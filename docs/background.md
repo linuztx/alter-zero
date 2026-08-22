@@ -26,21 +26,23 @@ told the result in a new turn.
   `description: Option<String>`; the tool schema advertises both.
 - A backgrounded call resolves with `StreamEvent::ToolBackgrounded {id, output}`
   **instead of** `ToolEnd` (`llm::agent` picks by `outcome.background`).
-  `output` is the *model-facing* text (task id + interim-output file path); the
-  cell never shows it — it renders the fixed
-  `⎿ Running in the background (↓ to manage)` row.
+  `output` is the *model-facing* text — the interim-output file path plus the
+  completion promise, **no task id**: nothing model-facing takes one back
+  (kills go by PID, progress by the file), so naming it would just ask the
+  model to track a token with no use. The cell never shows the text — it
+  renders the fixed `⎿ Running in the background (↓ to manage)` row.
 - That text differs by **who** backgrounded the call. A `run_in_background`
   launch gets the plain acknowledgement (`exec::background_launch_text` — the
-  model asked, so the id + interim path + notification promise suffice). A
+  model asked, so the interim path + completion promise suffice). A
   **Ctrl+B handoff** gets `exec::background_handoff_text`: the same facts led
   by `The user moved this command to the background …` and closed with a
   don't-re-run/don't-poll steer — the model requested a *foreground* run, and
   without being told the user moved it, it expects the full output and
   re-reads the interim file round after round waiting for it. The recorded
   `tool.output` is this same text, so `context::context_messages` replays the
-  explanation into every later turn's context too. The `bash` tool
-  description also warns the model up front that the user may background a
-  running command mid-run.
+  explanation into every later turn's context too. (The `bash` description
+  itself stays terse — the handoff text carries its own instructions at the
+  moment they matter.)
 - `ToolStatus::Backgrounded` is the resolved status: green header bullet, the
   fixed row as its body inline, in the preview, and in the Ctrl+O transcript.
   The wire/tool-result content in the derived context stays `tool.output`
@@ -67,14 +69,16 @@ executor (`llm::exec`), and the `!` shell runner:
   (nanos ⊕ pid ⊕ a launch counter — `tui::host::session_id`'s no-`rand`
   pattern) with a collision re-roll against the running set. The pure
   `task_id(seed)` pins the format.
-- The interim files live in **Claude Code's tasks layout** — the pure
-  `tasks_dir(temp, uid, cwd, session)`:
-  `{tmp}/alter-zero-{uid}/{cwd, non-alphanumerics dashed}/{session}/tasks/{id}.output`
-  (e.g. `/tmp/alter-zero-0/-home-user-proj/18f…-4e2/tasks/bvyo7tkbe.output`) —
-  a stable per-user root, the project cwd as one dashed segment, and a
-  per-session dir keeping concurrent instances apart. The boundary injects
-  the uid (`tui::host::process_uid` — `/proc/self`'s owner; no `libc` in a
-  `forbid(unsafe)` crate), cwd, and session id.
+- The interim files live in a **short per-session layout** — the pure
+  `tasks_dir(temp, uid, session)`:
+  `{tmp}/alter-zero-{uid}/{session}/{id}.output`
+  (e.g. `/tmp/alter-zero-0/18f…-4e2/bvyo7tkbe.output`) —
+  a stable per-user root (Claude Code's `claude-{uid}` pattern) and a
+  per-session dir keeping concurrent instances apart. Short deliberately: the
+  model reads these paths back out of every launch text, and the session id
+  already separates projects, so a dashed-cwd segment (and a `tasks` leaf)
+  was pure length. The boundary injects the uid (`tui::host::process_uid` —
+  `/proc/self`'s owner; no `libc` in a `forbid(unsafe)` crate) and session id.
 
 - `launch(command, description, from_model)` spawns `sh -c` in its own process
   group **detached from the controlling terminal**

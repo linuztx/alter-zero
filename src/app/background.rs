@@ -15,8 +15,9 @@ pub struct BackgroundNotice {
     /// The human description shown in the headline: the model-supplied
     /// `description` argument, falling back to the command line.
     pub description: String,
-    /// The registry task id (`bvyo7tkbe`, …) — lets the model pair the notice
-    /// to the launch result it received.
+    /// The registry task id (`bvyo7tkbe`, …) — the record's internal key
+    /// (never model-facing: the launch text and the context note both
+    /// identify the shell by its description alone).
     pub id: String,
     /// The exit code, or `None` when the process died to a signal.
     pub code: Option<i32>,
@@ -83,12 +84,11 @@ impl BackgroundNotice {
         let origin = self
             .origin
             .as_ref()
-            .map(|agent| format!(", launched by the {agent} agent"))
+            .map(|agent| format!(" (launched by the {agent} agent)"))
             .unwrap_or_default();
         format!(
-            "[background] Background command \"{}\" (id {}{origin}) {}.\nFinal output (tail):\n{tail}",
+            "[background] Background command \"{}\"{origin} {}.\nFinal output (tail):\n{tail}",
             self.description,
-            self.id,
             self.outcome_phrase(),
         )
     }

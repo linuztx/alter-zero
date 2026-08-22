@@ -98,11 +98,11 @@ impl<'t> Session<'t> {
         // interrupt/`/clear`. Interim output tees to per-task files under the temp
         // dir so the model can `read` progress mid-run.
         let (bg_tx, bg_rx) = tokio::sync::mpsc::unbounded_channel::<BgEvent>();
-        // Claude Code's tasks layout: a stable per-user root, the cwd as one
-        // dashed segment, and a per-session dir —
-        // `{tmp}/alter-zero-{uid}/-home-user-proj/{session}/tasks/{id}.output`
-        // (the pure `background::tasks_dir`; the uid/cwd/session injected here at
-        // the boundary).
+        // A short per-user, per-session layout —
+        // `{tmp}/alter-zero-{uid}/{session}/{id}.output`
+        // (the pure `background::tasks_dir`; the uid/session injected here at
+        // the boundary). Short deliberately: the model reads these paths back
+        // out of every background launch text.
         //
         // Every shell child (model `bash`, `run_in_background`, the `!` shell)
         // spawns detached from the controlling terminal (`subprocess::tiers` — the
@@ -117,7 +117,6 @@ impl<'t> Session<'t> {
             background::tasks_dir(
                 &std::env::temp_dir(),
                 host::process_uid(),
-                &cwd,
                 &host::session_id(),
             ),
         )

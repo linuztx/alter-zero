@@ -40,8 +40,8 @@ pub fn needs_cache_breakpoints(model: &str) -> bool {
 /// Mark the wire `messages` array (the JSON the provider receives) with up to
 /// three `cache_control: {"type":"ephemeral"}` breakpoints:
 ///
-/// 1. the **system message** — the big stable prefix (persona + environment +
-///    tools note) shared by every request;
+/// 1. the **system message** — the big stable prefix (persona + environment)
+///    shared by every request;
 /// 2. the **last cacheable message** — a moving breakpoint that tracks the
 ///    conversation frontier, so each agentic round caches everything so far
 ///    and the next round (or turn) reads it back;

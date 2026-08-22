@@ -53,8 +53,8 @@ stay byte-identical.
 [system  ← ①] [user] [assistant] [user ← ③] [assistant+tool_calls] [tool ← ②]
 ```
 
-1. **The system message** — the big stable prefix (persona + environment +
-   tools note) shared by every request of the session.
+1. **The system message** — the big stable prefix (persona + environment)
+   shared by every request of the session.
 2. **The last cacheable message** — a *moving* breakpoint tracking the
    conversation frontier. Mid-turn, each agent round ends on the round's tool
    results, so the next round reads everything so far from cache and only the

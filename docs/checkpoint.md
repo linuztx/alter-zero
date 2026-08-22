@@ -82,8 +82,8 @@ Split the repo's usual way — a **pure core** (unit-tested) and a **boundary**
 
 - `Checkpoint`, `restore_target`, `retain_surviving` — the mapping above.
 - `store_git_dir(root, cwd)` — the per-cwd store path, keyed by the cwd with
-  every non-alphanumeric char dashed (the same segmenting as
-  `background::tasks_dir`), so all sessions run in a directory share one object
+  every non-alphanumeric char dashed (`/home/user/proj` → `-home-user-proj`),
+  so all sessions run in a directory share one object
   store: a checkpoint recorded last week is restorable today.
 - `CHECKPOINT_EXCLUDES` / `exclude_file_contents` — the `info/exclude` denylist.
   The project's *own* `.gitignore` files already keep most build/vendor dirs out

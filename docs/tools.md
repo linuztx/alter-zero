@@ -38,8 +38,8 @@ definitions + JSON schemas live in [`llm::tools`](../src/llm/tools.rs)
 
 | tool | params | executes |
 | --- | --- | --- |
-| `bash` | `command` (req), `timeout_ms` (opt, default 30 000, cap 600 000) | `sh -c command` with **no controlling terminal** (`crate::subprocess` — a `/dev/tty` password prompt fails fast), stdin `/dev/null`, stdout+stderr captured, byte-capped, killed on timeout/cancel |
-| `read` | `path` (req), `offset` (opt 1-based line), `limit` (opt, default 2000 lines) | read the file: text returns `cat -n`-style numbered lines (so the model can cite line numbers to `edit`); an **image** (png/jpg/jpeg/gif/webp) is attached visually so the model can see it (`offset`/`limit` ignored — see "Image reads" below) |
+| `bash` | `command` (req), `timeout` (opt, ms — default 120 000, cap 600 000; the recorded-rollout alias `timeout_ms` still parses) | `sh -c command` with **no controlling terminal** (`crate::subprocess` — a `/dev/tty` password prompt fails fast), stdin `/dev/null`, stdout+stderr captured, byte-capped, killed on timeout/cancel |
+| `read` | `path` (req), `offset` (opt 1-based line), `limit` (opt, default 2000 lines) | read the file: text returns numbered lines (a dynamic-width gutter); an **image** (png/jpg/jpeg/gif/webp) is attached visually so the model can see it (`offset`/`limit` ignored — see "Image reads" below) |
 | `write` | `path` (req), `content` (req) | create parent dirs, write the file; report `Created {path} ({N} lines)` over the numbered contents for a new file, or the numbered diff hunks vs the previous content |
 | `edit` | `path` (req), `old_string` (req), `new_string` (req), `replace_all` (opt) | exact string replacement; error if `old_string` is absent, or non-unique without `replace_all`; report `Updated {path} (+A -D)` over the numbered diff hunks |
 
@@ -293,15 +293,16 @@ Ctrl+T thinking cycle established (`docs/reasoning.md`):
 
 Tools are **on by default for the real backend** and never for the dummy (the
 dummy's canned tools are unaffected). Toggle with `ALTER_ZERO_TOOLS`
-(`0`/`false`/`no` disables). When enabled, the tool-capability note in
-[`prompts/tools.md`](../prompts/tools.md) is appended to the system prompt —
-after the persona ([`prompts/alter_zero.md`](../prompts/alter_zero.md)) and the
+(`0`/`false`/`no` disables). Enabling them adds **no prose to the system
+prompt** — the schemas carry the whole capability story, so the assembled
+prompt stays persona ([`prompts/alter_zero.md`](../prompts/alter_zero.md)) →
 runtime **environment context**
-([`prompts/environment.md`](../prompts/environment.md), `docs/environment.md`),
-so the assembled prompt reads persona → environment → tools. All three are
-`include_str!`d into `llm::backend` so the wording lives in maintainable
-markdown files (swap a persona by pointing the const at a different
-`prompts/*.md`). The note just names the tools; the schemas carry the detail.
+([`prompts/environment.md`](../prompts/environment.md), `docs/environment.md`)
+and nothing else. (A `prompts/tools.md` note used to be appended here; it
+re-spent those tokens on every request saying what the schemas already say.)
+Both files are `include_str!`d into `llm::backend` so the wording lives in
+maintainable markdown (swap a persona by pointing the const at a different
+`prompts/*.md`).
 
 The executor runs commands and writes files **in the app's working directory with
 no sandbox** — the same trust model as the `!` shell. A future revision could add

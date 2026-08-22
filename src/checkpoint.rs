@@ -89,9 +89,9 @@ pub fn retain_surviving(checkpoints: &mut Vec<Checkpoint>, len: usize) {
 
 /// The isolated store's `GIT_DIR` for `cwd` under `root` (e.g.
 /// `~/.alter-zero/checkpoints`): one per working directory, keyed by the cwd
-/// with every non-alphanumeric char dashed — the same segmenting as
-/// [`crate::background::tasks_dir`] — so all sessions in a directory share one
-/// object store. Pure: the boundary injects `root`.
+/// with every non-alphanumeric char dashed (`/home/user/proj` →
+/// `-home-user-proj`) so all sessions in a directory share one object store.
+/// Pure: the boundary injects `root`.
 #[must_use]
 pub fn store_git_dir(root: &Path, cwd: &Path) -> PathBuf {
     let dashed: String = cwd
@@ -950,7 +950,7 @@ mod tests {
     }
 
     #[test]
-    fn store_git_dir_dashes_the_cwd_like_the_tasks_dir() {
+    fn store_git_dir_dashes_the_cwd_into_one_segment() {
         let dir = store_git_dir(
             Path::new("/home/user/.alter-zero/checkpoints"),
             Path::new("/home/user/my proj"),

@@ -684,11 +684,9 @@ pub(in crate::stream) fn agents_turn(cue: &Cue) -> Vec<StreamEvent> {
             .map(|&(id, description, _, response)| AgentCallDone {
                 id: id.to_string(),
                 output: if background {
-                    format!(
-                        "Background agent launched with ID: {id} \
-                         (\"{description}\"). You will be notified when it \
-                         completes."
-                    )
+                    // The real executor's own acknowledgement (the
+                    // dummy-backend rule: offline cells carry live output).
+                    crate::llm::backend::agent_launch_text(description)
                 } else {
                     response.to_string()
                 },

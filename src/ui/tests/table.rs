@@ -940,7 +940,9 @@ fn a_backgrounded_tool_cell_shows_the_fixed_row_not_its_output() {
         name: "Bash".to_string(),
         args: "ping -c 50 google.com".to_string(),
         status: ToolStatus::Backgrounded,
-        output: "Command running in background with ID: bash_1.".to_string(),
+        output:
+            "Command running in the background. Output is streaming to /tmp/a0/s1/bash_1.output."
+                .to_string(),
         timestamp: String::new(),
         shell: false,
         truncated: false,
@@ -974,7 +976,7 @@ fn a_backgrounded_shell_cell_is_the_headerless_fixed_row() {
         name: "ping x.com".to_string(),
         args: String::new(),
         status: ToolStatus::Backgrounded,
-        output: "[moved to background as task bash_1]".to_string(),
+        output: "[moved to background; the final output will follow when it completes]".to_string(),
         timestamp: String::new(),
         shell: true,
         truncated: false,

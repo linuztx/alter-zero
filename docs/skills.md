@@ -258,28 +258,30 @@ runs. The body it loads is subject to every gate it then tries to pass
 through — a skill telling the model to run `rm -rf` still meets the permission
 modal at the `bash` call.
 
-## `/<skill-name>`
+## `$<skill-name>`
 
-The reference's user-invocation shorthand works, and needs no code of its own.
-Typing `/haiku-writer about tmux` matches no built-in command, so it submits as
-an ordinary user turn; the system prompt's guidance line (`prompts/tools.md`)
-tells the model that `/<skill-name>` *is* a skill invocation, and the listing
-tells it which names exist — so it answers with a `skill` call carrying the
-rest of the line as `args`. Verified end to end against a live model:
+The user-invocation shorthand is the `$` mention, and it needs no code of its
+own. A submitted message carrying `$haiku-writer about tmux` is an ordinary
+user turn; the **Skill tool's own description** tells the model a `$<name>`
+mention is a request to run that skill, and the listing tells it which names
+exist — so it answers with a `skill` call carrying the rest of the line as
+`args`. (The guidance lives on the tool because it rides every request the
+tool does — the retired `prompts/tools.md` note and the listing's old closing
+sentence each said it a second time, per turn.) Verified end to end against a
+live model:
 
 ```
-❯ /haiku-writer about tmux
+❯ $haiku-writer about tmux
 ● Skill(haiku-writer)
   ⎿  Successfully loaded skill
 ● Grid of terminals, …
 ```
 
 The user-invoked and model-invoked paths therefore converge on one
-implementation rather than two. The same rails carry the composer's **`$`
-skill-mention picker** (`docs/skill-mentions.md`): typing `$` anywhere in a
-message fuzzy-completes the discovered skills' names, Tab/Enter insert the
-`$<name>` mention, and the listing's closing guidance sentence makes the
-model answer a submitted mention with the same `skill` call.
+implementation rather than two. The composer's **`$` skill-mention picker**
+(`docs/skill-mentions.md`) feeds the same rails: typing `$` anywhere in a
+message fuzzy-completes the discovered skills' names and Tab/Enter insert
+the `$<name>` mention.
 
 What is **not** implemented is palette *autocomplete*: typing `/` lists only
 the built-in commands, not the discovered skills. `app::COMMANDS` is a `const`

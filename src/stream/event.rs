@@ -186,7 +186,7 @@ pub enum StreamEvent {
     /// (a `run_in_background` bash call, or Ctrl+B on a running command) —
     /// sent **in place of** [`StreamEvent::ToolEnd`]. `id` is the registry
     /// task id; `output` is the model-facing launch text (the task id +
-    /// interim-output path) that becomes the tool result — the cell instead
+    /// interim-output path + completion promise) that becomes the tool result — the cell instead
     /// renders the fixed `⎿ Running in the background (↓ to manage)` row
     /// ([`crate::app::ToolStatus::Backgrounded`]). The process itself reports
     /// through the separate background channel. See `docs/background.md`.

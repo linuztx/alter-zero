@@ -117,10 +117,8 @@ pub(crate) fn spawn_shell_command(
                 let task = registry.adopt(&command, None, false, child, chunk_rx, combined);
                 let _ = tx.send(StreamEvent::ToolBackgrounded {
                     id: task.id.clone(),
-                    output: format!(
-                        "[moved to background as task {}; final output will follow when it completes]",
-                        task.id
-                    ),
+                    output: "[moved to background; the final output will follow when it completes]"
+                        .to_string(),
                 });
                 let _ = tx.send(StreamEvent::StreamDone);
                 return;

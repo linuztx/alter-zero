@@ -178,7 +178,7 @@ fn completion_notice_context_text_carries_the_tail() {
     };
     assert_eq!(
         notice.context_text(),
-        "[background] Background command \"Ping x\" (id bash_1) completed (exit code 0).\n\
+        "[background] Background command \"Ping x\" completed (exit code 0).\n\
          Final output (tail):\nline1\nline2"
     );
     let silent = BackgroundNotice {
@@ -223,7 +223,7 @@ fn a_subagent_launched_shell_is_attributed_end_to_end() {
     assert!(
         notice
             .context_text()
-            .contains("(id b1, launched by the general-purpose agent)"),
+            .contains("(launched by the general-purpose agent)"),
         "{}",
         notice.context_text()
     );

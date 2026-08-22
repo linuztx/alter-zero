@@ -22,10 +22,10 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 /// The `bash` tool's default per-command timeout when the model omits one
-/// (codex uses 10 s; we allow longer for build/test commands).
-pub const BASH_DEFAULT_TIMEOUT_MS: u64 = 30_000;
+/// (Claude Code's default; long enough for build/test commands).
+pub const BASH_DEFAULT_TIMEOUT_MS: u64 = 120_000;
 
-/// The ceiling a model-supplied `bash` `timeout_ms` is clamped to.
+/// The ceiling a model-supplied `bash` `timeout` is clamped to.
 pub const BASH_MAX_TIMEOUT_MS: u64 = 600_000;
 
 /// The `read` tool's default line cap when the model omits `limit`.
@@ -123,8 +123,8 @@ impl ToolOutcome {
     }
 
     /// A call resolved by moving to the background: `output` is the
-    /// model-facing launch text (task id + interim-output path). See
-    /// `docs/background.md`.
+    /// model-facing launch text (the interim-output path + completion
+    /// promise). See `docs/background.md`.
     #[must_use]
     pub fn backgrounded(id: impl Into<String>, output: impl Into<String>) -> Self {
         Self {
@@ -241,11 +241,11 @@ pub fn ask_spec() -> Value {
          answers. Use this when you are blocked on a decision that is genuinely \
          the user's to make: choosing between approaches, clarifying ambiguous \
          requirements, or picking an option you cannot resolve yourself. Each \
-         question shows 2-4 options plus an automatic free-text \"Other\" entry \
-         — never add an \"Other\" option yourself. The user can also decline to \
-         answer or ask to chat instead; the result reports what they chose per \
-         question. Do not use this for questions you can answer by exploring \
-         the code, or for permission to proceed with the obvious next step.",
+         question shows 2-4 options plus an automatic free-text entry — never \
+         add a catch-all \"Other\" option yourself. The user may instead \
+         decline or ask to chat; the result then tells you to stop and wait. \
+         Do not use this for questions you can answer by exploring the code, \
+         or for permission to proceed with the obvious next step.",
         json!({
             "type": "object",
             "properties": {
@@ -265,8 +265,8 @@ pub fn ask_spec() -> Value {
                             },
                             "header": {
                                 "type": "string",
-                                "description": "Very short label shown as the \
-                                    question's tab chip (max 12 chars), e.g. \
+                                "description": "Very short label for the \
+                                    question (max 12 chars), e.g. \
                                     \"Auth method\", \"Library\"."
                             },
                             "options": {
@@ -292,10 +292,10 @@ pub fn ask_spec() -> Value {
                                         },
                                         "preview": {
                                             "type": "string",
-                                            "description": "Optional content rendered \
-                                                in a side panel while the option is \
-                                                focused — a code snippet or mockup \
-                                                that helps compare options."
+                                            "description": "Optional content shown \
+                                                beside the option — a code snippet \
+                                                or mockup that helps compare \
+                                                options."
                                         }
                                     },
                                     "required": ["label", "description"],
@@ -323,7 +323,9 @@ pub fn ask_spec() -> Value {
 /// **non-empty** [`crate::skills::SkillRegistry`] is attached
 /// (`LlmBackend::with_skills`): with no skills on disk the tool has nothing
 /// to load, and both references omit it too. The description follows Claude
-/// Code's `SkillTool` prompt.
+/// Code's `SkillTool` prompt, with the reference's slash-command paragraph
+/// swapped for this TUI's `$<name>` mention syntax (`docs/skill-mentions.md`
+/// — here a leading `/` is the built-in command palette, never a skill).
 #[must_use]
 pub fn skill_spec() -> Value {
     function_spec(
@@ -333,9 +335,9 @@ pub fn skill_spec() -> Value {
          available skills matches. Skills package specialized capabilities and \
          domain knowledge; loading one gives you instructions written for \
          exactly this kind of work.\n\n\
-         When the user references a \"slash command\" or \"/<something>\" (e.g. \
-         \"/commit\", \"/review-pr\"), they mean a skill — use this tool to run \
-         it.\n\n\
+         The user may reference a skill anywhere in a message as `$<name>` \
+         (e.g. `$commit`, `$review-pr`); treat each such mention as a request \
+         to run that skill.\n\n\
          Important:\n\
          - The available skills are listed in a system-reminder message in the \
          conversation; only those names are valid, so never guess one.\n\
@@ -343,8 +345,7 @@ pub fn skill_spec() -> Value {
          the task — the skill may change how the work should be done.\n\
          - Never mention a skill without actually calling this tool.\n\
          - Do not invoke a skill already loaded in this conversation; its \
-         instructions are in front of you, so just follow them.\n\
-         - Do not use this tool for built-in commands like /help or /clear.",
+         instructions are in front of you, so just follow them.",
         json!({
             "type": "object",
             "properties": {
@@ -384,16 +385,14 @@ pub fn task_specs() -> Vec<Value> {
 fn task_create_spec() -> Value {
     function_spec(
         crate::tasks::TASK_CREATE_TOOL,
-        "Create a task in the structured task list for this coding session — \
-         the list the user watches update live as you work. Use it \
-         proactively for complex multi-step work (3+ distinct steps), when \
-         the user asks for a todo list or gives several tasks, and to capture \
-         follow-ups discovered mid-implementation. Skip it for a single \
-         trivial task — just do that directly. Every task is created \
-         pending; use taskupdate to mark it in_progress BEFORE starting the \
-         work and completed when done, and to wire dependencies \
-         (blocks/blockedBy). Keep subjects short and actionable, in \
-         imperative form (\"Fix authentication bug\").",
+        "Create a task in the structured task list for this coding session. \
+         Use it proactively for complex multi-step work (3+ distinct steps), \
+         when the user asks for a todo list or gives several tasks, and to \
+         capture follow-ups discovered mid-implementation. Skip it for a \
+         single trivial task — just do that directly. Every task is created \
+         pending; use taskupdate to track progress and wire dependencies. \
+         Keep subjects short and actionable, in imperative form (\"Fix \
+         authentication bug\").",
         json!({
             "type": "object",
             "properties": {
@@ -408,10 +407,9 @@ fn task_create_spec() -> Value {
                 },
                 "activeForm": {
                     "type": "string",
-                    "description": "Present continuous form shown in the \
-                        spinner while the task is in_progress (e.g. \
-                        \"Running tests\"). If omitted, the spinner shows \
-                        the subject instead."
+                    "description": "Present continuous form shown while the \
+                        task is in_progress (e.g. \"Running tests\"). If \
+                        omitted, the subject is shown instead."
                 }
             },
             "required": ["subject", "description"],
@@ -423,10 +421,9 @@ fn task_create_spec() -> Value {
 fn task_get_spec() -> Value {
     function_spec(
         crate::tasks::TASK_GET_TOOL,
-        "Retrieve a task by ID from the task list: its subject, description, \
-         status, what it blocks, and what blocks it. Use it to read the full \
-         requirements before starting work on a task. Verify its blocked-by \
-         list is empty before beginning.",
+        "Retrieve a task by ID from the task list. Use it to read the full \
+         requirements before starting work on a task, and verify its \
+         blocked-by list is empty before beginning.",
         json!({
             "type": "object",
             "properties": {
@@ -444,10 +441,9 @@ fn task_get_spec() -> Value {
 fn task_list_spec() -> Value {
     function_spec(
         crate::tasks::TASK_LIST_TOOL,
-        "List all tasks in the task list: each task's ID, status, subject, \
-         and the open tasks blocking it. Use it to check overall progress, \
+        "List all tasks in the task list. Use it to check overall progress, \
          find the next available task (pending and unblocked), or spot \
-         blocked work. Prefer working on tasks in ID order. Use taskget for \
+         blocked work. Prefer working on tasks in ID order; use taskget for \
          one task's full details.",
         json!({
             "type": "object",
@@ -464,10 +460,7 @@ fn task_update_spec() -> Value {
          start its work and completed IMMEDIATELY after finishing it — only \
          when fully accomplished (tests failing or a partial implementation \
          stay in_progress). Set status to \"deleted\" to remove a task that \
-         is no longer relevant. You can also rewrite the subject, \
-         description, or activeForm, and wire dependencies: addBlocks marks \
-         tasks that cannot start until this one completes, addBlockedBy \
-         marks tasks that must complete first.",
+         is no longer relevant.",
         json!({
             "type": "object",
             "properties": {
@@ -485,8 +478,8 @@ fn task_update_spec() -> Value {
                 },
                 "activeForm": {
                     "type": "string",
-                    "description": "Present continuous form shown in the \
-                        spinner while the task is in_progress."
+                    "description": "Present continuous form shown while the \
+                        task is in_progress."
                 },
                 "status": {
                     "type": "string",
@@ -521,37 +514,30 @@ fn agent_spec() -> Value {
          message to run them concurrently — each is independent and cannot \
          see the others (or this conversation), so give each a complete, \
          self-contained prompt and tell it what to return. By default agents \
-         run in the background: the call returns at once with an agent ID and \
-         you are notified with the final response when one completes — set \
-         run_in_background to false when you need the result before \
-         continuing. The user can watch, stop, or message your agents while \
-         they run.",
+         run in the background: the call returns at once and re-invokes you \
+         with the final response when one completes — set run_in_background \
+         to false when you need the result before continuing.",
         json!({
             "type": "object",
             "properties": {
                 "description": {
                     "type": "string",
-                    "description": "A short (3-5 word) description of the task, \
-                        shown in the UI."
+                    "description": "A short (3-5 word) description of the task."
                 },
                 "prompt": {
                     "type": "string",
-                    "description": "The task for the agent to perform — \
-                        complete and self-contained, including what to return."
+                    "description": "The task for the agent to perform."
                 },
                 "subagent_type": {
                     "type": "string",
-                    "description": "The type of specialized agent to use: \
-                        \"general-purpose\" (default — all tools) or \
-                        \"explore\" (read-only: shell and file reads, for \
+                    "description": "\"general-purpose\" (default — all tools) \
+                        or \"explore\" (shell and file reads only, for \
                         searching and research)."
                 },
                 "run_in_background": {
                     "type": "boolean",
-                    "description": "Agents run in the background by default; \
-                        you will be notified when one completes. Set to false \
-                        to run this agent synchronously when you need its \
-                        result before continuing."
+                    "description": "Set to false to run this agent \
+                        synchronously. Defaults to true."
                 }
             },
             "required": ["description", "prompt"],
@@ -578,17 +564,12 @@ fn bash_spec() -> Value {
     function_spec(
         "bash",
         "Run a shell command with `sh -c` in the current working directory and \
-         return its combined stdout and stderr. Use this for exploring the \
-         project (ls, grep, find, cat), running builds and tests, and git. \
-         Prefer the `read` tool over `cat` when you want to inspect a file to \
-         edit it. Long output is truncated; a non-zero exit status is reported. \
-         Set `run_in_background` for long-running commands: the call returns \
-         immediately with a task ID and an interim-output file path, and you \
-         are notified with the final output when the command completes. \
-         The user may also move a running command to the background \
-         themselves mid-run: the tool result then says so and reports the \
-         same task ID and notification promise — do not run the command again \
-         or wait for it, just continue.",
+         return its combined stdout and stderr.\n\
+         - Prefer the `read` tool over `cat` to inspect files.\n\
+         - Long output is truncated; a non-zero exit status is reported.\n\
+         - `timeout` is in milliseconds: default 120000, max 600000.\n\
+         - `run_in_background` runs the command detached: it keeps running \
+         across turns and re-invokes you when it exits.",
         json!({
             "type": "object",
             "properties": {
@@ -596,28 +577,20 @@ fn bash_spec() -> Value {
                     "type": "string",
                     "description": "The shell command to run."
                 },
-                "timeout_ms": {
+                "timeout": {
                     "type": "number",
-                    "description": "Maximum runtime in milliseconds before the \
-                        command is killed. Defaults to 30000; capped at 600000. \
-                        Ignored when run_in_background is true."
+                    "description": "Optional timeout in milliseconds (max \
+                        600000). Ignored when run_in_background is true."
                 },
                 "run_in_background": {
                     "type": "boolean",
                     "description": "Set to true to run this command in the \
-                        background: the tool returns at once with a task ID \
-                        while the command keeps running, and you receive a \
-                        notification with the final output when it completes. \
-                        Use for long-running commands (servers, watchers, \
-                        long benchmarks); read the reported interim-output \
-                        file to check progress mid-run. Defaults to false."
+                        background."
                 },
                 "description": {
                     "type": "string",
-                    "description": "A short human-readable description of what \
-                        the command does (e.g. \"Ping google.com 200 times\"), \
-                        shown in the UI and in background-completion \
-                        notifications."
+                    "description": "A short description of what the command \
+                        does (e.g. \"Ping google.com 200 times\")."
                 }
             },
             "required": ["command"],
@@ -629,12 +602,11 @@ fn bash_spec() -> Value {
 fn read_spec() -> Value {
     function_spec(
         "read",
-        "Read a file from the filesystem. A text file returns its contents with \
-         1-based line numbers (like `cat -n`), so you can cite exact lines to the \
-         `edit` tool — up to 2000 lines by default; use `offset`/`limit` to page \
-         through a large file. An image file (png/jpg/jpeg/gif/webp) is returned \
-         visually: the image is attached to the conversation so you can see it \
-         (`offset`/`limit` are ignored for images).",
+        "Read a file. A text file returns its contents with 1-based line \
+         numbers — up to 2000 lines by default; use `offset`/`limit` to page \
+         through a large file. An image file (png/jpg/jpeg/gif/webp) is \
+         attached to the conversation so you can see it (`offset`/`limit` \
+         are ignored for images).",
         json!({
             "type": "object",
             "properties": {
@@ -650,7 +622,7 @@ fn read_spec() -> Value {
                 },
                 "limit": {
                     "type": "number",
-                    "description": "Maximum number of lines to read. Defaults to 2000."
+                    "description": "Maximum number of lines to read."
                 }
             },
             "required": ["path"],
@@ -751,8 +723,10 @@ impl AgentArgs {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct BashArgs {
     pub command: String,
-    #[serde(default)]
-    pub timeout_ms: Option<u64>,
+    /// Milliseconds; the schema calls it `timeout`, and the `timeout_ms`
+    /// alias keeps calls recorded before the rename parseable.
+    #[serde(default, alias = "timeout_ms")]
+    pub timeout: Option<u64>,
     /// Run the command as a background task (`docs/background.md`).
     #[serde(default)]
     pub run_in_background: bool,
@@ -765,7 +739,7 @@ impl BashArgs {
     /// The effective timeout in milliseconds, clamped to [`BASH_MAX_TIMEOUT_MS`].
     #[must_use]
     pub fn timeout_ms(&self) -> u64 {
-        self.timeout_ms
+        self.timeout
             .unwrap_or(BASH_DEFAULT_TIMEOUT_MS)
             .clamp(1, BASH_MAX_TIMEOUT_MS)
     }
@@ -1443,6 +1417,24 @@ mod tests {
     }
 
     #[test]
+    fn the_skill_description_teaches_the_dollar_mention_syntax() {
+        // The composer's `$` picker inserts mentions like `$commit`
+        // (docs/skill-mentions.md) — the description is where the model
+        // learns one is a load request, since the `<system-reminder>`
+        // listing carries the roster alone. There is no slash syntax: a
+        // leading `/` is the built-in command palette, never a skill.
+        let desc = skill_spec()["function"]["description"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(desc.contains("`$<name>`"), "got {desc}");
+        assert!(desc.contains("`$commit`"), "got {desc}");
+        assert!(!desc.contains("slash command"), "got {desc}");
+        assert!(!desc.contains("/<something>"), "got {desc}");
+        assert!(!desc.contains("/review-pr"), "got {desc}");
+    }
+
+    #[test]
     fn the_skill_spec_takes_a_name_and_optional_args() {
         // The reference's schema exactly (docs/skills.md): `skill` required,
         // `args` optional — an over-strict `required` would make every call
@@ -1483,18 +1475,116 @@ mod tests {
     }
 
     #[test]
-    fn bash_description_warns_the_user_may_background_a_running_command() {
-        // The model should know IN ADVANCE that the user can move its
-        // foreground command to the background mid-run (Ctrl+B): the tool
-        // result then says so, and the model must not run the command again
+    fn bash_description_is_terse_and_teaches_timeout_and_background() {
+        // The description carries exactly what the model must know before
+        // calling: the timeout contract and what `run_in_background` means.
+        // Launch instructions (the interim path, the completion promise)
+        // arrive in the tool result when a background run actually happens —
+        // repeating them here would spend tokens on every request
         // (docs/background.md).
         let specs = tool_specs();
         let desc = specs[0]["function"]["description"].as_str().unwrap();
         assert!(
-            desc.contains("The user may also move a running command to the background"),
+            desc.contains("`timeout` is in milliseconds: default 120000, max 600000"),
             "got {desc}"
         );
-        assert!(desc.contains("do not run the command again"), "got {desc}");
+        assert!(
+            desc.contains("`run_in_background` runs the command detached"),
+            "got {desc}"
+        );
+        assert!(desc.contains("re-invokes you when it exits"), "got {desc}");
+        for stale in [
+            "task ID",
+            "interim",
+            "notification",
+            "The user may also move",
+        ] {
+            assert!(!desc.contains(stale), "stale detail `{stale}` in: {desc}");
+        }
+    }
+
+    #[test]
+    fn descriptions_carry_no_ui_chrome_or_dead_ids() {
+        // The model can act on none of it — where the harness renders a
+        // value, or ids nothing model-facing takes back. Chrome like that
+        // spends schema tokens on every request and goes stale the moment
+        // the UI moves. Sweep every authored spec, parameters included
+        // (MCP specs pass through the server's own text and are exempt).
+        let mut specs = tool_specs_with_agents();
+        specs.push(ask_spec());
+        specs.push(skill_spec());
+        specs.extend(task_specs());
+        let stale = [
+            "shown in the UI",
+            "in the UI",
+            "spinner",
+            "tab chip",
+            "side panel",
+            "the list the user watches",
+            "agent ID",
+            "task ID",
+            "watch, stop, or message",
+            "notification",
+        ];
+        for spec in &specs {
+            let text = spec["function"].to_string();
+            for phrase in stale {
+                assert!(
+                    !text.contains(phrase),
+                    "stale `{phrase}` in {}: {text}",
+                    spec["function"]["name"]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn read_description_promises_no_line_number_handoff_to_edit() {
+        // `edit` matches on exact strings — it has no line-number input, so
+        // "cite exact lines to the edit tool" taught a workflow that fails.
+        let specs = tool_specs();
+        let desc = specs[1]["function"]["description"].as_str().unwrap();
+        assert!(!desc.contains("edit"), "got {desc}");
+        assert!(!desc.contains("cat -n"), "got {desc}");
+    }
+
+    #[test]
+    fn ask_description_reports_the_decline_outcomes_honestly() {
+        // A decline or a chat request returns a stop-and-wait instruction,
+        // not per-question choices — and the auto-added free-text row is not
+        // labelled "Other" (`ask::ANSWERED_*`, docs/ask.md).
+        let desc = ask_spec()["function"]["description"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(!desc.contains("\"Other\" entry"), "got {desc}");
+        assert!(
+            !desc.contains("the result reports what they chose"),
+            "got {desc}"
+        );
+    }
+
+    #[test]
+    fn bash_param_descriptions_are_terse() {
+        // `run_in_background`'s full contract (detach, re-invoke) lives in
+        // the tool description — the property row is one sentence. The
+        // `description` param says what to write, never where the harness
+        // shows it.
+        let specs = tool_specs();
+        let props = &specs[0]["function"]["parameters"]["properties"];
+        assert!(props["timeout"].is_object(), "the param is `timeout` now");
+        assert!(
+            props["timeout_ms"].is_null(),
+            "no stale timeout_ms property in the schema"
+        );
+        assert_eq!(
+            props["run_in_background"]["description"],
+            "Set to true to run this command in the background."
+        );
+        let desc = props["description"]["description"].as_str().unwrap();
+        for stale in ["UI", "notification"] {
+            assert!(!desc.contains(stale), "stale detail `{stale}` in: {desc}");
+        }
     }
 
     #[test]
@@ -1511,10 +1601,18 @@ mod tests {
         let a: BashArgs = parse_args(r#"{"command":"ls -la"}"#).unwrap();
         assert_eq!(a.command, "ls -la");
         assert_eq!(a.timeout_ms(), BASH_DEFAULT_TIMEOUT_MS);
-        let b: BashArgs = parse_args(r#"{"command":"x","timeout_ms":5000}"#).unwrap();
+        assert_eq!(
+            BASH_DEFAULT_TIMEOUT_MS, 120_000,
+            "the schema's stated default"
+        );
+        let b: BashArgs = parse_args(r#"{"command":"x","timeout":5000}"#).unwrap();
         assert_eq!(b.timeout_ms(), 5000);
-        let c: BashArgs = parse_args(r#"{"command":"x","timeout_ms":9999999}"#).unwrap();
+        let c: BashArgs = parse_args(r#"{"command":"x","timeout":9999999}"#).unwrap();
         assert_eq!(c.timeout_ms(), BASH_MAX_TIMEOUT_MS, "clamped to the cap");
+        // Old rollouts recorded the parameter as `timeout_ms` — the serde
+        // alias keeps a replayed call parseable.
+        let d: BashArgs = parse_args(r#"{"command":"x","timeout_ms":7000}"#).unwrap();
+        assert_eq!(d.timeout_ms(), 7000);
     }
 
     #[test]

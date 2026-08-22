@@ -177,7 +177,7 @@ impl App {
     /// Resolve the in-flight tool call as **moved to the background** (a
     /// `run_in_background` bash call, or Ctrl+B on a running command):
     /// [`ToolStatus::Backgrounded`], with `output` holding the model-facing
-    /// launch text (task id + interim-output path) that the cell never shows —
+    /// launch text (interim-output path + completion promise) that the cell never shows —
     /// it renders the fixed `⎿ Running in the background (↓ to manage)` row.
     /// The boundary's handler for `StreamEvent::ToolBackgrounded`. See
     /// `docs/background.md`.
@@ -236,7 +236,7 @@ pub enum ToolStatus {
     /// call, or Ctrl+B on a running command): the process keeps running under
     /// the [`App::background`] registry while the cell resolves with a green
     /// bullet and the fixed `⎿ Running in the background (↓ to manage)` row —
-    /// the stored `output` is the model-facing text (task id + interim-output
+    /// the stored `output` is the model-facing text (interim-output
     /// path), never displayed. See `docs/background.md`.
     Backgrounded,
 }

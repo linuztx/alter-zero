@@ -294,7 +294,7 @@ fn reconstruct_arguments(tool: &ToolCall) -> String {
         // A `skill` call's summary *is* the skill name (`docs/skills.md`), so
         // it reconstructs exactly — and it must, since `skill` is a required
         // parameter a validating provider rejects the call without. The
-        // optional `args` are lossy the same way `bash`'s `timeout_ms` is;
+        // optional `args` are lossy the same way `bash`'s `timeout` is;
         // the result below carries the body they already rendered into.
         crate::skills::SKILL_TOOL_DISPLAY => "skill",
         _ => return "{}".to_string(),
@@ -1428,7 +1428,7 @@ mod tests {
         assert_eq!(ctx[0].role, ContextRole::User);
         assert_eq!(
             ctx[0].text,
-            "[background] Background command \"Ping x.com 200 times\" (id bash_1) \
+            "[background] Background command \"Ping x.com 200 times\" \
              completed (exit code 0).\nFinal output (tail):\n\
              64 bytes from x.com\n200 packets transmitted"
         );
@@ -1437,12 +1437,12 @@ mod tests {
     #[test]
     fn a_backgrounded_tool_replays_its_model_facing_launch_text() {
         // A backgrounded bash call is still a native tool-call pair — the
-        // stored output IS the model-facing launch text (task id + interim
-        // file), so no special casing is needed.
+        // stored output IS the model-facing launch text (the interim-output
+        // path), so no special casing is needed.
         let history = vec![tool(
             "Bash",
             "ping -c 200 x.com",
-            "Command running in the background with ID: bash_1.",
+            "Command running in the background. Output is streaming to /tmp/a0/s1/bash_1.output.",
             ToolStatus::Backgrounded,
             false,
         )];
@@ -1451,7 +1451,7 @@ mod tests {
             ctx[1],
             ContextMessage::tool_result(
                 "call_0",
-                "Command running in the background with ID: bash_1."
+                "Command running in the background. Output is streaming to /tmp/a0/s1/bash_1.output."
             )
         );
     }
@@ -1700,7 +1700,7 @@ mod tests {
         // the model call the tool with no arguments — and a validating
         // provider rejects that outright, `skill` being required. The stored
         // summary IS the name (`summarize_call`), so it reconstructs exactly;
-        // the optional `args` are lossy the same way `bash`'s `timeout_ms`
+        // the optional `args` are lossy the same way `bash`'s `timeout`
         // is, and the result below carries the rendered body they produced.
         let history = vec![tool(
             "Skill",

@@ -142,17 +142,17 @@ impl ToolExecutor for RealToolExecutor {
 }
 
 /// The model-facing result of a backgrounded `bash` call — what the tool
-/// result says (the cell shows the fixed backgrounded row instead). Mirrors
-/// Claude Code's launch acknowledgement: the task id to refer to it by, the
-/// interim-output file to `read` mid-run, and the promise of a completion
-/// notification. See `docs/background.md`.
+/// result says (the cell shows the fixed backgrounded row instead): the
+/// interim-output file to `read` mid-run and the promise of the final
+/// output. No task id — nothing model-facing takes one back (kills go by
+/// PID, progress by the file), so naming it would just ask the model to
+/// track a token with no use. See `docs/background.md`.
 #[must_use]
 pub fn background_launch_text(task: &crate::background::LaunchedTask) -> String {
     format!(
-        "Command running in background with ID: {}.\n\
-         Interim output is streaming to {} — read that file to check progress.\n\
-         You will be notified with the final output when the command completes.",
-        task.id,
+        "Command running in the background. Output is streaming to {} — \
+         read that file to check progress.\n\
+         You will be re-invoked with the final output when it exits.",
         task.output_path.display(),
     )
 }
@@ -163,9 +163,9 @@ pub fn background_launch_text(task: &crate::background::LaunchedTask) -> String 
 /// for), the model here requested a foreground run and expects the full
 /// output in this result — so the text must say who moved it and steer the
 /// model off waiting, or it treats the acknowledgement as an anomaly and
-/// re-reads the interim file round after round. The launch facts (task id,
-/// interim path, notification promise) are embedded verbatim so the two
-/// variants can never drift. See `docs/background.md`.
+/// re-reads the interim file round after round. The launch facts (interim
+/// path, completion promise) are embedded verbatim so the two variants can
+/// never drift. See `docs/background.md`.
 #[must_use]
 pub fn background_handoff_text(task: &crate::background::LaunchedTask) -> String {
     format!(
@@ -214,9 +214,9 @@ fn run_bash(
         registry.clear_background_request();
     }
     // `run_in_background`: hand the whole run to the registry and return the
-    // launch text at once — the model gets the task id + interim-output path,
-    // the completion notification follows when the command exits. A
-    // subagent's launch is attributed via `origin` (docs/agent-tool.md).
+    // launch text at once — the model gets the interim-output path, and the
+    // completion notification follows when the command exits. A subagent's
+    // launch is attributed via `origin` (docs/agent-tool.md).
     if args.run_in_background {
         let Some(registry) = background else {
             return ToolOutcome::error(
@@ -1029,10 +1029,29 @@ mod tests {
     // ===== background (docs/background.md) =====
 
     #[test]
+    fn background_launch_text_is_short_and_id_free() {
+        // No task id rides the text: nothing model-facing takes one back
+        // (kills go by PID, progress by the interim file), so naming it just
+        // asks the model to track a token with no use. The streaming path and
+        // the completion promise are the whole contract (docs/background.md).
+        let task = crate::background::LaunchedTask {
+            id: "bvyo7tkbe".to_string(),
+            output_path: std::path::PathBuf::from("/tmp/alter-zero-0/s1/bvyo7tkbe.output"),
+        };
+        let text = background_launch_text(&task);
+        assert!(!text.contains("ID"), "no id token: {text}");
+        assert!(
+            text.contains("/tmp/alter-zero-0/s1/bvyo7tkbe.output"),
+            "the interim path is the model's progress channel: {text}"
+        );
+        assert!(text.lines().count() <= 2, "short: {text}");
+    }
+
+    #[test]
     fn background_handoff_text_leads_with_the_user_move_over_the_launch_facts() {
         // Ctrl+B: the model expected a foreground run's full output, so the
         // handoff must say the USER moved the command, carry the launch facts
-        // (task id + interim path + notification promise) verbatim, and steer
+        // (interim path + completion promise) verbatim, and steer
         // the model off re-running/polling (docs/background.md).
         let task = crate::background::LaunchedTask {
             id: "bash_7".to_string(),
@@ -1094,8 +1113,8 @@ mod tests {
             "a claude-code-style id: {task_id}"
         );
         assert!(
-            out.output.contains(&format!("ID: {task_id}")) && out.output.contains(".output"),
-            "the model gets the task id + interim file: {}",
+            !out.output.contains("ID") && out.output.contains(".output"),
+            "the model gets the interim file, never an id: {}",
             out.output
         );
         assert!(
@@ -1190,8 +1209,8 @@ mod tests {
             out.output
         );
         assert!(
-            out.output.contains(&format!("ID: {task_id}")) && out.output.contains(".output"),
-            "the task id + interim file still ride the handoff text: {}",
+            !out.output.contains("ID") && out.output.contains(".output"),
+            "the interim file (and no id) rides the handoff text: {}",
             out.output
         );
         assert!(streamed.contains("early"), "the foreground tail ran first");

@@ -9,41 +9,41 @@ the current **date**, **os**, and **cwd** ride in the system prompt every
 session. Without them the model guesses the date, assumes a platform, and has
 no idea which directory its `bash`/`read`/`write`/`edit` tools act in.
 
-The block is authored in [`prompts/environment.md`](../prompts/environment.md),
-terse in the persona's own style:
+The block is authored in [`prompts/environment.md`](../prompts/environment.md)
+as the persona's `## Environment` section:
 
 ```
-Know your runtime environment
+## Environment
 
 Date {date}
 OS {os}
-Directory {cwd}
+CWD {cwd}
 ```
 
 The `{date}`/`{os}`/`{cwd}` placeholders are filled at runtime, e.g.:
 
 ```
-Know your runtime environment
+## Environment
 
 Date Sunday 2026-07-19
 OS linux (Ubuntu 24.04.4 LTS)
-Directory /home/user/alter-zero
+CWD /home/user/alter-zero
 ```
 
 ## Where it sits in the prompt
 
-The full system prompt the real backend sends is three blocks, in order:
+The full system prompt the real backend sends is two blocks, in order:
 
 ```
 persona        prompts/alter_zero.md   (who you are)
 environment    prompts/environment.md  (where/when you are)   ← this doc
-tools          prompts/tools.md        (what you can do)      when tools are on
 ```
 
-`persona → environment → tools`. The persona and environment are joined by
-`augment_with_environment`; the tools note is appended afterwards by
-`LlmBackend::configure` (unchanged). The Ctrl+D context-debug view shows the
-whole assembled prompt, so the environment block is visible there too.
+`persona → environment`, joined by `augment_with_environment` — nothing else:
+the tool schemas carry their own capability detail, so `LlmBackend::configure`
+appends no tools note (the retired `prompts/tools.md` re-spent those tokens on
+every request). The Ctrl+D context-debug view shows the whole assembled
+prompt, so the environment block is visible there too.
 
 ## Why this shape
 
@@ -80,7 +80,7 @@ read can't live in the pure, deterministically-tested library. So the split is:
 - `llm::backend` (pure): `render_environment` fills every placeholder and
   leaves no `{`; `augment_with_environment` appends the block after the base,
   leaves a blank base untouched, and — composed with `configure` — yields the
-  persona → environment → tools order.
+  persona → environment prompt whole, with no tools suffix.
 - `main.rs` (boundary): the date/os/cwd gathering — including `os_context`
   reading the real `/etc/os-release` on Linux — is verified by running the app
   (Ctrl+D shows the block) and by the live OpenRouter check that the model can

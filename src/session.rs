@@ -1621,7 +1621,7 @@ mod tests {
             name: "Bash".into(),
             args: "ping -c 200 x.com".into(),
             status: ToolStatus::Backgrounded,
-            output: "Command running in background with ID: bash_1.".into(),
+            output: "Command running in the background. Output is streaming to /tmp/a0/s1/bash_1.output.".into(),
             timestamp: "03:20 PM".into(),
             shell: false,
             truncated: false,

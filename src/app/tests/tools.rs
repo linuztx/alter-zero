@@ -297,12 +297,14 @@ fn background_tool_resolves_the_front_call_as_backgrounded() {
     app.begin_stream();
     app.start_tool("Bash", "ping x.com");
     let tool = app
-        .background_tool("Command running in background with ID: bash_1.")
+        .background_tool(
+            "Command running in the background. Output is streaming to /tmp/a0/s1/bash_1.output.",
+        )
         .expect("resolves the running call");
     assert_eq!(tool.status, ToolStatus::Backgrounded);
     assert_eq!(
         tool.output,
-        "Command running in background with ID: bash_1."
+        "Command running in the background. Output is streaming to /tmp/a0/s1/bash_1.output."
     );
     assert!(
         app.current_tool().is_none(),

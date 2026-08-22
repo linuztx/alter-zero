@@ -435,8 +435,8 @@ unit-tested must be unit-tested.
   async walk. ↑/↓ move, **Tab/Enter insert `$name `** (the sigil kept, an
   existing following space reused), Esc dismisses sticky-per-mention. A
   submitted message carrying a mention makes the model load that skill via
-  the ordinary `skill` tool — the listing's guidance sentence names the
-  syntax — so the green `● Skill(name)` cell, the context replay and the
+  the ordinary `skill` tool — its description names the mention syntax — so
+  the green `● Skill(name)` cell, the context replay and the
   rollout round-trip all come for free (deliberately not codex's eager
   `<skill>` injection, which exists because codex has no skill tool).
 - **A large paste collapses to a placeholder** (codex's large-paste handling —

@@ -2048,7 +2048,7 @@ mod tests {
         let calls = vec![call("c1", "bash", r#"{"command":"kill 408085; sleep 1"}"#)];
         let seen_round2: RefCell<Vec<(String, String)>> = RefCell::new(Vec::new());
         let note = "[background] Background command \"Start the API server\" \
-                    (id bvyo7tkbe) was terminated by a signal.";
+                    was terminated by a signal.";
         run_agent(
             &tx,
             &cancel,

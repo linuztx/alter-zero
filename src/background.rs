@@ -74,7 +74,8 @@ pub enum BgEvent {
 /// A successfully launched background task, for the model-facing tool result.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LaunchedTask {
-    /// The task id (`bvyo7tkbe`, …) the model uses to refer to it.
+    /// The task id (`bvyo7tkbe`, …) — internal only; the launch text names
+    /// the shell by its interim-output path instead.
     pub id: String,
     /// Where the interim output streams — the model can `read` it mid-run.
     pub output_path: PathBuf,
@@ -136,29 +137,18 @@ fn splitmix64(seed: u64) -> u64 {
     z ^ (z >> 31)
 }
 
-/// The tasks directory, in Claude Code's layout:
-/// `{temp}/alter-zero-{uid}/{cwd, non-alphanumerics dashed}/{session}/tasks`
-/// — a stable per-user root (Claude Code's `claude-{uid}`), the project's
-/// cwd as one dashed segment (`/home/user/proj` → `-home-user-proj`), and a
-/// per-session dir keeping concurrent instances off each other's files. Pure
-/// — the boundary injects the temp dir, uid, cwd, and session id (the
-/// `set_session_info` pattern). See `docs/background.md`.
+/// The background-tasks directory: `{temp}/alter-zero-{uid}/{session}` — a
+/// stable per-user root (Claude Code's `claude-{uid}` pattern) and a
+/// per-session dir keeping concurrent instances off each other's files. The
+/// model reads interim-output paths under this dir back out of the launch
+/// text every time it checks progress, so the layout stays as short as
+/// uniqueness allows: the session id already separates projects, making a
+/// dashed-cwd segment (and a `tasks` leaf) pure length. Pure — the boundary
+/// injects the temp dir, uid, and session id (the `set_session_info`
+/// pattern). See `docs/background.md`.
 #[must_use]
-pub fn tasks_dir(
-    temp: &std::path::Path,
-    uid: u32,
-    cwd: &std::path::Path,
-    session: &str,
-) -> PathBuf {
-    let dashed: String = cwd
-        .to_string_lossy()
-        .chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
-        .collect();
-    temp.join(format!("alter-zero-{uid}"))
-        .join(dashed)
-        .join(session)
-        .join("tasks")
+pub fn tasks_dir(temp: &std::path::Path, uid: u32, session: &str) -> PathBuf {
+    temp.join(format!("alter-zero-{uid}")).join(session)
 }
 
 /// How often a monitor thread wakes to poll its child / kill flag when no
@@ -258,7 +248,7 @@ impl BackgroundRegistry {
 
     /// Spawn `command` as a background task: `sh -c` in its own process group
     /// (so a kill reaps the whole tree), monitored on its own thread. Returns
-    /// the task id + interim-output path for the model-facing result.
+    /// the interim-output path for the model-facing result.
     ///
     /// # Errors
     /// The spawn error text when the shell can't start.
@@ -668,22 +658,15 @@ mod tests {
     }
 
     #[test]
-    fn tasks_dir_mirrors_claude_codes_layout() {
-        // `{temp}/alter-zero-{uid}/{sanitized cwd}/{session}/tasks` — the
-        // shape of Claude Code's
-        // `/tmp/claude-0/-home-user-proj/{session}/tasks/{id}.output`: a
-        // stable per-user root, the cwd with every non-alphanumeric char
-        // dashed, and a per-session dir isolating concurrent instances.
-        let dir = tasks_dir(
-            std::path::Path::new("/tmp"),
-            0,
-            std::path::Path::new("/home/user/alter-zero"),
-            "1f0a2b3c-4d5e",
-        );
-        assert_eq!(
-            dir,
-            PathBuf::from("/tmp/alter-zero-0/-home-user-alter-zero/1f0a2b3c-4d5e/tasks")
-        );
+    fn tasks_dir_is_short_and_per_session() {
+        // `{temp}/alter-zero-{uid}/{session}` — a stable per-user root and a
+        // per-session dir isolating concurrent instances. The model reads
+        // this path back out of the background launch text every time it
+        // checks progress, so it stays as short as uniqueness allows: the
+        // session id already separates projects, making a dashed-cwd segment
+        // (and a `tasks` leaf) pure length.
+        let dir = tasks_dir(std::path::Path::new("/tmp"), 0, "1f0a2b3c-4d5e");
+        assert_eq!(dir, PathBuf::from("/tmp/alter-zero-0/1f0a2b3c-4d5e"));
     }
 
     #[test]

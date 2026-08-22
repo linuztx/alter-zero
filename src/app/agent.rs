@@ -123,8 +123,8 @@ impl AgentNotice {
             self.result.trim_end_matches('\n')
         };
         format!(
-            "[background agent] Agent \"{}\" (id {}) {outcome}.\nFinal response:\n{body}",
-            self.description, self.id,
+            "[background agent] Agent \"{}\" {outcome}.\nFinal response:\n{body}",
+            self.description,
         )
     }
 }

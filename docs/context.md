@@ -188,7 +188,7 @@ The body (`ui::context_lines`) is the raw context window:
 ```
 system prompt:                        (amber tag — the backend's prompt)
   You are Alter Zero an autonomous AI agent running in terminal UI …
-  Know your runtime environment · Date … OS … Directory …   (docs/environment.md)
+  ## Environment · Date … OS … CWD …                       (docs/environment.md)
 user:                                 (blue tag — CONTEXT_USER_COLOR, the one
                                        blue the running bullet left behind)
   [Image #1] what's in this picture?
@@ -203,8 +203,8 @@ tool:                                 (purple tag — the tool result)
 — the system prompt first (injected at the boundary via
 `App::set_system_prompt` from `ReplySource::system_prompt()`, at startup and
 on every `/model` switch; the dummy has none — the real backend's is the
-persona, then the runtime **environment context** of date/os/cwd, then the
-tools note: persona → environment → tools, `docs/environment.md`), then every derived context
+persona, then the runtime **environment context** of date/os/cwd:
+persona → environment, `docs/environment.md`), then every derived context
 message: a coloured `role:` tag over its text wrapped **verbatim**
 (`wrap_verbatim`, never the markdown renderer — the whole point is the
 unformatted wire content), an assistant entry's native tool calls as purple

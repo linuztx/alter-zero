@@ -272,8 +272,8 @@ spaces preserved, + a `+N lines (Ns)` footer — via a
 `StreamEvent::ToolOutput` channel, collapsing to the head peek `… +N lines
 (ctrl+o to expand)` when it finishes, Claude-Code style) in
 `docs/tool-streaming.md`; and the **background shells** (the `bash` tool's
-`run_in_background` arg — the call resolves at once with a task id while a
-`BackgroundRegistry` process streams on its own channel; **Ctrl+B** moves a
+`run_in_background` arg — the call resolves at once with the interim-output
+path while a `BackgroundRegistry` process streams on its own channel; **Ctrl+B** moves a
 running model-`bash`/`!` command to the background mid-run (the live cell hints
 it with a dim `(ctrl+b to run in background)` row that waits a few seconds —
 `ui::TOOL_BACKGROUND_HINT_DELAY`, gated on the command's own boundary-injected
@@ -813,13 +813,12 @@ tool set share (`skills_active` stays the row's own value, which Tools must
 not rewrite), because a `<system-reminder>` naming a tool the request never
 carries is a dead end the model spends a round hunting for; the tools-free
 `/compact` turn carries no listing for the same reason;
-`/<skill-name>` needs no code — it submits as
-text and the system prompt's guidance line makes the model answer it with a
-`skill` call (verified live), and the composer's **`$` mention picker**
-(`docs/skill-mentions.md`) rides the same rails: Tab/Enter complete a
-`$<name>` mention in place, the listing's closing sentence tells the model a
-mention is a load request (verified live too —
-`live_dollar_mention_loads_the_mentioned_skill`), and the offline `skills`
+`$<skill-name>` needs no code — the mention submits as
+plain text and the Skill tool's own description tells the model a `$<name>`
+mention is a load request (verified live —
+`live_dollar_mention_loads_the_mentioned_skill`), the composer's **`$`
+mention picker** (`docs/skill-mentions.md`) completing one in place with
+Tab/Enter, and the offline `skills`
 scenario answers `$dataviz` mentions beside its "skill" cue so the demo and
 the smoke suite drive the round trip with no network; the offline `skills` scenario drives the cell
 through the real formatters, `smoke.sh` Phases 76, 78 and 79 — 78 planting
@@ -1012,9 +1011,8 @@ well-known uppercase `$PATH`-style names) stay closed, as does `!` shell mode
 wholesale; ↑/↓ move, **Tab/Enter insert `$name `** — the sigil kept, an
 existing following space reused rather than doubled — Esc dismisses
 sticky-per-mention, and a submitted message carrying `$name` makes the model
-**load that skill** via the ordinary `skill` tool (the listing's closing
-guidance sentence + `prompts/tools.md` name the mention syntax — the
-`/<skill-name>` path's mechanism, so the green `● Skill(name)` cell, the
+**load that skill** via the ordinary `skill` tool (its description names the
+mention syntax, so the green `● Skill(name)` cell, the
 context replay and the rollout all come for free; deliberately *not* codex's
 eager `<skill>` injection, which exists because codex has no skill tool);
 see `docs/skill-mentions.md`); plus, *above* the box while a turn streams, **messages
@@ -1747,9 +1745,9 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   dark-green/red background tints (`TOOL_DIFF_*_BG`), a 10-row inline peek
   (`FILE_PEEK_LINES`) with the `… +N lines` hint, everything in Ctrl+O;
   unparseable output (old rollouts, error bodies, a `read` placeholder) keeps
-  the legacy rendering. The backend's **system prompt** is assembled from three
-  `include_str!`d markdown files — the persona (`prompts/alter_zero.md`), the
+  the legacy rendering. The backend's **system prompt** is assembled from two
+  `include_str!`d markdown files — the persona (`prompts/alter_zero.md`) and the
   runtime **environment context** of date/os/cwd (`prompts/environment.md`,
   folded in at the boundary via `backend::augment_with_environment` so the agent
-  has context awareness), and the tools note (`prompts/tools.md`) — in the order
-  persona → environment → tools (`docs/environment.md`).
+  has context awareness) — persona → environment, nothing else: the tool
+  schemas carry their own capability detail (`docs/environment.md`).

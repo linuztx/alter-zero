@@ -1118,7 +1118,7 @@ fn live_ctrl_b_handoff_tells_the_model_the_user_moved_it() {
 
     let prompt = "Use the bash tool exactly once to run this command in the foreground \
                   (do NOT set run_in_background): sh -c 'echo started; sleep 8; echo finished'. \
-                  After the tool result arrives, reply with just the task ID it reported.";
+                  After the tool result arrives, reply with just the output file path it reported.";
     let context = vec![ContextMessage::new(ContextRole::User, prompt)];
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
     let handle = backend.spawn(prompt.to_string(), vec![], context, tx, CancelToken::new());
@@ -1148,8 +1148,8 @@ fn live_ctrl_b_handoff_tells_the_model_the_user_moved_it() {
         "the tool result says the user moved it: {output}"
     );
     assert!(
-        output.contains(&format!("ID: {id}")),
-        "the handoff text still names the task: {output}"
+        output.contains(&format!("{id}.output")),
+        "the handoff text still names the interim file: {output}"
     );
     // The turn completed with a text reply (the model kept going off the
     // handoff text instead of wedging on the missing output); the adopted
@@ -1295,7 +1295,7 @@ fn live_sudo_style_tty_prompt_fails_fast() {
     let backend = backend().with_background(registry);
 
     let prompt = "Use the bash tool exactly once to run exactly this command, verbatim, \
-                  with no timeout_ms argument: read pw < /dev/tty && echo PROMPT_READ_OK \
+                  with no timeout argument: read pw < /dev/tty && echo PROMPT_READ_OK \
                   Then report in one short sentence whether it could read from the terminal.";
     let context = vec![ContextMessage::new(ContextRole::User, prompt)];
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
@@ -1355,7 +1355,7 @@ fn live_run_in_background_resolves_and_completes() {
 
     let prompt = "Use the bash tool exactly once to run this command in the background \
                   (set run_in_background to true): sh -c 'echo live_bg_marker; sleep 1; echo done'. \
-                  After the tool result arrives, reply with just the task ID it reported.";
+                  After the tool result arrives, reply with just the output file path it reported.";
     let context = vec![ContextMessage::new(ContextRole::User, prompt)];
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
     let handle = backend.spawn(prompt.to_string(), vec![], context, tx, CancelToken::new());
@@ -1377,8 +1377,8 @@ fn live_run_in_background_resolves_and_completes() {
 
     let (id, output) = backgrounded.expect("the call resolved as backgrounded");
     assert!(
-        output.contains(&format!("ID: {id}")),
-        "the model-facing launch text names the task: {output}"
+        output.contains(&format!("{id}.output")),
+        "the model-facing launch text names the interim file: {output}"
     );
     // The registry reported the whole lifecycle on its own channel.
     let mut streamed = String::new();
@@ -1506,7 +1506,7 @@ fn live_subagent_background_bash_stacks_into_the_shared_registry() {
                   subagent_type \"general-purpose\", run_in_background false, and this exact \
                   prompt: \"Use the bash tool exactly once to run this command with \
                   run_in_background set to true: sh -c 'echo live_subagent_bg_marker; sleep 1'. \
-                  After the tool result arrives, reply with just the task ID it reported.\" \
+                  After the tool result arrives, reply with just the output file path it reported.\" \
                   When the agent returns, reply with one word: done.";
     let context = vec![ContextMessage::new(ContextRole::User, prompt)];
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
@@ -2603,8 +2603,8 @@ fn live_skill_tool_loads_a_skill_and_the_model_reads_its_body() {
 fn live_dollar_mention_loads_the_mentioned_skill() {
     // The `$` skill-mention feature end to end (docs/skill-mentions.md): the
     // composer's picker inserts `$<name>` into the message text, and the
-    // listing's mention guidance makes a real model treat it as a request to
-    // load exactly that skill via the `skill` tool. The prompt deliberately
+    // skill tool description's mention guidance makes a real model treat it
+    // as a request to load exactly that skill. The prompt deliberately
     // never says "skill" or repeats the description's vocabulary — the `$`
     // mention is the only signal — and the reply must obey the loaded body,
     // which proves the load actually happened.

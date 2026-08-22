@@ -468,6 +468,13 @@ fn agent_notice_texts_humanize_the_runtime() {
         "{}",
         notice.context_text()
     );
+    // No id token: the model cannot address an agent by id anywhere, so the
+    // description is the note's whole correlation key.
+    assert!(
+        !notice.context_text().contains("(id "),
+        "{}",
+        notice.context_text()
+    );
     let quick = crate::app::AgentNotice { secs: 35, ..notice };
     assert_eq!(
         quick.headline(),

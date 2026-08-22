@@ -62,11 +62,10 @@ This TUI already has Claude Code's `skill` tool with the two-text split
 subagent's own copy all come from it. So the mention stays plain text in the
 message and the **guidance** makes the model call the tool:
 
-- `prompts/tools.md` names `$<skill-name>` beside the existing
-  `/<skill-name>` shorthand;
-- `skills::listing_message` closes the per-turn `<system-reminder>` with the
-  mention rule, right beside the names it applies to (static text, so the
-  fragment stays prompt-cache-stable while the listing doesn't change);
+- the `skill` tool's own description states the mention rule (`The user may
+  reference a skill anywhere in a message as `$<name>` …`) — it rides every
+  request the tool does, so the `<system-reminder>` listing stays the bare
+  roster and spends its budget on names and descriptions alone;
 - verified live: `live_dollar_mention_loads_the_mentioned_skill`
   (`tests/live_openrouter.rs`) proves a real model answers a bare
   `Use $mixology — name a cocktail` by calling `skill("mixology")` and
@@ -85,7 +84,7 @@ It also keeps the mention **literal in history**, which is what makes a
 having to be replayed as its own history item.
 
 What the tool path trades away is determinism — it depends on the model
-honouring the guidance sentence — so that is measured rather than assumed.
+honouring the description's guidance — so that is measured rather than assumed.
 Both live mention tests were run across five models (`openai/gpt-4o-mini`,
 `anthropic/claude-haiku-4.5`, `qwen/qwen3.6-flash`, `deepseek/deepseek-v3.2`,
 `openai/gpt-oss-120b`) via `ALTER_ZERO_LIVE_MODEL`, and all ten runs loaded

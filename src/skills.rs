@@ -438,11 +438,11 @@ pub fn skill_listing(skills: &[SkillMetadata], budget: usize) -> String {
 /// would spend a turn's tokens telling the model about a tool it isn't
 /// offered.
 ///
-/// The reminder closes on the `$`-mention guidance (`docs/skill-mentions.md`):
-/// the composer's `$` picker inserts mentions like `$dataviz` into the
-/// message text, and the sentence that makes a model act on one belongs
-/// beside the names it applies to. Static across turns, so the fragment
-/// stays prompt-cache-stable unless the listing itself changes.
+/// The reminder is the roster alone: the `$`-mention guidance lives in the
+/// Skill tool's own description (`docs/skill-mentions.md`), which rides every
+/// request the tool does — repeating it here would say it twice per turn.
+/// Static across turns, so the fragment stays prompt-cache-stable unless the
+/// listing itself changes.
 #[must_use]
 pub fn listing_message(listing: &str) -> String {
     if listing.trim().is_empty() {
@@ -450,10 +450,7 @@ pub fn listing_message(listing: &str) -> String {
     }
     format!(
         "<system-reminder>\nThe following skills are available for use with the \
-         Skill tool:\n\n{listing}\n\nThe user may reference a skill anywhere in \
-         a message as `$<name>` (e.g. `$commit`); treat each such mention as a \
-         request to load that skill with the Skill tool before answering.\n\
-         </system-reminder>"
+         Skill tool:\n\n{listing}\n</system-reminder>"
     )
 }
 
@@ -1035,14 +1032,11 @@ mod tests {
         assert!(msg.ends_with("\n</system-reminder>"), "got {msg}");
         assert!(msg.contains("available for use with the Skill tool"));
         assert!(msg.contains("- commit: Create a git commit"));
-        // The `$` mention guidance rides the same reminder, right beside the
-        // names it applies to (docs/skill-mentions.md) — so a `$name` in the
-        // user's message reads as the skill request it is.
-        assert!(msg.contains("`$<name>`"), "got {msg}");
-        assert!(
-            msg.contains("load that skill with the Skill tool"),
-            "got {msg}"
-        );
+        // The reminder is the roster alone: the `$`-mention guidance lives in
+        // the Skill tool's own description (docs/skill-mentions.md), so
+        // repeating it here would spend listing-budget tokens saying it twice.
+        assert!(!msg.contains("`$<name>`"), "got {msg}");
+        assert!(!msg.contains("reference a skill"), "got {msg}");
     }
 
     #[test]

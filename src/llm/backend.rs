@@ -142,17 +142,14 @@ impl LlmBackend {
         let mut client = OpenAiClient::new(cfg);
         // Trim so the prompt-file trailing newline (or a whitespace-only
         // override) normalizes away; a now-empty prompt sends no system message.
-        let mut system_prompt = system_prompt
+        let system_prompt = system_prompt
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty());
         if tools_enabled {
+            // The schemas carry the whole capability story — no prose note
+            // rides the system prompt, so enabling tools costs no prompt
+            // tokens.
             client = client.with_tools(tools::tool_specs());
-            // Tell the model the tools exist (the schemas carry the detail);
-            // the Ctrl+D debug view then shows the same augmented prompt.
-            if let Some(prompt) = system_prompt.as_mut() {
-                prompt.push_str("\n\n");
-                prompt.push_str(TOOLS_SYSTEM_SUFFIX.trim());
-            }
         }
         Self {
             client,
@@ -353,13 +350,6 @@ fn tools_enabled_from_env() -> bool {
     }
 }
 
-/// The tool-capability note appended to the system prompt when tools are
-/// enabled, authored in [`prompts/tools.md`](../../prompts/tools.md) and
-/// compiled in with `include_str!` (same maintainable-markdown seam as
-/// [`DEFAULT_SYSTEM_PROMPT`]). Joined after a blank line; the schemas carry the
-/// per-parameter detail.
-const TOOLS_SYSTEM_SUFFIX: &str = include_str!("../../prompts/tools.md");
-
 /// The environment-context template appended to the system prompt for the
 /// agent's runtime awareness — authored in
 /// [`prompts/environment.md`](../../prompts/environment.md) (terse, in the
@@ -384,9 +374,8 @@ pub fn render_environment(date: &str, os: &str, cwd: &str) -> String {
 /// Append the environment context to a base system prompt so the agent knows
 /// its date/os/cwd (`docs/environment.md`). A blank base is returned unchanged
 /// so the "empty `ALTER_ZERO_SYSTEM_PROMPT` → no system message" contract holds
-/// (`docs/context.md`); the tools note (when enabled) is added by
-/// [`LlmBackend::configure`] afterwards, so the final prompt reads
-/// persona → environment → tools.
+/// (`docs/context.md`); nothing else is appended — the final prompt reads
+/// persona → environment (the tool schemas carry their own detail).
 #[must_use]
 pub fn augment_with_environment(base: &str, date: &str, os: &str, cwd: &str) -> String {
     if base.trim().is_empty() {
@@ -794,8 +783,8 @@ impl ReplySource for LlmBackend {
 #[derive(Clone)]
 struct SubagentConfig {
     client: OpenAiClient,
-    /// The subagent's system prompt: the main prompt (persona + environment +
-    /// tools note) with the subagent note appended (`prompts/subagent.md`).
+    /// The subagent's system prompt: the main prompt (persona + environment)
+    /// with the subagent note appended (`prompts/subagent.md`).
     system_prompt: Option<String>,
     vision: Option<bool>,
     detach_helper: Option<std::path::PathBuf>,
@@ -885,17 +874,18 @@ const SUBAGENT_SYSTEM_SUFFIX: &str = include_str!("../../prompts/subagent.md");
 const AGENT_WAIT_POLL: std::time::Duration = std::time::Duration::from_millis(30);
 
 /// The model-facing acknowledgement of a background agent launch — the tool
-/// result a `run_in_background` `agent` call returns at once (the reference
-/// wording, adapted). See `docs/agent-tool.md`.
+/// result a `run_in_background` `agent` call returns at once. The agent is
+/// named by its description alone: nothing model-facing takes an agent id
+/// back, and the completion note quotes the same description, so an
+/// `agentId:` line was a token with no consumer. See `docs/agent-tool.md`.
 #[must_use]
-pub fn agent_launch_text(id: &str, description: &str) -> String {
+pub fn agent_launch_text(description: &str) -> String {
     format!(
-        "Async agent launched successfully.\n\
-         agentId: {id} (\"{description}\")\n\
-         The agent is working in the background. You will be notified \
-         automatically with its final response when it completes. Do not wait \
-         or poll for it — continue with the rest of the task (or end your \
-         turn) and briefly tell the user what you launched."
+        "Async agent \"{description}\" launched and working in the \
+         background. You will be re-invoked with its final response when it \
+         completes. Do not wait or poll for it — continue with the rest of \
+         the task (or end your turn) and briefly tell the user what you \
+         launched."
     )
 }
 
@@ -904,12 +894,12 @@ pub fn agent_launch_text(id: &str, description: &str) -> String {
 /// must not expect the response in this result (the bash handoff's twin,
 /// `docs/background.md`).
 #[must_use]
-pub fn agent_handoff_text(id: &str, description: &str) -> String {
+pub fn agent_handoff_text(description: &str) -> String {
     format!(
         "The user moved this agent to the background while it was running — \
          it keeps running there, so its final response will not arrive in \
          this result.\n{}",
-        agent_launch_text(id, description),
+        agent_launch_text(description),
     )
 }
 
@@ -1006,7 +996,7 @@ fn run_agent_calls(
         });
         let mut dones = Vec::new();
         for launched in &launched_background {
-            let text = agent_launch_text(&launched.spec.id, &launched.spec.description);
+            let text = agent_launch_text(&launched.spec.description);
             results.push((launched.call_id.clone(), text.clone()));
             dones.push(AgentCallDone {
                 id: launched.spec.id.clone(),
@@ -1053,10 +1043,7 @@ fn run_agent_calls(
         let mut dones = Vec::new();
         for launched in &foreground {
             let (text, ok) = if handed_off && !registry.is_done(&launched.spec.id) {
-                (
-                    agent_handoff_text(&launched.spec.id, &launched.spec.description),
-                    true,
-                )
+                (agent_handoff_text(&launched.spec.description), true)
             } else {
                 agent_result_text(registry.outcome(&launched.spec.id))
             };
@@ -1657,13 +1644,12 @@ mod tests {
     }
 
     #[test]
-    fn enabling_tools_augments_the_system_prompt_and_flags_the_backend() {
+    fn enabling_tools_flags_the_backend_without_touching_the_prompt() {
+        // The tool schemas carry the whole capability story — a prose note in
+        // the system prompt would just re-spend those tokens every turn.
         let backend = LlmBackend::configure(ModelConfig::fallback(), Some("be nice".into()), true);
         assert!(backend.tools_enabled());
-        let prompt = backend.system_prompt.as_deref().unwrap();
-        assert!(prompt.starts_with("be nice"));
-        assert!(prompt.contains("bash"), "the tools are named in the prompt");
-        assert!(prompt.contains("edit"));
+        assert_eq!(backend.system_prompt.as_deref(), Some("be nice"));
     }
 
     #[test]
@@ -1754,11 +1740,31 @@ mod tests {
     }
 
     #[test]
+    fn agent_launch_text_is_id_free_and_steers_off_waiting() {
+        // The launch acknowledgement names the agent by its description
+        // alone: nothing model-facing takes an agent id back (the completion
+        // note quotes the same description), so an `agentId:` line was a
+        // token with no consumer (docs/agent-tool.md).
+        let text = agent_launch_text("Scan the logs");
+        assert!(!text.contains("a7k2m9x4q"), "no id token: {text}");
+        assert!(!text.contains("agentId"), "no id label: {text}");
+        assert!(text.contains("\"Scan the logs\""), "got {text}");
+        assert!(text.contains("Do not wait or poll"), "got {text}");
+    }
+
+    #[test]
     fn render_environment_fills_every_placeholder() {
         let block = render_environment("Sunday 2026-07-19", "linux", "/home/user/proj");
-        assert!(block.contains("Sunday 2026-07-19"), "date is in: {block}");
-        assert!(block.contains("linux"), "os is in: {block}");
-        assert!(block.contains("/home/user/proj"), "cwd is in: {block}");
+        assert!(
+            block.starts_with("## Environment"),
+            "the section header leads: {block}"
+        );
+        assert!(
+            block.contains("Date Sunday 2026-07-19"),
+            "date is in: {block}"
+        );
+        assert!(block.contains("OS linux"), "os is in: {block}");
+        assert!(block.contains("CWD /home/user/proj"), "cwd is in: {block}");
         // Every `{token}` placeholder is substituted — none survive.
         assert!(!block.contains('{'), "no leftover placeholder: {block}");
     }
@@ -1790,21 +1796,19 @@ mod tests {
     }
 
     #[test]
-    fn boundary_order_is_persona_then_environment_then_tools() {
-        // The full assembly the boundary produces: augment first (persona +
-        // environment), then `configure` appends the tools note — so the
-        // Ctrl+D debug view reads persona → environment → tools.
+    fn boundary_assembly_is_persona_then_environment_and_nothing_else() {
+        // The full assembly the boundary produces: the persona with the
+        // environment section appended — `configure` adds nothing on top
+        // (the tool schemas carry the capability detail), so the Ctrl+D
+        // debug view reads persona → environment, whole.
         let base =
             augment_with_environment("You are Alter Zero", "Sunday 2026-07-19", "linux", "/repo");
-        let backend = LlmBackend::configure(ModelConfig::fallback(), Some(base), true);
+        let backend = LlmBackend::configure(ModelConfig::fallback(), Some(base.clone()), true);
         let prompt = backend.system_prompt.as_deref().unwrap();
+        assert_eq!(prompt, base, "tools add no prompt suffix");
         let persona = prompt.find("Alter Zero").expect("persona present");
         let env = prompt.find("/repo").expect("environment present");
-        let tools = prompt.find("bash").expect("tools note present");
-        assert!(
-            persona < env && env < tools,
-            "order persona<env<tools: {prompt}"
-        );
+        assert!(persona < env, "order persona<env: {prompt}");
     }
 
     #[test]

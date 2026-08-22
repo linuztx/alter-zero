@@ -1,5 +1,5 @@
-Know your runtime environment
+## Environment
 
 Date {date}
 OS {os}
-Directory {cwd}
+CWD {cwd}
