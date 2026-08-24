@@ -667,4 +667,55 @@ mod tests {
         cfg.api_model_base = "https://x/v1/".to_string();
         assert_eq!(models_endpoint(&cfg), "https://x/v1/models");
     }
+
+    // --- lenient fields: one odd field must not cost the whole record ---
+    //
+    // The parse reads a handful of fields out of records it otherwise ignores,
+    // and aggregators are loose about types. A record whose `name`,
+    // `context_length` or capability block arrives in an unexpected shape
+    // still names a real, selectable model, so it stays in the list with that
+    // one field unread — it is never dropped, and it never fails the body.
+
+    #[test]
+    fn a_non_string_name_falls_back_to_the_id() {
+        let models = parse_models(r#"{"data":[{"id":"m","name":42}]}"#, "p").unwrap();
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0].display_name, "m");
+    }
+
+    #[test]
+    fn a_non_numeric_context_length_reads_as_unknown() {
+        let body = r#"{"data":[{"id":"m","context_length":"262144"}]}"#;
+        let models = parse_models(body, "p").unwrap();
+        assert_eq!(models.len(), 1, "the model is still listed");
+        assert_eq!(models[0].context, None);
+    }
+
+    #[test]
+    fn a_misshapen_capability_block_reads_as_no_capability() {
+        // `reasoning` as a string, `supported_parameters` as a string, and
+        // `architecture` as an array — none is the shape the sniffs expect.
+        let body = r#"{"data":[
+            {"id":"a","reasoning":"high"},
+            {"id":"b","supported_parameters":"reasoning"},
+            {"id":"c","architecture":[]},
+            {"id":"d","model_spec":"none"}
+        ]}"#;
+        let models = parse_models(body, "p").unwrap();
+        assert_eq!(models.len(), 4, "every record is still listed");
+        assert!(models.iter().all(|m| m.reasoning.is_none()));
+        assert!(models.iter().all(|m| m.vision.is_none()));
+    }
+
+    #[test]
+    fn a_misshapen_reasoning_field_reads_as_a_default_reasoner() {
+        // The object is there, so the model reasons; its inner fields are junk,
+        // so the ladder falls back to the default rungs rather than vanishing.
+        let body = r#"{"data":[{"id":"m","reasoning":{"mandatory":"no","supported_efforts":"low","default_effort":7}}]}"#;
+        let models = parse_models(body, "p").unwrap();
+        let support = models[0].reasoning.as_ref().expect("reasoning-capable");
+        assert_eq!(support.efforts, DEFAULT_EFFORTS.to_vec());
+        assert!(support.can_disable);
+        assert_eq!(support.default_effort, None);
+    }
 }

@@ -13,6 +13,7 @@ cargo clippy --all-targets -- -D warnings   # lint (warnings are errors here)
 cargo fmt --check                           # formatting gate
 cargo doc --no-deps --lib                   # intra-doc links must resolve
 cargo build && bash scripts/smoke.sh        # drive the real binary in tmux
+cargo run --release --example mem_probe     # /model parse RSS (docs/memory.md)
 ```
 
 The standard pre-commit gate used throughout this project is: `cargo fmt --check`
@@ -1722,6 +1723,27 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   (`file_tool_path_params_instruct_absolute_paths`, which checks both the
   lead-in and the length), and the same rule governs the tool descriptions
   around them: state the capability and its sharp edges, drop the padding.
+- **Never build a `Value` tree of a body you read a few fields out of.**
+  Resident memory is a feature here — the app idles in the user's terminal
+  all day, and glibc does **not** return a freed tree's pages to the OS
+  (thousands of small interleaved allocations coalesce into nothing), so a
+  parse that spikes is a parse that *stays*. Deserializing OpenRouter's
+  669 KB `/v1/models` list into `Vec<serde_json::Value>` cost **+6.5 MB
+  resident, permanently**, to read seven keys per record — one `/model` open
+  took the process from 16 MB to 25 MB and left it there. The shape that
+  fixes it is `Vec<&RawValue>` (borrowed slices of the body, `serde_json`'s
+  `raw_value` feature) decoded **one record at a time** (`entry_of`), which
+  keeps peak at a single record and leaves the field-reading code untouched:
+  ~0.4 MB for the same list. Measure with `cargo run --release --example
+  mem_probe` (`--dom` isolates the old shape) and gate with
+  `tests/model_parse_memory.rs` (its own test binary — `VmRSS` is
+  process-wide, so the reading needs a test with nothing running beside it).
+  Bound network reads too (`MODELS_BODY_MAX_BYTES`, the
+  `SHELL_OUTPUT_MAX_BYTES` posture), and see `docs/memory.md` for the
+  end-to-end numbers plus what measured as noise and stays unchanged
+  (`ModelPicker::matches`' per-keystroke churn; the marginal cost of a second
+  cached HTTP client — the models fetch shares the chat client for the
+  thread, the pool and the warm connection, not for megabytes).
 - **All width math goes through `cols()`** (display columns via `unicode-width`),
   never `chars().count()` — so CJK/emoji wrap and pad correctly. Measuring right
   is only half of it: a **wide glyph occupies one `Buffer` cell plus a blank

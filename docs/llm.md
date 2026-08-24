@@ -32,7 +32,7 @@ network calls are boundary code (like `main.rs`/`term.rs`), verified by hand.
 | `llm/thinking.rs` | `ThinkingSplitter` — peels `<think>`/`<reasoning>` tags (and native `reasoning` deltas) out of the stream | **pure** |
 | `llm/reasoning.rs` | `ThinkingMode`/`ReasoningSupport` — the Ctrl+T thinking-mode cycle + its request body (`docs/reasoning.md`) | **pure** |
 | `llm/openai.rs` | `OpenAiClient` — endpoint/payload build (pure) + the blocking SSE stream (boundary) | split |
-| `llm/models.rs` | `/v1/models` response → `Vec<ModelEntry>` (parse pure; fetch boundary; each entry carries its model's reasoning capability — `docs/reasoning.md`) | split |
+| `llm/models.rs` | `/v1/models` response → `Vec<ModelEntry>` (parse pure; fetch boundary; each entry carries its model's reasoning capability — `docs/reasoning.md`; records decode one at a time off borrowed `RawValue` slices, never a whole-list tree — `docs/memory.md`) | split |
 | `llm/backend.rs` | `LlmBackend: ReplySource` — bridges the SSE deltas to `StreamEvent`s | boundary |
 
 ### Why blocking `reqwest`, a transport thread, and a hand-rolled SSE reader
@@ -252,32 +252,19 @@ the bottom rule — the shape of the user's mock):
   `· {provider} unavailable` / `· N providers unavailable`, the successful lists
   staying put. Only when **every** provider fails (no models at all) does the
   picker go to `ModelLoad::Error`, showing one red `{provider}: {reason}` row each.
-- **The fetch is memory-bounded** — an aggregator's whole catalog is a
-  multi-hundred-KB body of which the picker keeps a few dozen KB of
-  `ModelEntry` rows, and the parse must not cost megabytes on the way
-  through. Three rules hold it down (`examples/mem_probe.rs` measures them;
-  the first `/model` open used to grow the process ~9 MB resident and now
-  grows it ~3 MB, almost all of it the one-time TLS/client stack the first
-  chat turn pays anyway):
-  - `parse_models` deserializes the envelope as **borrowed `RawValue`
-    slices** — one fat pointer per record — and materializes **one** record's
-    `serde_json::Value` tree at a time (`entry_of`), so the peak is a single
-    ~2 KB record. Materializing every record at once cost ~10x the body in
-    small heap blocks (+6.6 MB RSS for a real 668 KB OpenRouter list) that
-    glibc's arena kept after the parse dropped them — the "RSS never comes
-    back down after `/model`" bug. The per-record skip is unchanged: a
-    malformed aggregator row (missing/null/non-string id, a non-object entry)
-    is dropped, never fatal.
-  - The GET rides the **chat stream's own cached client**
-    (`openai::NET_OP_TIMEOUT` — `http_client` caches one client per timeout,
-    so the models-only 30 s deadline it used to pass built a second full
-    client stack: its own blocking-runtime thread, connection pool and TLS
-    config, held for the life of the process). One client means one pool —
-    and the picker's fetch warms the very connection the next turn reuses.
-  - The body read is **capped** (`MODELS_BODY_MAX_BYTES`, 8 MiB — the
-    `SHELL_OUTPUT_MAX_BYTES` posture): a broken or hostile endpoint can't
-    balloon the worker with an unbounded `read_to_string`; a body cut at the
-    cap fails the parse as an ordinary decode error.
+- **The fetch is memory-bounded** (`docs/memory.md` has the full story and
+  the measured numbers; `examples/mem_probe.rs` measures it,
+  `tests/model_parse_memory.rs` gates it): `parse_models` holds each record
+  as a borrowed `RawValue` slice and decodes **one** record's tree at a time
+  (`entry_of`) — materializing the whole catalog at once cost ~10x the body
+  in heap blocks glibc never returned, the "RSS never comes back down after
+  `/model`" bug — the GET rides the **chat stream's own cached client**
+  (`openai::NET_OP_TIMEOUT`, so the session runs one client/pool and the
+  picker's fetch warms the connection the next turn reuses), and the body
+  read is **capped** (`MODELS_BODY_MAX_BYTES`, 8 MiB — the
+  `SHELL_OUTPUT_MAX_BYTES` posture) so a broken endpoint can't balloon the
+  worker. The per-record skip is unchanged throughout: a malformed
+  aggregator row is dropped, never fatal.
 - Type to filter (case-insensitive substring over `id`, provider, and name),
   `↑/↓` move wrapping at the ends, PgUp/PgDn/Home/End jump, `Enter` selects →
   `Action::SelectModel { provider, id }`, `Esc` clears the query then closes,

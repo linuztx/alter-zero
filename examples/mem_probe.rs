@@ -13,7 +13,14 @@
 //!
 //! Part B drives a real OpenRouter fetch when `OPENROUTER_API_KEY` is set.
 //!
-//! Run:  cargo run --release --example mem_probe [captured-models.json]
+//! Run:  cargo run --release --example mem_probe [captured-models.json] [--dom]
+//!
+//! With no path a synthetic OpenRouter-shaped body is generated, so the probe
+//! runs from a fresh checkout. The default run measures the NEW arm first (its
+//! numbers are process-clean) and then the OLD arm in the same process — whose
+//! reading the NEW arm's freed blocks can subsidise — so for a quotable OLD
+//! number run `--dom`, which measures ONLY the whole-list `Value` tree in a
+//! fresh process (`docs/memory.md`).
 //!
 //! Linux-only reporting (reads `/proc/self/status`); elsewhere it prints n/a.
 
@@ -143,13 +150,53 @@ fn part_b() {
     }
 }
 
+/// The OLD arm alone, for a process-clean reading: the whole body as one
+/// `serde_json::Value` tree — what `parse_models` used to hold internally.
+fn part_dom(body: &str) {
+    println!(
+        "=== --dom: whole-list Value tree, isolated ({} KB body) ===\n",
+        body.len() / 1024
+    );
+    let rss0 = vm_kb("VmRSS:").unwrap_or(0);
+    let hwm0 = vm_kb("VmHWM:").unwrap_or(0);
+    if rss0 == 0 {
+        println!("(/proc/self/status not readable — n/a on this platform)");
+        return;
+    }
+    report("baseline", rss0, hwm0);
+    let tree: serde_json::Value = serde_json::from_str(body).expect("parse");
+    let records = tree
+        .get("data")
+        .and_then(serde_json::Value::as_array)
+        .map_or(0, Vec::len);
+    report(
+        &format!("whole-list tree held — {records} records"),
+        rss0,
+        hwm0,
+    );
+    drop(tree);
+    report("tree dropped (arena keeps the spike)", rss0, hwm0);
+}
+
 fn main() {
-    let body = match std::env::args().nth(1) {
+    let mut path = None;
+    let mut dom_only = false;
+    for arg in std::env::args().skip(1) {
+        match arg.as_str() {
+            "--dom" => dom_only = true,
+            p => path = Some(p.to_string()),
+        }
+    }
+    let body = match path {
         Some(path) => {
             std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("can't read {path}: {e}"))
         }
         None => gen_body(420),
     };
+    if dom_only {
+        part_dom(&body);
+        return;
+    }
     part_a(&body);
     part_b();
 }
