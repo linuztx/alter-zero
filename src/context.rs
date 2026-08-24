@@ -287,9 +287,10 @@ fn reconstruct_arguments(tool: &ToolCall) -> String {
     // provider rejects anything else — a damaged record falls through to the
     // per-tool table below, which is also what every pre-field rollout, the
     // `!` shell, and a hand-scripted event take.
-    if serde_json::from_str::<serde_json::Value>(tool.arguments.trim()).is_ok_and(|v| v.is_object())
+    if let Some(arguments) = &tool.arguments
+        && serde_json::from_str::<serde_json::Value>(arguments.trim()).is_ok_and(|v| v.is_object())
     {
-        return tool.arguments.trim().to_string();
+        return arguments.trim().to_string();
     }
     // An MCP call's stored `args` **is** the raw arguments JSON
     // (`llm::tools::summarize_call` keeps it verbatim precisely so this
@@ -716,7 +717,7 @@ mod tests {
             shell,
             truncated: false,
             context_output: None,
-            arguments: String::new(),
+            arguments: None,
             approval_note: None,
             batch: None,
         })
@@ -734,7 +735,7 @@ mod tests {
             shell: false,
             truncated: false,
             context_output: Some(result.to_string()),
-            arguments: String::new(),
+            arguments: None,
             approval_note: None,
             batch: None,
         })
@@ -1720,7 +1721,7 @@ mod tests {
         let HistoryItem::Tool(mut call) = tool(name, args, output, ToolStatus::Ok, false) else {
             unreachable!()
         };
-        call.arguments = arguments.to_string();
+        call.arguments = Some(arguments.to_string());
         HistoryItem::Tool(call)
     }
 

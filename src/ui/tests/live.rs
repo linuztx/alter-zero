@@ -16,7 +16,7 @@ fn render_live_tails_a_running_bash_tool_with_its_streamed_output() {
     // both show (docs/tool-streaming.md).
     let mut app = App::new();
     app.begin_stream();
-    app.start_tool("Bash", "ping -c 10 x", "");
+    app.start_tool("Bash", "ping -c 10 x", None);
     for i in 1..=9 {
         app.push_tool_output(&format!("line {i}\n"));
     }
@@ -211,7 +211,7 @@ fn render_live_previews_a_running_tool_with_a_pulsing_bullet() {
     // pulse reaches the screen, so it is the wiring this test pins.
     let mut app = App::new();
     app.begin_stream();
-    app.start_tool("Read", "src/main.rs", "");
+    app.start_tool("Read", "src/main.rs", None);
     let mut buf = buffer(40, 5);
     render_live(buf.area, &mut buf, &app);
 
@@ -260,7 +260,7 @@ fn preview_shows_the_whole_parallel_batch_running_plus_waiting() {
             })
             .collect();
     app.start_tool_batch(&batch);
-    app.start_tool("Bash", "ping google.com", ""); // the front call → Running
+    app.start_tool("Bash", "ping google.com", None); // the front call → Running
     // Past the hint delay so the running cell's Ctrl+B hint row shows.
     app.set_command_elapsed(Some(Duration::from_secs(3)));
     // Three 2-row cells (header + peek) with two blank separators, plus
@@ -299,7 +299,7 @@ fn render_live_previews_a_running_tool_with_its_running_row() {
     // *and* a `⎿ Running…` row beneath it — not just the header (req 2).
     let mut app = App::new();
     app.begin_stream();
-    app.start_tool("Bash", "sleep 1", "");
+    app.start_tool("Bash", "sleep 1", None);
     let h = live_height(
         &app.input,
         40,
@@ -565,7 +565,7 @@ fn the_model_picker_keeps_the_running_turn_strip_above_it() {
     // (docs/llm.md, docs/background.md).
     let mut app = App::new();
     app.begin_stream();
-    app.start_tool("Bash", "seq 1 100", "");
+    app.start_tool("Bash", "seq 1 100", None);
     app.push_tool_output("35\n36\n");
     app.open_model_picker("anthropic/claude-3-haiku");
     app.set_models(three_models());
@@ -657,7 +657,7 @@ fn the_running_preview_hints_ctrl_b_but_the_committed_cell_does_not() {
     // waits a few seconds (see below), so inject an elapsed past the delay.
     let mut app = App::new();
     app.begin_stream();
-    app.start_tool("Bash", "ping google.com -c 50", "");
+    app.start_tool("Bash", "ping google.com -c 50", None);
     app.set_command_elapsed(Some(Duration::from_secs(5)));
     let preview: Vec<String> = preview_tool_lines(&app, 60).iter().map(plain).collect();
     assert!(
@@ -685,7 +685,7 @@ fn the_ctrl_b_hint_waits_a_few_seconds_before_showing() {
     // the preview gates the hint on it (docs/background.md).
     let mut app = App::new();
     app.begin_stream();
-    app.start_tool("Bash", "ping google.com -c 50", "");
+    app.start_tool("Bash", "ping google.com -c 50", None);
     let shows_hint = |app: &App| {
         preview_tool_lines(app, 60)
             .iter()
@@ -745,7 +745,7 @@ fn a_waiting_batch_sibling_gets_no_ctrl_b_hint() {
             args: "b".to_string(),
         },
     ]);
-    app.start_tool("Bash", "a", "");
+    app.start_tool("Bash", "a", None);
     // Past the hint delay so the running call shows its hint — the point
     // here is that the `⎿ Waiting…` sibling still gets none.
     app.set_command_elapsed(Some(Duration::from_secs(5)));
@@ -814,7 +814,7 @@ fn the_manager_band_keeps_the_running_tool_strip_above_it() {
     let mut app = App::new();
     app.bg_started("bash_1", "sleep 100", None, true, None);
     app.begin_stream();
-    app.start_tool("Bash", "seq 1 100", "");
+    app.start_tool("Bash", "seq 1 100", None);
     app.push_tool_output("35\n36\n");
     app.open_background_view();
     let h = background_view_height(&app, 60, 40).unwrap();

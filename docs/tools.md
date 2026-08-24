@@ -202,18 +202,24 @@ tools already use (`ToolOutcome::context` → `StreamEvent::ToolAnswered` →
 rides the conversation is
 
 ```
-# write, new file
 File created successfully at: /tmp/name.txt (file state is current in your context — no need to read it back)
-# write over existing content, and every edit
-The file /tmp/note.txt has been updated successfully. (file state is current in your context — no need to read it back)
+File overwritten successfully at: /tmp/name.txt (…)
+The file /tmp/note.txt has been updated successfully. (…)
+
+Replaced 3 occurrences.
 ```
 
 (`tools::write_ack` / `tools::edit_ack` over the model's own path argument —
-the absolute one it sent, not the cell head's cwd-relative display form; a
-`replace_all` that touched more than one place adds a `Replaced {n}
-occurrences.` line, the one fact the diff carried that the arguments do not.
-A write that changed nothing stays single-text — `No changes to {path}` is
-already the whole truth, and there is no body to spare the model.)
+the absolute one it sent, not the cell head's cwd-relative display form. A
+`write` over an existing file says *overwritten* rather than borrowing
+`edit`'s "updated": that the file was already there is a fact only the
+executor knows, and a model that expected to create it should hear so. The
+count paragraph appears only for a `replace_all` that touched more than one
+place — the one fact the diff carried that the arguments do not, since a
+unique match is always exactly one. A write that changed nothing stays
+single-text: `No changes to {path}` is already the whole truth, and there is
+no body to spare the model. A **failure** stays single-text too — the error
+message *is* what the model must read to recover.)
 
 The saving is real because the change is not dropped, only **moved**: every
 call now records the model's verbatim arguments, and the derived context
@@ -221,7 +227,8 @@ replays them on the assistant `tool_calls` entry (`docs/context.md`). Before,
 a `write` replayed as `write({"path": …})` and the content came back as a
 line-numbered result every turn — roughly 1.3× the content's own tokens, for
 a copy the model had just written. Now the content rides the call once, in
-the shape the model sent it.
+the shape the model sent it, where a provider's prompt cache can keep it
+(`docs/prompt-caching.md`).
 
 The closing clause is a claim about that replay, so both file tools' schemas
 say the same thing in one sentence — *"Returns a one-line confirmation: the

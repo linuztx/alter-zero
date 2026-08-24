@@ -119,11 +119,10 @@ pub enum StreamEvent {
         /// summary was made *from*, kept whole so the recorded call
         /// ([`crate::app::ToolCall::arguments`]) can replay it on the next
         /// turn's assistant `tool_calls` entry instead of the lossy
-        /// reconstruction the summary allowed. `String::new()` when the
-        /// emitter has none (the `!` shell, a hand-scripted event), which
-        /// falls the replay back to that reconstruction. See
-        /// `docs/context.md`.
-        arguments: String,
+        /// reconstruction the summary allowed. `None` when the emitter has
+        /// none (the `!` shell, a hand-scripted event), which falls the
+        /// replay back to that reconstruction. See `docs/context.md`.
+        arguments: Option<String>,
     },
     /// The in-flight tool call finished with this `output` and outcome (`ok` →
     /// green, else red). Always follows a [`StreamEvent::ToolStart`].

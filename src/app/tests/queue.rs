@@ -90,7 +90,7 @@ fn a_full_batch_runs_in_order_leaving_three_history_tools_and_an_empty_queue() {
     let mut app = App::new();
     app.start_tool_batch(&ping_batch());
     for item in ping_batch() {
-        app.start_tool(&item.name, &item.args, "");
+        app.start_tool(&item.name, &item.args, None);
         app.end_tool("done", true);
     }
     assert!(app.tool_queue().is_empty(), "the batch fully drained");

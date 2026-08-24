@@ -1470,7 +1470,7 @@ fn ctrl_b_still_backgrounds_a_running_command_over_a_draft() {
     let mut app = App::new();
     type_chars(&mut app, "draft");
     app.begin_stream();
-    app.start_tool("Bash", "ping x.com", "");
+    app.start_tool("Bash", "ping x.com", None);
     assert_eq!(app.on_key(ctrl('b')), Action::MoveToBackground);
     assert_eq!(app.input.cursor(), 5, "the cursor stayed put");
 }

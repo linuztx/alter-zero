@@ -1095,6 +1095,49 @@ mod tests {
     }
 
     #[test]
+    fn a_failed_write_or_edit_carries_no_second_text() {
+        // An error's display *is* what the model must read to recover, so the
+        // split would hide the reason. Both tools return the error before
+        // they can attach an ack — this pins that they keep doing so.
+        let missing = temp_path("edit-no-file.txt");
+        std::fs::remove_file(&missing).ok();
+        let no_file = exec(
+            "edit",
+            &format!(
+                r#"{{"path":"{}","old_string":"a","new_string":"b"}}"#,
+                missing.display()
+            ),
+        );
+        assert!(!no_file.ok && no_file.context.is_none(), "{no_file:?}");
+
+        let seeded = temp_path("edit-no-match.txt");
+        std::fs::write(&seeded, "abc\n").unwrap();
+        let no_match = exec(
+            "edit",
+            &format!(
+                r#"{{"path":"{}","old_string":"zzz","new_string":"y"}}"#,
+                seeded.display()
+            ),
+        );
+        std::fs::remove_file(&seeded).ok();
+        assert!(!no_match.ok && no_match.context.is_none(), "{no_match:?}");
+
+        // A `write` that cannot create its parent (a file stands where the
+        // directory would go) fails the same way.
+        let blocker = temp_path("write-blocked.txt");
+        std::fs::write(&blocker, "not a dir\n").unwrap();
+        let blocked = exec(
+            "write",
+            &format!(
+                r#"{{"path":"{}/inside.txt","content":"x"}}"#,
+                blocker.display()
+            ),
+        );
+        std::fs::remove_file(&blocker).ok();
+        assert!(!blocked.ok && blocked.context.is_none(), "{blocked:?}");
+    }
+
+    #[test]
     fn edit_hands_the_model_one_line_and_counts_a_replace_all() {
         let path = temp_path("edit-ack.txt");
         std::fs::write(&path, "a\na\n").unwrap();

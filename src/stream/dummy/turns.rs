@@ -224,7 +224,7 @@ impl ScriptedCall {
             name: self.name.to_string(),
             args: self.args.clone(),
             detail: None,
-            arguments: self.arguments.clone(),
+            arguments: Some(self.arguments.clone()),
         }
     }
 
@@ -486,7 +486,7 @@ pub(in crate::stream) fn hooks_turn(cue: &Cue) -> Vec<StreamEvent> {
         name: "Bash".to_string(),
         args: BLOCKED.to_string(),
         detail: None,
-        arguments: serde_json::json!({ "command": BLOCKED }).to_string(),
+        arguments: Some(serde_json::json!({ "command": BLOCKED }).to_string()),
     });
     // Both texts, as the live runner sends them: the short one is the red
     // cell, the long one is what the model reads — and what the rollout keeps
@@ -885,7 +885,7 @@ pub(in crate::stream) fn skills_turn(cue: &Cue) -> Vec<StreamEvent> {
         name: crate::skills::SKILL_TOOL_DISPLAY.to_string(),
         args: SKILL_NAME.to_string(),
         detail: None,
-        arguments: serde_json::json!({ "skill": SKILL_NAME }).to_string(),
+        arguments: Some(serde_json::json!({ "skill": SKILL_NAME }).to_string()),
     });
     // The two-text split (docs/skills.md): the cell gets one line, the model
     // gets the body. `ToolAnswered` is what the live loop sends for it, so the

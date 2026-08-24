@@ -120,7 +120,7 @@ impl Session<'_> {
                 // Same safe boundary as ToolBatch: the buffer is empty, so any
                 // held completions commit ahead of the tool (docs/background.md).
                 self.settle_bg_completions();
-                self.app.start_tool(&name, &args, &arguments);
+                self.app.start_tool(&name, &args, arguments.as_deref());
                 // Start this command's own clock — the delayed Ctrl+B hint waits
                 // on it, so a fast command never flashes the hint (a model tool
                 // that starts deep into a turn can't inherit the turn's elapsed).

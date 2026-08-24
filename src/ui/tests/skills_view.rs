@@ -185,7 +185,7 @@ fn the_menu_reserves_the_running_turn_strip_above_it() {
     let mut app = skills_app();
     let idle = skills_menu_height(&app, 78, 200).expect("open");
     app.begin_stream();
-    app.start_tool("Bash", "cargo test", "");
+    app.start_tool("Bash", "cargo test", None);
     let preview = preview_rows(&app, 78);
     assert!(preview > 0, "the running tool previews mid-turn");
     let strip = preview + GAP_ROWS + STATUS_ROWS + STATUS_GAP_ROWS;

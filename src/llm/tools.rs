@@ -80,8 +80,12 @@ pub struct ToolOutcome {
     /// `None` for every other tool.
     pub tasks: Option<crate::tasks::TaskStore>,
     /// `Some(text)` when the **model-facing result differs from the displayed
-    /// cell text** — the `AskUserQuestion` tool's split (`docs/ask.md`):
-    /// `output` is then the committed cell's text (`User answered Alter
+    /// cell text**. Three tools split this way: `write`/`edit`, whose cell
+    /// keeps the numbered content or diff hunks while the model reads a
+    /// one-line ack ([`write_ack`]/[`edit_ack`], `docs/tools.md`); `skill`,
+    /// whose cell is one green line over the rendered body
+    /// (`docs/skills.md`); and `AskUserQuestion` (`docs/ask.md`), where
+    /// `output` is the committed cell's text (`User answered Alter
     /// Zero's questions:` over the `· Q → A` rows) while this is what the tool call
     /// returns to the model (the answers JSON, or the declined/chat
     /// stop-and-wait instruction). The agent loop surfaces the pair as
@@ -1495,15 +1499,14 @@ pub const FILE_STATE_NOTE: &str =
     "(file state is current in your context — no need to read it back)";
 
 /// The `write` tool's **model-facing** result — the one-line twin of
-/// [`write_report`], whose numbered body stays on the cell. `created`
-/// distinguishes a brand-new file from a full overwrite.
+/// [`write_report`], whose numbered body stays on the cell. An overwrite says
+/// *overwritten* rather than borrowing `edit`'s "updated": that the file
+/// already existed is a fact only the executor knows, and a model that
+/// expected to create it should hear so.
 #[must_use]
 pub fn write_ack(path: &str, created: bool) -> String {
-    if created {
-        format!("File created successfully at: {path} {FILE_STATE_NOTE}")
-    } else {
-        format!("The file {path} has been updated successfully. {FILE_STATE_NOTE}")
-    }
+    let verb = if created { "created" } else { "overwritten" };
+    format!("File {verb} successfully at: {path} {FILE_STATE_NOTE}")
 }
 
 /// The `edit` tool's **model-facing** result — [`write_ack`]'s twin over
@@ -2276,9 +2279,12 @@ mod tests {
             write_ack("/tmp/name.txt", true),
             format!("File created successfully at: /tmp/name.txt {FILE_STATE_NOTE}")
         );
+        // An overwrite says so rather than borrowing `edit`'s "updated": the
+        // model may have expected to create the file, and that it already
+        // existed is a fact only the executor knows.
         assert_eq!(
             write_ack("/tmp/name.txt", false),
-            format!("The file /tmp/name.txt has been updated successfully. {FILE_STATE_NOTE}")
+            format!("File overwritten successfully at: /tmp/name.txt {FILE_STATE_NOTE}")
         );
     }
 

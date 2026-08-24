@@ -1792,12 +1792,20 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   (`ToolOutcome::context` → `ToolAnswered` → `ToolCall::context_output`) and
   what the *model* reads is one line — `File created successfully at: {path}
   (file state is current in your context — no need to read it back)` /
-  `The file {path} has been updated successfully. (…)`
+  `File overwritten successfully at: {path} (…)` (an overwrite says so
+  rather than borrowing `edit`'s verb — that the file already existed is a
+  fact only the executor knows) / `The file {path} has been updated
+  successfully. (…)`
   (`tools::write_ack`/`edit_ack`; a multi-occurrence `replace_all` adds
-  `Replaced {n} occurrences.`, a no-op write stays single-text). That clause
+  `Replaced {n} occurrences.`, a no-op write and a failure both stay
+  single-text). That clause
   is honest because every call now records the model's **verbatim arguments**
   beside the lossy header summary (`ToolCall::arguments`, carried on
-  `StreamEvent::ToolStart`, round-tripped through the rollout) and
+  `StreamEvent::ToolStart` and taken as a **parameter** of `App::start_tool`
+  rather than a `set_tool_note`-style follow-up call — a note is optional and
+  conditional, while every backend call has arguments, so a second call a
+  future path could forget would drop them into the silent summary fallback;
+  round-tripped through the rollout) and
   `context::reconstruct_arguments` replays them whenever they parse as an
   object — so a `write`'s `content`, an `edit`'s two strings and a `bash`
   call's `timeout` all ride the *call* now instead of being rebuilt from

@@ -1348,7 +1348,7 @@ fn render_live_grows_the_preview_to_fit_a_long_running_command() {
                || echo \"wttr.in unavailable, trying alternative...\"";
     let mut app = App::new();
     app.begin_stream();
-    app.start_tool("Bash", cmd, "");
+    app.start_tool("Bash", cmd, None);
     let width = 40;
     let pv = preview_rows(&app, width);
     assert!(
@@ -1638,7 +1638,7 @@ fn app_calling(names: &[&str]) -> App {
         })
         .collect();
     app.start_tool_batch(&items);
-    app.start_tool(names[0], "", "");
+    app.start_tool(names[0], "", None);
     app
 }
 
@@ -1705,7 +1705,7 @@ fn a_mixed_batchs_mcp_cell_commits_exactly_once() {
         first.iter().map(plain).collect::<Vec<_>>(),
         vec![format!("{MCP_CALLED_PREFIX}Deepwiki{EXPAND_HINT}")]
     );
-    app.start_tool("Bash", "ls", "");
+    app.start_tool("Bash", "ls", None);
     app.end_tool("ok", true);
     let second: Vec<String> = tool_commit_lines(&app.history, app.tool_queue(), 100)
         .expect("the bash cell commits")
@@ -1750,7 +1750,7 @@ fn a_non_mcp_sibling_never_reflushes_the_committed_run() {
         None,
         "the first call holds: the batch's next call is still MCP"
     );
-    app.start_tool("deepwiki - read_wiki_structure (MCP)", "", "");
+    app.start_tool("deepwiki - read_wiki_structure (MCP)", "", None);
     app.end_tool("{\"topics\":[]}", true);
     let run: Vec<String> = tool_commit_lines(&app.history, app.tool_queue(), 100)
         .expect("the MCP run ends here — the batch continues non-MCP")
@@ -1761,7 +1761,7 @@ fn a_non_mcp_sibling_never_reflushes_the_committed_run() {
         run,
         vec![format!("{MCP_CALLED_PREFIX}Deepwiki 2 times{EXPAND_HINT}")]
     );
-    app.start_tool("Bash", "ls", "");
+    app.start_tool("Bash", "ls", None);
     app.end_tool("ok", true);
     let second: Vec<String> = tool_commit_lines(&app.history, app.tool_queue(), 100)
         .expect("the bash cell commits")
@@ -1790,7 +1790,7 @@ fn a_finished_parallel_mcp_run_commits_one_aggregated_line() {
         None,
         "the run's first call holds its commit"
     );
-    app.start_tool("deepwiki - read_wiki_structure (MCP)", "", "");
+    app.start_tool("deepwiki - read_wiki_structure (MCP)", "", None);
     app.end_tool("{\"topics\":[]}", true);
     let lines = tool_commit_lines(&app.history, app.tool_queue(), 100).expect("the run committed");
     assert_eq!(lines.len(), 1);
@@ -1826,7 +1826,7 @@ fn a_rebuild_mid_run_leaves_the_held_cell_to_the_strip() {
     );
     assert!(crate::ui::conversation_lines(committed, 100).is_empty());
     // Once the run ends, the rebuild has the whole run — as its one line.
-    app.start_tool("deepwiki - read_wiki_structure (MCP)", "", "");
+    app.start_tool("deepwiki - read_wiki_structure (MCP)", "", None);
     app.end_tool("{\"topics\":[]}", true);
     let committed = crate::ui::committed_history(&app.history, app.tool_queue());
     assert_eq!(committed.len(), 2);
@@ -1853,7 +1853,7 @@ fn a_failed_call_still_flushes_the_run_it_ends() {
         "deepwiki - read_wiki_structure (MCP)",
     ]);
     app.end_tool("{\"answer\":\"…\"}", true);
-    app.start_tool("deepwiki - read_wiki_structure (MCP)", "", "");
+    app.start_tool("deepwiki - read_wiki_structure (MCP)", "", None);
     app.end_tool("server exploded", false);
     let lines = tool_commit_lines(&app.history, app.tool_queue(), 100).expect("the run committed");
     let texts: Vec<String> = lines.iter().map(plain).collect();
@@ -1877,7 +1877,7 @@ fn two_sequential_mcp_calls_are_not_one_parallel_run() {
     // so they keep their own lines (the batch id is what tells them apart).
     let mut app = App::new();
     for _ in 0..2 {
-        app.start_tool("deepwiki - ask_question (MCP)", "{}", "");
+        app.start_tool("deepwiki - ask_question (MCP)", "{}", None);
         app.end_tool("{}", true);
     }
     let repaint: Vec<String> = crate::ui::conversation_lines(&app.history, 100)

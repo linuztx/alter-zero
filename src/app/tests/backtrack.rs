@@ -40,7 +40,7 @@ fn shell_headers_are_not_backtrack_targets() {
     // targets user messages); with nothing else in history Esc still quits.
     let mut app = App::new();
     app.begin_shell("pwd");
-    app.start_tool("shell", "pwd", "");
+    app.start_tool("shell", "pwd", None);
     app.end_tool("/home", true);
     app.end_turn(1);
     assert_eq!(app.on_key(key(KeyCode::Esc)), Action::Quit);

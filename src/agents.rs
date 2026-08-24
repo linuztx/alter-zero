@@ -233,7 +233,7 @@ impl AgentRun {
                         shell: false,
                         truncated: false,
                         context_output: None,
-                        arguments: String::new(),
+                        arguments: None,
                         approval_note: None,
                         // A subagent's parallel calls are not aggregated: its
                         // session view keeps a cell per call (`docs/mcp.md`).
@@ -360,10 +360,13 @@ impl AgentRun {
                 self.status = AgentStatus::Failed;
                 return true;
             }
-            // The ToolRejected shape's green twin (the ask tool's submitted
-            // answers, docs/ask.md). Subagents are never offered the ask tool,
-            // so this is unreachable today — handled like the rejection arm
-            // so the mapping stays total and honest if that ever changes.
+            // The ToolRejected shape's green twin: a resolution whose
+            // model-facing text differs from its cell. Subagents reach it on
+            // every `write`/`edit` — the file tools' one-line ack over the
+            // numbered body (docs/tools.md) — and on a loaded `skill`
+            // (docs/skills.md). (The ask tool sends it too, but subagents are
+            // never offered that one.) Keeping both texts is what lets the
+            // agent's own Ctrl+D and a continuation run replay what it read.
             StreamEvent::ToolAnswered {
                 display, result, ..
             } => {
@@ -403,7 +406,7 @@ impl AgentRun {
                     shell: false,
                     truncated: false,
                     context_output: None,
-                    arguments: String::new(),
+                    arguments: None,
                     approval_note: None,
                     batch: None,
                 }));
@@ -860,7 +863,7 @@ mod tests {
             name: "Bash".to_string(),
             args: "ls -la".to_string(),
             detail: None,
-            arguments: String::new(),
+            arguments: None,
         });
         run.apply(&StreamEvent::ToolNote(
             "Allowed by auto mode classifier".to_string(),
@@ -894,7 +897,7 @@ mod tests {
             name: "Bash".into(),
             args: "curl wttr.in".into(),
             detail: Some("Fetching Warsaw weather".into()),
-            arguments: String::new(),
+            arguments: None,
         }));
         assert_eq!(run.tool_uses, 1);
         assert_eq!(
@@ -935,14 +938,14 @@ mod tests {
             name: "Write".into(),
             args: "game.py".into(),
             detail: None,
-            arguments: String::new(),
+            arguments: None,
         }));
         assert_eq!(run.activity(), "Write(game.py)");
         assert!(!run.apply(&StreamEvent::ToolStart {
             name: "Bash".into(),
             args: "curl wttr.in".into(),
             detail: Some("Fetching Warsaw weather".into()),
-            arguments: String::new(),
+            arguments: None,
         }));
         assert_eq!(run.activity(), "Bash: Fetching Warsaw weather");
     }
@@ -958,7 +961,7 @@ mod tests {
             name: "Write".into(),
             args: "hello.py".into(),
             detail: None,
-            arguments: String::new(),
+            arguments: None,
         });
         assert!(!run.apply(&StreamEvent::ToolRejected {
             display: "User rejected write to hello.py\nInstructions: use pathlib".into(),
@@ -1011,7 +1014,7 @@ mod tests {
             name: "Bash".into(),
             args: "sleep 99".into(),
             detail: None,
-            arguments: String::new(),
+            arguments: None,
         });
         assert!(run.apply(&StreamEvent::Error("boom".into())));
         assert_eq!(run.status, AgentStatus::Failed);

@@ -273,7 +273,7 @@ fn rendered_cell(prompt: &str, name: &str) -> Vec<ratatui::text::Line<'static>> 
         shell: false,
         truncated: false,
         context_output: None,
-        arguments: String::new(),
+        arguments: None,
         approval_note: None,
         batch: None,
     };
@@ -403,7 +403,12 @@ fn the_scripted_file_calls_carry_their_arguments_and_resolve_with_the_ack() {
         match event {
             StreamEvent::ToolStart {
                 name, arguments, ..
-            } => open = Some((name.clone(), arguments.clone())),
+            } => {
+                let arguments = arguments
+                    .clone()
+                    .unwrap_or_else(|| panic!("a scripted {name} call carries its arguments"));
+                open = Some((name.clone(), arguments));
+            }
             StreamEvent::ToolAnswered {
                 display, result, ..
             } => {

@@ -157,7 +157,7 @@ fn fail_stream_resolves_a_running_tool_as_failed() {
     // and a later turn's interrupt record.
     let mut app = App::new();
     app.begin_stream();
-    app.start_tool("Read", "src/app.rs", "");
+    app.start_tool("Read", "src/app.rs", None);
     let failure = app.fail_stream("network down").expect("was streaming");
     assert!(app.current_tool().is_none(), "no phantom running tool");
     let tool = failure.tool.expect("the failed tool rides the failure");
@@ -180,7 +180,7 @@ fn fail_stream_orders_partial_then_tool_then_notice() {
     let mut app = App::new();
     app.begin_stream();
     app.push_chunk("half a rep");
-    app.start_tool("Bash", "ls", "");
+    app.start_tool("Bash", "ls", None);
     let failure = app.fail_stream("boom").expect("was streaming");
     assert_eq!(failure.partial.as_deref(), Some("half a rep"));
     assert!(failure.tool.is_some());
@@ -284,7 +284,7 @@ fn interrupt_between_tool_rounds_keeps_the_output_and_records_the_notice() {
     // Round 1: an assistant segment, then a finished tool.
     app.push_chunk("let me look");
     app.flush_streaming_segment(); // records the segment, leaves streaming = Some("")
-    app.start_tool("Read", "src/app.rs", "");
+    app.start_tool("Read", "src/app.rs", None);
     app.end_tool("fn main() {}", true); // pushes HistoryItem::Tool, current_tool = None
     // Round 2 is about to start; nothing has streamed yet this round.
     assert!(
@@ -373,7 +373,7 @@ fn interrupt_turn_resolves_a_running_tool_as_failed() {
     let mut app = App::new();
     app.begin_stream();
     app.push_chunk("before the tool ");
-    app.start_tool("Bash", "sleep 100", ""); // flush happens loop-side; buffer keeps streaming
+    app.start_tool("Bash", "sleep 100", None); // flush happens loop-side; buffer keeps streaming
     let InterruptedTurn::Kept { tool, .. } = app.interrupt_turn().expect("a turn was active")
     else {
         panic!("streamed output is kept, not undone");
@@ -399,7 +399,7 @@ fn interrupt_mid_batch_keeps_the_running_call_and_drops_waiting_siblings() {
     let mut app = App::new();
     app.begin_stream();
     app.start_tool_batch(&ping_batch());
-    app.start_tool("Bash", "ping google.com", ""); // the front is now Running
+    app.start_tool("Bash", "ping google.com", None); // the front is now Running
     let InterruptedTurn::Kept { tool, .. } = app.interrupt_turn().expect("a turn was active")
     else {
         panic!("a running tool means output streamed — kept, not undone");
@@ -511,7 +511,7 @@ fn a_turn_interleaves_text_and_a_tool_call_in_order() {
     app.begin_stream();
     app.push_chunk("let me check");
     app.flush_streaming_segment(); // text before the tool becomes its own message
-    app.start_tool("Bash", "ls", "");
+    app.start_tool("Bash", "ls", None);
     app.end_tool("a\nb", true);
     app.push_chunk("all done");
     app.finish_stream();
@@ -589,7 +589,7 @@ fn clear_mid_turn_wipes_the_streaming_state_and_records_nothing() {
     app.record_user_message("old message");
     app.begin_stream();
     app.push_chunk("half a rep");
-    app.start_tool("read_file", "src/app.rs", "");
+    app.start_tool("read_file", "src/app.rs", None);
     type_str(&mut app, "/clear");
     assert_eq!(app.on_key(key(KeyCode::Enter)), Action::Clear);
     assert!(app.history.is_empty(), "no partial/notice/summary recorded");
@@ -737,7 +737,7 @@ fn last_assistant_text_skips_trailing_non_assistant_items() {
     app.begin_stream();
     app.push_chunk("the answer");
     app.finish_stream();
-    app.start_tool("Read", "f", "");
+    app.start_tool("Read", "f", None);
     app.end_tool("out", true);
     app.record_user_message("a follow-up");
     app.record_system_message("a notice");
@@ -884,7 +884,7 @@ fn a_tool_adds_to_the_tally_and_flips_the_arrow_up_without_resetting() {
     app.begin_stream();
     app.push_chunk("the streamed reply so far");
     let after_text = app.status().unwrap().tokens;
-    app.start_tool("Read", "f", "");
+    app.start_tool("Read", "f", None);
     app.end_tool("a multi line\ntool output blob", true);
     let status = app.status().unwrap();
     assert!(
@@ -899,7 +899,7 @@ fn a_tool_adds_to_the_tally_and_flips_the_arrow_up_without_resetting() {
 fn streaming_again_after_a_tool_points_the_arrow_back_down() {
     let mut app = App::new();
     app.begin_stream();
-    app.start_tool("Read", "f", "");
+    app.start_tool("Read", "f", None);
     app.end_tool("out", true);
     assert_eq!(app.status().unwrap().arrow, TokenArrow::Up);
     app.push_chunk("more reply text");
@@ -918,7 +918,7 @@ fn thinking_chunks_grow_the_tally_pointing_down_without_touching_the_reply() {
     let mut app = App::new();
     app.begin_stream();
     app.push_chunk("reply so far ");
-    app.start_tool("Read", "f", "");
+    app.start_tool("Read", "f", None);
     app.end_tool("out", true);
     let before = app.status().unwrap().tokens;
     assert_eq!(app.status().unwrap().arrow, TokenArrow::Up);

@@ -336,11 +336,11 @@ struct ToolRecord {
     /// — what the derived context replays on the assistant `tool_calls`
     /// entry, so a resumed session's `write` still carries the content it
     /// wrote instead of the path alone (`docs/context.md`). Omitted when
-    /// empty, so files written before the field keep their shape and still
-    /// parse — such a record falls back to the per-tool reconstruction, which
-    /// is what it always used.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    arguments: String,
+    /// absent, the `context_output` rule, so files written before the field
+    /// keep their shape and still parse — such a record falls back to the
+    /// per-tool reconstruction, which is what it always used.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    arguments: Option<String>,
     /// The model-facing result of a permission-rejected call, when it differs
     /// from the displayed `output` (`docs/permissions.md`) — carrying Tab's
     /// amended instructions. Omitted when absent, so files written before the
@@ -1321,7 +1321,7 @@ mod tests {
             shell: false,
             truncated: false,
             context_output: None,
-            arguments: String::new(),
+            arguments: None,
             approval_note: None,
             batch: None,
         });
@@ -1334,7 +1334,7 @@ mod tests {
             shell: true,
             truncated: true,
             context_output: None,
-            arguments: String::new(),
+            arguments: None,
             approval_note: None,
             batch: None,
         });
@@ -1361,7 +1361,7 @@ mod tests {
                  following instructions instead: use pathlib"
                     .into(),
             ),
-            arguments: String::new(),
+            arguments: None,
             approval_note: None,
             batch: None,
         });
@@ -1379,7 +1379,7 @@ mod tests {
         let tool = HistoryItem::Tool(ToolCall {
             name: "Write".into(),
             args: "a.py".into(),
-            arguments: arguments.into(),
+            arguments: Some(arguments.into()),
             status: ToolStatus::Ok,
             output: "Wrote 1 line to a.py\n1 print(1)".into(),
             timestamp: "03:21 PM".into(),
@@ -1398,7 +1398,7 @@ mod tests {
             !file_of(&[HistoryItem::Tool(ToolCall {
                 name: "Bash".into(),
                 args: "ls".into(),
-                arguments: String::new(),
+                arguments: None,
                 status: ToolStatus::Ok,
                 output: "Exit code: 0".into(),
                 timestamp: String::new(),
@@ -1427,7 +1427,7 @@ mod tests {
             shell: false,
             truncated: false,
             context_output: None,
-            arguments: String::new(),
+            arguments: None,
             approval_note: Some("Allowed by auto mode classifier".into()),
             batch: None,
         });
@@ -1443,7 +1443,7 @@ mod tests {
             shell: false,
             truncated: false,
             context_output: None,
-            arguments: String::new(),
+            arguments: None,
             approval_note: None,
             batch: None,
         });
@@ -1464,7 +1464,7 @@ mod tests {
             shell: false,
             truncated: false,
             context_output: None,
-            arguments: String::new(),
+            arguments: None,
             approval_note: None,
             batch: None,
         });
@@ -1687,7 +1687,7 @@ mod tests {
             shell: false,
             truncated: false,
             context_output: None,
-            arguments: String::new(),
+            arguments: None,
             approval_note: None,
             batch: None,
         });
@@ -1711,7 +1711,7 @@ mod tests {
             shell: false,
             truncated: false,
             context_output: None,
-            arguments: String::new(),
+            arguments: None,
             approval_note: None,
             batch: None,
         });

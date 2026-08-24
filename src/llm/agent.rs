@@ -596,7 +596,7 @@ fn tool_start_event(call: &ToolCallRequest) -> StreamEvent {
         name: display_name(&call.name),
         args: summarize_call(&call.name, &call.arguments),
         detail: super::tools::call_description(&call.name, &call.arguments),
-        arguments: call.arguments.clone(),
+        arguments: Some(call.arguments.clone()),
     }
 }
 
@@ -1378,7 +1378,7 @@ mod tests {
                     name: "Bash".to_string(),
                     args: "ls".to_string(),
                     detail: None,
-                    arguments: r#"{"command":"ls"}"#.to_string(),
+                    arguments: Some(r#"{"command":"ls"}"#.to_string()),
                 },
                 StreamEvent::ToolEnd {
                     output: "ran bash".to_string(),

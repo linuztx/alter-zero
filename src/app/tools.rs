@@ -46,7 +46,7 @@ impl App {
                 // The announcement carries only the header summary; the
                 // verbatim arguments land when this call's own `ToolStart`
                 // flips it to `Running` (`start_tool`).
-                arguments: String::new(),
+                arguments: None,
                 approval_note: None,
                 batch,
             })
@@ -64,20 +64,26 @@ impl App {
     /// the `!` shell, the dummy's lone calls) a fresh `Running` call is pushed, so
     /// the single-tool path is unchanged.
     ///
-    /// `arguments` is the model's verbatim JSON — `""` when the caller has
-    /// none ([`ToolCall::arguments`]).
-    pub fn start_tool(&mut self, name: &str, args: &str, arguments: &str) {
+    /// `arguments` is the model's verbatim JSON, `None` when the caller has
+    /// none ([`ToolCall::arguments`]). It is a **parameter, not a follow-up
+    /// setter**, unlike [`set_tool_note`](App::set_tool_note): a note is
+    /// optional and conditional, while every backend call has arguments, and
+    /// a second call that a future path could forget would drop them
+    /// silently — the derived context would quietly fall back to the lossy
+    /// summary with nothing to notice.
+    pub fn start_tool(&mut self, name: &str, args: &str, arguments: Option<&str>) {
+        let arguments = arguments.map(str::to_string);
         if let Some(front) = self.tool_queue.front_mut()
             && front.status == ToolStatus::Waiting
         {
             front.status = ToolStatus::Running;
-            front.arguments = arguments.to_string();
+            front.arguments = arguments;
             return;
         }
         self.tool_queue.push_back(ToolCall {
             name: name.to_string(),
             args: args.to_string(),
-            arguments: arguments.to_string(),
+            arguments,
             status: ToolStatus::Running,
             output: String::new(),
             timestamp: String::new(), // stamped when it finishes (see end_tool)
@@ -303,15 +309,18 @@ pub struct ToolCall {
     /// for every call the user approved (or that needed no approval).
     pub approval_note: Option<String>,
     /// The model's **verbatim** JSON arguments for this call, beside the
-    /// derived one-line `args` summary — `""` when the emitter had none (the
-    /// `!` shell, an old rollout, a hand-scripted event). This is what
+    /// derived one-line `args` summary. This is what
     /// [`crate::context::context_messages`] replays on the assistant
     /// `tool_calls` entry, so a later turn sees the call the model really
     /// made: a `write`'s whole `content`, an `edit`'s two strings, a `bash`
     /// call's `timeout`. The summary alone was lossy — a `write` replayed as
     /// `{"path": …}` — which is why the executor could not collapse its
     /// result to one line before (`docs/context.md`, `docs/tools.md`).
-    pub arguments: String,
+    ///
+    /// `None` for a `!` shell cell, a call the app synthesized itself, and
+    /// every record written before the field existed — the summary
+    /// reconstruction stays the fallback for those.
+    pub arguments: Option<String>,
     /// The **parallel batch** this call was announced in
     /// ([`App::start_tool_batch`]), or `None` for a lone call. Every call of
     /// one round's batch shares the id, which is what lets the renderer

@@ -93,7 +93,7 @@ fn the_menu_reserves_the_running_turn_strip_above_it() {
     // manager band's rule (docs/background.md, docs/settings.md).
     let mut app = settings_app();
     app.begin_stream();
-    app.start_tool("Bash", "cargo test", "");
+    app.start_tool("Bash", "cargo test", None);
     let preview = preview_rows(&app, 78);
     assert!(preview > 0, "the running tool previews mid-turn");
     let strip = preview + GAP_ROWS + STATUS_ROWS + STATUS_GAP_ROWS;

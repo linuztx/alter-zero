@@ -173,7 +173,7 @@ impl App {
             shell: true,
             retry: None,
         });
-        self.start_tool(command, "", "");
+        self.start_tool(command, "", None);
         if let Some(tool) = self.tool_queue.front_mut() {
             tool.shell = true;
         }

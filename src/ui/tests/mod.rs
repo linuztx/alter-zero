@@ -70,7 +70,7 @@ pub(super) fn transcript_fixture() -> App {
     app.begin_stream();
     app.push_chunk("let me check");
     app.flush_streaming_segment();
-    app.start_tool("Read", "f", "");
+    app.start_tool("Read", "f", None);
     app.end_tool("L1\nL2\nL3", true);
     app.push_chunk("all done");
     app.finish_stream();
@@ -100,7 +100,7 @@ pub(super) fn stamped_history() -> Vec<HistoryItem> {
             shell: false,
             truncated: false,
             context_output: None,
-            arguments: String::new(),
+            arguments: None,
             approval_note: None,
             batch: None,
         }),
@@ -161,7 +161,7 @@ pub(super) fn tool(name: &str, args: &str, status: ToolStatus, output: &str) -> 
         shell: false,
         truncated: false,
         context_output: None,
-        arguments: String::new(),
+        arguments: None,
         approval_note: None,
         batch: None,
     }

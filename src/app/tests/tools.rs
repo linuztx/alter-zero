@@ -8,7 +8,7 @@ use super::*;
 #[test]
 fn start_tool_marks_a_running_tool_not_yet_in_history() {
     let mut app = App::new();
-    app.start_tool("Bash", "cargo test", "");
+    app.start_tool("Bash", "cargo test", None);
     let tool = app.current_tool().expect("a tool is running");
     assert_eq!(tool.name, "Bash");
     assert_eq!(tool.args, "cargo test");
@@ -25,26 +25,34 @@ fn start_tool_records_the_verbatim_arguments_on_the_call() {
     // filled in when its own ToolStart flips it to `Running`.
     let arguments = r#"{"path":"a.py","content":"print(1)\n"}"#;
     let mut app = App::new();
-    app.start_tool("Write", "a.py", arguments);
-    assert_eq!(app.current_tool().unwrap().arguments, arguments);
+    app.start_tool("Write", "a.py", Some(arguments));
+    assert_eq!(
+        app.current_tool().unwrap().arguments.as_deref(),
+        Some(arguments)
+    );
     let recorded = app.end_tool("Wrote 1 line to a.py", true).unwrap();
-    assert_eq!(recorded.arguments, arguments, "the record keeps them");
+    assert_eq!(
+        recorded.arguments.as_deref(),
+        Some(arguments),
+        "the record keeps them"
+    );
 
     let mut app = App::new();
     app.start_tool_batch(&ping_batch());
     assert_eq!(
         app.current_tool().unwrap().arguments,
-        "",
+        None,
         "announced, not run"
     );
     app.start_tool(
         "Bash",
         "ping google.com",
-        r#"{"command":"ping google.com"}"#,
+        Some(r#"{"command":"ping google.com"}"#),
     );
     assert_eq!(
-        app.current_tool().unwrap().arguments,
-        r#"{"command":"ping google.com"}"#
+        app.current_tool().unwrap().arguments.as_deref(),
+        Some(r#"{"command":"ping google.com"}"#),
+        "…and the sibling that starts takes its own"
     );
 }
 
@@ -75,7 +83,7 @@ fn start_tool_flips_the_front_waiting_call_to_running_without_adding_one() {
     // does not push a second call): the siblings stay `Waiting`.
     let mut app = App::new();
     app.start_tool_batch(&ping_batch());
-    app.start_tool("Bash", "ping google.com", "");
+    app.start_tool("Bash", "ping google.com", None);
     assert_eq!(app.tool_queue().len(), 3, "no extra call was pushed");
     assert_eq!(app.current_tool().unwrap().status, ToolStatus::Running);
     assert_eq!(
@@ -92,7 +100,7 @@ fn end_tool_pops_the_front_and_the_next_batch_call_becomes_current() {
     // it; the next `Waiting` sibling becomes the front (about to run).
     let mut app = App::new();
     app.start_tool_batch(&ping_batch());
-    app.start_tool("Bash", "ping google.com", "");
+    app.start_tool("Bash", "ping google.com", None);
     let finished = app.end_tool("pong", true).expect("the front call finished");
     assert_eq!(finished.args, "ping google.com");
     assert_eq!(finished.status, ToolStatus::Ok);
@@ -118,7 +126,7 @@ fn a_lone_start_tool_without_a_batch_pushes_a_running_call() {
     // The single-tool path (the `!` shell, the dummy's lone Read) is
     // unchanged: with no batch queued, start_tool pushes one Running call.
     let mut app = App::new();
-    app.start_tool("Read", "src/main.rs", "");
+    app.start_tool("Read", "src/main.rs", None);
     assert_eq!(app.tool_queue().len(), 1);
     assert_eq!(app.current_tool().unwrap().status, ToolStatus::Running);
 }
@@ -126,7 +134,7 @@ fn a_lone_start_tool_without_a_batch_pushes_a_running_call() {
 #[test]
 fn end_tool_records_a_successful_tool_call_and_clears_the_slot() {
     let mut app = App::new();
-    app.start_tool("Read", "src/main.rs", "");
+    app.start_tool("Read", "src/main.rs", None);
     let finished = app
         .end_tool("line1\nline2", true)
         .expect("a tool was running");
@@ -143,7 +151,7 @@ fn end_tool_records_a_successful_tool_call_and_clears_the_slot() {
             shell: false,
             truncated: false,
             context_output: None,
-            arguments: String::new(),
+            arguments: None,
             approval_note: None,
             batch: None,
         }))
@@ -157,7 +165,7 @@ fn reject_tool_keeps_the_model_facing_result_beside_the_cell_text() {
     // the model read. Only keeping both lets the derived context replay what
     // was really sent — Tab's amend feedback included (docs/permissions.md).
     let mut app = App::new();
-    app.start_tool("Write", "hello.py", "");
+    app.start_tool("Write", "hello.py", None);
     let finished = app
         .reject_tool(
             "User rejected write to hello.py\nInstructions: just print it",
@@ -182,7 +190,7 @@ fn an_ordinary_call_reads_its_own_output_as_the_model_facing_text() {
     // The split exists only for a rejection: every other call's cell text *is*
     // what the model read, so `context_text` falls through to `output`.
     let mut app = App::new();
-    app.start_tool("Read", "a.txt", "");
+    app.start_tool("Read", "a.txt", None);
     let finished = app.end_tool("L1", true).expect("a tool was running");
     assert_eq!(finished.context_output, None);
     assert_eq!(finished.context_text(), "L1");
@@ -196,7 +204,7 @@ fn a_rejections_token_tally_charges_the_text_the_model_reads() {
                 STOP what you are doing and wait for the user to tell you how to proceed.";
     let mut app = App::new();
     app.begin_stream();
-    app.start_tool("Write", "hello.py", "");
+    app.start_tool("Write", "hello.py", None);
     app.reject_tool("User rejected write to hello.py", long);
     let charged = app.status().expect("a turn is active").tokens;
     assert_eq!(charged, crate::app::count_tokens(long));
@@ -205,7 +213,7 @@ fn a_rejections_token_tally_charges_the_text_the_model_reads() {
 #[test]
 fn end_tool_marks_a_failure_red() {
     let mut app = App::new();
-    app.start_tool("Bash", "false", "");
+    app.start_tool("Bash", "false", None);
     let finished = app.end_tool("boom", false).expect("a tool was running");
     assert_eq!(finished.status, ToolStatus::Failed);
 }
@@ -241,7 +249,7 @@ fn set_tool_note_rides_the_running_call_into_history() {
     // running call right after its ToolStart, kept by end_tool so the
     // committed cell (and a /resume of it) can append the provenance row.
     let mut app = App::new();
-    app.start_tool("Bash", "ls -la", "");
+    app.start_tool("Bash", "ls -la", None);
     app.set_tool_note("Allowed by auto mode classifier");
     let finished = app.end_tool("Exit code: 0\ntotal 40", true).expect("ran");
     assert_eq!(
@@ -276,7 +284,7 @@ fn push_tool_output_tails_the_running_tool() {
     // Live streaming: each ToolOutput chunk appends to the running call's
     // output so the cell tails it (docs/tool-streaming.md).
     let mut app = App::new();
-    app.start_tool("Bash", "ping -c 2 x", "");
+    app.start_tool("Bash", "ping -c 2 x", None);
     app.push_tool_output("line 1\n");
     app.push_tool_output("line 2\n");
     assert_eq!(app.current_tool().unwrap().output, "line 1\nline 2\n");
@@ -310,7 +318,7 @@ fn push_tool_output_does_not_charge_the_token_tally() {
     // end_tool — never from the streamed chunks (which would double-count).
     let mut app = App::new();
     app.begin_stream();
-    app.start_tool("Bash", "echo hi", "");
+    app.start_tool("Bash", "echo hi", None);
     app.push_tool_output("hi\n");
     assert_eq!(
         app.status().unwrap().tokens,
@@ -328,7 +336,7 @@ fn push_tool_output_does_not_charge_the_token_tally() {
 fn background_tool_resolves_the_front_call_as_backgrounded() {
     let mut app = App::new();
     app.begin_stream();
-    app.start_tool("Bash", "ping x.com", "");
+    app.start_tool("Bash", "ping x.com", None);
     let tool = app
         .background_tool(
             "Command running in the background. Output is streaming to /tmp/a0/s1/bash_1.output.",

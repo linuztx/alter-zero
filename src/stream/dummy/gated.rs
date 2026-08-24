@@ -135,7 +135,7 @@ impl Stage<'_> {
             name: call.kind.to_string(),
             args: call.args.clone(),
             detail: None,
-            arguments: call.arguments.clone(),
+            arguments: Some(call.arguments.clone()),
         });
         if let Some(note) = note {
             let _ = self.tx.send(StreamEvent::ToolNote(note));
@@ -281,7 +281,7 @@ pub(in crate::stream) fn ask_questions_turn(stage: &AskStage<'_>) {
         name,
         args,
         detail: None,
-        arguments: call.arguments.clone(),
+        arguments: Some(call.arguments.clone()),
     });
     let answered = outcome.ok;
     let chatting = outcome.output.starts_with(crate::ask::CHAT_HEADLINE);

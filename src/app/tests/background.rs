@@ -433,12 +433,12 @@ fn ctrl_b_moves_only_a_running_command_to_the_background() {
     assert_eq!(app.on_key(ctrl('b')), Action::None, "idle: nothing to move");
     // A running model bash call can move.
     app.begin_stream();
-    app.start_tool("Bash", "ping x.com", "");
+    app.start_tool("Bash", "ping x.com", None);
     assert!(app.can_move_to_background());
     assert_eq!(app.on_key(ctrl('b')), Action::MoveToBackground);
     app.end_tool("done", true);
     // A running non-command tool can't.
-    app.start_tool("Read", "src/main.rs", "");
+    app.start_tool("Read", "src/main.rs", None);
     assert!(!app.can_move_to_background());
     assert_eq!(app.on_key(ctrl('b')), Action::None);
 }
@@ -459,7 +459,7 @@ fn the_open_manager_band_suppresses_the_ctrl_b_hint_clock() {
     // running cell itself stays visible above the band, hintless.
     let mut app = App::new();
     app.begin_stream();
-    app.start_tool("Bash", "sleep 100", "");
+    app.start_tool("Bash", "sleep 100", None);
     app.set_command_elapsed(Some(Duration::from_secs(5)));
     assert!(app.command_elapsed().is_some());
     app.bg_started("bash_1", "sleep 200", None, true, None);
@@ -482,7 +482,7 @@ fn an_open_inline_picker_suppresses_the_ctrl_b_hint_clock() {
     let hint_clock_off = |open: fn(&mut App)| {
         let mut app = App::new();
         app.begin_stream();
-        app.start_tool("Bash", "sleep 100", "");
+        app.start_tool("Bash", "sleep 100", None);
         app.set_command_elapsed(Some(Duration::from_secs(5)));
         assert!(app.command_elapsed().is_some());
         open(&mut app);

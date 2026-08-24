@@ -876,7 +876,7 @@ fn preview_rows_counts_the_running_backend_tool_cell() {
         1,
         "a streaming reply previews one row"
     );
-    app.start_tool("Bash", "sleep 1", "");
+    app.start_tool("Bash", "sleep 1", None);
     // Past the hint delay so the Ctrl+B hint row is part of the preview.
     app.set_command_elapsed(Some(Duration::from_secs(3)));
     assert_eq!(
@@ -904,7 +904,7 @@ fn a_rejected_cell_shows_the_amended_instructions_and_never_the_model_text() {
             "The user doesn't want to proceed with this tool use. STOP what you are doing."
                 .to_string(),
         ),
-        arguments: String::new(),
+        arguments: None,
         approval_note: None,
         batch: None,
     };
@@ -948,7 +948,7 @@ fn a_backgrounded_tool_cell_shows_the_fixed_row_not_its_output() {
         shell: false,
         truncated: false,
         context_output: None,
-        arguments: String::new(),
+        arguments: None,
         approval_note: None,
         batch: None,
     };
@@ -983,7 +983,7 @@ fn a_backgrounded_shell_cell_is_the_headerless_fixed_row() {
         shell: true,
         truncated: false,
         context_output: None,
-        arguments: String::new(),
+        arguments: None,
         approval_note: None,
         batch: None,
     };

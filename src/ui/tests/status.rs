@@ -47,7 +47,7 @@ fn transcript_shows_no_stamp_on_assistant_tool_or_summary_items() {
             shell: false,
             truncated: false,
             context_output: None,
-            arguments: String::new(),
+            arguments: None,
             approval_note: None,
             batch: None,
         }),
