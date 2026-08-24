@@ -377,8 +377,20 @@ the caret comes back with it) — while the tool thread **blocks** on the
 shared `permission::PermissionGate` (the `Arc<Mutex<…>> + Condvar` sibling of
 the background/agent registries, its `wait` polling the turn's `CancelToken` so
 an Esc reaps it); the prompt is modal (routed first in `on_key`, replacing the
-composer, the status line, the bands and the footer — but **never the cells that
-raised it**: the call being asked about keeps its `● Write(tt.py)` header over
+composer, the status line, the bands and the footer — and swallowing every key
+**except Ctrl+O and Ctrl+D**, the two read-only views, which
+`on_key_permission` runs off the shared `App::on_key_overlay_toggle` arm ahead
+of everything else (Tab's amend field included — neither is an editing key):
+the prompt asks about work that is already on the transcript, so locking the
+transcript and the derived context is locking exactly what the answer is read
+from, and both views only scroll, so the tool thread stays blocked, the draft
+stays stashed and the prompt is still open on the way back (the return is the
+ordinary `overlay_return_repaint` + flow check, so screen *and* scrollback come
+back byte-identical — `smoke.sh` Phase 90; the overlay's idle Esc gains a
+matching guard, `App::overlay_esc_backtracks` refusing to arm a rewind while a
+modal waits, since a background agent can raise one with no turn running) —
+but **never the cells that raised it**: the call being asked about keeps its
+`● Write(tt.py)` header over
 the same dim `⎿ Waiting…` its batch siblings show (the approve seam runs before
 `ToolStart`, so it genuinely is waiting — Claude Code's look; a truly running
 call, the main turn's own under a subagent's request, keeps its `⎿ Running…`
@@ -498,7 +510,10 @@ questions — `askuserquestion`, offered only when `LlmBackend::with_ask`
 attached the session's `ask::AskGate` (always, in the app; subagents never
 get it) — and its thread **blocks on the gate** exactly like a permission
 request while an inline modal (the permission prompt's sibling: modal keys
-routed first, composer draft stashed/restored, `ui::region_is_modal` so the
+routed first — Ctrl+O/Ctrl+D excepted, off the same shared
+`App::on_key_overlay_toggle` arm, so a question about the conversation never
+locks the two views that show it — composer draft stashed/restored,
+`ui::region_is_modal` so the
 close purge-rebuilds, the two modals queueing behind each other via
 `App::open_next_pending`) walks the user through a chip strip of question
 tabs (`☐`/`☒`/`✔ Submit`, the **current chip lit on the cyan selection

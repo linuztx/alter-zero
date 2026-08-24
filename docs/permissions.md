@@ -533,19 +533,77 @@ the long instruction, not the one-line cell.
 ## The prompt is modal, and the draft survives
 
 `App::permission` is checked first in `on_key`, ahead of the Ctrl+R search and
-the inline pickers: while a request is open it owns every key. `render_live`
+the inline pickers: while a request is open it owns every key but the two
+read-only overlays' ([below](#except-the-two-keys-that-only-look)). `render_live`
 replaces the **whole** live region with it, the streaming strip included — the
 turn is blocked on you, so there is nothing to animate.
 
 Opening stashes the composer (`TextArea` text + cursor, and the `!` shell-mode
-flag) and clears it; closing restores them. So a request that lands mid-sentence
-does not eat what you were typing — and Tab's amend field starts empty, because
-it *is* the same textarea. A second request arriving while one is open queues
-(`App::pending_permissions`) and opens as soon as the first resolves; its
-backend thread simply stays blocked meanwhile.
+flag) and clears it, and drops everything else that hangs off the composer —
+the palette, the `@`/`$` pickers, the `?` band, an open Ctrl+R search, a primed
+backtrack, and the footer's ↓ selections (`background_focus`,
+`agent_selection`). The footer ones matter for the same reason as the rest: the
+prompt paints over the footer, so a highlight left lit is one the user can
+neither see nor clear — the modal routes above its key handler — and that comes
+back *armed* when the prompt closes, where the next Enter opens the background
+manager band instead of doing what they meant. Closing restores the draft, so a
+request that lands mid-sentence does not eat what you were typing — and Tab's
+amend field starts empty, because it *is* the same textarea. A second request
+arriving while one is open queues (`App::pending_permissions`) and opens as
+soon as the first resolves; its backend thread simply stays blocked meanwhile.
 
 `/clear`, an interrupt, and a quit all drop the prompt and the queue; the
 blocked threads notice their cancel token and return.
+
+### …except the two keys that only look
+
+**Ctrl+O** (the transcript pager) and **Ctrl+D** (the raw LLM context) are the
+one exception to "owns every key", and they are the exception for the same
+reason the rest of the rule exists. The prompt asks about work that is already
+on the transcript, and the way to answer it is often to read further back than
+the cell above the question — what the model said it was doing, what the
+previous tool returned, what the context it is working from actually contains.
+Swallowing those two keys made a prompt the one moment in the session when the
+conversation could not be inspected, which is precisely the moment it matters
+most. So `on_key_permission` runs `App::on_key_overlay_toggle` first and
+returns whatever it decides — the same arm `on_key` uses for the composer, so
+the two can't drift — and only then swallows the rest. Every other Ctrl+key is
+still absorbed: the prompt must not be answerable by accident.
+
+Nothing else changes. Both views are read-only — they scroll, and that is all
+they do — so the tool thread stays blocked on the gate, the queue stays queued,
+the stashed draft stays stashed, and the prompt is still open on the way back.
+The keys work from **Tab's amend field** too (neither is an editing key), where
+the typed feedback survives the round trip. And because the views are the
+alternate screen, the modal-region routing takes care of itself: `on_key`'s
+guards are all `view == View::Conversation`, so while the overlay is up its own
+key map owns the keyboard.
+
+Two boundary details make the round trip a no-op on the terminal, and both were
+already there for the "the request arrived while the overlay was up" case:
+
+- The return is the ordinary `Session::overlay_return_repaint` — everything
+  that committed under the overlay sits in the viewport's pending queue and
+  flushes above the live region, and the next draw tick's flow check
+  (`view_flow_stale`) re-establishes a screen-tall prompt's flow with the usual
+  purge rebuild. Screen **and** scrollback come back byte-identical, at every
+  geometry (`smoke.sh` Phase 90 compares both, floating region and flowing page).
+- The overlay's idle **Esc** must not arm the backtrack preview
+  (`App::overlay_esc_backtracks` gained a `permission.is_none() && ask.is_none()`
+  clause). A *background agent* can raise a prompt with no turn running, so
+  "idle" alone would offer a rewind that truncates history and prefills the very
+  composer the prompt has stashed — with a tool thread still parked on the gate.
+  A modal is a decision you owe, not a backtrack target; the closing hint row
+  reads `q/esc/ctrl+o to quit` accordingly, since hint and key share the one
+  predicate.
+
+The `AskUserQuestion` modal follows the identical rule — same helper, same
+reason (`docs/ask.md`). The inline **pickers** (`/model`, `/settings`,
+`/hooks`, the ↓ manager, …) deliberately do not: they own every key too, but
+Esc just closes them, so the two views are one keystroke away already. The
+modals are the only regions you cannot leave without answering — Esc on a
+prompt cancels the turn, Esc on a question declines the call — which is
+exactly why they are the two that must not lock the conversation away.
 
 ### The cursor goes away
 
@@ -611,7 +669,10 @@ explains itself with a toast instead of pretending to toggle anything.
   from the composer both ways, and explains itself when permissions are
   disabled), the amend field, the queue — plus the whole
   amend round trip (real gate, real keys) asserting the recorded call and the
-  derived context carry exactly what the model was told.
+  derived context carry exactly what the model was told; and the two keys the
+  prompt lets through — Ctrl+O/Ctrl+D open and close over an open prompt
+  (options *and* amend field, feedback intact), every other Ctrl+key is still
+  swallowed, and a waiting prompt is not a backtrack target.
 - `ui/tests/footer.rs` — the footer's right-edge mode segment (flush at the
   row's edge, dim, the left content truncating first at narrow widths; absent
   when no mode is injected).
@@ -712,6 +773,12 @@ explains itself with a toast instead of pretending to toggle anything.
   **last row** — no band of blank rows underneath the still-open prompt (the
   reported empty-newlines bug) — with the tall `write`'s resolved cell
   visible above it, committed exactly once, and the box back flush after.
+- `smoke.sh` Phase 90 — Ctrl+O/Ctrl+D over an **open** prompt in a real
+  terminal, at two geometries (a region floating below a short conversation,
+  and one flush at the bottom whose page flows its top into scrollback): each
+  view opens with the asked-about call visible, the overlay's Esc is offered as
+  a quit rather than a backtrack, both round trips leave the screen *and* the
+  scrollback byte-identical, and the prompt still resolves afterwards.
 - `tests/live_openrouter.rs` — against a real provider: the replayed rejection
   is a legible context shape and the model still follows the instructions a
   turn later.

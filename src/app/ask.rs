@@ -177,13 +177,16 @@ impl App {
             return;
         }
         // The modal takes the composer over, so the bands that hang off it go
-        // (the permission prompt's rule).
+        // — and the footer's ↓ selections with them (the permission prompt's
+        // rule, `open_permission`).
         self.shortcuts_open = false;
         self.command_menu = None;
         self.file_search = None;
         self.skill_picker = None;
         self.history_search = None;
         self.backtrack = Backtrack::default();
+        self.background_focus = false;
+        self.agent_selection = None;
         let saved_input = self.input.text().to_string();
         let saved_cursor = self.input.cursor();
         let saved_shell_mode = self.shell_mode;
@@ -358,6 +361,14 @@ impl App {
     /// the model is told the user declined). In the Other/notes entry the
     /// composer is live: Enter accepts, Esc backs out keeping the text.
     pub(super) fn on_key_ask(&mut self, key: KeyEvent) -> Action {
+        // Ctrl+O / Ctrl+D first, the permission prompt's rule in its sibling
+        // modal: a question about the conversation must not lock the two
+        // read-only views that show it (they only scroll, so the blocked tool
+        // thread keeps waiting and the modal is still open on the way back).
+        // Ahead of the entry fields too — neither is an editing key.
+        if let Some(action) = self.on_key_overlay_toggle(key) {
+            return action;
+        }
         if self.ask.as_ref().is_some_and(AskPrompt::editing) {
             return self.on_key_ask_input(key);
         }

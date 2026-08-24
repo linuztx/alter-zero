@@ -61,15 +61,29 @@ impl App {
 
     /// Would Esc in the Ctrl+O transcript overlay **begin** the backtrack
     /// preview instead of closing the overlay? True exactly when idle (no
-    /// running turn), outside an agent session view, with a previous user
-    /// message to edit — codex's Ctrl+T → Esc path. The one predicate the
-    /// overlay's Esc key arm (`on_key_tool_view`) and its closing hint row
-    /// (`ui::render_tool_view` — `q/ctrl+o to quit   esc to edit prev` vs
-    /// `q/esc/ctrl+o to quit`) share, so what the hint promises and what the
-    /// key does can never drift. See `docs/backtrack.md`.
+    /// running turn), outside an agent session view, with no modal waiting on
+    /// the user, and with a previous user message to edit — codex's Ctrl+T →
+    /// Esc path. The one predicate the overlay's Esc key arm
+    /// (`on_key_tool_view`) and its closing hint row (`ui::render_tool_view` —
+    /// `q/ctrl+o to quit   esc to edit prev` vs `q/esc/ctrl+o to quit`) share,
+    /// so what the hint promises and what the key does can never drift. See
+    /// `docs/backtrack.md`.
+    ///
+    /// The modal clause is what makes the overlays safe to open from *inside*
+    /// a tool-permission prompt or an `AskUserQuestion` question
+    /// (`App::on_key_overlay_toggle`). A **background
+    /// agent** can raise either with no turn running, so "idle" alone would
+    /// let Esc arm a rewind that truncates history and prefills the very
+    /// composer the modal has stashed — while a tool thread is still blocked
+    /// on the gate. A modal is a decision the user owes, not a backtrack
+    /// target.
     #[must_use]
     pub fn overlay_esc_backtracks(&self) -> bool {
-        !self.turn_active() && self.agent_view.is_none() && self.has_backtrack_target()
+        !self.turn_active()
+            && self.agent_view.is_none()
+            && self.permission.is_none()
+            && self.ask.is_none()
+            && self.has_backtrack_target()
     }
 
     /// Start previewing with the newest user message highlighted, requesting

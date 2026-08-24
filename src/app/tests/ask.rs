@@ -563,3 +563,43 @@ fn arrows_wrap_the_rows_at_both_ends() {
         "Down from the last row wraps back to the first"
     );
 }
+
+// ===== The read-only overlays stay reachable (docs/ask.md) =====
+
+#[test]
+fn the_read_only_overlays_open_over_an_open_question() {
+    // The permission prompt's rule, in its sibling modal: a question about
+    // the conversation must not lock the two views that show it.
+    let mut app = App::new();
+    type_text(&mut app, "half a thought");
+    app.open_ask(request("ask_0", vec![coffee_question()]));
+    assert_eq!(app.on_key(ctrl('o')), Action::ToggleToolView);
+    assert_eq!(app.view, View::ToolOutput);
+    assert!(app.ask().is_some(), "the question is still waiting");
+    assert_eq!(app.on_key(ctrl('o')), Action::ToggleToolView);
+    assert_eq!(app.view, View::Conversation);
+    assert_eq!(app.on_key(ctrl('d')), Action::ToggleContextDebug);
+    assert_eq!(app.view, View::ContextDebug);
+    assert!(app.ask().is_some());
+    assert_eq!(app.on_key(ctrl('d')), Action::ToggleContextDebug);
+    assert_eq!(app.view, View::Conversation);
+    assert_eq!(app.input.text(), "", "the stashed draft stayed stashed");
+    assert!(!app.overlay_esc_backtracks(), "…and it blocks a backtrack");
+}
+
+#[test]
+fn a_question_takes_the_footer_selections_with_the_composer() {
+    // `open_permission`'s rule in the sibling modal: the question paints over
+    // the footer, so a lit ↓ indicator would come back armed at the close.
+    let mut app = app_with_shells(&["sleep 30"]);
+    app.on_key(key(KeyCode::Down));
+    assert!(
+        app.background_focused(),
+        "precondition: the indicator is lit"
+    );
+    app.open_ask(request("ask_0", vec![coffee_question()]));
+    assert!(!app.background_focused());
+    app.on_key(key(KeyCode::Esc));
+    assert!(app.ask().is_none());
+    assert!(!app.background_focused(), "…and does not come back armed");
+}

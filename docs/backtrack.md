@@ -141,8 +141,9 @@ re-attach.
   Before a preview the same row already tells the truth about Esc: whenever
   idle Esc would *begin* the preview it reads `q/ctrl+o to quit   esc to
   edit prev` (`TOOL_VIEW_HINT_QUIT_EDIT`), and only when Esc genuinely
-  closes the overlay — no target, a running turn, an agent session view —
-  does the classic `q/esc/ctrl+o to quit` stand. Both the hint and the key
+  closes the overlay — no target, a running turn, an agent session view, a
+  modal waiting on the user — does the classic `q/esc/ctrl+o to quit` stand.
+  Both the hint and the key
   arm guard on the one shared predicate `App::overlay_esc_backtracks`, so
   they can never disagree (the old always-`q/esc/ctrl+o` row promised a
   quit Esc didn't do — the reported "I pressed Esc to exit and got
@@ -168,6 +169,13 @@ All the new styling lives in the `ui/theme.rs` consts block (`BACKTRACK_*`,
   nothing to target — Esc quits as it always did, and an overlay Esc just
   closes the overlay (codex posts "No previous message to edit."; we simply
   don't enter the mode).
+- **A modal is open**: a tool-permission prompt or an `AskUserQuestion`
+  question can be opened *over* by Ctrl+O/Ctrl+D (`docs/permissions.md`), and
+  a **background agent** can raise either with no turn running — so "idle"
+  alone would let the overlay's Esc arm a preview whose Enter truncates
+  history and prefills the very composer the modal has stashed, with a tool
+  thread still parked on the gate. `overlay_esc_backtracks` therefore also
+  requires no open modal, and the hint row follows it as always.
 - **`/clear` and Ctrl+O reset**: both wipe the backtrack state; nothing
   survives a view toggle except via the explicit Esc re-entry.
 - **Oldest/newest bounds**: stepping saturates at both ends (codex clamps the

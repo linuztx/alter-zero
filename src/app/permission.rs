@@ -84,13 +84,19 @@ impl App {
             return;
         }
         // The prompt takes the composer over, so the bands that hang off it go
-        // (the `/model` picker's rule).
+        // (the `/model` picker's rule) — and so do the footer's ↓ selections,
+        // which the prompt paints over: a highlight left lit is one the user
+        // can neither see nor clear (the modal routes above its key handler)
+        // and that comes back armed at the close, where the next Enter opens
+        // the manager band instead of doing what they meant.
         self.shortcuts_open = false;
         self.command_menu = None;
         self.file_search = None;
         self.skill_picker = None;
         self.history_search = None;
         self.backtrack = Backtrack::default();
+        self.background_focus = false;
+        self.agent_selection = None;
         let saved_input = self.input.text().to_string();
         let saved_cursor = self.input.cursor();
         let saved_shell_mode = self.shell_mode;
@@ -222,7 +228,18 @@ impl App {
     ///
     /// In the amend field the composer is live: every editing key goes to it,
     /// Enter rejects with the typed feedback, and Esc backs out to the options.
+    ///
+    /// Two keys are let through ahead of all of it — **Ctrl+O** (the
+    /// transcript) and **Ctrl+D** (the raw context). The prompt is a question
+    /// about work that is already on the transcript, so the views that show
+    /// it are how the answer gets decided; they only scroll, so the blocked
+    /// tool thread keeps waiting undisturbed and the prompt is still open on
+    /// the way back. They come first so the amend field gets them too — neither
+    /// is an editing key. See [`on_key_overlay_toggle`](App::on_key_overlay_toggle).
     pub(super) fn on_key_permission(&mut self, key: KeyEvent) -> Action {
+        if let Some(action) = self.on_key_overlay_toggle(key) {
+            return action;
+        }
         if self.permission.as_ref().is_some_and(|p| p.amend) {
             return self.on_key_permission_amend(key);
         }

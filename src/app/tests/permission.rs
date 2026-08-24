@@ -554,3 +554,125 @@ fn the_derived_context_replays_the_amended_instructions_on_later_turns() {
         replayed.text
     );
 }
+
+// ===== The read-only overlays stay reachable (docs/permissions.md) =====
+
+#[test]
+fn ctrl_o_opens_the_transcript_over_an_open_prompt() {
+    // The prompt is a question about work already on the transcript, so the
+    // two read-only inspection views must survive it: the whole point of
+    // Ctrl+O here is reading what you are being asked to approve.
+    let mut app = App::new();
+    type_text(&mut app, "half a thought");
+    app.open_permission(write_request("p1"));
+    assert_eq!(app.on_key(ctrl('o')), Action::ToggleToolView);
+    assert_eq!(app.view, View::ToolOutput);
+    assert!(app.permission().is_some(), "the prompt is still waiting");
+    // …and the overlay's own keys work while it is up.
+    assert_eq!(app.on_key(ctrl('o')), Action::ToggleToolView);
+    assert_eq!(app.view, View::Conversation);
+    assert!(
+        app.permission().is_some(),
+        "…and it still is on the way back"
+    );
+    assert_eq!(app.input.text(), "", "the stashed draft stayed stashed");
+    app.on_key(key(KeyCode::Char('1')));
+    assert_eq!(app.input.text(), "half a thought", "…and came back after");
+}
+
+#[test]
+fn ctrl_d_opens_the_context_view_over_an_open_prompt() {
+    let mut app = App::new();
+    app.open_permission(bash_request("p1"));
+    assert_eq!(app.on_key(ctrl('d')), Action::ToggleContextDebug);
+    assert_eq!(app.view, View::ContextDebug);
+    assert!(app.permission().is_some());
+    assert_eq!(app.on_key(ctrl('d')), Action::ToggleContextDebug);
+    assert_eq!(app.view, View::Conversation);
+    assert!(app.permission().is_some());
+}
+
+#[test]
+fn the_overlays_are_reachable_from_the_amend_field_too() {
+    // Tab's amend field is a live composer, but Ctrl+O/Ctrl+D are not editing
+    // keys: they open the same views, and the typed feedback survives.
+    let mut app = App::new();
+    app.open_permission(write_request("p1"));
+    app.on_key(key(KeyCode::Tab));
+    type_text(&mut app, "use pathlib");
+    assert_eq!(app.on_key(ctrl('o')), Action::ToggleToolView);
+    assert_eq!(app.view, View::ToolOutput);
+    assert_eq!(app.on_key(ctrl('o')), Action::ToggleToolView);
+    assert!(app.permission().is_some_and(|p| p.amend), "still amending");
+    assert_eq!(app.input.text(), "use pathlib", "the feedback survived");
+    assert_eq!(app.on_key(ctrl('d')), Action::ToggleContextDebug);
+    assert_eq!(app.on_key(ctrl('d')), Action::ToggleContextDebug);
+    assert_eq!(app.input.text(), "use pathlib");
+}
+
+#[test]
+fn the_prompt_still_swallows_every_other_ctrl_key() {
+    // Only the two read-only overlays escape the modal — a stray Ctrl+key
+    // must not reach the composer or resolve anything.
+    let mut app = App::new();
+    app.open_permission(write_request("p1"));
+    for c in ['z', 'r', 't', 'v'] {
+        assert_eq!(app.on_key(ctrl(c)), Action::None, "ctrl+{c}");
+        assert_eq!(app.view, View::Conversation);
+        assert!(app.permission().is_some());
+    }
+}
+
+#[test]
+fn an_open_prompt_keeps_the_overlays_esc_from_backtracking() {
+    // A background agent can raise a prompt with no turn running: without
+    // this guard the overlay's idle Esc would begin a backtrack preview and
+    // Enter would rewind the conversation — prefilling the very composer the
+    // prompt has stashed, while a tool thread is still blocked on the gate.
+    let mut app = App::new();
+    app.record_user_message("hi");
+    app.begin_stream();
+    app.finish_stream();
+    app.end_turn(1);
+    assert!(app.overlay_esc_backtracks(), "idle with a target");
+    app.open_permission(bash_request("p1"));
+    assert!(
+        !app.overlay_esc_backtracks(),
+        "a waiting prompt is not a backtrack target"
+    );
+    app.on_key(ctrl('o'));
+    assert_eq!(
+        app.on_key(key(KeyCode::Esc)),
+        Action::ToggleToolView,
+        "Esc closes the overlay instead"
+    );
+    assert_eq!(app.view, View::Conversation);
+    assert!(app.permission().is_some(), "…and the prompt is still open");
+}
+
+#[test]
+fn a_prompt_takes_the_footer_selections_with_the_composer() {
+    // Opening clears the bands that hang off the composer; the footer's ↓
+    // selections hang off it the same way, and the prompt paints over the
+    // footer entirely — so a highlight left lit is one the user cannot see,
+    // cannot clear (the modal routes above its key handler) and comes back
+    // armed when the prompt closes, where the next Enter opens the manager
+    // band instead of doing what they meant.
+    let mut app = app_with_shells(&["sleep 30"]);
+    app.on_key(key(KeyCode::Down));
+    assert!(
+        app.background_focused(),
+        "precondition: the indicator is lit"
+    );
+    app.open_permission(bash_request("p1"));
+    assert!(
+        !app.background_focused(),
+        "the prompt painted over the footer it was lit on"
+    );
+    app.on_key(key(KeyCode::Char('3')));
+    assert!(app.permission().is_none());
+    assert!(
+        !app.background_focused(),
+        "…and it does not come back armed"
+    );
+}

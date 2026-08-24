@@ -67,15 +67,24 @@ park until the user decides.
   same way).
 
 - **`app::AskPrompt`** — the modal state, `PermissionPrompt`'s shape: it owns
-  every key while open, stashes the composer draft (the ask text entry reuses
-  `App::input`, like Tab's amend field), and queues cross-modal arrivals — a
+  every key while open **except Ctrl+O and Ctrl+D**, stashes the composer
+  draft (the ask text entry reuses `App::input`, like Tab's amend field), and
+  queues cross-modal arrivals — a
   permission request landing while a question is open waits its turn, and
   vice versa (`open_next_pending`). Navigation: ←/→/Tab/Shift+Tab move
   between question tabs (and the Submit tab), ↑/↓ move rows wrapping at the
   ends, digits
   jump-activate, Enter selects/toggles/activates, `n` opens the notes field
   on a preview question, Esc **declines** (the whole call resolves declined —
-  the turn continues; the model is told to stop and wait). A single-select
+  the turn continues; the model is told to stop and wait). The two read-only
+  overlays are the sibling of the permission prompt's one exception
+  (`docs/permissions.md`): `on_key_ask` runs `App::on_key_overlay_toggle`
+  first, so Ctrl+O (the transcript) and Ctrl+D (the raw context) open over an
+  open question — entry fields included, neither being an editing key — and
+  the question is still there on the way back. A question *about* the
+  conversation must not lock the two views that show it. The overlay's idle
+  Esc is guarded too: a pending modal is not a backtrack target
+  (`App::overlay_esc_backtracks`). A single-select
   answer auto-advances to the next tab; a lone question resolves immediately;
   a multi-select question confirms via its own unnumbered `Submit` row. The
   entry fields (the Other row, the notes line) are real composer fields:
