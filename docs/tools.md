@@ -40,8 +40,8 @@ definitions + JSON schemas live in [`llm::tools`](../src/llm/tools.rs)
 | --- | --- | --- |
 | `bash` | `command` (req), `timeout` (opt, ms — default 120 000, cap 600 000; the pre-rename alias `timeout_ms` still parses) | `sh -c command` with **no controlling terminal** (`crate::subprocess` — a `/dev/tty` password prompt fails fast), stdin `/dev/null`, stdout+stderr captured, byte-capped, killed on timeout/cancel |
 | `read` | `path` (req — absolute, like the other two), `offset` (opt 1-based line), `limit` (opt, default 2000 lines) | read the file: text returns numbered lines (a dynamic-width gutter); an **image** (png/jpg/jpeg/gif/webp) is attached visually so the model can see it (`offset`/`limit` ignored — see "Image reads" below) |
-| `write` | `path` (req — the schema asks for an **absolute** path), `content` (req) | create parent dirs, write the file; report `Wrote {N} lines to {path}` over the numbered contents for a new file, or the numbered diff hunks vs the previous content — the head's path shown cwd-relative (`tools::display_path`, `../` climbs outside the cwd) |
-| `edit` | `path` (req — absolute, like `write`'s), `old_string` (req), `new_string` (req), `replace_all` (opt) | exact string replacement; error if `old_string` is absent, or non-unique without `replace_all`; report `Updated {path} (+A -D)` over the numbered diff hunks, the path shown cwd-relative like `write`'s |
+| `write` | `path` (req — the schema asks for an **absolute** path), `content` (req) | create parent dirs, write the file; **show** `Wrote {N} lines to {path}` over the numbered contents for a new file, or the numbered diff hunks vs the previous content — the head's path shown cwd-relative (`tools::display_path`, `../` climbs outside the cwd) — while the *model* reads a one-line ack |
+| `edit` | `path` (req — absolute, like `write`'s), `old_string` (req), `new_string` (req), `replace_all` (opt) | exact string replacement; error if `old_string` is absent, or non-unique without `replace_all`; **show** `Updated {path} (+A -D)` over the numbered diff hunks, the path shown cwd-relative like `write`'s — the model again reads the ack |
 
 `read`/`write`/`edit` are separate JSON tools rather than one `apply_patch`
 grammar: they work on any function-calling model, and `edit`'s exact
@@ -175,14 +175,16 @@ cores in `llm::tools`:
 - **`read`** — reads the file; a text file applies `offset`/`limit`, formats
   numbered lines (`format_read`, pure), byte-caps the result; an image file
   takes the image branch below.
-- **`write`** — creates parent dirs, writes, returns `describe_change`: a brand-new
+- **`write`** — creates parent dirs, writes, and **displays** `describe_change`:
+  a brand-new
   file is a `Wrote {N} lines to <path>` head over the **numbered contents**
   (`tools::write_report` — `{n:>W} {text}` rows, the numbers matching `read`'s
   so the model can cite them to `edit`); overwriting is reported like an edit
   (`tools::update_report`). The head's path is the compact cwd-relative
   display form (`tools::display_path` — `src/main.rs` under the cwd, a
   `../../README.md` climb outside it), while the `● Write({path})` header
-  keeps the model's own (absolute, per the schema) argument verbatim.
+  keeps the model's own (absolute, per the schema) argument verbatim. What the
+  **model** reads is the one-line ack below.
 - **`edit`** — the pure `apply_edit` engine does the exact replacement; the
   executor writes it back and reports `Updated <path> (+A -D)` over the
   **numbered diff hunks** (`render_numbered_diff` — only each change run plus
@@ -190,7 +192,40 @@ cores in `llm::tools`:
   hunks separated by a `⋮` gap row; `{n:>W} {sign}{text}` rows — context/added
   lines numbered by the *new* file, removed by the *old*, codex's
   `diff_render` numbering). Both bodies cap at `DIFF_MAX_LINES` with a
-  `… N more lines` tail.
+  `… N more lines` tail — and, again, only on the cell.
+
+### The result the model reads is one line
+
+A `write`/`edit` resolves through the **two-text split** the ask and skill
+tools already use (`ToolOutcome::context` → `StreamEvent::ToolAnswered` →
+`ToolCall::context_output`): the numbered body above is the *cell*, and what
+rides the conversation is
+
+```
+File created successfully at: /tmp/name.txt (file state is current in your context — no need to read it back)
+The file /tmp/note.txt has been updated successfully. (file state is current in your context — no need to read it back)
+```
+
+(`tools::write_ack` / `tools::edit_ack` over the model's own path argument; a
+`replace_all` that touched more than one place adds a `Replaced {n}
+occurrences.` line, the one fact the diff carried that the arguments do not.
+A write that changed nothing stays single-text — `No changes to {path}` is
+already the whole truth, and there is no body to spare the model.)
+
+The saving is real because the change is not dropped, only **moved**: every
+call now records the model's verbatim arguments, and the derived context
+replays them on the assistant `tool_calls` entry (`docs/context.md`). Before,
+a `write` replayed as `write({"path": …})` and the content came back as a
+line-numbered result every turn — roughly 1.3× the content's own tokens, for
+a copy the model had just written. Now the content rides the call once, in
+the shape the model sent it.
+
+The closing clause is a claim about that replay, so both file tools' schemas
+say the same thing in one sentence — *"Returns a one-line confirmation: the
+content you sent stays in the conversation, so do not read the file back to
+check it"* — because a model that cannot see why the result got shorter will
+otherwise reach for a verifying `read`, which uploads the file a second time
+and undoes the saving.
 
 Every failure is returned as a **non-ok `ToolOutcome`** with a human/model-readable
 message (never a panic) — the model sees the error string as the tool result and

@@ -266,11 +266,7 @@ pub fn run_agent(
                         let hook = hooks.pre_tool_use(call, cancel);
                         if let Some(reason) = &hook.blocked {
                             let (display, result) = hook_block_texts(reason);
-                            let _ = tx.send(StreamEvent::ToolStart {
-                                name: display_name(&call.name),
-                                args: summarize_call(&call.name, &call.arguments),
-                                detail: super::tools::call_description(&call.name, &call.arguments),
-                            });
+                            let _ = tx.send(tool_start_event(call));
                             let _ = tx.send(StreamEvent::ToolRejected {
                                 display,
                                 result: result.clone(),
@@ -362,11 +358,7 @@ pub fn run_agent(
                     let hook = hooks.pre_tool_use(call, cancel);
                     if let Some(reason) = &hook.blocked {
                         let (display, result) = hook_block_texts(reason);
-                        let _ = tx.send(StreamEvent::ToolStart {
-                            name: display_name(&call.name),
-                            args: summarize_call(&call.name, &call.arguments),
-                            detail: super::tools::call_description(&call.name, &call.arguments),
-                        });
+                        let _ = tx.send(tool_start_event(call));
                         // The permission gate's own rejection event, reused
                         // whole: red cell, model-facing text on
                         // `context_output`, and a `/resume` that replays both.
@@ -416,11 +408,7 @@ pub fn run_agent(
                         approve(call, hook.force_ask)
                     };
                     if let Approval::Reject { display, result } = approval {
-                        let _ = tx.send(StreamEvent::ToolStart {
-                            name: display_name(&call.name),
-                            args: summarize_call(&call.name, &call.arguments),
-                            detail: super::tools::call_description(&call.name, &call.arguments),
-                        });
+                        let _ = tx.send(tool_start_event(call));
                         // ToolRejected, not ToolEnd: it carries BOTH texts, so
                         // the recorded call keeps the model-facing `result`
                         // beside the short cell line and later turns replay
@@ -434,11 +422,7 @@ pub fn run_agent(
                         results.push((call.id.clone(), result));
                         continue;
                     }
-                    let _ = tx.send(StreamEvent::ToolStart {
-                        name: display_name(&call.name),
-                        args: summarize_call(&call.name, &call.arguments),
-                        detail: super::tools::call_description(&call.name, &call.arguments),
-                    });
+                    let _ = tx.send(tool_start_event(call));
                     // A noted approval (the auto mode classifier's allow)
                     // rides its own event so the resolved cell can append the
                     // provenance row (docs/permissions.md).
@@ -559,11 +543,7 @@ pub fn run_agent(
                 // with the same text the model reads, so the stored message
                 // list stays well-formed for a `/resume` or a continuation.
                 for call in &refused_rest {
-                    let _ = tx.send(StreamEvent::ToolStart {
-                        name: display_name(&call.name),
-                        args: summarize_call(&call.name, &call.arguments),
-                        detail: super::tools::call_description(&call.name, &call.arguments),
-                    });
+                    let _ = tx.send(tool_start_event(call));
                     // A plain ToolEnd: the cell text and the tool result are
                     // the same one line, so there is no second text for
                     // `ToolRejected` to carry (docs/settings.md).
@@ -603,6 +583,20 @@ pub fn run_agent(
                 }
             }
         }
+    }
+}
+
+/// The `ToolStart` announcing `call`: the display name, the one-line header
+/// summary, the model's own `description` when it gave one — and the
+/// **verbatim arguments**, which is what lets the recorded call replay
+/// losslessly next turn instead of being rebuilt from the summary
+/// (`docs/context.md`).
+fn tool_start_event(call: &ToolCallRequest) -> StreamEvent {
+    StreamEvent::ToolStart {
+        name: display_name(&call.name),
+        args: summarize_call(&call.name, &call.arguments),
+        detail: super::tools::call_description(&call.name, &call.arguments),
+        arguments: call.arguments.clone(),
     }
 }
 
@@ -1384,6 +1378,7 @@ mod tests {
                     name: "Bash".to_string(),
                     args: "ls".to_string(),
                     detail: None,
+                    arguments: r#"{"command":"ls"}"#.to_string(),
                 },
                 StreamEvent::ToolEnd {
                     output: "ran bash".to_string(),

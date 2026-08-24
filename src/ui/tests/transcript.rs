@@ -46,7 +46,7 @@ fn transcript_lines_shows_the_in_progress_reply_and_running_tool() {
 
     // Now a tool starts running (text flushed); it shows as running.
     app.flush_streaming_segment();
-    app.start_tool("Bash", "ls");
+    app.start_tool("Bash", "ls", "");
     let texts: Vec<String> = transcript_lines(&app, 80)
         .iter()
         .map(|l| plain(l).trim_end().to_string())
@@ -154,7 +154,7 @@ fn transcript_cache_rebuilds_as_a_running_bash_streams_output() {
     // length and status don't change while it streams.
     let mut app = App::new();
     app.begin_stream();
-    app.start_tool("Bash", "make");
+    app.start_tool("Bash", "make", "");
     let mut cache = TranscriptCache::new();
     let _ = cache.lines(&app, 80); // first build — the running cell, no output yet
     let builds = cache.builds;
@@ -401,7 +401,7 @@ fn render_tool_view_fills_rows_below_the_content_with_tildes() {
 fn render_tool_view_separator_tracks_the_scroll_position() {
     // 0% at the top, 100% at the bottom — codex's pager percentage.
     let mut app = App::new();
-    app.start_tool("Read", "f");
+    app.start_tool("Read", "f", "");
     let output = (0..20)
         .map(|i| format!("line{i}"))
         .collect::<Vec<_>>()
@@ -426,7 +426,7 @@ fn render_tool_view_separator_tracks_the_scroll_position() {
 #[test]
 fn render_tool_view_scrolls_past_the_top() {
     let mut app = App::new();
-    app.start_tool("Read", "f");
+    app.start_tool("Read", "f", "");
     let output = (0..20)
         .map(|i| format!("line{i}"))
         .collect::<Vec<_>>()
@@ -736,6 +736,7 @@ fn the_agent_view_overlays_show_the_agents_transcript_and_context() {
             name: "Bash".into(),
             args: "curl wttr.in".into(),
             detail: None,
+            arguments: String::new(),
         },
         crate::stream::StreamEvent::ToolEnd {
             output: "+19°C".into(),

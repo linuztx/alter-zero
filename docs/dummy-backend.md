@@ -221,6 +221,15 @@ this costs nothing):
 | `Edit` | `tools::update_report` — `Updated {path} (+A -D)` + the numbered diff hunks | only the touched hunk, `+` rows on the green tint and `-` rows on the red one |
 | `Bash` | `Exit code: N` + the body | the frame `ui::command_display_output` reads: dropped on success, rewritten to a red `Error: Exit code N` head on failure, so a red cell says *why* |
 
+Parity runs past the cell, to what the *model* would have read: `Write` and
+`Edit` resolve through the same **two-text** `ToolAnswered` the live executor
+sends (`ScriptedCall::end`), the numbered body on the cell and
+`tools::write_ack`/`edit_ack`'s one line as the result, and every scripted
+`ToolStart` carries the verbatim arguments a real call would
+(`ScriptedCall::start`). So the demo's Ctrl+D shows the same replayed shape
+the live one does — a `write` whose content rides its own call, and a result
+that is one line (`docs/tools.md`, `docs/context.md`).
+
 ## The default turn is a story, not a sampler
 
 The turn that answers *anything* used to be two unrelated calls — read

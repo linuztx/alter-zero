@@ -635,7 +635,9 @@ fn write_spec() -> Value {
         "write",
         "Write text to a file, creating it (and any missing parent directories) \
          or overwriting it entirely. Prefer the `edit` tool for changing part of \
-         an existing file; use `write` for new files or full rewrites.",
+         an existing file; use `write` for new files or full rewrites. Returns a \
+         one-line confirmation: the content you sent stays in the conversation, \
+         so do not read the file back to check it.",
         json!({
             "type": "object",
             "properties": {
@@ -661,7 +663,9 @@ fn edit_spec() -> Value {
         "Replace an exact substring in a file. `old_string` must appear exactly \
          once (include enough surrounding context to make it unique) unless \
          `replace_all` is true. Read the file first so `old_string` matches the \
-         current contents verbatim, including whitespace and indentation.",
+         current contents verbatim, including whitespace and indentation. Returns \
+         a one-line confirmation: the strings you sent stay in the conversation, \
+         so do not read the file back to check it.",
         json!({
             "type": "object",
             "properties": {
@@ -1482,6 +1486,41 @@ pub fn update_report(path: &str, old: &str, new: &str) -> String {
     format!("Updated {path} {summary}\n{}", render_numbered_diff(&diff))
 }
 
+/// The clause every `write`/`edit` acknowledgement closes with. It is a claim
+/// about the *replayed* context, not a courtesy: the call's own arguments now
+/// ride the conversation verbatim ([`crate::context::context_messages`]), so
+/// the content the model just wrote — or the exact substrings it swapped — are
+/// still in front of it next turn and a read-back would upload them twice.
+pub const FILE_STATE_NOTE: &str =
+    "(file state is current in your context — no need to read it back)";
+
+/// The `write` tool's **model-facing** result — the one-line twin of
+/// [`write_report`], whose numbered body stays on the cell. `created`
+/// distinguishes a brand-new file from a full overwrite.
+#[must_use]
+pub fn write_ack(path: &str, created: bool) -> String {
+    if created {
+        format!("File created successfully at: {path} {FILE_STATE_NOTE}")
+    } else {
+        format!("The file {path} has been updated successfully. {FILE_STATE_NOTE}")
+    }
+}
+
+/// The `edit` tool's **model-facing** result — [`write_ack`]'s twin over
+/// [`update_report`]'s diff hunks. A `replace_all` that changed more than the
+/// one place the model named says so on a second line: the collapsed result
+/// would otherwise hide the only fact the diff carried that the arguments
+/// don't.
+#[must_use]
+pub fn edit_ack(path: &str, replacements: usize) -> String {
+    let head = format!("The file {path} has been updated successfully. {FILE_STATE_NOTE}");
+    if replacements > 1 {
+        format!("{head}\n\nReplaced {replacements} occurrences.")
+    } else {
+        head
+    }
+}
+
 /// Frame a `bash` command's captured output for the model the way codex does:
 /// an `Exit code: N` line, then the (already-truncated) output. A zero exit
 /// with empty output reports `(no output)`.
@@ -2228,6 +2267,38 @@ mod tests {
     }
 
     #[test]
+    fn write_ack_names_the_path_and_says_the_state_is_in_context() {
+        // The short model-facing twin of `write_report`: the numbered body
+        // stays on the *cell*, and the model reads one line — honest only
+        // because the call's own arguments now replay verbatim
+        // (`docs/context.md`).
+        assert_eq!(
+            write_ack("/tmp/name.txt", true),
+            format!("File created successfully at: /tmp/name.txt {FILE_STATE_NOTE}")
+        );
+        assert_eq!(
+            write_ack("/tmp/name.txt", false),
+            format!("The file /tmp/name.txt has been updated successfully. {FILE_STATE_NOTE}")
+        );
+    }
+
+    #[test]
+    fn edit_ack_reports_a_multi_occurrence_replacement() {
+        assert_eq!(
+            edit_ack("/tmp/note.txt", 1),
+            format!("The file /tmp/note.txt has been updated successfully. {FILE_STATE_NOTE}")
+        );
+        // `replace_all` changed more than the one place the model named, so
+        // say how many — the one fact the collapsed result would else hide.
+        let many = edit_ack("/tmp/note.txt", 2);
+        assert!(
+            many.starts_with("The file /tmp/note.txt has been updated"),
+            "{many}"
+        );
+        assert!(many.ends_with("\n\nReplaced 2 occurrences."), "{many}");
+    }
+
+    #[test]
     fn update_report_heads_with_updated_counts_over_the_diff_hunks() {
         let out = update_report("../../readme.md", "keep\nold\n", "keep\nnew\n");
         assert!(
@@ -2239,6 +2310,33 @@ mod tests {
         assert_eq!(
             update_report("same.txt", "a\n", "a\n"),
             "No changes to same.txt"
+        );
+    }
+
+    #[test]
+    fn the_file_tools_tell_the_model_not_to_read_back_what_it_just_sent() {
+        // The schema has to say it, because the model cannot see why the
+        // result got shorter: its own `content`/`old_string` now ride the
+        // replayed call instead of the result (`docs/context.md`). Without
+        // the sentence the natural next move is a verifying `read`, which
+        // uploads the file a second time — the opposite of the saving. One
+        // sentence each: every word rides in every request that offers the
+        // tool.
+        for spec in [write_spec(), edit_spec()] {
+            let name = spec["function"]["name"].as_str().unwrap().to_string();
+            let desc = spec["function"]["description"].as_str().unwrap();
+            assert!(
+                desc.contains("do not read the file back"),
+                "{name} must steer the model off the verifying read: {desc}"
+            );
+        }
+        // …and the `read` tool stays silent about it: it is the tool being
+        // steered away from, not a party to the contract.
+        assert!(
+            !read_spec()["function"]["description"]
+                .as_str()
+                .unwrap()
+                .contains("read the file back")
         );
     }
 

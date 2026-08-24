@@ -43,6 +43,10 @@ impl App {
                 shell: false,
                 truncated: false,
                 context_output: None,
+                // The announcement carries only the header summary; the
+                // verbatim arguments land when this call's own `ToolStart`
+                // flips it to `Running` (`start_tool`).
+                arguments: String::new(),
                 approval_note: None,
                 batch,
             })
@@ -55,19 +59,25 @@ impl App {
     /// If the front call is a `Waiting` batch sibling (`start_tool_batch`
     /// announced it), it is flipped to `Running` — the batch's `(name, args)` are
     /// authoritative and equal the ones passed here (both come from the same
-    /// backend summary), so only the status changes. Otherwise (an empty queue —
+    /// backend summary), so only the status changes, plus the `arguments` the
+    /// batch announcement has no room for. Otherwise (an empty queue —
     /// the `!` shell, the dummy's lone calls) a fresh `Running` call is pushed, so
     /// the single-tool path is unchanged.
-    pub fn start_tool(&mut self, name: &str, args: &str) {
+    ///
+    /// `arguments` is the model's verbatim JSON — `""` when the caller has
+    /// none ([`ToolCall::arguments`]).
+    pub fn start_tool(&mut self, name: &str, args: &str, arguments: &str) {
         if let Some(front) = self.tool_queue.front_mut()
             && front.status == ToolStatus::Waiting
         {
             front.status = ToolStatus::Running;
+            front.arguments = arguments.to_string();
             return;
         }
         self.tool_queue.push_back(ToolCall {
             name: name.to_string(),
             args: args.to_string(),
+            arguments: arguments.to_string(),
             status: ToolStatus::Running,
             output: String::new(),
             timestamp: String::new(), // stamped when it finishes (see end_tool)
@@ -292,6 +302,16 @@ pub struct ToolCall {
     /// example transcript's last line), and a `/resume` restores it. `None`
     /// for every call the user approved (or that needed no approval).
     pub approval_note: Option<String>,
+    /// The model's **verbatim** JSON arguments for this call, beside the
+    /// derived one-line `args` summary — `""` when the emitter had none (the
+    /// `!` shell, an old rollout, a hand-scripted event). This is what
+    /// [`crate::context::context_messages`] replays on the assistant
+    /// `tool_calls` entry, so a later turn sees the call the model really
+    /// made: a `write`'s whole `content`, an `edit`'s two strings, a `bash`
+    /// call's `timeout`. The summary alone was lossy — a `write` replayed as
+    /// `{"path": …}` — which is why the executor could not collapse its
+    /// result to one line before (`docs/context.md`, `docs/tools.md`).
+    pub arguments: String,
     /// The **parallel batch** this call was announced in
     /// ([`App::start_tool_batch`]), or `None` for a lone call. Every call of
     /// one round's batch shares the id, which is what lets the renderer

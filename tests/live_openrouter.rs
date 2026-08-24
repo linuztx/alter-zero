@@ -365,6 +365,145 @@ fn live_raw_tool_records_are_usable_context() {
 
 #[test]
 #[ignore = "hits the network; needs OPENROUTER_API_KEY"]
+fn live_a_real_write_then_edit_resolves_with_the_short_ack() {
+    // The executor path, live: a real model calls `write` then `edit` through
+    // `run_agent`, and each resolves as the two-text `ToolAnswered` — numbered
+    // body on the cell, one-line ack to the model (`docs/tools.md`). Also the
+    // proof the model does not then read the file back: the schema sentence
+    // has to hold against a real one.
+    let dir = std::env::temp_dir().join(format!("alter-zero-live-ack-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("work dir");
+    let path = dir.join("note.txt");
+    let _ = std::fs::remove_file(&path);
+
+    let prompt = format!(
+        "Use the write tool once to create {} containing exactly the line \
+         `name: Rivero`, then use the edit tool once to change Rivero to Rivera. \
+         Then reply with just: done",
+        path.display()
+    );
+    let context = vec![ContextMessage::new(ContextRole::User, &prompt)];
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let handle = backend().spawn(prompt.clone(), vec![], context, tx, CancelToken::new());
+
+    let mut answered: Vec<(String, String)> = Vec::new();
+    let mut started: Vec<String> = Vec::new();
+    while let Some(event) = rx.blocking_recv() {
+        match event {
+            StreamEvent::ToolStart {
+                name, arguments, ..
+            } => started.push(format!("{name}:{arguments}")),
+            StreamEvent::ToolAnswered {
+                display, result, ..
+            } => answered.push((display, result)),
+            StreamEvent::Retrying { attempt, max } => println!("retrying {attempt}/{max}…"),
+            StreamEvent::Error(e) => panic!("backend error: {e}"),
+            StreamEvent::StreamDone => break,
+            _ => {}
+        }
+    }
+    handle.join().expect("backend thread joins");
+    println!("started: {started:#?}\nanswered: {answered:#?}");
+
+    let written = std::fs::read_to_string(&path).expect("the file was written");
+    assert!(written.contains("Rivera"), "the edit landed: {written:?}");
+    assert!(
+        !started.iter().any(|s| s.starts_with("Read:")),
+        "the schema must keep the model off the verifying read: {started:?}"
+    );
+    // Every ToolStart carried the verbatim arguments the recording needs.
+    let write_call = started
+        .iter()
+        .find(|s| s.starts_with("Write:"))
+        .expect("the model wrote the file");
+    assert!(
+        write_call.contains("Rivero"),
+        "the write's ToolStart carries its content: {write_call}"
+    );
+    assert_eq!(answered.len(), 2, "both file calls resolved two-text");
+    for (display, result) in &answered {
+        assert!(
+            display.contains("Rivero") || display.contains("Rivera"),
+            "the cell keeps the numbered body: {display:?}"
+        );
+        assert!(
+            result.ends_with(alter_zero::llm::tools::FILE_STATE_NOTE),
+            "the model reads the ack: {result:?}"
+        );
+        assert!(
+            !result.contains('\n') || result.contains("Replaced"),
+            "the ack is one line (plus at most the occurrence count): {result:?}"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+#[ignore = "hits the network; needs OPENROUTER_API_KEY"]
+fn live_a_written_file_is_still_in_context_a_turn_later() {
+    // The whole point of the short `write` result (`docs/tools.md`): the
+    // content rides the **replayed call**, so a later turn can answer about
+    // the file with no read-back. Derived from a real history item, so the
+    // recording, the reconstruction and the wire shape are all under test —
+    // not a hand-built context.
+    let content = "PORT = 4821\nHOST = \"example.test\"\nRETRIES = 7\n";
+    let arguments =
+        serde_json::json!({ "path": "/tmp/settings.py", "content": content }).to_string();
+    let history = vec![
+        HistoryItem::Message(alter_zero::app::Message {
+            role: alter_zero::app::Role::User,
+            text: "Write the settings file.".to_string(),
+            timestamp: String::new(),
+            images: Vec::new(),
+        }),
+        HistoryItem::Tool(ToolCall {
+            name: "Write".to_string(),
+            args: "/tmp/settings.py".to_string(),
+            arguments: arguments.clone(),
+            status: ToolStatus::Ok,
+            // The cell's numbered body — never what the model reads.
+            output: alter_zero::llm::tools::write_report("/tmp/settings.py", content),
+            // …which is this one line.
+            context_output: Some(alter_zero::llm::tools::write_ack("/tmp/settings.py", true)),
+            timestamp: String::new(),
+            shell: false,
+            truncated: false,
+            approval_note: None,
+            batch: None,
+        }),
+    ];
+    let mut context = context_messages(&history);
+    // The replayed call must carry the content — that is the claim the ack
+    // makes on the model's behalf.
+    let call = context
+        .iter()
+        .find_map(|m| m.tool_calls.first())
+        .expect("the write replays as a native tool call");
+    assert_eq!(
+        call.arguments, arguments,
+        "the write replays with its content"
+    );
+    let result = context
+        .iter()
+        .find(|m| m.role == ContextRole::Tool)
+        .expect("its result answers it");
+    assert!(
+        !result.text.contains("RETRIES"),
+        "the result is the one-line ack, not the file: {:?}",
+        result.text
+    );
+    let question = "What is RETRIES set to in the file you wrote? Reply with just the number.";
+    context.push(ContextMessage::new(ContextRole::User, question));
+    let reply = complete(question, vec![], context);
+    println!("model replied: {reply:?}");
+    assert!(
+        reply.contains('7'),
+        "the model should read RETRIES out of its own replayed write, got: {reply:?}"
+    );
+}
+
+#[test]
+#[ignore = "hits the network; needs OPENROUTER_API_KEY"]
 fn live_amended_rejection_still_steers_the_model_a_turn_later() {
     // The Tab-amend fix (docs/permissions.md), against a real provider: a
     // rejected call replays with the **model-facing** denial — the user's
@@ -392,6 +531,7 @@ fn live_amended_rejection_still_steers_the_model_a_turn_later() {
     let history = vec![HistoryItem::Tool(ToolCall {
         name: "Write".to_string(),
         args: "config.py".to_string(),
+        arguments: String::new(),
         status: ToolStatus::Failed,
         // What the cell shows…
         output: denied_display(&request, Some(feedback)),
@@ -1250,6 +1390,7 @@ fn live_replayed_image_read_is_visible_on_the_next_turn() {
         HistoryItem::Tool(ToolCall {
             name: "Read".to_string(),
             args: path_str.clone(),
+            arguments: String::new(),
             output: alter_zero::llm::tools::format_read_image("PNG", 64, 64, 200),
             status: ToolStatus::Ok,
             timestamp: String::new(),

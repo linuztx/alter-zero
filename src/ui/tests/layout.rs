@@ -517,7 +517,11 @@ fn the_model_picker_reserves_the_running_tool_strip_above_it() {
     // picker's own frame.
     let mut app = App::new();
     app.begin_stream();
-    app.start_tool("Bash", "for i in $(seq 1 100); do echo $i; sleep 1; done");
+    app.start_tool(
+        "Bash",
+        "for i in $(seq 1 100); do echo $i; sleep 1; done",
+        "",
+    );
     app.open_model_picker("a");
     app.set_models(three_models());
     let preview = preview_rows(&app, 74);
@@ -582,7 +586,7 @@ fn a_squeezed_region_keeps_the_picker_whole_and_drops_strip_rows() {
     // round, which would cut the picker's search line off the bottom.
     let mut app = App::new();
     app.begin_stream();
-    app.start_tool("Bash", "sleep 100");
+    app.start_tool("Bash", "sleep 100", "");
     app.open_model_picker("a");
     app.set_models(three_models());
     let picker = 12; // 9 chrome + 3 list rows
@@ -779,7 +783,11 @@ fn the_manager_band_reserves_the_running_tool_strip_above_it() {
     let mut app = App::new();
     app.bg_started("bash_1", "sleep 100", None, true, None);
     app.begin_stream();
-    app.start_tool("Bash", "for i in $(seq 1 100); do echo $i; sleep 1; done");
+    app.start_tool(
+        "Bash",
+        "for i in $(seq 1 100); do echo $i; sleep 1; done",
+        "",
+    );
     app.open_background_view();
     let band = background_view_lines(&app, 74).len() as u16;
     let preview = preview_rows(&app, 74);
@@ -818,7 +826,7 @@ fn size_sweep_apps() -> Vec<(&'static str, App)> {
         app.record_system_message("help text\nwith a second line");
         app.begin_stream();
         app.push_chunk("text before the tool call. ");
-        app.start_tool("read_file", "src/app.rs with a long argument string");
+        app.start_tool("read_file", "src/app.rs with a long argument string", "");
         app.end_tool(SWEEP_TEXT, true);
         app.push_chunk(SWEEP_TEXT);
         app.finish_stream();
@@ -836,7 +844,7 @@ fn size_sweep_apps() -> Vec<(&'static str, App)> {
         let mut app = base();
         app.begin_stream();
         app.push_chunk("before tool ");
-        app.start_tool("write_file", SWEEP_TEXT);
+        app.start_tool("write_file", SWEEP_TEXT, "");
         app.set_status_times(Duration::from_secs(7), Some(Duration::from_secs(2)));
         app
     };

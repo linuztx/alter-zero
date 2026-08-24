@@ -561,7 +561,15 @@ fn run_write(arguments: &str) -> ToolOutcome {
     if let Err(err) = std::fs::write(path, &args.content) {
         return ToolOutcome::error(format!("could not write {}: {err}", args.path));
     }
-    ToolOutcome::ok(describe_change(&args.path, &old, &args.content, !existed))
+    let display = describe_change(&args.path, &old, &args.content, !existed);
+    // The cell keeps the numbered body; the model reads one line, because the
+    // content it just sent replays verbatim on the call itself
+    // (`docs/tools.md`, `docs/context.md`). A write that changed nothing has
+    // no body to spare it, so it stays single-text.
+    if old == args.content {
+        return ToolOutcome::ok(display);
+    }
+    ToolOutcome::ok(display).with_context(tools::write_ack(&args.path, !existed))
 }
 
 /// `edit`: exact-string replacement (the pure [`tools::apply_edit`]), written
@@ -584,12 +592,15 @@ fn run_edit(arguments: &str) -> ToolOutcome {
     if let Err(err) = std::fs::write(path, &result.new_content) {
         return ToolOutcome::error(format!("could not write {}: {err}", args.path));
     }
+    // [`run_write`]'s split: the diff hunks are the cell, the ack is the
+    // conversation. `apply_edit` refuses a no-op, so there is always a change.
     ToolOutcome::ok(describe_change(
         &args.path,
         &old,
         &result.new_content,
         false,
     ))
+    .with_context(tools::edit_ack(&args.path, result.replacements))
 }
 
 /// The model-facing result of a `write`/`edit` — also exactly what the cell
@@ -1026,6 +1037,81 @@ mod tests {
         assert!(out.ok);
         assert_eq!(after, "let x = 42;\nlet y = 2;\n");
         assert!(out.output.contains("1 +let x = 42;"), "got {}", out.output);
+    }
+
+    #[test]
+    fn write_hands_the_model_one_line_and_the_cell_the_numbered_body() {
+        // The two-text split (`ToolOutcome::context`, docs/tools.md): the
+        // numbered content is the *cell*, and what rides the conversation is
+        // one line — the arguments already carry the content verbatim.
+        let path = temp_path("write-ack-new.txt");
+        std::fs::remove_file(&path).ok();
+        let out = exec(
+            "write",
+            &format!(r#"{{"path":"{}","content":"one\ntwo\n"}}"#, path.display()),
+        );
+        std::fs::remove_file(&path).ok();
+        assert!(out.output.contains("1 one"), "the cell keeps the body");
+        assert_eq!(
+            out.context.as_deref(),
+            Some(tools::write_ack(&path.display().to_string(), /*created=*/ true).as_str()),
+            "the model reads the ack, naming its own absolute argument"
+        );
+    }
+
+    #[test]
+    fn write_over_existing_content_acknowledges_an_update() {
+        let path = temp_path("write-ack-over.txt");
+        std::fs::write(&path, "keep\nold\n").unwrap();
+        let out = exec(
+            "write",
+            &format!(r#"{{"path":"{}","content":"keep\nnew\n"}}"#, path.display()),
+        );
+        std::fs::remove_file(&path).ok();
+        assert!(out.output.contains("2 +new"), "the cell keeps the diff");
+        assert_eq!(
+            out.context.as_deref(),
+            Some(tools::write_ack(&path.display().to_string(), /*created=*/ false).as_str())
+        );
+    }
+
+    #[test]
+    fn a_write_that_changes_nothing_has_no_second_text() {
+        // `No changes to …` is already the whole truth: there is no body to
+        // spare the model, so the outcome stays a plain single-text ToolEnd.
+        let path = temp_path("write-ack-same.txt");
+        std::fs::write(&path, "same\n").unwrap();
+        let out = exec(
+            "write",
+            &format!(r#"{{"path":"{}","content":"same\n"}}"#, path.display()),
+        );
+        std::fs::remove_file(&path).ok();
+        assert!(
+            out.output.starts_with("No changes to "),
+            "got {}",
+            out.output
+        );
+        assert_eq!(out.context, None);
+    }
+
+    #[test]
+    fn edit_hands_the_model_one_line_and_counts_a_replace_all() {
+        let path = temp_path("edit-ack.txt");
+        std::fs::write(&path, "a\na\n").unwrap();
+        let out = exec(
+            "edit",
+            &format!(
+                r#"{{"path":"{}","old_string":"a","new_string":"b","replace_all":true}}"#,
+                path.display()
+            ),
+        );
+        std::fs::remove_file(&path).ok();
+        assert!(out.output.contains("1 +b"), "the cell keeps the diff");
+        assert_eq!(
+            out.context.as_deref(),
+            Some(tools::edit_ack(&path.display().to_string(), 2).as_str()),
+            "the ack counts what `replace_all` really touched"
+        );
     }
 
     #[test]

@@ -70,12 +70,20 @@ fn turn_events_interleaves_at_least_one_tool_call() {
         .iter()
         .filter(|e| matches!(e, StreamEvent::ToolStart { .. }))
         .count();
+    // A resolution is a `ToolEnd` or — for the file tools, whose model-facing
+    // ack differs from the numbered body on the cell — a `ToolAnswered`
+    // (`docs/tools.md`).
     let ends = events
         .iter()
-        .filter(|e| matches!(e, StreamEvent::ToolEnd { .. }))
+        .filter(|e| {
+            matches!(
+                e,
+                StreamEvent::ToolEnd { .. } | StreamEvent::ToolAnswered { .. }
+            )
+        })
         .count();
     assert!(starts >= 1, "a turn runs at least one tool");
-    assert_eq!(starts, ends, "every ToolStart has a matching ToolEnd");
+    assert_eq!(starts, ends, "every ToolStart has a matching resolution");
 }
 
 #[test]
@@ -179,7 +187,10 @@ fn the_default_turn_is_one_errand_in_three_steps() {
     );
 }
 
-/// Every `(name, args, output)` a turn's tools resolved with, in order.
+/// Every `(name, args, output)` a turn's tools resolved with, in order —
+/// `output` being the **displayed** text, so a two-text resolution
+/// (`ToolAnswered`: the file tools' numbered body over their one-line ack)
+/// contributes its `display` like a plain `ToolEnd` does its `output`.
 fn resolved_tools(events: &[StreamEvent]) -> Vec<(String, String, String)> {
     let mut out = Vec::new();
     let mut open: Option<(String, String)> = None;
@@ -188,8 +199,11 @@ fn resolved_tools(events: &[StreamEvent]) -> Vec<(String, String, String)> {
             StreamEvent::ToolStart { name, args, .. } => {
                 open = Some((name.clone(), args.clone()));
             }
-            StreamEvent::ToolEnd { output, .. } => {
-                let (name, args) = open.take().expect("a ToolEnd closes a ToolStart");
+            StreamEvent::ToolEnd { output, .. }
+            | StreamEvent::ToolAnswered {
+                display: output, ..
+            } => {
+                let (name, args) = open.take().expect("a resolution closes a ToolStart");
                 out.push((name, args, output.clone()));
             }
             _ => {}
@@ -259,6 +273,7 @@ fn rendered_cell(prompt: &str, name: &str) -> Vec<ratatui::text::Line<'static>> 
         shell: false,
         truncated: false,
         context_output: None,
+        arguments: String::new(),
         approval_note: None,
         batch: None,
     };
@@ -505,8 +520,8 @@ fn turn_events_resolve_each_tool_before_the_next_starts() {
                 assert!(!running, "a tool starts only after the previous one ended");
                 running = true;
             }
-            StreamEvent::ToolEnd { .. } => {
-                assert!(running, "a ToolEnd closes a running tool");
+            StreamEvent::ToolEnd { .. } | StreamEvent::ToolAnswered { .. } => {
+                assert!(running, "a resolution closes a running tool");
                 running = false;
             }
             StreamEvent::ToolOutput(_) => {

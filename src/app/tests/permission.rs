@@ -512,7 +512,7 @@ fn amended_rejection(feedback: &str) -> (String, ToolCall) {
         panic!("an amended answer is a rejection");
     };
     // …and the loop folds the backend's events into the app.
-    app.start_tool("Write", "hello.py");
+    app.start_tool("Write", "hello.py", "");
     let tool = app
         .reject_tool(&display, &result)
         .expect("the refused call resolves");

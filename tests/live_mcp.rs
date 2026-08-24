@@ -303,8 +303,13 @@ fn live_a_parallel_deepwiki_batch_renders_as_one_cell() {
                 let summaries: Vec<ToolCallSummary> = items.to_vec();
                 app.start_tool_batch(&summaries);
             }
-            StreamEvent::ToolStart { name, args, .. } => {
-                app.start_tool(name, args);
+            StreamEvent::ToolStart {
+                name,
+                args,
+                arguments,
+                ..
+            } => {
+                app.start_tool(name, args, arguments);
                 strips.push(live_strip_top(&app, 80));
             }
             StreamEvent::ToolEnd { output, ok, .. } => {

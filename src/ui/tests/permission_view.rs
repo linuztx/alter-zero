@@ -706,7 +706,7 @@ fn a_running_call_keeps_its_running_row_under_a_subagents_prompt() {
         name: "Bash".to_string(),
         args: "sleep 5".to_string(),
     }]);
-    app.start_tool("Bash", "sleep 5");
+    app.start_tool("Bash", "sleep 5", "");
     let mut req = request(PermissionKind::Bash, "ls", "");
     req.agent = Some("general-purpose".to_string());
     app.open_permission(req);

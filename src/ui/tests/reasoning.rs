@@ -293,7 +293,7 @@ fn a_running_tool_still_wins_the_preview_slot() {
     app.begin_stream();
     app.begin_reasoning();
     app.push_thinking("thought");
-    app.start_tool("bash", "ls");
+    app.start_tool("bash", "ls", "");
     let lines = preview_lines(&app, 60, None);
     assert!(
         plain(&lines[0]).contains("bash"),

@@ -54,6 +54,7 @@ fn finish_agent_group_snapshots_the_roster_around_the_outputs() {
             name: "Bash".into(),
             args: "curl wttr.in".into(),
             detail: None,
+            arguments: String::new(),
         },
         StreamEvent::ToolEnd {
             output: "+19°C".into(),

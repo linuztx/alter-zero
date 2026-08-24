@@ -1787,7 +1787,25 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   outside the cwd — while the header keeps the argument verbatim; the legacy
   `Created {path} ({N} lines)` head still parses for old rollouts)
   **hunks** (3 context lines, `⋮` between distant hunks — the pure
-  `tools::render_numbered_content`/`render_numbered_diff`), or — for `read` —
+  `tools::render_numbered_content`/`render_numbered_diff`) — but **only on the
+  cell**: a `write`/`edit` resolves through the ask tool's two-text split
+  (`ToolOutcome::context` → `ToolAnswered` → `ToolCall::context_output`) and
+  what the *model* reads is one line — `File created successfully at: {path}
+  (file state is current in your context — no need to read it back)` /
+  `The file {path} has been updated successfully. (…)`
+  (`tools::write_ack`/`edit_ack`; a multi-occurrence `replace_all` adds
+  `Replaced {n} occurrences.`, a no-op write stays single-text). That clause
+  is honest because every call now records the model's **verbatim arguments**
+  beside the lossy header summary (`ToolCall::arguments`, carried on
+  `StreamEvent::ToolStart`, round-tripped through the rollout) and
+  `context::reconstruct_arguments` replays them whenever they parse as an
+  object — so a `write`'s `content`, an `edit`'s two strings and a `bash`
+  call's `timeout` all ride the *call* now instead of being rebuilt from
+  `{"path": …}`, with the old per-tool reconstruction left as the fallback
+  for pre-field rollouts and the `!` shell. Both file schemas close with the
+  matching sentence (*do not read the file back to check it*), since a model
+  that cannot see why the result shrank reaches for a verifying `read` that
+  uploads the file twice; `docs/tools.md`, `docs/context.md`. Or — for `read` —
   the file numbered by `tools::format_read` in the **same** `{n:>W} {text}`
   gutter (dynamic-width numbers + a space, not the old `cat -n` tab; the UI
   synthesizes the `Read {N} lines` corner; a `read` of an **image**

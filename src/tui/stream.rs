@@ -101,7 +101,12 @@ impl Session<'_> {
                 self.app.start_tool_batch(&items);
                 false
             }
-            StreamEvent::ToolStart { name, args, .. } => {
+            StreamEvent::ToolStart {
+                name,
+                args,
+                arguments,
+                ..
+            } => {
                 // Finalise the current run of assistant text so the tool slots
                 // after it in scrollback, then show the tool running (pulsing
                 // grey) in the live region until its ToolEnd arrives. The flush
@@ -115,7 +120,7 @@ impl Session<'_> {
                 // Same safe boundary as ToolBatch: the buffer is empty, so any
                 // held completions commit ahead of the tool (docs/background.md).
                 self.settle_bg_completions();
-                self.app.start_tool(&name, &args);
+                self.app.start_tool(&name, &args, &arguments);
                 // Start this command's own clock — the delayed Ctrl+B hint waits
                 // on it, so a fast command never flashes the hint (a model tool
                 // that starts deep into a turn can't inherit the turn's elapsed).

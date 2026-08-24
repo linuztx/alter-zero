@@ -123,8 +123,15 @@ fn dummy_ai_emits_all_chunks_and_tool_calls_then_done() {
             StreamEvent::ToolRejected { .. } => {
                 panic!("no gate attached — nothing is ever rejected")
             }
-            StreamEvent::ToolAnswered { .. } => {
-                panic!("no ask gate attached — nothing is ever answered")
+            // The file tools' two-text resolution (`docs/tools.md`) — the
+            // ask tool needs a gate, but a `write`/`edit` ack does not: it
+            // closes its call exactly as a `ToolEnd` does.
+            StreamEvent::ToolAnswered {
+                display, result, ..
+            } => {
+                assert!(!display.is_empty(), "the cell keeps the numbered body");
+                assert!(!result.is_empty(), "the model reads the ack");
+                tool_ends += 1;
             }
             StreamEvent::ToolNote(_) => {
                 panic!("no gate attached — the classifier never speaks")
@@ -137,7 +144,10 @@ fn dummy_ai_emits_all_chunks_and_tool_calls_then_done() {
     assert!(saw_done, "stream must end with StreamDone");
     assert_eq!(streamed, expected, "chunks still reconstruct the reply");
     assert!(tool_starts >= 1, "the dummy streams at least one tool call");
-    assert_eq!(tool_starts, tool_ends, "every tool that starts also ends");
+    assert_eq!(
+        tool_starts, tool_ends,
+        "every tool that starts also resolves"
+    );
     assert!(
         tool_output_chunks >= 1,
         "the dummy streams live tool output (docs/tool-streaming.md)"

@@ -74,7 +74,7 @@ fn set_clock_stamps_every_recorded_message_and_tool() {
     app.begin_stream();
     app.push_chunk("answer");
     app.finish_stream();
-    app.start_tool("Read", "f");
+    app.start_tool("Read", "f", "");
     app.end_tool("out", true);
 
     assert_eq!(app.history.len(), 3, "user, assistant, tool");

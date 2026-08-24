@@ -398,7 +398,7 @@ fn preview_rows_counts_a_wrapped_running_tail() {
     // not one row per source line.
     let mut app = App::new();
     app.begin_stream();
-    app.start_tool("Bash", "cat log");
+    app.start_tool("Bash", "cat log", "");
     // Past the hint delay so the Ctrl+B hint row is part of the preview.
     app.set_command_elapsed(Some(Duration::from_secs(3)));
     app.push_tool_output(&"y".repeat(70)); // 35 content cols → 2 rows

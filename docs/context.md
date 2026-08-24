@@ -53,7 +53,7 @@ session back restores its history, and therefore its context, in one move.
 | --- | --- |
 | `Message(User)` | `user`, text verbatim (placeholders included) + its image paths |
 | `Message(Assistant)` | `assistant`, text verbatim |
-| `Tool` (backend) | an assistant `tool_calls` entry (native `{id, name, arguments}`) folded onto the preceding assistant segment, then a `tool`-role result carrying `ToolCall::context_text()` — the **model-facing** text |
+| `Tool` (backend) | an assistant `tool_calls` entry (native `{id, name, arguments}` — the model's **verbatim** arguments) folded onto the preceding assistant segment, then a `tool`-role result carrying `ToolCall::context_text()` — the **model-facing** text |
 | `Tool` (`!` shell) | `user`, a `$ {command}\n{output}` transcript (the user ran it locally) |
 | `Message(Shell)` | skipped — its tool cell above carries the command and output |
 | `Message(Error)` | `user`, `[error] {text}` (interrupts and backend failures) |
@@ -67,11 +67,25 @@ now replayed across turns: an `assistant` message carrying a `tool_calls`
 array, immediately followed by one `tool`-role message per call. Call **ids are
 synthesized per derivation** (`call_0`, `call_1`, …) — the whole context is
 rebuilt each turn, so the pairing only has to be internally consistent within
-one request. History stores a tool's one-line *summary*, not its raw argument
-JSON, so the replayed call's `arguments` is **reconstructed** from that summary
-(`{"command": …}` for `bash`, `{"path": …}` for the file tools); the tool
-**result** below it carries the full outcome the model reasons from (the diff,
-the file contents, the command output), so nothing the model needs is lost.
+one request. The replayed `arguments` are the model's own, **verbatim**:
+alongside the one-line header summary (`● Write(a.py)`) every call records the
+raw JSON it was made with (`ToolCall::arguments`, carried on
+`StreamEvent::ToolStart`, round-tripped through the rollout), and
+`reconstruct_arguments` returns it whenever it parses as an object.
+
+That used to be a *reconstruction* from the summary — `{"command": …}` for
+`bash`, `{"path": …}` for the file tools — which is lossy in a way that
+mattered: a `write` replayed as `write({"path": "a.py"})`, the model watching
+itself create a file with no content, while the whole content rode the tool
+**result** as a numbered body re-uploaded every turn. Recording the arguments
+makes the replay lossless (a `write`'s `content`, an `edit`'s two strings and
+`replace_all`, a `bash` call's `timeout`) and is what lets the file tools'
+result collapse to one line (`docs/tools.md`): the change is on the *call*
+now, not in the result. The reconstruction stays as the fallback for records
+that carry no arguments — every rollout written before the field, the `!`
+shell, a hand-scripted event — and for the odd damaged record, since a
+validating provider rejects arguments that are not a JSON object.
+
 An **image `read`** (detected from the stored record: `name == "Read"` + the
 `Read image ` output marker) additionally replays the follow-up user note the
 live loop attached — `llm::tools::image_attachment_note` over the path as an
@@ -82,8 +96,8 @@ request like a Ctrl+V paste (`docs/tools.md`).
 
 A tool's result is `ToolCall::context_text()`: `context_output` when the call
 recorded one, else its displayed `output`. The two are the same for every
-ordinary call — but a **permission rejection** (`docs/permissions.md`) resolves
-with two texts on purpose. The red cell reads
+ordinary call — but a **permission rejection** (`docs/permissions.md`) and a
+`write`/`edit` (`docs/tools.md`) each resolve with two texts on purpose. The red cell reads
 
 ```
 ⎿ User rejected write to hello.py
@@ -95,8 +109,16 @@ feedback appended. Replaying the cell text would hand a later turn a *different*
 tool result than the one the live round sent — dropping the user's instructions
 from the conversation entirely, one turn after they were given. Storing both
 keeps the replay honest: what Ctrl+D shows, and what the next request carries,
-is exactly what the model was told. (The `Backgrounded` split runs the other
-way: `output` holds the model-facing launch text and the *cell* row is
+is exactly what the model was told. A `write`/`edit` splits for the opposite
+reason — not to keep something, but to drop it: the cell keeps the numbered
+content or diff hunks while the model reads
+
+```
+File created successfully at: /tmp/a.py (file state is current in your context — no need to read it back)
+```
+
+which is honest only because the arguments above it replay verbatim. (The
+`Backgrounded` split runs the other way: `output` holds the model-facing launch text and the *cell* row is
 synthesized from the status, so `context_output` stays `None` there.)
 
 Adjacent same-role **plain-text** entries still **merge** (texts joined with a
@@ -277,11 +299,11 @@ base — default or override — so the empty → no-prompt contract still holds
   occurrences over its recorded paths; a placeholder typed *by hand* (never
   attach-backed) in the same message can shift that pairing — the string-keyed
   scheme's known edge (`docs/paste.md`).
-- A replayed tool call's `arguments` is reconstructed from history's one-line
-  summary (`{"command"/"path": …}`), not the model's original full JSON — the
-  full `write` content / `edit` strings aren't stored. The tool **result**
-  (the diff / output) carries the change, so the model reasons correctly; the
-  echoed argument is just lossy. (`docs/tools.md`.)
+- ~~A replayed tool call's `arguments` is reconstructed from history's
+  one-line summary~~ — **fixed**: every call records the model's verbatim
+  arguments and replays them (see above). The reconstruction survives only as
+  the fallback for rollouts written before the field, where the limitation
+  still reads as written.
 - Replaying native `tool_calls`/`tool` messages assumes the provider supports
   function calling (the same providers that would emit tool calls). Resuming a
   tools-on session with `ALTER_ZERO_TOOLS=0` would replay tool messages to a

@@ -61,6 +61,7 @@ impl TaskCallRecord {
             shell: false,
             truncated: false,
             context_output: None,
+            arguments: String::new(),
             approval_note: None,
             batch: None,
         }

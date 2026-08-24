@@ -233,6 +233,7 @@ impl AgentRun {
                         shell: false,
                         truncated: false,
                         context_output: None,
+                        arguments: String::new(),
                         approval_note: None,
                         // A subagent's parallel calls are not aggregated: its
                         // session view keeps a cell per call (`docs/mcp.md`).
@@ -240,7 +241,12 @@ impl AgentRun {
                     });
                 }
             }
-            StreamEvent::ToolStart { name, args, detail } => {
+            StreamEvent::ToolStart {
+                name,
+                args,
+                detail,
+                arguments,
+            } => {
                 self.flush_segment();
                 self.tool_uses += 1;
                 // The sticky tree-row activity: the model's own description
@@ -258,10 +264,12 @@ impl AgentRun {
                         front.status = ToolStatus::Running;
                         front.name.clone_from(name);
                         front.args.clone_from(args);
+                        front.arguments.clone_from(arguments);
                     }
                     _ => self.tool_queue.push_front(ToolCall {
                         name: name.clone(),
                         args: args.clone(),
+                        arguments: arguments.clone(),
                         status: ToolStatus::Running,
                         output: String::new(),
                         timestamp: String::new(),
@@ -395,6 +403,7 @@ impl AgentRun {
                     shell: false,
                     truncated: false,
                     context_output: None,
+                    arguments: String::new(),
                     approval_note: None,
                     batch: None,
                 }));
@@ -851,6 +860,7 @@ mod tests {
             name: "Bash".to_string(),
             args: "ls -la".to_string(),
             detail: None,
+            arguments: String::new(),
         });
         run.apply(&StreamEvent::ToolNote(
             "Allowed by auto mode classifier".to_string(),
@@ -884,6 +894,7 @@ mod tests {
             name: "Bash".into(),
             args: "curl wttr.in".into(),
             detail: Some("Fetching Warsaw weather".into()),
+            arguments: String::new(),
         }));
         assert_eq!(run.tool_uses, 1);
         assert_eq!(
@@ -924,12 +935,14 @@ mod tests {
             name: "Write".into(),
             args: "game.py".into(),
             detail: None,
+            arguments: String::new(),
         }));
         assert_eq!(run.activity(), "Write(game.py)");
         assert!(!run.apply(&StreamEvent::ToolStart {
             name: "Bash".into(),
             args: "curl wttr.in".into(),
             detail: Some("Fetching Warsaw weather".into()),
+            arguments: String::new(),
         }));
         assert_eq!(run.activity(), "Bash: Fetching Warsaw weather");
     }
@@ -945,6 +958,7 @@ mod tests {
             name: "Write".into(),
             args: "hello.py".into(),
             detail: None,
+            arguments: String::new(),
         });
         assert!(!run.apply(&StreamEvent::ToolRejected {
             display: "User rejected write to hello.py\nInstructions: use pathlib".into(),
@@ -997,6 +1011,7 @@ mod tests {
             name: "Bash".into(),
             args: "sleep 99".into(),
             detail: None,
+            arguments: String::new(),
         });
         assert!(run.apply(&StreamEvent::Error("boom".into())));
         assert_eq!(run.status, AgentStatus::Failed);

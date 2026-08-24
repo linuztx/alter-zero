@@ -27,6 +27,41 @@ use crate::llm::tools::write_report as created;
 /// context (`docs/permissions.md`).
 type Resolution = Result<String, (String, String)>;
 
+/// One scripted call's identity, as a live backend would announce it: the
+/// display `kind`, the header `args` summary, the **verbatim** `arguments`
+/// the recorded cell replays next turn (`docs/context.md`), and the short
+/// model-facing `ack` for the tools whose cell text is not what the model
+/// reads (`docs/tools.md`).
+struct ScriptedTool {
+    kind: &'static str,
+    args: String,
+    arguments: String,
+    ack: Option<String>,
+}
+
+impl ScriptedTool {
+    /// The scripted `write` of `content` to `path`.
+    fn write(path: &str, content: &str) -> Self {
+        Self {
+            kind: "Write",
+            args: path.to_string(),
+            arguments: serde_json::json!({ "path": path, "content": content }).to_string(),
+            ack: Some(crate::llm::tools::write_ack(path, /*created=*/ true)),
+        }
+    }
+
+    /// The scripted `bash` run of `command` — its cell text *is* what the
+    /// model reads, so no ack.
+    fn bash(command: &str) -> Self {
+        Self {
+            kind: "Bash",
+            args: command.to_string(),
+            arguments: serde_json::json!({ "command": command }).to_string(),
+            ack: None,
+        }
+    }
+}
+
 impl Stage<'_> {
     /// Announce a batch of calls up front, so the ones not yet running show
     /// as dim `⎿ Waiting…` cells (`docs/parallel-tools.md`).
@@ -95,29 +130,33 @@ impl Stage<'_> {
     /// provenance `note` when something other than the user cleared it (auto
     /// mode's classifier), then commit it green via `ToolEnd` or red via
     /// `ToolRejected`.
-    fn resolve(
-        &self,
-        kind: &str,
-        args: &str,
-        note: Option<String>,
-        resolved: Resolution,
-        ok: bool,
-    ) {
+    fn resolve(&self, call: &ScriptedTool, note: Option<String>, resolved: Resolution, ok: bool) {
         let _ = self.tx.send(StreamEvent::ToolStart {
-            name: kind.to_string(),
-            args: args.to_string(),
+            name: call.kind.to_string(),
+            args: call.args.clone(),
             detail: None,
+            arguments: call.arguments.clone(),
         });
         if let Some(note) = note {
             let _ = self.tx.send(StreamEvent::ToolNote(note));
         }
         match resolved {
+            // `ack` is the file tools' short model-facing result: the cell
+            // still shows the numbered body, so an approved offline write
+            // reads in Ctrl+D exactly as a live one does (`docs/tools.md`).
             Ok(output) => {
-                let _ = self.tx.send(StreamEvent::ToolEnd {
-                    output,
-                    ok,
-                    truncated: false,
-                });
+                let _ = match &call.ack {
+                    Some(result) if ok => self.tx.send(StreamEvent::ToolAnswered {
+                        display: output,
+                        result: result.clone(),
+                        truncated: false,
+                    }),
+                    _ => self.tx.send(StreamEvent::ToolEnd {
+                        output,
+                        ok,
+                        truncated: false,
+                    }),
+                };
             }
             Err((display, result)) => {
                 let _ = self.tx.send(StreamEvent::ToolRejected {
@@ -242,6 +281,7 @@ pub(in crate::stream) fn ask_questions_turn(stage: &AskStage<'_>) {
         name,
         args,
         detail: None,
+        arguments: call.arguments.clone(),
     });
     let answered = outcome.ok;
     let chatting = outcome.output.starts_with(crate::ask::CHAT_HEADLINE);
@@ -330,7 +370,12 @@ pub(in crate::stream) fn write_permission_turn(stage: &Stage<'_>) {
         return;
     };
     let ok = resolved.is_ok();
-    stage.resolve("Write", DUMMY_PERMISSION_PATH, None, resolved, true);
+    stage.resolve(
+        &ScriptedTool::write(DUMMY_PERMISSION_PATH, DUMMY_PERMISSION_CONTENT),
+        None,
+        resolved,
+        true,
+    );
     stage.close(if ok {
         "Done — the file is written."
     } else {
@@ -387,7 +432,7 @@ pub(in crate::stream) fn staggered_permission_turn(stage: &Stage<'_>) {
         let Some(resolved) = stage.ask(&mut request, || created(path, content)) else {
             return;
         };
-        stage.resolve("Write", path, None, resolved, true);
+        stage.resolve(&ScriptedTool::write(path, content), None, resolved, true);
     }
     stage.close("Both files are written — the big module and the tiny note.");
 }
@@ -436,7 +481,7 @@ pub(in crate::stream) fn parallel_permission_turn(stage: &Stage<'_>) {
         let Some(resolved) = stage.ask(&mut request, || output.to_string()) else {
             return;
         };
-        stage.resolve("Bash", cmd, None, resolved, ok);
+        stage.resolve(&ScriptedTool::bash(cmd), None, resolved, ok);
     }
     stage.close(
         "Both commands are done — sudo whoami failed (no terminal here) and the ping to \
@@ -529,7 +574,7 @@ pub(in crate::stream) fn auto_permission_turn(stage: &Stage<'_>) {
             }
         };
         any_rejected |= resolved.is_err();
-        stage.resolve("Bash", cmd, note, resolved, *ok);
+        stage.resolve(&ScriptedTool::bash(cmd), note, resolved, *ok);
     }
     // The closing reply reports what actually happened — in auto mode the
     // delete is blocked, while master (or an allowlist) runs both.

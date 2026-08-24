@@ -332,6 +332,15 @@ struct ToolRecord {
     truncated: bool,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     backgrounded: bool,
+    /// The model's **verbatim** JSON arguments ([`crate::app::ToolCall::arguments`])
+    /// — what the derived context replays on the assistant `tool_calls`
+    /// entry, so a resumed session's `write` still carries the content it
+    /// wrote instead of the path alone (`docs/context.md`). Omitted when
+    /// empty, so files written before the field keep their shape and still
+    /// parse — such a record falls back to the per-tool reconstruction, which
+    /// is what it always used.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    arguments: String,
     /// The model-facing result of a permission-rejected call, when it differs
     /// from the displayed `output` (`docs/permissions.md`) — carrying Tab's
     /// amended instructions. Omitted when absent, so files written before the
@@ -479,6 +488,7 @@ pub fn item_line(item: &HistoryItem, stamp: &str) -> String {
             truncated: tool.truncated,
             backgrounded: matches!(tool.status, ToolStatus::Backgrounded),
             context_output: tool.context_output.clone(),
+            arguments: tool.arguments.clone(),
             approval_note: tool.approval_note.clone(),
             batch: tool.batch,
         }),
@@ -658,6 +668,7 @@ pub fn parse_session(text: &str) -> Option<(SessionMeta, Vec<HistoryItem>)> {
                 shell: tool.shell,
                 truncated: tool.truncated,
                 context_output: tool.context_output,
+                arguments: tool.arguments,
                 approval_note: tool.approval_note,
                 batch: tool.batch,
             })),
@@ -1310,6 +1321,7 @@ mod tests {
             shell: false,
             truncated: false,
             context_output: None,
+            arguments: String::new(),
             approval_note: None,
             batch: None,
         });
@@ -1322,6 +1334,7 @@ mod tests {
             shell: true,
             truncated: true,
             context_output: None,
+            arguments: String::new(),
             approval_note: None,
             batch: None,
         });
@@ -1348,11 +1361,56 @@ mod tests {
                  following instructions instead: use pathlib"
                     .into(),
             ),
+            arguments: String::new(),
             approval_note: None,
             batch: None,
         });
         let (_, parsed) = parse_session(&file_of(std::slice::from_ref(&rejected))).expect("parses");
         assert_eq!(parsed, vec![rejected]);
+    }
+
+    #[test]
+    fn a_tool_call_round_trips_the_arguments_the_model_sent() {
+        // A resumed session must replay the *whole* call: without the
+        // arguments a `write` comes back as `{"path": …}` and the content it
+        // wrote — which the short ack no longer repeats — is gone from the
+        // conversation for good (`docs/context.md`).
+        let arguments = r#"{"path":"a.py","content":"print(1)\n"}"#;
+        let tool = HistoryItem::Tool(ToolCall {
+            name: "Write".into(),
+            args: "a.py".into(),
+            arguments: arguments.into(),
+            status: ToolStatus::Ok,
+            output: "Wrote 1 line to a.py\n1 print(1)".into(),
+            timestamp: "03:21 PM".into(),
+            shell: false,
+            truncated: false,
+            context_output: Some("File created successfully at: a.py".into()),
+            approval_note: None,
+            batch: None,
+        });
+        let file = file_of(std::slice::from_ref(&tool));
+        let (_, parsed) = parse_session(&file).expect("parses");
+        assert_eq!(parsed, vec![tool]);
+        // A call with none keeps the pre-field line shape, so old readers and
+        // old files stay compatible both ways.
+        assert!(
+            !file_of(&[HistoryItem::Tool(ToolCall {
+                name: "Bash".into(),
+                args: "ls".into(),
+                arguments: String::new(),
+                status: ToolStatus::Ok,
+                output: "Exit code: 0".into(),
+                timestamp: String::new(),
+                shell: false,
+                truncated: false,
+                context_output: None,
+                approval_note: None,
+                batch: None,
+            })])
+            .contains("arguments"),
+            "an empty field is omitted from the record"
+        );
     }
 
     #[test]
@@ -1369,6 +1427,7 @@ mod tests {
             shell: false,
             truncated: false,
             context_output: None,
+            arguments: String::new(),
             approval_note: Some("Allowed by auto mode classifier".into()),
             batch: None,
         });
@@ -1384,6 +1443,7 @@ mod tests {
             shell: false,
             truncated: false,
             context_output: None,
+            arguments: String::new(),
             approval_note: None,
             batch: None,
         });
@@ -1404,6 +1464,7 @@ mod tests {
             shell: false,
             truncated: false,
             context_output: None,
+            arguments: String::new(),
             approval_note: None,
             batch: None,
         });
@@ -1626,6 +1687,7 @@ mod tests {
             shell: false,
             truncated: false,
             context_output: None,
+            arguments: String::new(),
             approval_note: None,
             batch: None,
         });
@@ -1649,6 +1711,7 @@ mod tests {
             shell: false,
             truncated: false,
             context_output: None,
+            arguments: String::new(),
             approval_note: None,
             batch: None,
         });

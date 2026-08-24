@@ -76,6 +76,7 @@ fn a_lone_live_agent_renders_the_tool_cell_shape() {
             name: "Bash".into(),
             args: "sleep 10 && curl -s https://api.open-meteo.com/v1/forecast".into(),
             detail: Some("Fetching Warsaw weather".into()),
+            arguments: String::new(),
         },
     );
     let lines = live_agent_group_lines(&app, 44);
@@ -123,6 +124,7 @@ fn a_lone_live_agents_tool_row_clips_instead_of_wrapping() {
             name: "Bash".into(),
             args: "sleep 10 && curl -s https://api.open-meteo.com/v1/forecast?latitude=52".into(),
             detail: None,
+            arguments: String::new(),
         },
     );
     let lines = live_agent_group_lines(&app, 44);
@@ -232,6 +234,7 @@ fn a_multi_agent_tree_keeps_the_sticky_tool_activity() {
             name: "Bash".into(),
             args: "curl wttr.in/Warsaw".into(),
             detail: Some("Fetching Warsaw weather".into()),
+            arguments: String::new(),
         },
     );
     for event in [
@@ -239,6 +242,7 @@ fn a_multi_agent_tree_keeps_the_sticky_tool_activity() {
             name: "Write".into(),
             args: "game.py".into(),
             detail: None,
+            arguments: String::new(),
         },
         // The call resolves — the activity line stays (sticky, no
         // `Working…` between calls).
@@ -410,6 +414,7 @@ fn the_agent_view_swaps_the_strip_to_the_agents_stream() {
             name: "Bash".into(),
             args: "curl wttr.in".into(),
             detail: None,
+            arguments: String::new(),
         },
     );
     app.open_agent_view("a1");

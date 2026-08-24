@@ -114,6 +114,13 @@ const DUMMY_ABOUT_OUTPUT: &str = "alter-zero — an autonomous AI agent that liv
 struct ScriptedCall {
     name: &'static str,
     args: String,
+    /// The verbatim JSON arguments a live backend would send — recorded on
+    /// the call so the demo replays losslessly like the real one.
+    arguments: String,
+    /// The short **model-facing** result, when it differs from the displayed
+    /// `output` — the `write`/`edit` acks (`docs/tools.md`). `None` for a
+    /// tool whose display *is* what the model reads.
+    ack: Option<String>,
     output: String,
     exit: Option<u8>,
     streams: bool,
@@ -125,6 +132,8 @@ impl ScriptedCall {
         Self {
             name: "Read",
             args: path.to_string(),
+            arguments: serde_json::json!({ "path": path }).to_string(),
+            ack: None,
             output: crate::llm::tools::format_read(source, None, None),
             exit: None,
             streams: false,
@@ -136,6 +145,8 @@ impl ScriptedCall {
         Self {
             name: "Bash",
             args: command.to_string(),
+            arguments: serde_json::json!({ "command": command }).to_string(),
+            ack: None,
             output: output.to_string(),
             exit: Some(exit),
             streams: true,
@@ -150,6 +161,10 @@ impl ScriptedCall {
         Self {
             name: "Write",
             args: path.to_string(),
+            arguments: serde_json::json!({ "path": path, "content": content }).to_string(),
+            // The live executor's two-text split: the numbered body is the
+            // cell, one line is what the model reads (`docs/tools.md`).
+            ack: Some(crate::llm::tools::write_ack(path, /*created=*/ true)),
             output: crate::llm::tools::write_report(path, content),
             exit: None,
             streams: false,
@@ -163,6 +178,15 @@ impl ScriptedCall {
         Self {
             name: "Edit",
             args: path.to_string(),
+            arguments: serde_json::json!({
+                "path": path,
+                "old_string": old,
+                "new_string": new,
+            })
+            .to_string(),
+            // The demo's edits replace the whole file in one match, so the
+            // ack never needs the occurrence count.
+            ack: Some(crate::llm::tools::edit_ack(path, 1)),
             output: crate::llm::tools::update_report(path, old, new),
             exit: None,
             streams: false,
@@ -189,6 +213,37 @@ impl ScriptedCall {
         ToolCallSummary {
             name: self.name.to_string(),
             args: self.args.clone(),
+        }
+    }
+
+    /// This call's `ToolStart`, carrying the verbatim arguments a live
+    /// backend sends — so the offline demo's Ctrl+D shows the same replayed
+    /// shape the real one does (`docs/context.md`).
+    fn start(&self) -> StreamEvent {
+        StreamEvent::ToolStart {
+            name: self.name.to_string(),
+            args: self.args.clone(),
+            detail: None,
+            arguments: self.arguments.clone(),
+        }
+    }
+
+    /// This call's resolution: the plain `ToolEnd` most tools send, or —
+    /// for the file tools, whose model-facing result is the short ack while
+    /// the cell keeps the numbered body — the `ToolAnswered` two-text event
+    /// the live loop sends for them.
+    fn end(&self) -> StreamEvent {
+        match &self.ack {
+            Some(ack) => StreamEvent::ToolAnswered {
+                display: self.result(),
+                result: ack.clone(),
+                truncated: false,
+            },
+            None => StreamEvent::ToolEnd {
+                output: self.result(),
+                ok: self.ok(),
+                truncated: false,
+            },
         }
     }
 }
@@ -431,6 +486,7 @@ pub(in crate::stream) fn hooks_turn(cue: &Cue) -> Vec<StreamEvent> {
         name: "Bash".to_string(),
         args: BLOCKED.to_string(),
         detail: None,
+        arguments: serde_json::json!({ "command": BLOCKED }).to_string(),
     });
     // Both texts, as the live runner sends them: the short one is the red
     // cell, the long one is what the model reads — and what the rollout keeps
@@ -444,11 +500,7 @@ pub(in crate::stream) fn hooks_turn(cue: &Cue) -> Vec<StreamEvent> {
     });
 
     // The allowed call, with the hook's provenance row on its resolved cell.
-    events.push(StreamEvent::ToolStart {
-        name: ran.name.to_string(),
-        args: ran.args.clone(),
-        detail: None,
-    });
+    events.push(ran.start());
     events.push(StreamEvent::ToolNote(HOOK_NOTE.to_string()));
     events.push(StreamEvent::ToolEnd {
         output: ran.result(),
@@ -774,11 +826,7 @@ fn tool_turn(
         batch.iter().map(ScriptedCall::summary).collect(),
     ));
     for call in batch {
-        events.push(StreamEvent::ToolStart {
-            name: call.name.to_string(),
-            args: call.args.clone(),
-            detail: None,
-        });
+        events.push(call.start());
         // A streaming call's output arrives line-by-line so the live cell
         // tails it — the raw lines the command printed, never the `Exit code:`
         // frame, which the executor only adds when it resolves. The
@@ -787,11 +835,7 @@ fn tool_turn(
         if call.streams {
             events.extend(tool_output_events(&call.output));
         }
-        events.push(StreamEvent::ToolEnd {
-            output: call.result(),
-            ok: call.ok(),
-            truncated: false,
-        });
+        events.push(call.end());
     }
     events.extend(say(&second));
     events.push(StreamEvent::StreamDone);
@@ -841,6 +885,7 @@ pub(in crate::stream) fn skills_turn(cue: &Cue) -> Vec<StreamEvent> {
         name: crate::skills::SKILL_TOOL_DISPLAY.to_string(),
         args: SKILL_NAME.to_string(),
         detail: None,
+        arguments: serde_json::json!({ "skill": SKILL_NAME }).to_string(),
     });
     // The two-text split (docs/skills.md): the cell gets one line, the model
     // gets the body. `ToolAnswered` is what the live loop sends for it, so the

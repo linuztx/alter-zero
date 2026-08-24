@@ -269,13 +269,28 @@ fn wire_tool_name(display: &str) -> String {
     }
 }
 
-/// Reconstruct a JSON argument object for a finished tool call from its stored
-/// one-line summary. History keeps only the summary (`llm::tools::summarize_call`
-/// — the command for `bash`, the path for the file tools), not the raw argument
-/// JSON, so the replayed call carries the essential argument; the tool
-/// **result** (below it) carries the full outcome the model reasons from. An
-/// unrecognised tool replays with empty arguments.
+/// The JSON argument object a finished tool call replays with — the model's
+/// **verbatim** [`ToolCall::arguments`] whenever it recorded them, which is
+/// every live call now (`docs/context.md`). Only a record without them — a
+/// rollout written before the field, the `!` shell, a hand-scripted event —
+/// falls back to rebuilding one from the stored one-line summary
+/// (`llm::tools::summarize_call`: the command for `bash`, the path for the
+/// file tools), which is lossy; an unrecognised tool then replays with empty
+/// arguments.
 fn reconstruct_arguments(tool: &ToolCall) -> String {
+    // The model's own arguments, when the call recorded them: nothing to
+    // reconstruct, and nothing lost — a `write`'s whole `content`, an
+    // `edit`'s two strings, a `bash` call's `timeout` all replay as sent.
+    // This is what lets those tools' results collapse to one line: the
+    // conversation carries the change on the *call* now, not in the result
+    // (`docs/tools.md`). Guarded on parsing as an object, since a validating
+    // provider rejects anything else — a damaged record falls through to the
+    // per-tool table below, which is also what every pre-field rollout, the
+    // `!` shell, and a hand-scripted event take.
+    if serde_json::from_str::<serde_json::Value>(tool.arguments.trim()).is_ok_and(|v| v.is_object())
+    {
+        return tool.arguments.trim().to_string();
+    }
     // An MCP call's stored `args` **is** the raw arguments JSON
     // (`llm::tools::summarize_call` keeps it verbatim precisely so this
     // replay is lossless — the pretty `key: value` form is derived at render
@@ -288,6 +303,10 @@ fn reconstruct_arguments(tool: &ToolCall) -> String {
         }
         return "{}".to_string();
     }
+    // The legacy table: what a record with no arguments of its own can be
+    // rebuilt into from the one-line summary. Lossy by construction — it is
+    // why the arguments are recorded now — but it keeps a pre-field rollout
+    // replaying exactly as it always did.
     let key = match tool.name.as_str() {
         "Bash" => "command",
         "Read" | "Write" | "Edit" => "path",
@@ -581,9 +600,8 @@ fn derive_into(out: &mut Vec<ContextMessage>, history: &[HistoryItem]) {
             // A task tool call (`docs/task-tools.md`): invisible inline, but
             // the model made the call and read the result — replay the same
             // native pair every other tool gets, so later turns keep its
-            // memory of the plan. The stored args are the one-line summary,
-            // so like the ask tool the replayed call carries `{}` arguments
-            // — the result text below it is what the model reasons from.
+            // memory of the plan — carrying the model's own arguments, the
+            // same way an ordinary tool record now does.
             HistoryItem::TaskCall(record) => {
                 let id = format!("call_{tool_seq}");
                 tool_seq += 1;
@@ -698,6 +716,7 @@ mod tests {
             shell,
             truncated: false,
             context_output: None,
+            arguments: String::new(),
             approval_note: None,
             batch: None,
         })
@@ -715,6 +734,7 @@ mod tests {
             shell: false,
             truncated: false,
             context_output: Some(result.to_string()),
+            arguments: String::new(),
             approval_note: None,
             batch: None,
         })
@@ -1692,6 +1712,72 @@ mod tests {
             "<INSTRUCTIONS>\nUse TDD.\n</INSTRUCTIONS>\n\nhello"
         );
         assert_eq!(ctx[1].text, "hi");
+    }
+
+    /// A [`tool`] carrying the model's verbatim arguments — what every live
+    /// call now records beside the header summary.
+    fn tool_with_arguments(name: &str, args: &str, arguments: &str, output: &str) -> HistoryItem {
+        let HistoryItem::Tool(mut call) = tool(name, args, output, ToolStatus::Ok, false) else {
+            unreachable!()
+        };
+        call.arguments = arguments.to_string();
+        HistoryItem::Tool(call)
+    }
+
+    #[test]
+    fn a_write_replays_with_the_content_it_actually_sent() {
+        // The bug: the stored summary is only the *path*, so the replay was
+        // `write({"path": …})` — the model watching itself write a file with
+        // no content, while the whole content rode the result as a numbered
+        // body. The verbatim arguments make the replay lossless, which is
+        // what lets the result collapse to one line (`docs/tools.md`).
+        let arguments = r#"{"path":"/tmp/a.py","content":"print(1)\n"}"#;
+        let history = vec![tool_with_arguments(
+            "Write",
+            "/tmp/a.py",
+            arguments,
+            "Wrote 1 line to a.py\n1 print(1)",
+        )];
+        let ctx = context_messages(&history);
+        assert_eq!(ctx[0].tool_calls[0].name, "write");
+        assert_eq!(ctx[0].tool_calls[0].arguments, arguments);
+        assert_eq!(
+            ctx[1].text, "Wrote 1 line to a.py\n1 print(1)",
+            "the result is whatever was recorded — the executor decides its size"
+        );
+    }
+
+    #[test]
+    fn an_edit_replays_with_both_strings_and_the_replace_all_flag() {
+        let arguments = r#"{"path":"/tmp/n.txt","old_string":"Rivero","new_string":"Rivera","replace_all":true}"#;
+        let history = vec![tool_with_arguments("Edit", "/tmp/n.txt", arguments, "ok")];
+        let ctx = context_messages(&history);
+        assert_eq!(ctx[0].tool_calls[0].arguments, arguments);
+    }
+
+    #[test]
+    fn a_call_without_recorded_arguments_falls_back_to_the_old_reconstruction() {
+        // Rollouts written before the field, the `!` shell, the offline
+        // dummy: the per-tool table still answers, so an old session replays
+        // exactly as it did.
+        let history = vec![tool(
+            "Write",
+            "hello.py",
+            "Wrote 1 line",
+            ToolStatus::Ok,
+            false,
+        )];
+        let ctx = context_messages(&history);
+        assert_eq!(ctx[0].tool_calls[0].arguments, r#"{"path":"hello.py"}"#);
+    }
+
+    #[test]
+    fn unparseable_recorded_arguments_fall_back_rather_than_break_the_request() {
+        // A validating provider rejects a tool call whose arguments are not a
+        // JSON object, so a damaged record degrades to the reconstruction.
+        let history = vec![tool_with_arguments("Bash", "ls", "not json", "ok")];
+        let ctx = context_messages(&history);
+        assert_eq!(ctx[0].tool_calls[0].arguments, r#"{"command":"ls"}"#);
     }
 
     #[test]

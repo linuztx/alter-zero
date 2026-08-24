@@ -222,7 +222,19 @@ fn a_staggered_permission_demo_asks_a_tall_write_then_a_tiny_one() {
                 gate.resolve(&req.id, crate::permission::PermissionDecision::Approve);
             }
             StreamEvent::ToolStart { args, .. } => order.push(format!("start:{args}")),
-            StreamEvent::ToolEnd { ok, .. } => order.push(format!("end:{ok}")),
+            // An approved `write` resolves with the two-text split the live
+            // executor sends: the numbered body stays on the cell, the model
+            // reads the one-line ack (`docs/tools.md`).
+            StreamEvent::ToolAnswered {
+                display, result, ..
+            } => {
+                assert!(display.starts_with("Wrote "), "the cell keeps the body");
+                assert!(
+                    result.starts_with("File created successfully at: "),
+                    "the model reads the ack: {result}"
+                );
+                order.push("end:true".to_string());
+            }
             StreamEvent::Chunk(_) => {}
             StreamEvent::StreamDone => {
                 order.push("done".to_string());
