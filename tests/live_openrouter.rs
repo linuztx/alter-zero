@@ -553,7 +553,7 @@ fn live_scratchpad_context_reaches_the_model() {
 /// `write`/`edit` targets and the `bash` commands the round produced, over a
 /// prompt that names no path at all.
 #[cfg(test)]
-fn scratchpad_targets(scratchpad: &std::path::Path, task: &str) -> Vec<String> {
+fn scratchpad_targets(scratchpad: &std::path::Path, cwd: &str, task: &str) -> Vec<String> {
     use alter_zero::llm::backend::{augment_with_environment, augment_with_scratchpad};
     let key =
         std::env::var("OPENROUTER_API_KEY").expect("set OPENROUTER_API_KEY to run the live tests");
@@ -579,7 +579,7 @@ fn scratchpad_targets(scratchpad: &std::path::Path, task: &str) -> Vec<String> {
             alter_zero::llm::backend::DEFAULT_SYSTEM_PROMPT,
             "Monday 2026-08-24",
             "linux (Ubuntu 24.04.4 LTS)",
-            "/home/user/proj",
+            cwd,
         ),
         &scratchpad.display().to_string(),
     );
@@ -615,17 +615,26 @@ fn live_the_model_puts_its_temp_file_in_the_scratchpad() {
     // no path to put it at, every file the round touches must land in the
     // scratchpad — not `/tmp`, and not the project cwd.
     let scratchpad = std::path::PathBuf::from("/tmp/alter-zero-1000/18cea7c-5d77f/scratchpad");
-    let targets = scratchpad_targets(
-        &scratchpad,
-        "Save a short note listing three prime numbers to a temporary file, \
-         then tell me the full path you used.",
-    );
-    assert!(!targets.is_empty(), "the model used a tool at all");
-    for target in &targets {
+    let task = "Save a short note listing three prime numbers to a temporary file, \
+                then tell me the full path you used.";
+    // Both cwds, because the second one caught a real weakness: launched *in*
+    // a `/tmp` working directory, an earlier, softer wording sent the model to
+    // `/tmp/prime_numbers.txt` — the cwd primes it, and the block has to win
+    // anyway.
+    for cwd in ["/home/user/proj", "/tmp/az-work-dir"] {
+        println!("cwd {cwd}:");
+        let targets = scratchpad_targets(&scratchpad, cwd, task);
         assert!(
-            target.contains("/scratchpad"),
-            "the model wrote outside the scratchpad: {target:?} (all: {targets:?})"
+            !targets.is_empty(),
+            "the model used a tool at all (cwd {cwd})"
         );
+        for target in &targets {
+            assert!(
+                target.contains("/scratchpad"),
+                "the model wrote outside the scratchpad from cwd {cwd}: \
+                 {target:?} (all: {targets:?})"
+            );
+        }
     }
 }
 
