@@ -202,11 +202,14 @@ tools already use (`ToolOutcome::context` → `StreamEvent::ToolAnswered` →
 rides the conversation is
 
 ```
+# write, new file
 File created successfully at: /tmp/name.txt (file state is current in your context — no need to read it back)
+# write over existing content, and every edit
 The file /tmp/note.txt has been updated successfully. (file state is current in your context — no need to read it back)
 ```
 
-(`tools::write_ack` / `tools::edit_ack` over the model's own path argument; a
+(`tools::write_ack` / `tools::edit_ack` over the model's own path argument —
+the absolute one it sent, not the cell head's cwd-relative display form; a
 `replace_all` that touched more than one place adds a `Replaced {n}
 occurrences.` line, the one fact the diff carried that the arguments do not.
 A write that changed nothing stays single-text — `No changes to {path}` is
@@ -510,3 +513,11 @@ peek), so old sessions and edge cases keep rendering sensibly.
   invariant 4 in `CLAUDE.md`). True concurrent *execution* is still future work.
 - Token counts remain an app-side estimate (the protocol's `usage` is still not
   surfaced).
+- A `write`'s replayed arguments are **uncapped**, where the numbered result
+  they replaced was cut at `DIFF_MAX_LINES` (400). Writing a 2 000-line file
+  therefore carries all 2 000 lines into every later turn, instead of 400 plus
+  a `… N more lines` tail. That is the wire shape the model itself produced —
+  truncating a tool call's *arguments* would misreport the conversation back
+  to it, and the old cap silently shortened the model's memory of its own
+  file — but for a session of very large writes it is a real cost that
+  auto-compaction (`docs/compact.md`), not this path, absorbs.

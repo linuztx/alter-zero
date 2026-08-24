@@ -390,6 +390,74 @@ fn every_bash_cell_carries_the_executor_s_exit_code_frame() {
 }
 
 #[test]
+fn the_scripted_file_calls_carry_their_arguments_and_resolve_with_the_ack() {
+    // Demo/live parity past the cell (`docs/dummy-backend.md`): a scripted
+    // `Write`/`Edit` carries the verbatim arguments a real call would — so
+    // the offline Ctrl+D shows the same replayed shape — and resolves as the
+    // two-text `ToolAnswered` the live executor sends, the numbered body on
+    // the cell and one line to the model (`docs/tools.md`).
+    let events = turn_events("show me a diff", 0);
+    let mut seen = Vec::new();
+    let mut open: Option<(String, String)> = None;
+    for event in &events {
+        match event {
+            StreamEvent::ToolStart {
+                name, arguments, ..
+            } => open = Some((name.clone(), arguments.clone())),
+            StreamEvent::ToolAnswered {
+                display, result, ..
+            } => {
+                let (name, arguments) = open.take().expect("a resolution closes a start");
+                seen.push((name, arguments, display.clone(), result.clone()));
+            }
+            StreamEvent::ToolEnd { .. } => {
+                open = None;
+            }
+            _ => {}
+        }
+    }
+    let names: Vec<&str> = seen.iter().map(|(n, ..)| n.as_str()).collect();
+    assert_eq!(
+        names,
+        ["Write", "Edit"],
+        "only the file tools split: {seen:?}"
+    );
+    for (name, arguments, display, result) in &seen {
+        let parsed: serde_json::Value =
+            serde_json::from_str(arguments).unwrap_or_else(|e| panic!("{name} args: {e}"));
+        assert!(
+            parsed
+                .get("path")
+                .and_then(serde_json::Value::as_str)
+                .is_some(),
+            "{name} carries its path: {arguments}"
+        );
+        let payload = if name == "Write" {
+            "content"
+        } else {
+            "old_string"
+        };
+        assert!(
+            parsed.get(payload).is_some(),
+            "{name} carries its {payload} — the whole point: {arguments}"
+        );
+        assert!(
+            display.lines().count() > 1,
+            "the cell keeps the numbered body: {display:?}"
+        );
+        assert_eq!(
+            result.lines().count(),
+            1,
+            "the model reads one line: {result:?}"
+        );
+        assert!(
+            result.ends_with(crate::llm::tools::FILE_STATE_NOTE),
+            "…closing on the in-context claim: {result:?}"
+        );
+    }
+}
+
+#[test]
 fn a_diff_prompt_scripts_the_write_then_edit_demo() {
     // The file-change design (`docs/tools.md`) has no offline demo otherwise:
     // a `Write` shows the whole new file numbered, an `Edit` shows only the
