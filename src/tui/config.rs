@@ -27,10 +27,11 @@ use alter_zero::llm::{
     ThinkingSettings, backend::DEFAULT_SYSTEM_PROMPT,
 };
 use alter_zero::permission::{PermissionRules, PermissionsFile};
+use alter_zero::scratchpad;
 use alter_zero::settings::SessionSettings;
 use alter_zero::stream;
 
-use super::host::{local_date, os_context};
+use super::host::{self, local_date, os_context};
 
 /// Is the built-in dummy backend forced on? (`ALTER_ZERO_DUMMY` set to a truthy
 /// value). Keeps `smoke.sh` — which sets nothing — on the dummy, and lets a
@@ -371,6 +372,42 @@ pub(crate) fn tmp_dir() -> Option<PathBuf> {
     std::env::var_os("TMPDIR").map(PathBuf::from)
 }
 
+// ===== the session's temp layout (docs/scratchpad.md) =====
+
+/// This session's temp root — `{temp}/alter-zero-{uid}/{session}`, the parent
+/// of both the agent's scratchpad and the background shells' `tasks` dir. The
+/// uid and session id are the boundary's (`host::process_uid`/`session_id`),
+/// the shape is the pure [`scratchpad::session_root`]; `TMPDIR` moves the
+/// whole tree, since [`std::env::temp_dir`] honours it.
+pub(crate) fn session_tmp_root(session: &str) -> PathBuf {
+    scratchpad::session_root(&std::env::temp_dir(), host::process_uid(), session)
+}
+
+/// Is the scratchpad on? On by default; a falsy `ALTER_ZERO_SCRATCHPAD` turns
+/// it off entirely — no directory, no `## Scratchpad` block in the system
+/// prompt, and no permission exemption (`docs/scratchpad.md`).
+pub(crate) fn scratchpad_enabled() -> bool {
+    env_flag("ALTER_ZERO_SCRATCHPAD")
+}
+
+/// The session's scratchpad directory, **created**: `ALTER_ZERO_SCRATCHPAD_DIR`
+/// puts it at an exact path (the `ALTER_ZERO_SKILLS_DIR` convention), else
+/// `{session_root}/scratchpad`.
+///
+/// `None` means the agent is told about no scratchpad at all: the feature is
+/// off, or the directory could not be created. Pointing the model at a path
+/// that does not exist — and refusing its writes there in the same breath —
+/// is worse than saying nothing, so the whole feature hangs off this one
+/// answer (`docs/scratchpad.md`).
+pub(crate) fn prepare_scratchpad(session_root: &Path) -> Option<PathBuf> {
+    if !scratchpad_enabled() {
+        return None;
+    }
+    let dir = std::env::var_os("ALTER_ZERO_SCRATCHPAD_DIR")
+        .map_or_else(|| scratchpad::scratchpad_dir(session_root), PathBuf::from);
+    std::fs::create_dir_all(&dir).ok().map(|()| dir)
+}
+
 /// What one checkpoint snapshot may cost before the feature switches itself
 /// off for the session — `ALTER_ZERO_CHECKPOINT_MAX_FILES` /
 /// `ALTER_ZERO_CHECKPOINT_MAX_BYTES` over the defaults, each accepting a
@@ -660,22 +697,32 @@ pub(crate) fn context_window_override() -> Option<u64> {
 /// (`prompts/alter_zero.md`) unless `ALTER_ZERO_SYSTEM_PROMPT` overrides it
 /// (an empty value sends no system prompt at all — `with_system_prompt` drops
 /// blanks). Either way we fold in the runtime environment — date, os, cwd —
-/// so the agent has context awareness (`docs/environment.md`); the values are
+/// so the agent has context awareness (`docs/environment.md`), and — when the
+/// session has one — the `## Scratchpad` block pointing every temporary file
+/// at the session's own directory (`docs/scratchpad.md`), for an assembled
+/// persona → environment → scratchpad. The values are
 /// gathered here at the boundary (the `set_clock` pattern), the assembly is
-/// the pure `backend::augment_with_environment`. Resolved once at startup, so
+/// the pure `backend::augment_with_environment`/`augment_with_scratchpad`.
+/// Resolved once at startup, so
 /// every backend the loop rebuilds (a `/model` switch, a Ctrl+T thinking
 /// change, the capability probe) inherits it by clone.
-pub(crate) fn system_prompt(cwd: &Path) -> Option<String> {
+pub(crate) fn system_prompt(cwd: &Path, scratchpad: Option<&Path>) -> Option<String> {
     std::env::var("ALTER_ZERO_SYSTEM_PROMPT")
         .ok()
         .or_else(|| Some(DEFAULT_SYSTEM_PROMPT.to_string()))
         .map(|base| {
-            llm::backend::augment_with_environment(
+            let base = llm::backend::augment_with_environment(
                 &base,
                 &local_date(),
                 &os_context(),
                 &cwd.display().to_string(),
-            )
+            );
+            match scratchpad {
+                Some(dir) => {
+                    llm::backend::augment_with_scratchpad(&base, &dir.display().to_string())
+                }
+                None => base,
+            }
         })
 }
 

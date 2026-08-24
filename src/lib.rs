@@ -55,6 +55,10 @@
 //! - [`project_doc`] — AGENTS.md discovery: codex's project doc collected
 //!   root→cwd under a 32 KiB cap and rendered as the user-instructions
 //!   context fragment (see `docs/project-doc.md`).
+//! - [`scratchpad`]  — the session's own temp layout: the agent's scratchpad
+//!   (the directory its system prompt sends every temporary file to) and the
+//!   background shells' `tasks` dir beside it (pure; see
+//!   `docs/scratchpad.md`).
 //! - [`session`]     — the `/resume` rollout-file format: serialize/parse the
 //!   JSONL session record, the picker preview + humanized age.
 //! - [`settings`]    — the `/settings` menu's pure model: the knob inventory,
@@ -117,6 +121,7 @@ pub mod mcp;
 pub mod paste;
 pub mod permission;
 pub mod project_doc;
+pub mod scratchpad;
 pub mod session;
 pub mod settings;
 pub mod skills;

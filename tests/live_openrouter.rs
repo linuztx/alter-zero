@@ -488,6 +488,233 @@ fn live_environment_context_reaches_the_model() {
 
 #[test]
 #[ignore = "hits the network; needs OPENROUTER_API_KEY"]
+fn live_scratchpad_context_reaches_the_model() {
+    // The scratchpad block end to end (docs/scratchpad.md): the boundary folds
+    // the session's scratchpad directory into the system prompt via
+    // `augment_with_scratchpad`, after the environment block. A real model must
+    // read that path back out and name it as where temporary files go — the
+    // whole point of the block. Tools off, so the answer comes from the prompt.
+    use alter_zero::llm::backend::{augment_with_environment, augment_with_scratchpad};
+    let key =
+        std::env::var("OPENROUTER_API_KEY").expect("set OPENROUTER_API_KEY to run the live tests");
+    let model =
+        std::env::var("ALTER_ZERO_LIVE_MODEL").unwrap_or_else(|_| "openai/gpt-4o-mini".to_string());
+    let scratchpad = "/tmp/alter-zero-1000/18cea7cc0aee22c0-5d77f/scratchpad";
+    let system = augment_with_scratchpad(
+        &augment_with_environment(
+            "You are Alter Zero an autonomous AI agent running in terminal UI",
+            "Sunday 2026-07-19",
+            "linux (Ubuntu 24.04.4 LTS)",
+            "/home/user/proj",
+        ),
+        scratchpad,
+    );
+    let cfg = ModelConfig {
+        provider_id: "openrouter".to_string(),
+        provider_name: "OpenRouter".to_string(),
+        model,
+        api_base: "https://openrouter.ai/api/v1".to_string(),
+        api_model_base: "https://openrouter.ai/api/v1".to_string(),
+        api_key: Some(key),
+        temperature: Some(0.0),
+        thinking: None,
+        vision: None,
+        cache_key: None,
+        extra_headers: Vec::new(),
+        extra_body: serde_json::Map::new(),
+    };
+    let backend = LlmBackend::configure(cfg, Some(system), false);
+
+    let prompt = "You need a temporary file for an intermediate result. \
+                  Reply with the absolute directory path you would write it into, and nothing else.";
+    let context = vec![ContextMessage::new(ContextRole::User, prompt)];
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let handle = backend.spawn(prompt.to_string(), vec![], context, tx, CancelToken::new());
+    let mut reply = String::new();
+    while let Some(event) = rx.blocking_recv() {
+        match event {
+            StreamEvent::Chunk(c) => reply.push_str(&c),
+            StreamEvent::Retrying { attempt, max } => println!("retrying {attempt}/{max}…"),
+            StreamEvent::Error(e) => panic!("backend error: {e}"),
+            StreamEvent::StreamDone => break,
+            _ => {}
+        }
+    }
+    handle.join().expect("backend thread joins");
+    println!("model replied: {reply:?}");
+    assert!(
+        reply.contains(scratchpad),
+        "the model sends temp files to the scratchpad, got: {reply:?}"
+    );
+}
+
+/// Where the model *actually* puts a temporary file when it is only told to
+/// make one — the scratchpad block's whole reason for existing. Returns the
+/// `write`/`edit` targets and the `bash` commands the round produced, over a
+/// prompt that names no path at all.
+#[cfg(test)]
+fn scratchpad_targets(scratchpad: &std::path::Path, task: &str) -> Vec<String> {
+    use alter_zero::llm::backend::{augment_with_environment, augment_with_scratchpad};
+    let key =
+        std::env::var("OPENROUTER_API_KEY").expect("set OPENROUTER_API_KEY to run the live tests");
+    let model =
+        std::env::var("ALTER_ZERO_LIVE_MODEL").unwrap_or_else(|_| "openai/gpt-4o-mini".to_string());
+    let cfg = ModelConfig {
+        provider_id: "openrouter".to_string(),
+        provider_name: "OpenRouter".to_string(),
+        model,
+        api_base: "https://openrouter.ai/api/v1".to_string(),
+        api_model_base: "https://openrouter.ai/api/v1".to_string(),
+        api_key: Some(key),
+        temperature: Some(0.0),
+        thinking: None,
+        vision: None,
+        cache_key: None,
+        extra_headers: Vec::new(),
+        extra_body: serde_json::Map::new(),
+    };
+    // The production prompt, assembled exactly as the boundary assembles it.
+    let system = augment_with_scratchpad(
+        &augment_with_environment(
+            alter_zero::llm::backend::DEFAULT_SYSTEM_PROMPT,
+            "Monday 2026-08-24",
+            "linux (Ubuntu 24.04.4 LTS)",
+            "/home/user/proj",
+        ),
+        &scratchpad.display().to_string(),
+    );
+    let backend = LlmBackend::configure(cfg, Some(system), true);
+    let context = vec![ContextMessage::new(ContextRole::User, task)];
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let handle = backend.spawn(task.to_string(), vec![], context, tx, CancelToken::new());
+    let mut targets = Vec::new();
+    while let Some(event) = rx.blocking_recv() {
+        match event {
+            // `args` is the cell's own summary of the call — the path for a
+            // file tool, the command for `bash` — which is exactly the target
+            // under test.
+            StreamEvent::ToolStart { name, args, .. } => {
+                println!("  {name}({args})");
+                targets.push(args);
+            }
+            StreamEvent::Retrying { attempt, max } => println!("retrying {attempt}/{max}…"),
+            StreamEvent::Error(e) => panic!("backend error: {e}"),
+            StreamEvent::StreamDone => break,
+            _ => {}
+        }
+    }
+    handle.join().expect("backend thread joins");
+    targets
+}
+
+#[test]
+#[ignore = "hits the network; needs OPENROUTER_API_KEY"]
+fn live_the_model_puts_its_temp_file_in_the_scratchpad() {
+    // The block has to change what the model *does*, not just what it can
+    // recite (docs/scratchpad.md). Given a task that needs a scratch file and
+    // no path to put it at, every file the round touches must land in the
+    // scratchpad — not `/tmp`, and not the project cwd.
+    let scratchpad = std::path::PathBuf::from("/tmp/alter-zero-1000/18cea7c-5d77f/scratchpad");
+    let targets = scratchpad_targets(
+        &scratchpad,
+        "Save a short note listing three prime numbers to a temporary file, \
+         then tell me the full path you used.",
+    );
+    assert!(!targets.is_empty(), "the model used a tool at all");
+    for target in &targets {
+        assert!(
+            target.contains("/scratchpad"),
+            "the model wrote outside the scratchpad: {target:?} (all: {targets:?})"
+        );
+    }
+}
+
+#[test]
+#[ignore = "hits the network; needs OPENROUTER_API_KEY"]
+fn live_scratchpad_write_runs_without_a_permission_prompt() {
+    // The permission exemption end to end (docs/scratchpad.md): with a gate
+    // attached in its asking default, a `write` the model aims INSIDE the
+    // session scratchpad resolves before any prompt is raised — the file lands,
+    // no `StreamEvent::Permission` is emitted, and the cell wears the note that
+    // records no human approved it.
+    use alter_zero::llm::backend::augment_with_scratchpad;
+    use alter_zero::permission::{PermissionGate, SCRATCHPAD_ALLOWED_NOTE};
+
+    let dir = std::env::temp_dir().join(format!("alter-zero-live-pad-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("scratchpad dir");
+    let path = dir.join("notes.txt");
+    let _ = std::fs::remove_file(&path);
+
+    let gate = PermissionGate::new();
+    gate.set_scratchpad(Some(dir.clone()));
+    let key =
+        std::env::var("OPENROUTER_API_KEY").expect("set OPENROUTER_API_KEY to run the live tests");
+    let model =
+        std::env::var("ALTER_ZERO_LIVE_MODEL").unwrap_or_else(|_| "openai/gpt-4o-mini".to_string());
+    let cfg = ModelConfig {
+        provider_id: "openrouter".to_string(),
+        provider_name: "OpenRouter".to_string(),
+        model,
+        api_base: "https://openrouter.ai/api/v1".to_string(),
+        api_model_base: "https://openrouter.ai/api/v1".to_string(),
+        api_key: Some(key),
+        temperature: Some(0.0),
+        thinking: None,
+        vision: None,
+        cache_key: None,
+        extra_headers: Vec::new(),
+        extra_body: serde_json::Map::new(),
+    };
+    let system = augment_with_scratchpad(
+        "You are Alter Zero an autonomous AI agent running in terminal UI",
+        &dir.display().to_string(),
+    );
+    let backend = LlmBackend::configure(cfg, Some(system), true).with_permissions(gate);
+
+    let prompt = format!(
+        "Use the write tool exactly once to create {} containing the single line \
+         live_scratchpad_marker, then reply with just: done",
+        path.display()
+    );
+    let context = vec![ContextMessage::new(ContextRole::User, &prompt)];
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let handle = backend.spawn(prompt.clone(), vec![], context, tx, CancelToken::new());
+
+    let mut notes = Vec::new();
+    let mut asked = false;
+    let mut reply = String::new();
+    while let Some(event) = rx.blocking_recv() {
+        match event {
+            StreamEvent::Permission(request) => {
+                asked = true;
+                println!("PROMPTED for {:?} {}", request.kind, request.target);
+            }
+            StreamEvent::ToolNote(note) => notes.push(note),
+            StreamEvent::Chunk(c) => reply.push_str(&c),
+            StreamEvent::Retrying { attempt, max } => println!("retrying {attempt}/{max}…"),
+            StreamEvent::Error(e) => panic!("backend error: {e}"),
+            StreamEvent::StreamDone => break,
+            _ => {}
+        }
+    }
+    handle.join().expect("backend thread joins");
+    println!("model replied: {reply:?}, notes: {notes:?}");
+
+    assert!(!asked, "a scratchpad write never raises the prompt");
+    let written = std::fs::read_to_string(&path).expect("the file was written");
+    assert!(
+        written.contains("live_scratchpad_marker"),
+        "the write landed in the scratchpad: {written:?}"
+    );
+    assert!(
+        notes.iter().any(|n| n == SCRATCHPAD_ALLOWED_NOTE),
+        "the cell records that no human approved it: {notes:?}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+#[ignore = "hits the network; needs OPENROUTER_API_KEY"]
 fn live_agents_md_instructions_reach_the_model() {
     // The /init loop closed end to end (docs/project-doc.md): an AGENTS.md
     // on disk → `project_doc::load_user_instructions` (discovery + the codex

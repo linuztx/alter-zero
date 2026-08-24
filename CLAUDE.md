@@ -38,7 +38,7 @@ build (`unsafe_code = "forbid"`, plus `warnings` and `clippy::all` denied).
 ## Architecture
 
 A **library** (`src/lib.rs` → `app`, `stream`, `ui`, `term`, `frame`, `paste`,
-`session`, `subprocess`, `history`, `textarea`, `file_search`, `clipboard`, `context`, `background`, `agents`, `ask`, `tasks`, `skills`, `mcp`, `trust`, `checkpoint`, `project_doc`, `permission`, `settings`, `cli`, `links`) holds the logic; **`src/main.rs`** is a 77-line shell —
+`session`, `subprocess`, `history`, `textarea`, `file_search`, `clipboard`, `context`, `background`, `scratchpad`, `agents`, `ask`, `tasks`, `skills`, `mcp`, `trust`, `checkpoint`, `project_doc`, `permission`, `settings`, `cli`, `links`) holds the logic; **`src/main.rs`** is a 77-line shell —
 the detached-exec hook, the CLI resolution, the viewport, the loop — over
 **`src/tui/`**, the binary-private tree that drives the codex-style **async
 (tokio) `select!`** loop (`event_loop`, `actions`, `turn`, `stream`, `agent`,
@@ -271,9 +271,35 @@ tails its output — the last rows, long lines word-wrapped to the width with
 spaces preserved, + a `+N lines (Ns)` footer — via a
 `StreamEvent::ToolOutput` channel, collapsing to the head peek `… +N lines
 (ctrl+o to expand)` when it finishes, Claude-Code style) in
-`docs/tool-streaming.md`; and the **background shells** (the `bash` tool's
+`docs/tool-streaming.md`; and the **session scratchpad** (Claude-Code's
+temp directory, `docs/scratchpad.md`: one per-user, per-session temp root —
+`{tmp}/alter-zero-{uid}/{session}/` — holding the agent's `scratchpad/`
+beside the background shells' `tasks/` (the pure `scratchpad` module's
+`session_root`/`scratchpad_dir`/`tasks_dir`, the temp dir + uid + session id
+injected at the boundary, the session id **minted once** now and shared with
+the lifecycle hooks' payloads, which used to carry a *different* nanos-derived
+id than the tree they name). The directory is created before the prompt is
+assembled, and `prompts/scratchpad.md` becomes the system prompt's **third**
+block — persona → environment → scratchpad, composed by the pure
+`augment_with_scratchpad`, omitted whole when there is no directory to name
+(pointing the model at a path that does not exist, and refusing its writes
+there in the same breath, is worse than saying nothing) — telling the model
+every temporary file goes there instead of `/tmp`. And because the block says
+those writes need no approval, they don't: `approve_call` consults
+`PermissionGate::scratchpad_covers` **beside the standing allowlist** (before
+the `PermissionRequest` hook, the classifier and the prompt — it answers the
+same question), narrowly — `write`/`edit` only (a `bash` command naming a
+scratchpad path still asks; what it goes on to touch is its own business), the
+containment strictly lexical (`scratchpad::contains` — both paths absolute, a
+`..` anywhere refusing outright rather than resolving, the match component-wise
+so `{root}-elsewhere` is outside), and a `PreToolUse` forced ask still asking —
+and **visibly**, resolving as `Approval::AllowNoted` with the classifier
+note's sibling `SCRATCHPAD_ALLOWED_NOTE` (`⎿ Allowed in the session
+scratchpad`); gated by `ALTER_ZERO_SCRATCHPAD`, relocated by
+`ALTER_ZERO_SCRATCHPAD_DIR`) in `docs/scratchpad.md`; and the **background
+shells** (the `bash` tool's
 `run_in_background` arg — the call resolves at once with the interim-output
-path while a `BackgroundRegistry` process streams on its own channel; **Ctrl+B** moves a
+path — `{session}/tasks/{id}.output` — while a `BackgroundRegistry` process streams on its own channel; **Ctrl+B** moves a
 running model-`bash`/`!` command to the background mid-run (the live cell hints
 it with a dim `(ctrl+b to run in background)` row that waits a few seconds —
 `ui::TOOL_BACKGROUND_HINT_DELAY`, gated on the command's own boundary-injected

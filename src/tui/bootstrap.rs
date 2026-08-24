@@ -29,11 +29,12 @@ use ratatui::text::Line;
 
 use alter_zero::agents::AgentRegistry;
 use alter_zero::app::{App, CHECKPOINT_RESTORED_NOTICE, ToastKind};
-use alter_zero::background::{self, BackgroundRegistry, BgEvent};
+use alter_zero::background::{BackgroundRegistry, BgEvent};
 use alter_zero::checkpoint::{self, CheckpointRefusal, CheckpointStore};
 use alter_zero::frame;
 use alter_zero::paste::PasteBurst;
 use alter_zero::project_doc;
+use alter_zero::scratchpad;
 use alter_zero::session;
 use alter_zero::stream::{CancelToken, StreamEvent};
 use alter_zero::term::InlineViewport;
@@ -91,6 +92,20 @@ impl<'t> Session<'t> {
         let cwd = std::env::current_dir().unwrap_or_default();
         let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
 
+        // The session id, minted ONCE (it is nanos-derived — a second call is a
+        // different id) and shared by everything that needs one: the temp tree
+        // below and the lifecycle hooks' payloads, so a hook can find this
+        // session's scratchpad and task output by the id it was handed.
+        let session_id = host::session_id();
+        // This session's own temp tree (docs/scratchpad.md):
+        // `{tmp}/alter-zero-{uid}/{session}/` holding `scratchpad/` — where the
+        // system prompt sends every temporary file — beside the `tasks/` dir
+        // the background shells tee into. The scratchpad is created here,
+        // before the prompt is assembled: `None` back means the agent is told
+        // about no scratchpad and its writes there get no exemption.
+        let session_tmp = config::session_tmp_root(&session_id);
+        let scratchpad_dir = config::prepare_scratchpad(&session_tmp);
+
         // The background-shell registry (docs/background.md): processes launched
         // by the model's `run_in_background` bash calls (or moved back with
         // Ctrl+B) report on their own channel — a dedicated `select!` source,
@@ -98,11 +113,12 @@ impl<'t> Session<'t> {
         // interrupt/`/clear`. Interim output tees to per-task files under the temp
         // dir so the model can `read` progress mid-run.
         let (bg_tx, bg_rx) = tokio::sync::mpsc::unbounded_channel::<BgEvent>();
-        // A short per-user, per-session layout —
-        // `{tmp}/alter-zero-{uid}/{session}/{id}.output`
-        // (the pure `background::tasks_dir`; the uid/session injected here at
-        // the boundary). Short deliberately: the model reads these paths back
-        // out of every background launch text.
+        // The interim files sit in the session's own temp tree —
+        // `{tmp}/alter-zero-{uid}/{session}/tasks/{id}.output`, beside the
+        // agent's `scratchpad/` (the pure `scratchpad::tasks_dir` over the
+        // root resolved above; the uid/session injected at the boundary).
+        // Short deliberately: the model reads these paths back out of every
+        // background launch text.
         //
         // Every shell child (model `bash`, `run_in_background`, the `!` shell)
         // spawns detached from the controlling terminal (`subprocess::tiers` — the
@@ -112,15 +128,8 @@ impl<'t> Session<'t> {
         // valid even if a `cargo build` replaces the file mid-session (and the
         // setsid tier doesn't need it at all); a failed `current_exe` (None) just
         // shortens the chain. The registry carries it to all three spawn sites.
-        let registry = BackgroundRegistry::new(
-            bg_tx,
-            background::tasks_dir(
-                &std::env::temp_dir(),
-                host::process_uid(),
-                &host::session_id(),
-            ),
-        )
-        .with_detach_helper(std::env::current_exe().ok());
+        let registry = BackgroundRegistry::new(bg_tx, scratchpad::tasks_dir(&session_tmp))
+            .with_detach_helper(std::env::current_exe().ok());
 
         // The subagent registry (docs/agent-tool.md): the model's `agent` tool
         // launches run their own loops on their own threads, reporting on a
@@ -134,6 +143,12 @@ impl<'t> Session<'t> {
         // `write`/`edit`/`bash` call, the main turn's and its subagents', raises
         // the inline prompt and blocks its own thread on the answer.
         let permissions = PermissionStore::open(&cwd);
+        // …and pointed at the scratchpad, so a `write`/`edit` inside the
+        // session's own temp directory resolves without a prompt
+        // (`docs/scratchpad.md`). Nothing to point at = no exemption.
+        if let Some(gate) = permissions.gate() {
+            gate.set_scratchpad(scratchpad_dir.clone());
+        }
 
         // The ask gate (docs/ask.md): the `AskUserQuestion` modal's answers
         // post here, waking the blocked tool thread. Always built — asking is
@@ -233,7 +248,7 @@ impl<'t> Session<'t> {
         // an empty file's sink is `None` either way.
         let hook_setup = Some(HookSetup {
             file: std::sync::Arc::new(hooks_file),
-            session_id: host::session_id(),
+            session_id: session_id.clone(),
             cwd: cwd.clone(),
             // The same tty-detach helper every other shell child gets.
             detach_helper: std::env::current_exe().ok(),
@@ -245,6 +260,7 @@ impl<'t> Session<'t> {
         let mut models = ModelSession::resolve(
             &cwd,
             home.as_deref(),
+            scratchpad_dir.as_deref(),
             &registry,
             &agent_registry,
             permissions.gate(),

@@ -174,13 +174,15 @@ pub enum StreamEvent {
         result: String,
         truncated: bool,
     },
-    /// A provenance note for the **in-flight** tool call — today only the
-    /// auto mode classifier's `Allowed by auto mode classifier`
-    /// (`docs/permissions.md`). Sent right after the call's
+    /// A provenance note for the **in-flight** tool call — the auto mode
+    /// classifier's `Allowed by auto mode classifier`
+    /// (`docs/permissions.md`), or the scratchpad's `Allowed in the session
+    /// scratchpad` (`docs/scratchpad.md`). Sent right after the call's
     /// [`StreamEvent::ToolStart`]; the loop stores it on the running call
     /// ([`crate::app::App::set_tool_note`]) so the resolved cell appends it
     /// as a dim `⎿` row — the transcript's record that no human approved
-    /// the call. A backend with no classifier never sends it.
+    /// the call. A backend that never allows a call on the user's behalf
+    /// never sends it.
     ToolNote(String),
     /// The in-flight tool call resolved by **moving to the background**
     /// (a `run_in_background` bash call, or Ctrl+B on a running command) —

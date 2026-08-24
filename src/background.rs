@@ -6,8 +6,9 @@
 //! (`main.rs`). Launching (or adopting, for Ctrl+B) a command spawns a
 //! **monitor thread** that owns the child: it merges the stdout/stderr pipes
 //! in arrival order, streams completed lines as [`BgEvent::Output`], tees
-//! every byte to the task's `{id}.output` file (so the model can `read`
-//! interim output), and reports [`BgEvent::Exited`] when the child dies.
+//! every byte to the task's `{id}.output` file under the session's `tasks`
+//! directory ([`crate::scratchpad::tasks_dir`], so the model can `read` interim
+//! output), and reports [`BgEvent::Exited`] when the child dies.
 //! Events ride their own tokio channel — a dedicated `select!` source —
 //! because background shells outlive turns: the reply channel is swapped on
 //! every interrupt/`/clear`, and these events must survive that.
@@ -135,20 +136,6 @@ fn splitmix64(seed: u64) -> u64 {
     z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
     z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
     z ^ (z >> 31)
-}
-
-/// The background-tasks directory: `{temp}/alter-zero-{uid}/{session}` — a
-/// stable per-user root (Claude Code's `claude-{uid}` pattern) and a
-/// per-session dir keeping concurrent instances off each other's files. The
-/// model reads interim-output paths under this dir back out of the launch
-/// text every time it checks progress, so the layout stays as short as
-/// uniqueness allows: the session id already separates projects, making a
-/// dashed-cwd segment (and a `tasks` leaf) pure length. Pure — the boundary
-/// injects the temp dir, uid, and session id (the `set_session_info`
-/// pattern). See `docs/background.md`.
-#[must_use]
-pub fn tasks_dir(temp: &std::path::Path, uid: u32, session: &str) -> PathBuf {
-    temp.join(format!("alter-zero-{uid}")).join(session)
 }
 
 /// How often a monitor thread wakes to poll its child / kill flag when no
@@ -655,18 +642,6 @@ mod tests {
                 "a base36 body: {id}"
             );
         }
-    }
-
-    #[test]
-    fn tasks_dir_is_short_and_per_session() {
-        // `{temp}/alter-zero-{uid}/{session}` — a stable per-user root and a
-        // per-session dir isolating concurrent instances. The model reads
-        // this path back out of the background launch text every time it
-        // checks progress, so it stays as short as uniqueness allows: the
-        // session id already separates projects, making a dashed-cwd segment
-        // (and a `tasks` leaf) pure length.
-        let dir = tasks_dir(std::path::Path::new("/tmp"), 0, "1f0a2b3c-4d5e");
-        assert_eq!(dir, PathBuf::from("/tmp/alter-zero-0/1f0a2b3c-4d5e"));
     }
 
     #[test]

@@ -45,7 +45,10 @@ references agree on the asymmetry, so we copy it exactly:
 
 - **stdin (the payload) is `snake_case`** — `session_id`, `transcript_path`,
   `cwd`, `permission_mode`, `hook_event_name`, `tool_name`, `tool_input`,
-  `tool_use_id`, `agent_id`, `agent_type`.
+  `tool_use_id`, `agent_id`, `agent_type`. `session_id` is the session's *one*
+  id, shared with its temp tree (`docs/scratchpad.md`), so a handler can find
+  this session's scratchpad and task output from it — it used to be a second,
+  separately-minted (and therefore different) nanos-derived id.
 - **stdout (the verdict) is `camelCase`** — `continue`, `stopReason`,
   `suppressOutput`, `systemMessage`, `decision`, `reason`,
   `hookSpecificOutput.{hookEventName,permissionDecision,

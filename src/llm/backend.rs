@@ -388,6 +388,35 @@ pub fn augment_with_environment(base: &str, date: &str, os: &str, cwd: &str) -> 
     )
 }
 
+/// The scratchpad block appended to the system prompt when the session has a
+/// scratchpad directory — authored in
+/// [`prompts/scratchpad.md`](../../prompts/scratchpad.md) (terse, in the
+/// persona's own style) with the one `{scratchpad}` placeholder
+/// [`render_scratchpad`] fills. See `docs/scratchpad.md`.
+const SCRATCHPAD_TEMPLATE: &str = include_str!("../../prompts/scratchpad.md");
+
+/// Fill the scratchpad template with this session's scratchpad `dir`. Pure:
+/// the boundary builds the path ([`crate::scratchpad::scratchpad_dir`]) and
+/// creates the directory, the same split the environment block uses.
+#[must_use]
+pub fn render_scratchpad(dir: &str) -> String {
+    SCRATCHPAD_TEMPLATE.trim().replace("{scratchpad}", dir)
+}
+
+/// Append the scratchpad block to a base system prompt so the agent writes its
+/// temporary files into the session's own directory instead of `/tmp`
+/// (`docs/scratchpad.md`). Composes *after* [`augment_with_environment`], so
+/// the assembled prompt reads persona → environment → scratchpad; a blank base
+/// is returned unchanged, keeping the "empty `ALTER_ZERO_SYSTEM_PROMPT` → no
+/// system message" contract (`docs/context.md`).
+#[must_use]
+pub fn augment_with_scratchpad(base: &str, dir: &str) -> String {
+    if base.trim().is_empty() {
+        return base.to_string();
+    }
+    format!("{}\n\n{}", base.trim_end(), render_scratchpad(dir))
+}
+
 /// Extract a human distro name from `/etc/os-release` contents — the
 /// `PRETTY_NAME` (e.g. `Ubuntu 24.04.4 LTS`), else `NAME`. Values may be
 /// double- or single-quoted (the freedesktop os-release format). Returns
@@ -1810,6 +1839,48 @@ mod tests {
         let persona = prompt.find("Alter Zero").expect("persona present");
         let env = prompt.find("/repo").expect("environment present");
         assert!(persona < env, "order persona<env: {prompt}");
+    }
+
+    #[test]
+    fn render_scratchpad_fills_the_dir() {
+        let block = render_scratchpad("/tmp/alter-zero-1000/18cea7cc0aee22c0-5d77f/scratchpad");
+        assert!(
+            block.starts_with("## Scratchpad"),
+            "the section header leads: {block}"
+        );
+        assert!(
+            block.contains("/tmp/alter-zero-1000/18cea7cc0aee22c0-5d77f/scratchpad"),
+            "the dir is in: {block}"
+        );
+        assert!(
+            block.contains("/tmp"),
+            "the block still names /tmp as the thing not to use: {block}"
+        );
+        assert!(!block.contains('{'), "no leftover placeholder: {block}");
+    }
+
+    #[test]
+    fn augment_with_scratchpad_appends_the_block_after_the_base() {
+        let base =
+            augment_with_environment("You are Alter Zero", "Sunday 2026-07-19", "linux", "/repo");
+        let out = augment_with_scratchpad(&base, "/tmp/alter-zero-0/s1/scratchpad");
+        let persona = out.find("Alter Zero").expect("persona present");
+        let env = out.find("/repo").expect("environment present");
+        let pad = out
+            .find("/tmp/alter-zero-0/s1/scratchpad")
+            .expect("scratchpad present");
+        assert!(
+            persona < env && env < pad,
+            "order persona<environment<scratchpad: {out}"
+        );
+    }
+
+    #[test]
+    fn augment_with_scratchpad_leaves_a_blank_base_unchanged() {
+        // The "empty ALTER_ZERO_SYSTEM_PROMPT → no system message" contract
+        // (docs/context.md), exactly as the environment block honours it.
+        assert_eq!(augment_with_scratchpad("   ", "/tmp/s"), "   ");
+        assert_eq!(augment_with_scratchpad("", "/tmp/s"), "");
     }
 
     #[test]

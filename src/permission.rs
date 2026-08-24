@@ -8,6 +8,7 @@
 //! loop resolves it.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
@@ -354,6 +355,11 @@ pub struct ClassifierVerdict {
 /// The dim note appended to a cell the classifier allowed — the transcript's
 /// record that no human approved this call.
 pub const CLASSIFIER_ALLOWED_NOTE: &str = "Allowed by auto mode classifier";
+
+/// The dim note appended to a cell allowed because it writes inside the
+/// session's own scratchpad — the transcript's record that no human approved
+/// this call ([`CLASSIFIER_ALLOWED_NOTE`]'s sibling, `docs/scratchpad.md`).
+pub const SCRATCHPAD_ALLOWED_NOTE: &str = "Allowed in the session scratchpad";
 
 /// The short output recorded on a cell the classifier **denied** — the red
 /// counterpart of [`CLASSIFIER_ALLOWED_NOTE`], with the classifier's reason
@@ -887,6 +893,10 @@ impl PermissionsFile {
 #[derive(Debug, Default)]
 struct GateInner {
     rules: PermissionRules,
+    /// This session's scratchpad directory, when it has one
+    /// ([`PermissionGate::set_scratchpad`]) — the root
+    /// [`PermissionGate::scratchpad_covers`] measures a file change against.
+    scratchpad: Option<PathBuf>,
     /// Decisions the loop has posted, keyed by request id — each taken by the
     /// one thread waiting on it.
     decisions: HashMap<String, PermissionDecision>,
@@ -919,6 +929,33 @@ impl PermissionGate {
     #[must_use]
     pub fn allows(&self, request: &PermissionRequest) -> bool {
         self.lock().rules.allows(request)
+    }
+
+    /// Point the gate at this session's scratchpad directory — the boundary
+    /// does it once at startup, `None` when the feature is off or the
+    /// directory could not be created (`docs/scratchpad.md`).
+    pub fn set_scratchpad(&self, dir: Option<PathBuf>) {
+        self.lock().scratchpad = dir;
+    }
+
+    /// Does this request only change a file **inside** the session scratchpad
+    /// (so it runs unasked, wearing [`SCRATCHPAD_ALLOWED_NOTE`])?
+    ///
+    /// Deliberately narrow, and not a [`PermissionRules`] entry: only the two
+    /// file tools are covered, because only their `target` *is* the thing
+    /// being changed. A `bash` command naming a scratchpad path still asks —
+    /// what it goes on to touch is its own business — and so does an MCP call.
+    /// The containment test is the strict lexical
+    /// [`crate::scratchpad::contains`]. See `docs/scratchpad.md`.
+    #[must_use]
+    pub fn scratchpad_covers(&self, request: &PermissionRequest) -> bool {
+        if !matches!(request.kind, PermissionKind::Write | PermissionKind::Edit) {
+            return false;
+        }
+        let inner = self.lock();
+        inner.scratchpad.as_deref().is_some_and(|root| {
+            crate::scratchpad::contains(root, std::path::Path::new(&request.target))
+        })
     }
 
     /// Record option 2's standing approval.
@@ -1016,6 +1053,57 @@ mod tests {
             detail: None,
             agent: None,
         }
+    }
+
+    // --- the session scratchpad (docs/scratchpad.md) ---
+
+    #[test]
+    fn the_scratchpad_note_names_the_scratchpad() {
+        assert_eq!(SCRATCHPAD_ALLOWED_NOTE, "Allowed in the session scratchpad");
+    }
+
+    #[test]
+    fn the_scratchpad_covers_file_changes_inside_it_and_nothing_else() {
+        let gate = PermissionGate::new();
+        let inside = request(
+            PermissionKind::Write,
+            "/tmp/alter-zero-0/s1/scratchpad/notes.md",
+        );
+        assert!(
+            !gate.scratchpad_covers(&inside),
+            "no scratchpad attached, no exemption"
+        );
+        gate.set_scratchpad(Some(std::path::PathBuf::from(
+            "/tmp/alter-zero-0/s1/scratchpad",
+        )));
+        assert!(gate.scratchpad_covers(&inside), "a write inside is covered");
+        assert!(
+            gate.scratchpad_covers(&request(
+                PermissionKind::Edit,
+                "/tmp/alter-zero-0/s1/scratchpad/deep/b.txt"
+            )),
+            "an edit inside is covered"
+        );
+        // A command is never covered: it can touch anything, whatever path it
+        // happens to name — only the two file tools have a target we can trust.
+        assert!(!gate.scratchpad_covers(&request(
+            PermissionKind::Bash,
+            "rm -rf /tmp/alter-zero-0/s1/scratchpad"
+        )));
+        assert!(!gate.scratchpad_covers(&request(PermissionKind::Mcp, "mcp__fs__write")));
+        // Outside it, relative to the project, or escaping through `..`: ask.
+        assert!(
+            !gate.scratchpad_covers(&request(PermissionKind::Write, "/home/user/proj/main.rs"))
+        );
+        assert!(!gate.scratchpad_covers(&request(PermissionKind::Write, "notes.md")));
+        assert!(!gate.scratchpad_covers(&request(
+            PermissionKind::Write,
+            "/tmp/alter-zero-0/s1/scratchpad/../../../etc/passwd"
+        )));
+        assert!(!gate.scratchpad_covers(&request(
+            PermissionKind::Write,
+            "/tmp/alter-zero-0/s1/tasks/bvyo7tkbe.output"
+        )));
     }
 
     // --- the prompt's text ---

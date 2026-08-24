@@ -428,6 +428,26 @@ auto-mode turn whose events show `ToolStart → ToolNote → ToolEnd` with no
 server tool classified end to end
 (`live_auto_mode_classifies_an_mcp_call_instead_of_prompting`).
 
+## The scratchpad exemption
+
+One more thing resolves before the prompt: a `write`/`edit` **inside the
+session's own scratchpad directory** (`docs/scratchpad.md`). The system prompt
+sends every temporary file there, and the directory is outside the user's
+project, so `approve_call` consults `PermissionGate::scratchpad_covers` right
+beside the standing allowlist — before the `PermissionRequest` hook, the
+classifier and the prompt, because it answers the same question they do.
+
+It is narrow: the two file tools only (a `bash` command naming a scratchpad
+path still asks — what it goes on to touch is its own business), the path
+strictly inside and lexically checked, and a forced ask still asks. And it is
+visible, through the same channel the classifier's verdict uses:
+
+```
+● Write(/tmp/alter-zero-1000/18ce…-5d77f/scratchpad/plan.md)
+  ⎿  Wrote 12 lines to …/scratchpad/plan.md
+  ⎿  Allowed in the session scratchpad
+```
+
 ## Persisted per project (`~/.alter-zero/permissions.json`)
 
 Standing approvals used to be session-only — quit and every rule was gone,

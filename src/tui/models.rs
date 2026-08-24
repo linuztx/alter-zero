@@ -168,6 +168,7 @@ impl ModelSession {
     pub(crate) fn resolve(
         cwd: &Path,
         home: Option<&Path>,
+        scratchpad: Option<&Path>,
         registry: &BackgroundRegistry,
         agents: &AgentRegistry,
         permissions: Option<&PermissionGate>,
@@ -200,7 +201,7 @@ impl ModelSession {
         // spell means turning the row back on needs no rescan.
         let skills_enabled = settings.skills;
         let skills = skills.clone();
-        let system_prompt = config::system_prompt(cwd);
+        let system_prompt = config::system_prompt(cwd, scratchpad);
         // The provider the /model picker lists from and switches within: env,
         // else the saved selection, else the file's default.
         let active_provider = std::env::var("ALTER_ZERO_PROVIDER")

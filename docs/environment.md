@@ -32,14 +32,17 @@ CWD /home/user/alter-zero
 
 ## Where it sits in the prompt
 
-The full system prompt the real backend sends is two blocks, in order:
+The full system prompt the real backend sends is three blocks, in order:
 
 ```
 persona        prompts/alter_zero.md   (who you are)
 environment    prompts/environment.md  (where/when you are)   ← this doc
+scratchpad     prompts/scratchpad.md   (where your scratch goes, docs/scratchpad.md)
 ```
 
-`persona → environment`, joined by `augment_with_environment` — nothing else:
+`persona → environment`, joined by `augment_with_environment`, then the
+scratchpad block appended by `augment_with_scratchpad` when the session has a
+scratchpad directory — nothing else:
 the tool schemas carry their own capability detail, so `LlmBackend::configure`
 appends no tools note (the retired `prompts/tools.md` re-spent those tokens on
 every request). The Ctrl+D context-debug view shows the whole assembled

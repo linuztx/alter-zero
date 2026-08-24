@@ -239,6 +239,23 @@ it.
 `/settings` → **Permission mode** (or **Shift+Tab**) picks the posture;
 `ALTER_ZERO_PERMISSIONS=0` turns the gate off entirely.
 
+One kind of write never asks: the agent has a **scratchpad** of its own
+(`docs/scratchpad.md`) — a session-private directory at
+`/tmp/alter-zero-{uid}/{session}/scratchpad`, named in its system prompt as
+where every intermediate result, throwaway script and working note goes
+instead of `/tmp`. It sits outside your project, so a `write`/`edit` there
+runs unasked, saying so on the cell:
+
+```
+● Write(…/scratchpad/plan.md)
+  ⎿  Wrote 12 lines to …/scratchpad/plan.md
+  ⎿  Allowed in the session scratchpad
+```
+
+A `bash` command still asks, wherever it points. The background shells' interim
+output sits beside it under `…/{session}/tasks/{id}.output`.
+`ALTER_ZERO_SCRATCHPAD=0` turns the whole thing off.
+
 You can also wedge **your own commands** into the tool loop
 (`docs/hooks.md`) — Claude Code's `hooks.json` contract, so a script written
 for either tool works here unchanged. Put one at `~/.alter-zero/hooks.json`:

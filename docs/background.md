@@ -69,15 +69,16 @@ executor (`llm::exec`), and the `!` shell runner:
   (nanos ⊕ pid ⊕ a launch counter — `tui::host::session_id`'s no-`rand`
   pattern) with a collision re-roll against the running set. The pure
   `task_id(seed)` pins the format.
-- The interim files live in a **short per-session layout** — the pure
-  `tasks_dir(temp, uid, session)`:
-  `{tmp}/alter-zero-{uid}/{session}/{id}.output`
-  (e.g. `/tmp/alter-zero-0/18f…-4e2/bvyo7tkbe.output`) —
+- The interim files live in the session's own temp tree
+  (`docs/scratchpad.md`) — the pure `scratchpad::tasks_dir(session_root)`:
+  `{tmp}/alter-zero-{uid}/{session}/tasks/{id}.output`
+  (e.g. `/tmp/alter-zero-0/18f…-4e2/tasks/bvyo7tkbe.output`) —
   a stable per-user root (Claude Code's `claude-{uid}` pattern) and a
-  per-session dir keeping concurrent instances apart. Short deliberately: the
-  model reads these paths back out of every launch text, and the session id
-  already separates projects, so a dashed-cwd segment (and a `tasks` leaf)
-  was pure length. The boundary injects the uid (`tui::host::process_uid` —
+  per-session dir keeping concurrent instances apart, with the `tasks` leaf
+  naming these files apart from the agent's `scratchpad/` beside them. Short
+  deliberately: the model reads these paths back out of every launch text, and
+  the session id already separates projects, so a dashed-cwd segment would be
+  pure length. The boundary injects the uid (`tui::host::process_uid` —
   `/proc/self`'s owner; no `libc` in a `forbid(unsafe)` crate) and session id.
 
 - `launch(command, description, from_model)` spawns `sh -c` in its own process
