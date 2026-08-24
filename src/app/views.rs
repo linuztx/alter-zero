@@ -1,5 +1,10 @@
 //! The full-screen overlays' [`App`](super::App) state: the Ctrl+O transcript
-//! pager and the Ctrl+D context-debug view (open/close, scroll, key handling).
+//! pager and the Ctrl+D context-debug view (open/close, scroll, key handling),
+//! plus the one shared key arm that opens them —
+//! [`on_key_overlay_toggle`](super::App::on_key_overlay_toggle), which the
+//! dispatch *and* the two inline modals call, so a prompt blocking the turn
+//! still cannot lock the two views that show what it is asking about
+//! (`docs/permissions.md`).
 //!
 //! What each shows is `docs/tool-view-performance.md` and `docs/context.md`; the
 //! rule that nothing commits to scrollback while an overlay is up is CLAUDE.md
@@ -84,6 +89,50 @@ impl App {
                 Action::None
             }
             _ => Action::None,
+        }
+    }
+
+    /// The two read-only full-screen views, as one shared key arm: Ctrl+O
+    /// opens the transcript pager, Ctrl+D the raw-context view. `Some` when
+    /// the key was one of them (the view is already flipped, and the returned
+    /// [`Action`] tells the loop to sync the alternate screen), `None` when it
+    /// was not.
+    ///
+    /// [`on_key`](Self::on_key) runs it for the conversation and the overlays;
+    /// the **modals** — the tool-permission prompt and the `AskUserQuestion`
+    /// question — run it themselves, ahead of swallowing the rest of their
+    /// keys. Both are questions *about* the conversation, so locking the two
+    /// views that show it is exactly backwards: reading the transcript, or the
+    /// context the model was actually sent, is how you decide (see
+    /// `docs/permissions.md`, `docs/ask.md`). Neither view can act on the
+    /// conversation — they only scroll — so the blocked tool thread keeps
+    /// waiting, undisturbed, and the modal is still there on the way back.
+    ///
+    /// Both keys work mid-stream, so the conversation keeps updating
+    /// underneath them. Neither stacks on the other's view, nor on the
+    /// `/resume` picker: the full-screen views share the alternate screen. In
+    /// an agent session view they show the *viewed agent's* transcript and
+    /// context (`docs/agent-tool.md`).
+    pub(super) fn on_key_overlay_toggle(&mut self, key: KeyEvent) -> Option<Action> {
+        if !key.modifiers.contains(KeyModifiers::CONTROL) {
+            return None;
+        }
+        match key.code {
+            KeyCode::Char('o') => {
+                if matches!(self.view, View::ResumePicker | View::ContextDebug) {
+                    return Some(Action::None);
+                }
+                self.toggle_tool_view();
+                Some(Action::ToggleToolView)
+            }
+            KeyCode::Char('d') => {
+                if matches!(self.view, View::ResumePicker | View::ToolOutput) {
+                    return Some(Action::None);
+                }
+                self.toggle_context_debug();
+                Some(Action::ToggleContextDebug)
+            }
+            _ => None,
         }
     }
 

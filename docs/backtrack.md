@@ -175,7 +175,8 @@ All the new styling lives in the `ui/theme.rs` consts block (`BACKTRACK_*`,
   alone would let the overlay's Esc arm a preview whose Enter truncates
   history and prefills the very composer the modal has stashed, with a tool
   thread still parked on the gate. `overlay_esc_backtracks` therefore also
-  requires no open modal, and the hint row follows it as always.
+  requires `!App::modal_open()` — the one predicate `ui::region_is_modal` reads
+  too — and the hint row follows it as always.
 - **`/clear` and Ctrl+O reset**: both wipe the backtrack state; nothing
   survives a view toggle except via the explicit Esc re-entry.
 - **Oldest/newest bounds**: stepping saturates at both ends (codex clamps the

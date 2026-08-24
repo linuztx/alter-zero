@@ -566,9 +566,14 @@ previous tool returned, what the context it is working from actually contains.
 Swallowing those two keys made a prompt the one moment in the session when the
 conversation could not be inspected, which is precisely the moment it matters
 most. So `on_key_permission` runs `App::on_key_overlay_toggle` first and
-returns whatever it decides — the same arm `on_key` uses for the composer, so
-the two can't drift — and only then swallows the rest. Every other Ctrl+key is
-still absorbed: the prompt must not be answerable by accident.
+returns whatever it decides — one helper, extracted from `on_key`'s global arms
+into `app/views.rs` beside the two toggles it wraps, so the global binding and
+the modal's cannot drift — and only then swallows the rest. Every other Ctrl+key
+is still absorbed: the prompt must not be answerable by accident.
+
+The transcript shows the pending call the way the strip above the prompt does —
+`● Write(hello.py)` over its dim `⎿ Waiting…` — because it reads the same
+`tool_queue`, so what you opened it to look at is the first thing on it.
 
 Nothing else changes. Both views are read-only — they scroll, and that is all
 they do — so the tool thread stays blocked on the gate, the queue stays queued,
@@ -586,16 +591,23 @@ already there for the "the request arrived while the overlay was up" case:
   that committed under the overlay sits in the viewport's pending queue and
   flushes above the live region, and the next draw tick's flow check
   (`view_flow_stale`) re-establishes a screen-tall prompt's flow with the usual
-  purge rebuild. Screen **and** scrollback come back byte-identical, at every
-  geometry (`smoke.sh` Phase 90 compares both, floating region and flowing page).
+  purge rebuild. Screen **and** scrollback come back byte-identical at all three
+  geometries `smoke.sh` Phase 90 drives — a floating region, one flush at the
+  screen bottom, one flush whose page flows.
 - The overlay's idle **Esc** must not arm the backtrack preview
-  (`App::overlay_esc_backtracks` gained a `permission.is_none() && ask.is_none()`
-  clause). A *background agent* can raise a prompt with no turn running, so
-  "idle" alone would offer a rewind that truncates history and prefills the very
-  composer the prompt has stashed — with a tool thread still parked on the gate.
-  A modal is a decision you owe, not a backtrack target; the closing hint row
-  reads `q/esc/ctrl+o to quit` accordingly, since hint and key share the one
+  (`App::overlay_esc_backtracks` gained a `!App::modal_open()` clause). A
+  *background agent* can raise a prompt with no turn running, so "idle" alone
+  would offer a rewind that truncates history and prefills the very composer the
+  prompt has stashed — with a tool thread still parked on the gate. Nothing is
+  rewindable while something is blocked on the user; the closing hint row reads
+  `q/esc/ctrl+o to quit` accordingly, since hint and key share the one
   predicate.
+
+`App::modal_open` **is** that predicate — a permission prompt or an ask modal is
+open — and `ui::region_is_modal` is now its caller too, so the key routing, the
+region's re-pin and its close's purge, and the backtrack guard all read one
+definition. A second hand-rolled copy is exactly the drift the shared one exists
+to prevent.
 
 The `AskUserQuestion` modal follows the identical rule — same helper, same
 reason (`docs/ask.md`). The inline **pickers** (`/model`, `/settings`,
@@ -672,7 +684,12 @@ explains itself with a toast instead of pretending to toggle anything.
   derived context carry exactly what the model was told; and the two keys the
   prompt lets through — Ctrl+O/Ctrl+D open and close over an open prompt
   (options *and* amend field, feedback intact), every other Ctrl+key is still
-  swallowed, and a waiting prompt is not a backtrack target.
+  swallowed, and a waiting prompt is not a backtrack target — plus the footer
+  selections the open takes with the composer.
+- `ui/tests/transcript.rs` — the overlay's **closing hint row** under an open
+  prompt: a background agent's request (idle, with a backtrack target) still
+  reads `q/esc/ctrl+o to quit`, so what the row promises and what Esc does
+  agree by construction.
 - `ui/tests/footer.rs` — the footer's right-edge mode segment (flush at the
   row's edge, dim, the left content truncating first at narrow widths; absent
   when no mode is injected).
@@ -774,11 +791,15 @@ explains itself with a toast instead of pretending to toggle anything.
   reported empty-newlines bug) — with the tall `write`'s resolved cell
   visible above it, committed exactly once, and the box back flush after.
 - `smoke.sh` Phase 90 — Ctrl+O/Ctrl+D over an **open** prompt in a real
-  terminal, at two geometries (a region floating below a short conversation,
-  and one flush at the bottom whose page flows its top into scrollback): each
-  view opens with the asked-about call visible, the overlay's Esc is offered as
-  a quit rather than a backtrack, both round trips leave the screen *and* the
-  scrollback byte-identical, and the prompt still resolves afterwards.
+  terminal, at three geometries, each asserting the seat it is named for (a
+  region floating with rows to spare, one flush at the screen bottom, and one
+  flush whose page flows its top into scrollback) so no case can quietly
+  degenerate into a copy of another: the transcript opens with the asked-about
+  call still `⎿ Waiting…` on it and offers `q/esc/ctrl+o to quit`, **Esc**
+  leaves it — the key that would otherwise arm the rewind — landing back on the
+  same prompt still flush, Ctrl+D round-trips the same way, both trips leave the
+  screen *and* the scrollback byte-identical, and the prompt still resolves
+  afterwards.
 - `tests/live_openrouter.rs` — against a real provider: the replayed rejection
   is a legible context shape and the model still follows the instructions a
   turn later.

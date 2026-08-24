@@ -388,7 +388,10 @@ stays stashed and the prompt is still open on the way back (the return is the
 ordinary `overlay_return_repaint` + flow check, so screen *and* scrollback come
 back byte-identical — `smoke.sh` Phase 90; the overlay's idle Esc gains a
 matching guard, `App::overlay_esc_backtracks` refusing to arm a rewind while a
-modal waits, since a background agent can raise one with no turn running) —
+modal waits, since a background agent can raise one with no turn running, and
+the shared `App::modal_open` — `ui::region_is_modal`'s definition too — is what
+keeps that guard, the key routing and the region's re-pin reading one
+predicate) —
 but **never the cells that raised it**: the call being asked about keeps its
 `● Write(tt.py)` header over
 the same dim `⎿ Waiting…` its batch siblings show (the approve seam runs before

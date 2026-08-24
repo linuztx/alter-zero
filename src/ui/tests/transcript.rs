@@ -827,6 +827,28 @@ fn the_quit_hint_tells_the_truth_about_esc() {
         "{:?}",
         hint_row(&streaming)
     );
+    // An open inline modal quits too, even though the session is idle with a
+    // target. Ctrl+O reaches *through* a permission prompt (docs/permissions.md),
+    // and a BACKGROUND agent's request arrives with no turn in flight — so the
+    // `turn_active` clause above never covered it, and an Esc that armed the
+    // preview would offer to truncate the history a parked tool thread is
+    // still waiting on. The hint and the key read the same `modal_open`.
+    let mut asking = backtrack_app();
+    asking.open_permission(crate::permission::PermissionRequest {
+        id: "p1".to_string(),
+        kind: crate::permission::PermissionKind::Bash,
+        target: "rm -rf /".to_string(),
+        body: String::new(),
+        detail: None,
+        agent: Some("explorer".to_string()),
+    });
+    assert!(!asking.turn_active(), "a background agent's request: idle");
+    assert!(!asking.overlay_esc_backtracks());
+    assert!(
+        hint_row(&asking).contains("q/esc/ctrl+o to quit"),
+        "{:?}",
+        hint_row(&asking)
+    );
     // An active preview swaps in the backtrack keys (unchanged).
     let mut preview = backtrack_app();
     preview.backtrack.selected = Some(0);

@@ -599,6 +599,25 @@ impl App {
         self.streaming.is_some()
     }
 
+    /// Is an **inline modal** open — a tool-permission prompt
+    /// ([`permission`](Self::permission)) or an `AskUserQuestion` call
+    /// ([`ask`](Self::ask))? The two queue behind each other, so at most one
+    /// ever is.
+    ///
+    /// One definition of "a thread is parked on the user", because three
+    /// places have to agree on it: [`on_key`](Self::on_key) routes the modal
+    /// ahead of everything but the two read-only overlays,
+    /// [`crate::ui::region_is_modal`] paints and re-pins its region (and
+    /// notes the one-way scrolls its close must purge), and
+    /// [`overlay_esc_backtracks`](Self::overlay_esc_backtracks) refuses to
+    /// rewind a conversation that parked thread is still holding. A second
+    /// hand-rolled copy of the predicate is exactly the drift the shared one
+    /// exists to prevent.
+    #[must_use]
+    pub const fn modal_open(&self) -> bool {
+        self.permission.is_some() || self.ask.is_some()
+    }
+
     /// The [`history`](Self::history) mutation generation: unchanged by
     /// appends, bumped by every clear/replace/truncate/pop — see the field
     /// docs. `(generation, history.len())` pins a rendered prefix exactly.

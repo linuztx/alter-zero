@@ -390,10 +390,12 @@ pub fn restore_cursor_row(view_top: u16, view_height: u16, screen_height: u16) -
 /// close with a purge rebuild.
 ///
 /// The sibling of [`strip_has_status`]: a pure predicate over `App`, keeping
-/// the policy here and the I/O there.
+/// the policy here and the I/O there. It is `ui`'s name for
+/// [`App::modal_open`], which the key routing and the backtrack guard read
+/// too — one definition, so the three cannot drift.
 #[must_use]
 pub fn region_is_modal(app: &App) -> bool {
-    app.permission().is_some() || app.ask().is_some()
+    app.modal_open()
 }
 
 /// Whether this draw must **purge-rebuild** the conversation instead of

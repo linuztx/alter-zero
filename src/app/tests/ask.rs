@@ -588,6 +588,47 @@ fn the_read_only_overlays_open_over_an_open_question() {
 }
 
 #[test]
+fn the_overlays_reach_through_the_free_text_entry_too() {
+    // The `Type something.` row is a live composer field, like the permission
+    // prompt's amend field — and neither key edits text, so both open over it
+    // and what was typed is still there on the way back.
+    let mut app = App::new();
+    app.open_ask(request("ask_0", vec![coffee_question()]));
+    app.on_key(key(KeyCode::Char('4'))); // the auto-added `Type something.` row
+    assert!(
+        app.ask().is_some_and(AskPrompt::editing),
+        "precondition: the entry is open"
+    );
+    type_text(&mut app, "iced");
+    for (global, view) in [
+        (ctrl('o'), View::ToolOutput),
+        (ctrl('d'), View::ContextDebug),
+    ] {
+        app.on_key(global);
+        assert_eq!(app.view, view, "{global:?} opened its view");
+        app.on_key(global);
+        assert_eq!(app.view, View::Conversation);
+        assert!(
+            app.ask().is_some_and(AskPrompt::editing),
+            "still in the entry after {global:?}"
+        );
+        assert_eq!(app.input.text(), "iced", "the typed answer survived");
+    }
+}
+
+#[test]
+fn the_question_still_swallows_every_other_ctrl_key() {
+    // The reach-through is exactly two keys wide.
+    let mut app = App::new();
+    app.open_ask(request("ask_0", vec![coffee_question()]));
+    for c in ['z', 'r', 't', 'v'] {
+        assert_eq!(app.on_key(ctrl(c)), Action::None, "ctrl+{c}");
+        assert_eq!(app.view, View::Conversation);
+        assert!(app.ask().is_some());
+    }
+}
+
+#[test]
 fn a_question_takes_the_footer_selections_with_the_composer() {
     // `open_permission`'s rule in the sibling modal: the question paints over
     // the footer, so a lit ↓ indicator would come back armed at the close.
