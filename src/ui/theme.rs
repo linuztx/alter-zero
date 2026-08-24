@@ -169,14 +169,29 @@ pub(super) const MCP_CALLED_PREFIX: &str = "Called ";
 /// preview). The full output is always in the Ctrl+O view.
 pub(super) const TOOL_PEEK_LINES: usize = 4;
 
-/// The finished peek's safety ceiling in wrapped display **rows**: the budget
-/// above is *source lines* (each shown fully wrapped — a long first line must
-/// not push its siblings out of the peek), so without a ceiling ONE
-/// pathological line (a minified bundle, a 64 KiB log line) would balloon a
-/// committed cell into hundreds of rows now that lines wrap instead of
-/// clipping. Three rows per budgeted line keeps the everyday case — a `sudo`
-/// error wrapping to 2–3 rows at a narrow width — fully visible.
-pub(super) const TOOL_PEEK_MAX_ROWS: usize = TOOL_PEEK_LINES * 3;
+/// How many wrapped display **rows** ONE source line may spend in a collapsed
+/// cell (`docs/long-lines.md`). The budget above is *source lines* — each shown
+/// wrapped, so a long first line never pushes its siblings out of the peek —
+/// which left ONE pathological line (a minified bundle, a 2 KB JSON body from
+/// `curl`) free to fill the whole cell with wrapped noise. Past this it shows
+/// its head and stops, marked with [`TOOL_LINE_ELLIPSIS`]. Three rows keeps the
+/// everyday case — a `sudo` error wrapping to 2–3 rows at a narrow width —
+/// fully visible.
+pub(super) const TOOL_LINE_MAX_ROWS: usize = 3;
+
+/// The marker closing a row whose source line was cut at
+/// [`TOOL_LINE_MAX_ROWS`]: without it a clipped line reads as a line that
+/// simply ended, and a complete `ls` row is indistinguishable from the head of
+/// a 2 KB blob. Fitted so the row still ends inside the width, like
+/// [`ellipsize`]'s cut.
+pub(super) const TOOL_LINE_ELLIPSIS: &str = "…";
+
+/// The finished peek's ceiling in wrapped display **rows** — the product of the
+/// two budgets, since each of the [`TOOL_PEEK_LINES`] source lines may spend at
+/// most [`TOOL_LINE_MAX_ROWS`] rows. Enforced in the same loop, so a caller
+/// passing a bigger line budget (the numbered file cells' [`FILE_PEEK_LINES`])
+/// still can't run a committed cell past it.
+pub(super) const TOOL_PEEK_MAX_ROWS: usize = TOOL_PEEK_LINES * TOOL_LINE_MAX_ROWS;
 
 /// How many wrapped rows a tool's `● name(args)` header shows **inline** (and in
 /// the live preview) before the rest is cut with [`TOOL_HEADER_ELLIPSIS`] — so a

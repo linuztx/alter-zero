@@ -8,6 +8,7 @@
 
 use super::theme::*;
 use super::*;
+use std::ops::Range;
 
 /// Display width of `s` in terminal columns.
 ///
@@ -114,30 +115,7 @@ fn wrap_segment(segment: &str, width: usize) -> Vec<String> {
 /// command/shell output word-wraps via [`wrap_output`] instead, and
 /// **messages** keep [`wrap_text`].
 pub(super) fn wrap_verbatim(text: &str, width: u16) -> Vec<String> {
-    if width == 0 {
-        return text.split('\n').map(str::to_string).collect();
-    }
-    let width = width as usize;
-    let mut out = Vec::new();
-    for line in text.split('\n') {
-        if line.is_empty() {
-            out.push(String::new());
-            continue;
-        }
-        let mut cur = String::new();
-        let mut cur_w = 0; // display width of `cur` in columns
-        for g in line.graphemes(true) {
-            let g_w = cols(g);
-            if cur_w > 0 && cur_w + g_w > width {
-                out.push(std::mem::take(&mut cur));
-                cur_w = 0;
-            }
-            cur.push_str(g);
-            cur_w += g_w;
-        }
-        out.push(cur);
-    }
-    out
+    WrapMode::Verbatim.wrap(text, width)
 }
 
 /// Wrap `text` to `width` columns at **word boundaries, preserving
@@ -155,44 +133,148 @@ pub(super) fn wrap_verbatim(text: &str, width: u16) -> Vec<String> {
 /// ([`running_command_lines`]), and the Ctrl+O output ([`tool_full_lines`]),
 /// so the three wrap identically.
 pub(super) fn wrap_output(text: &str, width: u16) -> Vec<String> {
-    if width == 0 {
-        return text.split('\n').map(str::to_string).collect();
-    }
-    let width = width as usize;
-    let mut out = Vec::new();
-    for line in text.split('\n') {
-        let mut cur = String::new();
-        let mut cur_w = 0usize;
-        // Byte index in `cur` just past the most recent whitespace grapheme — a
-        // clean break point. `None` until the first space and after each break.
-        let mut brk: Option<usize> = None;
+    WrapMode::Output.wrap(text, width)
+}
+
+/// Which wrapper a collapsed cell measures and builds its rows with — the
+/// pairing of [`wrap_output`] / [`wrap_verbatim`] with the row **count** and
+/// the **clip** that have to agree with them, kept in one type so a
+/// `+N lines` hint can never count rows a *different* wrapper would have
+/// produced (`docs/long-lines.md`). All three ride one range-emitting scan per
+/// mode, so counting builds no rows at all — which is what lets the running
+/// tail's footer measure the whole retained buffer every animation frame.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) enum WrapMode {
+    /// Word boundaries, whitespace preserved — command and shell output
+    /// ([`wrap_output`]).
+    Output,
+    /// Hard break, whitespace preserved — diff bodies and code
+    /// ([`wrap_verbatim`]).
+    Verbatim,
+}
+
+impl WrapMode {
+    /// Emit the byte range of every display row one `'\n'`-free `line` wraps to
+    /// at `width` (> 0) columns — the single scan behind [`Self::wrap`],
+    /// [`Self::rows`] and [`Self::clip`]. Measured per grapheme cluster in
+    /// display columns like every other width decision in this module.
+    fn scan(self, line: &str, width: usize, emit: &mut dyn FnMut(Range<usize>)) {
+        let mut start = 0usize; // byte index the current row opens at
+        let mut cur_w = 0usize; // display width of `line[start..idx]`
+        let mut brk: Option<usize> = None; // byte index past the last space
+        let mut idx = 0usize; // byte index just past the graphemes consumed
         for g in line.graphemes(true) {
             let g_w = cols(g);
             if cur_w > 0 && cur_w + g_w > width {
-                match brk {
-                    // Break at the last space: it stays on the current row, the
-                    // partial word after it carries to the next.
-                    Some(bp) => {
-                        let cont = cur.split_off(bp);
-                        out.push(std::mem::replace(&mut cur, cont));
-                        cur_w = cols(&cur);
+                match (self, brk) {
+                    // Break at the last space: it stays at the end of the
+                    // current row, the partial word after it carries to the
+                    // next (so concatenating rows rebuilds the line exactly).
+                    (Self::Output, Some(bp)) => {
+                        emit(start..bp);
+                        start = bp;
+                        cur_w = cols(&line[start..idx]);
                     }
-                    // No space to break on — hard-break the over-long word.
-                    None => {
-                        out.push(std::mem::take(&mut cur));
+                    // No space to break on — or a verbatim body, which never
+                    // reflows at spaces: hard-break right here.
+                    _ => {
+                        emit(start..idx);
+                        start = idx;
                         cur_w = 0;
                     }
                 }
                 brk = None;
             }
-            cur.push_str(g);
+            idx += g.len();
             cur_w += g_w;
-            if g.chars().all(char::is_whitespace) {
-                brk = Some(cur.len());
+            if self == Self::Output && g.chars().all(char::is_whitespace) {
+                brk = Some(idx);
             }
         }
-        out.push(cur);
+        emit(start..line.len());
     }
+
+    /// `text` wrapped to `width` display columns, this mode's way — the body of
+    /// the free [`wrap_output`] / [`wrap_verbatim`] every renderer calls.
+    /// `width == 0` disables wrapping (text is only split on `'\n'`).
+    pub(super) fn wrap(self, text: &str, width: u16) -> Vec<String> {
+        if width == 0 {
+            return text.split('\n').map(str::to_string).collect();
+        }
+        let mut out = Vec::new();
+        for line in text.split('\n') {
+            self.scan(line, width as usize, &mut |r| out.push(line[r].to_string()));
+        }
+        out
+    }
+
+    /// How many display rows `text` occupies at `width` — exactly
+    /// `self.wrap(text, width).len()`, counted without building one
+    /// (`wrap_mode_rows_counts_exactly_what_it_would_build` pins the two
+    /// together). This is what a `+N lines` hint counts: rows the reader would
+    /// see, not source lines (`docs/long-lines.md`).
+    pub(super) fn rows(self, text: &str, width: u16) -> usize {
+        if width == 0 {
+            return text.split('\n').count();
+        }
+        let mut n = 0usize;
+        for line in text.split('\n') {
+            self.scan(line, width as usize, &mut |_| n += 1);
+        }
+        n
+    }
+
+    /// One source `line` wrapped to `width` and clipped to `max_rows` display
+    /// rows: the rows to paint — the last ending in [`TOOL_LINE_ELLIPSIS`] when
+    /// anything was cut — plus the number of rows dropped.
+    ///
+    /// The per-line budget a collapsed cell spends on one source line
+    /// (`docs/long-lines.md`): without it a single pathological line (a
+    /// minified bundle, a 2 KB JSON body) fills the whole cell with wrapped
+    /// noise and reports it as one hidden "line". A line that fits comes back
+    /// byte-identical to [`Self::wrap`], unmarked.
+    pub(super) fn clip(self, line: &str, width: u16, max_rows: usize) -> (Vec<String>, usize) {
+        let mut kept: Vec<String> = Vec::new();
+        let mut hidden = 0usize;
+        {
+            let mut push = |text: &str| {
+                if kept.len() < max_rows {
+                    kept.push(text.to_string());
+                } else {
+                    hidden += 1;
+                }
+            };
+            for seg in line.split('\n') {
+                if width == 0 {
+                    push(seg);
+                } else {
+                    self.scan(seg, width as usize, &mut |r| push(&seg[r]));
+                }
+            }
+        }
+        if hidden > 0
+            && let Some(last) = kept.last_mut()
+        {
+            *last = mark_clipped(last, width as usize);
+        }
+        (kept, hidden)
+    }
+}
+
+/// The last kept row of a clipped line, marked: its trailing whitespace
+/// replaced by [`TOOL_LINE_ELLIPSIS`] and the text cut back far enough that the
+/// row still ends inside `width` columns (`0` = unbounded, matching the
+/// wrappers' "no wrapping"). The row-level sibling of [`ellipsize`] — which
+/// marks a row cut *at* the width, where this marks one cut *below* its own
+/// wrapped remainder.
+fn mark_clipped(row: &str, width: usize) -> String {
+    let room = if width == 0 {
+        usize::MAX
+    } else {
+        width.saturating_sub(cols(TOOL_LINE_ELLIPSIS))
+    };
+    let mut out = truncate_cols(row.trim_end(), room);
+    out.push_str(TOOL_LINE_ELLIPSIS);
     out
 }
 

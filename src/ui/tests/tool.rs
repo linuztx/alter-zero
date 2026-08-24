@@ -5,8 +5,9 @@ use super::*;
 use crate::ui::theme::{
     CODE_TAB_WIDTH, EXPAND_HINT, FILE_PEEK_LINES, TOOL_ARGS_COLOR, TOOL_DIFF_ADD_BG,
     TOOL_DIFF_ADD_COLOR, TOOL_DIFF_DEL_BG, TOOL_DIFF_DEL_COLOR, TOOL_DIM_COLOR, TOOL_FAIL_COLOR,
-    TOOL_HEADER_MAX_ROWS, TOOL_OK_COLOR, TOOL_OUTPUT_COLOR, TOOL_PEEK_LINES, TOOL_PEEK_MAX_ROWS,
-    TOOL_PULSE_BRIGHT, TOOL_PULSE_DIM, TOOL_PULSE_PERIOD, TOOL_RUNNING_COLOR, TOOL_WAITING_COLOR,
+    TOOL_HEADER_MAX_ROWS, TOOL_LINE_ELLIPSIS, TOOL_LINE_MAX_ROWS, TOOL_OK_COLOR, TOOL_OUTPUT_COLOR,
+    TOOL_PEEK_LINES, TOOL_PEEK_MAX_ROWS, TOOL_PULSE_BRIGHT, TOOL_PULSE_DIM, TOOL_PULSE_PERIOD,
+    TOOL_RUNNING_COLOR, TOOL_WAITING_COLOR,
 };
 use crate::ui::tool::{live_tool_lines, running_command_lines, tool_full_lines};
 use crate::ui::wrap::cols;
@@ -353,13 +354,14 @@ fn a_finished_peek_shows_the_first_lines_fully_wrapped() {
 
 #[test]
 fn a_finished_peek_bounds_rows_and_hints_when_one_line_overflows_the_budget() {
-    // The safety ceiling: a single pathological line (a minified bundle)
-    // wraps but is bounded to TOOL_PEEK_MAX_ROWS display rows, so it can't
-    // balloon the committed cell into hundreds of rows; the expand hint
-    // appears because content is hidden below the ceiling — even though it
-    // is one source line (a partially-shown line counts as not-fully-shown).
+    // The block ceiling: FOUR pathological lines (a minified bundle each) can
+    // still only spend TOOL_PEEK_MAX_ROWS rows between them — the per-line
+    // budget times the line budget — so a committed cell can never balloon.
+    // The hint counts every display row hidden underneath, across all four
+    // (docs/long-lines.md).
     let long = "x".repeat(600); // 35 content cols → 18 rows uncapped
-    let lines: Vec<String> = tool_lines(&tool("Bash", "cat big", ToolStatus::Ok, &long), 40)
+    let out = vec![long; 4].join("\n");
+    let lines: Vec<String> = tool_lines(&tool("Bash", "cat big", ToolStatus::Ok, &out), 40)
         .iter()
         .map(plain)
         .collect();
@@ -374,8 +376,8 @@ fn a_finished_peek_bounds_rows_and_hints_when_one_line_overflows_the_budget() {
         "the hint signals more: {hint:?}"
     );
     assert!(
-        hint.contains("+1 lines"),
-        "one source line, partially hidden below the window: {hint:?}"
+        hint.contains(&format!("+{} lines", 4 * (18 - TOOL_LINE_MAX_ROWS))),
+        "every row hidden under the ceiling is counted: {hint:?}"
     );
 }
 
@@ -983,8 +985,11 @@ fn an_image_read_cell_is_one_concise_fact_row() {
 fn a_generic_cell_peek_line_wraps_instead_of_clipping() {
     // The single collapsed peek line (an image read's fact row, an error
     // body, an unknown tool) word-wraps to the width like the command peek —
-    // the old render clipped its tail at the terminal edge.
-    let long = "could not read /home/linuztx/some/deeply/nested/missing/file.txt: No such file or directory (os error 2)";
+    // the old render clipped its tail at the terminal edge. A line within the
+    // per-line row budget survives whole; the pathological one is clipped and
+    // marked instead (`a_generic_backend_cell_clips_its_single_peeked_line`,
+    // docs/long-lines.md).
+    let long = "could not read /home/u/missing/file.txt: no such file";
     let width: u16 = 40;
     let lines = tool_lines(&tool("Read", "file.txt", ToolStatus::Failed, long), width);
     let body: Vec<String> = lines[1..].iter().map(plain).collect();
@@ -1897,4 +1902,249 @@ fn a_narrow_terminal_drops_the_mcp_hint_before_the_label() {
     let head = plain(&lines[0]);
     assert!(head.starts_with("● Calling Deepwiki…"), "got {head:?}");
     assert!(!head.contains("ctrl+o"), "no room for the hint at 20 cols");
+}
+
+// --- very long output lines: bounded rows, honest counts (docs/long-lines.md) ---
+
+#[test]
+fn a_finished_peek_clips_one_pathological_line_to_the_per_line_budget() {
+    // The reported mess: a 2 KB `curl` body used to spend the WHOLE block
+    // ceiling (12 rows) on one source line. It now shows its head —
+    // TOOL_LINE_MAX_ROWS rows — marked with the `…` that says it continues.
+    let long = "x".repeat(600); // 35 content cols → 18 rows uncapped
+    let lines: Vec<String> = tool_lines(&tool("Bash", "cat big", ToolStatus::Ok, &long), 40)
+        .iter()
+        .map(plain)
+        .collect();
+    assert_eq!(
+        lines.len(),
+        1 + TOOL_LINE_MAX_ROWS + 1,
+        "header + the {TOOL_LINE_MAX_ROWS}-row line budget + hint: {lines:?}"
+    );
+    let last_row = &lines[TOOL_LINE_MAX_ROWS];
+    assert!(
+        last_row.ends_with(TOOL_LINE_ELLIPSIS),
+        "the cut is visible on the last kept row: {last_row:?}"
+    );
+    let hint = lines.last().unwrap();
+    assert!(
+        hint.contains(&format!("+{} lines", 18 - TOOL_LINE_MAX_ROWS)),
+        "the hint counts the DISPLAY ROWS it hid, not `+1 lines`: {hint:?}"
+    );
+    assert!(hint.contains("ctrl+o to expand"), "{hint:?}");
+    for l in &lines {
+        assert!(cols(l) <= 40, "no row overflows the width: {l:?}");
+    }
+}
+
+#[test]
+fn a_finished_peek_hint_counts_rows_hidden_inside_a_long_line() {
+    // The example verbatim: a short line, then a huge one. The old hint said
+    // `+1 lines` while hiding 15 rows of JSON — the number the user reads is
+    // what expanding actually adds.
+    let out = format!("/home/u/.local/bin/yt-dlp\n{}", "x".repeat(600));
+    let lines: Vec<String> = tool_lines(&tool("Bash", "curl -s …", ToolStatus::Ok, &out), 40)
+        .iter()
+        .map(plain)
+        .collect();
+    assert_eq!(
+        lines.len(),
+        1 + 1 + TOOL_LINE_MAX_ROWS + 1,
+        "header + the short line + the clipped line + hint: {lines:?}"
+    );
+    assert!(
+        lines.last().unwrap().contains("+15 lines"),
+        "18 wrapped rows less the {TOOL_LINE_MAX_ROWS} shown: {lines:?}"
+    );
+}
+
+#[test]
+fn a_clipped_line_still_leaves_room_for_the_lines_after_it() {
+    // The budget is still SOURCE lines: clipping the long one is what buys
+    // its siblings their rows (before, one line could eat the whole block).
+    let out = format!("{}\nbee\nsea", "x".repeat(600));
+    let lines: Vec<String> = tool_lines(&tool("Bash", "cat log", ToolStatus::Ok, &out), 40)
+        .iter()
+        .map(plain)
+        .collect();
+    let joined = lines.join("\n");
+    assert!(
+        joined.contains("bee") && joined.contains("sea"),
+        "the siblings still show: {lines:?}"
+    );
+    assert_eq!(
+        lines.len(),
+        1 + TOOL_LINE_MAX_ROWS + 2 + 1,
+        "header + clipped line + bee + sea + hint: {lines:?}"
+    );
+}
+
+#[test]
+fn a_finished_peek_hint_counts_whole_hidden_lines_in_rows_too() {
+    // Past the source-line budget the hint counts the hidden lines' ROWS: two
+    // hidden lines, one of which wraps to three rows, reads `+4 lines`.
+    let out = format!("a\nb\nc\nd\ne\n{}", "x".repeat(100)); // 100 cols → 3 rows
+    let lines: Vec<String> = tool_lines(&tool("Bash", "cat log", ToolStatus::Ok, &out), 40)
+        .iter()
+        .map(plain)
+        .collect();
+    assert!(
+        lines.last().unwrap().contains("+4 lines"),
+        "`e` (1 row) + the 3-row line: {lines:?}"
+    );
+}
+
+#[test]
+fn everyday_short_output_counts_the_same_as_before() {
+    // Rows and source lines are the same number when nothing wraps — the
+    // change is invisible for ordinary output.
+    let lines: Vec<String> = tool_lines(
+        &tool("Bash", "seq 6", ToolStatus::Ok, "l1\nl2\nl3\nl4\nl5\nl6"),
+        80,
+    )
+    .iter()
+    .map(plain)
+    .collect();
+    assert!(lines.last().unwrap().contains("+2 lines"), "{lines:?}");
+}
+
+#[test]
+fn a_shell_cell_clips_a_pathological_line_too() {
+    // The headerless `!` exec cell shares the peek, so it is bounded the same
+    // way (a `! curl` of a JSON API used to paint twelve rows).
+    let mut t = tool("curl -s api", "", ToolStatus::Ok, &"x".repeat(600));
+    t.shell = true;
+    let lines: Vec<String> = tool_lines(&t, 40).iter().map(plain).collect();
+    assert_eq!(
+        lines.len(),
+        TOOL_LINE_MAX_ROWS + 1,
+        "headerless: the clipped line + hint: {lines:?}"
+    );
+    assert!(lines[TOOL_LINE_MAX_ROWS - 1].ends_with(TOOL_LINE_ELLIPSIS));
+}
+
+#[test]
+fn a_generic_backend_cell_clips_its_single_peeked_line() {
+    // A non-command backend tool (an image read's fact line, an error body)
+    // peeks ONE source line — bounded by the same per-line budget.
+    let long = "x".repeat(600);
+    let lines: Vec<String> = tool_lines(&tool("WebFetch", "https://x", ToolStatus::Ok, &long), 40)
+        .iter()
+        .map(plain)
+        .collect();
+    assert_eq!(
+        lines.len(),
+        1 + TOOL_LINE_MAX_ROWS + 1,
+        "header + budget + hint: {lines:?}"
+    );
+    assert!(lines.last().unwrap().contains("+15 lines"), "{lines:?}");
+}
+
+#[test]
+fn a_read_cell_clips_a_very_long_file_line() {
+    // The same class of bug in the numbered file cell: its first body row was
+    // exempt from the FILE_PEEK_LINES budget, so ONE minified line painted
+    // dozens of rows inline. It is clipped and marked like any other line —
+    // but the hint keeps counting FILE lines, the unit the gutter numbers.
+    let body = format!(" 1 {}\n 2 short\n 3 tail", "x".repeat(400));
+    let lines: Vec<String> = tool_lines(&tool("Read", "min.json", ToolStatus::Ok, &body), 80)
+        .iter()
+        .map(plain)
+        .collect();
+    assert_eq!(
+        lines.len(),
+        2 + TOOL_LINE_MAX_ROWS + 2,
+        "header + `Read 3 lines` + the clipped line + rows 2 and 3: {lines:?}"
+    );
+    assert!(
+        lines[1 + TOOL_LINE_MAX_ROWS].ends_with(TOOL_LINE_ELLIPSIS),
+        "the cut is marked: {lines:?}"
+    );
+    assert!(
+        lines.iter().any(|l| l.contains("short")) && lines.iter().any(|l| l.contains("tail")),
+        "the lines after it still show: {lines:?}"
+    );
+    assert!(
+        !lines.join("\n").contains("ctrl+o to expand"),
+        "every file line is represented — no hint: {lines:?}"
+    );
+}
+
+#[test]
+fn the_ctrl_o_view_never_clips_a_long_line() {
+    // The expansion is where the whole line lives; clipping it would leave
+    // the text nowhere.
+    let long = "x".repeat(600);
+    let lines = tool_full_lines(&tool("Bash", "cat big", ToolStatus::Ok, &long), 40);
+    let joined: String = lines[1..]
+        .iter()
+        .map(|l| plain(l).chars().skip(5).collect::<String>())
+        .collect();
+    assert_eq!(joined, long, "every column survives: {}", lines.len());
+    assert!(
+        !plain(lines.last().unwrap()).contains(TOOL_LINE_ELLIPSIS),
+        "no cut marker in the expansion"
+    );
+}
+
+#[test]
+fn the_running_tail_footer_counts_hidden_rows() {
+    // The live tail's `+N lines ({secs}s)` footer measures what scrolled off
+    // the top the same way the finished cell's hint does: a 600-char line
+    // above the window is 18 rows, not "1 line".
+    let out = format!("{}\nw\nx\ny\nz", "x".repeat(600));
+    let t = tool("Bash", "curl -s api", ToolStatus::Running, &out);
+    let lines: Vec<String> = running_command_lines(&t, Duration::from_secs(3), Duration::ZERO, 40)
+        .iter()
+        .map(plain)
+        .collect();
+    let footer = lines.last().unwrap();
+    assert!(
+        footer.contains("+18 lines (3s)"),
+        "the 18 wrapped rows above the window: {lines:?}"
+    );
+}
+
+#[test]
+fn a_write_cell_clips_a_very_long_line_under_its_summary() {
+    // The `Wrote …` head keeps its row; the pathological content line under it
+    // is bounded like any other, and the short line after it still shows.
+    let body = format!("Wrote 2 lines to min.js\n 1 {}\n 2 ok", "z".repeat(400));
+    let lines: Vec<String> = tool_lines(&tool("Write", "min.js", ToolStatus::Ok, &body), 80)
+        .iter()
+        .map(plain)
+        .collect();
+    assert_eq!(
+        lines.len(),
+        2 + TOOL_LINE_MAX_ROWS + 1,
+        "header + `Wrote …` + the clipped line + row 2: {lines:?}"
+    );
+    assert!(lines[1 + TOOL_LINE_MAX_ROWS].ends_with(TOOL_LINE_ELLIPSIS));
+    assert!(lines.last().unwrap().contains("ok"), "{lines:?}");
+}
+
+#[test]
+fn a_clipped_diff_row_keeps_its_tint_across_the_marker() {
+    // An added row's dark-green tint pads the whole row; the `…` that marks
+    // the cut sits inside it, so the band doesn't break one column early.
+    let body = format!("Updated min.js (+1 -0)\n 1 +{}\n 2  ctx", "z".repeat(400));
+    let lines = tool_lines(&tool("Edit", "min.js", ToolStatus::Ok, &body), 80);
+    let cut_row = &lines[1 + TOOL_LINE_MAX_ROWS];
+    assert!(
+        plain(cut_row).ends_with(TOOL_LINE_ELLIPSIS),
+        "the cut is marked: {:?}",
+        plain(cut_row)
+    );
+    let marker = cut_row.spans.last().unwrap();
+    assert_eq!(
+        marker.style.bg,
+        Some(TOOL_DIFF_ADD_BG),
+        "the marker carries the added-row tint: {marker:?}"
+    );
+    assert_eq!(
+        cols(&plain(cut_row)),
+        80,
+        "the tint still pads the full width: {:?}",
+        plain(cut_row)
+    );
 }

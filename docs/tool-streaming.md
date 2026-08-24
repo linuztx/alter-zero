@@ -79,21 +79,23 @@ A **command-style** tool (a non-shell backend tool that is not a `read`/`write`/
 `⎿` block, like the `!` shell cell:
 
 - **Finished** (`tool_lines`): the first `TOOL_PEEK_LINES` **source lines**,
-  each fully wrapped — "the first 4 lines of output", so a long first line
-  never pushes its siblings out of the peek — then
-  `… +N lines (ctrl+o to expand)`, via the shared `result_peek_block`. Each
-  line **word-wraps, spaces preserved** (`wrap_output`, the same wrapper the
-  Ctrl+O view uses — a prose error like `sudo`'s breaks at words, never
-  mid-"askpass"; `ls -l` columns that fit stay byte-exact) rather than
-  clipping at the terminal edge, so a long line's tail no longer disappears.
-  `TOOL_PEEK_MAX_ROWS` (3× the line budget) is the safety ceiling in display
-  rows, so one pathological line (a minified bundle) can't balloon the
-  committed cell; the `+N lines` hint counts **source lines** not fully
-  shown, so it appears whenever any content is cut — even the wrapped
-  remainder of a single long line. (The legacy diff-fallback peek wraps
-  **verbatim** instead — code, never reflowed at spaces — with each wrapped
-  row coloured by its *source* line's `+`/`-` marker, so a continuation row
-  keeps its tint.)
+  each wrapped — "the first 4 lines of output", so a long first line never
+  pushes its siblings out of the peek — then `… +N lines (ctrl+o to expand)`,
+  via the shared `result_peek_block`. Each line **word-wraps, spaces
+  preserved** (`wrap_output`, the same wrapper the Ctrl+O view uses — a prose
+  error like `sudo`'s breaks at words, never mid-"askpass"; `ls -l` columns
+  that fit stay byte-exact) rather than clipping at the terminal edge, so a
+  long line's tail no longer disappears — and each line is bounded to
+  `TOOL_LINE_MAX_ROWS` rows of the block, its cut closed by a `…`, so one
+  pathological line (a minified bundle, a 2 KB `curl` body) can't spend the
+  whole cell on itself (`docs/long-lines.md`; `TOOL_PEEK_MAX_ROWS`, the
+  product of the two budgets, stays the block's ceiling). The `+N lines` hint
+  counts the **display rows** it didn't show — what pressing Ctrl+O actually
+  adds, counted with the same wrapper the expansion uses — instead of source
+  lines, which is how 1.8 KB of hidden JSON used to report itself as
+  `+1 lines`. (The legacy diff-fallback peek wraps **verbatim** instead —
+  code, never reflowed at spaces — with each wrapped row coloured by its
+  *source* line's `+`/`-` marker, so a continuation row keeps its tint.)
 - **Running** (`running_command_lines`, drawn only in the live strip's preview
   where the boundary-supplied `elapsed` is available): the header, the **last**
   `TOOL_PEEK_LINES` display **rows** of output, then `+{hidden} lines
@@ -103,9 +105,12 @@ A **command-style** tool (a non-shell backend tool that is not a `read`/`write`/
   instead of clipping at the terminal edge; the window is counted in wrapped
   rows, so a single long line tail-follows its own newest rows without
   growing the strip past its budget, and the newest-first walk wraps only
-  what the window can show per animation frame. The footer counts *source
-  lines*, and only the fully hidden ones — a wrapped line whose newest rows
-  are on screen isn't "hidden". (The strip stays sized by the same
+  what the window can show per animation frame. The footer counts *display
+  rows* above the window — the lines wholly above it plus the rows the oldest
+  shown line lost off its own top — so a 2 KB line that scrolled past reads
+  `+18 lines`, not `+1 lines` (`docs/long-lines.md`; `WrapMode::rows` counts
+  without building a row, so the whole retained buffer can be measured every
+  animation frame). (The strip stays sized by the same
   `preview_tool_lines` walk `render_live` paints from, so the count and the
   paint agree by construction.)
 - **Ctrl+O** (`tool_full_lines`): the whole output, uncapped — `wrap_output`

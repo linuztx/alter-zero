@@ -6,7 +6,7 @@ use super::assistant::code_content_rows;
 use super::inline::wrap_inline_hanging;
 use super::theme::*;
 use super::tool::{more_hint_line, tool_output_lines};
-use super::wrap::{cols, truncate_cols};
+use super::wrap::{cols, segments_cols, truncate_cols};
 use super::*;
 
 /// A `⎿` gutter row with an explicit content colour (`None` → dim): the
@@ -252,18 +252,70 @@ fn file_body_indent() -> usize {
     cols(TOOL_RESULT_PREFIX) + 1
 }
 
+/// One numbered row's styled content, clipped to `max_rows` display rows of
+/// `width` columns when the caller sets a budget — the numbered file cell's
+/// half of the per-line row budget (`docs/long-lines.md`). [`code_content_rows`]
+/// hard-breaks at exactly `width`, so `max_rows * width` columns **is**
+/// `max_rows` rows; the cut is marked with a dim [`TOOL_LINE_ELLIPSIS`] in the
+/// last column, which keeps whatever background tint the row carries. A row
+/// that fits comes back unclipped and unmarked.
+fn clip_segments(
+    segs: &[highlight::Seg],
+    width: usize,
+    max_rows: Option<usize>,
+) -> Vec<(String, Style)> {
+    let segments: Vec<(String, Style)> = segs
+        .iter()
+        .map(|seg| (seg.text.clone(), seg.style))
+        .collect();
+    let Some(max) = max_rows else {
+        return segments;
+    };
+    let budget = width.saturating_mul(max);
+    if segments_cols(&segments) <= budget {
+        return segments;
+    }
+    let room = budget.saturating_sub(cols(TOOL_LINE_ELLIPSIS));
+    let mut kept: Vec<(String, Style)> = Vec::new();
+    let mut used = 0usize;
+    for (text, style) in segments {
+        let w = cols(&text);
+        if used + w <= room {
+            used += w;
+            kept.push((text, style));
+        } else {
+            let cut = truncate_cols(&text, room - used);
+            if !cut.is_empty() {
+                kept.push((cut, style));
+            }
+            break;
+        }
+    }
+    kept.push((
+        TOOL_LINE_ELLIPSIS.to_string(),
+        Style::new().fg(TOOL_DIM_COLOR),
+    ));
+    kept
+}
+
 /// Build the display rows for one numbered source row: a dim right-aligned
 /// line number, the `+`/`-` sign in the diff colour, and the content
 /// syntax-highlighted — added rows on the dark-green tint, removed rows
 /// (their text dimmed) on the dark-red one, both padded to the full width.
 /// Long content wraps ([`code_content_rows`]); continuations indent under the
 /// content column and keep the tint.
+///
+/// `max_rows` is the collapsed cell's per-line budget ([`clip_segments`],
+/// `docs/long-lines.md`): a minified `.json` line is cut to that many rows and
+/// marked, instead of painting dozens of rows inline. `None` — the Ctrl+O
+/// expansion and the permission prompt's preview — renders it whole.
 fn numbered_row_lines(
     gutter: &str,
     sign: Option<char>,
     segs: &[highlight::Seg],
     indent_cols: usize,
     width: u16,
+    max_rows: Option<usize>,
 ) -> Vec<Line<'static>> {
     let dim = Style::new().fg(TOOL_DIM_COLOR);
     let indent = " ".repeat(indent_cols);
@@ -285,10 +337,7 @@ fn numbered_row_lines(
         .saturating_sub(indent_cols + gutter_cols)
         .max(1);
 
-    let segments: Vec<(String, Style)> = segs
-        .iter()
-        .map(|seg| (seg.text.clone(), seg.style))
-        .collect();
+    let segments = clip_segments(segs, content_width, max_rows);
     code_content_rows(&segments, content_width as u16)
         .into_iter()
         .enumerate()
@@ -354,7 +403,7 @@ pub(super) fn numbered_body_lines(
         let display = match parse_file_row(raw, signed) {
             Some(FileRow::Numbered { gutter, sign, text }) => {
                 let segs = hl.line(&text);
-                numbered_row_lines(&gutter, sign, &segs, indent_cols, width)
+                numbered_row_lines(&gutter, sign, &segs, indent_cols, width, None)
             }
             Some(FileRow::Gap(raw) | FileRow::Note(raw)) => {
                 // Hunks re-synchronize at the gap; the lexer state resets too.
@@ -400,6 +449,9 @@ pub(super) fn file_cell_lines(
     let mut out = summary_head_lines(&head, width);
 
     let budget = if peek { FILE_PEEK_LINES } else { usize::MAX };
+    // The collapsed cell also bounds ONE source line (`docs/long-lines.md`);
+    // the Ctrl+O expansion is where the whole line lives, so it passes `None`.
+    let line_rows = peek.then_some(TOOL_LINE_MAX_ROWS);
     let mut used = 0usize;
     let mut hidden = 0usize;
     let mut hl = highlight::Highlighter::new(lang);
@@ -419,7 +471,7 @@ pub(super) fn file_cell_lines(
             ])],
             FileRow::Numbered { gutter, sign, text } => {
                 let segs = hl.line(text);
-                numbered_row_lines(gutter, *sign, &segs, file_body_indent(), width)
+                numbered_row_lines(gutter, *sign, &segs, file_body_indent(), width, line_rows)
             }
         };
         if used + display.len() > budget && used > 0 {

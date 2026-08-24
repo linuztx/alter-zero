@@ -377,7 +377,9 @@ OPENROUTER_API_KEY=sk-... cargo run --example tool_smoke -- \
 
 A `bash` cell renders like the `!` shell cell: the coloured `● Bash(cmd)` header
 over a **multi-line `⎿` output peek** — up to `TOOL_PEEK_LINES` lines of the
-output then `… +N lines (ctrl+o to expand)`. Its `Exit code: N` frame (kept in
+output, each bounded to `TOOL_LINE_MAX_ROWS` wrapped rows and closed by a `…`
+when it is cut, then `… +N lines (ctrl+o to expand)` counting the display rows
+the expansion adds (`docs/long-lines.md`). Its `Exit code: N` frame (kept in
 `tool.output` for the model / context replay) is stripped for display, so the
 cell reads like the real command output. **While it runs the cell streams and
 tails its output** — the header, the last lines, and a `+N lines (Ns)` footer —
@@ -496,10 +498,15 @@ sits **one column further in** (`ui::file_body_indent`), matching Claude Code:
   user-message block. Context rows carry no tint. The `⋮` gap and `…` note
   rows stay dim.
 - Long rows **wrap** (`code_content_rows`), continuations indented under the
-  content column, keeping colour and tint.
+  content column, keeping colour and tint — bounded, inline, to
+  `TOOL_LINE_MAX_ROWS` rows per source line with a dim `…` marking the cut
+  (`clip_segments`, `docs/long-lines.md`), so one minified `.json` line can't
+  paint dozens of rows in a collapsed cell. The Ctrl+O expansion and the
+  permission prompt's preview pass no cap and render every row.
 - The **inline peek** shows the first `FILE_PEEK_LINES` (10) body rows (whole
-  source rows only) then the `… +N lines (ctrl+o to expand)` hint; the Ctrl+O
-  transcript shows everything.
+  source rows only) then the `… +N lines (ctrl+o to expand)` hint — counting
+  **file lines** here, the unit the gutter numbers and the expansion shows;
+  the Ctrl+O transcript shows everything.
 
 All the styling is centralized `TOOL_DIFF_*`/`FILE_PEEK_LINES` consts in
 `ui/theme.rs`. Output that **doesn't** parse as the numbered format — a rollout

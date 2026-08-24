@@ -271,7 +271,22 @@ tails its output — the last rows, long lines word-wrapped to the width with
 spaces preserved, + a `+N lines (Ns)` footer — via a
 `StreamEvent::ToolOutput` channel, collapsing to the head peek `… +N lines
 (ctrl+o to expand)` when it finishes, Claude-Code style) in
-`docs/tool-streaming.md`; and the **session scratchpad** (Claude-Code's
+`docs/tool-streaming.md`; the **bounded long line** (`docs/long-lines.md`: a
+peek budgeted in *source lines* let ONE pathological line — a minified bundle,
+a 2 KB `curl` JSON body — spend the whole cell on itself, twelve rows of
+wrapped noise under a hint claiming `+1 lines` was hidden. A source line now
+spends at most `TOOL_LINE_MAX_ROWS` rows of a **collapsed** cell — the peek,
+the shell cell, the generic one-line peek and the numbered file cell alike,
+never Ctrl+O and never the permission preview, where the whole line is the
+point — its cut closed by `TOOL_LINE_ELLIPSIS` so a clipped line can't read as
+a line that simply ended, and the `… +N lines` hint counts the **display
+rows** the expansion adds rather than source lines (the numbered file cells
+keep counting *file* lines: the rule is "count in the unit the expansion
+shows", and their gutter numbers them). The counting is exact and
+allocation-free — `ui::wrap`'s `WrapMode` pairs each wrapper with its own row
+counter and clip over one range-emitting scan, so a hint can never count rows
+a different wrapper would have produced and the running tail's footer can
+measure the whole retained buffer every animation frame); and the **session scratchpad** (Claude-Code's
 temp directory, `docs/scratchpad.md`: one per-user, per-session temp root —
 `{tmp}/alter-zero-{uid}/{session}/` — holding the agent's `scratchpad/`
 beside the background shells' `tasks/` (the pure `scratchpad` module's
@@ -1653,13 +1668,15 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   prompt while `App::shell_mode` is on and as the `Role::Shell` exec-cell
   header bullet in `message_lines`; shell `tool_lines`/`tool_full_lines` are
   headerless `⎿` blocks — inline up to `TOOL_PEEK_LINES` aligned source
-  lines, each fully wrapped
+  lines, each wrapped
   (`result_row` does the corner/continuation indent; a line wider than the
   terminal **word-wraps with spaces preserved** like the Ctrl+O view
   (`wrap_output`, via `result_peek_block`)
-  rather than clipping, the `TOOL_PEEK_MAX_ROWS` display-row ceiling keeping
-  one huge line from ballooning the cell) then `… +N lines (ctrl+o
-  to expand)`, `⎿ Running…` live, the retained output uncapped in the Ctrl+O view;
+  rather than clipping, and is bounded to `TOOL_LINE_MAX_ROWS` rows closed by
+  `TOOL_LINE_ELLIPSIS`, the `TOOL_PEEK_MAX_ROWS` block ceiling — the product
+  of the two budgets — keeping four huge lines from ballooning the cell
+  either; `docs/long-lines.md`) then `… +N lines (ctrl+o
+  to expand)` (counting display **rows**, what expanding adds), `⎿ Running…` live, the retained output uncapped in the Ctrl+O view;
   output over `tui::shell`'s `SHELL_OUTPUT_MAX_BYTES` is **capped in memory** as it's
   read (`tui::shell::append_capped`, codex's pattern — bounds peak RSS so `! tree ~/`
   can't spike memory; the dropped tail is gone, not saved) and the expanded cell

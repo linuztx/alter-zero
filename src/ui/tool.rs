@@ -6,7 +6,9 @@ use super::assistant::expand_code_tabs;
 use super::file_cell::{diff_line_color, file_cell_lines, gutter_row, is_diff_tool};
 use super::inline::wrap_inline_hanging;
 use super::theme::*;
-use super::wrap::{blend, cols, truncate_cols, truncate_spans, wrap_output, wrap_verbatim};
+use super::wrap::{
+    WrapMode, blend, cols, truncate_cols, truncate_spans, wrap_output, wrap_verbatim,
+};
 use super::*;
 
 /// The bullet colour for a tool's lifecycle: dim waiting, grey running, green
@@ -305,10 +307,15 @@ pub(super) fn running_command_lines(
     let wrap_width = u16::try_from(peek_width).unwrap_or(u16::MAX);
     let display = command_display_lines(tool);
     // The tail window: the last TOOL_PEEK_LINES wrapped rows, each remembering
-    // its source line index so the footer can count what's *fully* hidden.
+    // its source line index *and* how many of that line's rows it dropped, so
+    // the footer can count what scrolled off in display rows.
     let mut window: VecDeque<(usize, String)> = VecDeque::new();
+    let mut cut = 0usize; // rows dropped off the top of the oldest shown line
     for (idx, line) in display.iter().enumerate().rev() {
-        for row in wrap_output(line, wrap_width).into_iter().rev() {
+        let rows = wrap_output(line, wrap_width);
+        let over = (window.len() + rows.len()).saturating_sub(TOOL_PEEK_LINES);
+        cut = over.min(rows.len());
+        for row in rows.into_iter().rev() {
             window.push_front((idx, row));
         }
         if window.len() >= TOOL_PEEK_LINES {
@@ -318,9 +325,16 @@ pub(super) fn running_command_lines(
     while window.len() > TOOL_PEEK_LINES {
         window.pop_front();
     }
-    // Source lines wholly above the window. A partially shown wrapped line is
-    // on screen, not hidden — its index is the count of the lines above it.
-    let hidden = window.front().map_or(0, |(idx, _)| *idx);
+    // Display **rows** above the window — the lines wholly above it plus the
+    // rows the oldest shown line lost off its own top. Counting source lines
+    // called a 2 KB line that scrolled past "1 line" (`docs/long-lines.md`);
+    // `WrapMode::rows` builds nothing, so this stays cheap per animation frame.
+    let hidden = window.front().map_or(0, |(idx, _)| {
+        cut + display[..*idx]
+            .iter()
+            .map(|line| WrapMode::Output.rows(line, wrap_width))
+            .sum::<usize>()
+    });
     let shown = window.len();
     for (i, (_, row)) in window.into_iter().enumerate() {
         lines.push(output_row(i, row));
@@ -445,7 +459,8 @@ fn ask_cell_lines(
         lines.extend(result_peek_block(
             rest,
             peek_width,
-            wrap_output,
+            WrapMode::Output,
+            TOOL_PEEK_LINES,
             |i, text, _| output_row(i, text),
         ));
     } else {
@@ -775,9 +790,13 @@ fn tool_cell_body(tool: &ToolCall, width: u16, pulse: Option<Duration>) -> Vec<L
             ToolStatus::Waiting => vec![result_row(0, TOOL_WAITING.to_string())],
             ToolStatus::Running => vec![result_row(0, TOOL_RUNNING.to_string())],
             _ if out_lines.is_empty() => vec![result_row(0, TOOL_NO_OUTPUT.to_string())],
-            _ => result_peek_block(&out_lines, peek_width, wrap_output, |i, text, _| {
-                output_row(i, text)
-            }),
+            _ => result_peek_block(
+                &out_lines,
+                peek_width,
+                WrapMode::Output,
+                TOOL_PEEK_LINES,
+                |i, text, _| output_row(i, text),
+            ),
         };
     }
 
@@ -803,7 +822,8 @@ fn tool_cell_body(tool: &ToolCall, width: u16, pulse: Option<Duration>) -> Vec<L
         lines.extend(result_peek_block(
             &out_lines,
             peek_width,
-            wrap_verbatim,
+            WrapMode::Verbatim,
+            TOOL_PEEK_LINES,
             |i, text, src| gutter_row(i, text, diff_line_color(src)),
         ));
         return lines;
@@ -828,9 +848,13 @@ fn tool_cell_body(tool: &ToolCall, width: u16, pulse: Option<Duration>) -> Vec<L
                     TOOL_NO_OUTPUT.to_string()
                 },
             )],
-            _ => result_peek_block(&display, peek_width, wrap_output, |i, text, _| {
-                output_row(i, text)
-            }),
+            _ => result_peek_block(
+                &display,
+                peek_width,
+                WrapMode::Output,
+                TOOL_PEEK_LINES,
+                |i, text, _| output_row(i, text),
+            ),
         };
         let mut lines = tool_header_lines(tool, width, Some(TOOL_HEADER_MAX_ROWS), pulse);
         lines.extend(peek);
@@ -842,83 +866,77 @@ fn tool_cell_body(tool: &ToolCall, width: u16, pulse: Option<Duration>) -> Vec<L
     // placeholder, an error body — or an unknown tool): coloured header
     // (wrapped when long) + a single collapsed peek line — white output
     // content, dim placeholder — the rest behind the `… +N lines` hint. The
-    // peeked first line **word-wraps** to the width ([`wrap_output`], like the
-    // command peek) instead of clipping at the terminal edge; the
-    // [`TOOL_PEEK_MAX_ROWS`] ceiling keeps one pathological line from
-    // ballooning the cell, counting a line it cut mid-wrap as hidden.
+    // peeked line is the same [`result_peek_block`] every other cell shows
+    // with a one-line budget, so it word-wraps to the width, is clipped to
+    // [`TOOL_LINE_MAX_ROWS`] rows when pathological, and hides its remainder
+    // behind an honest row count (`docs/long-lines.md`).
     let mut lines = tool_header_lines(tool, width, Some(TOOL_HEADER_MAX_ROWS), pulse);
-    let mut hidden = out_lines.len().saturating_sub(1);
     match tool.status {
         ToolStatus::Waiting => lines.push(result_row(0, TOOL_WAITING.to_string())),
         ToolStatus::Running => lines.push(result_row(0, TOOL_RUNNING.to_string())),
         _ if out_lines.is_empty() => lines.push(result_row(0, TOOL_NO_OUTPUT.to_string())),
-        _ => {
-            let wrap_width = u16::try_from(peek_width).unwrap_or(u16::MAX);
-            let wrapped = wrap_output(&out_lines[0], wrap_width);
-            let total = wrapped.len();
-            let take = total.min(TOOL_PEEK_MAX_ROWS);
-            for (i, row) in wrapped.into_iter().take(take).enumerate() {
-                lines.push(output_row(i, row));
-            }
-            if take < total {
-                hidden += 1; // the first line itself was cut mid-wrap
-            }
-        }
-    }
-    if hidden > 0 {
-        lines.push(more_hint_line(hidden));
+        _ => lines.extend(result_peek_block(
+            &out_lines,
+            peek_width,
+            WrapMode::Output,
+            1,
+            |i, text, _| output_row(i, text),
+        )),
     }
     lines
 }
 
-/// The head peek of `out_lines`: the first [`TOOL_PEEK_LINES`] **source
-/// lines**, each **fully wrapped** to `peek_width` — "the first 4 lines of
-/// output", so a long first line never pushes its siblings out of the peek —
-/// built with `row` (which also receives the **source** line, so a diff cell
-/// can colour a wrapped continuation by the source's `+`/`-` marker). The
-/// wrapper is `wrap`: [`wrap_output`] for command/shell output (word
-/// boundaries, spaces preserved, like the Ctrl+O view) or [`wrap_verbatim`]
-/// for diff bodies (code — hard-break, never reflowed at spaces) — either
-/// way a long line's tail no longer disappears past the terminal edge. A
-/// `… +N lines` hint follows when any source line isn't fully shown.
+/// The head peek of `out_lines`: its first `budget_lines` **source lines** —
+/// "the first 4 lines of output", so a long first line never pushes its
+/// siblings out of the peek — each wrapped to `peek_width` with `mode` and
+/// **clipped to [`TOOL_LINE_MAX_ROWS`] rows** ([`WrapMode::clip`], the last
+/// kept row marked with `…`), built with `row` (which also receives the
+/// **source** line, so a diff cell can colour a wrapped continuation by the
+/// source's `+`/`-` marker). [`WrapMode::Output`] for command/shell output
+/// (word boundaries, spaces preserved, like the Ctrl+O view),
+/// [`WrapMode::Verbatim`] for diff bodies (code — hard-break, never reflowed
+/// at spaces) — either way a long line's tail no longer disappears past the
+/// terminal edge, and no single line can fill the cell with wrapped noise
+/// (`docs/long-lines.md`).
 ///
-/// [`TOOL_PEEK_MAX_ROWS`] is the safety ceiling in display rows: one
-/// pathological line (a minified bundle) can't balloon a committed cell into
-/// hundreds of rows. `hidden` counts **source lines** not fully shown (a
-/// line the ceiling cut mid-wrap counts as hidden), so the hint appears
-/// whenever any content is cut — even within a single line. The wrap stops
-/// once a budget is spent, so this is O(peek), not O(output).
+/// [`TOOL_PEEK_MAX_ROWS`] stays the block's ceiling (it binds only for a
+/// caller whose line budget exceeds [`TOOL_PEEK_LINES`]). The trailing
+/// `… +N lines` hint counts **display rows** not shown — the rows pressing
+/// Ctrl+O actually adds, counted with the same `mode` the expansion wraps
+/// with — instead of source lines, which is how 1.8 KB of hidden JSON used to
+/// report itself as `+1 lines`. Counting allocates nothing
+/// ([`WrapMode::rows`]), so this stays cheap even on a 64 KiB output.
 fn result_peek_block(
     out_lines: &[String],
     peek_width: usize,
-    wrap: fn(&str, u16) -> Vec<String>,
+    mode: WrapMode,
+    budget_lines: usize,
     row: impl Fn(usize, String, &str) -> Line<'static>,
 ) -> Vec<Line<'static>> {
     let wrap_width = u16::try_from(peek_width).unwrap_or(u16::MAX);
     let mut lines: Vec<Line> = Vec::new();
-    let mut fully_shown = 0usize; // source lines whose every wrapped row fits
-    for line in out_lines.iter().take(TOOL_PEEK_LINES) {
-        if lines.len() >= TOOL_PEEK_MAX_ROWS {
+    let mut hidden = 0usize; // display rows the cell doesn't show
+    for (i, line) in out_lines.iter().enumerate() {
+        let room = TOOL_PEEK_MAX_ROWS.saturating_sub(lines.len());
+        if i >= budget_lines || room == 0 {
+            // Past the budget: every remaining line is hidden whole.
+            hidden += out_lines[i..]
+                .iter()
+                .map(|rest| mode.rows(rest, wrap_width))
+                .sum::<usize>();
             break;
         }
-        let wrapped = wrap(line, wrap_width);
-        let total = wrapped.len();
-        let room = TOOL_PEEK_MAX_ROWS - lines.len();
-        let take = total.min(room);
-        for text in wrapped.into_iter().take(take) {
+        let (rows, cut) = mode.clip(line, wrap_width, TOOL_LINE_MAX_ROWS.min(room));
+        hidden += cut;
+        for text in rows {
             // The very first display row of the block gets the `⎿` corner
             // ([`gutter_row`]'s index 0); every later row — a wrapped
             // continuation or the next source line — indents under the content
             // column, exactly like the uncapped Ctrl+O block.
-            let i = lines.len();
-            lines.push(row(i, text, line));
+            let at = lines.len();
+            lines.push(row(at, text, line));
         }
-        if take < total {
-            break; // the ceiling cut this line mid-wrap: only partially shown
-        }
-        fully_shown += 1;
     }
-    let hidden = out_lines.len() - fully_shown;
     if hidden > 0 {
         lines.push(more_hint_line(hidden));
     }

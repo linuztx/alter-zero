@@ -4,10 +4,10 @@ use super::*;
 use crate::ui::theme::{
     AI_BULLET, BULLET_WIDTH, ERROR_BULLET, INDENT, PROMPT, SHELL_MODE_COLOR, TOOL_ARGS_COLOR,
     TOOL_DIFF_ADD_BG, TOOL_DIFF_ADD_COLOR, TOOL_DIFF_DEL_COLOR, TOOL_HEADER_ELLIPSIS,
-    TOOL_HEADER_MAX_ROWS, USER_BG_COLOR, USER_BULLET,
+    TOOL_HEADER_MAX_ROWS, TOOL_LINE_ELLIPSIS, USER_BG_COLOR, USER_BULLET,
 };
 use crate::ui::tool::{running_command_lines, tool_full_lines};
-use crate::ui::wrap::{cols, ellipsize, truncate_cols, wrap_output, wrap_verbatim};
+use crate::ui::wrap::{WrapMode, cols, ellipsize, truncate_cols, wrap_output, wrap_verbatim};
 
 #[test]
 fn ellipsize_marks_a_cut_and_keeps_fitting_text_whole() {
@@ -770,4 +770,108 @@ fn truncate_cols_never_splits_a_zwj_cluster() {
         "",
         "a cluster wider than the budget is dropped whole, never split"
     );
+}
+
+// --- WrapMode: the wrap / count / clip triple (docs/long-lines.md) ---
+
+#[test]
+fn wrap_mode_rows_counts_exactly_what_it_would_build() {
+    // The counter and the wrapper are two views of one scan, so a `+N lines`
+    // hint can never count rows a different wrapper would have produced.
+    // Property: for every mode, text and width, `rows` == `wrap(...).len()`.
+    let corpus = [
+        "",
+        "short",
+        "a  b   c",
+        "the quick brown fox jumps over the lazy dog",
+        "sudo: a terminal is required to read the password; either use the -S \
+         option or configure an askpass helper",
+        &"x".repeat(600),
+        &"0123456789 ".repeat(20),
+        "  indented   columns   stay   put  ",
+        "你好世界 CJK is two columns wide 你好世界",
+        "line one\nline two\n\nline four",
+        "trailing space at the break ",
+        &format!("{}\n{}", "y".repeat(120), "z"),
+    ];
+    for mode in [WrapMode::Output, WrapMode::Verbatim] {
+        for text in corpus {
+            for width in [0u16, 1, 2, 5, 13, 35, 80] {
+                assert_eq!(
+                    mode.rows(text, width),
+                    mode.wrap(text, width).len(),
+                    "{mode:?} at width {width} on {text:?}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn wrap_mode_rows_agrees_with_the_free_wrappers() {
+    // The free functions every other renderer calls ARE the modes, so the
+    // Ctrl+O view's row count and a peek's hint measure the same thing.
+    let text = "a long enough line to wrap a few times at a narrow width";
+    assert_eq!(WrapMode::Output.wrap(text, 13), wrap_output(text, 13));
+    assert_eq!(WrapMode::Verbatim.wrap(text, 13), wrap_verbatim(text, 13));
+}
+
+#[test]
+fn wrap_mode_clip_bounds_the_rows_marks_the_cut_and_counts_the_rest() {
+    // One pathological line: the head is kept, the last kept row ends in the
+    // `…` that says it continues, and the dropped rows are counted — the
+    // number the `+N lines` hint reports.
+    let long = "x".repeat(350); // 35 cols → 10 rows
+    let (rows, hidden) = WrapMode::Output.clip(&long, 35, 3);
+    assert_eq!(rows.len(), 3, "clipped to the budget: {rows:?}");
+    assert_eq!(hidden, 7, "the rows it dropped: {rows:?}");
+    assert!(
+        rows.last().unwrap().ends_with(TOOL_LINE_ELLIPSIS),
+        "the cut is visible: {rows:?}"
+    );
+    for r in &rows {
+        assert!(cols(r) <= 35, "no row overflows the width: {r:?}");
+    }
+}
+
+#[test]
+fn wrap_mode_clip_never_overflows_on_wide_glyphs() {
+    // The marker is fitted in display COLUMNS, so it replaces a whole CJK cell
+    // rather than pushing the row one column past the width (which would wrap
+    // the cell's own row and undo the budget).
+    let wide = "你好世界".repeat(20);
+    let (rows, hidden) = WrapMode::Output.clip(&wide, 11, 2);
+    assert!(hidden > 0, "the line is long enough to clip: {rows:?}");
+    assert!(rows.last().unwrap().ends_with(TOOL_LINE_ELLIPSIS));
+    for r in &rows {
+        assert!(cols(r) <= 11, "no row overflows the width: {r:?}");
+    }
+}
+
+#[test]
+fn wrap_mode_clip_leaves_a_fitting_line_untouched() {
+    // The everyday case: a line that fits its budget is byte-identical to the
+    // plain wrap — no marker, nothing hidden.
+    let text = "sudo: a terminal is required to read the password";
+    let (rows, hidden) = WrapMode::Output.clip(text, 25, 3);
+    assert_eq!(rows, wrap_output(text, 25));
+    assert_eq!(hidden, 0);
+    assert!(!rows.last().unwrap().ends_with(TOOL_LINE_ELLIPSIS));
+}
+
+#[test]
+fn wrap_mode_clip_marks_a_cut_that_lands_on_a_word_boundary() {
+    // `wrap_output` leaves the break space at the end of a row, so a cut row
+    // could read `foo …`. The marker replaces that trailing space instead of
+    // hanging off it.
+    let text = "alpha beta gamma delta epsilon zeta eta theta";
+    let (rows, hidden) = WrapMode::Output.clip(text, 12, 1);
+    assert!(hidden > 0);
+    let last = rows.last().unwrap();
+    assert!(last.ends_with(TOOL_LINE_ELLIPSIS), "marked: {last:?}");
+    assert!(
+        !last.trim_end_matches(TOOL_LINE_ELLIPSIS).ends_with(' '),
+        "no space before the marker: {last:?}"
+    );
+    assert!(cols(last) <= 12, "still fits: {last:?}");
 }
