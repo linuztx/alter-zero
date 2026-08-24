@@ -12,15 +12,15 @@ JSON body from `curl`. Then a single source line eats the whole cell:
       ormat=json" 2>/dev/null)
   ⎿  /home/linuztx/.local/bin/yt-dlp
      {"title":"How to Use Burp MCP with Claude to Find Bugs from HTTP
-     History","author_name":"𝙇𝙤𝙨\ud835\
-     ude69𝙨𝙚𝙘","author_url":"https://ww
+     History","author_name":"\ud835\ude47\ud835\ude64\ud835\ude68\ud835\
+     ude69\ud835\ude68\ud835\ude5a\ud835\ude58","author_url":"https://ww
      w.youtube.com/@lostsec_ftw","type":"video","height":113,"width":200
      ,"version":"1.0","provider_name":"YouTube","provider_url":"https://
      www.youtube.com/","thumbnail_height":360,"thumbnail_width":480,"thu
      mbnail_url":"https://i.ytimg.com/vi/Vr-NEWVLN9Y/hqdefault.jpg","htm
-     l":"<iframe width="200" height="113"
-     src="https://www.youtube.com/embed/Vr-NEWVLN9Y?feature=oembed\
-     u0022 frameborder="0" allow="accelerometer;
+     l":"\u003ciframe width=\u0022200\u0022 height=\u0022113\u0022
+     src=\u0022https://www.youtube.com/embed/Vr-NEWVLN9Y?feature=oembed\
+     u0022 frameborder=\u00220\u0022 allow=\u0022accelerometer;
      autoplay; clipboard-write; encrypted-media; gyroscope;
      … +1 lines (ctrl+o to expand)
 ```
@@ -105,18 +105,18 @@ inline).
 ## The result
 
 ```
-● Bash(which yt-dlp youtube-dl 2>/dev/null; curl -s
-      "https://www.youtube.com/oembed?url=https://youtu.be/Vr-NEWVLN9Y&f
-      ormat=json" 2>/dev/null)
-  ⎿  /home/linuztx/.local/bin/yt-dlp
-     {"title":"How to Use Burp MCP with Claude to Find Bugs from HTTP
-     History","author_name":"𝙇𝙤𝙨\ud835\
-     ude69𝙨𝙚𝙘","author_url":"https://…
+● Bash(curl -s
+      "https://www.youtube.com/oembed?url=https://youtu.be/Vr-NEWVLN9Y&format=js
+      on")
+  ⎿  {"title":"How to Use Burp MCP with Claude to Find Bugs from HTTP
+     History","author_name":"\ud835\ude47\ud835\ude64\ud835\ude68\ud835\ude69\ud
+     835\ude68\ud835\ude5a\ud835\ude58","author_url":"https://www.youtube.com/@…
      … +11 lines (ctrl+o to expand)
 ```
 
-Four rows instead of twelve, the cut marked, and a number that means what it
-says.
+Three rows instead of twelve, the cut marked, and a number that means what it
+says: the expansion holds exactly fourteen rows, three of them shown. (Captured
+from a live `openai/gpt-4o-mini` turn against the command from the report.)
 
 ## Code map
 
