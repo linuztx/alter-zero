@@ -30,7 +30,15 @@ use crate::stream::{CancelToken, TokenUsage};
 /// image whose upload couldn't fit 3 s spent its whole retry budget re-hitting
 /// the same wall, and a slow header exchange flashed spurious
 /// `retrying n/3` counters a few seconds into a normal turn.
-const NET_OP_TIMEOUT: Duration = Duration::from_secs(120);
+///
+/// The `/models` fetch ([`super::models::fetch_models`]) deliberately shares
+/// this exact deadline: [`super::http_client`] caches one client **per
+/// timeout**, so a models-only deadline built a second full client stack — its
+/// own blocking-runtime thread, connection pool and TLS config — beside the
+/// chat client, held for the life of the process. One timeout means one
+/// client: `/model` and the chat turns ride the same pool, and the picker's
+/// fetch warms the very connection the next turn reuses.
+pub(crate) const NET_OP_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// How often [`drain_stream`] wakes to poll the [`CancelToken`] while the
 /// transport channel is quiet — the Esc-interrupt/quit acknowledgement

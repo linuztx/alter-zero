@@ -41,13 +41,22 @@ pub struct ModelEntry {
 }
 
 /// The OpenAI `/models` envelope: `{ "data": [ { "id", "name"? } ] }`. Each
-/// record stays a raw [`serde_json::Value`] so one malformed aggregator entry
-/// (a missing/null/non-string id, a non-object row) is skipped per-record
+/// record stays an **unparsed** [`RawValue`] slice borrowed from the body, so
+/// the envelope parse costs one fat pointer per record: materializing every
+/// record as a [`serde_json::Value`] at once cost ~10x the body's size in
+/// small heap blocks the allocator then kept — +6.6 MB RSS per `/model` open
+/// against a real 668 KB OpenRouter list, where the rows the picker keeps
+/// ([`ModelEntry`]) total ~47 KB (`examples/mem_probe.rs`). [`parse_models`]
+/// builds one record's tree at a time and drops it before the next, so the
+/// peak is a single record — and one malformed aggregator entry (a
+/// missing/null/non-string id, a non-object row) is still skipped per-record
 /// instead of failing the whole list into a Decode error.
+///
+/// [`RawValue`]: serde_json::value::RawValue
 #[derive(Debug, Deserialize)]
-struct ModelsResponse {
-    #[serde(default)]
-    data: Vec<serde_json::Value>,
+struct ModelsResponse<'a> {
+    #[serde(default, borrow)]
+    data: Vec<&'a serde_json::value::RawValue>,
 }
 
 /// Parse a `/models` response body into rows tagged with `provider`, sorted by
@@ -63,28 +72,39 @@ pub fn parse_models(body: &str, provider: &str) -> Result<Vec<ModelEntry>> {
     let mut out: Vec<ModelEntry> = parsed
         .data
         .iter()
-        .filter_map(|record| {
-            let id = record.get("id")?.as_str()?;
-            if id.is_empty() {
-                return None;
-            }
-            let display_name = record
-                .get("name")
-                .and_then(serde_json::Value::as_str)
-                .filter(|n| !n.trim().is_empty())
-                .unwrap_or(id);
-            Some(ModelEntry {
-                id: id.to_string(),
-                provider: provider.to_string(),
-                display_name: display_name.to_string(),
-                reasoning: reasoning_support_of(record),
-                vision: vision_support_of(record),
-                context: context_window_of(record),
-            })
+        .filter_map(|raw| {
+            // One record's tree at a time (see ModelsResponse); the syntax was
+            // validated by the envelope parse, so the re-parse can only fail
+            // on a shape the per-record skip covers anyway.
+            let record: serde_json::Value = serde_json::from_str(raw.get()).ok()?;
+            entry_of(&record, provider)
         })
         .collect();
     out.sort_by(|a, b| a.id.cmp(&b.id));
     Ok(out)
+}
+
+/// One `/models` record's [`ModelEntry`], or `None` for a record without a
+/// usable string id (skipped, never fatal — aggregator lists carry the odd
+/// malformed row).
+fn entry_of(record: &serde_json::Value, provider: &str) -> Option<ModelEntry> {
+    let id = record.get("id")?.as_str()?;
+    if id.is_empty() {
+        return None;
+    }
+    let display_name = record
+        .get("name")
+        .and_then(serde_json::Value::as_str)
+        .filter(|n| !n.trim().is_empty())
+        .unwrap_or(id);
+    Some(ModelEntry {
+        id: id.to_string(),
+        provider: provider.to_string(),
+        display_name: display_name.to_string(),
+        reasoning: reasoning_support_of(record),
+        vision: vision_support_of(record),
+        context: context_window_of(record),
+    })
 }
 
 /// The effort ladder offered when a provider says "reasoning-capable" without
@@ -253,9 +273,12 @@ pub fn fetch_models(cfg: &ModelConfig, cancel: &CancelToken) -> Result<Vec<Model
     if cancel.is_cancelled() {
         return Err(LlmError::Cancelled);
     }
-    // A one-shot GET: a generous per-operation timeout (the /models body can be
-    // a few hundred KB across several reads, each bounded by this).
-    let client = super::http_client(std::time::Duration::from_secs(30))?;
+    // A one-shot GET on the session's **shared** HTTP client — the chat
+    // stream's own per-operation stall deadline, on purpose: `http_client`
+    // caches one client per timeout, so a models-only deadline paid a second
+    // full client stack (blocking-runtime thread, pool, TLS config) for the
+    // life of the process (see `openai::NET_OP_TIMEOUT`).
+    let client = super::http_client(super::openai::NET_OP_TIMEOUT)?;
     let url = models_endpoint(cfg);
     let mut req = client.get(&url).header("accept", "application/json");
     if let Some(key) = &cfg.api_key {
@@ -268,17 +291,28 @@ pub fn fetch_models(cfg: &ModelConfig, cancel: &CancelToken) -> Result<Vec<Model
     if !resp.status().is_success() {
         let status = resp.status().as_u16();
         let mut body = String::new();
-        let _ = resp.read_to_string(&mut body);
+        let _ = (&mut resp)
+            .take(MODELS_BODY_MAX_BYTES)
+            .read_to_string(&mut body);
         return Err(LlmError::Api { status, body });
     }
     if cancel.is_cancelled() {
         return Err(LlmError::Cancelled);
     }
     let mut body = String::new();
-    resp.read_to_string(&mut body)
+    (&mut resp)
+        .take(MODELS_BODY_MAX_BYTES)
+        .read_to_string(&mut body)
         .map_err(|e| LlmError::Http(e.to_string()))?;
     parse_models(&body, &cfg.provider_id)
 }
+
+/// The most a `/models` response body may buffer — the `SHELL_OUTPUT_MAX_BYTES`
+/// posture: an unbounded `read_to_string` off the network lets one broken (or
+/// hostile) endpoint balloon resident memory without limit. Generous — the
+/// largest real list (OpenRouter's whole catalog) is under 1 MiB; a body cut
+/// at the cap fails the parse as an ordinary decode error.
+const MODELS_BODY_MAX_BYTES: u64 = 8 * 1024 * 1024;
 
 #[cfg(test)]
 mod tests {
@@ -305,6 +339,35 @@ mod tests {
         // A zero/negative length is meaningless — treat as unknown.
         let zero = r#"{"data":[{"id":"m","context_length":0}]}"#;
         assert_eq!(parse_models(zero, "p").unwrap()[0].context, None);
+    }
+
+    #[test]
+    fn entry_of_reads_one_record_and_skips_an_unusable_one() {
+        // The per-record conversion: one record's parsed tree in, one
+        // ModelEntry out — `parse_models` materializes records one at a time
+        // through this, so the whole-list `Value` tree (megabytes of small
+        // heap blocks for a real aggregator body) never exists at once.
+        let record: serde_json::Value =
+            serde_json::from_str(r#"{"id":"m","name":"M","context_length":8192}"#).unwrap();
+        let entry = entry_of(&record, "p").expect("a usable record");
+        assert_eq!(entry.id, "m");
+        assert_eq!(entry.display_name, "M");
+        assert_eq!(entry.provider, "p");
+        assert_eq!(entry.context, Some(8192));
+        // The per-record skip: a non-object / id-less record is None, never
+        // an error (the list must survive one malformed aggregator row).
+        assert!(entry_of(&serde_json::Value::from(42), "p").is_none());
+        assert!(entry_of(&serde_json::json!({"name": "no id"}), "p").is_none());
+    }
+
+    #[test]
+    fn envelope_keys_around_data_are_ignored() {
+        // OpenAI sends `{"object":"list","data":[…]}` — keys before *and*
+        // after `data` must be skipped, whatever the parse's internal shape.
+        let body = r#"{"object":"list","data":[{"id":"m"}],"has_more":false}"#;
+        let models = parse_models(body, "p").unwrap();
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0].id, "m");
     }
 
     #[test]

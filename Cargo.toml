@@ -62,7 +62,12 @@ serde = { version = "1", features = ["derive"] }
 # rather than sorting them: a model's tool-call arguments render in the order
 # it wrote them (`repoName` before the long `question` it qualifies), which is
 # what the MCP cell headers and the permission prompt show (docs/mcp.md).
-serde_json = { version = "1", features = ["preserve_order"] }
+# `raw_value` lets the `/v1/models` parse borrow each record as an unparsed
+# slice of the body instead of materializing the whole catalog as a `Value`
+# tree at once — the tree cost ~10x the body in small heap blocks the
+# allocator then kept (+6.6 MB RSS per `/model` open on a real 668 KB
+# OpenRouter list, measured by examples/mem_probe.rs; docs/llm.md).
+serde_json = { version = "1", features = ["preserve_order", "raw_value"] }
 # The real LLM backend (docs/llm.md). Used ONLY at the I/O boundary — the `llm`
 # module's HTTP client (src/llm/openai.rs, src/llm/models.rs) and the backend
 # bridge (src/llm/backend.rs) — so the pure cores (config parse, the reasoning
