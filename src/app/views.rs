@@ -119,18 +119,38 @@ impl App {
         }
         match key.code {
             KeyCode::Char('o') => {
-                if matches!(self.view, View::ResumePicker | View::ContextDebug) {
+                if matches!(
+                    self.view,
+                    View::ResumePicker | View::ContextDebug | View::ClassifierContext
+                ) {
                     return Some(Action::None);
                 }
                 self.toggle_tool_view();
                 Some(Action::ToggleToolView)
             }
             KeyCode::Char('d') => {
-                if matches!(self.view, View::ResumePicker | View::ToolOutput) {
+                if matches!(
+                    self.view,
+                    View::ResumePicker | View::ToolOutput | View::ClassifierContext
+                ) {
                     return Some(Action::None);
                 }
                 self.toggle_context_debug();
                 Some(Action::ToggleContextDebug)
+            }
+            // Ctrl+G — the classifier's own window (`docs/permissions.md`).
+            // The third read-only overlay, and the one a permission prompt
+            // most wants: when the classifier fell back to asking, what it
+            // knew is the question the prompt raises.
+            KeyCode::Char('g') => {
+                if matches!(
+                    self.view,
+                    View::ResumePicker | View::ToolOutput | View::ContextDebug
+                ) {
+                    return Some(Action::None);
+                }
+                self.toggle_classifier_context();
+                Some(Action::ToggleClassifierContext)
             }
             _ => None,
         }
@@ -151,7 +171,10 @@ impl App {
             View::Conversation => View::ToolOutput,
             // The Ctrl+O guard in on_key keeps the picker and the Ctrl+D view
             // out of here; the arm is only exhaustiveness.
-            View::ToolOutput | View::ResumePicker | View::ContextDebug => View::Conversation,
+            View::ToolOutput
+            | View::ResumePicker
+            | View::ContextDebug
+            | View::ClassifierContext => View::Conversation,
         };
         self.tool_scroll = 0;
         self.tool_follow = self.view == View::ToolOutput;
@@ -209,10 +232,75 @@ impl App {
         self.backtrack = Backtrack::default();
         self.view = match self.view {
             View::Conversation => View::ContextDebug,
-            View::ContextDebug | View::ToolOutput | View::ResumePicker => View::Conversation,
+            View::ContextDebug
+            | View::ToolOutput
+            | View::ResumePicker
+            | View::ClassifierContext => View::Conversation,
         };
         self.debug_scroll = 0;
         self.debug_follow = self.view == View::ContextDebug;
+    }
+
+    /// Keys while the Ctrl+G classifier-context view is showing: the same
+    /// pager set as its two siblings, with q/Esc (or Ctrl+G itself, handled
+    /// globally) closing it. Read-only — the view shows what the classifier
+    /// reads, and nothing here can change it. See `docs/permissions.md`.
+    pub(super) fn on_key_classifier_context(&mut self, key: KeyEvent) -> Action {
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('q') => {
+                self.toggle_classifier_context();
+                Action::ToggleClassifierContext
+            }
+            KeyCode::Up => {
+                self.classifier_follow = false;
+                self.classifier_scroll = self.classifier_scroll.saturating_sub(1);
+                Action::None
+            }
+            KeyCode::Down => {
+                self.classifier_scroll = self.classifier_scroll.saturating_add(1);
+                Action::None
+            }
+            KeyCode::PageUp => {
+                self.classifier_follow = false;
+                self.classifier_scroll = self.classifier_scroll.saturating_sub(TOOL_VIEW_PAGE);
+                Action::None
+            }
+            KeyCode::PageDown => {
+                self.classifier_scroll = self.classifier_scroll.saturating_add(TOOL_VIEW_PAGE);
+                Action::None
+            }
+            KeyCode::Home => {
+                self.classifier_follow = false;
+                self.classifier_scroll = 0;
+                Action::None
+            }
+            KeyCode::End => {
+                // Past any end — `settle_classifier_scroll` pins it to the
+                // bottom and re-engages tail-follow, like the pager's End.
+                self.classifier_scroll = usize::MAX;
+                Action::None
+            }
+            _ => Action::None,
+        }
+    }
+
+    /// Flip between the conversation and the Ctrl+G classifier-context view —
+    /// [`toggle_context_debug`](Self::toggle_context_debug)'s sibling, with
+    /// the same activity rules and the same open-at-the-bottom tail-follow
+    /// (a view left open while the agent works keeps the newest actions in
+    /// sight as they land).
+    pub(super) fn toggle_classifier_context(&mut self) {
+        self.shortcuts_open = false;
+        self.backtrack = Backtrack::default();
+        self.view = match self.view {
+            View::Conversation => View::ClassifierContext,
+            View::ClassifierContext
+            | View::ContextDebug
+            | View::ToolOutput
+            | View::ResumePicker => View::Conversation,
+        };
+        self.classifier_scroll = 0;
+        self.classifier_follow = self.view == View::ClassifierContext;
     }
 
     /// Settle the tool-view scroll for a draw given the largest offset the current
@@ -240,6 +328,19 @@ impl App {
             max
         } else {
             self.debug_scroll.min(max)
+        };
+    }
+
+    /// Settle the Ctrl+G view's scroll for a draw, exactly like
+    /// [`settle_debug_scroll`](Self::settle_debug_scroll).
+    pub fn settle_classifier_scroll(&mut self, max: usize) {
+        if self.classifier_scroll >= max {
+            self.classifier_follow = true;
+        }
+        self.classifier_scroll = if self.classifier_follow {
+            max
+        } else {
+            self.classifier_scroll.min(max)
         };
     }
 }

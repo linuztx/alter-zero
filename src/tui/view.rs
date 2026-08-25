@@ -280,6 +280,28 @@ impl Session<'_> {
             .draw_overlay(|area, buf| ui::render_context_view(area, buf, app, lines))
     }
 
+    /// Render the Ctrl+G classifier-context view onto the alternate screen —
+    /// the context view's sibling. The block is pulled from the **backend**
+    /// here rather than cached: it grows through a turn (every tool call
+    /// appends a line) and resets at the next user message, so a view left
+    /// open must show the log as it lands. Cheap by construction — the
+    /// context is bounded to `CONTEXT_MAX_ACTIONS` short lines, which is why
+    /// this needs no `ContextCache` sibling. See `docs/permissions.md`.
+    pub(crate) fn draw_classifier_view(&mut self) -> io::Result<()> {
+        let context = self.models.backend().classifier_context();
+        self.app.set_classifier_context(context);
+        let screen = self.term.screen();
+        let max = ui::tool_view_max_scroll_for(
+            ui::classifier_lines(&self.app, screen.width).len(),
+            screen.height,
+        );
+        self.app.settle_classifier_scroll(max);
+        let lines = ui::classifier_lines(&self.app, screen.width);
+        let app = &self.app;
+        self.term
+            .draw_overlay(|area, buf| ui::render_classifier_view(area, buf, app, &lines))
+    }
+
     /// Paint whichever view is current — the draw tick's whole body.
     pub(crate) fn draw_active_view(&mut self) -> io::Result<()> {
         match self.app.view {
@@ -318,6 +340,7 @@ impl Session<'_> {
             View::ToolOutput => self.draw_tool_view(),
             View::ResumePicker => self.draw_resume_picker(),
             View::ContextDebug => self.draw_context_view(),
+            View::ClassifierContext => self.draw_classifier_view(),
         }
     }
 
@@ -573,6 +596,21 @@ impl Session<'_> {
             // / Phase 7). A resize under the overlay forces the purge-rebuild
             // every resize gets, and an open agent session view rebuilds
             // itself (docs/agent-tool.md).
+            self.overlay_return_repaint()
+        }
+    }
+
+    /// Ctrl+G: the classifier-context view — the same overlay dance again
+    /// (`docs/permissions.md`). Nothing to release on the way out: the view
+    /// holds no cache, only the injected block, which the next open refreshes
+    /// from the backend anyway.
+    pub(crate) fn toggle_classifier_context(&mut self) -> io::Result<()> {
+        if self.app.view == View::ClassifierContext {
+            self.term.enter_overlay()?;
+            self.draw_classifier_view()
+        } else {
+            self.app.set_classifier_context(None);
+            self.term.exit_overlay()?;
             self.overlay_return_repaint()
         }
     }

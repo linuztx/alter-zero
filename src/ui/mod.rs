@@ -39,6 +39,7 @@ mod agent;
 mod ask_view;
 mod assistant;
 mod background_view;
+mod classifier_view;
 mod context_view;
 mod conversation;
 mod file_cell;
@@ -76,6 +77,7 @@ pub use self::agent::{
 };
 pub use self::ask_view::{ask_height, ask_lines, render_ask};
 pub use self::background_view::{background_view_lines, render_background_view};
+pub use self::classifier_view::{classifier_lines, render_classifier_view};
 pub use self::context_view::{ContextCache, context_lines, render_context_view};
 pub use self::conversation::{
     banner_tail, committed_history, conversation_lines, repaint_lines, repaint_tail,

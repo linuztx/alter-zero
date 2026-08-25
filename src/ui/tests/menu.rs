@@ -609,7 +609,7 @@ fn render_live_draws_the_shortcuts_band_below_the_box() {
         .join("\n");
     assert!(all.contains("/ for commands"), "band rendered: {all:?}");
     assert!(
-        row(&buf, h - 1, 60).contains("$ for skills"),
+        row(&buf, h - 1, 60).contains("ctrl+w/u/k to kill text"),
         "the last band row sits on the last region row"
     );
 }
@@ -1092,17 +1092,25 @@ fn fmatch(path: &str) -> FileMatch {
 
 #[test]
 fn the_skill_entry_is_an_ordinary_grid_slot() {
-    // The `$` skill picker (docs/skill-mentions.md) sits in the last row's
-    // first column — a plain [`SHORTCUTS`] entry beside the kill keys, no
-    // third-column special case (the band is one two-column grid at every
-    // width):
-    //   $ for skills                  ctrl+w/u/k to kill text
+    // The `$` skill picker (docs/skill-mentions.md) is a plain [`SHORTCUTS`]
+    // entry in the grid's flow — no third-column special case (the band is
+    // one two-column grid at every width). Its slot moves whenever an entry
+    // is added ahead of it; what must hold is that it is an ordinary paired
+    // cell, and that an odd entry count leaves the last row's lone entry
+    // rather than an extra row:
+    //   shift+tab for permission mode $ for skills
+    //   ctrl+w/u/k to kill text
     let lines = shortcuts_lines(false, false);
     assert_eq!(lines.len(), SHORTCUTS.len().div_ceil(2), "no extra row");
-    let last = plain(lines.last().expect("a band row"));
+    let skills_row = plain(
+        lines
+            .iter()
+            .find(|l| plain(l).contains("$ for skills"))
+            .expect("a band row lists the skill mention"),
+    );
     assert!(
-        last.contains("$ for skills") && last.contains("ctrl+w/u/k to kill text"),
-        "the $ entry shares the last row with the kill keys: {last:?}"
+        skills_row.contains("shift+tab for permission mode"),
+        "the $ entry shares its row with the entry before it: {skills_row:?}"
     );
     assert!(
         !plain(&lines[0]).contains('$'),

@@ -261,6 +261,20 @@ pub struct App {
     /// Whether the context-debug view is pinned to the bottom (tail-follow),
     /// exactly like [`tool_follow`](Self::tool_follow).
     pub debug_follow: bool,
+    /// The Ctrl+G classifier-context view's scroll offset — its own state
+    /// beside the other two pagers'. See `docs/permissions.md`.
+    pub classifier_scroll: usize,
+    /// Whether the classifier-context view is pinned to the bottom
+    /// (tail-follow), exactly like [`tool_follow`](Self::tool_follow) — so a
+    /// view left open while the agent works keeps the newest actions in
+    /// sight as they land.
+    pub classifier_follow: bool,
+    /// The auto mode classifier's **rendered turn context** — the block the
+    /// next verdict will read, injected per draw at the boundary from the
+    /// live backend log (`ReplySource::classifier_context`), the
+    /// system-prompt pattern. `None` when the backend keeps no log (the
+    /// dummy) or nothing has been recorded yet. See `docs/permissions.md`.
+    pub(crate) classifier_context: Option<String>,
     /// The active backend's system prompt, injected at the boundary
     /// ([`App::set_system_prompt`], from `ReplySource::system_prompt`) so the
     /// Ctrl+D view can show the *whole* context window. `None` for the dummy.
@@ -775,6 +789,21 @@ impl App {
     /// the Ctrl+D view shows the whole context window. See `docs/context.md`.
     pub fn set_system_prompt(&mut self, prompt: Option<String>) {
         self.system_prompt = prompt;
+    }
+
+    /// Inject the auto mode classifier's rendered turn context (from
+    /// `ReplySource::classifier_context`, pulled per draw while the Ctrl+G
+    /// view is open) so the pure view can show what the next verdict reads.
+    /// See `docs/permissions.md`.
+    pub fn set_classifier_context(&mut self, context: Option<String>) {
+        self.classifier_context = context;
+    }
+
+    /// The injected classifier turn context, if any
+    /// ([`set_classifier_context`](Self::set_classifier_context)).
+    #[must_use]
+    pub fn classifier_context(&self) -> Option<&str> {
+        self.classifier_context.as_deref()
     }
 
     /// Inject the prompt a launched subagent is sent (from

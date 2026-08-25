@@ -6,14 +6,14 @@
 //! `docs/llm.md`.
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 
 use tokio::sync::mpsc::UnboundedSender;
 
 use super::agent::{self, RoundOutcome};
 use super::approval;
-use super::classifier::SafetyClassifier;
+use super::classifier::{ClassifierContext, SafetyClassifier};
 use super::config::ModelConfig;
 use super::exec::{RealToolExecutor, ToolExecutor};
 use super::hooks::{HookSink, NoHooks};
@@ -95,6 +95,16 @@ pub struct LlmBackend {
     /// calls in [`crate::permission::PermissionMode::Auto`] — idle in every
     /// other mode, and moot without a gate.
     classifier: SafetyClassifier,
+    /// The classifier's **live turn context** (`docs/permissions.md`),
+    /// shared so the boundary can show it: [`spawn`] reseeds it from the new
+    /// user message and the tool closures append to it as the turn runs,
+    /// while [`classifier_context`] reads it out for the Ctrl+G view. Shared
+    /// rather than a per-spawn local precisely so it *can* be read — the log
+    /// is the one part of a verdict the user cannot otherwise see.
+    ///
+    /// [`spawn`]: ReplySource::spawn
+    /// [`classifier_context`]: ReplySource::classifier_context
+    turn_context: Arc<Mutex<ClassifierContext>>,
     /// How many times a failed request is retried before the error surfaces —
     /// [`retry::MAX_RETRIES`] unless the `/settings` **Error retry** knob
     /// says otherwise ([`with_max_retries`](LlmBackend::with_max_retries)).
@@ -165,6 +175,7 @@ impl LlmBackend {
             skills: None,
             mcp: None,
             classifier,
+            turn_context: Arc::new(Mutex::new(ClassifierContext::new(""))),
             max_retries: MAX_RETRIES,
             max_tool_calls: agent::MAX_TOOL_ITERATIONS,
             hooks: Arc::new(NoHooks),
@@ -602,6 +613,7 @@ impl ReplySource for LlmBackend {
         let skills = self.skills.clone();
         let mcp = self.mcp.clone();
         let classifier = self.classifier.clone();
+        let turn_context = Arc::clone(&self.turn_context);
         let max_retries = self.max_retries;
         let max_tool_calls = self.max_tool_calls;
         let hooks = Arc::clone(&self.hooks);
@@ -646,12 +658,15 @@ impl ReplySource for LlmBackend {
                     .with_background(registry);
             }
             // The auto mode classifier's turn context (`docs/permissions.md`):
-            // seeded from this turn's user message and fed one line per action
-            // below, so a verdict mid-turn reads the work it sits inside. One
-            // per spawn — a new user message starts a new turn, which is
-            // exactly when the log must reset.
-            let turn_context =
-                std::sync::Mutex::new(super::classifier::ClassifierContext::new(&prompt));
+            // reseeded from this turn's user message and fed one line per
+            // action below, so a verdict mid-turn reads the work it sits
+            // inside. Reseeded per spawn — a new user message starts a new
+            // turn, which is exactly when the log must reset — and held on
+            // the backend rather than this stack, so the Ctrl+G view can read
+            // it live while the turn runs.
+            if let Ok(mut log) = turn_context.lock() {
+                *log = ClassifierContext::new(&prompt);
+            }
             // The agentic loop: `run_agent` streams one round, runs any tool
             // calls the model requested (via `executor`, emitting the
             // ToolStart/ToolEnd pair the TUI renders), appends the results, and
@@ -803,6 +818,15 @@ impl ReplySource for LlmBackend {
 
     fn model_name(&self) -> String {
         self.model.clone()
+    }
+
+    /// The classifier's live turn context, rendered for the Ctrl+G view
+    /// (`docs/permissions.md`). Read under the lock and handed out as an
+    /// owned string — the boundary must never hold a backend lock across a
+    /// draw. A poisoned lock (a panicked tool thread) reports nothing rather
+    /// than taking the UI down with it.
+    fn classifier_context(&self) -> Option<String> {
+        self.turn_context.lock().ok().map(|log| log.render())
     }
 
     fn system_prompt(&self) -> Option<String> {

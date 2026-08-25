@@ -522,7 +522,13 @@ seam in the user's stead, **task-aware**: each verdict reads the turn's
 truncated context (`classifier::ClassifierContext` — the user request plus
 one capped `Name(args)` line per action taken, denials marked, the newest
 `CONTEXT_MAX_ACTIONS` kept, seeded fresh per spawn so it resets on a new
-user message; the system prompt pins the block as data-never-instructions)
+user message; the system prompt pins the block as data-never-instructions;
+**Ctrl+G** opens that block as a full-screen overlay — the Ctrl+O/Ctrl+D
+pager's third sibling, pulled live from the backend per draw via
+`ReplySource::classifier_context` (which is why `LlmBackend` holds the log
+behind an `Arc<Mutex<…>>` rather than a per-spawn local), over a mode note
+saying whether it is actually being consulted, and open-able over a
+permission prompt like the other two)
 above the one `## Action to review`: the asked-about cell just keeps its `⎿ Waiting…`
 row while the verdict streams (silently — no UI events), an **allow** runs
 the call with a dim `⎿ Allowed by auto mode classifier` row appended to the
@@ -1145,7 +1151,13 @@ invariant 4), the **`/resume` picker**, and the **Ctrl+D context-debug view**
 each turn, tool calls in the provider-native `tool_calls`/`tool` wire format
 (an assistant `→ name(args)` request + a `tool:` result entry) and `[Image #N]`
 placeholders unrendered; `ui::render_context_view`/`ui::context_lines` over
-the pure `context::context_messages`, see `docs/context.md`). ratatui's `Viewport::Inline` can't change height after startup, so
+the pure `context::context_messages`, see `docs/context.md`) — plus the
+**Ctrl+G classifier-context view**, auto mode's reviewer's own window: the
+bounded task context it reads before each command, pulled live from the
+backend per draw (`ReplySource::classifier_context` →
+`App::set_classifier_context`, so it tail-follows actions as they land) over
+a note saying whether the mode actually consults it
+(`ui::render_classifier_view`/`ui::classifier_lines`, `docs/permissions.md`). ratatui's `Viewport::Inline` can't change height after startup, so
 `term::InlineViewport` is a *custom* inline viewport over a `CrosstermBackend`
 whose height is **dynamic** — the input box grows with the wrapped input, the
 streaming strip, the palette band, and the session footer (`ui::live_height`). Four non-obvious

@@ -676,3 +676,20 @@ fn a_prompt_takes_the_footer_selections_with_the_composer() {
         "…and it does not come back armed"
     );
 }
+
+#[test]
+fn ctrl_g_opens_the_classifier_view_over_an_open_prompt() {
+    // The third read-only overlay escapes the modal for the same reason the
+    // other two do — and more sharply: when auto mode's classifier fell back
+    // to asking, "what did it know?" is exactly the question the prompt
+    // raises. Read-only, so the blocked tool thread keeps waiting and the
+    // prompt is still there on the way back (docs/permissions.md).
+    let mut app = App::new();
+    app.open_permission(bash_request("p1"));
+    assert_eq!(app.on_key(ctrl('g')), Action::ToggleClassifierContext);
+    assert_eq!(app.view, View::ClassifierContext);
+    assert!(app.permission().is_some());
+    assert_eq!(app.on_key(ctrl('g')), Action::ToggleClassifierContext);
+    assert_eq!(app.view, View::Conversation);
+    assert!(app.permission().is_some());
+}

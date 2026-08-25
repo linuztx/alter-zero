@@ -146,6 +146,13 @@ pub enum View {
     /// (system prompt + every derived context message, placeholders and
     /// bracketed tool formats unrendered). See `docs/context.md`.
     ContextDebug,
+    /// The full-screen Ctrl+G classifier-context view: the bounded task
+    /// context auto mode's classifier reads before every command and MCP
+    /// call (the user request + the actions taken this turn). Boundary-fed
+    /// through [`App::set_classifier_context`]. See `docs/permissions.md`.
+    ///
+    /// [`App::set_classifier_context`]: crate::app::App::set_classifier_context
+    ClassifierContext,
 }
 
 /// The session context shown in the footer under the input box: the backend's

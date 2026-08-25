@@ -37,6 +37,10 @@ pub enum Action {
     /// q/Esc). The loop syncs the overlay to the now-updated [`App::view`],
     /// exactly like [`Action::ToggleToolView`]. See `docs/context.md`.
     ToggleContextDebug,
+    /// The user toggled the Ctrl+G classifier-context view (or closed it with
+    /// q/Esc) — [`Action::ToggleContextDebug`]'s sibling, synced the same way.
+    /// See `docs/permissions.md`.
+    ToggleClassifierContext,
     /// A slash command produced a one-off system notice (e.g. `/help`'s command
     /// list, or a stub's placeholder). The loop records it as a [`Role::System`]
     /// message and commits it to scrollback, like a normal message.

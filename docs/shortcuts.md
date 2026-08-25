@@ -68,26 +68,31 @@ bindings, codex's phrasing and two-column layout, keys cyan and labels dim
 (`SHORTCUTS_*` consts):
 
 ```
-/ for commands               ! for shell command
-↑ for input history          ctrl+r to search history
-shift+enter for newline      ctrl+o for tool output
-esc to quit                  ctrl+c to quit
-alt+↑ to edit queue          tab to queue next turn
-ctrl+v for image paste       ctrl+d for llm context
-ctrl+t to cycle thinking     shift+tab for permission mode
-$ for skills                 ctrl+w/u/k to kill text
+/ for commands                ! for shell command
+↑ for input history           ctrl+r to search history
+shift+enter for newline       ctrl+o for tool output
+esc to quit                   ctrl+c to quit
+alt+↑ to edit queue           tab to queue next turn
+ctrl+v for image paste        ctrl+d for llm context
+ctrl+g for classifier         ctrl+t to cycle thinking
+shift+tab for permission mode $ for skills
+ctrl+w/u/k to kill text
 ```
 
 (The `SHORTCUTS` const in `ui/theme.rs` is the single source of truth — entries laid
 out two per row in declaration order, so the band is
-`SHORTCUTS.len().div_ceil(2)` rows tall; currently 16 entries → 8 rows. The
-`$` skill-mention sigil (`docs/skill-mentions.md`) is an ordinary entry in
-that grid — the last row's first column, beside the kill keys. It rode the
-first row as a third column for a while; the special case is retired, so
-the band is one two-column grid at every width and `shortcuts_rows` is
-plain `div_ceil`.)
+`SHORTCUTS.len().div_ceil(2)` rows tall; currently 17 entries → 9 rows, the
+odd one trailing alone in the last row's first column rather than earning an
+extra row. The `$` skill-mention sigil (`docs/skill-mentions.md`) is an
+ordinary entry in that grid. It rode the first row as a third column for a
+while; the special case is retired, so the band is one two-column grid at
+every width and `shortcuts_rows` is plain `div_ceil`. Note that adding an
+entry **reflows every pairing after it**: `ctrl+g` moved
+`shift+tab for permission mode` — 29 columns, the widest entry there is —
+out of a second column and into a first, which is what `SHORTCUTS_COL` is
+sized for now.)
 
-The second column starts at `SHORTCUTS_COL` (30), sized so the **widest**
+The second column starts at `SHORTCUTS_COL` (31), sized so the **widest**
 first-column variant keeps a readable gutter (an earlier pairing put a
 27-column entry in the first column, which at the old column of 28 left a
 single space before its neighbour — the two entries read as one run-on line;

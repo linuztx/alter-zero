@@ -312,3 +312,88 @@ fn ctrl_o_is_inert_while_the_picker_is_up() {
     assert_eq!(app.on_key(ctrl('o')), Action::None);
     assert_eq!(app.view, View::ResumePicker);
 }
+
+// ===== Ctrl+G classifier-context view (docs/permissions.md) =====
+
+#[test]
+fn ctrl_g_toggles_into_and_out_of_the_classifier_context_view() {
+    let mut app = App::new();
+    assert_eq!(app.view, View::Conversation);
+    assert_eq!(app.on_key(ctrl('g')), Action::ToggleClassifierContext);
+    assert_eq!(app.view, View::ClassifierContext);
+    assert_eq!(app.on_key(ctrl('g')), Action::ToggleClassifierContext);
+    assert_eq!(app.view, View::Conversation);
+}
+
+#[test]
+fn q_and_esc_close_the_classifier_context_view() {
+    for code in [KeyCode::Char('q'), KeyCode::Esc] {
+        let mut app = App::new();
+        app.on_key(ctrl('g'));
+        assert_eq!(app.on_key(key(code)), Action::ToggleClassifierContext);
+        assert_eq!(app.view, View::Conversation, "{code:?} closes");
+    }
+}
+
+#[test]
+fn the_classifier_view_never_stacks_with_the_other_full_screen_views() {
+    // All four share the alternate screen, so none of them opens on top of
+    // another — in either direction.
+    for opener in [ctrl('o'), ctrl('d')] {
+        let mut app = App::new();
+        app.on_key(opener);
+        let before = app.view;
+        assert_eq!(app.on_key(ctrl('g')), Action::None);
+        assert_eq!(app.view, before, "ctrl+g must not stack on {before:?}");
+    }
+    let mut app = App::new();
+    app.open_resume_picker(Vec::new(), String::new());
+    assert_eq!(app.on_key(ctrl('g')), Action::None);
+    assert_eq!(app.view, View::ResumePicker);
+
+    for other in [ctrl('o'), ctrl('d')] {
+        let mut app = App::new();
+        app.on_key(ctrl('g'));
+        assert_eq!(app.on_key(other), Action::None);
+        assert_eq!(app.view, View::ClassifierContext);
+    }
+}
+
+#[test]
+fn ctrl_g_works_mid_turn() {
+    // The whole point is watching the log grow while the agent works.
+    let mut app = App::new();
+    app.record_user_message("hi");
+    app.begin_stream();
+    assert_eq!(app.on_key(ctrl('g')), Action::ToggleClassifierContext);
+    assert_eq!(app.view, View::ClassifierContext);
+}
+
+#[test]
+fn scroll_keys_move_the_classifier_context_offset() {
+    let mut app = App::new();
+    app.on_key(ctrl('g'));
+    assert!(app.classifier_follow, "opens pinned to the bottom");
+    app.on_key(key(KeyCode::Up));
+    assert!(!app.classifier_follow, "scrolling up drops tail-follow");
+    app.on_key(key(KeyCode::Down));
+    assert_eq!(app.classifier_scroll, 1);
+    app.on_key(key(KeyCode::PageDown));
+    assert_eq!(app.classifier_scroll, 1 + TOOL_VIEW_PAGE);
+    app.on_key(key(KeyCode::Home));
+    assert_eq!(app.classifier_scroll, 0);
+    app.on_key(key(KeyCode::End));
+    app.settle_classifier_scroll(4);
+    assert_eq!(app.classifier_scroll, 4, "End pins to the bottom");
+    assert!(app.classifier_follow, "and re-engages tail-follow");
+}
+
+#[test]
+fn the_boundary_injects_the_rendered_classifier_context() {
+    // The block is built on the backend thread, so the App only ever holds
+    // what the boundary pushed in — the system-prompt/clock pattern.
+    let mut app = App::new();
+    assert_eq!(app.classifier_context(), None);
+    app.set_classifier_context(Some("## Task context".to_string()));
+    assert_eq!(app.classifier_context(), Some("## Task context"));
+}

@@ -459,6 +459,64 @@ events show `ToolStart → ToolNote → ToolEnd` with no `Permission` in sight
 — `tests/live_mcp.rs` closing the loop with a real server tool classified
 end to end (`live_auto_mode_classifies_an_mcp_call_instead_of_prompting`).
 
+## Ctrl+G: seeing what the classifier sees
+
+The turn context decides whether a command runs unasked, so it is the one
+input to a verdict the user cannot otherwise read — the request is silent,
+the cell shows only the outcome. **Ctrl+G** opens it: a full-screen overlay,
+the Ctrl+O transcript and Ctrl+D context views' third sibling, sharing their
+pager exactly (↑/↓, pgup/pgdn, home/end, `q`/Esc/Ctrl+G to close, the
+scroll-percentage separator and the two dim hint rows). It shows the block
+verbatim — the mode note, then the rendered `## Task context` the next
+verdict will read:
+
+```
+/ C L A S S I F I E R / / / / / / / / / / / / / / / / / / / / / / / / / / /
+Auto mode — the classifier reads this before each command or MCP call.
+
+## Task context
+User request:
+> Read note.txt then list the files with ls -la
+
+Actions taken this turn:
+- Read(/home/user/proj/note.txt)
+- Bash(ls -la)
+```
+
+Three details earn their keep:
+
+- **The mode note.** The log is recorded in *every* mode — the boundary feeds
+  it per call, not per verdict — but only auto mode consults it. A view that
+  said nothing would read as "the classifier is deciding this" in the modes
+  where the user is, so the row above the block says which it is:
+  `Auto mode — …`, `Recorded every turn; consulted only in auto mode
+  (shift+tab to switch)`, or `Tool permissions are disabled — no classifier
+  runs` with no gate at all.
+- **It opens over a permission prompt**, like Ctrl+O and Ctrl+D and off the
+  same shared `App::on_key_overlay_toggle` arm — and it is the sharpest of
+  the three there: a prompt in auto mode means the classifier *failed* or the
+  call was a file change it never sees, and "what did it know?" is exactly
+  the question being asked. Read-only, so the blocked tool thread keeps
+  waiting and the prompt is still open on the way back.
+- **It reads live.** The block is pulled from the backend on every draw
+  (`ReplySource::classifier_context` → `App::set_classifier_context`, the
+  system-prompt injection pattern) rather than cached, because it grows as
+  the turn runs and resets at the next user message — a view left open
+  tail-follows the actions as they land. It needs no `ContextCache` sibling:
+  the context is bounded to `CONTEXT_MAX_ACTIONS` short lines by
+  construction, which is the whole point of the caps.
+
+That live read is why `LlmBackend` holds the `ClassifierContext` behind an
+`Arc<Mutex<…>>` rather than as a per-spawn local: `spawn` reseeds it from the
+new user message, the tool closures append to it, and the boundary reads it
+out. The dummy backend keeps no log — its offline auto-mode demo answers from
+the pure `permission::auto_verdict` heuristic — so the view shows its dim
+`No classifier context yet` placeholder there, under the same mode note.
+
+A **subagent** keeps its own context (seeded from its launch prompt), and
+that one is not surfaced: the view shows the lead's. Its own verdicts read
+its own log, exactly as the lead's read the lead's.
+
 ## The scratchpad exemption
 
 One more thing resolves before the prompt: a `write`/`edit` **inside the

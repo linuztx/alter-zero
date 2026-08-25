@@ -574,6 +574,37 @@ pub(super) const CONTEXT_VIEW_EMPTY: &str = "Context is empty — send a message
 /// `system:` note (a derived `[system]`/`[error]` notice).
 pub(super) const CONTEXT_SYSTEM_PROMPT_TAG: &str = "system prompt:";
 
+// --- The Ctrl+G classifier-context overlay (`docs/permissions.md`) — the
+// context view's sibling: the same pager chrome over the bounded task
+// context auto mode's classifier reads before every command and MCP call. ---
+
+/// The view's spaced-caps title, overlaid on the slash tiling.
+pub(super) const CLASSIFIER_VIEW_TITLE: &str = "C L A S S I F I E R";
+
+/// Second key-hint row: every key that closes the view.
+pub(super) const CLASSIFIER_VIEW_HINT_QUIT: &str = " q/esc/ctrl+g to quit";
+
+/// The dim placeholder before anything is recorded (a fresh session, or a
+/// backend that keeps no log — the dummy).
+pub(super) const CLASSIFIER_VIEW_EMPTY: &str =
+    "No classifier context yet — send a message to fill it.";
+
+/// The dim note above the block in **auto** mode: the log is live, and this
+/// is what the next verdict reads.
+pub(super) const CLASSIFIER_VIEW_NOTE_AUTO: &str =
+    "Auto mode — the classifier reads this before each command or MCP call.";
+
+/// The same note in every other mode. The log is recorded in all of them (the
+/// boundary feeds it per call, not per verdict), so a view that stayed silent
+/// here would read as "the classifier is deciding this" when it is not.
+pub(super) const CLASSIFIER_VIEW_NOTE_INACTIVE: &str =
+    "Recorded every turn; consulted only in auto mode (shift+tab to switch).";
+
+/// …and with the gate off entirely (`ALTER_ZERO_PERMISSIONS=0`), where no
+/// verdict is ever asked for.
+pub(super) const CLASSIFIER_VIEW_NOTE_OFF: &str =
+    "Tool permissions are disabled — no classifier runs.";
+
 /// The inset of an entry's raw text (and attachment rows) under its tag.
 pub(super) const CONTEXT_INDENT: &str = "  ";
 
@@ -1255,6 +1286,7 @@ pub(super) const SHORTCUTS: &[(&str, &str)] = &[
     ("tab", " to queue next turn"),
     ("ctrl+v", " for image paste"),
     ("ctrl+d", " for llm context"),
+    ("ctrl+g", " for classifier"),
     ("ctrl+t", " to cycle thinking"),
     ("shift+tab", " for permission mode"),
     ("$", " for skills"),
@@ -1269,7 +1301,12 @@ pub(super) const SHORTCUTS: &[(&str, &str)] = &[
 /// `the_shortcuts_columns_keep_a_readable_gutter_in_every_state` test pins a
 /// ≥ 2-column gutter across every context state; widen this with any new
 /// entry that needs it.
-pub(super) const SHORTCUTS_COL: usize = 30;
+///
+/// Note that an entry added anywhere **reflows the pairing**, so a wide entry
+/// that had been safe in a second column can land in a first one: `ctrl+g`
+/// moved `shift+tab for permission mode` (29 columns) across, which is what
+/// this is sized for now.
+pub(super) const SHORTCUTS_COL: usize = 31;
 
 /// Cyan — an entry's key (the palette-selection accent).
 pub(super) const SHORTCUTS_KEY_COLOR: Color = MENU_SELECTED_COLOR;
