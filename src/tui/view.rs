@@ -646,11 +646,12 @@ impl Session<'_> {
         // The ↓ manager band re-arms frames like an active turn: its details
         // view's Runtime ticks with no events otherwise — and so does a non-empty
         // agent roster (its elapsed counters tick, and the linger sweep needs the
-        // frames to fire).
-        if self.app.turn_active()
-            || self.app.background_view.is_some()
-            || !self.app.agents().is_empty()
-        {
+        // frames to fire). None of that re-arms under an alternate-screen
+        // overlay, where none of it is on screen and a repaint for no reason
+        // costs the user their text selection ([`App::wants_animation_frames`],
+        // `docs/overlay-repaint.md`); the chain re-seeds on the first draw after
+        // the return.
+        if self.app.wants_animation_frames() {
             self.frame.schedule_frame_in(STATUS_FRAME_INTERVAL);
         }
         Ok(())

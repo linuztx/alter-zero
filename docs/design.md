@@ -163,7 +163,14 @@ unit-tested must be unit-tested.
   from the overlay, which repaints before exiting so a turn that finished while the
   overlay was up restores its `Done for Ns` summary rather than the stale streaming
   strip it left frozen on the main screen. The overlay is read-only (typing is
-  ignored). Only the **user** message shows a **wall-clock timestamp** (12-hour,
+  ignored). Its frames are **diffed against what is already on the alternate
+  screen**, and a frame that changes nothing is not written at all — which is
+  what lets you select and copy text out of it *while a turn streams*, since a
+  terminal drops a mouse selection the moment the cells under it are rewritten
+  (`docs/overlay-repaint.md`). The draw tick correspondingly stops re-arming the
+  status animation's clock chain while an overlay is up: nothing it animates is
+  on screen there, and every event source schedules its own frame, so the page
+  still repaints the instant its content changes. Only the **user** message shows a **wall-clock timestamp** (12-hour,
   no seconds, e.g. `03:20 AM`): dim, **right-aligned on its own line below the
   message** (after a blank row) — the **only** stamp displayed anywhere (AI
   replies, tools, and turn summaries record one but never show it); the inline

@@ -411,3 +411,59 @@ fn the_boundary_injects_the_rendered_classifier_context() {
     app.set_classifier_context(Some("## Task context".to_string()));
     assert_eq!(app.classifier_context(), Some("## Task context"));
 }
+
+// --- The animation-frame chain under an alternate-screen overlay
+// (docs/overlay-repaint.md) ---
+
+#[test]
+fn the_three_full_screen_views_are_overlays_and_the_conversation_is_not() {
+    // The predicate the draw tick's re-arm and the repaint doc both read: an
+    // overlay is a view painted on the ALTERNATE screen, where none of the
+    // inline live region's animations is visible.
+    assert!(View::ToolOutput.is_overlay());
+    assert!(View::ContextDebug.is_overlay());
+    assert!(View::ResumePicker.is_overlay());
+    assert!(!View::Conversation.is_overlay());
+}
+
+#[test]
+fn an_active_turn_animates_the_conversation_view() {
+    // The chain exists for the inline strip — the spinner's sweep, the elapsed
+    // counter, the pulsing tool bullet — so a streaming turn keeps asking for
+    // frames with no events to drive them.
+    let mut app = App::new();
+    app.begin_stream();
+    assert!(app.turn_active());
+    assert!(app.wants_animation_frames());
+}
+
+#[test]
+fn an_open_overlay_stops_the_animation_frames_mid_turn() {
+    // Nothing the chain animates is on screen under the alternate screen, and
+    // the overlay's own content changes only when an event lands — and every
+    // event source schedules its own frame. Re-arming here repainted a page
+    // that had not changed ~31 times a second, which is what dropped the
+    // terminal's text selection and made Ctrl+O / Ctrl+D uncopyable mid-turn.
+    let mut app = App::new();
+    app.begin_stream();
+    for view in [View::ToolOutput, View::ContextDebug, View::ResumePicker] {
+        app.view = view;
+        assert!(
+            !app.wants_animation_frames(),
+            "{view:?} must not re-arm the clock chain"
+        );
+    }
+    app.view = View::Conversation;
+    assert!(
+        app.wants_animation_frames(),
+        "the return re-seeds the chain"
+    );
+}
+
+#[test]
+fn an_idle_conversation_asks_for_no_animation_frames() {
+    // The chain stops by itself on the first draw after the turn ends.
+    let app = App::new();
+    assert!(!app.turn_active());
+    assert!(!app.wants_animation_frames());
+}

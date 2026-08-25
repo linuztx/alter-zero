@@ -244,6 +244,27 @@ impl App {
         self.classifier_follow = self.view == View::ContextDebug;
     }
 
+    /// Whether the draw tick should **re-arm** the next animation frame — the
+    /// 32 ms clock chain that keeps the status line's shimmer sweeping and its
+    /// timer advancing when no event arrives (codex's status-widget cadence).
+    ///
+    /// Everything it animates lives in the **inline** live region: the
+    /// spinner, the elapsed counter, the pulsing tool bullet, a background
+    /// shell's ticking runtime, the agent roster's counters and linger sweep.
+    /// Under an alternate-screen overlay none of that is on screen, and the
+    /// overlay's own content changes only when an event lands — every event
+    /// source schedules its own frame, so nothing goes stale. Re-arming there
+    /// repainted an unchanged full screen ~31 times a second, and a terminal
+    /// drops the user's mouse selection the moment the cells under it are
+    /// rewritten: that is what made text in Ctrl+O / Ctrl+D uncopyable until
+    /// the turn finished. The chain re-seeds on the first draw after the
+    /// return. See `docs/overlay-repaint.md`.
+    #[must_use]
+    pub fn wants_animation_frames(&self) -> bool {
+        !self.view.is_overlay()
+            && (self.turn_active() || self.background_view.is_some() || !self.agents().is_empty())
+    }
+
     /// Settle the tool-view scroll for a draw given the largest offset the current
     /// screen allows. While following, it stays pinned to the bottom (`max`);
     /// otherwise it's capped to `max`, and reaching the bottom re-engages

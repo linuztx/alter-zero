@@ -148,6 +148,25 @@ pub enum View {
     ContextDebug,
 }
 
+impl View {
+    /// Whether this view is painted on the terminal's **alternate screen**
+    /// rather than inline — the Ctrl+O transcript, the Ctrl+D context view and
+    /// the `/resume` picker.
+    ///
+    /// The one predicate that answers "is the inline live region on screen at
+    /// all?", which is what decides whether the draw tick keeps re-arming the
+    /// status animation's clock chain: under an overlay nothing it animates is
+    /// visible, and repainting there for no reason is what dropped the
+    /// terminal's text selection mid-turn (`docs/overlay-repaint.md`).
+    #[must_use]
+    pub const fn is_overlay(self) -> bool {
+        matches!(
+            self,
+            Self::ToolOutput | Self::ResumePicker | Self::ContextDebug
+        )
+    }
+}
+
 /// Which page the Ctrl+D view is showing — Tab flips between them
 /// (`docs/context.md`, `docs/permissions.md`). Two windows onto "what is
 /// this turn actually sending", one key apart: the model's own context, and

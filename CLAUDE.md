@@ -950,7 +950,37 @@ entry, the rows, a toggle and its persistence across a restart); and the **Ctrl+
 performance work** (the incrementally-built, boundary-warmed transcript cache
 and the atomic queued overlay switch, so the transcript opens instantly on a
 big resumed session with no blank alt screen / kitty cursor-trail streak) in
-`docs/tool-view-performance.md`; and **`/compact` + auto-compact** (codex's
+`docs/tool-view-performance.md`; and the **overlay repaint fix** (the two
+full-screen views are **copyable while a turn runs**: a terminal drops a mouse
+selection the moment the cells under it are rewritten, and `draw_overlay` used
+to re-serialize **every cell** of the alternate screen on every frame — up to
+120 a second, since each reply event schedules one, floored at ~31 by the
+status animation's clock chain — so text in Ctrl+O / Ctrl+D could not be
+selected until the turn finished. It now **diffs against the frame already on
+the screen** (`term::overlay_updates`, the pure sibling of the inline
+`paint_frame`'s `prev.diff(buf)`, over its own `overlay_prev` baseline —
+`prev` describes a *different* screen and the entry/exit paths clear it) and an
+**unchanged frame emits nothing at all**: no cells, and no synchronized-update
+or cursor-move escapes either, so a still page is silence on the wire. The
+baseline drops on every entry (the queued `Clear(All)` blanks the screen),
+every exit, and any part-failed write; `Buffer::diff` skips wide-glyph shadows
+itself, so the diff path inherits `visible_cells`' rule rather than reopening
+the table tear. Beside it the draw tick stops **re-arming** the 32 ms chain
+under an overlay (`App::wants_animation_frames` → `View::is_overlay`) — every
+thing it animates is inline, and every event source already schedules its own
+frame, so nothing goes stale and the chain re-seeds on the first draw after the
+return. Measured with `tmux pipe-pane` over three seconds of an active turn:
+**316 KB → 0 B** for Ctrl+D, **389 KB → 0 B** for Ctrl+O, the inline control
+unchanged at 4.5 KB. Ctrl+D is provably still (its `ContextSig` carries no
+streaming state, so it is zero for the whole turn); a scrolled-back Ctrl+O
+writes **only the cells that moved** — zero when the frontier is off-screen,
+else a few hundred bytes a second of the growing line's own words landing on
+the one row they belong to, every other row untouched; and a Ctrl+O pinned to
+the bottom still tail-follows, which is what follow is *for* — a new row shifts
+the window and costs the selection, ↑ / PageUp / Home disengages it and the page
+holds still. `smoke.sh` Phase 94 measures the silence **and** that the chain
+re-seeds on the return, since a chain left broken would freeze the inline timer
+for the rest of the turn) in `docs/overlay-repaint.md`; and **`/compact` + auto-compact** (codex's
 context compaction, ported append-only: a summarization turn streams the
 model's handoff summary invisibly into `App::compact_buffer`,
 `finish_compact` appends a `HistoryItem::Compaction` marker — the transcript,
@@ -1352,6 +1382,12 @@ of bug:
    only *queues* hide+switch+clear; the first `draw_overlay` flush delivers
    them **with** the painted frame as one write — no blank alt screen for a
    kitty cursor-trail to streak across, `docs/tool-view-performance.md`).
+   **The overlay paints diffed, like the inline region** — `draw_overlay`
+   emits only `overlay_updates`' cells and an unchanged frame emits *nothing*,
+   which is what keeps a mouse selection alive there while a turn streams
+   (`docs/overlay-repaint.md`); the draw tick correspondingly stops re-arming
+   the status animation's clock chain under an overlay, where nothing it
+   animates is on screen.
    Only the **user** message shows its
    wall-clock `timestamp` (`hh:mm AM/PM`, no seconds): dim, **right-aligned on
    its own line below the message** — the *only* stamp displayed anywhere
