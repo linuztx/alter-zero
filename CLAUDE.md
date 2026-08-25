@@ -518,7 +518,12 @@ sends a non-allowlisted `bash` command to the **auto mode classifier** — a
 silent LLM safety check on the session's own provider
 (`llm::classifier::SafetyClassifier`, prompt in `prompts/classifier.md`,
 `ALTER_ZERO_CLASSIFIER_MODEL` overrides the model) consulted by the approve
-seam in the user's stead: the asked-about cell just keeps its `⎿ Waiting…`
+seam in the user's stead, **task-aware**: each verdict reads the turn's
+truncated context (`classifier::ClassifierContext` — the user request plus
+one capped `Name(args)` line per action taken, denials marked, the newest
+`CONTEXT_MAX_ACTIONS` kept, seeded fresh per spawn so it resets on a new
+user message; the system prompt pins the block as data-never-instructions)
+above the one `## Action to review`: the asked-about cell just keeps its `⎿ Waiting…`
 row while the verdict streams (silently — no UI events), an **allow** runs
 the call with a dim `⎿ Allowed by auto mode classifier` row appended to the
 resolved cell (the `Approval::AllowNoted` → `StreamEvent::ToolNote` →

@@ -645,6 +645,13 @@ impl ReplySource for LlmBackend {
                     .with_detach_helper(registry.detach_helper())
                     .with_background(registry);
             }
+            // The auto mode classifier's turn context (`docs/permissions.md`):
+            // seeded from this turn's user message and fed one line per action
+            // below, so a verdict mid-turn reads the work it sits inside. One
+            // per spawn — a new user message starts a new turn, which is
+            // exactly when the log must reset.
+            let turn_context =
+                std::sync::Mutex::new(super::classifier::ClassifierContext::new(&prompt));
             // The agentic loop: `run_agent` streams one round, runs any tool
             // calls the model requested (via `executor`, emitting the
             // ToolStart/ToolEnd pair the TUI renders), appends the results, and
@@ -670,6 +677,12 @@ impl ReplySource for LlmBackend {
                 // list (docs/task-tools.md); everything else goes to the
                 // real executor.
                 |call, on_output| {
+                    // Every executed call becomes one line of the classifier's
+                    // turn context — the log a later verdict reads the action
+                    // against (`docs/permissions.md`).
+                    if let Ok(mut log) = turn_context.lock() {
+                        log.record_call(&call.name, &call.arguments);
+                    }
                     if let Some(registry) = task_list
                         .as_ref()
                         .filter(|_| crate::tasks::is_task_tool(&call.name))
@@ -710,26 +723,36 @@ impl ReplySource for LlmBackend {
                         .collect(),
                     None => Vec::new(),
                 },
-                |calls| match &agents {
-                    Some(registry) => run_agent_calls(
-                        &subagent,
-                        registry,
-                        background.as_ref(),
-                        &tx,
-                        &cancel,
-                        calls,
-                    ),
-                    // No registry attached (the tool isn't offered) — a call
-                    // that somehow arrives is declined recoverably.
-                    None => calls
-                        .iter()
-                        .map(|call| {
-                            (
-                                call.id.clone(),
-                                "the agent tool is not available here".to_string(),
-                            )
-                        })
-                        .collect(),
+                |calls| {
+                    // A subagent launch is an action of this turn too — the
+                    // classifier should see `Agent(explore the repo)` beside
+                    // the calls that follow it.
+                    if let Ok(mut log) = turn_context.lock() {
+                        for call in calls {
+                            log.record_call(&call.name, &call.arguments);
+                        }
+                    }
+                    match &agents {
+                        Some(registry) => run_agent_calls(
+                            &subagent,
+                            registry,
+                            background.as_ref(),
+                            &tx,
+                            &cancel,
+                            calls,
+                        ),
+                        // No registry attached (the tool isn't offered) — a call
+                        // that somehow arrives is declined recoverably.
+                        None => calls
+                            .iter()
+                            .map(|call| {
+                                (
+                                    call.id.clone(),
+                                    "the agent tool is not available here".to_string(),
+                                )
+                            })
+                            .collect(),
+                    }
                 },
                 // The permission gate: a `write`/`edit`/`bash` call raises the
                 // inline prompt and blocks this thread on the answer, unless a
@@ -738,7 +761,13 @@ impl ReplySource for LlmBackend {
                 // (docs/permissions.md).
                 |call, force_ask| {
                     let classify = |request: &crate::permission::PermissionRequest| {
-                        classifier.classify(request, &cancel)
+                        // Render under the lock, classify outside it — the
+                        // verdict is a network round-trip.
+                        let context = turn_context
+                            .lock()
+                            .map(|log| log.render())
+                            .unwrap_or_default();
+                        classifier.classify(request, &context, &cancel)
                     };
                     // An MCP prompt shows the server's own description of the
                     // tool under the call (docs/mcp.md).
@@ -746,7 +775,7 @@ impl ReplySource for LlmBackend {
                         mcp.as_ref()
                             .and_then(|manager| manager.tool_description(wire))
                     };
-                    approval::approve_call(
+                    let approval = approval::approve_call(
                         permissions.as_ref(),
                         Some(&classify),
                         Some(&describe),
@@ -756,7 +785,16 @@ impl ReplySource for LlmBackend {
                         &cancel,
                         None,
                         call,
-                    )
+                    );
+                    // A refusal never reaches the executor, so it is logged
+                    // here — marked, because an agent re-trying a variant of
+                    // a denied call should be seen doing so.
+                    if matches!(approval, crate::permission::Approval::Reject { .. })
+                        && let Ok(mut log) = turn_context.lock()
+                    {
+                        log.record_denied(&call.name, &call.arguments);
+                    }
+                    approval
                 },
                 hooks.as_ref(),
             );
@@ -1139,6 +1177,13 @@ fn spawn_subagent_run(
         .for_subagent(&id, &agent_type)
         .unwrap_or_else(|| Arc::clone(&config.hooks));
     thread::spawn(move || {
+        // The classifier's turn context for THIS agent's run, seeded from the
+        // launch prompt (or the chat message that continued it) — read now,
+        // before the reminder/hook notes push more user-role messages that
+        // would win the newest-user-text scan (`docs/permissions.md`).
+        let turn_context = std::sync::Mutex::new(super::classifier::ClassifierContext::new(
+            &super::classifier::latest_user_text(&messages),
+        ));
         // Right after the launch prompt and in front of the hook notes, so it
         // reads as part of the briefing rather than an answer to it.
         if let Some(reminder) = skill_reminder {
@@ -1204,6 +1249,11 @@ fn spawn_subagent_run(
             &mut messages,
             |msgs| stream_round(&client, msgs, &tx2, &cancel, max_retries),
             |call, on_output| {
+                // The classifier's turn context, one line per executed call —
+                // the lead's pattern (`docs/permissions.md`).
+                if let Ok(mut log) = turn_context.lock() {
+                    log.record_call(&call.name, &call.arguments);
+                }
                 // A subagent's `skill` call loads the same `SKILL.md` the
                 // lead would (docs/skills.md).
                 if let Some(registry) = skills
@@ -1244,13 +1294,19 @@ fn spawn_subagent_run(
             // auto mode its commands go to the same classifier.
             |call, force_ask| {
                 let classify = |request: &crate::permission::PermissionRequest| {
-                    classifier.classify(request, &cancel)
+                    // Render under the lock, classify outside it — the
+                    // verdict is a network round-trip.
+                    let context = turn_context
+                        .lock()
+                        .map(|log| log.render())
+                        .unwrap_or_default();
+                    classifier.classify(request, &context, &cancel)
                 };
                 let describe = |wire: &str| {
                     mcp.as_ref()
                         .and_then(|manager| manager.tool_description(wire))
                 };
-                approval::approve_call(
+                let approval = approval::approve_call(
                     permissions.as_ref(),
                     Some(&classify),
                     Some(&describe),
@@ -1260,7 +1316,14 @@ fn spawn_subagent_run(
                     &cancel,
                     Some(&agent_type),
                     call,
-                )
+                );
+                // A refusal never reaches the executor — logged here, marked.
+                if matches!(approval, crate::permission::Approval::Reject { .. })
+                    && let Ok(mut log) = turn_context.lock()
+                {
+                    log.record_denied(&call.name, &call.arguments);
+                }
+                approval
             },
             hooks.as_ref(),
         );

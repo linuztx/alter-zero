@@ -354,13 +354,42 @@ approve(bash/MCP call) ── gate.allows()? ── yes ────────
 
 The request is **one silent completion** — no events reach the UI, so the
 asked-about cell just keeps the `⎿ Waiting…` row its batch announcement gave
-it while the verdict is decided. The classifier sees only the request itself
-— for a command: the command, the model's stated `description` (labelled a
-claim, not proof), and the cwd; for an MCP call: the tool named
-`{server} - {tool}`, the server's own description of it, and the arguments
-in the cell's `key: "value"` form (`classifier_request_prompt`'s MCP arm —
-the wire name alone would hide where a remote call's risk actually lives) —
-never the conversation, so a poisoned transcript can't lobby it. Its system
+it while the verdict is decided. Its one user message has two parts. The
+`## Task context` block is the turn's own story — the **turn context**
+(`classifier::ClassifierContext`): the user request that opened the turn,
+quoted line by line (`> ` per line, so a request carrying markdown of its
+own stays visibly quoted material rather than becoming structure), over one
+line per action the agent has already taken, each in the transcript cell's
+own `Name(args)` vocabulary (`Read(/path)`, `Bash(cargo test)`,
+`deepwiki - ask_question (MCP)({…})` — the same `display_name`/
+`summarize_call` pair the cells use, so the classifier and the user read
+the turn in the same words), a refused call marked `— denied, not run` (an
+agent re-trying a variant of a denied command should be *seen* doing so).
+Then, under its own `## Action to review` header so what is being *decided*
+can never blur into what already happened: the cwd and the request itself —
+for a command: the command and the model's stated `description` (labelled a
+claim, not proof); for an MCP call: the tool named `{server} - {tool}`, the
+server's own description of it, and the arguments in the cell's
+`key: "value"` form (`classifier_request_prompt`'s MCP arm — the wire name
+alone would hide where a remote call's risk actually lives). Context makes
+the verdict *task-aware* — `rm -rf build/` right after a failed
+`cargo build` reads differently from `rm -rf` out of nowhere — without
+opening the old poisoned-transcript hole, because the block is **bounded
+and inert**: every part is truncated (a `CONTEXT_REQUEST_MAX_CHARS` excerpt
+of the request, `CONTEXT_ACTION_MAX_CHARS` per line closed with `…`, only
+the newest `CONTEXT_MAX_ACTIONS` actions behind a counted
+`(+N earlier actions omitted)` marker — so a long turn's verdict has a
+fixed price), tool *outputs* never ride along (the cheapest channel for a
+poisoned repo to lobby through), and the system prompt pins the whole block
+as information-never-instructions — nothing in it can authorize an action
+(the live suite proves a context that *begs* for an allow changes nothing).
+The log lives exactly one turn: each backend spawn seeds a fresh
+`ClassifierContext` from its user message (a subagent's from its launch
+prompt or continuation chat — `classifier::latest_user_text`, read before
+the skill reminder and hook notes push more user-role messages), the
+execute/launch closures record each executed call and agent launch, and the
+approve closure records refusals — so the context accumulates across a
+turn's rounds and resets exactly when a new user message arrives. Its system
 prompt (`prompts/classifier.md`, the `include_str!` seam every prompt uses)
 ends with the reference's strict output contract — the reply must begin
 `<block>yes</block><reason>…</reason>` or `<block>no</block>` — which
@@ -422,11 +451,13 @@ list): the scripted `ls -la` runs with the note, the scripted
 `rm -rf /tmp/scratch` rejects, and the same demo in manual mode prompts —
 which is what lets `smoke.sh` drive the whole feature without a provider.
 The live OpenRouter suite (`tests/live_openrouter.rs`) covers the real
-thing: verdicts both ways for commands *and* MCP calls, and a full
-auto-mode turn whose events show `ToolStart → ToolNote → ToolEnd` with no
-`Permission` in sight — `tests/live_mcp.rs` closing the loop with a real
-server tool classified end to end
-(`live_auto_mode_classifies_an_mcp_call_instead_of_prompting`).
+thing: verdicts both ways for commands *and* MCP calls — with the task
+context attached and bare — plus the two context properties that matter (a
+context that begs for an allow lifts nothing, and a retried variant of a
+`— denied, not run` action stays blocked), and a full auto-mode turn whose
+events show `ToolStart → ToolNote → ToolEnd` with no `Permission` in sight
+— `tests/live_mcp.rs` closing the loop with a real server tool classified
+end to end (`live_auto_mode_classifies_an_mcp_call_instead_of_prompting`).
 
 ## The scratchpad exemption
 
