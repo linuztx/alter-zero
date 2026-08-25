@@ -574,15 +574,19 @@ pub(super) const CONTEXT_VIEW_EMPTY: &str = "Context is empty — send a message
 /// `system:` note (a derived `[system]`/`[error]` notice).
 pub(super) const CONTEXT_SYSTEM_PROMPT_TAG: &str = "system prompt:";
 
-// --- The Ctrl+G classifier-context overlay (`docs/permissions.md`) — the
-// context view's sibling: the same pager chrome over the bounded task
-// context auto mode's classifier reads before every command and MCP call. ---
+// --- The Ctrl+D view's classifier page (`docs/permissions.md`) — Tab's
+// other half: the same pager chrome over the bounded task context auto
+// mode's classifier reads before every command and MCP call. ---
 
 /// The view's spaced-caps title, overlaid on the slash tiling.
 pub(super) const CLASSIFIER_VIEW_TITLE: &str = "C L A S S I F I E R";
 
-/// Second key-hint row: every key that closes the view.
-pub(super) const CLASSIFIER_VIEW_HINT_QUIT: &str = " q/esc/ctrl+g to quit";
+/// The page-flip hint appended to the second key-hint row, naming the page
+/// Tab would show — the view's only discovery affordance for its other half.
+pub(super) const CONTEXT_VIEW_HINT_TAB_CLASSIFIER: &str = "   tab for classifier context";
+
+/// …and the way back.
+pub(super) const CONTEXT_VIEW_HINT_TAB_LLM: &str = "   tab for llm context";
 
 /// The dim placeholder before anything is recorded (a fresh session, or a
 /// backend that keeps no log — the dummy).
@@ -1286,7 +1290,6 @@ pub(super) const SHORTCUTS: &[(&str, &str)] = &[
     ("tab", " to queue next turn"),
     ("ctrl+v", " for image paste"),
     ("ctrl+d", " for llm context"),
-    ("ctrl+g", " for classifier"),
     ("ctrl+t", " to cycle thinking"),
     ("shift+tab", " for permission mode"),
     ("$", " for skills"),
@@ -1303,10 +1306,9 @@ pub(super) const SHORTCUTS: &[(&str, &str)] = &[
 /// entry that needs it.
 ///
 /// Note that an entry added anywhere **reflows the pairing**, so a wide entry
-/// that had been safe in a second column can land in a first one: `ctrl+g`
-/// moved `shift+tab for permission mode` (29 columns) across, which is what
-/// this is sized for now.
-pub(super) const SHORTCUTS_COL: usize = 31;
+/// that had been safe in a second column can land in a first one — check this
+/// still holds when adding one.
+pub(super) const SHORTCUTS_COL: usize = 30;
 
 /// Cyan — an entry's key (the palette-selection accent).
 pub(super) const SHORTCUTS_KEY_COLOR: Color = MENU_SELECTED_COLOR;

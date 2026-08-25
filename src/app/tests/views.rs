@@ -313,66 +313,65 @@ fn ctrl_o_is_inert_while_the_picker_is_up() {
     assert_eq!(app.view, View::ResumePicker);
 }
 
-// ===== Ctrl+G classifier-context view (docs/permissions.md) =====
+// ===== the Ctrl+D view's classifier page (docs/permissions.md) =====
 
 #[test]
-fn ctrl_g_toggles_into_and_out_of_the_classifier_context_view() {
+fn tab_flips_the_context_view_between_its_two_pages() {
+    // One key, two windows onto "what is this turn actually sending": the
+    // model's own context, and the classifier's task context.
     let mut app = App::new();
-    assert_eq!(app.view, View::Conversation);
-    assert_eq!(app.on_key(ctrl('g')), Action::ToggleClassifierContext);
-    assert_eq!(app.view, View::ClassifierContext);
-    assert_eq!(app.on_key(ctrl('g')), Action::ToggleClassifierContext);
-    assert_eq!(app.view, View::Conversation);
+    app.on_key(ctrl('d'));
+    assert_eq!(
+        app.debug_page,
+        DebugPage::Context,
+        "opens on the LLM window"
+    );
+    assert_eq!(app.on_key(key(KeyCode::Tab)), Action::None);
+    assert_eq!(app.debug_page, DebugPage::Classifier);
+    assert_eq!(app.on_key(key(KeyCode::Tab)), Action::None);
+    assert_eq!(app.debug_page, DebugPage::Context, "and back");
+    // Shift+Tab flips too — with two pages there is no other direction.
+    assert_eq!(app.on_key(key(KeyCode::BackTab)), Action::None);
+    assert_eq!(app.debug_page, DebugPage::Classifier);
 }
 
 #[test]
-fn q_and_esc_close_the_classifier_context_view() {
-    for code in [KeyCode::Char('q'), KeyCode::Esc] {
-        let mut app = App::new();
-        app.on_key(ctrl('g'));
-        assert_eq!(app.on_key(key(code)), Action::ToggleClassifierContext);
-        assert_eq!(app.view, View::Conversation, "{code:?} closes");
-    }
+fn the_page_persists_across_opens_and_both_reopen_at_the_bottom() {
+    // Ctrl+D comes back to whichever page you were last reading — the title
+    // says which — and each page opens pinned to the bottom.
+    let mut app = App::new();
+    app.on_key(ctrl('d'));
+    app.on_key(key(KeyCode::Tab));
+    app.classifier_scroll = 7;
+    app.classifier_follow = false;
+    app.on_key(ctrl('d')); // close
+    app.on_key(ctrl('d')); // reopen
+    assert_eq!(app.debug_page, DebugPage::Classifier, "the page persisted");
+    assert!(app.classifier_follow, "…and it reopened tail-following");
+    assert_eq!(app.classifier_scroll, 0);
 }
 
 #[test]
-fn the_classifier_view_never_stacks_with_the_other_full_screen_views() {
-    // All four share the alternate screen, so none of them opens on top of
-    // another — in either direction.
-    for opener in [ctrl('o'), ctrl('d')] {
-        let mut app = App::new();
-        app.on_key(opener);
-        let before = app.view;
-        assert_eq!(app.on_key(ctrl('g')), Action::None);
-        assert_eq!(app.view, before, "ctrl+g must not stack on {before:?}");
-    }
+fn each_page_keeps_its_own_scroll_offset() {
+    // Flipping to compare the two and back lands where you left off.
     let mut app = App::new();
-    app.open_resume_picker(Vec::new(), String::new());
-    assert_eq!(app.on_key(ctrl('g')), Action::None);
-    assert_eq!(app.view, View::ResumePicker);
-
-    for other in [ctrl('o'), ctrl('d')] {
-        let mut app = App::new();
-        app.on_key(ctrl('g'));
-        assert_eq!(app.on_key(other), Action::None);
-        assert_eq!(app.view, View::ClassifierContext);
-    }
+    app.on_key(ctrl('d'));
+    app.on_key(key(KeyCode::Down));
+    app.on_key(key(KeyCode::Down));
+    assert_eq!(app.debug_scroll, 2);
+    app.on_key(key(KeyCode::Tab));
+    assert_eq!(app.classifier_scroll, 0, "the other page has its own place");
+    app.on_key(key(KeyCode::Down));
+    assert_eq!(app.classifier_scroll, 1);
+    app.on_key(key(KeyCode::Tab));
+    assert_eq!(app.debug_scroll, 2, "…and the first page kept its own");
 }
 
 #[test]
-fn ctrl_g_works_mid_turn() {
-    // The whole point is watching the log grow while the agent works.
+fn scroll_keys_move_whichever_page_is_showing() {
     let mut app = App::new();
-    app.record_user_message("hi");
-    app.begin_stream();
-    assert_eq!(app.on_key(ctrl('g')), Action::ToggleClassifierContext);
-    assert_eq!(app.view, View::ClassifierContext);
-}
-
-#[test]
-fn scroll_keys_move_the_classifier_context_offset() {
-    let mut app = App::new();
-    app.on_key(ctrl('g'));
+    app.on_key(ctrl('d'));
+    app.on_key(key(KeyCode::Tab));
     assert!(app.classifier_follow, "opens pinned to the bottom");
     app.on_key(key(KeyCode::Up));
     assert!(!app.classifier_follow, "scrolling up drops tail-follow");
@@ -386,6 +385,21 @@ fn scroll_keys_move_the_classifier_context_offset() {
     app.settle_classifier_scroll(4);
     assert_eq!(app.classifier_scroll, 4, "End pins to the bottom");
     assert!(app.classifier_follow, "and re-engages tail-follow");
+    assert_eq!(
+        app.debug_scroll, 0,
+        "the LLM page was left alone throughout"
+    );
+}
+
+#[test]
+fn q_and_esc_close_the_view_from_the_classifier_page_too() {
+    for code in [KeyCode::Char('q'), KeyCode::Esc] {
+        let mut app = App::new();
+        app.on_key(ctrl('d'));
+        app.on_key(key(KeyCode::Tab));
+        assert_eq!(app.on_key(key(code)), Action::ToggleContextDebug);
+        assert_eq!(app.view, View::Conversation, "{code:?} closes");
+    }
 }
 
 #[test]

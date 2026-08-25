@@ -133,7 +133,6 @@ impl Session<'_> {
             Action::AgentChat { id, text } => self.agent_chat(&id, &text),
             Action::ToggleToolView => self.toggle_tool_view()?,
             Action::ToggleContextDebug => self.toggle_context_debug()?,
-            Action::ToggleClassifierContext => self.toggle_classifier_context()?,
             Action::ConfirmBacktrack => self.confirm_backtrack()?,
             Action::OpenResumePicker => self.open_resume_picker()?,
             Action::CloseResumePicker => self.close_resume_picker()?,
@@ -451,7 +450,7 @@ impl Session<'_> {
                 self.dispatch_file_search();
             }
             View::ResumePicker => self.app.paste_into_resume_search(pasted),
-            View::ToolOutput | View::ContextDebug | View::ClassifierContext => {}
+            View::ToolOutput | View::ContextDebug => {}
         }
         self.burst.reset();
         self.frame.schedule_frame();

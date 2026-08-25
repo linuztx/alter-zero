@@ -31,7 +31,7 @@ use std::io;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::text::Line;
 
-use alter_zero::app::{App, View};
+use alter_zero::app::{App, DebugPage, View};
 use alter_zero::paste;
 use alter_zero::ui;
 
@@ -268,6 +268,12 @@ impl Session<'_> {
     /// so the count feeding the clamp and the render share one build. See
     /// `docs/context.md`.
     pub(crate) fn draw_context_view(&mut self) -> io::Result<()> {
+        // Tab's other page is a different body under the same chrome, and it
+        // is built fresh from the backend rather than served from the cache
+        // (`docs/permissions.md`).
+        if self.app.debug_page == DebugPage::Classifier {
+            return self.draw_classifier_page();
+        }
         let screen = self.term.screen();
         let max = ui::tool_view_max_scroll_for(
             self.context.line_count(&self.app, screen.width),
@@ -280,26 +286,25 @@ impl Session<'_> {
             .draw_overlay(|area, buf| ui::render_context_view(area, buf, app, lines))
     }
 
-    /// Render the Ctrl+G classifier-context view onto the alternate screen —
-    /// the context view's sibling. The block is pulled from the **backend**
-    /// here rather than cached: it grows through a turn (every tool call
-    /// appends a line) and resets at the next user message, so a view left
-    /// open must show the log as it lands. Cheap by construction — the
-    /// context is bounded to `CONTEXT_MAX_ACTIONS` short lines, which is why
-    /// this needs no `ContextCache` sibling. See `docs/permissions.md`.
-    pub(crate) fn draw_classifier_view(&mut self) -> io::Result<()> {
+    /// Render the Ctrl+D view's **classifier page** (Tab) onto the alternate
+    /// screen — the same chrome, a different body (`docs/permissions.md`).
+    ///
+    /// The block is pulled from the **backend** per draw rather than cached:
+    /// it grows as the turn runs (every tool call appends a line) and rolls
+    /// its windows as the conversation goes on, so a page left open must show
+    /// the log as it lands. Cheap by construction — the context is bounded to
+    /// `CONTEXT_MAX_REQUESTS` + `CONTEXT_MAX_ACTIONS` short lines, which is
+    /// why this needs no `ContextCache` sibling.
+    fn draw_classifier_page(&mut self) -> io::Result<()> {
         let context = self.models.backend().classifier_context();
         self.app.set_classifier_context(context);
         let screen = self.term.screen();
-        let max = ui::tool_view_max_scroll_for(
-            ui::classifier_lines(&self.app, screen.width).len(),
-            screen.height,
-        );
-        self.app.settle_classifier_scroll(max);
         let lines = ui::classifier_lines(&self.app, screen.width);
+        let max = ui::tool_view_max_scroll_for(lines.len(), screen.height);
+        self.app.settle_classifier_scroll(max);
         let app = &self.app;
         self.term
-            .draw_overlay(|area, buf| ui::render_classifier_view(area, buf, app, &lines))
+            .draw_overlay(|area, buf| ui::render_context_view(area, buf, app, &lines))
     }
 
     /// Paint whichever view is current — the draw tick's whole body.
@@ -340,7 +345,6 @@ impl Session<'_> {
             View::ToolOutput => self.draw_tool_view(),
             View::ResumePicker => self.draw_resume_picker(),
             View::ContextDebug => self.draw_context_view(),
-            View::ClassifierContext => self.draw_classifier_view(),
         }
     }
 
@@ -600,21 +604,6 @@ impl Session<'_> {
         }
     }
 
-    /// Ctrl+G: the classifier-context view — the same overlay dance again
-    /// (`docs/permissions.md`). Nothing to release on the way out: the view
-    /// holds no cache, only the injected block, which the next open refreshes
-    /// from the backend anyway.
-    pub(crate) fn toggle_classifier_context(&mut self) -> io::Result<()> {
-        if self.app.view == View::ClassifierContext {
-            self.term.enter_overlay()?;
-            self.draw_classifier_view()
-        } else {
-            self.app.set_classifier_context(None);
-            self.term.exit_overlay()?;
-            self.overlay_return_repaint()
-        }
-    }
-
     /// Ctrl+D: the raw-context view — the same overlay dance as Ctrl+O
     /// (`docs/context.md`).
     pub(crate) fn toggle_context_debug(&mut self) -> io::Result<()> {
@@ -627,6 +616,9 @@ impl Session<'_> {
             // is a second full rendered copy of the conversation resident
             // for the rest of the session. The next Ctrl+D rebuilds once.
             self.context.release();
+            // …and the classifier page's injected block, which the next open
+            // refreshes from the backend anyway.
+            self.app.set_classifier_context(None);
             self.term.exit_overlay()?;
             self.overlay_return_repaint()
         }

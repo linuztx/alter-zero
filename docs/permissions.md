@@ -355,16 +355,27 @@ approve(bash/MCP call) ── gate.allows()? ── yes ────────
 The request is **one silent completion** — no events reach the UI, so the
 asked-about cell just keeps the `⎿ Waiting…` row its batch announcement gave
 it while the verdict is decided. Its one user message has two parts. The
-`## Task context` block is the turn's own story — the **turn context**
-(`classifier::ClassifierContext`): the user request that opened the turn,
-quoted line by line (`> ` per line, so a request carrying markdown of its
-own stays visibly quoted material rather than becoming structure), over one
-line per action the agent has already taken, each in the transcript cell's
-own `Name(args)` vocabulary (`Read(/path)`, `Bash(cargo test)`,
+`## Task context` block is the session's recent story — the **task context**
+(`classifier::ClassifierContext`): the recent user requests, quoted line by
+line (`> ` per line, so a request carrying markdown of its own stays visibly
+quoted material rather than becoming structure), over one line per action
+the agent has taken, each in the transcript cell's own `Name(args)`
+vocabulary (`Read(/path)`, `Bash(cargo test)`,
 `deepwiki - ask_question (MCP)({…})` — the same `display_name`/
 `summarize_call` pair the cells use, so the classifier and the user read
 the turn in the same words), a refused call marked `— denied, not run` (an
 agent re-trying a variant of a denied command should be *seen* doing so).
+
+Both halves are **rolling windows over the conversation**, not one turn. A
+turn boundary is the wrong reset point for either: the request that explains
+a command is often two turns back — "set up the project" → … → an `rm -rf`
+on the build output — and an agent that had a command denied and re-tries a
+variant of it a turn later should still be seen doing so. So each new user
+message *pushes onto* the window rather than clearing it, and the caps alone
+bound the block: the newest `CONTEXT_MAX_REQUESTS` (10) requests and
+`CONTEXT_MAX_ACTIONS` (20) actions, each line truncated, with counted
+`(+N … omitted)` markers where a window cuts. One verdict therefore costs
+the same on turn fifty as on turn one.
 Then, under its own `## Action to review` header so what is being *decided*
 can never blur into what already happened: the cwd and the request itself —
 for a command: the command and the model's stated `description` (labelled a
@@ -376,20 +387,17 @@ the verdict *task-aware* — `rm -rf build/` right after a failed
 `cargo build` reads differently from `rm -rf` out of nowhere — without
 opening the old poisoned-transcript hole, because the block is **bounded
 and inert**: every part is truncated (a `CONTEXT_REQUEST_MAX_CHARS` excerpt
-of the request, `CONTEXT_ACTION_MAX_CHARS` per line closed with `…`, only
-the newest `CONTEXT_MAX_ACTIONS` actions behind a counted
-`(+N earlier actions omitted)` marker — so a long turn's verdict has a
-fixed price), tool *outputs* never ride along (the cheapest channel for a
-poisoned repo to lobby through), and the system prompt pins the whole block
-as information-never-instructions — nothing in it can authorize an action
-(the live suite proves a context that *begs* for an allow changes nothing).
-The log lives exactly one turn: each backend spawn seeds a fresh
-`ClassifierContext` from its user message (a subagent's from its launch
-prompt or continuation chat — `classifier::latest_user_text`, read before
-the skill reminder and hook notes push more user-role messages), the
-execute/launch closures record each executed call and agent launch, and the
-approve closure records refusals — so the context accumulates across a
-turn's rounds and resets exactly when a new user message arrives. Its system
+per request, `CONTEXT_ACTION_MAX_CHARS` per action line closed with `…`,
+and the two windows above), tool *outputs* never ride along (the cheapest
+channel for a poisoned repo to lobby through), and the system prompt pins
+the whole block as information-never-instructions — nothing in it can
+authorize an action (the live suite proves a context that *begs* for an
+allow changes nothing). The log lives on the **backend**, one per session:
+each spawn pushes its user message onto the window (a subagent keeps its
+own, seeded from its launch prompt or continuation chat —
+`classifier::latest_user_text`, read before the skill reminder and hook
+notes push more user-role messages), the execute/launch closures record each
+executed call and agent launch, and the approve closure records refusals. Its system
 prompt (`prompts/classifier.md`, the `include_str!` seam every prompt uses)
 ends with the reference's strict output contract — the reply must begin
 `<block>yes</block><reason>…</reason>` or `<block>no</block>` — which
@@ -459,62 +467,78 @@ events show `ToolStart → ToolNote → ToolEnd` with no `Permission` in sight
 — `tests/live_mcp.rs` closing the loop with a real server tool classified
 end to end (`live_auto_mode_classifies_an_mcp_call_instead_of_prompting`).
 
-## Ctrl+G: seeing what the classifier sees
+## Seeing what the classifier sees — Ctrl+D, Tab
 
-The turn context decides whether a command runs unasked, so it is the one
-input to a verdict the user cannot otherwise read — the request is silent,
-the cell shows only the outcome. **Ctrl+G** opens it: a full-screen overlay,
-the Ctrl+O transcript and Ctrl+D context views' third sibling, sharing their
-pager exactly (↑/↓, pgup/pgdn, home/end, `q`/Esc/Ctrl+G to close, the
-scroll-percentage separator and the two dim hint rows). It shows the block
-verbatim — the mode note, then the rendered `## Task context` the next
-verdict will read:
+The task context decides whether a command runs unasked, so it is the one
+input to a verdict the user cannot otherwise read: the request is silent,
+the cell shows only the outcome. It lives one key away, as the **second page
+of the Ctrl+D view** — Tab flips between them:
 
 ```
 / C L A S S I F I E R / / / / / / / / / / / / / / / / / / / / / / / / / / /
 Auto mode — the classifier reads this before each command or MCP call.
 
 ## Task context
-User request:
-> Read note.txt then list the files with ls -la
+User requests (oldest first; the last is the current task):
+> set up the project
+> now clean up the build output
 
-Actions taken this turn:
-- Read(/home/user/proj/note.txt)
-- Bash(ls -la)
+Recent actions (oldest first):
+- Read(/home/user/proj/Makefile)
+- Bash(make)
+- Bash(sudo rm -rf /var/log) — denied, not run
+~
+──────────────────────────────────────────────────────────── 100% ─
+ ↑/↓ to scroll   pgup/pgdn to page   home/end to jump
+ q/esc/ctrl+d to quit   tab for llm context
 ```
 
-Three details earn their keep:
+Pairing them under one key is the point: both answer *what is this turn
+actually sending* — one the model's own context window, the other its
+reviewer's — so they share the chrome (`ui::render_context_view` paints
+either; only the title, the scroll offset and the direction of the Tab hint
+differ) and differ only in the body `ui::classifier_lines` /
+`ui::context_lines` build. Four details earn their keep:
 
-- **The mode note.** The log is recorded in *every* mode — the boundary feeds
-  it per call, not per verdict — but only auto mode consults it. A view that
-  said nothing would read as "the classifier is deciding this" in the modes
-  where the user is, so the row above the block says which it is:
+- **The mode note.** The log is recorded in *every* mode — the boundary
+  feeds it per call, not per verdict — but only auto mode consults it. A
+  page that said nothing would read as "the classifier is deciding this" in
+  the modes where the user is, so the row above the block says which it is:
   `Auto mode — …`, `Recorded every turn; consulted only in auto mode
   (shift+tab to switch)`, or `Tool permissions are disabled — no classifier
   runs` with no gate at all.
-- **It opens over a permission prompt**, like Ctrl+O and Ctrl+D and off the
-  same shared `App::on_key_overlay_toggle` arm — and it is the sharpest of
-  the three there: a prompt in auto mode means the classifier *failed* or the
-  call was a file change it never sees, and "what did it know?" is exactly
-  the question being asked. Read-only, so the blocked tool thread keeps
-  waiting and the prompt is still open on the way back.
-- **It reads live.** The block is pulled from the backend on every draw
-  (`ReplySource::classifier_context` → `App::set_classifier_context`, the
-  system-prompt injection pattern) rather than cached, because it grows as
-  the turn runs and resets at the next user message — a view left open
-  tail-follows the actions as they land. It needs no `ContextCache` sibling:
-  the context is bounded to `CONTEXT_MAX_ACTIONS` short lines by
+- **Tab reaches it over a permission prompt.** Ctrl+D already escapes the
+  modal (with Ctrl+O, the two read-only views), and once the view is up its
+  own handler owns the keys — the modal's routing only runs in the
+  conversation view — so the prompt's Tab (its amend field) and the page
+  flip never contend. That matters most here: a prompt in auto mode means
+  the classifier *failed* or the call was a file change it never sees, and
+  "what did it know?" is exactly the question being asked. Read-only, so the
+  blocked tool thread keeps waiting and the prompt is still open on the way
+  back.
+- **Each page keeps its own scroll**, so flipping to compare them and back
+  lands where you left off (`App::debug_page_scroll` hands the pager arms
+  whichever page is up), and the page itself persists across opens — Ctrl+D
+  returns to whichever you were last reading, the title saying which.
+- **The classifier page reads live.** Its block is pulled from the backend
+  on every draw (`ReplySource::classifier_context` →
+  `App::set_classifier_context`, the system-prompt injection pattern) rather
+  than cached, because it grows as the turn runs and rolls its windows as
+  the conversation goes on — a page left open tail-follows the actions as
+  they land. It needs no `ContextCache` sibling: the block is bounded to
+  `CONTEXT_MAX_REQUESTS` + `CONTEXT_MAX_ACTIONS` short lines by
   construction, which is the whole point of the caps.
 
 That live read is why `LlmBackend` holds the `ClassifierContext` behind an
-`Arc<Mutex<…>>` rather than as a per-spawn local: `spawn` reseeds it from the
-new user message, the tool closures append to it, and the boundary reads it
-out. The dummy backend keeps no log — its offline auto-mode demo answers from
-the pure `permission::auto_verdict` heuristic — so the view shows its dim
+`Arc<Mutex<…>>` rather than a per-spawn local: it must outlive a turn (both
+halves are windows over the conversation), `spawn` pushes each user message
+onto it, the tool closures append, and the boundary reads it out. The dummy
+backend keeps no log — its offline auto-mode demo answers from the pure
+`permission::auto_verdict` heuristic — so the page shows its dim
 `No classifier context yet` placeholder there, under the same mode note.
 
 A **subagent** keeps its own context (seeded from its launch prompt), and
-that one is not surfaced: the view shows the lead's. Its own verdicts read
+that one is not surfaced: the page shows the lead's. Its own verdicts read
 its own log, exactly as the lead's read the lead's.
 
 ## The scratchpad exemption

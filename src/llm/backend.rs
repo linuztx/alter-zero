@@ -95,11 +95,12 @@ pub struct LlmBackend {
     /// calls in [`crate::permission::PermissionMode::Auto`] — idle in every
     /// other mode, and moot without a gate.
     classifier: SafetyClassifier,
-    /// The classifier's **live turn context** (`docs/permissions.md`),
-    /// shared so the boundary can show it: [`spawn`] reseeds it from the new
-    /// user message and the tool closures append to it as the turn runs,
-    /// while [`classifier_context`] reads it out for the Ctrl+G view. Shared
-    /// rather than a per-spawn local precisely so it *can* be read — the log
+    /// The classifier's **live task context** (`docs/permissions.md`),
+    /// shared so it can outlive a turn and be read: [`spawn`] pushes each new
+    /// user message onto its rolling window and the tool closures append the
+    /// actions, while [`classifier_context`] reads it out for the Ctrl+D
+    /// view's classifier page. Session-lived rather than per-spawn because
+    /// both halves are windows over the *conversation* — and because the log
     /// is the one part of a verdict the user cannot otherwise see.
     ///
     /// [`spawn`]: ReplySource::spawn
@@ -175,7 +176,7 @@ impl LlmBackend {
             skills: None,
             mcp: None,
             classifier,
-            turn_context: Arc::new(Mutex::new(ClassifierContext::new(""))),
+            turn_context: Arc::new(Mutex::new(ClassifierContext::new())),
             max_retries: MAX_RETRIES,
             max_tool_calls: agent::MAX_TOOL_ITERATIONS,
             hooks: Arc::new(NoHooks),
@@ -657,15 +658,15 @@ impl ReplySource for LlmBackend {
                     .with_detach_helper(registry.detach_helper())
                     .with_background(registry);
             }
-            // The auto mode classifier's turn context (`docs/permissions.md`):
-            // reseeded from this turn's user message and fed one line per
-            // action below, so a verdict mid-turn reads the work it sits
-            // inside. Reseeded per spawn — a new user message starts a new
-            // turn, which is exactly when the log must reset — and held on
-            // the backend rather than this stack, so the Ctrl+G view can read
-            // it live while the turn runs.
+            // The auto mode classifier's task context (`docs/permissions.md`):
+            // this turn's user message joins the rolling window, and the tool
+            // closures below append one line per action, so a verdict reads
+            // the work it sits inside — including the turns before it, since
+            // the request that explains a command is often not the latest
+            // one. The log lives on the backend rather than this stack: it
+            // must outlive the turn, and the Ctrl+D view reads it live.
             if let Ok(mut log) = turn_context.lock() {
-                *log = ClassifierContext::new(&prompt);
+                log.push_request(&prompt);
             }
             // The agentic loop: `run_agent` streams one round, runs any tool
             // calls the model requested (via `executor`, emitting the
@@ -693,7 +694,7 @@ impl ReplySource for LlmBackend {
                 // real executor.
                 |call, on_output| {
                     // Every executed call becomes one line of the classifier's
-                    // turn context — the log a later verdict reads the action
+                    // task context — the log a later verdict reads the action
                     // against (`docs/permissions.md`).
                     if let Ok(mut log) = turn_context.lock() {
                         log.record_call(&call.name, &call.arguments);
@@ -820,7 +821,7 @@ impl ReplySource for LlmBackend {
         self.model.clone()
     }
 
-    /// The classifier's live turn context, rendered for the Ctrl+G view
+    /// The classifier's live task context, rendered for the Ctrl+D view
     /// (`docs/permissions.md`). Read under the lock and handed out as an
     /// owned string — the boundary must never hold a backend lock across a
     /// draw. A poisoned lock (a panicked tool thread) reports nothing rather
@@ -1201,13 +1202,13 @@ fn spawn_subagent_run(
         .for_subagent(&id, &agent_type)
         .unwrap_or_else(|| Arc::clone(&config.hooks));
     thread::spawn(move || {
-        // The classifier's turn context for THIS agent's run, seeded from the
+        // The classifier's task context for THIS agent's run, seeded from the
         // launch prompt (or the chat message that continued it) — read now,
         // before the reminder/hook notes push more user-role messages that
         // would win the newest-user-text scan (`docs/permissions.md`).
-        let turn_context = std::sync::Mutex::new(super::classifier::ClassifierContext::new(
-            &super::classifier::latest_user_text(&messages),
-        ));
+        let mut agent_context = super::classifier::ClassifierContext::new();
+        agent_context.push_request(&super::classifier::latest_user_text(&messages));
+        let turn_context = std::sync::Mutex::new(agent_context);
         // Right after the launch prompt and in front of the hook notes, so it
         // reads as part of the briefing rather than an answer to it.
         if let Some(reminder) = skill_reminder {
@@ -1273,7 +1274,7 @@ fn spawn_subagent_run(
             &mut messages,
             |msgs| stream_round(&client, msgs, &tx2, &cancel, max_retries),
             |call, on_output| {
-                // The classifier's turn context, one line per executed call —
+                // The classifier's task context, one line per executed call —
                 // the lead's pattern (`docs/permissions.md`).
                 if let Ok(mut log) = turn_context.lock() {
                     log.record_call(&call.name, &call.arguments);

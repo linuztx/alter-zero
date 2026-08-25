@@ -139,7 +139,6 @@ impl App {
             View::ToolOutput => self.on_key_tool_view(key),
             View::ResumePicker => self.on_key_resume_picker(key),
             View::ContextDebug => self.on_key_context_debug(key),
-            View::ClassifierContext => self.on_key_classifier_context(key),
         }
     }
 

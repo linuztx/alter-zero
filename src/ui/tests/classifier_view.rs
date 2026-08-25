@@ -1,4 +1,4 @@
-//! The Ctrl+G classifier-context overlay (`docs/permissions.md`).
+//! The Ctrl+D view's classifier page (`docs/permissions.md`).
 
 use super::*;
 use crate::permission::PermissionMode;

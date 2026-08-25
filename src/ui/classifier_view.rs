@@ -1,11 +1,12 @@
-//! The Ctrl+G classifier-context overlay: the bounded task context auto
-//! mode's classifier reads before every command and MCP call. The Ctrl+D
-//! view's sibling — same pager chrome, same verbatim body — over a different
-//! question: not *what does the model see*, but *what does the reviewer
-//! see*. See `docs/permissions.md`.
+//! The Ctrl+D view's **classifier page** (Tab): the bounded task context
+//! auto mode's classifier reads before every command and MCP call. Its
+//! sibling page answers *what does the model see*; this one answers *what
+//! does the reviewer see*. Same chrome, same verbatim body — only the lines
+//! differ, so this module is just the body builder and
+//! [`super::render_context_view`] paints either page. See
+//! `docs/permissions.md`.
 
 use super::theme::*;
-use super::transcript::{overlay_header, tool_view_separator};
 use super::wrap::wrap_verbatim;
 use super::*;
 use crate::permission::PermissionMode;
@@ -22,7 +23,7 @@ const fn mode_note(mode: Option<PermissionMode>) -> &'static str {
     }
 }
 
-/// The Ctrl+G body: the mode note, then the rendered turn context exactly as
+/// The classifier page's body: the mode note, then the rendered task context exactly as
 /// [`crate::llm::classifier::ClassifierContext::render`] built it — wrapped
 /// **verbatim** (never the markdown renderer: the `##` headers and the `> `
 /// quoting are the block's own structure, and the whole point is showing the
@@ -46,42 +47,4 @@ pub fn classifier_lines(app: &App, width: u16) -> Vec<Line<'static>> {
         lines.push(Line::from(row));
     }
     lines
-}
-
-/// Render the full-screen Ctrl+G view — the transcript pager's chrome over
-/// `lines` (built by [`classifier_lines`]), windowed by
-/// `App::classifier_scroll` (clamped) with `~` filler past the end. Pure —
-/// `term.rs` paints this onto the overlay.
-pub fn render_classifier_view(area: Rect, buf: &mut Buffer, app: &App, lines: &[Line<'static>]) {
-    let [title_area, body_area, sep_area, hints_area] = Layout::vertical([
-        Constraint::Length(TOOL_VIEW_TITLE_ROWS),
-        Constraint::Min(0),
-        Constraint::Length(1),
-        Constraint::Length(TOOL_VIEW_FOOTER_ROWS - 1),
-    ])
-    .areas(area);
-
-    Paragraph::new(overlay_header(CLASSIFIER_VIEW_TITLE, area.width)).render(title_area, buf);
-
-    let max = lines.len().saturating_sub(body_area.height as usize);
-    let scroll = app.classifier_scroll.min(max);
-    let mut visible: Vec<Line> = lines
-        .iter()
-        .skip(scroll)
-        .take(body_area.height as usize)
-        .cloned()
-        .collect();
-    while (visible.len() as u16) < body_area.height {
-        visible.push(Line::from(TOOL_VIEW_FILL));
-    }
-    Paragraph::new(visible).render(body_area, buf);
-
-    Paragraph::new(tool_view_separator(area.width, scroll, max)).render(sep_area, buf);
-
-    let dim = Style::new().fg(TOOL_DIM_COLOR);
-    Paragraph::new(vec![
-        Line::from(Span::styled(TOOL_VIEW_HINT_KEYS.to_string(), dim)),
-        Line::from(Span::styled(CLASSIFIER_VIEW_HINT_QUIT.to_string(), dim)),
-    ])
-    .render(hints_area, buf);
 }

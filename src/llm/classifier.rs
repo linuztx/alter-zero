@@ -8,21 +8,21 @@
 //! `<block>yes|no</block><reason>…</reason>` output contract (more robust
 //! than JSON across arbitrary OpenAI-compatible models) and one user message
 //! carrying a **bounded task context** plus the request. The context
-//! ([`ClassifierContext`]) is the turn's own story — the user's request and
-//! the actions the agent has already taken, each a one-line `Name(args)`
-//! summary — so the verdict can weigh whether an action *fits the task*
-//! (Claude Code's classifier reads its transcript the same way): `rm -rf
+//! ([`ClassifierContext`]) is the session's recent story — the last
+//! [`CONTEXT_MAX_REQUESTS`] user requests and the last
+//! [`CONTEXT_MAX_ACTIONS`] actions, each a one-line `Name(args)` summary —
+//! so the verdict can weigh whether an action *fits the task*: `rm -rf
 //! build/` after a failed `cargo build` reads differently from `rm -rf`
-//! out of nowhere. It is deliberately **not the conversation**: every part
-//! is truncated (`CONTEXT_*` caps — an excerpt of the request, capped
-//! one-line actions, only the newest [`CONTEXT_MAX_ACTIONS`]), tool *outputs*
+//! out of nowhere, and "now clean up the build output" two turns back is
+//! often the request that explains the command in front of you. It is
+//! deliberately **not the conversation**: both halves are rolling windows,
+//! every line is truncated (`CONTEXT_*` caps), tool *outputs*
 //! never ride along (the cheapest channel for a poisoned repo to lobby
 //! through), the system prompt pins the block as information-never-
 //! instructions, and the action under review sits under its own
 //! `## Action to review` header so what is being judged can't blur into
-//! what already happened. The context accumulates across one turn and
-//! resets with the next user message (each turn's backend spawn seeds a
-//! fresh one — `docs/permissions.md`). The verdict parse and the prompt
+//! what already happened. The caps alone bound it, so a verdict on turn
+//! fifty costs what one on turn one did (`docs/permissions.md`). The parse
 //! build are pure and unit-tested; [`SafetyClassifier::classify`] is the one
 //! HTTP boundary, riding the same blocking client and cancel-polling stream
 //! machinery as every other request ([`OpenAiClient::stream_chat`]).
@@ -87,11 +87,19 @@ pub fn classifier_request_prompt(request: &PermissionRequest, cwd: &str) -> Stri
     }
 }
 
-/// The most actions the task-context block keeps. When a long agentic turn
-/// overflows it, the **oldest** drop first — the recent actions are the ones
-/// the next verdict reads against — behind a counted `(+N earlier actions
-/// omitted)` marker so the list never reads as the whole story.
-pub const CONTEXT_MAX_ACTIONS: usize = 30;
+/// The most actions the task-context block keeps. When a long run overflows
+/// it, the **oldest** drop first — the recent actions are the ones the next
+/// verdict reads against — behind a counted `(+N earlier actions omitted)`
+/// marker so the list never reads as the whole story.
+pub const CONTEXT_MAX_ACTIONS: usize = 20;
+
+/// The most user requests the block keeps, newest last. The log spans the
+/// **conversation**, not one turn: a command reads very differently under
+/// "now delete the build output" than under the request three turns back
+/// that a single-turn window would have shown instead. Ten is the window —
+/// enough for the thread of a task, bounded so a long session's verdict
+/// costs no more than a short one's.
+pub const CONTEXT_MAX_REQUESTS: usize = 10;
 
 /// The character cap on one recorded action line. One pathological call — a
 /// heredoc `bash` command, a huge MCP argument object — must not spend the
@@ -139,85 +147,129 @@ fn action_line(name: &str, arguments: &str) -> String {
     truncate_chars(&line, CONTEXT_ACTION_MAX_CHARS)
 }
 
-/// The **turn context** the auto mode classifier reads beside each request
-/// (`docs/permissions.md`): the user's request that opened the turn and a
-/// bounded, truncated log of the actions the agent has taken since — so a
-/// verdict can weigh whether the action under review *fits the task*, not
-/// just whether it looks safe in a vacuum.
+/// The **task context** the auto mode classifier reads beside each request
+/// (`docs/permissions.md`): the recent user requests and a bounded,
+/// truncated log of the actions the agent has taken — so a verdict can weigh
+/// whether the action under review *fits the task*, not just whether it
+/// looks safe in a vacuum.
 ///
-/// One instance lives for one turn (the backend seeds a fresh one per spawn,
-/// so the log resets exactly when a new user message arrives) and is fed at
-/// the boundary: executed calls, denied calls (marked — an agent re-trying a
-/// variant of a refused command should be *seen* doing so), and subagent
-/// launches. Everything here is pure and unit-tested; the truncation caps
-/// ([`CONTEXT_MAX_ACTIONS`], [`CONTEXT_ACTION_MAX_CHARS`],
-/// [`CONTEXT_REQUEST_MAX_CHARS`]) bound what one verdict costs no matter how
-/// long the turn ran.
-#[derive(Debug, Clone)]
+/// Both halves are **rolling windows over the conversation**, not one turn.
+/// A turn boundary is the wrong reset point for either: the request that
+/// explains a command is often two turns back ("set up the project" → …→ a
+/// `rm -rf` on the build output), and an agent that had a command denied and
+/// re-tries a variant of it one turn later should still be seen doing so.
+/// So each new user message [`push_request`](Self::push_request)s onto the
+/// window rather than clearing it, and the caps alone bound the block: the
+/// newest [`CONTEXT_MAX_REQUESTS`] requests and [`CONTEXT_MAX_ACTIONS`]
+/// actions, each line truncated ([`CONTEXT_REQUEST_MAX_CHARS`],
+/// [`CONTEXT_ACTION_MAX_CHARS`]), with counted `(+N … omitted)` markers where
+/// the windows cut. One verdict therefore costs the same on turn fifty as on
+/// turn one — a ceiling of roughly 8 KB of prompt, most of it usually unused.
+///
+/// The backend owns one per session and feeds it at the boundary: the user
+/// message each `spawn` carries, executed calls, denied calls (marked), and
+/// subagent launches. A subagent keeps its own, seeded from its launch
+/// prompt. Everything here is pure and unit-tested.
+#[derive(Debug, Clone, Default)]
 pub struct ClassifierContext {
-    /// The truncated head of the user request that opened the turn.
-    request: String,
+    /// The newest [`CONTEXT_MAX_REQUESTS`] user requests, oldest first, each
+    /// truncated to [`CONTEXT_REQUEST_MAX_CHARS`].
+    requests: VecDeque<String>,
+    /// How many older requests the window pushed out.
+    dropped_requests: usize,
     /// The newest [`CONTEXT_MAX_ACTIONS`] action lines, oldest first.
     actions: VecDeque<String>,
-    /// How many older actions the cap pushed out.
-    dropped: usize,
+    /// How many older actions the window pushed out.
+    dropped_actions: usize,
 }
 
 impl ClassifierContext {
-    /// A fresh context for one turn, seeded with the user request that
-    /// started it (truncated to [`CONTEXT_REQUEST_MAX_CHARS`]).
+    /// An empty context — no requests, no actions.
     #[must_use]
-    pub fn new(user_request: &str) -> Self {
-        Self {
-            request: truncate_chars(user_request.trim(), CONTEXT_REQUEST_MAX_CHARS),
-            actions: VecDeque::new(),
-            dropped: 0,
-        }
+    pub fn new() -> Self {
+        Self::default()
     }
 
-    /// Record a tool call the agent ran (or is running) this turn.
+    /// Record a user request onto the rolling window (the boundary calls this
+    /// once per `spawn`). Blank text is ignored: a synthetic follow-up turn —
+    /// the one a finished background shell auto-starts — carries no request
+    /// of the user's, and an empty `> ` quote would only read as one.
+    pub fn push_request(&mut self, request: &str) {
+        let request = request.trim();
+        if request.is_empty() {
+            return;
+        }
+        if self.requests.len() >= CONTEXT_MAX_REQUESTS {
+            self.requests.pop_front();
+            self.dropped_requests += 1;
+        }
+        self.requests
+            .push_back(truncate_chars(request, CONTEXT_REQUEST_MAX_CHARS));
+    }
+
+    /// Record a tool call the agent ran (or is running).
     pub fn record_call(&mut self, name: &str, arguments: &str) {
-        self.push(action_line(name, arguments));
+        self.push_action(action_line(name, arguments));
     }
 
     /// Record a call that was refused — by the user, a hook, or the
     /// classifier itself. The marker is appended *after* the line's own
     /// truncation, so it can never be eaten by the cut.
     pub fn record_denied(&mut self, name: &str, arguments: &str) {
-        self.push(format!(
+        self.push_action(format!(
             "{} — denied, not run",
             action_line(name, arguments)
         ));
     }
 
-    fn push(&mut self, line: String) {
+    fn push_action(&mut self, line: String) {
         if self.actions.len() >= CONTEXT_MAX_ACTIONS {
             self.actions.pop_front();
-            self.dropped += 1;
+            self.dropped_actions += 1;
         }
         self.actions.push_back(line);
     }
 
     /// Render the `## Task context` block the classifier prompt opens with.
-    /// The request is quoted line by line (`> `) so a request carrying
-    /// markdown of its own — headers included — stays visibly quoted material
-    /// rather than becoming structure; an empty action log says `(none yet)`
-    /// rather than leaving the classifier to wonder what was omitted.
+    /// Each request is quoted line by line (`> `) so one carrying markdown of
+    /// its own — headers included — stays visibly quoted material rather than
+    /// becoming structure, and both lists say `(none yet)` when empty rather
+    /// than leaving the classifier to wonder what was omitted. The ordering
+    /// is stated in the headers, since which request is the *current* task is
+    /// the one thing the model must not have to guess.
     #[must_use]
     pub fn render(&self) -> String {
-        let mut out = String::from("## Task context\nUser request:\n");
-        for line in self.request.lines() {
-            out.push_str("> ");
-            out.push_str(line);
+        let mut out = String::from(
+            "## Task context\nUser requests (oldest first; the last is the current task):",
+        );
+        if self.requests.is_empty() {
+            out.push_str(" (none yet)\n");
+        } else {
             out.push('\n');
+            if self.dropped_requests > 0 {
+                out.push_str(&format!(
+                    "(+{} earlier requests omitted)\n",
+                    self.dropped_requests
+                ));
+            }
+            for request in &self.requests {
+                for line in request.lines() {
+                    out.push_str("> ");
+                    out.push_str(line);
+                    out.push('\n');
+                }
+            }
         }
-        out.push_str("\nActions taken this turn:");
+        out.push_str("\nRecent actions (oldest first):");
         if self.actions.is_empty() {
             out.push_str(" (none yet)");
         } else {
             out.push('\n');
-            if self.dropped > 0 {
-                out.push_str(&format!("(+{} earlier actions omitted)\n", self.dropped));
+            if self.dropped_actions > 0 {
+                out.push_str(&format!(
+                    "(+{} earlier actions omitted)\n",
+                    self.dropped_actions
+                ));
             }
             for action in &self.actions {
                 out.push_str("- ");
@@ -452,14 +504,21 @@ mod tests {
         assert!(!classifier_user_prompt("ls", Some("  "), "/p").contains("description"));
     }
 
-    // ===== the turn context (docs/permissions.md "Auto mode: the classifier") =====
+    // ===== the task context (docs/permissions.md "Auto mode: the classifier") =====
+
+    /// A context carrying one user request — the common test shape.
+    fn ctx(request: &str) -> ClassifierContext {
+        let mut context = ClassifierContext::new();
+        context.push_request(request);
+        context
+    }
 
     #[test]
     fn the_context_records_actions_and_renders_the_task_block() {
         // The classifier judges an action inside the task it serves: the block
         // carries the user's request and the actions already taken this turn,
         // each in the transcript cell's own `Name(args)` shape.
-        let mut context = ClassifierContext::new("Improve the project");
+        let mut context = ctx("Improve the project");
         context.record_call("read", r#"{"path":"/home/user/proj/src/main.rs"}"#);
         context.record_call(
             "edit",
@@ -501,7 +560,7 @@ mod tests {
         // the classifier as its head, cut at the cap and closed with an
         // ellipsis so nothing reads as complete when it isn't.
         let long = "x".repeat(CONTEXT_REQUEST_MAX_CHARS + 400);
-        let context = ClassifierContext::new(&long);
+        let context = ctx(&long);
         let block = context.render();
         let quoted_len = block
             .lines()
@@ -520,7 +579,7 @@ mod tests {
     fn the_context_quotes_every_line_of_a_multi_line_request() {
         // `> ` per line keeps a request that contains markdown of its own —
         // headers included — visibly quoted material rather than structure.
-        let context = ClassifierContext::new("do this\n## and that");
+        let context = ctx("do this\n## and that");
         let block = context.render();
         assert!(block.contains("> do this"), "got {block}");
         assert!(block.contains("> ## and that"), "got {block}");
@@ -529,7 +588,7 @@ mod tests {
 
     #[test]
     fn the_context_truncates_a_long_action_line() {
-        let mut context = ClassifierContext::new("task");
+        let mut context = ctx("task");
         let long = format!("echo {}", "y".repeat(CONTEXT_ACTION_MAX_CHARS * 2));
         context.record_call("bash", &serde_json::json!({"command": long}).to_string());
         let block = context.render();
@@ -550,7 +609,7 @@ mod tests {
         // A long agentic turn drops its oldest actions, not its newest — the
         // recent ones are the context the next verdict needs — and says how
         // many it dropped so the list never reads as the whole story.
-        let mut context = ClassifierContext::new("task");
+        let mut context = ctx("task");
         for n in 0..(CONTEXT_MAX_ACTIONS + 5) {
             context.record_call(
                 "bash",
@@ -579,7 +638,7 @@ mod tests {
         // A call the classifier (or the user) refused is context for the next
         // verdict — an agent re-trying a variant of a denied command should be
         // seen doing so. The marker lands after the cut so it can't be eaten.
-        let mut context = ClassifierContext::new("task");
+        let mut context = ctx("task");
         let long = format!("sudo {}", "z".repeat(CONTEXT_ACTION_MAX_CHARS * 2));
         context.record_denied("bash", &serde_json::json!({"command": long}).to_string());
         let block = context.render();
@@ -593,9 +652,71 @@ mod tests {
 
     #[test]
     fn an_actionless_context_says_so() {
-        let context = ClassifierContext::new("Improve the project");
+        let context = ctx("Improve the project");
         let block = context.render();
         assert!(block.contains("(none yet)"), "got {block}");
+    }
+
+    #[test]
+    fn user_requests_accumulate_across_turns_newest_last() {
+        // The window spans the conversation, not one turn: the request that
+        // explains a command is often two turns back, so a new one is pushed
+        // onto the log rather than replacing it.
+        let mut context = ClassifierContext::new();
+        context.push_request("set up the project");
+        context.record_call("bash", r#"{"command":"cargo build"}"#);
+        context.push_request("now clean up the build output");
+        let block = context.render();
+        let first = block
+            .find("> set up the project")
+            .expect("the older request survives");
+        let second = block
+            .find("> now clean up the build output")
+            .expect("and the newest is there");
+        assert!(first < second, "oldest first, current task last: {block}");
+        // …and the action recorded under the earlier request is still there:
+        // an agent's history does not reset with the turn either.
+        assert!(block.contains("- Bash(cargo build)"), "got {block}");
+    }
+
+    #[test]
+    fn the_request_window_drops_the_oldest_behind_a_counted_marker() {
+        let mut context = ClassifierContext::new();
+        for n in 0..(CONTEXT_MAX_REQUESTS + 3) {
+            context.push_request(&format!("request-{n}"));
+        }
+        let block = context.render();
+        assert!(!block.contains("> request-0"), "oldest dropped: {block}");
+        assert!(!block.contains("> request-2"), "oldest dropped: {block}");
+        assert!(
+            block.contains("> request-3"),
+            "the window keeps the rest: {block}"
+        );
+        assert!(
+            block.contains(&format!("> request-{}", CONTEXT_MAX_REQUESTS + 2)),
+            "newest kept: {block}"
+        );
+        assert!(
+            block.contains("+3 earlier requests omitted"),
+            "the drop is visible: {block}"
+        );
+    }
+
+    #[test]
+    fn a_blank_request_is_not_recorded() {
+        // A loop-initiated follow-up turn (a background shell finishing)
+        // carries no request of the user's; an empty `> ` quote would read as
+        // one.
+        let mut context = ClassifierContext::new();
+        context.push_request("   \n  ");
+        let block = context.render();
+        assert!(block.contains("(none yet)"), "got {block}");
+    }
+
+    #[test]
+    fn an_empty_context_says_so_on_both_halves() {
+        let block = ClassifierContext::new().render();
+        assert_eq!(block.matches("(none yet)").count(), 2, "got {block}");
     }
 
     #[test]
@@ -611,7 +732,7 @@ mod tests {
             detail: Some("List files".to_string()),
             agent: None,
         };
-        let mut context = ClassifierContext::new("Improve the project");
+        let mut context = ctx("Improve the project");
         context.record_call("read", r#"{"path":"/p/a.rs"}"#);
         let prompt = classifier_prompt(&request, "/p", &context.render());
         let task_at = prompt.find("## Task context").expect("task block");

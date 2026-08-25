@@ -1027,18 +1027,20 @@ fn the_transcript_overlay_seats_the_cursor_after_its_quit_hint() {
 
 #[test]
 fn the_context_overlay_seats_the_cursor_after_its_quit_hint() {
-    // Ctrl+D is the pager's sibling: same chrome, its own closing hint.
+    // Ctrl+D is the pager's sibling: same chrome, its own closing hint —
+    // which also carries the Tab page-flip hint, Tab being the classifier
+    // page's only discovery affordance (`docs/permissions.md`).
     let app = App::new();
     let area = Rect::new(0, 0, 60, 12);
     let mut buf = Buffer::empty(area);
     let lines = context_lines(&app, 60);
     render_context_view(area, &mut buf, &app, &lines);
     let (x, y) = overlay_cursor_seat(&buf);
-    let hint = " q/esc/ctrl+d to quit";
-    assert!(
-        row(&buf, y, 60).starts_with(hint),
-        "the seat row is the closing hint: {:?}",
-        row(&buf, y, 60)
+    let hint = " q/esc/ctrl+d to quit   tab for classifier context";
+    assert_eq!(
+        row(&buf, y, 60).trim_end(),
+        hint,
+        "the seat row is the closing hint"
     );
     assert_eq!(usize::from(x), hint.len(), "the seat sits right after it");
 }

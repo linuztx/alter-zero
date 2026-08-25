@@ -8357,18 +8357,19 @@ sleep 0.3
 tmux kill-session -t "$S92" 2>/dev/null
 
 
-# --- Phase 93: the Ctrl+G CLASSIFIER-CONTEXT view (docs/permissions.md). Auto
-# mode's reviewer reads a bounded task context — the turn's user request plus
+# --- Phase 93: the Ctrl+D view's CLASSIFIER PAGE (docs/permissions.md). Auto
+# mode's reviewer reads a bounded task context — the recent user requests plus
 # one line per action — and that context is the one input to a verdict the
 # user cannot otherwise see: the request is silent and the cell shows only the
-# outcome. Ctrl+G opens it as the Ctrl+O/Ctrl+D pager's third sibling. Three
-# claims: it OPENS (title + the mode note, which under the dummy's disabled
-# gate says so), it CLOSES back to the conversation, and the round trip is a
-# NO-OP on the terminal — screen and scrollback byte-identical, the
-# overlay-return invariant every alternate-screen view owes (invariant 4). The
-# dummy keeps no classifier log (its offline auto demo answers from the pure
-# `auto_verdict` heuristic), so the body is the placeholder here; the live
-# block is covered by the classifier unit tests and tests/live_openrouter.rs. ---
+# outcome. It is Tab away inside the Ctrl+D view, sharing its chrome. Four
+# claims: Ctrl+D opens on the LLM window, TAB flips to the classifier page
+# (its own title + the mode note, plus a hint pointing back), Tab flips back,
+# and the whole round trip is a NO-OP on the terminal — screen and scrollback
+# byte-identical, the overlay-return invariant every alternate-screen view
+# owes (invariant 4). The dummy keeps no classifier log (its offline auto demo
+# answers from the pure `auto_verdict` heuristic), so the body is the
+# placeholder here; the live block is covered by the classifier unit tests and
+# tests/live_openrouter.rs. ---
 S93="${S}_classifier"
 tmux new-session -d -s "$S93" -x 90 -y 24 "$APP"
 sleep 0.4
@@ -8390,46 +8391,74 @@ fi
 sleep 0.3
 cg_before="$(tmux capture-pane -t "$S93" -p)"
 cg_scroll_before="$(tmux capture-pane -t "$S93" -p -S -60)"
-tmux send-keys -t "$S93" C-g
+tmux send-keys -t "$S93" C-d
 sleep 0.6
+cg_llm="$(tmux capture-pane -t "$S93" -p)"
+if ! printf '%s' "$cg_llm" | grep -qF "C O N T E X T"; then
+	echo "FAIL: Phase 93 — Ctrl+D did not open on the LLM context page" >&2
+	status=1
+fi
+if ! printf '%s' "$cg_llm" | grep -qF "tab for classifier context"; then
+	echo "FAIL: Phase 93 — the LLM page never advertises its other half" >&2
+	status=1
+fi
+tmux send-keys -t "$S93" Tab
+sleep 0.5
 cg_view="$(tmux capture-pane -t "$S93" -p)"
-echo "==== Phase 93: captured pane (the Ctrl+G classifier view) ===="
+echo "==== Phase 93: captured pane (Ctrl+D, Tab — the classifier page) ===="
 printf '%s\n' "$cg_view"
 if ! printf '%s' "$cg_view" | grep -qF "C L A S S I F I E R"; then
-	echo "FAIL: Phase 93 — Ctrl+G did not open the classifier-context view" >&2
+	echo "FAIL: Phase 93 — Tab did not flip to the classifier page" >&2
 	status=1
 fi
-if ! printf '%s' "$cg_view" | grep -qF "q/esc/ctrl+g to quit"; then
-	echo "FAIL: Phase 93 — the view is missing its own closing hint row" >&2
+if ! printf '%s' "$cg_view" | grep -qF "tab for llm context"; then
+	echo "FAIL: Phase 93 — the classifier page never points back" >&2
 	status=1
 fi
-# The mode note always shows, so the view can never read as "the classifier is
+# The mode note always shows, so the page can never read as "the classifier is
 # deciding this" when it is not — here the suite's default manual mode, whose
 # note says the log is recorded but consulted only in auto.
 if ! printf '%s' "$cg_view" | grep -qE "auto mode|disabled"; then
 	echo "FAIL: Phase 93 — no mode note above the block" >&2
 	status=1
 fi
-tmux send-keys -t "$S93" C-g
+tmux send-keys -t "$S93" Tab
+sleep 0.5
+if ! tmux capture-pane -t "$S93" -p | grep -qF "C O N T E X T"; then
+	echo "FAIL: Phase 93 — Tab did not flip back to the LLM context page" >&2
+	status=1
+fi
+tmux send-keys -t "$S93" C-d
 sleep 0.6
 cg_after="$(tmux capture-pane -t "$S93" -p)"
 cg_scroll_after="$(tmux capture-pane -t "$S93" -p -S -60)"
 if [ "$cg_before" != "$cg_after" ]; then
-	echo "FAIL: Phase 93 — the Ctrl+G round trip changed the screen" >&2
+	echo "FAIL: Phase 93 — the Ctrl+D round trip changed the screen" >&2
 	printf 'before:\n%s\nafter:\n%s\n' "$cg_before" "$cg_after" >&2
 	status=1
 fi
 if [ "$cg_scroll_before" != "$cg_scroll_after" ]; then
-	echo "FAIL: Phase 93 — the Ctrl+G round trip lost or doubled scrollback rows" >&2
+	echo "FAIL: Phase 93 — the Ctrl+D round trip lost or doubled scrollback rows" >&2
 	status=1
 fi
-# …and q closes it too, like its two siblings.
-tmux send-keys -t "$S93" C-g
+# …and the page persists across opens: Ctrl+D comes back to the classifier
+# page when that is where you left it, and q closes from there.
+tmux send-keys -t "$S93" C-d
+sleep 0.4
+tmux send-keys -t "$S93" Tab
+sleep 0.4
+tmux send-keys -t "$S93" C-d
+sleep 0.4
+tmux send-keys -t "$S93" C-d
 sleep 0.5
+if ! tmux capture-pane -t "$S93" -p | grep -qF "C L A S S I F I E R"; then
+	echo "FAIL: Phase 93 — the view did not reopen on the page it was left on" >&2
+	status=1
+fi
 tmux send-keys -t "$S93" -l "q"
 sleep 0.5
 if tmux capture-pane -t "$S93" -p | grep -qF "C L A S S I F I E R"; then
-	echo "FAIL: Phase 93 — q did not close the classifier view" >&2
+	echo "FAIL: Phase 93 — q did not close the view from the classifier page" >&2
 	status=1
 fi
 tmux kill-session -t "$S93" 2>/dev/null

@@ -146,13 +146,34 @@ pub enum View {
     /// (system prompt + every derived context message, placeholders and
     /// bracketed tool formats unrendered). See `docs/context.md`.
     ContextDebug,
-    /// The full-screen Ctrl+G classifier-context view: the bounded task
-    /// context auto mode's classifier reads before every command and MCP
-    /// call (the user request + the actions taken this turn). Boundary-fed
-    /// through [`App::set_classifier_context`]. See `docs/permissions.md`.
+}
+
+/// Which page the Ctrl+D view is showing — Tab flips between them
+/// (`docs/context.md`, `docs/permissions.md`). Two windows onto "what is
+/// this turn actually sending", one key apart: the model's own context, and
+/// the bounded task context auto mode's classifier reads before every
+/// command and MCP call.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum DebugPage {
+    /// The raw LLM context window (the view's original, and its default).
+    #[default]
+    Context,
+    /// The classifier's task context, boundary-fed through
+    /// [`App::set_classifier_context`].
     ///
     /// [`App::set_classifier_context`]: crate::app::App::set_classifier_context
-    ClassifierContext,
+    Classifier,
+}
+
+impl DebugPage {
+    /// The other page — what Tab shows.
+    #[must_use]
+    pub const fn flipped(self) -> Self {
+        match self {
+            Self::Context => Self::Classifier,
+            Self::Classifier => Self::Context,
+        }
+    }
 }
 
 /// The session context shown in the footer under the input box: the backend's
