@@ -112,9 +112,9 @@ fn a_lone_live_agent_renders_the_tool_cell_shape() {
 
 #[test]
 fn a_lone_live_agents_tool_row_clips_instead_of_wrapping() {
-    // A description-less call wears the tool cell's own `Name(args)` shape,
-    // and a long one **clips at the width** rather than wrapping the cell
-    // open under a live counter — all of it dim (`docs/agent-tool.md`).
+    // A description-less call wears the clean `Name: args` shape, and a long
+    // one **clips at the width** rather than wrapping the cell open under a
+    // live counter — all of it dim (`docs/agent-tool.md`).
     let mut app = App::new();
     app.begin_stream();
     app.start_agent_group(false, &[spec("a1", "Fetch Warsaw", false)]);
@@ -131,7 +131,7 @@ fn a_lone_live_agents_tool_row_clips_instead_of_wrapping() {
     let texts: Vec<String> = lines.iter().map(plain).collect();
     assert_eq!(texts.len(), 2, "the header + one clipped row: {texts:?}");
     assert!(
-        texts[1].starts_with("  ⎿  Bash(sleep 10 && curl"),
+        texts[1].starts_with("  ⎿  Bash: sleep 10 && curl"),
         "{}",
         texts[1]
     );
@@ -261,8 +261,8 @@ fn a_multi_agent_tree_keeps_the_sticky_tool_activity() {
         "{}",
         texts[2]
     );
-    // No description on the call → the tool cell's own `Name(args)` shape.
-    assert!(texts[4].ends_with("⎿  Write(game.py)"), "{}", texts[4]);
+    // No description on the call → the clean `Name: args` shape.
+    assert!(texts[4].ends_with("⎿  Write: game.py"), "{}", texts[4]);
 }
 
 #[test]
@@ -424,9 +424,16 @@ fn the_agent_view_swaps_the_strip_to_the_agents_stream() {
     render_live(area, &mut buf, &app);
     let all: String = (0..24).map(|y| row(&buf, y, 80) + "\n").collect();
     assert!(all.contains("Bash(curl wttr.in)"), "{all}");
+    // The label is *embedded in* the top rule — `─ Fetch Warsaw ─`, the rule
+    // resuming for one cell after the text so it reads as part of the frame
+    // rather than dangling off its end (docs/agent-tool.md).
+    let rule_row = (0..24)
+        .map(|y| row(&buf, y, 80))
+        .find(|r| r.contains("Fetch Warsaw") && r.contains('─'))
+        .expect("the box rule carries the label");
     assert!(
-        all.contains(" Fetch Warsaw "),
-        "the box rule carries the label: {all}"
+        rule_row.trim_end().ends_with("─ Fetch Warsaw ─"),
+        "the rule closes after the label: {rule_row}"
     );
     assert!(
         all.contains("  ● general-purpose"),

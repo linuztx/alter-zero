@@ -172,7 +172,10 @@ zero new plumbing. The TUI cell is a new `HistoryItem::AgentNotice` —
 - `App::agent_view: Option<String>` — the **agent session view**: the whole
   inline screen shows that agent's own conversation (banner + its transcript,
   Purge-rebuilt like `/clear`), the input box's top rule carries the agent's
-  description as a right-aligned label, and the composer **chats with the
+  description as a right-aligned label **embedded in the rule** — the rule
+  resumes for one border cell after the text (`── {description} ─`, the
+  `AGENT_VIEW_RULE_TAIL` glyph) so the label reads as part of the frame
+  rather than dangling off its right end — and the composer **chats with the
   agent**: Enter sends the draft to the subagent — injected at its next round
   boundary while it runs (the `pending_notices` seam), or spawning a
   continuation turn over its stored message list when idle. Esc (empty
@@ -180,7 +183,18 @@ zero new plumbing. The TUI cell is a new `HistoryItem::AgentNotice` —
   transcript, mid-stream partial included). While the view is up the main
   turn's commits are suppressed exactly like the Ctrl+O overlay (invariant
   4); the viewed agent's events commit incrementally through a dedicated
-  `StreamRender`. The composer keeps its **full functionality** inside the
+  `StreamRender` — and its turns **end the way the main session's do**: the
+  settle records a dim `Done for 59s · 6.1k tokens (2.8k cached)` summary on
+  the agent's own transcript (`AgentRun::apply`'s StreamDone arm pushes the
+  `HistoryItem::Summary`, its `tokens`/`cached` the **turn's** billed usage —
+  `AgentRun::turn_usage_*`, reset by `reopen()` so each chat continuation
+  gets its own receipt while the roster tally stays cumulative; the runtime
+  was frozen at its live value just before the settling event, so `secs` is
+  the turn's elapsed), the view commits it at StreamDone
+  (`Session::commit_agent_view_event`), every rebuild and the Ctrl+O agent
+  transcript render it from history, the derived context skips it as chrome
+  like any summary, and a failed or interrupted run records none (main
+  parity — the red notice is that record). The composer keeps its **full functionality** inside the
   view: the `/` palette (commands act on the main session, as everywhere),
   the `?` shortcuts band, Ctrl+R history search, and the `@` file picker all
   work with the roster still below them; **Ctrl+O shows the viewed agent's
@@ -203,16 +217,21 @@ zero new plumbing. The TUI cell is a new `HistoryItem::AgentNotice` —
   `   │ ⎿  {activity}` status row per agent — plus the delayed
   `(ctrl+b to run in background)` hint (foreground only). The activity is
   **sticky**: `Initializing…` until the first event, then the newest tool's
-  `{Name}: {detail}` — a `bash` call's model-supplied `description`
-  (`Bash: Fetching current weather…`), else the tool cell's own header
-  shape (`Write(game.py)`), the spelling a call is printed in everywhere
-  else — held between calls (never dropping to `Working…`)
-  so the row keeps its context while the agent reasons over a result
-  (`StreamEvent::ToolStart` carries the `detail`;
+  `{Name}: {detail}` — **one grammar for every call** (`agents::activity_line`):
+  a `bash` call's model-supplied `description`
+  (`Bash: Fetching current weather…`), else the call's args summary
+  (`Write: game.py`, `Read: /home/…` — never the cell header's
+  `Write({args})`, whose parens read as clutter on a dim clipped one-liner),
+  and an MCP call as the **capitalized server over the tool**
+  (`Deepwiki: ask_question` — the full `deepwiki - ask_question (MCP)`
+  display name is a mouthful for this row); a call with nothing to say
+  after the colon shows the bare name — held between calls (never dropping
+  to `Working…`) so the row keeps its context while the agent reasons over
+  a result (`StreamEvent::ToolStart` carries the `detail`;
   `AgentRun::last_activity`). A **lone** agent renders the tool-cell shape
   instead of a one-row tree: `● Agent({description})` over that same one
   `⎿ {activity}` row — `⎿ Initializing…`, then
-  `⎿ Bash: Fetch public repos for linuztx` / `⎿ Bash(curl -s https://…)`.
+  `⎿ Bash: Fetch public repos for linuztx` / `⎿ Bash: curl -s https://…`.
   The strip's `preview_rows`/`preview_lines` size and draw it like the tool
   queue.
 

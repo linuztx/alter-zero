@@ -762,6 +762,32 @@ fn the_agent_view_overlays_show_the_agents_transcript_and_context() {
     );
     assert!(texts.iter().any(|t| t.starts_with("● Bash(curl wttr.in)")));
     assert!(texts.iter().any(|t| t.contains("+19°C")));
+    // A settled turn shows the agent's own `Done for Ns · tokens` receipt —
+    // the summary the settle records renders here and in the session view's
+    // rebuild alike (docs/agent-tool.md).
+    app.set_agent_runtime("a1", Duration::from_secs(59));
+    for event in [
+        crate::stream::StreamEvent::Usage(crate::stream::TokenUsage {
+            input: 6000,
+            output: 100,
+            cached: 2800,
+            ..crate::stream::TokenUsage::default()
+        }),
+        crate::stream::StreamEvent::StreamDone,
+    ] {
+        app.apply_agent_event("a1", &event);
+    }
+    let texts: Vec<String> = agent_transcript_lines(&app, 80)
+        .expect("the settled agent still renders")
+        .iter()
+        .map(plain)
+        .collect();
+    assert!(
+        texts
+            .iter()
+            .any(|t| t == "Done for 59s · 6.1k tokens (2.8k cached)"),
+        "the turn summary lands on the agent transcript: {texts:?}"
+    );
     // Ctrl+D derives the *agent's* context: its prompt is the user entry.
     let ctx: Vec<String> = context_lines(&app, 80).iter().map(plain).collect();
     assert!(ctx.iter().any(|t| t.contains("task?")), "{ctx:?}");

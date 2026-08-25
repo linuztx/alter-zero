@@ -17,7 +17,7 @@ use std::time::Duration;
 
 use tokio::sync::mpsc::UnboundedSender;
 
-use crate::app::{HistoryItem, Message, Role, ToolCall, ToolStatus};
+use crate::app::{HistoryItem, Message, Role, ToolCall, ToolStatus, TurnSummary};
 use crate::llm::ChatMessage;
 use crate::stream::{CancelToken, StreamEvent};
 
@@ -107,6 +107,15 @@ pub struct AgentRun {
     pub tokens: u64,
     /// Billed tokens summed over its usage frames (what `tokens` snaps to).
     usage_tokens: u64,
+    /// Billed tokens summed over the **current turn's** usage frames — the
+    /// `Done for Ns · {n} tokens` receipt the settle records
+    /// ([`TurnSummary::tokens`]); reset by [`reopen`](Self::reopen) so each
+    /// chat continuation gets its own receipt while `usage_tokens` stays
+    /// cumulative for the roster.
+    turn_usage_tokens: u64,
+    /// The cache-served share of `turn_usage_tokens` — the `({c} cached)`
+    /// suffix ([`TurnSummary::cached`]).
+    turn_usage_cached: u64,
     /// How long it has been running — boundary-injected each frame
     /// ([`crate::app::App::set_agent_runtime`], the `set_status_times`
     /// pattern). Frozen at its final value once the agent settles.
@@ -131,9 +140,10 @@ pub struct AgentRun {
     /// longer [`AGENT_STOPPED_LINGER`] so the red `◯` is there to be read
     /// (and cleared) instead of vanishing under the keypress.
     pub stopped_by_user: bool,
-    /// The **sticky** activity line — `{Name}: {detail}` from the newest
-    /// [`StreamEvent::ToolStart`] (a `bash` call's model-supplied
-    /// `description`, else its args summary). Kept until the *next* tool
+    /// The **sticky** activity line — the `{Name}: {detail}` row
+    /// `activity_line` builds from the newest [`StreamEvent::ToolStart`]
+    /// (a `bash` call's model-supplied `description`, else its args summary;
+    /// an MCP call as `{Server}: {tool}`). Kept until the *next* tool
     /// starts, so the tree row shows what the agent is doing (or just did)
     /// rather than dropping to a generic `Working…` between calls
     /// (`docs/agent-tool.md`).
@@ -161,6 +171,8 @@ impl AgentRun {
             tool_uses: 0,
             tokens: 0,
             usage_tokens: 0,
+            turn_usage_tokens: 0,
+            turn_usage_cached: 0,
             runtime: Duration::ZERO,
             history: vec![HistoryItem::Message(Message {
                 role: Role::User,
@@ -249,16 +261,7 @@ impl AgentRun {
             } => {
                 self.flush_segment();
                 self.tool_uses += 1;
-                // The sticky tree-row activity: the model's own description
-                // when it gave one (`Bash: Fetching current weather…`), else
-                // the tool cell's own header shape (`Write(game.py)`) — the
-                // spelling every other surface prints a call in, so a call
-                // with no description reads the same here as it does inline
-                // rather than in a second `Name: args` one.
-                self.last_activity = Some(match detail {
-                    Some(detail) => format!("{name}: {detail}"),
-                    None => format!("{name}({args})"),
-                });
+                self.last_activity = Some(activity_line(name, args, detail.as_deref()));
                 match self.tool_queue.front_mut() {
                     Some(front) if front.status == ToolStatus::Waiting => {
                         front.status = ToolStatus::Running;
@@ -346,11 +349,29 @@ impl AgentRun {
             StreamEvent::Usage(usage) => {
                 self.usage_tokens += usage.total();
                 self.tokens = self.usage_tokens;
+                self.turn_usage_tokens += usage.total();
+                self.turn_usage_cached += usage.cached;
             }
             StreamEvent::StreamDone => {
                 self.result = self.flush_segment();
                 self.tool_queue.clear();
                 self.status = AgentStatus::Done;
+                // The turn's dim receipt, the main turn-end's exact shape
+                // (`Done for 59s · 6.1k tokens (2.8k cached)`): the agent
+                // session view commits it and every rebuild/Ctrl+O renders it
+                // from here, while the derived context skips it as chrome
+                // like any summary (docs/agent-tool.md). The runtime was
+                // frozen at its live value just before this event
+                // (`tui::agent`), so it is the turn's elapsed; a failure or
+                // interrupt records none, main parity.
+                self.history.push(HistoryItem::Summary(TurnSummary {
+                    verb: "Done",
+                    secs: self.runtime.as_secs(),
+                    timestamp: String::new(),
+                    shells: 0,
+                    tokens: usize::try_from(self.turn_usage_tokens).unwrap_or(usize::MAX),
+                    cached: usize::try_from(self.turn_usage_cached).unwrap_or(usize::MAX),
+                }));
                 return true;
             }
             StreamEvent::Error(message) => {
@@ -471,12 +492,16 @@ impl AgentRun {
     }
 
     /// A follow-up chat turn began (a continuation run): reopen a settled
-    /// agent so new events fold in again.
+    /// agent so new events fold in again. The turn-scoped usage counters
+    /// reset — the next settle's `Done for Ns · {n} tokens` receipt is the
+    /// continuation's own — while the cumulative roster tally stands.
     pub fn reopen(&mut self) {
         self.status = AgentStatus::Running;
         self.stopped_by_user = false;
         self.result = None;
         self.error = None;
+        self.turn_usage_tokens = 0;
+        self.turn_usage_cached = 0;
     }
 
     /// The tree row's activity: what the agent is doing — or, between tool
@@ -525,6 +550,31 @@ impl AgentRun {
         }
         self.tool_queue.clear();
     }
+}
+
+/// The sticky `{Name}: {detail}` activity row for one starting call — the one
+/// grammar every agent activity wears (`docs/agent-tool.md`): the model's own
+/// description when it gave one (`Bash: Fetching current weather…`), else the
+/// call's args summary (`Write: game.py` — never the cell header's
+/// `Write({args})`, whose parens read as clutter on a dim clipped one-liner).
+/// An MCP call's display name is a mouthful for that row, so it leads with
+/// the **capitalized server** over the tool instead (`Deepwiki:
+/// ask_question`); a call with nothing to say after the colon is the bare
+/// name.
+fn activity_line(name: &str, args: &str, detail: Option<&str>) -> String {
+    if let Some(detail) = detail {
+        return format!("{name}: {detail}");
+    }
+    if let (Some(server), Some(tool)) = (
+        crate::mcp::display_server(name),
+        crate::mcp::display_tool(name),
+    ) {
+        return format!("{}: {tool}", crate::mcp::capitalize_server(server));
+    }
+    if args.is_empty() {
+        return name.to_string();
+    }
+    format!("{name}: {args}")
 }
 
 /// The base36 alphabet agent ids are drawn from (the task-id alphabet).
@@ -928,11 +978,12 @@ mod tests {
     }
 
     #[test]
-    fn the_sticky_activity_falls_back_to_the_tool_cells_own_header() {
-        // With a description the row reads it (`Bash: Fetching…`); with none it
-        // wears the tool cell's own `Name(args)` shape — the spelling every
-        // other surface uses — rather than a second `Name: args` one
-        // (`docs/agent-tool.md`).
+    fn the_sticky_activity_is_always_the_clean_name_colon_detail_row() {
+        // Every activity row wears one grammar — `{Name}: {detail}`: the
+        // model's own description when it gave one (`Bash: Fetching…`), else
+        // the call's args summary (`Write: game.py` — never the header's
+        // `Write(game.py)`, whose parens read as clutter on a dim one-liner;
+        // `docs/agent-tool.md`).
         let mut run = AgentRun::new("a1", "d", GENERAL_PURPOSE, "p", false);
         assert!(!run.apply(&StreamEvent::ToolStart {
             name: "Write".into(),
@@ -940,7 +991,7 @@ mod tests {
             detail: None,
             arguments: None,
         }));
-        assert_eq!(run.activity(), "Write(game.py)");
+        assert_eq!(run.activity(), "Write: game.py");
         assert!(!run.apply(&StreamEvent::ToolStart {
             name: "Bash".into(),
             args: "curl wttr.in".into(),
@@ -948,6 +999,30 @@ mod tests {
             arguments: None,
         }));
         assert_eq!(run.activity(), "Bash: Fetching Warsaw weather");
+        // Nothing to say after the colon → the bare name, not `Name: `.
+        assert!(!run.apply(&StreamEvent::ToolStart {
+            name: "TaskList".into(),
+            args: String::new(),
+            detail: None,
+            arguments: None,
+        }));
+        assert_eq!(run.activity(), "TaskList");
+    }
+
+    #[test]
+    fn an_mcp_calls_activity_leads_with_the_server_name() {
+        // An MCP call's display name (`deepwiki - ask_question (MCP)`) is a
+        // mouthful for a clipped dim row: the activity shows the capitalized
+        // server over the tool instead — `Deepwiki: ask_question`
+        // (`docs/agent-tool.md`).
+        let mut run = AgentRun::new("a1", "d", GENERAL_PURPOSE, "p", false);
+        assert!(!run.apply(&StreamEvent::ToolStart {
+            name: "deepwiki - ask_question (MCP)".into(),
+            args: "{\"repoName\":\"facebook/react\"}".into(),
+            detail: None,
+            arguments: None,
+        }));
+        assert_eq!(run.activity(), "Deepwiki: ask_question");
     }
 
     #[test]
@@ -981,6 +1056,98 @@ mod tests {
             "The user doesn't want to proceed… instructions instead: use pathlib"
         );
         assert!(run.tokens > 0, "the uploaded instruction ticks the tally");
+    }
+
+    #[test]
+    fn stream_done_records_the_turns_summary_on_the_transcript() {
+        // The agent session view ends its turns the way the main one does: a
+        // dim `Done for 59s · 6.1k tokens (2.8k cached)` summary lands on the
+        // agent's own transcript at StreamDone, carrying the turn's billed
+        // usage (`docs/agent-tool.md`).
+        let mut run = AgentRun::new("a1", "d", GENERAL_PURPOSE, "p", false);
+        run.runtime = Duration::from_secs(59);
+        run.apply(&chunk("It is 19°C."));
+        run.apply(&StreamEvent::Usage(TokenUsage {
+            input: 6000,
+            output: 100,
+            cached: 2800,
+            ..TokenUsage::default()
+        }));
+        assert!(run.apply(&StreamEvent::StreamDone));
+        let Some(HistoryItem::Summary(summary)) = run.history.last() else {
+            panic!("the settle records the summary: {:?}", run.history.last());
+        };
+        assert_eq!(summary.verb, "Done", "the view's synthesized done verb");
+        assert_eq!(summary.secs, 59);
+        assert_eq!(summary.tokens, 6100);
+        assert_eq!(summary.cached, 2800);
+        assert_eq!(summary.shells, 0, "shells are the main session's business");
+        // The summary sits AFTER the flushed final reply.
+        assert!(matches!(
+            &run.history[run.history.len() - 2],
+            HistoryItem::Message(m) if m.text == "It is 19°C."
+        ));
+    }
+
+    #[test]
+    fn a_continuation_turns_summary_counts_only_its_own_usage() {
+        let mut run = AgentRun::new("a1", "d", GENERAL_PURPOSE, "p", false);
+        run.apply(&chunk("first"));
+        run.apply(&StreamEvent::Usage(TokenUsage {
+            input: 900,
+            output: 100,
+            cached: 400,
+            ..TokenUsage::default()
+        }));
+        run.apply(&StreamEvent::StreamDone);
+        run.push_user_message("and Manila?");
+        run.reopen();
+        run.apply(&chunk("second"));
+        run.apply(&StreamEvent::Usage(TokenUsage {
+            input: 450,
+            output: 50,
+            cached: 0,
+            ..TokenUsage::default()
+        }));
+        run.apply(&StreamEvent::StreamDone);
+        let summaries: Vec<_> = run
+            .history
+            .iter()
+            .filter_map(|item| match item {
+                HistoryItem::Summary(s) => Some((s.tokens, s.cached)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            summaries,
+            [(1000, 400), (500, 0)],
+            "each turn's summary is its own receipt"
+        );
+        assert_eq!(run.tokens, 1500, "the roster tally stays cumulative");
+    }
+
+    #[test]
+    fn a_failed_or_interrupted_turn_records_no_summary() {
+        // Main parity: an error commits its red notice, an interrupt its
+        // record — neither earns a `Done for Ns` receipt.
+        let mut run = AgentRun::new("a1", "d", GENERAL_PURPOSE, "p", false);
+        run.apply(&chunk("partial"));
+        run.apply(&StreamEvent::Error("boom".into()));
+        assert!(
+            !run.history
+                .iter()
+                .any(|item| matches!(item, HistoryItem::Summary(_))),
+            "no summary on a failure"
+        );
+        let mut run = AgentRun::new("a2", "d", GENERAL_PURPOSE, "p", false);
+        run.apply(&chunk("partial"));
+        run.interrupt();
+        assert!(
+            !run.history
+                .iter()
+                .any(|item| matches!(item, HistoryItem::Summary(_))),
+            "no summary on an interrupt"
+        );
     }
 
     #[test]
@@ -1053,17 +1220,29 @@ mod tests {
         assert!(!run.apply(&chunk("28°C")));
         assert!(run.apply(&StreamEvent::StreamDone));
         assert_eq!(run.result.as_deref(), Some("28°C"));
-        // The transcript kept the whole exchange in order.
+        // The transcript kept the whole exchange in order — each turn closed
+        // by its own `Done for Ns` summary (`docs/agent-tool.md`).
         let roles: Vec<&str> = run
             .history
             .iter()
             .map(|item| match item {
                 HistoryItem::Message(m) if m.role == Role::User => "user",
                 HistoryItem::Message(_) => "assistant",
+                HistoryItem::Summary(_) => "summary",
                 _ => "other",
             })
             .collect();
-        assert_eq!(roles, ["user", "assistant", "user", "assistant"]);
+        assert_eq!(
+            roles,
+            [
+                "user",
+                "assistant",
+                "summary",
+                "user",
+                "assistant",
+                "summary"
+            ]
+        );
     }
 
     fn test_registry() -> AgentRegistry {

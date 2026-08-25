@@ -347,8 +347,11 @@ each running its own `run_agent` tool loop over a fresh context on its own
 thread, reporting on a dedicated `agents::AgentEvent` channel (a seventh
 `select!` source — agents outlive turns); a foreground group shows the live
 breathing-grey `● Running {n} agents…` tree (per-agent description · tool uses · tokens
-· a **sticky** `{Name}: {detail}` activity — a bash call's own `description`,
-held between calls, else the tool cell's own `{Name}({args})` header shape —
+· a **sticky** `{Name}: {detail}` activity — one grammar for every call
+(`agents::activity_line`): a bash call's own `description`, held between
+calls, else `{Name}: {args}` (`Write: game.py` — never the header's
+parenthesised `{Name}({args})`), an MCP call as the capitalized
+`{Server}: {tool}` (`Deepwiki: ask_question`) —
 Ctrl+B moves the group to the background; a **lone** agent renders
 `● Agent({description})` over that same one activity row instead, and **every**
 such row — tree and lone cell alike — is one **dim, clipped** line
@@ -378,13 +381,20 @@ holds the last picked agent's *id*, so ↓ comes back to that row instead of
 restarting at `● main`, with entering a session view counting as the pick and
 a walk back onto `main` the way to forget one); Enter on an agent opens its **inline session
 view** — a purge-rebuild showing the agent's own transcript under the banner,
-the composer's top rule labelled with its description, typing **chats with
+the composer's top rule labelled with its description **embedded in the
+rule** (`── {description} ─`, the rule resuming for one border cell after
+the text), typing **chats with
 the agent** (queued into its running loop at the next round boundary via the
 registry's pending-input seam, or a continuation run over its stored message
 list when idle) while the composer keeps its full functionality — the `/`
 palette, `?` band, Ctrl+R, the `@` picker, **Ctrl+O showing the agent's own
 transcript** and **Ctrl+D its derived context** (`!` shell mode stays
-literal chat text) — Esc returning to the purge-rebuilt main view (main
+literal chat text) — and the agent's turns **end like the main session's**:
+each settle records the dim `Done for 59s · 6.1k tokens (2.8k cached)`
+summary on the agent's own transcript (the turn's billed usage, a chat
+continuation resetting the receipt while the roster tally stays cumulative;
+a failed/interrupted run records none) — Esc returning to the purge-rebuilt
+main view (main
 commits are suppressed while the view is up, invariant-4 style); the Ctrl+O
 transcript expands each agent as `● Agent({description})` with `⎿ Prompt:`,
 the nested tool headers, `⎿ Response:`, and `⎿ Done ({n} tool uses ·

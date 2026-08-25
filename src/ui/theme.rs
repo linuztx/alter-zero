@@ -1496,6 +1496,13 @@ pub(super) const AGENT_RESPONSE_LABEL: &str = "Response:";
 
 pub(super) const AGENT_SECTION_COLOR: Color = TOOL_OK_COLOR;
 
+/// The rule cell painted **after** the agent session view's composer label —
+/// `── {description} ─` instead of `── {description} ` — so the label sits
+/// embedded in the top rule rather than dangling off its right end
+/// (`docs/agent-tool.md`). One border glyph, [`BORDER_COLOR`]-styled at the
+/// render site.
+pub(super) const AGENT_VIEW_RULE_TAIL: &str = "─";
+
 /// Indent of a Ctrl+O agent cell's section bodies (under the `⎿  ` corner's
 /// label, one level further in) and of its nested tool-header lines.
 pub(super) const AGENT_BODY_INDENT: &str = "       ";

@@ -532,11 +532,20 @@ pub fn render_live_with_preview(
         .borders(Borders::TOP | Borders::BOTTOM)
         .border_style(Style::new().fg(BORDER_COLOR));
     if let Some(run) = app.viewed_agent() {
+        // The dim label with a border cell after it, so the rule resumes for
+        // one glyph past the text (`── {description} ─`) and the label reads
+        // as embedded in the frame rather than dangling off its right end.
         block = block.title_top(
-            Line::from(Span::styled(
-                format!(" {} ", run.description),
-                Style::new().fg(TOOL_DIM_COLOR),
-            ))
+            Line::from(vec![
+                Span::styled(
+                    format!(" {} ", run.description),
+                    Style::new().fg(TOOL_DIM_COLOR),
+                ),
+                Span::styled(
+                    AGENT_VIEW_RULE_TAIL.to_string(),
+                    Style::new().fg(BORDER_COLOR),
+                ),
+            ])
             .right_aligned(),
         );
     }

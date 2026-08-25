@@ -146,6 +146,20 @@ pub fn display_server(name: &str) -> Option<&str> {
     name.split(" - ").next().filter(|s| !s.is_empty())
 }
 
+/// The tool part of a display name (`deepwiki - ask_question (MCP)` →
+/// `ask_question`) — the agent activity row's `{Server}: {tool}` detail half
+/// (`docs/agent-tool.md`). `None` when the name isn't the MCP display shape.
+#[must_use]
+pub fn display_tool(name: &str) -> Option<&str> {
+    if !is_mcp_display_name(name) {
+        return None;
+    }
+    name.strip_suffix(MCP_DISPLAY_SUFFIX)?
+        .split_once(" - ")
+        .map(|(_, tool)| tool)
+        .filter(|tool| !tool.is_empty())
+}
+
 /// Invert [`tool_display_name`] back to the wire name — the context replay's
 /// arm ([`crate::context`]), so a recorded cell replays as the `tool_calls`
 /// entry the model actually made. Re-normalizes both parts, which is the
@@ -313,6 +327,22 @@ mod tests {
             Some("deepwiki")
         );
         assert_eq!(display_server("Bash"), None);
+    }
+
+    #[test]
+    fn display_tool_extracts_the_tool_half() {
+        // The agent activity row's `{Server}: {tool}` needs the tool half of
+        // a display name; the tool keeps its own underscores.
+        assert_eq!(
+            display_tool("deepwiki - ask_question (MCP)"),
+            Some("ask_question")
+        );
+        assert_eq!(
+            display_tool("srv - read_wiki_structure (MCP)"),
+            Some("read_wiki_structure")
+        );
+        assert_eq!(display_tool("Bash"), None);
+        assert_eq!(display_tool("just a suffix (MCP)"), None);
     }
 
     #[test]

@@ -2016,7 +2016,7 @@ fn live_a_lone_subagents_running_tool_renders_one_dim_clipped_row() {
     // (docs/agent-tool.md). While its `bash` call runs, the cell is
     // `● Agent({description})` over exactly **one** row: the model's own call
     // description when it gave one (`⎿  Bash: Fetch public repos for
-    // linuztx`), else the tool cell's own `⎿  Bash(curl -s https://…)` shape
+    // linuztx`), else the clean `⎿  Bash: curl -s https://…` shape
     // — dim throughout and clipped at the width, never the white header that
     // used to char-wrap over three rows above a `Running…` line.
     const WIDTH: u16 = 60;
@@ -2120,7 +2120,8 @@ fn live_a_lone_subagents_running_tool_renders_one_dim_clipped_row() {
             colors[0], lines[0].spans[1].style.fg,
             "dim, not the header's white"
         );
-        // The description when the model gave one, else the `Name(args)` shape.
+        // The description when the model gave one, else the command itself —
+        // the one `Name: detail` grammar either way.
         match detail {
             Some(detail) => assert!(
                 texts[1].contains(&format!("Bash: {detail}"))
@@ -2130,12 +2131,39 @@ fn live_a_lone_subagents_running_tool_renders_one_dim_clipped_row() {
                 texts[1]
             ),
             None => assert!(
-                texts[1].starts_with("  ⎿  Bash("),
-                "no description → the tool cell's own header shape: {}",
+                texts[1].starts_with("  ⎿  Bash: "),
+                "no description → the clean `Bash: {{command}}` shape: {}",
                 texts[1]
             ),
         }
     }
+
+    // …and the replayed settle recorded the turn's `Done for Ns · {n} tokens`
+    // receipt on the agent's own transcript — the summary the session view
+    // commits — with the provider's real billed usage (docs/agent-tool.md).
+    let run = app
+        .agent(&agent_id)
+        .expect("the settled entry stays on the roster for its linger");
+    assert_eq!(
+        run.status,
+        alter_zero::agents::AgentStatus::Done,
+        "the subagent settled cleanly"
+    );
+    let Some(HistoryItem::Summary(summary)) = run.history.last() else {
+        panic!(
+            "the settle records the turn summary: {:?}",
+            run.history.last()
+        );
+    };
+    assert_eq!(summary.verb, "Done");
+    assert!(
+        summary.tokens > 0,
+        "the provider's real usage reaches the receipt: {summary:?}"
+    );
+    println!(
+        "agent summary: Done for {}s · {} tokens ({} cached)",
+        summary.secs, summary.tokens, summary.cached
+    );
 }
 
 // ===== the auto mode classifier (docs/permissions.md) =====

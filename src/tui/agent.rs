@@ -31,7 +31,7 @@ use std::time::Instant;
 use ratatui::text::Line;
 
 use alter_zero::agents::{AGENT_LINGER, AgentEvent};
-use alter_zero::app::{AgentStop, Role, ToastKind, View};
+use alter_zero::app::{AgentStop, HistoryItem, Role, ToastKind, View};
 use alter_zero::stream::StreamEvent;
 use alter_zero::ui;
 
@@ -152,10 +152,26 @@ impl Session<'_> {
             }
             StreamEvent::StreamDone => {
                 // The strip collapses (the agent's status clears) — reseat so
-                // the box stays flush (invariant 3). No summary cell: the
-                // agent session keeps codex's quiet end.
+                // the box stays flush (invariant 3) *before* committing, the
+                // main StreamDone dance — then commit the `Done for Ns ·
+                // {n} tokens` summary the fold just recorded on the agent's
+                // transcript, so the session view ends its turns the way the
+                // main one does (docs/agent-tool.md).
                 let height = self.live_region_height();
                 self.term.set_view_height(height);
+                let summary = self
+                    .app
+                    .viewed_agent()
+                    .and_then(|run| match run.history.last() {
+                        Some(HistoryItem::Summary(summary)) => {
+                            Some(ui::summary_lines(summary, width))
+                        }
+                        _ => None,
+                    });
+                if let Some(lines) = summary {
+                    self.term.insert_before(lines);
+                    self.term.insert_before(vec![Line::default()]);
+                }
             }
             _ => {}
         }
