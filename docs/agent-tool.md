@@ -205,8 +205,12 @@ zero new plumbing. The TUI cell is a new `HistoryItem::AgentNotice` —
   subagent is *actually sent* — the main prompt + the subagent note,
   `ReplySource::agent_system_prompt()` injected at the boundary as
   `App::agent_system_prompt` — and no AGENTS.md fragment, since subagent
-  conversations start without one; `docs/context.md`); only `!` shell mode
-  stays off — a leading bang is literal chat text. Overlay returns and
+  conversations start without one; `docs/context.md`), **and Tab from there
+  its own classifier context** — the launch prompt it was given plus the
+  calls it has made, the block its own auto-mode verdicts are reviewed
+  against, read from its registry slot rather than from the lead's backend
+  (`AgentRegistry::classifier_context`, `docs/permissions.md`); only `!` shell
+  mode stays off — a leading bang is literal chat text. Overlay returns and
   resizes repaint the agent view (`tui::view::Session::repaint_active_view`).
 
 ## Rendering (`ui`)

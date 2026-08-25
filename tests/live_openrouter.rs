@@ -1924,6 +1924,96 @@ fn live_subagent_is_sent_the_subagent_note_and_ctrl_d_matches_it() {
 
 #[test]
 #[ignore = "hits the network; needs OPENROUTER_API_KEY; costs a few cents"]
+fn live_a_subagents_classifier_context_is_its_own_not_the_leads() {
+    // The auto-mode reviewer's window, per agent (`docs/permissions.md`). A
+    // subagent's verdicts are reviewed against ITS run — the launch prompt it
+    // was given and the calls it has made — and the Ctrl+D classifier page
+    // inside that agent's session view has to show that, not the lead's log.
+    // It used to show the lead's: the agent built its context as a plain local
+    // in its own thread, so nothing outside could read it, and the page asked
+    // the lead's backend unconditionally. The context now lives on the
+    // registry slot, minted with the id.
+    //
+    // Proved on the real wire, both directions, with a sentinel each way: the
+    // lead's request carries a word the agent's prompt never does, and the
+    // agent runs a command the lead is told not to run.
+    let (bg_tx, _bg_rx) = tokio::sync::mpsc::unbounded_channel();
+    let dir = std::env::temp_dir().join(format!("alter-zero-live-agclass-{}", std::process::id()));
+    let bg = alter_zero::background::BackgroundRegistry::new(bg_tx, dir);
+    let (agent_tx, mut agent_rx) = tokio::sync::mpsc::unbounded_channel();
+    let agents = alter_zero::agents::AgentRegistry::new(agent_tx);
+    let backend = backend().with_background(bg).with_agents(agents.clone());
+
+    // ORCHESTRATOR-ONLY appears in the lead's request and nowhere in the
+    // child's; NARWHAL-MARKER is run only by the child.
+    let prompt = "ORCHESTRATOR-ONLY task. Use the agent tool exactly once: description \
+                  \"Echo a marker\", subagent_type \"general-purpose\", run_in_background \
+                  false, and this exact prompt: \"Run the bash command: echo NARWHAL-MARKER \
+                  and report its output.\" Do not run any bash command yourself. When the \
+                  agent returns, reply with one word: done.";
+    let context = vec![ContextMessage::new(ContextRole::User, prompt)];
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let handle = backend.spawn(prompt.to_string(), vec![], context, tx, CancelToken::new());
+    while let Some(event) = rx.blocking_recv() {
+        match event {
+            StreamEvent::Retrying { attempt, max } => println!("retrying {attempt}/{max}…"),
+            StreamEvent::Error(e) => panic!("backend error: {e}"),
+            StreamEvent::StreamDone => break,
+            _ => {}
+        }
+    }
+    handle.join().expect("backend thread joins");
+
+    // Every id the agent channel reported — the turn is over, so they are all
+    // queued and `try_recv` drains without blocking.
+    let mut ids: Vec<String> = Vec::new();
+    while let Ok(alter_zero::agents::AgentEvent::Stream { id, .. }) = agent_rx.try_recv() {
+        if !ids.contains(&id) {
+            ids.push(id);
+        }
+    }
+    assert_eq!(ids.len(), 1, "exactly one subagent ran: {ids:?}");
+
+    let lead = ReplySource::classifier_context(&backend).expect("the lead keeps a log");
+    let child = agents
+        .classifier_context(&ids[0])
+        .expect("the registry keeps the agent's own log");
+    println!("--- lead ---\n{lead}\n--- child ---\n{child}");
+
+    // The lead's window: its own request, and the launch as its action.
+    assert!(
+        lead.contains("ORCHESTRATOR-ONLY"),
+        "the lead's request is the lead's: {lead}"
+    );
+    assert!(
+        lead.contains("Agent(") || lead.contains("agent("),
+        "the lead's action is the launch: {lead}"
+    );
+
+    // The child's window: its own prompt as the request, its own call as the
+    // action, and no trace of the lead's framing. These four assertions are
+    // exactly what failed before the fix — the page showed `lead` here.
+    assert!(
+        child.contains("NARWHAL-MARKER"),
+        "the child's request is the prompt it was launched with: {child}"
+    );
+    assert!(
+        !child.contains("ORCHESTRATOR-ONLY"),
+        "the lead's request never leaks into the child's window: {child}"
+    );
+    assert!(
+        child.contains("Bash(") || child.contains("bash("),
+        "the child's own executed call is its action: {child}"
+    );
+    assert!(
+        !child.contains("Agent(") && !child.contains("agent("),
+        "the child never launched anything — that action is the lead's: {child}"
+    );
+    assert_ne!(lead, child, "the two windows are not the same block");
+}
+
+#[test]
+#[ignore = "hits the network; needs OPENROUTER_API_KEY; costs a few cents"]
 fn live_subagent_background_bash_stacks_into_the_shared_registry() {
     // The subagent background path (docs/agent-tool.md): a foreground agent
     // whose bash call sets run_in_background — the shell must join the SHARED

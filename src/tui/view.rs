@@ -296,7 +296,20 @@ impl Session<'_> {
     /// `CONTEXT_MAX_REQUESTS` + `CONTEXT_MAX_ACTIONS` short lines, which is
     /// why this needs no `ContextCache` sibling.
     fn draw_classifier_page(&mut self) -> io::Result<()> {
-        let context = self.models.backend().classifier_context();
+        // Whose review log? An open agent session view debugs the **viewed
+        // agent's** run, so its classifier page must show that agent's own
+        // context — its launch prompt and its own calls, the block its own
+        // verdicts were actually reviewed against. The lead's log describes
+        // decisions nobody on that screen made. (The other Ctrl+D page has
+        // always swapped this way — `ui::context_lines`' first branch keys on
+        // `viewed_agent` — this one simply never did.) An agent the registry
+        // no longer holds yields `None`, which renders as the page's empty
+        // placeholder rather than silently falling back to the lead.
+        // See `docs/permissions.md` / `docs/agent-tool.md`.
+        let context = match self.app.agent_view.as_deref() {
+            Some(id) => self.agent_registry.classifier_context(id),
+            None => self.models.backend().classifier_context(),
+        };
         self.app.set_classifier_context(context);
         let screen = self.term.screen();
         let lines = ui::classifier_lines(&self.app, screen.width);

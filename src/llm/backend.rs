@@ -1206,9 +1206,20 @@ fn spawn_subagent_run(
         // launch prompt (or the chat message that continued it) — read now,
         // before the reminder/hook notes push more user-role messages that
         // would win the newest-user-text scan (`docs/permissions.md`).
-        let mut agent_context = super::classifier::ClassifierContext::new();
-        agent_context.push_request(&super::classifier::latest_user_text(&messages));
-        let turn_context = std::sync::Mutex::new(agent_context);
+        //
+        // The context is the **registry's** (minted with the id in
+        // `register`), not a local: the Ctrl+D classifier page reads it from
+        // the event loop while this agent's session view is open, and a local
+        // here is why that page used to show the lead's log instead. A chat
+        // continuation finds the same handle and pushes its request onto the
+        // same rolling windows — one conversation, one context. The fallback
+        // covers a slot already removed, where nothing will read it anyway.
+        let turn_context = registry
+            .classifier_handle(&id)
+            .unwrap_or_else(|| Arc::new(std::sync::Mutex::new(ClassifierContext::new())));
+        if let Ok(mut log) = turn_context.lock() {
+            log.push_request(&super::classifier::latest_user_text(&messages));
+        }
         // Right after the launch prompt and in front of the hook notes, so it
         // reads as part of the briefing rather than an answer to it.
         if let Some(reminder) = skill_reminder {

@@ -19,6 +19,7 @@ use tokio::sync::mpsc::UnboundedSender;
 
 use crate::app::{HistoryItem, Message, Role, ToolCall, ToolStatus, TurnSummary};
 use crate::llm::ChatMessage;
+use crate::llm::classifier::ClassifierContext;
 use crate::stream::{CancelToken, StreamEvent};
 
 /// The default subagent type when the model omits `subagent_type`.
@@ -648,6 +649,16 @@ struct AgentSlot {
     /// User chat messages awaiting delivery into the running loop (taken per
     /// round via the `pending_notices` seam).
     pending_inputs: Vec<String>,
+    /// The auto-mode classifier's task context for **this agent's** run — its
+    /// own launch prompt and its own executed calls, never the lead's
+    /// (`docs/permissions.md`). It lives here rather than as a local in the
+    /// agent's thread for one reason: the Ctrl+D classifier page reads it from
+    /// the event loop while that agent's session view is open, and a page that
+    /// showed the lead's log there would be describing decisions no one on
+    /// screen made. Shared with the thread, which seeds it from the launch
+    /// prompt and records one line per call; a chat continuation pushes onto
+    /// the same rolling windows, because it is the same agent's conversation.
+    classifier: Arc<Mutex<ClassifierContext>>,
 }
 
 struct Inner {
@@ -701,6 +712,7 @@ impl AgentRegistry {
         inner.slots.insert(
             id.clone(),
             AgentSlot {
+                classifier: Arc::new(Mutex::new(ClassifierContext::new())),
                 cancel: cancel.clone(),
                 busy: true,
                 agent_type: agent_type.to_string(),
@@ -708,6 +720,31 @@ impl AgentRegistry {
             },
         );
         (id, cancel)
+    }
+
+    /// The shared handle to `id`'s classifier context — for the agent's own
+    /// thread, which seeds it from the launch prompt and records one line per
+    /// executed call. `None` once the slot is gone.
+    #[must_use]
+    pub fn classifier_handle(&self, id: &str) -> Option<Arc<Mutex<ClassifierContext>>> {
+        let inner = self.inner.lock().expect("agent registry poisoned");
+        inner.slots.get(id).map(|slot| Arc::clone(&slot.classifier))
+    }
+
+    /// `id`'s classifier context, rendered — exactly what its own auto-mode
+    /// verdicts are reviewed against. This is what the Ctrl+D classifier page
+    /// shows while that agent's session view is open; `None` for an agent the
+    /// registry no longer holds, which the page renders as its empty
+    /// placeholder rather than falling back to the lead's log
+    /// (`docs/permissions.md`).
+    #[must_use]
+    pub fn classifier_context(&self, id: &str) -> Option<String> {
+        // Take the handle first, so the registry lock is released before the
+        // context's own is acquired: the draw tick calls this every frame the
+        // classifier page is open, and it must never queue behind the whole
+        // map while an agent thread records a call.
+        let handle = self.classifier_handle(id)?;
+        handle.lock().ok().map(|log| log.render())
     }
 
     /// The registered subagent type (for a chat continuation's tool set).
@@ -1261,6 +1298,53 @@ mod tests {
         assert!(registry.is_done(&id1));
         assert_eq!(registry.outcome(&id1), Some(Ok("the answer".into())));
         assert_eq!(registry.outcome(&id2), None, "still running");
+    }
+
+    #[test]
+    fn each_agent_gets_its_own_classifier_context() {
+        // A subagent's auto-mode verdicts are reviewed against ITS run — the
+        // launch prompt and the calls it has made — not the lead's
+        // (`docs/permissions.md`). The registry is where that context has to
+        // live, because the Ctrl+D classifier page reads it from outside the
+        // agent's thread while the agent's session view is open.
+        let registry = test_registry();
+        let (id1, _c1) = registry.register(GENERAL_PURPOSE);
+        let (id2, _c2) = registry.register(GENERAL_PURPOSE);
+        let handle = registry.classifier_handle(&id1).expect("registered");
+        {
+            let mut log = handle.lock().expect("poisoned");
+            log.push_request("count the rust files");
+            log.record_call("bash", r#"{"command":"ls -1 src"}"#);
+        }
+        let first = registry.classifier_context(&id1).expect("registered");
+        assert!(
+            first.contains("count the rust files") && first.contains("ls -1 src"),
+            "the agent's own request and action are in its context: {first:?}"
+        );
+        let second = registry.classifier_context(&id2).expect("registered");
+        assert!(
+            !second.contains("ls -1 src"),
+            "a sibling agent's actions never leak into it: {second:?}"
+        );
+    }
+
+    #[test]
+    fn an_unknown_agent_has_no_classifier_context() {
+        // The page falls back to its empty placeholder rather than to the
+        // lead's context — showing the wrong agent's review log is the bug
+        // this exists to fix.
+        let registry = test_registry();
+        assert!(registry.classifier_context("nope").is_none());
+        assert!(registry.classifier_handle("nope").is_none());
+    }
+
+    #[test]
+    fn removing_an_agent_drops_its_classifier_context() {
+        let registry = test_registry();
+        let (id, _cancel) = registry.register(GENERAL_PURPOSE);
+        assert!(registry.classifier_context(&id).is_some());
+        registry.remove(&id);
+        assert!(registry.classifier_context(&id).is_none());
     }
 
     #[test]

@@ -500,6 +500,25 @@ either; only the title, the scroll offset and the direction of the Tab hint
 differ) and differ only in the body `ui::classifier_lines` /
 `ui::context_lines` build. Four details earn their keep:
 
+- **Whose window it is.** Inside an agent session view the page shows **that
+  agent's** context, not the lead's — its own launch prompt as the request,
+  its own executed calls as the actions. A subagent's verdicts are reviewed
+  against its own run (`spawn_subagent_run` seeds a context from the prompt it
+  was launched with and records one line per call it makes), so showing the
+  lead's log there would describe decisions nobody on that screen made. The
+  context lives on the agent's **registry slot**, minted with its id in
+  `AgentRegistry::register` and read back through
+  `AgentRegistry::classifier_context` — it used to be a plain local inside the
+  agent's thread, which is precisely why nothing outside could read it and the
+  page fell through to `ReplySource::classifier_context`, the lead's. A chat
+  continuation pushes onto the same rolling windows, because it is the same
+  agent's conversation; an agent the registry no longer holds renders the empty
+  placeholder rather than falling back to the lead. The other Ctrl+D page has
+  always swapped this way (`ui::context_lines`' first branch keys on
+  `viewed_agent`); this one now matches it. Covered by
+  `agents::tests::each_agent_gets_its_own_classifier_context` and, end to end
+  on the real wire, `live_a_subagents_classifier_context_is_its_own_not_the_leads`.
+
 - **The mode note.** The log is recorded in *every* mode — the boundary
   feeds it per call, not per verdict — but only auto mode consults it. A
   page that said nothing would read as "the classifier is deciding this" in
