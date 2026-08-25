@@ -249,12 +249,21 @@ impl ContextCache {
     }
 }
 
-/// Render the full-screen Ctrl+D context-debug view — the transcript pager's
-/// chrome over the raw context window `lines` (built by [`context_lines`],
-/// served through the loop's [`ContextCache`]), windowed by
-/// `App::debug_scroll` (clamped) with `~` filler past the end. Pure —
-/// `term.rs` paints this onto the overlay. See `docs/context.md`.
+/// Render the full-screen Ctrl+D view — the transcript pager's chrome over
+/// whichever page is showing, windowed by that page's own scroll offset
+/// (clamped) with `~` filler past the end.
+///
+/// Both pages come through here: `lines` is [`context_lines`]' raw context
+/// window (served through the loop's [`ContextCache`]) or
+/// [`classifier_lines`]' task context, and the page decides only the title,
+/// the scroll offset, and which way the Tab hint points. Sharing the chrome
+/// is the point — two windows onto "what is this turn actually sending",
+/// one key apart. Pure — `term.rs` paints this onto the overlay. See
+/// `docs/context.md` and `docs/permissions.md`.
+///
+/// [`classifier_lines`]: super::classifier_lines
 pub fn render_context_view(area: Rect, buf: &mut Buffer, app: &App, lines: &[Line<'static>]) {
+    let classifier = app.debug_page == crate::app::DebugPage::Classifier;
     let [title_area, body_area, sep_area, hints_area] = Layout::vertical([
         Constraint::Length(TOOL_VIEW_TITLE_ROWS),
         Constraint::Min(0),
@@ -263,10 +272,19 @@ pub fn render_context_view(area: Rect, buf: &mut Buffer, app: &App, lines: &[Lin
     ])
     .areas(area);
 
-    Paragraph::new(overlay_header(CONTEXT_VIEW_TITLE, area.width)).render(title_area, buf);
+    let title = if classifier {
+        CLASSIFIER_VIEW_TITLE
+    } else {
+        CONTEXT_VIEW_TITLE
+    };
+    Paragraph::new(overlay_header(title, area.width)).render(title_area, buf);
 
     let max = lines.len().saturating_sub(body_area.height as usize);
-    let scroll = app.debug_scroll.min(max);
+    let scroll = if classifier {
+        app.classifier_scroll.min(max)
+    } else {
+        app.debug_scroll.min(max)
+    };
     let mut visible: Vec<Line> = lines
         .iter()
         .skip(scroll)
@@ -281,9 +299,19 @@ pub fn render_context_view(area: Rect, buf: &mut Buffer, app: &App, lines: &[Lin
     Paragraph::new(tool_view_separator(area.width, scroll, max)).render(sep_area, buf);
 
     let dim = Style::new().fg(TOOL_DIM_COLOR);
+    // The quit row carries the page-flip hint: Tab is the other page's only
+    // discovery affordance, so it names the page it would show.
+    let tab_hint = if classifier {
+        CONTEXT_VIEW_HINT_TAB_LLM
+    } else {
+        CONTEXT_VIEW_HINT_TAB_CLASSIFIER
+    };
     Paragraph::new(vec![
         Line::from(Span::styled(TOOL_VIEW_HINT_KEYS.to_string(), dim)),
-        Line::from(Span::styled(CONTEXT_VIEW_HINT_QUIT.to_string(), dim)),
+        Line::from(Span::styled(
+            format!("{CONTEXT_VIEW_HINT_QUIT}{tab_hint}"),
+            dim,
+        )),
     ])
     .render(hints_area, buf);
 }

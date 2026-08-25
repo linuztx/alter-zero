@@ -63,6 +63,19 @@ pub trait ReplySource {
         self.system_prompt()
     }
 
+    /// The **auto mode classifier's task context**, rendered — the bounded
+    /// task context (the turn's user request + the actions taken so far) the
+    /// classifier reads before every command and MCP call, surfaced so the
+    /// Ctrl+D view's classifier page (Tab) can show what the next verdict
+    /// sees (`docs/permissions.md`). Read live: it grows as the turn runs
+    /// and rolls its windows as the conversation goes on, so the boundary
+    /// pulls it per draw rather than caching it. `None` when the backend keeps no log — the
+    /// dummy, whose offline auto-mode demo answers from a pure heuristic
+    /// (`permission::auto_verdict`) instead of a classifier.
+    fn classifier_context(&self) -> Option<String> {
+        None
+    }
+
     /// Send a chat message into a running/settled subagent's session
     /// (`docs/agent-tool.md`): queued into its loop at the next round
     /// boundary, or a continuation run when it is idle. Returns whether the

@@ -491,7 +491,9 @@ The backend follows the skills pattern:
   auto-mode classifier (`mcpToolInputToAutoClassifierInput`): the classifier
   reads the tool named `{server} - {tool}`, the server's own description,
   and the arguments (`llm::classifier::classifier_request_prompt`'s MCP arm
-  — the wire name alone would hide where the risk lives), the allowed call
+  — the wire name alone would hide where the risk lives), all under the
+  turn's truncated task context (the user request + the actions so far —
+  `classifier::ClassifierContext`, `docs/permissions.md`), the allowed call
   runs with the `Allowed by auto mode classifier` note on its record (shown
   in Ctrl+O; the quiet inline `Called {server}` line stays one line — see
   the rendering section below), a denial rejects red with the classifier's

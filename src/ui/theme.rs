@@ -574,6 +574,41 @@ pub(super) const CONTEXT_VIEW_EMPTY: &str = "Context is empty — send a message
 /// `system:` note (a derived `[system]`/`[error]` notice).
 pub(super) const CONTEXT_SYSTEM_PROMPT_TAG: &str = "system prompt:";
 
+// --- The Ctrl+D view's classifier page (`docs/permissions.md`) — Tab's
+// other half: the same pager chrome over the bounded task context auto
+// mode's classifier reads before every command and MCP call. ---
+
+/// The view's spaced-caps title, overlaid on the slash tiling.
+pub(super) const CLASSIFIER_VIEW_TITLE: &str = "C L A S S I F I E R";
+
+/// The page-flip hint appended to the second key-hint row, naming the page
+/// Tab would show — the view's only discovery affordance for its other half.
+pub(super) const CONTEXT_VIEW_HINT_TAB_CLASSIFIER: &str = "   tab for classifier context";
+
+/// …and the way back.
+pub(super) const CONTEXT_VIEW_HINT_TAB_LLM: &str = "   tab for llm context";
+
+/// The dim placeholder before anything is recorded (a fresh session, or a
+/// backend that keeps no log — the dummy).
+pub(super) const CLASSIFIER_VIEW_EMPTY: &str =
+    "No classifier context yet — send a message to fill it.";
+
+/// The dim note above the block in **auto** mode: the log is live, and this
+/// is what the next verdict reads.
+pub(super) const CLASSIFIER_VIEW_NOTE_AUTO: &str =
+    "Auto mode — the classifier reads this before each command or MCP call.";
+
+/// The same note in every other mode. The log is recorded in all of them (the
+/// boundary feeds it per call, not per verdict), so a view that stayed silent
+/// here would read as "the classifier is deciding this" when it is not.
+pub(super) const CLASSIFIER_VIEW_NOTE_INACTIVE: &str =
+    "Recorded every turn; consulted only in auto mode (shift+tab to switch).";
+
+/// …and with the gate off entirely (`ALTER_ZERO_PERMISSIONS=0`), where no
+/// verdict is ever asked for.
+pub(super) const CLASSIFIER_VIEW_NOTE_OFF: &str =
+    "Tool permissions are disabled — no classifier runs.";
+
 /// The inset of an entry's raw text (and attachment rows) under its tag.
 pub(super) const CONTEXT_INDENT: &str = "  ";
 
@@ -1269,6 +1304,10 @@ pub(super) const SHORTCUTS: &[(&str, &str)] = &[
 /// `the_shortcuts_columns_keep_a_readable_gutter_in_every_state` test pins a
 /// ≥ 2-column gutter across every context state; widen this with any new
 /// entry that needs it.
+///
+/// Note that an entry added anywhere **reflows the pairing**, so a wide entry
+/// that had been safe in a second column can land in a first one — check this
+/// still holds when adding one.
 pub(super) const SHORTCUTS_COL: usize = 30;
 
 /// Cyan — an entry's key (the palette-selection accent).

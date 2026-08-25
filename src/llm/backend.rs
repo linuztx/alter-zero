@@ -6,14 +6,14 @@
 //! `docs/llm.md`.
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 
 use tokio::sync::mpsc::UnboundedSender;
 
 use super::agent::{self, RoundOutcome};
 use super::approval;
-use super::classifier::SafetyClassifier;
+use super::classifier::{ClassifierContext, SafetyClassifier};
 use super::config::ModelConfig;
 use super::exec::{RealToolExecutor, ToolExecutor};
 use super::hooks::{HookSink, NoHooks};
@@ -95,6 +95,17 @@ pub struct LlmBackend {
     /// calls in [`crate::permission::PermissionMode::Auto`] — idle in every
     /// other mode, and moot without a gate.
     classifier: SafetyClassifier,
+    /// The classifier's **live task context** (`docs/permissions.md`),
+    /// shared so it can outlive a turn and be read: [`spawn`] pushes each new
+    /// user message onto its rolling window and the tool closures append the
+    /// actions, while [`classifier_context`] reads it out for the Ctrl+D
+    /// view's classifier page. Session-lived rather than per-spawn because
+    /// both halves are windows over the *conversation* — and because the log
+    /// is the one part of a verdict the user cannot otherwise see.
+    ///
+    /// [`spawn`]: ReplySource::spawn
+    /// [`classifier_context`]: ReplySource::classifier_context
+    turn_context: Arc<Mutex<ClassifierContext>>,
     /// How many times a failed request is retried before the error surfaces —
     /// [`retry::MAX_RETRIES`] unless the `/settings` **Error retry** knob
     /// says otherwise ([`with_max_retries`](LlmBackend::with_max_retries)).
@@ -165,6 +176,7 @@ impl LlmBackend {
             skills: None,
             mcp: None,
             classifier,
+            turn_context: Arc::new(Mutex::new(ClassifierContext::new())),
             max_retries: MAX_RETRIES,
             max_tool_calls: agent::MAX_TOOL_ITERATIONS,
             hooks: Arc::new(NoHooks),
@@ -602,6 +614,7 @@ impl ReplySource for LlmBackend {
         let skills = self.skills.clone();
         let mcp = self.mcp.clone();
         let classifier = self.classifier.clone();
+        let turn_context = Arc::clone(&self.turn_context);
         let max_retries = self.max_retries;
         let max_tool_calls = self.max_tool_calls;
         let hooks = Arc::clone(&self.hooks);
@@ -645,6 +658,16 @@ impl ReplySource for LlmBackend {
                     .with_detach_helper(registry.detach_helper())
                     .with_background(registry);
             }
+            // The auto mode classifier's task context (`docs/permissions.md`):
+            // this turn's user message joins the rolling window, and the tool
+            // closures below append one line per action, so a verdict reads
+            // the work it sits inside — including the turns before it, since
+            // the request that explains a command is often not the latest
+            // one. The log lives on the backend rather than this stack: it
+            // must outlive the turn, and the Ctrl+D view reads it live.
+            if let Ok(mut log) = turn_context.lock() {
+                log.push_request(&prompt);
+            }
             // The agentic loop: `run_agent` streams one round, runs any tool
             // calls the model requested (via `executor`, emitting the
             // ToolStart/ToolEnd pair the TUI renders), appends the results, and
@@ -670,6 +693,12 @@ impl ReplySource for LlmBackend {
                 // list (docs/task-tools.md); everything else goes to the
                 // real executor.
                 |call, on_output| {
+                    // Every executed call becomes one line of the classifier's
+                    // task context — the log a later verdict reads the action
+                    // against (`docs/permissions.md`).
+                    if let Ok(mut log) = turn_context.lock() {
+                        log.record_call(&call.name, &call.arguments);
+                    }
                     if let Some(registry) = task_list
                         .as_ref()
                         .filter(|_| crate::tasks::is_task_tool(&call.name))
@@ -710,26 +739,36 @@ impl ReplySource for LlmBackend {
                         .collect(),
                     None => Vec::new(),
                 },
-                |calls| match &agents {
-                    Some(registry) => run_agent_calls(
-                        &subagent,
-                        registry,
-                        background.as_ref(),
-                        &tx,
-                        &cancel,
-                        calls,
-                    ),
-                    // No registry attached (the tool isn't offered) — a call
-                    // that somehow arrives is declined recoverably.
-                    None => calls
-                        .iter()
-                        .map(|call| {
-                            (
-                                call.id.clone(),
-                                "the agent tool is not available here".to_string(),
-                            )
-                        })
-                        .collect(),
+                |calls| {
+                    // A subagent launch is an action of this turn too — the
+                    // classifier should see `Agent(explore the repo)` beside
+                    // the calls that follow it.
+                    if let Ok(mut log) = turn_context.lock() {
+                        for call in calls {
+                            log.record_call(&call.name, &call.arguments);
+                        }
+                    }
+                    match &agents {
+                        Some(registry) => run_agent_calls(
+                            &subagent,
+                            registry,
+                            background.as_ref(),
+                            &tx,
+                            &cancel,
+                            calls,
+                        ),
+                        // No registry attached (the tool isn't offered) — a call
+                        // that somehow arrives is declined recoverably.
+                        None => calls
+                            .iter()
+                            .map(|call| {
+                                (
+                                    call.id.clone(),
+                                    "the agent tool is not available here".to_string(),
+                                )
+                            })
+                            .collect(),
+                    }
                 },
                 // The permission gate: a `write`/`edit`/`bash` call raises the
                 // inline prompt and blocks this thread on the answer, unless a
@@ -738,7 +777,13 @@ impl ReplySource for LlmBackend {
                 // (docs/permissions.md).
                 |call, force_ask| {
                     let classify = |request: &crate::permission::PermissionRequest| {
-                        classifier.classify(request, &cancel)
+                        // Render under the lock, classify outside it — the
+                        // verdict is a network round-trip.
+                        let context = turn_context
+                            .lock()
+                            .map(|log| log.render())
+                            .unwrap_or_default();
+                        classifier.classify(request, &context, &cancel)
                     };
                     // An MCP prompt shows the server's own description of the
                     // tool under the call (docs/mcp.md).
@@ -746,7 +791,7 @@ impl ReplySource for LlmBackend {
                         mcp.as_ref()
                             .and_then(|manager| manager.tool_description(wire))
                     };
-                    approval::approve_call(
+                    let approval = approval::approve_call(
                         permissions.as_ref(),
                         Some(&classify),
                         Some(&describe),
@@ -756,7 +801,16 @@ impl ReplySource for LlmBackend {
                         &cancel,
                         None,
                         call,
-                    )
+                    );
+                    // A refusal never reaches the executor, so it is logged
+                    // here — marked, because an agent re-trying a variant of
+                    // a denied call should be seen doing so.
+                    if matches!(approval, crate::permission::Approval::Reject { .. })
+                        && let Ok(mut log) = turn_context.lock()
+                    {
+                        log.record_denied(&call.name, &call.arguments);
+                    }
+                    approval
                 },
                 hooks.as_ref(),
             );
@@ -765,6 +819,15 @@ impl ReplySource for LlmBackend {
 
     fn model_name(&self) -> String {
         self.model.clone()
+    }
+
+    /// The classifier's live task context, rendered for the Ctrl+D view
+    /// (`docs/permissions.md`). Read under the lock and handed out as an
+    /// owned string — the boundary must never hold a backend lock across a
+    /// draw. A poisoned lock (a panicked tool thread) reports nothing rather
+    /// than taking the UI down with it.
+    fn classifier_context(&self) -> Option<String> {
+        self.turn_context.lock().ok().map(|log| log.render())
     }
 
     fn system_prompt(&self) -> Option<String> {
@@ -1139,6 +1202,13 @@ fn spawn_subagent_run(
         .for_subagent(&id, &agent_type)
         .unwrap_or_else(|| Arc::clone(&config.hooks));
     thread::spawn(move || {
+        // The classifier's task context for THIS agent's run, seeded from the
+        // launch prompt (or the chat message that continued it) — read now,
+        // before the reminder/hook notes push more user-role messages that
+        // would win the newest-user-text scan (`docs/permissions.md`).
+        let mut agent_context = super::classifier::ClassifierContext::new();
+        agent_context.push_request(&super::classifier::latest_user_text(&messages));
+        let turn_context = std::sync::Mutex::new(agent_context);
         // Right after the launch prompt and in front of the hook notes, so it
         // reads as part of the briefing rather than an answer to it.
         if let Some(reminder) = skill_reminder {
@@ -1204,6 +1274,11 @@ fn spawn_subagent_run(
             &mut messages,
             |msgs| stream_round(&client, msgs, &tx2, &cancel, max_retries),
             |call, on_output| {
+                // The classifier's task context, one line per executed call —
+                // the lead's pattern (`docs/permissions.md`).
+                if let Ok(mut log) = turn_context.lock() {
+                    log.record_call(&call.name, &call.arguments);
+                }
                 // A subagent's `skill` call loads the same `SKILL.md` the
                 // lead would (docs/skills.md).
                 if let Some(registry) = skills
@@ -1244,13 +1319,19 @@ fn spawn_subagent_run(
             // auto mode its commands go to the same classifier.
             |call, force_ask| {
                 let classify = |request: &crate::permission::PermissionRequest| {
-                    classifier.classify(request, &cancel)
+                    // Render under the lock, classify outside it — the
+                    // verdict is a network round-trip.
+                    let context = turn_context
+                        .lock()
+                        .map(|log| log.render())
+                        .unwrap_or_default();
+                    classifier.classify(request, &context, &cancel)
                 };
                 let describe = |wire: &str| {
                     mcp.as_ref()
                         .and_then(|manager| manager.tool_description(wire))
                 };
-                approval::approve_call(
+                let approval = approval::approve_call(
                     permissions.as_ref(),
                     Some(&classify),
                     Some(&describe),
@@ -1260,7 +1341,14 @@ fn spawn_subagent_run(
                     &cancel,
                     Some(&agent_type),
                     call,
-                )
+                );
+                // A refusal never reaches the executor — logged here, marked.
+                if matches!(approval, crate::permission::Approval::Reject { .. })
+                    && let Ok(mut log) = turn_context.lock()
+                {
+                    log.record_denied(&call.name, &call.arguments);
+                }
+                approval
             },
             hooks.as_ref(),
         );

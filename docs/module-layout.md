@@ -82,6 +82,7 @@ widened for the split.
 | `mascot_view.rs` | The inline `/mascot` picker with its live banner preview (`docs/mascot.md`). |
 | `live.rs` | `render_live` — the streaming strip, the box, the band. |
 | `transcript.rs` | The Ctrl+O overlay and `TranscriptCache`. |
+| `classifier_view.rs` | The Ctrl+D view's classifier page body (`docs/permissions.md`). |
 | `context_view.rs` | The Ctrl+D context-debug overlay. |
 | `resume_view.rs`, `model_view.rs`, `login_view.rs`, `background_view.rs` | The pickers and the manager band. |
 | `permission_view.rs` | The tool-permission modal (`docs/permissions.md`). |

@@ -167,36 +167,61 @@ impl App {
                 self.toggle_context_debug();
                 Action::ToggleContextDebug
             }
+            // Tab flips between the view's two pages — the model's context
+            // window and the classifier's task context (`docs/permissions.md`).
+            // Reachable over an open permission prompt like the view itself:
+            // the modal's key routing only runs in the conversation view, so
+            // the prompt's Tab (its amend field) and this one never contend.
+            KeyCode::Tab | KeyCode::BackTab => {
+                self.debug_page = self.debug_page.flipped();
+                Action::None
+            }
             KeyCode::Up => {
-                self.debug_follow = false;
-                self.debug_scroll = self.debug_scroll.saturating_sub(1);
+                let (scroll, follow) = self.debug_page_scroll();
+                *follow = false;
+                *scroll = scroll.saturating_sub(1);
                 Action::None
             }
             KeyCode::Down => {
-                self.debug_scroll = self.debug_scroll.saturating_add(1);
+                let (scroll, _) = self.debug_page_scroll();
+                *scroll = scroll.saturating_add(1);
                 Action::None
             }
             KeyCode::PageUp => {
-                self.debug_follow = false;
-                self.debug_scroll = self.debug_scroll.saturating_sub(TOOL_VIEW_PAGE);
+                let (scroll, follow) = self.debug_page_scroll();
+                *follow = false;
+                *scroll = scroll.saturating_sub(TOOL_VIEW_PAGE);
                 Action::None
             }
             KeyCode::PageDown => {
-                self.debug_scroll = self.debug_scroll.saturating_add(TOOL_VIEW_PAGE);
+                let (scroll, _) = self.debug_page_scroll();
+                *scroll = scroll.saturating_add(TOOL_VIEW_PAGE);
                 Action::None
             }
             KeyCode::Home => {
-                self.debug_follow = false;
-                self.debug_scroll = 0;
+                let (scroll, follow) = self.debug_page_scroll();
+                *follow = false;
+                *scroll = 0;
                 Action::None
             }
             KeyCode::End => {
-                // Past any end — `settle_debug_scroll` pins it to the bottom
-                // and re-engages tail-follow, like the pager's End.
-                self.debug_scroll = usize::MAX;
+                // Past any end — the page's `settle_*_scroll` pins it to the
+                // bottom and re-engages tail-follow, like the pager's End.
+                let (scroll, _) = self.debug_page_scroll();
+                *scroll = usize::MAX;
                 Action::None
             }
             _ => Action::None,
+        }
+    }
+
+    /// The scroll offset and tail-follow flag **of the page currently
+    /// showing** — so one set of pager arms drives whichever is up, and each
+    /// page keeps its own place when you flip to compare them and back.
+    fn debug_page_scroll(&mut self) -> (&mut usize, &mut bool) {
+        match self.debug_page {
+            DebugPage::Context => (&mut self.debug_scroll, &mut self.debug_follow),
+            DebugPage::Classifier => (&mut self.classifier_scroll, &mut self.classifier_follow),
         }
     }
 
@@ -213,6 +238,10 @@ impl App {
         };
         self.debug_scroll = 0;
         self.debug_follow = self.view == View::ContextDebug;
+        // Both pages open pinned to the bottom; the page itself persists
+        // across opens, so Ctrl+D comes back to whichever you were reading.
+        self.classifier_scroll = 0;
+        self.classifier_follow = self.view == View::ContextDebug;
     }
 
     /// Settle the tool-view scroll for a draw given the largest offset the current
@@ -240,6 +269,20 @@ impl App {
             max
         } else {
             self.debug_scroll.min(max)
+        };
+    }
+
+    /// Settle the **classifier page's** scroll for a draw, exactly like
+    /// [`settle_debug_scroll`](Self::settle_debug_scroll) does the context
+    /// page's (`docs/permissions.md`).
+    pub fn settle_classifier_scroll(&mut self, max: usize) {
+        if self.classifier_scroll >= max {
+            self.classifier_follow = true;
+        }
+        self.classifier_scroll = if self.classifier_follow {
+            max
+        } else {
+            self.classifier_scroll.min(max)
         };
     }
 }

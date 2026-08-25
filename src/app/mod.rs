@@ -92,7 +92,9 @@ pub use self::turn::{
     format_elapsed,
 };
 pub(crate) use self::types::count_tokens;
-pub use self::types::{HistoryItem, HookNote, Message, Role, SessionInfo, Toast, ToastKind, View};
+pub use self::types::{
+    DebugPage, HistoryItem, HookNote, Message, Role, SessionInfo, Toast, ToastKind, View,
+};
 
 /// All mutable conversation state: the editable input line, the reply currently
 /// being streamed, the tool (if any) currently executing, and the finished
@@ -261,6 +263,24 @@ pub struct App {
     /// Whether the context-debug view is pinned to the bottom (tail-follow),
     /// exactly like [`tool_follow`](Self::tool_follow).
     pub debug_follow: bool,
+    /// Which page the Ctrl+D view is showing — Tab flips it
+    /// (`docs/permissions.md`). It persists across opens, so Ctrl+D comes
+    /// back to whichever page you were last reading.
+    pub debug_page: DebugPage,
+    /// The classifier page's scroll offset — its own state beside
+    /// [`debug_scroll`](Self::debug_scroll), so flipping pages to compare
+    /// them and back lands where you left off.
+    pub classifier_scroll: usize,
+    /// Whether the classifier page is pinned to the bottom (tail-follow),
+    /// exactly like [`tool_follow`](Self::tool_follow) — so a page left open
+    /// while the agent works keeps the newest actions in sight as they land.
+    pub classifier_follow: bool,
+    /// The auto mode classifier's **rendered task context** — the block the
+    /// next verdict will read, injected per draw at the boundary from the
+    /// live backend log (`ReplySource::classifier_context`), the
+    /// system-prompt pattern. `None` when the backend keeps no log (the
+    /// dummy) or nothing has been recorded yet. See `docs/permissions.md`.
+    pub(crate) classifier_context: Option<String>,
     /// The active backend's system prompt, injected at the boundary
     /// ([`App::set_system_prompt`], from `ReplySource::system_prompt`) so the
     /// Ctrl+D view can show the *whole* context window. `None` for the dummy.
@@ -775,6 +795,22 @@ impl App {
     /// the Ctrl+D view shows the whole context window. See `docs/context.md`.
     pub fn set_system_prompt(&mut self, prompt: Option<String>) {
         self.system_prompt = prompt;
+    }
+
+    /// Inject the auto mode classifier's rendered task context (from
+    /// `ReplySource::classifier_context`, pulled per draw while the Ctrl+D
+    /// view's classifier page is open) so the pure view can show what the
+    /// next verdict reads.
+    /// See `docs/permissions.md`.
+    pub fn set_classifier_context(&mut self, context: Option<String>) {
+        self.classifier_context = context;
+    }
+
+    /// The injected classifier task context, if any
+    /// ([`set_classifier_context`](Self::set_classifier_context)).
+    #[must_use]
+    pub fn classifier_context(&self) -> Option<&str> {
+        self.classifier_context.as_deref()
     }
 
     /// Inject the prompt a launched subagent is sent (from

@@ -676,3 +676,26 @@ fn a_prompt_takes_the_footer_selections_with_the_composer() {
         "…and it does not come back armed"
     );
 }
+
+#[test]
+fn the_classifier_page_is_reachable_over_an_open_prompt() {
+    // Ctrl+D escapes the modal, and once the view is up its own handler owns
+    // the keys — the modal's routing only runs in the conversation view — so
+    // Tab reaches the classifier page rather than the prompt's amend field.
+    // That matters most here: a prompt in auto mode means the classifier
+    // failed or never saw the call, and what it knew is the question being
+    // asked. Read-only, so the blocked tool thread keeps waiting.
+    let mut app = App::new();
+    app.open_permission(bash_request("p1"));
+    assert_eq!(app.on_key(ctrl('d')), Action::ToggleContextDebug);
+    assert_eq!(app.view, View::ContextDebug);
+    assert_eq!(app.on_key(key(KeyCode::Tab)), Action::None);
+    assert_eq!(app.debug_page, DebugPage::Classifier);
+    assert!(
+        app.permission().is_some_and(|p| !p.amend),
+        "the prompt is untouched — Tab did not open its amend field"
+    );
+    assert_eq!(app.on_key(ctrl('d')), Action::ToggleContextDebug);
+    assert_eq!(app.view, View::Conversation);
+    assert!(app.permission().is_some());
+}

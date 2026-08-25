@@ -312,3 +312,102 @@ fn ctrl_o_is_inert_while_the_picker_is_up() {
     assert_eq!(app.on_key(ctrl('o')), Action::None);
     assert_eq!(app.view, View::ResumePicker);
 }
+
+// ===== the Ctrl+D view's classifier page (docs/permissions.md) =====
+
+#[test]
+fn tab_flips_the_context_view_between_its_two_pages() {
+    // One key, two windows onto "what is this turn actually sending": the
+    // model's own context, and the classifier's task context.
+    let mut app = App::new();
+    app.on_key(ctrl('d'));
+    assert_eq!(
+        app.debug_page,
+        DebugPage::Context,
+        "opens on the LLM window"
+    );
+    assert_eq!(app.on_key(key(KeyCode::Tab)), Action::None);
+    assert_eq!(app.debug_page, DebugPage::Classifier);
+    assert_eq!(app.on_key(key(KeyCode::Tab)), Action::None);
+    assert_eq!(app.debug_page, DebugPage::Context, "and back");
+    // Shift+Tab flips too — with two pages there is no other direction.
+    assert_eq!(app.on_key(key(KeyCode::BackTab)), Action::None);
+    assert_eq!(app.debug_page, DebugPage::Classifier);
+}
+
+#[test]
+fn the_page_persists_across_opens_and_both_reopen_at_the_bottom() {
+    // Ctrl+D comes back to whichever page you were last reading — the title
+    // says which — and each page opens pinned to the bottom.
+    let mut app = App::new();
+    app.on_key(ctrl('d'));
+    app.on_key(key(KeyCode::Tab));
+    app.classifier_scroll = 7;
+    app.classifier_follow = false;
+    app.on_key(ctrl('d')); // close
+    app.on_key(ctrl('d')); // reopen
+    assert_eq!(app.debug_page, DebugPage::Classifier, "the page persisted");
+    assert!(app.classifier_follow, "…and it reopened tail-following");
+    assert_eq!(app.classifier_scroll, 0);
+}
+
+#[test]
+fn each_page_keeps_its_own_scroll_offset() {
+    // Flipping to compare the two and back lands where you left off.
+    let mut app = App::new();
+    app.on_key(ctrl('d'));
+    app.on_key(key(KeyCode::Down));
+    app.on_key(key(KeyCode::Down));
+    assert_eq!(app.debug_scroll, 2);
+    app.on_key(key(KeyCode::Tab));
+    assert_eq!(app.classifier_scroll, 0, "the other page has its own place");
+    app.on_key(key(KeyCode::Down));
+    assert_eq!(app.classifier_scroll, 1);
+    app.on_key(key(KeyCode::Tab));
+    assert_eq!(app.debug_scroll, 2, "…and the first page kept its own");
+}
+
+#[test]
+fn scroll_keys_move_whichever_page_is_showing() {
+    let mut app = App::new();
+    app.on_key(ctrl('d'));
+    app.on_key(key(KeyCode::Tab));
+    assert!(app.classifier_follow, "opens pinned to the bottom");
+    app.on_key(key(KeyCode::Up));
+    assert!(!app.classifier_follow, "scrolling up drops tail-follow");
+    app.on_key(key(KeyCode::Down));
+    assert_eq!(app.classifier_scroll, 1);
+    app.on_key(key(KeyCode::PageDown));
+    assert_eq!(app.classifier_scroll, 1 + TOOL_VIEW_PAGE);
+    app.on_key(key(KeyCode::Home));
+    assert_eq!(app.classifier_scroll, 0);
+    app.on_key(key(KeyCode::End));
+    app.settle_classifier_scroll(4);
+    assert_eq!(app.classifier_scroll, 4, "End pins to the bottom");
+    assert!(app.classifier_follow, "and re-engages tail-follow");
+    assert_eq!(
+        app.debug_scroll, 0,
+        "the LLM page was left alone throughout"
+    );
+}
+
+#[test]
+fn q_and_esc_close_the_view_from_the_classifier_page_too() {
+    for code in [KeyCode::Char('q'), KeyCode::Esc] {
+        let mut app = App::new();
+        app.on_key(ctrl('d'));
+        app.on_key(key(KeyCode::Tab));
+        assert_eq!(app.on_key(key(code)), Action::ToggleContextDebug);
+        assert_eq!(app.view, View::Conversation, "{code:?} closes");
+    }
+}
+
+#[test]
+fn the_boundary_injects_the_rendered_classifier_context() {
+    // The block is built on the backend thread, so the App only ever holds
+    // what the boundary pushed in — the system-prompt/clock pattern.
+    let mut app = App::new();
+    assert_eq!(app.classifier_context(), None);
+    app.set_classifier_context(Some("## Task context".to_string()));
+    assert_eq!(app.classifier_context(), Some("## Task context"));
+}

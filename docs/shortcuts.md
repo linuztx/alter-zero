@@ -85,7 +85,11 @@ out two per row in declaration order, so the band is
 that grid — the last row's first column, beside the kill keys. It rode the
 first row as a third column for a while; the special case is retired, so
 the band is one two-column grid at every width and `shortcuts_rows` is
-plain `div_ceil`.)
+plain `div_ceil`. Note that adding an entry **reflows every pairing after
+it**, so a wide entry that was safe in a second column can land in a first
+one — check `SHORTCUTS_COL` still leaves a gutter when adding one. The
+Ctrl+D view's classifier page has no entry of its own: Tab is discovered on
+the view's own hint row, `docs/permissions.md`.)
 
 The second column starts at `SHORTCUTS_COL` (30), sized so the **widest**
 first-column variant keeps a readable gutter (an earlier pairing put a

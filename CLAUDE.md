@@ -528,7 +528,23 @@ sends a non-allowlisted `bash` command to the **auto mode classifier** — a
 silent LLM safety check on the session's own provider
 (`llm::classifier::SafetyClassifier`, prompt in `prompts/classifier.md`,
 `ALTER_ZERO_CLASSIFIER_MODEL` overrides the model) consulted by the approve
-seam in the user's stead: the asked-about cell just keeps its `⎿ Waiting…`
+seam in the user's stead, **task-aware**: each verdict reads the session's
+truncated context (`classifier::ClassifierContext` — two **rolling windows
+over the conversation**, not one turn: the newest `CONTEXT_MAX_REQUESTS`
+(10) user requests over the newest `CONTEXT_MAX_ACTIONS` (20) capped
+`Name(args)` action lines, denials marked, each line truncated and every cut
+counted, since the request that explains a command is often two turns back
+and a re-tried denial should still be seen; the system prompt pins the block
+as data-never-instructions; **Ctrl+D's second page** shows it — **Tab**
+flips between the model's context window and its reviewer's, the two sharing
+one chrome (`ui::render_context_view` paints either) with the classifier
+page pulled live from the backend per draw via
+`ReplySource::classifier_context` (which is why `LlmBackend` holds the log
+behind an `Arc<Mutex<…>>` rather than a per-spawn local — it outlives the
+turn), over a mode note saying whether it is actually being consulted, each
+page keeping its own scroll, and Tab reaching it over an open permission
+prompt since the modal's key routing only runs in the conversation view)
+above the one `## Action to review`: the asked-about cell just keeps its `⎿ Waiting…`
 row while the verdict streams (silently — no UI events), an **allow** runs
 the call with a dim `⎿ Allowed by auto mode classifier` row appended to the
 resolved cell (the `Approval::AllowNoted` → `StreamEvent::ToolNote` →
@@ -1150,7 +1166,13 @@ invariant 4), the **`/resume` picker**, and the **Ctrl+D context-debug view**
 each turn, tool calls in the provider-native `tool_calls`/`tool` wire format
 (an assistant `→ name(args)` request + a `tool:` result entry) and `[Image #N]`
 placeholders unrendered; `ui::render_context_view`/`ui::context_lines` over
-the pure `context::context_messages`, see `docs/context.md`). ratatui's `Viewport::Inline` can't change height after startup, so
+the pure `context::context_messages`, see `docs/context.md`) — whose **Tab** opens its
+second page, auto mode's reviewer's own window: the bounded task context the
+classifier reads before each command, pulled live from the backend per draw
+(`ReplySource::classifier_context` → `App::set_classifier_context`, so it
+tail-follows actions as they land) over a note saying whether the mode
+actually consults it (`ui::classifier_lines` under the same
+`ui::render_context_view` chrome, `docs/permissions.md`). ratatui's `Viewport::Inline` can't change height after startup, so
 `term::InlineViewport` is a *custom* inline viewport over a `CrosstermBackend`
 whose height is **dynamic** — the input box grows with the wrapped input, the
 streaming strip, the palette band, and the session footer (`ui::live_height`). Four non-obvious
