@@ -135,3 +135,19 @@ either.
 - `scripts/smoke.sh` Phase 48 — resume a code-heavy session in tmux, Ctrl+O,
   assert the expanded transcript appears promptly and the inline view returns
   intact (the boundary halves: the queued switch and the loop-bottom warm).
+
+## What this doc does *not* cover: the paint
+
+Everything above is about how fast the transcript's **rows** are built. What
+happens to them afterwards — how many of those cells actually reach the
+terminal — is a separate mechanism, and for a long time it undid much of the
+saving: `draw_overlay` re-serialized every cell of the alternate screen on every
+frame, so a cache hit that rendered nothing new still wrote a full screen. Worse
+than wasted work, that write is what destroyed the user's mouse selection, which
+made the overlay's text uncopyable while a turn streamed.
+
+The overlay now diffs against the frame already on screen and an unchanged frame
+writes nothing at all. The two mechanisms compose exactly as you would hope: a
+cache hit produces a byte-identical buffer, which the diff then resolves to
+`Unchanged`, which reaches the terminal as silence. See
+`docs/overlay-repaint.md`.

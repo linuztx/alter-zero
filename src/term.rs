@@ -639,6 +639,15 @@ impl InlineViewport {
         // re-records the real one).
         self.painted_bottom = self.painted_bottom.min(height);
         self.prev = None; // geometry moved under us; repaint in full next draw
+        // …and the alt screen the emulator just reflowed under us. The area
+        // check in `overlay_paint` is NOT enough on its own: a resize burst can
+        // coalesce into one frame (`on_resize` asks for a frame, but the
+        // scheduler's floor is 8ms), so the net size can land back on the one
+        // the baseline records while the terminal clipped and regrew the
+        // alternate screen in between — diffing against that baseline would
+        // leave the vacated rows stale until the overlay was closed. Dropping
+        // it unconditionally, `changed` or not, costs one full repaint.
+        self.overlay_prev = None;
         changed
     }
 
@@ -819,11 +828,13 @@ impl InlineViewport {
         }
         let mut buf = Buffer::empty(self.screen);
         render(self.screen, &mut buf);
-        let updates = overlay_updates(self.overlay_prev.as_ref(), &buf);
+        let paint = overlay_paint(self.overlay_prev.as_ref(), &buf);
         // Nothing moved: emit NOTHING. Not a cell, not a synchronized-update
         // bracket, not a cursor move — the whole point is that a terminal
-        // holding a selection over this page sees no write at all.
-        if updates.as_ref().is_some_and(Vec::is_empty) {
+        // holding a selection over this page sees no write at all. (Skipping
+        // the Hide here is safe: the alternate screen is always entered with a
+        // Full frame right behind it, which asserts it.)
+        if matches!(paint, OverlayPaint::Unchanged) {
             return Ok(());
         }
         // The policy seat for the hidden cursor: just past the frame's last
@@ -838,10 +849,11 @@ impl InlineViewport {
         // the full-screen redraw. The overlay never re-shows it; [`exit_overlay`]
         // returns to the inline view, whose reflow re-seats it on the prompt.
         queue!(self.backend, Hide)?;
-        let drawn = match updates {
-            Some(updates) => self.draw_cells(updates.into_iter()),
-            // No baseline — every cell, minus the wide-glyph shadows.
-            None => {
+        let drawn = match paint {
+            OverlayPaint::Diff(updates) => self.draw_cells(updates.into_iter()),
+            // No comparable frame on screen: every visible cell goes out,
+            // minus the wide-glyph shadows.
+            _ => {
                 let width = self.screen.width as usize;
                 self.draw_cells(visible_cells(&buf.content, width, Position::new(0, 0)))
             }
@@ -1090,33 +1102,61 @@ impl InlineViewport {
 /// `/resume` picker and Ctrl+D context view). Missing any one of them leaves the
 /// tear alive in that view alone, which is why `smoke.sh` Phase 41 now checks
 /// the inline pane *and* the Ctrl+O overlay.
-/// What an overlay frame must actually put on the wire, given the frame already
-/// painted on the alternate screen (`prev`) and the one being drawn (`next`).
+/// What one alternate-screen frame has to write, given the frame the overlay
+/// last painted there (`prev`) and the one being drawn (`next`).
 ///
-/// `None` means "no usable baseline — paint every cell" (the first frame after
-/// [`InlineViewport::enter_overlay`]'s clear, or a resize whose reflow moved the
-/// screen out from under the baseline; `Buffer::diff` needs matching areas
-/// anyway). `Some(updates)` is the cell diff — and `Some(empty)` is the case
-/// this exists for: an **unchanged** page emits nothing at all.
+/// The alternate screen's answer to the inline region's diff
+/// ([`InlineViewport::paint_frame`]), and it exists for the same reason plus a
+/// sharper one. The overlay used to repaint in full on **every** frame, and
+/// while a turn streams underneath the loop schedules up to 120 of those a
+/// second (every reply event asks for one). Terminals drop an in-progress
+/// mouse selection when cells inside it are **written**, not when their
+/// content changes — so re-sending an identical screen at that rate made the
+/// text physically unselectable: nothing could be copied out of Ctrl+O /
+/// Ctrl+D until the turn finished. Ctrl+D was the plainest case, its
+/// `ContextSig` ignoring the streaming length, so the page it repainted was
+/// byte-identical every time.
 ///
-/// That last case is the fix for the reported bug. A terminal drops the user's
-/// mouse selection the moment the cells under it are rewritten, and the overlay
-/// re-serialized the whole screen on every frame — up to 120 a second while a
-/// turn streamed (every reply event schedules one) — so text in the Ctrl+O
-/// transcript or the Ctrl+D context view could not be selected and copied until
-/// the turn finished. The inline region never had the problem: `paint_frame`
-/// has always diffed against `prev`. This is the same rule, applied to the
-/// alternate screen. See `docs/overlay-repaint.md`.
+/// Hence [`Unchanged`], which short-circuits [`InlineViewport::draw_overlay`]
+/// before it touches the backend at all: not one cell, and none of the
+/// synchronized-update or cursor-seat escapes either. A [`Full`] paint is the
+/// answer whenever no comparable frame is on screen — none recorded (the
+/// alternate screen was just cleared by [`InlineViewport::enter_overlay`]), or
+/// a geometry that no longer matches (`Buffer::diff` needs equal areas).
 ///
 /// Pure, so the decision is unit-tested while the surrounding terminal I/O is
-/// only smoke-covered. `Buffer::diff` skips wide-glyph shadow cells itself, so
-/// the diff path inherits the rule [`visible_cells`] enforces on the full paint.
-fn overlay_updates<'a>(
-    prev: Option<&Buffer>,
-    next: &'a Buffer,
-) -> Option<Vec<(u16, u16, &'a Cell)>> {
-    prev.filter(|prev| prev.area == next.area)
-        .map(|prev| prev.diff(next))
+/// only smoke-covered. The diff is [`Buffer::diff`]'s, which is where
+/// [`visible_cells`] took its wide-glyph and VS16 handling from, so a partial
+/// repaint cannot tear a table the full paint gets right.
+/// See `docs/overlay-repaint.md`.
+///
+/// [`Unchanged`]: OverlayPaint::Unchanged
+/// [`Full`]: OverlayPaint::Full
+fn overlay_paint<'a>(prev: Option<&Buffer>, next: &'a Buffer) -> OverlayPaint<'a> {
+    match prev {
+        Some(prev) if prev.area == next.area => {
+            let updates = prev.diff(next);
+            if updates.is_empty() {
+                OverlayPaint::Unchanged
+            } else {
+                OverlayPaint::Diff(updates)
+            }
+        }
+        _ => OverlayPaint::Full,
+    }
+}
+
+/// The verdict of [`overlay_paint`]: how much of an overlay frame reaches the
+/// terminal.
+enum OverlayPaint<'a> {
+    /// Identical to the frame already on the alternate screen — write nothing,
+    /// so a mouse selection over it survives.
+    Unchanged,
+    /// Only these cells differ from the frame on screen.
+    Diff(Vec<(u16, u16, &'a Cell)>),
+    /// No comparable frame on screen — emit every visible cell
+    /// ([`visible_cells`]).
+    Full,
 }
 
 fn visible_cells(
@@ -1224,7 +1264,7 @@ mod tests {
     use ratatui::layout::{Position, Rect};
     use ratatui::style::Style;
 
-    use super::{keyboard_enhancement_disabled, overlay_updates, visible_cells};
+    use super::{OverlayPaint, keyboard_enhancement_disabled, overlay_paint, visible_cells};
 
     /// Render `line` into a `width`-wide one-row buffer the way every full-cell
     /// paint does, then list what [`visible_cells`] would actually send to the
@@ -1354,7 +1394,7 @@ mod tests {
         );
     }
 
-    /// Two `width`x`height` overlay frames from their row texts.
+    /// Two `width`-wide overlay frames from their row texts.
     fn frames(a: &[&str], b: &[&str], width: u16) -> (Buffer, Buffer) {
         let build = |rows: &[&str]| {
             let mut buf = Buffer::empty(Rect::new(0, 0, width, rows.len() as u16));
@@ -1367,7 +1407,7 @@ mod tests {
     }
 
     #[test]
-    fn an_unchanged_overlay_frame_emits_nothing() {
+    fn an_unchanged_overlay_frame_writes_nothing() {
         // THE fix (docs/overlay-repaint.md): a terminal drops the user's mouse
         // selection the moment the cells under it are rewritten, and the
         // overlay used to re-serialize every cell of the screen up to 120
@@ -1375,17 +1415,21 @@ mod tests {
         // could not be copied until the turn ended. An identical frame must
         // now put NOTHING on the wire.
         let (prev, next) = frames(&["hello", "world"], &["hello", "world"], 5);
-        let updates = overlay_updates(Some(&prev), &next).expect("diffable");
-        assert!(updates.is_empty(), "an unchanged page writes no cells");
+        assert!(matches!(
+            overlay_paint(Some(&prev), &next),
+            OverlayPaint::Unchanged
+        ));
     }
 
     #[test]
     fn an_overlay_frame_emits_only_the_cells_that_changed() {
         // A streaming Ctrl+O tail-follows, so its live tail genuinely moves —
-        // but the frozen rows above it (where a reader has scrolled back and
-        // selected) must stay untouched.
+        // but the rows above it (where a reader has scrolled back and selected)
+        // must stay untouched.
         let (prev, next) = frames(&["hello", "world"], &["hello", "WORLD"], 5);
-        let updates = overlay_updates(Some(&prev), &next).expect("diffable");
+        let OverlayPaint::Diff(updates) = overlay_paint(Some(&prev), &next) else {
+            panic!("a changed frame diffs");
+        };
         assert_eq!(updates.len(), 5, "only the second row's cells");
         assert!(
             updates.iter().all(|(_, y, _)| *y == 1),
@@ -1394,26 +1438,25 @@ mod tests {
     }
 
     #[test]
-    fn the_first_overlay_frame_repaints_in_full() {
+    fn the_first_overlay_frame_paints_in_full() {
         // `enter_overlay` queues a Clear(All) and drops the baseline: there is
         // nothing on the alternate screen to diff against.
         let (_, next) = frames(&[], &["hello"], 5);
-        assert!(
-            overlay_updates(None, &next).is_none(),
-            "no baseline — paint every cell"
-        );
+        assert!(matches!(overlay_paint(None, &next), OverlayPaint::Full));
     }
 
     #[test]
-    fn a_resized_overlay_repaints_in_full() {
+    fn a_resized_overlay_paints_in_full() {
         // The emulator reflowed the alternate screen out from under the
-        // baseline, and `Buffer::diff` needs matching areas anyway.
+        // baseline — and `Buffer::diff` needs matching areas anyway. (The
+        // same-size case `resized` also has to answer is not visible here:
+        // it drops the baseline itself, which lands on the `None` arm above.)
         let prev = Buffer::empty(Rect::new(0, 0, 5, 2));
         let next = Buffer::empty(Rect::new(0, 0, 8, 2));
-        assert!(
-            overlay_updates(Some(&prev), &next).is_none(),
-            "a size change invalidates the baseline"
-        );
+        assert!(matches!(
+            overlay_paint(Some(&prev), &next),
+            OverlayPaint::Full
+        ));
     }
 
     #[test]
@@ -1423,7 +1466,9 @@ mod tests {
         // past the glyph and drifts the rest of the row. `Buffer::diff` skips
         // them itself — this pins that the diff path inherits it.
         let (prev, next) = frames(&["ab"], &["\u{1f525}b"], 3);
-        let updates = overlay_updates(Some(&prev), &next).expect("diffable");
+        let OverlayPaint::Diff(updates) = overlay_paint(Some(&prev), &next) else {
+            panic!("a changed frame diffs");
+        };
         assert!(
             !updates.iter().any(|(x, _, _)| *x == 1),
             "the shadowed column is never emitted: {updates:?}"

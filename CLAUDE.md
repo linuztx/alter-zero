@@ -957,19 +957,27 @@ to re-serialize **every cell** of the alternate screen on every frame — up to
 120 a second, since each reply event schedules one, floored at ~31 by the
 status animation's clock chain — so text in Ctrl+O / Ctrl+D could not be
 selected until the turn finished. It now **diffs against the frame already on
-the screen** (`term::overlay_updates`, the pure sibling of the inline
-`paint_frame`'s `prev.diff(buf)`, over its own `overlay_prev` baseline —
-`prev` describes a *different* screen and the entry/exit paths clear it) and an
-**unchanged frame emits nothing at all**: no cells, and no synchronized-update
+the screen** (`term::overlay_paint` → `OverlayPaint::{Unchanged,Diff,Full}`,
+the pure sibling of the inline `paint_frame`'s `prev.diff(buf)`, over its own
+`overlay_prev` baseline — `prev` describes a *different* screen and the
+entry/exit paths clear it) and an **unchanged frame emits nothing at all**: no cells, and no synchronized-update
 or cursor-move escapes either, so a still page is silence on the wire. The
 baseline drops on every entry (the queued `Clear(All)` blanks the screen),
-every exit, and any part-failed write; `Buffer::diff` skips wide-glyph shadows
+every exit, every `resized` (**unconditionally** — the area check alone is not
+enough: a resize burst can coalesce into one frame and land back on the recorded
+area while the emulator clipped and regrew the screen in between, stranding
+stale rows); `Buffer::diff` skips wide-glyph shadows
 itself, so the diff path inherits `visible_cells`' rule rather than reopening
-the table tear. Beside it the draw tick stops **re-arming** the 32 ms chain
-under an overlay (`App::wants_animation_frames` → `View::is_overlay`) — every
-thing it animates is inline, and every event source already schedules its own
-frame, so nothing goes stale and the chain re-seeds on the first draw after the
-return. Measured with `tmux pipe-pane` over three seconds of an active turn:
+the table tear. Beside it — a CPU saving, **not** part of the copy fix, since a
+re-armed frame over an unchanged page now writes nothing anyway — the draw tick
+stops **re-arming** the 32 ms chain under an overlay
+(`App::wants_animation_frames` → `View::is_overlay`): every thing it animates is
+inline (`tool_full_body` pins `pulse = None`, `TranscriptSig` has no clock, and
+the elapsed-bearing `shell_running_line`/`running_command_lines` are
+`src/ui/live.rs`-only), every event source already schedules its own frame, and
+the chain re-seeds on the first draw after the return. What pauses is the agent
+roster's runtime/linger bookkeeping — recomputed from absolute `Instant`s, so
+deferred rather than lost, and invisible under an overlay anyway. Measured with `tmux pipe-pane` over three seconds of an active turn:
 **316 KB → 0 B** for Ctrl+D, **389 KB → 0 B** for Ctrl+O, the inline control
 unchanged at 4.5 KB. Ctrl+D is provably still (its `ContextSig` carries no
 streaming state, so it is zero for the whole turn); a scrolled-back Ctrl+O
@@ -1383,7 +1391,7 @@ of bug:
    them **with** the painted frame as one write — no blank alt screen for a
    kitty cursor-trail to streak across, `docs/tool-view-performance.md`).
    **The overlay paints diffed, like the inline region** — `draw_overlay`
-   emits only `overlay_updates`' cells and an unchanged frame emits *nothing*,
+   emits only `overlay_paint`'s cells and an unchanged frame emits *nothing*,
    which is what keeps a mouse selection alive there while a turn streams
    (`docs/overlay-repaint.md`); the draw tick correspondingly stops re-arming
    the status animation's clock chain under an overlay, where nothing it

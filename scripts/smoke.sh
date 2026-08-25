@@ -8575,6 +8575,51 @@ if ! printf '%s' "$live_b" | grep -qF "$EXPECT_REPLY"; then
 	echo "FAIL: Phase 94 — the streamed reply never reached the open transcript" >&2
 	status=1
 fi
+# …and the OTHER half, which the byte count cannot see: that the incremental
+# paints leave the *right* cells on screen. Let the whole turn settle under the
+# overlay (hundreds of diff frames), scroll away from the tail and back (more
+# diffs), then resize away and straight back — a burst whose net size is the one
+# the baseline records, which is why `resized` drops that baseline outright
+# instead of trusting the area check (whether the two events actually coalesce
+# into one frame is up to the scheduler, so this is a best-effort reproduction
+# and a permanent guard on the post-resize repaint path either way). Finally
+# close and REOPEN: `enter_overlay` clears the alternate screen, so that frame
+# is a pure full repaint of the same content at the same scroll seat (End
+# re-engaged tail-follow, and an open re-arms it). The two screens must match
+# exactly — any mismatch is a cell the diff path left stale.
+for _ in $(seq 1 120); do # let the turn finish under the overlay
+	if tmux capture-pane -t "$S94" -p | grep -qF "$SETTLED_REPLY"; then
+		break
+	fi
+	sleep 0.15
+done
+sleep 1.0 # StreamDone + the Done-for summary land under it
+for _ in 1 2 3; do
+	tmux send-keys -t "$S94" PageUp
+	sleep 0.15
+done
+tmux send-keys -t "$S94" End
+sleep 0.5
+tmux resize-window -t "$S94" -x 88 -y 26 2>/dev/null
+tmux resize-window -t "$S94" -x 100 -y 30 2>/dev/null
+sleep 0.8
+overlay_incremental="$(tmux capture-pane -t "$S94" -p)"
+tmux send-keys -t "$S94" -l "q" # close (q, not Esc: idle Esc arms the backtrack)
+sleep 0.7
+tmux send-keys -t "$S94" C-o # …and reopen: a clear + full repaint
+sleep 0.9
+overlay_full="$(tmux capture-pane -t "$S94" -p)"
+if ! printf '%s' "$overlay_full" | grep -qF "T R A N S C R I P T"; then
+	echo "FAIL: Phase 94 — the transcript did not reopen, so the stale-cell check proves nothing" >&2
+	status=1
+elif [ "$overlay_incremental" != "$overlay_full" ]; then
+	echo "FAIL: Phase 94 — the incrementally-painted overlay differs from a full repaint of the same content: the diff left a stale cell on the alternate screen" >&2
+	echo "---- incrementally painted ----" >&2
+	printf '%s\n' "$overlay_incremental" >&2
+	echo "---- full repaint ----" >&2
+	printf '%s\n' "$overlay_full" >&2
+	status=1
+fi
 # …and the clock chain the draw tick stopped re-arming must come BACK on the
 # return: it seeds from the Submit keypress and would otherwise stay broken for
 # the rest of the turn, freezing the inline timer and the spinner's sweep. Round

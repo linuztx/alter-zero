@@ -52,46 +52,87 @@ Two changes, both small, in the two places named above.
 
 ### 1. The overlay diffs, and an unchanged frame writes nothing
 
-`term::overlay_updates` — pure, unit-tested — answers "what must actually go on
-the wire?" given the frame already on the alternate screen and the one being
-drawn:
+**This change alone is the fix.** Everything in §2 is a separate saving; if you
+only ever read one section, read this one.
 
-- `None` — no usable baseline, paint every cell (the first frame after
-  `enter_overlay`'s clear, a resize, or a write that failed part-way);
-- `Some(updates)` — the cell diff;
-- `Some(empty)` — **nothing changed**.
+`term::overlay_paint` — pure, unit-tested — turns the frame already on the
+alternate screen and the one being drawn into a verdict:
 
-`draw_overlay` returns immediately on the empty case, before it queues anything:
-no cells, and no `BeginSynchronizedUpdate` / `Hide` / cursor-move escapes either.
-A still page is silence on the wire, which is the whole point — a terminal
-holding a selection over it sees no write at all.
+- `Unchanged` — nothing moved;
+- `Diff(updates)` — only these cells differ;
+- `Full` — no comparable frame on screen, paint every cell.
+
+`draw_overlay` returns on `Unchanged` **before it touches the backend at all**:
+no cells, and no `BeginSynchronizedUpdate` / `Hide` / cursor-move escapes
+either. A still page is silence on the wire, which is the whole point — a
+terminal holding a selection over it sees no write.
 
 The baseline lives in its own field, `InlineViewport::overlay_prev`. It cannot
 share `prev`: the two describe different screens at different areas, and the
-overlay entry/exit paths clear `prev` by design. It is dropped on every entry
-(the queued `Clear(All)` blanks the screen), every exit (the screen is gone),
-and any frame whose write failed part-way (the screen is then in a state no
-buffer describes — better to repaint in full than to diff against a fiction).
+overlay entry/exit paths clear `prev` by design. It is dropped whenever the
+alternate screen stops being what it records:
+
+- `enter_overlay` — the queued `Clear(All)` blanks the screen;
+- `exit_overlay` — the screen is gone, and a re-entry clears it anyway;
+- `resized` — the emulator reflowed it out from under us;
+- a frame whose write failed part-way — the screen is then in a state no buffer
+  describes, so repaint in full rather than diff against a fiction.
+
+The `resized` drop is not redundant with `overlay_paint`'s area check, and it is
+deliberately unconditional (`changed` or not). A resize burst can coalesce into
+a single frame — `on_resize` asks for one, but the scheduler's floor is 8 ms —
+so the net size can land back on exactly the area the baseline records while the
+terminal clipped and regrew the alternate screen in between. Diffing against
+that baseline leaves the vacated rows stale until the overlay is closed and
+reopened. Dropping it costs one full repaint on a resize, which is happening
+anyway.
 
 `Buffer::diff` skips wide-glyph shadow cells itself, which is the same rule
 `visible_cells` enforces on the full-paint path, so the diff path inherits the
 table-tearing fix rather than reopening it (`docs/table-streaming.md` *Wide
 glyphs*).
 
-### 2. The clock chain stops under an overlay
+### 2. The clock chain stops under an overlay — a CPU saving, not part of the fix
+
+Be clear about what this is and is not. With §1 in place a re-armed frame over
+an unchanged page already writes nothing, so **this buys no additional
+copyability at all**. What it buys is the work: without it the app still
+*builds* that frame 31 times a second for a screen nobody is looking at — a
+full-screen `Buffer` allocation, the render closure, a diff over every cell, and
+on the Ctrl+D classifier page a backend mutex and a fresh `String` render — to
+conclude `Unchanged` every single time.
 
 `App::wants_animation_frames` — pure, unit-tested — is the draw tick's re-arm
-condition, and it is now `false` whenever `View::is_overlay()`. Nothing goes
-stale: every event source (`stream`, `agent`, `background`, `mcp`, the workers,
-every keypress) already ends in its own `schedule_frame()`, so a page that has
-something new to show still gets a frame the moment it does. The chain re-seeds
-on the first draw after the return.
+condition, and it is now `false` whenever `View::is_overlay()`.
 
-Note the ordering: with (1) in place, (2) is not what makes copying work — a
-re-armed frame over an unchanged page now writes nothing anyway. (2) is what
-stops the app *building* that frame: a full-screen `Buffer`, the render closure,
-and on the Ctrl+D classifier page a backend mutex and a fresh `String` render,
-31 times a second for a screen nobody is looking at.
+Nothing an overlay shows goes stale, because nothing an overlay shows is
+time-driven. That is not an accident of the current code, it is stated in it:
+`tool_full_body` opens with `let pulse: Option<Duration> = None;` over a comment
+explaining that animating in the transcript "would either not move or cost a
+full-tail re-render every 32 ms", `TranscriptSig` carries no clock field, and
+the two renderers that *do* take an elapsed — `shell_running_line` and
+`running_command_lines` — are called only from `src/ui/live.rs`, the inline
+strip. Content changes still arrive as events, and every event source
+(`stream`, `agent`, `background`, `mcp`, the workers, every keypress) ends in
+its own `schedule_frame()`. The chain re-seeds on the first draw after the
+return, because `after_key` → `schedule_for_key` fires on the very keypress
+that closes the overlay.
+
+What *does* pause, honestly: the agent roster's runtime counters and its linger
+sweep (`tick_agent_roster`), which only the draw tick drives. Both are derived
+from absolute `Instant`s and recomputed rather than accumulated — the runtime is
+`started.elapsed()`, the sweep compares stored deadlines against `now` — so the
+first frame after the return produces exactly the values it would have anyway.
+They are also in the footer, invisible under an overlay. Nothing is lost, only
+deferred while it cannot be seen. (Toast expiry is *not* affected:
+`expire_toast` schedules its own frame independently of this predicate.)
+
+The real cost is a coupling: if a clock is ever added to something an overlay
+renders, it will freeze here rather than tick. The transcript is cached behind a
+clock-free signature so a change there would have to defeat `TranscriptSig`
+first and would be noticed, but `agent_transcript_lines` is built fresh per draw
+and has no such tripwire. Anyone adding a live counter to an overlay body needs
+to revisit this predicate.
 
 ## What it measures
 
@@ -151,6 +192,24 @@ line; it is a new *row* that shifts the window and costs the selection. Scroll
 up to read back — what the footer's `↑/↓ to scroll` line already invites — and
 the page holds still.
 
+## What Phase 94 checks
+
+Two different failures, neither of which subsumes the other:
+
+- **Did it actually go quiet?** `tmux pipe-pane` captures every byte the app
+  writes to the pane over two seconds of a turn held active by a 30-second
+  `!sleep`. Ctrl+O and Ctrl+D must write exactly zero — and the inline control
+  is asserted to write *something* first, so a zero can never come from a broken
+  meter. Then that the clock chain re-seeds after the return, since a chain left
+  broken would freeze the inline timer for the rest of the turn.
+- **Did it paint the right cells?** Bytes say nothing about correctness. So a
+  whole turn streams under the overlay (hundreds of diff frames), the view
+  scrolls away from the tail and back, resizes away and straight back, and then
+  the overlay is closed and reopened — `enter_overlay` clears the alternate
+  screen, so that frame is a pure full repaint of the same content at the same
+  seat. The two screens must be identical. A diff that dropped an update, or
+  left a cell stale after a resize, fails here and nowhere else.
+
 ## Invariants this touches
 
 Invariant 4 (`CLAUDE.md`) is unchanged in substance and slightly stronger in
@@ -164,9 +223,9 @@ screen finally getting the rule `paint_frame` has always followed inline.
 
 | piece | file | kind |
 | --- | --- | --- |
-| `overlay_updates` — diff or full paint | `src/term.rs` | **pure** |
-| `overlay_prev` baseline, `draw_overlay` | `src/term.rs` | boundary |
+| `overlay_paint` → `OverlayPaint` | `src/term.rs` | **pure** |
+| `overlay_prev` baseline, `draw_overlay`, `resized` | `src/term.rs` | boundary |
 | `View::is_overlay` | `src/app/types.rs` | **pure** |
 | `App::wants_animation_frames` | `src/app/views.rs` | **pure** |
 | the draw tick's re-arm | `src/tui/view.rs` | boundary |
-| byte-level proof | `scripts/smoke.sh` Phase 94 | smoke |
+| byte-level proof + stale-cell check | `scripts/smoke.sh` Phase 94 | smoke |
