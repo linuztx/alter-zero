@@ -12,6 +12,7 @@ fn request(id: &str, kind: PermissionKind, target: &str) -> PermissionRequest {
         body: String::new(),
         detail: None,
         agent: None,
+        agent_id: None,
     }
 }
 

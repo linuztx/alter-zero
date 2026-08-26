@@ -129,6 +129,17 @@ pub struct PermissionRequest {
     /// The subagent type that asked (`general-purpose`), so the title can say
     /// `· from the general-purpose agent`. `None` for the main agent.
     pub agent: Option<String>,
+    /// **Which** subagent asked — its roster id, stamped by the boundary that
+    /// routes the request ([`crate::agents::AgentEvent`] carries it), `None`
+    /// for the main turn's own calls.
+    ///
+    /// The type above names the asker in the title; this identifies it. The
+    /// prompt's context cells are "what raised this, on the screen you are
+    /// looking at" (`docs/permissions.md`), and inside an agent session view
+    /// that screen is one conversation among several running at once — so
+    /// only an id can tell the viewed agent's own `⎿ Waiting…` batch from
+    /// another agent's, or from the main turn's. Two agents can share a type.
+    pub agent_id: Option<String>,
 }
 
 /// What the user chose, handed back to the blocked tool thread. Esc is *not*
@@ -1052,6 +1063,7 @@ mod tests {
             body: String::new(),
             detail: None,
             agent: None,
+            agent_id: None,
         }
     }
 

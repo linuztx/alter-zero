@@ -12,6 +12,7 @@
 //! See `docs/markdown.md` and CLAUDE.md invariant 2.
 
 use super::*;
+use crate::ui::live::preview_lines;
 
 /// xorshift64* — a deterministic, dependency-free PRNG so every failure
 /// reproduces from the printed seed.
@@ -133,10 +134,33 @@ fn hostile_doc(rng: &mut Rng) -> String {
     doc
 }
 
-fn styled(l: &Line) -> Vec<(String, Option<Color>, Modifier)> {
+/// One rendered row, compared by **everything the terminal would show**: the
+/// text, both colours, the modifiers — and `underline_color`, which is not
+/// decoration here but the **OSC 8 link carrier** (`ui::inline` stamps the
+/// interned id there and `term::draw_cells` brackets the marked run —
+/// `docs/links.md`). A comparator blind to it would let a batch-vs-streaming
+/// divergence in link interning pass unseen: the words would match while one
+/// render linked them and the other did not.
+type Row = (
+    String,
+    Option<Color>,
+    Modifier,
+    Option<Color>,
+    Option<Color>,
+);
+
+fn styled(l: &Line) -> Vec<Row> {
     l.spans
         .iter()
-        .map(|s| (s.content.to_string(), s.style.fg, s.style.add_modifier))
+        .map(|s| {
+            (
+                s.content.to_string(),
+                s.style.fg,
+                s.style.add_modifier,
+                s.style.bg,
+                s.style.underline_color,
+            )
+        })
         .collect()
 }
 
@@ -149,13 +173,12 @@ fn styled(l: &Line) -> Vec<(String, Option<Color>, Modifier)> {
 /// above it are on screen nowhere), and commits + `finish` reconstruct the
 /// whole reply. Panics name the seed/doc so failures repro.
 fn assert_stream_matches_batch(full: &str, width: u16, ctx: &str) {
-    let expected: Vec<Vec<(String, Option<Color>, Modifier)>> =
-        message_lines(Role::Assistant, full, width)
-            .iter()
-            .map(styled)
-            .collect();
+    let expected: Vec<Vec<Row>> = message_lines(Role::Assistant, full, width)
+        .iter()
+        .map(styled)
+        .collect();
     let mut render = StreamRender::new();
-    let mut committed: Vec<Vec<(String, Option<Color>, Modifier)>> = Vec::new();
+    let mut committed: Vec<Vec<Row>> = Vec::new();
     for end in 1..=full.len() {
         if !full.is_char_boundary(end) {
             continue;
@@ -166,12 +189,11 @@ fn assert_stream_matches_batch(full: &str, width: u16, ctx: &str) {
             committed.len() <= expected.len() && committed[..] == expected[..committed.len()],
             "{ctx}: a committed row diverged at {prefix:?} (w={width})\nfull doc: {full:?}\n got {committed:?}\nwant a prefix of {expected:?}"
         );
-        let batch_prefix: Vec<Vec<(String, Option<Color>, Modifier)>> =
-            message_lines(Role::Assistant, prefix, width)
-                .iter()
-                .map(styled)
-                .collect();
-        let got_preview: Vec<Vec<(String, Option<Color>, Modifier)>> = render
+        let batch_prefix: Vec<Vec<Row>> = message_lines(Role::Assistant, prefix, width)
+            .iter()
+            .map(styled)
+            .collect();
+        let got_preview: Vec<Vec<Row>> = render
             .preview(prefix, width, usize::MAX)
             .iter()
             .map(styled)
@@ -311,16 +333,14 @@ fn crlf_reply_renders_like_its_lf_twin() {
     for lf in lf_docs {
         let crlf = lf.replace('\n', "\r\n");
         for width in [12u16, 40] {
-            let want: Vec<Vec<(String, Option<Color>, Modifier)>> =
-                message_lines(Role::Assistant, lf, width)
-                    .iter()
-                    .map(styled)
-                    .collect();
-            let got: Vec<Vec<(String, Option<Color>, Modifier)>> =
-                message_lines(Role::Assistant, &crlf, width)
-                    .iter()
-                    .map(styled)
-                    .collect();
+            let want: Vec<Vec<Row>> = message_lines(Role::Assistant, lf, width)
+                .iter()
+                .map(styled)
+                .collect();
+            let got: Vec<Vec<Row>> = message_lines(Role::Assistant, &crlf, width)
+                .iter()
+                .map(styled)
+                .collect();
             assert_eq!(
                 got, want,
                 "CRLF twin diverged from LF for {lf:?} (w={width})"
@@ -787,4 +807,103 @@ fn the_strip_redraw_stays_inside_a_frame_on_a_huge_prose_line() {
         "a single strip redraw took {worst:?} — the draw tick would visibly \
          stall the status animation"
     );
+}
+
+// ===== The agent session view's frontier (docs/agent-view-streaming.md) =====
+
+/// The agent-view twin of [`assert_stream_matches_batch`]: stream `full` into
+/// an `AgentRun` whose session view is open, committing through the render
+/// that view commits with, and assert `committed ++ strip == the reply so far`
+/// at every character prefix.
+///
+/// The view keeps its own copy of the main strip's branches, and the copy is
+/// what fell behind — a subagent's forming table lived on screen NOWHERE
+/// (`docs/agent-view-streaming.md`). The contract is the main one's
+/// (CLAUDE.md invariant 2), so it earns the same generated fragment soup, run
+/// through the real `preview_lines` dispatch (which routes on
+/// `App::viewed_agent`).
+fn assert_agent_view_matches_batch(full: &str, width: u16, ctx: &str) {
+    let mut app = App::new();
+    app.begin_stream();
+    app.start_agent_group(false, &[spec("a1", "Hostile soup", false)]);
+    app.open_agent_view("a1");
+    let mut render = StreamRender::new();
+    let mut committed: Vec<Vec<Row>> = Vec::new();
+    let mut sent = 0usize;
+    for end in 1..=full.len() {
+        if !full.is_char_boundary(end) {
+            continue;
+        }
+        app.apply_agent_event(
+            "a1",
+            &crate::stream::StreamEvent::Chunk(full[sent..end].to_string()),
+        );
+        sent = end;
+        let prefix = &full[..end];
+        committed.extend(render.commit(prefix, width).iter().map(styled));
+        let preview = render.preview(prefix, width, usize::MAX);
+        let mut on_screen = committed.clone();
+        on_screen.extend(
+            preview_lines(&app, width, Some(&preview))
+                .iter()
+                .map(styled),
+        );
+        let batch: Vec<Vec<Row>> = message_lines(Role::Assistant, prefix, width)
+            .iter()
+            .map(styled)
+            .collect();
+        assert_eq!(
+            on_screen, batch,
+            "{ctx}: the agent view's scrollback + strip must be its reply so far at {prefix:?} (w={width})"
+        );
+    }
+    committed.extend(render.finish(full, width).iter().map(styled));
+    let expected: Vec<Vec<Row>> = message_lines(Role::Assistant, full, width)
+        .iter()
+        .map(styled)
+        .collect();
+    assert_eq!(
+        committed, expected,
+        "{ctx}: reconstruct {full:?} (w={width})"
+    );
+}
+
+#[test]
+fn fuzz_the_agent_view_frontier_agrees_with_batch_on_hostile_soup() {
+    let mut rng = Rng(0x5EED_A9E7_1234_5678);
+    for doc in 0..40 {
+        let full = hostile_doc(&mut rng);
+        for &width in &[20u16, 44, 80] {
+            assert_agent_view_matches_batch(&full, width, &format!("agent doc {doc}"));
+        }
+    }
+}
+
+#[test]
+fn an_agent_views_live_tool_cell_outranks_its_streaming_frontier() {
+    // The strip's branch order is the main one's: what is genuinely executing
+    // is what the user waits on. A subagent that streamed text and then
+    // announced a batch previews the batch — and the text it withheld is not
+    // lost, it was finalised at the flush point the fold declares
+    // (`AgentRun::flushes_segment`).
+    let mut app = App::new();
+    app.begin_stream();
+    app.start_agent_group(false, &[spec("a1", "Mixed round", false)]);
+    app.apply_agent_event(
+        "a1",
+        &crate::stream::StreamEvent::Chunk("thinking out loud".to_string()),
+    );
+    app.apply_agent_event(
+        "a1",
+        &crate::stream::StreamEvent::ToolBatch(vec![crate::stream::ToolCallSummary {
+            name: "Bash".to_string(),
+            args: "ls".to_string(),
+        }]),
+    );
+    app.open_agent_view("a1");
+    let rows: Vec<String> = preview_lines(&app, 60, None).iter().map(plain).collect();
+    assert_eq!(rows[0], "● Bash(ls)", "{rows:?}");
+    assert_eq!(rows[1], "  ⎿  Waiting…");
+    let run = app.agent("a1").expect("the roster entry");
+    assert!(run.streaming.is_none(), "the segment was finalised");
 }

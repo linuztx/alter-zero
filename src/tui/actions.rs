@@ -290,9 +290,17 @@ impl Session<'_> {
         // thought (or the display off) it is a no-op and the undo path is
         // untouched (docs/thinking-stream.md).
         self.settle_reasoning();
+        // The interrupt takes a live foreground agent group down with it, and
+        // a member may be the conversation on screen — the `Error` arm's rule
+        // (`docs/agent-view-streaming.md`). A no-op with no agent view open,
+        // which is the ordinary case: Esc inside one leaves the view instead.
+        let width = self.term.screen().width;
+        let owed = self.begin_turn_agent_settle(width);
         // Interrupt only arises in the conversation view (overlay Esc returns
         // instead), so nothing here touches the alternate screen.
-        match self.app.interrupt_turn() {
+        let interrupted = self.app.interrupt_turn();
+        self.finish_turn_agent_settle(owed, width);
+        match interrupted {
             Some(alter_zero::app::InterruptedTurn::Undone) => {
                 // Nothing had streamed and nothing was queued: the submission is
                 // undone — interrupt_turn put the message back in the composer

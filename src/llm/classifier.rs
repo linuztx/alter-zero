@@ -434,6 +434,7 @@ mod tests {
             body: body.to_string(),
             detail: detail.map(str::to_string),
             agent: None,
+            agent_id: None,
         }
     }
 
@@ -475,6 +476,7 @@ mod tests {
             body: String::new(),
             detail: Some("List files".to_string()),
             agent: None,
+            agent_id: None,
         };
         assert_eq!(
             classifier_request_prompt(&request, "/p"),
@@ -731,6 +733,7 @@ mod tests {
             body: String::new(),
             detail: Some("List files".to_string()),
             agent: None,
+            agent_id: None,
         };
         let mut context = ctx("Improve the project");
         context.record_call("read", r#"{"path":"/p/a.rs"}"#);

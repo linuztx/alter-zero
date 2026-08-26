@@ -471,7 +471,17 @@ call, the main turn's own under a subagent's request, keeps its `⎿ Running…`
 at rest), and a subagent's request keeps the whole live
 `● Running 3 agents…` tree, with `App::command_elapsed` reading `None`
 meanwhile so the delayed Ctrl+B hint never advertises a key the modal
-swallows — but the context is **budgeted**: a big parallel batch's screenful
+swallows — *on the main screen*: **inside a subagent session view the context
+is that agent's own queue**, its `● Bash(ls -la)` over `⎿ Waiting…` with every
+parallel sibling behind it, the same `queue_chunks` walk the main branch uses,
+since the lead's `● Agent({description})` cell and the main turn's queue belong
+to a screen the user is not looking at (the reported "the subagent TUI shows
+the Agent cell" bug — `docs/agent-view-streaming.md`); telling the two apart
+needs `PermissionRequest::agent_id`, **which** run asked, stamped by
+`tui::agent`'s handler (the type on `agent` names the asker in the title, but
+two agents share one), and a request from another conversation keeps no
+context at all rather than borrowing this one's — but the context is
+**budgeted**: a big parallel batch's screenful
 of `⎿ Waiting…` siblings used to squeeze the body's budget to zero (a prompt
 with no content) and push the options off the bottom, so `permission_lines`
 reserves its fixed rows plus a body floor (`PERMISSION_MIN_BODY_ROWS`, the

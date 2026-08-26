@@ -244,6 +244,7 @@ fn live_deepwiki_tool_descriptions_drive_the_permission_prompt() {
         body: mcp::pretty_args(&format!(r#"{{"repoName":"{REPO}"}}"#)),
         detail: Some(description.clone()),
         agent: None,
+        agent_id: None,
     };
     let mut app = App::new();
     app.set_session_info("live", "~/Codes/tests");

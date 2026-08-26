@@ -46,7 +46,13 @@ impl Session<'_> {
         // roster's: raise the same shared prompt the main turn does, and stop —
         // the agent's own state is untouched while it waits
         // (docs/permissions.md).
-        if let StreamEvent::Permission(request) = event {
+        if let StreamEvent::Permission(mut request) = event {
+            // Stamp **which** agent asked. The backend fills the type (the
+            // title's `· from the general-purpose agent`); only this channel
+            // knows the id, and the prompt's context cells need it to tell
+            // the viewed agent's own batch from another conversation's
+            // (`docs/permissions.md`).
+            request.agent_id = Some(id.to_string());
             self.app.open_permission(request);
             return;
         }
@@ -89,26 +95,26 @@ impl Session<'_> {
         // before a tool cell / the live thinking block / the end of the run,
         // exactly like the main loop's flush points. Committed BEFORE the fold
         // (the fold consumes the buffer).
+        //
+        // **Which events those are is the fold's own answer**
+        // ([`AgentRun::flushes_segment`]), not a list kept here: the
+        // hand-kept one drifted, missing `HookNote` — whose arm flushes the
+        // buffer — so a `SubagentStop` continuation dropped the reply's
+        // withheld tail from the screen *and* left `agent_render` holding a
+        // prefix of a buffer that no longer existed, which the continuation's
+        // next `Chunk` then committed against
+        // (`docs/agent-view-streaming.md`). `ThinkingStart` stays separate
+        // (`opening`): it flushes only when the display is on, and that gate
+        // is the boundary's.
         if viewing
-            && (opening
-                || matches!(
-                    event,
-                    StreamEvent::ToolBatch(_)
-                        | StreamEvent::ToolStart { .. }
-                        | StreamEvent::Steered { .. }
-                        | StreamEvent::StreamDone
-                        | StreamEvent::Error(_)
-                ))
+            && (opening || alter_zero::agents::AgentRun::flushes_segment(&event))
             && let Some(text) = self
                 .app
                 .viewed_agent()
                 .and_then(|run| run.streaming.clone())
                 .filter(|text| !text.is_empty())
         {
-            self.term
-                .insert_before(self.agent_render.finish(&text, width));
-            self.term.insert_before(vec![Line::default()]);
-            self.agent_render.reset();
+            self.flush_agent_segment(&text, width);
         }
         // A phase opening records the flushed segment on the agent's own
         // transcript and opens the buffer — the `ThinkingStart` dance, so the
@@ -141,6 +147,107 @@ impl Session<'_> {
             self.agent_clocks.remove(id);
             self.agent_expiry
                 .insert(id.to_string(), Instant::now() + linger);
+        }
+    }
+
+    /// Commit the run of streamed text `text` finalises — the tail
+    /// `agent_render` withheld, then the spacer — and reset the render so the
+    /// next segment starts clean.
+    ///
+    /// One helper for both kinds of segment boundary: the event fold's flush
+    /// block above, and the **local** settles that carry no event at all
+    /// ([`Session::begin_local_agent_settle`], which finalise the same buffer
+    /// through `AgentRun::interrupt`). Those used to skip it entirely, so a
+    /// settled agent's partial reply lost its withheld tail from the view's
+    /// scrollback and left the render stale for the chat continuation that
+    /// follows (`docs/agent-view-streaming.md`).
+    fn flush_agent_segment(&mut self, text: &str, width: u16) {
+        self.term
+            .insert_before(self.agent_render.finish(text, width));
+        self.term.insert_before(vec![Line::default()]);
+        self.agent_render.reset();
+    }
+
+    /// The pre-fold work the session view owes a **local** settle of `id` —
+    /// one that carries no `StreamEvent`, so `on_agent_event`'s flush block
+    /// never runs. Returns the agent's transcript length, for the
+    /// [`commit_agent_tail`](Session::commit_agent_tail) that must follow the
+    /// settle itself.
+    ///
+    /// `AgentRun::interrupt` finalises the same three things a settling event
+    /// does — the open thought, the run of streamed text, the running call —
+    /// and the first two have committers of their own that a bare
+    /// `commit_agent_tail` never triggers. Without this the settled thought
+    /// and the partial reply's withheld tail never reached the screen, and
+    /// `agent_render` stayed holding a prefix of a buffer `flush_segment`
+    /// had already taken — which the next chat continuation's `Chunk` then
+    /// committed against (`docs/agent-view-streaming.md`).
+    ///
+    /// **Three doors reach that settle**, and they all come through here: the
+    /// roster's `x` ([`Session::stop_agent`]), and the turn-level resolutions
+    /// that take a foreground group down with them —
+    /// `App::resolve_live_agent_group`, reached from the backend `Error` arm
+    /// and the Esc interrupt.
+    fn begin_local_agent_settle(&mut self, id: &str, width: u16) -> usize {
+        let on_screen = self.viewing_agent(id);
+        self.settle_agent_reasoning(id, on_screen, width);
+        if on_screen
+            && let Some(text) = self
+                .app
+                .agent(id)
+                .and_then(|run| run.streaming.clone())
+                .filter(|text| !text.is_empty())
+        {
+            self.flush_agent_segment(&text, width);
+        }
+        self.app.agent(id).map_or(0, |run| run.history.len())
+    }
+
+    /// The viewed agent when the turn is about to settle it *locally* — it is
+    /// a member of the live foreground group `App::resolve_live_agent_group`
+    /// interrupts on a backend error or an Esc. `None` whenever no agent view
+    /// is open, the viewed agent is not in that group, or it has already
+    /// settled: nothing is being taken from under the screen, so the view
+    /// owes nothing.
+    fn viewed_agent_losing_its_turn(&self) -> Option<String> {
+        // Only a turn that is actually in flight reaches
+        // `App::resolve_live_agent_group` — both `fail_stream` and
+        // `interrupt_turn` return early otherwise, and a pre-fold flush with
+        // no settle behind it would reset the render while the buffer still
+        // held its text, re-committing the whole reply on the next chunk.
+        if !self.app.is_streaming() && !self.app.turn_active() {
+            return None;
+        }
+        let id = self.app.agent_view.clone()?;
+        let live = self.app.agent_group()?;
+        if !live.ids.contains(&id) {
+            return None;
+        }
+        self.app
+            .agent(&id)
+            .filter(|run| !run.status.is_final())
+            .map(|_| id)
+    }
+
+    /// [`begin_local_agent_settle`](Session::begin_local_agent_settle) for the
+    /// viewed agent when a turn-level resolution is about to take its group
+    /// down — the backend `Error` arm and the Esc interrupt. Returns what the
+    /// matching [`Session::finish_turn_agent_settle`] needs, or `None` when
+    /// nothing on screen is being settled.
+    pub(crate) fn begin_turn_agent_settle(&mut self, width: u16) -> Option<(String, usize)> {
+        let id = self.viewed_agent_losing_its_turn()?;
+        let recorded = self.begin_local_agent_settle(&id, width);
+        Some((id, recorded))
+    }
+
+    /// Commit the cell the local settle recorded on the viewed agent's own
+    /// transcript — the second half of [`Session::begin_turn_agent_settle`],
+    /// run after the resolution itself.
+    pub(crate) fn finish_turn_agent_settle(&mut self, owed: Option<(String, usize)>, width: u16) {
+        if let Some((id, recorded)) = owed
+            && self.viewing_agent(&id)
+        {
+            self.commit_agent_tail(recorded, width);
         }
     }
 
@@ -340,8 +447,8 @@ impl Session<'_> {
         // stop recorded, exactly as the fold does
         // (`docs/agent-view-streaming.md`).
         let width = self.term.screen().width;
-        let recorded = self.app.agent(id).map_or(0, |run| run.history.len());
         let on_screen = self.viewing_agent(id);
+        let recorded = self.begin_local_agent_settle(id, width);
         match self.app.stop_agent(id) {
             Some(AgentStop::Stopped(notice)) => {
                 if on_screen {
@@ -349,9 +456,9 @@ impl Session<'_> {
                 }
                 let _ = self.agent_registry.kill(id);
                 self.agent_clocks.remove(id);
-                // The stop settled any open thought through
-                // `AgentRun::interrupt` (from the injected elapsed) — drop its
-                // clock so the roster tick stops re-arming the phase.
+                // The open thought settled above, through the same helper the
+                // event path uses — this only makes sure no clock survives to
+                // re-arm the phase on the next roster tick.
                 self.agent_thinking_clocks.remove(id);
                 let linger = self.app.agent(id).map_or(AGENT_LINGER, |run| run.linger());
                 self.agent_expiry

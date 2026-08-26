@@ -18,6 +18,7 @@ fn request(kind: PermissionKind, target: &str, body: &str) -> PermissionRequest 
         body: body.to_string(),
         detail: None,
         agent: None,
+        agent_id: None,
     }
 }
 
@@ -1034,5 +1035,107 @@ fn a_pathological_body_still_caps_at_the_ceiling() {
     assert!(
         lines.iter().any(|l| l.contains("… +50 lines")),
         "the ceiling's tail counts the excess: {lines:?}"
+    );
+}
+
+// --- inside an agent session view the prompt is about THAT conversation ---
+
+/// A lead turn that launched one foreground subagent, the agent's own round
+/// announced (`calls`, the front one the asked-about `Bash`), and the user
+/// inside that agent's session view — no prompt open yet.
+fn agent_view(calls: &[(&str, &str)]) -> App {
+    let mut app = App::new();
+    app.begin_stream();
+    app.start_agent_group(
+        false,
+        &[AgentSpec {
+            id: "a1".to_string(),
+            description: "Run ls -la via subagent".to_string(),
+            agent_type: "general-purpose".to_string(),
+            prompt: "p".to_string(),
+            background: false,
+        }],
+    );
+    app.apply_agent_event(
+        "a1",
+        &crate::stream::StreamEvent::ToolBatch(
+            calls
+                .iter()
+                .map(|(name, args)| ToolCallSummary {
+                    name: (*name).to_string(),
+                    args: (*args).to_string(),
+                })
+                .collect(),
+        ),
+    );
+    app.open_agent_view("a1");
+    app
+}
+
+/// [`agent_view`] with the agent's own prompt open for its front call — the
+/// request stamped with **which** agent asked, exactly as
+/// `tui::agent::Session::on_agent_event` stamps it at the boundary.
+fn agent_view_prompt(calls: &[(&str, &str)]) -> App {
+    let mut app = agent_view(calls);
+    let mut req = request(PermissionKind::Bash, calls[0].1, "");
+    req.agent = Some("general-purpose".to_string());
+    req.agent_id = Some("a1".to_string());
+    app.open_permission(req);
+    app
+}
+
+#[test]
+fn an_agent_views_prompt_shows_the_agents_own_call_not_the_lead_cell() {
+    // The reported bug: inside the subagent's session view the prompt led
+    // with the LEAD's `● Agent(Run ls -la via subagent) / ⎿ Working` cell —
+    // the main screen's context, on a screen showing a different
+    // conversation. The question is about the agent's own `Bash(ls -la)`,
+    // which is what its view has on screen, so that is the context.
+    let app = agent_view_prompt(&[("Bash", "ls -la")]);
+    let lines = rows(&app, 70, 40);
+    assert_eq!(lines[0], "● Bash(ls -la)", "{lines:?}");
+    assert_eq!(lines[1], "  ⎿  Waiting…", "{lines:?}");
+    assert!(
+        !lines.iter().any(|l| l.contains("Agent(")),
+        "the lead's agent cell belongs to the main screen: {lines:?}"
+    );
+}
+
+#[test]
+fn an_agent_views_prompt_shows_every_waiting_sibling_of_its_batch() {
+    // Parallel calls inside a subagent read exactly like the main view's
+    // batch: the asked-about call over each `⎿ Waiting…` sibling
+    // (docs/parallel-tools.md).
+    let app = agent_view_prompt(&[
+        ("Bash", "ls -la"),
+        ("Read", "README.md"),
+        ("Write", "notes.md"),
+    ]);
+    let lines = rows(&app, 70, 44);
+    assert_eq!(lines[0], "● Bash(ls -la)", "{lines:?}");
+    assert_eq!(lines[1], "  ⎿  Waiting…");
+    assert_eq!(lines[2], "");
+    assert_eq!(lines[3], "● Read(README.md)", "{lines:?}");
+    assert_eq!(lines[4], "  ⎿  Waiting…");
+    assert_eq!(lines[5], "");
+    assert_eq!(lines[6], "● Write(notes.md)", "{lines:?}");
+    assert_eq!(lines[7], "  ⎿  Waiting…");
+}
+
+#[test]
+fn an_agent_views_prompt_keeps_no_context_for_another_conversations_request() {
+    // The main turn — or a *sibling* agent — can raise a prompt while the
+    // user is inside agent `a1`'s view. The cells that raised it are on a
+    // screen the user is not looking at, and a context cell out of nowhere is
+    // exactly what the context exists not to be, so the prompt opens with its
+    // own rule (the idle shape) rather than borrowing `a1`'s waiting batch.
+    let mut app = agent_view(&[("Bash", "ls -la")]);
+    // The main turn's own call — no agent stamp.
+    app.open_permission(request(PermissionKind::Bash, "rm -rf build", ""));
+    let lines = rows(&app, 70, 40);
+    assert_eq!(lines[0], "─".repeat(70), "no context rows: {lines:?}");
+    assert!(
+        !lines.iter().any(|l| l.contains("ls -la")),
+        "the viewed agent's own batch is not the answer to this: {lines:?}"
     );
 }

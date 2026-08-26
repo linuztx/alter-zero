@@ -380,6 +380,7 @@ fn an_ask_arriving_while_a_permission_prompt_is_open_queues_behind_it() {
         body: String::new(),
         detail: None,
         agent: None,
+        agent_id: None,
     });
     app.open_ask(request("ask_0", vec![coffee_question()]));
     assert!(app.permission().is_some(), "the prompt keeps the screen");
@@ -401,6 +402,7 @@ fn a_permission_arriving_while_the_ask_is_open_queues_behind_it() {
         body: String::new(),
         detail: None,
         agent: None,
+        agent_id: None,
     });
     assert!(app.ask().is_some(), "the modal keeps the screen");
     assert!(app.permission().is_none());

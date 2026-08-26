@@ -100,6 +100,12 @@ pub(in crate::stream) struct AgentStage<'a> {
     pub(in crate::stream) agents: &'a AgentRegistry,
     pub(in crate::stream) tx: &'a UnboundedSender<StreamEvent>,
     pub(in crate::stream) cancel: &'a CancelToken,
+    /// The shared permission gate, when one is attached — a subagent's own
+    /// call asks on it exactly as the main turn's does, and the request
+    /// travels the **agent** channel so the boundary stamps whose it is
+    /// (`docs/permissions.md`). `None` runs the demo unasked, which is what
+    /// `ALTER_ZERO_PERMISSIONS=0` means.
+    pub(in crate::stream) gate: Option<&'a PermissionGate>,
 }
 
 /// How a selected scenario produces its events.
@@ -144,6 +150,19 @@ pub(in crate::stream) struct Scenario {
 /// cues are the narrowest), then the scripted turns, then the default turn —
 /// which matches anything, so selection never falls off the end.
 pub(in crate::stream) const SCENARIOS: &[Scenario] = &[
+    // A subagent that **asks**: its own parallel `bash` batch raises the
+    // shared permission prompt from inside its session view, which is the
+    // one place the view's context cells had no offline coverage — and so
+    // the one place the lead's `● Agent(…)` cell leaked onto a screen
+    // showing a different conversation (`docs/agent-view-streaming.md`).
+    // First in the table: every `permission` entry below would shadow it,
+    // and so would the `subagent` demo that follows them.
+    Scenario {
+        #[cfg(test)]
+        name: "agent-permission",
+        selects: |cue| cue.mentions("subagent") && cue.mentions("permission"),
+        play: Play::Agent(agent::agent_permission_turn),
+    },
     // The `AskUserQuestion` round trip: three questions through the modal
     // (docs/ask.md).
     Scenario {

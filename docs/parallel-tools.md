@@ -132,6 +132,27 @@ smoke suite asserts against):
 A real backend gets the same display for free via the `ToolBatch` the agent loop
 emits, rendering however many parallel calls the model actually requests.
 
+## Inside a subagent
+
+A subagent runs the **same** `llm::agent::run_agent`, so its rounds announce
+their batches the same way, and the forwarder passes every event through to the
+agent channel verbatim. `AgentRun::apply`'s `ToolBatch` arm is `App`'s twin —
+one `ToolStatus::Waiting` cell per announced call, replacing the queue (the
+announcement is the round's whole set) — so a subagent's parallel batch shows
+exactly as the main turn's does on all four surfaces of that agent's session
+view (`docs/agent-tool.md`): the strip previews the whole queue through the
+shared `ui::live::live_call_lines`, Ctrl+O expands every cell, each resolution
+commits to the agent's own scrollback, and a **permission prompt raised there
+shows the asked-about call over every `⎿ Waiting…` sibling** through the same
+`queue_chunks` walk the main branch uses (`docs/permissions.md`,
+`docs/agent-view-streaming.md`).
+
+Two deliberate differences remain, both about aggregation rather than display:
+a subagent's calls carry no batch id, so a run of MCP cells is never collapsed
+into one `Called {server} N times` line (`docs/mcp.md`), and the parent's own
+`● Running {n} agents…` tree shows one sticky activity row per agent rather
+than a cell per call — the tree is a roster, not a transcript.
+
 ## Limitations
 
 - Execution is sequential (see above) — a genuinely concurrent executor is future

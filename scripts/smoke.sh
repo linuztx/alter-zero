@@ -45,6 +45,7 @@ cleanup() {
 	tmux kill-session -t "${S}_bottom" 2>/dev/null
 	tmux kill-session -t "${S}_overlaysilence" 2>/dev/null
 	tmux kill-session -t "${S}_agentstream" 2>/dev/null
+	tmux kill-session -t "${S}_agentperm" 2>/dev/null
 	tmux kill-session -t "${S}_overlaysilence_inline" 2>/dev/null
 	tmux kill-session -t "${S}_overlaysilence_Cd" 2>/dev/null
 	tmux kill-session -t "${S}_overlaysilence_Co" 2>/dev/null
@@ -8963,6 +8964,92 @@ if ! printf '%s' "$unsteer_after" | grep -qF "esc to interrupt"; then
 fi
 tmux kill-session -t "$S97" 2>/dev/null
 echo "==== Phase 97: an unread message comes back on Alt+Up ===="
+
+
+
+# --- Phase 98: a permission prompt raised INSIDE a subagent's session view is
+# a question about THAT conversation (docs/permissions.md,
+# docs/agent-view-streaming.md). The prompt replaces the whole live region, so
+# its context cells are the only thing left of the agent's stream — and they
+# used to come from `App::agent_group()` / `App::tool_queue()`, i.e. the
+# LEAD's live cell and the MAIN turn's queue, drawn over a screen showing a
+# different conversation. The reported bug: the subagent's TUI showing
+# `● Agent(Run ls -la via subagent)` / `⎿ Working…` where its own
+# `● Bash(ls -la)` / `⎿ Waiting…` belonged. The `agent-permission` demo
+# launches a background subagent whose own PARALLEL bash batch asks, so the
+# whole round trip is drivable offline. ---
+S98="${S}_agentperm"
+tmux new-session -d -s "$S98" -x 100 -y 40 "$APP"
+sleep 0.7
+tmux send-keys -t "$S98" -l "launch a subagent that needs permission"
+sleep 0.3
+tmux send-keys -t "$S98" Enter
+for _ in $(seq 1 200); do # the background launch puts its row on the roster
+	if tmux capture-pane -t "$S98" -p | grep -qF "Ask before two commands"; then
+		break
+	fi
+	sleep 0.1
+done
+# ↓ ↓ Enter into its session — the demo's longer pre-roll leaves room for
+# exactly this walk, since the prompt owns every key once it opens.
+tmux send-keys -t "$S98" Down
+sleep 0.2
+tmux send-keys -t "$S98" Down
+sleep 0.2
+tmux send-keys -t "$S98" Enter
+sleep 0.3
+for _ in $(seq 1 250); do
+	if tmux capture-pane -t "$S98" -p | grep -qF "requires approval"; then
+		break
+	fi
+	sleep 0.1
+done
+agentperm="$(tmux capture-pane -t "$S98" -p -S -200)"
+echo "==== Phase 98: the prompt inside the subagent's session view ===="
+printf '%s\n' "$agentperm" | grep -v '^$' | sed -n '1,20p'
+if ! printf '%s' "$agentperm" | grep -qF "Run two shell commands"; then
+	echo "FAIL: Phase 98 — the agent session view never opened on the agent's own transcript" >&2
+	status=1
+fi
+if ! printf '%s' "$agentperm" | grep -qF "from the general-purpose agent"; then
+	echo "FAIL: Phase 98 — the subagent's permission prompt never opened" >&2
+	status=1
+fi
+# The asked-about call, and its parallel sibling, both as `⎿ Waiting…`.
+for want in "● Bash(ls -la)" "● Bash(echo hello from the subagent)"; do
+	if ! printf '%s' "$agentperm" | grep -qF "$want"; then
+		echo "FAIL: Phase 98 — '$want' is missing above the prompt: the subagent's own batch is not the context (the reported bug)" >&2
+		status=1
+	fi
+done
+waiting_rows="$(printf '%s' "$agentperm" | grep -c "⎿  Waiting…")"
+if [ "${waiting_rows:-0}" -lt 2 ]; then
+	echo "FAIL: Phase 98 — only $waiting_rows '⎿ Waiting…' rows above the prompt; a parallel batch shows one per call" >&2
+	status=1
+fi
+# …and NOT the lead's cell, which belongs to the main screen.
+if printf '%s' "$agentperm" | grep -qF "● Agent("; then
+	echo "FAIL: Phase 98 — the lead's '● Agent(…)' cell is on the subagent's screen (the reported bug)" >&2
+	status=1
+fi
+# Answering runs the call and the cell resolves on the AGENT's transcript.
+tmux send-keys -t "$S98" -l "1"
+sleep 0.5
+for _ in $(seq 1 200); do
+	if tmux capture-pane -t "$S98" -p -S -200 | grep -qF "Exit code: 0"; then
+		break
+	fi
+	sleep 0.1
+done
+agentperm_after="$(tmux capture-pane -t "$S98" -p -S -200)"
+if ! printf '%s' "$agentperm_after" | grep -qF "total 8"; then
+	echo "FAIL: Phase 98 — the approved call's output never committed to the agent's transcript" >&2
+	status=1
+fi
+echo "==== Phase 98: the approved cell on the agent's own transcript ===="
+printf '%s\n' "$agentperm_after" | grep -v '^$' | sed -n '1,14p'
+tmux kill-session -t "$S98" 2>/dev/null
+echo "==== Phase 98: a subagent's prompt asks about the subagent's own calls ===="
 
 
 if [ "$status" -eq 0 ]; then

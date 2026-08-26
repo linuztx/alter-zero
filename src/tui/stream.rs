@@ -398,7 +398,15 @@ impl Session<'_> {
                 // — settled first, so its cell sits ahead of the partial reply
                 // and the red notice (docs/thinking-stream.md).
                 self.settle_reasoning();
-                if let Some(failure) = self.app.fail_stream(&message) {
+                // The failure takes a live foreground agent group down with it
+                // (`App::resolve_live_agent_group` interrupts every member),
+                // and one of those members may be the conversation on screen —
+                // a settle that carries no event of its own, so the session
+                // view's pre-fold work has to run here (`docs/agent-view-streaming.md`).
+                let owed = self.begin_turn_agent_settle(width);
+                let failed = self.app.fail_stream(&message);
+                self.finish_turn_agent_settle(owed, width);
+                if let Some(failure) = failed {
                     // A live agent group died with the turn: its subagent threads
                     // keep running unless killed here (the backend thread that
                     // owned the wait loop is gone). Idempotent for agents the

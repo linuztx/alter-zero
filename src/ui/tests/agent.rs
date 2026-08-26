@@ -687,3 +687,136 @@ fn an_agent_views_strip_previews_its_thinking_block() {
         "the strip's status carries the phase's elapsed"
     );
 }
+
+#[test]
+fn an_agent_views_strip_shows_every_waiting_sibling_of_a_parallel_batch() {
+    // The main strip renders a parallel batch as the running call over each
+    // dim `⎿ Waiting…` sibling, blank-separated (docs/parallel-tools.md).
+    // The agent session view is the same picture over the agent's own queue:
+    // its `ToolBatch` fills `AgentRun::tool_queue` exactly as the main turn's
+    // fills `App::tool_queue`, and `agent_view_preview_lines` walks it through
+    // the shared `live_call_lines`.
+    let mut app = App::new();
+    app.begin_stream();
+    app.start_agent_group(false, &[spec("a1", "Parallel demo", false)]);
+    app.apply_agent_event(
+        "a1",
+        &crate::stream::StreamEvent::ToolBatch(vec![
+            crate::stream::ToolCallSummary {
+                name: "Bash".into(),
+                args: "echo AAA".into(),
+            },
+            crate::stream::ToolCallSummary {
+                name: "Bash".into(),
+                args: "echo BBB".into(),
+            },
+            crate::stream::ToolCallSummary {
+                name: "Bash".into(),
+                args: "echo CCC".into(),
+            },
+        ]),
+    );
+    app.open_agent_view("a1");
+    let width = 60;
+    let lines: Vec<String> = preview_lines(&app, width, None).iter().map(plain).collect();
+    assert_eq!(
+        lines,
+        vec![
+            "● Bash(echo AAA)".to_string(),
+            "  ⎿  Waiting…".to_string(),
+            String::new(),
+            "● Bash(echo BBB)".to_string(),
+            "  ⎿  Waiting…".to_string(),
+            String::new(),
+            "● Bash(echo CCC)".to_string(),
+            "  ⎿  Waiting…".to_string(),
+        ],
+        "the whole batch previews, blank-separated"
+    );
+    // The reserved rows and the painted rows must agree (the strip's
+    // `debug_assert`), for the agent branch as for the main one.
+    assert_eq!(
+        usize::from(preview_rows(&app, width)),
+        lines.len(),
+        "preview_rows sizes from the same walk"
+    );
+}
+
+#[test]
+fn an_agent_views_running_call_leads_its_waiting_siblings() {
+    // Sequential execution inside the agent, exactly as in the main view:
+    // only the front call ever runs, the rest keep waiting.
+    let mut app = App::new();
+    app.begin_stream();
+    app.start_agent_group(false, &[spec("a1", "Parallel demo", false)]);
+    app.apply_agent_event(
+        "a1",
+        &crate::stream::StreamEvent::ToolBatch(vec![
+            crate::stream::ToolCallSummary {
+                name: "Bash".into(),
+                args: "echo AAA".into(),
+            },
+            crate::stream::ToolCallSummary {
+                name: "Read".into(),
+                args: "notes.md".into(),
+            },
+        ]),
+    );
+    app.apply_agent_event(
+        "a1",
+        &crate::stream::StreamEvent::ToolStart {
+            name: "Bash".into(),
+            args: "echo AAA".into(),
+            detail: None,
+            arguments: None,
+        },
+    );
+    app.open_agent_view("a1");
+    let lines: Vec<String> = preview_lines(&app, 60, None).iter().map(plain).collect();
+    assert_eq!(lines[0], "● Bash(echo AAA)");
+    assert_eq!(lines[1], "  ⎿  Running…", "{lines:?}");
+    assert_eq!(lines[3], "● Read(notes.md)");
+    assert_eq!(lines[4], "  ⎿  Waiting…", "{lines:?}");
+}
+
+#[test]
+fn an_agents_ctrl_o_cell_lists_only_the_calls_it_ran() {
+    // The cell's `tool_headers` carry no status of their own
+    // (`docs/agent-tool.md`: "the nested tool headers the agent ran"), so a
+    // not-yet-started `⎿ Waiting…` sibling listed there reads as a call the
+    // agent made — and an interrupt drops those siblings without ever
+    // recording them. The running call still belongs: what it is doing now is
+    // part of what it has done.
+    let mut app = App::new();
+    app.begin_stream();
+    app.start_agent_group(false, &[spec("a1", "Batch demo", false)]);
+    app.apply_agent_event(
+        "a1",
+        &crate::stream::StreamEvent::ToolBatch(vec![
+            crate::stream::ToolCallSummary {
+                name: "Bash".to_string(),
+                args: "echo running".to_string(),
+            },
+            crate::stream::ToolCallSummary {
+                name: "Bash".to_string(),
+                args: "echo waiting".to_string(),
+            },
+        ]),
+    );
+    app.apply_agent_event(
+        "a1",
+        &crate::stream::StreamEvent::ToolStart {
+            name: "Bash".to_string(),
+            args: "echo running".to_string(),
+            detail: None,
+            arguments: None,
+        },
+    );
+    let run = app.agent("a1").expect("the roster entry");
+    let cell = crate::ui::agent::AgentCellView::of_run(run);
+    assert_eq!(
+        cell.tool_headers,
+        vec!["Bash(echo running)".to_string()],
+        "only the running call is listed"
+    );
+}

@@ -232,6 +232,37 @@ impl AgentRun {
         }
     }
 
+    /// Does folding `event` **finalise the run of streamed text before it**
+    /// — the segment boundaries [`apply`](Self::apply) flushes at (CLAUDE.md
+    /// invariant 4's flush-before-you-interleave)?
+    ///
+    /// One definition, two readers: `apply` consumes the buffer at these
+    /// points, and the session view commits the tail its `StreamRender`
+    /// withheld — then resets that render — at exactly the same ones
+    /// (`tui::agent`). A hand-kept list in the boundary is what drifted
+    /// before: [`StreamEvent::HookNote`] flushes the buffer in the fold but
+    /// was missing from the view's list, so a `SubagentStop` continuation
+    /// dropped the reply's withheld tail from the screen *and* left the
+    /// render holding a prefix of a buffer that no longer existed
+    /// (`docs/agent-view-streaming.md`).
+    ///
+    /// [`StreamEvent::ThinkingStart`] is deliberately not here: it flushes
+    /// too, but only when the display is on — the boundary reads that gate
+    /// itself (`/settings` **Hide thinking**), so this stays the question
+    /// `apply` alone answers. `every_flush_point_is_declared` pins the pair.
+    #[must_use]
+    pub const fn flushes_segment(event: &StreamEvent) -> bool {
+        matches!(
+            event,
+            StreamEvent::ToolBatch(_)
+                | StreamEvent::ToolStart { .. }
+                | StreamEvent::HookNote { .. }
+                | StreamEvent::Steered { .. }
+                | StreamEvent::StreamDone
+                | StreamEvent::Error(_)
+        )
+    }
+
     /// Fold one of the subagent's own [`StreamEvent`]s into this entry —
     /// the roster-sized mirror of the main loop's `on_stream_event`. Returns
     /// `true` when the event settled the agent (reached a terminal status),
@@ -313,6 +344,11 @@ impl AgentRun {
             }
             StreamEvent::ToolBatch(items) => {
                 self.flush_segment();
+                // The announcement is the round's **whole** queue, exactly as
+                // `App::start_tool_batch` treats it: anything left over from
+                // an earlier round would otherwise sit at the front and take
+                // this round's resolutions, putting every cell off by one.
+                self.tool_queue.clear();
                 for item in items {
                     self.tool_queue.push_back(ToolCall {
                         name: item.name.clone(),
@@ -403,13 +439,19 @@ impl AgentRun {
             // (its Ctrl+D view, and a continuation run over its stored
             // messages) replays what it actually read (docs/permissions.md).
             StreamEvent::ToolRejected {
-                display, result, ..
+                display,
+                result,
+                truncated,
             } => {
                 self.tokens += crate::app::count_tokens(result) as u64;
                 if let Some(mut front) = self.tool_queue.pop_front() {
                     front.status = ToolStatus::Failed;
                     front.output = display.clone();
                     front.context_output = Some(result.clone());
+                    // The main boundary flags it on all three resolutions
+                    // (`tui::stream`), so the expanded cell appends its dim
+                    // `…` marker here too.
+                    front.truncated = *truncated;
                     self.history.push(HistoryItem::Tool(front));
                 }
             }
@@ -418,6 +460,10 @@ impl AgentRun {
             // front call as backgrounded — the shell itself lives on the
             // shared list (`docs/background.md`).
             StreamEvent::ToolBackgrounded { output, .. } => {
+                // The launch acknowledgement is text the model reads, so it
+                // is charged like every other resolution's — the main
+                // session's `resolve_front_tool` charges it too.
+                self.tokens += crate::app::count_tokens(output) as u64;
                 if let Some(mut front) = self.tool_queue.pop_front() {
                     front.status = ToolStatus::Backgrounded;
                     front.output = output.clone();
@@ -481,13 +527,16 @@ impl AgentRun {
             // never offered that one.) Keeping both texts is what lets the
             // agent's own Ctrl+D and a continuation run replay what it read.
             StreamEvent::ToolAnswered {
-                display, result, ..
+                display,
+                result,
+                truncated,
             } => {
                 self.tokens += crate::app::count_tokens(result) as u64;
                 if let Some(mut front) = self.tool_queue.pop_front() {
                     front.status = ToolStatus::Ok;
                     front.output = display.clone();
                     front.context_output = Some(result.clone());
+                    front.truncated = *truncated;
                     self.history.push(HistoryItem::Tool(front));
                 }
             }
@@ -1822,6 +1871,207 @@ mod tests {
             );
             assert!(run.tool_queue.is_empty(), "{name} left the call live");
         }
+    }
+
+    /// Every `StreamEvent` a subagent's channel can carry, one of each — the
+    /// walk `every_flush_point_is_declared` uses so a new variant cannot slip
+    /// past the predicate.
+    fn one_of_every_event() -> Vec<(&'static str, StreamEvent)> {
+        vec![
+            ("Chunk", StreamEvent::Chunk("hi".to_string())),
+            (
+                "HookNote",
+                StreamEvent::HookNote {
+                    label: "SubagentStop".to_string(),
+                    text: "keep going".to_string(),
+                },
+            ),
+            (
+                "Steered",
+                StreamEvent::Steered {
+                    text: "one more thing".to_string(),
+                },
+            ),
+            ("ThinkingChunk", StreamEvent::ThinkingChunk("t".to_string())),
+            ("ToolCallDelta", StreamEvent::ToolCallDelta("{".to_string())),
+            (
+                "ToolBatch",
+                StreamEvent::ToolBatch(vec![ToolCallSummary {
+                    name: "Bash".to_string(),
+                    args: "ls".to_string(),
+                }]),
+            ),
+            (
+                "ToolStart",
+                StreamEvent::ToolStart {
+                    name: "Bash".to_string(),
+                    args: "ls".to_string(),
+                    detail: None,
+                    arguments: None,
+                },
+            ),
+            ("ToolNote", StreamEvent::ToolNote("noted".to_string())),
+            ("ToolOutput", StreamEvent::ToolOutput("out".to_string())),
+            (
+                "ToolEnd",
+                StreamEvent::ToolEnd {
+                    output: "out".to_string(),
+                    ok: true,
+                    truncated: false,
+                },
+            ),
+            (
+                "ToolRejected",
+                StreamEvent::ToolRejected {
+                    display: "no".to_string(),
+                    result: "refused".to_string(),
+                    truncated: false,
+                },
+            ),
+            (
+                "ToolAnswered",
+                StreamEvent::ToolAnswered {
+                    display: "done".to_string(),
+                    result: "ack".to_string(),
+                    truncated: false,
+                },
+            ),
+            (
+                "ToolBackgrounded",
+                StreamEvent::ToolBackgrounded {
+                    id: "b1".to_string(),
+                    output: "backgrounded".to_string(),
+                },
+            ),
+            ("StreamDone", StreamEvent::StreamDone),
+            ("Error", StreamEvent::Error("boom".to_string())),
+        ]
+    }
+
+    #[test]
+    fn every_flush_point_is_declared() {
+        // `AgentRun::flushes_segment` is the boundary's only source of truth
+        // for where the session view must finish + reset its `StreamRender`
+        // (`docs/agent-view-streaming.md`). It has to agree with what `apply`
+        // actually does to the buffer for **every** event, or the view falls
+        // behind the fold again — which is how `HookNote` came to drop a
+        // reply's withheld tail and leave the render pointing at a buffer
+        // that no longer existed.
+        for (name, event) in one_of_every_event() {
+            let mut run = AgentRun::new("a1", "d", GENERAL_PURPOSE, "p", false);
+            run.apply(&StreamEvent::Chunk("partial answer".to_string()));
+            run.apply(&event);
+            // `flush_segment` *takes* the buffer, so a finalised segment
+            // leaves `None` — a `Chunk` merely appending to it has not
+            // finalised anything.
+            let consumed = run.streaming.is_none();
+            assert_eq!(
+                AgentRun::flushes_segment(&event),
+                consumed,
+                "{name}: the predicate and the fold disagree about the segment"
+            );
+        }
+    }
+
+    #[test]
+    fn a_batch_announcement_is_the_rounds_whole_queue() {
+        // `App::start_tool_batch` *replaces* the queue — the announcement is
+        // the round's whole set of calls (`docs/parallel-tools.md`). The
+        // agent's fold appended instead, so an entry left over from an
+        // earlier round would sit at the front and every resolution in the
+        // new round would land on the wrong cell.
+        let mut run = AgentRun::new("a1", "d", GENERAL_PURPOSE, "p", false);
+        run.apply(&StreamEvent::ToolBatch(vec![ToolCallSummary {
+            name: "Bash".to_string(),
+            args: "stale".to_string(),
+        }]));
+        run.apply(&StreamEvent::ToolBatch(vec![
+            ToolCallSummary {
+                name: "Read".to_string(),
+                args: "a.md".to_string(),
+            },
+            ToolCallSummary {
+                name: "Read".to_string(),
+                args: "b.md".to_string(),
+            },
+        ]));
+        let queued: Vec<&str> = run.tool_queue.iter().map(|t| t.args.as_str()).collect();
+        assert_eq!(queued, ["a.md", "b.md"], "the new batch is the queue");
+    }
+
+    #[test]
+    fn every_resolution_records_a_truncated_result() {
+        // The main boundary flags `truncated` on all three resolutions
+        // (`tui::stream`'s ToolEnd/ToolRejected/ToolAnswered arms), so the
+        // expanded cell appends its dim `…` marker. The agent's fold honoured
+        // it on `ToolEnd` alone, so a subagent's capped `write`/`skill`
+        // result silently claimed to be whole.
+        let start = StreamEvent::ToolStart {
+            name: "Write".to_string(),
+            args: "f.py".to_string(),
+            detail: None,
+            arguments: None,
+        };
+        let resolutions: [(&str, StreamEvent); 3] = [
+            (
+                "ToolEnd",
+                StreamEvent::ToolEnd {
+                    output: "out".to_string(),
+                    ok: true,
+                    truncated: true,
+                },
+            ),
+            (
+                "ToolRejected",
+                StreamEvent::ToolRejected {
+                    display: "no".to_string(),
+                    result: "refused".to_string(),
+                    truncated: true,
+                },
+            ),
+            (
+                "ToolAnswered",
+                StreamEvent::ToolAnswered {
+                    display: "done".to_string(),
+                    result: "ack".to_string(),
+                    truncated: true,
+                },
+            ),
+        ];
+        for (name, event) in resolutions {
+            let mut run = AgentRun::new("a1", "d", GENERAL_PURPOSE, "p", false);
+            run.apply(&start);
+            run.apply(&event);
+            let Some(HistoryItem::Tool(tool)) = run.history.last() else {
+                panic!("{name} recorded no cell");
+            };
+            assert!(tool.truncated, "{name} dropped the truncation marker");
+        }
+    }
+
+    #[test]
+    fn a_backgrounded_call_charges_its_acknowledgement() {
+        // The main session's `resolve_front_tool` folds every resolution's
+        // output into the `↑` tally — a `run_in_background` launch included,
+        // since its acknowledgement is text the model reads. The agent's fold
+        // charged nothing for it.
+        let mut run = AgentRun::new("a1", "d", GENERAL_PURPOSE, "p", false);
+        run.apply(&StreamEvent::ToolStart {
+            name: "Bash".to_string(),
+            args: "sleep 30".to_string(),
+            detail: None,
+            arguments: None,
+        });
+        let before = run.tokens;
+        run.apply(&StreamEvent::ToolBackgrounded {
+            id: "b1".to_string(),
+            output: "Command running in the background with id b1".to_string(),
+        });
+        assert!(
+            run.tokens > before,
+            "the launch acknowledgement is uploaded text: {before} -> {}",
+            run.tokens
+        );
     }
 
     #[test]

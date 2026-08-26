@@ -74,6 +74,24 @@ live agent tree (`● Running 3 agents…` and its rows). Everything else in the
 live region gives way: the status line (nothing is running; the turn is blocked
 on you), the composer, the bands, and the footer.
 
+"On screen" is literal, and a **subagent session view** is a different screen
+(`docs/agent-tool.md`). Inside one, the context is that agent's **own** queue —
+its `● Bash(ls -la)` over `⎿ Waiting…`, every parallel sibling behind it,
+exactly the picture the main view draws for the main turn's batch. The lead's
+`● Agent({description})` cell and the main turn's queue belong to the screen
+the user is *not* looking at; drawing them here was the reported bug (the
+subagent's TUI showing `● Agent(Run ls -la via subagent)` / `⎿ Working…` where
+its own waiting call belonged — `docs/agent-view-streaming.md`).
+
+Which agent asked is knowable because the request carries it:
+`PermissionRequest::agent` is the *type* the title names, and
+`PermissionRequest::agent_id` is **which** run, stamped by the boundary that
+routes the event (`tui::agent::Session::on_agent_event`) — the only place that
+knows it, since two agents can share a type. A request whose id is not the
+open view's — the main turn's own call, or a sibling agent's — raised its
+cells on another screen, so the prompt opens with no context at all (the idle
+shape) rather than borrowing the viewed agent's unrelated batch.
+
 Every queued call renders its ordinary collapsed cell — Claude Code's look.
 The one under the prompt shows the same dim `⎿ Waiting…` its batch siblings
 do: it genuinely *is* waiting — the approve seam runs **before** its

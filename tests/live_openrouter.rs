@@ -574,6 +574,7 @@ fn live_amended_rejection_still_steers_the_model_a_turn_later() {
         body: String::new(),
         detail: None,
         agent: None,
+        agent_id: None,
     };
     let history = vec![HistoryItem::Tool(ToolCall {
         name: "Write".to_string(),
@@ -2268,6 +2269,7 @@ fn bash_request(command: &str, description: Option<&str>) -> PermissionRequest {
         body: String::new(),
         detail: description.map(str::to_string),
         agent: None,
+        agent_id: None,
     }
 }
 
@@ -2414,6 +2416,7 @@ fn mcp_request(wire: &str, args: &str, description: Option<&str>) -> PermissionR
         body: args.to_string(),
         detail: description.map(str::to_string),
         agent: None,
+        agent_id: None,
     }
 }
 

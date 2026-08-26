@@ -80,6 +80,7 @@ pub fn permission_request(
                 body,
                 detail: None,
                 agent,
+                agent_id: None,
             })
         }
         "edit" => {
@@ -95,6 +96,7 @@ pub fn permission_request(
                 body: render_numbered_diff(&tools::diff_lines(&old, &result.new_content)),
                 detail: None,
                 agent,
+                agent_id: None,
             })
         }
         "bash" => {
@@ -109,6 +111,7 @@ pub fn permission_request(
                     .map(|d| d.trim().to_string())
                     .filter(|d| !d.is_empty()),
                 agent,
+                agent_id: None,
             })
         }
         // An MCP call asks too (`docs/mcp.md`): the wire name is the target
@@ -126,6 +129,7 @@ pub fn permission_request(
                 .map(|text| text.trim().to_string())
                 .filter(|text| !text.is_empty()),
             agent,
+            agent_id: None,
         }),
         _ => None,
     }

@@ -267,6 +267,7 @@ fn region_is_modal_only_while_a_permission_prompt_is_open() {
         body: "1 print(\"hi\")".to_string(),
         detail: None,
         agent: None,
+        agent_id: None,
     });
     assert!(region_is_modal(&app));
 }

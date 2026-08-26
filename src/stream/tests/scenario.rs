@@ -12,6 +12,7 @@ use super::*;
 /// check, and an example that lands on an *earlier* entry — the shadowing a
 /// hand-written `if`/`else` chain used to hide — fails it on the name.
 const EXAMPLES: &[&str] = &[
+    "launch a subagent that needs permission",
     "ask me some questions",
     "auto permission demo",
     "parallel permission demo",

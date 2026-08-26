@@ -198,6 +198,7 @@ impl Stage<'_> {
             body,
             detail: detail.map(str::to_string),
             agent: None,
+            agent_id: None,
         }
     }
 }

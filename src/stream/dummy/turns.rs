@@ -141,7 +141,7 @@ impl ScriptedCall {
     }
 
     /// A `bash` run of `command` printing `output` and exiting with `exit`.
-    fn command(command: &str, output: &str, exit: u8) -> Self {
+    pub(super) fn command(command: &str, output: &str, exit: u8) -> Self {
         Self {
             name: "Bash",
             args: command.to_string(),

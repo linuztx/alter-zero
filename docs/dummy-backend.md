@@ -58,7 +58,7 @@ subtree inside it:
 | `dummy/script.rs` | The canned replies, the `handoff!()` sentence they close on, and the streaming/output primitives (`chunks`, `dummy_response`, `reply_parts`, `image_ack`; the file-cell bodies come straight from `llm::tools::write_report`/`update_report`). |
 | `dummy/turns.rs` | The **pure** scripted turns — one `Cue -> Vec<StreamEvent>` per scenario. |
 | `dummy/gated.rs` | The turns that *ask*, blocking on the permission gate. |
-| `dummy/agent.rs` | The one turn that streams a **launched subagent's own round** on the agent channel, so the agent session view is drivable offline (`docs/agent-view-streaming.md`). |
+| `dummy/agent.rs` | The two turns that stream a **launched subagent's own round** on the agent channel, so the agent session view is drivable offline (`docs/agent-view-streaming.md`) — one that streams a table, one whose own parallel `bash` batch **asks** on the shared permission gate. |
 
 Everything above the dummy is the seam a real backend implements: `event.rs`
 (the whole wire format), `source.rs` (`ReplySource`), `cancel.rs`
@@ -160,6 +160,7 @@ picked. Same trick `ui::TranscriptCache`'s counters use.
 
 | Name | Cue | What it demonstrates |
 |------|-----|----------------------|
+| `agent-permission` | "subagent" + "permission" | a background subagent whose **own parallel `bash` batch** asks — the only demo that raises the prompt from inside an agent session view, where the context cells are that agent's own `⎿ Waiting…` queue (`docs/agent-view-streaming.md`) |
 | `permission-auto` | "permission" + "auto" | auto mode's classifier deciding a `bash` batch in the user's stead (`docs/permissions.md`) |
 | `permission-parallel` | "permission" + "parallel" | two gated `bash` calls — back-to-back prompts with no pause between them |
 | `permission-staggered` | "permission" + "staggered" | a screen-tall `write` prompt answered into a one-line one: the modal region's hardest shrink |
@@ -174,7 +175,9 @@ picked. Same trick `ui::TranscriptCache`'s counters use.
 
 Cue order is registry order, so a narrower cue sits above a broader one that
 would also match it — `agent-stream` sits above `table` because the table is
-what its subagent streams, so a prompt naming both means that one. Two cues
+what its subagent streams, so a prompt naming both means that one, and
+`agent-permission` leads the whole table because every `permission` entry and
+`agent-stream` alike would otherwise shadow it. Two cues
 carry a guard rather than an order: `agents` and `files` both exclude
 `agents.md`, because `/init` submits a canned prompt that names it and says
 "do not over**write**" — without the guard that turn would be answered with a

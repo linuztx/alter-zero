@@ -298,7 +298,29 @@ fn mcp_rows(request: &PermissionRequest, width: u16, budget: usize) -> (Vec<Line
 /// the round's live agent group (when a subagent asked), then one chunk per
 /// queued call — the asked-about front call first, its batch siblings behind
 /// it. [`context_lines`] joins them blank-separated and caps the tail.
+///
+/// **Inside an agent session view the screen is a different conversation**,
+/// so the chunks come from [`queue_chunks`] over that agent's own queue —
+/// its `● Bash(ls -la)` over `⎿ Waiting…`, every parallel sibling behind it,
+/// exactly as the main view shows the main turn's batch. The lead's
+/// `● Agent({description})` cell and the main turn's queue belong to the
+/// screen the user is *not* looking at; showing them here was the reported
+/// "the subagent TUI shows the Agent cell" bug
+/// (`docs/agent-view-streaming.md`).
 fn context_chunks(app: &App, width: u16) -> Vec<Vec<Line<'static>>> {
+    if let Some(run) = app.viewed_agent() {
+        // Only the agent whose view is up has its cells on this screen. A
+        // request from anywhere else — the main turn, a sibling agent — is a
+        // question about a conversation that is not painted here, and a
+        // context cell out of nowhere is exactly what the context is for
+        // *not* being (the prompt then opens with its own rule, the idle
+        // shape).
+        if app.permission().and_then(|p| p.request.agent_id.as_deref()) != app.agent_view.as_deref()
+        {
+            return Vec::new();
+        }
+        return queue_chunks(run.tool_queue.iter(), width);
+    }
     let mut chunks = Vec::new();
     let agents = live_agent_group_lines(app, width);
     if !agents.is_empty() {
@@ -313,8 +335,19 @@ fn context_chunks(app: &App, width: u16) -> Vec<Vec<Line<'static>>> {
     {
         return vec![batch];
     }
-    chunks.extend(app.tool_queue().iter().map(|tool| tool_lines(tool, width)));
+    chunks.extend(queue_chunks(app.tool_queue().iter(), width));
     chunks
+}
+
+/// One chunk per queued call — each call's ordinary collapsed cell, drawn at
+/// rest (the prompt is a still frame, `docs/tool-pulse.md`). The one walk the
+/// main turn's queue and a viewed agent's share, so a subagent's parallel
+/// batch shows every `⎿ Waiting…` sibling exactly as the main view's does.
+fn queue_chunks<'a>(
+    queue: impl Iterator<Item = &'a ToolCall>,
+    width: u16,
+) -> Vec<Vec<Line<'static>>> {
+    queue.map(|tool| tool_lines(tool, width)).collect()
 }
 
 /// The dim summary row standing in for the sibling cells the cap collapsed —
@@ -558,6 +591,15 @@ pub fn permission_lines(app: &App, width: u16, term_height: u16) -> Vec<Line<'st
 /// turn's own, under a subagent's request — whose streamed output grows the
 /// cell's peek. Either one is enough to hold the whole context back.
 fn context_is_stable(app: &App) -> bool {
+    // An agent view's context is that agent's own queue and nothing else
+    // ([`context_chunks`]), so its stability is that queue's alone — the
+    // lead's tree is not on this screen to tick.
+    if let Some(run) = app.viewed_agent() {
+        return run
+            .tool_queue
+            .iter()
+            .all(|tool| tool.status != ToolStatus::Running);
+    }
     app.agent_group().is_none()
         && app
             .tool_queue()

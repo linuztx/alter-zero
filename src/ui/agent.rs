@@ -414,8 +414,19 @@ impl AgentCellView {
                 _ => None,
             })
             .collect();
-        for tool in &run.tool_queue {
-            tool_headers.push(format!("{}({})", tool.name, tool.args));
+        // The **running** call joins them — what the agent is doing right now
+        // is part of what it has done. Its not-yet-started `⎿ Waiting…`
+        // siblings do not: this cell lists headers with no status of their
+        // own, so a queued call would read as one the agent ran, and an
+        // interrupt drops those siblings without ever recording them
+        // (`docs/parallel-tools.md`). The main transcript can show them
+        // because `tool_full_lines` carries each call's status row.
+        if let Some(running) = run
+            .tool_queue
+            .front()
+            .filter(|tool| tool.status == ToolStatus::Running)
+        {
+            tool_headers.push(format!("{}({})", running.name, running.args));
         }
         Self {
             description: run.description.clone(),

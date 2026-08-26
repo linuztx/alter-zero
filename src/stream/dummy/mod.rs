@@ -257,6 +257,10 @@ impl ReplySource for DummyAi {
                         agents: registry,
                         tx: &tx,
                         cancel: &cancel,
+                        // A subagent's own call asks on the same gate the
+                        // main turn's does; `None` when permissions are off
+                        // (docs/permissions.md).
+                        gate: permissions.as_ref(),
                     }),
                     None => replay(turns::tools_turn(&cue), &tx, &cancel, &steer),
                 },
