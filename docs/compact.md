@@ -21,6 +21,12 @@ the summary. The visible transcript is untouched — a cyan
 ───────────────────────────────────────────────────────────────
 ```
 
+A `/compact` turn is **not steerable** (`docs/queue.md`): its request is the
+fixed handoff prompt over the context being summarized, not a conversation, so
+a draft submitted while it runs queues as a follow-up turn — which is what it
+was always going to be — instead of being folded into the summarization
+request.
+
 ## The append-only design (why history is never rewritten)
 
 Codex keeps **two** histories: the TUI transcript stays intact while the

@@ -13,8 +13,10 @@ Two deliberate divergences from codex tune what happens when there is nothing
 worth keeping:
 
 - **No output yet → undo, don't notify.** If Esc lands before the turn has
-  produced anything (no partial reply, no tool) and nothing is queued behind
-  it, the submission is **rolled back** rather than interrupted: the just-sent
+  produced anything (no partial reply, no tool) and nothing waits behind it —
+  neither a queued follow-up nor a message handed to this turn that it never
+  read (`docs/queue.md`) — the submission is **rolled back** rather than
+  interrupted: the just-sent
   user message goes back into the composer to edit, and **no** `Conversation
   interrupted` notice is committed. There was no output, so we return to the
   pre-submit state instead of leaving a stray user bubble + notice on screen.
@@ -81,8 +83,11 @@ pub enum InterruptedTurn {
 
 `interrupt_turn` takes the partial buffer first, then branches:
 
-**Undo path** — `partial.is_none() && current_tool.is_none() && queued.is_empty()`
-(nothing was produced and nothing waits behind it):
+**Undo path** — `partial.is_none() && current_tool.is_none() && queued.is_empty()
+&& steered.is_empty()` (nothing was produced and nothing waits behind it — the
+interrupt is what sends a message the turn never read, so pulling the
+submission back while that dispatches would read as the undo having done
+nothing):
 
 - `take_trailing_user_messages` pops the maximal run of trailing `Role::User`
   messages (the turn's own input — a previous turn always ends with a summary,

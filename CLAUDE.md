@@ -39,7 +39,7 @@ build (`unsafe_code = "forbid"`, plus `warnings` and `clippy::all` denied).
 ## Architecture
 
 A **library** (`src/lib.rs` → `app`, `stream`, `ui`, `term`, `frame`, `paste`,
-`session`, `subprocess`, `history`, `textarea`, `file_search`, `clipboard`, `context`, `background`, `scratchpad`, `agents`, `ask`, `tasks`, `skills`, `mcp`, `trust`, `checkpoint`, `project_doc`, `permission`, `settings`, `cli`, `links`) holds the logic; **`src/main.rs`** is a 77-line shell —
+`session`, `subprocess`, `history`, `textarea`, `file_search`, `clipboard`, `context`, `background`, `scratchpad`, `agents`, `ask`, `tasks`, `skills`, `steer`, `mcp`, `trust`, `checkpoint`, `project_doc`, `permission`, `settings`, `cli`, `links`) holds the logic; **`src/main.rs`** is a 77-line shell —
 the detached-exec hook, the CLI resolution, the viewport, the loop — over
 **`src/tui/`**, the binary-private tree that drives the codex-style **async
 (tokio) `select!`** loop (`event_loop`, `actions`, `turn`, `stream`, `agent`,
@@ -116,7 +116,9 @@ startup, so ↑/↓ recall *and* Ctrl+R span sessions) in
 `docs/history-persistence.md`; the `!` local shell commands in
 `docs/shell-command.md`; the `?` shortcuts band in
 `docs/shortcuts.md`; the Shift+Enter / Ctrl+J newline keys in
-`docs/shift-enter.md`; the mid-turn message queue in `docs/queue.md`; the
+`docs/shift-enter.md`; the mid-turn message queue — and its **delivery into the
+running turn** at the next round boundary, main session and subagent session
+alike — in `docs/queue.md`; the
 session-context footer in `docs/footer.md`; the **startup banner** (the
 gradient mascot beside the bold `Alter Zero (v…)` title, the dim cwd, and the
 cyan `/login /model /resume` hint — chrome outside `history`, re-emitted atop
@@ -1162,18 +1164,34 @@ mention syntax, so the green `● Skill(name)` cell, the
 context replay and the rollout all come for free; deliberately *not* codex's
 eager `<skill>` injection, which exists because codex has no skill tool);
 see `docs/skill-mentions.md`); plus, *above* the box while a turn streams, **messages
-submitted with Enter queue** instead of waiting (shown like sent user messages,
-inset two columns — `  ❯ {msg}` rows in the strip under the status line —
-`App::queued`, a `VecDeque<QueuedTurn>` of **typed entries** (text `Messages`
-batches and standalone `Shell` commands — codex's action-tagged
-`queued_user_messages`): **Enter appends to the current batch** (those messages
-auto-sent together as one next turn) while **Tab opens a new batch** (codex's
-Tab-to-queue — its message runs as a *separate follow-up turn* after the first
-queue, a blank row dividing them), the loop dispatching one entry per turn end
-(a text batch to the model, a queued `!command` run locally) —
-**Esc interrupts and sends the front batch right away**, Alt+Up pulls the **last
-batch** (its messages newline-joined) back into the composer to edit, leaving
-earlier batches queued; see
+submitted with Enter go into the turn already running** instead of waiting
+(shown like sent user messages, inset two columns — `  ❯ {msg}` rows in the
+strip under the status line — until the model's **next round boundary** takes
+them, right after that round's tool results, which is codex's steering: the
+loop pushes onto a shared `steer::SteerQueue`, `llm::agent::run_agent` drains
+it at the top of every round through its typed `PendingInput` seam (background
+notices lead, the user's own messages close — a completion is a *result* and
+belongs with the results it follows, while the newest thing said must be the
+last thing read), and `StreamEvent::Steered` announces each take so the pending
+row becomes a **real user bubble** — `App::deliver_steered` finalising the
+assistant run ahead of it (invariant 4), recording the message and counting its
+`↑` tokens — while **Tab** instead opens a new `QueuedTurn` batch (codex's
+Tab-to-queue — its message runs as a *separate follow-up turn* after the
+running one, a blank row dividing them) in the classic `App::queued`
+`VecDeque` of **typed entries** (text `Messages` batches and standalone `Shell`
+commands, one dispatched per turn end — a text batch to the model, a queued
+`!command` run locally). A turn that ends **before** reading what was handed to
+it hands it back (`App::reclaim_steered` at every turn-end site, so the front
+of the follow-up queue carries it as the next turn) — which is why nothing
+typed is ever dropped, why Enter's old batching survives as the fallback, and
+why **Esc interrupts and sends what the turn never read right away**; Alt+Up
+pulls the **last follow-up batch** (its messages newline-joined) back into the
+composer to edit, and with none left reaches the running turn's own messages
+through the boundary (only the shared queue knows whether one can still be
+taken back). **A subagent session view has the same queue over that agent's own
+loop** — same seam, same event, same rows, the registry (not the roster's
+one-event-behind status) deciding whether a message is queued or starts a chat
+continuation (`AgentChatDelivery`); see
 `docs/queue.md`; plus **`!command` runs a local shell command** (codex's `!`
 shell mode: a leading `!` is **absorbed** into `App::shell_mode` and rendered
 back as the composer's red `! ` prompt — `! pwd`, never `❯ !pwd` — with a red
@@ -1478,20 +1496,25 @@ touch it), `insert_before`s it, then spawns one reply via the selected
 Ctrl+V image paths drained from `App::take_submission_images`, see
 `docs/image-paste.md`), keeping the
 thread handle + `CancelToken` so a quit mid-stream cancels and reaps it.
-**Enter *while a turn is in flight* queues** the message into `App::queued`
-(codex's `queued_user_messages`) instead of producing `Submit` — shown like
-sent user messages (`❯` rows) in the strip above the box. The queue is a
-sequence of **typed entries** (`QueuedTurn`): Enter appends to the last
-`Messages` batch (`queue_draft(false)`), **Tab opens a new batch**
-(`queue_draft(true)`, a separate follow-up turn), and a **mid-turn `!command`
-queues as a standalone `Shell` entry** (`queue_shell`, run locally, never
-merged); `tui::turn::Session::flush_next_queued` dispatches **one entry**
-(`drain_next_batch`) per turn end — a `Messages` batch via `start_turn`, a
-`Shell` via `run_shell` — so Enter messages batch into one turn while Tab
-follow-ups and `!` commands iterate in order (Alt+Up pulls the **last entry**
-(`drain_last_batch`, `pop_back`) back into the composer to edit — a `Messages`
-batch newline-joined, a `Shell` entry as `!command` re-entering shell mode —
-earlier entries stay queued; see `docs/queue.md`). The
+**Enter *while a turn is in flight* hands the message to that turn**
+(`steer_draft` → `Action::Steer`, codex's `submit_user_message`) instead of
+producing `Submit`: it waits in `App::steered` — shown like sent user messages
+(`❯` rows) in the strip above the box — while the boundary pushes it onto the
+shared `steer::SteerQueue` the backend thread drains at the top of every round,
+and `StreamEvent::Steered` lands it in the conversation the moment the model has
+it (`deliver_steered`). **Tab** instead opens a follow-up entry in `App::queued`
+(`queue_draft(true)`), and a **mid-turn `!command` queues as a standalone
+`Shell` entry** (`queue_shell`, run locally, never merged);
+`tui::turn::Session::dispatch_after_turn` reclaims whatever the ended turn never
+read (`reclaim_steered`, onto the **front** of the queue) and
+`flush_next_queued` dispatches **one entry** (`drain_next_batch`) per turn end —
+a `Messages` batch via `start_turn`, a `Shell` via `run_shell` — so unread
+Enters batch into one turn while Tab follow-ups and `!` commands iterate in
+order (Alt+Up pulls the **last entry** (`drain_last_batch`, `pop_back`) back
+into the composer to edit — a `Messages` batch newline-joined, a `Shell` entry
+as `!command` re-entering shell mode — and with none left asks the boundary for
+the newest still-unread steered message (`Action::ReclaimSteered`); see
+`docs/queue.md`). The
 backend interleaves `StreamEvent::ToolStart{name,args}`/`ToolEnd{output,ok,truncated}` pairs
 (with `ToolOutput(chunk)` **live-output** deltas streamed in between — the
 running `bash` cell tails them via `App::push_tool_output`, `docs/tool-streaming.md`)

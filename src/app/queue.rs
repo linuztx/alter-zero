@@ -44,12 +44,20 @@ impl App {
     /// Can a message submitted right now be folded into the turn already
     /// running? A model turn can: its agent loop takes the queue at every
     /// round boundary, so the message reaches the model *within* the turn
-    /// (`docs/queue.md`). A `!` shell turn cannot — nothing is reading a
-    /// conversation — so its drafts queue as follow-up turns exactly as they
-    /// always did.
+    /// (`docs/queue.md`).
+    ///
+    /// Two turns can't, and both queue their drafts as follow-up turns exactly
+    /// as they always did:
+    ///
+    /// - a **`!` shell turn** — nothing is reading a conversation there;
+    /// - a **`/compact` turn** — its request is the fixed handoff prompt over
+    ///   the context being summarized, not a conversation, and a user message
+    ///   folded into it would corrupt the summary (`docs/compact.md`).
     #[must_use]
     pub fn turn_steerable(&self) -> bool {
-        self.is_streaming() && !self.status.as_ref().is_some_and(|status| status.shell)
+        self.is_streaming()
+            && !self.is_compacting()
+            && !self.status.as_ref().is_some_and(|status| status.shell)
     }
 
     /// Hand the composer draft to the **running** turn: it waits in

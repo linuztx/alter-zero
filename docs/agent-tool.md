@@ -176,9 +176,23 @@ zero new plumbing. The TUI cell is a new `HistoryItem::AgentNotice` —
   resumes for one border cell after the text (`── {description} ─`, the
   `AGENT_VIEW_RULE_TAIL` glyph) so the label reads as part of the frame
   rather than dangling off its right end — and the composer **chats with the
-  agent**: Enter sends the draft to the subagent — injected at its next round
-  boundary while it runs (the `pending_notices` seam), or spawning a
-  continuation turn over its stored message list when idle. Esc (empty
+  agent**, and it is the **main session's mid-turn queue one level down**
+  (`docs/queue.md`): while the agent runs, Enter parks the draft on its own
+  queue — shown above the box as the same inset `  ❯ …` row, `AgentRun::queued`
+  — and its loop takes it at the next round boundary (`run_agent`'s
+  `pending_inputs` seam), where `StreamEvent::Steered` on the agent channel
+  turns it into a real user message **on that agent's transcript**, after the
+  streamed segment ahead of it is finalised. When the agent is idle instead, a
+  continuation turn spawns over its stored message list carrying the draft as
+  its newest user turn, and the transcript records it at once — an idle submit.
+  **The registry decides which**, not the roster: `spawn_agent_chat` returns an
+  `AgentChatDelivery` (`Queued`/`Started`/`Declined`), because a roster status
+  one event behind the registry would either strand the pending row forever or
+  record the message twice. A run that settles with messages unread hands them
+  back (`Session::reclaim_agent_chat`): a **naturally finished** agent gets them
+  straight back as a continuation, while a failed or `x`-stopped one keeps
+  nothing — there is nothing to continue, and restarting an agent the user just
+  killed is the opposite of what the key meant. Esc (empty
   composer) returns to the main session (Purge-rebuild of the main
   transcript, mid-stream partial included). While the view is up the main
   turn's commits are suppressed exactly like the Ctrl+O overlay (invariant

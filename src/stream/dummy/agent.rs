@@ -210,6 +210,45 @@ fn spawn_agent_session(registry: AgentRegistry, id: String, cancel: CancelToken)
     });
 }
 
+/// What the demo agent answers a **chat continuation** with — a message the
+/// user sent into its session after it had already settled. Short on purpose:
+/// the point of the offline round trip is the mechanics (the bubble, the
+/// stream, the `Done for Ns` receipt on the agent's own transcript), not a
+/// second demo reply.
+const DEMO_CONTINUATION: &str = "\
+Noted — a real subagent would rebuild the table with that row. This one is \
+scripted, so it can only show you the shape: your message reached its \
+conversation, and this reply is its next turn.";
+
+/// Answer a chat message sent into the demo agent **after it settled**: play a
+/// short continuation round on the agent channel, from a thread of its own,
+/// exactly as [`spawn_agent_session`] plays the first one. The offline half of
+/// `LlmBackend::spawn_agent_chat`'s continuation path, so the agent session
+/// view's chat is drivable with no network (`docs/queue.md`).
+pub(super) fn spawn_chat_continuation(registry: AgentRegistry, id: String, cancel: CancelToken) {
+    thread::spawn(move || {
+        nap(CHUNK_DELAY, &cancel);
+        for piece in chunks(DEMO_CONTINUATION) {
+            if cancel.is_cancelled() {
+                return;
+            }
+            registry.send(AgentEvent::Stream {
+                id: id.clone(),
+                event: StreamEvent::Chunk(piece),
+            });
+            nap(CHUNK_DELAY, &cancel);
+        }
+        if cancel.is_cancelled() {
+            return;
+        }
+        registry.send(AgentEvent::Stream {
+            id: id.clone(),
+            event: StreamEvent::StreamDone,
+        });
+        registry.finish(&id, Ok(DEMO_CONTINUATION.to_string()), Vec::new());
+    });
+}
+
 /// Stream `text` word by word onto the reply channel, pausing like the
 /// scripted replay does. `false` once the receiver is gone or the turn was
 /// cancelled — the caller stops quietly.

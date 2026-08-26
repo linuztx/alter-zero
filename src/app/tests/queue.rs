@@ -542,6 +542,22 @@ fn alt_up_over_a_steered_message_asks_the_boundary_for_it_back() {
 }
 
 #[test]
+fn alt_up_edits_a_follow_up_turn_before_reaching_the_running_one() {
+    // The follow-up queue is the deliberate backlog and the one Alt+Up has
+    // always edited; a message already handed to the running turn is only
+    // reachable once nothing is left there.
+    let mut app = App::new();
+    app.begin_stream();
+    app.input = TextArea::from_text("now");
+    app.on_key(key(KeyCode::Enter)); // steered
+    app.input = TextArea::from_text("later");
+    app.on_key(key(KeyCode::Tab)); // a follow-up turn
+    assert_eq!(app.on_key(alt(KeyCode::Up)), Action::None);
+    assert_eq!(app.input.text(), "later");
+    assert_eq!(app.steered, ["now"], "the running turn keeps its message");
+}
+
+#[test]
 fn recall_steered_puts_the_message_back_in_the_composer() {
     let mut app = App::new();
     app.begin_stream();
@@ -571,4 +587,38 @@ fn clear_mid_turn_drops_the_steered_messages_too() {
     app.on_key(key(KeyCode::Enter));
     app.clear_conversation();
     assert!(app.steered.is_empty(), "/clear kills the whole turn");
+}
+
+#[test]
+fn a_message_handed_to_the_turn_blocks_the_interrupt_undo() {
+    // The undo rolls the submission back into the composer, which is only
+    // right when nothing is waiting behind it. A steered message is waiting
+    // behind it exactly like a queued follow-up, and the interrupt is what
+    // sends it (docs/interrupt.md).
+    let mut app = App::new();
+    app.record_user_message("go");
+    app.begin_stream();
+    app.input = TextArea::from_text("wait, also this");
+    app.on_key(key(KeyCode::Enter));
+    assert!(
+        matches!(app.interrupt_turn(), Some(InterruptedTurn::Kept { .. })),
+        "the turn is kept so the reclaim can send what it never read"
+    );
+    assert_eq!(app.input.text(), "", "the submission is not pulled back");
+}
+
+#[test]
+fn a_compact_turn_takes_no_queued_messages() {
+    // A summarization turn is not a conversation (docs/compact.md): its
+    // request is the fixed handoff prompt, and a user message folded into it
+    // would corrupt the summary. The draft queues as a follow-up turn, which
+    // is what it was always going to be.
+    let mut app = App::new();
+    app.record_user_message("go");
+    app.begin_compact(false);
+    assert!(!app.turn_steerable(), "nothing to steer into");
+    app.input = TextArea::from_text("meanwhile, check the tests");
+    assert_eq!(app.on_key(key(KeyCode::Enter)), Action::None);
+    assert!(app.steered.is_empty());
+    assert_eq!(app.queued, [batch(&["meanwhile, check the tests"])]);
 }

@@ -269,6 +269,25 @@ impl ReplySource for DummyAi {
     fn model_name(&self) -> String {
         "dummy_model_name".to_string()
     }
+
+    /// A message sent into the demo subagent's session (`docs/queue.md`). The
+    /// **registry** decides, exactly as it does for a real backend: a running
+    /// agent takes it onto its queue for the next round boundary, a settled
+    /// one gets a short scripted continuation round. Declined without a
+    /// registry attached — there is no agent to talk to.
+    fn spawn_agent_chat(&self, id: &str, text: &str) -> super::AgentChatDelivery {
+        let Some(registry) = &self.agents else {
+            return super::AgentChatDelivery::Declined;
+        };
+        if registry.queue_input(id, text) {
+            return super::AgentChatDelivery::Queued;
+        }
+        let Some((_messages, cancel)) = registry.begin_continuation(id) else {
+            return super::AgentChatDelivery::Declined;
+        };
+        agent::spawn_chat_continuation(registry.clone(), id.to_string(), cancel);
+        super::AgentChatDelivery::Started
+    }
 }
 
 /// Play a scripted turn onto the channel: send each event, then pause for as

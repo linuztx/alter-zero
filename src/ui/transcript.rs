@@ -139,6 +139,15 @@ pub fn agent_transcript_lines(app: &App, width: u16) -> Option<Vec<Line<'static>
         lines.extend(tool_full_lines(tool, width));
         lines.push(Line::default());
     }
+    // …and what the user typed into this agent while it works, waiting for its
+    // next round boundary — the main tail's rule (`docs/queue.md`): the Ctrl+O
+    // view never hides a pending message. `queued_lines` reads the viewed
+    // agent's own queue here, so this is that agent's backlog, not the
+    // session's.
+    if !run.queued.is_empty() {
+        lines.extend(queued_lines(app, width));
+        lines.push(Line::default());
+    }
     if lines.len() == chrome_rows {
         lines.push(Line::from(Span::styled(
             TOOL_VIEW_EMPTY.to_string(),
@@ -274,6 +283,11 @@ struct TranscriptSig {
     /// queue length and status unchanged and the overlay would go static. See
     /// `docs/parallel-tools.md`.
     pub(super) tool_queue: Option<(usize, ToolStatus, usize)>,
+    /// How many messages are waiting above the box — the follow-up entries
+    /// **and** the ones handed to the running turn. Both, because pushing onto
+    /// `App::steered` changes no history length and no tool queue, so a
+    /// signature blind to it would leave the overlay frozen on a page that no
+    /// longer matches the strip (`docs/queue.md`).
     queued_len: usize,
     backtrack_selected: Option<usize>,
     /// The subagent roster's mutation counter — a live agent streaming (its
@@ -295,7 +309,7 @@ impl TranscriptSig {
             tool_queue: queue
                 .front()
                 .map(|t| (queue.len(), t.status, t.output.len())),
-            queued_len: app.queued.len(),
+            queued_len: app.queued.len() + app.steered.len(),
             backtrack_selected: app.backtrack.selected,
             agents_generation: app.agents_generation(),
         }
@@ -461,7 +475,7 @@ impl TranscriptCache {
             self.lines.extend(tool_full_lines(tool, width));
             self.lines.push(Line::default());
         }
-        if !app.queued.is_empty() {
+        if !app.queued.is_empty() || !app.steered.is_empty() {
             self.lines.extend(queued_lines(app, width));
             self.lines.push(Line::default());
         }

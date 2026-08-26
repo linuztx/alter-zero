@@ -885,3 +885,72 @@ fn the_quit_hint_tells_the_truth_about_esc() {
         hint_row(&preview)
     );
 }
+
+// --- the mid-turn queue in the transcript view (docs/queue.md) ---
+
+#[test]
+fn the_transcript_shows_a_message_waiting_for_the_running_turn() {
+    // The Ctrl+O view never hides a pending message — and a message handed to
+    // the running turn is pending exactly like a queued follow-up.
+    let mut app = App::new();
+    app.record_user_message("go");
+    app.begin_stream();
+    app.push_chunk("working");
+    app.steered.push_back("also check the tests".to_string());
+    let mut cache = TranscriptCache::default();
+    let text = cache
+        .lines(&app, 40)
+        .iter()
+        .map(plain)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        text.contains("❯ also check the tests"),
+        "the pending message is missing from the transcript:\n{text}"
+    );
+}
+
+#[test]
+fn queueing_a_message_invalidates_the_transcript_cache() {
+    // The signature has to see it: pushing onto `steered` changes no history
+    // length and no tool queue, so a cache keyed only on those would show a
+    // frozen page until something else moved.
+    let mut app = App::new();
+    app.record_user_message("go");
+    app.begin_stream();
+    app.push_chunk("working");
+    let mut cache = TranscriptCache::default();
+    let before = cache
+        .lines(&app, 40)
+        .iter()
+        .map(plain)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(!before.contains("❯ later"));
+    app.steered.push_back("later".to_string());
+    let after = cache
+        .lines(&app, 40)
+        .iter()
+        .map(plain)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        after.contains("❯ later"),
+        "the cache did not refresh when a message was queued:\n{after}"
+    );
+}
+
+#[test]
+fn an_agent_transcript_shows_that_agents_pending_message() {
+    let mut app = App::new();
+    app.begin_stream();
+    app.start_agent_group(false, &[spec("a1", "Fetch Manila weather", false)]);
+    app.queue_agent_chat("a1", "also add Elixir");
+    app.open_agent_view("a1");
+    let lines = agent_transcript_lines(&app, 40).expect("the agent view is open");
+    let text = lines.iter().map(plain).collect::<Vec<_>>().join("\n");
+    assert!(
+        text.contains("❯ also add Elixir"),
+        "the agent's pending message is missing from its transcript:\n{text}"
+    );
+}

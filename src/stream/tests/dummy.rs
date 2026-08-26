@@ -250,3 +250,30 @@ fn the_dummy_takes_a_queued_message_at_its_next_tool_boundary() {
         "and drained, so the turn end reclaims nothing"
     );
 }
+
+#[test]
+fn the_dummy_queues_a_chat_message_into_a_running_agent() {
+    // The offline mirror of `LlmBackend::spawn_agent_chat` (docs/queue.md):
+    // the registry decides, and a running agent's session takes the message
+    // onto its queue for the next round boundary. Without this the agent
+    // view's own queue had no offline coverage at all — the dummy declined
+    // every chat.
+    let (agent_tx, _agent_rx) = unbounded_channel();
+    let registry = crate::agents::AgentRegistry::new(agent_tx);
+    let (id, _cancel) = registry.register(crate::agents::GENERAL_PURPOSE);
+    let dummy = DummyAi::with_startup_delay(Duration::ZERO).with_agents(registry.clone());
+    assert_eq!(
+        dummy.spawn_agent_chat(&id, "also add Elixir"),
+        crate::stream::AgentChatDelivery::Queued
+    );
+    assert_eq!(registry.take_pending_inputs(&id), vec!["also add Elixir"]);
+}
+
+#[test]
+fn the_dummy_declines_a_chat_with_no_subagents_attached() {
+    let dummy = DummyAi::with_startup_delay(Duration::ZERO);
+    assert_eq!(
+        dummy.spawn_agent_chat("a1", "hello"),
+        crate::stream::AgentChatDelivery::Declined
+    );
+}

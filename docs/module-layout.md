@@ -43,7 +43,7 @@ widened for the split.
 | `commands.rs` | The `COMMANDS` registry, the `/token` filter, and running the highlighted command. |
 | `file_picker.rs` | The `@` picker's query round-trip and path insertion. |
 | `input_history.rs` | `InputHistory` (↑/↓ recall) and `HistorySearch` (Ctrl+R). |
-| `queue.rs` | `QueuedTurn` and the mid-turn queue. |
+| `queue.rs` | `QueuedTurn`, the mid-turn queue, and the messages handed to the running turn (`docs/queue.md`). |
 | `tools.rs` | The tool-call batch queue and how a call resolves. |
 | `turn.rs` | Turn lifecycle: begin/stream/interrupt/finish, the status tally, the summary. |
 | `compact.rs` | `/compact`, auto-compaction, and the context gauge. |
@@ -138,7 +138,7 @@ can drive). Reading the seam meant scrolling past canned `ping` output.
 |--------|-------|
 | `mod.rs` | The facade (`mod` + `pub use`). |
 | `event.rs` | `StreamEvent` and its payloads (`ToolCallSummary`, `AgentSpec`, `AgentCallDone`, `TokenUsage`) — the whole wire format. |
-| `source.rs` | `ReplySource`: the one trait the event loop depends on. |
+| `source.rs` | `ReplySource`: the one trait the event loop depends on, plus `AgentChatDelivery` — how a message sent into a subagent's session landed (`docs/queue.md`). |
 | `cancel.rs` | `CancelToken`. |
 | `stall.rs` | `StallAi`, the wedged-backend double (`docs/interrupt.md`). |
 | `dummy/mod.rs` | `DummyAi` — the `ReplySource` impl, `turn_events`, the playback pacing. |

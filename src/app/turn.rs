@@ -400,6 +400,11 @@ impl App {
             && self.tool_queue.is_empty()
             && self.agent_group.is_none()
             && self.queued.is_empty()
+            // …and nothing handed to this turn that it never read: the
+            // interrupt is what sends those (docs/queue.md), so pulling the
+            // submission back into the composer while they dispatch as the
+            // next turn would read as the undo having done nothing.
+            && self.steered.is_empty()
         {
             self.status = None;
             let (text, pairs) = self.take_trailing_user_messages();

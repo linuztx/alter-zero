@@ -461,17 +461,6 @@ impl App {
             // recent entry, leaving the earlier batches queued. Guarded on an
             // empty composer so it never clobbers a draft (the composer is empty
             // in the normal flow — Enter/Tab emptied it on queue).
-            // A message steered into the running turn goes back first — it is
-            // the newest thing typed — but only the boundary's shared queue
-            // knows whether the turn has already read it, so it decides
-            // (docs/queue.md).
-            KeyCode::Up
-                if key.modifiers.contains(KeyModifiers::ALT)
-                    && self.input.is_empty()
-                    && !self.steered.is_empty() =>
-            {
-                Action::ReclaimSteered
-            }
             KeyCode::Up
                 if key.modifiers.contains(KeyModifiers::ALT)
                     && self.input.is_empty()
@@ -479,6 +468,17 @@ impl App {
             {
                 self.recall_last_queued();
                 Action::None
+            }
+            // With no follow-up left to edit, Alt+Up reaches the messages
+            // handed to the turn already running — but whether one can still
+            // be taken back is the boundary's shared queue to answer, not
+            // ours: it may have been read a moment ago (docs/queue.md).
+            KeyCode::Up
+                if key.modifiers.contains(KeyModifiers::ALT)
+                    && self.input.is_empty()
+                    && !self.steered.is_empty() =>
+            {
+                Action::ReclaimSteered
             }
             // ↑/↓ (and their terminal twins Ctrl+P/Ctrl+N): the open band's
             // selection first (codex's "popups win"), then shell-style history
