@@ -8967,89 +8967,119 @@ echo "==== Phase 97: an unread message comes back on Alt+Up ===="
 
 
 
-# --- Phase 98: a permission prompt raised INSIDE a subagent's session view is
-# a question about THAT conversation (docs/permissions.md,
-# docs/agent-view-streaming.md). The prompt replaces the whole live region, so
-# its context cells are the only thing left of the agent's stream — and they
-# used to come from `App::agent_group()` / `App::tool_queue()`, i.e. the
-# LEAD's live cell and the MAIN turn's queue, drawn over a screen showing a
-# different conversation. The reported bug: the subagent's TUI showing
-# `● Agent(Run ls -la via subagent)` / `⎿ Working…` where its own
-# `● Bash(ls -la)` / `⎿ Waiting…` belonged. The `agent-permission` demo
-# launches a background subagent whose own PARALLEL bash batch asks, so the
-# whole round trip is drivable offline. ---
+# --- Phase 98: a subagent's PERMISSION PROMPT is about the conversation ON
+# SCREEN (docs/permissions.md, docs/agent-view-streaming.md). In manual mode,
+# standing inside a lone FOREGROUND subagent's session view, its `bash` request
+# opened over the LEAD's live `● Agent(…)` / `⎿ Working…` cell — the main
+# strip's lone-agent tree, which that screen does not show — hiding the agent's
+# own `● Bash(ls -la)` / `⎿ Waiting…` and every waiting sibling of its parallel
+# batch. The `agent-permission` demo launches one foreground subagent that
+# announces two `bash` calls and asks at the shared gate before each: walk into
+# its session and assert the prompt's context is ITS cells, not the lead's —
+# then leave and assert the MAIN view still shows the lead's cell, which is
+# what is on screen there. ---
 S98="${S}_agentperm"
-tmux new-session -d -s "$S98" -x 100 -y 40 "$APP"
+tmux new-session -d -s "$S98" -x 100 -y 34 "$APP"
 sleep 0.7
-tmux send-keys -t "$S98" -l "launch a subagent that needs permission"
+tmux send-keys -t "$S98" -l "subagent permission demo"
 sleep 0.3
 tmux send-keys -t "$S98" Enter
-for _ in $(seq 1 200); do # the background launch puts its row on the roster
-	if tmux capture-pane -t "$S98" -p | grep -qF "Ask before two commands"; then
+agentperm_row=""
+for _ in $(seq 1 200); do # the foreground launch puts its row on the roster
+	if tmux capture-pane -t "$S98" -p | grep -qF "Run ls -la via subagent"; then
+		agentperm_row=1
 		break
 	fi
 	sleep 0.1
 done
-# ↓ ↓ Enter into its session — the demo's longer pre-roll leaves room for
-# exactly this walk, since the prompt owns every key once it opens.
+if [ -z "$agentperm_row" ]; then
+	echo "FAIL: Phase 98 — the gated subagent demo never put its row on the footer roster" >&2
+	status=1
+fi
+# The lead's own cell IS right in the main view — a lone foreground launch
+# wears the tool-cell look there (docs/agent-tool.md).
+agentperm_main="$(tmux capture-pane -t "$S98" -p)"
+if ! printf '%s' "$agentperm_main" | grep -qF "● Agent(Run ls -la via subagent)"; then
+	echo "FAIL: Phase 98 — the main view is missing the lead's live agent cell" >&2
+	status=1
+fi
+# ↓ opens the roster on `● main`, a second ↓ steps onto the agent, Enter opens
+# its session — all inside the demo's pre-roll, before its first request.
 tmux send-keys -t "$S98" Down
 sleep 0.2
 tmux send-keys -t "$S98" Down
 sleep 0.2
 tmux send-keys -t "$S98" Enter
-sleep 0.3
-for _ in $(seq 1 250); do
-	if tmux capture-pane -t "$S98" -p | grep -qF "requires approval"; then
+agentperm_entered=""
+for _ in $(seq 1 60); do # the view is up once its rule carries the description
+	if tmux capture-pane -t "$S98" -p | grep -qF "─ Run ls -la via subagent ─"; then
+		agentperm_entered=1
 		break
 	fi
 	sleep 0.1
 done
-agentperm="$(tmux capture-pane -t "$S98" -p -S -200)"
+if [ -z "$agentperm_entered" ]; then
+	echo "FAIL: Phase 98 — never reached the subagent's session view (the demo's pre-roll must outlast the ↓ ↓ Enter walk)" >&2
+	status=1
+fi
+agentperm_view=""
+for _ in $(seq 1 200); do # …and its first `bash` call raises the prompt
+	agentperm_view="$(tmux capture-pane -t "$S98" -p)"
+	if printf '%s' "$agentperm_view" | grep -qF "Do you want to proceed?"; then
+		break
+	fi
+	sleep 0.1
+done
 echo "==== Phase 98: the prompt inside the subagent's session view ===="
-printf '%s\n' "$agentperm" | grep -v '^$' | sed -n '1,20p'
-if ! printf '%s' "$agentperm" | grep -qF "Run two shell commands"; then
-	echo "FAIL: Phase 98 — the agent session view never opened on the agent's own transcript" >&2
+printf '%s\n' "$agentperm_view"
+if ! printf '%s' "$agentperm_view" | grep -qF "● Bash(ls -la)"; then
+	echo "FAIL: Phase 98 — the prompt does not show the AGENT's own call above it" >&2
 	status=1
 fi
-if ! printf '%s' "$agentperm" | grep -qF "from the general-purpose agent"; then
-	echo "FAIL: Phase 98 — the subagent's permission prompt never opened" >&2
+if ! printf '%s' "$agentperm_view" | grep -qF "● Bash(pwd)"; then
+	echo "FAIL: Phase 98 — the batch's waiting sibling is missing from the prompt's context" >&2
 	status=1
 fi
-# The asked-about call, and its parallel sibling, both as `⎿ Waiting…`.
-for want in "● Bash(ls -la)" "● Bash(echo hello from the subagent)"; do
-	if ! printf '%s' "$agentperm" | grep -qF "$want"; then
-		echo "FAIL: Phase 98 — '$want' is missing above the prompt: the subagent's own batch is not the context (the reported bug)" >&2
-		status=1
-	fi
-done
-waiting_rows="$(printf '%s' "$agentperm" | grep -c "⎿  Waiting…")"
-if [ "${waiting_rows:-0}" -lt 2 ]; then
-	echo "FAIL: Phase 98 — only $waiting_rows '⎿ Waiting…' rows above the prompt; a parallel batch shows one per call" >&2
+if [ "$(printf '%s' "$agentperm_view" | grep -cF "⎿  Waiting…")" -ne 2 ]; then
+	echo "FAIL: Phase 98 — both queued cells must read '⎿ Waiting…' above the prompt" >&2
 	status=1
 fi
-# …and NOT the lead's cell, which belongs to the main screen.
-if printf '%s' "$agentperm" | grep -qF "● Agent("; then
-	echo "FAIL: Phase 98 — the lead's '● Agent(…)' cell is on the subagent's screen (the reported bug)" >&2
+if printf '%s' "$agentperm_view" | grep -qF "● Agent(Run ls -la via subagent)"; then
+	echo "FAIL: Phase 98 — the LEAD's agent cell covered the agent's own cells (the reported bug)" >&2
 	status=1
 fi
-# Answering runs the call and the cell resolves on the AGENT's transcript.
-tmux send-keys -t "$S98" -l "1"
-sleep 0.5
-for _ in $(seq 1 200); do
-	if tmux capture-pane -t "$S98" -p -S -200 | grep -qF "Exit code: 0"; then
+if ! printf '%s' "$agentperm_view" | grep -qF "Bash command · from the general-purpose agent"; then
+	echo "FAIL: Phase 98 — the prompt does not say which subagent asked" >&2
+	status=1
+fi
+# Answer it (option 1), let the batch drain, then Esc back to the main view:
+# the lead's cell is on screen there, and the agent's own cells are not.
+tmux send-keys -t "$S98" Enter
+sleep 0.6
+for _ in $(seq 1 200); do # the second call raises its own prompt
+	if tmux capture-pane -t "$S98" -p | grep -qF "don't ask again for: pwd"; then
 		break
 	fi
 	sleep 0.1
 done
-agentperm_after="$(tmux capture-pane -t "$S98" -p -S -200)"
-if ! printf '%s' "$agentperm_after" | grep -qF "total 8"; then
-	echo "FAIL: Phase 98 — the approved call's output never committed to the agent's transcript" >&2
+agentperm_second="$(tmux capture-pane -t "$S98" -p)"
+if ! printf '%s' "$agentperm_second" | grep -qF "● Bash(pwd)"; then
+	echo "FAIL: Phase 98 — the second prompt lost the call it is about" >&2
 	status=1
 fi
-echo "==== Phase 98: the approved cell on the agent's own transcript ===="
-printf '%s\n' "$agentperm_after" | grep -v '^$' | sed -n '1,14p'
+tmux send-keys -t "$S98" Enter
+sleep 0.8
+tmux send-keys -t "$S98" Escape
+sleep 0.8
+agentperm_back="$(tmux capture-pane -t "$S98" -p)"
+echo "==== Phase 98: back in the main view ===="
+printf '%s\n' "$agentperm_back"
+if ! printf '%s' "$agentperm_back" | grep -qF "subagent permission demo"; then
+	echo "FAIL: Phase 98 — Esc did not return to the main conversation" >&2
+	status=1
+fi
 tmux kill-session -t "$S98" 2>/dev/null
-echo "==== Phase 98: a subagent's prompt asks about the subagent's own calls ===="
+echo "==== Phase 98: a subagent's prompt asks about the screen it opens on ===="
 
 
 if [ "$status" -eq 0 ]; then

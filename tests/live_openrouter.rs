@@ -18,12 +18,15 @@
 
 use std::path::PathBuf;
 
-use alter_zero::app::{HistoryItem, ToolCall, ToolStatus};
+use alter_zero::app::{HistoryItem, Role, ToolCall, ToolStatus};
 use alter_zero::context::{ContextMessage, ContextRole, ContextToolCall, context_messages};
 use alter_zero::llm::classifier::ClassifierContext;
 use alter_zero::llm::{LlmBackend, ModelConfig, ThinkingMode};
 use alter_zero::permission::{PermissionKind, PermissionRequest, denial_result, denied_display};
 use alter_zero::stream::{CancelToken, ReplySource, StreamEvent};
+use alter_zero::ui::{StreamRender, message_lines};
+use ratatui::style::{Color, Modifier};
+use ratatui::text::Line;
 
 /// A backend configured for OpenRouter from the environment, for `model` with
 /// the given thinking mode and known image-input support. Panics with a clear
@@ -3837,4 +3840,215 @@ fn live_streaming_never_loses_or_repeats_a_row() {
     }
     assert!(checked > 0, "no live reply was checked");
     println!("checked {checked} (reply × width) combinations");
+}
+
+// --- live streaming into the inline render pipeline (docs/markdown.md) ---
+//
+// `ui::tests::stream_stress` fuzzes the incremental renderer over *generated*
+// fragment soup. These drive the same differential harness over a **real
+// model's streamed reply**: the one-frontier contract (`committed ++ preview
+// == the batch render of the prefix`) and prefix stability, checked at every
+// character prefix of what a provider actually sent — its own chunk
+// boundaries included, since every chunk boundary is a character boundary.
+// A model writes markdown a fuzzer only approximates (nested lists under a
+// table, a fenced block whose language tag arrives split, emoji in a heading),
+// so this is the corpus the generator cannot invent.
+
+/// A Venice/Agent-Zero backend for the streaming-stress prompts.
+fn venice_backend(system: Option<String>) -> LlmBackend {
+    let key = std::env::var("A0_VENICE_API_KEY")
+        .expect("set A0_VENICE_API_KEY to run the Venice live tests");
+    let model = std::env::var("ALTER_ZERO_LIVE_VENICE_MODEL")
+        .unwrap_or_else(|_| "openai-gpt-4o-mini-2024-07-18".to_string());
+    let providers = alter_zero::llm::ProvidersFile::builtin();
+    let sel = alter_zero::llm::Selection {
+        provider_id: "a0_venice".to_string(),
+        model,
+        api_key: Some(key),
+        temperature: Some(0.0),
+        thinking: None,
+        vision: None,
+        cache_key: None,
+    };
+    let cfg = providers.model_config(&sel).expect("a0_venice is built in");
+    LlmBackend::with_system_prompt(cfg, system)
+}
+
+/// Stream `prompt` through `backend`, returning the reply text **and** the
+/// chunk boundaries the provider actually produced (cumulative byte offsets),
+/// so a failure can name the split that broke the render.
+fn stream_with_bounds(backend: &LlmBackend, prompt: &str) -> (String, Vec<usize>) {
+    let context = vec![ContextMessage::new(ContextRole::User, prompt)];
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let handle = backend.spawn(prompt.to_string(), vec![], context, tx, CancelToken::new());
+    let mut text = String::new();
+    let mut bounds = Vec::new();
+    while let Some(event) = rx.blocking_recv() {
+        match event {
+            StreamEvent::Chunk(chunk) => {
+                text.push_str(&chunk);
+                bounds.push(text.len());
+            }
+            StreamEvent::Retrying { attempt, max } => println!("retrying {attempt}/{max}…"),
+            StreamEvent::Error(e) => panic!("backend error: {e}"),
+            StreamEvent::StreamDone => break,
+            _ => {}
+        }
+    }
+    handle.join().expect("backend thread joins");
+    (text, bounds)
+}
+
+/// The plain text of a rendered row with **everything the terminal would
+/// show** — both colours, the modifiers, and `underline_color` — the same
+/// signature `ui::tests::stream_stress` compares on, so a *style* flip on an
+/// already-committed row fails too (a code line recolouring when its closing
+/// paren lands is the bug this catches). `underline_color` is not decoration
+/// here but the OSC 8 link carrier (`docs/links.md`): a model's reply is full
+/// of URLs, and without that field a batch-vs-streaming divergence in link
+/// interning would pass unseen.
+type LiveRow = (
+    String,
+    Option<Color>,
+    Modifier,
+    Option<Color>,
+    Option<Color>,
+);
+
+fn styled_row(line: &Line<'static>) -> Vec<LiveRow> {
+    line.spans
+        .iter()
+        .map(|s| {
+            (
+                s.content.to_string(),
+                s.style.fg,
+                s.style.add_modifier,
+                s.style.bg,
+                s.style.underline_color,
+            )
+        })
+        .collect()
+}
+
+type StyledRows = Vec<Vec<LiveRow>>;
+
+fn batch_rows(text: &str, width: u16) -> StyledRows {
+    message_lines(Role::Assistant, text, width)
+        .iter()
+        .map(styled_row)
+        .collect()
+}
+
+/// CLAUDE.md invariant 2 over a real reply, at `width`: every committed row
+/// extends a stable prefix of the final render, scrollback + strip are the
+/// reply so far at every prefix, and the commits plus `finish` reconstruct it
+/// whole.
+fn assert_live_stream_renders(full: &str, width: u16, bounds: &[usize], ctx: &str) {
+    let expected = batch_rows(full, width);
+    let mut render = StreamRender::new();
+    let mut committed: StyledRows = Vec::new();
+    for end in 1..=full.len() {
+        if !full.is_char_boundary(end) {
+            continue;
+        }
+        let prefix = &full[..end];
+        // Name the provider's own split when the failure lands on one.
+        let at_chunk = bounds.contains(&end);
+        committed.extend(render.commit(prefix, width).iter().map(styled_row));
+        assert!(
+            committed.len() <= expected.len() && committed[..] == expected[..committed.len()],
+            "{ctx}: a committed row diverged after {end} bytes (chunk boundary: {at_chunk}, w={width})\n\
+             prefix ends {:?}\ngot {committed:?}\nwant a prefix of {expected:?}",
+            &prefix[prefix.len().saturating_sub(40)..],
+        );
+        let preview: StyledRows = render
+            .preview(prefix, width, usize::MAX)
+            .iter()
+            .map(styled_row)
+            .collect();
+        let mut on_screen = committed.clone();
+        on_screen.extend(preview.iter().cloned());
+        assert_eq!(
+            on_screen,
+            batch_rows(prefix, width),
+            "{ctx}: scrollback + strip must be the reply so far after {end} bytes \
+             (chunk boundary: {at_chunk}, w={width})\ncommitted {committed:?}\npreview {preview:?}"
+        );
+    }
+    committed.extend(render.finish(full, width).iter().map(styled_row));
+    assert_eq!(
+        committed, expected,
+        "{ctx}: reconstruct the whole reply (w={width})"
+    );
+}
+
+/// The prompt that makes a model emit everything the renderer has to survive
+/// in one reply — the shapes `StreamRender::commit` withholds by source line.
+const HOSTILE_MARKDOWN_PROMPT: &str = "\
+Reply with ONE markdown document and no preamble. It must contain, in order:
+1. A `##` heading containing an emoji and a CJK word.
+2. A short paragraph with **bold**, *italic*, `inline code`, a bare URL \
+https://example.com/a/very/long/path?q=1&r=2 and a [labelled link](https://example.org/x).
+3. A markdown table with 4 columns and 5 rows, where one cell holds an emoji \
+and one holds CJK text.
+4. A fenced ```python block of at least 12 lines including a comment, a string \
+with a paren in it, and a nested function.
+5. A nested bullet list, 3 levels deep.
+6. One paragraph that is a single line of at least 400 characters with no newlines.
+Do not explain any of it.";
+
+#[test]
+#[ignore = "hits the network; needs A0_VENICE_API_KEY"]
+fn live_streamed_markdown_upholds_the_one_frontier_contract() {
+    let backend = venice_backend(Some(
+        "You are a markdown generator. Output only the requested document.".to_string(),
+    ));
+    let (reply, bounds) = stream_with_bounds(&backend, HOSTILE_MARKDOWN_PROMPT);
+    println!(
+        "streamed {} bytes in {} chunks (min {}, max {})",
+        reply.len(),
+        bounds.len(),
+        bounds.windows(2).map(|w| w[1] - w[0]).min().unwrap_or(0),
+        bounds.windows(2).map(|w| w[1] - w[0]).max().unwrap_or(0),
+    );
+    assert!(
+        reply.len() > 400,
+        "the model produced a document: {reply:?}"
+    );
+    assert!(reply.contains("```"), "…with a fenced block: {reply:?}");
+    assert!(reply.contains('|'), "…and a table: {reply:?}");
+    // A width sweep on one network call: the degenerate narrows (where a
+    // table re-fits every prefix and a hard word break lands mid-glyph), the
+    // sizes a real pane takes, and one wider than the document.
+    for width in [2u16, 3, 7, 12, 21, 37, 60, 80, 120] {
+        assert_live_stream_renders(&reply, width, &bounds, "live hostile markdown");
+    }
+}
+
+#[test]
+#[ignore = "hits the network; needs A0_VENICE_API_KEY"]
+fn live_streamed_wide_glyphs_upholds_the_one_frontier_contract() {
+    // The wide-glyph half of the same contract: a reply that is mostly CJK and
+    // emoji, where one source character occupies two display columns and the
+    // wrap has to agree with `cols()` at every prefix (`docs/table-streaming.md`
+    // *Wide glyphs*).
+    let backend = venice_backend(Some(
+        "You are a markdown generator. Output only the requested document.".to_string(),
+    ));
+    let (reply, bounds) = stream_with_bounds(
+        &backend,
+        "Reply with a markdown table of 3 columns and 6 rows about Japanese cities. \
+         Every cell must be Japanese text, and each row must also carry one emoji. \
+         Then one paragraph of at least 200 characters of Japanese prose. No preamble.",
+    );
+    println!("streamed {} bytes in {} chunks", reply.len(), bounds.len());
+    assert!(
+        reply.len() > 200,
+        "the model produced a document: {reply:?}"
+    );
+    // Odd widths matter here: a two-column glyph straddling the wrap point is
+    // where `cols()` and the renderer have to agree exactly.
+    for width in [2u16, 3, 5, 13, 22, 41, 60, 80, 121] {
+        assert_live_stream_renders(&reply, width, &bounds, "live wide glyphs");
+    }
 }

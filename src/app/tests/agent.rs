@@ -727,3 +727,66 @@ fn a_message_reaches_an_agents_transcript_by_exactly_one_path() {
         .count();
     assert_eq!(landed, 1, "the echo records it, and only the echo");
 }
+
+#[test]
+fn a_foreground_groups_resolution_settles_its_members_live_calls() {
+    // A member the group settles from the call's outcome — its own terminal
+    // event never arrived (a killed loop returns without one; the offline
+    // dummy scripts none at all) — must settle the way every other settle
+    // does: its running call resolved onto the transcript, its queue cleared.
+    // Flipping the status alone left a *finished* agent still owning live
+    // cells, so its session view previewed a `⎿ Running…` that could never
+    // resolve and the next chat continuation's batch queued behind it.
+    let mut app = App::new();
+    app.begin_stream();
+    app.start_agent_group(false, &agent_specs(false));
+    for event in [
+        StreamEvent::ToolBatch(vec![
+            ToolCallSummary {
+                name: "Bash".into(),
+                args: "sleep 30".into(),
+            },
+            ToolCallSummary {
+                name: "Read".into(),
+                args: "main.rs".into(),
+            },
+        ]),
+        StreamEvent::ToolStart {
+            name: "Bash".into(),
+            args: "sleep 30".into(),
+            detail: None,
+            arguments: None,
+        },
+    ] {
+        app.apply_agent_event("a1", &event);
+    }
+    assert_eq!(app.agent("a1").unwrap().tool_queue.len(), 2, "mid-round");
+    app.finish_agent_group(
+        false,
+        &[
+            AgentCallDone {
+                id: "a1".into(),
+                output: AGENT_STOPPED_OUTPUT.into(),
+                ok: false,
+            },
+            AgentCallDone {
+                id: "a2".into(),
+                output: AGENT_STOPPED_OUTPUT.into(),
+                ok: false,
+            },
+        ],
+    );
+    let run = app.agent("a1").expect("the roster entry");
+    assert_eq!(run.status, crate::agents::AgentStatus::Interrupted);
+    assert!(
+        run.tool_queue.is_empty(),
+        "a settled agent owns no live cells: {:?}",
+        run.tool_queue
+    );
+    assert!(
+        matches!(run.history.last(), Some(HistoryItem::Tool(tool))
+            if tool.name == "Bash" && tool.status == ToolStatus::Failed),
+        "the running call resolved onto its transcript: {:?}",
+        run.history.last()
+    );
+}

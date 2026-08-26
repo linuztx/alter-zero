@@ -309,6 +309,14 @@ small ways, each fixed with the main path's own rule and a unit test:
 - **A backgrounded call charges its acknowledgement.** `resolve_front_tool`
   folds every resolution's model-facing text into the `↑` tally; the fold's
   `ToolBackgrounded` arm charged nothing.
+- **A group's resolution settles its members' live calls.** A foreground
+  member whose own terminal event never arrived — a killed loop returns
+  without one, the offline dummy scripts none — was settled by
+  `App::finish_agent_group` with a bare `agent.status = …` write, so a
+  *finished* agent went on owning live cells: its session view previewed a
+  `⎿ Running…` that could never resolve. It settles through the shared
+  `AgentRun::settle_from_group` now (partial thought, `resolve_tools`,
+  status), the way every other settle does.
 
 ### 7. `/copy` copies what the screen shows
 
@@ -329,8 +337,12 @@ untouched.
   agent's own call (`● Bash(ls -la)` / `⎿ Waiting…`, never the lead's
   `Agent(` cell), a parallel batch shows every waiting sibling
   blank-separated, and a request from another conversation keeps no context
-  at all. The view's *strip* previews the same batch, and `preview_rows`
-  reserves exactly the rows it paints.
+  at all — while the **main** view's own prompt still keeps the lead's tree,
+  the other half of the same rule. An overflowing page keeps the agent's
+  static cells and drops its *running* one, so `context_is_stable`'s new
+  branch is covered where it matters (`docs/view-flow.md`). The view's
+  *strip* previews the same batch, and `preview_rows` reserves exactly the
+  rows it paints.
 - `agents` (unit): **every** resolution — `ToolEnd`, `ToolAnswered`,
   `ToolRejected`, `ToolBackgrounded` — leaves its cell as the transcript's
   last item, and a backend `Error` leaves the call it killed there (the
@@ -339,6 +351,15 @@ untouched.
   (`every_flush_point_is_declared`); a batch announcement replaces the queue;
   all three resolutions record `truncated`; a backgrounded call charges its
   acknowledgement.
+- `app` (unit): a foreground group's resolution settles its members' live
+  calls (`a_foreground_groups_resolution_settles_its_members_live_calls`) —
+  the running call resolved onto the transcript, the queue cleared.
+- `tests/live_openrouter.rs` (live, `#[ignore]`): the same one-frontier
+  contract over a **real model's** streamed reply — hostile markdown at nine
+  widths including degenerate narrows, and a CJK+emoji corpus at odd widths
+  where a two-column glyph straddles the wrap point — tracking the provider's
+  own chunk boundaries so a failure names the split that broke the render.
+  The corpus a generator cannot invent, checked at every character prefix.
   `apply` buffers `ThinkingChunk` only while a phase is open,
   opening one flushes the text before it, the settle records
   `HistoryItem::Reasoning` **ahead of** the partial reply on both an `Error`
@@ -358,13 +379,19 @@ untouched.
 - `app` (unit): `last_assistant_text` follows the viewed agent, and `/copy`
   from inside the view returns that text.
 - `scripts/smoke.sh` **Phase 98**: the offline `agent-permission` scenario
-  (`src/stream/dummy/agent.rs`, cue "subagent" + "permission") launches a
-  background subagent whose own **parallel `bash` batch** asks, so the whole
-  round trip is drivable with no network. The phase walks the roster into that
-  session and asserts the prompt's context is the agent's own
-  `● Bash(ls -la)` / `⎿ Waiting…` over its `⎿ Waiting…` sibling — and that no
-  `● Agent(` cell is on that screen — then answers it and asserts the resolved
-  cell lands on the agent's own transcript.
+  (`src/stream/dummy/agent.rs`, cue "subagent" + "permission"). Three details
+  make it reproduce, and all three are the real backend's shape: the launch is
+  **foreground** (a background group resolves at once, so no live lead cell
+  survives to cover anything — which would make the negative assertion below
+  vacuous), the calls are announced as a **parallel batch** before any runs,
+  and the request is raised **before** the `ToolStart`, the approve seam's own
+  order, which is why the asked-about call genuinely reads `⎿ Waiting…`. The
+  phase asserts the lead's `● Agent(…)` cell *is* in the main view, that the
+  ↓ ↓ Enter walk reached the session view (so a race fails naming its cause,
+  not as a content mismatch), that the prompt there shows the agent's own
+  `● Bash(ls -la)` over `● Bash(pwd)` with two `⎿ Waiting…` rows and **no**
+  `● Agent(` cell, and that Esc back to the main view finds the lead's cell
+  still on screen.
 - `scripts/smoke.sh` **Phase 95**: drives the real binary. The dummy gains an
   `agent-stream` scenario (`src/stream/dummy/agent.rs`, cue "subagent") that
   launches one background subagent and plays *its* round on the subagent

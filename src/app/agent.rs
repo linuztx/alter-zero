@@ -318,13 +318,24 @@ impl App {
                 if let Some(agent) = self.agents.iter_mut().find(|agent| agent.id == done.id)
                     && !agent.status.is_final()
                 {
-                    agent.status = if done.ok {
+                    let status = if done.ok {
                         AgentStatus::Done
                     } else if done.output == AGENT_STOPPED_OUTPUT {
                         AgentStatus::Interrupted
                     } else {
                         AgentStatus::Failed
                     };
+                    // Through the shared settle, not a bare status write: a
+                    // member resolved from its group's outcome still has to
+                    // give up what it had in flight, or a finished agent
+                    // keeps live cells nothing will ever resolve
+                    // (`AgentRun::settle_from_group`).
+                    let cell = if status == AgentStatus::Interrupted {
+                        crate::app::INTERRUPT_TOOL_OUTPUT
+                    } else {
+                        &done.output
+                    };
+                    agent.settle_from_group(status, cell);
                     if done.ok && agent.result.is_none() {
                         agent.result = Some(done.output.clone());
                     }

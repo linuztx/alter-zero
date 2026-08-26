@@ -267,63 +267,70 @@ fn say(
     !cancel.is_cancelled()
 }
 
-// ===== The subagent that ASKS (`docs/permissions.md`) =====
+// --- the subagent that ASKS (docs/permissions.md) ---------------------------
+//
+// The reported bug, drivable offline: standing inside a subagent's session
+// view in manual mode, its `bash` request opened over the *lead's*
+// `● Agent(…)` / `⎿ Working…` cell — the main strip's lone-agent tree, which
+// that screen does not show — instead of the agent's own `● Bash(ls -la)` /
+// `⎿ Waiting…` and its batch siblings.
+//
+// Three details make it reproduce, and all three are the real backend's shape:
+// the launch is **foreground** (a background group resolves at once, so no
+// live lead cell survives to cover anything), the calls are announced as a
+// **parallel batch** before any runs, and the request is raised **before** the
+// `ToolStart` — the approve seam's own order, which is why the asked-about
+// call genuinely reads `⎿ Waiting…`.
 
-/// The gated demo's task label — the roster row and the session view's rule.
-const GATED_DESCRIPTION: &str = "Ask before two commands";
+/// The gated demo's task label — the roster row, the session view's rule, and
+/// the lead's live `● Agent({description})` cell.
+const GATED_DESCRIPTION: &str = "Run ls -la via subagent";
 
-/// Its launch prompt (the first user message of its transcript).
-const GATED_PROMPT: &str = "Run two shell commands, asking me before each one.";
+/// The prompt it is launched with (the first user message of its transcript).
+const GATED_PROMPT: &str = "Run `ls -la` and `pwd`, then report what you saw.";
 
-/// The two commands the gated subagent requests **in one parallel batch** —
-/// `(command, description, output, exit)`. Announced up front, so its session
-/// view shows the asked-about call over its `⎿ Waiting…` sibling exactly as
-/// the main view shows the main turn's batch (`docs/parallel-tools.md`).
-const GATED_COMMANDS: [(&str, &str, &str, u8); 2] = [
+/// Its parallel batch: two commands, announced together, asked one at a time.
+const GATED_COMMANDS: [(&str, &str); 2] = [
     (
         "ls -la",
-        "List this directory in long format",
-        "total 8\ndrwxr-xr-x  3 you you 4096 Jan  1 09:00 .\n-rw-r--r--  1 you you   42 Jan  1 09:00 notes.md",
-        0,
+        "total 12\ndrwxr-xr-x  3 user user 4096 Jan  1 00:00 .\n\
+         -rw-r--r--  1 user user   42 Jan  1 00:00 notes.md",
     ),
-    (
-        "echo hello from the subagent",
-        "Print a greeting",
-        "hello from the subagent",
-        0,
-    ),
+    ("pwd", "/home/user/repo"),
 ];
 
-/// How long the gated agent waits before its first event. Longer than
-/// [`DEMO_PRE_ROLL`]: the *point* of this demo is the prompt raised from
-/// inside the agent's session view, and the prompt owns every key once it is
-/// open — so the walk to that view (↓, ↓, Enter) has to finish first, or the
-/// first keystroke answers the question instead of opening the screen it is
-/// about.
-const GATED_PRE_ROLL: Duration = Duration::from_secs(6);
+/// How often the launcher polls the registry while the foreground group runs
+/// — `llm::backend`'s own wait cadence.
+const GATED_WAIT_POLL: Duration = Duration::from_millis(30);
 
-/// What the lead narrates while the gated agent works. Closes on the shared
-/// hand-off sentence like every other user-facing demo reply
-/// (`docs/dummy-backend.md`).
+/// How long this agent waits before its first request. Longer than
+/// [`DEMO_PRE_ROLL`] on purpose: the user has to reach the session view
+/// *before* the first prompt opens, and a prompt is modal — an early one
+/// swallows the ↓ ↓ Enter walk and answers itself on the Enter.
+const GATED_PRE_ROLL: Duration = Duration::from_millis(3500);
+
+/// What the agent answers once its batch resolves.
+const GATED_REPLY: &str = "One directory, one file, and the working directory \
+     is `/home/user/repo`. Both commands went through the permission prompt \
+     first — inside this session view it asks about **my** call, not the cell \
+     that launched me.";
+
+/// The main turn's narration, in the two-part shape every demo reply uses.
 const GATED_NARRATION: &str = concat!(
-    "Launching a subagent that has to ask. Walk the roster with **↓** and \
-     press **Enter** on its row to step into its session — the prompt it \
-     raises is about *its* call, so the cells above the question are its own \
-     `● Bash(…)` over `⎿ Waiting…`, its parallel sibling behind them.\n\n",
-    "That is the whole point: the prompt's context is what the screen you are \
-     looking at has on it. The lead's `● Agent(…)` cell belongs to the main \
-     screen, and stays there.\n\n",
+    "Launching one **foreground** subagent that runs a parallel `bash` batch. \
+     In manual mode each of its commands asks first. Press **↓** to walk the \
+     roster below, then **Enter** on its row to open its session — the prompt \
+     that opens there is about *its* call.\n\n",
+    "That is the point of the context cells above a prompt: they are the \
+     conversation on screen. In the main view you see the lead's `Agent(…)` \
+     cell; inside the agent's own session you see its `Bash(…)` cell over each \
+     waiting sibling of the batch.\n\n",
     handoff!()
 );
 
-/// Play the gated subagent demo: narrate, launch a background agent, and
-/// stream a round on the agent channel whose **own** parallel `bash` batch
-/// raises the shared permission prompt.
-///
-/// The request travels the *agent* channel, so `tui::agent`'s handler stamps
-/// whose it is before raising it — which is what lets the prompt's context
-/// cells be that agent's own queue instead of the lead's tree
-/// (`docs/agent-view-streaming.md`).
+/// Play the gated demo: narrate, launch **one foreground agent**, wait for it
+/// the way `llm::backend::run_agent_calls` does (polling the registry, killing
+/// on an Esc), then resolve the group and close.
 pub(in crate::stream) fn agent_permission_turn(stage: &AgentStage<'_>) {
     let (first, second) = reply_parts(GATED_NARRATION);
     if !say(&first, stage.tx, stage.cancel) {
@@ -331,13 +338,13 @@ pub(in crate::stream) fn agent_permission_turn(stage: &AgentStage<'_>) {
     }
     let (id, agent_cancel) = stage.agents.register(GENERAL_PURPOSE);
     let announced = stage.tx.send(StreamEvent::AgentBatch {
-        background: true,
+        background: false,
         agents: vec![AgentSpec {
             id: id.clone(),
             description: GATED_DESCRIPTION.to_string(),
             agent_type: GENERAL_PURPOSE.to_string(),
             prompt: GATED_PROMPT.to_string(),
-            background: true,
+            background: false,
         }],
     });
     if announced.is_err() {
@@ -345,17 +352,27 @@ pub(in crate::stream) fn agent_permission_turn(stage: &AgentStage<'_>) {
     }
     spawn_gated_agent_session(
         stage.agents.clone(),
+        stage.gate.cloned(),
         id.clone(),
         agent_cancel,
-        stage.gate.cloned(),
     );
+    // The foreground wait loop, one level down: poll until the agent settles,
+    // and an Esc on the *launching* turn kills it (`docs/agent-tool.md`).
+    while !stage.agents.is_done(&id) {
+        if stage.cancel.is_cancelled() {
+            let _ = stage.agents.kill(&id);
+            return;
+        }
+        nap(GATED_WAIT_POLL, stage.cancel);
+    }
+    let (output, ok) = match stage.agents.outcome(&id) {
+        Some(Ok(text)) => (text, true),
+        Some(Err(error)) => (format!("[agent failed: {error}]"), false),
+        None => (crate::app::AGENT_STOPPED_OUTPUT.to_string(), false),
+    };
     let resolved = stage.tx.send(StreamEvent::AgentGroupDone {
-        background: true,
-        agents: vec![AgentCallDone {
-            id,
-            output: crate::llm::backend::agent_launch_text(GATED_DESCRIPTION),
-            ok: true,
-        }],
+        background: false,
+        agents: vec![AgentCallDone { id, output, ok }],
     });
     if resolved.is_err() {
         return;
@@ -365,159 +382,151 @@ pub(in crate::stream) fn agent_permission_turn(stage: &AgentStage<'_>) {
     }
 }
 
-/// One gated call's request, as the real `permission_request` builds a `bash`
-/// one: the command as the target, the model's own description as the detail,
-/// and the asker's **type** (the title's `· from the general-purpose agent`).
-/// The id is the boundary's to stamp — only the agent channel knows it.
-fn gated_request(gate: &PermissionGate, command: &str, detail: &str) -> PermissionRequest {
-    PermissionRequest {
+/// Stream the gated agent's round on the agent channel: the pre-roll, the
+/// announced batch, then each command asked at the shared gate before it runs.
+///
+/// The `Permission` event rides the **agent** channel like everything else a
+/// subagent reports — `tui::agent::Session::on_agent_event` lifts it out and
+/// raises the one shared prompt, exactly as the live forwarder's does.
+fn spawn_gated_agent_session(
+    registry: AgentRegistry,
+    gate: Option<PermissionGate>,
+    id: String,
+    cancel: CancelToken,
+) {
+    thread::spawn(move || {
+        let outcome = gated_agent_round(&registry, gate.as_ref(), &id, &cancel);
+        // **Always** close the slot, on every path out — the real
+        // `spawn_subagent_run` does, and a *foreground* launcher polls
+        // `is_done` to resolve its group. An early return that skipped this
+        // would leave the launching turn spinning for an agent that had
+        // already stopped. (A killed slot keeps its own outcome.)
+        registry.finish(&id, outcome, Vec::new());
+    });
+}
+
+/// The gated agent's round, returning what its slot settles with — `Ok(reply)`
+/// for a completed run, `Err` for one the user stopped, the real backend's
+/// two outcomes.
+fn gated_agent_round(
+    registry: &AgentRegistry,
+    gate: Option<&PermissionGate>,
+    id: &str,
+    cancel: &CancelToken,
+) -> Result<String, String> {
+    const STOPPED: &str = "stopped by the user";
+    nap(GATED_PRE_ROLL, cancel);
+    let send = |event: StreamEvent, pause: Duration| -> bool {
+        if cancel.is_cancelled() {
+            return false;
+        }
+        registry.send(AgentEvent::Stream {
+            id: id.to_string(),
+            event,
+        });
+        nap(pause, cancel);
+        !cancel.is_cancelled()
+    };
+    let calls: Vec<ScriptedCall> = GATED_COMMANDS
+        .iter()
+        .map(|&(command, output)| ScriptedCall::command(command, output, 0))
+        .collect();
+    if !send(
+        StreamEvent::ToolBatch(calls.iter().map(ScriptedCall::summary).collect()),
+        TOOL_DELAY,
+    ) {
+        return Err(STOPPED.to_string());
+    }
+    for (call, (command, _)) in calls.iter().zip(GATED_COMMANDS) {
+        // The approve seam: ask BEFORE the `ToolStart`, so the cell the
+        // prompt is about is still `⎿ Waiting…` while it asks.
+        let refusal = match gate {
+            Some(gate) => match ask_at_gate(gate, registry, id, command, cancel) {
+                Gated::Cancelled => return Err(STOPPED.to_string()),
+                Gated::Allowed => None,
+                Gated::Refused(texts) => Some(texts),
+            },
+            None => None,
+        };
+        if !send(call.start(), TOOL_DELAY) {
+            return Err(STOPPED.to_string());
+        }
+        let resolution = match refusal {
+            Some((display, result)) => StreamEvent::ToolRejected {
+                display,
+                result,
+                truncated: false,
+            },
+            None => call.end(),
+        };
+        if !send(resolution, CHUNK_DELAY) {
+            return Err(STOPPED.to_string());
+        }
+    }
+    for piece in chunks(GATED_REPLY) {
+        if !send(StreamEvent::Chunk(piece), CHUNK_DELAY) {
+            return Err(STOPPED.to_string());
+        }
+    }
+    send(StreamEvent::StreamDone, Duration::ZERO);
+    Ok(GATED_REPLY.to_string())
+}
+
+/// How one gated command came back from the shared prompt.
+enum Gated {
+    /// Run it (approved, or already covered by a standing rule).
+    Allowed,
+    /// Don't: the cell text and the model-facing instruction.
+    Refused((String, String)),
+    /// The turn was cancelled out from under us — stop.
+    Cancelled,
+}
+
+/// Raise `command`'s request on the **agent** channel and block on the shared
+/// gate until the user answers — [`gated::Stage::ask`]'s shape, over the
+/// subagent's own channel and carrying its `agent` attribution so the prompt's
+/// title says `· from the general-purpose agent`.
+fn ask_at_gate(
+    gate: &PermissionGate,
+    registry: &AgentRegistry,
+    id: &str,
+    command: &str,
+    cancel: &CancelToken,
+) -> Gated {
+    let mut request = PermissionRequest {
         id: gate.next_id(),
         kind: PermissionKind::Bash,
         target: command.to_string(),
         body: String::new(),
-        detail: Some(detail.to_string()),
+        detail: None,
         agent: Some(GENERAL_PURPOSE.to_string()),
+        // The type the title names; **which** run asked is the boundary's to
+        // stamp, since only the agent channel knows the id
+        // (`tui::agent::Session::on_agent_event`).
         agent_id: None,
-    }
-}
-
-/// How one gated call resolved, offline — the shape
-/// [`spawn_gated_agent_session`] acts on.
-enum GatedOutcome {
-    /// Approved: run it, and let the scripted resolution follow.
-    Run,
-    /// Refused: this `ToolRejected` replaces the call's `ToolEnd`
-    /// (`docs/permissions.md`).
-    Refused(StreamEvent),
-    /// The turn was cancelled out from under us — the channel is already
-    /// abandoned, so the caller simply stops.
-    Cancelled,
-}
-
-/// Map the user's answer onto that outcome, remembering an "allow always" as
-/// a session rule on the way through — the real approve seam's `judge`.
-fn judge_gated(
-    gate: &PermissionGate,
-    request: &mut PermissionRequest,
-    cancel: &CancelToken,
-) -> GatedOutcome {
-    let reject = |display: String, result: String| {
-        GatedOutcome::Refused(StreamEvent::ToolRejected {
-            display,
-            result,
-            truncated: false,
-        })
     };
+    if gate.allows(&request) {
+        return Gated::Allowed;
+    }
+    registry.send(AgentEvent::Stream {
+        id: id.to_string(),
+        event: StreamEvent::Permission(request.clone()),
+    });
     match gate.wait(&request.id, &|| cancel.is_cancelled()) {
-        Some(PermissionDecision::Approve) => GatedOutcome::Run,
+        Some(PermissionDecision::Approve) => Gated::Allowed,
         Some(PermissionDecision::ApproveAlways) => {
             request.id.clear();
-            gate.remember(request);
-            GatedOutcome::Run
+            gate.remember(&request);
+            Gated::Allowed
         }
-        Some(PermissionDecision::Deny(feedback)) => reject(
-            crate::permission::denied_display(request, feedback.as_deref()),
+        Some(PermissionDecision::Deny(feedback)) => Gated::Refused((
+            crate::permission::denied_display(&request, feedback.as_deref()),
             crate::permission::denial_result(feedback.as_deref()),
-        ),
-        Some(PermissionDecision::Explain) => reject(
+        )),
+        Some(PermissionDecision::Explain) => Gated::Refused((
             crate::permission::explain_display(),
-            crate::permission::explain_result(request),
-        ),
-        None => GatedOutcome::Cancelled,
+            crate::permission::explain_result(&request),
+        )),
+        None => Gated::Cancelled,
     }
-}
-
-/// Stream the gated agent's round on the agent channel: a pre-roll pause so
-/// the user can open its session view, the two-call `bash` batch announced up
-/// front, then per call — ask, **block on the gate**, resolve — exactly as
-/// `llm::agent::run_agent`'s loop does for a real subagent.
-///
-/// With no gate attached (`ALTER_ZERO_PERMISSIONS=0`) the calls simply run,
-/// which is what that setting means.
-fn spawn_gated_agent_session(
-    registry: AgentRegistry,
-    id: String,
-    cancel: CancelToken,
-    gate: Option<PermissionGate>,
-) {
-    thread::spawn(move || {
-        nap(GATED_PRE_ROLL, &cancel);
-        let send = |event: StreamEvent, pause: Duration| -> bool {
-            if cancel.is_cancelled() {
-                return false;
-            }
-            registry.send(AgentEvent::Stream {
-                id: id.clone(),
-                event,
-            });
-            nap(pause, &cancel);
-            !cancel.is_cancelled()
-        };
-        let calls: Vec<ScriptedCall> = GATED_COMMANDS
-            .iter()
-            .map(|&(command, _, output, exit)| ScriptedCall::command(command, output, exit))
-            .collect();
-        if !send(
-            StreamEvent::ToolBatch(calls.iter().map(ScriptedCall::summary).collect()),
-            TOOL_DELAY,
-        ) {
-            return;
-        }
-        let mut refused = false;
-        for (call, &(command, detail, _, _)) in calls.iter().zip(GATED_COMMANDS.iter()) {
-            // The approve seam, offline: a standing rule runs the call
-            // unasked, otherwise raise the request on the **agent** channel
-            // (so the boundary stamps whose it is) and block on the gate
-            // exactly as a real backend's tool thread does. `None` means the
-            // turn was cancelled out from under us.
-            let resolved = match &gate {
-                None => GatedOutcome::Run,
-                Some(gate) => {
-                    let mut request = gated_request(gate, command, detail);
-                    if gate.allows(&request) {
-                        GatedOutcome::Run
-                    } else {
-                        registry.send(AgentEvent::Stream {
-                            id: id.clone(),
-                            event: StreamEvent::Permission(request.clone()),
-                        });
-                        judge_gated(gate, &mut request, &cancel)
-                    }
-                }
-            };
-            if matches!(resolved, GatedOutcome::Cancelled) {
-                return;
-            }
-            // The cell goes live first either way — the real loop emits
-            // `ToolStart` and then sends `ToolRejected` *in place of* the
-            // `ToolEnd`, which is what carries the call's verbatim arguments
-            // onto the recorded cell (`docs/permissions.md`).
-            if !send(call.start(), TOOL_DELAY) {
-                return;
-            }
-            let event = match resolved {
-                GatedOutcome::Run => call.end(),
-                GatedOutcome::Refused(rejection) => {
-                    refused = true;
-                    rejection
-                }
-                GatedOutcome::Cancelled => return,
-            };
-            if !send(event, CHUNK_DELAY) {
-                return;
-            }
-        }
-        let closing = if refused {
-            "Understood — I left the refused command alone."
-        } else {
-            "Both commands ran; their cells are above."
-        };
-        for piece in chunks(closing) {
-            if !send(StreamEvent::Chunk(piece), CHUNK_DELAY) {
-                return;
-            }
-        }
-        send(StreamEvent::StreamDone, Duration::ZERO);
-        registry.finish(&id, Ok(closing.to_string()), Vec::new());
-    });
 }

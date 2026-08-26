@@ -621,6 +621,27 @@ impl AgentRun {
         true
     }
 
+    /// Settle this run from its **group's** resolution — the path for a
+    /// member whose own terminal event never arrived (a cancelled loop
+    /// returns without one, and the offline dummy scripts none at all), so
+    /// the foreground group's outcome is all there is to settle from.
+    ///
+    /// Every other settle resolves what is in flight; this one must too, or
+    /// a *finished* agent goes on owning live cells — its session view
+    /// previews a `⎿ Running…` that can never resolve, and the next chat
+    /// continuation's batch queues behind the ghost. `output` is the resolved
+    /// cell's text (the call did not complete, whatever the run reported).
+    /// Inert once final.
+    pub fn settle_from_group(&mut self, status: AgentStatus, output: &str) {
+        if self.status.is_final() {
+            return;
+        }
+        // A partial thought is what the user saw — the interrupt's rule.
+        self.settle_thinking();
+        self.resolve_tools(output);
+        self.status = status;
+    }
+
     /// How long this entry lingers on the roster once it settles, before the
     /// boundary's sweep drops it. A user stop earns
     /// [`AGENT_STOPPED_LINGER`] (the red row is there to be read and

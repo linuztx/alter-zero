@@ -160,7 +160,7 @@ picked. Same trick `ui::TranscriptCache`'s counters use.
 
 | Name | Cue | What it demonstrates |
 |------|-----|----------------------|
-| `agent-permission` | "subagent" + "permission" | a background subagent whose **own parallel `bash` batch** asks — the only demo that raises the prompt from inside an agent session view, where the context cells are that agent's own `⎿ Waiting…` queue (`docs/agent-view-streaming.md`) |
+| `agent-permission` | "subagent" + "permission" | one **foreground** subagent whose own parallel `bash` batch asks: the prompt raised inside its session view is about *its* calls, not the lead's `● Agent(…)` cell (`docs/agent-view-streaming.md`) |
 | `permission-auto` | "permission" + "auto" | auto mode's classifier deciding a `bash` batch in the user's stead (`docs/permissions.md`) |
 | `permission-parallel` | "permission" + "parallel" | two gated `bash` calls — back-to-back prompts with no pause between them |
 | `permission-staggered` | "permission" + "staggered" | a screen-tall `write` prompt answered into a one-line one: the modal region's hardest shrink |
@@ -176,8 +176,8 @@ picked. Same trick `ui::TranscriptCache`'s counters use.
 Cue order is registry order, so a narrower cue sits above a broader one that
 would also match it — `agent-stream` sits above `table` because the table is
 what its subagent streams, so a prompt naming both means that one, and
-`agent-permission` leads the whole table because every `permission` entry and
-`agent-stream` alike would otherwise shadow it. Two cues
+`agent-permission` sits above the whole permission block for the same reason
+(its cue is "permission" plus one more word). Two cues
 carry a guard rather than an order: `agents` and `files` both exclude
 `agents.md`, because `/init` submits a canned prompt that names it and says
 "do not over**write**" — without the guard that turn would be answered with a
@@ -187,6 +187,10 @@ A scenario can also need a **handle** the session may not have attached, and
 `select` skips it when it is missing so the prompt falls through to a script:
 the permission demos need the gate, the ask demo the ask gate, and
 `agent-stream` the subagent registry (`Play::Gated`/`Asked`/`Agent`).
+`agent-permission` wants **both**: it is a `Play::Agent`, so the registry
+gates its selection, and `AgentStage` carries the permission gate as an
+`Option` — with none attached (permissions off) its subagent runs its calls
+unasked, which is what the real approve seam does there too.
 
 ## What the dummy actually says
 

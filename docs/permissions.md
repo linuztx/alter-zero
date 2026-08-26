@@ -74,14 +74,26 @@ live agent tree (`● Running 3 agents…` and its rows). Everything else in the
 live region gives way: the status line (nothing is running; the turn is blocked
 on you), the composer, the bands, and the footer.
 
-"On screen" is literal, and a **subagent session view** is a different screen
-(`docs/agent-tool.md`). Inside one, the context is that agent's **own** queue —
-its `● Bash(ls -la)` over `⎿ Waiting…`, every parallel sibling behind it,
-exactly the picture the main view draws for the main turn's batch. The lead's
-`● Agent({description})` cell and the main turn's queue belong to the screen
-the user is *not* looking at; drawing them here was the reported bug (the
-subagent's TUI showing `● Agent(Run ls -la via subagent)` / `⎿ Working…` where
-its own waiting call belonged — `docs/agent-view-streaming.md`).
+Those cells come from **the conversation on screen**, which is what makes them
+worth showing. In the main view that is the live agent group plus
+`App::tool_queue`, as above. Inside a **subagent's session view** it is that
+agent's own queue and nothing else (`App::viewed_agent`) — the same walk its
+strip previews, so the prompt looks exactly like the strip it replaced. The
+divergence was a reported bug, and manual mode met it on every command: with
+one *foreground* subagent running, the lead's live `● Agent(Run ls -la via
+subagent)` / `⎿ Working…` cell is up for as long as the agent works, so
+standing inside that agent's session its every `bash` request opened over the
+lead's cell — a cell belonging to a screen the user had left — with the
+agent's own `● Bash(ls -la)` / `⎿ Waiting…` and its batch siblings nowhere.
+`context_chunks` and `context_is_stable` both take the viewed agent's branch,
+because the flow test has to read the cells the context actually renders: the
+lead's group is *always* live while a foreground subagent runs, so judging
+staticness by it dropped the agent view's own static cells from every page too
+tall to fit. The rest of the boundary already followed this rule —
+`ui::preview_lines`, `ui::preview_rows`, `queued_lines`, `task_lines`,
+`context_lines`, `agent_transcript_lines` and `App::last_assistant_text` all
+swap on `viewed_agent()`; the prompt was the last holdout
+(`docs/agent-view-streaming.md`, `scripts/smoke.sh` Phase 98).
 
 Which agent asked is knowable because the request carries it:
 `PermissionRequest::agent` is the *type* the title names, and

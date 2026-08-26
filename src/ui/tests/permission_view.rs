@@ -1038,24 +1038,20 @@ fn a_pathological_body_still_caps_at_the_ceiling() {
     );
 }
 
-// --- inside an agent session view the prompt is about THAT conversation ---
+// --- the context follows the conversation on screen (`docs/permissions.md`) ---
 
-/// A lead turn that launched one foreground subagent, the agent's own round
-/// announced (`calls`, the front one the asked-about `Bash`), and the user
-/// inside that agent's session view — no prompt open yet.
-fn agent_view(calls: &[(&str, &str)]) -> App {
+/// A subagent `a1` mid-round with a parallel batch of `calls` announced, its
+/// session view open, and a prompt from that agent open for the front call.
+fn agent_view_pending(calls: &[(&str, &str)], request: PermissionRequest) -> App {
+    // What `tui::agent::Session::on_agent_event` stamps on every request that
+    // arrives over an agent's channel: **which** run asked. The type on
+    // `agent` names the asker in the title; only the id identifies it.
+    let mut request = request;
+    request.agent_id = Some("a1".to_string());
     let mut app = App::new();
+    app.set_session_info("dummy_model_name", "~/repo");
     app.begin_stream();
-    app.start_agent_group(
-        false,
-        &[AgentSpec {
-            id: "a1".to_string(),
-            description: "Run ls -la via subagent".to_string(),
-            agent_type: "general-purpose".to_string(),
-            prompt: "p".to_string(),
-            background: false,
-        }],
-    );
+    app.start_agent_group(false, &[spec("a1", "Run ls -la via subagent", false)]);
     app.apply_agent_event(
         "a1",
         &crate::stream::StreamEvent::ToolBatch(
@@ -1069,57 +1065,142 @@ fn agent_view(calls: &[(&str, &str)]) -> App {
         ),
     );
     app.open_agent_view("a1");
-    app
-}
-
-/// [`agent_view`] with the agent's own prompt open for its front call — the
-/// request stamped with **which** agent asked, exactly as
-/// `tui::agent::Session::on_agent_event` stamps it at the boundary.
-fn agent_view_prompt(calls: &[(&str, &str)]) -> App {
-    let mut app = agent_view(calls);
-    let mut req = request(PermissionKind::Bash, calls[0].1, "");
-    req.agent = Some("general-purpose".to_string());
-    req.agent_id = Some("a1".to_string());
-    app.open_permission(req);
+    app.open_permission(request);
     app
 }
 
 #[test]
 fn an_agent_views_prompt_shows_the_agents_own_call_not_the_lead_cell() {
-    // The reported bug: inside the subagent's session view the prompt led
-    // with the LEAD's `● Agent(Run ls -la via subagent) / ⎿ Working` cell —
-    // the main screen's context, on a screen showing a different
-    // conversation. The question is about the agent's own `Bash(ls -la)`,
-    // which is what its view has on screen, so that is the context.
-    let app = agent_view_prompt(&[("Bash", "ls -la")]);
-    let lines = rows(&app, 70, 40);
-    assert_eq!(lines[0], "● Bash(ls -la)", "{lines:?}");
-    assert_eq!(lines[1], "  ⎿  Waiting…", "{lines:?}");
+    // The reported bug (manual mode, one *foreground* subagent): standing
+    // inside the subagent's session view, its `bash` request opened over the
+    // lead's `● Agent(…)` / `⎿ Working…` cell — the main strip's lone-agent
+    // tree, which is not on this screen at all — instead of the agent's own
+    // `● Bash(ls -la)` / `⎿ Waiting…`. The prompt's context is the *viewed*
+    // conversation's cells, exactly like the strip it replaces.
+    let mut req = request(PermissionKind::Bash, "ls -la", "");
+    req.agent = Some("general-purpose".to_string());
+    let app = agent_view_pending(&[("Bash", "ls -la")], req);
+    let lines = rows(&app, 72, 40);
+    assert_eq!(
+        lines[0], "● Bash(ls -la)",
+        "the agent's own cell: {lines:?}"
+    );
+    assert_eq!(lines[1], "  ⎿  Waiting…", "…over its waiting row");
+    assert_eq!(lines[2], "", "…then a blank before the frame");
+    assert_eq!(lines[3], "─".repeat(72), "…then the prompt's top rule");
     assert!(
-        !lines.iter().any(|l| l.contains("Agent(")),
-        "the lead's agent cell belongs to the main screen: {lines:?}"
+        !lines.iter().any(|l| l.contains("Run ls -la via subagent")),
+        "the lead's agent cell is not on this screen: {lines:?}"
+    );
+    assert!(
+        !lines.iter().any(|l| l.contains("Working…")),
+        "…nor its activity row: {lines:?}"
     );
 }
 
 #[test]
 fn an_agent_views_prompt_shows_every_waiting_sibling_of_its_batch() {
-    // Parallel calls inside a subagent read exactly like the main view's
-    // batch: the asked-about call over each `⎿ Waiting…` sibling
-    // (docs/parallel-tools.md).
-    let app = agent_view_prompt(&[
-        ("Bash", "ls -la"),
-        ("Read", "README.md"),
-        ("Write", "notes.md"),
-    ]);
-    let lines = rows(&app, 70, 44);
-    assert_eq!(lines[0], "● Bash(ls -la)", "{lines:?}");
+    // A subagent's parallel batch reads like the main session's: the call
+    // being asked about over each not-yet-run sibling's `⎿ Waiting…`.
+    let app = agent_view_pending(
+        &[("Bash", "ls -la"), ("Read", "main.rs"), ("Bash", "pwd")],
+        request(PermissionKind::Bash, "ls -la", ""),
+    );
+    let lines = rows(&app, 72, 40);
+    let rule = lines
+        .iter()
+        .position(|l| l.starts_with('─'))
+        .expect("the prompt's top rule");
+    let context = &lines[..rule];
+    assert_eq!(context[0], "● Bash(ls -la)");
+    assert_eq!(context[1], "  ⎿  Waiting…");
+    assert_eq!(context[3], "● Read(main.rs)");
+    assert_eq!(context[4], "  ⎿  Waiting…");
+    assert_eq!(context[6], "● Bash(pwd)");
+    assert_eq!(context[7], "  ⎿  Waiting…");
+    assert_eq!(
+        context.iter().filter(|l| l.contains("Waiting…")).count(),
+        3,
+        "every sibling waits: {context:?}"
+    );
+}
+
+#[test]
+fn the_main_view_still_shows_the_lead_agent_tree_above_a_subagents_prompt() {
+    // The other half of the same rule: from the *main* conversation the
+    // subagent's request keeps the lead's live agent cell, which is what is
+    // on screen there (`docs/permissions.md`) — and never the agent's own
+    // queue, which that screen does not show.
+    let mut req = request(PermissionKind::Bash, "ls -la", "");
+    req.agent = Some("general-purpose".to_string());
+    let mut app = agent_view_pending(&[("Bash", "ls -la")], req);
+    app.close_agent_view();
+    let lines = rows(&app, 72, 40);
+    assert_eq!(lines[0], "● Agent(Run ls -la via subagent)", "{lines:?}");
+    assert!(
+        !lines[..3].iter().any(|l| l.contains("Bash(ls -la)")),
+        "the agent's own queue is not on the main screen: {lines:?}"
+    );
+}
+
+#[test]
+fn an_agent_views_overflowing_prompt_keeps_its_static_cells() {
+    // The flow's stability test must read the same cells the context does. A
+    // foreground subagent always leaves a live agent group on the *main*
+    // session, so judging by that alone dropped the agent view's own static
+    // `⎿ Waiting…` cells from every page too tall to fit — the prompt read as
+    // a box out of nowhere again, one level down (`docs/view-flow.md`).
+    let body: String = (1..=120).map(|n| format!("{n:>3} line {n}\n")).collect();
+    let app = agent_view_pending(
+        &[("Write", "viz.py"), ("Write", "plot.py")],
+        request(PermissionKind::Write, "viz.py", body.trim_end()),
+    );
+    let lines = rows(&app, 80, 44);
+    assert!(lines.len() > 44, "the page flows: {}", lines.len());
+    assert_eq!(
+        lines[0], "● Write(viz.py)",
+        "the asked-about call: {lines:?}"
+    );
     assert_eq!(lines[1], "  ⎿  Waiting…");
-    assert_eq!(lines[2], "");
-    assert_eq!(lines[3], "● Read(README.md)", "{lines:?}");
-    assert_eq!(lines[4], "  ⎿  Waiting…");
-    assert_eq!(lines[5], "");
-    assert_eq!(lines[6], "● Write(notes.md)", "{lines:?}");
-    assert_eq!(lines[7], "  ⎿  Waiting…");
+    assert_eq!(
+        lines.iter().filter(|l| l.contains("Waiting…")).count(),
+        2,
+        "both queued cells ride the flow: {lines:?}"
+    );
+}
+
+#[test]
+fn an_agent_views_overflowing_prompt_drops_a_running_cell() {
+    // …and gives way to the one thing that ticks: the agent's own running
+    // call, whose streamed peek grows while the page sits frozen in
+    // scrollback.
+    let body: String = (1..=120).map(|n| format!("{n:>3} line {n}\n")).collect();
+    let mut app = agent_view_pending(
+        &[("Bash", "make test"), ("Write", "viz.py")],
+        request(PermissionKind::Write, "viz.py", body.trim_end()),
+    );
+    app.apply_agent_event(
+        "a1",
+        &crate::stream::StreamEvent::ToolStart {
+            name: "Bash".into(),
+            args: "make test".into(),
+            detail: None,
+            arguments: None,
+        },
+    );
+    let lines = rows(&app, 80, 44);
+    assert!(lines.len() > 44, "the page flows: {}", lines.len());
+    assert!(
+        !lines.iter().any(|l| l.contains("make test")),
+        "the ticking cell gave way: {lines:?}"
+    );
+    assert!(lines[0].starts_with('─'), "{:?}", lines[0]);
+    // …and a terminal that fits the page keeps it whole.
+    let tall = rows(&app, 80, 220);
+    assert!(
+        tall.iter().any(|l| l.contains("make test")),
+        "a fitting page keeps the running cell: {tall:?}"
+    );
 }
 
 #[test]
@@ -1129,8 +1210,20 @@ fn an_agent_views_prompt_keeps_no_context_for_another_conversations_request() {
     // screen the user is not looking at, and a context cell out of nowhere is
     // exactly what the context exists not to be, so the prompt opens with its
     // own rule (the idle shape) rather than borrowing `a1`'s waiting batch.
-    let mut app = agent_view(&[("Bash", "ls -la")]);
-    // The main turn's own call — no agent stamp.
+    // Agent *type* cannot answer this — two agents share `general-purpose` —
+    // which is why the request carries an id.
+    let mut app = App::new();
+    app.begin_stream();
+    app.start_agent_group(false, &[spec("a1", "Run ls -la via subagent", false)]);
+    app.apply_agent_event(
+        "a1",
+        &crate::stream::StreamEvent::ToolBatch(vec![ToolCallSummary {
+            name: "Bash".to_string(),
+            args: "ls -la".to_string(),
+        }]),
+    );
+    app.open_agent_view("a1");
+    // The main turn's own call: no agent stamp at all.
     app.open_permission(request(PermissionKind::Bash, "rm -rf build", ""));
     let lines = rows(&app, 70, 40);
     assert_eq!(lines[0], "─".repeat(70), "no context rows: {lines:?}");
