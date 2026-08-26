@@ -111,7 +111,7 @@ const DUMMY_ABOUT_OUTPUT: &str = "alter-zero — an autonomous AI agent that liv
 /// `Updated` output, so its cell renders as the real numbered,
 /// syntax-highlighted file change rather than a plain text peek
 /// (`docs/tools.md`).
-struct ScriptedCall {
+pub(super) struct ScriptedCall {
     name: &'static str,
     args: String,
     /// The verbatim JSON arguments a live backend would send — recorded on
@@ -157,7 +157,7 @@ impl ScriptedCall {
     /// executor's report (`llm::exec::describe_change` calls the same
     /// [`crate::llm::tools::write_report`]; the demo's paths are already
     /// cwd-relative, so no `display_path` step is needed).
-    fn write(path: &str, content: &str) -> Self {
+    pub(super) fn write(path: &str, content: &str) -> Self {
         Self {
             name: "Write",
             args: path.to_string(),
@@ -209,7 +209,7 @@ impl ScriptedCall {
     }
 
     /// This call as a batch-announcement entry.
-    fn summary(&self) -> ToolCallSummary {
+    pub(super) fn summary(&self) -> ToolCallSummary {
         ToolCallSummary {
             name: self.name.to_string(),
             args: self.args.clone(),
@@ -219,7 +219,7 @@ impl ScriptedCall {
     /// This call's `ToolStart`, carrying the verbatim arguments a live
     /// backend sends — so the offline demo's Ctrl+D shows the same replayed
     /// shape the real one does (`docs/context.md`).
-    fn start(&self) -> StreamEvent {
+    pub(super) fn start(&self) -> StreamEvent {
         StreamEvent::ToolStart {
             name: self.name.to_string(),
             args: self.args.clone(),
@@ -232,7 +232,7 @@ impl ScriptedCall {
     /// for the file tools, whose model-facing result is the short ack while
     /// the cell keeps the numbered body — the `ToolAnswered` two-text event
     /// the live loop sends for them.
-    fn end(&self) -> StreamEvent {
+    pub(super) fn end(&self) -> StreamEvent {
         match &self.ack {
             Some(ack) => StreamEvent::ToolAnswered {
                 display: self.result(),

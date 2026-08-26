@@ -8746,7 +8746,29 @@ else
 	echo "==== Phase 95: the forming grid in the agent view's strip ===="
 	printf '%s\n' "$agent_grid" | grep -E "│|┌|└" | sed -n '1,12p'
 fi
-# …and it commits exactly once when it closes.
+# …and its **parallel `write` batch** commits its cells at once, with no
+# resize. The file tools resolve through the two-text split
+# (`StreamEvent::ToolAnswered`), which the view's commit arm did not list, so
+# the cells reached the agent's transcript and stopped there — a resize
+# rebuilt the view from history and they all appeared at once (the reported
+# bug). Assert them in the pane *before* anything resizes it.
+for _ in $(seq 1 250); do
+	if tmux capture-pane -t "$S95" -p -S -200 | grep -qF "Wrote 3 lines to notes/sources.md"; then
+		break
+	fi
+	sleep 0.1
+done
+agent_writes="$(tmux capture-pane -t "$S95" -p -S -200)"
+for want in "Write(notes/languages.md)" "Wrote 3 lines to notes/languages.md" \
+	"Write(notes/sources.md)" "Wrote 3 lines to notes/sources.md"; do
+	if ! printf '%s' "$agent_writes" | grep -qF "$want"; then
+		echo "FAIL: Phase 95 — the subagent's parallel write batch never committed '$want' to scrollback (it needs a resize to appear)" >&2
+		status=1
+	fi
+done
+echo "==== Phase 95: the subagent's committed write cells ===="
+printf '%s\n' "$agent_writes" | grep -A 3 -F "Write(notes/" | sed -n '1,10p'
+# …and the table commits exactly once when it closes.
 for _ in $(seq 1 200); do
 	if tmux capture-pane -t "$S95" -p | grep -qF "Four rows, one grid."; then
 		break

@@ -7,7 +7,15 @@ Date: 2026-08-26
 > the streaming inside the subagent tui — when it tries to stream it
 > disappears. I'm not sure if it's because it's streaming a table.
 
-It is. And `/copy` inside that view copies the wrong conversation.
+It is. And, from a second report:
+
+> when the agent uses parallel tool calls the results are not displayed —
+> you need to refresh the TUI. It successfully created the files but it does
+> not update the inline TUI.
+
+Two bugs, one shape: **the agent session view keeps its own copy of what the
+main view does, and the copy fell behind.** (`/copy` inside that view also
+copies the wrong conversation.)
 
 ## What was actually happening
 
@@ -153,6 +161,50 @@ copy":
   it whole (`reasoning_live_full_lines` — the pager has no row budget, unlike
   the strip's windowed block). It does now.
 
+### 3c. The view commits what the fold *recorded*, not what event arrived
+
+A second report, same shape: a subagent creates files and the cells never
+appear — until you resize the terminal, and then all of them do at once.
+
+`commit_agent_view_event` listed the events that resolve a call:
+
+```rust
+StreamEvent::ToolEnd { .. } | StreamEvent::ToolRejected { .. } | StreamEvent::ToolBackgrounded { .. }
+```
+
+`157e032` ("write/edit: record the model's arguments, hand it a one-line
+result") moved `write`/`edit` onto the **two-text split** —
+`ToolOutcome::context` → `StreamEvent::ToolAnswered`, so the numbered body
+stays on the cell while the model reads a one-line ack. It updated
+`src/tui/stream.rs`, the main view's commit path. It did not touch
+`src/tui/agent.rs`. So from that commit on, a subagent's `write`/`edit` (and
+a loaded `skill`) landed on its transcript and stopped there; a resize
+purge-rebuilt the view from that same history and every missing cell appeared
+together. A parallel batch of writes made it unmissable — which is how it was
+reported.
+
+The fix is not "add `ToolAnswered` to the list". A hand-kept list of events is
+what drifted, and this view had already fallen behind the main one once (§1).
+`Session::commit_agent_tail` keys on **what `AgentRun::apply` appended to the
+transcript** instead: the boundary snapshots `run.history.len()` before the
+fold, and afterwards commits the newly-recorded last item — a `Tool` through
+`ui::tool_commit_lines` (which still holds an MCP run's members until the run
+ends), a `Summary` through `ui::summary_lines`. That is the same question a
+rebuild answers, which is exactly why the two now agree; a future resolution
+event needs no change here at all.
+
+Everything else that reaches the transcript has its own committer and must not
+land twice — a flushed text segment belongs to `agent_render`, a settled
+thought to `settle_agent_reasoning`, a hook note is invisible inline — so they
+fall through. And the red error notice is the one thing a failure does *not*
+record (the run keeps only its `error` field), so it still commits explicitly,
+after the cell the failure resolved: before this change the `Error` arm
+committed the notice and silently dropped that cell.
+
+The same helper closes the **local** settles, which carry no event at all: the
+roster's `x` resolves the agent's running call through `AgentRun::interrupt`,
+and its `⎿ Interrupted by user` cell had the identical problem.
+
 ### 4. `/copy` copies what the screen shows
 
 `App::last_assistant_text` reads the **viewed agent's** transcript when an
@@ -168,7 +220,11 @@ untouched.
   forming table's whole block; a running agent `bash` cell tails its output;
   the live `● Thinking…` block previews and `agent_view_status` carries the
   phase's elapsed.
-- `agents` (unit): `apply` buffers `ThinkingChunk` only while a phase is open,
+- `agents` (unit): **every** resolution — `ToolEnd`, `ToolAnswered`,
+  `ToolRejected`, `ToolBackgrounded` — leaves its cell as the transcript's
+  last item, and a backend `Error` leaves the call it killed there (the
+  invariant `commit_agent_tail` keys on; the old event list is what drifted).
+  `apply` buffers `ThinkingChunk` only while a phase is open,
   opening one flushes the text before it, the settle records
   `HistoryItem::Reasoning` **ahead of** the partial reply on both an `Error`
   and a `StreamDone`, the round's `Usage` snaps the count, an interrupt keeps
@@ -183,7 +239,10 @@ untouched.
   launches one background subagent and plays *its* round on the subagent
   channel from that agent's own thread — a thinking phase, then the table —
   which is the first time the agent session view has been drivable with no
-  network. The phase walks the roster into that session and asserts the live
-  `● Thinking…` block shows, the forming **grid** (not just its closing
-  border) is in the strip mid-stream, the table commits exactly once, and the
-  settled `Thought for …` cell lands on the agent's transcript.
+  network — a thinking phase, a **parallel batch of two `write` calls** (the
+  two-text split, the reported case), then the table. The phase walks the
+  roster into that session and asserts the live `● Thinking…` block shows, the
+  forming **grid** (not just its closing border) is in the strip mid-stream,
+  both write cells reach scrollback **with no resize**, the table commits
+  exactly once, and the settled `Thought for …` cell lands on the agent's
+  transcript.

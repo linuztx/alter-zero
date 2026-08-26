@@ -385,7 +385,12 @@ a walk back onto `main` the way to forget one); Enter on an agent opens its **in
 view** — a purge-rebuild showing the agent's own transcript under the banner,
 the composer's top rule labelled with its description **embedded in the
 rule** (`── {description} ─`, the rule resuming for one border cell after
-the text), **streaming there exactly as the main view streams**: the strip
+the text), its **commits keyed on what the fold recorded** — the transcript's
+new `Tool`/`Summary` item, through the same builders a rebuild uses
+(`Session::commit_agent_tail`; keying on the *event* is what dropped a
+subagent's `write`/`edit` cells when the file tools moved onto
+`ToolAnswered`, so they showed only after a resize) — and **streaming there
+exactly as the main view streams**: the strip
 previews the *same* `agent_render` frontier its commits leave behind — the
 whole forming table, the whole withheld code line, a running `bash` cell
 tailing its output through the shared `ui::live::live_call_lines` — over the

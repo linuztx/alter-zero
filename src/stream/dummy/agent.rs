@@ -10,12 +10,17 @@
 //!
 //! It exists because the agent **session view** had no offline coverage at
 //! all: the dummy announced groups but never streamed a member, so nothing
-//! could drive the strip that view paints. That is the gap the reported
-//! "streaming disappears inside the subagent TUI" bug lived in — the view's
-//! preview showed one row of a block its own commits had withheld whole. The
-//! table is the case that shows it: `StreamRender` withholds a forming table
-//! entirely, so a broken strip renders its closing border and nothing else,
-//! and a working one renders the grid (`scripts/smoke.sh` Phase 95).
+//! could drive the strip that view paints. That is the gap two reported bugs
+//! lived in, and the round it plays drives both (`scripts/smoke.sh` Phase 95,
+//! `docs/agent-view-streaming.md`):
+//!
+//! - **The forming table.** `StreamRender` withholds a table's block whole
+//!   until it closes, so a broken strip renders its closing border and
+//!   nothing else where a working one renders the grid.
+//! - **The parallel `write` batch.** The file tools resolve through the
+//!   two-text split (`StreamEvent::ToolAnswered`), which the view's commit
+//!   arm did not list — the cells reached the agent's transcript but never
+//!   scrollback, so they appeared only when a resize rebuilt the view.
 
 use std::thread;
 use std::time::Duration;
@@ -25,7 +30,8 @@ use crate::agents::{AgentEvent, AgentRegistry, GENERAL_PURPOSE};
 use super::super::{AgentCallDone, AgentSpec, CancelToken, StreamEvent};
 use super::scenario::AgentStage;
 use super::script::{chunks, handoff, reply_parts};
-use super::{CHUNK_DELAY, THINK_CHUNK_DELAY, nap};
+use super::turns::ScriptedCall;
+use super::{CHUNK_DELAY, THINK_CHUNK_DELAY, TOOL_DELAY, nap};
 
 /// The subagent's task label — the roster row and the session view's rule.
 const DEMO_DESCRIPTION: &str = "Stream a comparison table";
@@ -43,6 +49,23 @@ const DEMO_PRE_ROLL: Duration = Duration::from_millis(1200);
 const DEMO_THOUGHT: &str = "The user wants a comparison table.\n\
      Four rows, and the grid is the case worth showing: its block is withheld \
      whole until it closes, so every row of it lives in the strip until then.";
+
+/// The two files the subagent writes **in one parallel batch** — the case the
+/// reported bug lived in: a `write` resolves through the two-text split
+/// (`StreamEvent::ToolAnswered`, `docs/tools.md`), which the session view's
+/// commit arm did not list, so its cells reached the transcript but never
+/// scrollback until a resize rebuilt the view from history
+/// (`docs/agent-view-streaming.md`).
+const DEMO_FILES: [(&str, &str); 2] = [
+    (
+        "notes/languages.md",
+        "# Languages\n\nFour rows, one grid — see the table below.\n",
+    ),
+    (
+        "notes/sources.md",
+        "# Sources\n\nRelease years from each language's own documentation.\n",
+    ),
+];
 
 /// The agent's reply — a GFM table, which the incremental renderer withholds
 /// **whole** until its closing row (`docs/table-streaming.md`), plus a line
@@ -144,6 +167,26 @@ fn spawn_agent_session(registry: AgentRegistry, id: String, cancel: CancelToken)
         }
         if !send(StreamEvent::ThinkingEnd, THINK_CHUNK_DELAY) {
             return;
+        }
+        // A **parallel batch** of two `write` calls: announced up front, so
+        // the not-yet-run one shows `⎿ Waiting…` in the session view's strip,
+        // then executed in order. Each resolves with `ToolAnswered` — the
+        // file tools' two-text split — which is exactly what the view failed
+        // to commit (`docs/agent-view-streaming.md`).
+        let calls: Vec<ScriptedCall> = DEMO_FILES
+            .iter()
+            .map(|&(path, content)| ScriptedCall::write(path, content))
+            .collect();
+        if !send(
+            StreamEvent::ToolBatch(calls.iter().map(ScriptedCall::summary).collect()),
+            TOOL_DELAY,
+        ) {
+            return;
+        }
+        for call in &calls {
+            if !send(call.start(), TOOL_DELAY) || !send(call.end(), CHUNK_DELAY) {
+                return;
+            }
         }
         for piece in chunks(DEMO_REPLY) {
             if !send(StreamEvent::Chunk(piece), CHUNK_DELAY) {

@@ -1550,6 +1550,93 @@ mod tests {
     // ===== The agent's thinking stream (docs/agent-view-streaming.md) =====
 
     #[test]
+    fn every_resolution_leaves_the_resolved_cell_last_on_the_transcript() {
+        // The session view commits what the fold **recorded**, not what event
+        // arrived (`docs/agent-view-streaming.md`), so every way a call can
+        // resolve must leave its cell as the transcript's last item — else
+        // the view drops it and only a resize brings it back. That is the
+        // reported bug: `write`/`edit` moved onto `ToolAnswered` and the old
+        // event-keyed arm never listed it.
+        let start = StreamEvent::ToolStart {
+            name: "Write".to_string(),
+            args: "f.py".to_string(),
+            detail: None,
+            arguments: None,
+        };
+        let resolutions: [(&str, StreamEvent); 4] = [
+            (
+                "ToolEnd",
+                StreamEvent::ToolEnd {
+                    output: "out".to_string(),
+                    ok: true,
+                    truncated: false,
+                },
+            ),
+            (
+                "ToolAnswered",
+                StreamEvent::ToolAnswered {
+                    display: "Wrote 1 lines to f.py".to_string(),
+                    result: "File created successfully at: f.py".to_string(),
+                    truncated: false,
+                },
+            ),
+            (
+                "ToolRejected",
+                StreamEvent::ToolRejected {
+                    display: "User rejected write to f.py".to_string(),
+                    result: "the user refused".to_string(),
+                    truncated: false,
+                },
+            ),
+            (
+                "ToolBackgrounded",
+                StreamEvent::ToolBackgrounded {
+                    id: "b1".to_string(),
+                    output: "Running in the background".to_string(),
+                },
+            ),
+        ];
+        for (name, event) in resolutions {
+            let mut run = AgentRun::new("a1", "d", GENERAL_PURPOSE, "p", false);
+            run.apply(&start);
+            let before = run.history.len();
+            run.apply(&event);
+            assert_eq!(run.history.len(), before + 1, "{name} recorded no cell");
+            assert!(
+                matches!(run.history.last(), Some(HistoryItem::Tool(_))),
+                "{name} did not leave its cell last: {:?}",
+                run.history
+            );
+            assert!(run.tool_queue.is_empty(), "{name} left the call live");
+        }
+    }
+
+    #[test]
+    fn a_backend_error_leaves_the_call_it_killed_last() {
+        // The failure resolves the running call red — and the session view
+        // commits that cell before the red notice, which is the one thing a
+        // failure does *not* record (`docs/agent-view-streaming.md`).
+        let mut run = AgentRun::new("a1", "d", GENERAL_PURPOSE, "p", false);
+        run.apply(&StreamEvent::ToolStart {
+            name: "Bash".to_string(),
+            args: "sleep 30".to_string(),
+            detail: None,
+            arguments: None,
+        });
+        run.apply(&StreamEvent::Error("boom".to_string()));
+        let Some(HistoryItem::Tool(tool)) = run.history.last() else {
+            panic!("the killed call is the last item: {:?}", run.history);
+        };
+        assert_eq!(tool.status, ToolStatus::Failed);
+        assert!(
+            !run.history
+                .iter()
+                .any(|item| matches!(item, HistoryItem::Message(m) if m.role == Role::Error)),
+            "the notice is the view's, not the transcript's"
+        );
+    }
+
+    #[test]
     fn a_retrying_agent_says_so_and_the_next_content_clears_it() {
         // Main parity (`docs/llm.md`): a subagent reconnecting shows
         // `retrying {n}/{max}` in its session view's status line instead of a

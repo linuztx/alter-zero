@@ -54,9 +54,7 @@ impl Session<'_> {
         // session view (a menu opened from its palette, `docs/view-flow.md`)
         // — the flow-exit rebuild regenerates the agent transcript from its
         // history, exactly like the view's own returns.
-        let viewing = self.app.view == View::Conversation
-            && self.app.agent_view.as_deref() == Some(id)
-            && self.flowed_view.is_none();
+        let viewing = self.viewing_agent(id);
         // Freeze the entry's runtime at its live value before a settling event
         // (the per-frame injection stops once the status is final).
         if let Some(elapsed) = self.agent_clocks.get(id).map(Instant::elapsed) {
@@ -118,9 +116,12 @@ impl Session<'_> {
         if opening {
             self.app.begin_agent_reasoning(id);
         }
+        // What the fold appends to the agent's transcript is what the screen
+        // owes it — see `commit_agent_view_event`.
+        let recorded = self.app.agent(id).map_or(0, |run| run.history.len());
         let settled = self.app.apply_agent_event(id, &event);
         if viewing {
-            self.commit_agent_view_event(&event, width);
+            self.commit_agent_view_event(&event, width, recorded);
         }
         if let Some(notice) = settled {
             // A background agent completed on its own: the model-facing note
@@ -181,72 +182,104 @@ impl Session<'_> {
         self.term.insert_before(vec![Line::default()]);
     }
 
-    /// The screen half of [`Session::on_agent_event`], for the agent whose session
-    /// view is open: commit its streamed rows, its resolved tool cells, its error
-    /// notice — and reseat the viewport when its strip collapses (invariant 3).
-    fn commit_agent_view_event(&mut self, event: &StreamEvent, width: u16) {
-        match event {
-            StreamEvent::Chunk(_) => {
-                if let Some(text) = self
-                    .app
-                    .viewed_agent()
-                    .and_then(|run| run.streaming.as_deref())
-                {
-                    let lines = self.agent_render.commit(text, width);
-                    self.term.insert_before(lines);
+    /// Is `id`'s session the conversation currently on the inline screen?
+    ///
+    /// Commits pause while a framed view's flow covers it (a menu opened from
+    /// its palette, `docs/view-flow.md`) — the flow-exit rebuild regenerates
+    /// the transcript from its history, exactly like the view's own returns.
+    fn viewing_agent(&self, id: &str) -> bool {
+        self.app.view == View::Conversation
+            && self.app.agent_view.as_deref() == Some(id)
+            && self.flowed_view.is_none()
+    }
+
+    /// Commit whatever was just appended to the **viewed** agent's transcript
+    /// past `recorded` — its resolved call's collapsed cell, or the turn's
+    /// summary — reseating the viewport first, since the strip loses the live
+    /// cell (or the whole status line) as it lands (invariant 3).
+    ///
+    /// The one place the session view turns a transcript item into scrollback,
+    /// shared by the event fold and the **local** settles that carry no event
+    /// at all (the roster's `x` resolves the running call itself). Keying on
+    /// the recorded item rather than on what triggered it is what stops this
+    /// view falling behind the main one again — see
+    /// [`Session::commit_agent_view_event`].
+    ///
+    /// Every other item has its own committer and must **not** land twice: a
+    /// flushed text segment belongs to `agent_render`
+    /// ([`Session::on_agent_event`]'s flush block), a settled thought to
+    /// [`Session::settle_agent_reasoning`], and a hook note is invisible
+    /// inline by design (`docs/hooks.md`).
+    fn commit_agent_tail(&mut self, recorded: usize, width: u16) {
+        let owed = self
+            .app
+            .viewed_agent()
+            .filter(|run| run.history.len() > recorded)
+            .and_then(|run| match run.history.last() {
+                // A resolved call — its collapsed cell, through the same
+                // history-derived builder the rebuild uses, which also holds
+                // an MCP run's members until the run ends (`docs/mcp.md`).
+                Some(HistoryItem::Tool(_)) => {
+                    ui::tool_commit_lines(&run.history, &run.tool_queue, width)
                 }
+                // The turn's `Done for Ns · {n} tokens` receipt
+                // (`docs/agent-tool.md`).
+                Some(HistoryItem::Summary(summary)) => Some(ui::summary_lines(summary, width)),
+                _ => None,
+            })
+            .filter(|lines| !lines.is_empty());
+        if let Some(lines) = owed {
+            let height = self.live_region_height();
+            self.term.set_view_height(height);
+            self.term.insert_before(lines);
+            self.term.insert_before(vec![Line::default()]);
+        }
+    }
+
+    /// The screen half of [`Session::on_agent_event`], for the agent whose
+    /// session view is open: commit its streamed rows, whatever the fold just
+    /// recorded on its transcript, and its error notice — reseating the
+    /// viewport first when its strip collapses (invariant 3). `recorded` is
+    /// the transcript's length *before* the fold.
+    ///
+    /// **Keyed on the item the fold appended, not on the event.** The event
+    /// list is what drifted: `write`/`edit` moved onto the two-text
+    /// `StreamEvent::ToolAnswered` when the file tools started handing the
+    /// model a one-line ack, the main view's arm was updated and this one was
+    /// not, so a subagent's file cells reached its transcript and stopped
+    /// there — appearing only when a resize rebuilt the view from that same
+    /// history (the reported bug, `docs/agent-view-streaming.md`). Asking
+    /// what `AgentRun::apply` actually recorded cannot fall behind a new
+    /// resolution event the way a hand-kept list does, and it is the same
+    /// question a rebuild answers, which is what keeps the two agreeing.
+    ///
+    /// Every other item has its own committer and must **not** be committed
+    /// twice here: a flushed text segment belongs to `agent_render`
+    /// ([`Session::on_agent_event`]'s flush block), a settled thought to
+    /// [`Session::settle_agent_reasoning`], and a hook note is invisible
+    /// inline by design (`docs/hooks.md`).
+    fn commit_agent_view_event(&mut self, event: &StreamEvent, width: u16, recorded: usize) {
+        if matches!(event, StreamEvent::Chunk(_)) {
+            if let Some(text) = self
+                .app
+                .viewed_agent()
+                .and_then(|run| run.streaming.as_deref())
+            {
+                let lines = self.agent_render.commit(text, width);
+                self.term.insert_before(lines);
             }
-            StreamEvent::ToolEnd { .. }
-            | StreamEvent::ToolRejected { .. }
-            | StreamEvent::ToolBackgrounded { .. } => {
-                // The resolved call was pushed onto the agent's transcript —
-                // commit its collapsed cell (the main ToolEnd dance), through
-                // the same history-derived builder, so the agent view and its
-                // rebuild agree the way the main view's do (`docs/mcp.md`).
-                let lines = self
-                    .app
-                    .viewed_agent()
-                    .and_then(|run| ui::tool_commit_lines(&run.history, &run.tool_queue, width));
-                if let Some(lines) = lines
-                    && !lines.is_empty()
-                {
-                    let height = self.live_region_height();
-                    self.term.set_view_height(height);
-                    self.term.insert_before(lines);
-                    self.term.insert_before(vec![Line::default()]);
-                }
-            }
-            StreamEvent::Error(message) => {
-                let height = self.live_region_height();
-                self.term.set_view_height(height);
-                self.term
-                    .insert_before(ui::message_lines(Role::Error, message, width));
-                self.term.insert_before(vec![Line::default()]);
-            }
-            StreamEvent::StreamDone => {
-                // The strip collapses (the agent's status clears) — reseat so
-                // the box stays flush (invariant 3) *before* committing, the
-                // main StreamDone dance — then commit the `Done for Ns ·
-                // {n} tokens` summary the fold just recorded on the agent's
-                // transcript, so the session view ends its turns the way the
-                // main one does (docs/agent-tool.md).
-                let height = self.live_region_height();
-                self.term.set_view_height(height);
-                let summary = self
-                    .app
-                    .viewed_agent()
-                    .and_then(|run| match run.history.last() {
-                        Some(HistoryItem::Summary(summary)) => {
-                            Some(ui::summary_lines(summary, width))
-                        }
-                        _ => None,
-                    });
-                if let Some(lines) = summary {
-                    self.term.insert_before(lines);
-                    self.term.insert_before(vec![Line::default()]);
-                }
-            }
-            _ => {}
+            return;
+        }
+        self.commit_agent_tail(recorded, width);
+        // The red notice is the one thing a failure does *not* record on the
+        // transcript (the run keeps only its `error` field), so it commits
+        // here — after the cell the failure resolved, the main view's order.
+        if let StreamEvent::Error(message) = event {
+            let height = self.live_region_height();
+            self.term.set_view_height(height);
+            self.term
+                .insert_before(ui::message_lines(Role::Error, message, width));
+            self.term.insert_before(vec![Line::default()]);
         }
     }
 
@@ -291,9 +324,22 @@ impl Session<'_> {
     /// it starts the follow-up turn. The **second** `x` clears that row: the
     /// app hides it and the sweep collects the entry at the next tick.
     pub(crate) fn stop_agent(&mut self, id: &str) -> std::io::Result<()> {
+        // Deliberately looser than `viewing_agent`: a *clear* must take the
+        // screen back even from under a framed view's flow, since the view it
+        // covers is about to stop existing.
         let viewing = self.app.agent_view.as_deref() == Some(id);
+        // The stop resolves the agent's running call **locally** — no event
+        // follows to carry its cell — so the session view commits what the
+        // stop recorded, exactly as the fold does
+        // (`docs/agent-view-streaming.md`).
+        let width = self.term.screen().width;
+        let recorded = self.app.agent(id).map_or(0, |run| run.history.len());
+        let on_screen = self.viewing_agent(id);
         match self.app.stop_agent(id) {
             Some(AgentStop::Stopped(notice)) => {
+                if on_screen {
+                    self.commit_agent_tail(recorded, width);
+                }
                 let _ = self.agent_registry.kill(id);
                 self.agent_clocks.remove(id);
                 // The stop settled any open thought through

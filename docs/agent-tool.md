@@ -309,6 +309,12 @@ zero new plumbing. The TUI cell is a new `HistoryItem::AgentNotice` —
 - `session.rs` round-trips both new items (`agent_group` / `agent_notice`
   records); old builds skip them (the forward-compatibility contract). The
   roster itself is ephemeral, like background shells.
+- The session view **commits what the fold recorded**, not what event
+  arrived: `Session::commit_agent_tail` compares the transcript's length
+  across `AgentRun::apply` and commits the newly-recorded `Tool`/`Summary`.
+  Keying on the event is what let `write`/`edit` fall through when they moved
+  onto `ToolAnswered` (`docs/agent-view-streaming.md`); the local `x` stop,
+  which carries no event at all, goes through the same helper.
 - A subagent's **thinking phase** settles onto its own transcript as a
   `HistoryItem::Reasoning` (`AgentRun::begin_reasoning`/`finish_reasoning`,
   the phase's elapsed boundary-injected from
