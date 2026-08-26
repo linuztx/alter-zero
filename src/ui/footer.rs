@@ -63,12 +63,10 @@ pub fn queued_lines(app: &App, width: u16) -> Vec<Line<'static>> {
         return lines;
     }
     // What the *running* turn is about to read comes first — it is what
-    // happens next. They share one blank-divided block: the model reads them
+    // happens next. They share one undivided block: the model reads them
     // together at its next round boundary.
-    if !app.steered.is_empty() {
-        for text in &app.steered {
-            lines.extend(user_rows(text));
-        }
+    for text in &app.steered {
+        lines.extend(user_rows(text));
     }
     for entry in &app.queued {
         divide(&mut lines);

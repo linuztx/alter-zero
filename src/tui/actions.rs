@@ -119,10 +119,12 @@ impl Session<'_> {
             // takes it at its next round boundary and answers with
             // `StreamEvent::Steered`.
             Action::Steer(text) => self.steer.push(&text),
-            // Alt+Up over one of those: only the shared queue knows whether
-            // the turn has read it yet. Still waiting → back to the composer;
-            // already read → fall back to the follow-up queue, which is what
-            // Alt+Up means when nothing is in flight.
+            // Alt+Up reaching past an empty follow-up queue to the messages
+            // handed to the running turn: only the shared queue knows whether
+            // the turn has read one yet, so it answers. Still waiting → back
+            // to the composer. Already read → there is nothing to edit; the
+            // fallback finds the queue empty (that is why this arm ran) and
+            // does nothing, which is the honest outcome.
             Action::ReclaimSteered => match self.steer.take_last() {
                 Some(text) => self.app.recall_steered(&text),
                 None => self.app.recall_last_queued(),

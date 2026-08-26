@@ -100,19 +100,15 @@ impl App {
     /// read is what the transcript owes the user.
     pub fn deliver_steered(&mut self, text: &str) -> bool {
         self.flush_streaming_segment();
-        let waiting = self
-            .steered
-            .iter()
-            .position(|pending| pending == text)
-            .inspect(|index| {
-                self.steered.remove(*index);
-            })
-            .is_some();
+        let waiting = self.steered.iter().position(|pending| pending == text);
+        if let Some(index) = waiting {
+            self.steered.remove(index);
+        }
         self.record_user_message(text);
         // The uploaded text counts into this turn's `↑` tally, exactly as a
         // turn-start message does (`docs/status-indicator.md`).
         self.count_user_input(text);
-        waiting
+        waiting.is_some()
     }
 
     /// The turn ended without reaching another round boundary — the model

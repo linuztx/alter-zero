@@ -273,8 +273,8 @@ impl Session<'_> {
                 // flush-before-you-interleave — records the message and counts
                 // it into the turn's `↑` tally.
                 //
-                // A compact turn has no queue to take from (its one-off
-                // backend carries none), so this can only be the session's.
+                // Never a compact turn: `App::turn_steerable` refuses one, so
+                // nothing was ever queued against it to take.
                 self.flush_segment(committing, width);
                 self.render.reset();
                 self.settle_bg_completions();
