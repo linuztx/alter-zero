@@ -27,7 +27,6 @@ use std::time::Instant;
 
 use ratatui::text::Line;
 
-use alter_zero::app::{Role, View};
 use alter_zero::background::BgEvent;
 use alter_zero::ui;
 
@@ -56,41 +55,25 @@ impl Session<'_> {
                 self.bg_clocks.remove(&id);
                 if let Some(completion) = self.app.bg_exited(&id, code, killed) {
                     // A subagent-launched shell reports to its launcher first:
-                    // the note queues into that agent's running loop (heard at
-                    // its next round via the pending-input seam) and is recorded
-                    // on its transcript so the session view shows what the loop
-                    // heard. A launcher that already settled can't hear it — the
-                    // shared board takes the note instead, so the main turn (or
-                    // the idle follow-up turn) relays the outcome
+                    // the note queues onto that agent's seam and is heard at
+                    // its next round boundary — the same seam a user's chat
+                    // message rides (docs/queue.md). Queueing is **all** this
+                    // does: `StreamEvent::Steered` records the note on the
+                    // agent's transcript when the loop actually takes it, and
+                    // the session view commits it from there. Recording it
+                    // here as well put it on the transcript twice — once
+                    // eagerly, once on the echo — permanently, in history, the
+                    // rollout and every rebuild.
+                    //
+                    // A launcher that already settled can't hear it: the shared
+                    // board takes the note instead, so the main turn (or the
+                    // idle follow-up turn) relays the outcome
                     // (docs/agent-tool.md).
                     let note = completion.context_text();
                     let routed = completion.origin.as_ref().is_some_and(|origin| {
                         self.agent_registry.queue_input(&origin.agent_id, &note)
                     });
-                    if routed {
-                        if let Some(origin) = &completion.origin {
-                            let agent_id = origin.agent_id.clone();
-                            self.app.agent_chat(&agent_id, &note);
-                            // Inside that agent's session view the injected note
-                            // commits in place (the AgentChat bubble's shape);
-                            // any other view picks it up on its rebuild. An open
-                            // permission prompt is no bar — the commit scrolls in
-                            // above it like any other, and the close's purge
-                            // rebuild regenerates it (docs/permissions.md).
-                            if self.app.view == View::Conversation
-                                && self.app.agent_view.as_deref() == Some(agent_id.as_str())
-                                && self.flowed_view.is_none()
-                            {
-                                let width = self.term.screen().width;
-                                self.term.insert_before(ui::message_lines(
-                                    Role::User,
-                                    &note,
-                                    width,
-                                ));
-                                self.term.insert_before(vec![Line::default()]);
-                            }
-                        }
-                    } else {
+                    if !routed {
                         self.registry.post_notice(note, completion.from_model);
                     }
                     self.app.defer_bg_completion(completion);

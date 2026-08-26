@@ -84,10 +84,20 @@ pub enum InterruptedTurn {
 `interrupt_turn` takes the partial buffer first, then branches:
 
 **Undo path** — `partial.is_none() && current_tool.is_none() && queued.is_empty()
-&& steered.is_empty()` (nothing was produced and nothing waits behind it — the
-interrupt is what sends a message the turn never read, so pulling the
-submission back while that dispatches would read as the undo having done
-nothing):
+&& steered.is_empty() && !steered_this_turn` (nothing was produced, nothing
+waits behind it, and nothing was read mid-turn):
+
+- The **pending** guard: the interrupt is what sends a message the turn never
+  read, so pulling the submission back while that dispatches would read as the
+  undo having done nothing.
+- The **delivered** guard: a message the turn *did* read leaves a user message
+  as the history tail even after the turn committed a reply and tool cells, so
+  the tail test alone would fire the undo in the gap between the delivery and
+  the next round's first token — yanking a message the model has already read
+  back into the composer and committing no notice over the output on screen
+  (`docs/queue.md`).
+
+Then:
 
 - `take_trailing_user_messages` pops the maximal run of trailing `Role::User`
   messages (the turn's own input — a previous turn always ends with a summary,

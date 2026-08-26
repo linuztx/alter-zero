@@ -698,15 +698,32 @@ fn the_agents_round_boundary_delivers_its_queued_message() {
 }
 
 #[test]
-fn a_settled_agent_hands_its_unread_messages_back() {
+fn a_message_reaches_an_agents_transcript_by_exactly_one_path() {
+    // Two things can put a user-role message on an agent's transcript: the
+    // continuation recorder (`agent_chat` — the run carries the message, so
+    // nothing will announce it) and the delivery echo. A caller that uses
+    // both records it twice, permanently — in history, the rollout, the
+    // context replay and every rebuild. That is what routing a
+    // subagent-launched shell's completion note through the seam *and*
+    // `agent_chat` used to do (`docs/queue.md`), so the queue path must
+    // record nothing until the echo arrives.
+    let note = "[background] Background command \"npm test\" completed.";
     let mut app = App::new();
     app.begin_stream();
     app.start_agent_group(false, &agent_specs(false));
-    app.queue_agent_chat("a1", "one");
-    app.queue_agent_chat("a1", "two");
-    assert_eq!(
-        app.reclaim_agent_chat("a1"),
-        vec!["one".to_string(), "two".to_string()]
+    app.queue_agent_chat("a1", note);
+    app.apply_agent_event(
+        "a1",
+        &crate::stream::StreamEvent::Steered {
+            text: note.to_string(),
+        },
     );
-    assert!(app.agent("a1").expect("the row").queued.is_empty());
+    let landed = app
+        .agent("a1")
+        .expect("the row")
+        .history
+        .iter()
+        .filter(|item| matches!(item, HistoryItem::Message(m) if m.text == note))
+        .count();
+    assert_eq!(landed, 1, "the echo records it, and only the echo");
 }

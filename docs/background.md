@@ -55,9 +55,13 @@ told the result in a new turn.
   clause (persisted on the notice record; omitted when absent so old rollouts
   parse). The **Ctrl+B latch stays main-only**: a subagent's `bash` neither
   clears nor consumes it. A subagent-launched shell's completion note routes
-  to its launcher first (`AgentRegistry::queue_input` into the running loop's
-  pending-input seam); a settled launcher can't hear it, so the note falls to
-  the shared board — the normal main-turn / follow-up path.
+  to its launcher first (`AgentRegistry::queue_input` onto that agent's steer
+  seam, `docs/queue.md`); a settled launcher can't hear it, so the note falls
+  to the shared board — the normal main-turn / follow-up path. Queueing is
+  **all** the boundary does: the `StreamEvent::Steered` echo records the note
+  on the agent's transcript when its loop actually takes it. Recording it
+  eagerly as well put it there twice, permanently — in history, the rollout and
+  every rebuild.
 
 ### The registry (`src/background.rs` — boundary, like `term`)
 

@@ -132,9 +132,11 @@ pub struct AgentRun {
     /// queue, one level down (`docs/queue.md`). They show above the box in
     /// the agent's session view until its loop's next round boundary takes
     /// them, when [`StreamEvent::Steered`] turns each into a real user
-    /// message on this transcript. A run that settles without reading them
-    /// hands them back ([`reclaim_queued`](AgentRun::reclaim_queued)) for the
-    /// boundary to re-deliver as a chat continuation.
+    /// message on this transcript — the one event a **settled** run still
+    /// folds, reopening it, because the continuation that delivered it is
+    /// otherwise invisible. A run the user **stopped** instead drops these
+    /// outright ([`interrupt`](AgentRun::interrupt)): its loop is cancelled,
+    /// so a row left up would promise a delivery that cannot happen.
     pub queued: Vec<String>,
     /// Its live tool calls, front running — the parallel-batch queue shape.
     pub tool_queue: VecDeque<ToolCall>,
@@ -238,7 +240,18 @@ impl AgentRun {
     /// a local kill).
     pub fn apply(&mut self, event: &StreamEvent) -> bool {
         if self.status.is_final() {
-            return false;
+            // One event reaches a settled run: a message delivered into it
+            // (`docs/queue.md`). A continuation is what delivered it — the
+            // one its own thread starts for a message queued in the settle
+            // window — and folding it is what keeps that continuation
+            // visible: without this it runs with the model working, the
+            // transcript showing nothing and the pending row never clearing.
+            // A run the user **stopped** is closed for good: the `x` said so,
+            // and nothing may resurrect it.
+            if !matches!(event, StreamEvent::Steered { .. }) || self.stopped_by_user {
+                return false;
+            }
+            self.reopen();
         }
         if self.status == AgentStatus::Pending && !matches!(event, StreamEvent::StreamDone) {
             self.status = AgentStatus::Running;
@@ -549,6 +562,12 @@ impl AgentRun {
         self.settle_thinking();
         self.flush_segment();
         self.resolve_tools(crate::app::INTERRUPT_TOOL_OUTPUT);
+        // A stopped agent's loop is cancelled, so nothing will ever take what
+        // is still queued for it: drop the rows rather than leave them
+        // promising a delivery that cannot happen (`docs/queue.md`). Only a
+        // *stop* does this — a natural settle with a message still queued
+        // hands it back for a continuation to deliver.
+        self.queued.clear();
         self.status = AgentStatus::Interrupted;
         true
     }
@@ -588,15 +607,6 @@ impl AgentRun {
     /// is what the main session's queue avoids too (`docs/queue.md`).
     pub fn queue_chat(&mut self, text: &str) {
         self.queued.push(text.to_string());
-    }
-
-    /// Take back the messages this run never read — the boundary re-delivers
-    /// them as a chat continuation, the way the main session's
-    /// [`reclaim_steered`](crate::app::App::reclaim_steered) makes them the
-    /// next turn.
-    #[must_use]
-    pub fn reclaim_queued(&mut self) -> Vec<String> {
-        std::mem::take(&mut self.queued)
     }
 
     /// A follow-up chat turn began (a continuation run): reopen a settled
@@ -1051,6 +1061,24 @@ impl AgentRegistry {
             .get_mut(id)
             .map(|slot| std::mem::take(&mut slot.pending_inputs))
             .unwrap_or_default()
+    }
+
+    /// Does `id` still hold a message nobody has delivered?
+    ///
+    /// The **settle guard** (`docs/queue.md`): a slot stays `busy` between its
+    /// loop's last drain and [`finish`](Self::finish), so a message typed in
+    /// that window is accepted by [`queue_input`](Self::queue_input) and then
+    /// read by nobody — the loop is over, and the roster's terminal event may
+    /// already have been folded, so the boundary's own reconciliation has been
+    /// and gone. The run's thread asks this before exiting and continues
+    /// itself when the answer is yes.
+    #[must_use]
+    pub fn has_pending_inputs(&self, id: &str) -> bool {
+        let inner = self.inner.lock().expect("agent registry poisoned");
+        inner
+            .slots
+            .get(id)
+            .is_some_and(|slot| !slot.pending_inputs.is_empty())
     }
 
     /// Begin a chat continuation on a settled agent: reclaim its stored
@@ -1639,19 +1667,84 @@ mod tests {
     }
 
     #[test]
-    fn a_run_that_settles_hands_its_unread_messages_back() {
-        // The agent answered before reaching another round boundary: what it
-        // never read is reclaimed, for the boundary to re-deliver as a chat
-        // continuation (the main session's reclaim, one level down).
+    fn a_message_delivered_to_a_settled_agent_reopens_it() {
+        // The settle window's other half (`docs/queue.md`): a message queued
+        // between the loop's last drain and `finish` is delivered by a
+        // continuation the run's own thread starts — but by then the roster
+        // has folded the terminal event, and `apply` drops everything once a
+        // status is final. Without the reopen that continuation runs
+        // invisibly: the model works, the transcript shows nothing, and the
+        // pending row never clears.
         let mut run = AgentRun::new("a1", "d", GENERAL_PURPOSE, "p", false);
-        run.queue_chat("one");
-        run.queue_chat("two");
-        assert_eq!(
-            run.reclaim_queued(),
-            vec!["one".to_string(), "two".to_string()]
+        run.apply(&chunk("done"));
+        run.apply(&StreamEvent::StreamDone);
+        assert!(run.status.is_final(), "settled");
+        run.queue_chat("one more thing");
+        run.apply(&StreamEvent::Steered {
+            text: "one more thing".to_string(),
+        });
+        assert_eq!(run.status, AgentStatus::Running, "the run is live again");
+        assert!(run.queued.is_empty(), "the pending row is spent");
+        assert!(
+            matches!(
+                run.history.last(),
+                Some(HistoryItem::Message(m))
+                    if m.role == Role::User && m.text == "one more thing"
+            ),
+            "…and the message is on its transcript"
         );
-        assert!(run.queued.is_empty(), "the rows go with the reclaim");
-        assert!(run.reclaim_queued().is_empty(), "reclaimed once");
+    }
+
+    #[test]
+    fn a_stopped_agent_is_never_reopened_by_a_late_delivery() {
+        // The `x` said stop. Nothing should resurrect it.
+        let mut run = AgentRun::new("a1", "d", GENERAL_PURPOSE, "p", false);
+        run.apply(&chunk("working"));
+        run.stopped_by_user = true;
+        assert!(run.interrupt());
+        run.apply(&StreamEvent::Steered {
+            text: "too late".to_string(),
+        });
+        assert_eq!(run.status, AgentStatus::Interrupted);
+        assert!(
+            !run.history.iter().any(|item| matches!(
+                item,
+                HistoryItem::Message(m) if m.text == "too late"
+            )),
+            "a stopped agent's transcript is closed"
+        );
+    }
+
+    #[test]
+    fn stopping_an_agent_drops_the_messages_its_loop_will_never_read() {
+        // The `x` cancels the loop, so nothing will ever take what is still
+        // queued for it. Leaving the rows up would promise a delivery that
+        // cannot happen — and the roster defers its sweep while the user is
+        // inside that agent's view, so the promise would stand indefinitely.
+        let mut run = AgentRun::new("a1", "d", GENERAL_PURPOSE, "p", false);
+        run.apply(&chunk("working"));
+        run.queue_chat("one more thing");
+        assert!(run.interrupt());
+        assert!(run.queued.is_empty(), "a cancelled loop reads nothing more");
+    }
+
+    #[test]
+    fn the_registry_reports_an_agent_holding_an_undelivered_message() {
+        // The settle window (`docs/queue.md`): a slot stays `busy` between
+        // its loop's last drain and `finish`, so a message typed in there is
+        // accepted by `queue_input` and then read by nobody — the loop is
+        // over, and the roster's terminal event may already have been folded.
+        // The run's own thread checks this before exiting and continues.
+        let registry = test_registry();
+        let (id, _cancel) = registry.register(GENERAL_PURPOSE);
+        assert!(!registry.has_pending_inputs(&id), "nothing queued yet");
+        assert!(registry.queue_input(&id, "one more thing"));
+        assert!(
+            registry.has_pending_inputs(&id),
+            "the run must not settle leaving this undelivered"
+        );
+        assert_eq!(registry.take_pending_inputs(&id), ["one more thing"]);
+        assert!(!registry.has_pending_inputs(&id), "drained");
     }
 
     #[test]

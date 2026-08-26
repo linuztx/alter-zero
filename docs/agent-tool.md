@@ -56,11 +56,12 @@ field, the completion notice reads `· from the {type} agent`, and the context
 note says `launched by the {type} agent`. Only the **Ctrl+B latch** stays
 main-only — a subagent's executor neither clears nor consumes it, so the
 handoff always belongs to the main turn's foreground command. A completion
-routes to its launcher first: the boundary queues the note into the launching
-agent's running loop (`AgentRegistry::queue_input` — heard at its next round
-via the pending-input seam); if the launcher already settled, the note falls
-to the shared board instead (the main turn / automatic-follow-up path), so
-someone always hears the outcome.
+routes to its launcher first: the boundary queues the note onto the launching
+agent's steer seam (`AgentRegistry::queue_input` — heard at its next round
+boundary, `docs/queue.md`) and does **nothing else**, the `StreamEvent::Steered`
+echo being what records it on that agent's transcript; if the launcher already
+settled, the note falls to the shared board instead (the main turn /
+automatic-follow-up path), so someone always hears the outcome.
 
 ## Protocol
 

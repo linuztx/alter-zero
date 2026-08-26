@@ -162,6 +162,18 @@ pub struct App {
     /// [`reclaim_steered`]: App::reclaim_steered
     /// [`StreamEvent::Steered`]: crate::stream::StreamEvent::Steered
     pub steered: VecDeque<String>,
+    /// Has a steered message been **delivered** into this turn
+    /// (`docs/queue.md`)? Reset by [`begin_stream`](App::begin_stream).
+    ///
+    /// The Esc-interrupt **undo** decides from the history *tail*: a trailing
+    /// user message means the turn is still the untouched submission. A
+    /// delivered message breaks that reading — it leaves a user message there
+    /// even after the turn has committed a reply and tool cells — so this is
+    /// one more thing that opts the turn out. Without it, Esc in the gap
+    /// between a delivery and the next round's first token pulls a message
+    /// the model has already read back into the composer, drops it from
+    /// history, and commits no notice over the output already on screen.
+    steered_this_turn: bool,
     /// Whether the `?` shortcuts band (the keyboard-shortcuts overview below
     /// the input box — codex's footer shortcut overlay) is showing. Toggled by
     /// `?` from an empty composer; any other key closes it. See

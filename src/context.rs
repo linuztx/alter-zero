@@ -747,6 +747,53 @@ mod tests {
     }
 
     #[test]
+    fn a_message_steered_mid_turn_replays_between_the_rounds_it_landed_between() {
+        // Steering makes a history shape nothing else does (`docs/queue.md`):
+        // a user entry between one round's tool result and the next round's
+        // call. The derivation must keep that order **and** open a fresh
+        // assistant message for the call after it — folding that call onto the
+        // assistant segment before the user entry would put a tool result
+        // after an intervening user message, which strict providers reject.
+        let history = vec![
+            message(Role::User, "run the tests"),
+            message(Role::Assistant, "running them"),
+            tool("Bash", "cargo test", "Exit code: 0", ToolStatus::Ok, false),
+            message(Role::User, "also check clippy"),
+            tool(
+                "Bash",
+                "cargo clippy",
+                "Exit code: 0",
+                ToolStatus::Ok,
+                false,
+            ),
+        ];
+        let out = context_messages(&history);
+        assert_eq!(
+            out.iter().map(|m| m.role).collect::<Vec<_>>(),
+            vec![
+                ContextRole::User,
+                ContextRole::Assistant,
+                ContextRole::Tool,
+                ContextRole::User,
+                ContextRole::Assistant,
+                ContextRole::Tool,
+            ],
+            "the steered message sits between the two rounds: {out:?}"
+        );
+        assert_eq!(out[3].text, "also check clippy");
+        assert_eq!(
+            out[1].tool_calls.len(),
+            1,
+            "the first round's call stayed on its own assistant message"
+        );
+        assert_eq!(
+            out[4].tool_calls.len(),
+            1,
+            "…and the next round's call opened a fresh one"
+        );
+    }
+
+    #[test]
     fn a_hook_note_replays_verbatim_as_a_user_message() {
         // The model read it as a user message mid-turn (docs/hooks.md), so
         // every later turn replays exactly that — no prefix, no wrapper: the

@@ -1191,7 +1191,15 @@ through the boundary (only the shared queue knows whether one can still be
 taken back). **A subagent session view has the same queue over that agent's own
 loop** — same seam, same event, same rows, the registry (not the roster's
 one-event-behind status) deciding whether a message is queued or starts a chat
-continuation (`AgentChatDelivery`); see
+continuation (`AgentChatDelivery`), the run's **own thread** reconciling the
+settle window at `finish` (a slot stays `busy` between its loop's last drain
+and `finish`, so a message typed there is accepted and read by nobody —
+`has_pending_inputs` is the guard and the thread starts the continuation
+itself, which a `Steered` echo then folds onto the **settled** entry,
+reopening it, since otherwise that continuation runs invisibly), and a
+delivered message opting the turn out of the Esc-interrupt undo
+(`steered_this_turn` — the undo reads the history tail, which a delivery
+makes a user message again); see
 `docs/queue.md`; plus **`!command` runs a local shell command** (codex's `!`
 shell mode: a leading `!` is **absorbed** into `App::shell_mode` and rendered
 back as the composer's red `! ` prompt — `! pwd`, never `❯ !pwd` — with a red

@@ -1209,6 +1209,8 @@ fn spawn_subagent_run(
 ) {
     let skills = config.skills.clone();
     let mcp = config.mcp.clone();
+    // Kept whole for the settle-window continuation at the very bottom.
+    let respawn_config = config.clone();
     // The subagent's tool set: its type's own (never `agent` — no nesting),
     // plus the `skill` tool when the session found any (`docs/skills.md`),
     // plus the MCP servers' tools (`docs/mcp.md`).
@@ -1287,6 +1289,14 @@ fn spawn_subagent_run(
                     StreamEvent::ToolBatch(_)
                     | StreamEvent::ToolStart { .. }
                     | StreamEvent::AgentBatch { .. }
+                    // A user message landed mid-run: whatever the agent had
+                    // said before it is no longer its final answer, so the
+                    // parent must not be handed the two concatenated
+                    // (docs/queue.md). Every round that reaches a boundary
+                    // emits a tool event first today, which already clears
+                    // this — but that is a property of the current paths, not
+                    // of the rule, and the rule is what belongs here.
+                    | StreamEvent::Steered { .. }
                     | StreamEvent::HookNote { .. } => final_text.clear(),
                     StreamEvent::StreamDone => outcome = Some(Ok(())),
                     StreamEvent::Error(e) => outcome = Some(Err(e.clone())),
@@ -1431,6 +1441,21 @@ fn spawn_subagent_run(
         // posture), and the registry settles the moment the run ends rather
         // than after a cleanup hook's timeout.
         registry.finish(&id, outcome, messages);
+        // The settle window (`docs/queue.md`): a message queued after this
+        // run's last drain but before `finish` landed sits where nobody will
+        // ever read it — the slot was still `busy`, so `spawn_agent_chat`
+        // queued instead of continuing, and the roster's terminal event may
+        // already have been folded, so the boundary's reconciliation has been
+        // and gone. Now that the slot has settled, run that continuation
+        // here. (A message racing the other way sees `busy == false` and takes
+        // the continuation path itself, so between them nothing is stranded.)
+        // A killed agent continues nothing — the `x` said stop.
+        if registry.has_pending_inputs(&id)
+            && !cancel.is_cancelled()
+            && let Some((messages, cancel)) = registry.begin_continuation(&id)
+        {
+            spawn_subagent_run(&respawn_config, registry, id, agent_type, messages, cancel);
+        }
     });
 }
 

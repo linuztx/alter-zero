@@ -621,22 +621,6 @@ impl App {
         }
     }
 
-    /// Take back the messages a settled agent never read, for the boundary to
-    /// re-deliver as a chat continuation — the agent-side
-    /// [`reclaim_steered`](App::reclaim_steered). Empty for an agent that
-    /// read everything (the common case) or is no longer on the roster.
-    #[must_use]
-    pub fn reclaim_agent_chat(&mut self, id: &str) -> Vec<String> {
-        let Some(agent) = self.agents.iter_mut().find(|agent| agent.id == id) else {
-            return Vec::new();
-        };
-        let pending = agent.reclaim_queued();
-        if !pending.is_empty() {
-            self.agents_generation += 1;
-        }
-        pending
-    }
-
     /// A chat message that started a **continuation run** on a settled agent:
     /// record it into the agent's transcript at once (the run carries it as
     /// its newest user turn, so no round boundary will announce it) and

@@ -622,3 +622,56 @@ fn a_compact_turn_takes_no_queued_messages() {
     assert!(app.steered.is_empty());
     assert_eq!(app.queued, [batch(&["meanwhile, check the tests"])]);
 }
+
+#[test]
+fn a_delivered_message_also_blocks_the_interrupt_undo() {
+    // The undo reads the history *tail* to decide whether the turn is an
+    // untouched submission — and a delivered message leaves a user message
+    // there even after the turn has committed a reply and a tool cell. Esc
+    // in the gap between the delivery and the next round's first token would
+    // then pull a message the model has already read back into the composer,
+    // drop it from history and commit no notice, leaving the turn's output
+    // on screen with nothing explaining it.
+    let mut app = App::new();
+    app.record_user_message("go");
+    app.begin_stream();
+    app.push_chunk("reading the file");
+    app.start_tool("Read", "about.py", None);
+    app.end_tool("Read 16 lines", true);
+    app.input = TextArea::from_text("also check the tests");
+    app.on_key(key(KeyCode::Enter));
+    app.deliver_steered("also check the tests");
+    // The next round's request is in flight: nothing streamed, no tool live.
+    assert!(
+        matches!(app.interrupt_turn(), Some(InterruptedTurn::Kept { .. })),
+        "the turn produced output — Esc interrupts it, it does not undo it"
+    );
+    assert_eq!(
+        app.input.text(),
+        "",
+        "the delivered message is not pulled back"
+    );
+    assert!(
+        app.history.iter().any(|item| matches!(
+            item,
+            HistoryItem::Message(m) if m.text == "also check the tests"
+        )),
+        "…nor dropped from the conversation the model read it in"
+    );
+}
+
+#[test]
+fn a_fresh_turn_can_be_undone_again_after_one_that_was_steered() {
+    // The opt-out is per turn, not sticky: the next turn starts clean.
+    let mut app = App::new();
+    app.record_user_message("go");
+    app.begin_stream();
+    app.deliver_steered("mid-turn");
+    app.end_turn(1);
+    app.record_user_message("second");
+    app.begin_stream();
+    assert!(
+        matches!(app.interrupt_turn(), Some(InterruptedTurn::Undone)),
+        "a turn that produced nothing still undoes"
+    );
+}

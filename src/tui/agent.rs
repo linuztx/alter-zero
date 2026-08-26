@@ -30,7 +30,7 @@ use std::time::{Duration, Instant};
 
 use ratatui::text::Line;
 
-use alter_zero::agents::{AGENT_LINGER, AgentEvent, AgentStatus};
+use alter_zero::agents::{AGENT_LINGER, AgentEvent};
 use alter_zero::app::{AgentStop, HistoryItem, Role, ToastKind, View};
 use alter_zero::stream::{AgentChatDelivery, StreamEvent};
 use alter_zero::ui;
@@ -141,10 +141,6 @@ impl Session<'_> {
             self.agent_clocks.remove(id);
             self.agent_expiry
                 .insert(id.to_string(), Instant::now() + linger);
-            // …and whatever the run never got to read goes back in as a chat
-            // continuation, which un-arms the linger it just set
-            // (`docs/queue.md`).
-            self.reclaim_agent_chat(id);
         }
     }
 
@@ -438,37 +434,6 @@ impl Session<'_> {
                 "Agent chat is not available with this backend",
                 ToastKind::Error,
             ),
-        }
-    }
-
-    /// A subagent's run settled: reconcile the messages it never read
-    /// (`docs/queue.md`). They come off the registry's queue *and* off the
-    /// roster's rows, so neither side can strand one, and — for a run that
-    /// finished **naturally** — go straight back in as a chat continuation:
-    /// the user asked something and is owed an answer, which is the agent-side
-    /// of the main session's turn-end reclaim.
-    ///
-    /// A run that **failed** or that the user **stopped** keeps nothing: there
-    /// is nothing to continue, and restarting an agent the user just killed is
-    /// the opposite of what the `x` meant.
-    fn reclaim_agent_chat(&mut self, id: &str) {
-        let pending = self.agent_registry.take_pending_inputs(id);
-        let mirrored = self.app.reclaim_agent_chat(id);
-        let resumable = self
-            .app
-            .agent(id)
-            .is_some_and(|run| run.status == AgentStatus::Done);
-        if !resumable {
-            return;
-        }
-        // The registry's copy is the authority on what the loop never read;
-        // the roster's mirror covers a slot the registry has already dropped.
-        for text in if pending.is_empty() {
-            mirrored
-        } else {
-            pending
-        } {
-            self.agent_chat(id, &text);
         }
     }
 

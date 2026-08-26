@@ -23,8 +23,10 @@ nothing the user typed is ever dropped.
 **The same mechanism runs one level down.** A subagent's session view has this
 exact queue over that agent's own loop: a message typed while it works waits
 above the box and lands on *its* transcript at *its* next round boundary. Main
-and subagent share the seam (`SteerQueue`), the event (`StreamEvent::Steered`),
-the rendering (`ui::queued_lines`) and the reclaim. See `docs/agent-tool.md`.
+and subagent share the seam (`SteerQueue`), the event (`StreamEvent::Steered`)
+and the rendering (`ui::queued_lines`); each reconciles what its loop never
+read, the session at its turn end and an agent inside its own run's thread. See
+`docs/agent-tool.md`.
 
 See `CLAUDE.md` for where this sits in the runtime model.
 
@@ -158,6 +160,15 @@ the boundary is about to re-dispatch.
   transcript owes the user.
 - `App::reclaim_steered()` — the turn-end fallback described above. A no-op when
   nothing is waiting, so no empty batch is ever invented.
+- `App::steered_this_turn` — has this turn *read* one? The Esc-interrupt undo
+  decides from the history **tail**: a trailing user message means the turn is
+  still the untouched submission. A delivered message breaks that reading — it
+  leaves a user message there even after the turn has committed a reply and
+  tool cells — so it opts the turn out, alongside a pending one. Without it,
+  Esc in the gap between a delivery and the next round's first token pulls a
+  message the model has already read back into the composer, drops it from
+  history, and commits no notice over the output already on screen
+  (`docs/interrupt.md`).
 - `App::recall_steered(text)` / `App::recall_last_queued()` — Alt+Up's two
   halves (see below).
 - `App::queue_draft(new_batch: bool)` — the follow-up path. `new_batch` picks
@@ -217,9 +228,15 @@ same code:
   `take_pending_inputs`); it now feeds `run_agent`'s `pending_inputs` seam, so a
   subagent announces its takes with `StreamEvent::Steered` on the agent channel
   exactly as the main turn does on the reply channel.
-- `AgentRun::queued: Vec<String>` is the mirror, `AgentRun::apply`'s `Steered`
-  arm the delivery (flush the streamed segment, drop the row, `push_user_message`
-  on **that agent's** transcript), and `AgentRun::reclaim_queued` the fallback.
+- `AgentRun::queued: Vec<String>` is the mirror and `AgentRun::apply`'s
+  `Steered` arm the delivery (flush the streamed segment, drop the row,
+  `push_user_message` on **that agent's** transcript). It is the one event a
+  **settled** run still folds, reopening the entry: the continuation below is
+  what delivered it, and without the reopen that continuation runs invisibly —
+  the model working, the transcript showing nothing, the row never clearing. A
+  run the user **stopped** stays closed (`stopped_by_user`), and its
+  `interrupt()` drops the rows outright: a cancelled loop will read nothing, so
+  leaving them up would promise a delivery that cannot happen.
 - `ui::queued_lines` renders the **viewed agent's** queue in the agent view and
   the main session's two sets outside it — same rows, same geometry.
 - **The registry decides, not the roster.** `ReplySource::spawn_agent_chat`
@@ -229,16 +246,36 @@ same code:
   once and the bubble commits, an idle submit one level down). A roster status
   that lagged the registry by one event would either strand the row forever or
   record the message twice, which is exactly why the key arm no longer decides.
-- **A settled run reconciles** (`Session::reclaim_agent_chat`): the unread
-  messages come off the registry's queue *and* the roster's rows, and a run that
-  finished **naturally** gets them straight back as a chat continuation. A run
-  that failed, or that the user stopped with `x`, keeps nothing — there is
-  nothing to continue, and restarting an agent the user just killed is the
-  opposite of what the key meant.
+- **The run's own thread reconciles at `finish`**, which is where the
+  **settle window** lives: a slot stays `busy` between its loop's last drain
+  and `finish`, so a message typed in there is accepted by `queue_input` and
+  then read by nobody — the loop is over, and the roster's terminal event may
+  already have been folded. `AgentRegistry::has_pending_inputs` is the guard,
+  and the thread starts the continuation itself before exiting. A message
+  racing the other way sees `busy == false` and takes the continuation path in
+  `spawn_agent_chat`, so between them nothing is stranded; a **killed** agent
+  continues nothing.
+
+  Reconciling at the source rather than at the boundary is deliberate. A
+  boundary sweep on the terminal event cannot see the window at all — the
+  event is folded *before* `finish` lands — and running both would race: the
+  sweep's `take_pending_inputs` can empty the queue a moment before
+  `has_pending_inputs` reads it, leaving the message re-queued into a slot
+  nothing will drain again.
 
 The bug this fixed on that side: the view recorded the message the instant it
 was typed, claiming the agent had read something it had not, and showed no
 pending state at all.
+
+**A subagent-launched background shell's completion note rides the same seam**
+(`docs/background.md`): `tui/background.rs` queues it with `queue_input` and
+stops there. Recording it on the transcript as well — which is what routing it
+through the seam *and* `App::agent_chat` used to do — put it there **twice**,
+once eagerly and once on the echo, permanently: in history, the rollout, the
+context replay and every rebuild. Exactly one path may record a user-role
+message on an agent's transcript, and which one it is depends on whether an
+echo is coming: `agent_chat` for a continuation that carries the message in
+its own request, the `Steered` echo for everything that rides the queue.
 
 ### Display (`ui/footer.rs`)
 

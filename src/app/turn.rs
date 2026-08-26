@@ -103,6 +103,8 @@ impl App {
     /// start the live turn status (pick this turn's verbs, reset the tally).
     pub fn begin_stream(&mut self) {
         self.streaming = Some(String::new());
+        // A fresh turn has been handed nothing yet (docs/queue.md).
+        self.steered_this_turn = false;
         // A new real turn re-arms the auto-compact trigger (one attempt per
         // user turn — docs/compact.md).
         self.auto_compact_blocked = false;
@@ -405,6 +407,9 @@ impl App {
             // submission back into the composer while they dispatch as the
             // next turn would read as the undo having done nothing.
             && self.steered.is_empty()
+            // …nor one it already read, which leaves a user message as the
+            // tail even though the turn has committed a reply and tool cells.
+            && !self.steered_this_turn
         {
             self.status = None;
             let (text, pairs) = self.take_trailing_user_messages();

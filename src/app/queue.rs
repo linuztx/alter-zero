@@ -107,6 +107,9 @@ impl App {
         // The uploaded text counts into this turn's `↑` tally, exactly as a
         // turn-start message does (`docs/status-indicator.md`).
         self.count_user_input(text);
+        // This turn has read something now, so the Esc-interrupt undo must
+        // stop treating the new history tail as an untouched submission.
+        self.steered_this_turn = true;
         waiting.is_some()
     }
 
