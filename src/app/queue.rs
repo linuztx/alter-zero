@@ -89,9 +89,8 @@ impl App {
     }
 
     /// The running turn took `text` into its context
-    /// ([`StreamEvent::Steered`]): stop
-    /// showing it above the box and record it as a **real user message**, the
-    /// model having genuinely read it now.
+    /// ([`StreamEvent::Steered`]): stop showing it above the box and record it
+    /// as a **real user message**, the model having genuinely read it now.
     ///
     /// The streamed run of assistant text ahead of it is finalised first —
     /// invariant 4's flush-before-you-interleave — so the bubble slots after

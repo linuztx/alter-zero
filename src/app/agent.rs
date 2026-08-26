@@ -607,9 +607,8 @@ impl App {
     /// A message typed into a **running** agent's session: park it on that
     /// agent's queue (`docs/queue.md`). It shows above the box until the
     /// agent's loop takes it at its next round boundary, when
-    /// [`StreamEvent::Steered`] turns it
-    /// into a real user message on that transcript — the main session's
-    /// steering, one level down.
+    /// [`StreamEvent::Steered`] turns it into a real user message on that
+    /// transcript — the main session's steering, one level down.
     ///
     /// Which of this and [`agent_chat`](App::agent_chat) runs is the
     /// **registry's** call, not the roster's: only the registry knows whether
