@@ -34,5 +34,5 @@ pub use self::dummy::{
     dummy_response, image_ack, turn_events,
 };
 pub use self::event::{AgentCallDone, AgentSpec, StreamEvent, TokenUsage, ToolCallSummary};
-pub use self::source::ReplySource;
+pub use self::source::{AgentChatDelivery, ReplySource};
 pub use self::stall::StallAi;

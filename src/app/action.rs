@@ -55,6 +55,19 @@ pub enum Action {
     /// echoes `❯ !command`, calls [`App::begin_shell`], and spawns it. See
     /// `docs/shell-command.md`.
     RunShell(String),
+    /// Enter while a **model turn is running**: hand this text to that turn
+    /// (`docs/queue.md`). `App::steer_draft` has already consumed the
+    /// composer and parked the text in [`App::steered`]; the boundary pushes
+    /// it onto the shared [`SteerQueue`](crate::steer::SteerQueue) the
+    /// backend drains at its next round boundary, so the model reads it
+    /// **within** the turn instead of after it.
+    Steer(String),
+    /// Alt+Up over a message steered into the running turn: ask the boundary
+    /// for it back. Only the shared queue knows whether the turn has read it
+    /// yet — if it has not, the boundary hands the text to
+    /// [`App::recall_steered`]; if it has, it falls back to the follow-up
+    /// queue ([`App::recall_last_queued`]). See `docs/queue.md`.
+    ReclaimSteered,
     /// The user pressed Esc while a turn was in flight: stop the generation
     /// (cancel + reap the backend, then [`App::interrupt_turn`]) — codex-style.
     Interrupt,

@@ -604,9 +604,45 @@ impl App {
         self.agent_view = None;
     }
 
-    /// A chat message submitted inside an agent session view: record it into
-    /// the agent's transcript (the registry delivers the same text to its
-    /// loop) and reopen a settled entry so the continuation's events fold in.
+    /// A message typed into a **running** agent's session: park it on that
+    /// agent's queue (`docs/queue.md`). It shows above the box until the
+    /// agent's loop takes it at its next round boundary, when
+    /// [`StreamEvent::Steered`] turns it
+    /// into a real user message on that transcript — the main session's
+    /// steering, one level down.
+    ///
+    /// Which of this and [`agent_chat`](App::agent_chat) runs is the
+    /// **registry's** call, not the roster's: only the registry knows whether
+    /// the loop is still running, and a roster status that lagged it by one
+    /// event would either strand the row forever or record the message twice.
+    pub fn queue_agent_chat(&mut self, id: &str, text: &str) {
+        if let Some(agent) = self.agents.iter_mut().find(|agent| agent.id == id) {
+            agent.queue_chat(text);
+            self.agents_generation += 1;
+        }
+    }
+
+    /// Take back the messages a settled agent never read, for the boundary to
+    /// re-deliver as a chat continuation — the agent-side
+    /// [`reclaim_steered`](App::reclaim_steered). Empty for an agent that
+    /// read everything (the common case) or is no longer on the roster.
+    #[must_use]
+    pub fn reclaim_agent_chat(&mut self, id: &str) -> Vec<String> {
+        let Some(agent) = self.agents.iter_mut().find(|agent| agent.id == id) else {
+            return Vec::new();
+        };
+        let pending = agent.reclaim_queued();
+        if !pending.is_empty() {
+            self.agents_generation += 1;
+        }
+        pending
+    }
+
+    /// A chat message that started a **continuation run** on a settled agent:
+    /// record it into the agent's transcript at once (the run carries it as
+    /// its newest user turn, so no round boundary will announce it) and
+    /// reopen the entry so the continuation's events fold in. The idle-submit
+    /// half of [`queue_agent_chat`](App::queue_agent_chat).
     pub fn agent_chat(&mut self, id: &str, text: &str) {
         if let Some(agent) = self.agents.iter_mut().find(|agent| agent.id == id) {
             agent.push_user_message(text);

@@ -297,6 +297,13 @@ impl Session<'_> {
             self.sync_task_registry();
         }
         let unheard = self.registry.take_pending_notices();
+        // A message the turn never reached a round boundary to read — it
+        // simply answered — becomes the next turn instead of being dropped
+        // (docs/queue.md). Taken from the shared handle first so the backend
+        // can't read it after the fact, then off the strip and onto the front
+        // of the follow-up queue, which `flush_next_queued` dispatches below.
+        let _ = self.steer.take();
+        self.app.reclaim_steered();
         // The finished turn's handle is spent; whatever dispatches below takes
         // its place (and nothing dispatching leaves the loop idle).
         self.inflight = None;

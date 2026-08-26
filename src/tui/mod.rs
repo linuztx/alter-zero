@@ -206,6 +206,13 @@ pub(crate) struct Session<'t> {
     /// Subagents: the `agent` tool's roster and its threads
     /// (`docs/agent-tool.md`).
     agent_registry: AgentRegistry,
+    /// The **mid-turn message queue** (`docs/queue.md`): what the user
+    /// submitted while a turn was already running, waiting for that turn's
+    /// next round boundary. This side pushes; the backend thread drains.
+    /// `App::steered` is the mirror the strip renders — and the one that
+    /// survives a turn that ended without reading them, which is why the
+    /// reclaim at every turn end goes through both.
+    steer: alter_zero::steer::SteerQueue,
     /// The tool-permission gate and this project's saved rules
     /// (`docs/permissions.md`).
     permissions: PermissionStore,

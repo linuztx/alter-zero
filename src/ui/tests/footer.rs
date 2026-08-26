@@ -184,6 +184,60 @@ fn the_footer_omits_the_gauge_without_a_window() {
 // --- message queue (docs/queue.md) ---
 
 #[test]
+fn steered_messages_show_above_the_box_until_the_turn_takes_them() {
+    // A message handed to the running turn reads exactly like a queued one —
+    // it is pending either way; what differs is which turn it belongs to.
+    let mut app = App::new();
+    app.steered.push_back("also check the tests".to_string());
+    assert_eq!(queued_rows(&app, 40), 1);
+    assert!(
+        plain(&queued_lines(&app, 40)[0]).contains("❯ also check the tests"),
+        "the user-message style, inset"
+    );
+}
+
+#[test]
+fn steered_messages_lead_the_follow_up_turns() {
+    // They belong to the turn already running, so they are what happens next
+    // — a Tab follow-up comes after, divided by the usual blank row.
+    let mut app = App::new();
+    app.steered.push_back("now".to_string());
+    app.queued.push_back(batch(&["later"]));
+    let rows: Vec<String> = queued_lines(&app, 40).iter().map(plain).collect();
+    assert_eq!(rows.len(), 3, "one each + the divider");
+    assert!(rows[0].contains("❯ now"), "{rows:?}");
+    assert!(rows[1].trim().is_empty(), "{rows:?}");
+    assert!(rows[2].contains("❯ later"), "{rows:?}");
+}
+
+#[test]
+fn an_agent_session_view_shows_that_agents_own_queue() {
+    // The agent view shows the agent's world (docs/agent-tool.md): its own
+    // pending messages, never the main session's follow-ups.
+    let mut app = App::new();
+    app.begin_stream();
+    app.start_agent_group(false, &[spec("a1", "Fetch Manila weather", false)]);
+    app.queued.push_back(batch(&["a main follow-up"]));
+    app.queue_agent_chat("a1", "also check Manila");
+    app.open_agent_view("a1");
+    let rows: Vec<String> = queued_lines(&app, 40).iter().map(plain).collect();
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert!(rows[0].contains("❯ also check Manila"), "{rows:?}");
+    assert_eq!(queued_rows(&app, 40), 1);
+}
+
+#[test]
+fn an_agent_session_view_with_nothing_queued_reserves_no_rows() {
+    let mut app = App::new();
+    app.begin_stream();
+    app.start_agent_group(false, &[spec("a1", "Fetch Manila weather", false)]);
+    app.queued.push_back(batch(&["a main follow-up"]));
+    app.steered.push_back("and a steered one".to_string());
+    app.open_agent_view("a1");
+    assert_eq!(queued_rows(&app, 40), 0, "the main session's stay off it");
+}
+
+#[test]
 fn queued_rows_is_zero_empty_and_counts_the_queue() {
     let mut app = App::new();
     assert_eq!(queued_rows(&app, 40), 0);

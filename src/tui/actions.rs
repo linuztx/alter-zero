@@ -113,6 +113,20 @@ impl Session<'_> {
                 // and resize repaint all work exactly like an AI turn.
                 self.run_shell(command);
             }
+            // Enter mid-turn: hand the draft to the turn already running
+            // (docs/queue.md). `App` has parked it in `steered` for the strip;
+            // pushing it here is what puts it in front of the backend, which
+            // takes it at its next round boundary and answers with
+            // `StreamEvent::Steered`.
+            Action::Steer(text) => self.steer.push(&text),
+            // Alt+Up over one of those: only the shared queue knows whether
+            // the turn has read it yet. Still waiting → back to the composer;
+            // already read → fall back to the follow-up queue, which is what
+            // Alt+Up means when nothing is in flight.
+            Action::ReclaimSteered => match self.steer.take_last() {
+                Some(text) => self.app.recall_steered(&text),
+                None => self.app.recall_last_queued(),
+            },
             Action::Interrupt => self.interrupt_turn()?,
             Action::Compact => {
                 // /compact (docs/compact.md): run codex's summarization turn —
@@ -345,6 +359,11 @@ impl Session<'_> {
         // phantom follow-up turn about them.
         self.registry.kill_all();
         let _ = self.registry.take_pending_notices();
+        // …and the mid-turn queue: `App::clear_conversation` dropped the rows,
+        // so the handle the dying backend was about to drain must go too, or
+        // the next turn would open by reading a message from the conversation
+        // that was just wiped (docs/queue.md).
+        let _ = self.steer.take();
         // …and the subagents (docs/agent-tool.md): the wiped roster drops their
         // late events.
         self.agent_registry.kill_all();

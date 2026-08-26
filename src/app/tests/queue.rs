@@ -1,4 +1,8 @@
 //! The mid-turn message queue (`docs/queue.md`).
+//!
+//! Two halves: what Enter hands to the **running** turn (steering — delivered
+//! at its next round boundary) and what Tab / a `!` command leave for a
+//! **follow-up** turn (the classic queue, drained at turn end).
 
 use super::*;
 
@@ -125,15 +129,16 @@ fn enter_when_idle_submits_and_never_queues() {
 
 #[test]
 fn drain_next_batch_takes_the_front_batch_in_order_and_empties() {
-    // A batch (the Enters that share a turn) flushes whole as the next turn.
+    // A batch flushes whole as the next turn. Three Enters against a turn
+    // that ended before reading any of them is how a multi-message batch
+    // forms now (the reclaim).
     let mut app = App::new();
     app.begin_stream();
-    app.input = TextArea::from_text("a");
-    app.on_key(key(KeyCode::Enter));
-    app.input = TextArea::from_text("b");
-    app.on_key(key(KeyCode::Enter));
-    app.input = TextArea::from_text("c");
-    app.on_key(key(KeyCode::Enter));
+    for text in ["a", "b", "c"] {
+        app.input = TextArea::from_text(text);
+        app.on_key(key(KeyCode::Enter));
+    }
+    app.reclaim_steered();
     assert_eq!(
         app.drain_next_batch(),
         Some(batch(&["a", "b", "c"])),
@@ -145,18 +150,20 @@ fn drain_next_batch_takes_the_front_batch_in_order_and_empties() {
 
 #[test]
 fn tab_mid_turn_opens_a_new_follow_up_batch() {
-    // Enter accumulates into the current batch; Tab starts a *new* batch so
-    // its message runs as its own follow-up turn after the first queue.
+    // Tab is the *other* mid-turn intent (Enter steers into the running
+    // turn): each Tab starts its own batch, so its message runs as a separate
+    // follow-up turn after the ones already queued.
     let mut app = App::new();
     app.begin_stream();
     app.input = TextArea::from_text("first");
-    app.on_key(key(KeyCode::Enter)); // batch 1
-    app.input = TextArea::from_text("follow");
     assert_eq!(app.on_key(key(KeyCode::Tab)), Action::None);
     assert_eq!(app.input.text(), "", "Tab consumes the composer like Enter");
-    assert_eq!(app.queued.len(), 2, "Tab opened a second batch");
+    app.input = TextArea::from_text("follow");
+    app.on_key(key(KeyCode::Tab));
+    assert_eq!(app.queued.len(), 2, "each Tab opened its own batch");
     assert_eq!(app.queued[0], batch(&["first"]));
     assert_eq!(app.queued[1], batch(&["follow"]));
+    assert!(app.steered.is_empty(), "Tab never steers the running turn");
 }
 
 #[test]
@@ -173,15 +180,16 @@ fn tab_when_idle_does_not_queue() {
 #[test]
 fn alt_up_pulls_only_the_last_batch_into_the_composer_for_editing() {
     // Alt+Up edits the *last* turn-batch (codex's edit_queued_message
-    // pop_back), not the whole backlog: with an Enter batch then a Tab
-    // batch, Alt+Up yanks back only the Tab batch — the earlier Enter batch
-    // stays queued, untouched.
+    // pop_back), not the whole backlog: with a reclaimed batch then a Tab
+    // batch, Alt+Up yanks back only the Tab batch — the earlier one stays
+    // queued, untouched.
     let mut app = App::new();
     app.begin_stream();
-    app.input = TextArea::from_text("hello");
-    app.on_key(key(KeyCode::Enter)); // batch 1 = [hello]
-    app.input = TextArea::from_text("world");
-    app.on_key(key(KeyCode::Enter)); // batch 1 = [hello, world]
+    for text in ["hello", "world"] {
+        app.input = TextArea::from_text(text);
+        app.on_key(key(KeyCode::Enter));
+    }
+    app.reclaim_steered(); // batch 1 = [hello, world]
     app.input = TextArea::from_text("deploy");
     app.on_key(key(KeyCode::Tab)); // batch 2 = [deploy]
     assert_eq!(app.on_key(alt(KeyCode::Up)), Action::None);
@@ -205,14 +213,16 @@ fn alt_up_pulls_only_the_last_batch_into_the_composer_for_editing() {
 
 #[test]
 fn alt_up_concats_the_last_batchs_messages() {
-    // The last batch can itself hold several messages (a Tab opened it, an
-    // Enter extended it): Alt+Up returns them newline-joined, oldest first.
+    // A batch can itself hold several messages (a turn ended before reading
+    // the Enters steered into it): Alt+Up returns them newline-joined,
+    // oldest first.
     let mut app = App::new();
     app.begin_stream();
-    app.input = TextArea::from_text("deploy");
-    app.on_key(key(KeyCode::Tab)); // batch 1 = [deploy]
-    app.input = TextArea::from_text("rollback");
-    app.on_key(key(KeyCode::Enter)); // batch 1 = [deploy, rollback]
+    for text in ["deploy", "rollback"] {
+        app.input = TextArea::from_text(text);
+        app.on_key(key(KeyCode::Enter));
+    }
+    app.reclaim_steered(); // batch 1 = [deploy, rollback]
     assert_eq!(app.on_key(alt(KeyCode::Up)), Action::None);
     assert_eq!(
         app.input.text(),
@@ -246,7 +256,7 @@ fn clear_mid_turn_drops_the_queued_backlog() {
     let mut app = App::new();
     app.begin_stream();
     app.input = TextArea::from_text("queued follow-up");
-    app.on_key(key(KeyCode::Enter)); // a turn is in flight — this queues
+    app.on_key(key(KeyCode::Tab)); // a turn is in flight — this queues
     assert_eq!(app.queued.len(), 1, "the message queued");
     type_str(&mut app, "/clear");
     assert_eq!(app.on_key(key(KeyCode::Enter)), Action::Clear);
@@ -279,18 +289,18 @@ fn a_bang_command_mid_turn_queues_as_a_standalone_shell_entry() {
 
 #[test]
 fn a_queued_shell_entry_is_never_merged_with_text() {
-    // A Shell entry stands alone: an Enter-text after it opens a *fresh*
+    // A Shell entry stands alone: a Tab-text after it opens a *fresh*
     // Messages batch (the back is a Shell, not a Messages), so the command
     // never gets concatenated into a text turn — codex's per-completion
     // shell dispatch ("cannot be added to").
     let mut app = App::new();
     app.begin_stream();
     app.input = TextArea::from_text("hello");
-    app.on_key(key(KeyCode::Enter)); // Messages(["hello"])
+    app.on_key(key(KeyCode::Tab)); // Messages(["hello"])
     type_query(&mut app, "!ls");
     app.on_key(key(KeyCode::Enter)); // Shell("ls") — standalone
     app.input = TextArea::from_text("world");
-    app.on_key(key(KeyCode::Enter)); // a NEW Messages(["world"]), not merged
+    app.on_key(key(KeyCode::Tab)); // a NEW Messages(["world"]), not merged
     assert_eq!(
         app.queued,
         VecDeque::from(vec![
@@ -342,4 +352,223 @@ fn alt_up_pulls_a_queued_shell_entry_back_into_shell_mode() {
         app.queued.is_empty(),
         "the entry was pulled out of the queue"
     );
+}
+
+// ===== steering: what Enter hands to the turn already running =====
+
+#[test]
+fn enter_mid_turn_hands_the_message_to_the_running_turn() {
+    // The mid-turn queue's whole point: a message submitted while the model
+    // works goes *into that turn* — the boundary pushes it onto the shared
+    // queue the agent loop drains at its next round boundary — instead of
+    // waiting for the turn to end.
+    let mut app = App::new();
+    app.begin_stream();
+    app.input = TextArea::from_text("also check the tests");
+    assert_eq!(
+        app.on_key(key(KeyCode::Enter)),
+        Action::Steer("also check the tests".to_string()),
+        "the boundary is handed the text to steer"
+    );
+    assert_eq!(
+        app.steered,
+        ["also check the tests"],
+        "and it shows above the box until the turn takes it"
+    );
+    assert!(
+        app.queued.is_empty(),
+        "it is not a follow-up turn — it belongs to the one running"
+    );
+    assert_eq!(app.input.text(), "", "the composer is consumed");
+}
+
+#[test]
+fn consecutive_enters_steer_in_submission_order() {
+    let mut app = App::new();
+    app.begin_stream();
+    for text in ["first", "second"] {
+        app.input = TextArea::from_text(text);
+        app.on_key(key(KeyCode::Enter));
+    }
+    assert_eq!(app.steered, ["first", "second"]);
+}
+
+#[test]
+fn a_steered_message_is_recorded_for_recall() {
+    let mut app = App::new();
+    app.begin_stream();
+    app.input = TextArea::from_text("and deploy it");
+    app.on_key(key(KeyCode::Enter));
+    assert_eq!(
+        app.take_unpersisted_inputs(),
+        ["and deploy it"],
+        "↑ recalls a steered message like any other submit"
+    );
+}
+
+#[test]
+fn the_turn_taking_a_message_turns_it_into_a_user_bubble() {
+    // `StreamEvent::Steered`: the model genuinely has the text now, so the
+    // inset row above the box becomes a real user message in the conversation.
+    let mut app = App::new();
+    app.begin_stream();
+    app.input = TextArea::from_text("also check the tests");
+    app.on_key(key(KeyCode::Enter));
+    assert!(
+        app.deliver_steered("also check the tests"),
+        "the row was ours"
+    );
+    assert!(app.steered.is_empty(), "it stops waiting above the box");
+    assert!(
+        matches!(
+            app.history.last(),
+            Some(HistoryItem::Message(m))
+                if m.role == Role::User && m.text == "also check the tests"
+        ),
+        "and lands in the transcript where the model read it"
+    );
+}
+
+#[test]
+fn a_taken_message_finalises_the_reply_streamed_before_it() {
+    // Invariant 4's flush-before-you-interleave: the run of assistant text
+    // ahead of the user's message becomes its own history message, so the
+    // bubble slots *after* it and a repaint keeps that order.
+    let mut app = App::new();
+    app.begin_stream();
+    app.push_chunk("Reading the file…");
+    app.deliver_steered("wait, check the tests too");
+    let roles: Vec<Role> = app
+        .history
+        .iter()
+        .filter_map(|item| match item {
+            HistoryItem::Message(m) => Some(m.role),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        roles,
+        vec![Role::Assistant, Role::User],
+        "the streamed segment is finalised in front of the interleaved message"
+    );
+}
+
+#[test]
+fn enter_during_a_shell_turn_still_queues_a_follow_up() {
+    // A `!` command has no model reading anything, so there is no round
+    // boundary to steer into: the draft waits for the turn to end, exactly as
+    // it always did.
+    let mut app = App::new();
+    app.begin_shell("sleep 5");
+    app.input = TextArea::from_text("next please");
+    assert_eq!(app.on_key(key(KeyCode::Enter)), Action::None);
+    assert!(app.steered.is_empty(), "nothing to steer into");
+    assert_eq!(app.queued, [batch(&["next please"])]);
+}
+
+#[test]
+fn a_draft_with_attachments_queues_instead_of_steering() {
+    // A round-boundary injection is text-only (`ChatMessage::user`), so a
+    // draft carrying Ctrl+V images keeps the follow-up path, where the typed
+    // image channel can carry them (docs/image-paste.md).
+    let mut app = App::new();
+    app.begin_stream();
+    app.attach_image(std::path::PathBuf::from("/tmp/shot.png"));
+    app.input = TextArea::from_text("what is in [Image #1]?");
+    assert_eq!(app.on_key(key(KeyCode::Enter)), Action::None);
+    assert!(
+        app.steered.is_empty(),
+        "an attachment can't ride a round boundary"
+    );
+    assert_eq!(app.queued.len(), 1, "so it queues as a follow-up turn");
+}
+
+#[test]
+fn an_undelivered_message_is_reclaimed_as_the_next_turn() {
+    // The turn ended before its next round boundary (the model just
+    // answered): what it never took becomes the next turn, batched.
+    let mut app = App::new();
+    app.begin_stream();
+    for text in ["first", "second"] {
+        app.input = TextArea::from_text(text);
+        app.on_key(key(KeyCode::Enter));
+    }
+    app.reclaim_steered();
+    assert!(app.steered.is_empty());
+    assert_eq!(
+        app.queued,
+        [batch(&["first", "second"])],
+        "one turn, the messages in order"
+    );
+}
+
+#[test]
+fn reclaimed_messages_lead_the_follow_ups_already_queued() {
+    // They were submitted into the *current* turn, so they run before a Tab
+    // follow-up that was always meant for later.
+    let mut app = App::new();
+    app.begin_stream();
+    app.input = TextArea::from_text("later");
+    app.on_key(key(KeyCode::Tab)); // an explicit follow-up turn
+    app.input = TextArea::from_text("now");
+    app.on_key(key(KeyCode::Enter)); // steered into the running turn
+    app.reclaim_steered();
+    assert_eq!(app.queued, [batch(&["now"]), batch(&["later"])]);
+}
+
+#[test]
+fn reclaiming_nothing_leaves_the_queue_alone() {
+    let mut app = App::new();
+    app.begin_stream();
+    app.input = TextArea::from_text("later");
+    app.on_key(key(KeyCode::Tab));
+    app.reclaim_steered();
+    assert_eq!(
+        app.queued,
+        [batch(&["later"])],
+        "no empty batch is invented"
+    );
+}
+
+#[test]
+fn alt_up_over_a_steered_message_asks_the_boundary_for_it_back() {
+    // Only the shared queue knows whether the turn has taken it yet, so the
+    // pull-back is the boundary's call (docs/queue.md).
+    let mut app = App::new();
+    app.begin_stream();
+    app.input = TextArea::from_text("oops typo");
+    app.on_key(key(KeyCode::Enter));
+    assert_eq!(app.on_key(alt(KeyCode::Up)), Action::ReclaimSteered);
+}
+
+#[test]
+fn recall_steered_puts_the_message_back_in_the_composer() {
+    let mut app = App::new();
+    app.begin_stream();
+    app.input = TextArea::from_text("oops typo");
+    app.on_key(key(KeyCode::Enter));
+    app.recall_steered("oops typo");
+    assert_eq!(app.input.text(), "oops typo", "back as an editable draft");
+    assert!(app.steered.is_empty(), "and off the strip");
+}
+
+#[test]
+fn alt_up_falls_back_to_the_queue_with_nothing_in_flight() {
+    let mut app = App::new();
+    app.begin_stream();
+    app.input = TextArea::from_text("later");
+    app.on_key(key(KeyCode::Tab));
+    assert_eq!(app.on_key(alt(KeyCode::Up)), Action::None);
+    assert_eq!(app.input.text(), "later");
+    assert!(app.queued.is_empty());
+}
+
+#[test]
+fn clear_mid_turn_drops_the_steered_messages_too() {
+    let mut app = App::new();
+    app.begin_stream();
+    app.input = TextArea::from_text("still going");
+    app.on_key(key(KeyCode::Enter));
+    app.clear_conversation();
+    assert!(app.steered.is_empty(), "/clear kills the whole turn");
 }

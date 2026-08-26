@@ -25,19 +25,21 @@ fn enter_with_blank_input_does_nothing() {
 
 #[test]
 fn enter_while_streaming_does_not_submit() {
-    // A turn is in flight: Enter never produces Submit — it queues the
-    // message (codex's queued_user_messages) and consumes the composer.
+    // A turn is in flight: Enter never produces Submit — it steers the
+    // message into that turn (codex's submit_user_message) and consumes the
+    // composer. See docs/queue.md.
     let mut app = App::new();
     app.input = TextArea::from_text("hello");
     app.begin_stream();
     let action = app.on_key(key(KeyCode::Enter));
-    assert_eq!(action, Action::None);
+    assert_eq!(action, Action::Steer("hello".to_string()));
     assert_eq!(
         app.input.text(),
         "",
-        "the composer is consumed into the queue"
+        "the composer is consumed into the running turn"
     );
-    assert_eq!(app.queued.front(), Some(&batch(&["hello"])));
+    assert_eq!(app.steered.front(), Some(&"hello".to_string()));
+    assert!(app.queued.is_empty(), "it is not a follow-up turn");
 }
 
 #[test]
@@ -490,38 +492,34 @@ fn ctrl_c_quits_from_the_tool_view_too() {
 }
 
 #[test]
-fn enter_mid_turn_appends_to_one_batch_in_order() {
-    // Consecutive Enters share a single turn-batch, oldest first — they
-    // flush together as one next turn.
+fn enter_mid_turn_steers_in_order_and_batches_only_if_unread() {
+    // Consecutive Enters reach the running turn oldest first. Should it end
+    // before reading them, they fall back to one shared next turn — the old
+    // batching, kept as the fallback it now is.
     let mut app = App::new();
     app.begin_stream();
     app.input = TextArea::from_text("first");
     app.on_key(key(KeyCode::Enter));
     app.input = TextArea::from_text("second");
     app.on_key(key(KeyCode::Enter));
-    assert_eq!(app.queued.len(), 1, "both Enters land in one batch");
-    assert_eq!(
-        app.queued[0],
-        batch(&["first", "second"]),
-        "FIFO, oldest first"
-    );
+    assert_eq!(app.steered, ["first", "second"], "FIFO, oldest first");
+    app.reclaim_steered();
+    assert_eq!(app.queued.len(), 1, "unread, both land in one batch");
+    assert_eq!(app.queued[0], batch(&["first", "second"]));
 }
 
 #[test]
-fn enter_after_tab_appends_to_the_follow_up_batch() {
-    // Once Tab opens a new batch, a plain Enter joins *that* batch (the one
-    // now being accumulated), not the first.
+fn an_enter_after_a_tab_goes_to_the_running_turn_not_the_follow_up() {
+    // Tab's batch is deliberately *later*; an Enter after it is deliberately
+    // *now*. The two intents stay apart — the Enter never joins the batch.
     let mut app = App::new();
     app.begin_stream();
-    app.input = TextArea::from_text("a");
-    app.on_key(key(KeyCode::Enter)); // batch 1 = [a]
     app.input = TextArea::from_text("b");
-    app.on_key(key(KeyCode::Tab)); // batch 2 = [b]
+    app.on_key(key(KeyCode::Tab)); // a follow-up turn
     app.input = TextArea::from_text("c");
-    app.on_key(key(KeyCode::Enter)); // batch 2 = [b, c]
-    assert_eq!(app.queued.len(), 2);
-    assert_eq!(app.queued[0], batch(&["a"]));
-    assert_eq!(app.queued[1], batch(&["b", "c"]));
+    app.on_key(key(KeyCode::Enter)); // into the turn already running
+    assert_eq!(app.queued, [batch(&["b"])], "the follow-up is untouched");
+    assert_eq!(app.steered, ["c"]);
 }
 
 #[test]
@@ -531,7 +529,7 @@ fn alt_up_does_not_clobber_a_draft() {
     let mut app = App::new();
     app.begin_stream();
     app.input = TextArea::from_text("queued");
-    app.on_key(key(KeyCode::Enter));
+    app.on_key(key(KeyCode::Tab));
     app.input = TextArea::from_text("a draft");
     assert_eq!(app.on_key(alt(KeyCode::Up)), Action::None);
     assert_eq!(app.input.text(), "a draft", "the draft is untouched");

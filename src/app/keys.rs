@@ -315,19 +315,33 @@ impl App {
                     Action::None
                 } else if let Some(id) = self.agent_view.clone() {
                     // Inside an agent session view the draft goes to *that
-                    // agent* — recorded into its transcript here, delivered
-                    // by the loop (queued into a running loop, or a chat
-                    // continuation when idle). See docs/agent-tool.md.
+                    // agent*. How it lands is the registry's call, not ours —
+                    // queued into a running loop (shown above the box until
+                    // that loop reads it) or a chat continuation when idle —
+                    // so the boundary records it once it knows which
+                    // (docs/agent-tool.md, docs/queue.md).
                     let text = self.take_input();
+                    self.file_search = None;
+                    self.skill_picker = None;
                     self.input_history.record(&text);
-                    self.agent_chat(&id, &text);
                     Action::AgentChat { id, text }
+                } else if self.turn_steerable() {
+                    // A model turn is in flight — hand the draft to *that
+                    // turn* (codex's steering): it reaches the model at the
+                    // next round boundary, right after the round's tool
+                    // results, instead of waiting for the turn to finish.
+                    // Tab is the other intent — a separate follow-up turn
+                    // (see the Tab arm above) — and a `!` command or an
+                    // attachment falls back to that queue too (steer_draft
+                    // routes both). See docs/queue.md.
+                    match self.steer_draft() {
+                        Some(text) => Action::Steer(text),
+                        None => Action::None,
+                    }
                 } else if self.is_streaming() {
-                    // A turn is in flight — queue the draft for a later turn
-                    // instead of dropping it (codex's queued_user_messages).
-                    // Enter appends to the batch being accumulated, so
-                    // consecutive Enters batch into one next turn; Tab instead
-                    // opens a new follow-up batch (see the Tab arm above).
+                    // A `!` shell turn: nothing is reading a conversation, so
+                    // the draft queues as a follow-up turn exactly as it
+                    // always did (docs/shell-command.md).
                     self.queue_draft(/*new_batch*/ false);
                     Action::None
                 } else if self.shell_mode {
@@ -447,25 +461,23 @@ impl App {
             // recent entry, leaving the earlier batches queued. Guarded on an
             // empty composer so it never clobbers a draft (the composer is empty
             // in the normal flow — Enter/Tab emptied it on queue).
+            // A message steered into the running turn goes back first — it is
+            // the newest thing typed — but only the boundary's shared queue
+            // knows whether the turn has already read it, so it decides
+            // (docs/queue.md).
+            KeyCode::Up
+                if key.modifiers.contains(KeyModifiers::ALT)
+                    && self.input.is_empty()
+                    && !self.steered.is_empty() =>
+            {
+                Action::ReclaimSteered
+            }
             KeyCode::Up
                 if key.modifiers.contains(KeyModifiers::ALT)
                     && self.input.is_empty()
                     && !self.queued.is_empty() =>
             {
-                match self.drain_last_batch() {
-                    // A text batch returns newline-joined (oldest first), its
-                    // image attachments re-attached so the placeholders in the
-                    // restored draft are backed again (docs/image-paste.md).
-                    Some(QueuedTurn::Messages { texts, images }) => {
-                        self.recall_input(&texts.join("\n"));
-                        self.images = images;
-                    }
-                    // A shell entry re-enters shell mode: recalling `!command`
-                    // re-absorbs the bang (sync_shell_mode), so the composer
-                    // shows the red `! command` prompt again, ready to edit/re-run.
-                    Some(QueuedTurn::Shell(cmd)) => self.recall_input(&format!("!{cmd}")),
-                    None => {}
-                }
+                self.recall_last_queued();
                 Action::None
             }
             // ↑/↓ (and their terminal twins Ctrl+P/Ctrl+N): the open band's

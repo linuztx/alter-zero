@@ -247,6 +247,21 @@ pub enum StreamEvent {
     /// later turn, and a `/resume` restores it. `label` is the short
     /// transcript heading (`Stop hook`, `UserPromptSubmit hook`).
     HookNote { label: String, text: String },
+    /// A message the user queued **while this turn was already running** has
+    /// been folded into its context, at the round boundary the agent loop
+    /// reached (right after the previous round's tool results) — codex's
+    /// steering, and the whole point of the mid-turn queue
+    /// (`docs/queue.md`). `text` is verbatim what the model now reads as a
+    /// user-role message.
+    ///
+    /// The loop's half of the handoff: the inset `❯ …` row waiting above the
+    /// box becomes a **real user bubble** in the conversation — recorded in
+    /// history, committed to scrollback, counted into the turn's `↑` tally —
+    /// because the model genuinely has it now. Sent on the main reply channel
+    /// for the session's own queue and on the **agent** channel for a
+    /// subagent's, where it lands on that agent's own transcript: one event,
+    /// both queues (`docs/agent-tool.md`).
+    Steered { text: String },
     /// A `UserPromptSubmit` hook **blocked the prompt** (`docs/hooks.md`):
     /// the turn is over before the first request. The loop rolls the
     /// just-recorded user message back out of history (the recorder's

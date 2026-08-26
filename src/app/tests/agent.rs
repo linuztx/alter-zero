@@ -197,8 +197,10 @@ fn enter_views_an_agent_and_the_composer_chats_with_it() {
         Action::ViewAgent("a1".to_string())
     );
     assert_eq!(app.agent_view.as_deref(), Some("a1"));
-    // Typing + Enter chats with the viewed agent, recording into its
-    // transcript.
+    // Typing + Enter chats with the viewed agent. Whether the message joins
+    // its queue or starts a continuation is the registry's call, so the key
+    // arm only hands the boundary the text (docs/queue.md) — the composer is
+    // consumed and nothing is claimed on the transcript yet.
     app.input = TextArea::from_text("and humidity?");
     assert_eq!(
         app.on_key(key(KeyCode::Enter)),
@@ -207,11 +209,15 @@ fn enter_views_an_agent_and_the_composer_chats_with_it() {
             text: "and humidity?".to_string()
         }
     );
+    assert_eq!(app.input.text(), "");
     let run = app.agent("a1").unwrap();
-    assert!(matches!(
-        run.history.last(),
-        Some(HistoryItem::Message(m)) if m.text == "and humidity?" && m.role == Role::User
-    ));
+    assert!(
+        !run.history.iter().any(|item| matches!(
+            item,
+            HistoryItem::Message(m) if m.text == "and humidity?"
+        )),
+        "the boundary records it once the registry says how it landed"
+    );
     // Esc with an empty composer leaves the view.
     assert_eq!(app.on_key(key(KeyCode::Esc)), Action::LeaveAgentView);
     assert!(app.agent_view.is_none());
@@ -636,4 +642,71 @@ fn an_empty_agent_thinking_phase_records_nothing() {
     assert!(app.finish_agent_reasoning("a1", 0).is_none());
     let history = &app.agent("a1").expect("listed").history;
     assert_eq!(history.len(), 1, "only the prompt: {history:?}");
+}
+
+// ===== chatting with a running agent: its own mid-turn queue (docs/queue.md) =====
+
+#[test]
+fn a_message_typed_into_a_running_agents_session_waits_on_its_queue() {
+    // The boundary asks the registry, not the roster — only the registry
+    // knows whether the loop is still running — and a queued message shows
+    // above the box until that loop's next round boundary takes it.
+    let mut app = App::new();
+    app.begin_stream();
+    app.start_agent_group(false, &agent_specs(false));
+    let generation = app.agents_generation();
+    app.queue_agent_chat("a1", "also check Manila");
+    assert_eq!(
+        app.agent("a1").expect("the row").queued,
+        ["also check Manila"]
+    );
+    assert!(
+        app.agents_generation() > generation,
+        "the transcript cache is told the agent's view changed"
+    );
+}
+
+#[test]
+fn the_agents_round_boundary_delivers_its_queued_message() {
+    let mut app = App::new();
+    app.begin_stream();
+    app.start_agent_group(false, &agent_specs(false));
+    app.queue_agent_chat("a1", "also check Manila");
+    app.apply_agent_event(
+        "a1",
+        &crate::stream::StreamEvent::Steered {
+            text: "also check Manila".to_string(),
+        },
+    );
+    let run = app.agent("a1").expect("the row");
+    assert!(run.queued.is_empty());
+    assert!(
+        matches!(
+            run.history.last(),
+            Some(HistoryItem::Message(m))
+                if m.role == Role::User && m.text == "also check Manila"
+        ),
+        "it lands on that agent's transcript, not the main one"
+    );
+    assert!(
+        !app.history.iter().any(|item| matches!(
+            item,
+            HistoryItem::Message(m) if m.text == "also check Manila"
+        )),
+        "the main conversation is untouched"
+    );
+}
+
+#[test]
+fn a_settled_agent_hands_its_unread_messages_back() {
+    let mut app = App::new();
+    app.begin_stream();
+    app.start_agent_group(false, &agent_specs(false));
+    app.queue_agent_chat("a1", "one");
+    app.queue_agent_chat("a1", "two");
+    assert_eq!(
+        app.reclaim_agent_chat("a1"),
+        vec!["one".to_string(), "two".to_string()]
+    );
+    assert!(app.agent("a1").expect("the row").queued.is_empty());
 }

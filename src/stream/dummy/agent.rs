@@ -188,6 +188,16 @@ fn spawn_agent_session(registry: AgentRegistry, id: String, cancel: CancelToken)
                 return;
             }
         }
+        // The batch resolved: a **round boundary**, where a real subagent's
+        // loop takes what the user typed into its session while it worked and
+        // folds it into the next request (`docs/queue.md`). Announcing it here
+        // is what makes the agent view's own mid-turn queue drivable offline —
+        // the row above the box becomes a user bubble on this transcript.
+        for text in registry.take_pending_inputs(&id) {
+            if !send(StreamEvent::Steered { text }, CHUNK_DELAY) {
+                return;
+            }
+        }
         for piece in chunks(DEMO_REPLY) {
             if !send(StreamEvent::Chunk(piece), CHUNK_DELAY) {
                 return;

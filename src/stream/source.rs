@@ -77,11 +77,34 @@ pub trait ReplySource {
     }
 
     /// Send a chat message into a running/settled subagent's session
-    /// (`docs/agent-tool.md`): queued into its loop at the next round
-    /// boundary, or a continuation run when it is idle. Returns whether the
-    /// message was accepted. The default (the dummy, backends without a
-    /// subagent registry) declines — the loop raises a toast.
-    fn spawn_agent_chat(&self, _id: &str, _text: &str) -> bool {
-        false
+    /// (`docs/agent-tool.md`, `docs/queue.md`). The backend's registry — the
+    /// only thing that knows whether the loop is still running — decides
+    /// which it is, and says so in the [`AgentChatDelivery`] it returns; the
+    /// loop renders the message accordingly. The default (the dummy, backends
+    /// without a subagent registry) declines, and the loop raises a toast.
+    fn spawn_agent_chat(&self, _id: &str, _text: &str) -> AgentChatDelivery {
+        AgentChatDelivery::Declined
     }
+}
+
+/// What became of a message sent into a subagent's session — the registry's
+/// answer, which the loop must not second-guess: a roster status that lagged
+/// the registry by one event would either strand the queued row forever or
+/// record the message twice. See `docs/queue.md`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AgentChatDelivery {
+    /// The agent is mid-run: the message waits on its queue and reaches its
+    /// loop at the next round boundary, where
+    /// [`StreamEvent::Steered`](super::StreamEvent::Steered) announces it.
+    /// Shown above the box meanwhile ([`App::queue_agent_chat`]).
+    ///
+    /// [`App::queue_agent_chat`]: crate::app::App::queue_agent_chat
+    Queued,
+    /// The agent was idle: a **continuation run** started with the message as
+    /// its newest user turn. Nothing will announce it — it is already in the
+    /// request — so the loop records it now, like an idle submit
+    /// ([`App::agent_chat`](crate::app::App::agent_chat)).
+    Started,
+    /// No subagents here (the dummy), or the id is unknown.
+    Declined,
 }

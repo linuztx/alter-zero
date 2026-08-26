@@ -30,9 +30,9 @@ use std::time::{Duration, Instant};
 
 use ratatui::text::Line;
 
-use alter_zero::agents::{AGENT_LINGER, AgentEvent};
+use alter_zero::agents::{AGENT_LINGER, AgentEvent, AgentStatus};
 use alter_zero::app::{AgentStop, HistoryItem, Role, ToastKind, View};
-use alter_zero::stream::StreamEvent;
+use alter_zero::stream::{AgentChatDelivery, StreamEvent};
 use alter_zero::ui;
 
 use super::Session;
@@ -95,6 +95,7 @@ impl Session<'_> {
                     event,
                     StreamEvent::ToolBatch(_)
                         | StreamEvent::ToolStart { .. }
+                        | StreamEvent::Steered { .. }
                         | StreamEvent::StreamDone
                         | StreamEvent::Error(_)
                 ))
@@ -140,6 +141,10 @@ impl Session<'_> {
             self.agent_clocks.remove(id);
             self.agent_expiry
                 .insert(id.to_string(), Instant::now() + linger);
+            // …and whatever the run never got to read goes back in as a chat
+            // continuation, which un-arms the linger it just set
+            // (`docs/queue.md`).
+            self.reclaim_agent_chat(id);
         }
     }
 
@@ -225,6 +230,12 @@ impl Session<'_> {
                 // The turn's `Done for Ns · {n} tokens` receipt
                 // (`docs/agent-tool.md`).
                 Some(HistoryItem::Summary(summary)) => Some(ui::summary_lines(summary, width)),
+                // A message the user queued into this agent, now that its loop
+                // has read it (`docs/queue.md`) — the bubble lands where the
+                // agent saw it, not where it was typed.
+                Some(HistoryItem::Message(message)) if message.role == Role::User => {
+                    Some(ui::message_lines(Role::User, &message.text, width))
+                }
                 _ => None,
             })
             .filter(|lines| !lines.is_empty());
@@ -389,26 +400,75 @@ impl Session<'_> {
         self.repaint_conversation()
     }
 
-    /// Enter inside an agent session: deliver the draft to the agent — queued
-    /// into its running loop, or a continuation run when idle. The transcript
-    /// already recorded it; commit the bubble in place.
+    /// Enter inside an agent session: deliver the draft to the agent. The
+    /// **registry** decides how — it is the only thing that knows whether the
+    /// loop is still running — and the view follows its answer
+    /// (`docs/queue.md`):
+    ///
+    /// - **running** → the message joins that agent's queue, showing above the
+    ///   box like the main session's steered rows, and reaches its loop at the
+    ///   next round boundary. Nothing is committed and nothing is claimed on
+    ///   its transcript: `StreamEvent::Steered` does both, when the agent
+    ///   genuinely has it.
+    /// - **idle** → a continuation run started with the message as its newest
+    ///   user turn, so the transcript records it now and the bubble commits
+    ///   here — an idle submit, one level down.
     pub(crate) fn agent_chat(&mut self, id: &str, text: &str) {
-        if self.models.backend().spawn_agent_chat(id, text) {
-            let width = self.term.screen().width;
-            if self.flowed_view.is_none() {
-                self.term
-                    .insert_before(ui::message_lines(Role::User, text, width));
-                self.term.insert_before(vec![Line::default()]);
+        match self.models.backend().spawn_agent_chat(id, text) {
+            AgentChatDelivery::Queued => {
+                self.app.queue_agent_chat(id, text);
+                self.agent_expiry.remove(id);
             }
-            self.agent_clocks
-                .entry(id.to_string())
-                .or_insert_with(Instant::now);
-            self.agent_expiry.remove(id);
-        } else {
-            self.toast(
+            AgentChatDelivery::Started => {
+                self.app.agent_chat(id, text);
+                let width = self.term.screen().width;
+                if self.viewing_agent(id) {
+                    let height = self.live_region_height();
+                    self.term.set_view_height(height);
+                    self.term
+                        .insert_before(ui::message_lines(Role::User, text, width));
+                    self.term.insert_before(vec![Line::default()]);
+                }
+                self.agent_clocks
+                    .entry(id.to_string())
+                    .or_insert_with(Instant::now);
+                self.agent_expiry.remove(id);
+            }
+            AgentChatDelivery::Declined => self.toast(
                 "Agent chat is not available with this backend",
                 ToastKind::Error,
-            );
+            ),
+        }
+    }
+
+    /// A subagent's run settled: reconcile the messages it never read
+    /// (`docs/queue.md`). They come off the registry's queue *and* off the
+    /// roster's rows, so neither side can strand one, and — for a run that
+    /// finished **naturally** — go straight back in as a chat continuation:
+    /// the user asked something and is owed an answer, which is the agent-side
+    /// of the main session's turn-end reclaim.
+    ///
+    /// A run that **failed** or that the user **stopped** keeps nothing: there
+    /// is nothing to continue, and restarting an agent the user just killed is
+    /// the opposite of what the `x` meant.
+    fn reclaim_agent_chat(&mut self, id: &str) {
+        let pending = self.agent_registry.take_pending_inputs(id);
+        let mirrored = self.app.reclaim_agent_chat(id);
+        let resumable = self
+            .app
+            .agent(id)
+            .is_some_and(|run| run.status == AgentStatus::Done);
+        if !resumable {
+            return;
+        }
+        // The registry's copy is the authority on what the loop never read;
+        // the roster's mirror covers a slot the registry has already dropped.
+        for text in if pending.is_empty() {
+            mirrored
+        } else {
+            pending
+        } {
+            self.agent_chat(id, &text);
         }
     }
 

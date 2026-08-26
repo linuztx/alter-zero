@@ -7,48 +7,75 @@ use super::theme::*;
 use super::wrap::{cols, truncate_cols};
 use super::*;
 
-/// How many rows the queued messages occupy in the strip at `width`: the total
-/// wrapped height of every queued message (each styled like a user message),
-/// uncapped — the whole backlog shows, codex-style; 0 when the queue is empty.
+/// How many rows the pending messages occupy in the strip at `width`: the total
+/// wrapped height of every one of them (each styled like a user message),
+/// uncapped — the whole backlog shows, codex-style; 0 when nothing is pending.
 /// [`live_height`] reserves this and [`render_live`] paints exactly this many —
 /// the two must agree (both go through [`queued_lines`], so they can't drift).
 /// `live_height`'s terminal-height clamp still bounds the region as a whole.
 #[must_use]
 pub fn queued_rows(app: &App, width: u16) -> u16 {
-    // An agent session view shows the agent's world — the main session's
-    // queued follow-ups stay off it (they re-appear on return).
-    if app.agent_view.is_some() {
-        return 0;
-    }
     // Saturating: the queue is uncapped, and a plain `as` cast would silently
     // wrap a >65,535-row backlog into a tiny (wrong) height.
     queued_lines(app, width).len().min(usize::from(u16::MAX)) as u16
 }
 
-/// The styled lines for the queued follow-up messages: each rendered like a sent
-/// user message ([`message_lines`] — the `❯ ` bullet, dark background, wrapped to
-/// `width` minus the `QUEUED_INDENT` every row is inset by), concatenated —
-/// every queued message shows (no display cap). A **blank row divides each
-/// turn-batch** from the next, so Tab-opened follow-ups read as separate turns
-/// from the first queue (`docs/queue.md`). Empty when the queue is empty.
+/// The styled lines for the messages waiting above the box: each rendered like
+/// a sent user message ([`message_lines`] — the `❯ ` bullet, dark background,
+/// wrapped to `width` minus the `QUEUED_INDENT` every row is inset by),
+/// concatenated — every pending message shows (no display cap). A **blank row
+/// divides each turn** from the next, so Tab-opened follow-ups read as separate
+/// turns from what is going into the one running (`docs/queue.md`).
+///
+/// Whose messages depends on which conversation is on screen — the same rows
+/// either way, because a pending message is a pending message:
+///
+/// - the **main** view shows what the running turn is about to read
+///   ([`App::steered`], first — it happens next) over the follow-up turns
+///   ([`App::queued`]);
+/// - an **agent session view** shows that agent's own queue
+///   ([`AgentRun::queued`](crate::agents::AgentRun::queued)) and nothing else:
+///   the view is the agent's world, and the main session's rows re-appear on
+///   return.
+///
+/// Empty when nothing is pending.
 #[must_use]
 pub fn queued_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     let inner = width.saturating_sub(cols(QUEUED_INDENT) as u16);
     let mut lines = Vec::new();
-    for (i, entry) in app.queued.iter().enumerate() {
-        // A blank row divides each queued entry from the next, so Tab-opened
-        // follow-ups (and standalone shell commands) read as separate turns.
-        if i > 0 {
+    // A blank row divides each pending turn from the next, so Tab-opened
+    // follow-ups (and standalone shell commands) read as separate turns.
+    let divide = |lines: &mut Vec<Line<'static>>| {
+        if !lines.is_empty() {
             lines.push(Line::default());
         }
+    };
+    let user_rows = |text: &str| {
+        message_lines(Role::User, text, inner)
+            .into_iter()
+            .map(indent_queued_line)
+    };
+    if let Some(agent) = app.viewed_agent() {
+        for text in &agent.queued {
+            divide(&mut lines);
+            lines.extend(user_rows(text));
+        }
+        return lines;
+    }
+    // What the *running* turn is about to read comes first — it is what
+    // happens next. They share one blank-divided block: the model reads them
+    // together at its next round boundary.
+    if !app.steered.is_empty() {
+        for text in &app.steered {
+            lines.extend(user_rows(text));
+        }
+    }
+    for entry in &app.queued {
+        divide(&mut lines);
         match entry {
             QueuedTurn::Messages { texts, .. } => {
                 for msg in texts {
-                    lines.extend(
-                        message_lines(Role::User, msg, inner)
-                            .into_iter()
-                            .map(indent_queued_line),
-                    );
+                    lines.extend(user_rows(msg));
                 }
             }
             // A queued `!` command renders like the exec cell it becomes: the

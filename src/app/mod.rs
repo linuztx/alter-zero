@@ -145,6 +145,23 @@ pub struct App {
     ///
     /// [`drain_next_batch`]: App::drain_next_batch
     pub queued: VecDeque<QueuedTurn>,
+    /// The messages handed to the turn **already running** — codex's steering,
+    /// what Enter does mid-turn (`docs/queue.md`). They wait here, shown above
+    /// the box exactly like [`queued`](App::queued), only until the model's
+    /// next round boundary takes them: [`StreamEvent::Steered`] then turns
+    /// each into a real user message in the conversation
+    /// ([`deliver_steered`]). A turn that ends without taking them —
+    /// the model simply answered — hands them back as the next turn
+    /// ([`reclaim_steered`]), so nothing the user typed is ever dropped.
+    ///
+    /// The app's mirror of the boundary's [`SteerQueue`](crate::steer::SteerQueue),
+    /// which is the half that crosses the thread boundary. Only ever non-empty
+    /// while a turn is active.
+    ///
+    /// [`deliver_steered`]: App::deliver_steered
+    /// [`reclaim_steered`]: App::reclaim_steered
+    /// [`StreamEvent::Steered`]: crate::stream::StreamEvent::Steered
+    pub steered: VecDeque<String>,
     /// Whether the `?` shortcuts band (the keyboard-shortcuts overview below
     /// the input box — codex's footer shortcut overlay) is showing. Toggled by
     /// `?` from an empty composer; any other key closes it. See
@@ -910,6 +927,9 @@ impl App {
         self.auto_compact_blocked = false;
         self.tool_queue.clear();
         self.status = None;
+        // A message the running turn never got to read goes with it: the user
+        // asked for a blank screen (docs/queue.md).
+        self.steered.clear();
         // The wiped batches' image attachments will never dispatch — record
         // their temp files as discarded so the boundary removes them.
         for entry in self.queued.drain(..) {

@@ -25,7 +25,10 @@ use crate::agents::{AgentEvent, AgentRegistry};
 use crate::ask::AskGate;
 use crate::context::ContextMessage;
 use crate::permission::PermissionGate;
-use crate::stream::{AgentCallDone, AgentSpec, CancelToken, ReplySource, StreamEvent};
+use crate::steer::SteerQueue;
+use crate::stream::{
+    AgentCallDone, AgentChatDelivery, AgentSpec, CancelToken, ReplySource, StreamEvent,
+};
 
 /// The default system prompt for the real backend — the "Alter Zero" agent
 /// identity, authored in [`prompts/alter_zero.md`](../../prompts/alter_zero.md)
@@ -117,6 +120,17 @@ pub struct LlmBackend {
     /// calls** knob says otherwise, and **`0` means no limit** (the app's own
     /// default). See `docs/settings.md`.
     max_tool_calls: usize,
+    /// The session's **mid-turn message queue** (`docs/queue.md`): what the
+    /// user typed while this turn was already running. Drained at every round
+    /// boundary, so a message reaches the model within the turn it was
+    /// submitted into instead of waiting for the next one. Default-empty
+    /// rather than `Option`, because "no one queued anything" is the normal
+    /// state and costs one uncontended lock per round; the boundary attaches
+    /// its own on every rebuild so a `/model` switch keeps the queue the loop
+    /// is pushing into. Subagents get the registry's per-agent queue instead
+    /// (same type, one level down), and the one-off `/compact` backend keeps
+    /// this empty — its turn has a single round and nothing to steer.
+    steer: SteerQueue,
     /// The user's lifecycle hooks (`docs/hooks.md`): consulted before and
     /// after every tool call, and in the user's stead at the permission gate.
     /// [`NoHooks`] until the boundary attaches a loaded `hooks.json`, so a
@@ -179,6 +193,7 @@ impl LlmBackend {
             turn_context: Arc::new(Mutex::new(ClassifierContext::new())),
             max_retries: MAX_RETRIES,
             max_tool_calls: agent::MAX_TOOL_ITERATIONS,
+            steer: SteerQueue::new(),
             hooks: Arc::new(NoHooks),
         }
     }
@@ -251,6 +266,19 @@ impl LlmBackend {
             self.tasks = Some(registry);
             self.sync_tool_specs();
         }
+        self
+    }
+
+    /// Attach the session's mid-turn message queue (`docs/queue.md`): what
+    /// the user submits while a turn runs is folded into **that turn's**
+    /// context at its next round boundary. Unlike the tool attachments this
+    /// enables no spec, so it is not gated on `tools_enabled` — a tools-free
+    /// backend still runs rounds, and a message queued against one still
+    /// belongs to it. The boundary re-attaches the same shared queue on every
+    /// rebuild.
+    #[must_use]
+    pub fn with_steer(mut self, queue: SteerQueue) -> Self {
+        self.steer = queue;
         self
     }
 
@@ -618,6 +646,10 @@ impl ReplySource for LlmBackend {
         let max_retries = self.max_retries;
         let max_tool_calls = self.max_tool_calls;
         let hooks = Arc::clone(&self.hooks);
+        // The mid-turn queue this turn answers to (docs/queue.md): the loop
+        // pushes onto it while the turn runs and the agent loop drains it at
+        // every round boundary.
+        let steer = self.steer.clone();
         thread::spawn(move || {
             // Encoding the attachments reads files — done here on the backend
             // thread so a large image never stalls the event loop. A known
@@ -731,13 +763,18 @@ impl ReplySource for LlmBackend {
                         _ => executor.execute(call, &cancel, on_output),
                     }
                 },
-                || match &notices {
-                    Some(registry) => registry
-                        .take_pending_notices()
-                        .into_iter()
-                        .map(|note| note.context)
-                        .collect(),
-                    None => Vec::new(),
+                // What the conversation gained since the last request
+                // (docs/queue.md): the background completions the model has
+                // not heard about, then the messages the user queued while
+                // this turn was running — the mid-turn queue's delivery.
+                || {
+                    let mut pending: Vec<agent::PendingInput> = notices
+                        .iter()
+                        .flat_map(crate::background::BackgroundRegistry::take_pending_notices)
+                        .map(|note| agent::PendingInput::Notice(note.context))
+                        .collect();
+                    pending.extend(steer.take().into_iter().map(agent::PendingInput::User));
+                    pending
                 },
                 |calls| {
                     // A subagent launch is an action of this turn too — the
@@ -847,15 +884,17 @@ impl ReplySource for LlmBackend {
     /// queued into its running loop, or a continuation run over its stored
     /// conversation when idle. `false` when agents aren't enabled here or the
     /// id is unknown/busy-less-stored.
-    fn spawn_agent_chat(&self, id: &str, text: &str) -> bool {
+    fn spawn_agent_chat(&self, id: &str, text: &str) -> AgentChatDelivery {
         let Some(registry) = &self.agents else {
-            return false;
+            return AgentChatDelivery::Declined;
         };
+        // Still running: the message rides its queue to the next round
+        // boundary, exactly as the main session's does (docs/queue.md).
         if registry.queue_input(id, text) {
-            return true;
+            return AgentChatDelivery::Queued;
         }
         let Some((mut messages, cancel)) = registry.begin_continuation(id) else {
-            return false;
+            return AgentChatDelivery::Declined;
         };
         messages.push(ChatMessage::user(text));
         spawn_subagent_run(
@@ -866,7 +905,7 @@ impl ReplySource for LlmBackend {
             messages,
             cancel,
         );
-        true
+        AgentChatDelivery::Started
     }
 }
 
@@ -1308,9 +1347,16 @@ fn spawn_subagent_run(
                 }
                 executor.execute(call, &cancel, on_output)
             },
-            // The chat seam: user messages sent into this agent's session
-            // arrive at its next round boundary (docs/agent-tool.md).
-            || inputs_registry.take_pending_inputs(&inputs_id),
+            // The chat seam: messages the user queued into this agent's
+            // session arrive at its next round boundary — the main session's
+            // queue, one level down (`docs/queue.md`, `docs/agent-tool.md`).
+            || {
+                inputs_registry
+                    .take_pending_inputs(&inputs_id)
+                    .into_iter()
+                    .map(agent::PendingInput::User)
+                    .collect()
+            },
             // Subagents cannot nest agents (the tool isn't offered; a
             // hallucinated call is declined recoverably).
             |calls| {

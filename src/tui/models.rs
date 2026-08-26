@@ -111,6 +111,11 @@ pub(crate) struct ModelSession {
     /// doc). Cheap `Arc` clones of the loop's own registries.
     registry: BackgroundRegistry,
     agents: AgentRegistry,
+    /// The session's mid-turn message queue (`docs/queue.md`) — re-attached
+    /// on every rebuild like the registries, so a `/model` switch or a
+    /// `/settings` change never leaves the loop pushing into a queue no
+    /// backend is draining.
+    steer: alter_zero::steer::SteerQueue,
     permissions: Option<PermissionGate>,
     ask: alter_zero::ask::AskGate,
     /// The shared task list (docs/task-tools.md) — enables the four task
@@ -171,6 +176,7 @@ impl ModelSession {
         scratchpad: Option<&Path>,
         registry: &BackgroundRegistry,
         agents: &AgentRegistry,
+        steer: &alter_zero::steer::SteerQueue,
         permissions: Option<&PermissionGate>,
         ask: &alter_zero::ask::AskGate,
         tasks: &alter_zero::tasks::TaskRegistry,
@@ -273,6 +279,7 @@ impl ModelSession {
                 max_tool_calls,
                 registry,
                 agents,
+                steer,
                 permissions,
                 ask,
                 tasks,
@@ -287,7 +294,11 @@ impl ModelSession {
                 // view (`docs/agent-view-streaming.md`).
                 let dummy = DummyAi::with_startup_delay(config::startup_delay())
                     .with_ask(ask.clone())
-                    .with_agents(agents.clone());
+                    .with_agents(agents.clone())
+                    // …and the mid-turn queue, so the offline demo takes a
+                    // queued message at its next tool boundary exactly as a
+                    // real round boundary does (docs/queue.md).
+                    .with_steer(steer.clone());
                 Box::new(match permissions {
                     Some(gate) => dummy.with_permissions(gate.clone()),
                     None => dummy,
@@ -333,6 +344,7 @@ impl ModelSession {
             real_backend,
             registry: registry.clone(),
             agents: agents.clone(),
+            steer: steer.clone(),
             permissions: permissions.cloned(),
             ask: ask.clone(),
             tasks: tasks.clone(),
@@ -474,6 +486,7 @@ impl ModelSession {
             self.max_tool_calls,
             &self.registry,
             &self.agents,
+            &self.steer,
             self.permissions.as_ref(),
             &self.ask,
             &self.tasks,
@@ -1020,6 +1033,7 @@ fn session_backend(
     max_tool_calls: usize,
     registry: &BackgroundRegistry,
     agents: &AgentRegistry,
+    steer: &alter_zero::steer::SteerQueue,
     permissions: Option<&PermissionGate>,
     ask: &alter_zero::ask::AskGate,
     tasks: &alter_zero::tasks::TaskRegistry,
@@ -1039,6 +1053,10 @@ fn session_backend(
         .with_max_tool_calls(max_tool_calls)
         .with_background(registry.clone())
         .with_agents(agents.clone())
+        // The mid-turn message queue (docs/queue.md): every build drains the
+        // same one, so a message queued against the turn a `/model` switch
+        // replaced still reaches its successor.
+        .with_steer(steer.clone())
         // The ask gate (docs/ask.md): enables the `askuserquestion` tool —
         // always attached; asking is not a permission.
         .with_ask(ask.clone())

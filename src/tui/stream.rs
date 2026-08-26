@@ -27,6 +27,7 @@
 
 use ratatui::text::Line;
 
+use alter_zero::app::Role;
 use alter_zero::stream::StreamEvent;
 use alter_zero::ui;
 
@@ -260,6 +261,32 @@ impl Session<'_> {
                     self.render.reset();
                     self.settle_bg_completions();
                     self.app.record_hook_note(&label, &text);
+                }
+                false
+            }
+            StreamEvent::Steered { text } => {
+                // The running turn reached a round boundary and took a message
+                // the user queued into it (docs/queue.md). The model has it
+                // now, so it stops being a pending row above the box and
+                // becomes a real user bubble: `deliver_steered` finalises the
+                // assistant run ahead of it — invariant 4's
+                // flush-before-you-interleave — records the message and counts
+                // it into the turn's `↑` tally.
+                //
+                // A compact turn has no queue to take from (its one-off
+                // backend carries none), so this can only be the session's.
+                self.flush_segment(committing, width);
+                self.render.reset();
+                self.settle_bg_completions();
+                self.app.deliver_steered(&text);
+                if committing {
+                    // The strip loses the pending row as the bubble lands, so
+                    // reseat before committing (invariant 3).
+                    let height = self.live_region_height();
+                    self.term.set_view_height(height);
+                    self.term
+                        .insert_before(ui::message_lines(Role::User, &text, width));
+                    self.term.insert_before(vec![Line::default()]);
                 }
                 false
             }

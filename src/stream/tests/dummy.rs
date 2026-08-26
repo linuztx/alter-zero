@@ -136,6 +136,7 @@ fn dummy_ai_emits_all_chunks_and_tool_calls_then_done() {
             StreamEvent::ToolNote(_) => {
                 panic!("no gate attached — the classifier never speaks")
             }
+            StreamEvent::Steered { .. } => panic!("nothing was queued into this turn"),
             StreamEvent::Error(e) => panic!("dummy never errors, got {e:?}"),
         }
     }
@@ -213,5 +214,39 @@ fn dummy_ai_sends_nothing_when_cancelled_before_it_starts() {
     assert!(
         rx.try_recv().is_err(),
         "a cancelled backend streams nothing"
+    );
+}
+
+#[test]
+fn the_dummy_takes_a_queued_message_at_its_next_tool_boundary() {
+    // The offline mirror of a real round boundary (docs/queue.md): a message
+    // queued while the scripted turn runs is announced as soon as the turn's
+    // next tool call resolves — not at the end of the turn — so the whole
+    // mid-turn queue is drivable with no network.
+    let queue = crate::steer::SteerQueue::new();
+    queue.push("also check the tests");
+    let (tx, mut rx) = unbounded_channel();
+    let handle = DummyAi::with_startup_delay(Duration::ZERO)
+        .with_steer(queue.clone())
+        .spawn("hi".to_string(), vec![], vec![], tx, CancelToken::new());
+
+    let mut steered_after = None;
+    let mut tool_ends = 0;
+    while let Some(event) = rx.blocking_recv() {
+        match event {
+            StreamEvent::ToolEnd { .. } => tool_ends += 1,
+            StreamEvent::Steered { text } => steered_after = Some((text, tool_ends)),
+            _ => {}
+        }
+    }
+    handle.join().expect("dummy thread");
+    assert_eq!(
+        steered_after,
+        Some(("also check the tests".to_string(), 1)),
+        "taken right after the first tool call resolved"
+    );
+    assert!(
+        queue.is_empty(),
+        "and drained, so the turn end reclaims nothing"
     );
 }

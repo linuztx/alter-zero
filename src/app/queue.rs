@@ -1,6 +1,13 @@
-//! The mid-turn message queue: Enter batches into the current [`QueuedTurn`],
-//! Tab opens a new one, and the loop drains one entry per turn end.
-//! See `docs/queue.md`.
+//! The mid-turn message queue, in two halves (`docs/queue.md`):
+//!
+//! - **Steering** — Enter while a model turn runs hands the draft to *that
+//!   turn* ([`App::steer_draft`]). It waits in [`App::steered`] only until the
+//!   agent loop's next round boundary takes it, right after the round's tool
+//!   results; [`App::deliver_steered`] then turns it into a real user message.
+//!   A turn that ends without taking it hands it back as the next turn
+//!   ([`App::reclaim_steered`]).
+//! - **Follow-up turns** — Tab opens a new [`QueuedTurn`] and a `!` command
+//!   queues as its own; the loop drains one entry per turn end.
 
 use super::*;
 
@@ -34,6 +41,120 @@ pub enum QueuedTurn {
 }
 
 impl App {
+    /// Can a message submitted right now be folded into the turn already
+    /// running? A model turn can: its agent loop takes the queue at every
+    /// round boundary, so the message reaches the model *within* the turn
+    /// (`docs/queue.md`). A `!` shell turn cannot — nothing is reading a
+    /// conversation — so its drafts queue as follow-up turns exactly as they
+    /// always did.
+    #[must_use]
+    pub fn turn_steerable(&self) -> bool {
+        self.is_streaming() && !self.status.as_ref().is_some_and(|status| status.shell)
+    }
+
+    /// Hand the composer draft to the **running** turn: it waits in
+    /// [`steered`](App::steered) — shown above the box like a queued entry —
+    /// until the model's next round boundary takes it. Returns the text for
+    /// the boundary to push onto the shared
+    /// [`SteerQueue`](crate::steer::SteerQueue) the backend thread drains.
+    ///
+    /// `None` when the draft can't ride a round boundary and belongs on the
+    /// follow-up queue instead: a **shell-mode** `!` command (always local,
+    /// always its own turn) or a draft carrying **Ctrl+V attachments** (a
+    /// boundary injection is a text `ChatMessage`; the images need the typed
+    /// channel a real turn start opens — `docs/image-paste.md`). Both cases
+    /// fall through to [`queue_draft`](App::queue_draft), so the caller only
+    /// has to ask once.
+    ///
+    /// The text is recorded for ↑ recall, like a normal submit.
+    pub(super) fn steer_draft(&mut self) -> Option<String> {
+        if self.shell_mode || !self.images.is_empty() {
+            self.queue_draft(/*new_batch*/ false);
+            return None;
+        }
+        let text = self.take_input();
+        self.file_search = None; // the composer is consumed into the turn
+        self.skill_picker = None;
+        self.input_history.record(&text);
+        self.steered.push_back(text.clone());
+        Some(text)
+    }
+
+    /// The running turn took `text` into its context
+    /// ([`StreamEvent::Steered`]): stop
+    /// showing it above the box and record it as a **real user message**, the
+    /// model having genuinely read it now.
+    ///
+    /// The streamed run of assistant text ahead of it is finalised first —
+    /// invariant 4's flush-before-you-interleave — so the bubble slots after
+    /// it and a repaint keeps that order. Returns whether a waiting row was
+    /// dropped; the message is recorded either way, because what the model
+    /// read is what the transcript owes the user.
+    pub fn deliver_steered(&mut self, text: &str) -> bool {
+        self.flush_streaming_segment();
+        let waiting = self
+            .steered
+            .iter()
+            .position(|pending| pending == text)
+            .inspect(|index| {
+                self.steered.remove(*index);
+            })
+            .is_some();
+        self.record_user_message(text);
+        // The uploaded text counts into this turn's `↑` tally, exactly as a
+        // turn-start message does (`docs/status-indicator.md`).
+        self.count_user_input(text);
+        waiting
+    }
+
+    /// The turn ended without reaching another round boundary — the model
+    /// simply answered — so what it never took becomes the **next** turn:
+    /// one batch at the **front** of the follow-up queue, ahead of any Tab
+    /// entry that was always meant for later. A no-op when nothing is waiting,
+    /// so no empty batch is ever invented.
+    pub fn reclaim_steered(&mut self) {
+        if self.steered.is_empty() {
+            return;
+        }
+        let texts: Vec<String> = self.steered.drain(..).collect();
+        self.queued.push_front(QueuedTurn::Messages {
+            texts,
+            images: Vec::new(),
+        });
+    }
+
+    /// Alt+Up over a steered message: put `text` back in the composer to edit,
+    /// extend or drop. The boundary reclaims it from the shared queue first
+    /// ([`SteerQueue::take_last`](crate::steer::SteerQueue::take_last)) —
+    /// only that side knows whether the turn has already read it — and hands
+    /// the text here.
+    pub fn recall_steered(&mut self, text: &str) {
+        if let Some(index) = self.steered.iter().rposition(|pending| pending == text) {
+            self.steered.remove(index);
+        }
+        self.recall_input(text);
+    }
+
+    /// Alt+Up's pure half: pull the **last queued follow-up** back into the
+    /// composer (see the key arm). Split out so the boundary can fall back to
+    /// it when the steered message it tried to reclaim had already been read.
+    pub fn recall_last_queued(&mut self) {
+        match self.drain_last_batch() {
+            // A text batch returns newline-joined (oldest first), its image
+            // attachments re-attached so the placeholders in the restored
+            // draft are backed again (docs/image-paste.md).
+            Some(QueuedTurn::Messages { texts, images }) => {
+                self.recall_input(&texts.join("\n"));
+                self.images = images;
+            }
+            // A shell entry re-enters shell mode: recalling `!command`
+            // re-absorbs the bang (sync_shell_mode), so the composer shows the
+            // red `! command` prompt again, ready to edit/re-run.
+            Some(QueuedTurn::Shell(cmd)) => self.recall_input(&format!("!{cmd}")),
+            None => {}
+        }
+    }
+
     /// Pop the front queued batch — the messages of the next turn — for the loop
     /// to send when the current turn ends; empty when nothing is queued. Each
     /// batch is its own turn, so popping one per turn-end iterates the

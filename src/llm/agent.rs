@@ -87,25 +87,57 @@ pub enum RoundOutcome {
     Failed(LlmError),
 }
 
+/// One thing waiting to be folded into the next round's context, taken at
+/// every round boundary by [`run_agent`]'s `pending_inputs` seam. Both
+/// variants become a user-role message; what separates them is whether the
+/// *user* said it.
+///
+/// The queue behind them is per-conversation: the session's own
+/// [`SteerQueue`](crate::steer::SteerQueue) for the main turn, the agent
+/// registry's for a subagent — the same mechanism, twice (`docs/queue.md`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PendingInput {
+    /// A background shell or agent finished (`docs/background.md`) — the note
+    /// the model reads. Invisible: the loop already recorded the completion,
+    /// so nothing is announced.
+    Notice(String),
+    /// A message the **user** queued while the turn was running
+    /// (`docs/queue.md`). Announced with [`StreamEvent::Steered`] as it is
+    /// taken, so the loop can turn its queued row into a real user bubble.
+    User(String),
+}
+
 /// Drive one agentic turn to completion, sending the terminal `StreamDone` /
 /// `Error` (or nothing on a cancel) and the per-tool `ToolStart`/`ToolEnd`
 /// events. Generic over `round` (one streaming request), `execute` (running
-/// a tool), and `pending_notices` (the background-completion notes to
-/// inject) so it is fully unit-tested with fakes.
+/// a tool), and `pending_inputs` (what the conversation gained since the last
+/// request) so it is fully unit-tested with fakes.
 ///
 /// `messages` is the initial request list (system prompt + conversation
 /// context); it grows in place with each assistant/tool message as the loop
 /// runs, so every round sees the full history.
 ///
-/// `pending_notices` is taken at the top of **every** round: background
-/// shells that finished since the last request — a completion, or a kill the
-/// model itself just ran (`kill`/`pkill` in a bash call, or the user's `x`
-/// in the ↓ manager) — reach the model *within the same turn*, each appended
-/// as a user-role message after the prior round's tool results (the same
-/// form `context::context_messages` replays into later turns' contexts).
-/// The take sits after the cancel check so an abandoned turn can't steal
-/// notes owed to the boundary's automatic follow-up turn. See
-/// `docs/background.md`.
+/// `pending_inputs` is taken at the top of **every** round, and it is what
+/// makes a turn *reachable while it runs*. Two kinds of
+/// [`PendingInput`] arrive there, both appended as user-role messages after
+/// the prior round's tool results (the same form `context::context_messages`
+/// replays into later turns' contexts):
+///
+/// - [`PendingInput::Notice`] — a background shell or agent that finished
+///   since the last request: a completion, or a kill the model itself just
+///   ran (`kill`/`pkill` in a bash call, or the user's `x` in the ↓ manager).
+///   Invisible; the loop already recorded it (`docs/background.md`).
+/// - [`PendingInput::User`] — a message the user queued **while this turn was
+///   running**. Announced with [`StreamEvent::Steered`] as it is taken, so
+///   the loop turns its queued row into a real user bubble at the moment the
+///   model genuinely has it (`docs/queue.md`).
+///
+/// Notices lead, the user's own messages close: a completion is a *result*
+/// and belongs with the results it follows, while the newest thing the user
+/// said must be the last thing the model reads. The take sits after the
+/// cancel check so an abandoned turn can't steal notes owed to the boundary's
+/// automatic follow-up turn — nor a queued message the boundary is about to
+/// re-dispatch as the next turn.
 ///
 /// `approve` is the permission gate (`docs/permissions.md`), consulted for
 /// every ordinary call **before** its `ToolStart` — so nothing has run, and
@@ -131,7 +163,7 @@ pub fn run_agent(
     messages: &mut Vec<ChatMessage>,
     mut round: impl FnMut(&[ChatMessage]) -> RoundOutcome,
     mut execute: impl FnMut(&ToolCallRequest, &mut dyn FnMut(&str)) -> ToolOutcome,
-    mut pending_notices: impl FnMut() -> Vec<String>,
+    mut pending_inputs: impl FnMut() -> Vec<PendingInput>,
     mut run_agents: impl FnMut(&[ToolCallRequest]) -> Vec<(String, String)>,
     mut approve: impl FnMut(&ToolCallRequest, bool) -> Approval,
     hooks: &dyn HookSink,
@@ -144,8 +176,23 @@ pub fn run_agent(
         if cancel.is_cancelled() {
             return;
         }
-        for note in pending_notices() {
-            messages.push(ChatMessage::user(note));
+        // Notices first, the user's own messages last: a completion note is a
+        // *result*, belonging with the tool results it follows, while what the
+        // user just said is the newest thing in the conversation and must be
+        // the last thing the model reads.
+        let (notices, steered): (Vec<_>, Vec<_>) = pending_inputs()
+            .into_iter()
+            .partition(|input| matches!(input, PendingInput::Notice(_)));
+        for input in notices.into_iter().chain(steered) {
+            match input {
+                PendingInput::Notice(note) => messages.push(ChatMessage::user(&note)),
+                // The queued row above the user's box becomes a real bubble
+                // the moment the model actually has the text (docs/queue.md).
+                PendingInput::User(text) => {
+                    let _ = tx.send(StreamEvent::Steered { text: text.clone() });
+                    messages.push(ChatMessage::user(&text));
+                }
+            }
         }
         match round(messages) {
             RoundOutcome::Complete { text } => {
@@ -2070,7 +2117,7 @@ mod tests {
                 // The exit landed while the kill command ran: the board has
                 // the note by the time round 2's request is built.
                 if *rounds.borrow() == 1 {
-                    vec![note.to_string()]
+                    vec![PendingInput::Notice(note.to_string())]
                 } else {
                     Vec::new()
                 }
@@ -2117,7 +2164,14 @@ mod tests {
                 }
             },
             |_c, _sink| panic!("no tools requested"),
-            || pending.borrow_mut().take().into_iter().collect(),
+            || {
+                pending
+                    .borrow_mut()
+                    .take()
+                    .map(PendingInput::Notice)
+                    .into_iter()
+                    .collect()
+            },
             |_calls| Vec::new(),
             |_call, _force| Approval::Allow,
             &NoHooks,
@@ -2129,6 +2183,129 @@ mod tests {
                 ("user".to_string(), "hi".to_string()),
                 ("user".to_string(), "[background] note".to_string()),
             ]
+        );
+    }
+
+    #[test]
+    fn a_steered_message_lands_in_the_next_rounds_context() {
+        // The mid-turn queue's whole point (docs/queue.md): a message the user
+        // submitted while the turn was running reaches the model at the next
+        // ROUND boundary — right after the round's tool results — instead of
+        // waiting for the turn to finish. It is a user-role message like any
+        // other, and the loop is told it landed (`Steered`) so the inset
+        // queued row can become a real user bubble.
+        let (tx, mut rx) = unbounded_channel();
+        let cancel = CancelToken::new();
+        let rounds = RefCell::new(0);
+        let calls = vec![call("c1", "bash", r#"{"command":"ls"}"#)];
+        let seen_round2: RefCell<Vec<(String, String)>> = RefCell::new(Vec::new());
+        run_agent(
+            &tx,
+            &cancel,
+            MAX_TOOL_ITERATIONS,
+            &mut vec![ChatMessage::user("list the repo")],
+            |msgs| {
+                let mut n = rounds.borrow_mut();
+                *n += 1;
+                if *n == 1 {
+                    RoundOutcome::ToolCalls {
+                        assistant: assistant_with(&calls),
+                        calls: calls.clone(),
+                    }
+                } else {
+                    *seen_round2.borrow_mut() =
+                        msgs.iter().map(|m| (m.role.clone(), text_of(m))).collect();
+                    RoundOutcome::Complete {
+                        text: String::new(),
+                    }
+                }
+            },
+            |_c, _sink| ToolOutcome::ok("Exit code: 0"),
+            || {
+                // Typed while the `ls` ran: waiting at the top of round 2.
+                if *rounds.borrow() == 1 {
+                    vec![PendingInput::User("also check the tests".to_string())]
+                } else {
+                    Vec::new()
+                }
+            },
+            |_calls| Vec::new(),
+            |_call, _force| Approval::Allow,
+            &NoHooks,
+        );
+        let seen = seen_round2.borrow();
+        assert_eq!(
+            seen.last(),
+            Some(&("user".to_string(), "also check the tests".to_string())),
+            "the steered message is the last thing round 2 sends"
+        );
+        assert!(
+            seen.iter().any(|(role, _)| role == "tool"),
+            "…and it sits after the round's tool result, not in front of it"
+        );
+        assert!(
+            drain(&mut rx).contains(&StreamEvent::Steered {
+                text: "also check the tests".to_string(),
+            }),
+            "the loop hears that the message was taken into the turn"
+        );
+    }
+
+    #[test]
+    fn a_notice_leads_a_steered_message_in_the_same_round() {
+        // Both seams feed one round. A background completion is a *result* —
+        // it belongs with the tool results it follows — while the user's own
+        // message is the newest thing said, so it goes last.
+        let (tx, mut rx) = unbounded_channel();
+        let cancel = CancelToken::new();
+        let taken = RefCell::new(false);
+        let seen = RefCell::new(Vec::new());
+        run_agent(
+            &tx,
+            &cancel,
+            MAX_TOOL_ITERATIONS,
+            &mut vec![ChatMessage::user("hi")],
+            |msgs| {
+                *seen.borrow_mut() = msgs.iter().map(|m| (m.role.clone(), text_of(m))).collect();
+                RoundOutcome::Complete {
+                    text: String::new(),
+                }
+            },
+            |_c, _sink| panic!("no tools requested"),
+            || {
+                if std::mem::replace(&mut *taken.borrow_mut(), true) {
+                    return Vec::new();
+                }
+                vec![
+                    PendingInput::User("and deploy it".to_string()),
+                    PendingInput::Notice("[background] note".to_string()),
+                ]
+            },
+            |_calls| Vec::new(),
+            |_call, _force| Approval::Allow,
+            &NoHooks,
+        );
+        assert_eq!(
+            *seen.borrow(),
+            vec![
+                ("user".to_string(), "hi".to_string()),
+                ("user".to_string(), "[background] note".to_string()),
+                ("user".to_string(), "and deploy it".to_string()),
+            ],
+            "notices first, the user's own message last — whatever order they arrived in"
+        );
+        let events = drain(&mut rx);
+        assert!(
+            events.contains(&StreamEvent::Steered {
+                text: "and deploy it".to_string(),
+            }),
+            "only the user's message is announced"
+        );
+        assert!(
+            !events.contains(&StreamEvent::Steered {
+                text: "[background] note".to_string(),
+            }),
+            "a background notice is not a user bubble"
         );
     }
 

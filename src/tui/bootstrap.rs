@@ -256,6 +256,12 @@ impl<'t> Session<'t> {
             handles: hook_handles,
         });
 
+        // The mid-turn message queue (docs/queue.md): what the user types
+        // while a turn is running. The loop pushes onto it and every backend
+        // build re-attaches the same handle, so a `/model` switch keeps the
+        // queue the running turn's successor will drain.
+        let steer = alter_zero::steer::SteerQueue::new();
+
         // The reply backend and everything that selects it (docs/llm.md).
         let mut models = ModelSession::resolve(
             &cwd,
@@ -263,6 +269,7 @@ impl<'t> Session<'t> {
             scratchpad_dir.as_deref(),
             &registry,
             &agent_registry,
+            &steer,
             permissions.gate(),
             &ask,
             &task_registry,
@@ -372,6 +379,7 @@ impl<'t> Session<'t> {
             _file_worker: file_worker,
             registry,
             agent_registry,
+            steer,
             permissions,
             ask,
             task_registry,

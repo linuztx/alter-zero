@@ -127,6 +127,15 @@ pub struct AgentRun {
     pub history: Vec<HistoryItem>,
     /// The in-flight reply text (its streaming buffer).
     pub streaming: Option<String>,
+    /// Messages the user typed into this agent's session **while it was
+    /// running** — the main session's [`steered`](crate::app::App::steered)
+    /// queue, one level down (`docs/queue.md`). They show above the box in
+    /// the agent's session view until its loop's next round boundary takes
+    /// them, when [`StreamEvent::Steered`] turns each into a real user
+    /// message on this transcript. A run that settles without reading them
+    /// hands them back ([`reclaim_queued`](AgentRun::reclaim_queued)) for the
+    /// boundary to re-deliver as a chat continuation.
+    pub queued: Vec<String>,
     /// Its live tool calls, front running — the parallel-batch queue shape.
     pub tool_queue: VecDeque<ToolCall>,
     /// The final response text once it settles (what the caller received).
@@ -207,6 +216,7 @@ impl AgentRun {
                 images: Vec::new(),
             })],
             streaming: None,
+            queued: Vec::new(),
             tool_queue: VecDeque::new(),
             result: None,
             error: None,
@@ -255,6 +265,15 @@ impl AgentRun {
                         text: text.clone(),
                         timestamp: String::new(),
                     }));
+                self.tokens += crate::app::count_tokens(text) as u64;
+            }
+            // The agent's loop took a message the user queued into its
+            // session (docs/queue.md): it stops waiting above the box and
+            // becomes a real user message on this transcript, after the run
+            // of streamed text ahead of it (invariant 4).
+            StreamEvent::Steered { text } => {
+                self.queued.retain(|pending| pending != text);
+                self.push_user_message(text);
                 self.tokens += crate::app::count_tokens(text) as u64;
             }
             // Never sent on an agent's channel — the prompt-submit hook fires
@@ -560,6 +579,24 @@ impl AgentRun {
             timestamp: String::new(),
             images: Vec::new(),
         }));
+    }
+
+    /// Park a message the user typed into this agent's session while it was
+    /// running: it shows above the box until the agent's next round boundary
+    /// takes it ([`StreamEvent::Steered`]). Deliberately **not** recorded on
+    /// the transcript yet — claiming the agent has read something it has not
+    /// is what the main session's queue avoids too (`docs/queue.md`).
+    pub fn queue_chat(&mut self, text: &str) {
+        self.queued.push(text.to_string());
+    }
+
+    /// Take back the messages this run never read — the boundary re-delivers
+    /// them as a chat continuation, the way the main session's
+    /// [`reclaim_steered`](crate::app::App::reclaim_steered) makes them the
+    /// next turn.
+    #[must_use]
+    pub fn reclaim_queued(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.queued)
     }
 
     /// A follow-up chat turn began (a continuation run): reopen a settled
@@ -1532,6 +1569,89 @@ mod tests {
         assert!(!registry.is_done(&id), "busy again");
         registry.finish(&id, Ok("follow-up".into()), messages);
         assert_eq!(registry.outcome(&id), Some(Ok("follow-up".into())));
+    }
+
+    #[test]
+    fn a_message_queued_into_a_running_agent_waits_on_its_own_transcript() {
+        // The main session's queue, one level down (docs/queue.md): the
+        // message shows above the box in that agent's session view and is
+        // NOT on its transcript yet — the agent has not read it.
+        let mut run = AgentRun::new("a1", "d", GENERAL_PURPOSE, "p", false);
+        run.apply(&StreamEvent::Chunk("working".to_string()));
+        run.queue_chat("also check Manila");
+        assert_eq!(run.queued, ["also check Manila"]);
+        assert!(
+            !run.history.iter().any(|item| matches!(
+                item,
+                HistoryItem::Message(m) if m.role == Role::User && m.text == "also check Manila"
+            )),
+            "nothing is claimed on the transcript before the agent has it"
+        );
+    }
+
+    #[test]
+    fn its_round_boundary_turns_the_queued_message_into_a_user_bubble() {
+        // `StreamEvent::Steered` on the agent channel — the same event the
+        // main session's queue resolves through.
+        let mut run = AgentRun::new("a1", "d", GENERAL_PURPOSE, "p", false);
+        run.apply(&StreamEvent::Chunk("reading…".to_string()));
+        run.queue_chat("also check Manila");
+        run.apply(&StreamEvent::Steered {
+            text: "also check Manila".to_string(),
+        });
+        assert!(run.queued.is_empty(), "it stops waiting above the box");
+        assert!(
+            matches!(
+                run.history.last(),
+                Some(HistoryItem::Message(m))
+                    if m.role == Role::User && m.text == "also check Manila"
+            ),
+            "and lands on the agent's own transcript"
+        );
+        assert!(
+            matches!(run.history.first(), Some(HistoryItem::Message(m)) if m.role == Role::User),
+            "…after the launch prompt"
+        );
+    }
+
+    #[test]
+    fn a_taken_message_finalises_the_agents_streamed_reply_before_it() {
+        // Invariant 4 on the agent's own transcript: the run of text ahead of
+        // the interleaved message is finalised first.
+        let mut run = AgentRun::new("a1", "d", GENERAL_PURPOSE, "p", false);
+        run.apply(&StreamEvent::Chunk("Checking Cebu…".to_string()));
+        run.apply(&StreamEvent::Steered {
+            text: "also check Manila".to_string(),
+        });
+        let roles: Vec<Role> = run
+            .history
+            .iter()
+            .filter_map(|item| match item {
+                HistoryItem::Message(m) => Some(m.role),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            roles,
+            vec![Role::User, Role::Assistant, Role::User],
+            "prompt, the finalised segment, then the message the agent just read"
+        );
+    }
+
+    #[test]
+    fn a_run_that_settles_hands_its_unread_messages_back() {
+        // The agent answered before reaching another round boundary: what it
+        // never read is reclaimed, for the boundary to re-deliver as a chat
+        // continuation (the main session's reclaim, one level down).
+        let mut run = AgentRun::new("a1", "d", GENERAL_PURPOSE, "p", false);
+        run.queue_chat("one");
+        run.queue_chat("two");
+        assert_eq!(
+            run.reclaim_queued(),
+            vec!["one".to_string(), "two".to_string()]
+        );
+        assert!(run.queued.is_empty(), "the rows go with the reclaim");
+        assert!(run.reclaim_queued().is_empty(), "reclaimed once");
     }
 
     #[test]

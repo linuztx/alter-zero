@@ -108,6 +108,12 @@ pub struct DummyAi {
     /// agent **session view** is drivable offline
     /// (`docs/agent-view-streaming.md`).
     agents: Option<crate::agents::AgentRegistry>,
+    /// The session's mid-turn message queue (`docs/queue.md`), so the whole
+    /// round trip is drivable offline: a scripted turn takes what the user
+    /// queued at each of its **tool boundaries** — the dummy's honest stand-in
+    /// for a real round boundary — and announces it with
+    /// [`StreamEvent::Steered`] exactly as `run_agent` does.
+    steer: crate::steer::SteerQueue,
 }
 
 impl Default for DummyAi {
@@ -117,6 +123,7 @@ impl Default for DummyAi {
             permissions: None,
             ask: None,
             agents: None,
+            steer: crate::steer::SteerQueue::new(),
         }
     }
 }
@@ -165,6 +172,15 @@ impl DummyAi {
         self.agents = Some(registry);
         self
     }
+
+    /// Attach the session's mid-turn message queue, so a scripted turn takes
+    /// what the user queued into it at its next tool boundary — the offline
+    /// mirror of a real round boundary (`docs/queue.md`).
+    #[must_use]
+    pub fn with_steer(mut self, queue: crate::steer::SteerQueue) -> Self {
+        self.steer = queue;
+        self
+    }
 }
 
 impl ReplySource for DummyAi {
@@ -199,6 +215,7 @@ impl ReplySource for DummyAi {
         let permissions = self.permissions.clone();
         let ask = self.ask.clone();
         let agents = self.agents.clone();
+        let steer = self.steer.clone();
         thread::spawn(move || {
             // Pause before streaming so the status indicator is visible first
             // (interruptibly — an Esc during the wait reaps the thread at once).
@@ -221,7 +238,7 @@ impl ReplySource for DummyAi {
                         tx: &tx,
                         cancel: &cancel,
                     }),
-                    None => replay(turns::tools_turn(&cue), &tx, &cancel),
+                    None => replay(turns::tools_turn(&cue), &tx, &cancel, &steer),
                 },
                 // The ask demo raises the question modal and blocks on the
                 // ask gate the same way (`docs/ask.md`).
@@ -231,7 +248,7 @@ impl ReplySource for DummyAi {
                         tx: &tx,
                         cancel: &cancel,
                     }),
-                    None => replay(turns::tools_turn(&cue), &tx, &cancel),
+                    None => replay(turns::tools_turn(&cue), &tx, &cancel, &steer),
                 },
                 // The subagent demo streams on the agent channel too, from
                 // the launched agent's own thread (docs/agent-view-streaming.md).
@@ -241,9 +258,9 @@ impl ReplySource for DummyAi {
                         tx: &tx,
                         cancel: &cancel,
                     }),
-                    None => replay(turns::tools_turn(&cue), &tx, &cancel),
+                    None => replay(turns::tools_turn(&cue), &tx, &cancel, &steer),
                 },
-                Play::Script(script) => replay(script(&cue), &tx, &cancel),
+                Play::Script(script) => replay(script(&cue), &tx, &cancel, &steer),
             }
         })
     }
@@ -257,14 +274,37 @@ impl ReplySource for DummyAi {
 /// Play a scripted turn onto the channel: send each event, then pause for as
 /// long as [`pace`] says so the reply visibly streams. Stops early — sending
 /// nothing further — the moment `cancel` is tripped or the receiver hangs up.
-fn replay(events: Vec<StreamEvent>, tx: &UnboundedSender<StreamEvent>, cancel: &CancelToken) {
+///
+/// **Tool boundaries are round boundaries here** (`docs/queue.md`): a resolved
+/// call is the point a real agent loop would build its next request at, so
+/// that is where a message the user queued mid-turn is taken and announced
+/// with [`StreamEvent::Steered`]. Without this the offline demo would show a
+/// queued row that only ever moved at the end of the turn — the behaviour this
+/// whole seam replaced.
+fn replay(
+    events: Vec<StreamEvent>,
+    tx: &UnboundedSender<StreamEvent>,
+    cancel: &CancelToken,
+    steer: &crate::steer::SteerQueue,
+) {
     for event in events {
         if cancel.is_cancelled() {
             return; // asked to stop — drop the rest quietly
         }
+        let boundary = matches!(
+            event,
+            StreamEvent::ToolEnd { .. } | StreamEvent::ToolAnswered { .. }
+        );
         let pause = pace(&event);
         if tx.send(event).is_err() {
             return; // receiver gone — stop quietly
+        }
+        if boundary {
+            for text in steer.take() {
+                if tx.send(StreamEvent::Steered { text }).is_err() {
+                    return;
+                }
+            }
         }
         if let Some(pause) = pause {
             nap(pause, cancel);

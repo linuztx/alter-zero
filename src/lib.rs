@@ -125,6 +125,7 @@ pub mod scratchpad;
 pub mod session;
 pub mod settings;
 pub mod skills;
+pub mod steer;
 pub mod stream;
 pub mod subprocess;
 pub mod tasks;

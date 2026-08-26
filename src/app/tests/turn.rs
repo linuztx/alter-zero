@@ -534,14 +534,16 @@ fn a_turn_interleaves_text_and_a_tool_call_in_order() {
 
 #[test]
 fn tab_follow_ups_drain_one_turn_at_a_time() {
-    // Each batch is its own turn: drain yields the first queue, then the Tab
-    // follow-up, in order — sequential turns, not one merged blob.
+    // Each batch is its own turn: drain yields the reclaimed messages first
+    // (they belonged to the turn that just ended), then the Tab follow-up —
+    // sequential turns, not one merged blob.
     let mut app = App::new();
     app.begin_stream();
-    app.input = TextArea::from_text("first");
-    app.on_key(key(KeyCode::Enter));
     app.input = TextArea::from_text("later");
     app.on_key(key(KeyCode::Tab));
+    app.input = TextArea::from_text("first");
+    app.on_key(key(KeyCode::Enter));
+    app.reclaim_steered();
     assert_eq!(
         app.drain_next_batch(),
         Some(batch(&["first"])),
