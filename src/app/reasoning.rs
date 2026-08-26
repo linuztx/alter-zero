@@ -136,24 +136,44 @@ impl App {
     /// and the frame (a `/clear`, a backtrack) simply leaves nothing to snap.
     pub(super) fn snap_round_reasoning(&mut self, reasoning_tokens: u64) {
         let targets = std::mem::take(&mut self.round_reasoning);
-        if reasoning_tokens == 0 || targets.is_empty() {
-            return;
-        }
-        let weights: Vec<usize> = targets
-            .iter()
-            .map(|&i| match self.history.get(i) {
-                Some(HistoryItem::Reasoning(r)) => r.tokens,
-                _ => 0,
-            })
-            .collect();
-        let parts = distribute(
-            usize::try_from(reasoning_tokens).unwrap_or(usize::MAX),
-            &weights,
-        );
-        for (&i, tokens) in targets.iter().zip(parts) {
-            if let Some(HistoryItem::Reasoning(r)) = self.history.get_mut(i) {
-                r.tokens = tokens;
-            }
+        snap_reasoning_tokens(&mut self.history, &targets, reasoning_tokens);
+    }
+}
+
+/// Replace the tokenizer estimates of the [`HistoryItem::Reasoning`] cells at
+/// `targets` with the provider's own `reasoning_tokens`, split over them by
+/// weight ([`distribute`]).
+///
+/// The pure core of [`App::snap_round_reasoning`], shared with
+/// [`crate::agents::AgentRun`]'s own usage arm — a subagent's thinking cells
+/// live on *its* transcript and need the identical snap
+/// (`docs/agent-view-streaming.md`), and one round's accounting rule copied
+/// into two places is one that drifts.
+///
+/// Defensive about its indices: a history mutation between the recording and
+/// the frame (a `/clear`, a backtrack) simply leaves nothing to snap.
+pub(crate) fn snap_reasoning_tokens(
+    history: &mut [HistoryItem],
+    targets: &[usize],
+    reasoning_tokens: u64,
+) {
+    if reasoning_tokens == 0 || targets.is_empty() {
+        return;
+    }
+    let weights: Vec<usize> = targets
+        .iter()
+        .map(|&i| match history.get(i) {
+            Some(HistoryItem::Reasoning(r)) => r.tokens,
+            _ => 0,
+        })
+        .collect();
+    let parts = distribute(
+        usize::try_from(reasoning_tokens).unwrap_or(usize::MAX),
+        &weights,
+    );
+    for (&i, tokens) in targets.iter().zip(parts) {
+        if let Some(HistoryItem::Reasoning(r)) = history.get_mut(i) {
+            r.tokens = tokens;
         }
     }
 }

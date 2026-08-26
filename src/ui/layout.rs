@@ -6,7 +6,7 @@
 //! (`docs/status-indicator.md`), the bands (`docs/shortcuts.md`,
 //! `docs/file-search.md`) and the footer (`docs/footer.md`).
 
-use super::agent::agent_view_preview_lines;
+use super::agent::agent_preview_rows;
 use super::live::preview_tool_lines;
 use super::theme::*;
 use super::wrap::cols;
@@ -69,10 +69,11 @@ pub(super) const fn strip_rows(has_status: bool, preview_rows: u16, task_rows: u
 #[must_use]
 pub fn preview_rows(app: &App, width: u16) -> u16 {
     // An agent session view previews the *viewed agent's* stream — its live
-    // tool cells or its reply's last row (docs/agent-tool.md).
+    // tool cells, its thinking block, or its reply's uncommitted frontier
+    // (docs/agent-tool.md, docs/agent-view-streaming.md). The branch mirrors
+    // the main one below, so `agent_preview_rows` owns it.
     if let Some(run) = app.viewed_agent() {
-        return u16::try_from(agent_view_preview_lines(run, app.pulse(), width).len())
-            .unwrap_or(u16::MAX);
+        return agent_preview_rows(app, run, width);
     }
     // A live agent group previews its whole tree cell (over the tool queue's
     // cells when a mixed round runs both — docs/agent-tool.md); a live tool

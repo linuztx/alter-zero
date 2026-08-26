@@ -79,6 +79,9 @@ pub use self::model_picker::{ModelFetchError, ModelLoad, ModelPicker};
 pub use self::permission::PermissionPrompt;
 pub use self::queue::QueuedTurn;
 pub use self::reasoning::Reasoning;
+// Crate-internal: `agents::AgentRun` runs the same reasoning-token snap over
+// its own transcript (`docs/agent-view-streaming.md`).
+pub(crate) use self::reasoning::snap_reasoning_tokens;
 pub use self::resume::{ResumeControl, ResumeFilter, ResumePicker, ResumeSort};
 pub use self::settings::{SettingRow, SettingsPicker};
 pub use self::skill_picker::SkillPicker;
@@ -773,17 +776,27 @@ impl App {
         }));
     }
 
-    /// The text of the last assistant message in [`history`](Self::history), if
-    /// any non-empty one exists — what `/copy` writes to the clipboard. Our turn
-    /// model splits assistant prose around tool calls, so this is the last
-    /// recorded assistant *segment*, mirroring codex's `last_agent_markdown`
-    /// (likewise the latest agent message). The in-progress streaming buffer is
-    /// not considered — only finished history. `None` (the nothing-to-copy path)
-    /// when there's no assistant message, or the latest one is empty. See
-    /// `docs/copy.md`.
+    /// The text of the last assistant message on **the conversation the screen
+    /// is showing**, if any non-empty one exists — what `/copy` writes to the
+    /// clipboard. Our turn model splits assistant prose around tool calls, so
+    /// this is the last recorded assistant *segment*, mirroring codex's
+    /// `last_agent_markdown` (likewise the latest agent message). The
+    /// in-progress streaming buffer is not considered — only finished history.
+    /// `None` (the nothing-to-copy path) when there's no assistant message, or
+    /// the latest one is empty. See `docs/copy.md`.
+    ///
+    /// Inside an **agent session view** that conversation is the viewed
+    /// agent's own transcript, not [`history`](Self::history) — the
+    /// [`viewed_agent`](Self::viewed_agent) branch `ui::context_lines` and
+    /// `ui::agent_transcript_lines` already take. Copying the lead's last
+    /// answer while the screen shows a subagent's was the reported bug
+    /// (`docs/agent-view-streaming.md`).
     #[must_use]
     pub fn last_assistant_text(&self) -> Option<String> {
-        let latest = self.history.iter().rev().find_map(|item| match item {
+        let history = self
+            .viewed_agent()
+            .map_or(self.history.as_slice(), |run| run.history.as_slice());
+        let latest = history.iter().rev().find_map(|item| match item {
             HistoryItem::Message(m) if m.role == Role::Assistant => Some(&m.text),
             _ => None,
         })?;

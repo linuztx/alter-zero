@@ -183,7 +183,10 @@ zero new plumbing. The TUI cell is a new `HistoryItem::AgentNotice` —
   transcript, mid-stream partial included). While the view is up the main
   turn's commits are suppressed exactly like the Ctrl+O overlay (invariant
   4); the viewed agent's events commit incrementally through a dedicated
-  `StreamRender` — and its turns **end the way the main session's do**: the
+  `StreamRender` — **and its strip previews that same render's frontier**, so
+  a forming table or a fenced code block streams there exactly as it does in
+  the main view, its live `● Thinking…` block included
+  (`docs/agent-view-streaming.md`) — and its turns **end the way the main session's do**: the
   settle records a dim `Done for 59s · 6.1k tokens (2.8k cached)` summary on
   the agent's own transcript (`AgentRun::apply`'s StreamDone arm pushes the
   `HistoryItem::Summary`, its `tokens`/`cached` the **turn's** billed usage —
@@ -248,6 +251,16 @@ zero new plumbing. The TUI cell is a new `HistoryItem::AgentNotice` —
   main turn's own running cell and grew the strip under counters that tick
   every frame. The bullet's breathing grey already says the call is running,
   so the row says *what* is running and nothing more.
+- **The session view's strip** (`agent_view_preview_lines`): the main strip's
+  branches over the viewed agent's own state, in the same order — its live
+  tool cells (the batch queue blank-separated, a running `bash` **tailing its
+  streamed output** through the shared `ui::live::live_call_lines`), else its
+  open thinking block (`live_reasoning_lines`), else the **uncommitted
+  frontier** of its reply, which the boundary builds with the same
+  `agent_render` its commits use and injects the height of
+  (`App::set_stream_preview_rows`, read back by `agent_preview_rows`). See
+  `docs/agent-view-streaming.md` — previewing one batch-rendered row instead
+  was the "streaming disappears in the subagent TUI" bug.
 - **Committed cells**: `● {n} background agents launched (↓ to manage ·
   ctrl+o to expand)` over description-only tree rows (green); `● {n} agents
   finished (ctrl+o to expand)` over the counted tree rows with `⎿ Done` /
@@ -296,6 +309,13 @@ zero new plumbing. The TUI cell is a new `HistoryItem::AgentNotice` —
 - `session.rs` round-trips both new items (`agent_group` / `agent_notice`
   records); old builds skip them (the forward-compatibility contract). The
   roster itself is ephemeral, like background shells.
+- A subagent's **thinking phase** settles onto its own transcript as a
+  `HistoryItem::Reasoning` (`AgentRun::begin_reasoning`/`finish_reasoning`,
+  the phase's elapsed boundary-injected from
+  `Session::agent_thinking_clocks`), so the session view, its Ctrl+O
+  expansion and the roster's token snap all behave like the main session's —
+  gated by the same `/settings` **Hide thinking** knob
+  (`docs/agent-view-streaming.md`).
 - `/clear` and quit `kill_all()` agents; an Esc interrupt kills only the
   in-flight **foreground** group (background agents keep running, like
   background shells).

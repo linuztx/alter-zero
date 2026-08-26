@@ -128,6 +128,13 @@ pub fn agent_transcript_lines(app: &App, width: u16) -> Option<Vec<Line<'static>
         lines.extend(message_lines(Role::Assistant, text, width));
         lines.push(Line::default());
     }
+    // The agent's open thinking phase, whole — the main tail's order and its
+    // reason: the pager has no row budget, unlike the strip's windowed block
+    // (`docs/thinking-stream.md`, `docs/agent-view-streaming.md`).
+    if let Some(text) = run.reasoning() {
+        lines.extend(reasoning_live_full_lines(text, width));
+        lines.push(Line::default());
+    }
     for tool in &run.tool_queue {
         lines.extend(tool_full_lines(tool, width));
         lines.push(Line::default());

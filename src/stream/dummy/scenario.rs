@@ -22,11 +22,12 @@
 
 use tokio::sync::mpsc::UnboundedSender;
 
+use crate::agents::AgentRegistry;
 use crate::ask::AskGate;
 use crate::permission::PermissionGate;
 
 use super::super::{CancelToken, StreamEvent};
-use super::{gated, turns};
+use super::{agent, gated, turns};
 
 /// The turn's inputs as a scenario reads them: the prompt, its lowercased
 /// form (cue matching is case-insensitive) and how many Ctrl+V images rode
@@ -91,6 +92,16 @@ pub(in crate::stream) struct AskStage<'a> {
     pub(in crate::stream) cancel: &'a CancelToken,
 }
 
+/// What an **agent** scenario streams through — the [`Stage`] twin for the
+/// demo that plays a launched subagent's own round, writing to the reply
+/// channel *and* to the subagent channel the registry owns
+/// (`docs/agent-view-streaming.md`).
+pub(in crate::stream) struct AgentStage<'a> {
+    pub(in crate::stream) agents: &'a AgentRegistry,
+    pub(in crate::stream) tx: &'a UnboundedSender<StreamEvent>,
+    pub(in crate::stream) cancel: &'a CancelToken,
+}
+
 /// How a selected scenario produces its events.
 #[derive(Clone, Copy)]
 pub(in crate::stream) enum Play {
@@ -107,6 +118,12 @@ pub(in crate::stream) enum Play {
     /// and blocks on the ask gate exactly as the real tool does
     /// (`docs/ask.md`). Only ever selected when an ask gate is attached.
     Asked(fn(&AskStage<'_>)),
+    /// A turn that **launches a subagent and streams its session**: it writes
+    /// the launch to the reply channel and the agent's own round to the
+    /// subagent channel, from that agent's own thread — the only offline demo
+    /// that drives the agent session view (`docs/agent-view-streaming.md`).
+    /// Only ever selected when an agent registry is attached.
+    Agent(fn(&AgentStage<'_>)),
 }
 
 /// One offline demo the dummy can play.
@@ -187,6 +204,17 @@ pub(in crate::stream) const SCENARIOS: &[Scenario] = &[
         selects: |cue| cue.mentions("hook"),
         play: Play::Script(turns::hooks_turn),
     },
+    // One background subagent that streams its OWN session — the only demo
+    // that drives the agent session view's strip
+    // (docs/agent-view-streaming.md). Above the table demo, whose cue it
+    // also matches: the table is what this subagent streams, so a prompt
+    // naming both means *this* one.
+    Scenario {
+        #[cfg(test)]
+        name: "agent-stream",
+        selects: |cue| cue.mentions("subagent"),
+        play: Play::Agent(agent::agent_stream_turn),
+    },
     // A streaming GFM table with wide emoji: the strip-collapse geometry.
     Scenario {
         #[cfg(test)]
@@ -260,17 +288,19 @@ pub(in crate::stream) const SCENARIOS: &[Scenario] = &[
     },
 ];
 
-/// The scenario `cue` selects. `gate_attached` / `ask_attached` report which
-/// gates the session handed the dummy: without the matching one a
-/// gated/asked demo would block forever on an answer nobody can give, so it
-/// is skipped and the prompt falls through to a scripted turn — which is why
-/// `turn_events` can answer *any* prompt.
+/// The scenario `cue` selects. `gate_attached` / `ask_attached` /
+/// `agents_attached` report what the session handed the dummy: without the
+/// matching handle a gated/asked demo would block forever on an answer
+/// nobody can give (and an agent demo would have no channel to stream its
+/// subagent on), so it is skipped and the prompt falls through to a scripted
+/// turn — which is why `turn_events` can answer *any* prompt.
 ///
 /// Total by construction: [`SCENARIOS`]'s last entry matches everything.
 pub(in crate::stream) fn select(
     cue: &Cue,
     gate_attached: bool,
     ask_attached: bool,
+    agents_attached: bool,
 ) -> &'static Scenario {
     SCENARIOS
         .iter()
@@ -279,6 +309,7 @@ pub(in crate::stream) fn select(
                 Play::Script(_) => true,
                 Play::Gated(_) => gate_attached,
                 Play::Asked(_) => ask_attached,
+                Play::Agent(_) => agents_attached,
             };
             playable && (scenario.selects)(cue)
         })

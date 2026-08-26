@@ -58,6 +58,7 @@ subtree inside it:
 | `dummy/script.rs` | The canned replies, the `handoff!()` sentence they close on, and the streaming/output primitives (`chunks`, `dummy_response`, `reply_parts`, `image_ack`; the file-cell bodies come straight from `llm::tools::write_report`/`update_report`). |
 | `dummy/turns.rs` | The **pure** scripted turns — one `Cue -> Vec<StreamEvent>` per scenario. |
 | `dummy/gated.rs` | The turns that *ask*, blocking on the permission gate. |
+| `dummy/agent.rs` | The one turn that streams a **launched subagent's own round** on the agent channel, so the agent session view is drivable offline (`docs/agent-view-streaming.md`). |
 
 Everything above the dummy is the seam a real backend implements: `event.rs`
 (the whole wire format), `source.rs` (`ReplySource`), `cancel.rs`
@@ -164,6 +165,7 @@ picked. Same trick `ui::TranscriptCache`'s counters use.
 | `permission-staggered` | "permission" + "staggered" | a screen-tall `write` prompt answered into a one-line one: the modal region's hardest shrink |
 | `permission-write` | "permission" | the single `Write` approval: the options, Tab's amend, the stashed draft |
 | `compact` | the summarization marker | `/compact`'s text-only handoff summary (`docs/compact.md`) |
+| `agent-stream` | "subagent" | one background subagent that streams **its own session** — a thinking phase then a forming table — the only demo that drives the agent session view's strip (`docs/agent-view-streaming.md`) |
 | `table` | "table" | a streaming GFM table with wide emoji (`docs/table-streaming.md`) |
 | `agents` | "agents", not "agents.md" | a two-subagent group, foreground or background (`docs/agent-tool.md`) |
 | `parallel-batch` | "parallel" | three parallel `Bash(ping …)` calls and their `⎿ Waiting…` cells (`docs/parallel-tools.md`) |
@@ -171,10 +173,17 @@ picked. Same trick `ui::TranscriptCache`'s counters use.
 | `tools` | anything | the default turn: think, then read `about.py`, `Edit` in the credit it forgot, and run it |
 
 Cue order is registry order, so a narrower cue sits above a broader one that
-would also match it. Two cues carry a guard rather than an order: `agents` and
-`files` both exclude `agents.md`, because `/init` submits a canned prompt that
-names it and says "do not over**write**" — without the guard that turn would be
-answered with a scripted fizzbuzz.
+would also match it — `agent-stream` sits above `table` because the table is
+what its subagent streams, so a prompt naming both means that one. Two cues
+carry a guard rather than an order: `agents` and `files` both exclude
+`agents.md`, because `/init` submits a canned prompt that names it and says
+"do not over**write**" — without the guard that turn would be answered with a
+scripted fizzbuzz.
+
+A scenario can also need a **handle** the session may not have attached, and
+`select` skips it when it is missing so the prompt falls through to a script:
+the permission demos need the gate, the ask demo the ask gate, and
+`agent-stream` the subagent registry (`Play::Gated`/`Asked`/`Agent`).
 
 ## What the dummy actually says
 

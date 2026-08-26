@@ -146,6 +146,7 @@ can drive). Reading the seam meant scrolling past canned `ping` output.
 | `dummy/script.rs` | Canned replies and the streaming primitives. |
 | `dummy/turns.rs` | The **pure** scripted turns, one `Cue -> Vec<StreamEvent>` each. |
 | `dummy/gated.rs` | The turns that block on a gate: the permission demos and the `AskUserQuestion` round trip (`docs/ask.md`). |
+| `dummy/agent.rs` | The turn that streams a launched **subagent's own round** on the agent channel — the offline driver for the agent session view (`docs/agent-view-streaming.md`). |
 
 The dummy is a subtree rather than four sibling files because it is genuinely
 separable: it is the one backend that could be deleted without touching the

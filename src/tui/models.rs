@@ -281,8 +281,13 @@ impl ModelSession {
                 hooks.as_ref(),
             )),
             (None, None) => {
-                let dummy =
-                    DummyAi::with_startup_delay(config::startup_delay()).with_ask(ask.clone());
+                // The subagent registry rides the dummy too: the "subagent"
+                // demo streams a launched agent's own round on that channel,
+                // which is the only offline way to drive the agent session
+                // view (`docs/agent-view-streaming.md`).
+                let dummy = DummyAi::with_startup_delay(config::startup_delay())
+                    .with_ask(ask.clone())
+                    .with_agents(agents.clone());
                 Box::new(match permissions {
                     Some(gate) => dummy.with_permissions(gate.clone()),
                     None => dummy,

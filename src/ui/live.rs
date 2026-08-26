@@ -93,7 +93,10 @@ pub(super) fn preview_lines(
     stream_preview: Option<&[Line<'static>]>,
 ) -> Vec<Line<'static>> {
     if let Some(run) = app.viewed_agent() {
-        agent_view_preview_lines(run, app.pulse(), width)
+        // The viewed agent's own strip — fed the same boundary-built frontier
+        // the main branch below gets, since its commits go through the same
+        // kind of `StreamRender` (`docs/agent-view-streaming.md`).
+        agent_view_preview_lines(run, app.pulse(), width, stream_preview)
     } else if app.agent_group().is_some() || !app.tool_queue().is_empty() {
         preview_tool_lines(app, width)
     } else if let Some(text) = app.reasoning() {
@@ -111,6 +114,37 @@ pub(super) fn preview_lines(
             .into_iter()
             .collect()
     }
+}
+
+/// One live call's strip rows: a `!` shell run's single `⎿ Running… (Ns)`
+/// row, a running backend command tool (`bash`) **tailing its streamed
+/// output** (`running_command_lines` — the header + last lines + a
+/// `+N lines (Ns)` footer, `docs/tool-streaming.md`), else the plain live
+/// cell whose running bullet pulses (`docs/tool-pulse.md`).
+///
+/// The one renderer for a live cell, shared by the main strip
+/// ([`preview_tool_lines`]) and the **agent session view's**
+/// ([`super::agent::agent_view_preview_lines`]) — a subagent's running
+/// command tails its output exactly like the main turn's, which a second
+/// thinner copy of this walk did not (`docs/agent-view-streaming.md`).
+/// `elapsed` is whose runtime the `(Ns)` clauses show: the turn's for the
+/// main strip, the agent's own for its view.
+pub(super) fn live_call_lines(
+    tool: &ToolCall,
+    elapsed: Duration,
+    pulse: Duration,
+    width: u16,
+) -> Vec<Line<'static>> {
+    if tool.shell && tool.status == ToolStatus::Running {
+        return vec![shell_running_line(elapsed)];
+    }
+    if is_command_tool(tool)
+        && tool.status == ToolStatus::Running
+        && !command_display_lines(tool).is_empty()
+    {
+        return running_command_lines(tool, elapsed, pulse, width);
+    }
+    live_tool_lines(tool, width, pulse)
 }
 
 /// The live tool queue rendered as preview rows: each call's collapsed cell,
@@ -148,20 +182,7 @@ pub(super) fn preview_tool_lines(app: &App, width: u16) -> Vec<Line<'static>> {
         if i > 0 || !lines.is_empty() {
             lines.push(Line::default()); // blank row between batch cells
         }
-        if tool.shell && tool.status == ToolStatus::Running {
-            lines.push(shell_running_line(elapsed));
-        } else if is_command_tool(tool)
-            && tool.status == ToolStatus::Running
-            && !command_display_lines(tool).is_empty()
-        {
-            // A running backend command tool (bash) with streamed output tails it
-            // live; other running tools fall to their plain `⎿ Running…` peek.
-            lines.extend(running_command_lines(tool, elapsed, pulse, width));
-        } else {
-            // The live cell: a running bullet pulses here and only here
-            // (`docs/tool-pulse.md`).
-            lines.extend(live_tool_lines(tool, width, pulse));
-        }
+        lines.extend(live_call_lines(tool, elapsed, pulse, width));
         // A running command (a model `bash` call or the `!` shell) can be
         // moved to the background with Ctrl+B — hint it under the live cell,
         // but only once the command has been running a few seconds

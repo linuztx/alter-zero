@@ -3,7 +3,7 @@
 //! See `docs/agent-tool.md`.
 
 use super::theme::*;
-use super::tool::{live_tool_lines, result_row, tool_pulse_color};
+use super::tool::{result_row, tool_pulse_color};
 use super::wrap::{cols, truncate_cols};
 use super::*;
 
@@ -729,7 +729,9 @@ pub fn agent_hint_line(app: &App) -> Line<'static> {
 /// The synthesized status for an **agent session view**'s strip — the viewed
 /// agent's own spinner line (`Working… (elapsed · ↓ tokens · esc to
 /// interrupt)` shape, without the interrupt hint's meaning changing: Esc
-/// leaves the view). Built per draw from the roster entry.
+/// leaves the view). Built per draw from the roster entry, the agent's open
+/// thinking phase included (`Thinking for Ns`, boundary-injected like the
+/// runtime — `docs/agent-view-streaming.md`).
 #[must_use]
 pub fn agent_view_status(run: &crate::agents::AgentRun) -> crate::app::TurnStatus {
     crate::app::TurnStatus {
@@ -738,20 +740,35 @@ pub fn agent_view_status(run: &crate::agents::AgentRun) -> crate::app::TurnStatu
         tokens: usize::try_from(run.tokens).unwrap_or(usize::MAX),
         arrow: crate::app::TokenArrow::Down,
         elapsed: run.runtime,
-        thinking: None,
+        thinking: run.thinking,
         shell: false,
-        retry: None,
+        retry: run.retry,
     }
 }
 
-/// The agent session view's strip preview: the viewed agent's live tool
-/// cells (the batch queue, blank-separated) or its streaming reply's last
-/// row. Empty when idle. The [`preview_lines`]/[`preview_rows`] pair calls
-/// this for a viewed agent so the two agree.
+/// The agent session view's strip preview — the main strip's branches over
+/// the viewed agent's own state, in the same order
+/// ([`super::live::preview_lines`]): its live tool cells (the batch queue,
+/// blank-separated, a running command tailing its output), else its open
+/// thinking block, else its streaming reply's frontier. Empty when idle.
+///
+/// `stream_preview` is the boundary's [`super::StreamRender::preview`] over
+/// the agent's buffer — **the rows its own commits have withheld**, which for
+/// a forming table or a fenced code line is the whole block, not one row. The
+/// fallback below (`None`: a unit test, or any caller without a render)
+/// re-renders the last line from the buffer, exactly as the main branch's
+/// does. Rendering that fallback while the commits withheld a whole block was
+/// the reported "streaming disappears" bug — `committed ++ preview` must be
+/// the reply here as much as in the main view (CLAUDE.md invariant 2,
+/// `docs/agent-view-streaming.md`).
+///
+/// The [`preview_lines`]/[`preview_rows`] pair calls this for a viewed agent
+/// so the two agree.
 pub(super) fn agent_view_preview_lines(
     run: &crate::agents::AgentRun,
     pulse: Duration,
     width: u16,
+    stream_preview: Option<&[Line<'static>]>,
 ) -> Vec<Line<'static>> {
     if !run.tool_queue.is_empty() {
         let mut lines = Vec::new();
@@ -760,10 +777,28 @@ pub(super) fn agent_view_preview_lines(
                 lines.push(Line::default());
             }
             // A live strip like the main one — the agent's running call
-            // breathes here too (`docs/tool-pulse.md`).
-            lines.extend(live_tool_lines(tool, width, pulse));
+            // breathes here too (`docs/tool-pulse.md`) and a running command
+            // tails its streamed output (`docs/tool-streaming.md`). The
+            // elapsed is the agent's own, which is what its status line
+            // shows.
+            lines.extend(super::live::live_call_lines(
+                tool,
+                run.runtime,
+                pulse,
+                width,
+            ));
         }
         return lines;
+    }
+    // An open thinking phase previews its live block, after the tool branch
+    // and before the reply's — what is genuinely executing is what the user
+    // waits on, and the model cannot be streaming a reply while it thinks
+    // (the main strip's order, `docs/thinking-stream.md`).
+    if let Some(text) = run.reasoning() {
+        return super::reasoning::live_reasoning_lines(text, pulse, width);
+    }
+    if let Some(lines) = stream_preview {
+        return lines.to_vec();
     }
     run.streaming
         .as_deref()
@@ -775,4 +810,21 @@ pub(super) fn agent_view_preview_lines(
         })
         .into_iter()
         .collect()
+}
+
+/// The strip's preview row count for a viewed agent — [`preview_rows`]' agent
+/// branch, mirroring its main one: a live tool queue or an open thinking
+/// phase size from the same walk the strip draws, while a **streaming reply**
+/// reports the boundary-injected frontier height
+/// ([`crate::app::App::stream_preview_rows`]), because only the boundary's
+/// `StreamRender` knows how many rows it withheld
+/// (`docs/agent-view-streaming.md`, `docs/table-streaming.md`).
+pub(super) fn agent_preview_rows(app: &App, run: &crate::agents::AgentRun, width: u16) -> u16 {
+    if run.tool_queue.is_empty()
+        && run.reasoning().is_none()
+        && run.streaming.as_deref().is_some_and(|t| !t.is_empty())
+    {
+        return app.stream_preview_rows();
+    }
+    u16::try_from(agent_view_preview_lines(run, app.pulse(), width, None).len()).unwrap_or(u16::MAX)
 }

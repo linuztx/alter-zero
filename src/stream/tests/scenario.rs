@@ -20,6 +20,7 @@ const EXAMPLES: &[&str] = &[
     crate::context::SUMMARIZATION_PROMPT,
     "hook demo: block my prompt",
     "show me the hooks demo",
+    "launch a subagent that streams a table",
     "show me a table",
     "call agents for weather",
     "run three pings in parallel",
@@ -30,16 +31,18 @@ const EXAMPLES: &[&str] = &[
     "hello there",
 ];
 
-/// Select for `prompt` as the dummy would with both gates attached (the
-/// permission gate and the ask gate — the app's default posture).
+/// Select for `prompt` as the dummy would with everything attached (the
+/// permission gate, the ask gate and the subagent registry — the app's
+/// default posture).
 fn gated(prompt: &str) -> &'static str {
-    select(&Cue::new(prompt, 0), true, true).name
+    select(&Cue::new(prompt, 0), true, true, true).name
 }
 
-/// Select for `prompt` as the dummy would with no gate — the `turn_events`
-/// path, where the gated and asked demos are unreachable.
+/// Select for `prompt` as the dummy would with nothing attached — the
+/// `turn_events` path, where the gated, asked and agent demos are
+/// unreachable.
 fn ungated(prompt: &str) -> &'static str {
-    select(&Cue::new(prompt, 0), false, false).name
+    select(&Cue::new(prompt, 0), false, false, false).name
 }
 
 #[test]
@@ -132,19 +135,41 @@ fn a_gated_scenario_is_only_selected_when_a_gate_is_attached() {
     ] {
         assert!(
             matches!(
-                select(&Cue::new(prompt, 0), true, true).play,
+                select(&Cue::new(prompt, 0), true, true, true).play,
                 Play::Gated(_)
             ),
             "{prompt:?} should reach a gated demo when a gate is attached"
         );
         assert!(
             matches!(
-                select(&Cue::new(prompt, 0), false, false).play,
+                select(&Cue::new(prompt, 0), false, false, false).play,
                 Play::Script(_)
             ),
             "{prompt:?} must fall through to a script with no gate attached"
         );
     }
+}
+
+#[test]
+fn the_agent_demo_is_only_selected_when_the_registry_is_attached() {
+    // The subagent demo streams its agent's round on the registry's channel
+    // (`docs/agent-view-streaming.md`) — without one there is nowhere to send
+    // it, so selection skips it and the prompt falls through to a script,
+    // exactly like the gated demos. Its cue also mentions "table", so the
+    // fall-through lands on the table demo it deliberately outranks.
+    let prompt = "launch a subagent that streams a table";
+    assert!(
+        matches!(
+            select(&Cue::new(prompt, 0), false, false, true).play,
+            Play::Agent(_)
+        ),
+        "{prompt:?} should reach the agent demo when the registry is attached"
+    );
+    assert_eq!(
+        select(&Cue::new(prompt, 0), true, true, false).name,
+        "table",
+        "with no registry it falls through to the next matching script"
+    );
 }
 
 #[test]
@@ -155,7 +180,7 @@ fn the_ask_demo_is_only_selected_when_an_ask_gate_is_attached() {
     let prompt = "ask me some questions";
     assert!(
         matches!(
-            select(&Cue::new(prompt, 0), false, true).play,
+            select(&Cue::new(prompt, 0), false, true, false).play,
             Play::Asked(_)
         ),
         "{prompt:?} should reach the ask demo when the ask gate is attached \
@@ -163,7 +188,7 @@ fn the_ask_demo_is_only_selected_when_an_ask_gate_is_attached() {
     );
     assert!(
         matches!(
-            select(&Cue::new(prompt, 0), true, false).play,
+            select(&Cue::new(prompt, 0), true, false, false).play,
             Play::Script(_)
         ),
         "{prompt:?} must fall through to a script with no ask gate attached"
@@ -369,7 +394,7 @@ fn turn_events_plays_the_scenario_the_registry_selects() {
         crate::context::SUMMARIZATION_PROMPT,
     ] {
         let cue = Cue::new(prompt, 0);
-        let Play::Script(script) = select(&cue, false, false).play else {
+        let Play::Script(script) = select(&cue, false, false, false).play else {
             panic!("{prompt:?} selected a gated demo with no gate attached");
         };
         assert_eq!(

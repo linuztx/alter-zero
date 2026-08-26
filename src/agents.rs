@@ -149,6 +149,31 @@ pub struct AgentRun {
     /// rather than dropping to a generic `Working…` between calls
     /// (`docs/agent-tool.md`).
     pub last_activity: Option<String>,
+    /// The **open** thinking phase's chain-of-thought, or `None` outside one
+    /// — what the agent session view's strip previews while the phase runs
+    /// (`ui::live_reasoning_lines`). Opened only by
+    /// [`begin_reasoning`](Self::begin_reasoning), which the boundary calls
+    /// only when the display is on, so with `/settings` **Hide thinking**
+    /// set a delta is counted and dropped exactly as it always was
+    /// (`docs/thinking-stream.md`, `docs/agent-view-streaming.md`).
+    reasoning: Option<String>,
+    /// Where this round's settled thinking cells landed in
+    /// [`history`](Self::history), so the round's own [`StreamEvent::Usage`]
+    /// frame can snap their tokenizer estimates to the provider's
+    /// `reasoning_tokens` (`app::reasoning::snap_reasoning_tokens`). Cleared by
+    /// each frame — one frame ends one round.
+    round_reasoning: Vec<usize>,
+    /// How long the open thinking phase has run — boundary-injected each
+    /// frame from `Session::agent_thinking_clocks`, the
+    /// [`runtime`](Self::runtime) pattern — so the session view's status line
+    /// shows `Thinking for Ns` and a settle needs no clock of its own.
+    /// `None` outside a phase.
+    pub thinking: Option<Duration>,
+    /// Set while this agent's failed request is being retried
+    /// ([`StreamEvent::Retrying`]) — its session view's status line shows the
+    /// same `retrying {attempt}/{max}` clause the main turn's does, and the
+    /// next streamed content clears it (`docs/llm.md`).
+    pub retry: Option<crate::app::RetryInfo>,
 }
 
 impl AgentRun {
@@ -188,6 +213,10 @@ impl AgentRun {
             hidden: false,
             stopped_by_user: false,
             last_activity: None,
+            reasoning: None,
+            round_reasoning: Vec::new(),
+            thinking: None,
+            retry: None,
         }
     }
 
@@ -210,6 +239,9 @@ impl AgentRun {
                     .get_or_insert_with(String::new)
                     .push_str(chunk);
                 self.tokens += crate::app::count_tokens(chunk) as u64;
+                // Content arrived — the reconnect is over (the main turn's
+                // rule, `docs/llm.md`).
+                self.retry = None;
             }
             // A SubagentStop block's continuation feedback on this agent's
             // own loop (docs/hooks.md): the reply so far becomes its own
@@ -229,9 +261,22 @@ impl AgentRun {
             // only at the main session's spawn top (docs/hooks.md); mapped so
             // the match stays total and honest if that ever changes.
             StreamEvent::PromptBlocked { .. } => {}
+            // A reasoning delta: counted so the footer tally ticks while the
+            // agent thinks (the status-line pattern) and — **while a phase is
+            // open** — accumulated for the live `● Thinking…` block the
+            // session view previews. With the display off no phase is ever
+            // opened, so it stays counted-and-dropped exactly as before
+            // (`docs/agent-view-streaming.md`).
+            StreamEvent::ThinkingChunk(text) => {
+                self.tokens += crate::app::count_tokens(text) as u64;
+                self.retry = None;
+                if let Some(buffer) = self.reasoning.as_mut() {
+                    buffer.push_str(text);
+                }
+            }
             // Opaque progress — counted so the footer tally ticks while the
-            // agent thinks / generates a call (the status-line pattern).
-            StreamEvent::ThinkingChunk(text) | StreamEvent::ToolCallDelta(text) => {
+            // agent generates a call (the status-line pattern).
+            StreamEvent::ToolCallDelta(text) => {
                 self.tokens += crate::app::count_tokens(text) as u64;
             }
             StreamEvent::ToolBatch(items) => {
@@ -348,12 +393,23 @@ impl AgentRun {
                 }
             }
             StreamEvent::Usage(usage) => {
+                // One frame ends one round: this is where the round's
+                // `Thought for …` cells trade their tokenizer estimate for
+                // the provider's own `reasoning_tokens`, the main session's
+                // snap over this agent's transcript
+                // (`docs/thinking-stream.md`).
+                let targets = std::mem::take(&mut self.round_reasoning);
+                crate::app::snap_reasoning_tokens(&mut self.history, &targets, usage.reasoning);
                 self.usage_tokens += usage.total();
                 self.tokens = self.usage_tokens;
                 self.turn_usage_tokens += usage.total();
                 self.turn_usage_cached += usage.cached;
             }
             StreamEvent::StreamDone => {
+                // A phase still open when the round ended keeps what streamed
+                // — settled first, so its cell sits ahead of the reply it
+                // preceded (`docs/thinking-stream.md`).
+                self.settle_thinking();
                 self.result = self.flush_segment();
                 self.tool_queue.clear();
                 self.status = AgentStatus::Done;
@@ -376,6 +432,9 @@ impl AgentRun {
                 return true;
             }
             StreamEvent::Error(message) => {
+                // The open thought survives the failure, ahead of the partial
+                // reply and the red notice (the main session's order).
+                self.settle_thinking();
                 self.flush_segment();
                 self.resolve_tools(message);
                 self.error = Some(message.clone());
@@ -439,11 +498,20 @@ impl AgentRun {
             // agent's own state changes while it waits. An ask request would
             // be too (docs/ask.md) — unreachable, since subagents never get
             // the tool.
+            // This agent's request failed before any content streamed and is
+            // being retried: its session view's status line says so, exactly
+            // like the main turn's (`docs/llm.md`). Nothing commits — the run
+            // is still in flight.
+            StreamEvent::Retrying { attempt, max } => {
+                self.retry = Some(crate::app::RetryInfo {
+                    attempt: *attempt,
+                    max: *max,
+                });
+            }
             StreamEvent::Permission(_)
             | StreamEvent::AskUser(_)
             | StreamEvent::ThinkingStart
             | StreamEvent::ThinkingEnd
-            | StreamEvent::Retrying { .. }
             | StreamEvent::AgentBatch { .. }
             | StreamEvent::AgentGroupDone { .. } => {}
         }
@@ -458,6 +526,8 @@ impl AgentRun {
         if self.status.is_final() {
             return false;
         }
+        // Keep a partial thought: what streamed is what the user saw.
+        self.settle_thinking();
         self.flush_segment();
         self.resolve_tools(crate::app::INTERRUPT_TOOL_OUTPUT);
         self.status = AgentStatus::Interrupted;
@@ -503,6 +573,7 @@ impl AgentRun {
         self.error = None;
         self.turn_usage_tokens = 0;
         self.turn_usage_cached = 0;
+        self.round_reasoning.clear();
     }
 
     /// The tree row's activity: what the agent is doing — or, between tool
@@ -537,6 +608,77 @@ impl AgentRun {
             images: Vec::new(),
         }));
         Some(text)
+    }
+
+    /// Open a thinking phase on this agent — the boundary calls it at its
+    /// [`StreamEvent::ThinkingStart`], and **only when the display is on**
+    /// (`/settings` **Hide thinking**), which is the whole gate: with it off
+    /// no buffer exists and every delta stays counted-and-dropped
+    /// (`docs/agent-view-streaming.md`).
+    ///
+    /// **Flush before you interleave** (CLAUDE.md invariant 4): a model can
+    /// reason after it has begun answering, so the run of text before the
+    /// phase becomes its own message here, as the live block goes up — the
+    /// `ThinkingStart` dance the main session does.
+    pub fn begin_reasoning(&mut self) {
+        self.flush_segment();
+        self.reasoning = Some(String::new());
+    }
+
+    /// The chain-of-thought streamed so far in the open phase, or `None` when
+    /// none is open — what the session view's strip previews. `Some("")`
+    /// right after [`begin_reasoning`](Self::begin_reasoning): the phase is
+    /// real before its first delta, and the block should say so.
+    #[must_use]
+    pub fn reasoning(&self) -> Option<&str> {
+        self.reasoning.as_deref()
+    }
+
+    /// Inject the open phase's elapsed (the boundary's thinking clock, the
+    /// [`crate::app::App::set_agent_runtime`] pattern) so the session view's
+    /// status line shows `Thinking for Ns` and a settle reached from the pure
+    /// side ([`interrupt`](Self::interrupt), an `Error`) needs no clock.
+    pub fn set_thinking(&mut self, elapsed: Option<Duration>) {
+        self.thinking = elapsed;
+    }
+
+    /// Close the open thinking phase, recording it as a
+    /// [`HistoryItem::Reasoning`] on **this agent's** transcript and returning
+    /// it for the session view to commit as the collapsed `Thought for …`
+    /// cell. `secs` is the phase's wall-clock (the boundary's clock at a
+    /// `ThinkingEnd`; the injected [`thinking`](Self::thinking) at every other
+    /// settle point).
+    ///
+    /// `None` — recording nothing — when no phase was open, or when it
+    /// produced no text: some providers open and close one without a single
+    /// delta, and a `Thought for 0s` cell for that is noise. The main
+    /// session's rule exactly (`docs/thinking-stream.md`).
+    pub fn finish_reasoning(&mut self, secs: u64) -> Option<crate::app::Reasoning> {
+        self.thinking = None;
+        let text = self.reasoning.take()?;
+        if text.trim().is_empty() {
+            return None;
+        }
+        let reasoning = crate::app::Reasoning {
+            tokens: crate::app::count_tokens(&text),
+            text,
+            secs,
+            timestamp: String::new(),
+        };
+        // Remember where it landed so this round's usage frame can snap its
+        // estimate to the provider's own count.
+        self.round_reasoning.push(self.history.len());
+        self.history.push(HistoryItem::Reasoning(reasoning.clone()));
+        Some(reasoning)
+    }
+
+    /// Settle an open phase from the injected [`thinking`](Self::thinking)
+    /// elapsed — the pure settle points (`StreamDone`, `Error`,
+    /// [`interrupt`](Self::interrupt)), which have no clock of their own.
+    /// A no-op when no phase is open.
+    fn settle_thinking(&mut self) {
+        let secs = self.thinking.unwrap_or_default().as_secs();
+        self.finish_reasoning(secs);
     }
 
     /// Resolve every live tool call as failed with `output` (an interrupt or
@@ -1403,5 +1545,122 @@ mod tests {
         registry.remove(&id1);
         assert!(registry.is_done(&id1), "unknown ids read as done");
         assert!(registry.is_killed(&id2));
+    }
+
+    // ===== The agent's thinking stream (docs/agent-view-streaming.md) =====
+
+    #[test]
+    fn a_retrying_agent_says_so_and_the_next_content_clears_it() {
+        // Main parity (`docs/llm.md`): a subagent reconnecting shows
+        // `retrying {n}/{max}` in its session view's status line instead of a
+        // bare spinner, and the first streamed content takes it back down.
+        let mut run = AgentRun::new("a1", "d", GENERAL_PURPOSE, "p", false);
+        run.apply(&StreamEvent::Retrying { attempt: 2, max: 5 });
+        assert_eq!(
+            run.retry,
+            Some(crate::app::RetryInfo { attempt: 2, max: 5 })
+        );
+        run.apply(&chunk("here we go"));
+        assert!(run.retry.is_none(), "content ends the reconnect");
+    }
+
+    #[test]
+    fn a_thinking_delta_is_only_buffered_while_a_phase_is_open() {
+        // The display gate lives at the boundary: with it off nothing calls
+        // `begin_reasoning`, so a delta is counted and dropped, exactly as
+        // before (docs/thinking-stream.md).
+        let mut run = AgentRun::new("a1", "d", GENERAL_PURPOSE, "p", false);
+        run.apply(&StreamEvent::ThinkingChunk("unseen".into()));
+        assert!(run.reasoning().is_none());
+        assert!(run.tokens > 0, "still counted");
+        run.begin_reasoning();
+        run.apply(&StreamEvent::ThinkingChunk("weighing ".into()));
+        run.apply(&StreamEvent::ThinkingChunk("it".into()));
+        assert_eq!(run.reasoning(), Some("weighing it"));
+    }
+
+    #[test]
+    fn opening_a_phase_finalises_the_text_before_it() {
+        // Flush before you interleave: a model that reasons *after* it has
+        // begun answering must not have the cell spliced into the paragraph
+        // that was streaming (CLAUDE.md invariant 4).
+        let mut run = AgentRun::new("a1", "d", GENERAL_PURPOSE, "p", false);
+        run.apply(&chunk("Let me think. "));
+        run.begin_reasoning();
+        assert!(run.streaming.is_none(), "the segment was flushed");
+        let HistoryItem::Message(m) = &run.history[1] else {
+            panic!("the text became its own message");
+        };
+        assert_eq!(m.text, "Let me think. ");
+    }
+
+    #[test]
+    fn the_rounds_usage_frame_snaps_the_thought_to_the_providers_count() {
+        // The main session's snap (docs/thinking-stream.md): the tokenizer
+        // estimate gives way to `completion_tokens_details.reasoning_tokens`.
+        let mut run = AgentRun::new("a1", "d", GENERAL_PURPOSE, "p", false);
+        run.begin_reasoning();
+        run.apply(&StreamEvent::ThinkingChunk(
+            "a long chain of thought".into(),
+        ));
+        let settled = run.finish_reasoning(2).expect("text settles");
+        assert!(settled.tokens > 0, "estimated first");
+        run.apply(&StreamEvent::Usage(TokenUsage {
+            input: 10,
+            output: 20,
+            cached: 0,
+            cache_write: 0,
+            reasoning: 169,
+        }));
+        let HistoryItem::Reasoning(r) = &run.history[1] else {
+            panic!("the cell is on the transcript");
+        };
+        assert_eq!(r.tokens, 169, "snapped to the provider's own count");
+    }
+
+    #[test]
+    fn an_interrupt_keeps_the_partial_thought() {
+        // An Esc/`x` mid-thought settles the phase rather than dropping it —
+        // what streamed is what the user saw.
+        let mut run = AgentRun::new("a1", "d", GENERAL_PURPOSE, "p", false);
+        run.begin_reasoning();
+        run.apply(&StreamEvent::ThinkingChunk("half a thought".into()));
+        run.set_thinking(Some(Duration::from_secs(4)));
+        assert!(run.interrupt());
+        let HistoryItem::Reasoning(r) = &run.history[1] else {
+            panic!("the partial thought settled: {:?}", run.history);
+        };
+        assert_eq!(r.text, "half a thought");
+        assert_eq!(r.secs, 4, "the injected elapsed is the phase's");
+        assert!(run.reasoning().is_none());
+    }
+
+    #[test]
+    fn a_backend_error_settles_the_open_phase_first() {
+        // The thought is recorded ahead of the partial reply and the failure
+        // — and *ahead of any text still buffered*, which is the order the
+        // boundary commits in too (`Session::settle_agent_reasoning` runs
+        // before the segment flush). Screen and history must agree or a
+        // rebuild reorders them (CLAUDE.md invariant 4).
+        let mut run = AgentRun::new("a1", "d", GENERAL_PURPOSE, "p", false);
+        run.begin_reasoning();
+        run.apply(&StreamEvent::ThinkingChunk("thinking".into()));
+        run.apply(&chunk("half an answer"));
+        run.apply(&StreamEvent::Error("boom".into()));
+        let kinds: Vec<&str> = run
+            .history
+            .iter()
+            .map(|item| match item {
+                HistoryItem::Reasoning(_) => "reasoning",
+                HistoryItem::Message(_) => "message",
+                _ => "other",
+            })
+            .collect();
+        assert_eq!(
+            kinds,
+            ["message", "reasoning", "message"],
+            "prompt, the thought, then the partial: {:?}",
+            run.history
+        );
     }
 }

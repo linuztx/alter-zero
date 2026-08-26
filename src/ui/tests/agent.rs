@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::ui::agent::agent_group_full_lines;
+use crate::ui::live::preview_lines;
 use crate::ui::theme::{
     TOOL_DIM_COLOR, TOOL_FAIL_COLOR, TOOL_OK_COLOR, TOOL_OUTPUT_COLOR, TOOL_PULSE_BRIGHT,
     TOOL_PULSE_DIM, TOOL_PULSE_PERIOD,
@@ -556,4 +557,133 @@ fn agent_entry(
         tool_headers: vec!["Bash(curl wttr.in)".to_string()],
         output: "It is 19°C.".to_string(),
     }
+}
+
+// ===== The agent session view's streaming strip (docs/agent-view-streaming.md) =====
+
+/// An app with agent `a1` in its own session view, mid-reply on `text`.
+fn streaming_agent_view(text: &str) -> App {
+    let mut app = App::new();
+    app.begin_stream();
+    app.start_agent_group(false, &[spec("a1", "Table demo", false)]);
+    app.apply_agent_event("a1", &crate::stream::StreamEvent::Chunk(text.to_string()));
+    app.open_agent_view("a1");
+    app
+}
+
+/// A markdown table caught mid-stream — the reported case.
+const FORMING_TABLE: &str = "\
+| Language | Year | Typing |
+|----------|------|--------|
+| Python | 1991 | Dynamic |
+| Rust | 2010 | Static |
+| Go";
+
+#[test]
+fn an_agent_views_strip_previews_the_rows_its_commits_withheld() {
+    // The reported bug (docs/agent-view-streaming.md): the view's commits go
+    // through a `StreamRender`, which withholds a forming table WHOLE — so
+    // the strip must show that whole block, not the one row a batch render
+    // happened to end on. `committed ++ preview` is the reply, in this view
+    // exactly as in the main one (CLAUDE.md invariant 2).
+    let width = 44;
+    let app = streaming_agent_view(FORMING_TABLE);
+    let text = app
+        .agent("a1")
+        .and_then(|run| run.streaming.clone())
+        .expect("the agent is mid-reply");
+
+    let mut render = StreamRender::new();
+    let committed = render.commit(&text, width);
+    let preview = render.preview(&text, width, 20);
+    assert!(
+        committed.is_empty(),
+        "the open table is withheld whole: {committed:?}"
+    );
+    assert!(preview.len() > 1, "the forming grid is many rows");
+
+    let lines = preview_lines(&app, width, Some(&preview));
+    let texts: Vec<String> = lines.iter().map(plain).collect();
+    assert_eq!(lines.len(), preview.len(), "the whole frontier: {texts:?}");
+    // What shipped before, pinned as the contrast: the batch-render fallback
+    // keeps ONE row — the block's closing border — so every row above it was
+    // on screen nowhere.
+    assert_eq!(
+        preview_lines(&app, width, None).len(),
+        1,
+        "the fallback is the old one-row render"
+    );
+    assert!(
+        texts.iter().any(|t| t.contains("Python")),
+        "the grid's rows show, not just its border: {texts:?}"
+    );
+    // …and the strip reserves exactly what it draws (the debug_assert).
+    app_with_injected_rows(app, preview.len(), width);
+}
+
+/// `preview_rows` must report the injected count for a viewed agent, the way
+/// it does for the main session — split out so the assertion reads once.
+fn app_with_injected_rows(mut app: App, rows: usize, width: u16) {
+    app.set_stream_preview_rows(u16::try_from(rows).unwrap());
+    assert_eq!(usize::from(preview_rows(&app, width)), rows);
+}
+
+#[test]
+fn an_agent_views_running_command_tails_its_streamed_output() {
+    // Main parity (docs/tool-streaming.md): a subagent's running `bash` call
+    // tails its output in the strip — the newest lines plus the
+    // `+N lines (Ns)` footer — instead of the plain `⎿ Running…` peek.
+    use crate::stream::StreamEvent;
+    let mut app = App::new();
+    app.begin_stream();
+    app.start_agent_group(false, &[spec("a1", "Ping", false)]);
+    app.apply_agent_event(
+        "a1",
+        &StreamEvent::ToolStart {
+            name: "Bash".into(),
+            args: "ping -c 10 x".into(),
+            detail: None,
+            arguments: None,
+        },
+    );
+    for i in 1..=9 {
+        app.apply_agent_event("a1", &StreamEvent::ToolOutput(format!("line {i}\n")));
+    }
+    app.set_agent_runtime("a1", Duration::from_secs(9));
+    app.open_agent_view("a1");
+    let lines = preview_lines(&app, 60, None);
+    let all: String = lines.iter().map(|l| plain(l) + "\n").collect();
+    assert!(all.contains("line 9"), "the newest line tails: {all:?}");
+    assert!(!all.contains("line 4"), "older lines are hidden: {all:?}");
+    assert!(all.contains("+5 lines (9s)"), "the footer shows: {all:?}");
+    assert_eq!(usize::from(preview_rows(&app, 60)), lines.len());
+}
+
+#[test]
+fn an_agent_views_strip_previews_its_thinking_block() {
+    // A reasoning subagent shows the same live `● Thinking…` block the main
+    // view does, and its status line says `Thinking for Ns`
+    // (docs/thinking-stream.md, docs/agent-view-streaming.md).
+    use crate::stream::StreamEvent;
+    let mut app = App::new();
+    app.begin_stream();
+    app.start_agent_group(false, &[spec("a1", "Think", false)]);
+    app.begin_agent_reasoning("a1");
+    app.apply_agent_event("a1", &StreamEvent::ThinkingChunk("weighing options".into()));
+    app.set_agent_thinking("a1", Duration::from_secs(3));
+    app.open_agent_view("a1");
+    let lines = preview_lines(&app, 60, None);
+    let texts: Vec<String> = lines.iter().map(plain).collect();
+    assert!(texts[0].starts_with("● Thinking…"), "{texts:?}");
+    assert!(
+        texts.iter().any(|t| t.contains("weighing options")),
+        "the chain-of-thought tails: {texts:?}"
+    );
+    assert_eq!(usize::from(preview_rows(&app, 60)), lines.len());
+    let run = app.agent("a1").expect("listed");
+    assert_eq!(
+        agent_view_status(run).thinking,
+        Some(Duration::from_secs(3)),
+        "the strip's status carries the phase's elapsed"
+    );
 }

@@ -348,6 +348,7 @@ impl<'t> Session<'t> {
             toast_deadline: None,
             bg_clocks: HashMap::new(),
             agent_clocks: HashMap::new(),
+            agent_thinking_clocks: HashMap::new(),
             agent_expiry: HashMap::new(),
             // Invariant 1: the `EventStream` is created HERE — after
             // `InlineViewport::init` (in `main`) queried the cursor position over

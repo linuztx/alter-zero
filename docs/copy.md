@@ -39,6 +39,13 @@ a scrollback bullet. See `docs/toast.md`.
 
 ### What we copy (`App::last_assistant_text`)
 
+> **Update (2026-08-26):** it copies **the conversation the screen is
+> showing**. Inside an agent session view that is the *viewed agent's* own
+> transcript, not `App::history` — the `viewed_agent()` branch every other
+> view-aware reader takes. Copying the lead's last answer while the screen
+> showed a subagent's was the reported bug (`docs/agent-view-streaming.md`).
+> Everything below still describes the main view's case, which is unchanged.
+
 The text of the **last `HistoryItem::Message` with `role == Role::Assistant`**
 in `App::history`. Our turn model splits assistant prose around tool calls
 (`flush_streaming_segment` records the run of text before each `ToolStart` as its

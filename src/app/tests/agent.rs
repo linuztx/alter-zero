@@ -537,3 +537,103 @@ fn clear_wipes_the_roster_and_the_live_group() {
     assert!(app.agent_group().is_none());
     assert!(app.agent_view.is_none());
 }
+
+// ===== The agent session view's `/copy` and thinking (docs/agent-view-streaming.md) =====
+
+#[test]
+fn last_assistant_text_follows_the_viewed_agent() {
+    // `/copy` copies what the screen shows: inside an agent session view the
+    // screen is that AGENT's conversation, so the last assistant message is
+    // its own — not the lead's, which the user isn't looking at (the
+    // reported bug, docs/agent-view-streaming.md).
+    let mut app = App::new();
+    app.begin_stream();
+    app.push_chunk("the lead's answer");
+    app.finish_stream();
+    app.start_agent_group(false, &agent_specs(false));
+    app.apply_agent_event("a1", &StreamEvent::Chunk("the agent's answer".into()));
+    app.apply_agent_event("a1", &StreamEvent::StreamDone);
+    assert_eq!(
+        app.last_assistant_text().as_deref(),
+        Some("the lead's answer"),
+        "the main view copies the main conversation"
+    );
+    app.open_agent_view("a1");
+    assert_eq!(
+        app.last_assistant_text().as_deref(),
+        Some("the agent's answer"),
+        "the agent view copies the agent's"
+    );
+    // …and `/copy` through the palette carries it.
+    for c in "/copy".chars() {
+        app.on_key(key(KeyCode::Char(c)));
+    }
+    assert_eq!(
+        app.on_key(key(KeyCode::Enter)),
+        Action::Copy(Some("the agent's answer".to_string()))
+    );
+}
+
+#[test]
+fn an_agent_with_nothing_to_copy_reports_the_empty_case() {
+    // A freshly launched agent has only its prompt (a *user* message) — the
+    // empty path, not the lead's answer leaking through the view.
+    let mut app = App::new();
+    app.begin_stream();
+    app.push_chunk("the lead's answer");
+    app.finish_stream();
+    app.start_agent_group(false, &agent_specs(false));
+    app.open_agent_view("a1");
+    assert!(app.last_assistant_text().is_none());
+}
+
+#[test]
+fn an_agents_thinking_phase_settles_onto_its_own_transcript() {
+    // The main session's shape (docs/thinking-stream.md), on the agent's
+    // transcript: the buffer opens only when the boundary asks (the display
+    // gate), the deltas accumulate, and the settle records the cell AHEAD of
+    // the reply it preceded.
+    let mut app = App::new();
+    app.begin_stream();
+    app.start_agent_group(false, &agent_specs(false));
+    app.apply_agent_event("a1", &StreamEvent::ThinkingChunk("unseen".into()));
+    assert!(
+        app.agent_reasoning("a1").is_none(),
+        "no phase open — the delta is counted and dropped"
+    );
+    app.begin_agent_reasoning("a1");
+    app.apply_agent_event("a1", &StreamEvent::ThinkingChunk("weighing it".into()));
+    assert_eq!(app.agent_reasoning("a1"), Some("weighing it"));
+    let settled = app
+        .finish_agent_reasoning("a1", 3)
+        .expect("a phase with text settles");
+    assert_eq!(settled.text, "weighing it");
+    assert_eq!(settled.secs, 3);
+    app.apply_agent_event("a1", &StreamEvent::Chunk("the answer".into()));
+    app.apply_agent_event("a1", &StreamEvent::StreamDone);
+    let history = &app.agent("a1").expect("listed").history;
+    let kinds: Vec<&str> = history
+        .iter()
+        .map(|item| match item {
+            HistoryItem::Message(m) if m.role == Role::User => "user",
+            HistoryItem::Message(_) => "assistant",
+            HistoryItem::Reasoning(_) => "reasoning",
+            HistoryItem::Summary(_) => "summary",
+            _ => "other",
+        })
+        .collect();
+    assert_eq!(kinds, ["user", "reasoning", "assistant", "summary"]);
+}
+
+#[test]
+fn an_empty_agent_thinking_phase_records_nothing() {
+    // A provider that opens and closes a phase without a delta: no
+    // `Thought for 0s` noise (the main session's rule).
+    let mut app = App::new();
+    app.begin_stream();
+    app.start_agent_group(false, &agent_specs(false));
+    app.begin_agent_reasoning("a1");
+    assert!(app.finish_agent_reasoning("a1", 0).is_none());
+    let history = &app.agent("a1").expect("listed").history;
+    assert_eq!(history.len(), 1, "only the prompt: {history:?}");
+}

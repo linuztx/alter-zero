@@ -28,6 +28,7 @@ use crate::context::ContextMessage;
 use self::scenario::{Cue, Play, Stage};
 use super::{CancelToken, ReplySource, StreamEvent};
 
+mod agent;
 mod gated;
 pub(super) mod scenario;
 pub(super) mod script;
@@ -45,17 +46,19 @@ pub use self::turns::AGENT_DELAY;
 /// request a text-only summary, and anything else the default turn — half the
 /// reply, a thinking phase, a `Read`+`Bash` batch, the rest of the reply.
 ///
-/// No permission gate is in play here, so the gated demos are skipped and
-/// *every* prompt resolves to a script. Deterministic, so a turn's whole event
-/// order is unit-testable; [`DummyAi`] plays the same script back with delays.
+/// No gate and no registry are in play here, so the gated, asked and agent
+/// demos are skipped and *every* prompt resolves to a script. Deterministic,
+/// so a turn's whole event order is unit-testable; [`DummyAi`] plays the same
+/// script back with delays.
 #[must_use]
 pub fn turn_events(prompt: &str, image_count: usize) -> Vec<StreamEvent> {
     let cue = Cue::new(prompt, image_count);
-    match scenario::select(&cue, false, false).play {
+    match scenario::select(&cue, false, false, false).play {
         Play::Script(script) => script(&cue),
-        // Unreachable: selecting with no gate attached skips every gated and
-        // asked entry. Answering with the default turn beats panicking.
-        Play::Gated(_) | Play::Asked(_) => turns::tools_turn(&cue),
+        // Unreachable: selecting with nothing attached skips every gated,
+        // asked and agent entry. Answering with the default turn beats
+        // panicking.
+        Play::Gated(_) | Play::Asked(_) | Play::Agent(_) => turns::tools_turn(&cue),
     }
 }
 
@@ -100,6 +103,11 @@ pub struct DummyAi {
     /// dummy drive the whole `AskUserQuestion` round trip for a prompt
     /// mentioning "ask" + "question" (`docs/ask.md`).
     ask: Option<crate::ask::AskGate>,
+    /// The shared subagent registry, when the app attached one — the channel
+    /// the "subagent" demo streams a launched agent's own round on, so the
+    /// agent **session view** is drivable offline
+    /// (`docs/agent-view-streaming.md`).
+    agents: Option<crate::agents::AgentRegistry>,
 }
 
 impl Default for DummyAi {
@@ -108,6 +116,7 @@ impl Default for DummyAi {
             startup_delay: STARTUP_DELAY,
             permissions: None,
             ask: None,
+            agents: None,
         }
     }
 }
@@ -146,6 +155,16 @@ impl DummyAi {
         self.ask = Some(gate);
         self
     }
+
+    /// Attach the session's subagent registry, enabling the "subagent" demo:
+    /// the launched agent's own round streams on that channel, which is what
+    /// makes the agent session view drivable with no network
+    /// (`docs/agent-view-streaming.md`).
+    #[must_use]
+    pub fn with_agents(mut self, registry: crate::agents::AgentRegistry) -> Self {
+        self.agents = Some(registry);
+        self
+    }
 }
 
 impl ReplySource for DummyAi {
@@ -179,6 +198,7 @@ impl ReplySource for DummyAi {
         let image_count = images.len();
         let permissions = self.permissions.clone();
         let ask = self.ask.clone();
+        let agents = self.agents.clone();
         thread::spawn(move || {
             // Pause before streaming so the status indicator is visible first
             // (interruptibly — an Esc during the wait reaps the thread at once).
@@ -187,7 +207,9 @@ impl ReplySource for DummyAi {
                 return;
             }
             let cue = Cue::new(&prompt, image_count);
-            match scenario::select(&cue, permissions.is_some(), ask.is_some()).play {
+            match scenario::select(&cue, permissions.is_some(), ask.is_some(), agents.is_some())
+                .play
+            {
                 // A gated demo asks, blocking on the permission gate exactly
                 // as a real backend's tool thread does, and streams as it
                 // resolves. Selection only offers one when the gate was
@@ -206,6 +228,16 @@ impl ReplySource for DummyAi {
                 Play::Asked(play) => match &ask {
                     Some(gate) => play(&scenario::AskStage {
                         gate,
+                        tx: &tx,
+                        cancel: &cancel,
+                    }),
+                    None => replay(turns::tools_turn(&cue), &tx, &cancel),
+                },
+                // The subagent demo streams on the agent channel too, from
+                // the launched agent's own thread (docs/agent-view-streaming.md).
+                Play::Agent(play) => match &agents {
+                    Some(registry) => play(&scenario::AgentStage {
+                        agents: registry,
                         tx: &tx,
                         cancel: &cancel,
                     }),

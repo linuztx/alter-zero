@@ -144,6 +144,12 @@ pub(crate) struct Session<'t> {
     bg_clocks: HashMap<String, Instant>,
     /// When each running subagent started, so the roster's elapsed ticks.
     agent_clocks: HashMap<String, Instant>,
+    /// When each subagent's **open thinking phase** started — the per-agent
+    /// sibling of `StatusClocks::thinking_start`, so its session view's
+    /// status line shows `Thinking for Ns` and the settle knows the phase's
+    /// wall-clock. An entry exists only while that agent is thinking
+    /// (`docs/agent-view-streaming.md`).
+    agent_thinking_clocks: HashMap<String, Instant>,
     /// When each finished subagent's row should sweep off the roster
     /// (`docs/agent-tool.md`).
     agent_expiry: HashMap<String, Instant>,

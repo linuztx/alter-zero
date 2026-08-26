@@ -63,7 +63,9 @@ kept apart from the offline demo that used to crowd it: `event` (the whole
 subtree (`mod` — `DummyAi` + `turn_events` + the playback pacing, `scenario` —
 **the registry that decides which demo a prompt plays**, `script` — the canned
 replies, `turns` — the pure `Cue → Vec<StreamEvent>` turns, `gated` — the ones
-that block on the permission gate); adding a demo is one `SCENARIOS` entry plus
+that block on the permission gate, `agent` — the one that streams a launched
+**subagent's own round** on the agent channel, so the agent session view is
+drivable offline, `docs/agent-view-streaming.md`); adding a demo is one `SCENARIOS` entry plus
 its turn function plus its example prompt in the suite, and the suite proves
 every entry is still reachable (the two hand-written `if`/`else` chains it
 replaced could retire a demo silently by shadowing its cue). The dummy is what a
@@ -383,7 +385,17 @@ a walk back onto `main` the way to forget one); Enter on an agent opens its **in
 view** — a purge-rebuild showing the agent's own transcript under the banner,
 the composer's top rule labelled with its description **embedded in the
 rule** (`── {description} ─`, the rule resuming for one border cell after
-the text), typing **chats with
+the text), **streaming there exactly as the main view streams**: the strip
+previews the *same* `agent_render` frontier its commits leave behind — the
+whole forming table, the whole withheld code line, a running `bash` cell
+tailing its output through the shared `ui::live::live_call_lines` — over the
+agent's own live `● Thinking…` block, which settles onto its transcript as a
+`Thought for Ns · N tokens` cell like the main session's (the phase's elapsed
+boundary-injected from `Session::agent_thinking_clocks`, the same `/settings`
+**Hide thinking** gate); previewing one batch-rendered row instead, while the
+commits withheld the block whole, was the reported "streaming disappears in
+the subagent TUI" bug, and `/copy` there copied the *lead's* last answer
+rather than the agent's — both `docs/agent-view-streaming.md`. Typing **chats with
 the agent** (queued into its running loop at the next round boundary via the
 registry's pending-input seam, or a continuation run over its stored message
 list when idle) while the composer keeps its full functionality — the `/`

@@ -235,6 +235,20 @@ record anything else, which is what keeps stream order right.
   append, so the conversation-length keys and the Esc-Esc truncation work as
   they always did.
 
+## Subagents think out loud too
+
+Everything above describes the *main* session. A **subagent** now runs the
+same shape over its own state (`docs/agent-view-streaming.md`): `AgentRun`
+carries the phase buffer, its round's snap targets, and the boundary-injected
+elapsed; `Session::settle_agent_reasoning` is `settle_reasoning`'s sibling,
+recording `HistoryItem::Reasoning` on that agent's transcript and committing
+the collapsed cell when its session view is on screen. The strip's live block,
+the `Thinking for Ns` clause, the Ctrl+O expansion, the `reasoning_tokens`
+snap, and the `/settings` **Hide thinking** gate are all the same code paths.
+The one piece not shared is `distribute`'s caller: the snap is the pure
+`app::reasoning::snap_reasoning_tokens`, which `App` and `AgentRun` both call
+rather than each keeping a copy.
+
 ## The flag
 
 `tui::config::show_thinking()` reads `ALTER_ZERO_SHOW_THINKING` with the

@@ -162,17 +162,30 @@ impl Session<'_> {
     /// it [`Session::live_region_height`], the strip layout, and the cursor seat
     /// — reserve exactly the rows the strip draws. See `docs/markdown.md`,
     /// `docs/table-streaming.md`.
+    ///
+    /// **Whose reply** is the view's question, not the loop's: with an agent
+    /// session view open the screen shows that agent's conversation, so the
+    /// frontier comes from its buffer through `agent_render` — the very
+    /// render `Session::commit_agent_view_event` commits with, which is what
+    /// makes `committed ++ preview` the reply there too. Previewing the main
+    /// buffer instead (or, as before, not at all) left a subagent's forming
+    /// table on screen nowhere: withheld by the commit, one row of it in the
+    /// strip (`docs/agent-view-streaming.md`).
     fn stream_preview_lines(&mut self) -> Option<Vec<Line<'static>>> {
         let screen = self.term.screen();
-        let preview = match self.app.streaming_text() {
-            Some(text) if !text.is_empty() && self.app.current_tool().is_none() => {
-                Some(self.render.preview(
-                    text,
-                    screen.width,
-                    ui::stream_preview_max_rows(screen.height),
-                ))
-            }
-            _ => None,
+        let max_rows = ui::stream_preview_max_rows(screen.height);
+        let preview = match self.app.viewed_agent() {
+            Some(run) => run
+                .streaming
+                .clone()
+                .filter(|text| !text.is_empty() && run.tool_queue.is_empty())
+                .map(|text| self.agent_render.preview(&text, screen.width, max_rows)),
+            None => match self.app.streaming_text() {
+                Some(text) if !text.is_empty() && self.app.current_tool().is_none() => {
+                    Some(self.render.preview(text, screen.width, max_rows))
+                }
+                _ => None,
+            },
         };
         self.app.set_stream_preview_rows(
             preview
@@ -494,6 +507,12 @@ impl Session<'_> {
         // (`ui::committed_history`, `docs/mcp.md`).
         let history = ui::committed_history(&run.history, &run.tool_queue).to_vec();
         let streaming = run.streaming.clone().filter(|text| !text.is_empty());
+        // The preview comes FIRST, as in `repaint_conversation`: it injects
+        // the strip's row count (`set_stream_preview_rows`) that
+        // `live_region_height` below must reserve — a rebuild that skipped it
+        // squeezed a multi-row frontier back to one row for that frame
+        // (`docs/agent-view-streaming.md`).
+        let preview = self.stream_preview_lines();
         let height = self.live_region_height();
         let mut tail = ui::conversation_lines(&history, screen.width);
         if let Some(text) = &streaming {
@@ -512,9 +531,20 @@ impl Session<'_> {
         self.term.reflow(
             tail,
             height,
-            |area, buf| ui::render_live_with_preview(area, buf, app, None),
+            |area, buf| ui::render_live_with_preview(area, buf, app, preview.as_deref()),
             app,
-        )
+        )?;
+        // Catch scrollback up on the agent's in-flight partial the purge
+        // dropped — `repaint_conversation`'s catch-up over `agent_render`, so
+        // a rebuild mid-reply leaves the same rows behind here as it does in
+        // the main view (suppressed under a flow, for the same reason).
+        if self.flowed_view.is_none()
+            && let Some(text) = streaming.as_deref()
+        {
+            let lines = self.agent_render.commit(text, screen.width);
+            self.term.insert_before(lines);
+        }
+        Ok(())
     }
 }
 

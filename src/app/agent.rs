@@ -459,6 +459,55 @@ impl App {
         }
     }
 
+    /// Open a thinking phase on one agent — the boundary's `ThinkingStart`
+    /// handler, called **only when the display is on** (the whole gate; see
+    /// [`AgentRun::begin_reasoning`]). See `docs/agent-view-streaming.md`.
+    ///
+    /// [`AgentRun::begin_reasoning`]: crate::agents::AgentRun::begin_reasoning
+    pub fn begin_agent_reasoning(&mut self, id: &str) {
+        if let Some(agent) = self.agents.iter_mut().find(|agent| agent.id == id) {
+            agent.begin_reasoning();
+            self.agents_generation += 1;
+        }
+    }
+
+    /// One agent's open chain-of-thought, or `None` when it isn't thinking —
+    /// what its session view's strip previews.
+    #[must_use]
+    pub fn agent_reasoning(&self, id: &str) -> Option<&str> {
+        self.agent(id)?.reasoning()
+    }
+
+    /// Close one agent's thinking phase, recording the cell on **its**
+    /// transcript and handing it back for the session view to commit
+    /// ([`AgentRun::finish_reasoning`] — `None` when nothing was thought).
+    ///
+    /// [`AgentRun::finish_reasoning`]: crate::agents::AgentRun::finish_reasoning
+    pub fn finish_agent_reasoning(&mut self, id: &str, secs: u64) -> Option<Reasoning> {
+        let agent = self.agents.iter_mut().find(|agent| agent.id == id)?;
+        let settled = agent.finish_reasoning(secs)?;
+        self.agents_generation += 1;
+        Some(settled)
+    }
+
+    /// Inject one agent's **open thinking phase** elapsed before a draw (the
+    /// [`set_agent_runtime`](App::set_agent_runtime) sibling), so its session
+    /// view's status line shows `Thinking for Ns`.
+    pub fn set_agent_thinking(&mut self, id: &str, elapsed: Duration) {
+        if let Some(agent) = self.agents.iter_mut().find(|agent| agent.id == id) {
+            agent.set_thinking(Some(elapsed));
+        }
+    }
+
+    /// Clear every agent's injected thinking elapsed — run before the live
+    /// clocks are re-injected each frame, so a phase that ended (its clock is
+    /// gone) drops the `Thinking for Ns` clause instead of freezing it.
+    pub fn clear_agent_thinking(&mut self) {
+        for agent in &mut self.agents {
+            agent.set_thinking(None);
+        }
+    }
+
     /// Sweep one roster entry (its linger expired). Deferred by the boundary
     /// while the user is inside that agent's session view. Also drops the
     /// selection/view if they pointed at it.

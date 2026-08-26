@@ -26,7 +26,7 @@
 //! `AGENT_LINGER` is up — deferred while the user is inside that agent's view, so
 //! leaving restarts the full linger.
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use ratatui::text::Line;
 
@@ -62,17 +62,44 @@ impl Session<'_> {
         if let Some(elapsed) = self.agent_clocks.get(id).map(Instant::elapsed) {
             self.app.set_agent_runtime(id, elapsed);
         }
+        // A thinking phase opens: start its clock, and — with the display on
+        // (`/settings` **Hide thinking**, read per phase like the main
+        // session's) — open the agent's reasoning buffer below, which is the
+        // whole gate. See `docs/agent-view-streaming.md`.
+        let opening = matches!(event, StreamEvent::ThinkingStart) && self.show_thinking();
+        if matches!(event, StreamEvent::ThinkingStart) {
+            self.agent_thinking_clocks
+                .insert(id.to_string(), Instant::now());
+            self.app.set_agent_thinking(id, Duration::ZERO);
+        }
+        // Settle the phase this event ends — the one settle helper, at all
+        // three of its points: `ThinkingEnd`, a backend error, and a run that
+        // ended still thinking. **Before** the segment flush below, because
+        // the fold records the flushed text after the cell
+        // (`AgentRun::flush_segment` runs inside `apply`, which comes last),
+        // and screen order must match history order or a rebuild reorders
+        // them (invariant 4). With no text buffered — the only state a real
+        // backend reaches, since opening a phase flushes — both are no-ops
+        // and the order does not arise.
+        if matches!(
+            event,
+            StreamEvent::ThinkingEnd | StreamEvent::StreamDone | StreamEvent::Error(_)
+        ) {
+            self.settle_agent_reasoning(id, viewing, width);
+        }
         // The view's segment boundaries: the agent's streamed text finalises
-        // before a tool cell / the end of the run, exactly like the main loop's
-        // flush points. Committed BEFORE the fold (the fold consumes the buffer).
+        // before a tool cell / the live thinking block / the end of the run,
+        // exactly like the main loop's flush points. Committed BEFORE the fold
+        // (the fold consumes the buffer).
         if viewing
-            && matches!(
-                event,
-                StreamEvent::ToolBatch(_)
-                    | StreamEvent::ToolStart { .. }
-                    | StreamEvent::StreamDone
-                    | StreamEvent::Error(_)
-            )
+            && (opening
+                || matches!(
+                    event,
+                    StreamEvent::ToolBatch(_)
+                        | StreamEvent::ToolStart { .. }
+                        | StreamEvent::StreamDone
+                        | StreamEvent::Error(_)
+                ))
             && let Some(text) = self
                 .app
                 .viewed_agent()
@@ -83,6 +110,13 @@ impl Session<'_> {
                 .insert_before(self.agent_render.finish(&text, width));
             self.term.insert_before(vec![Line::default()]);
             self.agent_render.reset();
+        }
+        // A phase opening records the flushed segment on the agent's own
+        // transcript and opens the buffer — the `ThinkingStart` dance, so the
+        // `● Thinking…` header sits under the same blank spacer the settled
+        // cell will take (`docs/thinking-stream.md`).
+        if opening {
+            self.app.begin_agent_reasoning(id);
         }
         let settled = self.app.apply_agent_event(id, &event);
         if viewing {
@@ -106,6 +140,45 @@ impl Session<'_> {
             self.agent_expiry
                 .insert(id.to_string(), Instant::now() + linger);
         }
+    }
+
+    /// Is the thinking display on? The `/settings` **Hide thinking** knob,
+    /// read per phase — so flipping it mid-session takes effect on the very
+    /// next one, exactly as the main session reads it (`docs/settings.md`).
+    fn show_thinking(&self) -> bool {
+        self.app.settings().show_thinking()
+    }
+
+    /// Close one subagent's thinking phase: record its `Thought for … · …
+    /// tokens` cell on **that agent's** transcript and, when its session view
+    /// is on screen, commit the collapsed line.
+    ///
+    /// The sibling of [`Session::settle_reasoning`], and the one settle helper
+    /// for all three points a phase can end — its own `ThinkingEnd`, the
+    /// agent's backend error, and a run that ended still thinking — plus the
+    /// user's `x`, which settles through the pure `AgentRun::interrupt`.
+    /// A no-op when no phase is open (the display is off, or it streamed no
+    /// text), so the call sites need no condition of their own.
+    ///
+    /// **Reseat before you commit** (invariant 3): the strip loses the live
+    /// block's rows as the cell lands, so the box must not rise off the
+    /// bottom. See `docs/agent-view-streaming.md`.
+    fn settle_agent_reasoning(&mut self, id: &str, viewing: bool, width: u16) {
+        let secs = self
+            .agent_thinking_clocks
+            .remove(id)
+            .map_or(0, |start| start.elapsed().as_secs());
+        let Some(reasoning) = self.app.finish_agent_reasoning(id, secs) else {
+            return;
+        };
+        if !viewing {
+            return;
+        }
+        let height = self.live_region_height();
+        self.term.set_view_height(height);
+        self.term
+            .insert_before(ui::reasoning_lines(&reasoning, width));
+        self.term.insert_before(vec![Line::default()]);
     }
 
     /// The screen half of [`Session::on_agent_event`], for the agent whose session
@@ -223,6 +296,10 @@ impl Session<'_> {
             Some(AgentStop::Stopped(notice)) => {
                 let _ = self.agent_registry.kill(id);
                 self.agent_clocks.remove(id);
+                // The stop settled any open thought through
+                // `AgentRun::interrupt` (from the injected elapsed) — drop its
+                // clock so the roster tick stops re-arming the phase.
+                self.agent_thinking_clocks.remove(id);
                 let linger = self.app.agent(id).map_or(AGENT_LINGER, |run| run.linger());
                 self.agent_expiry
                     .insert(id.to_string(), Instant::now() + linger);
@@ -299,6 +376,14 @@ impl Session<'_> {
         for (id, started) in &self.agent_clocks {
             self.app.set_agent_runtime(id, started.elapsed());
         }
+        // The open thinking phases' elapsed, the same injection: cleared
+        // first, so an agent whose phase ended (its clock is gone) drops the
+        // `Thinking for Ns` clause instead of freezing it
+        // (`docs/agent-view-streaming.md`).
+        self.app.clear_agent_thinking();
+        for (id, started) in &self.agent_thinking_clocks {
+            self.app.set_agent_thinking(id, started.elapsed());
+        }
         let now = Instant::now();
         let settled: Vec<(String, std::time::Duration)> = self
             .app
@@ -318,6 +403,7 @@ impl Session<'_> {
             agent_expiry,
             app,
             agent_registry,
+            agent_thinking_clocks,
             ..
         } = self;
         agent_expiry.retain(|id, deadline| {
@@ -331,6 +417,7 @@ impl Session<'_> {
             if now >= *deadline {
                 app.remove_agent(id);
                 agent_registry.remove(id);
+                agent_thinking_clocks.remove(id);
                 return false;
             }
             true
