@@ -1145,7 +1145,7 @@ impl Session<'_> {
         // actually sent (docs/agent-tool.md).
         let prompt = self.models.backend().system_prompt();
         self.app.set_system_prompt(prompt);
-        self.sync_agent_system_prompt();
+        self.sync_agent_view_context();
         // The footer gauge + auto-compact window (docs/compact.md).
         let window = self.models.context_window();
         self.app.set_context_window(window);
@@ -1155,22 +1155,26 @@ impl Session<'_> {
         self.sync_system_reminder();
     }
 
-    /// Push the **viewed** subagent type's system prompt into `App`, so an
-    /// agent session view's Ctrl+D shows what *that* agent was sent — its
-    /// definition's own body when it has one (`docs/subagents.md`). With no
-    /// view open the default type answers, which is what a launch with no
-    /// `subagent_type` gets.
+    /// Push the **viewed** subagent type's system prompt *and its briefing*
+    /// into `App`, so an agent session view's Ctrl+D shows what *that* agent
+    /// was sent — its definition's own body when it has one, and the skills
+    /// `<system-reminder>` its fresh context opened on (`docs/subagents.md`).
+    /// With no view open the default type answers, which is what a launch
+    /// with no `subagent_type` gets.
     ///
-    /// Run beside every `sync_backend_info` and on entering a view: the
-    /// prompt is per type, so a single startup read would show the wrong one
-    /// for every other type.
-    pub(crate) fn sync_agent_system_prompt(&mut self) {
+    /// Run beside every `sync_backend_info` and on entering a view: both are
+    /// per type — a type whose `tools:` withholds `Skill` is briefed with
+    /// nothing — so a single startup read would show the wrong pair for every
+    /// other type.
+    pub(crate) fn sync_agent_view_context(&mut self) {
         let agent_type = self.app.viewed_agent().map_or_else(
             || alter_zero::agents::GENERAL_PURPOSE.to_string(),
             |agent| agent.agent_type.clone(),
         );
         let prompt = self.models.backend().agent_system_prompt(&agent_type);
+        let briefing = self.models.backend().agent_system_reminder(&agent_type);
         self.app.set_agent_system_prompt(prompt);
+        self.app.set_agent_system_reminder(briefing);
     }
 
     /// Render the session's `<system-reminder>` into `App`, so the derived

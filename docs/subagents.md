@@ -148,7 +148,29 @@ scripts its agent demo rather than being offered a spec, so it sends no agent
 section and every offline context is byte-identical to before.
 
 A **subagent** gets the skills half only (`subagent_skill_reminder`): it has
-no `agent` tool, so naming types to it would be a roster it cannot use.
+no `agent` tool, so naming types to it would be a roster it cannot use. That
+briefing **leads its context**, ahead of the launch prompt, exactly as the
+lead's reminder leads its own: it is standing information about the session,
+not an answer to the task, and a roster read after the instruction it should
+have informed is a roster read too late. So a subagent opens on
+
+```
+system:  {its prompt}
+user:    <system-reminder> … </system-reminder>
+
+         {the task from the main agent}
+```
+
+and the agent session view's **Ctrl+D shows exactly that** — the briefing is
+`SubagentConfig::briefing_for`, one rule read by the launch that sends it and
+by `ReplySource::agent_system_reminder`, which the view leads its derived
+context with (`App::agent_system_reminder`). A view that showed the task alone
+claimed the agent was sent less than it was; two copies of the rule is how one
+comes to claim a briefing the agent never got — a type whose `tools:`
+withholds `Skill` is briefed with nothing.
+
+It is assembled where a launch is built, so a **chat continuation** — which
+resumes a message list that already carries it — never pushes a second copy.
 
 ## Rescanning
 

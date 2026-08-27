@@ -83,16 +83,17 @@ pub fn context_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     // prompt, plus the subagent note (`App::agent_system_prompt`, from
     // `ReplySource::agent_system_prompt`) — with no AGENTS.md fragment
     // (subagents get none). See `docs/agent-tool.md`.
-    // A viewed subagent's own window has neither leading fragment: its
-    // instructions ride the system prompt shown above, and its skills — which
-    // it does carry (`docs/skills.md`) — are the session's, listed on the
-    // main view. Nor does it list agent types: subagents cannot launch
-    // agents (`docs/subagents.md`).
+    // A viewed subagent's window has no AGENTS.md fragment (subagents get
+    // none — its instructions ride the system prompt shown above), but it
+    // does lead with a reminder of its own: the skills roster its fresh
+    // context was briefed with, ahead of the task, which is the order the
+    // agent read them in (`docs/subagents.md`). No agent types in it —
+    // subagents cannot launch agents.
     let (history, instructions, reminder, system_prompt) = match app.viewed_agent() {
         Some(run) => (
             run.history.as_slice(),
             None,
-            None,
+            app.agent_system_reminder.as_deref(),
             app.agent_system_prompt.as_ref(),
         ),
         None => (
@@ -177,6 +178,7 @@ struct ContextSig {
     agent_prompt_len: Option<usize>,
     instructions_len: Option<usize>,
     reminder_len: Option<usize>,
+    agent_reminder_len: Option<usize>,
 }
 
 impl ContextSig {
@@ -193,6 +195,7 @@ impl ContextSig {
             agent_prompt_len: app.agent_system_prompt.as_ref().map(String::len),
             instructions_len: app.user_instructions.as_ref().map(String::len),
             reminder_len: app.system_reminder.as_ref().map(String::len),
+            agent_reminder_len: app.agent_system_reminder.as_ref().map(String::len),
         }
     }
 }

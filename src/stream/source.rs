@@ -66,6 +66,19 @@ pub trait ReplySource {
         self.system_prompt()
     }
 
+    /// The `<system-reminder>` a **subagent** of `agent_type` opens on, ahead
+    /// of its task prompt: the session's skills roster, which a fresh context
+    /// would not otherwise carry (`docs/subagents.md`). Surfaced beside
+    /// [`agent_system_prompt`](ReplySource::agent_system_prompt) and for the
+    /// same reason — the agent session view's Ctrl+D has to show what that
+    /// agent actually read, and its briefing is the half no history item
+    /// holds. `None` when the session has no skills, or the type's `tools:`
+    /// withholds `Skill` (the listing and the tool travel together).
+    fn agent_system_reminder(&self, agent_type: &str) -> Option<String> {
+        let _ = agent_type;
+        None
+    }
+
     /// The **auto mode classifier's task context**, rendered — the bounded
     /// task context (the turn's user request + the actions taken so far) the
     /// classifier reads before every command and MCP call, surfaced so the

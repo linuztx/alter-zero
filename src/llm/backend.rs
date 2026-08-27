@@ -923,6 +923,14 @@ impl ReplySource for LlmBackend {
         self.subagent_config().system_prompt_for(agent_type)
     }
 
+    /// The `<system-reminder>` a subagent of `agent_type` opens on, ahead of
+    /// its task — the same `briefing_for` the launch pushes, so the agent
+    /// view's Ctrl+D leads with what that agent actually read
+    /// (`docs/subagents.md`).
+    fn agent_system_reminder(&self, agent_type: &str) -> Option<String> {
+        self.subagent_config().briefing_for(agent_type)
+    }
+
     /// Send a chat message into a subagent's session (`docs/agent-tool.md`):
     /// queued into its running loop, or a continuation run over its stored
     /// conversation when idle. `false` when agents aren't enabled here or the
@@ -1035,6 +1043,31 @@ impl SubagentConfig {
     /// per-turn rescan.
     fn definition(&self, agent_type: &str) -> Option<crate::subagents::AgentDefinition> {
         self.definitions.find(agent_type)
+    }
+
+    /// The **briefing** a subagent of `agent_type` opens on: the skills
+    /// `<system-reminder>` (`docs/skills.md`), or `None` when this session has
+    /// no skills or the type's `tools:` withholds `Skill`.
+    ///
+    /// A subagent starts on a fresh context, so the lead's reminder never
+    /// reaches it: with the spec but no roster it would have to guess a name
+    /// and read the real ones back out of the error. The tool and the listing
+    /// travel together on every surface — the rule `skills_offered` enforces
+    /// for the lead — which is why a definition that excludes `Skill` gets
+    /// neither.
+    ///
+    /// One place, because two answer the same question: the launch that
+    /// **sends** it (`run_agent_calls`) and the agent view's Ctrl+D that
+    /// **shows** it (`ReplySource::agent_system_reminder`). A second copy of
+    /// the rule is how a view comes to claim a briefing the agent never got.
+    fn briefing_for(&self, agent_type: &str) -> Option<String> {
+        let allowed = self
+            .definition(agent_type)
+            .map_or(crate::subagents::AgentTools::All, |def| def.tools);
+        allowed
+            .allows(crate::skills::SKILL_TOOL_NAME)
+            .then(|| subagent_skill_reminder(self.skills.as_ref()))
+            .flatten()
     }
 
     /// The system prompt a subagent of `agent_type` is sent
@@ -1176,10 +1209,21 @@ fn run_agent_calls(
             background: args.background(),
         };
         // A subagent conversation starts fresh: the (augmented) system
-        // prompt, then the task as the first user message.
+        // prompt, the briefing, then the task as the first user message.
+        //
+        // The briefing leads, exactly as the lead's `<system-reminder>` leads
+        // its own context (`docs/context.md`): it is standing information
+        // about the session, not an answer to the task, and a roster read
+        // *after* the instruction it should have informed is a roster read too
+        // late. Assembled here — the one place a launch is built — so a chat
+        // continuation, which resumes a message list that already carries it,
+        // never pushes a second copy (`docs/subagents.md`).
         let mut messages = Vec::new();
         if let Some(system) = config.system_prompt_for(args.agent_type()) {
             messages.push(ChatMessage::system(&system));
+        }
+        if let Some(briefing) = config.briefing_for(args.agent_type()) {
+            messages.push(ChatMessage::user(&briefing));
         }
         messages.push(ChatMessage::user(&args.prompt));
         spawn_subagent_run(
@@ -1313,16 +1357,6 @@ fn spawn_subagent_run(
         extras.extend(manager.tool_specs());
     }
     specs.extend(tools::allowed_specs(extras, &allowed));
-    // …and the listing that makes the skill tool usable. A subagent starts on
-    // a fresh context, so the lead's `<system-reminder>` never reaches it:
-    // with the spec but no roster it would have to guess a name and read the
-    // real ones back out of the error. The tool and the listing travel
-    // together on every surface — the same rule `skills_offered` enforces for
-    // the lead, which is why a definition that excludes `Skill` gets neither.
-    let skill_reminder = allowed
-        .allows(crate::skills::SKILL_TOOL_NAME)
-        .then(|| subagent_skill_reminder(skills.as_ref()))
-        .flatten();
     // A definition may pin its own model (`model: kimi-k3`): same provider,
     // base and key, and the session's thinking mode / vision verdict dropped
     // — both describe the model being replaced, not this one.
@@ -1366,11 +1400,6 @@ fn spawn_subagent_run(
             .unwrap_or_else(|| Arc::new(std::sync::Mutex::new(ClassifierContext::new())));
         if let Ok(mut log) = turn_context.lock() {
             log.push_request(&super::classifier::latest_user_text(&messages));
-        }
-        // Right after the launch prompt and in front of the hook notes, so it
-        // reads as part of the briefing rather than an answer to it.
-        if let Some(reminder) = skill_reminder {
-            messages.push(ChatMessage::user(&reminder));
         }
         // `SubagentStart` (docs/hooks.md) runs here, on the agent's **own**
         // thread rather than at `registry.register`, for two reasons: the
@@ -2002,6 +2031,39 @@ mod tests {
         assert!(
             rx.try_recv().is_err(),
             "no group was announced: nothing was launched for a type that does not exist"
+        );
+    }
+
+    #[test]
+    fn a_types_briefing_follows_its_tools_allowlist() {
+        // The skills roster and the `skill` tool travel together
+        // (`docs/subagents.md`): a type that may load a skill is briefed with
+        // the names it can load; a type whose `tools:` withholds `Skill` is
+        // briefed with nothing, since a roster it cannot use is a round spent
+        // on a dead end. One rule, read by the launch that sends it and the
+        // view that shows it.
+        let skills = crate::skills::SkillRegistry::new(vec![crate::skills::SkillMetadata {
+            name: "dataviz".to_string(),
+            description: "Charts.".to_string(),
+            dir: std::path::PathBuf::from("/skills/dataviz"),
+            path: std::path::PathBuf::from("/skills/dataviz/SKILL.md"),
+        }]);
+        let defs = crate::subagents::SubagentRegistry::new(vec![
+            crate::subagents::parse_agent(
+                "---\nname: reader\ndescription: d\ntools: Bash, Read\n---\n",
+                "reader",
+            )
+            .expect("parses"),
+        ]);
+        let backend = LlmBackend::configure(ModelConfig::fallback(), None, true)
+            .with_skills(skills)
+            .with_subagents(defs);
+        let general = ReplySource::agent_system_reminder(&backend, crate::agents::GENERAL_PURPOSE)
+            .expect("an all-tools type is briefed");
+        assert!(general.contains("dataviz"), "{general}");
+        assert!(
+            ReplySource::agent_system_reminder(&backend, "reader").is_none(),
+            "a type without the Skill tool is briefed with no roster"
         );
     }
 

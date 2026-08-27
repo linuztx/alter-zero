@@ -324,6 +324,15 @@ pub struct App {
     /// `ReplySource::agent_system_prompt`) so the *agent session view's*
     /// Ctrl+D shows what that agent actually gets. See `docs/agent-tool.md`.
     pub agent_system_prompt: Option<String>,
+    /// The `<system-reminder>` a launched **subagent** opens on, ahead of its
+    /// task — the session's skills roster ([`App::set_agent_system_reminder`],
+    /// from `ReplySource::agent_system_reminder`). The agent session view's
+    /// Ctrl+D leads its derived context with it, exactly as the main view
+    /// leads with [`system_reminder`](Self::system_reminder), because that is
+    /// the order the agent read them in. `None` when the session has no
+    /// skills or the type's `tools:` withholds `Skill`. See
+    /// `docs/subagents.md`.
+    pub agent_system_reminder: Option<String>,
     /// The project's AGENTS.md instructions, rendered as codex's
     /// user-instructions fragment and injected at the boundary
     /// ([`App::set_user_instructions`], from `project_doc::load_user_instructions`
@@ -864,6 +873,14 @@ impl App {
     /// `docs/agent-tool.md`.
     pub fn set_agent_system_prompt(&mut self, prompt: Option<String>) {
         self.agent_system_prompt = prompt;
+    }
+
+    /// Inject the briefing a launched subagent opens on (from
+    /// `ReplySource::agent_system_reminder`, beside every
+    /// [`set_agent_system_prompt`](Self::set_agent_system_prompt)) so the
+    /// agent session view's Ctrl+D leads with it. See `docs/subagents.md`.
+    pub fn set_agent_system_reminder(&mut self, reminder: Option<String>) {
+        self.agent_system_reminder = reminder;
     }
 
     /// Inject the project's rendered AGENTS.md instructions (from

@@ -221,6 +221,55 @@ fn an_agent_session_view_shows_the_subagents_own_system_prompt() {
 }
 
 #[test]
+fn an_agents_context_view_leads_with_the_briefing_it_opened_on() {
+    // A launched subagent opens on the skills `<system-reminder>` and reads
+    // its task behind it (`docs/subagents.md`), so its Ctrl+D has to lead
+    // with the reminder: a view that showed the task alone claimed the agent
+    // was sent less than it was, and one that showed the reminder *after* the
+    // task would misreport the order the agent read them in.
+    let mut app = context_fixture();
+    app.set_agent_system_prompt(Some("be nice\n\nsubagent note".to_string()));
+    app.set_agent_system_reminder(Some(
+        "<system-reminder>\nskills: dataviz\n</system-reminder>".to_string(),
+    ));
+    app.begin_stream();
+    app.start_agent_group(false, &[spec("a1", "Fetch Warsaw weather", false)]);
+    app.open_agent_view("a1");
+    let texts: Vec<String> = context_lines(&app, 80)
+        .iter()
+        .map(|l| plain(l).trim_end().to_string())
+        .collect();
+    let user = texts
+        .iter()
+        .position(|t| t == "user:")
+        .unwrap_or_else(|| panic!("a user entry: {texts:?}"));
+    // The reminder opens that entry, a blank row divides it from the task.
+    assert_eq!(texts[user + 1], "  <system-reminder>", "{texts:?}");
+    assert_eq!(texts[user + 2], "  skills: dataviz", "{texts:?}");
+    assert_eq!(texts[user + 3], "  </system-reminder>", "{texts:?}");
+    assert_eq!(texts[user + 4], "", "{texts:?}");
+    assert_eq!(texts[user + 5], "  task?", "{texts:?}");
+}
+
+#[test]
+fn the_main_view_leaves_an_agents_briefing_out_of_its_own_context() {
+    // The subagent briefing is stored on `App` like the subagent prompt is;
+    // neither may leak into the main window, which carries its own reminder.
+    let mut app = context_fixture();
+    app.set_agent_system_reminder(Some(
+        "<system-reminder>\nagent-only\n</system-reminder>".into(),
+    ));
+    let texts: Vec<String> = context_lines(&app, 80)
+        .iter()
+        .map(|l| plain(l).trim_end().to_string())
+        .collect();
+    assert!(
+        !texts.iter().any(|t| t.contains("agent-only")),
+        "the agent's briefing stays out of the main window: {texts:?}"
+    );
+}
+
+#[test]
 fn the_main_view_keeps_the_main_prompt_beside_a_stored_agent_prompt() {
     // Storing the subagent prompt must not leak it into the main Ctrl+D —
     // the main request never carries the note.

@@ -372,7 +372,13 @@ where a listing of its own would have put 2% in front of every turn), gated on
 the `agent` tool actually being on the wire so the offline dummy's context is
 unchanged;
 `ALTER_ZERO_AGENTS_DIR` relocates the roots; the allowlist guards the
-**executor** too, since a model can name a tool it was never offered), reporting on a dedicated `agents::AgentEvent` channel (a seventh
+**executor** too, since a model can name a tool it was never offered, and it
+also decides the **briefing** — a launched agent opens on the skills
+`<system-reminder>` *ahead of* its task (standing session information, not an
+answer to it), assembled once where the launch is built so a chat continuation
+never re-pushes it, and surfaced by `ReplySource::agent_system_reminder` so
+the agent session view's Ctrl+D leads with the same block the agent read),
+reporting on a dedicated `agents::AgentEvent` channel (a seventh
 `select!` source — agents outlive turns); a foreground group shows the live
 breathing-grey `● Running {n} agents…` tree (per-agent description · tool uses · tokens
 · a **sticky** `{Name}: {detail}` activity — one grammar for every call
