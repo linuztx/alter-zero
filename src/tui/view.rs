@@ -173,7 +173,7 @@ impl Session<'_> {
     /// strip (`docs/agent-view-streaming.md`).
     fn stream_preview_lines(&mut self) -> Option<Vec<Line<'static>>> {
         let screen = self.term.screen();
-        let max_rows = ui::stream_preview_max_rows(screen.height);
+        let max_rows = ui::stream_preview_max_rows(&self.app, screen.width, screen.height);
         let preview = match self.app.viewed_agent() {
             Some(run) => run
                 .streaming
@@ -611,7 +611,7 @@ fn live_region_height(app: &App, screen: ratatui::layout::Rect) -> u16 {
         screen.width,
         screen.height,
         ui::strip_has_status(app),
-        ui::preview_rows(app, screen.width),
+        ui::fitted_preview_rows(app, screen.width, screen.height),
         ui::task_rows(app, screen.width),
         ui::queued_rows(app, screen.width),
         ui::toast_rows(app),

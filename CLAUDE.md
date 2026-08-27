@@ -1114,7 +1114,19 @@ command isn't clipped and the running state shows; a **parallel
 batch** previews the *whole* `tool_queue` — the running call over each dim
 `⎿ Waiting…` sibling, blank-separated, `docs/parallel-tools.md`; the preview slot
 is sized by `ui::preview_rows`, a running `!` shell/streaming reply staying one
-row; `docs/tools.md`), a blank gap row,
+row; `docs/tools.md` — and **budgeted**, since it is the region's only elastic
+row: `ui::preview_budget` is what the terminal has left once every other row
+the region owes is paid (the status slot, the queued messages, the toast, the
+box, the band, the footer, the agent roster), `ui::fitted_preview_rows` is the
+content's ask clamped to it — the one count `live_height`/`live_layout`/
+`input_box`/`cursor_position`/the paint all size by, with `preview_lines`
+trimming the built rows to match (from the front for a reply's frontier, off
+the end for live cells) — and `live_layout` holds the box's `LIVE_MIN_HEIGHT`
+back **first** as the backstop. A **fixed** allowance was the reported bug:
+pressing `/` under a forming table on a small terminal asked for rows the
+terminal did not have and the constraint solver spent them on the strip, so
+the textarea vanished until the turn ended, `docs/table-streaming.md` *The
+preview slot is budgeted*), a blank gap row,
 a codex-style **status line** (`(●•·   ) {verb}… ({elapsed}s · {↓|↑} {n} tokens ·
 Thinking for {m}s · esc to interrupt)` — opened by a comet spinner (a
 Larson-scanner sweep: a white head dragging a fading grey tail back and forth
@@ -1824,7 +1836,9 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   1 for a streaming reply or `!` shell run, N for a running backend tool's whole
   cell (or the whole parallel `tool_queue`: every batched call's cell, running +
   `⎿ Waiting…`, blank-separated — `docs/parallel-tools.md`); the pre-stream pause
-  reserves **no** empty preview row, like codex) —
+  reserves **no** empty preview row, like codex, and `preview_budget`/
+  `fitted_preview_rows` clamp the count to the rows the region actually has —
+  `docs/table-streaming.md`) —
   (`render_live` draws the status line under the preview's gap, or at the strip
   top during the pause) — with the
   **queued messages stacked below the status, *above* the box** (`queued_rows`,

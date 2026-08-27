@@ -27,8 +27,10 @@ fn live_layout_splits_the_area_into_the_strip_box_band_and_footer() {
                 for footer_rows in [0, 1] {
                     // The smallest height still fits the tallest strip (a
                     // 2-row preview cell → 2 + gap + status + gap = 5) +
-                    // band (3) + footer (1) = 9.
-                    for h in [LIVE_MIN_HEIGHT + 6, 12, 24] {
+                    // the box (LIVE_MIN_HEIGHT) + band (3) + footer (1) = 12.
+                    // Below that the split holds the box's floor back and the
+                    // strip gives way instead — `live_layout_never_evicts_the_box`.
+                    for h in [LIVE_MIN_HEIGHT + 9, 13, 24] {
                         let [strip, input, band, footer, _] = live_layout(
                             Rect::new(0, 0, 40, h),
                             streaming,
@@ -48,6 +50,7 @@ fn live_layout_splits_the_area_into_the_strip_box_band_and_footer() {
                         assert_eq!(strip.height, strip_rows(streaming, preview_rows, 0));
                         assert_eq!(band.height, band_rows);
                         assert_eq!(footer.height, footer_rows);
+                        assert!(input.height >= LIVE_MIN_HEIGHT, "the box keeps its floor");
                     }
                 }
             }

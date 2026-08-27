@@ -46,6 +46,7 @@ cleanup() {
 	tmux kill-session -t "${S}_overlaysilence" 2>/dev/null
 	tmux kill-session -t "${S}_agentstream" 2>/dev/null
 	tmux kill-session -t "${S}_agentperm" 2>/dev/null
+	tmux kill-session -t "${S}_bandpreview" 2>/dev/null
 	tmux kill-session -t "${S}_overlaysilence_inline" 2>/dev/null
 	tmux kill-session -t "${S}_overlaysilence_Cd" 2>/dev/null
 	tmux kill-session -t "${S}_overlaysilence_Co" 2>/dev/null
@@ -9080,6 +9081,82 @@ if ! printf '%s' "$agentperm_back" | grep -qF "subagent permission demo"; then
 fi
 tmux kill-session -t "$S98" 2>/dev/null
 echo "==== Phase 98: a subagent's prompt asks about the screen it opens on ===="
+
+
+# --- Phase 99: a BAND OPENED UNDER A TALL STREAMING PREVIEW keeps the composer
+# (docs/table-streaming.md "The preview slot is budgeted"). The strip's preview
+# was capped against a FIXED chrome allowance — the box, the status line, a
+# footer — so a forming table always spent the region's whole slack. Press `/`
+# (or `?`, or `@`) mid-table on a small terminal and the band asked for rows
+# the terminal did not have: the constraint solver spent them on the strip and
+# the textarea disappeared until the turn ended — the reported bug. The budget
+# now pays every other row the region owes first and the preview tail-follows
+# into what is left, so the box, the band and the status line are all on screen
+# together. Driven at the reported size with each of the three bands. ---
+S99="${S}_bandpreview"
+for band_key in "/" "?" "@s"; do
+	tmux kill-session -t "$S99" 2>/dev/null
+	tmux new-session -d -s "$S99" -x 51 -y 24 "$APP"
+	sleep 0.7
+	tmux send-keys -t "$S99" -l "response again but now with table"
+	sleep 0.2
+	tmux send-keys -t "$S99" Enter
+	# Wait until the block is genuinely taller than the region's slack: the
+	# demo table's fifth record is well past it at 51 columns.
+	band_ready=""
+	for _ in $(seq 1 250); do
+		if tmux capture-pane -t "$S99" -p | grep -qF "Shell Command"; then
+			band_ready=1
+			break
+		fi
+		sleep 0.1
+	done
+	if [ -z "$band_ready" ]; then
+		echo "FAIL: Phase 99 — the table demo never streamed past the region's slack" >&2
+		status=1
+	fi
+	tmux send-keys -t "$S99" -l "$band_key"
+	sleep 0.5
+	band_pane="$(tmux capture-pane -t "$S99" -p)"
+	echo "==== Phase 99: '$band_key' opened mid-table on a 51x24 pane ===="
+	printf '%s\n' "$band_pane"
+	# The composer: its prompt row, and both of the box's rules around it.
+	if ! printf '%s' "$band_pane" | grep -qE '^❯'; then
+		echo "FAIL: Phase 99 — '$band_key' mid-table squeezed the composer off the screen" >&2
+		status=1
+	fi
+	# The rules are counted in awk's byte mode (the suite runs in a POSIX
+	# locale, where `─+` would quantify the glyph's last byte): a rule row is
+	# one that is nothing but `─`.
+	band_rules="$(printf '%s\n' "$band_pane" |
+		awk '{ bare = $0; gsub(/─/, "", bare); if (length($0) > 0 && length(bare) == 0) n++ } END { print n + 0 }')"
+	if [ "$band_rules" -ne 2 ]; then
+		echo "FAIL: Phase 99 — the box lost a rule under the '$band_key' band ($band_rules of 2)" >&2
+		status=1
+	fi
+	# …and neither the band nor the turn's status line was traded away for it.
+	if ! printf '%s' "$band_pane" | grep -qF "Working…"; then
+		echo "FAIL: Phase 99 — the status line went missing under the '$band_key' band" >&2
+		status=1
+	fi
+	case "$band_key" in
+	"/") band_marker="/help" ;;
+	"?") band_marker="for commands" ;;
+	*) band_marker="Dir" ;;
+	esac
+	if ! printf '%s' "$band_pane" | grep -qF "$band_marker"; then
+		echo "FAIL: Phase 99 — the '$band_key' band did not open" >&2
+		status=1
+	fi
+	# The preview yielded rather than the composer: the forming block is still
+	# there, tail-following into the rows that are left.
+	if ! printf '%s' "$band_pane" | grep -qE "(Code Snippet|│)"; then
+		echo "FAIL: Phase 99 — the forming table vanished from the strip entirely" >&2
+		status=1
+	fi
+done
+tmux kill-session -t "$S99" 2>/dev/null
+echo "==== Phase 99: a band opened under a tall streaming preview keeps the composer ===="
 
 
 if [ "$status" -eq 0 ]; then

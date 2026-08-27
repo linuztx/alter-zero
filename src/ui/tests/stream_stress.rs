@@ -842,9 +842,12 @@ fn assert_agent_view_matches_batch(full: &str, width: u16, ctx: &str) {
         let prefix = &full[..end];
         committed.extend(render.commit(prefix, width).iter().map(styled));
         let preview = render.preview(prefix, width, usize::MAX);
+        // The boundary injects the frontier's height each frame; the strip
+        // reserves exactly that (`App::set_stream_preview_rows`).
+        app.set_stream_preview_rows(u16::try_from(preview.len()).unwrap());
         let mut on_screen = committed.clone();
         on_screen.extend(
-            preview_lines(&app, width, Some(&preview))
+            preview_lines(&app, width, Some(&preview), preview_rows(&app, width))
                 .iter()
                 .map(styled),
         );
@@ -901,7 +904,10 @@ fn an_agent_views_live_tool_cell_outranks_its_streaming_frontier() {
         }]),
     );
     app.open_agent_view("a1");
-    let rows: Vec<String> = preview_lines(&app, 60, None).iter().map(plain).collect();
+    let rows: Vec<String> = preview_lines(&app, 60, None, preview_rows(&app, 60))
+        .iter()
+        .map(plain)
+        .collect();
     assert_eq!(rows[0], "● Bash(ls)", "{rows:?}");
     assert_eq!(rows[1], "  ⎿  Waiting…");
     let run = app.agent("a1").expect("the roster entry");

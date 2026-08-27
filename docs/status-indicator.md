@@ -223,6 +223,16 @@ when there is no preview, so the status is the strip's top row) *only when*
 (the preview content-row count), fed by `strip_has_status`/`preview_rows` from the
 `App`-having callers (`render_live`, `cursor_position`, `main.rs`).
 
+The `N` above is **budgeted**, not just measured. The preview is the only row
+count in the region that can give way — the status line, the box, the band and
+the footer are each decided by state the frame cannot negotiate with — so
+`ui::preview_budget` is what the terminal has left once all of them are paid,
+and `ui::fitted_preview_rows` (the content's ask clamped to it) is what the
+callers above actually pass. Without it a tall preview and an open band asked
+for more rows than the terminal had, and the composer was what the clamp took
+them from — the reported disappearing textarea (`docs/table-streaming.md`
+*The preview slot is budgeted*).
+
 ### The strip outlives the composer
 
 Only the two **modals** — the tool-permission prompt (`docs/permissions.md`)

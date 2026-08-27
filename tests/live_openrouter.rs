@@ -15,6 +15,11 @@
 //! (`docs/prompt-caching.md`) live here too; the Venice ones need
 //! `A0_VENICE_API_KEY` (and `ALTER_ZERO_LIVE_VENICE_MODEL` to override that
 //! provider's churning model ids).
+//!
+//! The streaming-render contract (CLAUDE.md invariant 2) and the live
+//! region's **geometry** under a real reply are checked here too — a model
+//! writes markdown a fuzzer only approximates, and its chunk boundaries are
+//! the ones the renderer actually meets (`docs/table-streaming.md`).
 
 use std::path::PathBuf;
 
@@ -4050,5 +4055,125 @@ fn live_streamed_wide_glyphs_upholds_the_one_frontier_contract() {
     // where `cols()` and the renderer have to agree exactly.
     for width in [2u16, 3, 5, 13, 22, 41, 60, 80, 121] {
         assert_live_stream_renders(&reply, width, &bounds, "live wide glyphs");
+    }
+}
+
+// --- the live region's geometry under a real streamed table
+// (docs/table-streaming.md *The preview slot is budgeted*) ---
+
+/// Paint the whole live region for `app` the way the boundary does — the
+/// frontier rendered once under the budget's cap, its height injected, the
+/// region sized from the fit — and return the painted rows.
+fn painted_live_rows(
+    app: &mut alter_zero::app::App,
+    render: &mut StreamRender,
+    text: &str,
+    width: u16,
+    term_height: u16,
+) -> Vec<String> {
+    let preview = render.preview(
+        text,
+        width,
+        alter_zero::ui::stream_preview_max_rows(app, width, term_height),
+    );
+    app.set_stream_preview_rows(u16::try_from(preview.len()).unwrap());
+    let band = alter_zero::ui::band_rows(app, width);
+    let height = alter_zero::ui::live_height(
+        &app.input,
+        width,
+        term_height,
+        alter_zero::ui::strip_has_status(app),
+        alter_zero::ui::fitted_preview_rows(app, width, term_height),
+        alter_zero::ui::task_rows(app, width),
+        alter_zero::ui::queued_rows(app, width),
+        alter_zero::ui::toast_rows(app),
+        band,
+        alter_zero::ui::footer_rows(app, band),
+        alter_zero::ui::agent_list_rows(app),
+    );
+    assert!(
+        height <= term_height,
+        "the live region never outgrows the terminal ({height} > {term_height})"
+    );
+    let area = ratatui::layout::Rect::new(0, 0, width, height);
+    let mut buf = ratatui::buffer::Buffer::empty(area);
+    alter_zero::ui::render_live_with_preview(area, &mut buf, app, Some(&preview));
+    (0..height)
+        .map(|y| {
+            (0..width)
+                .map(|x| buf[(x, y)].symbol())
+                .collect::<String>()
+                .trim_end()
+                .to_string()
+        })
+        .collect()
+}
+
+#[test]
+#[ignore = "hits the network; needs A0_VENICE_API_KEY"]
+fn live_streamed_table_never_squeezes_the_composer() {
+    // The reported bug, against a model's own table rather than a fixture:
+    // while a wide grid forms in the strip, opening a band below the box
+    // (`/`, `?`, `@`) used to ask for more rows than the terminal had, and
+    // the composer was what the clamp took them from — the textarea gone
+    // until the turn ended. Replayed at every chunk boundary the provider
+    // actually produced, at the sizes a small pane takes: the box keeps its
+    // two rules and its prompt row, and the band it was opened for is drawn.
+    let backend = venice_backend(Some(
+        "You are a markdown generator. Output only the requested document.".to_string(),
+    ));
+    let (reply, bounds) = stream_with_bounds(
+        &backend,
+        "Reply with ONE markdown document, no preamble: a `##` heading, then a table \
+         with 4 columns (Metric, Value, Trend, Notes) and 10 rows of GitHub profile \
+         statistics, where the Notes column holds a full sentence. No other text.",
+    );
+    println!("streamed {} bytes in {} chunks", reply.len(), bounds.len());
+    assert!(reply.contains('|'), "the model produced a table: {reply:?}");
+
+    for (band_key, marker) in [("/", "/help"), ("?", "for commands"), ("", "")] {
+        for (width, term_height) in [(51u16, 24u16), (80, 24), (60, 18), (100, 30)] {
+            let mut app = alter_zero::app::App::new();
+            app.begin_stream();
+            app.set_status_times(std::time::Duration::from_secs(9), None);
+            app.input = alter_zero::textarea::TextArea::from_text(band_key);
+            match band_key {
+                "/" => app.command_menu = Some(alter_zero::app::CommandMenu { selected: 0 }),
+                "?" => app.shortcuts_open = true,
+                _ => {}
+            }
+            let mut render = StreamRender::new();
+            let mut sent = 0usize;
+            for &end in &bounds {
+                app.push_chunk(&reply[sent..end]);
+                sent = end;
+                let prefix = &reply[..end];
+                let _ = render.commit(prefix, width);
+                let rows = painted_live_rows(&mut app, &mut render, prefix, width, term_height);
+                let ctx = format!("band={band_key:?} {width}x{term_height} after {end} bytes");
+                assert!(
+                    rows.iter().any(|r| r.starts_with('❯')),
+                    "{ctx}: the composer keeps its prompt row:\n{}",
+                    rows.join("\n")
+                );
+                let rules = rows
+                    .iter()
+                    .filter(|r| !r.is_empty() && r.chars().all(|c| c == '─'))
+                    .count();
+                assert_eq!(
+                    rules,
+                    2,
+                    "{ctx}: the box keeps both of its rules:\n{}",
+                    rows.join("\n")
+                );
+                if !marker.is_empty() {
+                    assert!(
+                        rows.iter().any(|r| r.contains(marker)),
+                        "{ctx}: the band stays open below it:\n{}",
+                        rows.join("\n")
+                    );
+                }
+            }
+        }
     }
 }

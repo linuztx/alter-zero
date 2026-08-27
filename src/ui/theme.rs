@@ -1483,16 +1483,6 @@ pub(super) const INPUT_CHROME_ROWS: u16 = 2;
 /// rules (idle has no preview strip). `main.rs` sizes the initial viewport from this.
 pub const LIVE_MIN_HEIGHT: u16 = INPUT_CHROME_ROWS + 1;
 
-/// Rows of live-region chrome that must stay visible under a tall forming-table
-/// preview: the preview's gap, the status line + its gap, the minimal box, and
-/// the session footer — plus one row of headroom.
-pub(super) const STREAM_PREVIEW_RESERVED_ROWS: u16 =
-    GAP_ROWS + STATUS_ROWS + STATUS_GAP_ROWS + LIVE_MIN_HEIGHT + 2;
-
-/// The forming-table preview never shrinks below this many rows, however small
-/// the terminal — enough to see the newest row or two plus the border.
-pub(super) const STREAM_PREVIEW_MIN_ROWS: usize = 3;
-
 /// The `/compact` marker cell's text — codex's "Context compacted" info cell,
 /// verbatim. See `docs/compact.md`.
 pub const COMPACTED_NOTICE: &str = "Context compacted";

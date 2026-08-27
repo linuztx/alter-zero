@@ -89,10 +89,10 @@ pub use self::footer::{
 pub use self::header::{header_lines, startup_notice_lines};
 pub use self::hooks_view::{hooks_menu_height, hooks_view_lines, render_hooks_menu};
 pub use self::layout::{
-    Repin, background_view_height, cursor_position, cursor_visible, key_onboarding_height,
-    live_height, modal_needs_rebuild, model_picker_height, overlay_cursor_seat, permission_height,
-    preview_rows, region_is_modal, repin, restore_cursor_row, stream_preview_max_rows,
-    strip_has_status,
+    Repin, background_view_height, cursor_position, cursor_visible, fitted_preview_rows,
+    key_onboarding_height, live_height, modal_needs_rebuild, model_picker_height,
+    overlay_cursor_seat, permission_height, preview_budget, preview_rows, region_is_modal, repin,
+    restore_cursor_row, stream_preview_max_rows, strip_has_status,
 };
 pub use self::live::{render_live, render_live_with_preview};
 pub use self::login_view::render_key_onboarding;

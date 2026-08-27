@@ -552,6 +552,11 @@ When the frontier is clean — everything rendered is committed — the preview 
 **empty** and the strip reserves no preview row, the pre-stream pause's shape.
 `ui::preview_rows` therefore reports the injected count verbatim; a floor there
 would reserve a row `preview_lines` does not draw and trip its `debug_assert`.
+A **ceiling** is the one adjustment the geometry does make — `ui::preview_budget`
+caps the slot at the rows the region has left, and `preview_lines` trims the
+frontier to the same number (tail-first, so the newest rows survive), which is
+what keeps a tall preview from squeezing the composer off a small terminal
+(`docs/table-streaming.md` *The preview slot is budgeted*).
 
 `ui::tests::preview_and_scrollback_together_show_the_whole_reply` drives real
 streaming order (commit before the draw's preview) over every prefix of a corpus

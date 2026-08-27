@@ -294,7 +294,7 @@ fn a_running_tool_still_wins_the_preview_slot() {
     app.begin_reasoning();
     app.push_thinking("thought");
     app.start_tool("bash", "ls", None);
-    let lines = preview_lines(&app, 60, None);
+    let lines = preview_lines(&app, 60, None, preview_rows(&app, 60));
     assert!(
         plain(&lines[0]).contains("bash"),
         "the running call previews: {:?}",

@@ -194,7 +194,12 @@ fn render_live_shows_streaming_text_in_preview_row() {
     let mut app = App::new();
     app.begin_stream();
     app.push_chunk("Hi there");
-    let mut buf = buffer(40, 4);
+    // Sized like the boundary sizes it — a 4-row region cannot hold the
+    // preview, the status and the box at once, and it is the preview that
+    // yields (`ui::preview_budget`).
+    let pv = preview_rows(&app, 40);
+    let h = live_height(&app.input, 40, 24, true, pv, 0, 0, 0, 0, 0, 0);
+    let mut buf = buffer(40, h);
     render_live(buf.area, &mut buf, &app);
 
     let preview = row(&buf, 0, 40);
@@ -212,7 +217,9 @@ fn render_live_previews_a_running_tool_with_a_pulsing_bullet() {
     let mut app = App::new();
     app.begin_stream();
     app.start_tool("Read", "src/main.rs", None);
-    let mut buf = buffer(40, 5);
+    let pv = preview_rows(&app, 40);
+    let h = live_height(&app.input, 40, 24, true, pv, 0, 0, 0, 0, 0, 0);
+    let mut buf = buffer(40, h);
     render_live(buf.area, &mut buf, &app);
 
     let preview = row(&buf, 0, 40);
@@ -300,19 +307,8 @@ fn render_live_previews_a_running_tool_with_its_running_row() {
     let mut app = App::new();
     app.begin_stream();
     app.start_tool("Bash", "sleep 1", None);
-    let h = live_height(
-        &app.input,
-        40,
-        24,
-        true,
-        preview_rows(&app, 40),
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-    );
+    let pv = preview_rows(&app, 40);
+    let h = live_height(&app.input, 40, 24, true, pv, 0, 0, 0, 0, 0, 0);
     let mut buf = buffer(40, h);
     render_live(buf.area, &mut buf, &app);
     assert!(
@@ -841,4 +837,160 @@ fn the_manager_band_keeps_the_running_tool_strip_above_it() {
         .position(|r| r.contains("1 active shell"))
         .unwrap();
     assert!(cell < band, "the strip sits above the band: {all}");
+}
+
+// --- the composer survives a tall preview under an open band
+// (docs/table-streaming.md *The preview slot is budgeted*) ---
+
+/// The reported bug's own shape: a wide GFM table streaming into a narrow
+/// terminal, its grid taller than the region has rows.
+const STREAMING_TABLE: &str = "\
+## Stats\n\n\
+| Metric | Value |\n\
+|---|---|\n\
+| Followers | 32 |\n\
+| Following | 1 |\n\
+| Public repos | 11 |\n\
+| Public gists | 0 |\n\
+| Account created | 2024-05-29 |\n\
+| Last profile update | 2026-07-30 |";
+
+/// Paint the conversation view the way the boundary does: the frontier
+/// rendered once through a `StreamRender` under the budget's cap, its height
+/// injected, the region sized from the fit — then the whole live region drawn.
+fn paint_live_region(app: &mut App, text: &str, width: u16, term_height: u16) -> Buffer {
+    let mut render = StreamRender::new();
+    let _committed = render.commit(text, width);
+    let preview = render.preview(
+        text,
+        width,
+        stream_preview_max_rows(app, width, term_height),
+    );
+    app.set_stream_preview_rows(u16::try_from(preview.len()).unwrap());
+    let band = band_rows(app, width);
+    let height = live_height(
+        &app.input,
+        width,
+        term_height,
+        strip_has_status(app),
+        fitted_preview_rows(app, width, term_height),
+        crate::ui::tasks::task_rows(app, width),
+        queued_rows(app, width),
+        toast_rows(app),
+        band,
+        footer_rows(app, band),
+        agent_list_rows(app),
+    );
+    let mut buf = buffer(width, height);
+    render_live_with_preview(buf.area, &mut buf, app, Some(&preview));
+    buf
+}
+
+#[test]
+fn the_palette_over_a_streaming_table_keeps_the_composer_on_screen() {
+    // The reported bug: mid-table, on a small terminal, pressing `/` made the
+    // textarea vanish until the turn ended — the forming grid's preview had
+    // been sized against a fixed chrome allowance that knew nothing about the
+    // band, so the strip took every row the region had.
+    let (width, term_height) = (51u16, 24u16);
+    let mut app = App::new();
+    app.begin_stream();
+    app.push_chunk(STREAMING_TABLE);
+    app.set_status_times(Duration::from_secs(9), None);
+    app.input = TextArea::from_text("/");
+    app.command_menu = Some(crate::app::CommandMenu { selected: 0 });
+
+    let buf = paint_live_region(&mut app, STREAMING_TABLE, width, term_height);
+    let rows: Vec<String> = (0..buf.area.height).map(|y| row(&buf, y, width)).collect();
+    let all = rows.join("\n");
+    assert!(
+        rows.iter().any(|r| r.starts_with("❯ /")),
+        "the composer's prompt row is painted: {all}"
+    );
+    assert_eq!(
+        rows.iter()
+            .filter(|r| r.trim_end() == "─".repeat(width as usize))
+            .count(),
+        2,
+        "both of the box's rules are painted: {all}"
+    );
+    assert!(all.contains("/help"), "the palette shows below it: {all}");
+    assert!(
+        all.contains("Working…"),
+        "and the turn's status line is still there: {all}"
+    );
+    assert!(
+        all.contains('│'),
+        "the forming grid still previews in what is left: {all}"
+    );
+}
+
+#[test]
+fn every_band_and_terminal_size_keeps_the_composer() {
+    // The stress sweep behind that one case: a forming table, a thinking
+    // block and a parallel tool batch — the three previews that can outgrow a
+    // screen — under every band that can open below the box, at every
+    // terminal height from the region's floor up. The composer's rules and
+    // its text row survive all of them, and the strip never draws a row it
+    // did not reserve (`render_live_with_preview`'s debug_assert, live here
+    // because tests run with debug assertions on).
+    let width = 51u16;
+    for band in ["", "/", "?", "@src", "$sk"] {
+        for kind in 0..3 {
+            for term_height in LIVE_MIN_HEIGHT..30 {
+                let mut app = App::new();
+                app.begin_stream();
+                match kind {
+                    0 => app.push_chunk(STREAMING_TABLE),
+                    1 => {
+                        app.begin_reasoning();
+                        app.push_thinking(&"a long reasoning line to wrap. ".repeat(20));
+                    }
+                    _ => {
+                        let batch: Vec<crate::stream::ToolCallSummary> = (1..=9)
+                            .map(|i| crate::stream::ToolCallSummary {
+                                name: "Bash".to_string(),
+                                args: format!("sleep {i}"),
+                            })
+                            .collect();
+                        app.start_tool_batch(&batch);
+                        app.start_tool("Bash", "sleep 1", None);
+                    }
+                }
+                app.set_status_times(Duration::from_secs(9), None);
+                app.input = TextArea::from_text(band);
+                match band {
+                    "/" => app.command_menu = Some(crate::app::CommandMenu { selected: 0 }),
+                    "?" => app.shortcuts_open = true,
+                    "@src" => {
+                        app.file_search = Some(FileSearch {
+                            query: "src".to_string(),
+                            matches: (0..8)
+                                .map(|i| crate::file_search::FileMatch {
+                                    path: format!("src/module_{i}/main.rs"),
+                                    score: 10,
+                                    indices: vec![0, 1, 2],
+                                })
+                                .collect(),
+                            selected: 0,
+                            waiting: false,
+                        });
+                    }
+                    _ => {}
+                }
+                let buf = paint_live_region(&mut app, STREAMING_TABLE, width, term_height);
+                let rows: Vec<String> = (0..buf.area.height).map(|y| row(&buf, y, width)).collect();
+                let ctx = format!("band={band:?} kind={kind} h={term_height}");
+                assert!(
+                    rows.iter().any(|r| r.starts_with('❯')),
+                    "{ctx}: the composer keeps its prompt row:\n{}",
+                    rows.join("\n")
+                );
+                assert!(
+                    buf.area.height <= term_height,
+                    "{ctx}: and the region never outgrows the terminal"
+                );
+            }
+        }
+    }
 }

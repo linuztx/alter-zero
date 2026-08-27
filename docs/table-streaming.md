@@ -302,13 +302,66 @@ is what blanks rows an in-place shrink vacates. Guarded by `smoke.sh` Phase 41
 `cursor_position` / `render_live_with_preview` all consume it — but only the
 boundary's `StreamRender` knows the forming table's height. The boundary
 computes the preview once per frame (`tui::view::Session::stream_preview_lines`, passing
-`ui::stream_preview_max_rows(screen.height)` as the cap — the screen minus the
-strip/box/footer chrome, floored) and injects its row count into the pure state
+`ui::stream_preview_max_rows(app, screen.width, screen.height)` as the cap) and
+injects its row count into the pure state
 via `App::set_stream_preview_rows` — the `set_status_times` /`set_clock`
 boundary-injection pattern. `preview_rows` reports that count while a reply
 streams (1 when nothing multi-row was injected, so unit tests and the
 render fallback keep the old single-row behaviour), and the strip's
 `debug_assert` still pins drawn-lines == reserved-rows.
+
+### The preview slot is budgeted
+
+That cap used to be a **fixed allowance** — the screen minus the preview's gap,
+the status line and its gap, a minimal box and a footer, plus two rows of
+headroom. It is right for exactly one frame: a streaming turn with nothing else
+on screen. Every other row the live region can owe — the `/` palette, the `?`
+shortcuts band, the `@` file picker, the `$` skill picker, the queued messages,
+the toast, the task checklist, the agent roster, a composer draft that wraps —
+was invisible to it, so the forming table always asked for the region's entire
+slack and anything else had to come out of somewhere.
+
+Where it came out of was the composer. `live_height` clamps its sum to the
+terminal, and `live_layout`'s constraint solver spent the clamped region in
+constraint order: the strip's `Length` first, the box's `Min(0)` last. Press `/`
+mid-table on a 24-row terminal and the box was allotted **zero rows** — the
+textarea gone from the screen, reappearing only when the turn ended and the
+strip collapsed (the reported bug; `smoke.sh` Phase 99 drives it with each of
+the three bands). Nothing about it was table-specific either: a parallel batch
+of nine `⎿ Waiting…` cells previews taller than a small screen with no table in
+sight, and walked the box off the same way.
+
+The preview is the region's **only elastic row** — everything else it holds is
+decided by state the frame cannot negotiate with — so it is the one that yields:
+
+- `ui::preview_budget(app, width, height)` is what the region has left once
+  every other row is paid, minus the slot's own trailing gap. `height` is the
+  rows the region may occupy: the screen at the boundary, the region's own
+  `area.height` inside a render, which agree by construction (an unclamped
+  region is exactly the sum of its parts, so the budget comes back as the
+  content's full ask; a clamped one is the terminal).
+- `ui::stream_preview_max_rows` **is** that budget, so `StreamRender::preview`
+  never renders a row the strip cannot reserve.
+- `ui::fitted_preview_rows` is `preview_rows` clamped to it — the single count
+  `live_height`, `live_layout`, `input_box`, `cursor_position` and the strip's
+  paint all size by, so a squeezed region trims the preview instead of the
+  composer. `preview_lines` trims the built rows to the same number: from the
+  front for a reply's frontier (its newest rows are the ones still arriving —
+  `StreamRender::preview`'s own tail-follow rule) and off the end for a queue of
+  live cells or a thinking block (the running call and the `● Thinking…` header
+  are the rows that say what is happening).
+- `live_layout` is hand-split rather than solved, and holds the box's
+  `LIVE_MIN_HEIGHT` back **first**: whatever the chrome asks for, a region with
+  three rows keeps a composer you can see and type into. It is the backstop
+  under the budget — the band alone can outgrow a tiny terminal — and when
+  everything fits it lands exactly where the solver did (each slot takes its
+  ask in order; every row nobody claimed grows the box).
+
+The same order already governed the composer-**replacing** views
+(`/model`, `/settings`, the ↓ manager band): `view_split` pins their frame and
+squeezes the strip. `render_strip_above` now fits the preview into the rows that
+split actually left, so a tall forming table no longer clips the status line off
+the bottom of its own strip.
 
 ## Trade-offs (accepted deliberately)
 
@@ -322,6 +375,11 @@ render fallback keep the old single-row behaviour), and the strip's
   final and correct.
 - A table taller than `stream_preview_max_rows` previews only its newest rows
   while forming (tail-follow). The committed block is always complete.
+- Opening a band mid-table therefore *shortens* the forming grid on screen —
+  the band's rows come off the preview's budget. That is the trade the fix
+  makes on purpose: the composer and the band the user just opened are worth
+  more than rows of a block that will commit whole seconds later, and the
+  preview is the one row-count that can give way without losing anything.
 
 ## Tests
 
@@ -340,6 +398,17 @@ render fallback keep the old single-row behaviour), and the strip's
   and `committed ++ preview` equals the batch render of every prefix; at the
   close the whole grid commits.
 - `table_preview_caps_to_its_newest_rows` — the `max_rows` cap keeps the tail.
+- The budget: `the_preview_budget_pays_the_band_before_the_preview` (every band
+  row comes off it, and the boundary's cap **is** the budget),
+  `a_forming_table_under_the_palette_keeps_the_composer` (the reported
+  geometry — box, band and strip all seated, the region filling the terminal),
+  `a_tall_tool_queue_yields_to_the_composer_too` (the same class with no table),
+  `live_layout_never_evicts_the_box` (the backstop, at every height from the
+  region's floor up), and at the paint level
+  `the_palette_over_a_streaming_table_keeps_the_composer_on_screen` +
+  `every_band_and_terminal_size_keeps_the_composer` — the sweep over three
+  preview kinds × five band states × every terminal height, which also exercises
+  the strip's drawn-equals-reserved `debug_assert`.
 - `stream_render_matches_batch_render_on_every_prefix` — the differential
   guardrail, strengthened: the preview is now asserted to be a **suffix** of the
   batch render at every prefix/width (and, while a table is open,
@@ -367,6 +436,19 @@ render fallback keep the old single-row behaviour), and the strip's
   `visible_cells_scrubs_then_redraws_a_vs16_shadow` (the emission *order*), and
   `visible_cells_shadow_stays_in_its_row_and_the_origin_offsets` (the row clamp
   + `blit`'s area offset).
+- The live half of the budget is
+  `live_streamed_table_never_squeezes_the_composer` (tests/live_openrouter.rs,
+  `--ignored`): a real model's streamed table replayed at the provider's own
+  chunk boundaries, painted through `render_live_with_preview` at four pane
+  sizes with the `/` palette, the `?` band, and no band — the composer keeps
+  both rules and its prompt row at every prefix, and the band stays open below
+  it. Verified against three Venice models whose chunking differs by an order
+  of magnitude (14 chunks to 293).
+- The boundary half of the budget is `smoke.sh` Phase 99, which drives the
+  reported bug end to end: the dummy's table demo streaming into a 51x24 pane,
+  each of the three bands opened once the block is taller than the region's
+  slack. Against the unfixed binary all three report `no composer row` (and
+  `0 of 2` rules).
 - The boundary half is `smoke.sh` Phase 41: the dummy's demo table carries ✅/❌
   status cells, and the phase asserts every grid row is the same display width
   in the inline pane **and** in the Ctrl+O overlay — the second check is what

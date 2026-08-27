@@ -6,9 +6,10 @@ use super::*;
 /// gap, hint, gap, bottom rule — pinned here so a builder change that adds
 /// or drops a row fails a height test (`key_onboarding_lines`).
 const LOGIN_KEY_ROWS: u16 = 9;
+use crate::ui::layout::live_layout;
 use crate::ui::theme::{
-    GAP_ROWS, MENU_MAX_ROWS, MODEL_SEARCH_ROW, STATUS_GAP_ROWS, STATUS_ROWS,
-    STREAM_PREVIEW_MIN_ROWS, STREAM_PREVIEW_RESERVED_ROWS,
+    GAP_ROWS, INPUT_CHROME_ROWS, LIVE_MIN_HEIGHT, MENU_MAX_ROWS, MODEL_SEARCH_ROW, STATUS_GAP_ROWS,
+    STATUS_ROWS,
 };
 
 #[test]
@@ -34,14 +35,19 @@ fn preview_rows_reports_the_injected_stream_preview_height() {
 
 #[test]
 fn stream_preview_max_rows_leaves_room_for_the_chrome() {
-    // The cap the boundary passes to `preview`: the screen minus the strip
-    // gaps + status + box + footer chrome, floored so a tiny terminal still
-    // previews a few rows.
+    // The cap the boundary passes to `preview`: the screen minus everything
+    // else the live region owes — here the preview's own gap, the status line
+    // and its gap, and the box.
+    let mut app = App::new();
+    app.begin_stream();
+    app.push_chunk("hi");
     assert_eq!(
-        stream_preview_max_rows(24),
-        usize::from(24 - STREAM_PREVIEW_RESERVED_ROWS)
+        stream_preview_max_rows(&app, 40, 24),
+        usize::from(24 - GAP_ROWS - STATUS_ROWS - STATUS_GAP_ROWS - LIVE_MIN_HEIGHT)
     );
-    assert_eq!(stream_preview_max_rows(4), STREAM_PREVIEW_MIN_ROWS);
+    // A terminal too small to hold the chrome at all previews nothing rather
+    // than reserving rows it does not have.
+    assert_eq!(stream_preview_max_rows(&app, 40, 4), 0);
 }
 
 #[test]
@@ -617,6 +623,38 @@ fn a_squeezed_region_keeps_the_picker_whole_and_drops_strip_rows() {
 }
 
 #[test]
+fn a_squeezed_pickers_strip_drops_preview_rows_not_the_status_line() {
+    // The other half of that squeeze: what the strip does with the rows it
+    // was left. A tall forming table asked for all of them and the status
+    // line — painted below the preview slot — fell off the bottom of its own
+    // strip. `render_strip_above` fits the preview into the rows `view_split`
+    // actually left, the same order `preview_budget` enforces in the
+    // composer's region (docs/table-streaming.md).
+    let mut app = forming_table(30);
+    app.set_status_times(Duration::from_secs(9), None);
+    app.open_model_picker("a");
+    app.set_models(three_models());
+    let (width, term) = (60u16, 20u16);
+    let h = model_picker_height(&app, width, term).unwrap();
+    assert_eq!(h, term, "the region really is clamped to the terminal");
+    let mut buf = buffer(width, h);
+    let preview: Vec<Line<'static>> = (0..30)
+        .map(|i| Line::from(format!("table row {i}")))
+        .collect();
+    app.set_stream_preview_rows(30);
+    render_live_with_preview(buf.area, &mut buf, &app, Some(&preview));
+    let rows: Vec<String> = (0..h).map(|y| row(&buf, y, width)).collect();
+    assert!(
+        rows.iter().any(|r| r.contains("Working…")),
+        "the turn's status line survives the squeeze: {rows:?}"
+    );
+    assert!(
+        rows.iter().any(|r| r.contains("table row 29")),
+        "…and the preview tail-follows into what is left: {rows:?}"
+    );
+}
+
+#[test]
 fn live_height_saturates_instead_of_overflowing_u16() {
     // A recalled multi-megabyte paste (tens of thousands of wrapped rows)
     // plus the same text queued mid-turn used to overflow the u16 row sum
@@ -1044,4 +1082,167 @@ fn the_context_overlay_seats_the_cursor_after_its_quit_hint() {
         "the seat row is the closing hint"
     );
     assert_eq!(usize::from(x), hint.len(), "the seat sits right after it");
+}
+
+// --- the preview slot yields: the composer is never squeezed out
+// (docs/table-streaming.md "The preview slot is budgeted") ---
+
+/// A streaming turn whose frontier previews `rows` tall — a forming table,
+/// the shape the reported bug needs.
+fn forming_table(rows: u16) -> App {
+    let mut app = App::new();
+    app.begin_stream();
+    app.push_chunk("| a | b |\n|---|---|\n| 1 | 2 |");
+    app.set_stream_preview_rows(rows);
+    app
+}
+
+#[test]
+fn the_preview_budget_pays_the_band_before_the_preview() {
+    // The reported bug: the cap the boundary hands `StreamRender::preview`
+    // counted a FIXED chrome allowance, so it always spent the region's whole
+    // slack on the forming table. Opening the palette then asked for rows the
+    // terminal did not have and the box was squeezed out. The budget is what
+    // the region has left once every other row it owes is paid — so the
+    // palette's rows come off it.
+    let mut app = forming_table(30);
+    let (width, height) = (51, 24);
+    let bare = preview_budget(&app, width, height);
+    app.input = TextArea::from_text("/");
+    app.command_menu = Some(crate::app::CommandMenu { selected: 0 });
+    let band = band_rows(&app, width);
+    assert!(band > 0, "the palette is open");
+    assert_eq!(
+        preview_budget(&app, width, height),
+        bare - band,
+        "every band row comes off the preview's budget"
+    );
+    assert_eq!(
+        stream_preview_max_rows(&app, width, height),
+        usize::from(preview_budget(&app, width, height)),
+        "the boundary's cap IS the budget — it never renders rows the strip \
+         cannot reserve"
+    );
+}
+
+#[test]
+fn a_forming_table_under_the_palette_keeps_the_composer() {
+    // End to end over the pure geometry: a tall forming table with the
+    // palette open on a small terminal. Pre-fix the region's rows all went to
+    // the strip — `input.height == 0`, the textarea gone from the screen
+    // until the turn ended — and the palette was clipped short too.
+    let mut app = forming_table(30);
+    let (width, height) = (51u16, 24u16);
+    app.input = TextArea::from_text("/");
+    app.command_menu = Some(crate::app::CommandMenu { selected: 0 });
+    let band = band_rows(&app, width);
+    let footer = footer_rows(&app, band);
+    let preview = fitted_preview_rows(&app, width, height);
+    let region = live_height(
+        &app.input,
+        width,
+        height,
+        strip_has_status(&app),
+        preview,
+        task_rows(&app, width),
+        queued_rows(&app, width),
+        toast_rows(&app),
+        band,
+        footer,
+        agent_list_rows(&app),
+    );
+    let [strip, input, band_area, _, _] = live_layout(
+        Rect::new(0, 0, width, region),
+        strip_has_status(&app),
+        preview,
+        task_rows(&app, width),
+        queued_rows(&app, width),
+        toast_rows(&app),
+        band,
+        footer,
+        agent_list_rows(&app),
+    );
+    assert_eq!(
+        input.height,
+        INPUT_CHROME_ROWS + 1,
+        "the box keeps its two rules and its text row"
+    );
+    assert_eq!(
+        band_area.height, band,
+        "the palette shows every row it built"
+    );
+    assert!(preview > 0, "the table still previews: {preview}");
+    assert_eq!(
+        strip.height,
+        preview + GAP_ROWS + STATUS_ROWS + STATUS_GAP_ROWS,
+        "the strip took exactly the rows left over"
+    );
+    assert_eq!(
+        strip.height + input.height + band_area.height,
+        height,
+        "and the region fills the terminal"
+    );
+}
+
+#[test]
+fn a_tall_tool_queue_yields_to_the_composer_too() {
+    // The same class with no table in sight: a big parallel batch previews
+    // every call's cell (`preview_tool_lines`, uncapped — only the boundary's
+    // streaming cap ever bounded a preview). On a small terminal that walked
+    // the box off the screen exactly as the forming table did.
+    let mut app = App::new();
+    app.begin_stream();
+    let batch: Vec<crate::stream::ToolCallSummary> = (1..=9)
+        .map(|i| crate::stream::ToolCallSummary {
+            name: "Bash".to_string(),
+            args: format!("sleep {i}"),
+        })
+        .collect();
+    app.start_tool_batch(&batch);
+    let (width, height) = (51u16, 24u16);
+    let want = preview_rows(&app, width);
+    assert!(
+        want > height,
+        "the batch really does want more rows than the terminal has: {want}"
+    );
+    let preview = fitted_preview_rows(&app, width, height);
+    let [_, input, _, _, _] = live_layout(
+        Rect::new(0, 0, width, height),
+        strip_has_status(&app),
+        preview,
+        0,
+        0,
+        0,
+        0,
+        footer_rows(&app, 0),
+        0,
+    );
+    assert_eq!(
+        input.height,
+        INPUT_CHROME_ROWS + 1,
+        "the box survives a batch taller than the screen"
+    );
+}
+
+#[test]
+fn live_layout_never_evicts_the_box() {
+    // The backstop under the budget: whatever the chrome asks for, the box
+    // keeps its floor (`LIVE_MIN_HEIGHT`) whenever the region has the rows —
+    // a palette taller than a tiny terminal used to take them all.
+    for height in LIVE_MIN_HEIGHT..24 {
+        // A frame asking for far more than any of these terminals has: a
+        // 40-row preview over a 3-row checklist and 5 queued rows, a toast, an
+        // 8-row band, the footer, and a two-agent roster.
+        let [strip, input, band, footer, agent] =
+            live_layout(Rect::new(0, 0, 51, height), true, 40, 3, 5, 1, 8, 1, 2);
+        assert_eq!(
+            input.height, LIVE_MIN_HEIGHT,
+            "the box keeps its floor at height {height}"
+        );
+        assert_eq!(
+            strip.height + input.height + band.height + footer.height + agent.height,
+            height,
+            "and the rows still add up at height {height}"
+        );
+    }
 }

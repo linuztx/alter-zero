@@ -57,15 +57,19 @@ pub(super) const fn strip_rows(has_status: bool, preview_rows: u16, task_rows: u
     preview + status
 }
 
-/// The number of **preview** content rows the streaming strip reserves for `app`
-/// at `width` (0 during the pre-stream pause / when idle, so the strip drops the
-/// preview slot and its gap rather than leaving a stray blank — codex's
-/// behaviour). A running backend tool previews its *whole* collapsed cell (the
-/// wrapped header + `⎿ Running…`) so a long command isn't clipped live and the
-/// running state shows; a running `!` shell command and a streaming reply preview
-/// a single row. Must match exactly what [`render_live_with_preview`] draws (it
-/// sizes the layout from the same `preview_lines`). Used by
-/// [`render_live`]/[`cursor_position`]/`main.rs` to feed `strip_rows`.
+/// The number of **preview** content rows the streaming strip's content
+/// *wants* for `app` at `width` (0 during the pre-stream pause / when idle, so
+/// the strip drops the preview slot and its gap rather than leaving a stray
+/// blank — codex's behaviour). A running backend tool previews its *whole*
+/// collapsed cell (the wrapped header + `⎿ Running…`) so a long command isn't
+/// clipped live and the running state shows; a running `!` shell command and a
+/// streaming reply preview a single row.
+///
+/// This is what the content asks for, which on a small terminal is more than
+/// the region can give: the conversation view sizes itself from
+/// [`fitted_preview_rows`] instead, which is this clamped to
+/// [`preview_budget`]. Must match exactly what `preview_lines` builds before
+/// its own trim (they share this walk, so they agree by construction).
 #[must_use]
 pub fn preview_rows(app: &App, width: u16) -> u16 {
     // An agent session view previews the *viewed agent's* stream — its live
@@ -111,15 +115,115 @@ pub fn preview_rows(app: &App, width: u16) -> u16 {
     }
 }
 
+/// Rows the streaming strip's **preview slot** may take inside a live region
+/// of `height` — the one budget the whole pipeline spends
+/// (docs/table-streaming.md *The preview slot is budgeted*).
+///
+/// The preview is the region's only elastic row: everything else it holds is
+/// decided by state the frame cannot negotiate with — the status line and the
+/// task checklist, the queued messages, the toast, the composer's two rules
+/// and its wrapped rows, the band below it, the footer, the agent roster. So
+/// the budget is what is left once all of that is paid, minus the slot's own
+/// trailing gap; 0 when nothing is left, which drops the slot whole.
+///
+/// A **fixed** allowance was the reported bug: the cap counted the box, the
+/// status line and a footer and spent the region's entire slack on the forming
+/// table, so opening the `/` palette mid-table asked for rows the terminal did
+/// not have and the composer was squeezed off the screen until the turn ended.
+///
+/// `height` is the rows the live region may occupy — the screen height at the
+/// boundary, the region's own `area.height` inside a render, which agree by
+/// construction: an unclamped region is exactly the sum of its parts, so the
+/// budget comes back as the content's full ask; a clamped one is the terminal.
+///
+/// A composer-replacing view (`/model`, `/settings`, the ↓ manager band …)
+/// pays for the composer's chrome here rather than its own frame's rows — it
+/// keeps that frame by `view_split`, which pins the body and squeezes the
+/// strip, so the box-eviction this budget prevents cannot arise there.
+#[must_use]
+pub fn preview_budget(app: &App, width: u16, height: u16) -> u16 {
+    slot_budget(height, non_preview_rows(app, width))
+}
+
+/// Every row the conversation view's live region owes **besides** the preview
+/// slot: the status line and its checklist with their gap, the queued
+/// messages, the toast, the composer's two rules and its wrapped rows, the
+/// band below it, the footer, and the agent roster. What [`live_height`] adds
+/// the preview slot to, spelled once so the budget cannot drift from the sum
+/// it is subtracted from.
+///
+/// Saturating throughout: the queue and the input are both uncapped (a
+/// recalled multi-megabyte paste wraps to tens of thousands of rows), and a
+/// saturated total simply means no budget at all.
+///
+/// It re-derives rows its callers often have in hand rather than taking ten
+/// arguments, because a second spelling of this sum is a sum that can drift.
+/// Measured: 53 ns on an ordinary frame, and 13 µs on one whose palette is
+/// open over a four-message queue (`queued_lines` renders each message) —
+/// against a 8.3 ms frame budget, and beside the three calls the draw already
+/// makes to the same helpers. If it ever matters, memoize `queued_lines`,
+/// which every one of those call sites would gain from too.
+fn non_preview_rows(app: &App, width: u16) -> u16 {
+    let band = band_rows(app, width);
+    strip_other_rows(app, width)
+        .saturating_add(INPUT_CHROME_ROWS)
+        .saturating_add(u16::try_from(app.input.row_count(field_width(width))).unwrap_or(u16::MAX))
+        .saturating_add(band)
+        .saturating_add(footer_rows(app, band))
+        .saturating_add(agent_list_rows(app))
+}
+
+/// The strip's own rows **besides** the preview slot: the status line and its
+/// task checklist with their trailing gap, the queued messages, and the toast.
+/// [`strip_above_rows`] is this plus the preview slot; `render_strip_above`
+/// subtracts it from the rows [`view_split`] left the strip.
+pub(super) fn strip_other_rows(app: &App, width: u16) -> u16 {
+    strip_rows(
+        strip_has_status(app),
+        0,
+        super::tasks::task_rows(app, width),
+    )
+    .saturating_add(queued_rows(app, width))
+    .saturating_add(toast_rows(app))
+}
+
+/// Rows left for the preview slot inside `height` once `other` — every row
+/// beside it — is paid, the slot's own trailing gap included.
+const fn slot_budget(height: u16, other: u16) -> u16 {
+    height.saturating_sub(other.saturating_add(GAP_ROWS))
+}
+
+/// `want` clamped to [`slot_budget`]: the preview's fit inside a region whose
+/// other rows are already spoken for. [`fitted_preview_rows`] is this over the
+/// conversation view's chrome; `render_strip_above` is this over the rows
+/// [`view_split`] left a composer-replacing view's strip.
+pub(super) const fn fit_preview_rows(height: u16, want: u16, other: u16) -> u16 {
+    let room = slot_budget(height, other);
+    if want < room { want } else { room }
+}
+
+/// [`preview_rows`] clamped to [`preview_budget`]: the rows the strip actually
+/// reserves *and* draws in a live region of `height`. The single source of
+/// truth the conversation view's geometry sizes by — [`live_height`],
+/// `live_layout`, `input_box`, [`cursor_position`] and the strip's own
+/// paint all read it, so a squeezed region trims the preview instead of the
+/// composer.
+#[must_use]
+pub fn fitted_preview_rows(app: &App, width: u16, height: u16) -> u16 {
+    fit_preview_rows(
+        height,
+        preview_rows(app, width),
+        non_preview_rows(app, width),
+    )
+}
+
 /// The cap the boundary passes to [`StreamRender::preview`]: how many strip
 /// rows a multi-row (forming-table) preview may take at this terminal height
-/// before it tail-follows its newest rows — the screen minus the live-region
-/// chrome (`STREAM_PREVIEW_RESERVED_ROWS`), floored at
-/// `STREAM_PREVIEW_MIN_ROWS` (docs/table-streaming.md).
+/// before it tail-follows its newest rows — [`preview_budget`] exactly, so the
+/// renderer never spends a row the strip cannot reserve (docs/table-streaming.md).
 #[must_use]
-pub fn stream_preview_max_rows(term_height: u16) -> usize {
-    usize::from(term_height.saturating_sub(STREAM_PREVIEW_RESERVED_ROWS))
-        .max(STREAM_PREVIEW_MIN_ROWS)
+pub fn stream_preview_max_rows(app: &App, width: u16, term_height: u16) -> usize {
+    usize::from(preview_budget(app, width, term_height))
 }
 
 /// Whether the streaming strip shows the **status line** (the spinner + timer +
@@ -489,20 +593,51 @@ pub(super) fn live_layout(
     footer_rows: u16,
     agent_rows: u16,
 ) -> [Rect; 5] {
-    Layout::vertical([
-        // Saturating: `queued_rows` is uncapped, and the layout clamp below
-        // (not this sum) is what bounds it to the area.
-        Constraint::Length(
-            strip_rows(has_status, preview_rows, task_rows)
-                .saturating_add(queued_rows)
-                .saturating_add(toast_rows),
-        ),
-        Constraint::Min(0),
-        Constraint::Length(band_rows),
-        Constraint::Length(footer_rows),
-        Constraint::Length(agent_rows),
-    ])
-    .areas(area)
+    // Hand-split rather than solved, because when the asks overflow the area
+    // *which* slot gives way is the whole point. The box's floor is held back
+    // first: a region that has `LIVE_MIN_HEIGHT` rows at all keeps a composer
+    // you can see and type into, whatever the strip and the band asked for
+    // (a constraint solver spent the rows in constraint order instead and
+    // returned `Min(0)` == 0 — the textarea gone from the screen, the reported
+    // bug's last mile). The rest take their ask in priority order from what is
+    // left — the band the user just opened and is typing into, then the
+    // bottom-pinned footer and agent roster, then the strip, whose preview is
+    // the one row-count that is *supposed* to yield (`preview_budget`
+    // normally spends it before we get here) — and every row nobody claimed
+    // grows the box, so a region that fits lands exactly where the solver put
+    // it. (The band and the footer never actually compete: `footer_rows`
+    // reports 0 while a band is open, `docs/footer.md`.)
+    let mut spare = area.height;
+    let floor = LIVE_MIN_HEIGHT.min(spare);
+    spare -= floor;
+    let mut take = |ask: u16| {
+        let got = ask.min(spare);
+        spare -= got;
+        got
+    };
+    let band = take(band_rows);
+    let footer = take(footer_rows);
+    let agent = take(agent_rows);
+    // Saturating: `queued_rows` is uncapped, and `take` is what bounds it.
+    let strip = take(
+        strip_rows(has_status, preview_rows, task_rows)
+            .saturating_add(queued_rows)
+            .saturating_add(toast_rows),
+    );
+    let input = floor + spare;
+    let mut y = area.y;
+    let mut slice = |height: u16| {
+        let rect = Rect { y, height, ..area };
+        y += height;
+        rect
+    };
+    [
+        slice(strip),
+        slice(input),
+        slice(band),
+        slice(footer),
+        slice(agent),
+    ]
 }
 
 /// The geometry shared by [`render_live`] and [`cursor_position`] so the drawn
@@ -875,7 +1010,9 @@ pub fn cursor_position(area: Rect, app: &App) -> (u16, u16) {
     // task runs: typing edits the draft, Enter queues it).
     let band = band_rows(app, area.width);
     let footer = footer_rows(app, band);
-    let preview = preview_rows(app, area.width);
+    // The same fit `render_live_with_preview` lays the box out with, off the
+    // same region rect — the two must agree or the caret leaves the prompt.
+    let preview = fitted_preview_rows(app, area.width, area.height);
     let has_status = strip_has_status(app);
     let toast = toast_rows(app);
     let tasks = super::tasks::task_rows(app, area.width);

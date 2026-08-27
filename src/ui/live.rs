@@ -8,7 +8,10 @@
 //! `docs/tool-streaming.md`.
 
 use super::agent::agent_view_preview_lines;
-use super::layout::{input_box, key_onboarding_rows, live_layout, model_picker_rows, view_split};
+use super::layout::{
+    fit_preview_rows, input_box, key_onboarding_rows, live_layout, model_picker_rows,
+    strip_other_rows, view_split,
+};
 use super::reasoning::live_reasoning_lines;
 use super::theme::*;
 use super::tool::{
@@ -87,33 +90,67 @@ pub fn render_live(area: Rect, buf: &mut Buffer, app: &App) {
 /// genuinely executing is what the user waits on) and before the reply's,
 /// which cannot be streaming while the model is still thinking.
 /// Empty when there is nothing to preview (the pre-stream pause / idle).
+///
+/// `rows` is the slot the caller reserved ([`fitted_preview_rows`], or the
+/// unclamped [`preview_rows`] where nothing squeezes it): the walk builds what
+/// the content wants and this **trims to it**, so the drawn rows can never
+/// outrun the reserved ones. Which end survives is what the preview is *of* —
+/// a reply's frontier tail-follows (its newest rows are the ones still
+/// arriving, `StreamRender::preview`'s own rule), while a queue of live cells
+/// or a thinking block keeps its head (the running call, the `● Thinking…`
+/// header — the rows that say what is happening).
 pub(super) fn preview_lines(
     app: &App,
     width: u16,
     stream_preview: Option<&[Line<'static>]>,
+    rows: u16,
 ) -> Vec<Line<'static>> {
+    let rows = usize::from(rows);
     if let Some(run) = app.viewed_agent() {
         // The viewed agent's own strip — fed the same boundary-built frontier
         // the main branch below gets, since its commits go through the same
         // kind of `StreamRender` (`docs/agent-view-streaming.md`).
-        agent_view_preview_lines(run, app.pulse(), width, stream_preview)
+        let streaming = run.tool_queue.is_empty() && run.reasoning().is_none();
+        trim_preview(
+            agent_view_preview_lines(run, app.pulse(), width, stream_preview),
+            rows,
+            streaming,
+        )
     } else if app.agent_group().is_some() || !app.tool_queue().is_empty() {
-        preview_tool_lines(app, width)
+        trim_preview(preview_tool_lines(app, width), rows, false)
     } else if let Some(text) = app.reasoning() {
-        live_reasoning_lines(text, app.pulse(), width)
+        trim_preview(live_reasoning_lines(text, app.pulse(), width), rows, false)
     } else if let Some(lines) = stream_preview {
-        lines.to_vec()
+        trim_preview(lines.to_vec(), rows, true)
     } else {
-        app.streaming_text()
-            .filter(|t| !t.is_empty())
-            .map(|text| {
-                message_lines(Role::Assistant, text, width)
-                    .pop()
-                    .unwrap_or_default()
-            })
-            .into_iter()
-            .collect()
+        trim_preview(
+            app.streaming_text()
+                .filter(|t| !t.is_empty())
+                .map(|text| {
+                    message_lines(Role::Assistant, text, width)
+                        .pop()
+                        .unwrap_or_default()
+                })
+                .into_iter()
+                .collect(),
+            rows,
+            true,
+        )
     }
+}
+
+/// Trim built preview rows to the `rows` the strip reserved — from the front
+/// when the newest rows are the point (`tail`), off the end otherwise. A no-op
+/// while the slot is big enough, which is every terminal that isn't cramped.
+fn trim_preview(mut lines: Vec<Line<'static>>, rows: usize, tail: bool) -> Vec<Line<'static>> {
+    if lines.len() > rows {
+        if tail {
+            lines.drain(..lines.len() - rows);
+        } else {
+            lines.truncate(rows);
+        }
+    }
+    lines
 }
 
 /// One live call's strip rows: a `!` shell run's single `⎿ Running… (Ns)`
@@ -367,8 +404,17 @@ fn render_strip_above(
     app: &App,
     stream_preview: Option<&[Line<'static>]>,
 ) {
-    let preview = preview_lines(app, strip.width, stream_preview);
-    let preview_n = preview_rows(app, strip.width);
+    // The strip here is `view_split`'s leftover, so the fit is against the
+    // rows it actually got: the view's own frame is pinned and the preview
+    // gives way, which is the same order `preview_budget` enforces in the
+    // composer's region. Without it a tall forming table clipped the status
+    // line off the bottom of its own strip.
+    let preview_n = fit_preview_rows(
+        strip.height,
+        preview_rows(app, strip.width),
+        strip_other_rows(app, strip.width),
+    );
+    let preview = preview_lines(app, strip.width, stream_preview, preview_n);
     debug_assert_eq!(
         usize::from(preview_n),
         preview.len(),
@@ -527,12 +573,12 @@ pub fn render_live_with_preview(
     // must match it exactly — same state, same width, so they agree by
     // construction. The `debug_assert` catches any future drift (a desync would
     // reserve one height but paint another, unseating the box/cursor).
-    let preview = preview_lines(app, area.width, stream_preview);
-    let preview_n = preview_rows(app, area.width);
+    let preview_n = fitted_preview_rows(app, area.width, area.height);
+    let preview = preview_lines(app, area.width, stream_preview, preview_n);
     debug_assert_eq!(
         usize::from(preview_n),
         preview.len(),
-        "preview_rows() must equal the drawn preview_lines()"
+        "fitted_preview_rows() must equal the drawn preview_lines()"
     );
     let has_status = strip_has_status(app);
     let tasks_n = super::tasks::task_rows(app, area.width);

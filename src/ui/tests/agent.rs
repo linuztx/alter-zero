@@ -587,7 +587,7 @@ fn an_agent_views_strip_previews_the_rows_its_commits_withheld() {
     // happened to end on. `committed ++ preview` is the reply, in this view
     // exactly as in the main one (CLAUDE.md invariant 2).
     let width = 44;
-    let app = streaming_agent_view(FORMING_TABLE);
+    let mut app = streaming_agent_view(FORMING_TABLE);
     let text = app
         .agent("a1")
         .and_then(|run| run.streaming.clone())
@@ -602,14 +602,17 @@ fn an_agent_views_strip_previews_the_rows_its_commits_withheld() {
     );
     assert!(preview.len() > 1, "the forming grid is many rows");
 
-    let lines = preview_lines(&app, width, Some(&preview));
+    // What the boundary injects each frame, so the strip reserves the rows it
+    // is about to draw (`App::set_stream_preview_rows`).
+    app.set_stream_preview_rows(u16::try_from(preview.len()).unwrap());
+    let lines = preview_lines(&app, width, Some(&preview), preview_rows(&app, width));
     let texts: Vec<String> = lines.iter().map(plain).collect();
     assert_eq!(lines.len(), preview.len(), "the whole frontier: {texts:?}");
     // What shipped before, pinned as the contrast: the batch-render fallback
     // keeps ONE row — the block's closing border — so every row above it was
     // on screen nowhere.
     assert_eq!(
-        preview_lines(&app, width, None).len(),
+        preview_lines(&app, width, None, preview_rows(&app, width)).len(),
         1,
         "the fallback is the old one-row render"
     );
@@ -651,7 +654,7 @@ fn an_agent_views_running_command_tails_its_streamed_output() {
     }
     app.set_agent_runtime("a1", Duration::from_secs(9));
     app.open_agent_view("a1");
-    let lines = preview_lines(&app, 60, None);
+    let lines = preview_lines(&app, 60, None, preview_rows(&app, 60));
     let all: String = lines.iter().map(|l| plain(l) + "\n").collect();
     assert!(all.contains("line 9"), "the newest line tails: {all:?}");
     assert!(!all.contains("line 4"), "older lines are hidden: {all:?}");
@@ -672,7 +675,7 @@ fn an_agent_views_strip_previews_its_thinking_block() {
     app.apply_agent_event("a1", &StreamEvent::ThinkingChunk("weighing options".into()));
     app.set_agent_thinking("a1", Duration::from_secs(3));
     app.open_agent_view("a1");
-    let lines = preview_lines(&app, 60, None);
+    let lines = preview_lines(&app, 60, None, preview_rows(&app, 60));
     let texts: Vec<String> = lines.iter().map(plain).collect();
     assert!(texts[0].starts_with("● Thinking…"), "{texts:?}");
     assert!(
@@ -718,7 +721,10 @@ fn an_agent_views_strip_shows_every_waiting_sibling_of_a_parallel_batch() {
     );
     app.open_agent_view("a1");
     let width = 60;
-    let lines: Vec<String> = preview_lines(&app, width, None).iter().map(plain).collect();
+    let lines: Vec<String> = preview_lines(&app, width, None, preview_rows(&app, width))
+        .iter()
+        .map(plain)
+        .collect();
     assert_eq!(
         lines,
         vec![
@@ -772,7 +778,10 @@ fn an_agent_views_running_call_leads_its_waiting_siblings() {
         },
     );
     app.open_agent_view("a1");
-    let lines: Vec<String> = preview_lines(&app, 60, None).iter().map(plain).collect();
+    let lines: Vec<String> = preview_lines(&app, 60, None, preview_rows(&app, 60))
+        .iter()
+        .map(plain)
+        .collect();
     assert_eq!(lines[0], "● Bash(echo AAA)");
     assert_eq!(lines[1], "  ⎿  Running…", "{lines:?}");
     assert_eq!(lines[3], "● Read(notes.md)");
