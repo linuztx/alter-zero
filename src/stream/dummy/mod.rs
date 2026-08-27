@@ -292,6 +292,16 @@ impl ReplySource for DummyAi {
         agent::spawn_chat_continuation(registry.clone(), id.to_string(), cancel);
         super::AgentChatDelivery::Started
     }
+
+    fn agent_ready_for_turn(&self, id: &str) -> bool {
+        self.agents
+            .as_ref()
+            .is_some_and(|registry| registry.ready_for_turn(id))
+    }
+
+    fn reclaim_agent_input(&self, id: &str) -> Option<String> {
+        self.agents.as_ref()?.take_last_input(id)
+    }
 }
 
 /// Play a scripted turn onto the channel: send each event, then pause for as

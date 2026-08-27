@@ -790,3 +790,172 @@ fn a_foreground_groups_resolution_settles_its_members_live_calls() {
         run.history.last()
     );
 }
+
+// ===== the agent view's follow-up queue: Tab, one level down (docs/queue.md) =====
+
+#[test]
+fn tab_in_an_agent_view_queues_a_follow_up_for_that_agent() {
+    // The bug this pins: Tab read the *main* session's `is_streaming()` and
+    // pushed onto the *main* session's `queued`, so a message typed into a
+    // subagent's session ran as a follow-up turn of the lead conversation.
+    let mut app = App::new();
+    app.begin_stream();
+    app.start_agent_group(false, &agent_specs(false));
+    app.open_agent_view("a1");
+    let generation = app.agents_generation();
+    app.input = TextArea::from_text("also add Elixir");
+    assert_eq!(app.on_key(key(KeyCode::Tab)), Action::None);
+    assert_eq!(app.input.text(), "", "Tab consumes the composer like Enter");
+    assert_eq!(
+        app.agent("a1").expect("the row").followups,
+        ["also add Elixir"],
+        "it queues a follow-up turn for the viewed agent"
+    );
+    assert!(
+        app.queued.is_empty() && app.steered.is_empty(),
+        "the main session's queue is untouched"
+    );
+    assert!(
+        app.agents_generation() > generation,
+        "the transcript cache is told the agent's view changed"
+    );
+}
+
+#[test]
+fn each_tab_in_an_agent_view_opens_its_own_follow_up_turn() {
+    let mut app = App::new();
+    app.begin_stream();
+    app.start_agent_group(false, &agent_specs(false));
+    app.open_agent_view("a1");
+    for text in ["first", "second"] {
+        app.input = TextArea::from_text(text);
+        app.on_key(key(KeyCode::Tab));
+    }
+    assert_eq!(
+        app.agent("a1").expect("the row").followups,
+        ["first", "second"],
+        "one entry per Tab, in submission order"
+    );
+}
+
+#[test]
+fn tab_in_an_agent_view_whose_agent_settled_is_a_no_op() {
+    // The main session's rule one level down: Tab only queues against a
+    // *running* turn, and an idle Tab keeps the draft (docs/queue.md).
+    let mut app = App::new();
+    app.begin_stream();
+    app.start_agent_group(false, &agent_specs(false));
+    app.apply_agent_event("a1", &StreamEvent::StreamDone);
+    app.open_agent_view("a1");
+    app.input = TextArea::from_text("too late");
+    assert_eq!(app.on_key(key(KeyCode::Tab)), Action::None);
+    assert!(app.agent("a1").expect("the row").followups.is_empty());
+    assert!(app.queued.is_empty(), "and never the main session's queue");
+    assert_eq!(app.input.text(), "too late", "the draft survives");
+}
+
+#[test]
+fn the_agent_view_dispatches_one_follow_up_per_settle() {
+    // `take_agent_followup` is what the boundary drains at the agent's settle
+    // — one entry per turn, exactly like `drain_next_batch` (docs/queue.md).
+    let mut app = App::new();
+    app.begin_stream();
+    app.start_agent_group(false, &agent_specs(false));
+    app.open_agent_view("a1");
+    for text in ["first", "second"] {
+        app.input = TextArea::from_text(text);
+        app.on_key(key(KeyCode::Tab));
+    }
+    assert_eq!(app.take_agent_followup("a1").as_deref(), Some("first"));
+    assert_eq!(app.take_agent_followup("a1").as_deref(), Some("second"));
+    assert_eq!(app.take_agent_followup("a1"), None, "drained");
+}
+
+#[test]
+fn alt_up_in_an_agent_view_pulls_back_that_agents_follow_up() {
+    // …and never a main-session batch, which is what it used to reach.
+    let mut app = App::new();
+    app.begin_stream();
+    app.start_agent_group(false, &agent_specs(false));
+    app.queued.push_back(batch(&["a main follow-up"]));
+    app.open_agent_view("a1");
+    app.input = TextArea::from_text("also add Elixir");
+    app.on_key(key(KeyCode::Tab));
+    assert_eq!(app.on_key(alt(KeyCode::Up)), Action::None);
+    assert_eq!(app.input.text(), "also add Elixir", "back in the composer");
+    assert!(app.agent("a1").expect("the row").followups.is_empty());
+    assert_eq!(
+        app.queued.len(),
+        1,
+        "the main session's batch stayed queued"
+    );
+}
+
+#[test]
+fn alt_up_in_an_agent_view_never_reaches_the_main_queue() {
+    let mut app = App::new();
+    app.begin_stream();
+    app.start_agent_group(false, &agent_specs(false));
+    app.queued.push_back(batch(&["a main follow-up"]));
+    app.open_agent_view("a1");
+    assert_eq!(app.on_key(alt(KeyCode::Up)), Action::None);
+    assert_eq!(app.input.text(), "", "nothing came back");
+    assert_eq!(app.queued.len(), 1, "the main batch is untouched");
+}
+
+#[test]
+fn stopping_an_agent_drops_its_follow_ups() {
+    // Its loop is cancelled, so no continuation will ever run them — the rule
+    // `interrupt` already applies to the steered rows (docs/queue.md).
+    let mut app = App::new();
+    app.begin_stream();
+    app.start_agent_group(false, &agent_specs(false));
+    app.open_agent_view("a1");
+    app.input = TextArea::from_text("never mind");
+    app.on_key(key(KeyCode::Tab));
+    app.stop_agent("a1");
+    assert!(app.agent("a1").expect("the row").followups.is_empty());
+}
+
+#[test]
+fn alt_up_in_an_agent_view_reaches_its_unread_steered_message() {
+    // With no follow-up left, Alt+Up asks for the message the agent's loop
+    // has not read yet — the main session's fall-through to
+    // `Action::ReclaimSteered`, one level down. Only the registry knows
+    // whether it can still be taken back, so the key only asks.
+    let mut app = App::new();
+    app.begin_stream();
+    app.start_agent_group(false, &agent_specs(false));
+    app.open_agent_view("a1");
+    app.queue_agent_chat("a1", "also check Manila");
+    assert_eq!(
+        app.on_key(alt(KeyCode::Up)),
+        Action::ReclaimAgentChat {
+            id: "a1".to_string()
+        }
+    );
+    // The boundary's answer puts it back in the composer and drops the row.
+    app.recall_agent_chat("a1", "also check Manila");
+    assert_eq!(app.input.text(), "also check Manila");
+    assert!(app.agent("a1").expect("the row").queued.is_empty());
+}
+
+#[test]
+fn alt_up_in_an_agent_view_prefers_the_follow_up_queue() {
+    // The deliberate backlog first, exactly as the main session prefers
+    // `queued` over its steered messages.
+    let mut app = App::new();
+    app.begin_stream();
+    app.start_agent_group(false, &agent_specs(false));
+    app.open_agent_view("a1");
+    app.queue_agent_chat("a1", "steered");
+    app.input = TextArea::from_text("a follow up");
+    app.on_key(key(KeyCode::Tab));
+    assert_eq!(app.on_key(alt(KeyCode::Up)), Action::None);
+    assert_eq!(app.input.text(), "a follow up");
+    assert_eq!(
+        app.agent("a1").expect("the row").queued,
+        ["steered"],
+        "the steered row is untouched"
+    );
+}

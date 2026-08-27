@@ -270,11 +270,32 @@ impl App {
             KeyCode::Tab if skill_open && self.highlighted_skill_match().is_some() => {
                 self.accept_skill_selection()
             }
+            // Tab inside an agent session view queues a follow-up turn for
+            // **that agent** — the same intent one level down, over that
+            // agent's own queue (docs/queue.md). It has to be checked before
+            // the main-session arm below, and the main arm has to exclude the
+            // view, or Tab reaches `is_streaming()`/`queued` — the *lead's*
+            // stream and the *lead's* backlog — and a message typed into a
+            // subagent runs as a follow-up turn of the main conversation.
+            KeyCode::Tab
+                if self.agent_view.is_some()
+                    && self.viewed_agent_running()
+                    && !self.input.text().trim().is_empty() =>
+            {
+                self.queue_agent_draft();
+                Action::None
+            }
             // Tab while a turn streams queues the draft as a *new* follow-up
             // batch — a separate turn that runs after the batches already queued,
             // instead of merging into the current one like Enter (codex's
-            // Tab-to-queue). Empty/idle Tab falls through to a no-op.
-            KeyCode::Tab if self.is_streaming() && !self.input.text().trim().is_empty() => {
+            // Tab-to-queue). Empty/idle Tab falls through to a no-op — and so
+            // does Tab in an agent view whose agent has settled, which the
+            // arm above deliberately lets through rather than queueing here.
+            KeyCode::Tab
+                if self.agent_view.is_none()
+                    && self.is_streaming()
+                    && !self.input.text().trim().is_empty() =>
+            {
                 self.queue_draft(/*new_batch*/ true);
                 Action::None
             }
@@ -454,6 +475,19 @@ impl App {
             KeyCode::Right => {
                 self.input.move_right();
                 Action::None
+            }
+            // In an agent session view Alt+Up edits **that agent's** pending
+            // messages and nothing else — its last follow-up turn, then the
+            // message its loop has not read (via the boundary, which is the
+            // only side that knows). The main session's backlog belongs to a
+            // conversation the user is not looking at, so this never falls
+            // through to the arms below.
+            KeyCode::Up
+                if key.modifiers.contains(KeyModifiers::ALT)
+                    && self.input.is_empty()
+                    && self.agent_view.is_some() =>
+            {
+                self.recall_agent_pending()
             }
             // Alt+Up pulls the *last* queued batch back into an *empty* composer
             // as one newline-joined draft (its own messages oldest first) to

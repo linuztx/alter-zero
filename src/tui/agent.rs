@@ -549,6 +549,34 @@ impl Session<'_> {
         }
     }
 
+    /// Dispatch each agent's next **Tab follow-up turn** once its loop has
+    /// settled — [`Session::dispatch_after_turn`]'s `flush_next_queued`, one
+    /// level down (`docs/queue.md`): one entry per settle, in submission
+    /// order, each running as its own chat continuation.
+    ///
+    /// Run from the roster tick rather than from the terminal event's fold,
+    /// for the reason the settle window exists at all
+    /// ([`crate::agents::AgentRegistry::has_pending_inputs`]): the agent's own
+    /// thread may still be starting a continuation for messages its last
+    /// round never read, and a follow-up handed over in that window would be
+    /// queued *into* that run as a steer rather than being the turn it was
+    /// typed as. So the registry — never the roster, which lags it by an
+    /// event — is asked whether a new turn can start, and a sweep that finds
+    /// no one ready simply comes back next frame. `Declined` can only mean
+    /// the slot is gone (a killed agent already dropped its follow-ups), so
+    /// the entry is spent either way and nothing loops.
+    fn dispatch_agent_followups(&mut self) {
+        for id in self.app.agents_awaiting_followup() {
+            if !self.models.backend().agent_ready_for_turn(&id) {
+                continue;
+            }
+            let Some(text) = self.app.take_agent_followup(&id) else {
+                continue;
+            };
+            self.agent_chat(&id, &text);
+        }
+    }
+
     /// Inject each running agent's elapsed before a draw (so the roster's
     /// counters tick), then arm and run the linger sweep over the finished ones.
     ///
@@ -556,6 +584,10 @@ impl Session<'_> {
     /// resolution, an Esc interrupt, a backend error, an `x` — so no path can
     /// strand a finished row on the roster.
     pub(crate) fn tick_agent_roster(&mut self) {
+        // A settled agent with a Tab follow-up waiting starts it now — before
+        // the linger sweep below, which would otherwise drop the row (and the
+        // queue with it) out from under a message the user is watching.
+        self.dispatch_agent_followups();
         for (id, started) in &self.agent_clocks {
             self.app.set_agent_runtime(id, started.elapsed());
         }

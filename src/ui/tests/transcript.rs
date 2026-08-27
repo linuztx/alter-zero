@@ -955,3 +955,21 @@ fn an_agent_transcript_shows_that_agents_pending_message() {
         "the agent's pending message is missing from its transcript:\n{text}"
     );
 }
+
+#[test]
+fn an_agent_transcript_shows_its_tab_follow_ups_too() {
+    // A Tab follow-up is a pending message like any other, so the Ctrl+O view
+    // must not hide it either (`docs/queue.md`) — and it is the only pending
+    // set here, so a gate that asked about the steered rows alone would.
+    let mut app = App::new();
+    app.begin_stream();
+    app.start_agent_group(false, &[spec("a1", "Fetch Manila weather", false)]);
+    app.open_agent_view("a1");
+    app.queue_agent_followup("and then Elixir");
+    let lines = agent_transcript_lines(&app, 40).expect("the agent view is open");
+    let text = lines.iter().map(plain).collect::<Vec<_>>().join("\n");
+    assert!(
+        text.contains("❯ and then Elixir"),
+        "the agent's queued follow-up turn is missing from its transcript:\n{text}"
+    );
+}

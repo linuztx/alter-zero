@@ -129,6 +129,15 @@ impl Session<'_> {
                 Some(text) => self.app.recall_steered(&text),
                 None => self.app.recall_last_queued(),
             },
+            // The same pull-back inside an agent session view, over that
+            // agent's own loop (docs/queue.md). No `recall_last_queued`
+            // fallback: the key arm already tried that agent's follow-ups and
+            // must never reach the main session's backlog from here.
+            Action::ReclaimAgentChat { id } => {
+                if let Some(text) = self.models.backend().reclaim_agent_input(&id) {
+                    self.app.recall_agent_chat(&id, &text);
+                }
+            }
             Action::Interrupt => self.interrupt_turn()?,
             Action::Compact => {
                 // /compact (docs/compact.md): run codex's summarization turn —

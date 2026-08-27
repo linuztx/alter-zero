@@ -2,6 +2,7 @@
 //! (`docs/footer.md`, `docs/toast.md`, `docs/queue.md`).
 
 use super::*;
+use crate::ui::footer::queued_builds;
 use crate::ui::layout::live_layout;
 use crate::ui::layout::strip_rows;
 use crate::ui::theme::{
@@ -230,6 +231,26 @@ fn an_agent_session_view_shows_that_agents_own_queue() {
 }
 
 #[test]
+fn an_agent_session_view_shows_its_steered_rows_over_its_follow_ups() {
+    // The main view's shape one level down: what the running loop reads next
+    // leads, the Tab follow-ups come after, a blank row dividing each turn
+    // (docs/queue.md).
+    let mut app = App::new();
+    app.begin_stream();
+    app.start_agent_group(false, &[spec("a1", "Fetch Manila weather", false)]);
+    app.queued.push_back(batch(&["a main follow-up"]));
+    app.queue_agent_chat("a1", "now");
+    app.open_agent_view("a1");
+    app.queue_agent_followup("later");
+    let rows: Vec<String> = queued_lines(&app, 40).iter().map(plain).collect();
+    assert_eq!(rows.len(), 3, "one each + the divider: {rows:?}");
+    assert!(rows[0].contains("\u{276f} now"), "{rows:?}");
+    assert!(rows[1].trim().is_empty(), "{rows:?}");
+    assert!(rows[2].contains("\u{276f} later"), "{rows:?}");
+    assert_eq!(queued_rows(&app, 40), 3);
+}
+
+#[test]
 fn an_agent_session_view_with_nothing_queued_reserves_no_rows() {
     let mut app = App::new();
     app.begin_stream();
@@ -238,6 +259,64 @@ fn an_agent_session_view_with_nothing_queued_reserves_no_rows() {
     app.steered.push_back("and a steered one".to_string());
     app.open_agent_view("a1");
     assert_eq!(queued_rows(&app, 40), 0, "the main session's stay off it");
+}
+
+#[test]
+fn the_pending_rows_are_built_once_per_frame_not_once_per_caller() {
+    // `queued_lines` is reached six or seven times a draw — `live_height`,
+    // `preview_budget`, `cursor_position`, `render_live`'s own layout and its
+    // paint — and each build word-wraps and styles the WHOLE backlog. With
+    // the frame chain re-arming every 32 ms that was ~200 full re-renders a
+    // second for rows that never changed: "pressing Tab with a message again
+    // and again lags the TUI" (`docs/queue.md`). The memo makes the repeats
+    // free, and a real change still rebuilds.
+    let mut app = App::new();
+    app.begin_stream();
+    for i in 0..20 {
+        app.queued
+            .push_back(batch(&[&format!("queued message number {i}")]));
+    }
+    let before = queued_builds();
+    let rows = queued_rows(&app, 40);
+    for _ in 0..6 {
+        assert_eq!(queued_rows(&app, 40), rows);
+    }
+    let lines = queued_lines(&app, 40);
+    assert_eq!(lines.len(), usize::from(rows), "rows and lines agree");
+    assert_eq!(
+        queued_builds() - before,
+        1,
+        "one build served every caller of the frame"
+    );
+    // A queued message is a change; so is a resize.
+    app.queued.push_back(batch(&["one more"]));
+    assert_eq!(
+        queued_rows(&app, 40),
+        rows + 2,
+        "the new entry + its divider"
+    );
+    assert_eq!(queued_builds() - before, 2, "the change rebuilt");
+    let _ = queued_lines(&app, 30);
+    assert_eq!(queued_builds() - before, 3, "a new width rebuilt");
+}
+
+#[test]
+fn the_memo_follows_the_agent_session_view() {
+    // Same queues, a different conversation on screen: the memo must not
+    // serve the main session's rows into an agent view (or the reverse).
+    let mut app = App::new();
+    app.begin_stream();
+    app.start_agent_group(false, &[spec("a1", "Fetch Manila weather", false)]);
+    app.queued.push_back(batch(&["a main follow-up"]));
+    app.queue_agent_chat("a1", "an agent one");
+    let main_rows: Vec<String> = queued_lines(&app, 40).iter().map(plain).collect();
+    app.open_agent_view("a1");
+    let agent_rows: Vec<String> = queued_lines(&app, 40).iter().map(plain).collect();
+    app.close_agent_view();
+    let back: Vec<String> = queued_lines(&app, 40).iter().map(plain).collect();
+    assert!(main_rows[0].contains("a main follow-up"), "{main_rows:?}");
+    assert!(agent_rows[0].contains("an agent one"), "{agent_rows:?}");
+    assert_eq!(back, main_rows, "the return serves the main rows again");
 }
 
 #[test]

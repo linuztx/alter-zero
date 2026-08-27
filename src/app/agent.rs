@@ -632,6 +632,124 @@ impl App {
         }
     }
 
+    /// **Tab** in an agent session view: park the text as a **follow-up turn**
+    /// for the agent on screen — its own queue, never the main session's
+    /// ([`queued`](App::queued), which is what Tab used to reach here: a
+    /// message typed into a subagent ran as a follow-up turn of the *lead*
+    /// conversation once the lead's turn ended). It waits below the steered
+    /// rows until that agent's loop settles, when the boundary hands it over
+    /// as a chat continuation. See `docs/queue.md`.
+    ///
+    /// A no-op when no agent session view is open.
+    pub fn queue_agent_followup(&mut self, text: &str) {
+        let Some(id) = self.agent_view.clone() else {
+            return;
+        };
+        if let Some(agent) = self.agents.iter_mut().find(|agent| agent.id == id) {
+            agent.queue_followup(text);
+            self.agents_generation += 1;
+        }
+    }
+
+    /// Tab's whole path in an agent session view: consume the composer,
+    /// record the text for ↑ recall (a queued message recalls like a
+    /// submitted one, exactly as [`queue_draft`](App::queue_draft) does), and
+    /// park it as that agent's next follow-up turn.
+    pub(super) fn queue_agent_draft(&mut self) {
+        let text = self.take_input();
+        self.file_search = None; // the composer is consumed into the queue
+        self.skill_picker = None;
+        self.input_history.record(&text);
+        self.queue_agent_followup(&text);
+    }
+
+    /// Take `id`'s next follow-up turn — the boundary drains one per settle,
+    /// [`drain_next_batch`](App::drain_next_batch)'s twin one level down.
+    /// Takes an id rather than the viewed agent: an agent settles whether or
+    /// not its session is the screen on show.
+    pub fn take_agent_followup(&mut self, id: &str) -> Option<String> {
+        let agent = self.agents.iter_mut().find(|agent| agent.id == id)?;
+        let text = agent.take_followup()?;
+        self.agents_generation += 1;
+        Some(text)
+    }
+
+    /// The ids of every agent with a follow-up turn waiting — what the
+    /// boundary sweeps at each settle. Empty in the ordinary case, so the
+    /// per-tick sweep costs one `is_empty` per roster row.
+    #[must_use]
+    pub fn agents_awaiting_followup(&self) -> Vec<String> {
+        self.agents
+            .iter()
+            .filter(|agent| !agent.followups.is_empty())
+            .map(|agent| agent.id.clone())
+            .collect()
+    }
+
+    /// Alt+Up in an agent session view: pull that agent's **last** follow-up
+    /// back into the composer to edit, extend or drop — the earlier ones stay
+    /// queued ([`recall_last_queued`](App::recall_last_queued)'s twin).
+    /// Returns whether anything came back.
+    pub(super) fn recall_last_agent_followup(&mut self) -> bool {
+        let Some(id) = self.agent_view.clone() else {
+            return false;
+        };
+        let Some(text) = self
+            .agents
+            .iter_mut()
+            .find(|agent| agent.id == id)
+            .and_then(AgentRun::take_last_followup)
+        else {
+            return false;
+        };
+        self.agents_generation += 1;
+        self.recall_input(&text);
+        true
+    }
+
+    /// Alt+Up's whole path in an agent session view: the deliberate backlog
+    /// first — that agent's last **follow-up turn** — and only with none left
+    /// the message its loop has not read yet, which the boundary must ask the
+    /// registry for ([`Action::ReclaimAgentChat`]). The main session's two
+    /// Alt+Up arms, one level down; it never falls through to the main
+    /// session's own backlog, which belongs to a conversation the user is not
+    /// looking at.
+    pub(super) fn recall_agent_pending(&mut self) -> Action {
+        if self.recall_last_agent_followup() {
+            return Action::None;
+        }
+        match self.viewed_agent() {
+            Some(agent) if !agent.queued.is_empty() => Action::ReclaimAgentChat {
+                id: agent.id.clone(),
+            },
+            _ => Action::None,
+        }
+    }
+
+    /// The boundary's answer to [`Action::ReclaimAgentChat`]: the agent's loop
+    /// had not read `text`, so drop its pending row and put it back in the
+    /// composer to edit, extend or drop ([`recall_steered`](App::recall_steered)'s
+    /// twin).
+    pub fn recall_agent_chat(&mut self, id: &str, text: &str) {
+        if let Some(agent) = self.agents.iter_mut().find(|agent| agent.id == id)
+            && let Some(index) = agent.queued.iter().rposition(|pending| pending == text)
+        {
+            agent.queued.remove(index);
+            self.agents_generation += 1;
+        }
+        self.recall_input(text);
+    }
+
+    /// Is the agent on screen still running — i.e. can Tab queue a follow-up
+    /// turn against it? The main session's `is_streaming()` one level down,
+    /// and the same rule follows from it: an idle Tab is a no-op that keeps
+    /// the draft (`docs/queue.md`).
+    #[must_use]
+    pub fn viewed_agent_running(&self) -> bool {
+        self.viewed_agent()
+            .is_some_and(|agent| !agent.status.is_final())
+    }
+
     /// A chat message that started a **continuation run** on a settled agent:
     /// record it into the agent's transcript at once (the run carries it as
     /// its newest user turn, so no round boundary will announce it) and

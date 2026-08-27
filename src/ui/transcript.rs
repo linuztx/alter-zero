@@ -139,12 +139,14 @@ pub fn agent_transcript_lines(app: &App, width: u16) -> Option<Vec<Line<'static>
         lines.extend(tool_full_lines(tool, width));
         lines.push(Line::default());
     }
-    // …and what the user typed into this agent while it works, waiting for its
-    // next round boundary — the main tail's rule (`docs/queue.md`): the Ctrl+O
-    // view never hides a pending message. `queued_lines` reads the viewed
-    // agent's own queue here, so this is that agent's backlog, not the
-    // session's.
-    if !run.queued.is_empty() {
+    // …and what the user typed into this agent while it works — the messages
+    // waiting for its next round boundary **and** the Tab follow-up turns
+    // waiting for it to settle. The main tail's rule (`docs/queue.md`): the
+    // Ctrl+O view never hides a pending message, so both sets gate it or a
+    // follow-up queued on its own would be invisible here. `queued_lines`
+    // reads the viewed agent's own sets, so this is that agent's backlog, not
+    // the session's.
+    if !run.queued.is_empty() || !run.followups.is_empty() {
         lines.extend(queued_lines(app, width));
         lines.push(Line::default());
     }

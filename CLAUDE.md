@@ -1257,7 +1257,27 @@ itself, which a `Steered` echo then folds onto the **settled** entry,
 reopening it, since otherwise that continuation runs invisibly), and a
 delivered message opting the turn out of the Esc-interrupt undo
 (`steered_this_turn` — the undo reads the history tail, which a delivery
-makes a user message again); see
+makes a user message again) — **and the same Tab**, which queues a **follow-up
+turn for that agent** (`AgentRun::followups`, rendered below its steered rows
+and blank-divided from them) that `Session::dispatch_agent_followups` starts as
+its own chat continuation once that loop settles, one entry per settle, asking
+the registry (`ReplySource::agent_ready_for_turn`) rather than the roster
+before it hands one over so a follow-up can't be folded into the settle-window
+continuation as a steer; a stopped agent drops its follow-ups with its steered
+rows; and **Alt+Up** there walks that agent's own sets — its last follow-up,
+then the message its loop has not read (`Action::ReclaimAgentChat` →
+`AgentRegistry::take_last_input`, `SteerQueue::take_last`'s twin) — reaching
+the main backlog never. Tab used to read the *lead's* `is_streaming()` and push
+onto the *lead's* `queued`, so a message typed into a subagent's session ran as
+a follow-up turn of the **main** conversation. **And the pending rows are
+memoized** (`ui::footer`'s `with_queued_lines`, keyed on a content fingerprint
+of the width, whose session is on screen, and both pending sets — content
+rather than a mutation counter because the queues are plain fields the whole
+crate writes directly): they are reached six or seven times per draw and each
+build word-wraps and styles the whole backlog, so with the 32 ms frame chain
+re-arming, a growing queue burned 15% of a core on a screen holding still —
+fifty ~530-character messages measured **75 CPU ticks per five idle seconds
+against a 6-tick empty-queue baseline, now 13**; see
 `docs/queue.md`; plus **`!command` runs a local shell command** (codex's `!`
 shell mode: a leading `!` is **absorbed** into `App::shell_mode` and rendered
 back as the composer's red `! ` prompt — `! pwd`, never `❯ !pwd` — with a red

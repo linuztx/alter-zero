@@ -16,7 +16,7 @@ use super::*;
 /// `VecDeque<QueuedTurn>` drained FIFO, one entry per turn-end; the variant is
 /// the dispatch discriminator, so a text batch goes to the model while a `!`
 /// command runs locally. See `docs/queue.md`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum QueuedTurn {
     /// One or more Enter-batched text messages — sent to the backend as a
     /// single turn (newline-joined). Consecutive Enters append to the last such

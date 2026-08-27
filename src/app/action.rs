@@ -68,6 +68,17 @@ pub enum Action {
     /// boundary hands the text to [`App::recall_steered`]; if it has, there is
     /// nothing to edit and the press does nothing. See `docs/queue.md`.
     ReclaimSteered,
+    /// [`ReclaimSteered`](Action::ReclaimSteered) inside an **agent session
+    /// view**, with no follow-up turn of that agent's left to edit: ask the
+    /// boundary for the message its loop has not read yet. Only the agent
+    /// registry knows whether the round boundary has taken it — if it has
+    /// not, the boundary hands the text to [`App::recall_agent_chat`]; if it
+    /// has, there is nothing to edit and the press does nothing. See
+    /// `docs/queue.md`.
+    ReclaimAgentChat {
+        /// The agent whose session is on screen.
+        id: String,
+    },
     /// The user pressed Esc while a turn was in flight: stop the generation
     /// (cancel + reap the backend, then [`App::interrupt_turn`]) — codex-style.
     Interrupt,

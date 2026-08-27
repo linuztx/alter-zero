@@ -20,13 +20,14 @@ message is a pending message — and a turn that ends **before** reading what wa
 handed to it gives it back, so the follow-up path is also the fallback and
 nothing the user typed is ever dropped.
 
-**The same mechanism runs one level down.** A subagent's session view has this
-exact queue over that agent's own loop: a message typed while it works waits
-above the box and lands on *its* transcript at *its* next round boundary. Main
-and subagent share the seam (`SteerQueue`), the event (`StreamEvent::Steered`)
-and the rendering (`ui::queued_lines`); each reconciles what its loop never
-read, the session at its turn end and an agent inside its own run's thread. See
-`docs/agent-tool.md`.
+**The same mechanism runs one level down — both halves of it.** A subagent's
+session view has this exact queue over that agent's own loop: **Enter** hands a
+message to the run in flight (it waits above the box and lands on *its*
+transcript at *its* next round boundary) and **Tab** opens a follow-up turn that
+runs after that loop settles. Main and subagent share the seam (`SteerQueue`),
+the event (`StreamEvent::Steered`) and the rendering (`ui::queued_lines`); each
+reconciles what its loop never read, the session at its turn end and an agent
+inside its own run's thread. See `docs/agent-tool.md`.
 
 See `CLAUDE.md` for where this sits in the runtime model.
 
@@ -237,8 +238,10 @@ same code:
   run the user **stopped** stays closed (`stopped_by_user`), and its
   `interrupt()` drops the rows outright: a cancelled loop will read nothing, so
   leaving them up would promise a delivery that cannot happen.
-- `ui::queued_lines` renders the **viewed agent's** queue in the agent view and
-  the main session's two sets outside it — same rows, same geometry.
+- `ui::queued_lines` renders the **viewed agent's** two sets in the agent view
+  (its steered rows as one undivided block over its blank-divided Tab
+  follow-ups) and the main session's two sets outside it — same rows, same
+  geometry, same order.
 - **The registry decides, not the roster.** `ReplySource::spawn_agent_chat`
   returns an `AgentChatDelivery`: `Queued` (the loop is running — park the row
   and wait for the round boundary) or `Started` (it was idle — a continuation run
@@ -266,6 +269,54 @@ same code:
 The bug this fixed on that side: the view recorded the message the instant it
 was typed, claiming the agent had read something it had not, and showed no
 pending state at all.
+
+### …and Tab, its follow-up turns
+
+Enter was the half that got ported; **Tab was not**, and the omission was not
+inert. `on_key_conversation`'s Tab arm read `App::is_streaming()` and called
+`App::queue_draft` — the **lead's** stream and the **lead's** backlog — with no
+`agent_view` branch of its own, where the Enter arm has one first. So a message
+Tab-queued inside a subagent's session went onto the main session's queue: it
+showed nowhere (an agent view renders that agent's rows and no others), and
+when the *lead's* turn ended it ran as a follow-up turn of the **main**
+conversation. Typing several before noticing queued several main turns.
+
+So Tab has its own set one level down, exactly as Enter has:
+
+- `AgentRun::followups: VecDeque<String>` is `App::queued`'s twin — one entry
+  per follow-up turn, always its own (Tab means "a separate turn"; there is no
+  Enter-append here, because Enter steers, and no `Shell`/image variant,
+  because neither can ride a chat continuation).
+- `App::queue_agent_draft` is `queue_draft`'s twin: consume the composer,
+  record the text for ↑ recall, park it on the **viewed** agent. Its key arm
+  sits **ahead** of the main one and the main one now excludes the view, so
+  neither can reach the other's queue. Tab against a **settled** agent is the
+  no-op that keeps the draft — the main session's idle-Tab rule, one level
+  down.
+- `App::take_agent_followup(id)` is `drain_next_batch`'s twin, and
+  `Session::dispatch_agent_followups` is `flush_next_queued`'s: one entry per
+  settle, in submission order, each starting its own chat continuation through
+  the existing `agent_chat` seam — so the transcript record, the committed
+  bubble, the turn receipt and the rollout all come for free.
+- `App::recall_agent_pending` is Alt+Up's two arms in one: that agent's last
+  follow-up (`recall_last_agent_followup`, `recall_last_queued`'s twin) and,
+  with none left, the message its loop has not read — `Action::ReclaimAgentChat`
+  → `AgentRegistry::take_last_input` (`SteerQueue::take_last`'s twin, `None`
+  once the round boundary has drained it) → `App::recall_agent_chat`. It never
+  falls through to the main session's backlog: that belongs to a conversation
+  the user is not looking at.
+- `AgentRun::interrupt` drops the follow-ups with the steered rows: each would
+  have continued a run the `x` just cancelled.
+
+**Dispatch asks the registry, not the roster** — the rule `AgentChatDelivery`
+already states, for the same reason. `ReplySource::agent_ready_for_turn` →
+`AgentRegistry::ready_for_turn` answers "settled, not stopped, resumable", and
+`dispatch_agent_followups` (run from the roster tick, ahead of the linger
+sweep) hands nothing over until it says yes. That is what keeps a follow-up its
+**own** turn: handed over inside the settle window it would be accepted by
+`queue_input` and folded into the continuation the agent's own thread is
+starting for messages its last round never read — delivered, but as a steer,
+which is the other key's meaning.
 
 **A subagent-launched background shell's completion note rides the same seam**
 (`docs/background.md`): `tui/background.rs` queues it with `queue_input` and
@@ -321,6 +372,26 @@ while a turn runs, so the rows live naturally in the strip. `queued_rows` /
   exactly what `render_live` paints (they can't drift). `live_height`'s
   terminal-height clamp still bounds the region.
 
+**Both go through a memo**, and that is a fix rather than a flourish. The rows
+are reached **six or seven times per draw** — `live_height`'s and
+`preview_budget`'s row sums, `cursor_position`'s seat, `render_live`'s layout,
+and its paint — and each build word-wraps and styles the *whole* backlog. While
+a turn runs the draw tick re-arms every 32 ms, so a growing queue re-rendered
+rows that had not changed since the last keystroke about two hundred times a
+second. Measured on a stalled turn with fifty ~530-character messages queued:
+**75 CPU ticks per five idle seconds against a 6-tick empty-queue baseline**
+— 15% of a core spent on a screen holding still, which is what "pressing Tab
+with a message again and again lags the TUI" was. `with_queued_lines` builds
+once per frame and serves every caller from the entry: **13 ticks** on the same
+workload, i.e. the queue's own cost down from 69 to 7. The key is a fingerprint
+of everything the build reads — the width, which conversation is on screen, and
+the exact texts of that conversation's two pending sets — **content-derived on
+purpose**: the queues are plain fields several modules and the whole test tree
+write directly, so a mutation counter would be one forgotten bump away from
+painting rows that are no longer there. The `queued_builds` counter is the
+test hook, because the property here is a *cost* and a cost is only pinned by
+counting it.
+
 The **Ctrl+O transcript view shows the backlog too**: `ui::transcript_lines`
 appends `queued_lines` after the live tail — the same inset rows, reading as
 "pending, not yet read" below the in-progress reply — so opening the overlay
@@ -355,7 +426,14 @@ The `tab to queue next turn` binding is listed in the `?` shortcuts band
   command — it wins over the queue Tab.)
 - **Idle Tab is a no-op.** Codex's idle Tab submits like Enter (and inserts a tab
   in a `!` bang draft); ours does nothing — Tab only queues against a running
-  turn, which is all the user asked for.
+  turn, which is all the user asked for. In an agent session view "running"
+  means *that agent's* loop, so Tab beside a settled agent is the same no-op.
+- **A subagent's follow-up is one message, not a batch.** `App::queued`'s
+  entries can hold several (consecutive Enters append when the turn can't be
+  steered, and a reclaim merges the unread ones); an agent's can't, because
+  neither of those paths exists one level down — Enter always steers there, and
+  the unread messages are reconciled by the run's own thread. So
+  `AgentRun::followups` is a `VecDeque<String>`, one entry per Tab.
 - **Alt+Up restores the last entry (like codex), as an editable draft.**
   Codex's `edit_queued_message` pops the most recent queued entry; ours pops the
   most recent **entry** (`pop_back`) — a `Messages` batch newline-joined into the
@@ -363,7 +441,9 @@ The `tab to queue next turn` binding is listed in the `?` shortcuts band
   back as `!command` re-entering shell mode — leaving the earlier entries queued.
   With no follow-up left it reaches the running turn's own messages, which codex
   has no equivalent for: a steer there is gone the moment it is submitted, where
-  ours can still be taken back until the turn reads it.
+  ours can still be taken back until the turn reads it. **Inside an agent
+  session view it is the same two steps over that agent's sets** and stops
+  there — the main session's backlog is another conversation's.
 - **Mid-turn `!` commands now match codex (run locally, not queued as text).** A
   shell command submitted while a turn streams queues as its own `Shell` entry and
   runs locally when its turn comes — codex's action-tagged `RunShell` dispatch.
@@ -412,11 +492,25 @@ The `tab to queue next turn` binding is listed in the `?` shortcuts band
   after it opens a fresh `Messages` batch, and two `!` commands queue as two
   separate `Shell` entries; **Alt+Up over a `Shell` entry re-enters shell mode**
   with the command in the composer.
+- `agents` (its reclaim): `take_last_input` gives back only a message the
+  round boundary has not read, and nothing for an unknown id.
 - `agents` (the subagent's own queue): a message queued into a running agent
   waits on its rows and claims **nothing** on its transcript; its round boundary
   (`StreamEvent::Steered`) turns it into a user message there, after the
   streamed segment ahead of it is finalised; a settled run hands its unread
-  messages back once.
+  messages back once; its **follow-ups** drain oldest-first while Alt+Up takes
+  the newest, a **stop** drops them with the steered rows, and
+  `AgentRegistry::ready_for_turn` is true only for a settled, unstopped,
+  resumable agent (an unknown id takes nothing).
+- `app` (the agent view's Tab): Tab there queues a follow-up on **that agent**
+  and leaves the main session's two sets empty, bumping `agents_generation`;
+  each Tab opens its own entry, in order; Tab against a **settled** agent is a
+  no-op that keeps the draft and still never touches the main queue;
+  `take_agent_followup` drains one per settle; **Alt+Up prefers that agent's
+  follow-up queue** and only then asks the boundary for its unread steered
+  message (`Action::ReclaimAgentChat`, whose answer `recall_agent_chat` puts
+  back in the composer and drops from its rows), reaching the main backlog
+  never.
 - `app` (agent queue): `queue_agent_chat` parks the row and bumps
   `agents_generation` (the transcript cache is told); the round boundary lands
   it on **that agent's** transcript and never the main conversation's;
@@ -425,12 +519,17 @@ The `tab to queue next turn` binding is listed in the `?` shortcuts band
   **first** tool call resolves (not at the end of the turn) and drains the
   queue; `spawn_agent_chat` queues into a running agent and declines with no
   registry attached.
+- `ui` (the memo): one build serves a whole frame's six-plus callers, a queued
+  message rebuilds, and so does a new width; and the memo **follows the agent
+  session view** — the same queues render as different pages depending on
+  whose session is on screen, and the return serves the main rows again.
 - `ui` (queue): `queued_rows` is 0 empty / counts a batch's messages / counts a
   long message's wrapped rows / **counts the blank between batches**;
   `queued_lines` styles each message like a user message, **divides turns with a
   blank row**, renders a `Shell` entry with the red `! ` `Role::Shell` header,
   shows the steered messages **before** the follow-ups, and in an **agent
-  session view** shows that agent's queue and none of the main session's;
+  session view** shows that agent's queue and none of the main session's — its
+  steered rows leading its blank-divided Tab follow-ups, the main view's shape;
   `live_height` grows with the queue; `render_live` draws it above the box;
   `transcript_lines` lists the backlog after the live tail in the same inset
   style, **including a message handed to the running turn** (with the cache
@@ -465,6 +564,11 @@ The `tab to queue next turn` binding is listed in the `?` shortcuts band
   overlay* (the column-0 `❯ world` entry appears and the turn runs on to its
   `Done for` summary, the overlay still open), and the Ctrl+O return flushes it
   all into the inline view.
+- `scripts/smoke.sh` Phase 101 (the subagent's **Tab** queue): open the demo
+  subagent's session while it works and Tab two messages — both wait inset above
+  the box, then each runs as its own continuation turn on that agent's
+  transcript, in order, once its loop settles, and the Esc return shows no
+  trace of either in the main conversation (which is where they used to run).
 - `scripts/smoke.sh` Phase 96 (the subagent's queue): open the demo subagent's
   session while it works and type a message — it waits inset above the box, its
   loop takes it at its own round boundary (after its `write` batch) where it

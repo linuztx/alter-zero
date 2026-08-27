@@ -138,6 +138,16 @@ pub struct AgentRun {
     /// outright ([`interrupt`](AgentRun::interrupt)): its loop is cancelled,
     /// so a row left up would promise a delivery that cannot happen.
     pub queued: Vec<String>,
+    /// **Follow-up turns** the user queued into this agent's session with
+    /// **Tab** — the main session's [`queued`](crate::app::App::queued), one
+    /// level down (`docs/queue.md`). Where [`queued`](Self::queued) rides the
+    /// running loop's next round boundary, each of these waits for that loop
+    /// to *settle* and then runs as its own chat continuation, one per
+    /// settle, in submission order. They render above the box beneath the
+    /// steered rows, blank-divided, exactly as a Tab follow-up does in the
+    /// main view. A run the user **stopped** drops these too
+    /// ([`interrupt`](AgentRun::interrupt)) — nothing will continue it.
+    pub followups: VecDeque<String>,
     /// Its live tool calls, front running — the parallel-batch queue shape.
     pub tool_queue: VecDeque<ToolCall>,
     /// The final response text once it settles (what the caller received).
@@ -219,6 +229,7 @@ impl AgentRun {
             })],
             streaming: None,
             queued: Vec::new(),
+            followups: VecDeque::new(),
             tool_queue: VecDeque::new(),
             result: None,
             error: None,
@@ -615,8 +626,11 @@ impl AgentRun {
         // is still queued for it: drop the rows rather than leave them
         // promising a delivery that cannot happen (`docs/queue.md`). Only a
         // *stop* does this — a natural settle with a message still queued
-        // hands it back for a continuation to deliver.
+        // hands it back for a continuation to deliver. The Tab follow-ups go
+        // with them: each would have run as a continuation of a run that is
+        // now cancelled.
         self.queued.clear();
+        self.followups.clear();
         self.status = AgentStatus::Interrupted;
         true
     }
@@ -677,6 +691,27 @@ impl AgentRun {
     /// is what the main session's queue avoids too (`docs/queue.md`).
     pub fn queue_chat(&mut self, text: &str) {
         self.queued.push(text.to_string());
+    }
+
+    /// Park a **follow-up turn** (Tab) for this agent: it waits below the
+    /// steered rows until the agent's loop settles, when the boundary hands
+    /// it over as a chat continuation — the main session's `queue_draft`, one
+    /// level down (`docs/queue.md`). Always its own entry: Tab means "a
+    /// separate turn", here as in the main view.
+    pub fn queue_followup(&mut self, text: &str) {
+        self.followups.push_back(text.to_string());
+    }
+
+    /// Take the **next** follow-up turn (the boundary drains one per settle,
+    /// `App::drain_next_batch`'s twin). `None` when nothing is waiting.
+    pub fn take_followup(&mut self) -> Option<String> {
+        self.followups.pop_front()
+    }
+
+    /// Take the **last** follow-up back (Alt+Up's pull into the composer,
+    /// `App::drain_last_batch`'s twin), leaving the earlier ones queued.
+    pub fn take_last_followup(&mut self) -> Option<String> {
+        self.followups.pop_back()
     }
 
     /// A follow-up chat turn began (a continuation run): reopen a settled
@@ -1149,6 +1184,34 @@ impl AgentRegistry {
             .slots
             .get(id)
             .is_some_and(|slot| !slot.pending_inputs.is_empty())
+    }
+
+    /// Take the **last** message queued into this agent's loop back — Alt+Up's
+    /// pull into the composer inside its session view, and
+    /// [`SteerQueue::take_last`](crate::steer::SteerQueue::take_last)'s twin.
+    /// `None` once the round boundary has drained it, which is the only
+    /// honest answer: a message the loop has read is in its context now.
+    pub fn take_last_input(&self, id: &str) -> Option<String> {
+        let mut inner = self.inner.lock().expect("agent registry poisoned");
+        inner.slots.get_mut(id)?.pending_inputs.pop()
+    }
+
+    /// Can this agent take a **new turn** right now — settled, not stopped,
+    /// and with a stored conversation a continuation can resume from? The
+    /// question the Tab follow-up queue's dispatch asks before it hands a
+    /// message over (`docs/queue.md`): the registry is the only honest
+    /// answer, exactly as it is for [`spawn_agent_chat`], and asking it is
+    /// what keeps a follow-up its **own** turn instead of a steer folded into
+    /// a run that is still going.
+    ///
+    /// [`spawn_agent_chat`]: crate::stream::ReplySource::spawn_agent_chat
+    #[must_use]
+    pub fn ready_for_turn(&self, id: &str) -> bool {
+        let inner = self.inner.lock().expect("agent registry poisoned");
+        inner
+            .slots
+            .get(id)
+            .is_some_and(|slot| !slot.busy && !slot.killed && slot.messages.is_some())
     }
 
     /// Begin a chat continuation on a settled agent: reclaim its stored
@@ -1815,6 +1878,66 @@ mod tests {
         );
         assert_eq!(registry.take_pending_inputs(&id), ["one more thing"]);
         assert!(!registry.has_pending_inputs(&id), "drained");
+    }
+
+    #[test]
+    fn take_last_input_reclaims_only_an_undelivered_message() {
+        // Alt+Up inside the agent's session view: the registry is the only
+        // side that knows whether the round boundary has read it yet.
+        let registry = test_registry();
+        let (id, _cancel) = registry.register(GENERAL_PURPOSE);
+        assert!(registry.queue_input(&id, "first"));
+        assert!(registry.queue_input(&id, "second"));
+        assert_eq!(registry.take_last_input(&id).as_deref(), Some("second"));
+        assert_eq!(registry.take_pending_inputs(&id), ["first"]);
+        assert_eq!(
+            registry.take_last_input(&id),
+            None,
+            "a message the loop has read cannot come back"
+        );
+        assert_eq!(registry.take_last_input("nope"), None);
+    }
+
+    #[test]
+    fn ready_for_turn_is_true_only_for_a_settled_unstopped_agent() {
+        // The Tab follow-up queue asks this before dispatching, so a
+        // follow-up becomes its own continuation turn rather than a steer
+        // into a run still going (docs/queue.md).
+        let registry = test_registry();
+        let (id, _cancel) = registry.register(GENERAL_PURPOSE);
+        assert!(!registry.ready_for_turn(&id), "still running");
+        registry.finish(&id, Ok("done".into()), vec![ChatMessage::user("hi")]);
+        assert!(registry.ready_for_turn(&id), "settled with a conversation");
+        assert!(
+            !registry.ready_for_turn("nope"),
+            "an unknown id takes nothing"
+        );
+        let (killed, _c2) = registry.register(GENERAL_PURPOSE);
+        registry.finish(&killed, Ok("done".into()), vec![ChatMessage::user("hi")]);
+        registry.kill(&killed);
+        assert!(
+            !registry.ready_for_turn(&killed),
+            "the `x` said stop — nothing continues it"
+        );
+    }
+
+    #[test]
+    fn a_stopped_agent_drops_its_follow_up_turns_too() {
+        let mut run = AgentRun::new("a1", "Do the thing", GENERAL_PURPOSE, "prompt", false);
+        run.queue_chat("read next");
+        run.queue_followup("and then this");
+        assert!(run.interrupt());
+        assert!(run.queued.is_empty() && run.followups.is_empty());
+    }
+
+    #[test]
+    fn follow_ups_drain_oldest_first_and_alt_up_takes_the_newest() {
+        let mut run = AgentRun::new("a1", "Do the thing", GENERAL_PURPOSE, "prompt", false);
+        run.queue_followup("first");
+        run.queue_followup("second");
+        assert_eq!(run.take_last_followup().as_deref(), Some("second"));
+        assert_eq!(run.take_followup().as_deref(), Some("first"));
+        assert_eq!(run.take_followup(), None);
     }
 
     #[test]

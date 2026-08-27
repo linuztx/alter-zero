@@ -198,7 +198,22 @@ zero new plumbing. The TUI cell is a new `HistoryItem::AgentNotice` —
   back (`Session::reclaim_agent_chat`): a **naturally finished** agent gets them
   straight back as a continuation, while a failed or `x`-stopped one keeps
   nothing — there is nothing to continue, and restarting an agent the user just
-  killed is the opposite of what the key meant. Esc (empty
+  killed is the opposite of what the key meant. **Tab is the other half**, and
+  it too is the main session's key one level down: it queues a **follow-up
+  turn** for that agent (`AgentRun::followups`, `App::queue_agent_draft`),
+  rendered below the steered rows and blank-divided from them, which
+  `Session::dispatch_agent_followups` starts as its own chat continuation once
+  that agent's loop settles — one entry per settle, in submission order,
+  through the same `agent_chat` seam Enter's idle path uses. It asks
+  `ReplySource::agent_ready_for_turn` (the registry, never the roster) before
+  handing one over, so a follow-up cannot be folded into the settle-window
+  continuation as a steer; a stopped agent drops them with its steered rows;
+  and **Alt+Up** there is the main session's two steps over that agent's own
+  sets — its last follow-up, then (via `ReplySource::reclaim_agent_input` →
+  `AgentRegistry::take_last_input`, `None` once its round boundary has read
+  it) the message still waiting — reaching the main session's backlog never. Tab used to read the **lead's** stream and push onto
+  the **lead's** queue, so a message typed into a subagent ran as a follow-up
+  turn of the main conversation (`docs/queue.md`). Esc (empty
   composer) returns to the main session (Purge-rebuild of the main
   transcript, mid-stream partial included). While the view is up the main
   turn's commits are suppressed exactly like the Ctrl+O overlay (invariant

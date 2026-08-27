@@ -101,6 +101,25 @@ pub trait ReplySource {
     fn spawn_agent_chat(&self, _id: &str, _text: &str) -> AgentChatDelivery {
         AgentChatDelivery::Declined
     }
+
+    /// Can this subagent take a **new turn** right now — settled, not
+    /// stopped, and resumable? The Tab follow-up queue asks before handing
+    /// one over, so the message opens its own continuation instead of being
+    /// queued as a steer into a run that is still going (`docs/queue.md`).
+    /// The registry answers, never the roster, for the reason
+    /// [`AgentChatDelivery`] spells out. The default (a backend with no
+    /// subagents) is `false`: nothing to continue.
+    fn agent_ready_for_turn(&self, _id: &str) -> bool {
+        false
+    }
+
+    /// Take back the **last** message queued into this subagent's running
+    /// loop — Alt+Up inside its session view, the main session's
+    /// [`SteerQueue::take_last`](crate::steer::SteerQueue::take_last). `None`
+    /// once its round boundary has read it, which is the only honest answer.
+    fn reclaim_agent_input(&self, _id: &str) -> Option<String> {
+        None
+    }
 }
 
 /// What became of a message sent into a subagent's session — the registry's

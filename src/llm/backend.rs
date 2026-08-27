@@ -958,6 +958,16 @@ impl ReplySource for LlmBackend {
         );
         AgentChatDelivery::Started
     }
+
+    fn agent_ready_for_turn(&self, id: &str) -> bool {
+        self.agents
+            .as_ref()
+            .is_some_and(|registry| registry.ready_for_turn(id))
+    }
+
+    fn reclaim_agent_input(&self, id: &str) -> Option<String> {
+        self.agents.as_ref()?.take_last_input(id)
+    }
 }
 
 /// Everything a subagent run needs off the backend, bundled so the launcher

@@ -6,6 +6,9 @@
 use super::theme::*;
 use super::wrap::{cols, truncate_cols};
 use super::*;
+use std::cell::{Cell, RefCell};
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 
 /// How many rows the pending messages occupy in the strip at `width`: the total
 /// wrapped height of every one of them (each styled like a user message),
@@ -17,7 +20,98 @@ use super::*;
 pub fn queued_rows(app: &App, width: u16) -> u16 {
     // Saturating: the queue is uncapped, and a plain `as` cast would silently
     // wrap a >65,535-row backlog into a tiny (wrong) height.
-    queued_lines(app, width).len().min(usize::from(u16::MAX)) as u16
+    with_queued_lines(app, width, |lines| {
+        lines.len().min(usize::from(u16::MAX)) as u16
+    })
+}
+
+/// The frame's memoized pending rows: `queued_lines`'s build, kept until
+/// something it reads changes.
+struct QueuedMemo {
+    /// A fingerprint of every input [`build_queued_lines`] reads — the width,
+    /// which conversation is on screen, and the exact text of both its pending
+    /// sets. Content-derived rather than a mutation counter on purpose: the
+    /// queues are plain fields several modules (and the whole test tree) write
+    /// directly, so a counter would be one forgotten bump away from painting
+    /// rows that are no longer there.
+    signature: u64,
+    lines: Vec<Line<'static>>,
+}
+
+thread_local! {
+    /// One memo per thread: the loop draws on one, and each test thread gets
+    /// its own (a fingerprint match means the *inputs* match, so a shared
+    /// entry could only ever serve identical rows anyway).
+    static QUEUED_MEMO: RefCell<Option<QueuedMemo>> = const { RefCell::new(None) };
+    /// How many times the rows have actually been **built** on this thread —
+    /// the memo's own test hook (see [`queued_builds`]).
+    static QUEUED_BUILDS: Cell<u64> = const { Cell::new(0) };
+}
+
+/// How many times [`queued_lines`] has built its rows on this thread, as
+/// opposed to answering from the memo. The property the memo exists for is a
+/// *cost*, and a cost is only pinned by counting it.
+#[cfg(test)]
+#[must_use]
+pub(crate) fn queued_builds() -> u64 {
+    QUEUED_BUILDS.with(Cell::get)
+}
+
+/// Run `f` over the pending rows, building them only when the memo's
+/// fingerprint has moved.
+///
+/// **Why this is memoized at all.** `queued_lines` is reached six or seven
+/// times per draw — [`live_height`] and [`preview_budget`]'s row sums,
+/// [`cursor_position`]'s seat, `render_live`'s layout, and its paint — and
+/// each build word-wraps and styles the *whole* backlog. While a turn runs the
+/// draw tick re-arms every 32 ms, so a growing queue re-rendered rows that had
+/// not changed since the last keystroke about two hundred times a second.
+/// Measured on a stalled turn with fifty ~530-character messages queued: **75
+/// CPU ticks per five idle seconds against a 6-tick empty-queue baseline** —
+/// 15% of a core spent on a screen holding still, which is what "pressing Tab
+/// with a message again and again lags the TUI" was. One build now serves the
+/// whole frame: **13 ticks** on the same workload, the queue's own cost down
+/// from 69 to 7.
+fn with_queued_lines<T>(app: &App, width: u16, f: impl FnOnce(&[Line<'static>]) -> T) -> T {
+    let signature = queued_signature(app, width);
+    let stale = QUEUED_MEMO.with(|memo| {
+        memo.borrow()
+            .as_ref()
+            .is_none_or(|entry| entry.signature != signature)
+    });
+    if stale {
+        // Built outside the cell's borrow: nothing in the builder may re-enter
+        // it, and not holding it is how that stays true rather than a promise.
+        let lines = build_queued_lines(app, width);
+        QUEUED_BUILDS.with(|builds| builds.set(builds.get().saturating_add(1)));
+        QUEUED_MEMO.with(|memo| *memo.borrow_mut() = Some(QueuedMemo { signature, lines }));
+    }
+    QUEUED_MEMO.with(|memo| {
+        f(memo
+            .borrow()
+            .as_ref()
+            .map_or(&[][..], |entry| entry.lines.as_slice()))
+    })
+}
+
+/// The fingerprint the memo turns on: the width, **which** conversation's rows
+/// these are, and the exact texts of that conversation's two pending sets —
+/// precisely what [`build_queued_lines`] reads and nothing else.
+fn queued_signature(app: &App, width: u16) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    width.hash(&mut hasher);
+    if let Some(agent) = app.viewed_agent() {
+        // The branch itself is part of the key: the same texts render as a
+        // different page depending on whose session is on screen.
+        0u8.hash(&mut hasher);
+        agent.queued.hash(&mut hasher);
+        agent.followups.hash(&mut hasher);
+    } else {
+        1u8.hash(&mut hasher);
+        app.steered.hash(&mut hasher);
+        app.queued.hash(&mut hasher);
+    }
+    hasher.finish()
 }
 
 /// The styled lines for the messages waiting above the box: each rendered like
@@ -33,14 +127,21 @@ pub fn queued_rows(app: &App, width: u16) -> u16 {
 /// - the **main** view shows what the running turn is about to read
 ///   ([`App::steered`], first — it happens next) over the follow-up turns
 ///   ([`App::queued`]);
-/// - an **agent session view** shows that agent's own queue
-///   ([`AgentRun::queued`](crate::agents::AgentRun::queued)) and nothing else:
-///   the view is the agent's world, and the main session's rows re-appear on
-///   return.
+/// - an **agent session view** shows that agent's own two sets — what its
+///   running loop is about to read
+///   ([`AgentRun::queued`](crate::agents::AgentRun::queued)) over its Tab
+///   follow-up turns ([`AgentRun::followups`](crate::agents::AgentRun::followups))
+///   — and nothing else: the view is the agent's world, and the main
+///   session's rows re-appear on return.
 ///
 /// Empty when nothing is pending.
 #[must_use]
 pub fn queued_lines(app: &App, width: u16) -> Vec<Line<'static>> {
+    with_queued_lines(app, width, <[Line<'static>]>::to_vec)
+}
+
+/// [`queued_lines`]' actual build — the one the memo caches.
+fn build_queued_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     let inner = width.saturating_sub(cols(QUEUED_INDENT) as u16);
     let mut lines = Vec::new();
     // A blank row divides each pending turn from the next, so Tab-opened
@@ -56,7 +157,13 @@ pub fn queued_lines(app: &App, width: u16) -> Vec<Line<'static>> {
             .map(indent_queued_line)
     };
     if let Some(agent) = app.viewed_agent() {
+        // The main branch's shape exactly: what the running loop reads next
+        // leads as one undivided block, its Tab follow-up turns come after,
+        // a blank row dividing each of them (`docs/queue.md`).
         for text in &agent.queued {
+            lines.extend(user_rows(text));
+        }
+        for text in &agent.followups {
             divide(&mut lines);
             lines.extend(user_rows(text));
         }
