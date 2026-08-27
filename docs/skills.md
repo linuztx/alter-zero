@@ -147,7 +147,11 @@ a file that is fixed and broken again reports again.
 ## The listing
 
 Every turn, the derived context leads with the project doc (AGENTS.md) and
-then the skill listing, wrapped in the reference's `<system-reminder>`:
+then the session's `<system-reminder>`, whose first section is the skill
+listing (its second is the subagent types the `Agent` tool can launch —
+`docs/subagents.md`; either section may be absent, and the wrapper is
+`subagents::reminder_message`, of which `skills::listing_message` is the
+skills-only case a launched subagent gets):
 
 ```
 <system-reminder>
@@ -155,11 +159,16 @@ The following skills are available for use with the Skill tool:
 
 - commit: Create a git commit with staged changes
 - dataviz: Use when creating any chart, graph, plot or dashboard…
+
+Available agent types for the Agent tool:
+
+- general-purpose: General-purpose agent for researching complex questions… (Tools: *)
+- explore: Read-only search agent for broad fan-out searches… (Tools: Bash, Read, Skill, mcp__*)
 </system-reminder>
 ```
 
-It is a **leading fragment**, not history: `App::skill_listing` is rendered at
-the boundary and `context::context_messages_full` injects it in front of the
+It is a **leading fragment**, not history: `App::system_reminder` is rendered
+at the boundary and `context::context_messages_full` injects it in front of the
 conversation — so Ctrl+D shows it, `App::estimate_context_tokens` counts it,
 and it survives a `/compact` at the front exactly like the project doc. It
 never enters `history`, so it cannot be backtracked past or recorded twice.

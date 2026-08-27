@@ -52,14 +52,17 @@ pub trait ReplySource {
         None
     }
 
-    /// The system prompt a **subagent** launched by this backend is sent —
-    /// surfaced like [`system_prompt`](ReplySource::system_prompt) so the
-    /// *agent session view's* Ctrl+D shows the real thing
-    /// (`docs/agent-tool.md`). Defaults to the backend's own prompt: without
-    /// a distinct subagent prompt a launched agent would get the same one.
-    /// `LlmBackend` overrides this with the main prompt + the subagent note
-    /// (`prompts/subagent.md`).
-    fn agent_system_prompt(&self) -> Option<String> {
+    /// The system prompt a **subagent** of `agent_type` is sent — surfaced
+    /// like [`system_prompt`](ReplySource::system_prompt) so the *agent
+    /// session view's* Ctrl+D shows the real thing (`docs/agent-tool.md`).
+    /// Defaults to the backend's own prompt: without a distinct subagent
+    /// prompt a launched agent would get the same one. `LlmBackend` overrides
+    /// this with the type's definition — its own body when it has one, else
+    /// the main prompt — plus the subagent note (`prompts/subagent.md`,
+    /// `docs/subagents.md`), which is why it takes the type: two types can be
+    /// sent different prompts.
+    fn agent_system_prompt(&self, agent_type: &str) -> Option<String> {
+        let _ = agent_type;
         self.system_prompt()
     }
 

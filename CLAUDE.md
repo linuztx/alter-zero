@@ -39,7 +39,7 @@ build (`unsafe_code = "forbid"`, plus `warnings` and `clippy::all` denied).
 ## Architecture
 
 A **library** (`src/lib.rs` → `app`, `stream`, `ui`, `term`, `frame`, `paste`,
-`session`, `subprocess`, `history`, `textarea`, `file_search`, `clipboard`, `context`, `background`, `scratchpad`, `agents`, `ask`, `tasks`, `skills`, `steer`, `mcp`, `trust`, `checkpoint`, `project_doc`, `permission`, `settings`, `cli`, `links`) holds the logic; **`src/main.rs`** is a 77-line shell —
+`session`, `subprocess`, `history`, `textarea`, `file_search`, `clipboard`, `context`, `background`, `scratchpad`, `agents`, `subagents`, `frontmatter`, `ask`, `tasks`, `skills`, `steer`, `mcp`, `trust`, `checkpoint`, `project_doc`, `permission`, `settings`, `cli`, `links`) holds the logic; **`src/main.rs`** is a 77-line shell —
 the detached-exec hook, the CLI resolution, the viewport, the loop — over
 **`src/tui/`**, the binary-private tree that drives the codex-style **async
 (tokio) `select!`** loop (`event_loop`, `actions`, `turn`, `stream`, `agent`,
@@ -348,7 +348,27 @@ summary) in `docs/background.md`; and the **`Agent` tool** (Claude-Code-style su
 `docs/agent-tool.md`: the model launches autonomous side-agents —
 `description`/`prompt`/`subagent_type`/`run_in_background` (default true) —
 each running its own `run_agent` tool loop over a fresh context on its own
-thread, reporting on a dedicated `agents::AgentEvent` channel (a seventh
+thread, the **type** coming from an `agents/*.md` **definition** on disk
+(`docs/subagents.md`: Claude Code's agent files — YAML frontmatter naming and
+describing the type, optionally pinning a `model:` (`inherit` by default) and
+a `tools:` allowlist (omit for all; `Bash, Read, Skill, mcp__deepwiki__*` —
+capitalized built-ins, MCP wire names, a trailing `*` globbing a server), over
+an optional body that **replaces the persona** for that type while the
+environment/scratchpad blocks and the subagent note stay; the built-in
+`general-purpose`/`explore` are seeded into `~/.alter-zero/agents/` on first
+run — editable files, never clobbered, with the embedded copies as the
+last-resort fallback since the schema's default type must always resolve —
+discovered from `{cwd}/.alter-zero/agents`, the project root's, then
+`{config_home}/agents` (**no `.claude/agents`**: a `SKILL.md` is inert
+markdown, an agent file names a model and a tool reach), **re-walked at every
+turn start** beside the skills so a type the agent just wrote is launchable
+now, an unknown `subagent_type` resolving as a recoverable error listing the
+real ones, and the whole roster riding the context as the **second section of
+the same `<system-reminder>` the skills listing opens** — `- {name}:
+{description} (Tools: …)`, budgeted identically, gated on the `agent` tool
+actually being on the wire so the offline dummy's context is unchanged;
+`ALTER_ZERO_AGENTS_DIR` relocates the roots; the allowlist guards the
+**executor** too, since a model can name a tool it was never offered), reporting on a dedicated `agents::AgentEvent` channel (a seventh
 `select!` source — agents outlive turns); a foreground group shows the live
 breathing-grey `● Running {n} agents…` tree (per-agent description · tool uses · tokens
 · a **sticky** `{Name}: {detail}` activity — one grammar for every call
@@ -905,7 +925,13 @@ rather than **dropping** a skill, since one you can't see is one you can't
 invoke) that `context::context_messages_full` injects as the derived
 context's second leading fragment, right behind `user_instructions` and in
 front of everything else, a fixed position because both are re-rendered per
-turn and a fragment that moved would invalidate the prompt cache behind it.
+turn and a fragment that moved would invalidate the prompt cache behind it —
+**one** reminder with a section each for the skills and the subagent types
+(`subagents::reminder_message` wraps both, `skills::listing_message` being
+its skills-only case; `App::system_reminder` holds the rendered text,
+`docs/subagents.md`), since they are one kind of thing (what this session can
+reach that the tool schemas don't name) and a second fragment would be a
+second place the cached prefix can shift.
 A call resolves through the **`ToolOutcome::context` two-text split the ask
 tool already had** rather than a parallel mechanism: `output` is the whole
 visible surface — `● Skill(dataviz)` over one green `⎿ Successfully loaded

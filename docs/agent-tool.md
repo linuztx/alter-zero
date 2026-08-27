@@ -37,15 +37,20 @@ backend only — a subagent never gets the `agent` tool, so agents can't nest:
 | --- | --- | --- |
 | `description` | required | a short (3-5 word) task label — the tree rows / footer list show it |
 | `prompt` | required | the full task for the agent to perform |
-| `subagent_type` | optional | `general-purpose` (default, all tools) or `explore` (read-only: `bash`+`read`) |
+| `subagent_type` | optional | which **agent definition** to launch — `general-purpose` (the default) and `explore` ship as `agents/*.md` files, and a project or the user can add more; the available types and their tools are named in the `<system-reminder>` listing (`docs/subagents.md`). An unknown type resolves as a recoverable error listing the real ones |
 | `run_in_background` | optional | **default `true`** — the call returns at once with the launch acknowledgement (the agent named by its description; no id — nothing model-facing takes one back); `false` blocks the turn until the agent finishes and returns its final response |
 
-(The reference schema's `model` / `isolation` params are deliberately not
-implemented — out of scope for this TUI.)
+(The reference schema's `isolation` param is deliberately not implemented —
+out of scope for this TUI. Its `model` is here, but as a property of the
+*definition* rather than of the call: which model a type runs on is a
+standing choice about that type, not something to re-decide per launch.)
 
-A subagent's conversation starts fresh: the same persona/environment system
-prompt plus a subagent note (`prompts/subagent.md` — "your final message is
-returned to the caller"), then the `prompt` as the first user message. It runs
+A subagent's conversation starts fresh: its type's system prompt — the
+definition's own body when it has one, else the session's
+persona/environment prompt — plus a subagent note (`prompts/subagent.md` —
+"your final message is returned to the caller"), then the `prompt` as the
+first user message. Its **tool set** and its **model** come from the same
+definition (`docs/subagents.md`). It runs
 `llm::agent::run_agent` with its own executor and its own cancel token, on its
 own thread. The executor carries the **shared background registry** too, so a
 subagent's `bash` can `run_in_background` like the main turn's — the shell

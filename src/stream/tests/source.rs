@@ -34,8 +34,15 @@ fn agent_system_prompt_defaults_to_the_backends_own_prompt() {
             Some("base".to_string())
         }
     }
-    assert_eq!(Fixed.agent_system_prompt().as_deref(), Some("base"));
-    assert!(DummyAi::new().agent_system_prompt().is_none());
+    assert_eq!(
+        Fixed.agent_system_prompt("general-purpose").as_deref(),
+        Some("base")
+    );
+    assert!(
+        DummyAi::new()
+            .agent_system_prompt("general-purpose")
+            .is_none()
+    );
 }
 
 #[test]

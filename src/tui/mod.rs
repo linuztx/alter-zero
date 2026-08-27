@@ -231,6 +231,13 @@ pub(crate) struct Session<'t> {
     /// mid-session — or written by the agent itself — is live on the next
     /// turn instead of waiting for a restart.
     skill_registry: alter_zero::skills::SkillRegistry,
+    /// The subagent definitions on disk (`docs/subagents.md`) — the
+    /// `agents/*.md` types a launch resolves `subagent_type` against, and the
+    /// source of the agent half of the `<system-reminder>`. Re-walked at
+    /// every turn start ([`Session::rescan_agents`]) beside the skills, so a
+    /// type added mid-session — or written by the agent itself — is
+    /// launchable on the next turn.
+    subagents: alter_zero::subagents::SubagentRegistry,
     /// The MCP servers (`docs/mcp.md`): every declared server's live
     /// connection state, the tool specs the backend folds in, and the OAuth
     /// flows. `None` when `ALTER_ZERO_MCP` turned the feature off.
@@ -249,6 +256,10 @@ pub(crate) struct Session<'t> {
     /// each walk's errors, so a file that is fixed and broken again reports
     /// again (`alter_zero::skills::unreported_errors`).
     reported_skill_errors: std::collections::BTreeSet<std::path::PathBuf>,
+    /// The agent definition files whose parse failure has already been raised
+    /// as a toast — [`reported_skill_errors`](Self::reported_skill_errors)'s
+    /// twin, one feature over (`alter_zero::subagents::unreported_errors`).
+    reported_agent_errors: std::collections::BTreeSet<std::path::PathBuf>,
     /// Mirrors history to the `/resume` rollout file (`docs/resume.md`).
     recorder: SessionRecorder,
     /// The cross-session input history (`docs/history-persistence.md`).

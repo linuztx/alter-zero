@@ -111,7 +111,7 @@ impl Session<'_> {
             alter_zero::llm::skill::load_skills(&self.cwd, config::config_home().as_deref());
         self.skill_registry.replace(skills);
         self.sync_setting_availability();
-        self.sync_skill_listing();
+        self.sync_system_reminder();
         self.models.refresh_skills();
         // A `SKILL.md` that stopped parsing says so — once. Silence here is
         // what makes "the model ignores my skill" and "I typo'd the
@@ -119,6 +119,28 @@ impl Session<'_> {
         let fresh = alter_zero::skills::unreported_errors(&self.reported_skill_errors, &errors);
         self.reported_skill_errors = errors.iter().map(|error| error.path.clone()).collect();
         self.report_skill_errors(&fresh);
+    }
+
+    /// Re-walk the agent-definition roots (`docs/subagents.md`), beside the
+    /// `SKILL.md` rescan and for the same reason: a startup-only discovery
+    /// froze the session at what it booted with, so a type you added — or one
+    /// the agent had just written *for* you — was unlaunchable until a
+    /// restart. The cost is three `read_dir`s against a turn about to hit the
+    /// network.
+    ///
+    /// The registry is the shared handle every backend holds, so replacing
+    /// its contents is all a launch needs; only the listing has to be
+    /// re-rendered. No backend rebuild: the `agent` spec's shape doesn't
+    /// depend on which types exist (the tool set does not name them — the
+    /// reminder does).
+    pub(crate) fn rescan_agents(&mut self) {
+        let (agents, errors) =
+            alter_zero::llm::subagent::load_agents(&self.cwd, config::config_home().as_deref());
+        self.subagents.replace(agents);
+        self.sync_system_reminder();
+        let fresh = alter_zero::subagents::unreported_errors(&self.reported_agent_errors, &errors);
+        self.reported_agent_errors = errors.iter().map(|error| error.path.clone()).collect();
+        self.report_agent_errors(&fresh);
     }
 
     /// Apply the `/skills` menu's toggle: make it true of the running session
@@ -140,7 +162,7 @@ impl Session<'_> {
             disabled.insert(name.to_string());
         }
         self.skill_registry.set_disabled(disabled.clone());
-        self.sync_skill_listing();
+        self.sync_system_reminder();
         // The tool set is decided at attach time, so the rebuild is what
         // withdraws (or restores) the spec when the last skill goes off/on.
         self.models.refresh_skills();
@@ -182,7 +204,7 @@ impl Session<'_> {
             // a tool it was told it had (`docs/skills.md`).
             SettingKey::Tools => {
                 self.models.set_tools(settings.tools);
-                self.sync_skill_listing();
+                self.sync_system_reminder();
             }
             // The retry budget rides every round of every turn — the main
             // one's and a subagent's.
@@ -213,7 +235,7 @@ impl Session<'_> {
             // stops (or starts) knowing about skills (`docs/skills.md`).
             SettingKey::Skills => {
                 self.models.set_skills(settings.skills_active());
-                self.sync_skill_listing();
+                self.sync_system_reminder();
             }
             // Read where they are used — nothing to rebuild.
             SettingKey::HideThinking | SettingKey::AutoCompact => {}

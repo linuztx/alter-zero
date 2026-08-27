@@ -23,7 +23,7 @@ pub struct SkillPicker {
 
 impl App {
     /// Inject the skills the composer may mention (called at the boundary
-    /// beside the `<system-reminder>` listing render — `set_skill_listing`'s
+    /// beside the `<system-reminder>` listing render — `set_system_reminder`'s
     /// sibling, so the picker and the listing can never disagree about what
     /// is offered). The **enabled** skills only: a disabled skill is one the
     /// registry's lookup refuses, so advertising it here would complete a

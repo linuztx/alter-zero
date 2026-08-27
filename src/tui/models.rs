@@ -82,6 +82,11 @@ pub(crate) struct ModelSession {
     max_tool_calls: usize,
     /// The persona + environment system prompt every rebuild inherits.
     system_prompt: Option<String>,
+    /// Its runtime half alone — the environment and scratchpad blocks — for a
+    /// subagent definition whose body replaces the persona
+    /// (`docs/subagents.md`). Resolved once at startup beside it, so every
+    /// rebuild inherits it by clone.
+    prompt_context: Option<String>,
     /// `ALTER_ZERO_STALL_MS` — the test-only wedged backend (`docs/interrupt.md`).
     stall_ms: Option<u64>,
     /// `ALTER_ZERO_CONTEXT_WINDOW`, which outranks whatever a provider reports.
@@ -121,6 +126,10 @@ pub(crate) struct ModelSession {
     /// The shared task list (docs/task-tools.md) — enables the four task
     /// tools on every rebuild.
     tasks: alter_zero::tasks::TaskRegistry,
+    /// The subagent definitions (`docs/subagents.md`) — the shared handle
+    /// every rebuild re-attaches, so a type the per-turn rescan found is
+    /// launchable without one.
+    subagents: alter_zero::subagents::SubagentRegistry,
     /// The discovered skills (`docs/skills.md`) — enables the `skill` tool on
     /// every rebuild, held even when the `/settings` **Skills** row is off so
     /// turning it back on needs no rescan. `skills_enabled` is the knob.
@@ -181,6 +190,7 @@ impl ModelSession {
         ask: &alter_zero::ask::AskGate,
         tasks: &alter_zero::tasks::TaskRegistry,
         skills: &alter_zero::skills::SkillRegistry,
+        subagents: &alter_zero::subagents::SubagentRegistry,
         mcp: Option<&alter_zero::llm::mcp::McpManager>,
         settings: &SessionSettings,
         hooks: Option<HookSetup>,
@@ -207,7 +217,11 @@ impl ModelSession {
         // spell means turning the row back on needs no rescan.
         let skills_enabled = settings.skills;
         let skills = skills.clone();
+        let subagents = subagents.clone();
         let system_prompt = config::system_prompt(cwd, scratchpad);
+        // The runtime half alone, for an agent definition whose body replaces
+        // the persona (docs/subagents.md).
+        let prompt_context = config::prompt_context(cwd, scratchpad);
         // The provider the /model picker lists from and switches within: env,
         // else the saved selection, else the file's default.
         let active_provider = std::env::var("ALTER_ZERO_PROVIDER")
@@ -274,6 +288,7 @@ impl ModelSession {
             (None, Some(cfg)) => Box::new(session_backend(
                 cfg,
                 system_prompt.clone(),
+                prompt_context.clone(),
                 tools,
                 max_retries,
                 max_tool_calls,
@@ -284,6 +299,7 @@ impl ModelSession {
                 ask,
                 tasks,
                 skills_enabled.then_some(&skills),
+                &subagents,
                 mcp,
                 hooks.as_ref(),
             )),
@@ -333,6 +349,7 @@ impl ModelSession {
             max_retries,
             max_tool_calls,
             system_prompt,
+            prompt_context,
             stall_ms,
             env_context_window: config::context_window_override(),
             active_provider,
@@ -348,6 +365,7 @@ impl ModelSession {
             permissions: permissions.cloned(),
             ask: ask.clone(),
             tasks: tasks.clone(),
+            subagents,
             // What the backend built just above was handed: the same three
             // gates, so the first `refresh_skills` measures a real change
             // rather than the difference between two spellings of "on".
@@ -481,6 +499,7 @@ impl ModelSession {
         self.backend = Box::new(session_backend(
             cfg,
             self.system_prompt.clone(),
+            self.prompt_context.clone(),
             self.tools,
             self.max_retries,
             self.max_tool_calls,
@@ -491,6 +510,7 @@ impl ModelSession {
             &self.ask,
             &self.tasks,
             self.skills_enabled.then_some(&self.skills),
+            &self.subagents,
             self.mcp.as_ref(),
             self.hooks.as_ref(),
         ));
@@ -632,6 +652,14 @@ impl ModelSession {
     pub(crate) fn set_skills(&mut self, enabled: bool) {
         self.skills_enabled = enabled;
         self.rebuild_current();
+    }
+
+    /// Whether a build right now would put the `agent` spec on the wire — the
+    /// gate the agent-type listing rides (`docs/subagents.md`). The registry
+    /// is attached to every real build, so this is the tools knob plus the
+    /// dummy, which scripts its agent demo rather than being offered a spec.
+    pub(crate) fn agents_offered(&self) -> bool {
+        self.real_backend && self.tools
     }
 
     /// Whether a build right now would put the `skill` spec on the wire: the
@@ -1028,6 +1056,7 @@ impl HookSetup {
 fn session_backend(
     cfg: ModelConfig,
     system_prompt: Option<String>,
+    prompt_context: Option<String>,
     tools: bool,
     max_retries: u32,
     max_tool_calls: usize,
@@ -1038,6 +1067,7 @@ fn session_backend(
     ask: &alter_zero::ask::AskGate,
     tasks: &alter_zero::tasks::TaskRegistry,
     skills: Option<&alter_zero::skills::SkillRegistry>,
+    subagents: &alter_zero::subagents::SubagentRegistry,
     mcp: Option<&alter_zero::llm::mcp::McpManager>,
     hooks: Option<&HookSetup>,
 ) -> LlmBackend {
@@ -1051,8 +1081,15 @@ fn session_backend(
     let mut backend = LlmBackend::configure(cfg, system_prompt, tools)
         .with_max_retries(max_retries)
         .with_max_tool_calls(max_tool_calls)
+        // The runtime half of the prompt, for a subagent definition whose
+        // body replaces the persona (docs/subagents.md).
+        .with_prompt_context(prompt_context)
         .with_background(registry.clone())
         .with_agents(agents.clone())
+        // The subagent definitions the `agent` tool's types come from
+        // (docs/subagents.md) — the shared handle, so the per-turn rescan
+        // reaches this backend without a rebuild.
+        .with_subagents(subagents.clone())
         // The mid-turn message queue (docs/queue.md): every build drains the
         // same one, so a message queued against the turn a `/model` switch
         // replaced still reaches its successor.
@@ -1107,49 +1144,82 @@ impl Session<'_> {
         // so an agent session view's Ctrl+D shows what a launched agent is
         // actually sent (docs/agent-tool.md).
         let prompt = self.models.backend().system_prompt();
-        let agent_prompt = self.models.backend().agent_system_prompt();
         self.app.set_system_prompt(prompt);
-        self.app.set_agent_system_prompt(agent_prompt);
+        self.sync_agent_system_prompt();
         // The footer gauge + auto-compact window (docs/compact.md).
         let window = self.models.context_window();
         self.app.set_context_window(window);
         // The skill listing is budgeted off that same window (1% of it, in
         // characters), so it is re-rendered here rather than once at startup:
         // a `/model` switch to a roomier model widens the listing with it.
-        self.sync_skill_listing();
+        self.sync_system_reminder();
     }
 
-    /// Render the `<system-reminder>` skill listing into `App`, so the derived
-    /// context leads with it (`docs/skills.md`). `None` when no skill loaded,
-    /// the `/settings` **Skills** row is off, **or tools are off at all** —
-    /// the listing and the tool set share one gate (`skills_offered`), since
-    /// a reminder naming a tool the request never carries is worse than no
-    /// reminder. A session with no skills sends exactly the context it sent
-    /// before the feature existed.
+    /// Push the **viewed** subagent type's system prompt into `App`, so an
+    /// agent session view's Ctrl+D shows what *that* agent was sent — its
+    /// definition's own body when it has one (`docs/subagents.md`). With no
+    /// view open the default type answers, which is what a launch with no
+    /// `subagent_type` gets.
     ///
-    /// The composer's `$` picker rides the same gate: the **enabled**
-    /// snapshot goes into `App` beside the listing (`App::set_skills`), so
+    /// Run beside every `sync_backend_info` and on entering a view: the
+    /// prompt is per type, so a single startup read would show the wrong one
+    /// for every other type.
+    pub(crate) fn sync_agent_system_prompt(&mut self) {
+        let agent_type = self.app.viewed_agent().map_or_else(
+            || alter_zero::agents::GENERAL_PURPOSE.to_string(),
+            |agent| agent.agent_type.clone(),
+        );
+        let prompt = self.models.backend().agent_system_prompt(&agent_type);
+        self.app.set_agent_system_prompt(prompt);
+    }
+
+    /// Render the session's `<system-reminder>` into `App`, so the derived
+    /// context leads with it (`docs/skills.md`, `docs/subagents.md`).
+    ///
+    /// Two sections, gated separately because they are two different tools:
+    ///
+    /// - **skills** — `None` when no skill loaded, the `/settings` **Skills**
+    ///   row is off, **or tools are off at all**: the listing and the tool set
+    ///   share one gate (`skills_offered`), since a reminder naming a tool the
+    ///   request never carries is worse than no reminder.
+    /// - **agent types** — the same rule one tool over: they ride exactly when
+    ///   the `agent` tool does (`agents_offered`). The offline dummy scripts
+    ///   its agent demo rather than being handed a spec, so it sends no agent
+    ///   section and an offline context is byte-identical to before the
+    ///   definitions existed.
+    ///
+    /// The composer's `$` picker rides the skills gate: the **enabled**
+    /// snapshot goes into `App` beside the reminder (`App::set_skills`), so
     /// the picker can only ever complete a mention the listing names and the
     /// registry's lookup will honour (`docs/skill-mentions.md`). Every site
     /// that changes what is offered — the per-turn rescan, a `/skills`
     /// toggle, the `/settings` Skills/Tools rows, a `/model` switch — already
     /// funnels through here, which is what keeps the two in step.
-    pub(crate) fn sync_skill_listing(&mut self) {
-        let listing = if self.app.settings().skills_offered() {
-            let budget = alter_zero::skills::listing_budget(
-                self.models
-                    .context_window()
-                    .and_then(|w| usize::try_from(w).ok()),
-            );
-            let rendered =
-                alter_zero::skills::listing_message(&self.skill_registry.listing(budget));
-            (!rendered.is_empty()).then_some(rendered)
+    pub(crate) fn sync_system_reminder(&mut self) {
+        // The budget is 1% of the model's context window in characters, so
+        // this is re-rendered here rather than once at startup: a `/model`
+        // switch to a roomier model widens both listings with it.
+        let window = self
+            .models
+            .context_window()
+            .and_then(|w| usize::try_from(w).ok());
+        let skills_offered = self.app.settings().skills_offered();
+        let skills = if skills_offered {
+            self.skill_registry
+                .listing(alter_zero::skills::listing_budget(window))
         } else {
-            None
+            String::new()
         };
-        let offered = listing.is_some();
-        self.app.set_skill_listing(listing);
-        self.app.set_skills(if offered {
+        let agents = if self.models.agents_offered() {
+            self.subagents
+                .listing(alter_zero::skills::listing_budget(window))
+        } else {
+            String::new()
+        };
+        let reminder = alter_zero::subagents::reminder_message(&skills, &agents);
+        self.app
+            .set_system_reminder((!reminder.is_empty()).then_some(reminder));
+        self.app.set_skills(if skills_offered {
             self.skill_registry.enabled()
         } else {
             Vec::new()

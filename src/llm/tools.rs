@@ -202,16 +202,32 @@ pub fn tool_specs_with_agents() -> Vec<Value> {
     specs
 }
 
-/// The tool set a subagent of `agent_type` is offered: `explore` is
-/// read-only (`bash` + `read` — the reference's read-only search agent),
-/// everything else (the default `general-purpose`) gets all four. Never
-/// includes `agent`.
+/// The built-in tool set a subagent is offered: [`tool_specs`] filtered by
+/// its definition's `tools:` allowlist (`docs/subagents.md`). Never includes
+/// `agent` — agents don't nest, whatever a definition file says.
+///
+/// The order is the definition order, not the file's: two types with the same
+/// set then send byte-identical specs, which is one less way a prompt cache
+/// misses.
 #[must_use]
-pub fn subagent_tool_specs(agent_type: &str) -> Vec<Value> {
-    match agent_type {
-        "explore" => vec![bash_spec(), read_spec()],
-        _ => tool_specs(),
-    }
+pub fn subagent_tool_specs(tools: &crate::subagents::AgentTools) -> Vec<Value> {
+    allowed_specs(tool_specs(), tools)
+}
+
+/// `specs` filtered by an agent definition's allowlist — the one place that
+/// filter is applied, so the `skill` spec and the MCP servers' specs obey the
+/// file exactly as the built-ins do. A `tools:` line that governed only the
+/// built-ins would be a half-truth about what the agent can reach.
+#[must_use]
+pub fn allowed_specs(specs: Vec<Value>, tools: &crate::subagents::AgentTools) -> Vec<Value> {
+    specs
+        .into_iter()
+        .filter(|spec| {
+            spec["function"]["name"]
+                .as_str()
+                .is_some_and(|name| tools.allows(name))
+        })
+        .collect()
 }
 
 /// The tool names offered, in definition order — handy for the system prompt
@@ -511,16 +527,13 @@ fn task_update_spec() -> Value {
 fn agent_spec() -> Value {
     function_spec(
         AGENT_TOOL_NAME,
-        "Launch a new agent to handle a task autonomously. The agent runs its \
-         own tool loop (shell, file reads/writes) over a fresh context, works \
-         in the same directory, and reports back: its final message is \
-         returned to you as this tool's result. Launch several agents in one \
-         message to run them concurrently — each is independent and cannot \
-         see the others (or this conversation), so give each a complete, \
-         self-contained prompt and tell it what to return. By default agents \
-         run in the background: the call returns at once and re-invokes you \
-         with the final response when one completes — set run_in_background \
-         to false when you need the result before continuing.",
+        "Launch a subagent to handle a task autonomously. It runs its own tool \
+         loop over a fresh context in this directory; its final message comes \
+         back as this tool's result. It cannot see this conversation, so give \
+         it a complete, self-contained prompt and say what to return. Several \
+         calls in one message run concurrently. Agents run in the background \
+         by default — the call returns at once and you are re-invoked when one \
+         finishes; pass run_in_background false to wait for the result.",
         json!({
             "type": "object",
             "properties": {
@@ -534,9 +547,9 @@ fn agent_spec() -> Value {
                 },
                 "subagent_type": {
                     "type": "string",
-                    "description": "\"general-purpose\" (default — all tools) \
-                        or \"explore\" (shell and file reads only, for \
-                        searching and research)."
+                    "description": "Which agent type to launch — the available \
+                        types and their tools are listed in the \
+                        system-reminder. Defaults to \"general-purpose\"."
                 },
                 "run_in_background": {
                     "type": "boolean",
@@ -2450,17 +2463,79 @@ mod tests {
         );
         assert!(spec["properties"]["run_in_background"].is_object());
         assert!(spec["properties"]["subagent_type"].is_object());
-        // Subagent sets: explore is read-only, everything else the full four.
-        let explore: Vec<String> = subagent_tool_specs("explore")
+    }
+
+    /// The wire names of a spec list, for the subagent tool-set tests.
+    fn spec_names(specs: &[Value]) -> Vec<String> {
+        specs
             .iter()
             .map(|spec| spec["function"]["name"].as_str().unwrap().to_string())
-            .collect();
-        assert_eq!(explore, ["bash", "read"]);
-        let general: Vec<String> = subagent_tool_specs("general-purpose")
-            .iter()
-            .map(|spec| spec["function"]["name"].as_str().unwrap().to_string())
-            .collect();
-        assert_eq!(general, ["bash", "read", "write", "edit"]);
+            .collect()
+    }
+
+    #[test]
+    fn the_agent_schema_points_at_the_listing_that_names_the_types() {
+        // The types are discovered files now, so the schema cannot enumerate
+        // them — it points at the `<system-reminder>` that can, and that
+        // pointer is the tool/listing pairing `docs/subagents.md` rests on: a
+        // schema naming types that no longer exist, or a reminder nothing
+        // points at, is how a model comes to guess a `subagent_type`.
+        let spec = &tool_specs_with_agents()[4]["function"];
+        let described = spec["parameters"]["properties"]["subagent_type"]["description"]
+            .as_str()
+            .expect("the type param is described");
+        assert!(described.contains("system-reminder"), "{described}");
+        assert!(
+            described.contains(crate::agents::GENERAL_PURPOSE),
+            "the schema still names its default: {described}"
+        );
+        assert!(
+            crate::subagents::AGENT_LISTING_HEADER.contains("Agent tool"),
+            "…and the listing says which tool it is for"
+        );
+    }
+
+    #[test]
+    fn a_subagents_tool_set_is_its_definitions_allowlist() {
+        use crate::subagents::AgentTools;
+        // No `tools:` in the file — every built-in, exactly as before the
+        // definitions existed.
+        assert_eq!(
+            spec_names(&subagent_tool_specs(&AgentTools::All)),
+            ["bash", "read", "write", "edit"]
+        );
+        // An allowlist filters, in the definition order rather than the
+        // file's, so two types with the same set send the same bytes.
+        assert_eq!(
+            spec_names(&subagent_tool_specs(&AgentTools::parse("Read, Bash"))),
+            ["bash", "read"]
+        );
+        assert_eq!(
+            spec_names(&subagent_tool_specs(&AgentTools::parse("Edit"))),
+            ["edit"]
+        );
+    }
+
+    #[test]
+    fn the_allowlist_filters_the_skill_and_mcp_specs_too() {
+        use crate::subagents::AgentTools;
+        let extras = vec![
+            skill_spec(),
+            function_spec("mcp__deepwiki__ask_question", "d", json!({})),
+            function_spec("mcp__other__thing", "d", json!({})),
+        ];
+        // A file that names neither keeps neither: an allowlist that only
+        // governed the built-ins would be a half-truth.
+        assert!(allowed_specs(extras.clone(), &AgentTools::parse("Bash")).is_empty());
+        assert_eq!(
+            spec_names(&allowed_specs(
+                extras.clone(),
+                &AgentTools::parse("Skill, mcp__deepwiki__*")
+            )),
+            ["skill", "mcp__deepwiki__ask_question"]
+        );
+        // …and an omitted `tools:` keeps everything the session has.
+        assert_eq!(allowed_specs(extras, &AgentTools::All).len(), 3);
     }
 
     #[test]

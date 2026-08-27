@@ -333,15 +333,17 @@ pub struct App {
     /// (`context::context_messages_with`), the Ctrl+D view shows it there,
     /// and the offline token estimate counts it. See `docs/project-doc.md`.
     pub user_instructions: Option<String>,
-    /// The discovered skills' `<system-reminder>` listing, rendered at the
-    /// boundary ([`App::set_skill_listing`], from
-    /// `skills::listing_message`) and injected as the derived context's
+    /// The `<system-reminder>` naming what this session can reach that the
+    /// tool schemas don't: the discovered skills (`docs/skills.md`) and the
+    /// subagent types the `agent` tool can launch (`docs/subagents.md`).
+    /// Rendered at the boundary ([`App::set_system_reminder`], from
+    /// `subagents::reminder_message`) and injected as the derived context's
     /// **second** leading user entry, right behind
     /// [`user_instructions`](Self::user_instructions)
     /// (`context::context_messages_full`) — so the Ctrl+D view shows it and
-    /// the offline token estimate counts it. `None` when no skill loaded or
-    /// the `/settings` **Skills** row is off. See `docs/skills.md`.
-    pub skill_listing: Option<String>,
+    /// the offline token estimate counts it. `None` when neither section has
+    /// anything to say.
+    pub system_reminder: Option<String>,
     /// The Esc-Esc backtrack gesture (edit a previous message): primed by Esc
     /// from an idle empty composer when a previous user message exists,
     /// previewing in the transcript overlay, confirmed with Enter. Reset by
@@ -872,13 +874,14 @@ impl App {
         self.user_instructions = instructions;
     }
 
-    /// Inject the skills' `<system-reminder>` listing (from
-    /// `skills::listing_message`, rendered at the boundary once at startup and
-    /// re-rendered when the **Skills** setting changes) so the context
+    /// Inject the session's `<system-reminder>` (from
+    /// `subagents::reminder_message` — the skills listing and the agent-type
+    /// listing, rendered at the boundary at startup, at every turn's rescan,
+    /// and whenever a setting changes what is offered) so the context
     /// derivation, the Ctrl+D view, and the token estimate all carry it. See
-    /// `docs/skills.md`.
-    pub fn set_skill_listing(&mut self, listing: Option<String>) {
-        self.skill_listing = listing;
+    /// `docs/skills.md`, `docs/subagents.md`.
+    pub fn set_system_reminder(&mut self, reminder: Option<String>) {
+        self.system_reminder = reminder;
     }
 
     /// Record a finished user message in the history.

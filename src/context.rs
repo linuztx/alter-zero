@@ -412,33 +412,34 @@ pub fn derives_conversation(history: &[HistoryItem]) -> bool {
     })
 }
 
-/// [`context_messages_with`] plus the **skill listing** (`docs/skills.md`) —
-/// the `<system-reminder>` naming every discovered skill, injected right
-/// after the project's instructions and in front of the conversation.
+/// [`context_messages_with`] plus the session's **`<system-reminder>`** —
+/// the discovered skills (`docs/skills.md`) and the subagent types the
+/// `agent` tool can launch (`docs/subagents.md`), injected right after the
+/// project's instructions and in front of the conversation.
 ///
 /// Its position is a prompt-cache decision: both leading fragments are
 /// re-rendered per turn, and one that moved would invalidate every token
 /// behind it. `None` or a blank changes nothing, which is what a session with
-/// no skills sends.
+/// neither sends.
 #[must_use]
 pub fn context_messages_full(
     user_instructions: Option<&str>,
-    skill_listing: Option<&str>,
+    system_reminder: Option<&str>,
     history: &[HistoryItem],
 ) -> Vec<ContextMessage> {
-    let mut out = leading_fragments(user_instructions, skill_listing);
+    let mut out = leading_fragments(user_instructions, system_reminder);
     derive_history_into(&mut out, history);
     out
 }
 
 /// The leading user entries a turn's context opens with, in their fixed
-/// order: the project doc, then the skill listing.
+/// order: the project doc, then the system reminder.
 fn leading_fragments(
     user_instructions: Option<&str>,
-    skill_listing: Option<&str>,
+    system_reminder: Option<&str>,
 ) -> Vec<ContextMessage> {
     let mut out: Vec<ContextMessage> = Vec::new();
-    for fragment in [user_instructions, skill_listing]
+    for fragment in [user_instructions, system_reminder]
         .into_iter()
         .flatten()
         .filter(|fragment| !fragment.trim().is_empty())

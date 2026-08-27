@@ -256,6 +256,32 @@ A `bash` command still asks, wherever it points. The background shells' interim
 output sits beside it under `…/{session}/tasks/{id}.output`.
 `ALTER_ZERO_SCRATCHPAD=0` turns the whole thing off.
 
+The model can hand work to **subagents** (`docs/agent-tool.md`) — side
+conversations with their own context and tool loop, whose final message comes
+back as the tool's result — and *which* subagents exist is yours to decide
+(`docs/subagents.md`). Each type is a markdown file, Claude-Code style, in
+`~/.alter-zero/agents/` (or a project's `.alter-zero/agents/`):
+
+```markdown
+---
+name: reviewer
+description: Reviews a diff for correctness bugs and reports what it found.
+model: inherit          # or a model id — kimi-k3, claude-sonnet-5, …
+tools: Bash, Read       # omit for every tool; mcp__deepwiki__* globs a server
+---
+
+You are a reviewer. Read the diff, report real defects only …
+```
+
+The body (optional) becomes that type's system prompt; `tools:` is an
+allowlist, so leaving `Write` and `Edit` out makes the type genuinely
+read-only. The built-in `general-purpose` and `explore` are written into
+`~/.alter-zero/agents/` on first run — real files, yours to edit, with
+comments explaining every key. The roots are re-walked at every turn, so a
+type you (or the agent) just added is launchable immediately, and each type's
+name, description and tools ride the model's context so it can pick one.
+`ALTER_ZERO_AGENTS_DIR` points the whole thing somewhere else.
+
 You can also wedge **your own commands** into the tool loop
 (`docs/hooks.md`) — Claude Code's `hooks.json` contract, so a script written
 for either tool works here unchanged. Put one at `~/.alter-zero/hooks.json`:

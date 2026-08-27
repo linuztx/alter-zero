@@ -176,6 +176,23 @@ impl<'t> Session<'t> {
                 .disabled_for(&cwd.display().to_string()),
         );
 
+        // The subagent definitions on disk (docs/subagents.md): the built-in
+        // `general-purpose`/`explore` seeded into the user root the first
+        // time — so the defaults are editable files rather than a `match` in
+        // the binary — then the walk over the project's and the user's roots.
+        // Done here, before the backend, so a launch and the `<system-
+        // reminder>` listing agree from the first turn. A file that will not
+        // parse is collected, not thrown, and becomes the startup toast.
+        let mut agent_errors =
+            match alter_zero::llm::subagent::user_agents_dir(config::config_home().as_deref()) {
+                Some(dir) => alter_zero::llm::subagent::seed_default_agents(&dir),
+                None => Vec::new(),
+            };
+        let (found_agents, walk_errors) =
+            alter_zero::llm::subagent::load_agents(&cwd, config::config_home().as_deref());
+        agent_errors.extend(walk_errors);
+        let subagents = alter_zero::subagents::SubagentRegistry::new(found_agents);
+
         // The project's `.alter-zero` config layer (docs/project-config.md):
         // each file read once, fingerprinted, and checked against trust.json
         // — the snapshot /trust reviews. Loaded BEFORE the MCP manager and
@@ -274,6 +291,7 @@ impl<'t> Session<'t> {
             &ask,
             &task_registry,
             &skill_registry,
+            &subagents,
             mcp_manager.as_ref(),
             &settings,
             hook_setup,
@@ -384,12 +402,17 @@ impl<'t> Session<'t> {
             ask,
             task_registry,
             skill_registry,
+            subagents,
             mcp: mcp_manager,
             project_layer,
             user_hooks_file,
             // Seeded with the startup walk's failures, so the first turn's
             // rescan doesn't re-toast what the banner already said.
             reported_skill_errors: skill_errors
+                .iter()
+                .map(|error| error.path.clone())
+                .collect(),
+            reported_agent_errors: agent_errors
                 .iter()
                 .map(|error| error.path.clone())
                 .collect(),
@@ -412,6 +435,7 @@ impl<'t> Session<'t> {
         // showing the hooks one — the actionable typo beats the size refusal.
         session.report_hooks_error(hooks_error);
         session.report_skill_errors(&skill_errors);
+        session.report_agent_errors(&agent_errors);
         session.report_mcp_errors();
         session.report_trust_state(trust_error);
         let picker = session.apply_startup(startup);
@@ -555,6 +579,30 @@ impl<'t> Session<'t> {
         };
         self.toast(
             format!("Skill {}: {}{tail}", first.path.display(), first.message),
+            ToastKind::Error,
+        );
+    }
+
+    /// Raise the first agent-definition failure as a red toast — the
+    /// `report_skill_errors` rule one feature over (`docs/subagents.md`): an
+    /// `agents/*.md` that silently never becomes a type makes "the model says
+    /// my agent type is unknown" and "I typo'd the frontmatter" read as two
+    /// unrelated problems.
+    ///
+    /// Shared with the per-turn rescan ([`Session::rescan_agents`]), which
+    /// hands it only the failures it hasn't already raised.
+    pub(crate) fn report_agent_errors(&mut self, errors: &[alter_zero::subagents::AgentFileError]) {
+        let Some(first) = errors.first() else {
+            return;
+        };
+        let more = errors.len() - 1;
+        let tail = if more > 0 {
+            format!(" (+{more} more)")
+        } else {
+            String::new()
+        };
+        self.toast(
+            format!("Agent {}: {}{tail}", first.path.display(), first.message),
             ToastKind::Error,
         );
     }

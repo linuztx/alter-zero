@@ -119,6 +119,7 @@ impl Session<'_> {
         // the user drops in mid-session must not need a restart to be seen.
         // Re-renders the listing this turn's context is about to carry.
         self.rescan_skills();
+        self.rescan_agents();
         // The whole conversation — the just-recorded user message included —
         // rides the request so a real model keeps its context across turns (the
         // AGENTS.md instructions in front); the image paths also travel the
@@ -126,7 +127,7 @@ impl Session<'_> {
         // docs/context.md.
         let context = context::context_messages_full(
             self.app.user_instructions.as_deref(),
-            self.app.skill_listing.as_deref(),
+            self.app.system_reminder.as_deref(),
             &self.app.history,
         );
         self.spawn_reply(prompt, paths, context);
@@ -194,9 +195,10 @@ impl Session<'_> {
         // skill; this turn is a real model turn, so it re-walks like any other
         // (docs/skills.md).
         self.rescan_skills();
+        self.rescan_agents();
         let context = context::context_messages_full(
             self.app.user_instructions.as_deref(),
-            self.app.skill_listing.as_deref(),
+            self.app.system_reminder.as_deref(),
             &self.app.history,
         );
         self.spawn_reply(prompt, Vec::new(), context);

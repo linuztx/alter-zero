@@ -22,8 +22,10 @@ the context window from `App::history` on demand —
 AGENTS.md instructions lead it (`docs/project-doc.md`; the two emptiness
 checks deliberately derive *without* them, so a standing guide alone is
 still "nothing to compact"), or `context_messages_full(instructions,
-skill_listing, &app.history)` when the skills' `<system-reminder>` listing
-rides behind them (`docs/skills.md`) — because `history`
+system_reminder, &app.history)` when the session's `<system-reminder>` rides
+behind them — the skills it can load (`docs/skills.md`) and the subagent
+types it can launch (`docs/subagents.md`), one fragment with a section each
+— because `history`
 is already the single source of truth the TUI keeps correct everywhere it
 matters:
 
@@ -33,7 +35,7 @@ matters:
 - a `/resume` load replaces it with the parsed rollout file.
 
 Both leading fragments sit **in front of** history rather than in it, in a
-fixed order (instructions, then the skill listing): they are re-rendered per
+fixed order (instructions, then the system reminder): they are re-rendered per
 turn, so a fragment that moved position would invalidate the prompt cache
 behind it, and keeping them out of `history` means a backtrack cannot rewind
 past them and the recorder cannot store them twice.
@@ -256,7 +258,7 @@ tool-view-performance.md`): `draw_context_view` asks it for the line count
 then the lines, and the cache rebuilds **only when its signature changes** —
 history generation + length, the width, the viewed agent (id + its own
 transcript length), and the leading fragments' lengths (system/agent prompt,
-`AGENTS.md` instructions, the skill listing — they only otherwise change
+`AGENTS.md` instructions, the system reminder — they only otherwise change
 beside a turn-start history append, and the lengths catch the direct edits: a
 `/settings` toggle dropping the instructions, a `/model` switch swapping the
 prompt). A scroll key or a status tick is a cache hit (O(viewport) to window

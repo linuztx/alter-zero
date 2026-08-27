@@ -493,6 +493,10 @@ impl Session<'_> {
     /// Enter on a roster row: swap the screen to that agent's own inline session
     /// — purge + rebuild from its transcript, the `/clear` shape.
     pub(crate) fn enter_agent_view(&mut self) -> std::io::Result<()> {
+        // The prompt shown by this view's Ctrl+D is the *viewed* type's — an
+        // `agents/*.md` body replaces the persona per type, so it is resolved
+        // on entry rather than once at startup (`docs/subagents.md`).
+        self.sync_agent_system_prompt();
         self.repaint_agent_view()
     }
 

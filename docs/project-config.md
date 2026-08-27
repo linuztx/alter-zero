@@ -26,6 +26,7 @@ What the project layer reads:
 | file                            | what                                        | merge rule                                   |
 | ------------------------------- | ------------------------------------------- | -------------------------------------------- |
 | `{root}/.alter-zero/skills/`    | project skills (already shipped, unchanged) | first-root-wins walk (`docs/skills.md`)      |
+| `{root}/.alter-zero/agents/`    | project subagent types (outside the gate, like skills) | first-root-wins walk (`docs/subagents.md`) |
 | `{root}/.alter-zero/hooks.json` | project lifecycle hooks — **new**           | **union** after the user file (see below)    |
 | `{root}/.alter-zero/mcp.json`   | project MCP servers — **new**               | first-name-wins, ahead of `.mcp.json`        |
 | `{root}/.mcp.json`              | Claude-Code-compat MCP servers (existing)   | first-name-wins, after `.alter-zero/mcp.json` |
@@ -76,6 +77,14 @@ until the user approves them.
   model explicitly loads it, and any command in its body still meets the
   permission gate like every other tool call. (Its one-line description does
   ride the context listing — the standing behavior since `docs/skills.md`.)
+- **Subagent definitions stay outside it too**, for the same reasons
+  (`docs/subagents.md`): an `agents/*.md` is markdown and metadata that runs
+  nothing on load, its `tools:` can only *narrow* what a launched agent may
+  reach, its `model:` names a model on the session's own provider, and every
+  `write`/`edit`/`bash` that agent does still meets the permission gate. What
+  a project file can do is put words in a subagent's system prompt — which a
+  checked-in `AGENTS.md` or `SKILL.md` can do already, so gating this one
+  would be a lock on an open door.
 
 ## Merge semantics
 

@@ -19,6 +19,8 @@ use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
+use crate::frontmatter;
+
 /// The wire name of the skill-loading tool, lowercase like every other tool
 /// name here — which is also what the context replay's lowercasing fallback
 /// reproduces from the display name, so a replayed call matches the offered
@@ -90,32 +92,17 @@ pub struct SkillMetadata {
 }
 
 /// A `SKILL.md` that could not be read, parsed, or validated. Collected
-/// rather than thrown: one bad skill must not cost a session the rest.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SkillError {
-    pub path: PathBuf,
-    pub message: String,
-}
+/// rather than thrown: one bad skill must not cost a session the rest. The
+/// shared [`crate::frontmatter::FileError`] — an agent definition
+/// (`docs/subagents.md`) fails the same way and is reported by the same rule.
+pub type SkillError = frontmatter::FileError;
 
 /// The errors in `current` whose file `reported` has not already raised — the
-/// per-turn rescan's toast filter (`docs/skills.md`).
-///
-/// A `SKILL.md` that stops parsing has to say so: silence is what makes "the
-/// model ignores my skill" and "I typo'd the frontmatter" read as two
-/// unrelated problems. But the walk re-runs every turn and a broken file
-/// stays broken, so the startup toast's shape alone would put the same red
-/// row on every turn for the rest of the session.
-///
-/// Keyed on the **path**, and the caller re-seeds its set from each rescan's
-/// errors: a file that is fixed is forgotten, so breaking it again reports
-/// again.
+/// per-turn rescan's toast filter, the shared
+/// [`crate::frontmatter::unreported`] (`docs/skills.md`).
 #[must_use]
 pub fn unreported_errors(reported: &BTreeSet<PathBuf>, current: &[SkillError]) -> Vec<SkillError> {
-    current
-        .iter()
-        .filter(|error| !reported.contains(&error.path))
-        .cloned()
-        .collect()
+    frontmatter::unreported(reported, current)
 }
 
 /// A validated `SKILL.md`: its frontmatter and the markdown body under it.
@@ -193,30 +180,20 @@ pub fn validate_skill_name(name: &str) -> Result<(), String> {
 /// [`SkillParseError`] when the frontmatter is absent, the description is
 /// missing, or the resolved name is unusable.
 pub fn parse_skill(contents: &str, default_name: &str) -> Result<ParsedSkill, SkillParseError> {
-    let (frontmatter, body) =
-        split_frontmatter(contents).ok_or(SkillParseError::MissingFrontmatter)?;
-    let fields = parse_frontmatter_scalars(&frontmatter);
+    let (block, body) = frontmatter::split(contents).ok_or(SkillParseError::MissingFrontmatter)?;
+    let fields = frontmatter::scalars(&block);
 
-    let name = fields
-        .iter()
-        .find(|(key, _)| key == "name")
-        .map(|(_, value)| value.clone())
-        .filter(|value| !value.is_empty())
+    let name = frontmatter::field(&fields, "name")
+        .map(str::to_string)
         .unwrap_or_else(|| default_name.to_string());
     validate_skill_name(&name).map_err(SkillParseError::InvalidName)?;
 
-    let description = fields
-        .iter()
-        .find(|(key, _)| key == "description")
-        .map(|(_, value)| value.clone())
-        .filter(|value| !value.is_empty())
+    let description = frontmatter::field(&fields, "description")
+        .map(str::to_string)
         .ok_or(SkillParseError::MissingDescription)?;
     // The reference's `getCommandDescription`: `description - whenToUse`.
-    let when_to_use = fields
-        .iter()
-        .find(|(key, _)| key == "when_to_use" || key == "whenToUse")
-        .map(|(_, value)| value.as_str())
-        .filter(|value| !value.is_empty());
+    let when_to_use = frontmatter::field(&fields, "when_to_use")
+        .or_else(|| frontmatter::field(&fields, "whenToUse"));
     let description = match when_to_use {
         Some(when) => format!("{description} - {when}"),
         None => description,
@@ -224,153 +201,9 @@ pub fn parse_skill(contents: &str, default_name: &str) -> Result<ParsedSkill, Sk
 
     Ok(ParsedSkill {
         name,
-        description: truncate_chars(&description, MAX_LISTING_DESC_CHARS),
+        description: frontmatter::truncate_chars(&description, MAX_LISTING_DESC_CHARS),
         body: body.trim_matches(['\n', '\r']).trim_end().to_string(),
     })
-}
-
-/// Split a `---`-delimited frontmatter block off the front of `contents`,
-/// returning it and the remaining body. `None` when the block never opens or
-/// never closes.
-fn split_frontmatter(contents: &str) -> Option<(String, String)> {
-    // A leading BOM/blank line must not hide the fence.
-    let contents = contents.trim_start_matches('\u{feff}');
-    let mut lines = contents.lines();
-    if lines.next()?.trim() != "---" {
-        return None;
-    }
-    let mut frontmatter = Vec::new();
-    let mut body = Vec::new();
-    let mut closed = false;
-    for line in lines {
-        if !closed && line.trim() == "---" {
-            closed = true;
-            continue;
-        }
-        if closed {
-            body.push(line);
-        } else {
-            frontmatter.push(line);
-        }
-    }
-    if !closed || frontmatter.is_empty() {
-        return None;
-    }
-    Some((frontmatter.join("\n"), body.join("\n")))
-}
-
-/// The top-level `key: value` scalars of a frontmatter block, in order.
-///
-/// Deliberately small: plain, quoted and block (`|`/`>`) scalars plus YAML's
-/// indented plain-scalar continuation, which is how long descriptions are
-/// actually written. Nested maps and sequences parse as a folded string on
-/// their key — harmless, since every key that carries one is a key we ignore.
-fn parse_frontmatter_scalars(frontmatter: &str) -> Vec<(String, String)> {
-    let lines: Vec<&str> = frontmatter.lines().collect();
-    let mut fields = Vec::new();
-    let mut index = 0;
-    while index < lines.len() {
-        let line = lines[index];
-        index += 1;
-        if line.trim().is_empty()
-            || line.starts_with([' ', '\t'])
-            || line.trim_start().starts_with('#')
-        {
-            continue;
-        }
-        let Some((key, rest)) = line.split_once(':') else {
-            continue;
-        };
-        let key = key.trim().to_string();
-        if key.is_empty() {
-            continue;
-        }
-        // Gather this key's continuation: every following line that is
-        // indented (blank lines inside the block included).
-        let start = index;
-        while index < lines.len()
-            && (lines[index].starts_with([' ', '\t']) || lines[index].trim().is_empty())
-        {
-            index += 1;
-        }
-        let continuation = &lines[start..index];
-        fields.push((key, scalar_value(rest.trim(), continuation)));
-    }
-    fields
-}
-
-/// One key's value: the same-line scalar folded with any continuation lines.
-fn scalar_value(inline: &str, continuation: &[&str]) -> String {
-    let literal = inline.starts_with('|');
-    if literal || inline.starts_with('>') {
-        // A block scalar: the marker line carries nothing but the style.
-        let joined: Vec<&str> = continuation
-            .iter()
-            .map(|line| line.trim())
-            .filter(|line| !literal || !line.is_empty())
-            .collect();
-        return if literal {
-            joined.join("\n")
-        } else {
-            fold(&joined)
-        };
-    }
-    let inline = unquote(inline);
-    if continuation.is_empty() {
-        return inline;
-    }
-    let mut parts: Vec<&str> = Vec::new();
-    if !inline.is_empty() {
-        parts.push(inline.as_str());
-    }
-    parts.extend(
-        continuation
-            .iter()
-            .map(|line| line.trim())
-            .filter(|line| !line.is_empty()),
-    );
-    unquote(&fold(&parts))
-}
-
-/// Join lines with single spaces, collapsing runs of whitespace — YAML's
-/// folded style, and codex's `sanitize_single_line`.
-fn fold(parts: &[&str]) -> String {
-    parts
-        .join(" ")
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
-/// Strip a matching pair of surrounding quotes, undoubling `''` inside a
-/// single-quoted scalar. Prose like `description: Deploy: to ECS` is left
-/// exactly as written.
-fn unquote(value: &str) -> String {
-    let value = value.trim();
-    for quote in ['\'', '"'] {
-        if value.len() >= 2 && value.starts_with(quote) && value.ends_with(quote) {
-            let inner = &value[1..value.len() - 1];
-            return if quote == '\'' {
-                inner.replace("''", "'")
-            } else {
-                inner.to_string()
-            };
-        }
-    }
-    value.to_string()
-}
-
-/// `value` cut to `max` characters, the last replaced by `…` when it was.
-fn truncate_chars(value: &str, max: usize) -> String {
-    if value.chars().count() <= max {
-        return value.to_string();
-    }
-    if max == 0 {
-        return String::new();
-    }
-    let mut out: String = value.chars().take(max - 1).collect();
-    out.push('…');
-    out
 }
 
 /// The listing's character budget for a model whose context window is
@@ -425,12 +258,18 @@ pub fn skill_listing(skills: &[SkillMetadata], budget: usize) -> String {
             format!(
                 "- {}: {}",
                 skill.name,
-                truncate_chars(&skill.description, max_desc)
+                frontmatter::truncate_chars(&skill.description, max_desc)
             )
         })
         .collect::<Vec<_>>()
         .join("\n")
 }
+
+/// The skills section's header inside the `<system-reminder>` — the
+/// reference's wording, and the sibling of
+/// [`crate::subagents::AGENT_LISTING_HEADER`].
+pub const SKILL_LISTING_HEADER: &str =
+    "The following skills are available for use with the Skill tool:";
 
 /// The listing wrapped in the reference's `<system-reminder>` — the leading
 /// context fragment `crate::context::context_messages_with` injects. Empty in,
@@ -448,10 +287,7 @@ pub fn listing_message(listing: &str) -> String {
     if listing.trim().is_empty() {
         return String::new();
     }
-    format!(
-        "<system-reminder>\nThe following skills are available for use with the \
-         Skill tool:\n\n{listing}\n</system-reminder>"
-    )
+    crate::subagents::reminder_message(listing, "")
 }
 
 /// Substitute a skill invocation's `args` into its body: `$ARGUMENTS` for the

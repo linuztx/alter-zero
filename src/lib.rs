@@ -28,6 +28,9 @@
 //! - [`file_search`] — the `@` picker's pure primitives (token detection,
 //!   fuzzy match, ranking).
 //! - [`frame`]       — frame scheduling: coalesce redraw requests, 120 fps cap.
+//! - [`frontmatter`] — the `---` YAML frontmatter parse a `SKILL.md` and an
+//!   agent definition share: the block split, its scalars, the listing trim
+//!   (pure; see `docs/skills.md`, `docs/subagents.md`).
 //! - [`highlight`]   — grammar-accurate syntax highlighting for code blocks:
 //!   syntect + two_face (~250 TextMate grammars, Catppuccin Mocha theme — codex
 //!   parity), driven incrementally per line so it stays prefix-stable.
@@ -76,6 +79,10 @@
 //!   `taskget` / `tasklist` / `taskupdate` store, every result string, and
 //!   the shared registry the executor and the loop hold together (see
 //!   `docs/task-tools.md`).
+//! - [`subagents`]   — the `agents/*.md` subagent definitions behind the
+//!   `agent` tool's `subagent_type`: the frontmatter parse, the tool
+//!   allowlist, the model/system-prompt overrides, the budgeted listing and
+//!   the registry the boundary fills (pure; see `docs/subagents.md`).
 //! - [`subprocess`]  — the shared detached `sh -c` spawn (setsid binary →
 //!   helper re-exec → attached): every shell runner's child is severed from
 //!   the controlling terminal so a `/dev/tty` password prompt (`sudo`) fails
@@ -111,6 +118,7 @@ pub mod clipboard;
 pub mod context;
 pub mod file_search;
 pub mod frame;
+pub mod frontmatter;
 pub mod highlight;
 pub mod history;
 pub mod hooks;
@@ -127,6 +135,7 @@ pub mod settings;
 pub mod skills;
 pub mod steer;
 pub mod stream;
+pub mod subagents;
 pub mod subprocess;
 pub mod tasks;
 pub mod term;

@@ -726,6 +726,27 @@ pub(crate) fn system_prompt(cwd: &Path, scratchpad: Option<&Path>) -> Option<Str
         })
 }
 
+/// The **runtime half** of [`system_prompt`] alone: the environment block and
+/// — when the session has one — the scratchpad block, without the persona.
+///
+/// What a subagent definition whose body *replaces* the persona still carries
+/// (`docs/subagents.md`): the date, the os, the cwd and where temporary files
+/// go are facts about this session, and an agent that doesn't know them
+/// writes into `/tmp` and guesses the year. Built from the same two pure
+/// renderers `system_prompt` composes with, from the same boundary reads, so
+/// the two can never describe different environments.
+pub(crate) fn prompt_context(cwd: &Path, scratchpad: Option<&Path>) -> Option<String> {
+    let environment =
+        llm::backend::render_environment(&local_date(), &os_context(), &cwd.display().to_string());
+    Some(match scratchpad {
+        Some(dir) => format!(
+            "{environment}\n\n{}",
+            llm::backend::render_scratchpad(&dir.display().to_string())
+        ),
+        None => environment,
+    })
+}
+
 /// Is the MCP feature on? On by default; a falsy `ALTER_ZERO_MCP` turns the
 /// whole thing off — no connections, no tools, `/mcp` explains via toast
 /// (`docs/mcp.md`).

@@ -59,10 +59,23 @@ pub struct LlmBackend {
     /// notes on a known non-vision model) and the `read` tool's image branch
     /// (`docs/tools.md`).
     vision: Option<bool>,
+    /// The runtime half of [`system_prompt`](Self::system_prompt) alone — the
+    /// environment and scratchpad blocks, without the persona
+    /// (`docs/subagents.md`). Kept apart so an agent definition whose body
+    /// **replaces** the persona can still carry the facts about this session:
+    /// the date, the os, the cwd, where temporary files go. `None` when the
+    /// boundary composed no context (the tests, an embedder).
+    prompt_context: Option<String>,
     /// The shared subagent registry, when the boundary attached one — enables
     /// the `agent` tool (`docs/agent-tool.md`). Attaching it swaps the
     /// client's tool set to include `agent`.
     agents: Option<AgentRegistry>,
+    /// The subagent **definitions** — the `agents/*.md` types a launch picks
+    /// from (`docs/subagents.md`). Shared with the loop, which re-walks the
+    /// roots every turn, so a launcher always reads the current set. Seeded
+    /// with the built-ins, so a backend the boundary never handed definitions
+    /// to still resolves `general-purpose` and `explore`.
+    subagents: crate::subagents::SubagentRegistry,
     /// The shared tool-permission gate, when the boundary attached one — makes
     /// every `write`/`edit`/`bash` call ask before it runs
     /// (`docs/permissions.md`). Without it (an embedder, the live tests,
@@ -183,7 +196,14 @@ impl LlmBackend {
             tools_enabled,
             background: None,
             vision,
+            prompt_context: None,
             agents: None,
+            // Every backend knows the built-in types, definitions attached
+            // or not: the `agent` schema's default is `general-purpose`, so a
+            // launch cannot depend on a file having been found. The boundary
+            // replaces this with the walk's set — which carries the same two
+            // as its own fallback (`docs/subagents.md`).
+            subagents: crate::subagents::SubagentRegistry::new(super::subagent::builtin_agents()),
             permissions: None,
             ask: None,
             tasks: None,
@@ -218,6 +238,29 @@ impl LlmBackend {
             self.agents = Some(registry);
             self.sync_tool_specs();
         }
+        self
+    }
+
+    /// Attach the runtime half of the system prompt — the environment and
+    /// scratchpad blocks alone (`docs/subagents.md`). Only a subagent whose
+    /// definition **overrides** the persona reads it; the main prompt already
+    /// contains it.
+    #[must_use]
+    pub fn with_prompt_context(mut self, context: Option<String>) -> Self {
+        self.prompt_context = context
+            .map(|context| context.trim().to_string())
+            .filter(|context| !context.is_empty());
+        self
+    }
+
+    /// Attach the subagent **definitions** — the `agents/*.md` types
+    /// (`docs/subagents.md`). Unlike [`with_agents`](Self::with_agents) this
+    /// enables nothing on its own: it is the roster a launch resolves
+    /// `subagent_type` against, and the handle is shared, so the loop's
+    /// per-turn rescan reaches every backend rebuild without one.
+    #[must_use]
+    pub fn with_subagents(mut self, registry: crate::subagents::SubagentRegistry) -> Self {
+        self.subagents = registry;
         self
     }
 
@@ -871,13 +914,13 @@ impl ReplySource for LlmBackend {
         self.system_prompt.clone()
     }
 
-    /// The prompt a launched subagent's leading system message carries — the
-    /// main prompt with the subagent note appended, exactly as
-    /// `subagent_config` hands it to `spawn_subagent_run` — so the agent
+    /// The prompt a subagent of `agent_type` carries — its definition's own
+    /// body when it has one, else the main prompt, and the subagent note
+    /// either way: exactly what `spawn_subagent_run` composes, so the agent
     /// session view's Ctrl+D shows what that agent is actually sent
-    /// (`docs/agent-tool.md`).
-    fn agent_system_prompt(&self) -> Option<String> {
-        self.subagent_config().system_prompt
+    /// (`docs/agent-tool.md`, `docs/subagents.md`).
+    fn agent_system_prompt(&self, agent_type: &str) -> Option<String> {
+        self.subagent_config().system_prompt_for(agent_type)
     }
 
     /// Send a chat message into a subagent's session (`docs/agent-tool.md`):
@@ -914,9 +957,16 @@ impl ReplySource for LlmBackend {
 #[derive(Clone)]
 struct SubagentConfig {
     client: OpenAiClient,
-    /// The subagent's system prompt: the main prompt (persona + environment)
-    /// with the subagent note appended (`prompts/subagent.md`).
-    system_prompt: Option<String>,
+    /// The session's own assembled system prompt (persona → environment →
+    /// scratchpad) — what a definition **without** a body keeps, plus the
+    /// subagent note (`prompts/subagent.md`).
+    base_system_prompt: Option<String>,
+    /// Its runtime half alone, for a definition whose body replaces the
+    /// persona (`docs/subagents.md`).
+    prompt_context: Option<String>,
+    /// The subagent definitions this launch resolves `subagent_type` against
+    /// — the shared handle, so a type added mid-session is launchable at once.
+    definitions: crate::subagents::SubagentRegistry,
     vision: Option<bool>,
     detach_helper: Option<std::path::PathBuf>,
     /// The shared background-shell registry, so a subagent's `bash` can
@@ -955,14 +1005,11 @@ struct SubagentConfig {
 impl LlmBackend {
     /// The bundled config a subagent run needs (see [`SubagentConfig`]).
     fn subagent_config(&self) -> SubagentConfig {
-        let suffix = SUBAGENT_SYSTEM_SUFFIX.trim();
-        let system_prompt = Some(match &self.system_prompt {
-            Some(base) => format!("{base}\n\n{suffix}"),
-            None => suffix.to_string(),
-        });
         SubagentConfig {
             client: self.client.clone(),
-            system_prompt,
+            base_system_prompt: self.system_prompt.clone(),
+            prompt_context: self.prompt_context.clone(),
+            definitions: self.subagents.clone(),
             vision: self.vision,
             detach_helper: self
                 .background
@@ -977,6 +1024,28 @@ impl LlmBackend {
             max_tool_calls: self.max_tool_calls,
             hooks: Arc::clone(&self.hooks),
         }
+    }
+}
+
+impl SubagentConfig {
+    /// The definition `agent_type` resolves to, or `None` for a type nothing
+    /// on disk (and no built-in) claims. Resolved per run rather than held on
+    /// the registry so a chat continuation and its launch read the same file
+    /// — an edit between them takes effect, which is the whole point of the
+    /// per-turn rescan.
+    fn definition(&self, agent_type: &str) -> Option<crate::subagents::AgentDefinition> {
+        self.definitions.find(agent_type)
+    }
+
+    /// The system prompt a subagent of `agent_type` is sent
+    /// (`crate::subagents::system_prompt_for`).
+    fn system_prompt_for(&self, agent_type: &str) -> Option<String> {
+        crate::subagents::system_prompt_for(
+            self.definition(agent_type).as_ref(),
+            self.base_system_prompt.as_deref(),
+            self.prompt_context.as_deref(),
+            SUBAGENT_SYSTEM_SUFFIX,
+        )
     }
 }
 
@@ -1085,6 +1154,19 @@ fn run_agent_calls(
                 continue;
             }
         };
+        // An unknown `subagent_type` is a recoverable error naming the types
+        // that exist, not a silent general-purpose agent the model never
+        // asked for (`docs/subagents.md`).
+        if config.definition(args.agent_type()).is_none() {
+            results.push((
+                call.id.clone(),
+                crate::subagents::unknown_agent_message(
+                    args.agent_type(),
+                    &config.definitions.names(),
+                ),
+            ));
+            continue;
+        }
         let (id, agent_cancel) = registry.register(args.agent_type());
         let spec = AgentSpec {
             id: id.clone(),
@@ -1096,8 +1178,8 @@ fn run_agent_calls(
         // A subagent conversation starts fresh: the (augmented) system
         // prompt, then the task as the first user message.
         let mut messages = Vec::new();
-        if let Some(system) = &config.system_prompt {
-            messages.push(ChatMessage::system(system));
+        if let Some(system) = config.system_prompt_for(args.agent_type()) {
+            messages.push(ChatMessage::system(&system));
         }
         messages.push(ChatMessage::user(&args.prompt));
         spawn_subagent_run(
@@ -1211,24 +1293,48 @@ fn spawn_subagent_run(
     let mcp = config.mcp.clone();
     // Kept whole for the settle-window continuation at the very bottom.
     let respawn_config = config.clone();
-    // The subagent's tool set: its type's own (never `agent` — no nesting),
-    // plus the `skill` tool when the session found any (`docs/skills.md`),
-    // plus the MCP servers' tools (`docs/mcp.md`).
-    let mut specs = tools::subagent_tool_specs(&agent_type);
+    // The type's definition (`docs/subagents.md`): its tool allowlist, its
+    // model, and its system prompt. Resolved here rather than passed in so a
+    // chat continuation reads the same file the launch did.
+    let definition = config.definition(&agent_type);
+    let allowed = definition
+        .as_ref()
+        .map_or(crate::subagents::AgentTools::All, |def| def.tools.clone());
+    // The subagent's tool set: the built-ins its definition allows (never
+    // `agent` — no nesting), plus the `skill` tool when the session found any
+    // (`docs/skills.md`) and the MCP servers' tools (`docs/mcp.md`), both
+    // through the same allowlist.
+    let mut specs = tools::subagent_tool_specs(&allowed);
+    let mut extras = Vec::new();
     if skills.is_some() {
-        specs.push(tools::skill_spec());
+        extras.push(tools::skill_spec());
     }
     if let Some(manager) = &mcp {
-        specs.extend(manager.tool_specs());
+        extras.extend(manager.tool_specs());
     }
-    // …and the listing that makes that tool usable. A subagent starts on a
-    // fresh context, so the lead's `<system-reminder>` never reaches it: with
-    // the spec but no roster it would have to guess a name and read the real
-    // ones back out of the error. The tool and the listing travel together on
-    // every surface — the same rule `skills_offered` enforces for the lead.
-    let skill_reminder = subagent_skill_reminder(skills.as_ref());
-    let client = config.client.clone().with_tools(specs);
-    let vision = config.vision;
+    specs.extend(tools::allowed_specs(extras, &allowed));
+    // …and the listing that makes the skill tool usable. A subagent starts on
+    // a fresh context, so the lead's `<system-reminder>` never reaches it:
+    // with the spec but no roster it would have to guess a name and read the
+    // real ones back out of the error. The tool and the listing travel
+    // together on every surface — the same rule `skills_offered` enforces for
+    // the lead, which is why a definition that excludes `Skill` gets neither.
+    let skill_reminder = allowed
+        .allows(crate::skills::SKILL_TOOL_NAME)
+        .then(|| subagent_skill_reminder(skills.as_ref()))
+        .flatten();
+    // A definition may pin its own model (`model: kimi-k3`): same provider,
+    // base and key, and the session's thinking mode / vision verdict dropped
+    // — both describe the model being replaced, not this one.
+    let client = match definition.as_ref().and_then(|def| def.model.named()) {
+        Some(model) => config.client.clone().with_model(model),
+        None => config.client.clone(),
+    };
+    let vision = definition
+        .as_ref()
+        .and_then(|def| def.model.named())
+        .map_or(config.vision, |_| None);
+    let client = client.with_tools(specs);
     let detach = config.detach_helper.clone();
     let background = config.background.clone();
     let permissions = config.permissions.clone();
@@ -1334,6 +1440,17 @@ fn spawn_subagent_run(
             &mut messages,
             |msgs| stream_round(&client, msgs, &tx2, &cancel, max_retries),
             |call, on_output| {
+                // The definition's allowlist, enforced where the call RUNS
+                // and not only where the specs were offered: a model can name
+                // a tool it was never given, and a `tools:` line that only
+                // shaped the request would be a promise the executor doesn't
+                // keep (`docs/subagents.md`).
+                if !allowed.allows(&call.name) {
+                    return tools::ToolOutcome::error(crate::subagents::withheld_tool_message(
+                        &call.name,
+                        &agent_type,
+                    ));
+                }
                 // The classifier's task context, one line per executed call —
                 // the lead's pattern (`docs/permissions.md`).
                 if let Ok(mut log) = turn_context.lock() {
@@ -1805,8 +1922,8 @@ mod tests {
         // session view's Ctrl+D shows the real thing (docs/agent-tool.md).
         // Tools off for determinism, like the sibling test above.
         let backend = LlmBackend::configure(ModelConfig::fallback(), Some("be nice".into()), false);
-        let prompt =
-            ReplySource::agent_system_prompt(&backend).expect("subagents always get a prompt");
+        let prompt = ReplySource::agent_system_prompt(&backend, crate::agents::GENERAL_PURPOSE)
+            .expect("subagents always get a prompt");
         assert!(
             prompt.starts_with("be nice\n\n"),
             "the main prompt leads: {prompt}"
@@ -1817,7 +1934,9 @@ mod tests {
         );
         assert_eq!(
             Some(prompt),
-            backend.subagent_config().system_prompt,
+            backend
+                .subagent_config()
+                .system_prompt_for(crate::agents::GENERAL_PURPOSE),
             "the surfaced prompt IS the one a spawned subagent is sent"
         );
         // The main prompt stays note-less.
@@ -1830,6 +1949,63 @@ mod tests {
     }
 
     #[test]
+    fn every_backend_knows_the_built_in_agent_types() {
+        // A backend the boundary never handed definitions to — an embedder, a
+        // live test — still resolves the two built-ins: the `agent` tool's
+        // schema names `general-purpose` as its default, so a launch must not
+        // depend on a file having been found (`docs/subagents.md`).
+        let backend = LlmBackend::configure(ModelConfig::fallback(), Some("be nice".into()), false);
+        let config = backend.subagent_config();
+        assert!(config.definition(crate::agents::GENERAL_PURPOSE).is_some());
+        let explore = config.definition("explore").expect("explore is built in");
+        assert!(!explore.tools.allows("write"), "explore stays read-only");
+        assert_eq!(
+            config.definitions.names(),
+            vec![
+                crate::agents::GENERAL_PURPOSE.to_string(),
+                "explore".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn an_unknown_agent_type_is_refused_without_launching_anything() {
+        let backend = LlmBackend::configure(ModelConfig::fallback(), None, false);
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let (agent_tx, _agent_rx) = tokio::sync::mpsc::unbounded_channel();
+        let registry = AgentRegistry::new(agent_tx);
+        let call = ToolCallRequest {
+            id: "call_1".to_string(),
+            name: tools::AGENT_TOOL_NAME.to_string(),
+            arguments: r#"{"description":"d","prompt":"p","subagent_type":"reviewer"}"#.to_string(),
+        };
+        let results = run_agent_calls(
+            &backend.subagent_config(),
+            &registry,
+            None,
+            &tx,
+            &CancelToken::new(),
+            &[call],
+        );
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].0, "call_1");
+        assert!(
+            results[0].1.starts_with("Unknown agent type \"reviewer\""),
+            "{}",
+            results[0].1
+        );
+        assert!(
+            results[0].1.contains("general-purpose"),
+            "the model is told what does exist: {}",
+            results[0].1
+        );
+        assert!(
+            rx.try_recv().is_err(),
+            "no group was announced: nothing was launched for a type that does not exist"
+        );
+    }
+
+    #[test]
     fn a_promptless_backend_still_hands_subagents_the_note() {
         // An empty ALTER_ZERO_SYSTEM_PROMPT drops the main prompt entirely,
         // but a subagent still needs its framing — the note alone is its
@@ -1837,7 +2013,7 @@ mod tests {
         let backend = LlmBackend::configure(ModelConfig::fallback(), None, false);
         assert!(ReplySource::system_prompt(&backend).is_none());
         assert_eq!(
-            ReplySource::agent_system_prompt(&backend).as_deref(),
+            ReplySource::agent_system_prompt(&backend, crate::agents::GENERAL_PURPOSE).as_deref(),
             Some(SUBAGENT_SYSTEM_SUFFIX.trim())
         );
     }

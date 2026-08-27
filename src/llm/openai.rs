@@ -101,6 +101,23 @@ impl OpenAiClient {
         self
     }
 
+    /// Point this client at a different **model** on the same provider — an
+    /// agent definition's `model:` (`docs/subagents.md`).
+    ///
+    /// The thinking mode and the vision verdict are dropped with the swap:
+    /// both were detected for the model being replaced, and sending a
+    /// `reasoning` parameter to a model that doesn't reason is how a provider
+    /// comes to reject the whole request. Everything else — base, key,
+    /// headers, provider kwargs, temperature, cache key — is the provider's
+    /// and stays.
+    #[must_use]
+    pub fn with_model(mut self, model: &str) -> Self {
+        self.cfg.model = model.to_string();
+        self.cfg.thinking = None;
+        self.cfg.vision = None;
+        self
+    }
+
     /// The chat-completions endpoint (`{api_base}/chat/completions`), falling
     /// back to OpenAI when the base is empty.
     #[must_use]

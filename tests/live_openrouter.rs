@@ -1874,7 +1874,7 @@ fn live_subagent_is_sent_the_subagent_note_and_ctrl_d_matches_it() {
     // The sentinel phrase lives in prompts/subagent.md alone — not in the
     // terse main prompt, and (deliberately) not in either prompt below.
     let sentinel = "launched by the main agent";
-    let surfaced = ReplySource::agent_system_prompt(&backend)
+    let surfaced = ReplySource::agent_system_prompt(&backend, alter_zero::agents::GENERAL_PURPOSE)
         .expect("the backend surfaces its subagent prompt");
     assert!(
         surfaced.contains(sentinel),

@@ -79,15 +79,16 @@ fn context_entry_lines(
 pub fn context_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     // An agent session view debugs the *viewed agent's* context: its own
     // transcript derived through the same mapping, under the prompt a
-    // subagent is actually sent — the main prompt with the subagent note
-    // appended (`App::agent_system_prompt`, from
+    // subagent is actually sent — its type's definition, else the main
+    // prompt, plus the subagent note (`App::agent_system_prompt`, from
     // `ReplySource::agent_system_prompt`) — with no AGENTS.md fragment
     // (subagents get none). See `docs/agent-tool.md`.
     // A viewed subagent's own window has neither leading fragment: its
     // instructions ride the system prompt shown above, and its skills — which
     // it does carry (`docs/skills.md`) — are the session's, listed on the
-    // main view.
-    let (history, instructions, skills, system_prompt) = match app.viewed_agent() {
+    // main view. Nor does it list agent types: subagents cannot launch
+    // agents (`docs/subagents.md`).
+    let (history, instructions, reminder, system_prompt) = match app.viewed_agent() {
         Some(run) => (
             run.history.as_slice(),
             None,
@@ -97,7 +98,7 @@ pub fn context_lines(app: &App, width: u16) -> Vec<Line<'static>> {
         None => (
             app.history.as_slice(),
             app.user_instructions.as_deref(),
-            app.skill_listing.as_deref(),
+            app.system_reminder.as_deref(),
             app.system_prompt.as_ref(),
         ),
     };
@@ -113,7 +114,7 @@ pub fn context_lines(app: &App, width: u16) -> Vec<Line<'static>> {
             width,
         );
     }
-    for message in crate::context::context_messages_full(instructions, skills, history) {
+    for message in crate::context::context_messages_full(instructions, reminder, history) {
         context_entry_lines(
             &mut lines,
             &format!("{}:", message.role.wire_name()),
@@ -175,7 +176,7 @@ struct ContextSig {
     prompt_len: Option<usize>,
     agent_prompt_len: Option<usize>,
     instructions_len: Option<usize>,
-    skills_len: Option<usize>,
+    reminder_len: Option<usize>,
 }
 
 impl ContextSig {
@@ -191,7 +192,7 @@ impl ContextSig {
             prompt_len: app.system_prompt.as_ref().map(String::len),
             agent_prompt_len: app.agent_system_prompt.as_ref().map(String::len),
             instructions_len: app.user_instructions.as_ref().map(String::len),
-            skills_len: app.skill_listing.as_ref().map(String::len),
+            reminder_len: app.system_reminder.as_ref().map(String::len),
         }
     }
 }
