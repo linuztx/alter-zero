@@ -16,14 +16,22 @@ use crate::subagents::{
 /// these), and the last-resort definitions when the walk finds no file of
 /// that name at all.
 ///
+/// Authored in `prompts/agents/`, beside every other `include_str!`'d markdown
+/// this crate embeds (`prompts/alter_zero.md`, `prompts/subagent.md`, …) — the
+/// file a user edits lives in *their* agents directory, and this is only the
+/// copy the binary carries.
+///
 /// `general-purpose` first: it is the `agent` tool's schema default, so it is
 /// also the first row of the listing the model reads.
 const BUILTIN_FILES: [(&str, &str); 2] = [
     (
         "general-purpose.md",
-        include_str!("../../agents/general-purpose.md"),
+        include_str!("../../prompts/agents/general-purpose.md"),
     ),
-    ("explore.md", include_str!("../../agents/explore.md")),
+    (
+        "explore.md",
+        include_str!("../../prompts/agents/explore.md"),
+    ),
 ];
 
 /// The agent-definition roots, in precedence order — the **first** root to
@@ -129,15 +137,24 @@ pub fn seed_default_agents(dir: &Path) -> Vec<AgentFileError> {
     errors
 }
 
-/// The embedded definitions, parsed. Their paths are the file names alone:
-/// they name the file a user would edit without claiming a directory nothing
-/// was read from.
+/// The embedded definitions, parsed. They carry **no** path — nothing read
+/// them off disk, and a synthetic one would name a file that may not be
+/// there ([`AgentDefinition::is_builtin`]).
 #[must_use]
 pub fn builtin_agents() -> Vec<AgentDefinition> {
     BUILTIN_FILES
         .iter()
-        .filter_map(|(name, contents)| parse_agent(contents, Path::new(name)).ok())
+        .filter_map(|(file, contents)| parse_agent(contents, &file_stem(Path::new(file))).ok())
         .collect()
+}
+
+/// A definition file's stem — the `name` a file that omits the frontmatter
+/// key takes.
+fn file_stem(path: &Path) -> String {
+    path.file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or_default()
+        .to_string()
 }
 
 /// Walk `roots` for `<root>/<name>.md`, parsing each one.
@@ -177,11 +194,16 @@ pub fn discover_agents(roots: &[PathBuf]) -> (Vec<AgentDefinition>, Vec<AgentFil
                     continue;
                 }
             };
-            match parse_agent(&contents, &path) {
+            match parse_agent(&contents, &file_stem(&path)) {
                 // First root wins: a later root's same-named type is
                 // shadowed, not a second row in the listing.
                 Ok(parsed) if agents.iter().any(|agent| agent.name == parsed.name) => {}
-                Ok(parsed) => agents.push(parsed),
+                Ok(mut parsed) => {
+                    // The file this came off, stamped by the only code that
+                    // knows it — what an error names and a browser opens.
+                    parsed.path = Some(path);
+                    agents.push(parsed);
+                }
                 Err(err) => errors.push(AgentFileError {
                     path,
                     message: err.to_string(),
@@ -312,8 +334,14 @@ mod tests {
         // Not an agent file: a README beside them must not be parsed.
         std::fs::write(second.join("README.txt"), "hello").unwrap();
 
-        let (agents, errors) = discover_agents(&[first, second]);
+        let (agents, errors) = discover_agents(&[first.clone(), second]);
         assert!(errors.is_empty(), "{errors:?}");
+        assert_eq!(
+            agents[0].path.as_deref(),
+            Some(first.join("explore.md").as_path()),
+            "the walk stamps the file it read"
+        );
+        assert!(!agents[0].is_builtin());
         assert_eq!(
             agents.iter().map(|a| a.name.as_str()).collect::<Vec<_>>(),
             vec!["explore", "reviewer"]
@@ -372,6 +400,10 @@ mod tests {
             vec![crate::agents::GENERAL_PURPOSE, "explore"]
         );
         let general = &builtins[0];
+        assert!(
+            general.is_builtin(),
+            "no file backs a compiled-in definition"
+        );
         assert_eq!(
             general.tools,
             AgentTools::All,

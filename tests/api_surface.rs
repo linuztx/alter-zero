@@ -166,6 +166,7 @@ use alter_zero::skills::{
     SKILL_LOADED_DISPLAY,
     SKILL_MENTION_PREFIX,
     SKILL_TOOL_DISPLAY,
+    SKILL_LISTING_HEADER,
     SKILL_TOOL_NAME,
     SKILL_TRUNCATION_MARKER,
     is_skill_tool,
@@ -180,6 +181,45 @@ use alter_zero::skills::{
     substitute_arguments,
     unreported_errors,
     validate_skill_name,
+};
+
+// --- `subagents` — the agent definitions' pure model (docs/subagents.md) ---
+#[rustfmt::skip]
+#[allow(unused_imports)]
+use alter_zero::subagents::{
+    AGENTS_DIR_NAME,
+    AGENT_FILE_EXT,
+    AGENT_LISTING_HEADER,
+    ALL_TOOLS,
+    AgentDefinition,
+    AgentFileError,
+    AgentModel,
+    AgentParseError,
+    AgentTools,
+    INHERIT_MODEL,
+    MAX_AGENT_NAME_LEN,
+    SubagentRegistry,
+    agent_budget,
+    agent_listing,
+    parse_agent,
+    reminder_message,
+    system_prompt_for,
+    unknown_agent_message,
+    unreported_errors as unreported_agent_errors,
+    validate_agent_name,
+    withheld_tool_message,
+};
+
+// --- `frontmatter` — the `---` block parse both authored formats share ---
+#[rustfmt::skip]
+#[allow(unused_imports)]
+use alter_zero::frontmatter::{
+    FileError,
+    field,
+    scalars,
+    split,
+    truncate_chars,
+    unreported,
 };
 
 // --- `tasks` — the task tools' pure model (docs/task-tools.md) ---

@@ -529,11 +529,13 @@ fn agent_spec() -> Value {
         AGENT_TOOL_NAME,
         "Launch a subagent to handle a task autonomously. It runs its own tool \
          loop over a fresh context in this directory; its final message comes \
-         back as this tool's result. It cannot see this conversation, so give \
-         it a complete, self-contained prompt and say what to return. Several \
-         calls in one message run concurrently. Agents run in the background \
-         by default — the call returns at once and you are re-invoked when one \
-         finishes; pass run_in_background false to wait for the result.",
+         back as this tool's result. Pick the subagent_type whose description \
+         fits the task — the type decides which tools the agent has. It cannot \
+         see this conversation, so give it a complete, self-contained prompt \
+         and say what to return. Several calls in one message run \
+         concurrently. Agents run in the background by default — the call \
+         returns at once and you are re-invoked when one finishes; pass \
+         run_in_background false to wait for the result.",
         json!({
             "type": "object",
             "properties": {

@@ -72,8 +72,8 @@ which is also what makes a test run hermetic.
 
 ### Seeding, and the built-in fallback
 
-The two defaults ship embedded in the binary (`agents/general-purpose.md`,
-`agents/explore.md` in the repo, `include_str!`'d). At startup each is
+The two defaults ship embedded in the binary (`prompts/agents/*.md` in the
+repo, `include_str!`'d beside every other markdown this crate carries). At startup each is
 **written into the user root when that file is absent** — so a fresh install
 finds them on disk and can edit them, and a release that adds a default gets
 it too. Deleting one brings it back next launch; to change a default, edit
@@ -167,7 +167,7 @@ re-broken reports again).
 | `src/frontmatter.rs` | the shared `---` frontmatter parse (skills + agents) |
 | `src/subagents.rs` | pure: `AgentDefinition`, the parse, `AgentTools::allows`, the listing, the reminder wrapper, `SubagentRegistry` |
 | `src/llm/subagent.rs` | boundary: the root walk, the discovery, the seeding of the embedded defaults |
-| `agents/*.md` | the embedded defaults themselves |
+| `prompts/agents/*.md` | the embedded defaults themselves |
 
 `ALTER_ZERO_AGENTS_DIR` relocates the roots. There is no separate on/off
 switch: the types *are* the `agent` tool, which the `/settings` **Tools** row

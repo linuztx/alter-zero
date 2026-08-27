@@ -176,9 +176,19 @@ pub struct AgentDefinition {
     /// `None` when the file is frontmatter only.
     pub system_prompt: Option<String>,
     /// The file it was read from — what an error names, and what a later
-    /// browser would open. Empty for a built-in fallback that never reached
-    /// disk.
-    pub path: PathBuf,
+    /// browser would open. `None` for a compiled-in fallback, which has no
+    /// file: a synthetic path there would name something that isn't on disk.
+    pub path: Option<PathBuf>,
+}
+
+impl AgentDefinition {
+    /// Is this the copy the binary carries rather than a file on disk? True
+    /// only when the walk found no file of this name anywhere
+    /// (`llm::subagent::with_builtins`).
+    #[must_use]
+    pub const fn is_builtin(&self) -> bool {
+        self.path.is_none()
+    }
 }
 
 /// Why an agent file was refused.
@@ -235,8 +245,11 @@ pub fn validate_agent_name(name: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Parse one agent definition file. `path` names it — its stem is the
-/// default `name`, and an error reports it.
+/// Parse one agent definition file. `default_name` (the file's stem, or the
+/// type name for a compiled-in one) is the `name` when the frontmatter omits
+/// it; the [`path`](AgentDefinition::path) is stamped by the walk that read
+/// the file, so what comes out of here is always `None` — a built-in has no
+/// file, and inventing one would name something that isn't on disk.
 ///
 /// Unknown frontmatter keys are **ignored, not rejected** (the `SKILL.md`
 /// rule): a file authored for another tool carries keys we do not model, and
@@ -245,21 +258,13 @@ pub fn validate_agent_name(name: &str) -> Result<(), String> {
 /// # Errors
 /// [`AgentParseError`] when the frontmatter is absent, the description is
 /// missing, or the resolved name is unusable.
-pub fn parse_agent(
-    contents: &str,
-    path: &std::path::Path,
-) -> Result<AgentDefinition, AgentParseError> {
+pub fn parse_agent(contents: &str, default_name: &str) -> Result<AgentDefinition, AgentParseError> {
     let (block, body) = frontmatter::split(contents).ok_or(AgentParseError::MissingFrontmatter)?;
     let fields = frontmatter::scalars(&block);
 
     let name = frontmatter::field(&fields, "name")
         .map(str::to_string)
-        .unwrap_or_else(|| {
-            path.file_stem()
-                .and_then(|stem| stem.to_str())
-                .unwrap_or_default()
-                .to_string()
-        });
+        .unwrap_or_else(|| default_name.to_string());
     validate_agent_name(&name).map_err(AgentParseError::InvalidName)?;
 
     let description = frontmatter::field(&fields, "description")
@@ -276,7 +281,9 @@ pub fn parse_agent(
         model: frontmatter::field(&fields, "model").map_or(AgentModel::Inherit, AgentModel::parse),
         tools: frontmatter::field(&fields, "tools").map_or(AgentTools::All, AgentTools::parse),
         system_prompt: (!body.is_empty()).then_some(body),
-        path: path.to_path_buf(),
+        // The walk stamps the file it read this from; a built-in keeps
+        // `None`, which is what `is_builtin` reads.
+        path: None,
     })
 }
 
@@ -348,6 +355,21 @@ pub fn agent_listing(agents: &[AgentDefinition], budget: usize) -> String {
 /// Below this, a trimmed description says nothing useful and the listing
 /// degrades to names only instead ([`crate::skills`]' rule).
 const MIN_DESC_LEN: usize = 20;
+
+/// The agent listing's share of the reminder's character budget: whatever the
+/// skills section ahead of it did not spend.
+///
+/// The reminder is **one** leading fragment, so it gets **one** budget
+/// ([`crate::skills::listing_budget`], 1% of the model's context window):
+/// handing each section the whole of it would put 2% of the window in front
+/// of every turn. Spent skills-first because they are listed first and there
+/// are far more of them; a starved agent section still names every type and
+/// its tools, since [`agent_listing`] degrades rather than dropping an entry
+/// the model would then be unable to launch.
+#[must_use]
+pub fn agent_budget(total: usize, skill_listing: &str) -> usize {
+    total.saturating_sub(skill_listing.chars().count())
+}
 
 /// The `<system-reminder>` the derived context leads with: the skills the
 /// `Skill` tool can load, then the types the `Agent` tool can launch — one
@@ -518,10 +540,9 @@ impl SubagentRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::Path;
 
     fn parse(contents: &str) -> AgentDefinition {
-        parse_agent(contents, Path::new("/agents/explore.md")).expect("parses")
+        parse_agent(contents, "explore").expect("parses")
     }
 
     // ===== the file =====
@@ -544,11 +565,11 @@ mod tests {
             ])
         );
         assert_eq!(def.system_prompt.as_deref(), Some("You are a reviewer."));
-        assert_eq!(def.path, Path::new("/agents/explore.md"));
+        assert!(def.is_builtin(), "the walk stamps the path, not the parse");
     }
 
     #[test]
-    fn the_name_defaults_to_the_file_stem() {
+    fn the_name_defaults_to_the_files_own_stem() {
         let def = parse("---\ndescription: Explores.\n---\n");
         assert_eq!(def.name, "explore");
     }
@@ -597,21 +618,18 @@ mod tests {
     #[test]
     fn a_file_without_frontmatter_or_description_is_refused() {
         assert_eq!(
-            parse_agent("no frontmatter", Path::new("x.md")),
+            parse_agent("no frontmatter", "x"),
             Err(AgentParseError::MissingFrontmatter)
         );
         assert_eq!(
-            parse_agent("---\nname: x\n---\nbody", Path::new("x.md")),
+            parse_agent("---\nname: x\n---\nbody", "x"),
             Err(AgentParseError::MissingDescription)
         );
     }
 
     #[test]
     fn an_unusable_name_is_refused() {
-        let err = parse_agent(
-            "---\nname: not a name\ndescription: d\n---\n",
-            Path::new("x.md"),
-        );
+        let err = parse_agent("---\nname: not a name\ndescription: d\n---\n", "x");
         assert!(
             matches!(err, Err(AgentParseError::InvalidName(_))),
             "{err:?}"
@@ -698,12 +716,12 @@ mod tests {
         vec![
             parse_agent(
                 "---\nname: general-purpose\ndescription: Does anything.\n---\n",
-                Path::new("general-purpose.md"),
+                "general-purpose",
             )
             .unwrap(),
             parse_agent(
                 "---\nname: explore\ndescription: Searches.\ntools: Bash, Read\n---\n",
-                Path::new("explore.md"),
+                "explore",
             )
             .unwrap(),
         ]
@@ -746,6 +764,21 @@ mod tests {
     }
 
     // ===== the reminder =====
+
+    #[test]
+    fn the_two_sections_share_one_budget_rather_than_spending_it_twice() {
+        // The reminder is ONE leading fragment, so its budget is one budget:
+        // giving each section the full 1% would put 2% of the window in front
+        // of every turn.
+        assert_eq!(agent_budget(1_000, "- dataviz: Charts."), 1_000 - 18);
+        assert_eq!(agent_budget(10, "- dataviz: Charts."), 0, "skills-first");
+        assert_eq!(agent_budget(1_000, ""), 1_000, "no skills, no spend");
+        // …and a starved agent section still lists every type, by name and
+        // tools — the degradation `agent_listing` already guarantees.
+        let listing = agent_listing(&defs(), agent_budget(10, "- dataviz: Charts."));
+        assert_eq!(listing.lines().count(), 2, "{listing}");
+        assert!(listing.contains("general-purpose"), "{listing}");
+    }
 
     #[test]
     fn the_reminder_carries_both_sections_in_one_block() {

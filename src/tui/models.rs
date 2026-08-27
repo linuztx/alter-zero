@@ -1198,21 +1198,23 @@ impl Session<'_> {
     pub(crate) fn sync_system_reminder(&mut self) {
         // The budget is 1% of the model's context window in characters, so
         // this is re-rendered here rather than once at startup: a `/model`
-        // switch to a roomier model widens both listings with it.
+        // switch to a roomier model widens both listings with it. **One**
+        // budget for the whole reminder, spent skills-first and the remainder
+        // to the agents (`subagents::agent_budget`) — one fragment, one 1%.
         let window = self
             .models
             .context_window()
             .and_then(|w| usize::try_from(w).ok());
+        let budget = alter_zero::skills::listing_budget(window);
         let skills_offered = self.app.settings().skills_offered();
         let skills = if skills_offered {
-            self.skill_registry
-                .listing(alter_zero::skills::listing_budget(window))
+            self.skill_registry.listing(budget)
         } else {
             String::new()
         };
         let agents = if self.models.agents_offered() {
             self.subagents
-                .listing(alter_zero::skills::listing_budget(window))
+                .listing(alter_zero::subagents::agent_budget(budget, &skills))
         } else {
             String::new()
         };

@@ -356,8 +356,9 @@ capitalized built-ins, MCP wire names, a trailing `*` globbing a server), over
 an optional body that **replaces the persona** for that type while the
 environment/scratchpad blocks and the subagent note stay; the built-in
 `general-purpose`/`explore` are seeded into `~/.alter-zero/agents/` on first
-run — editable files, never clobbered, with the embedded copies as the
-last-resort fallback since the schema's default type must always resolve —
+run from the copies embedded out of `prompts/agents/` — editable files, never
+clobbered, and the last-resort fallback (`AgentDefinition::is_builtin`, a
+`path` of `None`) since the schema's default type must always resolve —
 discovered from `{cwd}/.alter-zero/agents`, the project root's, then
 `{config_home}/agents` (**no `.claude/agents`**: a `SKILL.md` is inert
 markdown, an agent file names a model and a tool reach), **re-walked at every
@@ -365,8 +366,11 @@ turn start** beside the skills so a type the agent just wrote is launchable
 now, an unknown `subagent_type` resolving as a recoverable error listing the
 real ones, and the whole roster riding the context as the **second section of
 the same `<system-reminder>` the skills listing opens** — `- {name}:
-{description} (Tools: …)`, budgeted identically, gated on the `agent` tool
-actually being on the wire so the offline dummy's context is unchanged;
+{description} (Tools: …)`, sharing **one** 1%-of-window budget with the skills
+half (spent skills-first, `subagents::agent_budget`: one fragment, one budget,
+where a listing of its own would have put 2% in front of every turn), gated on
+the `agent` tool actually being on the wire so the offline dummy's context is
+unchanged;
 `ALTER_ZERO_AGENTS_DIR` relocates the roots; the allowlist guards the
 **executor** too, since a model can name a tool it was never offered), reporting on a dedicated `agents::AgentEvent` channel (a seventh
 `select!` source — agents outlive turns); a foreground group shows the live

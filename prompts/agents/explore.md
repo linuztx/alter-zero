@@ -1,13 +1,11 @@
 ---
 name: explore
 description: Read-only search agent for broad fan-out searches. Use it when answering means sweeping many files, directories or naming conventions and you want the conclusion, not the file dumps — it locates code and reports what it found, and never edits.
-# `model:` — a provider model id (e.g. `kimi-k3`) to run this type on, or
-# `inherit` for whatever model the session is using.
+# `model:` — a model id to run this type on, or `inherit` for the session's
+#   own. See general-purpose.md for the full grammar of every key here.
 model: inherit
-# `tools:` — a comma-separated allowlist; omit it for every tool. Built-in
-# names are capitalized (Bash, Read, Write, Edit, Skill); MCP tools keep their
-# wire spelling and a trailing `*` globs a whole server. Leaving `Write` and
-# `Edit` out is what makes this type read-only.
+# `tools:` — the read-only set: no `Write`, no `Edit`. Drop the key entirely to
+#   offer every tool instead.
 tools: Bash, Read, Skill, mcp__*
 ---
 

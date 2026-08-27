@@ -520,6 +520,17 @@ unit-tested must be unit-tested.
   leaves behind),
   background completions noticing + auto-following-up like background shells,
   and per-agent `● Agent(…)` expansions in the Ctrl+O transcript.
+- **Subagent definitions** (`docs/subagents.md`): which `subagent_type`s exist
+  is authored, not compiled in — `agents/*.md` files of YAML frontmatter
+  (`name`, `description`, `model`, `tools`) over a body that replaces the
+  persona half of that type's system prompt. The cwd's, the project root's and
+  `~/.alter-zero/agents` are walked at **every turn start**, so a file the
+  agent just wrote for itself is launchable on the next turn; the two built-ins
+  are seeded into the user's directory as editable files and stay compiled in
+  as the fallback; the `tools:` allowlist is enforced where a call **runs**,
+  not only where the specs are offered; and the model picks a type from the
+  `<system-reminder>` that carries the skill listing beside it, under one
+  shared budget.
 - **Task tools** (`docs/task-tools.md`): Claude Code's structured task list —
   the model plans multi-step work with
   `taskcreate`/`taskget`/`tasklist`/`taskupdate` and the user watches a
