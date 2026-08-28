@@ -1,10 +1,16 @@
 # Very long output lines — bounded rows, honest counts
 
-A collapsed tool cell budgets its peek in **source lines** (`TOOL_PEEK_LINES` of
-them) and renders each one fully wrapped, so a long line's tail never
-disappears past the terminal edge (`docs/tool-streaming.md`). That is right
-until one line is *pathological* — a minified bundle, a base64 blob, a 2 KB
-JSON body from `curl`. Then a single source line eats the whole cell:
+A collapsed tool cell shows the head of its output and hides the rest behind a
+`… +N lines (ctrl+o to expand)` hint. What "the head" *means* is the whole
+subject of this document, and it has been wrong twice — both times because the
+cell measured itself in **source lines** while the user reads it in **display
+rows**.
+
+The first version budgeted in source lines alone (`TOOL_PEEK_LINES` of them),
+each rendered fully wrapped so a long line's tail never disappeared past the
+terminal edge (`docs/tool-streaming.md`). That is right until one line is
+*pathological* — a minified bundle, a base64 blob, a 2 KB JSON body from
+`curl`. Then a single source line ate the whole cell:
 
 ```
 ● Bash(which yt-dlp youtube-dl 2>/dev/null; curl -s
@@ -25,34 +31,83 @@ JSON body from `curl`. Then a single source line eats the whole cell:
      … +1 lines (ctrl+o to expand)
 ```
 
-Twelve rows of unreadable wrapped JSON — the whole `TOOL_PEEK_MAX_ROWS`
-ceiling spent on **one** line — closed by a hint claiming *one* line is
-hidden. Both halves are wrong, and they are wrong in the same way: the cell
-measures itself in source lines while the user reads it in **rows**.
+Twelve rows of unreadable wrapped JSON — the whole block ceiling spent on
+**one** line — closed by a hint claiming *one* line is hidden. Both halves are
+wrong, and they are wrong in the same way: the cell measures itself in source
+lines while the user reads it in **rows**.
 
 ## The rule
 
-> A source line spends at most **`TOOL_LINE_MAX_ROWS`** display rows in a
-> collapsed cell, the cut is **visible**, and an unnumbered cell's `+N lines`
-> hint counts the **rows** the expansion will add.
+> A collapsed cell's output block spends at most **`TOOL_PEEK_ROWS`** display
+> rows, of which any one source line may spend at most
+> **`TOOL_LINE_MAX_ROWS`**; the cut is **visible**, and an unnumbered cell's
+> `+N lines` hint counts the **rows** the expansion will add.
 
-Three parts, each fixing one half of the mess above.
+Four parts. The first three landed together and bounded the *line*; the fourth
+(§0 below, added after the mess came back in a second dress) bounds the
+*block*.
+
+### 0. Rows, not lines (`TOOL_PEEK_ROWS = 4`)
+
+Bounding the line was not bounding the cell. Four source lines, each *within*
+its 3-row budget, still cost twelve rows — and that is the everyday shape of a
+`curl` of any web page:
+
+```
+● Bash(curl -s "https://en.wikipedia.org/wiki/World_Chess_Champion" |
+      grep -i "champion" -A 5 | head -n 20)
+  ⎿  <title>World Chess Championship - Wikipedia</title>
+     <script>(function(){var className="client-js
+     vector-feature-language-in-header-enabled
+     vector-feature-language-in-main-menu-disabled…
+     RLSTATE={"ext.globalCssJs.user.styles":"ready","site.styles":"ready
+     ","user.styles":"ready","ext.globalCssJs.user":"ready","user":"read
+     y","user.options":"loading","ext.cite.parsoid.styles":"ready","ext…
+     <script>(RLQ=window.RLQ||[]).push(function(){mw.loader.impl(functio
+     n(){return["user.options@12s5i",function($,jQuery,require,module){m
+     w.user.tokens.set({"patrolToken":"+\\","watchToken":"+\\","csrfTok…
+     … +122 lines (ctrl+o to expand)
+  ⎿  Allowed by auto mode classifier
+```
+
+Ten rows of markup for a cell whose whole job is to say *the command ran, here
+is a glimpse*. Nothing in it is a bug at the line level: every line is clipped
+at 3 rows and marked. The bug is that the **block** had no row budget — its
+ceiling was the *product* of the two line budgets (`TOOL_PEEK_LINES *
+TOOL_LINE_MAX_ROWS` = 12), so the same four lines cost four rows when they were
+short and twelve when they wrapped. A cell whose height depends on how the
+output happens to be shaped is a cell you cannot skim.
+
+`TOOL_PEEK_ROWS` is that budget, and it is now **the** budget: four display
+rows, whatever the output looks like. The source-line budget still stands
+beside it (`TOOL_PEEK_LINES`, the same 4) — whichever runs out first ends the
+peek, so ordinary output still reads line for line and a wrapping one stops at
+four rows.
+
+It is also the window the **running** tail already used
+(`running_command_lines` shows the last four *rows*), so head and tail are
+literally the same size now: a `bash` cell does not resize when it settles.
+
+The per-line budget keeps its job inside the smaller block: it is what
+guarantees the blob does not take all four rows, leaving one for the line
+*after* it — the peek shows that the output continues rather than spending
+itself on one line.
 
 ### 1. A per-line row budget (`TOOL_LINE_MAX_ROWS = 3`)
 
-The peek's budget stays `TOOL_PEEK_LINES` **source lines** — "the first 4 lines
-of output", so a long first line never pushes its siblings out of the peek —
-but each of those lines may now spend at most `TOOL_LINE_MAX_ROWS` rows of the
-block. The everyday multi-row case is untouched: a `sudo: a terminal is
-required…` error wrapping to 2–3 rows at a narrow width still shows in full
-(the ceiling was already "three rows per budgeted line"; it is now enforced
-*per line* instead of only for the block). What changes is the pathological
-line: it shows its head and stops, and its siblings keep their rows.
+No one source line may spend more than `TOOL_LINE_MAX_ROWS` rows of the block.
+The everyday multi-row case is untouched: a `sudo: a terminal is required…`
+error wrapping to 2–3 rows at a narrow width still shows in full. What changes
+is the pathological line: it shows its head and stops, and the line after it
+still gets a row — which is the whole point of a *per-line* cap inside the
+block budget above. Without it, one blob would take all four rows and the peek
+would never show that the output continues.
 
-`TOOL_PEEK_MAX_ROWS` stays the block's ceiling and is now literally the product
-of the two budgets (`TOOL_PEEK_LINES * TOOL_LINE_MAX_ROWS`), enforced in the
-same loop so a caller passing a bigger line budget (the numbered file cells,
-`FILE_PEEK_LINES`) still can't run past it.
+`TOOL_PEEK_ROWS` is the block's ceiling, enforced in the same loop, so the
+per-line budget is really `min(TOOL_LINE_MAX_ROWS, rows left in the block)` —
+a line arriving with one row left shows one row and its `…` — and a caller
+passing a bigger line budget (the numbered file cells, `FILE_PEEK_LINES`)
+still can't run past it.
 
 ### 2. The cut is visible (`TOOL_LINE_ELLIPSIS`)
 
@@ -118,17 +173,35 @@ Three rows instead of twelve, the cut marked, and a number that means what it
 says: the expansion holds exactly fourteen rows, three of them shown. (Captured
 from a live `openai/gpt-4o-mini` turn against the command from the report.)
 
+And the multi-line report the block budget answers — the same page, the same
+grep, four rows instead of ten:
+
+```
+● Bash(grep -i "champion" -A 5 /tmp/wiki.html | head -n 20)
+  ⎿  <title>World Chess Championship - Wikipedia</title>
+     <script>(function(){var className="client-js
+     vector-feature-language-in-header-enabled
+     vector-feature-language-in-main-menu-disabled…
+     … +113 lines (ctrl+o to expand)
+  ⎿  Allowed by auto mode classifier
+```
+
+(Captured from a live `openai-gpt-4o-mini` turn in auto permission mode,
+against a local copy of the page from the report.)
+
 ## Code map
 
 | Piece | Where |
 | --- | --- |
-| `TOOL_LINE_MAX_ROWS`, `TOOL_LINE_ELLIPSIS`, `TOOL_PEEK_MAX_ROWS` | `ui/theme.rs` |
+| `TOOL_PEEK_ROWS`, `TOOL_LINE_MAX_ROWS`, `TOOL_LINE_ELLIPSIS` | `ui/theme.rs` |
 | `WrapMode::{wrap, rows, clip}` — one scan, three uses | `ui/wrap.rs` |
 | The collapsed output peek (`result_peek_block`) | `ui/tool.rs` |
 | The running tail's `+N lines ({secs}s)` footer | `ui/tool.rs` (`running_command_lines`) |
 | The numbered file cell's per-line clip | `ui/file_cell.rs` (`numbered_row_lines`) |
 
 Tests: `ui::tests::wrap` (the counter/clip primitives) and `ui::tests::tool`
-(every cell shape), plus `scripts/smoke.sh` Phase 92, which drives a real
-750-character single-line command through the binary and checks both the
-clipped cell and the whole line in Ctrl+O.
+(every cell shape — `a_finished_peek_never_spends_more_rows_than_the_row_ceiling`
+is the block budget's own), plus `scripts/smoke.sh` Phase 92, which drives two
+real commands through the binary: a 750-character single line (the clipped cell
+and the whole line in Ctrl+O) and four wrapping lines (the 4-row ceiling, the
+honest count, and every row still in Ctrl+O).

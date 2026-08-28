@@ -24,7 +24,8 @@ Running (live, in the strip above the box):        Finished (committed to scroll
 
 The two states are deliberately asymmetric — while **running** you want the
 **tail** (what just happened); once **finished** you want the **head** with an
-expand hint. Both cap at `TOOL_PEEK_LINES` (4) rows.
+expand hint. Both cap at `TOOL_PEEK_ROWS` (4) display rows, so the cell is the
+same size streaming and settled.
 
 ## The protocol — `StreamEvent::ToolOutput`
 
@@ -78,9 +79,9 @@ A **command-style** tool (a non-shell backend tool that is not a `read`/`write`/
 `edit` file cell — in practice `bash`) now renders its output as a multi-line
 `⎿` block, like the `!` shell cell:
 
-- **Finished** (`tool_lines`): the first `TOOL_PEEK_LINES` **source lines**,
-  each wrapped — "the first 4 lines of output", so a long first line never
-  pushes its siblings out of the peek — then `… +N lines (ctrl+o to expand)`,
+- **Finished** (`tool_lines`): the head of the output — at most
+  `TOOL_PEEK_ROWS` display **rows** and at most `TOOL_PEEK_LINES` source
+  lines, whichever runs out first — then `… +N lines (ctrl+o to expand)`,
   via the shared `result_peek_block`. Each line **word-wraps, spaces
   preserved** (`wrap_output`, the same wrapper the Ctrl+O view uses — a prose
   error like `sudo`'s breaks at words, never mid-"askpass"; `ls -l` columns
@@ -88,8 +89,8 @@ A **command-style** tool (a non-shell backend tool that is not a `read`/`write`/
   long line's tail no longer disappears — and each line is bounded to
   `TOOL_LINE_MAX_ROWS` rows of the block, its cut closed by a `…`, so one
   pathological line (a minified bundle, a 2 KB `curl` body) can't spend the
-  whole cell on itself (`docs/long-lines.md`; `TOOL_PEEK_MAX_ROWS`, the
-  product of the two budgets, stays the block's ceiling). The `+N lines` hint
+  whole cell on itself and the line after it still gets a row
+  (`docs/long-lines.md`). The `+N lines` hint
   counts the **display rows** it didn't show — what pressing Ctrl+O actually
   adds, counted with the same wrapper the expansion uses — instead of source
   lines, which is how 1.8 KB of hidden JSON used to report itself as
@@ -98,7 +99,7 @@ A **command-style** tool (a non-shell backend tool that is not a `read`/`write`/
   *source* line's `+`/`-` marker, so a continuation row keeps its tint.)
 - **Running** (`running_command_lines`, drawn only in the live strip's preview
   where the boundary-supplied `elapsed` is available): the header, the **last**
-  `TOOL_PEEK_LINES` display **rows** of output, then `+{hidden} lines
+  `TOOL_PEEK_ROWS` display **rows** of output, then `+{hidden} lines
   ({secs}s)` when any source lines are fully hidden above (else just the tail —
   the status line carries the timer). No output yet → the existing
   `⎿ Running…` row. Long lines **word-wrap** the same way (`wrap_output`)

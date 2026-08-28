@@ -58,6 +58,7 @@ cleanup() {
 	tmux kill-session -t "${S}_recall" 2>/dev/null
 	tmux kill-session -t "${S}_shortcuts" 2>/dev/null
 	tmux kill-session -t "${S}_longline" 2>/dev/null
+	tmux kill-session -t "${S}_peekrows" 2>/dev/null
 	tmux kill-session -t "${S}_queue" 2>/dev/null
 	tmux kill-session -t "${S}_queueint" 2>/dev/null
 	tmux kill-session -t "${S}_altup" 2>/dev/null
@@ -8401,6 +8402,56 @@ fi
 tmux send-keys -t "$S92" C-o
 sleep 0.3
 tmux kill-session -t "$S92" 2>/dev/null
+
+# The other half of the same rule, and the reported one (docs/long-lines.md
+# "Rows, not lines"): FOUR wrapping lines — a `curl | grep` of a web page —
+# where every single line is inside its own 3-row budget and the CELL was still
+# ten rows of noise, because the block was budgeted in source lines. The peek is
+# bounded in display ROWS now (TOOL_PEEK_ROWS = 4), so four 150-char lines (2
+# rows each at the 75-column gutter) show the first two and hide the rest. ---
+S92B="${S}_peekrows"
+tmux new-session -d -s "$S92B" -x 80 -y 24 "$APP"
+sleep 0.4
+tmux send-keys -t "$S92B" -l "!for c in a b c d; do printf \"\$c%.0s\" \$(seq 1 150); echo; done"
+sleep 0.2
+tmux send-keys -t "$S92B" Enter
+pr_pane=""
+for _ in $(seq 1 60); do # up to ~6s
+	pr_pane="$(tmux capture-pane -t "$S92B" -p -S -40)"
+	if printf '%s' "$pr_pane" | grep -qF "lines (ctrl+o to expand)"; then
+		break
+	fi
+	sleep 0.1
+done
+echo "==== Phase 92: captured pane (four wrapping lines, bounded in rows) ===="
+printf '%s\n' "$pr_pane"
+pr_rows="$(printf '%s' "$pr_pane" | grep -cE 'aaaaaaaa|bbbbbbbb|cccccccc|dddddddd')"
+if [ "$pr_rows" -ne 4 ]; then
+	echo "FAIL: Phase 92 — the four-line output painted $pr_rows rows inline, not the 4-row peek ceiling" >&2
+	status=1
+fi
+if printf '%s' "$pr_pane" | grep -qF "cccccccc"; then
+	echo "FAIL: Phase 92 — the third line shows inline: the block ceiling is not bounding the cell" >&2
+	status=1
+fi
+if ! printf '%s' "$pr_pane" | grep -qF "… +4 lines (ctrl+o to expand)"; then
+	echo "FAIL: Phase 92 — the hint does not count the 4 hidden display rows" >&2
+	status=1
+fi
+# Ctrl+O still holds every row — the cell is bounded, the output is not lost.
+tmux send-keys -t "$S92B" C-o
+sleep 0.5
+pr_view="$(tmux capture-pane -t "$S92B" -p)"
+echo "==== Phase 92: captured pane (Ctrl+O — all four lines) ===="
+printf '%s\n' "$pr_view"
+pr_full="$(printf '%s' "$pr_view" | grep -cE 'aaaaaaaa|bbbbbbbb|cccccccc|dddddddd')"
+if [ "$pr_full" -lt 8 ]; then
+	echo "FAIL: Phase 92 — the transcript shows only $pr_full of the output's 8 rows" >&2
+	status=1
+fi
+tmux send-keys -t "$S92B" C-o
+sleep 0.3
+tmux kill-session -t "$S92B" 2>/dev/null
 
 
 # --- Phase 93: the Ctrl+D view's CLASSIFIER PAGE (docs/permissions.md). Auto

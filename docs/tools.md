@@ -376,10 +376,11 @@ OPENROUTER_API_KEY=sk-... cargo run --example tool_smoke -- \
 ## Rendering (codex's `diff_render`, in the `⎿` gutter)
 
 A `bash` cell renders like the `!` shell cell: the coloured `● Bash(cmd)` header
-over a **multi-line `⎿` output peek** — up to `TOOL_PEEK_LINES` lines of the
-output, each bounded to `TOOL_LINE_MAX_ROWS` wrapped rows and closed by a `…`
-when it is cut, then `… +N lines (ctrl+o to expand)` counting the display rows
-the expansion adds (`docs/long-lines.md`). Its `Exit code: N` frame (kept in
+over a **multi-line `⎿` output peek** — the head of the output, at most
+`TOOL_PEEK_ROWS` (4) wrapped rows of it and at most `TOOL_PEEK_LINES` source
+lines, each line bounded to `TOOL_LINE_MAX_ROWS` rows and closed by a `…` when
+it is cut, then `… +N lines (ctrl+o to expand)` counting the display rows the
+expansion adds (`docs/long-lines.md`). Its `Exit code: N` frame (kept in
 `tool.output` for the model / context replay) is stripped for display, so the
 cell reads like the real command output. **While it runs the cell streams and
 tails its output** — the header, the last lines, and a `+N lines (Ns)` footer —
@@ -432,7 +433,7 @@ identically — but only the inline peek (and the live preview) passes the row c
 **A running backend tool previews its whole cell.** While the model's tool runs,
 the streaming strip's preview slot shows the *full* live cell — the wrapped
 header **plus** its output. Before any output a `bash` cell shows `⎿ Running…`;
-once output streams it **tails** — the last `TOOL_PEEK_LINES` lines and a
+once output streams it **tails** — the last `TOOL_PEEK_ROWS` rows and a
 `+N lines (Ns)` footer (`ui::running_command_lines`; see
 `docs/tool-streaming.md`) — so the running state is visible and a long command
 still isn't clipped mid-run. The preview slot is sized by `ui::preview_rows`

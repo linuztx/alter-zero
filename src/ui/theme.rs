@@ -164,19 +164,22 @@ pub(super) const MCP_CALLING_PREFIX: &str = "Calling ";
 pub(super) const MCP_CALLING_SUFFIX: &str = "…";
 pub(super) const MCP_CALLED_PREFIX: &str = "Called ";
 
-/// How many output lines a `!` shell command shows inline before collapsing the
-/// rest behind a `… +N lines (ctrl+o to expand)` hint (Claude-Code's exec-cell
-/// preview). The full output is always in the Ctrl+O view.
+/// How many output **source lines** a collapsed cell shows inline before
+/// collapsing the rest behind a `… +N lines (ctrl+o to expand)` hint
+/// (Claude-Code's exec-cell preview). The full output is always in the Ctrl+O
+/// view. Paired with [`TOOL_PEEK_ROWS`], the same number of **display rows**:
+/// whichever budget runs out first ends the peek, so ordinary output reads
+/// line for line while a wrapping one still stops at four rows.
 pub(super) const TOOL_PEEK_LINES: usize = 4;
 
 /// How many wrapped display **rows** ONE source line may spend in a collapsed
-/// cell (`docs/long-lines.md`). The budget above is *source lines* — each shown
-/// wrapped, so a long first line never pushes its siblings out of the peek —
-/// which left ONE pathological line (a minified bundle, a 2 KB JSON body from
-/// `curl`) free to fill the whole cell with wrapped noise. Past this it shows
-/// its head and stops, marked with [`TOOL_LINE_ELLIPSIS`]. Three rows keeps the
-/// everyday case — a `sudo` error wrapping to 2–3 rows at a narrow width —
-/// fully visible.
+/// cell (`docs/long-lines.md`). Past this it shows its head and stops, marked
+/// with [`TOOL_LINE_ELLIPSIS`]. Three rows keeps the everyday case — a `sudo`
+/// error wrapping to 2–3 rows at a narrow width — fully visible, while inside
+/// the [`TOOL_PEEK_ROWS`] block it also guarantees that a pathological first
+/// line (a minified bundle, a 2 KB JSON body from `curl`) still leaves a row
+/// for the line *after* it: the peek shows that the output continues rather
+/// than spending itself on one blob.
 pub(super) const TOOL_LINE_MAX_ROWS: usize = 3;
 
 /// The marker closing a row whose source line was cut at
@@ -186,12 +189,19 @@ pub(super) const TOOL_LINE_MAX_ROWS: usize = 3;
 /// [`ellipsize`]'s cut.
 pub(super) const TOOL_LINE_ELLIPSIS: &str = "…";
 
-/// The finished peek's ceiling in wrapped display **rows** — the product of the
-/// two budgets, since each of the [`TOOL_PEEK_LINES`] source lines may spend at
-/// most [`TOOL_LINE_MAX_ROWS`] rows. Enforced in the same loop, so a caller
-/// passing a bigger line budget (the numbered file cells' [`FILE_PEEK_LINES`])
-/// still can't run a committed cell past it.
-pub(super) const TOOL_PEEK_MAX_ROWS: usize = TOOL_PEEK_LINES * TOOL_LINE_MAX_ROWS;
+/// **The** budget a collapsed peek is bounded by: wrapped display **rows**, the
+/// unit the user reads the cell in (`docs/long-lines.md`). It used to be the
+/// *product* of the two budgets ([`TOOL_PEEK_LINES`] source lines each free to
+/// spend [`TOOL_LINE_MAX_ROWS`] rows), which let four wrapping lines paint
+/// twelve rows of a `curl` body inline — every one of them within its own
+/// budget, and the cell three times the size the same output has when its
+/// lines happen to be short. Four rows is what a `bash` cell costs now,
+/// whatever shape its output has; the rest is one `ctrl+o` away.
+///
+/// It is the same window the **running** tail shows (`running_command_lines`),
+/// so a command's cell is the same size while it streams and after it settles
+/// — the peek stops moving, it doesn't resize.
+pub(super) const TOOL_PEEK_ROWS: usize = 4;
 
 /// How many wrapped rows a tool's `● name(args)` header shows **inline** (and in
 /// the live preview) before the rest is cut with [`TOOL_HEADER_ELLIPSIS`] — so a

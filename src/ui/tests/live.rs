@@ -4,7 +4,7 @@ use super::*;
 use crate::ui::live::preview_tool_lines;
 use crate::ui::theme::{
     FOOTER_FOCUS_BG, FOOTER_FOCUS_FG, INPUT_CHROME_ROWS, MODEL_SEARCH_ROW, STATUS_GAP_ROWS,
-    STATUS_ROWS, TOOL_BACKGROUND_HINT, TOOL_BACKGROUND_HINT_DELAY, TOOL_PEEK_LINES,
+    STATUS_ROWS, TOOL_BACKGROUND_HINT, TOOL_BACKGROUND_HINT_DELAY, TOOL_PEEK_ROWS,
     TOOL_PULSE_BRIGHT, TOOL_PULSE_DIM, TOOL_PULSE_PERIOD,
 };
 use crate::ui::wrap::cols;
@@ -460,7 +460,7 @@ fn the_previewed_match_highlights_the_query_reversed() {
 
 #[test]
 fn a_long_shell_output_caps_the_preview_with_an_expand_hint() {
-    // More than the cap → the first TOOL_PEEK_LINES lines, then a
+    // More than the cap → the first TOOL_PEEK_ROWS rows, then a
     // `… +N lines (ctrl+o to expand)` row aligned with them.
     let output = (1..=6)
         .map(|n| n.to_string())
@@ -474,14 +474,14 @@ fn a_long_shell_output_caps_the_preview_with_an_expand_hint() {
         .collect();
     assert_eq!(
         lines.len(),
-        TOOL_PEEK_LINES + 1,
+        TOOL_PEEK_ROWS + 1,
         "capped lines + the hint row"
     );
     assert_eq!(lines[0], "  ⎿  1");
     assert_eq!(lines[1], "     2", "continuation aligned, no corner");
-    let hidden = 6 - TOOL_PEEK_LINES;
+    let hidden = 6 - TOOL_PEEK_ROWS;
     assert_eq!(
-        lines[TOOL_PEEK_LINES],
+        lines[TOOL_PEEK_ROWS],
         format!("     … +{hidden} lines (ctrl+o to expand)")
     );
 }

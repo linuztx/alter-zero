@@ -273,7 +273,7 @@ pub(super) fn command_display_lines(tool: &ToolCall) -> Vec<String> {
 }
 
 /// The live preview for a **running** command-style backend tool (`bash`): the
-/// coloured `● name(args)` header, the **last** [`TOOL_PEEK_LINES`] display
+/// coloured `● name(args)` header, the **last** [`TOOL_PEEK_ROWS`] display
 /// **rows** of its output under the `⎿` gutter (the *tail* — what just
 /// streamed), then a `+{hidden} lines ({secs}s)` footer when any source lines
 /// are fully hidden above it. This is Claude-Code's running-command look (the
@@ -306,23 +306,23 @@ pub(super) fn running_command_lines(
         .max(1);
     let wrap_width = u16::try_from(peek_width).unwrap_or(u16::MAX);
     let display = command_display_lines(tool);
-    // The tail window: the last TOOL_PEEK_LINES wrapped rows, each remembering
+    // The tail window: the last TOOL_PEEK_ROWS wrapped rows, each remembering
     // its source line index *and* how many of that line's rows it dropped, so
     // the footer can count what scrolled off in display rows.
     let mut window: VecDeque<(usize, String)> = VecDeque::new();
     let mut cut = 0usize; // rows dropped off the top of the oldest shown line
     for (idx, line) in display.iter().enumerate().rev() {
         let rows = wrap_output(line, wrap_width);
-        let over = (window.len() + rows.len()).saturating_sub(TOOL_PEEK_LINES);
+        let over = (window.len() + rows.len()).saturating_sub(TOOL_PEEK_ROWS);
         cut = over.min(rows.len());
         for row in rows.into_iter().rev() {
             window.push_front((idx, row));
         }
-        if window.len() >= TOOL_PEEK_LINES {
+        if window.len() >= TOOL_PEEK_ROWS {
             break;
         }
     }
-    while window.len() > TOOL_PEEK_LINES {
+    while window.len() > TOOL_PEEK_ROWS {
         window.pop_front();
     }
     // Display **rows** above the window — the lines wholly above it plus the
@@ -371,8 +371,10 @@ fn approval_note_row(tool: &ToolCall) -> Option<Line<'static>> {
 /// A `!` shell command is **headerless** — its `Role::Shell` header (`! pwd`)
 /// sits flush above (docs/shell-command.md) — and shows up to
 /// `TOOL_PEEK_LINES` of its output as a `⎿` block (each line aligned under
-/// the corner), then a `… +N lines (ctrl+o to expand)` hint when more is
-/// hidden (Claude-Code's exec cell). A backend tool keeps its coloured
+/// the corner) — and at most `TOOL_PEEK_ROWS` display **rows** of it, so a
+/// wrapping line costs the cell no more than a short one — then a
+/// `… +N lines (ctrl+o to expand)` hint when more is hidden (Claude-Code's
+/// exec cell). A backend tool keeps its coloured
 /// `● name(args)` header and a single collapsed peek line. The full output is
 /// only rendered in the separate tool-output view, never here.
 ///
@@ -781,7 +783,8 @@ fn tool_cell_body(tool: &ToolCall, width: u16, pulse: Option<Duration>) -> Vec<L
     }
 
     if tool.shell {
-        // The running/empty single-row states; else up to TOOL_PEEK_LINES rows.
+        // The running/empty single-row states; else the head peek, bounded
+        // by TOOL_PEEK_LINES source lines AND TOOL_PEEK_ROWS display rows.
         // (Truncation of an over-cap output is marked only in the expanded view;
         // inline, the `… +N lines (ctrl+o to expand)` hint already signals more.)
         return match tool.status {
@@ -830,10 +833,10 @@ fn tool_cell_body(tool: &ToolCall, width: u16, pulse: Option<Duration>) -> Vec<L
     }
 
     // A backend **command tool** (`bash`): coloured header (wrapped when long)
-    // over a multi-line `⎿` peek — the *head*, up to TOOL_PEEK_LINES lines, then
-    // `… +N lines (ctrl+o to expand)`, like the `!` shell cell (the mock's
-    // finished state). The `Exit code: N` frame is stripped for display
-    // (docs/tool-streaming.md); no output yet → the `⎿ Running…`/`Waiting…` row.
+    // over a multi-line `⎿` peek — the *head*, up to TOOL_PEEK_LINES lines and
+    // TOOL_PEEK_ROWS rows, then `… +N lines (ctrl+o to expand)`, like the `!`
+    // shell cell (the mock's finished state). The `Exit code: N` frame is
+    // stripped for display (docs/tool-streaming.md); no output yet → the `⎿ Running…`/`Waiting…` row.
     // The running *tail* (last lines + elapsed) is a separate live-only render
     // (`running_command_lines`), used by the preview.
     if is_command_tool(tool) {
@@ -899,8 +902,10 @@ fn tool_cell_body(tool: &ToolCall, width: u16, pulse: Option<Duration>) -> Vec<L
 /// terminal edge, and no single line can fill the cell with wrapped noise
 /// (`docs/long-lines.md`).
 ///
-/// [`TOOL_PEEK_MAX_ROWS`] stays the block's ceiling (it binds only for a
-/// caller whose line budget exceeds [`TOOL_PEEK_LINES`]). The trailing
+/// [`TOOL_PEEK_ROWS`] is the block's ceiling, in **display rows** — the unit
+/// the cell is read in — so four wrapping lines cost the cell exactly what
+/// four short ones do (`docs/long-lines.md`): it binds the moment a line
+/// wraps, `budget_lines` binds when none does. The trailing
 /// `… +N lines` hint counts **display rows** not shown — the rows pressing
 /// Ctrl+O actually adds, counted with the same `mode` the expansion wraps
 /// with — instead of source lines, which is how 1.8 KB of hidden JSON used to
@@ -917,7 +922,7 @@ fn result_peek_block(
     let mut lines: Vec<Line> = Vec::new();
     let mut hidden = 0usize; // display rows the cell doesn't show
     for (i, line) in out_lines.iter().enumerate() {
-        let room = TOOL_PEEK_MAX_ROWS.saturating_sub(lines.len());
+        let room = TOOL_PEEK_ROWS.saturating_sub(lines.len());
         if i >= budget_lines || room == 0 {
             // Past the budget: every remaining line is hidden whole.
             hidden += out_lines[i..]

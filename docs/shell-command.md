@@ -81,16 +81,16 @@ In `on_key_conversation`'s Enter arm, in shell mode:
 
 The committed result is one Claude-Code-style **exec cell** — the `! command`
 dark header, then the output as a `⎿` block (the first line under the corner,
-the rest aligned beneath it), capped inline at `TOOL_PEEK_LINES` (4)
-source lines — each **fully wrapped** — with a `… +N lines (ctrl+o to
-expand)` hint when more is hidden. A line wider than the terminal
-**word-wraps, spaces preserved** (`wrap_output`, the same wrapper the Ctrl+O
-view uses — prose like a `sudo` error breaks at words, `ls -l` columns that
-fit stay byte-exact) instead of clipping at the edge, so no output text
-disappears; `TOOL_PEEK_MAX_ROWS` (3× the line budget) is a display-row
-safety ceiling so one pathological line can't balloon the cell (its tail
-rides behind the hint), and the `+N lines` count includes a line only
-partially shown:
+the rest aligned beneath it), capped inline at `TOOL_PEEK_ROWS` (4) display
+rows and `TOOL_PEEK_LINES` (4) source lines — whichever runs out first — each
+line **fully wrapped**, with a `… +N lines (ctrl+o to expand)` hint when more
+is hidden. A line wider than the terminal **word-wraps, spaces preserved**
+(`wrap_output`, the same wrapper the Ctrl+O view uses — prose like a `sudo`
+error breaks at words, `ls -l` columns that fit stay byte-exact) instead of
+clipping at the edge, so no output text disappears; the row budget is what
+keeps four *wrapping* lines from costing three times what four short ones do
+(`docs/long-lines.md`), `TOOL_LINE_MAX_ROWS` bounds any one line inside it,
+and the `+N lines` count includes a line only partially shown:
 
 ```
 ! ls                           ← Role::Shell header: dark user-style line
@@ -103,7 +103,7 @@ partially shown:
      ├── index.html
      ├── script.js
      ├── styles.css
-     … +2 lines (ctrl+o to expand)   ← capped at TOOL_PEEK_LINES, rest in Ctrl+O
+     … +2 lines (ctrl+o to expand)   ← capped at TOOL_PEEK_ROWS, rest in Ctrl+O
 ```
 
 `begin_shell(command)` (pure) sets up the turn so the existing paths produce
@@ -125,7 +125,7 @@ exactly that:
   While it runs the strip's preview row is `  ⎿ Running… (Ns)` —
   `render_live`'s `shell_running_line(elapsed)`, the elapsed the hidden status
   would have carried — sitting flush under the committed header; on `ToolEnd`
-  the committed `⎿` block (up to `TOOL_PEEK_LINES` aligned lines, then `… +N
+  the committed `⎿` block (up to `TOOL_PEEK_ROWS` aligned rows, then `… +N
   lines (ctrl+o to expand)`) replaces it (`result_row` does the corner/
   continuation alignment). `conversation_lines` skips the blank spacer after a
   Shell message so the repaint keeps the cell flush.
@@ -247,7 +247,7 @@ The `?` shortcuts band gains a `! for shell command` entry.
   strip being preview + gap only (no `esc to interrupt`, req 3);
   `message_lines(Role::Shell…)` is the dark user-style line with the red
   `! ` bullet, width-padded; a shell tool renders headerless — inline a `⎿`
-  block of up to `TOOL_PEEK_LINES` lines (continuation lines aligned under the
+  block of up to `TOOL_PEEK_ROWS` rows (continuation lines aligned under the
   corner) with a `… +N lines (ctrl+o to expand)` hint when more is hidden,
   `⎿ Running…` while running (`tool_lines`; the live preview adds the elapsed);
   the Ctrl+O `tool_full_lines` is headerless too
