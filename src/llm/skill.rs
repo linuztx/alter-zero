@@ -15,6 +15,29 @@ use crate::skills::{
     render_skill_body,
 };
 
+/// The built-in skills the binary carries, as `<name>/SKILL.md` → its bytes.
+///
+/// One skill today: `skill-creator`, which teaches this runtime's own skill
+/// format (`docs/skills.md`) — its `SKILL.md` and the `reference.md` beside
+/// it, since a skill is a *directory* and its extra files are seeded with it.
+///
+/// [`seed_builtin_skills`] writes exactly these, so what a session discovers
+/// on a fresh install is what is authored in `prompts/skills/` — beside every
+/// other `include_str!`'d markdown this crate embeds, and editable on disk
+/// once it is there.
+const BUILTIN_SKILL_FILES: [(&str, &str); 2] = [
+    (
+        "skill-creator/SKILL.md",
+        include_str!("../../prompts/skills/skill-creator/SKILL.md"),
+    ),
+    // Its sibling reference — the loader's own substitution tokens, which a
+    // *body* cannot spell out (it would expand them) and a read file can.
+    (
+        "skill-creator/reference.md",
+        include_str!("../../prompts/skills/skill-creator/reference.md"),
+    ),
+];
+
 /// The skill directories, in precedence order — the **first** root to claim a
 /// name wins, so a project can shadow a personal skill of the same name.
 ///
@@ -66,6 +89,75 @@ fn project_dirs(dir: &Path) -> Vec<PathBuf> {
         dir.join(".alter-zero").join("skills"),
         dir.join(".claude").join("skills"),
     ]
+}
+
+/// The root [`seed_builtin_skills`] writes into: `{config_home}/skills`, the
+/// personal root the walk reads at row 5 — and **`None`** whenever
+/// `ALTER_ZERO_SKILLS_DIR` replaced the root list.
+///
+/// That refusal is the difference from the agent definitions, which seed into
+/// their override ([`super::subagent::user_agents_dir`]): a built-in agent
+/// type *must* resolve, because `general-purpose` is the `agent` schema's
+/// default, while a built-in skill is a convenience the session works without.
+/// So the override is honoured literally — it says "these are the skills, and
+/// only these", and writing one of ours into a directory the user curates
+/// would both edit their set and un-hermetic every run that points the
+/// variable at an empty temp dir.
+#[must_use]
+pub fn builtin_skills_dir(
+    config_home: Option<&Path>,
+    override_dir: Option<&Path>,
+) -> Option<PathBuf> {
+    if override_dir.is_some() {
+        return None;
+    }
+    config_home.map(|home| home.join("skills"))
+}
+
+/// [`builtin_skills_dir`] with the `ALTER_ZERO_SKILLS_DIR` read applied — the
+/// boundary's entry point, sharing `override_dir` with
+/// [`resolved_skill_roots`] so the variable is still read in one place.
+#[must_use]
+pub fn resolved_builtin_skills_dir(config_home: Option<&Path>) -> Option<PathBuf> {
+    builtin_skills_dir(config_home, override_dir().as_deref())
+}
+
+/// Write the built-in skills into `root`, **skipping any whose `SKILL.md` is
+/// already there** — so a fresh install finds them on disk and can edit them,
+/// a later launch never discards those edits, and a deleted one comes back.
+///
+/// The agent definitions' rule, for the same reason (`docs/subagents.md` —
+/// a seed that overwrote would silently replace the user's own copy on every
+/// restart). Turning a built-in skill *off* is `/skills`, which persists;
+/// deleting the folder only lasts until the next launch.
+///
+/// Failures are collected, never thrown: a read-only config home costs the
+/// built-in skill, not the session.
+pub fn seed_builtin_skills(root: &Path) -> Vec<SkillError> {
+    let mut errors = Vec::new();
+    for (relative, contents) in BUILTIN_SKILL_FILES {
+        let path = root.join(relative);
+        if path.exists() {
+            continue;
+        }
+        let Some(dir) = path.parent() else {
+            continue;
+        };
+        if let Err(err) = std::fs::create_dir_all(dir) {
+            errors.push(SkillError {
+                path: dir.to_path_buf(),
+                message: err.to_string(),
+            });
+            continue;
+        }
+        if let Err(err) = std::fs::write(&path, contents) {
+            errors.push(SkillError {
+                path,
+                message: err.to_string(),
+            });
+        }
+    }
+    errors
 }
 
 /// Walk `roots` for `<root>/<name>/SKILL.md`, parsing each one's frontmatter.
@@ -156,9 +248,7 @@ pub fn load_skills(
 #[must_use]
 pub fn resolved_skill_roots(cwd: &Path, config_home: Option<&Path>) -> Vec<PathBuf> {
     let home = std::env::var_os("HOME").map(PathBuf::from);
-    let override_dir = std::env::var_os("ALTER_ZERO_SKILLS_DIR")
-        .map(PathBuf::from)
-        .filter(|dir| !dir.as_os_str().is_empty());
+    let override_dir = override_dir();
     let project_root = crate::project_doc::find_project_root(cwd);
     skill_roots(
         cwd,
@@ -167,6 +257,15 @@ pub fn resolved_skill_roots(cwd: &Path, config_home: Option<&Path>) -> Vec<PathB
         home.as_deref(),
         override_dir.as_deref(),
     )
+}
+
+/// `ALTER_ZERO_SKILLS_DIR`, empty read as unset — the **one** place the
+/// variable is read, shared by [`resolved_skill_roots`] (which it replaces the
+/// roots of) and [`resolved_builtin_skills_dir`] (which it switches off).
+fn override_dir() -> Option<PathBuf> {
+    std::env::var_os("ALTER_ZERO_SKILLS_DIR")
+        .map(PathBuf::from)
+        .filter(|dir| !dir.as_os_str().is_empty())
 }
 
 /// One `skill` call's arguments.
@@ -509,5 +608,154 @@ mod tests {
 
         let outcome = run_skill_tool(&registry, &call(r#"{"skill":"x"}"#));
         assert!(outcome.context.expect("body").contains("new body"));
+    }
+
+    // ===== the built-in `skill-creator` (docs/skills.md) =====
+
+    #[test]
+    fn the_built_in_skill_is_a_skill_this_crate_can_load() {
+        // The seeded bytes are what a session then discovers, so a built-in
+        // that will not parse ships a startup toast to every user.
+        let mut skills = 0;
+        for (path, contents) in BUILTIN_SKILL_FILES {
+            let (dir, file) = path.split_once('/').expect("a <name>/<file> path");
+            if file != SKILL_FILE_NAME {
+                // A skill's other files (references, templates, scripts) ride
+                // along; only the SKILL.md is parsed frontmatter.
+                assert!(
+                    BUILTIN_SKILL_FILES
+                        .iter()
+                        .any(|(other, _)| *other == format!("{dir}/{SKILL_FILE_NAME}")),
+                    "{path} belongs to a skill that is seeded too"
+                );
+                continue;
+            }
+            skills += 1;
+            let parsed = parse_skill(contents, dir).expect("the built-in parses");
+            assert_eq!(parsed.name, dir, "the frontmatter name matches its folder");
+            assert!(
+                !parsed.description.is_empty() && !parsed.description.ends_with('…'),
+                "the listing carries the description whole, uncut: {}",
+                parsed.description
+            );
+        }
+        assert!(skills > 0, "the binary carries at least one built-in skill");
+    }
+
+    #[test]
+    fn every_extra_built_in_file_is_one_its_skill_points_at() {
+        // A skill is a directory, so a built-in may seed reference files
+        // beside its SKILL.md — but only the body can send the model to one.
+        // A file nothing names is a file nothing reads, and the pointer's
+        // other direction (the named file is really written) is
+        // `seeding_writes_the_built_in_where_the_walk_finds_it`.
+        for (path, _) in BUILTIN_SKILL_FILES {
+            let (dir, file) = path.split_once('/').expect("a <name>/<file> path");
+            if file == SKILL_FILE_NAME {
+                continue;
+            }
+            let body = BUILTIN_SKILL_FILES
+                .iter()
+                .find(|(other, _)| *other == format!("{dir}/{SKILL_FILE_NAME}"))
+                .map(|(_, contents)| *contents)
+                .expect("the skill it belongs to");
+            assert!(
+                body.contains(file),
+                "{path} is seeded but {dir}/{SKILL_FILE_NAME} never names it"
+            );
+        }
+    }
+
+    #[test]
+    fn no_built_in_body_carries_a_placeholder_the_loader_would_eat() {
+        // A skill body is rendered through `substitute_arguments` and the
+        // `${…SKILL_DIR}` expansion before the model ever sees it, so a body
+        // that *documents* those tokens has them rewritten out from under it:
+        // a live run of `skill-creator` read "- `create commit-style` — the
+        // whole argument string" where the file says `$ARGUMENTS`, and the
+        // sentence naming both `${…SKILL_DIR}` spellings came out as the same
+        // path twice. Detail that has to survive verbatim belongs in a
+        // sibling file the model *reads* — which is also the multi-file
+        // pattern this skill teaches.
+        for (path, contents) in BUILTIN_SKILL_FILES {
+            if !path.ends_with(SKILL_FILE_NAME) {
+                continue;
+            }
+            let dir = path.split('/').next().unwrap_or_default();
+            let body = parse_skill(contents, dir)
+                .expect("the built-in parses")
+                .body;
+            let rendered = render_skill_body(Path::new("/seeded"), &body, "an argument");
+            // The body has to survive the render **verbatim**: a rewrite
+            // anywhere inside it breaks this prefix. (The `Arguments:` line
+            // the loader appends when a body has no placeholders is the one
+            // thing allowed past its end — that is the feature working.)
+            assert!(
+                rendered.starts_with(&format!("Base directory for this skill: /seeded\n\n{body}")),
+                "{path}: the loader rewrote the body's own text:\n{rendered}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_built_in_root_is_the_config_homes_skills_dir() {
+        assert_eq!(
+            builtin_skills_dir(Some(Path::new("/cfg/.alter-zero")), None),
+            Some(PathBuf::from("/cfg/.alter-zero/skills")),
+        );
+    }
+
+    #[test]
+    fn an_override_root_is_never_seeded_into() {
+        // ALTER_ZERO_SKILLS_DIR means "these are the skills, and only these":
+        // writing one of ours into it would both edit a directory the user
+        // curates and un-hermetic every run that points the variable at an
+        // empty temp dir.
+        assert_eq!(
+            builtin_skills_dir(
+                Some(Path::new("/cfg/.alter-zero")),
+                Some(Path::new("/tmp/mine"))
+            ),
+            None,
+        );
+    }
+
+    #[test]
+    fn seeding_writes_the_built_in_where_the_walk_finds_it() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path().join("skills");
+
+        assert!(seed_builtin_skills(&root).is_empty(), "seeding succeeds");
+
+        let (skills, errors) = discover_skills(std::slice::from_ref(&root));
+        assert!(errors.is_empty(), "{errors:?}");
+        assert!(
+            skills.iter().any(|skill| skill.name == "skill-creator"),
+            "the first launch's walk finds the seeded skill: {skills:?}"
+        );
+        // Every file of the skill, not just its SKILL.md: the body sends the
+        // model to its sibling reference, and a pointer at a file the seed
+        // skipped is worse than no pointer.
+        for (relative, _) in BUILTIN_SKILL_FILES {
+            assert!(
+                root.join(relative).is_file(),
+                "{relative} was seeded beside its SKILL.md"
+            );
+        }
+    }
+
+    #[test]
+    fn seeding_never_clobbers_a_skill_the_user_edited() {
+        // A seed that overwrote would silently discard the user's own edits on
+        // every restart — the agent definitions' rule (docs/subagents.md).
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path().to_path_buf();
+        write_skill(&root, "skill-creator", &skill_md("Mine.", "my own body"));
+
+        assert!(seed_builtin_skills(&root).is_empty());
+
+        let kept = std::fs::read_to_string(root.join("skill-creator").join(SKILL_FILE_NAME))
+            .expect("read");
+        assert!(kept.contains("my own body"), "the edit survives: {kept}");
     }
 }

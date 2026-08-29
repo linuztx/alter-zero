@@ -103,6 +103,56 @@ is inert markdown until the model explicitly loads it, and any command in a
 loaded body still meets the permission gate like every other tool call —
 there is nothing here that executes on discovery.
 
+### The built-in `skill-creator`
+
+One skill ships with the binary: **`skill-creator`**, which teaches this
+format — the frontmatter contract, where to write the folder, how to word a
+description that actually triggers, and how to update an existing skill
+without clobbering it.
+
+It exists because the format is *ours*. A model asked to "write me a skill"
+without it writes something plausible — a lone `my-skill.md` at a root, an
+`allowed-tools:` line it expects to be honoured, a description that reads like
+a persona — and every one of those fails silently: the walk only looks for
+`<root>/<name>/SKILL.md`, and a skill that is never listed is a skill that is
+never chosen. The rules are cheap to state and impossible to guess.
+
+Authored in `prompts/skills/skill-creator/` and `include_str!`'d beside every
+other markdown this crate carries, then **written into `{config_home}/skills`
+at startup when the file is absent** — the agent definitions' rule
+(`docs/subagents.md`), for the agent definitions' reasons: a default that is a
+real file on disk can be read, edited and diffed, and a release that improves
+it ships the improvement. The seed runs *before* the walk, so the session that
+installed the app can already use it. An edited copy is never overwritten; a
+deleted file comes back next launch, so the off-switch is `/skills` (which
+persists) rather than `rm -rf`.
+
+One difference from the agent definitions: `ALTER_ZERO_SKILLS_DIR` is **never
+seeded into**. That variable replaces the root list — it says "these are the
+skills, and only these" — and a built-in skill is a convenience the session
+works without, where a built-in *agent type* has to resolve because
+`general-purpose` is the `agent` schema's default. So the override is honoured
+literally: nothing of ours is written into a directory the user curates, and a
+hermetic run (`smoke.sh`) keeps the empty root it made.
+
+#### Why it is two files
+
+The skill is a directory holding `SKILL.md` **and** `reference.md`, and the
+split is forced by the loader itself. A body is rendered through
+`substitute_arguments` and the `${…SKILL_DIR}` expansion before the model sees
+it — so a body that *documents* those tokens has them rewritten out from under
+it. The first live run of an earlier draft is the evidence: where the file
+said `$ARGUMENTS` the model read `` `create commit-style` `` (the caller's own
+arguments), and the sentence naming both `${…SKILL_DIR}` spellings arrived as
+the same absolute path twice, explaining nothing.
+
+Detail that has to survive verbatim therefore lives in a sibling file the
+model **reads** — which is also the multi-file pattern the skill teaches, so
+the built-in demonstrates it rather than only describing it.
+`no_built_in_body_carries_a_placeholder_the_loader_would_eat` keeps a body
+from re-acquiring one: it renders every built-in with arguments and requires
+the body back byte-for-byte.
+
 ### The walk re-runs every turn
 
 Discovery runs at startup **and at every turn start** —
@@ -387,6 +437,17 @@ Against a live model, with three skills on disk:
 | restart | the menu opens with the same skills off |
 | re-enable | the skill loads again and the signature is back |
 
+The built-in `skill-creator` has its own two live runs (`tests/live_openrouter.rs`,
+on the `a0_venice` key):
+
+| test | observed |
+|---|---|
+| `live_the_built_in_skill_creator_writes_a_skill_this_crate_can_load` | the prompt never names the skill — the **description alone** earns the load — and the `commit-style/SKILL.md` the model then writes is one this crate's own walk discovers and parser accepts |
+| `live_the_skill_creator_sends_the_model_to_its_reference_file` | asked for a skill that takes an argument, the model follows the body's pointer, `Read`s `reference.md`, and writes a body using a live `$1` — the indirection works on a real model, not just on paper |
+
+The second is the one worth keeping: the reference file only earns its
+existence if a model actually opens it.
+
 The signature is the useful probe: it is *in the skill body and nowhere else*,
 so its presence proves the body reached the model and its absence proves it
 didn't — better evidence than the cell, which only shows what the TUI drew.
@@ -423,11 +484,12 @@ here unchanged (`hooks::claude_code_alias`, `docs/hooks.md`).
 | Where | What |
 |---|---|
 | `src/skills.rs` | **pure**: `SkillMetadata`, frontmatter parse, name validation, listing + budget, `$ARGUMENTS` substitution, body render, the `SkillRegistry` handle |
-| `src/llm/skill.rs` | **boundary**: root resolution, the `read_dir` walk, the tool executor (`run_skill_tool`) |
+| `prompts/skills/skill-creator/` | the built-in skill itself — `SKILL.md` + `reference.md`, embedded and seeded |
+| `src/llm/skill.rs` | **boundary**: root resolution, the `read_dir` walk, the built-in seed (`seed_builtin_skills`), the tool executor (`run_skill_tool`) |
 | `src/llm/tools.rs` | `skill_spec()`, `display_name`, `summarize_call` |
 | `src/llm/backend.rs` | `with_skills` — the `with_tasks` pattern |
 | `src/context.rs` | the leading listing fragment |
-| `src/tui/bootstrap.rs` | discovery at startup, the failure toast |
+| `src/tui/bootstrap.rs` | the built-in seed, then discovery at startup, and the failure toast |
 | `src/tui/models.rs` | `with_skills` on every backend rebuild, `sync_skill_listing` |
 | `src/app/skills_menu.rs` | the `/skills` picker's state, rows and key map |
 | `src/ui/skills_view.rs` | the `/skills` picker's rendering and geometry |

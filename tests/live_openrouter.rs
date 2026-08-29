@@ -379,8 +379,19 @@ fn live_raw_tool_records_are_usable_context() {
 /// events alone, which is where the arguments could still be dropped.
 fn recorded_turn(prompt: &str) -> Vec<HistoryItem> {
     let context = vec![ContextMessage::new(ContextRole::User, prompt)];
+    recorded_turn_with(&backend(), prompt, context)
+}
+
+/// [`recorded_turn`] over an explicit backend and context — the skills tests
+/// need both (a registry has to be attached, and the `<system-reminder>`
+/// listing has to lead the context the way `tui::models` assembles it).
+fn recorded_turn_with(
+    backend: &LlmBackend,
+    prompt: &str,
+    context: Vec<ContextMessage>,
+) -> Vec<HistoryItem> {
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-    let handle = backend().spawn(prompt.to_string(), vec![], context, tx, CancelToken::new());
+    let handle = backend.spawn(prompt.to_string(), vec![], context, tx, CancelToken::new());
     let mut app = alter_zero::app::App::new();
     while let Some(event) = rx.blocking_recv() {
         match event {
@@ -4176,4 +4187,153 @@ fn live_streamed_table_never_squeezes_the_composer() {
             }
         }
     }
+}
+
+/// A tools-enabled backend on the `a0_venice` provider carrying `registry` —
+/// [`skill_backend_and_context`]'s Venice twin, for the skill tests run
+/// against that key (`A0_VENICE_API_KEY`, `ALTER_ZERO_LIVE_VENICE_MODEL`).
+fn venice_skill_backend(registry: &alter_zero::skills::SkillRegistry) -> LlmBackend {
+    let key = std::env::var("A0_VENICE_API_KEY")
+        .expect("set A0_VENICE_API_KEY to run the Venice live tests");
+    let model = std::env::var("ALTER_ZERO_LIVE_VENICE_MODEL")
+        .unwrap_or_else(|_| "zai-org-glm-4.7-flash".to_string());
+    let providers = alter_zero::llm::ProvidersFile::builtin();
+    let sel = alter_zero::llm::Selection {
+        provider_id: "a0_venice".to_string(),
+        model,
+        api_key: Some(key),
+        temperature: Some(0.0),
+        thinking: None,
+        vision: None,
+        cache_key: None,
+    };
+    let cfg = providers.model_config(&sel).expect("a0_venice is built in");
+    LlmBackend::configure(
+        cfg,
+        Some("You are a terse assistant.".to_string()),
+        /* tools */ true,
+    )
+    .with_skills(registry.clone())
+}
+
+#[test]
+#[ignore = "hits the network; needs A0_VENICE_API_KEY"]
+fn live_the_built_in_skill_creator_writes_a_skill_this_crate_can_load() {
+    // The built-in `skill-creator` end to end (docs/skills.md): the real seed
+    // writes it, the real walk discovers it, its description alone gets it
+    // chosen — the prompt never names it — and the `SKILL.md` the model then
+    // writes is one THIS crate's own walk discovers and parser accepts.
+    //
+    // That last assertion is the whole point of the test. A built-in that
+    // taught a frontmatter shape our parser refuses (or a directory layout the
+    // walk skips) would look perfectly reasonable in review and fail only
+    // here: the skill's body is a claim about this parser, and the parser is
+    // the only thing that can check it.
+    let work = std::env::temp_dir().join(format!(
+        "alter-zero-live-skill-creator-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&work);
+    let root = work.join("skills");
+    assert!(
+        alter_zero::llm::skill::seed_builtin_skills(&root).is_empty(),
+        "the built-in seeds"
+    );
+    let (seeded, errors) = alter_zero::llm::skill::discover_skills(std::slice::from_ref(&root));
+    assert!(errors.is_empty(), "the seeded skill parses: {errors:?}");
+    let registry = alter_zero::skills::SkillRegistry::new(seeded);
+
+    let prompt = format!(
+        "Create a skill called `commit-style` that tells you how to write this \
+         project's commit messages: imperative mood, 72-column subject, no \
+         emoji. Put it under {}. Then reply with just: done",
+        root.display()
+    );
+    let listing = alter_zero::skills::listing_message(
+        &registry.listing(alter_zero::skills::listing_budget(None)),
+    );
+    assert!(
+        listing.contains("skill-creator"),
+        "the reminder offers the built-in: {listing}"
+    );
+    let context = vec![
+        ContextMessage::new(ContextRole::User, &listing),
+        ContextMessage::new(ContextRole::User, &prompt),
+    ];
+    let history = recorded_turn_with(&venice_skill_backend(&registry), &prompt, context);
+
+    // The description alone earned the load — nothing in the prompt named it.
+    let loaded = recorded_call(&history, alter_zero::skills::SKILL_TOOL_DISPLAY);
+    assert!(
+        loaded.context_text().contains("Writing a skill"),
+        "the model read the built-in's body: {:?}",
+        loaded.context_text()
+    );
+
+    // And what it wrote is a skill this session could load next turn.
+    let (found, errors) = alter_zero::llm::skill::discover_skills(std::slice::from_ref(&root));
+    let _ = std::fs::remove_dir_all(&work);
+    assert!(
+        errors.is_empty(),
+        "the written SKILL.md parses with our own parser: {errors:?}"
+    );
+    let written = found
+        .iter()
+        .find(|skill| skill.name != "skill-creator")
+        .unwrap_or_else(|| panic!("a new skill was written: {found:?}"));
+    println!("wrote {} — {}", written.name, written.description);
+    assert!(
+        !written.description.is_empty(),
+        "the new skill carries the description the listing needs"
+    );
+}
+
+#[test]
+#[ignore = "hits the network; needs A0_VENICE_API_KEY"]
+fn live_the_skill_creator_sends_the_model_to_its_reference_file() {
+    // The other half of the built-in (docs/skills.md): the loader's own
+    // substitution tokens cannot be written in a *body* — it would expand
+    // them — so they live in `reference.md` beside it and the body says to
+    // read it. That indirection is only worth anything if a real model
+    // follows it, and the proof is the skill it writes: a body carrying a
+    // live `$ARGUMENTS` or `$1` placeholder is one written from the
+    // reference, and one that greets a hard-coded topic is not.
+    let work = std::env::temp_dir().join(format!(
+        "alter-zero-live-skill-reference-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&work);
+    let root = work.join("skills");
+    assert!(alter_zero::llm::skill::seed_builtin_skills(&root).is_empty());
+    let (seeded, errors) = alter_zero::llm::skill::discover_skills(std::slice::from_ref(&root));
+    assert!(errors.is_empty(), "{errors:?}");
+    let registry = alter_zero::skills::SkillRegistry::new(seeded);
+
+    let prompt = format!(
+        "Write a new skill `haiku` under {} that writes a haiku about whatever \
+         topic the caller passes to it as an argument — the body must pick that \
+         topic up from the call's arguments. Then reply with just: done",
+        root.display()
+    );
+    let listing = alter_zero::skills::listing_message(
+        &registry.listing(alter_zero::skills::listing_budget(None)),
+    );
+    let context = vec![
+        ContextMessage::new(ContextRole::User, &listing),
+        ContextMessage::new(ContextRole::User, &prompt),
+    ];
+    let history = recorded_turn_with(&venice_skill_backend(&registry), &prompt, context);
+
+    let written = std::fs::read_to_string(root.join("haiku").join("SKILL.md"))
+        .expect("the model wrote the skill");
+    let _ = std::fs::remove_dir_all(&work);
+    println!("wrote:\n{written}");
+    assert!(
+        written.contains("$ARGUMENTS") || written.contains("$1"),
+        "the body uses a real substitution token, so the reference was read: {written}"
+    );
+    let read_the_reference = history
+        .iter()
+        .any(|item| matches!(item, HistoryItem::Tool(call) if call.args.contains("reference.md")));
+    println!("read reference.md: {read_the_reference}");
 }

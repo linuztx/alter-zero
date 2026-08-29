@@ -926,7 +926,31 @@ unchanged) over a body, discovered from the cwd's `.alter-zero/skills` +
 `skills`, and `~/.claude/skills`, first root winning a name
 (`ALTER_ZERO_SKILLS_DIR` **replaces** the list, the `*_DIR` convention — and
 what makes a smoke run hermetic; a `SKILL.md` that won't parse is a toast
-naming it, never silence). The walk re-runs at **every turn start**
+naming it, never silence). **One skill ships in the binary** — `skill-creator`,
+which teaches this format (the frontmatter contract, the roots, how to word a
+description that triggers, how to update one without clobbering it), because
+the format is *ours*: a model asked for "a skill" without it writes a lone
+`my-skill.md` at a root, or an `allowed-tools:` line it expects honoured, and
+every such near-miss fails **silently**, the walk reading only
+`<root>/<name>/SKILL.md`. Authored in `prompts/skills/skill-creator/` beside
+every other `include_str!`'d markdown and seeded into `{config_home}/skills`
+**before** the startup walk (so the session that installed the app can already
+use it) the way the agent definitions are — editable, never clobbered, a
+deleted file back next launch, the off-switch being `/skills`, which persists,
+rather than `rm -rf` — but **never into an `ALTER_ZERO_SKILLS_DIR` override**,
+the one place the two seeds differ: that variable says *only these*, and a
+built-in skill is a convenience the session works without where a built-in
+agent *type* must resolve (`general-purpose` is the `agent` schema's default).
+It is **two files** because the loader's own substitution runs over the body:
+a body that documents `$ARGUMENTS` or `${…SKILL_DIR}` has them rewritten out
+from under it — the first live run read the caller's own arguments where the
+file said `$ARGUMENTS`, and got the same path twice for the sentence naming
+both skill-dir spellings — so detail that must survive verbatim lives in the
+`reference.md` beside it, which the model **reads** (the multi-file pattern the
+skill teaches, demonstrated rather than described), with
+`no_built_in_body_carries_a_placeholder_the_loader_would_eat` rendering every
+built-in with arguments and requiring the body back byte-for-byte. The walk
+re-runs at **every turn start**
 (`Session::rescan_skills`, beside the `AGENTS.md` refresh): a startup-only
 discovery froze the session at what it booted with — a skill you added, or one
 the agent had just written *for* you, was invisible until a restart — and the

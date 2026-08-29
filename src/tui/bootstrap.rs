@@ -165,8 +165,20 @@ impl<'t> Session<'t> {
         // A `SKILL.md` that will not parse is collected, not thrown — one bad
         // skill must not cost a session the rest — and becomes the startup
         // toast below.
-        let (found_skills, skill_errors) =
+        // The built-in `skill-creator` is seeded into the personal root first,
+        // so this very walk finds it — a skill that appeared only on the
+        // *second* launch would be missing from exactly the session that just
+        // installed the app. Never clobbers an edited copy, and skipped
+        // entirely when ALTER_ZERO_SKILLS_DIR replaced the roots.
+        let mut skill_errors = match alter_zero::llm::skill::resolved_builtin_skills_dir(
+            config::config_home().as_deref(),
+        ) {
+            Some(root) => alter_zero::llm::skill::seed_builtin_skills(&root),
+            None => Vec::new(),
+        };
+        let (found_skills, walk_errors) =
             alter_zero::llm::skill::load_skills(&cwd, config::config_home().as_deref());
+        skill_errors.extend(walk_errors);
         let skill_registry = alter_zero::skills::SkillRegistry::new(found_skills);
         // …and this project's saved on/off choices from `skills.json`, applied
         // BEFORE the backend is built so a session that starts with its last
