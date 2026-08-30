@@ -44,7 +44,7 @@ the detached-exec hook, the CLI resolution, the viewport, the loop — over
 **`src/tui/`**, the binary-private tree that drives the codex-style **async
 (tokio) `select!`** loop (`event_loop`, `actions`, `turn`, `stream`, `agent`,
 `background`, `permission`, `view`, `commit`, `models`, `config`, `bootstrap`,
-`startup`, `recorder`, `resume`, `history_store`, `settings`, `shell`, `workers`, `host`, `mascot`, `mcp`, `trust`,
+`startup`, `recorder`, `resume`, `history_store`, `settings`, `shell`, `workers`, `host`, `mascot`, `mcp`, `trust`, `login`,
 with the **`Session`** struct itself in `mod.rs` — every handler is an `impl
 Session` block in its area module, reaching the private fields the way `app/`'s
 submodules reach `App`'s). The four big ones are **directories
@@ -126,7 +126,40 @@ every purge rebuild) in `docs/header.md`, and the **`/mascot` picker** that
 switches it (the `/settings` family's frame over the six-mascot catalog
 with a **live banner preview** rendered by the header's own builder, the
 choice persisted in `mascot.json` and the switch's purge rebuild redrawing
-the banner at once) in `docs/mascot.md`; the **Ctrl+T thinking-mode
+the banner at once) in `docs/mascot.md`; the **`/login` sign-in fork** (the
+flow's root now asks *how* you sign in — **Use a subscription** or **Use an
+API key** — because GitHub Copilot is not a key you paste: `auth =
+"github_copilot"` in `providers.toml` puts it in the subscription list, where
+Enter runs GitHub's **device flow** on the loop's fourth worker (the one that
+runs for *minutes*) and the page shows the one-time code in a rounded box over
+the URL to enter it at — no browser is launched, `c` copies the code through
+`/copy`'s own clipboard path, the `expires in 14:11` countdown is a boundary
+clock read injected per draw and the cursor hides (a wait, not a field), and a
+failure stays *on* the page in red rather than closing the explanation away
+with itself. Both halves end in the **same** `.env` store under the provider's
+`api_key_env`, which is what makes the fork cheap — `/model`, the ✓ marks, the
+capability probe and the next launch need no second mechanism. What is stored
+is the long-lived GitHub **OAuth** token; what the API takes is a ~30-minute
+**bearer**, exchanged from it (and cached in memory, never written) by the one
+`copilot::request_auth` seam both `stream_chat` and `fetch_models` resolve
+through — `AuthScheme::ApiKey` answering with the stored key and **no I/O at
+all**, so every existing provider's path is byte-identical, and the exchange
+additionally naming the account's own host, since a Business seat is served
+from one the file cannot know. Its cached life comes from `refresh_in`, never
+`expires_at`: a clock running ahead makes the latter already past and
+re-exchanges on every request. Copilot's `/models` then feeds the three
+existing per-record sniffs a branch each — the prompt cap
+(`max_prompt_tokens`, which Copilot sets *below* the nominal window and
+actually enforces) as the context window, `supports.vision`, and
+`supports.reasoning_effort`, which is the **Ctrl+T ladder itself** rather than
+the hardcoded guess every other provider gets — while `entry_of` drops the
+records this client cannot call at all (embeddings, and the `/responses`-only
+reasoning family). On the wire the mode is a top-level `reasoning_effort`
+string *instead of* the `reasoning` object, whose unknown-field 400 blames the
+model, and three per-request headers ride along: `X-Initiator` (billing —
+GitHub charges the user's round and not the agent's tool loop),
+`Copilot-Vision-Request` with an image, and `X-Request-Id`) in
+`docs/copilot.md`; the **Ctrl+T thinking-mode
 cycle** (a reasoning-capable model's effort — detected per model from the
 provider's `/v1/models`, shown beside the model name in the footer, cycled
 with a `Thinking: {mode}` toast, riding the request as the unified `reasoning`

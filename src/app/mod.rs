@@ -72,7 +72,10 @@ pub use self::composer::{SHELL_EMPTY_NOTICE, shell_query};
 pub use self::file_picker::FileSearch;
 pub use self::hooks_menu::{HooksLevel, HooksMenu};
 pub use self::input_history::{HistorySearch, InputHistory, SearchState};
-pub use self::login::{KeyOnboarding, KeyStep, ProviderChoice};
+pub use self::login::{
+    DeviceLogin, DeviceStatus, KeyOnboarding, KeyStep, LoginMethod, ProviderChoice,
+    SubscriptionChoice,
+};
 pub use self::mascot::{Mascot, MascotPicker, MascotRow, mascot_file_json, parse_mascot_file};
 pub use self::mcp_menu::{McpAuthView, McpMenu, McpPage, McpServerAction, server_actions};
 pub use self::model_picker::{ModelFetchError, ModelLoad, ModelPicker};

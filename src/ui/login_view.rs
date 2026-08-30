@@ -1,12 +1,14 @@
-//! The inline `/login` API-key onboarding. See `docs/llm.md`.
+//! The inline `/login` onboarding — the method root, the subscription list and
+//! its device-code page, the API-key provider list and its masked key field.
+//! See `docs/llm.md` and `docs/copilot.md`.
 
 use super::model_view::{model_placeholder_row, model_rule, model_wrapped_rows};
 use super::theme::*;
 use super::wrap::{cols, ellipsize, truncate_cols};
 use super::*;
 
-/// The `/login` `>` line: the cyan prompt then `text` (the provider filter, or
-/// the masked key). Shared shape with the `/model` search line.
+/// The `/login` `>` line: the cyan prompt then `text` (the current step's
+/// filter, or the masked key). Shared shape with the `/model` search line.
 fn login_prompt_line(text: Line<'static>) -> Line<'static> {
     let Line { mut spans, .. } = text;
     let mut out = vec![
@@ -17,21 +19,24 @@ fn login_prompt_line(text: Line<'static>) -> Line<'static> {
     Line::from(out)
 }
 
-/// One provider row in the `/login` list: `{marker}{name} [{env_var}]{✓}` — the
-/// selected row lights up cyan (the palette accent), the `[env_var]` tag is dim,
-/// and an already-configured provider carries a green ✓. Mirrors [`model_row`].
-fn login_provider_row(choice: &ProviderChoice, selected: bool, width: u16) -> Line<'static> {
+/// A `/login` page title — `Use a subscription`, `Sign in to GitHub Copilot`,
+/// `Enter your Agent Zero API key`. Cyan on every page, so the flow's headings
+/// read as one.
+fn login_title(text: &str, width: u16) -> Line<'static> {
+    model_placeholder_row(text, LOGIN_TITLE_COLOR, width)
+}
+
+/// One list row shared by the three `/login` lists: `{marker}{name}{gap}{tag}{✓}`.
+/// The selected row's marker and name light up cyan (the palette accent), the
+/// trailing `tag` (an env var, or a subscription's description) is dim, and an
+/// already-configured row carries a green ✓. Mirrors `model_row`.
+fn login_row(name: &str, tag: &str, configured: bool, selected: bool, width: u16) -> Line<'static> {
     let marker = if selected { MODEL_MARKER } else { "  " };
-    let tag = format!(" [{}]", choice.env_var);
-    let check = if choice.configured {
-        MODEL_ACTIVE_MARK
-    } else {
-        ""
-    };
-    let reserved = cols(marker) + cols(&tag) + cols(check);
+    let check = if configured { MODEL_ACTIVE_MARK } else { "" };
+    let reserved = cols(marker) + cols(tag) + cols(check);
     let name_room = (width as usize).saturating_sub(reserved).max(1);
     // `…`-cut like the model id: the tag keeps its seat and the cut shows.
-    let name = ellipsize(&choice.name, name_room);
+    let name = ellipsize(name, name_room);
 
     let (marker_style, name_style) = if selected {
         (
@@ -46,49 +51,75 @@ fn login_provider_row(choice: &ProviderChoice, selected: bool, width: u16) -> Li
     Line::from(vec![
         Span::styled(marker.to_string(), marker_style),
         Span::styled(name, name_style),
-        Span::styled(tag, Style::new().fg(MODEL_META_COLOR)),
+        Span::styled(tag.to_string(), Style::new().fg(MODEL_META_COLOR)),
         Span::styled(check.to_string(), Style::new().fg(MODEL_ACTIVE_COLOR)),
     ])
 }
 
-/// The `/login` provider list: a single `No matching providers` placeholder when
-/// the filter matches nothing, else the rows windowed ([`centered_window`]) to
-/// keep the selection **centered** and capped at [`LOGIN_MENU_MAX_ROWS`]. Its
-/// length equals [`login_provider_list_rows`] so the reserved height and painted
-/// rows agree.
-fn login_provider_list_lines(onboarding: &KeyOnboarding, width: u16) -> Vec<Line<'static>> {
-    let matches = onboarding.matches();
-    if matches.is_empty() {
-        return vec![model_placeholder_row(
-            LOGIN_NO_MATCH,
-            MODEL_META_COLOR,
-            width,
-        )];
+/// The rows of whichever list the current step shows, windowed
+/// ([`centered_window`]) to keep the selection **centered** and capped at
+/// [`LOGIN_MENU_MAX_ROWS`], or a single placeholder when the filter matches
+/// nothing. Its length is what the page height counts, so the reserved and the
+/// painted rows agree.
+fn login_list_lines(onboarding: &KeyOnboarding, width: u16) -> Vec<Line<'static>> {
+    // (name, tag, configured) per row — one shape for all three lists.
+    let rows: Vec<(String, String, bool)> = match onboarding.step {
+        KeyStep::Method => onboarding
+            .method_matches()
+            .into_iter()
+            .map(|m| (m.label().to_string(), String::new(), false))
+            .collect(),
+        KeyStep::Subscription => onboarding
+            .subscription_matches()
+            .into_iter()
+            .map(|s| (s.name.clone(), format!("  {}", s.description), s.configured))
+            .collect(),
+        _ => onboarding
+            .matches()
+            .into_iter()
+            .map(|p| (p.name.clone(), format!(" [{}]", p.env_var), p.configured))
+            .collect(),
+    };
+    if rows.is_empty() {
+        let placeholder = match onboarding.step {
+            KeyStep::Method => LOGIN_NO_METHOD_MATCH,
+            KeyStep::Subscription => LOGIN_NO_SUBSCRIPTION_MATCH,
+            _ => LOGIN_NO_MATCH,
+        };
+        return vec![model_placeholder_row(placeholder, MODEL_META_COLOR, width)];
     }
     let max = LOGIN_MENU_MAX_ROWS as usize;
-    let selected = onboarding.selected.min(matches.len() - 1);
-    let offset = centered_window(matches.len(), selected, max);
-    matches
-        .iter()
+    let selected = onboarding.selected.min(rows.len() - 1);
+    let offset = centered_window(rows.len(), selected, max);
+    rows.iter()
         .enumerate()
         .skip(offset)
         .take(max)
-        .map(|(i, c)| login_provider_row(c, i == selected, width))
+        .map(|(i, (name, tag, configured))| login_row(name, tag, *configured, i == selected, width))
         .collect()
 }
 
-/// The `(selected+1/total)` counter under the `/login` provider list, or a blank
-/// line when nothing is selectable.
+/// How many rows the current list step offers — the `(n/total)` counter's total.
+fn login_list_len(onboarding: &KeyOnboarding) -> usize {
+    match onboarding.step {
+        KeyStep::Method => onboarding.method_matches().len(),
+        KeyStep::Subscription => onboarding.subscription_matches().len(),
+        _ => onboarding.matches().len(),
+    }
+}
+
+/// The `(selected+1/total)` counter under a `/login` list, or a blank line when
+/// nothing is selectable.
 fn login_counter_line(onboarding: &KeyOnboarding) -> Line<'static> {
-    let matches = onboarding.matches();
-    if matches.is_empty() {
+    let len = login_list_len(onboarding);
+    if len == 0 {
         return Line::default();
     }
-    let selected = onboarding.selected.min(matches.len() - 1);
+    let selected = onboarding.selected.min(len - 1);
     Line::from(vec![
         Span::raw(MODEL_INDENT),
         Span::styled(
-            format!("({}/{})", selected + 1, matches.len()),
+            format!("({}/{})", selected + 1, len),
             Style::new().fg(MODEL_META_COLOR),
         ),
     ])
@@ -125,44 +156,191 @@ fn login_key_field(onboarding: &KeyOnboarding, width: u16) -> Line<'static> {
     login_prompt_line(Line::from(vec![body]))
 }
 
-/// The whole framed page as lines, per step. The provider step (headerless,
-/// like `/model`): top rule, gap, `❯` filter, gap, the windowed provider
-/// list, a `(n/total)` counter, gap, a dim `Keys are saved to {.env path}`
-/// hint, gap, bottom rule. The key step: top rule, gap, a periwinkle
-/// `Enter your {provider} API key` prompt, gap, the masked `❯` field, gap, a
-/// dim `Enter to save · Esc to go back` hint, gap, bottom rule. What
-/// [`render_key_onboarding`] paints (bottom-anchored) and
-/// `layout::key_onboarding_rows` counts, so the reserved height and the
-/// painted rows can never disagree (`docs/view-flow.md`).
+/// `mm:ss` — how the device page counts a code's remaining life down. Minutes
+/// are **not** clamped to two digits: a fifteen-minute code reads `14:11`, and
+/// a hypothetical longer one must not silently wrap.
+pub(super) fn countdown(remaining: std::time::Duration) -> String {
+    let secs = remaining.as_secs();
+    format!("{}:{:02}", secs / 60, secs % 60)
+}
+
+/// The one-time code inside its rounded box, three rows indented past the
+/// page's own inset. The box is sized to the code, so a provider that issues a
+/// longer one still gets a snug frame.
+fn device_code_box(code: &str) -> Vec<Line<'static>> {
+    let indent = format!("{MODEL_INDENT}{DEVICE_BOX_INDENT}");
+    let inner = cols(DEVICE_BOX_PAD) * 2 + cols(code);
+    let bar = DEVICE_BOX_HORIZONTAL.repeat(inner);
+    let border = Style::new().fg(BORDER_COLOR);
+    vec![
+        Line::from(vec![
+            Span::raw(indent.clone()),
+            Span::styled(
+                format!("{DEVICE_BOX_TOP_LEFT}{bar}{DEVICE_BOX_TOP_RIGHT}"),
+                border,
+            ),
+        ]),
+        Line::from(vec![
+            Span::raw(indent.clone()),
+            Span::styled(DEVICE_BOX_VERTICAL, border),
+            Span::raw(DEVICE_BOX_PAD),
+            Span::styled(
+                code.to_string(),
+                Style::new()
+                    .fg(DEVICE_CODE_COLOR)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(DEVICE_BOX_PAD),
+            Span::styled(DEVICE_BOX_VERTICAL, border),
+        ]),
+        Line::from(vec![
+            Span::raw(indent),
+            Span::styled(
+                format!("{DEVICE_BOX_BOTTOM_LEFT}{bar}{DEVICE_BOX_BOTTOM_RIGHT}"),
+                border,
+            ),
+        ]),
+    ]
+}
+
+/// The device page's status row: the wait (with the code's countdown when the
+/// boundary has fed one) or, on a failure, the reason in red — the page stays
+/// up either way, so the reason is readable until Esc takes it down.
+fn device_status_lines(device: &DeviceLogin, width: u16) -> Vec<Line<'static>> {
+    match &device.status {
+        DeviceStatus::Failed(reason) => model_wrapped_rows(reason, ERROR_COLOR, width),
+        DeviceStatus::Starting => model_wrapped_rows(DEVICE_STARTING, MODEL_META_COLOR, width),
+        DeviceStatus::Waiting => {
+            let tail = match device.remaining {
+                // A code whose clock ran out says so rather than reading
+                // `expires in 0:00` forever — the poll reports the expiry too,
+                // but the countdown reaches zero first.
+                Some(left) if left.is_zero() => DEVICE_EXPIRED.to_string(),
+                Some(left) => format!("{DEVICE_EXPIRES_PREFIX}{}", countdown(left)),
+                None => String::new(),
+            };
+            model_wrapped_rows(&format!("{DEVICE_WAITING}{tail}"), MODEL_META_COLOR, width)
+        }
+    }
+}
+
+/// The whole device-code page as lines: title, the two-row instruction naming
+/// the URL, the code box, the status row, and the `c copy code  esc cancel`
+/// hint. No browser is launched — the URL is text the user opens themselves.
+fn device_page_lines(device: &DeviceLogin, width: u16) -> Vec<Line<'static>> {
+    let mut lines = vec![
+        model_rule(width),
+        Line::default(),
+        login_title(
+            &format!("{DEVICE_TITLE_PREFIX}{}", device.provider_name),
+            width,
+        ),
+        Line::default(),
+    ];
+    if device.verification_uri.is_empty() {
+        // Before the code lands there is no URL to name; the status row alone
+        // says what is happening.
+        lines.push(Line::default());
+    } else {
+        // The URL is its own wrapped row so a narrow terminal never cuts it —
+        // it is the one thing on the page that must be typed exactly.
+        lines.extend(model_wrapped_rows(
+            &format!("{DEVICE_VISIT_PREFIX}{}", device.verification_uri),
+            DEVICE_URI_COLOR,
+            width,
+        ));
+        lines.push(model_placeholder_row(
+            DEVICE_ENTER_LINE,
+            MODEL_META_COLOR,
+            width,
+        ));
+    }
+    lines.push(Line::default());
+    if let Some(code) = device.code() {
+        lines.extend(device_code_box(code));
+    } else {
+        lines.push(Line::default());
+    }
+    lines.push(Line::default());
+    lines.extend(device_status_lines(device, width));
+    lines.push(Line::default());
+    lines.push(model_placeholder_row(DEVICE_HINT, MODEL_META_COLOR, width));
+    lines.push(Line::default());
+    lines.push(model_rule(width));
+    lines
+}
+
+/// A `/login` list page: top rule, gap, an optional cyan title, the `❯` filter,
+/// gap, the windowed list, a `(n/total)` counter, gap, the step's dim hint
+/// rows, gap, bottom rule. The method step is the root and carries no title —
+/// the two rows *are* the question.
+fn list_page_lines(onboarding: &KeyOnboarding, width: u16) -> Vec<Line<'static>> {
+    let mut lines = vec![model_rule(width), Line::default()];
+    let title = match onboarding.step {
+        KeyStep::Method => None,
+        KeyStep::Subscription => Some(LOGIN_METHOD_SUBSCRIPTION),
+        _ => Some(LOGIN_METHOD_API_KEY),
+    };
+    if let Some(title) = title {
+        lines.push(login_title(title, width));
+        lines.push(Line::default());
+    }
+    lines.push(login_prompt_line(Line::from(onboarding.query.clone())));
+    lines.push(Line::default());
+    lines.extend(login_list_lines(onboarding, width));
+    // The counter takes a row only when something is selectable; with nothing
+    // matched it collapsed to a blank line stacked on the gap below it (the
+    // `/model` picker's placeholder rule). The method step never shows one —
+    // it is a fixed two-row question, and "(1/2)" under it says nothing the
+    // rows don't.
+    if onboarding.step != KeyStep::Method && login_list_len(onboarding) > 0 {
+        lines.push(login_counter_line(onboarding));
+    }
+    lines.push(Line::default());
+    // Wrapped, not clipped: the `.env` path — where the secret is stored — is
+    // the tail, so it was the first thing a narrow terminal lost. It sits below
+    // the cursor's search row, so nothing moves above.
+    if onboarding.step == KeyStep::Provider {
+        lines.extend(model_wrapped_rows(
+            &format!("{LOGIN_PROVIDER_HINT_PREFIX}{}", onboarding.env_path),
+            MODEL_META_COLOR,
+            width,
+        ));
+    }
+    let hint = match onboarding.step {
+        KeyStep::Method => LOGIN_METHOD_HINT,
+        KeyStep::Subscription => LOGIN_SUBSCRIPTION_HINT,
+        _ => LOGIN_PROVIDER_HINT,
+    };
+    // Placed, not wrapped: `wrap_text` is the *message* wrapper and collapses
+    // runs of whitespace, which is exactly the double space separating one
+    // `{key} {thing}` pair from the next. A hint is short and fixed, so an
+    // `…`-cut at a narrow width costs nothing the path row above it doesn't
+    // already say.
+    lines.push(model_placeholder_row(hint, MODEL_META_COLOR, width));
+    lines.push(Line::default());
+    lines.push(model_rule(width));
+    lines
+}
+
+/// The whole framed page as lines, per step — the three lists share
+/// [`list_page_lines`], the device page is [`device_page_lines`], and the key
+/// step is a fixed height: top rule, gap, a cyan `Enter your {provider} API
+/// key` title, gap, the masked `❯` field, gap, a dim `Enter to save · Esc to
+/// go back` hint, gap, bottom rule. What [`render_key_onboarding`] paints
+/// (bottom-anchored) and `layout::key_onboarding_rows` counts, so the reserved
+/// height and the painted rows can never disagree (`docs/view-flow.md`).
 pub(super) fn key_onboarding_lines(onboarding: &KeyOnboarding, width: u16) -> Vec<Line<'static>> {
     match onboarding.step {
-        KeyStep::Provider => {
-            let mut lines = vec![
-                model_rule(width),
-                Line::default(),
-                login_prompt_line(Line::from(onboarding.query.clone())),
-                Line::default(),
-            ];
-            lines.extend(login_provider_list_lines(onboarding, width));
-            // The counter takes a row only when something is selectable;
-            // with nothing matched it collapsed to a blank line stacked on
-            // the gap below it (the `/model` picker's placeholder rule).
-            if !onboarding.matches().is_empty() {
-                lines.push(login_counter_line(onboarding));
-            }
-            lines.push(Line::default());
-            // Wrapped, not clipped: the path — where the secret is stored —
-            // is the tail, so it was the first thing a narrow terminal lost.
-            // It sits below the cursor's search row, so nothing moves above.
-            lines.extend(model_wrapped_rows(
-                &format!("{LOGIN_PROVIDER_HINT_PREFIX}{}", onboarding.env_path),
-                MODEL_META_COLOR,
-                width,
-            ));
-            lines.push(Line::default());
-            lines.push(model_rule(width));
-            lines
+        KeyStep::Method | KeyStep::Subscription | KeyStep::Provider => {
+            list_page_lines(onboarding, width)
         }
+        KeyStep::Device => match &onboarding.device {
+            Some(device) => device_page_lines(device, width),
+            // Unreachable in practice (the step and the page open together),
+            // but a torn-down page must never paint a frameless void.
+            None => vec![model_rule(width), Line::default(), model_rule(width)],
+        },
         KeyStep::Key => {
             let name = onboarding
                 .chosen_provider()
@@ -170,7 +348,7 @@ pub(super) fn key_onboarding_lines(onboarding: &KeyOnboarding, width: u16) -> Ve
             vec![
                 model_rule(width),
                 Line::default(),
-                model_placeholder_row(&login_key_prompt(name), LOGIN_KEY_PROMPT_COLOR, width),
+                login_title(&login_key_prompt(name), width),
                 Line::default(),
                 login_key_field(onboarding, width),
                 Line::default(),
@@ -182,11 +360,10 @@ pub(super) fn key_onboarding_lines(onboarding: &KeyOnboarding, width: u16) -> Ve
     }
 }
 
-/// Render the **inline** `/login` API-key onboarding flow into the live region,
-/// in place of the composer. Two steps sharing the `/model` picker's framed
-/// look: the provider list ([`KeyStep::Provider`]) and the masked key field
-/// ([`KeyStep::Key`]) — bottom-anchored like every framed view
-/// (`docs/view-flow.md`). Pure — `render_live` paints this. See `docs/llm.md`.
+/// Render the **inline** `/login` onboarding flow into the live region, in
+/// place of the composer. Five steps sharing the `/model` picker's framed look
+/// — bottom-anchored like every framed view (`docs/view-flow.md`). Pure —
+/// `render_live` paints this. See `docs/llm.md` and `docs/copilot.md`.
 pub fn render_key_onboarding(area: Rect, buf: &mut Buffer, onboarding: &KeyOnboarding) {
     super::view_flow::render_framed_tail(area, buf, key_onboarding_lines(onboarding, area.width));
 }

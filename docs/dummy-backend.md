@@ -208,8 +208,8 @@ a job rather than fill space:
 - **They end on the hand-off.** Every user-facing reply closes on one shared
   sentence — the `handoff!()` macro in `script.rs`:
 
-  > Two commands away from the real thing: `/login` saves a provider API key,
-  > then `/model` picks the model to run.
+  > Two commands away from the real thing: `/login` signs you in — a
+  > subscription, or a provider API key — then `/model` picks the model to run.
 
   `stream::tests::scenario::every_user_facing_script_hands_the_user_off_to_a_real_model`
   walks the registry and fails any scenario that doesn't, and `smoke.sh` settles

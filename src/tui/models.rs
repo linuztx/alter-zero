@@ -29,7 +29,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use alter_zero::agents::AgentRegistry;
-use alter_zero::app::{ProviderChoice, ToastKind};
+use alter_zero::app::{ProviderChoice, SubscriptionChoice, ToastKind};
 use alter_zero::background::BackgroundRegistry;
 use alter_zero::llm::{
     self, EnvFile, LlmBackend, ModelConfig, ModelEntry, ProvidersFile, ReasoningSupport,
@@ -437,10 +437,25 @@ impl ModelSession {
         config::key_env_name(&self.providers, provider)
     }
 
-    /// The provider rows the `/login` flow shows, each tagged with whether a
-    /// key already resolves.
+    /// The **API-key** rows the `/login` flow shows, each tagged with whether
+    /// a key already resolves. A subscription provider is not among them —
+    /// there is no key to paste for one (`docs/copilot.md`).
     pub(crate) fn provider_choices(&self) -> Vec<ProviderChoice> {
         config::provider_choices(&self.providers, &self.env_file)
+    }
+
+    /// The **subscription** rows the `/login` flow shows, each tagged with
+    /// whether it is already signed in.
+    pub(crate) fn subscription_choices(&self) -> Vec<SubscriptionChoice> {
+        config::subscription_choices(&self.providers, &self.env_file)
+    }
+
+    /// Is this provider signed in to rather than keyed? What decides whether
+    /// a `/login` row starts a device flow.
+    pub(crate) fn is_subscription(&self, provider: &str) -> bool {
+        self.providers
+            .get(provider)
+            .is_some_and(|p| p.auth.is_subscription())
     }
 
     /// The active provider id, for the `/model` picker's "switch within this
@@ -930,11 +945,16 @@ impl ModelSession {
         tx: &tokio::sync::mpsc::UnboundedSender<ModelFetch>,
     ) -> usize {
         self.cancel_model_fetch();
-        let configured: Vec<ProviderChoice> = self
-            .provider_choices()
-            .into_iter()
-            .filter(|c| c.configured)
-            .collect();
+        // Every provider with a resolving credential — a pasted key *or* a
+        // subscription's stored token. `provider_choices` answers a different
+        // question (which providers `/login` offers a key field for), and
+        // fetching from that list would leave a signed-in GitHub Copilot with
+        // no models in the picker at all (`docs/copilot.md`).
+        let configured: Vec<ProviderChoice> =
+            config::all_provider_choices(&self.providers, &self.env_file)
+                .into_iter()
+                .filter(|c| c.configured)
+                .collect();
         if configured.is_empty() {
             return 0;
         }
@@ -1283,11 +1303,15 @@ impl Session<'_> {
             self.app.set_thinking(thinking);
             self.toast(format!("Switched model to {id}"), ToastKind::Info);
         } else {
-            let env = self.models.key_env(provider);
-            self.toast(
-                format!("Can't switch to {id}: run /login to set {env}"),
-                ToastKind::Error,
-            );
+            // A subscription has no env var to "set" — you sign in to it, and
+            // naming GITHUB_COPILOT_TOKEN would send the user looking for a
+            // key to paste that does not exist (`docs/copilot.md`).
+            let fix = if self.models.is_subscription(provider) {
+                "run /login and sign in".to_string()
+            } else {
+                format!("run /login to set {}", self.models.key_env(provider))
+            };
+            self.toast(format!("Can't switch to {id}: {fix}"), ToastKind::Error);
         }
     }
 
@@ -1305,15 +1329,6 @@ impl Session<'_> {
             .map(|t| (t.support.clone(), t.mode));
         self.models.persist(thinking.as_ref());
         self.toast(format!("Thinking: {}", mode.label()), ToastKind::Info);
-    }
-
-    /// `/login` from an idle composer (`docs/llm.md`): open the inline onboarding,
-    /// its provider choices built from the file with the ✓ reflecting real env /
-    /// `.env` key resolution. The hint names the real `.env` path.
-    pub(crate) fn open_key_onboarding(&mut self) {
-        let choices = self.models.provider_choices();
-        let env_path = self.models.env_path_display().to_string();
-        self.app.open_key_onboarding(choices, env_path);
     }
 
     /// Persist a key to the `.env` store and confirm — or report why it couldn't

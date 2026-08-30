@@ -13,6 +13,10 @@
 //! - [`spawn_image_paste`] — one Ctrl+V clipboard read (`docs/image-paste.md`).
 //! - [`spawn_model_fetch`] — one provider's model list, for the `/model`
 //!   picker and the startup capability probe (`docs/llm.md`).
+//! - [`spawn_device_login`] — the `/login` subscription sign-in
+//!   (`docs/copilot.md`), the one worker that runs for **minutes** rather
+//!   than milliseconds: it polls the provider until the user approves the
+//!   code, or `cancel` trips.
 //!
 //! **Invariant 1:** a worker only ever *sends*. None of them reads stdin, so
 //! the `EventStream` stays the single stdin reader.
@@ -34,6 +38,60 @@ use super::Session;
 /// fetches every configured provider in parallel and merges these as they land.
 /// Carried on the model-fetch worker's channel. See `docs/llm.md`.
 pub(crate) type ModelFetch = (String, Result<Vec<ModelEntry>, String>);
+
+/// What the `/login` device-flow worker reports back (`docs/copilot.md`).
+/// Two messages, in order: the code to show, then the flow's verdict.
+#[derive(Debug)]
+pub(crate) enum DeviceEvent {
+    /// The provider issued a code — show it, and start counting it down.
+    Code {
+        /// Where the user enters it.
+        verification_uri: String,
+        /// The one-time code itself.
+        user_code: String,
+        /// When it stops being valid, for the page's countdown.
+        expires_at: std::time::Instant,
+    },
+    /// The flow finished: the long-lived OAuth token to persist, or why not.
+    Done(Result<String, String>),
+}
+
+/// Run GitHub's device flow on a worker thread, reporting the code and then
+/// the verdict. Long-running by nature — the poll only ends when the user
+/// approves, the code expires, or `cancel` trips (Esc on the page, or the
+/// flow being closed out from under it). See `docs/copilot.md`.
+pub(crate) fn spawn_device_login(
+    cancel: CancelToken,
+    tx: tokio::sync::mpsc::UnboundedSender<DeviceEvent>,
+) {
+    std::thread::spawn(move || {
+        let device = match llm::copilot::request_device_code() {
+            Ok(device) => device,
+            Err(e) => {
+                let _ = tx.send(DeviceEvent::Done(Err(e.to_string())));
+                return;
+            }
+        };
+        let expires_at =
+            std::time::Instant::now() + std::time::Duration::from_secs(device.expires_in);
+        if tx
+            .send(DeviceEvent::Code {
+                verification_uri: device.verification_uri.clone(),
+                user_code: device.user_code.clone(),
+                expires_at,
+            })
+            .is_err()
+        {
+            return;
+        }
+        let result = llm::copilot::poll_for_token(&device, &cancel);
+        // A cancelled flow has no page left to report to — the user already
+        // walked away from it.
+        if !cancel.is_cancelled() {
+            let _ = tx.send(DeviceEvent::Done(result));
+        }
+    });
+}
 
 /// Max files the `@` picker's worker indexes — bounds each walk's memory/time
 /// (codex's nucleo walk is similarly capped).

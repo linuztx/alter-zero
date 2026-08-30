@@ -8,7 +8,9 @@
 // of `crate::ui` — private items included — through their own `use super::*`.
 use super::*;
 
-use crate::app::{FileSearch, Message, ModelFetchError, RetryInfo};
+use crate::app::{
+    FileSearch, Message, ModelFetchError, ProviderChoice, RetryInfo, SubscriptionChoice,
+};
 
 mod agent;
 mod ask_view;
@@ -293,6 +295,15 @@ pub(super) fn three_models() -> Vec<ModelEntry> {
 
 // --- The inline `/login` onboarding flow (docs/llm.md). ---
 
+fn login_subscriptions() -> Vec<SubscriptionChoice> {
+    vec![SubscriptionChoice {
+        id: "github_copilot".into(),
+        name: "GitHub Copilot".into(),
+        description: "Sign in with your GitHub account".into(),
+        configured: true,
+    }]
+}
+
 fn login_choices() -> Vec<ProviderChoice> {
     vec![
         ProviderChoice {
@@ -310,9 +321,40 @@ fn login_choices() -> Vec<ProviderChoice> {
     ]
 }
 
-pub(super) fn login_app_provider() -> App {
+/// The `/login` flow parked on its root (the method step).
+pub(super) fn login_app() -> App {
     let mut app = App::new();
-    app.open_key_onboarding(login_choices(), "~/.alter-zero/.env");
+    app.open_key_onboarding(login_choices(), login_subscriptions(), "~/.alter-zero/.env");
+    app
+}
+
+/// …one step down, on the API-key provider list.
+pub(super) fn login_app_provider() -> App {
+    let mut app = login_app();
+    app.key_onboarding.as_mut().unwrap().step = KeyStep::Provider;
+    app
+}
+
+/// …or on the subscription list.
+pub(super) fn login_app_subscription() -> App {
+    let mut app = login_app();
+    app.key_onboarding.as_mut().unwrap().step = KeyStep::Subscription;
+    app
+}
+
+/// …or on GitHub Copilot's device page, with a code delivered.
+pub(super) fn login_app_device() -> App {
+    let mut app = login_app_subscription();
+    {
+        let onboarding = app.key_onboarding.as_mut().unwrap();
+        onboarding.step = KeyStep::Device;
+        onboarding.device = Some(crate::app::DeviceLogin {
+            provider_id: "github_copilot".into(),
+            provider_name: "GitHub Copilot".into(),
+            ..Default::default()
+        });
+    }
+    app.set_device_code("https://github.com/login/device", "C363-262E");
     app
 }
 

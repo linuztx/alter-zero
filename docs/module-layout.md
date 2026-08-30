@@ -105,7 +105,7 @@ opening the viewport, running the loop — and everything else lives here:
 | Module | Holds |
 |--------|-------|
 | `mod.rs` | The `Session` struct and `StatusClocks` — the loop's state. |
-| `event_loop.rs` | `run`: the `select!` over the nine sources — one handler call per branch. |
+| `event_loop.rs` | `run`: the `select!` over the ten sources — one handler call per branch. |
 | `actions.rs` | The `Action` dispatch — one arm per key-press outcome — plus `Flow`, `/clear`, `/copy`, the resize and paste routing. |
 | `turn.rs` | Turn lifecycle: `start_turn`, `run_shell`, the background follow-up, `/compact`, `dispatch_after_turn`, `abandon_inflight`. |
 | `stream.rs` | `on_stream_event`: folding one reply event into `App` + scrollback. |
@@ -114,7 +114,8 @@ opening the viewport, running the loop — and everything else lives here:
 | `permission.rs` | `PermissionStore` — the gate, its file, this project's key — and the prompt's answers (`docs/permissions.md`). |
 | `view.rs` | Drawing: the draw tick, the overlays, the repaints, `live_region_height`, the injected clocks. |
 | `commit.rs` | Scrollback commits — the one place invariant 4 is enforced — and the toast. |
-| `models.rs` | `ModelSession`: the backend and every knob that selects it, plus the `/model`, `/login`, Ctrl+T and probe arms (`docs/llm.md`). |
+| `models.rs` | `ModelSession`: the backend and every knob that selects it, plus the `/model`, Ctrl+T and probe arms (`docs/llm.md`). |
+| `login.rs` | The `/login` flow's boundary half: opening it, running a subscription's device sign-in, persisting what it mints (`docs/copilot.md`). |
 | `config.rs` | Reading the environment: providers, keys, settings, permission rules, paths. |
 | `bootstrap.rs` | `Session::bootstrap` / `shutdown` / `after_iteration` — assembly, teardown, loop-bottom work. |
 | `startup.rs` | The `--continue`/`--resume` argument resolution (`docs/cli.md`). |
@@ -123,7 +124,7 @@ opening the viewport, running the loop — and everything else lives here:
 | `history_store.rs` | `InputHistoryStore` (`docs/history-persistence.md`). |
 | `mascot.rs` | Applying a `/mascot` selection: the `mascot.json` write + banner repaint (`docs/mascot.md`). |
 | `shell.rs` | The `!` command runner and its drain/cap unit tests (`docs/shell-command.md`). |
-| `workers.rs` | The off-thread file-search / clipboard / model-list jobs. |
+| `workers.rs` | The off-thread file-search / clipboard / model-list / device-sign-in jobs. |
 | `host.rs` | Clocks, dates, the OS string, the uid, ids — the raw impurities. |
 
 ### `src/stream/` — the backend seam

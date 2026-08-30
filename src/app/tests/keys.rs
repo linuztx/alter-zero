@@ -1181,7 +1181,7 @@ fn esc_clears_the_query_first_then_closes() {
 
 #[test]
 fn enter_advances_to_the_key_step_for_the_highlighted_provider() {
-    let mut app = login_app();
+    let mut app = provider_app();
     app.key_onboarding.as_mut().unwrap().selected = 1; // openrouter
     assert_eq!(app.on_key(key(KeyCode::Enter)), Action::None);
     let onboarding = app.key_onboarding.as_ref().unwrap();
@@ -1191,7 +1191,7 @@ fn enter_advances_to_the_key_step_for_the_highlighted_provider() {
 
 #[test]
 fn enter_pins_the_index_from_the_filtered_matches() {
-    let mut app = login_app();
+    let mut app = provider_app();
     // Filter to a single match whose *unfiltered* index is 2 (together).
     type_chars(&mut app, "toget");
     assert_eq!(app.key_onboarding.as_ref().unwrap().matches().len(), 1);
@@ -1203,7 +1203,7 @@ fn enter_pins_the_index_from_the_filtered_matches() {
 
 #[test]
 fn arrows_move_the_provider_selection_wrapping_at_the_ends() {
-    let mut app = login_app();
+    let mut app = provider_app();
     app.on_key(key(KeyCode::Up)); // top → bottom
     assert_eq!(app.key_onboarding.as_ref().unwrap().selected, 2);
     app.on_key(key(KeyCode::Down)); // bottom → top

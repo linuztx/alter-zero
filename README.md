@@ -50,8 +50,8 @@ the logic is pure and unit-tested.
   and the command output is the proof the edit landed. Read, change, verify: a
   real agent works exactly like that, one small checked step at a time.
 
-  Two commands away from the real thing: /login saves a provider API key, then
-  /model picks the model to run.
+  Two commands away from the real thing: /login signs you in — a
+  subscription, or a provider API key — then /model picks the model to run.
 
 ────────────────────────────────────────────────────────────────────────────────
 ❯
@@ -144,7 +144,7 @@ without a real terminal.
 | `src/textarea.rs` | The editable multi-line input: a movable grapheme-aware cursor, wrapped ↑/↓, insert/delete anywhere. | ✅ |
 | `src/ui/`    | Pure rendering, one module per area (`docs/module-layout.md`): display-width word-wrap, styled message/tool lines, the live-region geometry, the status line, the bands + footer, commit bookkeeping. All styling lives in `ui/theme.rs`. | ✅ |
 | `src/stream/` | The backend seam, one module per area (`docs/module-layout.md`): the `StreamEvent` protocol, the `ReplySource` trait, a `CancelToken` — and the offline `DummyAi` in its own `dummy/` subtree, whose scenario registry decides which canned demo a prompt plays (`docs/dummy-backend.md`). | ✅ (pure parts, token & dummy) |
-| `src/llm/` | The real OpenAI-compatible backend: `providers.toml` config, the streaming SSE client, the reasoning splitter, the `/v1/models` listing, the `.env` key store (`/login`), the `config.json` model store (`/model`), and the `ReplySource` bridge. | ✅ (pure cores) |
+| `src/llm/` | The real OpenAI-compatible backend: `providers.toml` config, the streaming SSE client, the reasoning splitter, the `/v1/models` listing, the `.env` key store (`/login`), the GitHub Copilot device sign-in + token exchange, the `config.json` model store (`/model`), and the `ReplySource` bridge. | ✅ (pure cores) |
 | `src/hooks/` | Lifecycle hooks (`docs/hooks.md`): the `hooks.json` format, which handlers an event selects, the JSON payload each writes to a handler's stdin and the verdict its stdout is parsed back into. The spawn lives in `src/llm/hooks.rs`. | ✅ |
 | `src/file_search.rs` | The pure core of the `@` file picker: token detection, fuzzy matching, ranking. | ✅ |
 | `src/frame.rs` | The frame scheduler: coalesces redraw requests into ticks, rate-limited to 120 fps. | ✅ (pure parts) |
@@ -213,9 +213,22 @@ export ALTER_ZERO_MODEL=anthropic/claude-3.5-haiku
 cargo run
 ```
 
-Or add the key in-app with **`/login`** — an inline flow to pick a provider and
-paste its API key; it saves to `~/.alter-zero/.env` (git-ignored) so it persists
-across runs. The dummy stays the default and the fallback — the real backend
+Or sign in from inside the app with **`/login`**, which asks how first —
+**Use a subscription** or **Use an API key** (`docs/copilot.md`):
+
+- **A subscription** is **GitHub Copilot**. Enter runs GitHub's device flow and
+  shows the one-time code in a box over the URL to enter it at — no browser is
+  launched, `c` copies the code, and the page counts the code down while it
+  waits for you to approve it. What is stored is the long-lived GitHub OAuth
+  token; each request exchanges it for the short-lived bearer Copilot's API
+  takes, and reads the model's context window, vision and *reasoning-effort
+  ladder* off `api.githubcopilot.com/models` so Ctrl+T cycles exactly the
+  levels that model accepts.
+- **An API key** is the old flow: pick a provider (**Agent Zero API**,
+  **OpenRouter**) and paste its key.
+
+Either way the secret lands in `~/.alter-zero/.env` (git-ignored) so it
+persists across runs. The dummy stays the default and the fallback — the real backend
 activates only when a provider, model, and key all resolve and `ALTER_ZERO_DUMMY`
 isn't set, so the app always runs offline out of the box. Switch models live with
 the **`/model`** picker: an inline search-and-select list of the provider's

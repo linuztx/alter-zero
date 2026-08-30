@@ -92,6 +92,9 @@ fn entry_of(record: &serde_json::Value, provider: &str) -> Option<ModelEntry> {
     if id.is_empty() {
         return None;
     }
+    if !is_callable(record) {
+        return None;
+    }
     let display_name = record
         .get("name")
         .and_then(serde_json::Value::as_str)
@@ -105,6 +108,45 @@ fn entry_of(record: &serde_json::Value, provider: &str) -> Option<ModelEntry> {
         vision: vision_support_of(record),
         context: context_window_of(record),
     })
+}
+
+/// One record's `capabilities` object, when it is GitHub Copilot's — the
+/// nested `{family, type, tokenizer, limits, supports}` shape none of the
+/// other providers send. Every Copilot-specific sniff hangs off this, so a
+/// bare OpenAI-style list is untouched by all of them.
+fn copilot_capabilities(record: &serde_json::Value) -> Option<&serde_json::Value> {
+    record.get("capabilities").filter(|c| c.is_object())
+}
+
+/// Can this client actually call the model? Copilot's list carries records
+/// this one can't use, and offering them puts models in the picker that fail
+/// every turn:
+///
+/// - **embeddings / completion** models (`capabilities.type`), which have no
+///   chat surface at all;
+/// - models served **only** from `/responses` (`supported_endpoints`) — most
+///   of the current GPT-5 reasoning family — which answer a
+///   `/chat/completions` request with a 400.
+///
+/// An absent endpoint list means chat completions (the legacy GPT records
+/// omit it), and a record with no `capabilities` object at all isn't
+/// Copilot's — every other provider's list passes untouched.
+fn is_callable(record: &serde_json::Value) -> bool {
+    let Some(capabilities) = copilot_capabilities(record) else {
+        return true;
+    };
+    if let Some(kind) = capabilities.get("type").and_then(serde_json::Value::as_str)
+        && kind != "chat"
+    {
+        return false;
+    }
+    match record
+        .get("supported_endpoints")
+        .and_then(serde_json::Value::as_array)
+    {
+        Some(list) => list.iter().any(|e| e.as_str() == Some("/chat/completions")),
+        None => true,
+    }
 }
 
 /// The effort ladder offered when a provider says "reasoning-capable" without
@@ -179,6 +221,51 @@ fn reasoning_support_of(record: &serde_json::Value) -> Option<ReasoningSupport> 
             });
         }
     }
+    // GitHub Copilot's `capabilities.supports`. Uniquely among the providers
+    // it publishes the **exact** effort levels the model accepts, so the
+    // Ctrl+T cycle offers what the API will take instead of the default
+    // ladder — and never sends a level this model would reject.
+    if let Some(supports) = copilot_capabilities(record)
+        .and_then(|c| c.get("supports"))
+        .filter(|s| s.is_object())
+    {
+        let flag = |name: &str| {
+            supports
+                .get(name)
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false)
+        };
+        let ladder = supports
+            .get("reasoning_effort")
+            .and_then(serde_json::Value::as_array);
+        let budgeted = supports.get("max_thinking_budget").is_some() || flag("adaptive_thinking");
+        let Some(levels) = ladder else {
+            // No ladder: an Anthropic-shaped model that takes a thinking
+            // *budget* instead. It still reasons, so Ctrl+T must offer On.
+            return budgeted.then(|| ReasoningSupport {
+                efforts: Vec::new(),
+                can_disable: true,
+                default_effort: None,
+            });
+        };
+        let mut efforts: Vec<ReasoningEffort> = levels
+            .iter()
+            .filter_map(|l| l.as_str())
+            .filter_map(ReasoningEffort::parse)
+            .collect();
+        efforts.sort_by_key(|e| ReasoningEffort::LADDER.iter().position(|l| l == e));
+        efforts.dedup();
+        if efforts.is_empty() && !budgeted {
+            return None;
+        }
+        return Some(ReasoningSupport {
+            // Reasoning is opt-in on Copilot — omitting the parameter is
+            // always allowed, so Off is always a rung.
+            can_disable: true,
+            efforts,
+            default_effort: None,
+        });
+    }
     // Venice's model_spec.capabilities booleans.
     let capabilities = record.get("model_spec")?.get("capabilities")?;
     let flag = |name: &str| {
@@ -229,6 +316,20 @@ fn vision_support_of(record: &serde_json::Value) -> Option<bool> {
             );
         }
     }
+    // GitHub Copilot's `capabilities.supports.vision`. It never sends a
+    // `false` — an unsupported capability is simply absent — so once the
+    // object exists, absence *is* the answer rather than "unknown".
+    if let Some(supports) = copilot_capabilities(record)
+        .and_then(|c| c.get("supports"))
+        .filter(|s| s.is_object())
+    {
+        return Some(
+            supports
+                .get("vision")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false),
+        );
+    }
     record
         .get("model_spec")?
         .get("capabilities")?
@@ -241,6 +342,8 @@ fn vision_support_of(record: &serde_json::Value) -> Option<bool> {
 ///
 /// - **OpenRouter** (and most aggregators): a top-level `context_length`.
 /// - **Venice**: `model_spec.availableContextTokens`.
+/// - **GitHub Copilot**: `capabilities.limits.max_prompt_tokens`, falling back
+///   to `max_context_window_tokens` (`docs/copilot.md`).
 ///
 /// `None` when the record doesn't say, or reports a non-positive size (a
 /// meaningless window would divide the gauge by zero). See `docs/compact.md`.
@@ -253,6 +356,22 @@ fn context_window_of(record: &serde_json::Value) -> Option<u64> {
                 .get("model_spec")?
                 .get("availableContextTokens")?
                 .as_u64()
+        })
+        .or_else(|| {
+            // GitHub Copilot's `capabilities.limits`. Its **prompt** cap is
+            // what to gauge against, not the nominal window: Copilot sets the
+            // two apart (gpt-4o windows 128000 but accepts a 63997-token
+            // prompt), and the gauge exists to keep a turn inside the limit
+            // the API enforces.
+            let limits = copilot_capabilities(record)?.get("limits")?;
+            limits
+                .get("max_prompt_tokens")
+                .and_then(serde_json::Value::as_u64)
+                .or_else(|| {
+                    limits
+                        .get("max_context_window_tokens")
+                        .and_then(serde_json::Value::as_u64)
+                })
         })?;
     (raw > 0).then_some(raw)
 }
@@ -279,9 +398,16 @@ pub fn fetch_models(cfg: &ModelConfig, cancel: &CancelToken) -> Result<Vec<Model
     // full client stack (blocking-runtime thread, pool, TLS config) for the
     // life of the process (see `openai::NET_OP_TIMEOUT`).
     let client = super::http_client(super::openai::NET_OP_TIMEOUT)?;
-    let url = models_endpoint(cfg);
+    // The same auth seam the chat request uses: a Copilot config's stored
+    // OAuth token is exchanged for the bearer, and the account's own host
+    // outranks the configured one (`docs/copilot.md`).
+    let (bearer, base) = super::copilot::request_auth(cfg)?;
+    let url = base.map_or_else(
+        || models_endpoint(cfg),
+        |base| format!("{}/models", base.trim_end_matches('/')),
+    );
     let mut req = client.get(&url).header("accept", "application/json");
-    if let Some(key) = &cfg.api_key {
+    if let Some(key) = &bearer {
         req = req.bearer_auth(key);
     }
     for (k, v) in &cfg.extra_headers {
@@ -339,6 +465,151 @@ mod tests {
         // A zero/negative length is meaningless — treat as unknown.
         let zero = r#"{"data":[{"id":"m","context_length":0}]}"#;
         assert_eq!(parse_models(zero, "p").unwrap()[0].context, None);
+    }
+
+    // --- GitHub Copilot's own record shape (docs/copilot.md) ---
+
+    /// One real `GET https://api.githubcopilot.com/models` record, trimmed to
+    /// the keys this parse reads — the shape three independent captures agree
+    /// on.
+    fn copilot_body(extra_supports: &str, extra_top: &str) -> String {
+        format!(
+            r#"{{"data":[{{"id":"claude-sonnet-4.6","name":"Claude Sonnet 4.6",
+              "vendor":"Anthropic","model_picker_enabled":true{extra_top},
+              "capabilities":{{"family":"claude-sonnet-4.6","type":"chat",
+                "tokenizer":"o200k_base",
+                "limits":{{"max_context_window_tokens":1000000,
+                  "max_prompt_tokens":936000,"max_output_tokens":64000,
+                  "vision":{{"max_prompt_images":5}}}},
+                "supports":{{"streaming":true,"tool_calls":true{extra_supports}}}}}}}]}}"#
+        )
+    }
+
+    #[test]
+    fn a_copilot_record_reports_its_prompt_budget_as_the_context_window() {
+        // Copilot caps the *prompt* well below the nominal window (gpt-4o:
+        // 128000 vs 63997), and the prompt cap is what the footer gauge and
+        // auto-compaction must respect — a gauge against the window would let
+        // a turn sail past the limit the API actually enforces.
+        let models = parse_models(&copilot_body("", ""), "github_copilot").unwrap();
+        assert_eq!(models[0].context, Some(936_000));
+        assert_eq!(models[0].display_name, "Claude Sonnet 4.6");
+    }
+
+    #[test]
+    fn a_copilot_record_without_a_prompt_cap_falls_back_to_the_window() {
+        let body = r#"{"data":[{"id":"m","capabilities":{"type":"chat",
+            "limits":{"max_context_window_tokens":128000}}}]}"#;
+        assert_eq!(
+            parse_models(body, "github_copilot").unwrap()[0].context,
+            Some(128_000)
+        );
+    }
+
+    #[test]
+    fn copilot_vision_is_read_off_the_supports_object() {
+        // Copilot never sends `false` — an unsupported capability is simply
+        // absent — so absence must read as "no", not "unknown".
+        let seeing = parse_models(&copilot_body(r#","vision":true"#, ""), "p").unwrap();
+        assert_eq!(seeing[0].vision, Some(true));
+        let blind = parse_models(&copilot_body("", ""), "p").unwrap();
+        assert_eq!(blind[0].vision, Some(false));
+    }
+
+    #[test]
+    fn a_copilot_effort_array_is_the_thinking_ladder_itself() {
+        // Unlike every other provider, Copilot publishes the exact levels the
+        // model accepts — so Ctrl+T cycles what the API will take rather than
+        // a hardcoded guess, and a level outside the list is never sent.
+        let body = copilot_body(
+            r#","reasoning_effort":["minimal","low","medium","high"]"#,
+            "",
+        );
+        let support = parse_models(&body, "p").unwrap()[0]
+            .reasoning
+            .clone()
+            .expect("a reasoning model");
+        assert_eq!(
+            support.efforts,
+            vec![
+                ReasoningEffort::Minimal,
+                ReasoningEffort::Low,
+                ReasoningEffort::Medium,
+                ReasoningEffort::High
+            ]
+        );
+        assert!(support.can_disable, "reasoning is opt-in on Copilot");
+    }
+
+    #[test]
+    fn a_copilot_effort_array_is_ordered_canonically() {
+        let body = copilot_body(r#","reasoning_effort":["high","none","low"]"#, "");
+        let support = parse_models(&body, "p").unwrap()[0]
+            .reasoning
+            .clone()
+            .unwrap();
+        assert_eq!(
+            support.efforts,
+            vec![ReasoningEffort::Low, ReasoningEffort::High],
+            "sorted, and the `none` rung is the off switch rather than a level"
+        );
+    }
+
+    #[test]
+    fn a_copilot_thinking_budget_marks_an_on_off_reasoner() {
+        // The Anthropic-shaped models advertise a budget instead of a ladder;
+        // they still reason, so Ctrl+T must offer On.
+        let budget = copilot_body(r#","max_thinking_budget":32000"#, "");
+        let support = parse_models(&budget, "p").unwrap()[0]
+            .reasoning
+            .clone()
+            .unwrap();
+        assert!(support.efforts.is_empty(), "no ladder — on/off only");
+        let adaptive = copilot_body(r#","adaptive_thinking":true"#, "");
+        assert!(parse_models(&adaptive, "p").unwrap()[0].reasoning.is_some());
+    }
+
+    #[test]
+    fn a_copilot_record_with_no_reasoning_at_all_reports_none() {
+        assert!(
+            parse_models(&copilot_body("", ""), "p").unwrap()[0]
+                .reasoning
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn copilot_lists_only_what_this_client_can_actually_call() {
+        // The list mixes in embeddings and — the trap — reasoning models
+        // served *only* from `/responses`. Offering one puts a model in the
+        // picker that 400s every turn.
+        let body = r#"{"data":[
+            {"id":"chat-ok","capabilities":{"type":"chat"},
+             "supported_endpoints":["/chat/completions","/v1/messages"]},
+            {"id":"responses-only","capabilities":{"type":"chat"},
+             "supported_endpoints":["/responses","ws:/responses"]},
+            {"id":"embeddings","capabilities":{"type":"embeddings"}},
+            {"id":"legacy-chat","capabilities":{"type":"chat"}}
+        ]}"#;
+        let ids: Vec<String> = parse_models(body, "github_copilot")
+            .unwrap()
+            .into_iter()
+            .map(|m| m.id)
+            .collect();
+        assert_eq!(
+            ids,
+            vec!["chat-ok".to_string(), "legacy-chat".to_string()],
+            "an absent endpoint list means chat completions, as the legacy models send"
+        );
+    }
+
+    #[test]
+    fn an_ordinary_providers_records_are_untouched_by_the_copilot_filter() {
+        // The filter keys off Copilot's own `capabilities` object, so an
+        // OpenAI-style bare list — which has neither a type nor an endpoint
+        // list — must still list in full.
+        let body = r#"{"data":[{"id":"gpt-4o-mini"},{"id":"o3"}]}"#;
+        assert_eq!(parse_models(body, "openai").unwrap().len(), 2);
     }
 
     #[test]

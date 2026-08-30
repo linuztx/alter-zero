@@ -749,6 +749,13 @@ pub fn cursor_visible(app: &App) -> bool {
     if app.hooks_menu.is_some() || app.trust_menu.is_some() || app.background_view.is_some() {
         return false;
     }
+    // The `/login` device page is a wait, not a field — the same menu rule: a
+    // kitty cursor trail would streak across it on every countdown tick.
+    if let Some(onboarding) = &app.key_onboarding
+        && onboarding.step == KeyStep::Device
+    {
+        return false;
+    }
     if let Some(menu) = &app.mcp_menu {
         return menu.page == crate::app::McpPage::Auth;
     }
@@ -993,7 +1000,15 @@ pub fn cursor_position(area: Rect, app: &App) -> (u16, u16) {
     // again inside its own frame, below the strip, shifted by the anchor.
     if let Some(onboarding) = &app.key_onboarding {
         let (query_cols, row) = match onboarding.step {
-            KeyStep::Provider => (cols(&onboarding.query), LOGIN_SEARCH_ROW),
+            // The method step is the root and carries no title, so its filter
+            // sits two rows higher than the titled lists below it.
+            KeyStep::Method => (cols(&onboarding.query), LOGIN_METHOD_SEARCH_ROW),
+            KeyStep::Subscription | KeyStep::Provider => {
+                (cols(&onboarding.query), LOGIN_SEARCH_ROW)
+            }
+            // The device page has no field; park the (hidden — see
+            // `cursor_visible`) cursor on its code box rather than the corner.
+            KeyStep::Device => (0, DEVICE_CODE_ROW),
             // One mask glyph per key character sits after the prompt.
             KeyStep::Key => (onboarding.key_input.chars().count(), LOGIN_KEY_INPUT_ROW),
         };

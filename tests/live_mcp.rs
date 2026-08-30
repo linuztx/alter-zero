@@ -106,6 +106,7 @@ fn backend_with_deepwiki(manager: McpManager) -> LlmBackend {
         api_base: "https://openrouter.ai/api/v1".to_string(),
         api_model_base: "https://openrouter.ai/api/v1".to_string(),
         api_key: Some(key),
+        auth: alter_zero::llm::AuthScheme::ApiKey,
         temperature: Some(0.0),
         thinking: None,
         vision: None,

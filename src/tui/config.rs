@@ -20,7 +20,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use alter_zero::app::ProviderChoice;
+use alter_zero::app::{ProviderChoice, SubscriptionChoice};
 use alter_zero::checkpoint;
 use alter_zero::llm::{
     self, EnvFile, ModelConfig, ProvidersFile, ReasoningSupport, Selection, Settings, ThinkingMode,
@@ -149,16 +149,39 @@ pub(crate) fn session_cache_key() -> &'static str {
     })
 }
 
-/// The provider rows the `/login` flow shows: every provider in the file, tagged
-/// with its key env var and whether a key already resolves (the ✓). See
-/// `docs/llm.md`.
+/// The **API-key** rows the `/login` flow shows: every provider whose key is
+/// pasted, tagged with its env var and whether one already resolves (the ✓).
+/// A subscription provider is excluded — it is signed in to, not keyed, and
+/// listing it beside the others would offer a key field for a flow that has
+/// none. See `docs/llm.md` and `docs/copilot.md`.
 pub(crate) fn provider_choices(
     providers: &ProvidersFile,
     env_file: &EnvFile,
 ) -> Vec<ProviderChoice> {
+    choices_where(providers, env_file, |p| !p.auth.is_subscription())
+}
+
+/// **Every** provider, however it authenticates — what the `/model` picker
+/// fetches from. Deliberately not [`provider_choices`]: that one answers
+/// "which providers does `/login` offer a key field for?", and a signed-in
+/// GitHub Copilot is exactly the provider that has models and no key field.
+pub(crate) fn all_provider_choices(
+    providers: &ProvidersFile,
+    env_file: &EnvFile,
+) -> Vec<ProviderChoice> {
+    choices_where(providers, env_file, |_| true)
+}
+
+/// The shared build behind both: one row per provider the predicate keeps.
+fn choices_where(
+    providers: &ProvidersFile,
+    env_file: &EnvFile,
+    keep: impl Fn(&alter_zero::llm::config::Provider) -> bool,
+) -> Vec<ProviderChoice> {
     providers
         .ids()
         .into_iter()
+        .filter(|id| providers.get(id).is_some_and(&keep))
         .map(|id| {
             let name = providers
                 .get(&id)
@@ -171,6 +194,26 @@ pub(crate) fn provider_choices(
                 env_var,
                 configured,
             }
+        })
+        .collect()
+}
+
+/// The **subscription** rows the `/login` flow shows: every provider whose
+/// `auth` names a sign-in flow, described by the file and tagged with whether
+/// a token already resolves. See `docs/copilot.md`.
+pub(crate) fn subscription_choices(
+    providers: &ProvidersFile,
+    env_file: &EnvFile,
+) -> Vec<SubscriptionChoice> {
+    providers
+        .providers
+        .iter()
+        .filter(|(_, p)| p.auth.is_subscription())
+        .map(|(id, p)| SubscriptionChoice {
+            id: id.clone(),
+            name: p.name.clone(),
+            description: p.description.clone().unwrap_or_default(),
+            configured: resolve_api_key(providers, env_file, id).is_some(),
         })
         .collect()
 }

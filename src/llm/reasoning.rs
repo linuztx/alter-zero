@@ -162,6 +162,26 @@ impl ReasoningSupport {
     }
 }
 
+/// GitHub Copilot's chat-completions spelling of a thinking mode: a
+/// **top-level `reasoning_effort` string**, not the `reasoning` object every
+/// other provider here takes (Microsoft's own client documents the shape as
+/// following the API path — `/chat/completions` → top-level
+/// `reasoning_effort`, `/responses` → a nested object).
+///
+/// Only an explicit effort rides the wire. `On` means "the model's own
+/// default", and `Off` is expressed by **omitting** the parameter, which is
+/// what Copilot's opt-in reasoning does anyway — sending an unrecognised
+/// value there earns the misleading `model_not_supported` 400 rather than a
+/// useful error, so the levels are gated on what the model's own record
+/// advertised (`docs/copilot.md`).
+#[must_use]
+pub fn copilot_reasoning_effort(mode: ThinkingMode) -> Option<&'static str> {
+    match mode {
+        ThinkingMode::Effort(effort) => Some(effort.as_str()),
+        ThinkingMode::On | ThinkingMode::Off => None,
+    }
+}
+
 /// The request's `reasoning` object for a mode: an explicit effort, a disable,
 /// or nothing at all for [`ThinkingMode::On`] (the model's own default). The
 /// Venice-side `disable_thinking` companion is applied by the payload builder
@@ -374,6 +394,24 @@ mod tests {
         };
         let max = ThinkingMode::Effort(ReasoningEffort::Max);
         assert_eq!(support.next_mode(max), max);
+    }
+
+    #[test]
+    fn copilot_spells_an_effort_as_a_top_level_string() {
+        // Copilot's chat-completions endpoint takes `reasoning_effort`, not
+        // the `reasoning` object — and the object, being an unknown field
+        // there, risks a 400 that blames the model.
+        assert_eq!(
+            copilot_reasoning_effort(ThinkingMode::Effort(ReasoningEffort::High)),
+            Some("high")
+        );
+        assert_eq!(
+            copilot_reasoning_effort(ThinkingMode::Effort(ReasoningEffort::Minimal)),
+            Some("minimal")
+        );
+        // On = the model's own default, Off = omit it: reasoning is opt-in.
+        assert_eq!(copilot_reasoning_effort(ThinkingMode::On), None);
+        assert_eq!(copilot_reasoning_effort(ThinkingMode::Off), None);
     }
 
     #[test]

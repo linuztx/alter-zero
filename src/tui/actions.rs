@@ -85,6 +85,9 @@ impl Session<'_> {
                     self.term.exit_overlay()?;
                     self.overlay_return_repaint()?;
                 }
+                // A `/login` device flow's worker parks on a poll for minutes;
+                // cancel it so the process can actually exit (`docs/copilot.md`).
+                self.cancel_device_login();
                 return Ok(Flow::Quit);
             }
             Action::Submit(text) => {
@@ -185,14 +188,19 @@ impl Session<'_> {
             Action::SetThinking(mode) => self.set_thinking(mode),
             Action::OpenKeyOnboarding => self.open_key_onboarding(),
             Action::CloseKeyOnboarding => {
-                // Esc/Ctrl+C dismissed the flow: nothing to reap; the region
-                // collapses back to the composer on next draw.
+                // Esc/Ctrl+C dismissed the flow. A device sign-in it was
+                // *past* answers Action::CancelDeviceLogin instead, so there
+                // is nothing to reap here; the region collapses back to the
+                // composer on the next draw.
             }
             Action::SaveApiKey {
                 provider,
                 env_var,
                 key,
             } => self.save_api_key(&provider, &env_var, &key),
+            Action::StartDeviceLogin(provider) => self.start_device_login(&provider),
+            Action::CancelDeviceLogin => self.cancel_device_login(),
+            Action::CopyDeviceCode(code) => self.copy_device_code(&code),
             Action::OpenSettings => self.open_settings(),
             Action::CloseSettings => {
                 // Esc/Ctrl+C dismissed the menu: nothing to reap; the region

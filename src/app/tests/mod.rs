@@ -303,15 +303,47 @@ pub(super) fn sample_choices() -> Vec<ProviderChoice> {
     ]
 }
 
+/// The subscription rows the boundary injects — one, GitHub Copilot.
+pub(super) fn sample_subscriptions() -> Vec<SubscriptionChoice> {
+    vec![SubscriptionChoice {
+        id: "github_copilot".into(),
+        name: "GitHub Copilot".into(),
+        description: "Sign in with your GitHub account".into(),
+        configured: true,
+    }]
+}
+
 pub(super) fn login_app() -> App {
     let mut app = App::new();
-    app.open_key_onboarding(sample_choices(), "~/.alter-zero/.env");
+    app.open_key_onboarding(
+        sample_choices(),
+        sample_subscriptions(),
+        "~/.alter-zero/.env",
+    );
+    app
+}
+
+/// Drive the flow to the API-key provider list (one step below the method).
+pub(super) fn provider_app() -> App {
+    let mut app = login_app();
+    app.on_key(key(KeyCode::Down)); // "Use an API key"
+    app.on_key(key(KeyCode::Enter));
+    assert_eq!(app.key_onboarding.as_ref().unwrap().step, KeyStep::Provider);
+    app
+}
+
+/// Drive the flow to the GitHub Copilot device page.
+pub(super) fn device_app() -> App {
+    let mut app = login_app();
+    app.on_key(key(KeyCode::Enter)); // "Use a subscription"
+    app.on_key(key(KeyCode::Enter)); // GitHub Copilot
+    assert_eq!(app.key_onboarding.as_ref().unwrap().step, KeyStep::Device);
     app
 }
 
 /// Drive the flow to the key-entry step for the given provider id.
 pub(super) fn key_app(provider_id: &str) -> App {
-    let mut app = login_app();
+    let mut app = provider_app();
     let idx = sample_choices()
         .iter()
         .position(|p| p.id == provider_id)

@@ -158,7 +158,18 @@ impl OpenAiClient {
         if super::cache::needs_cache_breakpoints(&self.cfg.model) {
             super::cache::apply_cache_breakpoints(&mut payload["messages"]);
         }
-        if let Some(key) = self.cfg.cache_key.as_deref().filter(|k| !k.is_empty()) {
+        if let Some(key) = self
+            .cfg
+            .cache_key
+            .as_deref()
+            .filter(|k| !k.is_empty())
+            // GitHub Copilot's proxy answers a request shape it doesn't
+            // recognise with `model_not_supported` — an error that blames the
+            // *model* — and its own caching is server-side, so the affinity
+            // key buys nothing there worth that risk. The request carries the
+            // same value as `X-Request-Id` instead (`docs/copilot.md`).
+            .filter(|_| self.cfg.auth != super::AuthScheme::GithubCopilot)
+        {
             // The per-session affinity key: the standard OpenAI
             // `prompt_cache_key` (accepted by OpenRouter and Venice alike),
             // plus OpenRouter's own `session_id` so its routing pins the
@@ -193,6 +204,18 @@ impl OpenAiClient {
         // footer must never claim an effort a stale `disable_thinking: true`
         // silently vetoes).
         if let Some(mode) = self.cfg.thinking {
+            // GitHub Copilot's chat-completions endpoint spells the mode as a
+            // top-level `reasoning_effort` string, and the `reasoning` object
+            // is an unknown field there — one its proxy answers with a
+            // `model_not_supported` 400 that blames the model rather than the
+            // payload. So it is the shape *instead of*, never alongside
+            // (`docs/copilot.md`).
+            if self.cfg.auth == super::AuthScheme::GithubCopilot {
+                if let Some(effort) = super::reasoning::copilot_reasoning_effort(mode) {
+                    payload["reasoning_effort"] = json!(effort);
+                }
+                return payload;
+            }
             if let Some(body) = super::reasoning::reasoning_body(mode) {
                 payload["reasoning"] = body;
             }
@@ -214,6 +237,36 @@ impl OpenAiClient {
         payload
     }
 
+    /// The per-request headers GitHub Copilot needs on top of the static
+    /// identity `providers.toml` carries — a no-op for every other provider.
+    ///
+    /// - `X-Initiator` is **billing-relevant**: GitHub charges a premium
+    ///   request for a user-initiated round and nothing for the agent's own
+    ///   tool round trips, so a turn that marked every round `user` would bill
+    ///   the user several times over for one question.
+    /// - `Copilot-Vision-Request` is mandatory whenever a round carries an
+    ///   image; without it the API answers `400 missing required
+    ///   Copilot-Vision-Request header for vision requests`.
+    /// - `X-Request-Id` is what GitHub support asks for when a request
+    ///   misbehaves; the cache key doubles as one, being per-session.
+    fn copilot_request_headers(
+        &self,
+        req: reqwest::blocking::RequestBuilder,
+        messages: &[ChatMessage],
+    ) -> reqwest::blocking::RequestBuilder {
+        if self.cfg.auth != super::AuthScheme::GithubCopilot {
+            return req;
+        }
+        let mut req = req.header("x-initiator", super::copilot::initiator(messages));
+        if super::copilot::has_image(messages) {
+            req = req.header("copilot-vision-request", "true");
+        }
+        if let Some(key) = &self.cfg.cache_key {
+            req = req.header("x-request-id", key);
+        }
+        req
+    }
+
     /// Stream a completion, invoking `on_delta` for every non-empty split delta.
     /// Polls `cancel` between SSE frames and stops promptly when it trips.
     ///
@@ -232,17 +285,29 @@ impl OpenAiClient {
             return Err(LlmError::Cancelled);
         }
         let client = super::http_client(NET_OP_TIMEOUT)?;
+        // What the request authenticates with, and where it goes. For every
+        // ordinary provider that is the stored key and the configured base,
+        // resolved with no I/O; GitHub Copilot's stored value is an OAuth
+        // token, exchanged (cached) here for the bearer its API takes and the
+        // account's own host — a Business seat is served from a different one
+        // than the file names. See `docs/copilot.md`.
+        let (bearer, base) = super::copilot::request_auth(&self.cfg)?;
+        let url = base.map_or_else(
+            || self.endpoint(),
+            |base| format!("{}/chat/completions", base.trim_end_matches('/')),
+        );
         let mut req = client
-            .post(self.endpoint())
+            .post(url)
             .header("accept", "text/event-stream")
             .header("content-type", "application/json")
             .json(&self.build_payload(&messages));
-        if let Some(key) = &self.cfg.api_key {
+        if let Some(key) = &bearer {
             req = req.bearer_auth(key);
         }
         for (k, v) in &self.cfg.extra_headers {
             req = req.header(k, v);
         }
+        req = self.copilot_request_headers(req, &messages);
 
         // All blocking network I/O — the send/header exchange and every body
         // read — runs on a detached transport thread feeding this channel, so
@@ -1118,6 +1183,62 @@ mod tests {
         let p = OpenAiClient::new(cfg).build_payload(&[ChatMessage::user("hi")]);
         assert!(p.get("prompt_cache_key").is_none());
         assert!(p.get("session_id").is_none());
+    }
+
+    // --- GitHub Copilot's payload shape (docs/copilot.md) ---
+
+    #[test]
+    fn a_copilot_payload_carries_no_affinity_key() {
+        // Copilot's proxy answers an unrecognised request shape with
+        // `model_not_supported` — an error that blames the model — and its own
+        // caching is server-side, so the affinity key buys nothing worth that.
+        let mut cfg = ModelConfig::fallback();
+        cfg.auth = crate::llm::AuthScheme::GithubCopilot;
+        cfg.cache_key = Some("alter-zero-42".to_string());
+        let p = OpenAiClient::new(cfg).build_payload(&[ChatMessage::user("hi")]);
+        assert!(p.get("prompt_cache_key").is_none(), "{p}");
+        assert!(p.get("session_id").is_none(), "{p}");
+    }
+
+    #[test]
+    fn a_copilot_payload_spells_reasoning_as_a_top_level_effort() {
+        // Not the `reasoning` object every other provider here takes — and
+        // *instead of* it, since the object is an unknown field there.
+        let mut cfg = ModelConfig::fallback();
+        cfg.auth = crate::llm::AuthScheme::GithubCopilot;
+        cfg.thinking = Some(crate::llm::ThinkingMode::Effort(
+            crate::llm::ReasoningEffort::High,
+        ));
+        let p = OpenAiClient::new(cfg).build_payload(&[ChatMessage::user("hi")]);
+        assert_eq!(p["reasoning_effort"], json!("high"));
+        assert!(p.get("reasoning").is_none(), "{p}");
+    }
+
+    #[test]
+    fn a_copilot_payload_omits_reasoning_when_it_is_off_or_default() {
+        // Reasoning is opt-in on Copilot: On means the model's own default and
+        // Off is the absence of the parameter, so neither sends one.
+        for mode in [crate::llm::ThinkingMode::On, crate::llm::ThinkingMode::Off] {
+            let mut cfg = ModelConfig::fallback();
+            cfg.auth = crate::llm::AuthScheme::GithubCopilot;
+            cfg.thinking = Some(mode);
+            let p = OpenAiClient::new(cfg).build_payload(&[ChatMessage::user("hi")]);
+            assert!(p.get("reasoning_effort").is_none(), "{mode:?}: {p}");
+            assert!(p.get("reasoning").is_none(), "{mode:?}: {p}");
+        }
+    }
+
+    #[test]
+    fn an_ordinary_providers_payload_is_unchanged_by_the_copilot_branch() {
+        let mut cfg = ModelConfig::fallback();
+        cfg.cache_key = Some("alter-zero-42".to_string());
+        cfg.thinking = Some(crate::llm::ThinkingMode::Effort(
+            crate::llm::ReasoningEffort::High,
+        ));
+        let p = OpenAiClient::new(cfg).build_payload(&[ChatMessage::user("hi")]);
+        assert_eq!(p["prompt_cache_key"], json!("alter-zero-42"));
+        assert_eq!(p["reasoning"], json!({"effort": "high"}));
+        assert!(p.get("reasoning_effort").is_none(), "{p}");
     }
 
     #[test]

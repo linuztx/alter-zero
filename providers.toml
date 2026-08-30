@@ -41,6 +41,32 @@ api_base = "https://api.agent-zero.ai/venice/v1"
 [providers.a0_venice.kwargs.venice_parameters]
 include_venice_system_prompt = false
 
+# GitHub Copilot is a *subscription*, not a pasted key: `auth` puts it in
+# `/login`'s subscription list, where Enter runs GitHub's device flow
+# (docs/copilot.md). What `api_key_env` stores is the resulting long-lived
+# GitHub OAuth token; every request exchanges it for the short-lived Copilot
+# bearer the API actually takes, so nothing here is sent verbatim. The editor
+# identity headers are load-bearing — Copilot answers 400 without
+# `Editor-Version` and 403 without a known `Copilot-Integration-Id`.
+[providers.github_copilot]
+name = "GitHub Copilot"
+auth = "github_copilot"
+description = "Sign in with your GitHub account"
+api_key_env = "GITHUB_COPILOT_TOKEN"
+
+[providers.github_copilot.extra_headers]
+Editor-Version = "vscode/1.104.3"
+Editor-Plugin-Version = "copilot-chat/0.26.7"
+Copilot-Integration-Id = "vscode-chat"
+User-Agent = "GitHubCopilotChat/0.26.7"
+Openai-Intent = "conversation-panel"
+
+[providers.github_copilot.kwargs]
+# The account's real base comes from the token exchange (`endpoints.api` —
+# a Business/Enterprise seat gets its own host); this is the individual
+# default and the fallback.
+api_base = "https://api.githubcopilot.com"
+
 [providers.openrouter]
 name = "OpenRouter"
 api_model_base = "https://openrouter.ai/api/v1"

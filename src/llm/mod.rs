@@ -21,6 +21,7 @@ pub mod backend;
 pub mod cache;
 pub mod classifier;
 pub mod config;
+pub mod copilot;
 pub mod exec;
 pub mod hooks;
 pub mod keystore;
@@ -39,7 +40,7 @@ pub mod tools;
 use std::time::Duration;
 
 pub use backend::LlmBackend;
-pub use config::{ModelConfig, ProvidersFile, Selection};
+pub use config::{AuthScheme, ModelConfig, ProvidersFile, Selection};
 pub use keystore::EnvFile;
 pub use models::ModelEntry;
 pub use reasoning::{ReasoningEffort, ReasoningSupport, ThinkingMode};

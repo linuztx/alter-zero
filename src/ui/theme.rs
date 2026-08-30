@@ -762,9 +762,72 @@ pub(super) const MODEL_LOADING_MORE: &str = "loading more…";
 // (indent, `❯` prompt, cyan selection, dim meta, green ✓, `→` marker) plus the
 // `LOGIN_*` strings/geometry below. ---
 
-/// Periwinkle (Claude Code's accent, `#96a0d5`) — the `Enter your … API key`
-/// prompt on the key-entry step.
-pub(super) const LOGIN_KEY_PROMPT_COLOR: Color = Color::Rgb(0x96, 0xA0, 0xD5);
+/// Every `/login` page title — `Use a subscription`, `Sign in to GitHub
+/// Copilot`, `Enter your Agent Zero API key`. The palette accent the whole
+/// picker family already selects with, so a title reads as *this* flow's own
+/// heading rather than a fourth colour to learn.
+pub(super) const LOGIN_TITLE_COLOR: Color = MODEL_SELECTED_COLOR;
+
+/// The method step's two rows, in order — the root of the flow.
+pub(super) const LOGIN_METHOD_SUBSCRIPTION: &str = "Use a subscription";
+pub(super) const LOGIN_METHOD_API_KEY: &str = "Use an API key";
+
+/// The dim hint under the method step (the root: Esc closes).
+pub(super) const LOGIN_METHOD_HINT: &str = "↑↓ navigate  enter select  escape/ctrl+c cancel";
+
+/// The dim hint under the subscription list.
+pub(super) const LOGIN_SUBSCRIPTION_HINT: &str = "↑↓ navigate  enter sign in  esc back";
+
+/// The dim hint under the API-key provider list, below the `.env` path row.
+pub(super) const LOGIN_PROVIDER_HINT: &str = "↑↓ navigate  enter select  esc back";
+
+/// The list placeholder when the method filter matches nothing.
+pub(super) const LOGIN_NO_METHOD_MATCH: &str = "No matching options";
+
+/// The list placeholder when the subscription filter matches nothing.
+pub(super) const LOGIN_NO_SUBSCRIPTION_MATCH: &str = "No matching subscriptions";
+
+// --- The device-code page (docs/copilot.md). A subscription sign-in shows the
+// provider's one-time code in a rounded box over the URL to enter it at, and
+// waits. No browser is launched — the URL is text the user opens themselves. ---
+
+/// The device page's title prefix — `Sign in to {provider}`.
+pub(super) const DEVICE_TITLE_PREFIX: &str = "Sign in to ";
+
+/// The device page's instruction, in two rows: `Visit {uri}` then this.
+pub(super) const DEVICE_VISIT_PREFIX: &str = "Visit ";
+pub(super) const DEVICE_ENTER_LINE: &str = "and enter this one-time code";
+
+/// The code box's extra indent past [`MODEL_INDENT`], and its rounded corners.
+pub(super) const DEVICE_BOX_INDENT: &str = "   ";
+pub(super) const DEVICE_BOX_TOP_LEFT: &str = "╭";
+pub(super) const DEVICE_BOX_TOP_RIGHT: &str = "╮";
+pub(super) const DEVICE_BOX_BOTTOM_LEFT: &str = "╰";
+pub(super) const DEVICE_BOX_BOTTOM_RIGHT: &str = "╯";
+pub(super) const DEVICE_BOX_HORIZONTAL: &str = "─";
+pub(super) const DEVICE_BOX_VERTICAL: &str = "│";
+/// The padding inside the box, each side of the code.
+pub(super) const DEVICE_BOX_PAD: &str = "  ";
+
+/// The code itself — bright and bold, the one thing on the page to transcribe.
+pub(super) const DEVICE_CODE_COLOR: Color = Color::Rgb(0xFF, 0xFF, 0xFF);
+
+/// The verification URL, painted like a link (the palette accent).
+pub(super) const DEVICE_URI_COLOR: Color = MODEL_SELECTED_COLOR;
+
+/// The status line's two states, and the countdown clause appended to the wait.
+pub(super) const DEVICE_STARTING: &str = "Requesting a code…";
+pub(super) const DEVICE_WAITING: &str = "Waiting for approval…";
+pub(super) const DEVICE_EXPIRES_PREFIX: &str = " · expires in ";
+pub(super) const DEVICE_EXPIRED: &str = " · code expired";
+
+/// The dim hint under the device page.
+pub(super) const DEVICE_HINT: &str = "c copy code  esc cancel";
+
+/// The row the device page's code box starts on — top(0) gap(1) title(2)
+/// gap(3) visit(4) enter(5) gap(6) box(7). The cursor is hidden on this page
+/// (there is no field), so this is only the seat [`cursor_position`] parks at.
+pub(super) const DEVICE_CODE_ROW: u16 = 7;
 
 /// The dim hint under the provider list, prefixing the real `.env` path
 /// (`onboarding.env_path`) so it names where the key actually lands.
@@ -786,9 +849,15 @@ pub(super) const LOGIN_NO_MATCH: &str = "No matching providers";
 /// selection **centered**, like the `/model` list — `centered_window`).
 pub(super) const LOGIN_MENU_MAX_ROWS: u16 = 8;
 
-/// The row the provider-step `❯` filter sits on — top(0) gap(1) search(2).
-/// Shared by [`render_key_onboarding`] and [`cursor_position`].
-pub(super) const LOGIN_SEARCH_ROW: u16 = 2;
+/// The row the **method** step's `❯` filter sits on — top(0) gap(1)
+/// search(2). It is the flow's root and carries no title, so its filter sits
+/// two rows above the titled lists'.
+pub(super) const LOGIN_METHOD_SEARCH_ROW: u16 = 2;
+
+/// The row the subscription / provider `❯` filter sits on — top(0) gap(1)
+/// title(2) gap(3) search(4). Shared by [`render_key_onboarding`] and
+/// [`cursor_position`].
+pub(super) const LOGIN_SEARCH_ROW: u16 = 4;
 
 /// The row the key-entry `❯` field sits on — top(0) gap(1) prompt(2) gap(3)
 /// input(4).

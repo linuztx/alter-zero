@@ -242,6 +242,17 @@ pub enum Action {
     /// The onboarding flow was dismissed (Esc/Ctrl+C): [`App::key_onboarding`]
     /// is already cleared; the loop just repaints the collapsed region.
     CloseKeyOnboarding,
+    /// Enter on a subscription row: start that provider's device-code sign-in
+    /// (the id, e.g. `github_copilot`). The pure core already opened the
+    /// device page; the loop runs the flow on a worker thread and feeds the
+    /// code back through [`App::set_device_code`]. See `docs/copilot.md`.
+    StartDeviceLogin(String),
+    /// Esc (or Ctrl+C) on the device page: abandon the sign-in. The pure core
+    /// already tore the page down; the loop cancels the worker.
+    CancelDeviceLogin,
+    /// `c` on the device page: copy the one-time code to the system clipboard.
+    /// The loop does the I/O and raises the toast, like [`Action::Copy`].
+    CopyDeviceCode(String),
     /// Enter on the key-entry step: persist `key` to `env_var` in the `.env`
     /// file. The loop writes the file, updates its in-memory secrets, and
     /// commits a system notice. See `docs/llm.md`.

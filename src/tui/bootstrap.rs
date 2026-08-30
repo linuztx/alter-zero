@@ -321,6 +321,7 @@ impl<'t> Session<'t> {
         // picker's list fetch (docs/llm.md): each runs on its own short-lived
         // worker thread and reports here.
         let (img_tx, img_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (device_tx, device_rx) = tokio::sync::mpsc::unbounded_channel();
         let (model_tx, model_rx) = tokio::sync::mpsc::unbounded_channel::<ModelFetch>();
         // The capability probe's own channel, so a concurrently-open `/model`
         // picker can't confuse the results (docs/reasoning.md).
@@ -400,6 +401,10 @@ impl<'t> Session<'t> {
             last_file_query: None,
             img_tx,
             img_rx,
+            device_tx,
+            device_rx,
+            device_cancel: None,
+            device_expires: None,
             model_tx,
             model_rx,
             probe_rx,

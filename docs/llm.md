@@ -26,7 +26,8 @@ network calls are boundary code (like `main.rs`/`term.rs`), verified by hand.
 | --- | --- | --- |
 | `llm/mod.rs` | `ChatMessage`, module glue, `LlmError`/`Result` | mostly |
 | `llm/cache.rs` | prompt-cache request shaping — which models need explicit `cache_control` breakpoints, and the wire-JSON rewrite that places them (`docs/prompt-caching.md`) | **pure** |
-| `llm/config.rs` | `providers.toml` → `Provider`/`ProvidersConfig`, `ModelConfig`, key/model resolution | **pure** |
+| `llm/config.rs` | `providers.toml` → `Provider`/`ProvidersConfig`, `ModelConfig`, key/model resolution, the `AuthScheme` that splits a pasted key from a subscription sign-in (`docs/copilot.md`) | **pure** |
+| `llm/copilot.rs` | GitHub Copilot: the device flow's wire shapes and poll verdict, the OAuth→bearer exchange every request resolves through, and the request identity its API insists on (`docs/copilot.md`) | split |
 | `llm/keystore.rs` | `EnvFile` — the `.env` reader/writer the `/login` flow persists keys through | **pure** |
 | `llm/settings.rs` | `Settings` — the `config.json` reader/writer persisting the `/model` selection across runs | **pure** |
 | `llm/thinking.rs` | `ThinkingSplitter` — peels `<think>`/`<reasoning>` tags (and native `reasoning` deltas) out of the stream | **pure** |
@@ -360,11 +361,21 @@ in place; unlike it, it is a **two-step** flow.
   provider-step hint names. The save confirmation is a transient toast
   (`Saved {ENV} — run /model to use {provider}`), not a committed message. See
   `docs/toast.md`.
-- **Provider step**: type-to-filter (id/name substring), `↑/↓` move wrapping
-  at the ends, PgUp/PgDn/Home/End jump, `Enter` advances to key entry for the
-  highlighted provider (its index is
-  pinned so the filter can't reorder it out from under you), `Esc` clears the
-  filter then closes, `Ctrl+C` closes.
+- **The three list steps** (method, subscription, provider) share one grammar:
+  type-to-filter (id/name substring), `↑/↓` move wrapping at the ends,
+  PgUp/PgDn/Home/End jump, `Enter` activates the highlighted row (on the
+  provider step, its index is pinned so the filter can't reorder it out from
+  under you), `Esc` clears the filter then steps *back* — the method step,
+  being the root, closes instead — and `Ctrl+C` closes from anywhere. Every
+  step change resets the shared filter and selection, so a list always opens at
+  the top with a clean query.
+- **Every title is cyan** (`LOGIN_TITLE_COLOR`, the palette accent the whole
+  picker family selects with), so the flow's headings read as one rather than
+  as a colour of their own. The method step carries none — its two rows *are*
+  the question — and is the one list with no `(n/total)` counter.
+- **The subscription half** (`KeyStep::Subscription` → `KeyStep::Device`) is
+  GitHub Copilot's device sign-in; it ends in the same `.env` store, under the
+  provider's own `api_key_env`. See `docs/copilot.md`.
 - **Key step**: printable keys and Backspace edit the key, a **bracketed paste**
   (`App::paste_into_key_onboarding`) appends it with whitespace/newlines stripped
   (API keys are always pasted), `Enter` saves a non-empty key

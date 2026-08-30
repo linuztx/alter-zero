@@ -27,6 +27,7 @@
 //! is impure, so the pure `App`/`ui` only ever see already-computed durations.
 
 use std::io;
+use std::time::Instant;
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::text::Line;
@@ -78,6 +79,15 @@ impl Session<'_> {
         // The animation phase for the live region's pulsing bullets — a phase,
         // not a measurement: nothing displays it (docs/tool-pulse.md).
         self.app.set_pulse(self.clocks.loop_start.elapsed());
+        // How long a `/login` device code has left, when one is on screen
+        // (docs/copilot.md).
+        if self.app.device_login_active() {
+            let now = Instant::now();
+            self.app.set_device_remaining(
+                self.device_expires
+                    .map(|at| at.saturating_duration_since(now)),
+            );
+        }
     }
 
     /// Schedule the redraw for a just-handled key. A plain typed character that

@@ -81,6 +81,10 @@ pub(crate) async fn run(
             // 5. A finished Ctrl+V clipboard read.
             Some(result) = session.img_rx.recv() => session.on_image_paste(result),
 
+            // 5b. The `/login` device flow's worker: the code to show, then
+            //     the sign-in's verdict (`docs/copilot.md`).
+            Some(event) = session.device_rx.recv() => session.on_device_event(event),
+
             // 6. A finished `/model` fetch from one provider's worker thread.
             Some((label, result)) = session.model_rx.recv() => {
                 session.on_model_fetch(label, result);

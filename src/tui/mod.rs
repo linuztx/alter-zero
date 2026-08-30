@@ -72,7 +72,7 @@ use self::history_store::InputHistoryStore;
 use self::models::ModelSession;
 use self::permission::PermissionStore;
 use self::recorder::SessionRecorder;
-use self::workers::{FileSearchResult, ModelFetch};
+use self::workers::{DeviceEvent, FileSearchResult, ModelFetch};
 
 pub(crate) mod actions;
 pub(crate) mod agent;
@@ -83,6 +83,7 @@ pub(crate) mod config;
 pub(crate) mod event_loop;
 pub(crate) mod history_store;
 pub(crate) mod host;
+pub(crate) mod login;
 pub(crate) mod mascot;
 pub(crate) mod mcp;
 pub(crate) mod mcp_cli;
@@ -182,6 +183,13 @@ pub(crate) struct Session<'t> {
     /// A Ctrl+V clipboard read's result channel (`docs/image-paste.md`).
     img_tx: tokio::sync::mpsc::UnboundedSender<Result<PathBuf, String>>,
     img_rx: tokio::sync::mpsc::UnboundedReceiver<Result<PathBuf, String>>,
+    /// The `/login` device-flow worker's channel (`docs/copilot.md`), the
+    /// `CancelToken` Esc reaps it with, and when the shown code expires — the
+    /// countdown the page ticks, injected per draw like every other clock.
+    device_tx: tokio::sync::mpsc::UnboundedSender<DeviceEvent>,
+    device_rx: tokio::sync::mpsc::UnboundedReceiver<DeviceEvent>,
+    device_cancel: Option<CancelToken>,
+    device_expires: Option<Instant>,
     /// The `/model` picker's fetch results (`docs/llm.md`), and the startup
     /// capability probe's own channel — separate so a concurrently-open picker
     /// can't confuse the results (`docs/reasoning.md`).

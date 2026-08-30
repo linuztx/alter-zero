@@ -15,12 +15,47 @@ use super::reasoning::ThinkingMode;
 /// always has the reference providers even when no file is found.
 const DEFAULT_PROVIDERS_TOML: &str = include_str!("../../providers.toml");
 
+/// How a provider authenticates — which decides both how `/login` signs you in
+/// and what rides the request's `Authorization` header.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AuthScheme {
+    /// GitHub Copilot: `/login` runs GitHub's device flow and stores the
+    /// resulting OAuth token, which each request exchanges for a short-lived
+    /// Copilot bearer. See `docs/copilot.md`.
+    GithubCopilot,
+    /// `Authorization: Bearer {api_key}` — a key the user pastes, and the
+    /// scheme every OpenAI-compatible provider uses. The **fallback** for an
+    /// unrecognised `auth` value too (`#[serde(other)]`, which serde requires
+    /// on the last variant): a provider file written against a newer build
+    /// must degrade, not fail the whole parse.
+    #[default]
+    #[serde(other)]
+    ApiKey,
+}
+
+impl AuthScheme {
+    /// Is this a subscription signed in to, rather than a key pasted? The
+    /// split `/login` shows its two lists on.
+    #[must_use]
+    pub fn is_subscription(self) -> bool {
+        !matches!(self, Self::ApiKey)
+    }
+}
+
 /// One `[providers.<id>]` block. Unknown keys are ignored so the file can carry
 /// provider-specific extras without breaking the parse.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct Provider {
     /// Human-readable label shown in the picker footer / logs.
     pub name: String,
+    /// How this provider authenticates — a pasted key by default.
+    #[serde(default)]
+    pub auth: AuthScheme,
+    /// What signing in means, shown beside the name in `/login`'s
+    /// subscription list. Only a subscription provider needs one.
+    #[serde(default)]
+    pub description: Option<String>,
     /// Endpoint whose `/models` the picker lists. Falls back to
     /// [`Kwargs::api_base`] when unset.
     #[serde(default)]
@@ -170,6 +205,7 @@ impl ProvidersFile {
             api_base: provider.kwargs.api_base.clone(),
             api_model_base: provider.models_base(),
             api_key: sel.api_key.clone(),
+            auth: provider.auth,
             temperature: sel.temperature,
             thinking: sel.thinking,
             vision: sel.vision,
@@ -220,6 +256,9 @@ pub struct ModelConfig {
     /// Models-listing base (`{api_model_base}/models`).
     pub api_model_base: String,
     pub api_key: Option<String>,
+    /// How [`api_key`](Self::api_key) authenticates the request — a bearer as
+    /// stored, or (Copilot) an OAuth token to exchange for one first.
+    pub auth: AuthScheme,
     pub temperature: Option<f32>,
     /// The active thinking mode (see [`Selection::thinking`]).
     pub thinking: Option<ThinkingMode>,
@@ -243,6 +282,7 @@ impl ModelConfig {
             api_base: "https://api.openai.com/v1".to_string(),
             api_model_base: "https://api.openai.com/v1".to_string(),
             api_key: None,
+            auth: AuthScheme::ApiKey,
             temperature: None,
             thinking: None,
             vision: None,
@@ -366,6 +406,78 @@ api_base = "https://one.example/v1/"
         );
         // api_base is NOT forwarded — it's the endpoint, not a body param.
         assert!(!body.contains_key("api_base"));
+    }
+
+    // --- auth schemes: a pasted key vs a subscription sign-in (docs/copilot.md) ---
+
+    #[test]
+    fn a_provider_authenticates_with_a_pasted_key_by_default() {
+        let file = ProvidersFile::builtin();
+        assert_eq!(file.get("openrouter").unwrap().auth, AuthScheme::ApiKey);
+        assert!(!AuthScheme::ApiKey.is_subscription());
+    }
+
+    #[test]
+    fn a_provider_can_declare_a_subscription_sign_in() {
+        // `/login` splits its two lists on this: a subscription provider is
+        // signed in to, never keyed.
+        let text = r#"
+[providers.github_copilot]
+name = "GitHub Copilot"
+auth = "github_copilot"
+description = "Sign in with your GitHub account"
+[providers.github_copilot.kwargs]
+api_base = "https://api.githubcopilot.com"
+"#;
+        let file = ProvidersFile::parse(text).unwrap();
+        let copilot = file.get("github_copilot").unwrap();
+        assert_eq!(copilot.auth, AuthScheme::GithubCopilot);
+        assert!(copilot.auth.is_subscription());
+        assert_eq!(
+            copilot.description.as_deref(),
+            Some("Sign in with your GitHub account")
+        );
+    }
+
+    #[test]
+    fn an_unknown_auth_scheme_falls_back_to_a_pasted_key() {
+        // A provider file from a newer build must not fail the whole parse —
+        // an unrecognised scheme degrades to the one every provider supports.
+        let text = r#"
+[providers.x]
+name = "X"
+auth = "retina-scan"
+[providers.x.kwargs]
+api_base = "https://x/v1"
+"#;
+        let file = ProvidersFile::parse(text).expect("the file still parses");
+        assert_eq!(file.get("x").unwrap().auth, AuthScheme::ApiKey);
+    }
+
+    #[test]
+    fn the_builtin_file_ships_github_copilot_as_a_subscription() {
+        let file = ProvidersFile::builtin();
+        let copilot = file.get("github_copilot").expect("shipped");
+        assert_eq!(copilot.auth, AuthScheme::GithubCopilot);
+        assert_eq!(copilot.name, "GitHub Copilot");
+        assert_eq!(copilot.kwargs.api_base, "https://api.githubcopilot.com");
+        assert_eq!(copilot.key_env("github_copilot"), "GITHUB_COPILOT_TOKEN");
+    }
+
+    #[test]
+    fn model_config_carries_the_providers_auth_scheme() {
+        // The request builder reads it to decide what the Authorization header
+        // gets: the stored key, or a token exchanged from it.
+        let file = ProvidersFile::builtin();
+        let sel = Selection {
+            provider_id: "github_copilot".to_string(),
+            model: "gpt-4o".to_string(),
+            api_key: Some("gho_test".to_string()),
+            ..Default::default()
+        };
+        let cfg = file.model_config(&sel).expect("resolves");
+        assert_eq!(cfg.auth, AuthScheme::GithubCopilot);
+        assert_eq!(ModelConfig::fallback().auth, AuthScheme::ApiKey);
     }
 
     #[test]
