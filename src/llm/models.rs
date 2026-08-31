@@ -460,8 +460,36 @@ fn context_window_of(record: &serde_json::Value) -> Option<u64> {
 }
 
 /// The share of a ChatGPT model's nominal window the backend actually accepts
-/// a prompt in, when the record doesn't say. Codex's own default.
+/// a prompt in, when the record doesn't say. Codex's own default — and the
+/// live listing does *not* send the field, so this is the value in force.
 const DEFAULT_EFFECTIVE_CONTEXT_PERCENT: u64 = 95;
+
+/// A parsed catalog, or the reason an **empty** one is a failure rather than
+/// a fact.
+///
+/// For an ordinary provider an empty list is just an empty list. For a
+/// signed-in ChatGPT account it never is: the request authenticated, so
+/// listing nothing means either the plan reaches no models or the backend's
+/// per-record client-version gate has moved past what
+/// [`chatgpt::CLIENT_VERSION`] claims. Both are actionable, and both used to
+/// arrive as a provider that simply contributed no rows to the `/model`
+/// picker — a silence that reads like the fetch never happened.
+///
+/// [`chatgpt::CLIENT_VERSION`]: super::chatgpt::CLIENT_VERSION
+///
+/// # Errors
+/// An empty ChatGPT catalog becomes an [`LlmError`] naming both causes.
+fn catalog_or_error(models: Vec<ModelEntry>, auth: super::AuthScheme) -> Result<Vec<ModelEntry>> {
+    if models.is_empty() && auth == super::AuthScheme::OpenAiChatGpt {
+        return Err(LlmError::Api {
+            status: 200,
+            body: "the account listed no models — its ChatGPT plan may not include Codex, \
+                   or this client is too old for the models it serves"
+                .to_string(),
+        });
+    }
+    Ok(models)
+}
 
 /// The `/models` endpoint for a config: `{api_model_base}/models`.
 ///
@@ -480,7 +508,13 @@ fn models_url(base: &str, auth: super::AuthScheme) -> String {
     let base = base.trim_end_matches('/');
     match auth {
         super::AuthScheme::OpenAiChatGpt => {
-            format!("{base}/models?client_version={}", env!("CARGO_PKG_VERSION"))
+            // Required, and load-bearing: the backend filters the catalog by
+            // it (`chatgpt::CLIENT_VERSION`), answering a version below every
+            // record's own gate with an empty list on an HTTP 200.
+            format!(
+                "{base}/models?client_version={}",
+                super::chatgpt::CLIENT_VERSION
+            )
         }
         _ => format!("{base}/models"),
     }
@@ -537,7 +571,7 @@ pub fn fetch_models(cfg: &ModelConfig, cancel: &CancelToken) -> Result<Vec<Model
         .take(MODELS_BODY_MAX_BYTES)
         .read_to_string(&mut body)
         .map_err(|e| LlmError::Http(e.to_string()))?;
-    parse_models(&body, &cfg.provider_id)
+    catalog_or_error(parse_models(&body, &cfg.provider_id)?, cfg.auth)
 }
 
 /// The most a `/models` response body may buffer — the `SHELL_OUTPUT_MAX_BYTES`
@@ -668,6 +702,61 @@ mod tests {
         assert_eq!(
             chatgpt_catalog(r#"{"slug":"m","visibility":"list"}"#).len(),
             1
+        );
+    }
+
+    #[test]
+    fn the_chatgpt_models_url_sends_a_client_version_past_the_catalog_gate() {
+        // The reported bug: this query is not decoration. Every record the
+        // backend holds carries a `minimal_client_version` (0.98.0 … 0.144.0
+        // when measured), and it serves only the records at or below what the
+        // caller claims — so the crate's own `0.1.0` came back
+        // `{"models":[]}` with an HTTP 200 and no hint why. It must be the
+        // Codex client version this client presents as, never
+        // `CARGO_PKG_VERSION`, which means nothing to OpenAI.
+        let mut cfg = ModelConfig::fallback();
+        cfg.api_model_base = "https://chatgpt.com/backend-api/codex".to_string();
+        cfg.auth = super::super::AuthScheme::OpenAiChatGpt;
+        let url = models_endpoint(&cfg);
+        assert!(
+            url.ends_with(&format!(
+                "/models?client_version={}",
+                super::super::chatgpt::CLIENT_VERSION
+            )),
+            "{url}"
+        );
+        assert!(
+            !url.contains(env!("CARGO_PKG_VERSION")),
+            "the crate version is not a Codex client version: {url}"
+        );
+    }
+
+    #[test]
+    fn an_empty_chatgpt_catalog_is_an_error_rather_than_a_silent_blank_picker() {
+        // A signed-in account that lists nothing is a *failure* — a plan with
+        // no access, or a gate raised past the version we send — and the
+        // picker showing an empty provider says none of that. Every other
+        // provider's empty list stays an ordinary empty list.
+        let chatgpt = super::super::AuthScheme::OpenAiChatGpt;
+        let err = catalog_or_error(Vec::new(), chatgpt).expect_err("empty is an error here");
+        let shown = err.to_string();
+        assert!(shown.contains("no models"), "{shown}");
+        assert!(shown.contains("plan"), "names the likeliest cause: {shown}");
+        // A non-empty one passes straight through.
+        let one = vec![ModelEntry {
+            id: "gpt-5.5".to_string(),
+            provider: "openai_chatgpt".to_string(),
+            display_name: "GPT-5.5".to_string(),
+            reasoning: None,
+            vision: None,
+            context: None,
+        }];
+        assert_eq!(catalog_or_error(one.clone(), chatgpt).unwrap(), one);
+        // And an ordinary provider's empty list is not an error at all.
+        assert!(
+            catalog_or_error(Vec::new(), super::super::AuthScheme::ApiKey)
+                .unwrap()
+                .is_empty()
         );
     }
 

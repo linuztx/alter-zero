@@ -57,6 +57,23 @@ const SCOPE: &str = "openid profile email offline_access";
 /// does not say so. The `User-Agent` follows the same shape Codex sends.
 pub const ORIGINATOR: &str = "codex_cli_rs";
 
+/// The Codex client version this client presents as — and **not** a
+/// decoration. The `/models` listing takes it as a required query parameter
+/// and serves only the records whose own `minimal_client_version` it satisfies
+/// (measured: `0.98.0` through `0.144.0` across one account's catalog). A
+/// version below every record's gate is answered `{"models":[]}` on an HTTP
+/// **200**, with nothing to say why — which is precisely how sending the
+/// crate's own `CARGO_PKG_VERSION` (`0.1.0`) produced an empty `/model`
+/// picker and no error.
+///
+/// So it is a **ceiling sentinel**, the value OpenAI's own release tooling
+/// uses, rather than some real release number: OpenAI raises those per-record
+/// gates as models ship, and a pinned real version would silently start
+/// dropping models again — the same invisible failure, deferred. Nothing else
+/// keys off it; the gate is the server's own filter, and each record still
+/// declares what it needs.
+pub const CLIENT_VERSION: &str = "99.99.99";
+
 /// Per-operation deadline for the flow's requests — a small JSON round trip
 /// each, with a user watching.
 const OP_TIMEOUT: Duration = Duration::from_secs(30);
@@ -781,14 +798,15 @@ fn set_owner_only(path: &Path) {
 pub const REFRESH_ENV_VAR: &str = "OPENAI_CHATGPT_REFRESH_TOKEN";
 
 /// The `User-Agent` the backend expects to see — Codex's shape, since the
-/// client id is Codex's. Built once per process.
+/// client id is Codex's, carrying the same [`CLIENT_VERSION`] the `/models`
+/// query does (a request whose two version claims disagreed would be a
+/// needless thing to have a server notice). Built once per process.
 #[must_use]
 pub fn user_agent() -> &'static str {
     static AGENT: OnceLock<String> = OnceLock::new();
     AGENT.get_or_init(|| {
         format!(
-            "{ORIGINATOR}/{} ({} {}; {}) {}",
-            env!("CARGO_PKG_VERSION"),
+            "{ORIGINATOR}/{CLIENT_VERSION} ({} {}; {}) {}",
             std::env::consts::OS,
             "0.0.0",
             std::env::consts::ARCH,

@@ -288,7 +288,7 @@ already share, so no other provider's list is touched:
 | --- | --- | --- |
 | id | `slug` (not `id`) | the model sent to the API |
 | name | `display_name` | the picker's label |
-| context | `context_window` × `effective_context_window_percent` | the footer gauge, auto-compact |
+| context | `context_window` × `effective_context_window_percent` (the field is absent live, so the 95% default is what applies) | the footer gauge, auto-compact |
 | vision | `input_modalities` contains `image` | `docs/tools.md`'s image degradation |
 | reasoning | `supported_reasoning_levels` + `default_reasoning_level` | the Ctrl+T cycle |
 
@@ -306,8 +306,29 @@ Ctrl+T offers what the API will accept — including `ultra`, a rung above
 A record marked `visibility: "none"` is withheld; `"hide"` only means "not a
 headline model" and stays selectable.
 
-`client_version` is **required** — without it the listing is refused rather
-than defaulted, which is why `models_url` is the one place that query is added.
+### `client_version` is a filter, not a formality
+
+The query parameter is required — but it is also **what decides how much of
+the catalog you are shown**. Every record carries its own
+`minimal_client_version` (measured live: `0.98.0` through `0.144.0` across one
+account), and the backend serves only the records the claimed version
+satisfies. A version below all of them is answered `{"models": []}` on an HTTP
+**200**, with nothing at all to say why.
+
+That is exactly what sending the crate's own `CARGO_PKG_VERSION` (`0.1.0`)
+did: a signed-in account whose `/model` picker listed nothing, and no error
+anywhere to explain it. `chatgpt::CLIENT_VERSION` is therefore a **ceiling
+sentinel** (`99.99.99`, the value OpenAI's own release tooling uses) rather
+than a real release number — OpenAI raises those per-record gates as models
+ship, and a pinned real version would silently start dropping models again.
+The same value rides the `User-Agent`, so the request's two version claims
+agree.
+
+Two things now make that failure impossible to have again silently: the
+constant is pinned by a test that also asserts it is *not* the crate version,
+and an **empty catalog is an error** for this provider
+(`models::catalog_or_error`) naming both causes — the plan, or the gate.
+Every other provider's empty list stays an ordinary empty list.
 
 ## When it doesn't work
 
@@ -316,6 +337,7 @@ it already does for Copilot:
 
 | what you see | what it means |
 | --- | --- |
+| `the account listed no models — its ChatGPT plan may not include Codex, or this client is too old for the models it serves` | the `/models` fetch authenticated and came back empty (see `client_version` above) |
 | `Your ChatGPT sign-in has expired. Run /login and sign in again.` | the refresh token expired, was reused, or was revoked — all terminal |
 | `OpenAI refused this request. A ChatGPT plan that includes Codex is needed.` | a 403: the seat, not the request |
 | `ports 1455 and 1457 are both in use` | another sign-in is holding them; no third port is allow-listed |

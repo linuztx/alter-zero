@@ -319,7 +319,13 @@ fn parse_usage(response: &Value) -> Option<TokenUsage> {
                 .get("input_tokens_details")
                 .and_then(|d| d.get("cached_tokens")),
         ),
-        cache_write: 0,
+        // Reported beside `cached_tokens` on this API, where chat completions
+        // leaves it to Anthropic-style aliases.
+        cache_write: count(
+            usage
+                .get("input_tokens_details")
+                .and_then(|d| d.get("cache_write_tokens")),
+        ),
         reasoning: count(
             usage
                 .get("output_tokens_details")
@@ -538,9 +544,11 @@ mod tests {
 
     #[test]
     fn a_completed_response_carries_the_rounds_usage() {
+        // The shape a live `response.completed` actually carries.
         let frame = r#"{"type":"response.completed","response":{"status":"completed","usage":{
-            "input_tokens":100,"input_tokens_details":{"cached_tokens":40},
-            "output_tokens":20,"output_tokens_details":{"reasoning_tokens":12}}}}"#;
+            "input_tokens":100,"input_tokens_details":{"cached_tokens":40,"cache_write_tokens":7},
+            "output_tokens":20,"output_tokens_details":{"reasoning_tokens":12},
+            "total_tokens":120}}}"#;
         let ResponseEvent::Completed { usage, status } = parse_event(frame) else {
             panic!("expected completion");
         };
@@ -549,6 +557,7 @@ mod tests {
         assert_eq!(usage.input, 100);
         assert_eq!(usage.output, 20);
         assert_eq!(usage.cached, 40);
+        assert_eq!(usage.cache_write, 7);
         assert_eq!(usage.reasoning, 12);
         assert_eq!(status.as_deref(), Some("completed"));
     }
