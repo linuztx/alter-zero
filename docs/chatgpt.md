@@ -160,10 +160,19 @@ guessed from what the flow happens to have filled in yet:
 
 | | `DeviceCode` (Copilot) | `BrowserLink` (ChatGPT) |
 | --- | --- | --- |
-| shows | a short URL + a **code in a box** | a long link, and no box |
-| the second row says | `and enter this one-time code` | `and sign in — this window continues by itself` |
+| shows | `Visit {url}` + a **code in a box** | the bare URL, bright, and no box |
+| the second row says | `and enter this one-time code` | `Sign in there — this window continues by itself` |
 | `c` copies | the code | the **link** |
 | waits for | approval | the browser |
+
+Both URLs are real **OSC 8 hyperlinks** (`docs/links.md`), stamped on the
+unwrapped text so every hard-broken fragment opens the whole target rather
+than its own row's worth of it. That is also why the browser page carries no
+verb in front of its URL: the link is the affordance, and an `Open ` would
+only push the target off the start of the row it should begin. The device
+page's URL stays **dim** (the code box is what the eye should land on —
+`docs/copilot.md`), so linking adds an underline and the carrier without
+repainting it.
 
 `c` copying the link rather than a code that doesn't exist is the point of the
 distinction: a browser page's URL is far too long to retype, so a `c` that did

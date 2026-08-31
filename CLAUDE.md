@@ -167,10 +167,15 @@ worker Copilot's device flow uses and reports on the same two messages,
 because the two pages are the same page — something to show, then a wait; what
 differs rides `SigninKind` on the row, injected from the provider's `auth`
 scheme rather than guessed from what the flow has filled in yet, so the
-browser page says `Open {link}` over `and sign in — this window continues by
-itself`, shows no code box, and `c` copies the **link** (a URL far too long to
-retype, where a `c` bound to a code that does not exist would be dead on the
-one page that most needs it). The listener binds `127.0.0.1:1455` (falling
+browser page gives the URL its own row **bare** over `Sign in there — this
+window continues by itself`, shows no code box, and `c` copies the **link** (a
+URL far too long to retype, where a `c` bound to a code that does not exist
+would be dead on the one page that most needs it). Both pages' URLs are real
+**OSC 8 hyperlinks** (`ui::model_view`'s `model_linked_rows`, `docs/links.md`)
+— stamped on the *unwrapped* text so every hard-broken fragment opens the whole
+target, which is why the browser page needs no verb in front of its link, and
+keeping the caller's colour so the device page's deliberately dim URL gains an
+underline rather than the chat link dress. The listener binds `127.0.0.1:1455` (falling
 back to `1457`) while the redirect URI names `localhost`: OpenAI's allow-list
 is pinned to those two ports against Codex's client id, so a port of our own
 is refused at the authorize step — and binding `"localhost"` can resolve to

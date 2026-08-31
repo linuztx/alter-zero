@@ -2,7 +2,7 @@
 //! its device-code page, the API-key provider list and its masked key field.
 //! See `docs/llm.md` and `docs/copilot.md`.
 
-use super::model_view::{model_placeholder_row, model_rule, model_wrapped_rows};
+use super::model_view::{model_linked_rows, model_placeholder_row, model_rule, model_wrapped_rows};
 use super::theme::*;
 use super::wrap::{cols, ellipsize, truncate_cols};
 use super::*;
@@ -209,7 +209,10 @@ fn device_code_box(code: &str) -> Vec<Line<'static>> {
 fn device_status_lines(device: &DeviceLogin, width: u16) -> Vec<Line<'static>> {
     let browser = device.kind == SigninKind::BrowserLink;
     match &device.status {
-        DeviceStatus::Failed(reason) => model_wrapped_rows(reason, ERROR_COLOR, width),
+        // A failure body is the other place a URL turns up here — a provider's
+        // own error text, or advice naming a page to visit — so it is linked
+        // like the instruction above it rather than left as dead text.
+        DeviceStatus::Failed(reason) => model_linked_rows(reason, ERROR_COLOR, width),
         DeviceStatus::Starting => model_wrapped_rows(
             if browser {
                 DEVICE_LINK_STARTING
@@ -260,19 +263,22 @@ fn device_page_lines(device: &DeviceLogin, width: u16) -> Vec<Line<'static>> {
     )]];
     let browser = device.kind == SigninKind::BrowserLink;
     if !device.verification_uri.is_empty() {
-        // The URL is its own wrapped row so a narrow terminal never cuts it —
-        // it is the one thing on the page that must be typed exactly. Dim,
-        // like the sentence under it: the code in its box is what the eye
-        // should land on, and a lit URL competed with it. A browser sign-in
-        // has no box, so there the URL *is* what the eye should land on and
-        // the row below says what happens next rather than pointing at one.
-        let prefix = if browser {
-            DEVICE_OPEN_PREFIX
-        } else {
-            DEVICE_VISIT_PREFIX
-        };
-        let mut instruction = model_wrapped_rows(
-            &format!("{prefix}{}", device.verification_uri),
+        // The URL wraps rather than being cut — it is the one thing on the
+        // page that must arrive exactly — and it is a real **hyperlink**
+        // (`docs/links.md`): every wrapped fragment carries the whole target,
+        // so clicking the second half opens the same URL as clicking the
+        // first. The two pages differ in what leads it and how it is lit. A
+        // device page keeps `Visit ` and stays dim, because the code in its
+        // box is what the eye should land on. A browser page gives the URL
+        // the row **bare and bright**: there is no box to compete with, the
+        // link itself is the affordance, and a verb in front of it would only
+        // push the target off the start of its own row.
+        let mut instruction = model_linked_rows(
+            &if browser {
+                device.verification_uri.clone()
+            } else {
+                format!("{DEVICE_VISIT_PREFIX}{}", device.verification_uri)
+            },
             if browser {
                 DEVICE_CODE_COLOR
             } else {

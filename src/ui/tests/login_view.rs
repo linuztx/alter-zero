@@ -525,6 +525,120 @@ fn a_device_page_with_no_code_yet_still_frames_itself() {
     );
 }
 
+// --- clickable sign-in links (docs/links.md) ---
+
+/// The lines of a sign-in page for `kind` carrying `uri`.
+fn signin_page(kind: crate::app::SigninKind, uri: &str, width: u16) -> Vec<Line<'static>> {
+    let mut app = login_app_subscription();
+    {
+        let onboarding = app.key_onboarding.as_mut().unwrap();
+        onboarding.step = KeyStep::Device;
+        onboarding.device = Some(crate::app::DeviceLogin {
+            provider_name: "P".into(),
+            verification_uri: uri.into(),
+            status: crate::app::DeviceStatus::Waiting,
+            kind,
+            ..Default::default()
+        });
+    }
+    let onboarding = app.key_onboarding.as_ref().unwrap();
+    crate::ui::login_view::key_onboarding_lines(onboarding, width)
+}
+
+/// Every link target carried by any span of `lines`.
+fn link_targets(lines: &[Line<'static>]) -> Vec<String> {
+    lines
+        .iter()
+        .flat_map(|l| l.spans.iter())
+        .filter_map(|s| crate::links::style_link(&s.style).map(|u| u.to_string()))
+        .collect()
+}
+
+#[test]
+fn the_browser_sign_in_shows_the_bare_url_with_no_verb_in_front_of_it() {
+    // The link is the affordance: an "Open" before a clickable URL is a word
+    // doing nothing, and it pushed the URL off its own line's start.
+    let lines = signin_page(
+        crate::app::SigninKind::BrowserLink,
+        "https://auth.openai.com/oauth/authorize?client_id=abc",
+        72,
+    );
+    let texts: Vec<String> = lines.iter().map(|l| plain(l).trim().to_string()).collect();
+    assert!(
+        texts
+            .iter()
+            .any(|t| t.starts_with("https://auth.openai.com/oauth/authorize")),
+        "the URL opens its own row: {texts:?}"
+    );
+    assert!(
+        !texts.iter().any(|t| t.starts_with("Open ")),
+        "no verb in front of the link: {texts:?}"
+    );
+}
+
+#[test]
+fn a_hard_broken_sign_in_url_opens_the_whole_target_from_every_fragment() {
+    // The reason `links` exists at all: a URL wider than the row breaks across
+    // display rows, and a terminal's own detection sees only row text — so
+    // without the carrier, clicking the second half opens a truncated URL.
+    // The page is narrow enough here that the URL must break.
+    let url = "https://auth.openai.com/oauth/authorize?response_type=code&client_id=app_EMoamEEZ73f0CkXaXp7hrann&state=xyz";
+    let lines = signin_page(crate::app::SigninKind::BrowserLink, url, 48);
+    let fragments: Vec<&Span<'static>> = lines
+        .iter()
+        .flat_map(|l| l.spans.iter())
+        .filter(|s| s.content.contains("openai.com") || s.content.contains("client_id"))
+        .collect();
+    assert!(
+        fragments.len() >= 2,
+        "the URL must actually wrap for this test to mean anything: {}",
+        fragments.len()
+    );
+    for span in fragments {
+        assert_eq!(
+            crate::links::style_link(&span.style).as_deref(),
+            Some(url),
+            "every fragment carries the whole target, not its own row text: {:?}",
+            span.content
+        );
+    }
+}
+
+#[test]
+fn the_device_pages_url_is_clickable_too_and_keeps_its_dim_dress() {
+    // Both sign-in pages get the carrier. The device page's URL stays DIM on
+    // purpose (docs/copilot.md: the code in its box is what the eye should
+    // land on), so linking it must not repaint it in the chat link colour —
+    // the underline is the affordance that it is clickable.
+    let lines = signin_page(
+        crate::app::SigninKind::DeviceCode,
+        "https://github.com/login/device",
+        72,
+    );
+    assert_eq!(
+        link_targets(&lines),
+        vec!["https://github.com/login/device".to_string()],
+        "exactly the one URL on the page is a link"
+    );
+    let url_span = lines
+        .iter()
+        .flat_map(|l| l.spans.iter())
+        .find(|s| s.content.contains("github.com"))
+        .expect("the URL span");
+    assert_eq!(url_span.style.fg, Some(MODEL_META_COLOR), "still dim");
+    assert!(
+        url_span.style.add_modifier.contains(Modifier::UNDERLINED),
+        "underlined, as a link is"
+    );
+    // The prose around it is not swept into the link.
+    let visit = lines
+        .iter()
+        .flat_map(|l| l.spans.iter())
+        .find(|s| s.content.contains("Visit"))
+        .expect("the Visit lead");
+    assert!(crate::links::style_link(&visit.style).is_none());
+}
+
 #[test]
 fn no_device_page_ever_stacks_two_blank_rows() {
     // The suite's own convention (`no_login_page_ever_stacks_two_blank_rows`),

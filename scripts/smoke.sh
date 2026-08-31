@@ -9675,7 +9675,7 @@ done
 # OpenAI refuses the flow without, plus the allow-listed redirect and the
 # `offline_access` scope that is what earns a refresh token at all.
 chatgpt_url="$(printf '%s' "$chatgpt_page" | tr -d ' \n')"
-for want in "Open" "https://auth.openai.com/oauth/authorize?response_type=code" \
+for want in "https://auth.openai.com/oauth/authorize?response_type=code" \
 	"client_id=app_EMoamEEZ73f0CkXaXp7hrann" \
 	"redirect_uri=http%3A%2F%2Flocalhost%3A1455%2Fauth%2Fcallback" \
 	"offline_access" "code_challenge_method=S256" "originator=codex_cli_rs"; do
@@ -9684,8 +9684,15 @@ for want in "Open" "https://auth.openai.com/oauth/authorize?response_type=code" 
 		status=1
 	fi
 done
-# And it must NOT wear the device page's clothes.
-for unwanted in "enter this one-time code" "c copy code"; do
+# The URL opens its own row: it is a clickable OSC 8 hyperlink
+# (docs/links.md), and a verb in front of one only pushes the target off the
+# start of the row it should begin.
+if ! printf '%s' "$chatgpt_page" | grep -qE '^ *https://auth\.openai\.com/oauth/authorize'; then
+	echo "FAIL: Phase 104 — the authorize URL does not start its own row" >&2
+	status=1
+fi
+# And it must NOT wear the device page's clothes, or a verb the link replaced.
+for unwanted in "enter this one-time code" "c copy code" "Open https://"; do
 	if printf '%s' "$chatgpt_page" | grep -qF "$unwanted"; then
 		echo "FAIL: Phase 104 — the browser page fell back to the device-code wording (\"$unwanted\")" >&2
 		status=1

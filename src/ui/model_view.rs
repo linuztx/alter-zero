@@ -36,6 +36,53 @@ pub(super) fn model_wrapped_rows(text: &str, color: Color, width: u16) -> Vec<Li
         .collect()
 }
 
+/// [`model_wrapped_rows`] with every bare URL in `text` made **clickable**
+/// (`docs/links.md`).
+///
+/// The link is stamped on the *unwrapped* text and the wrap carries it, which
+/// is the whole point of the carrier: a URL wider than the row hard-breaks
+/// across display rows, and a terminal's own detection only ever sees row
+/// text — so a per-row pass would leave the second fragment opening a
+/// truncated target, which is precisely the bug `links` exists to fix.
+///
+/// The caller's colour is **kept**, with only an underline added, rather than
+/// taking the chat link dress: these pages colour their URL on purpose (the
+/// device page dims it so the code box stays what the eye lands on —
+/// `docs/copilot.md`), and the underline alone already says "clickable".
+pub(super) fn model_linked_rows(text: &str, color: Color, width: u16) -> Vec<Line<'static>> {
+    let room = (width as usize).saturating_sub(cols(MODEL_INDENT)).max(1) as u16;
+    let base = Style::new().fg(color);
+    text.split('\n')
+        .flat_map(|part| super::inline::wrap_inline(&linked_segments(part, base), room))
+        .map(|spans| {
+            let mut row = Vec::with_capacity(spans.len() + 1);
+            row.push(Span::raw(MODEL_INDENT));
+            row.extend(spans);
+            Line::from(row)
+        })
+        .collect()
+}
+
+/// One line split into styled runs: the prose under `base`, each bare URL
+/// underlined and carrying itself as its link target.
+fn linked_segments(line: &str, base: Style) -> Vec<(String, Style)> {
+    let mut out: Vec<(String, Style)> = Vec::new();
+    let mut at = 0;
+    for range in crate::links::find_urls(line) {
+        if range.start > at {
+            out.push((line[at..range.start].to_string(), base));
+        }
+        let url = &line[range.clone()];
+        let dress = base.add_modifier(Modifier::UNDERLINED);
+        out.push((url.to_string(), crate::links::linked(dress, url)));
+        at = range.end;
+    }
+    if at < line.len() || out.is_empty() {
+        out.push((line[at..].to_string(), base));
+    }
+    out
+}
+
 /// One model row: `{marker}{id} [{provider}]{✓}` — the selected row's marker and
 /// id light up cyan (the palette accent), the `[provider]` tag is dim, and the
 /// active model carries a green ✓. The id is `…`-cut so the tag stays visible

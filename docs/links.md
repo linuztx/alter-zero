@@ -77,7 +77,19 @@ survives the trip.
      blocks, headings, and the non-markdown roles (user/system/shell text)
      and tool output — the terminal's own detection still covers their
      unwrapped URLs exactly as before.
-3. **`src/term.rs` — the emission.** All four cell-writing paths — scrollback
+3. **`src/ui/model_view.rs` — the picker family's marking.** Assistant prose
+   is not the only place a URL is shown: the `/login` sign-in pages print one
+   the user is meant to *act* on. `model_linked_rows` is
+   `model_wrapped_rows`'s linking sibling — it marks the URLs in the
+   **unwrapped** text and wraps through `inline::wrap_inline`, so the carrier
+   survives the hard break exactly as it does in prose. It differs from the
+   prose funnel in one way on purpose: it keeps the **caller's colour** and
+   adds only the underline, because these pages light their URL deliberately
+   (the device page dims it so the code in its box stays what the eye lands
+   on — `docs/copilot.md`) and the chat link dress would overrule that. The
+   browser sign-in page then needs no verb in front of its URL at all
+   (`docs/chatgpt.md`): the link is the affordance.
+4. **`src/term.rs` — the emission.** All four cell-writing paths — scrollback
    commits + reflow (`draw_lines`), the live-region blit, the live-region
    diff, and the alt-screen overlay (`draw_overlay`) — already funnel into
    `Backend::draw`; they now go through one `draw_cells` choke point that

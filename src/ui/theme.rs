@@ -805,13 +805,14 @@ pub(super) const DEVICE_TITLE_PREFIX: &str = "Sign in to ";
 pub(super) const DEVICE_VISIT_PREFIX: &str = "Visit ";
 pub(super) const DEVICE_ENTER_LINE: &str = "and enter this one-time code";
 
-/// A **browser** sign-in's twin of the pair above (`docs/chatgpt.md`): the
-/// link is far too long to retype, and there is no code to follow it — the
-/// browser redirects back to this process on its own. So the verb is `Open`
-/// rather than `Visit`, and the second row says what happens next instead of
+/// A **browser** sign-in's twin of the pair above (`docs/chatgpt.md`): there
+/// is no code to follow the link, because the browser redirects back to this
+/// process on its own. The URL takes the row **bare** — it is an OSC 8
+/// hyperlink (`docs/links.md`), and a verb in front of a clickable link is a
+/// word doing nothing but pushing the target off the start of its own row —
+/// so only the row beneath it is needed, saying what happens next instead of
 /// pointing at a box that isn't there.
-pub(super) const DEVICE_OPEN_PREFIX: &str = "Open ";
-pub(super) const DEVICE_RETURN_LINE: &str = "and sign in — this window continues by itself";
+pub(super) const DEVICE_RETURN_LINE: &str = "Sign in there — this window continues by itself";
 
 /// The code box's extra indent past [`MODEL_INDENT`], and its rounded corners.
 pub(super) const DEVICE_BOX_INDENT: &str = "   ";
@@ -829,7 +830,9 @@ pub(super) const DEVICE_CODE_COLOR: Color = Color::Rgb(0xFF, 0xFF, 0xFF);
 
 /// The verification URL — **dim**, like the sentence under it. The one thing
 /// on this page the eye should land on is the code in its box; an accented URL
-/// competed with it, and the URL is an instruction rather than a choice.
+/// competed with it, and the URL is an instruction rather than a choice. It is
+/// still a clickable hyperlink; the underline is what says so, which is why
+/// linking it does not repaint it (`docs/links.md`).
 pub(super) const DEVICE_URI_COLOR: Color = MODEL_META_COLOR;
 
 /// The status line's two states, and the countdown clause appended to the wait.
