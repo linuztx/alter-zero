@@ -1860,7 +1860,10 @@ tmux send-keys -t "$S33" Enter
 toast_login=""
 for _ in $(seq 1 15); do # up to ~1.5s (still inside the 2s pause)
 	toast_login="$(tmux capture-pane -t "$S33" -p)"
-	if printf '%s' "$toast_login" | grep -qF "Keys are saved to"; then
+	# The flow's ROOT, not the provider list: `/login` asks how you sign in
+	# first (Phase 103), so the provider step's `Keys are saved to` hint is a
+	# step further in and never appears on the page this phase opens.
+	if printf '%s' "$toast_login" | grep -qF "Use a subscription"; then
 		break
 	fi
 	sleep 0.1
@@ -3274,8 +3277,10 @@ if ! printf '%s' "$toast_model" | grep -qF "esc to interrupt"; then
 	echo "FAIL: Phase 33 the mid-turn /model picker hid the status indicator — it must replace the composer only, keeping the streaming strip above it" >&2
 	status=1
 fi
-# Phase 33: /login opens mid-turn under the same live status line.
-if ! printf '%s' "$toast_login" | grep -qF "Keys are saved to"; then
+# Phase 33: /login opens mid-turn under the same live status line — on its
+# method root (the sign-in fork, Phase 103), which is what a mid-turn `/login`
+# now shows.
+if ! printf '%s' "$toast_login" | grep -qF "Use a subscription"; then
 	echo "FAIL: Phase 33 mid-turn /login did not open the inline onboarding flow" >&2
 	status=1
 fi
@@ -9578,7 +9583,8 @@ sleep 0.4
 login_subs="$(tmux capture-pane -t "$S103" -p)"
 echo "==== Phase 103: the subscription list ===="
 printf '%s\n' "$login_subs"
-for want in "GitHub Copilot" "Sign in with your GitHub account" "enter sign in"; do
+for want in "GitHub Copilot" "Sign in with your GitHub account" "enter sign in" \
+	"OpenAI (ChatGPT)" "Sign in with your ChatGPT"; do
 	if ! printf '%s' "$login_subs" | grep -qF "$want"; then
 		echo "FAIL: Phase 103 — the subscription list did not show \"$want\"" >&2
 		status=1
@@ -9627,6 +9633,79 @@ if printf '%s' "$login_closed" | grep -qF "Use a subscription"; then
 fi
 tmux kill-session -t "$S103" 2>/dev/null
 echo "==== Phase 103: the /login sign-in fork walks both halves and closes at its root ===="
+
+# --- Phase 104: the BROWSER sign-in page (docs/chatgpt.md). The second
+# subscription's sign-in is not a device code — it is a link the user opens,
+# and the browser redirects back to a loopback listener. That page is drivable
+# offline (building the URL and binding 127.0.0.1:1455 touch no network at
+# all), so unlike Copilot's device page it can be walked here. What this
+# phase pins is that the page is worded for a LINK rather than for a code: the
+# `Open …` verb, the authorize URL itself, the row saying the window continues
+# by itself, and a hint offering `c copy link`. A page that silently fell back
+# to the device wording would tell the user to type a one-time code that does
+# not exist. ---
+S104="${S}_chatgptlogin"
+tmux new-session -d -s "$S104" -x 100 -y 30 "$APP"
+sleep 0.6
+tmux send-keys -t "$S104" -l "/login"
+sleep 0.2
+tmux send-keys -t "$S104" Enter
+sleep 0.5
+# Enter opens the subscription list; the ChatGPT row is second (the list is
+# alphabetical by provider id: github_copilot, then openai_chatgpt).
+tmux send-keys -t "$S104" Enter
+sleep 0.4
+tmux send-keys -t "$S104" Down
+sleep 0.2
+tmux send-keys -t "$S104" Enter
+sleep 1.2
+chatgpt_page="$(tmux capture-pane -t "$S104" -p)"
+echo "==== Phase 104: the ChatGPT browser sign-in page ===="
+printf '%s\n' "$chatgpt_page"
+for want in "Sign in to OpenAI (ChatGPT)" "this window continues by itself" \
+	"c copy link" "Waiting for the browser"; do
+	if ! printf '%s' "$chatgpt_page" | grep -qF "$want"; then
+		echo "FAIL: Phase 104 — the browser sign-in page did not show \"$want\"" >&2
+		status=1
+	fi
+done
+# The URL is one unbreakable word, so it wraps across rows at any width — the
+# parameter assertions read the pane with the wrapping squeezed out (a URL
+# contains no spaces, so nothing real is lost). These are the parameters
+# OpenAI refuses the flow without, plus the allow-listed redirect and the
+# `offline_access` scope that is what earns a refresh token at all.
+chatgpt_url="$(printf '%s' "$chatgpt_page" | tr -d ' \n')"
+for want in "Open" "https://auth.openai.com/oauth/authorize?response_type=code" \
+	"client_id=app_EMoamEEZ73f0CkXaXp7hrann" \
+	"redirect_uri=http%3A%2F%2Flocalhost%3A1455%2Fauth%2Fcallback" \
+	"offline_access" "code_challenge_method=S256" "originator=codex_cli_rs"; do
+	if ! printf '%s' "$chatgpt_url" | grep -qF "$want"; then
+		echo "FAIL: Phase 104 — the authorize URL is missing \"$want\"" >&2
+		status=1
+	fi
+done
+# And it must NOT wear the device page's clothes.
+for unwanted in "enter this one-time code" "c copy code"; do
+	if printf '%s' "$chatgpt_page" | grep -qF "$unwanted"; then
+		echo "FAIL: Phase 104 — the browser page fell back to the device-code wording (\"$unwanted\")" >&2
+		status=1
+	fi
+done
+# Esc cancels the sign-in back to the subscription list, releasing the port.
+tmux send-keys -t "$S104" Escape
+sleep 0.5
+chatgpt_back="$(tmux capture-pane -t "$S104" -p)"
+if ! printf '%s' "$chatgpt_back" | grep -qF "OpenAI (ChatGPT)"; then
+	echo "FAIL: Phase 104 — Esc on the sign-in page did not return to the subscription list" >&2
+	printf '%s\n' "$chatgpt_back" >&2
+	status=1
+fi
+if printf '%s' "$chatgpt_back" | grep -qF "Waiting for the browser"; then
+	echo "FAIL: Phase 104 — Esc left the sign-in page up" >&2
+	status=1
+fi
+tmux kill-session -t "$S104" 2>/dev/null
+echo "==== Phase 104: the browser sign-in page is worded for a link, not a code ===="
 
 
 if [ "$status" -eq 0 ]; then

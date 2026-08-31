@@ -68,6 +68,7 @@ use alter_zero::app::{
     ResumeSort,
     RetryInfo,
     Role,
+    SigninKind,
     SearchState,
     SessionInfo,
     SettingRow,

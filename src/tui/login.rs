@@ -9,7 +9,7 @@ use alter_zero::llm;
 use alter_zero::stream::CancelToken;
 
 use super::Session;
-use super::workers::{DeviceEvent, spawn_device_login};
+use super::workers::{DeviceEvent, spawn_signin};
 
 /// The toast a copied device code raises — the `/copy` confirmation's sibling,
 /// worded for what was actually copied.
@@ -42,7 +42,7 @@ impl Session<'_> {
         }
         let cancel = CancelToken::new();
         self.device_cancel = Some(cancel.clone());
-        spawn_device_login(cancel, self.device_tx.clone());
+        spawn_signin(provider.to_string(), cancel, self.device_tx.clone());
     }
 
     /// Reap a running device flow's worker, if any. Idempotent — Esc, Ctrl+C
@@ -112,10 +112,12 @@ impl Session<'_> {
         let (id, name) = provider;
         let env_var = self.models.key_env(&id);
         // Signing in again with the same account is how a user recovers from a
-        // bearer the provider has stopped honouring, so drop the cached one
+        // credential the provider has stopped honouring, so drop the cached one
         // rather than handing the next request the exact token they just
-        // re-authenticated to replace.
+        // re-authenticated to replace. Neither cache knows the other's keys,
+        // so both are told — the miss is free.
         llm::copilot::forget(token);
+        llm::chatgpt::forget(token);
         match self.models.save_api_key(&env_var, token) {
             Ok(()) => {
                 self.app.close_key_onboarding();

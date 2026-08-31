@@ -52,8 +52,10 @@ Ctrl+T explains.
 ## The mode, the cycle, and the wire
 
 [`llm::reasoning::ThinkingMode`] is `Off`, `On`, or `Effort(level)` with the
-canonical ladder `minimal → low → medium → high → xhigh → max`
-(`ReasoningEffort`). `ReasoningSupport::modes()` builds the cycle — `Off`
+canonical ladder `minimal → low → medium → high → xhigh → max → ultra`
+(`ReasoningEffort`; `ultra` is named only by the ChatGPT backend's newest
+models — `docs/chatgpt.md` — and, like every rung, is offered only where a
+model's own record listed it). `ReasoningSupport::modes()` builds the cycle — `Off`
 (when disableable) then the model's efforts, or `[Off, On]` for an
 effort-less reasoner — and `next_mode` steps it, wrapping; a stale persisted
 mode the model no longer offers steps to `default_mode()` (medium →

@@ -805,6 +805,14 @@ pub(super) const DEVICE_TITLE_PREFIX: &str = "Sign in to ";
 pub(super) const DEVICE_VISIT_PREFIX: &str = "Visit ";
 pub(super) const DEVICE_ENTER_LINE: &str = "and enter this one-time code";
 
+/// A **browser** sign-in's twin of the pair above (`docs/chatgpt.md`): the
+/// link is far too long to retype, and there is no code to follow it — the
+/// browser redirects back to this process on its own. So the verb is `Open`
+/// rather than `Visit`, and the second row says what happens next instead of
+/// pointing at a box that isn't there.
+pub(super) const DEVICE_OPEN_PREFIX: &str = "Open ";
+pub(super) const DEVICE_RETURN_LINE: &str = "and sign in — this window continues by itself";
+
 /// The code box's extra indent past [`MODEL_INDENT`], and its rounded corners.
 pub(super) const DEVICE_BOX_INDENT: &str = "   ";
 pub(super) const DEVICE_BOX_TOP_LEFT: &str = "╭";
@@ -830,8 +838,17 @@ pub(super) const DEVICE_WAITING: &str = "Waiting for approval…";
 pub(super) const DEVICE_EXPIRES_PREFIX: &str = " · expires in ";
 pub(super) const DEVICE_EXPIRED: &str = " · code expired";
 
-/// The dim hint under the device page.
+/// A browser sign-in's twin of the two states above: nothing is requested
+/// from a provider first (the link is built locally), and what is waited on
+/// is the browser coming back, not a code being approved.
+pub(super) const DEVICE_LINK_STARTING: &str = "Opening the sign-in…";
+pub(super) const DEVICE_LINK_WAITING: &str = "Waiting for the browser…";
+pub(super) const DEVICE_LINK_EXPIRED: &str = " · timed out";
+
+/// The dim hint under the sign-in page — the code page's, and the browser
+/// page's, which copies the link instead.
 pub(super) const DEVICE_HINT: &str = "c copy code  esc cancel";
+pub(super) const DEVICE_LINK_HINT: &str = "c copy link  esc cancel";
 
 /// Where the device page's **hidden** cursor parks — the frame's first content
 /// row, the title.

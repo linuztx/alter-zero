@@ -310,6 +310,7 @@ pub(super) fn sample_subscriptions() -> Vec<SubscriptionChoice> {
         name: "GitHub Copilot".into(),
         description: "Sign in with your GitHub account".into(),
         configured: true,
+        kind: SigninKind::DeviceCode,
     }]
 }
 

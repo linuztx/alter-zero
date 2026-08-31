@@ -115,7 +115,7 @@ opening the viewport, running the loop — and everything else lives here:
 | `view.rs` | Drawing: the draw tick, the overlays, the repaints, `live_region_height`, the injected clocks. |
 | `commit.rs` | Scrollback commits — the one place invariant 4 is enforced — and the toast. |
 | `models.rs` | `ModelSession`: the backend and every knob that selects it, plus the `/model`, Ctrl+T and probe arms (`docs/llm.md`). |
-| `login.rs` | The `/login` flow's boundary half: opening it, running a subscription's device sign-in, persisting what it mints (`docs/copilot.md`). |
+| `login.rs` | The `/login` flow's boundary half: opening it, running a subscription's sign-in — a device code or a browser PKCE flow, per provider — and persisting what it mints (`docs/copilot.md`, `docs/chatgpt.md`). |
 | `config.rs` | Reading the environment: providers, keys, settings, permission rules, paths. |
 | `bootstrap.rs` | `Session::bootstrap` / `shutdown` / `after_iteration` — assembly, teardown, loop-bottom work. |
 | `startup.rs` | The `--continue`/`--resume` argument resolution (`docs/cli.md`). |

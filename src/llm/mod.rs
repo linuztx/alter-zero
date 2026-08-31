@@ -17,8 +17,10 @@
 pub mod agent;
 pub mod approval;
 pub mod ask;
+pub mod auth;
 pub mod backend;
 pub mod cache;
+pub mod chatgpt;
 pub mod classifier;
 pub mod config;
 pub mod copilot;
@@ -29,6 +31,7 @@ pub mod mcp;
 pub mod models;
 pub mod openai;
 pub mod reasoning;
+pub mod responses;
 pub mod retry;
 pub mod settings;
 pub mod skill;
@@ -40,7 +43,7 @@ pub mod tools;
 use std::time::Duration;
 
 pub use backend::LlmBackend;
-pub use config::{AuthScheme, ModelConfig, ProvidersFile, Selection};
+pub use config::{AuthScheme, ModelConfig, ProvidersFile, Selection, WireApi};
 pub use keystore::EnvFile;
 pub use models::ModelEntry;
 pub use reasoning::{ReasoningEffort, ReasoningSupport, ThinkingMode};

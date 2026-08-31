@@ -207,26 +207,47 @@ fn device_code_box(code: &str) -> Vec<Line<'static>> {
 /// boundary has fed one) or, on a failure, the reason in red — the page stays
 /// up either way, so the reason is readable until Esc takes it down.
 fn device_status_lines(device: &DeviceLogin, width: u16) -> Vec<Line<'static>> {
+    let browser = device.kind == SigninKind::BrowserLink;
     match &device.status {
         DeviceStatus::Failed(reason) => model_wrapped_rows(reason, ERROR_COLOR, width),
-        DeviceStatus::Starting => model_wrapped_rows(DEVICE_STARTING, MODEL_META_COLOR, width),
+        DeviceStatus::Starting => model_wrapped_rows(
+            if browser {
+                DEVICE_LINK_STARTING
+            } else {
+                DEVICE_STARTING
+            },
+            MODEL_META_COLOR,
+            width,
+        ),
         DeviceStatus::Waiting => {
+            let expired = if browser {
+                DEVICE_LINK_EXPIRED
+            } else {
+                DEVICE_EXPIRED
+            };
             let tail = match device.remaining {
                 // A code whose clock ran out says so rather than reading
                 // `expires in 0:00` forever — the poll reports the expiry too,
                 // but the countdown reaches zero first.
-                Some(left) if left.is_zero() => DEVICE_EXPIRED.to_string(),
+                Some(left) if left.is_zero() => expired.to_string(),
                 Some(left) => format!("{DEVICE_EXPIRES_PREFIX}{}", countdown(left)),
                 None => String::new(),
             };
-            model_wrapped_rows(&format!("{DEVICE_WAITING}{tail}"), MODEL_META_COLOR, width)
+            let waiting = if browser {
+                DEVICE_LINK_WAITING
+            } else {
+                DEVICE_WAITING
+            };
+            model_wrapped_rows(&format!("{waiting}{tail}"), MODEL_META_COLOR, width)
         }
     }
 }
 
-/// The whole device-code page as lines: title, the two-row instruction naming
-/// the URL, the code box, the status row, and the `c copy code  esc cancel`
-/// hint. No browser is launched — the URL is text the user opens themselves.
+/// The whole sign-in page as lines: title, the two-row instruction naming the
+/// URL, the code box (a device flow only), the status row, and the copy/cancel
+/// hint. No browser is launched either way — the URL is text the user opens
+/// themselves, which is also what makes the flow work over SSH once the port
+/// is forwarded.
 fn device_page_lines(device: &DeviceLogin, width: u16) -> Vec<Line<'static>> {
     // Built as **blocks** joined by exactly one blank row, with an empty block
     // contributing nothing at all. Two of the four only exist once GitHub has
@@ -237,18 +258,34 @@ fn device_page_lines(device: &DeviceLogin, width: u16) -> Vec<Line<'static>> {
         &format!("{DEVICE_TITLE_PREFIX}{}", device.provider_name),
         width,
     )]];
+    let browser = device.kind == SigninKind::BrowserLink;
     if !device.verification_uri.is_empty() {
         // The URL is its own wrapped row so a narrow terminal never cuts it —
         // it is the one thing on the page that must be typed exactly. Dim,
         // like the sentence under it: the code in its box is what the eye
-        // should land on, and a lit URL competed with it.
+        // should land on, and a lit URL competed with it. A browser sign-in
+        // has no box, so there the URL *is* what the eye should land on and
+        // the row below says what happens next rather than pointing at one.
+        let prefix = if browser {
+            DEVICE_OPEN_PREFIX
+        } else {
+            DEVICE_VISIT_PREFIX
+        };
         let mut instruction = model_wrapped_rows(
-            &format!("{DEVICE_VISIT_PREFIX}{}", device.verification_uri),
-            DEVICE_URI_COLOR,
+            &format!("{prefix}{}", device.verification_uri),
+            if browser {
+                DEVICE_CODE_COLOR
+            } else {
+                DEVICE_URI_COLOR
+            },
             width,
         );
         instruction.push(model_placeholder_row(
-            DEVICE_ENTER_LINE,
+            if browser {
+                DEVICE_RETURN_LINE
+            } else {
+                DEVICE_ENTER_LINE
+            },
             MODEL_META_COLOR,
             width,
         ));
@@ -259,7 +296,11 @@ fn device_page_lines(device: &DeviceLogin, width: u16) -> Vec<Line<'static>> {
     }
     blocks.push(device_status_lines(device, width));
     blocks.push(vec![model_placeholder_row(
-        DEVICE_HINT,
+        if browser {
+            DEVICE_LINK_HINT
+        } else {
+            DEVICE_HINT
+        },
         MODEL_META_COLOR,
         width,
     )]);

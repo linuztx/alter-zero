@@ -12,6 +12,15 @@ Three features share one data model, so they share one document:
    sent — image placeholders raw, and every tool call/result as its own native
    `assistant` request + `tool` result entry.
 
+> One provider is the exception to "exactly what the model is sent": under a
+> ChatGPT sign-in the request is translated into the **Responses** format at
+> the last moment (`docs/chatgpt.md`), so Ctrl+D shows the derived
+> conversation *before* that step. It is still the conversation the session
+> holds and what a `/resume` restores — the `input` array is a rendering of
+> it, not a second source of truth. That translation also depends on a
+> property of this derivation: a tool call and its result are always emitted
+> together, never one without the other.
+
 ## The context is *derived*, not stored
 
 The design decision everything else follows from: there is **no second store**

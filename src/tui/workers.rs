@@ -13,10 +13,10 @@
 //! - [`spawn_image_paste`] — one Ctrl+V clipboard read (`docs/image-paste.md`).
 //! - [`spawn_model_fetch`] — one provider's model list, for the `/model`
 //!   picker and the startup capability probe (`docs/llm.md`).
-//! - [`spawn_device_login`] — the `/login` subscription sign-in
-//!   (`docs/copilot.md`), the one worker that runs for **minutes** rather
-//!   than milliseconds: it polls the provider until the user approves the
-//!   code, or `cancel` trips.
+//! - [`spawn_signin`] — the `/login` subscription sign-in (`docs/copilot.md`,
+//!   `docs/chatgpt.md`), the one worker that runs for **minutes** rather than
+//!   milliseconds: it waits on the provider until the user approves, or
+//!   `cancel` trips.
 //!
 //! **Invariant 1:** a worker only ever *sends*. None of them reads stdin, so
 //! the `EventStream` stays the single stdin reader.
@@ -57,14 +57,76 @@ pub(crate) enum DeviceEvent {
     Done(Result<(String, Option<String>), String>),
 }
 
-/// Run GitHub's device flow on a worker thread, reporting the code and then
-/// the verdict. Long-running by nature — the poll only ends when the user
-/// approves, the code expires, or `cancel` trips (Esc on the page, or the
-/// flow being closed out from under it). See `docs/copilot.md`.
-pub(crate) fn spawn_device_login(
+/// Run a subscription's sign-in on a worker thread, reporting what to show
+/// and then the verdict. Long-running by nature — it ends when the user
+/// approves, the prompt expires, or `cancel` trips (Esc on the page, or the
+/// flow being closed out from under it).
+///
+/// Which flow runs is the **provider's**, not a guess: GitHub's device code
+/// (`docs/copilot.md`) or OpenAI's browser PKCE (`docs/chatgpt.md`). Both
+/// report on the same two messages, because both pages are the same page —
+/// something to show, then a wait.
+pub(crate) fn spawn_signin(
+    provider: String,
     cancel: CancelToken,
     tx: tokio::sync::mpsc::UnboundedSender<DeviceEvent>,
 ) {
+    if provider == CHATGPT_PROVIDER {
+        spawn_chatgpt_login(cancel, tx);
+    } else {
+        spawn_device_login(cancel, tx);
+    }
+}
+
+/// The provider id whose sign-in is OpenAI's browser flow. Matching on the id
+/// keeps `workers` from needing the provider file: the *page* already knows
+/// its kind, and this only has to agree with it.
+const CHATGPT_PROVIDER: &str = "openai_chatgpt";
+
+/// Run OpenAI's PKCE loopback flow: bind the callback port, publish the URL
+/// to open, then block until the browser comes back. See `docs/chatgpt.md`.
+fn spawn_chatgpt_login(cancel: CancelToken, tx: tokio::sync::mpsc::UnboundedSender<DeviceEvent>) {
+    std::thread::spawn(move || {
+        let signin = match llm::chatgpt::begin_signin() {
+            Ok(signin) => signin,
+            Err(e) => {
+                let _ = tx.send(DeviceEvent::Done(Err(e.to_string())));
+                return;
+            }
+        };
+        // No code to type — the page shows the link and the browser redirects
+        // back on its own, so the "expiry" shown is this flow's own patience.
+        if tx
+            .send(DeviceEvent::Code {
+                verification_uri: signin.url.clone(),
+                user_code: String::new(),
+                expires_at: std::time::Instant::now() + llm::chatgpt::AUTH_TIMEOUT,
+            })
+            .is_err()
+        {
+            return;
+        }
+        let result = llm::chatgpt::await_callback(&signin, &cancel)
+            // The seat rides back with the token, as it does for Copilot: the
+            // plan is the question a sign-in leaves open, and a free account
+            // that cannot reach these models is better said now than met as a
+            // 403 mid-turn.
+            .map(|(refresh, access)| {
+                (
+                    refresh,
+                    access.plan.as_deref().map(llm::chatgpt::plan_label),
+                )
+            })
+            .map_err(|e| e.to_string());
+        if !cancel.is_cancelled() {
+            let _ = tx.send(DeviceEvent::Done(result));
+        }
+    });
+}
+
+/// Run GitHub's device flow on a worker thread, reporting the code and then
+/// the verdict. See `docs/copilot.md`.
+fn spawn_device_login(cancel: CancelToken, tx: tokio::sync::mpsc::UnboundedSender<DeviceEvent>) {
     std::thread::spawn(move || {
         let device = match llm::copilot::request_device_code() {
             Ok(device) => device,

@@ -26,8 +26,8 @@ use unicode_width::UnicodeWidthStr;
 use crate::app::{
     App, BackgroundShell, BackgroundView, DeviceLogin, DeviceStatus, HistoryItem, HistorySearch,
     KeyOnboarding, KeyStep, ModelLoad, ModelPicker, QueuedTurn, ResumeControl, ResumeFilter,
-    ResumePicker, ResumeSort, Role, SearchState, SlashCommand, ToastKind, TokenArrow, ToolCall,
-    ToolStatus, TurnStatus, TurnSummary, command_query, matching_commands,
+    ResumePicker, ResumeSort, Role, SearchState, SigninKind, SlashCommand, ToastKind, TokenArrow,
+    ToolCall, ToolStatus, TurnStatus, TurnSummary, command_query, matching_commands,
 };
 use crate::file_search::FileMatch;
 use crate::highlight;

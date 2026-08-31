@@ -57,6 +57,11 @@ pub struct ModelEntry {
 struct ModelsResponse<'a> {
     #[serde(default, borrow)]
     data: Vec<&'a serde_json::value::RawValue>,
+    /// The ChatGPT backend names the same array `models` and its records
+    /// `slug` (`docs/chatgpt.md`). One extra field costs nothing and keeps a
+    /// second parse function from existing.
+    #[serde(default, borrow)]
+    models: Vec<&'a serde_json::value::RawValue>,
 }
 
 /// Parse a `/models` response body into rows tagged with `provider`, sorted by
@@ -69,8 +74,12 @@ struct ModelsResponse<'a> {
 pub fn parse_models(body: &str, provider: &str) -> Result<Vec<ModelEntry>> {
     let parsed: ModelsResponse =
         serde_json::from_str(body).map_err(|e| LlmError::Decode(e.to_string()))?;
-    let mut out: Vec<ModelEntry> = parsed
-        .data
+    let records = if parsed.data.is_empty() {
+        &parsed.models
+    } else {
+        &parsed.data
+    };
+    let mut out: Vec<ModelEntry> = records
         .iter()
         .filter_map(|raw| {
             // One record's tree at a time (see ModelsResponse); the syntax was
@@ -88,7 +97,10 @@ pub fn parse_models(body: &str, provider: &str) -> Result<Vec<ModelEntry>> {
 /// usable string id (skipped, never fatal — aggregator lists carry the odd
 /// malformed row).
 fn entry_of(record: &serde_json::Value, provider: &str) -> Option<ModelEntry> {
-    let id = record.get("id")?.as_str()?;
+    let id = record
+        .get("id")
+        .or_else(|| record.get("slug"))
+        .and_then(serde_json::Value::as_str)?;
     if id.is_empty() {
         return None;
     }
@@ -97,6 +109,7 @@ fn entry_of(record: &serde_json::Value, provider: &str) -> Option<ModelEntry> {
     }
     let display_name = record
         .get("name")
+        .or_else(|| record.get("display_name"))
         .and_then(serde_json::Value::as_str)
         .filter(|n| !n.trim().is_empty())
         .unwrap_or(id);
@@ -132,6 +145,12 @@ fn copilot_capabilities(record: &serde_json::Value) -> Option<&serde_json::Value
 /// omit it), and a record with no `capabilities` object at all isn't
 /// Copilot's — every other provider's list passes untouched.
 fn is_callable(record: &serde_json::Value) -> bool {
+    // The ChatGPT backend marks a record it does not want offered at all
+    // (`docs/chatgpt.md`). `hide` only means "not a headline model" — it is
+    // still selectable, so only `none` is filtered.
+    if record.get("visibility").and_then(serde_json::Value::as_str) == Some("none") {
+        return false;
+    }
     let Some(capabilities) = copilot_capabilities(record) else {
         return true;
     };
@@ -266,6 +285,41 @@ fn reasoning_support_of(record: &serde_json::Value) -> Option<ReasoningSupport> 
             default_effort: None,
         });
     }
+    // The ChatGPT backend's `supported_reasoning_levels` — like Copilot it
+    // publishes the **exact** rungs the model takes, so Ctrl+T offers what the
+    // API will accept. Entries are objects (`{effort, description}`) on the
+    // live endpoint and bare strings in some fixtures; both are read.
+    if let Some(levels) = record
+        .get("supported_reasoning_levels")
+        .and_then(serde_json::Value::as_array)
+    {
+        let labels = |value: &serde_json::Value| -> Option<String> {
+            value
+                .as_str()
+                .or_else(|| value.get("effort")?.as_str())
+                .map(str::to_string)
+        };
+        let named: Vec<String> = levels.iter().filter_map(labels).collect();
+        let mut efforts: Vec<ReasoningEffort> = named
+            .iter()
+            .filter_map(|l| ReasoningEffort::parse(l))
+            .collect();
+        efforts.sort_by_key(|e| ReasoningEffort::LADDER.iter().position(|l| l == e));
+        efforts.dedup();
+        if efforts.is_empty() {
+            return None;
+        }
+        return Some(ReasoningSupport {
+            // An offered `"none"` is the off switch, not a rung — and
+            // omitting the parameter is always allowed here besides.
+            can_disable: true,
+            efforts,
+            default_effort: record
+                .get("default_reasoning_level")
+                .and_then(serde_json::Value::as_str)
+                .and_then(ReasoningEffort::parse),
+        });
+    }
     // Venice's model_spec.capabilities booleans.
     let capabilities = record.get("model_spec")?.get("capabilities")?;
     let flag = |name: &str| {
@@ -330,6 +384,14 @@ fn vision_support_of(record: &serde_json::Value) -> Option<bool> {
                 .unwrap_or(false),
         );
     }
+    // The ChatGPT backend's `input_modalities` — a bare top-level array,
+    // where OpenRouter nests the same idea under `architecture`.
+    if let Some(inputs) = record
+        .get("input_modalities")
+        .and_then(serde_json::Value::as_array)
+    {
+        return Some(inputs.iter().any(|m| m.as_str() == Some("image")));
+    }
     record
         .get("model_spec")?
         .get("capabilities")?
@@ -358,6 +420,27 @@ fn context_window_of(record: &serde_json::Value) -> Option<u64> {
                 .as_u64()
         })
         .or_else(|| {
+            // The ChatGPT backend's own window, scaled by the share of it the
+            // backend will actually accept a prompt in
+            // (`effective_context_window_percent`, 95 by default). Same rule
+            // as Copilot's `max_prompt_tokens` below: gauge against the limit
+            // the API *enforces*, not the nominal one.
+            let window = record
+                .get("context_window")
+                .and_then(serde_json::Value::as_u64)
+                .or_else(|| {
+                    record
+                        .get("max_context_window")
+                        .and_then(serde_json::Value::as_u64)
+                })?;
+            let percent = record
+                .get("effective_context_window_percent")
+                .and_then(serde_json::Value::as_u64)
+                .filter(|p| (1..=100).contains(p))
+                .unwrap_or(DEFAULT_EFFECTIVE_CONTEXT_PERCENT);
+            Some(window.saturating_mul(percent) / 100)
+        })
+        .or_else(|| {
             // GitHub Copilot's `capabilities.limits`. Its **prompt** cap is
             // what to gauge against, not the nominal window: Copilot sets the
             // two apart (gpt-4o windows 128000 but accepts a 63997-token
@@ -376,11 +459,31 @@ fn context_window_of(record: &serde_json::Value) -> Option<u64> {
     (raw > 0).then_some(raw)
 }
 
+/// The share of a ChatGPT model's nominal window the backend actually accepts
+/// a prompt in, when the record doesn't say. Codex's own default.
+const DEFAULT_EFFECTIVE_CONTEXT_PERCENT: u64 = 95;
+
 /// The `/models` endpoint for a config: `{api_model_base}/models`.
+///
+/// The ChatGPT backend additionally **requires** a `client_version` query
+/// parameter; without it the listing is refused rather than defaulted
+/// (`docs/chatgpt.md`).
 #[must_use]
 pub fn models_endpoint(cfg: &ModelConfig) -> String {
-    let base = cfg.api_model_base.trim_end_matches('/');
-    format!("{base}/models")
+    models_url(&cfg.api_model_base, cfg.auth)
+}
+
+/// The `/models` URL for a base and auth scheme — the one place the
+/// ChatGPT backend's required query parameter is added.
+#[must_use]
+fn models_url(base: &str, auth: super::AuthScheme) -> String {
+    let base = base.trim_end_matches('/');
+    match auth {
+        super::AuthScheme::OpenAiChatGpt => {
+            format!("{base}/models?client_version={}", env!("CARGO_PKG_VERSION"))
+        }
+        _ => format!("{base}/models"),
+    }
 }
 
 /// GET the provider's model list (boundary — real HTTP). Polls `cancel` so a
@@ -398,19 +501,23 @@ pub fn fetch_models(cfg: &ModelConfig, cancel: &CancelToken) -> Result<Vec<Model
     // full client stack (blocking-runtime thread, pool, TLS config) for the
     // life of the process (see `openai::NET_OP_TIMEOUT`).
     let client = super::http_client(super::openai::NET_OP_TIMEOUT)?;
-    // The same auth seam the chat request uses: a Copilot config's stored
-    // OAuth token is exchanged for the bearer, and the account's own host
-    // outranks the configured one (`docs/copilot.md`).
-    let (bearer, base) = super::copilot::request_auth(cfg)?;
-    let url = base.map_or_else(
-        || models_endpoint(cfg),
-        |base| format!("{}/models", base.trim_end_matches('/')),
-    );
+    // The same auth seam the chat request uses: a subscription's stored token
+    // is exchanged for the bearer the API takes, the account's own host
+    // outranks the configured one (`docs/copilot.md`), and the credential's
+    // own identity headers ride along (`docs/chatgpt.md`).
+    let auth = super::auth::request_auth(cfg)?;
+    let url = auth
+        .base
+        .as_ref()
+        .map_or_else(|| models_endpoint(cfg), |base| models_url(base, cfg.auth));
     let mut req = client.get(&url).header("accept", "application/json");
-    if let Some(key) = &bearer {
+    if let Some(key) = &auth.bearer {
         req = req.bearer_auth(key);
     }
     for (k, v) in &cfg.extra_headers {
+        req = req.header(k, v);
+    }
+    for (k, v) in &auth.headers {
         req = req.header(k, v);
     }
     let mut resp = req.send().map_err(|e| LlmError::Http(e.to_string()))?;
@@ -465,6 +572,119 @@ mod tests {
         // A zero/negative length is meaningless — treat as unknown.
         let zero = r#"{"data":[{"id":"m","context_length":0}]}"#;
         assert_eq!(parse_models(zero, "p").unwrap()[0].context, None);
+    }
+
+    // --- the ChatGPT backend's own record shape (docs/chatgpt.md) ---
+
+    /// One record of the ChatGPT backend's `/models` listing, in its own
+    /// envelope. Nothing about it matches the OpenAI-compatible shape: the
+    /// array is `models`, the id is `slug`, and every capability is a
+    /// top-level field.
+    fn chatgpt_catalog(record: &str) -> Vec<ModelEntry> {
+        parse_models(&format!(r#"{{"models":[{record}]}}"#), "openai_chatgpt").unwrap()
+    }
+
+    #[test]
+    fn a_chatgpt_record_lists_under_its_slug_and_display_name() {
+        let models = chatgpt_catalog(
+            r#"{"slug":"gpt-5.5","display_name":"GPT-5.5","context_window":272000,
+                "input_modalities":["text","image"]}"#,
+        );
+        assert_eq!(models[0].id, "gpt-5.5");
+        assert_eq!(models[0].display_name, "GPT-5.5");
+    }
+
+    #[test]
+    fn a_chatgpt_records_context_window_is_the_share_the_backend_enforces() {
+        // The gauge exists to keep a turn inside the limit the API actually
+        // accepts a prompt in — the same rule Copilot's `max_prompt_tokens`
+        // gets, since the nominal window is not what is enforced.
+        let models = chatgpt_catalog(r#"{"slug":"m","context_window":272000}"#);
+        assert_eq!(models[0].context, Some(272_000 * 95 / 100));
+        let explicit = chatgpt_catalog(
+            r#"{"slug":"m","context_window":200000,"effective_context_window_percent":50}"#,
+        );
+        assert_eq!(explicit[0].context, Some(100_000));
+        // With only a ceiling reported, that is what there is to gauge against.
+        let ceiling = chatgpt_catalog(r#"{"slug":"m","max_context_window":100000}"#);
+        assert_eq!(ceiling[0].context, Some(95_000));
+    }
+
+    #[test]
+    fn a_chatgpt_records_input_modalities_decide_vision() {
+        let seeing = chatgpt_catalog(r#"{"slug":"m","input_modalities":["text","image"]}"#);
+        assert_eq!(seeing[0].vision, Some(true));
+        let blind = chatgpt_catalog(r#"{"slug":"m","input_modalities":["text"]}"#);
+        assert_eq!(blind[0].vision, Some(false));
+    }
+
+    #[test]
+    fn a_chatgpt_records_reasoning_levels_are_the_ctrl_t_ladder() {
+        // Like Copilot, this backend publishes the exact rungs the model
+        // takes — including `ultra`, which no other provider names.
+        let models = chatgpt_catalog(
+            r#"{"slug":"gpt-5.6-sol","default_reasoning_level":"low",
+                "supported_reasoning_levels":[
+                    {"effort":"low","description":"…"},{"effort":"medium","description":"…"},
+                    {"effort":"high","description":"…"},{"effort":"xhigh","description":"…"},
+                    {"effort":"max","description":"…"},{"effort":"ultra","description":"…"}]}"#,
+        );
+        let support = models[0].reasoning.clone().expect("reasoning-capable");
+        assert_eq!(
+            support.efforts,
+            vec![
+                ReasoningEffort::Low,
+                ReasoningEffort::Medium,
+                ReasoningEffort::High,
+                ReasoningEffort::XHigh,
+                ReasoningEffort::Max,
+                ReasoningEffort::Ultra,
+            ]
+        );
+        assert!(support.can_disable, "omitting the parameter is allowed");
+        assert_eq!(support.default_effort, Some(ReasoningEffort::Low));
+    }
+
+    #[test]
+    fn a_chatgpt_reasoning_ladder_of_bare_strings_reads_the_same() {
+        let models = chatgpt_catalog(r#"{"slug":"m","supported_reasoning_levels":["high","low"]}"#);
+        let support = models[0].reasoning.clone().unwrap();
+        // Canonically re-ordered, like every other provider's unordered list.
+        assert_eq!(
+            support.efforts,
+            vec![ReasoningEffort::Low, ReasoningEffort::High]
+        );
+    }
+
+    #[test]
+    fn a_chatgpt_record_marked_invisible_is_not_offered() {
+        // `hide` only means "not a headline model" — still selectable. Only
+        // `none` is withheld.
+        assert!(chatgpt_catalog(r#"{"slug":"m","visibility":"none"}"#).is_empty());
+        assert_eq!(
+            chatgpt_catalog(r#"{"slug":"m","visibility":"hide"}"#).len(),
+            1
+        );
+        assert_eq!(
+            chatgpt_catalog(r#"{"slug":"m","visibility":"list"}"#).len(),
+            1
+        );
+    }
+
+    #[test]
+    fn the_chatgpt_models_url_carries_the_client_version_it_requires() {
+        // Without it the listing is refused rather than defaulted.
+        let mut cfg = ModelConfig::fallback();
+        cfg.api_model_base = "https://chatgpt.com/backend-api/codex".to_string();
+        cfg.auth = super::super::AuthScheme::OpenAiChatGpt;
+        let url = models_endpoint(&cfg);
+        assert!(url.starts_with("https://chatgpt.com/backend-api/codex/models?client_version="));
+        // Every other provider's URL is untouched.
+        cfg.auth = super::super::AuthScheme::ApiKey;
+        assert_eq!(
+            models_endpoint(&cfg),
+            "https://chatgpt.com/backend-api/codex/models"
+        );
     }
 
     // --- GitHub Copilot's own record shape (docs/copilot.md) ---

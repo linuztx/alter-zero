@@ -19,6 +19,10 @@ pub enum ReasoningEffort {
     High,
     XHigh,
     Max,
+    /// Above `max` — the top rung the ChatGPT backend's newest models offer
+    /// (`docs/chatgpt.md`). No other provider names it, so it only ever
+    /// appears on a model whose own record listed it.
+    Ultra,
 }
 
 impl ReasoningEffort {
@@ -31,6 +35,7 @@ impl ReasoningEffort {
         Self::High,
         Self::XHigh,
         Self::Max,
+        Self::Ultra,
     ];
 
     /// The wire label (`reasoning.effort`'s value) — also what the footer and
@@ -44,6 +49,7 @@ impl ReasoningEffort {
             Self::High => "high",
             Self::XHigh => "xhigh",
             Self::Max => "max",
+            Self::Ultra => "ultra",
         }
     }
 
@@ -162,20 +168,20 @@ impl ReasoningSupport {
     }
 }
 
-/// GitHub Copilot's chat-completions spelling of a thinking mode: a
-/// **top-level `reasoning_effort` string**, not the `reasoning` object every
-/// other provider here takes (Microsoft's own client documents the shape as
-/// following the API path — `/chat/completions` → top-level
-/// `reasoning_effort`, `/responses` → a nested object).
+/// A thinking mode's bare effort label, for the two wires that want the level
+/// **on its own** rather than inside [`reasoning_body`]'s object: GitHub
+/// Copilot's chat completions, where it is a top-level `reasoning_effort`
+/// string (`docs/copilot.md`), and the Responses API, where it is the
+/// `effort` field of its own `reasoning` object (`docs/chatgpt.md`).
 ///
-/// Only an explicit effort rides the wire. `On` means "the model's own
-/// default", and `Off` is expressed by **omitting** the parameter, which is
-/// what Copilot's opt-in reasoning does anyway — sending an unrecognised
-/// value there earns the misleading `model_not_supported` 400 rather than a
-/// useful error, so the levels are gated on what the model's own record
-/// advertised (`docs/copilot.md`).
+/// Only an explicit effort rides the wire either way. `On` means "the model's
+/// own default", and `Off` is expressed by **omitting** the parameter —
+/// which is what both of those APIs' opt-in reasoning does anyway, neither
+/// having a disable to send. On Copilot an unrecognised value earns the
+/// misleading `model_not_supported` 400 rather than a useful error, so the
+/// levels offered are gated on what the model's own record advertised.
 #[must_use]
-pub fn copilot_reasoning_effort(mode: ThinkingMode) -> Option<&'static str> {
+pub fn effort_label(mode: ThinkingMode) -> Option<&'static str> {
     match mode {
         ThinkingMode::Effort(effort) => Some(effort.as_str()),
         ThinkingMode::On | ThinkingMode::Off => None,
@@ -220,7 +226,10 @@ mod tests {
     #[test]
     fn ladder_orders_minimal_to_max() {
         let labels: Vec<&str> = ReasoningEffort::LADDER.iter().map(|e| e.as_str()).collect();
-        assert_eq!(labels, ["minimal", "low", "medium", "high", "xhigh", "max"]);
+        assert_eq!(
+            labels,
+            ["minimal", "low", "medium", "high", "xhigh", "max", "ultra"]
+        );
     }
 
     #[test]
@@ -402,16 +411,16 @@ mod tests {
         // the `reasoning` object — and the object, being an unknown field
         // there, risks a 400 that blames the model.
         assert_eq!(
-            copilot_reasoning_effort(ThinkingMode::Effort(ReasoningEffort::High)),
+            effort_label(ThinkingMode::Effort(ReasoningEffort::High)),
             Some("high")
         );
         assert_eq!(
-            copilot_reasoning_effort(ThinkingMode::Effort(ReasoningEffort::Minimal)),
+            effort_label(ThinkingMode::Effort(ReasoningEffort::Minimal)),
             Some("minimal")
         );
         // On = the model's own default, Off = omit it: reasoning is opt-in.
-        assert_eq!(copilot_reasoning_effort(ThinkingMode::On), None);
-        assert_eq!(copilot_reasoning_effort(ThinkingMode::Off), None);
+        assert_eq!(effort_label(ThinkingMode::On), None);
+        assert_eq!(effort_label(ThinkingMode::Off), None);
     }
 
     #[test]

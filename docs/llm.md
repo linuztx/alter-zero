@@ -115,7 +115,14 @@ stream + `ThinkingEnd` (when the response text resumes), driving the existing
 ## Configuration and the dummy toggle
 
 `providers.toml` (repo root by default) declares the providers; see the file's own
-comments for the block shape. Resolution order for the file: `ALTER_ZERO_PROVIDERS_FILE`
+comments for the block shape. Two of its keys change how a provider is *reached*
+rather than what it is called, and both degrade to their default on a value this
+build doesn't know: `auth` decides which `/login` list the provider appears in
+and what the `Authorization` header gets (`docs/copilot.md`,
+`docs/chatgpt.md`), and `wire_api` decides whether requests take the Chat
+Completions or the Responses shape (`docs/chatgpt.md`). They are deliberately
+independent — how you authenticate and what shape the request takes are two
+questions. Resolution order for the file: `ALTER_ZERO_PROVIDERS_FILE`
 → `./providers.toml` → `~/.alter-zero/providers.toml` → a built-in default with the
 two shipped providers (`a0_venice` — the Agent Zero/Venice proxy — and `openrouter`).
 
@@ -131,7 +138,7 @@ default — and can be switched live by `/model`:
 | `ALTER_ZERO_API_KEY` | generic API key (fallback) | unset |
 | `<PROVIDER>_API_KEY` | per-provider key, e.g. `OPENROUTER_API_KEY` | unset |
 | `ALTER_ZERO_CONFIG_DIR` | the config home (holds `.env` + `config.json`) | `~/.alter-zero` |
-| `ALTER_ZERO_ENV_FILE` | the `.env` key store `/login` reads and writes | `{config_home}/.env` |
+| `ALTER_ZERO_ENV_FILE` | the `.env` key store `/login` reads and writes (and where a rotated ChatGPT refresh token is written back — `docs/chatgpt.md`) | `{config_home}/.env` |
 | `ALTER_ZERO_TEMPERATURE` | sampling temperature | provider/omit |
 | `ALTER_ZERO_TOOLS` | falsy (`0`/`false`/`no`/`off`) disables the `bash`/`read`/`write`/`edit` tools (see `docs/tools.md`) | tools on |
 | `ALTER_ZERO_SYSTEM_PROMPT` | override the "Alter Zero" persona; empty sends no system prompt. Any non-empty prompt still gets the runtime environment context (date/os/cwd, `docs/environment.md`) folded on | persona in `prompts/alter_zero.md` |
@@ -373,9 +380,13 @@ in place; unlike it, it is a **two-step** flow.
   picker family selects with), so the flow's headings read as one rather than
   as a colour of their own. The method step carries none — its two rows *are*
   the question — and is the one list with no `(n/total)` counter.
-- **The subscription half** (`KeyStep::Subscription` → `KeyStep::Device`) is
-  GitHub Copilot's device sign-in; it ends in the same `.env` store, under the
-  provider's own `api_key_env`. See `docs/copilot.md`.
+- **The subscription half** (`KeyStep::Subscription` → `KeyStep::Device`) is a
+  provider sign-in rather than a secret to paste — GitHub Copilot's device code
+  (`docs/copilot.md`) or OpenAI ChatGPT's browser PKCE (`docs/chatgpt.md`),
+  chosen by the row's `SigninKind`. Both end in the same `.env` store, under the
+  provider's own `api_key_env`, which is what makes the fork cheap: `/model`,
+  the ✓ marks, the capability probe and the next launch need no second
+  mechanism.
 - **Key step**: printable keys and Backspace edit the key, a **bracketed paste**
   (`App::paste_into_key_onboarding`) appends it with whitespace/newlines stripped
   (API keys are always pasted), `Enter` saves a non-empty key

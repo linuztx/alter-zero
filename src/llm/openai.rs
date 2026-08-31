@@ -122,12 +122,42 @@ impl OpenAiClient {
     /// back to OpenAI when the base is empty.
     #[must_use]
     pub fn endpoint(&self) -> String {
-        let base = if self.cfg.api_base.is_empty() {
-            "https://api.openai.com/v1"
+        format!("{}/chat/completions", self.base_url(None))
+    }
+
+    /// The base every request is built on: the auth seam's override when it
+    /// named one (a Copilot Business seat's own host), else the configured
+    /// base, else OpenAI itself. Trailing slash trimmed.
+    fn base_url(&self, override_base: Option<&str>) -> String {
+        let base = override_base
+            .filter(|b| !b.is_empty())
+            .unwrap_or(&self.cfg.api_base);
+        if base.is_empty() {
+            "https://api.openai.com/v1".to_string()
         } else {
-            self.cfg.api_base.trim_end_matches('/')
-        };
-        format!("{base}/chat/completions")
+            base.trim_end_matches('/').to_string()
+        }
+    }
+
+    /// Where this request goes — the path is the wire format's, not the
+    /// provider's: Responses and Chat Completions are different endpoints on
+    /// the same base (`docs/chatgpt.md`).
+    fn request_url(&self, override_base: Option<&str>) -> String {
+        let base = self.base_url(override_base);
+        match self.cfg.wire_api {
+            super::WireApi::Responses => format!("{base}/responses"),
+            super::WireApi::Chat => format!("{base}/chat/completions"),
+        }
+    }
+
+    /// This request's body, in whichever wire format the provider speaks.
+    fn request_payload(&self, messages: &[ChatMessage]) -> serde_json::Value {
+        match self.cfg.wire_api {
+            super::WireApi::Responses => {
+                super::responses::build_payload(&self.cfg, &self.tools, messages)
+            }
+            super::WireApi::Chat => self.build_payload(messages),
+        }
     }
 
     /// The streamed request body: model, messages, `stream: true` (with the
@@ -211,7 +241,7 @@ impl OpenAiClient {
             // payload. So it is the shape *instead of*, never alongside
             // (`docs/copilot.md`).
             if self.cfg.auth == super::AuthScheme::GithubCopilot {
-                if let Some(effort) = super::reasoning::copilot_reasoning_effort(mode) {
+                if let Some(effort) = super::reasoning::effort_label(mode) {
                     payload["reasoning_effort"] = json!(effort);
                 }
                 return payload;
@@ -291,20 +321,22 @@ impl OpenAiClient {
         // token, exchanged (cached) here for the bearer its API takes and the
         // account's own host — a Business seat is served from a different one
         // than the file names. See `docs/copilot.md`.
-        let (bearer, base) = super::copilot::request_auth(&self.cfg)?;
-        let url = base.map_or_else(
-            || self.endpoint(),
-            |base| format!("{}/chat/completions", base.trim_end_matches('/')),
-        );
+        let auth = super::auth::request_auth(&self.cfg)?;
+        let url = self.request_url(auth.base.as_deref());
         let mut req = client
             .post(url)
             .header("accept", "text/event-stream")
             .header("content-type", "application/json")
-            .json(&self.build_payload(&messages));
-        if let Some(key) = &bearer {
+            .json(&self.request_payload(&messages));
+        if let Some(key) = &auth.bearer {
             req = req.bearer_auth(key);
         }
         for (k, v) in &self.cfg.extra_headers {
+            req = req.header(k, v);
+        }
+        // The credential's own identity — the account a ChatGPT request is
+        // made on behalf of, and the client identity that account expects.
+        for (k, v) in &auth.headers {
             req = req.header(k, v);
         }
         req = self.copilot_request_headers(req, &messages);
@@ -320,22 +352,34 @@ impl OpenAiClient {
         // detach-don't-join discipline, docs/interrupt.md).
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || run_transport(req, &tx));
-        drain_stream(&rx, cancel, on_delta).map_err(|e| self.explain(e))
+        let outcome = match self.cfg.wire_api {
+            super::WireApi::Responses => drain_responses(&rx, cancel, on_delta),
+            super::WireApi::Chat => drain_stream(&rx, cancel, on_delta),
+        };
+        outcome.map_err(|e| self.explain(e))
     }
 
-    /// Rewrite a failure the provider explains badly. Only GitHub Copilot has
-    /// such a mapping ([`super::copilot::chat_advice`]) — its wire bodies name
-    /// a `code` and nothing a user can act on, and the commonest of them
-    /// (`model_not_supported`) is not even about the request being malformed.
-    /// Every other provider's error passes through exactly as it did.
+    /// Rewrite a failure the provider explains badly. Only the two
+    /// subscriptions have such a mapping — Copilot's wire bodies name a `code`
+    /// and nothing a user can act on (and the commonest of them,
+    /// `model_not_supported`, is not even about the request being malformed),
+    /// and a ChatGPT 401 means a sign-in to redo rather than a request to fix.
+    /// Every pasted-key provider's error passes through exactly as it did.
     fn explain(&self, error: LlmError) -> LlmError {
         let LlmError::Api { status, body } = &error else {
             return error;
         };
-        if self.cfg.auth != super::AuthScheme::GithubCopilot {
-            return error;
-        }
-        match super::copilot::chat_advice(*status, body, &self.cfg.model) {
+        let advice = match self.cfg.auth {
+            super::AuthScheme::GithubCopilot => {
+                super::copilot::chat_advice(*status, body, &self.cfg.model)
+            }
+            // A ChatGPT request that 401s has an expired sign-in behind it,
+            // and the wire body says only `invalid_token` — a sentence the
+            // user cannot act on.
+            super::AuthScheme::OpenAiChatGpt => super::chatgpt::auth_advice(*status, body),
+            super::AuthScheme::ApiKey => None,
+        };
+        match advice {
             Some(advice) => LlmError::Api {
                 status: *status,
                 body: advice,
@@ -391,6 +435,155 @@ fn run_transport(req: reqwest::blocking::RequestBuilder, tx: &Sender<Result<Vec<
 /// channel is the clean EOF (any buffered final line flushed first, so a
 /// stream ending without a trailing newline still parses). Pure with respect
 /// to the network — unit-tested by feeding the channel directly.
+/// Drain a **Responses** stream (`docs/chatgpt.md`). The same cancel cadence
+/// and transport contract as [`drain_stream`]; only the frame vocabulary
+/// differs, so the two produce the identical [`StreamOutcome`] currency and
+/// nothing above this module can tell them apart.
+///
+/// The one structural difference: a tool call arrives **whole**, on a single
+/// `response.output_item.done` frame, where Chat Completions dribbles it out
+/// as `tool_calls` fragments. So there is no accumulator here — the argument
+/// fragments that *do* stream are surfaced for the token tally only.
+fn drain_responses(
+    rx: &Receiver<Result<Vec<u8>>>,
+    cancel: &CancelToken,
+    mut on_delta: impl FnMut(Delta),
+) -> Result<StreamOutcome> {
+    let mut text = String::new();
+    let mut reasoning = String::new();
+    let mut tool_calls: Vec<ToolCallRequest> = Vec::new();
+    let mut finish_reason: Option<String> = None;
+    let mut usage: Option<TokenUsage> = None;
+    pump_lines(rx, cancel, &mut |line: &[u8]| {
+        let Ok(frame) = std::str::from_utf8(line) else {
+            return SseStep::Continue;
+        };
+        let Some(data) = sse_data(frame) else {
+            return SseStep::Continue;
+        };
+        if data == "[DONE]" {
+            return SseStep::Done;
+        }
+        match super::responses::parse_event(data) {
+            super::responses::ResponseEvent::Text(chunk) => {
+                if !chunk.is_empty() {
+                    text.push_str(&chunk);
+                    on_delta(Delta {
+                        response: chunk,
+                        ..Delta::default()
+                    });
+                }
+            }
+            super::responses::ResponseEvent::Reasoning(chunk) => {
+                if !chunk.is_empty() {
+                    reasoning.push_str(&chunk);
+                    on_delta(Delta {
+                        reasoning: chunk,
+                        ..Delta::default()
+                    });
+                }
+            }
+            super::responses::ResponseEvent::ToolFragment(fragment) => {
+                if !fragment.is_empty() {
+                    on_delta(Delta {
+                        tool_call: fragment,
+                        ..Delta::default()
+                    });
+                }
+            }
+            super::responses::ResponseEvent::ToolCall(call) => {
+                // The name arrives with the finished item, so this is also
+                // the first moment the tally can see it.
+                on_delta(Delta {
+                    tool_call: call.name.clone(),
+                    ..Delta::default()
+                });
+                tool_calls.push(call);
+            }
+            super::responses::ResponseEvent::Completed { usage: got, status } => {
+                if got.is_some() {
+                    usage = got;
+                }
+                // A round that requested tools finished *for* those tools,
+                // which is what the agent loop reads to decide to loop again.
+                finish_reason = Some(if tool_calls.is_empty() {
+                    status.unwrap_or_else(|| "stop".to_string())
+                } else {
+                    "tool_calls".to_string()
+                });
+                return SseStep::Done;
+            }
+            super::responses::ResponseEvent::Failed(message) => {
+                return SseStep::Fail(LlmError::Api {
+                    status: 0,
+                    body: message,
+                });
+            }
+            super::responses::ResponseEvent::Ignored => {}
+        }
+        SseStep::Continue
+    })?;
+    Ok(StreamOutcome {
+        text: super::thinking::ChatStreamResult {
+            response: text,
+            reasoning,
+        },
+        tool_calls,
+        finish_reason,
+        usage,
+    })
+}
+
+/// Split the transport's bytes into SSE lines and hand each to `on_line`,
+/// polling `cancel` between chunks so an Esc is honoured within
+/// [`CANCEL_POLL_INTERVAL`] however long the network blocks. Returns at the
+/// first [`SseStep::Done`], at clean EOF (the final partial line flushed
+/// first), or with the failure that ended the stream.
+///
+/// Shared by both wire formats — the cancel discipline and the transport
+/// contract are the same however the frames are spelled.
+fn pump_lines(
+    rx: &Receiver<Result<Vec<u8>>>,
+    cancel: &CancelToken,
+    on_line: &mut impl FnMut(&[u8]) -> SseStep,
+) -> Result<()> {
+    let mut line: Vec<u8> = Vec::new();
+    loop {
+        if cancel.is_cancelled() {
+            return Err(LlmError::Cancelled);
+        }
+        match rx.recv_timeout(CANCEL_POLL_INTERVAL) {
+            Ok(Ok(chunk)) => {
+                for &byte in &chunk {
+                    match byte {
+                        b'\n' => {
+                            let step = on_line(&line);
+                            line.clear();
+                            match step {
+                                SseStep::Continue => {}
+                                SseStep::Done => return Ok(()),
+                                SseStep::Fail(err) => return Err(err),
+                            }
+                        }
+                        b'\r' => {}
+                        byte => line.push(byte),
+                    }
+                }
+            }
+            Ok(Err(err)) => return Err(err),
+            Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Disconnected) => {
+                if !line.is_empty()
+                    && let SseStep::Fail(err) = on_line(&line)
+                {
+                    return Err(err);
+                }
+                return Ok(());
+            }
+        }
+    }
+}
+
 fn drain_stream(
     rx: &Receiver<Result<Vec<u8>>>,
     cancel: &CancelToken,
@@ -400,79 +593,30 @@ fn drain_stream(
     let mut tools = ToolCallAccumulator::default();
     let mut finish_reason: Option<String> = None;
     let mut usage: Option<TokenUsage> = None;
-    let mut line: Vec<u8> = Vec::new();
     // A response that ignored `stream:true` has no SSE framing at all —
     // collect its raw lines (bounded) so EOF can fall back to parsing one
     // plain JSON completion instead of reporting a clean empty stream.
     let mut saw_sse_framing = false;
     let mut raw_body: Vec<u8> = Vec::new();
-    let note_raw_line = |line: &[u8], saw: &mut bool, body: &mut Vec<u8>| {
-        if *saw {
-            return;
+    pump_lines(rx, cancel, &mut |line: &[u8]| {
+        if !saw_sse_framing {
+            if is_sse_framing(line) {
+                saw_sse_framing = true;
+                raw_body.clear();
+            } else if raw_body.len() + line.len() < RAW_BODY_MAX_BYTES {
+                raw_body.extend_from_slice(line);
+                raw_body.push(b'\n');
+            } // past the cap the tail is dropped — the fallback parse then errors
         }
-        if is_sse_framing(line) {
-            *saw = true;
-            body.clear();
-        } else if body.len() + line.len() < RAW_BODY_MAX_BYTES {
-            body.extend_from_slice(line);
-            body.push(b'\n');
-        } // past the cap the tail is dropped — the fallback parse then errors
-    };
-    'stream: loop {
-        if cancel.is_cancelled() {
-            return Err(LlmError::Cancelled);
-        }
-        match rx.recv_timeout(CANCEL_POLL_INTERVAL) {
-            Ok(Ok(chunk)) => {
-                for &byte in &chunk {
-                    match byte {
-                        b'\n' => {
-                            note_raw_line(&line, &mut saw_sse_framing, &mut raw_body);
-                            let step = process_sse_line(
-                                &line,
-                                &mut splitter,
-                                &mut tools,
-                                &mut finish_reason,
-                                &mut usage,
-                                &mut on_delta,
-                            );
-                            line.clear();
-                            match step {
-                                SseStep::Continue => {}
-                                SseStep::Done => break 'stream, // saw `data: [DONE]`
-                                // The provider failed the stream in-band; surface
-                                // it instead of letting EOF report a clean finish.
-                                SseStep::Fail(err) => return Err(err),
-                            }
-                        }
-                        b'\r' => {} // SSE line ending — ignore the CR
-                        byte => line.push(byte),
-                    }
-                }
-            }
-            // The transport reported the failure that ended the stream.
-            Ok(Err(err)) => return Err(err),
-            // Quiet channel — loop back to poll `cancel`.
-            Err(RecvTimeoutError::Timeout) => {}
-            Err(RecvTimeoutError::Disconnected) => {
-                // Clean EOF: flush any final line that had no trailing newline.
-                note_raw_line(&line, &mut saw_sse_framing, &mut raw_body);
-                if !line.is_empty()
-                    && let SseStep::Fail(err) = process_sse_line(
-                        &line,
-                        &mut splitter,
-                        &mut tools,
-                        &mut finish_reason,
-                        &mut usage,
-                        &mut on_delta,
-                    )
-                {
-                    return Err(err);
-                }
-                break;
-            }
-        }
-    }
+        process_sse_line(
+            line,
+            &mut splitter,
+            &mut tools,
+            &mut finish_reason,
+            &mut usage,
+            &mut on_delta,
+        )
+    })?;
     // No SSE framing at all: the provider answered with one plain body — a
     // shim that ignored `stream:true` returning a whole JSON completion, or a
     // bare JSON error on a 200. Parse it as one payload; an unparseable

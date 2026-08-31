@@ -20,7 +20,6 @@ use std::time::Duration;
 
 use serde::Deserialize;
 
-use super::config::{AuthScheme, ModelConfig};
 use super::{ChatMessage, LlmError, MessageContent, Result};
 use crate::stream::CancelToken;
 
@@ -802,28 +801,6 @@ fn nap(total: Duration, cancel: &CancelToken) -> bool {
     !cancel.is_cancelled()
 }
 
-/// The `Authorization` bearer and base URL a request against `cfg` uses. For
-/// every ordinary provider that is the stored key and the configured base,
-/// resolved with no I/O at all; for GitHub Copilot the stored value is an
-/// OAuth token, exchanged here (cached) for the bearer the API takes and the
-/// account's own host.
-///
-/// # Errors
-/// A Copilot exchange that fails becomes an [`LlmError`]; every other scheme
-/// is infallible.
-pub(crate) fn request_auth(cfg: &ModelConfig) -> Result<(Option<String>, Option<String>)> {
-    match cfg.auth {
-        AuthScheme::ApiKey => Ok((cfg.api_key.clone(), None)),
-        AuthScheme::GithubCopilot => {
-            let Some(oauth) = cfg.api_key.as_deref().filter(|k| !k.is_empty()) else {
-                return Ok((None, None));
-            };
-            let auth = authorize(oauth)?;
-            Ok((Some(auth.bearer), Some(auth.api_base)))
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1355,29 +1332,5 @@ mod tests {
     fn a_scope_with_a_colon_encodes_too() {
         assert_eq!(form_encode(SCOPE), "read%3Auser");
         assert_eq!(form_encode("a b"), "a+b");
-    }
-
-    // --- the request-auth seam ---
-
-    #[test]
-    fn an_ordinary_provider_authenticates_with_no_network_at_all() {
-        let mut cfg = ModelConfig::fallback();
-        cfg.api_key = Some("sk-test".to_string());
-        let (bearer, base) = request_auth(&cfg).unwrap();
-        assert_eq!(bearer.as_deref(), Some("sk-test"));
-        assert_eq!(base, None, "the configured base stands");
-    }
-
-    #[test]
-    fn a_copilot_config_with_no_stored_token_resolves_to_nothing_rather_than_calling_out() {
-        // The `/model` picker builds configs for providers that were never
-        // signed in to; an exchange attempt there would hang the fetch on a
-        // request that can only 401.
-        let mut cfg = ModelConfig::fallback();
-        cfg.auth = AuthScheme::GithubCopilot;
-        cfg.api_key = None;
-        assert_eq!(request_auth(&cfg).unwrap(), (None, None));
-        cfg.api_key = Some(String::new());
-        assert_eq!(request_auth(&cfg).unwrap(), (None, None));
     }
 }

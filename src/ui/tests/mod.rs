@@ -9,7 +9,7 @@
 use super::*;
 
 use crate::app::{
-    FileSearch, Message, ModelFetchError, ProviderChoice, RetryInfo, SubscriptionChoice,
+    FileSearch, Message, ModelFetchError, ProviderChoice, RetryInfo, SigninKind, SubscriptionChoice,
 };
 
 mod agent;
@@ -301,6 +301,7 @@ fn login_subscriptions() -> Vec<SubscriptionChoice> {
         name: "GitHub Copilot".into(),
         description: "Sign in with your GitHub account".into(),
         configured: true,
+        kind: SigninKind::DeviceCode,
     }]
 }
 

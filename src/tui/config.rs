@@ -20,11 +20,11 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use alter_zero::app::{ProviderChoice, SubscriptionChoice};
+use alter_zero::app::{ProviderChoice, SigninKind, SubscriptionChoice};
 use alter_zero::checkpoint;
 use alter_zero::llm::{
-    self, EnvFile, ModelConfig, ProvidersFile, ReasoningSupport, Selection, Settings, ThinkingMode,
-    ThinkingSettings, backend::DEFAULT_SYSTEM_PROMPT,
+    self, AuthScheme, EnvFile, ModelConfig, ProvidersFile, ReasoningSupport, Selection, Settings,
+    ThinkingMode, ThinkingSettings, backend::DEFAULT_SYSTEM_PROMPT,
 };
 use alter_zero::permission::{PermissionRules, PermissionsFile};
 use alter_zero::scratchpad;
@@ -214,8 +214,18 @@ pub(crate) fn subscription_choices(
             name: p.name.clone(),
             description: p.description.clone().unwrap_or_default(),
             configured: resolve_api_key(providers, env_file, id).is_some(),
+            kind: signin_kind(p.auth),
         })
         .collect()
+}
+
+/// Which sign-in page a scheme opens. The provider file decides, so a row's
+/// page is never guessed from what the flow happens to have filled in yet.
+fn signin_kind(auth: AuthScheme) -> SigninKind {
+    match auth {
+        AuthScheme::OpenAiChatGpt => SigninKind::BrowserLink,
+        AuthScheme::GithubCopilot | AuthScheme::ApiKey => SigninKind::DeviceCode,
+    }
 }
 
 /// The app's config home — where the `.env` key store and `config.json` live:

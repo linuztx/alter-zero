@@ -198,15 +198,22 @@ that; a minute of skew comes off it for clock drift and in-flight latency.
 
 ### The seam
 
-`copilot::request_auth(cfg)` answers *(bearer, base override)* for any config:
+`auth::request_auth(cfg)` answers *(bearer, base override, headers)* for any
+config:
 
 - **`AuthScheme::ApiKey`** → the stored key and no override, with **no I/O at
   all**. Every existing provider's path is byte-identical to what it was.
 - **`AuthScheme::GithubCopilot`** → the exchanged bearer and the account's own
-  host. A config with no stored token resolves to `(None, None)` rather than
-  calling out: the `/model` picker builds configs for providers that were never
-  signed in to, and an exchange attempt there would hang the fetch on a request
-  that can only fail.
+  host. A config with no stored token resolves to an empty `RequestAuth` rather
+  than calling out: the `/model` picker builds configs for providers that were
+  never signed in to, and an exchange attempt there would hang the fetch on a
+  request that can only fail.
+
+It lived in this module and returned a `(bearer, base)` pair until the second
+subscription arrived: a ChatGPT request needs a **header** carrying the account
+it is made on behalf of, which a pair could not express, so the seam moved to
+`src/llm/auth.rs` and widened by one field (`docs/chatgpt.md`). Copilot's own
+arm is unchanged — its headers list is simply empty.
 
 Both `openai::stream_chat` and `models::fetch_models` go through it. The base
 override matters: a Business/Enterprise seat is served from

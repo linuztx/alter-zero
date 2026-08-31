@@ -159,7 +159,64 @@ string *instead of* the `reasoning` object, whose unknown-field 400 blames the
 model, and three per-request headers ride along: `X-Initiator` (billing —
 GitHub charges the user's round and not the agent's tool loop),
 `Copilot-Vision-Request` with an image, and `X-Request-Id`) in
-`docs/copilot.md`; the **Ctrl+T thinking-mode
+`docs/copilot.md`; the **OpenAI ChatGPT sign-in** — the subscription list's
+second row, and the two things a second subscription turned out to need
+(`docs/chatgpt.md`): a second *sign-in shape* and a second *wire format*.
+`auth = "openai_chatgpt"` runs OpenAI's **browser PKCE loopback** on the same
+worker Copilot's device flow uses and reports on the same two messages,
+because the two pages are the same page — something to show, then a wait; what
+differs rides `SigninKind` on the row, injected from the provider's `auth`
+scheme rather than guessed from what the flow has filled in yet, so the
+browser page says `Open {link}` over `and sign in — this window continues by
+itself`, shows no code box, and `c` copies the **link** (a URL far too long to
+retype, where a `c` bound to a code that does not exist would be dead on the
+one page that most needs it). The listener binds `127.0.0.1:1455` (falling
+back to `1457`) while the redirect URI names `localhost`: OpenAI's allow-list
+is pinned to those two ports against Codex's client id, so a port of our own
+is refused at the authorize step — and binding `"localhost"` can resolve to
+`::1` and miss the browser entirely. What is stored is the **refresh** token,
+and it **rotates**: OpenAI may retire the one just used, and re-presenting a
+retired one is terminal, so `chatgpt::persist_refresh` writes the new value
+straight back into the `.env` store (through a path `tui::models` hands the
+module once at startup, since the mint runs several layers below the
+boundary — skipping that call is not a crash but a forced re-login at the next
+launch). The `chatgpt-account-id` the backend routes on is read out of the
+minted access token's own claims, which is what keeps the store to one value
+with nothing to drift; the cached life comes from that token's `exp` with a
+five-minute skew **and a sixty-second floor**, the floor standing in for the
+`refresh_in` duration Copilot has and OpenAI does not (a clock hours ahead
+then costs one extra mint a minute instead of one per request). Copilot's
+`(bearer, base)` seam widened into `auth::request_auth`'s `RequestAuth`
+{bearer, base, headers} to carry that account header — `AuthScheme::ApiKey`
+still answering with the stored key, no override and **no I/O at all**. The
+wire format is a **separate** provider key (`wire_api = "responses"`), not a
+consequence of `auth`: how you authenticate and what shape the request takes
+are two questions, and an API key can reach the Responses API too.
+`src/llm/responses.rs` translates both directions between it and the Chat
+Completions currency the rest of the crate uses, so the agent loop, the
+transcript, the rollout and the derived context are untouched — `messages`
+becomes an `input` array of typed items (a tool call is a `function_call` item
+of its own, its result a `function_call_output` linked by `call_id`, and there
+is no `role: "tool"`), the system prompt is hoisted into the **required**
+top-level `instructions`, parts are `input_text`/`input_image` (the image URL
+being the *value*, not a nested object), `store: false` is mandatory, an empty
+assistant `content` array is a 400 where chat completions tolerates `""`, and
+`Off` sends no `reasoning` field at all since this API has no `enabled:
+false`. `drain_responses` is `drain_stream`'s sibling over the shared
+`pump_lines` byte loop, so Esc is honoured identically either way; its one
+structural difference is that a tool call arrives **whole** on a single
+`response.output_item.done` frame rather than as accumulated fragments (the
+fragments that do stream are surfaced for the token tally only). Its
+`/models?client_version=…` listing — the query is required, not defaulted —
+answers `{"models": […]}` with `slug`, `context_window` ×
+`effective_context_window_percent` (the share the backend enforces, Copilot's
+`max_prompt_tokens` rule), `input_modalities`, and a
+`supported_reasoning_levels` ladder that is the Ctrl+T cycle itself, `ultra`
+included — a rung above `max` that no other provider names and that
+`ReasoningEffort` gained for it. Encrypted reasoning deliberately does **not**
+round-trip: carrying it would mean a new `ChatMessage` field threaded through
+`context`, the rollout and the transcript, so the model re-reasons each round
+— a quality cost, not an error) in `docs/chatgpt.md`; the **Ctrl+T thinking-mode
 cycle** (a reasoning-capable model's effort — detected per model from the
 provider's `/v1/models`, shown beside the model name in the footer, cycled
 with a `Thinking: {mode}` toast, riding the request as the unified `reasoning`

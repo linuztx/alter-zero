@@ -65,6 +65,21 @@ pub struct ProviderChoice {
     pub configured: bool,
 }
 
+/// How a subscription's sign-in asks the user to prove who they are. The two
+/// are genuinely different pages, not one page with a blank: a device flow
+/// shows a **code** to type at a short URL, a browser flow shows a long
+/// **link** that comes back on its own. See `docs/copilot.md` and
+/// `docs/chatgpt.md`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SigninKind {
+    /// A short code the user types at a short URL (GitHub Copilot).
+    #[default]
+    DeviceCode,
+    /// A long authorize link the user opens; the browser redirects back to a
+    /// loopback listener, so there is nothing to type (OpenAI ChatGPT).
+    BrowserLink,
+}
+
 /// One selectable subscription row — the same shape as [`ProviderChoice`] but
 /// carrying a *description* instead of an env var, since signing in is a flow
 /// rather than a secret to paste. See `docs/copilot.md`.
@@ -78,6 +93,8 @@ pub struct SubscriptionChoice {
     pub description: String,
     /// Whether this subscription is already signed in (shown with a ✓).
     pub configured: bool,
+    /// Which sign-in page this row opens.
+    pub kind: SigninKind,
 }
 
 /// How far the device-code sign-in has got. The page stays up through every
@@ -113,6 +130,9 @@ pub struct DeviceLogin {
     pub status: DeviceStatus,
     /// How long the code is still valid — injected per draw by the boundary.
     pub remaining: Option<Duration>,
+    /// Which page this is (see [`SigninKind`]) — it decides what the
+    /// instruction says and what `c` copies.
+    pub kind: SigninKind,
 }
 
 impl DeviceLogin {
@@ -120,6 +140,20 @@ impl DeviceLogin {
     #[must_use]
     pub fn code(&self) -> Option<&str> {
         (!self.user_code.is_empty()).then_some(self.user_code.as_str())
+    }
+
+    /// What `c` copies: the code on a device page, the link on a browser one.
+    /// A browser flow has no code at all, so copying "the code" there would
+    /// be a key that does nothing on the only page that really needs it —
+    /// its URL is far too long to retype.
+    #[must_use]
+    pub fn copy_target(&self) -> Option<&str> {
+        match self.kind {
+            SigninKind::DeviceCode => self.code(),
+            SigninKind::BrowserLink => {
+                (!self.verification_uri.is_empty()).then_some(self.verification_uri.as_str())
+            }
+        }
     }
 }
 
@@ -343,7 +377,8 @@ impl App {
     ///   type-to-filter with Backspace, `Enter` activates the highlighted row,
     ///   `Esc` clears a non-empty filter then steps *back* (the method step,
     ///   being the root, closes instead), `Ctrl+C` closes.
-    /// - **Device** (the code page): `c` copies the code once there is one,
+    /// - **Device** (the sign-in page): `c` copies the code — or, on a
+    ///   browser flow, the link — once there is one,
     ///   `Esc` cancels the sign-in back to the subscription list, `Ctrl+C`
     ///   closes.
     /// - **Key** (masked entry): printable keys and Backspace edit the key,
@@ -446,6 +481,7 @@ impl App {
                 onboarding.device = Some(DeviceLogin {
                     provider_id: choice.id.clone(),
                     provider_name: choice.name,
+                    kind: choice.kind,
                     ..DeviceLogin::default()
                 });
                 Action::StartDeviceLogin(choice.id)
@@ -480,9 +516,9 @@ impl App {
             KeyCode::Char('c' | 'C') => onboarding
                 .device
                 .as_ref()
-                .and_then(DeviceLogin::code)
-                .map_or(Action::None, |code| {
-                    Action::CopyDeviceCode(code.to_string())
+                .and_then(DeviceLogin::copy_target)
+                .map_or(Action::None, |target| {
+                    Action::CopyDeviceCode(target.to_string())
                 }),
             KeyCode::Esc => {
                 onboarding.device = None;

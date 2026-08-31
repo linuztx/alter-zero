@@ -73,7 +73,7 @@ pub use self::file_picker::FileSearch;
 pub use self::hooks_menu::{HooksLevel, HooksMenu};
 pub use self::input_history::{HistorySearch, InputHistory, SearchState};
 pub use self::login::{
-    DeviceLogin, DeviceStatus, KeyOnboarding, KeyStep, LoginMethod, ProviderChoice,
+    DeviceLogin, DeviceStatus, KeyOnboarding, KeyStep, LoginMethod, ProviderChoice, SigninKind,
     SubscriptionChoice,
 };
 pub use self::mascot::{Mascot, MascotPicker, MascotRow, mascot_file_json, parse_mascot_file};

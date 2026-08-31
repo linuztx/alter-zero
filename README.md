@@ -144,7 +144,7 @@ without a real terminal.
 | `src/textarea.rs` | The editable multi-line input: a movable grapheme-aware cursor, wrapped ↑/↓, insert/delete anywhere. | ✅ |
 | `src/ui/`    | Pure rendering, one module per area (`docs/module-layout.md`): display-width word-wrap, styled message/tool lines, the live-region geometry, the status line, the bands + footer, commit bookkeeping. All styling lives in `ui/theme.rs`. | ✅ |
 | `src/stream/` | The backend seam, one module per area (`docs/module-layout.md`): the `StreamEvent` protocol, the `ReplySource` trait, a `CancelToken` — and the offline `DummyAi` in its own `dummy/` subtree, whose scenario registry decides which canned demo a prompt plays (`docs/dummy-backend.md`). | ✅ (pure parts, token & dummy) |
-| `src/llm/` | The real OpenAI-compatible backend: `providers.toml` config, the streaming SSE client, the reasoning splitter, the `/v1/models` listing, the `.env` key store (`/login`), the GitHub Copilot device sign-in + token exchange, the `config.json` model store (`/model`), and the `ReplySource` bridge. | ✅ (pure cores) |
+| `src/llm/` | The real OpenAI-compatible backend: `providers.toml` config, the streaming SSE client, the reasoning splitter, the `/v1/models` listing, the `.env` key store (`/login`), the GitHub Copilot device sign-in and the OpenAI ChatGPT browser sign-in (each with its own token exchange), the Responses wire format, the `config.json` model store (`/model`), and the `ReplySource` bridge. | ✅ (pure cores) |
 | `src/hooks/` | Lifecycle hooks (`docs/hooks.md`): the `hooks.json` format, which handlers an event selects, the JSON payload each writes to a handler's stdin and the verdict its stdout is parsed back into. The spawn lives in `src/llm/hooks.rs`. | ✅ |
 | `src/file_search.rs` | The pure core of the `@` file picker: token detection, fuzzy matching, ranking. | ✅ |
 | `src/frame.rs` | The frame scheduler: coalesces redraw requests into ticks, rate-limited to 120 fps. | ✅ (pure parts) |
@@ -214,9 +214,9 @@ cargo run
 ```
 
 Or sign in from inside the app with **`/login`**, which asks how first —
-**Use a subscription** or **Use an API key** (`docs/copilot.md`):
+**Use a subscription** or **Use an API key**:
 
-- **A subscription** is **GitHub Copilot**. Enter runs GitHub's device flow and
+- **GitHub Copilot** (`docs/copilot.md`). Enter runs GitHub's device flow and
   shows the one-time code in a box over the URL to enter it at — no browser is
   launched, `c` copies the code, and the page counts the code down while it
   waits for you to approve it. What is stored is the long-lived GitHub OAuth
@@ -224,6 +224,17 @@ Or sign in from inside the app with **`/login`**, which asks how first —
   takes, and reads the model's context window, vision and *reasoning-effort
   ladder* off `api.githubcopilot.com/models` so Ctrl+T cycles exactly the
   levels that model accepts.
+- **OpenAI (ChatGPT)** (`docs/chatgpt.md`) — sign in with a ChatGPT
+  Plus/Pro/Team seat. Enter runs OpenAI's PKCE flow: the page shows a link to
+  open (`c` copies it) and the browser redirects back to a loopback listener,
+  so there is nothing to type. What is stored is the **refresh** token — and
+  re-stored whenever OpenAI rotates it, since a reused one is terminal — while
+  each request mints the ~1h access token the API takes and reads the account
+  it routes on out of that token's own claims. The backend speaks OpenAI's
+  **Responses** API rather than chat completions, translated in
+  `src/llm/responses.rs` so nothing above the client notices; its
+  `/models` listing feeds the same context-window gauge, vision degradation
+  and Ctrl+T ladder every other provider gets.
 - **An API key** is the old flow: pick a provider (**Agent Zero API**,
   **OpenRouter**) and paste its key.
 

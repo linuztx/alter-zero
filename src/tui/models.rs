@@ -201,6 +201,12 @@ impl ModelSession {
         // during key resolution (a real process env var still wins).
         let env_file_path = config::env_file_path();
         let env_file = config::load_env_file(&env_file_path);
+        // OpenAI rotates a refresh token as it is used, and the rotation
+        // happens deep on a backend thread with no path in hand — so tell the
+        // module where the store is, once. Without this the retired token
+        // stays on disk and the next launch is a forced re-login
+        // (`docs/chatgpt.md`).
+        llm::chatgpt::set_store_path(env_file_path.clone());
         // The persisted `/model` selection (`~/.alter-zero/config.json`): the
         // provider + model chosen last run, so it survives a restart.
         let settings_path = config::settings_file_path();

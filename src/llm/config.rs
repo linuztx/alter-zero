@@ -24,6 +24,16 @@ pub enum AuthScheme {
     /// resulting OAuth token, which each request exchanges for a short-lived
     /// Copilot bearer. See `docs/copilot.md`.
     GithubCopilot,
+    /// OpenAI's ChatGPT seat: `/login` runs OpenAI's PKCE loopback flow and
+    /// stores the resulting **refresh** token, which each request mints a
+    /// short-lived access token from. See `docs/chatgpt.md`.
+    ///
+    /// Renamed explicitly: `rename_all = "snake_case"` spells this variant
+    /// `open_ai_chat_gpt`, and an `auth` value that doesn't match falls
+    /// silently through to [`Self::ApiKey`] below — a subscription provider
+    /// that looks configured and asks for a pasted key instead.
+    #[serde(rename = "openai_chatgpt")]
+    OpenAiChatGpt,
     /// `Authorization: Bearer {api_key}` — a key the user pastes, and the
     /// scheme every OpenAI-compatible provider uses. The **fallback** for an
     /// unrecognised `auth` value too (`#[serde(other)]`, which serde requires
@@ -43,6 +53,27 @@ impl AuthScheme {
     }
 }
 
+/// Which request/response wire format a provider speaks. Kept apart from
+/// [`AuthScheme`] on purpose: how you *authenticate* and what shape the
+/// request takes are two questions, and an OpenAI API key can reach the
+/// Responses API just as a ChatGPT sign-in can. See `docs/chatgpt.md`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WireApi {
+    /// OpenAI's **Responses** API: `{api_base}/responses`, an `input` array of
+    /// typed items under a top-level `instructions`, and its own SSE event
+    /// vocabulary. See `docs/chatgpt.md`.
+    Responses,
+    /// **Chat Completions**: `{api_base}/chat/completions` with `messages`.
+    /// The default, and the **fallback** for an unrecognised value
+    /// (`#[serde(other)]`, which serde requires on the last variant) — a
+    /// provider file written against a newer build must degrade, not fail the
+    /// whole parse, exactly as [`AuthScheme`] does.
+    #[default]
+    #[serde(other)]
+    Chat,
+}
+
 /// One `[providers.<id>]` block. Unknown keys are ignored so the file can carry
 /// provider-specific extras without breaking the parse.
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -52,6 +83,9 @@ pub struct Provider {
     /// How this provider authenticates — a pasted key by default.
     #[serde(default)]
     pub auth: AuthScheme,
+    /// The wire format its requests take — Chat Completions by default.
+    #[serde(default)]
+    pub wire_api: WireApi,
     /// What signing in means, shown beside the name in `/login`'s
     /// subscription list. Only a subscription provider needs one.
     #[serde(default)]
@@ -206,6 +240,7 @@ impl ProvidersFile {
             api_model_base: provider.models_base(),
             api_key: sel.api_key.clone(),
             auth: provider.auth,
+            wire_api: provider.wire_api,
             temperature: sel.temperature,
             thinking: sel.thinking,
             vision: sel.vision,
@@ -257,8 +292,10 @@ pub struct ModelConfig {
     pub api_model_base: String,
     pub api_key: Option<String>,
     /// How [`api_key`](Self::api_key) authenticates the request — a bearer as
-    /// stored, or (Copilot) an OAuth token to exchange for one first.
+    /// stored, or (Copilot/ChatGPT) an OAuth token to exchange for one first.
     pub auth: AuthScheme,
+    /// The wire format the request takes (see [`WireApi`]).
+    pub wire_api: WireApi,
     pub temperature: Option<f32>,
     /// The active thinking mode (see [`Selection::thinking`]).
     pub thinking: Option<ThinkingMode>,
@@ -283,6 +320,7 @@ impl ModelConfig {
             api_model_base: "https://api.openai.com/v1".to_string(),
             api_key: None,
             auth: AuthScheme::ApiKey,
+            wire_api: WireApi::Chat,
             temperature: None,
             thinking: None,
             vision: None,
@@ -437,6 +475,75 @@ api_base = "https://api.githubcopilot.com"
             copilot.description.as_deref(),
             Some("Sign in with your GitHub account")
         );
+    }
+
+    #[test]
+    fn a_provider_can_declare_the_chatgpt_subscription_sign_in() {
+        // The OpenAI ChatGPT seat is a sign-in like Copilot's, not a key: the
+        // stored secret is a refresh token, and every request mints the
+        // short-lived access token from it (`docs/chatgpt.md`).
+        let text = r#"
+[providers.openai_chatgpt]
+name = "OpenAI (ChatGPT)"
+auth = "openai_chatgpt"
+description = "Sign in with your ChatGPT account"
+[providers.openai_chatgpt.kwargs]
+api_base = "https://chatgpt.com/backend-api/codex"
+"#;
+        let file = ProvidersFile::parse(text).unwrap();
+        let chatgpt = file.get("openai_chatgpt").unwrap();
+        assert_eq!(chatgpt.auth, AuthScheme::OpenAiChatGpt);
+        assert!(chatgpt.auth.is_subscription());
+    }
+
+    // --- the wire format a provider speaks (docs/chatgpt.md) ---
+
+    #[test]
+    fn a_provider_speaks_chat_completions_by_default() {
+        let file = ProvidersFile::builtin();
+        assert_eq!(file.get("openrouter").unwrap().wire_api, WireApi::Chat);
+        assert_eq!(ModelConfig::fallback().wire_api, WireApi::Chat);
+    }
+
+    #[test]
+    fn a_provider_can_declare_the_responses_wire_format() {
+        let text = r#"
+[providers.p]
+name = "P"
+wire_api = "responses"
+[providers.p.kwargs]
+api_base = "https://x/v1"
+"#;
+        let file = ProvidersFile::parse(text).unwrap();
+        assert_eq!(file.get("p").unwrap().wire_api, WireApi::Responses);
+    }
+
+    #[test]
+    fn an_unknown_wire_format_falls_back_to_chat_completions() {
+        // Same degrade-don't-fail rule as `auth`: a file written against a
+        // newer build must still parse.
+        let text = r#"
+[providers.p]
+name = "P"
+wire_api = "telepathy"
+[providers.p.kwargs]
+api_base = "https://x/v1"
+"#;
+        let file = ProvidersFile::parse(text).expect("the file still parses");
+        assert_eq!(file.get("p").unwrap().wire_api, WireApi::Chat);
+    }
+
+    #[test]
+    fn model_config_carries_the_providers_wire_format() {
+        let file = ProvidersFile::builtin();
+        let sel = Selection {
+            provider_id: "openai_chatgpt".to_string(),
+            model: "gpt-5.5".to_string(),
+            ..Selection::default()
+        };
+        let cfg = file.model_config(&sel).expect("shipped");
+        assert_eq!(cfg.wire_api, WireApi::Responses);
+        assert_eq!(cfg.auth, AuthScheme::OpenAiChatGpt);
     }
 
     #[test]
