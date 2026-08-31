@@ -187,6 +187,21 @@ fn a_failed_device_login_is_reported_on_the_page_not_closed() {
 }
 
 #[test]
+fn the_device_page_does_not_ride_the_status_animation_chain() {
+    // The 32 ms chain exists for a shimmering spinner. This page's only moving
+    // part is an `mm:ss` countdown, and every frame it costs carries a cursor
+    // hide and a re-seat — thirty a second is what a terminal with a
+    // cursor-trail animation renders as a permanent shimmer over the page. The
+    // boundary gives it its own once-a-second tick instead (`docs/copilot.md`).
+    let app = device_app();
+    assert!(app.device_login_active(), "the page is up");
+    assert!(
+        !app.wants_animation_frames(),
+        "an open device page must not re-arm the status chain"
+    );
+}
+
+#[test]
 fn the_countdown_is_injected_by_the_boundary_clock() {
     // The remaining time is a clock read — injected per draw like the status
     // line's elapsed, never computed in the pure core.

@@ -228,43 +228,49 @@ fn device_status_lines(device: &DeviceLogin, width: u16) -> Vec<Line<'static>> {
 /// the URL, the code box, the status row, and the `c copy code  esc cancel`
 /// hint. No browser is launched — the URL is text the user opens themselves.
 fn device_page_lines(device: &DeviceLogin, width: u16) -> Vec<Line<'static>> {
-    let mut lines = vec![
-        model_rule(width),
-        Line::default(),
-        login_title(
-            &format!("{DEVICE_TITLE_PREFIX}{}", device.provider_name),
-            width,
-        ),
-        Line::default(),
-    ];
-    if device.verification_uri.is_empty() {
-        // Before the code lands there is no URL to name; the status row alone
-        // says what is happening.
-        lines.push(Line::default());
-    } else {
+    // Built as **blocks** joined by exactly one blank row, with an empty block
+    // contributing nothing at all. Two of the four only exist once GitHub has
+    // answered — before that there is no URL to name and no code to box — and
+    // reserving their rows anyway left a band of blanks under the title while
+    // the page did the one thing it says it is doing.
+    let mut blocks: Vec<Vec<Line<'static>>> = vec![vec![login_title(
+        &format!("{DEVICE_TITLE_PREFIX}{}", device.provider_name),
+        width,
+    )]];
+    if !device.verification_uri.is_empty() {
         // The URL is its own wrapped row so a narrow terminal never cuts it —
-        // it is the one thing on the page that must be typed exactly.
-        lines.extend(model_wrapped_rows(
+        // it is the one thing on the page that must be typed exactly. Dim,
+        // like the sentence under it: the code in its box is what the eye
+        // should land on, and a lit URL competed with it.
+        let mut instruction = model_wrapped_rows(
             &format!("{DEVICE_VISIT_PREFIX}{}", device.verification_uri),
             DEVICE_URI_COLOR,
             width,
-        ));
-        lines.push(model_placeholder_row(
+        );
+        instruction.push(model_placeholder_row(
             DEVICE_ENTER_LINE,
             MODEL_META_COLOR,
             width,
         ));
+        blocks.push(instruction);
     }
-    lines.push(Line::default());
     if let Some(code) = device.code() {
-        lines.extend(device_code_box(code));
-    } else {
-        lines.push(Line::default());
+        blocks.push(device_code_box(code));
     }
-    lines.push(Line::default());
-    lines.extend(device_status_lines(device, width));
-    lines.push(Line::default());
-    lines.push(model_placeholder_row(DEVICE_HINT, MODEL_META_COLOR, width));
+    blocks.push(device_status_lines(device, width));
+    blocks.push(vec![model_placeholder_row(
+        DEVICE_HINT,
+        MODEL_META_COLOR,
+        width,
+    )]);
+
+    let mut lines = vec![model_rule(width), Line::default()];
+    for (i, block) in blocks.into_iter().filter(|b| !b.is_empty()).enumerate() {
+        if i > 0 {
+            lines.push(Line::default());
+        }
+        lines.extend(block);
+    }
     lines.push(Line::default());
     lines.push(model_rule(width));
     lines

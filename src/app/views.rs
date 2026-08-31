@@ -262,12 +262,7 @@ impl App {
     #[must_use]
     pub fn wants_animation_frames(&self) -> bool {
         !self.view.is_overlay()
-            && (self.turn_active()
-                || self.background_view.is_some()
-                || !self.agents().is_empty()
-                // A `/login` device page counts its code down with nothing
-                // else on the wire to schedule a frame (`docs/copilot.md`).
-                || self.device_login_active())
+            && (self.turn_active() || self.background_view.is_some() || !self.agents().is_empty())
     }
 
     /// Settle the tool-view scroll for a draw given the largest offset the current

@@ -72,8 +72,8 @@ subscription's token lives in the same store.
 
   Sign in to GitHub Copilot
 
-  Visit https://github.com/login/device
-  and enter this one-time code
+  Visit https://github.com/login/device            (dim — the code is the
+  and enter this one-time code                      bright thing on the page)
 
      ╭─────────────╮
      │  C363-262E  │
@@ -86,24 +86,57 @@ subscription's token lives in the same store.
 ────────────────────────────────────────────────────────────────────────
 ```
 
+…and, while the code is still being requested, exactly this — no rows held
+open for content that does not exist yet:
+
+```
+────────────────────────────────────────────────────────────────────────
+
+  Sign in to GitHub Copilot
+
+  Requesting a code…
+
+  c copy code  esc cancel
+
+────────────────────────────────────────────────────────────────────────
+```
+
 - **No browser is launched.** The URL is text the user opens themselves. A TUI
   that shells out to `xdg-open` is guessing at a desktop it may not be on (an
   SSH session, a container, a headless box), and the failure mode — a stray
   process, or a browser opening on the *wrong machine* — is worse than a URL
   the user can click in any modern terminal anyway.
+- The URL and the sentence under it are **dim**. The one thing on this page the
+  eye should land on is the code in its box; an accented URL competed with it,
+  and the URL is an instruction rather than a choice.
 - The box is **sized to the code**, so a provider that issues a longer one
   still gets a snug frame.
+- The page is built as **blocks joined by exactly one blank row, an empty block
+  contributing nothing**. Two of the four only exist once GitHub has answered —
+  before that there is no URL to name and no code to box — and reserving their
+  rows anyway left a band of blanks under the title while the page did the one
+  thing it says it is doing. Waiting for the code is therefore just title, gap,
+  status, gap, hint (`no_device_page_ever_stacks_two_blank_rows`, the list
+  pages' own rule applied to the page whose content genuinely comes and goes).
 - `c` copies the code through `/copy`'s own clipboard path (arboard with the
   OSC 52 fallback, `docs/copy.md`); only the confirmation differs, because
   "Copied last message" would be a lie here.
 - The countdown is a **boundary clock read**, injected per draw
   (`App::set_device_remaining`) exactly like the status line's elapsed — the
-  pure core never reads a clock. `wants_animation_frames` includes an open
-  device page so the frame chain re-arms and the count actually moves with
-  nothing else on the wire.
+  pure core never reads a clock.
+- It redraws **once a second, on its own chain** (`DEVICE_TICK_INTERVAL`),
+  deliberately *not* the status animation's 32 ms one. An `mm:ss` countdown
+  changes once a second; the 32 ms chain redrew it thirty times as often, and
+  every frame carries a cursor `Hide` and a re-seat, which is what a terminal
+  with a cursor-trail animation (kitty and kin) renders as a permanent shimmer
+  over the page. Measured with `tmux pipe-pane` over three seconds of an open
+  device page: **90 cursor-hide escapes → 3**, 2520 bytes → 84.
 - The **cursor is hidden** here (`ui::cursor_visible`): the page is a wait, not
-  a field, and a kitty cursor trail would streak across it on every tick. Its
-  seat still tracks the code box rather than the frame's corner.
+  a field. It parks at the frame's first content row (`DEVICE_CURSOR_ROW`),
+  because a hidden caret is still *seated* somewhere and a trail animates
+  toward the seat — the code box is the one place on the page that must not
+  have anything painted over it, and its row moves when the page grows from
+  the waiting shape to the full one.
 - A failure **replaces the wait line, in red, with the page still up** — closing
   on the error would take the explanation away with it. Only Esc takes it down,
   back to the subscription list.

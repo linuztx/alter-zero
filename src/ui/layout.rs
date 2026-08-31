@@ -1006,9 +1006,10 @@ pub fn cursor_position(area: Rect, app: &App) -> (u16, u16) {
             KeyStep::Subscription | KeyStep::Provider => {
                 (cols(&onboarding.query), LOGIN_SEARCH_ROW)
             }
-            // The device page has no field; park the (hidden — see
-            // `cursor_visible`) cursor on its code box rather than the corner.
-            KeyStep::Device => (0, DEVICE_CODE_ROW),
+            // The device page has no field at all; the (hidden — see
+            // `cursor_visible`) caret parks at the frame's top, off the code
+            // and out of the way of the countdown's redraws.
+            KeyStep::Device => (0, DEVICE_CURSOR_ROW),
             // One mask glyph per key character sits after the prompt.
             KeyStep::Key => (onboarding.key_input.chars().count(), LOGIN_KEY_INPUT_ROW),
         };

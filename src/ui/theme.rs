@@ -819,8 +819,10 @@ pub(super) const DEVICE_BOX_PAD: &str = "  ";
 /// The code itself — bright and bold, the one thing on the page to transcribe.
 pub(super) const DEVICE_CODE_COLOR: Color = Color::Rgb(0xFF, 0xFF, 0xFF);
 
-/// The verification URL, painted like a link (the palette accent).
-pub(super) const DEVICE_URI_COLOR: Color = MODEL_SELECTED_COLOR;
+/// The verification URL — **dim**, like the sentence under it. The one thing
+/// on this page the eye should land on is the code in its box; an accented URL
+/// competed with it, and the URL is an instruction rather than a choice.
+pub(super) const DEVICE_URI_COLOR: Color = MODEL_META_COLOR;
 
 /// The status line's two states, and the countdown clause appended to the wait.
 pub(super) const DEVICE_STARTING: &str = "Requesting a code…";
@@ -831,10 +833,17 @@ pub(super) const DEVICE_EXPIRED: &str = " · code expired";
 /// The dim hint under the device page.
 pub(super) const DEVICE_HINT: &str = "c copy code  esc cancel";
 
-/// The row the device page's code box starts on — top(0) gap(1) title(2)
-/// gap(3) visit(4) enter(5) gap(6) box(7). The cursor is hidden on this page
-/// (there is no field), so this is only the seat [`cursor_position`] parks at.
-pub(super) const DEVICE_CODE_ROW: u16 = 7;
+/// Where the device page's **hidden** cursor parks — the frame's first content
+/// row, the title.
+///
+/// The caret is invisible here ([`cursor_visible`]), but a terminal with a
+/// cursor-trail animation (kitty and kin) still animates toward wherever it is
+/// *seated*, and this page re-arms a frame every 32 ms to tick its countdown.
+/// So the seat must be somewhere harmless and somewhere **still**: the code
+/// box is neither — anything the emulator paints at the cursor lands on the
+/// one thing the page exists to be read from, and the box's row moves when the
+/// page grows from the waiting shape to the full one.
+pub(super) const DEVICE_CURSOR_ROW: u16 = 2;
 
 /// The dim hint under the provider list, prefixing the real `.env` path
 /// (`onboarding.env_path`) so it names where the key actually lands.

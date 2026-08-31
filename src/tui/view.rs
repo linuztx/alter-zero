@@ -43,6 +43,10 @@ use super::Session;
 /// sweep and keeps the timer advancing through event-less pauses.
 pub(crate) const STATUS_FRAME_INTERVAL: std::time::Duration = std::time::Duration::from_millis(32);
 
+/// How often an open `/login` device page redraws — the granularity of the
+/// `mm:ss` countdown that is its only moving part. See `docs/copilot.md`.
+const DEVICE_TICK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
+
 /// Upper bound on the rows a purge rebuild (`/clear`, resize, a history
 /// rewind) re-renders into scrollback. A purge drops the terminal's own
 /// scrollback, so the whole conversation is rebuilt from history — capped here
@@ -706,6 +710,15 @@ impl Session<'_> {
         // the return.
         if self.app.wants_animation_frames() {
             self.frame.schedule_frame_in(STATUS_FRAME_INTERVAL);
+        }
+        // The `/login` device page keeps its own, much slower chain. Its only
+        // moving part is an `mm:ss` countdown, so a frame a second is exactly
+        // the rate its content changes at — and every frame costs a cursor
+        // Hide plus a re-seat, which at the status chain's thirty a second is
+        // what a terminal with a cursor-trail animation renders as a permanent
+        // shimmer over the page (`docs/copilot.md`).
+        if self.app.device_login_active() {
+            self.frame.schedule_frame_in(DEVICE_TICK_INTERVAL);
         }
         Ok(())
     }

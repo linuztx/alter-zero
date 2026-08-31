@@ -6,9 +6,18 @@ use super::*;
 const LOGIN_KEY_ROWS: u16 = 9;
 use crate::ui::login_view::login_key_prompt;
 use crate::ui::theme::{
-    DEVICE_CODE_ROW, ERROR_COLOR, LOGIN_KEY_INPUT_ROW, LOGIN_SEARCH_ROW, LOGIN_TITLE_COLOR,
-    MODEL_SELECTED_COLOR,
+    DEVICE_CURSOR_ROW, ERROR_COLOR, LOGIN_KEY_INPUT_ROW, LOGIN_SEARCH_ROW, LOGIN_TITLE_COLOR,
+    MODEL_META_COLOR, MODEL_SELECTED_COLOR,
 };
+
+/// The row the code box's top border lands on, found by content — the page's
+/// shape changes with what GitHub has answered, so a pinned row number would
+/// test the layout rather than the behaviour.
+fn code_box_row(buf: &Buffer, width: u16) -> u16 {
+    (0..buf.area.height)
+        .find(|y| row(buf, *y, width).contains('╭'))
+        .expect("the code box")
+}
 
 #[test]
 fn model_rows_show_marker_provider_tag_and_active_check() {
@@ -400,11 +409,12 @@ fn the_device_page_shows_the_url_and_the_code_in_a_box() {
     );
     assert!(row(&buf, 5, 72).contains("and enter this one-time code"));
     // The rounded box, sized to the code (9 glyphs + 2 pad each side = 13).
-    let top = row(&buf, DEVICE_CODE_ROW, 72);
+    let box_row = code_box_row(&buf, 72);
+    let top = row(&buf, box_row, 72);
     assert!(top.contains("╭─────────────╮"), "{top:?}");
-    let middle = row(&buf, DEVICE_CODE_ROW + 1, 72);
+    let middle = row(&buf, box_row + 1, 72);
     assert!(middle.contains("│  C363-262E  │"), "{middle:?}");
-    assert!(row(&buf, DEVICE_CODE_ROW + 2, 72).contains("╰─────────────╯"));
+    assert!(row(&buf, box_row + 2, 72).contains("╰─────────────╯"));
     assert!(
         row(&buf, 11, 72).contains("Waiting for approval"),
         "the wait"
@@ -512,5 +522,147 @@ fn a_device_page_with_no_code_yet_still_frames_itself() {
     assert!(
         !texts.iter().any(|t| t.contains('╭')),
         "no empty box: {texts:?}"
+    );
+}
+
+#[test]
+fn no_device_page_ever_stacks_two_blank_rows() {
+    // The suite's own convention (`no_login_page_ever_stacks_two_blank_rows`),
+    // applied to the page whose content genuinely comes and goes: before the
+    // code lands there is no URL and no box, and reserving their rows anyway
+    // left a band of blanks under the title.
+    use crate::ui::login_view::key_onboarding_lines;
+    let mut app = login_app_subscription();
+    {
+        let onboarding = app.key_onboarding.as_mut().unwrap();
+        onboarding.step = KeyStep::Device;
+        onboarding.device = Some(crate::app::DeviceLogin {
+            provider_name: "GitHub Copilot".into(),
+            ..Default::default()
+        });
+    }
+    // Every state the page passes through, in the order it passes through
+    // them: requesting the code, showing it, then failing.
+    for state in 0..3 {
+        match state {
+            1 => app.set_device_code("https://github.com/login/device", "C363-262E"),
+            2 => app.fail_device_login("it went wrong"),
+            _ => {}
+        }
+        let onboarding = app.key_onboarding.as_ref().unwrap();
+        let texts: Vec<String> = key_onboarding_lines(onboarding, 72)
+            .iter()
+            .map(|l| plain(l).trim_end().to_string())
+            .collect();
+        for pair in texts.windows(2) {
+            assert!(
+                !(pair[0].is_empty() && pair[1].is_empty()),
+                "state {state} stacked two blank rows: {texts:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn the_waiting_page_is_title_status_hint_and_nothing_else() {
+    // The exact shape asked for: rule, gap, title, gap, status, gap, hint,
+    // gap, rule — no rows held open for a URL and a code box that do not
+    // exist yet.
+    use crate::ui::login_view::key_onboarding_lines;
+    let mut app = login_app_subscription();
+    {
+        let onboarding = app.key_onboarding.as_mut().unwrap();
+        onboarding.step = KeyStep::Device;
+        onboarding.device = Some(crate::app::DeviceLogin {
+            provider_name: "GitHub Copilot".into(),
+            ..Default::default()
+        });
+    }
+    let onboarding = app.key_onboarding.as_ref().unwrap();
+    let texts: Vec<String> = key_onboarding_lines(onboarding, 72)
+        .iter()
+        .map(|l| plain(l).trim_end().to_string())
+        .collect();
+    let is_rule = |t: &str| !t.is_empty() && t.chars().all(|c| c == '─');
+    assert_eq!(texts.len(), 9, "{texts:?}");
+    assert!(is_rule(&texts[0]), "{texts:?}");
+    assert_eq!(texts[1], "", "{texts:?}");
+    assert!(texts[2].contains("Sign in to GitHub Copilot"), "{texts:?}");
+    assert_eq!(texts[3], "", "{texts:?}");
+    assert!(texts[4].contains("Requesting a code"), "{texts:?}");
+    assert_eq!(texts[5], "", "{texts:?}");
+    assert!(texts[6].contains("c copy code"), "{texts:?}");
+    assert_eq!(texts[7], "", "{texts:?}");
+    assert!(is_rule(&texts[8]), "{texts:?}");
+}
+
+#[test]
+fn the_verification_url_is_dim_so_the_code_is_the_bright_thing() {
+    // The code in its box is what gets transcribed; a cyan URL competed with
+    // it for the eye. Everything around the box reads as instruction now.
+    let app = login_app_device();
+    let onboarding = app.key_onboarding.as_ref().unwrap();
+    let mut buf = buffer(72, 16);
+    render_key_onboarding(buf.area, &mut buf, onboarding);
+    let visit_row = (0..16)
+        .find(|y| row(&buf, *y, 72).contains("Visit https://"))
+        .expect("the visit row");
+    assert_eq!(buf[(2, visit_row)].fg, MODEL_META_COLOR, "the URL is dim");
+    // …and the code inside the box stays bright.
+    let code_row = code_box_row(&buf, 72) + 1;
+    let code_col = row(&buf, code_row, 72).find('C').expect("the code") as u16;
+    assert_ne!(
+        buf[(code_col, code_row)].fg,
+        MODEL_META_COLOR,
+        "the code itself is not dim"
+    );
+}
+
+#[test]
+fn the_device_pages_hidden_cursor_parks_off_the_code() {
+    // The caret is hidden here, but a terminal with a cursor-trail animation
+    // (kitty and kin) still animates toward wherever it is *seated* — so the
+    // seat must not be the code box. Anything the emulator paints at the
+    // cursor would land on the one thing the page exists to be read from.
+    // It parks on the frame's first content row instead, where every other
+    // `/login` step already puts it.
+    let app = login_app_device();
+    assert!(!cursor_visible(&app), "the page is a wait, not a field");
+    let onboarding = app.key_onboarding.as_ref().unwrap();
+    let rows = crate::ui::login_view::key_onboarding_lines(onboarding, 72).len() as u16;
+    let area = Rect::new(0, 0, 72, rows);
+    let (_, y) = cursor_position(area, &app);
+    assert_eq!(y, DEVICE_CURSOR_ROW, "the frame's first content row");
+    let mut buf = buffer(72, rows);
+    render_key_onboarding(buf.area, &mut buf, onboarding);
+    assert_ne!(y, code_box_row(&buf, 72) + 1, "never on the code itself");
+}
+
+#[test]
+fn the_device_seat_does_not_move_when_the_code_arrives() {
+    // The page grows from 9 rows to 16 when GitHub answers. A seat measured
+    // from the frame's top is the same screen row across that change, so the
+    // trail fires once at most — a seat further down jumps with the growth,
+    // and the countdown re-arms a frame every 32ms behind it.
+    let mut app = login_app_subscription();
+    {
+        let onboarding = app.key_onboarding.as_mut().unwrap();
+        onboarding.step = KeyStep::Device;
+        onboarding.device = Some(crate::app::DeviceLogin {
+            provider_name: "GitHub Copilot".into(),
+            ..Default::default()
+        });
+    }
+    let seat_of = |app: &App| {
+        let onboarding = app.key_onboarding.as_ref().unwrap();
+        let rows = crate::ui::login_view::key_onboarding_lines(onboarding, 72).len() as u16;
+        cursor_position(Rect::new(0, 0, 72, rows.max(1)), app)
+    };
+    let waiting = seat_of(&app);
+    app.set_device_code("https://github.com/login/device", "C363-262E");
+    assert_eq!(
+        waiting,
+        seat_of(&app),
+        "the seat holds still across the growth"
     );
 }
