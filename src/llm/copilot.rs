@@ -590,6 +590,67 @@ fn mentions_sso(body: &str) -> bool {
     lower.contains("saml") || lower.contains("sso")
 }
 
+/// What a failed **chat** request means, as a sentence to show the user — the
+/// `/chat/completions` sibling of [`exchange_advice`].
+///
+/// `None` for anything we cannot actually explain: the provider's own body is
+/// more informative than a guess, so only the failures with a known cause get
+/// rewritten.
+#[must_use]
+pub fn chat_advice(status: u16, body: &str, model: &str) -> Option<String> {
+    let code = error_code(body).unwrap_or_default();
+    let lower = body.to_ascii_lowercase();
+    match status {
+        400 if code == "model_not_supported" => Some(format!(
+            "Copilot will not serve {model} to this account. It is usually a \
+             model whose terms have not been accepted — open it once at \
+             github.com/settings/copilot/features — or one your plan does not \
+             include. Pick another with /model."
+        )),
+        400 if code == "model_not_available_for_integrator" => Some(format!(
+            "Copilot does not offer {model} to this client. Pick another with \
+             /model."
+        )),
+        402 => Some(
+            "Your Copilot quota is used up — the request never ran. It resets \
+             on your plan's own schedule; github.com/settings/copilot shows \
+             what is left."
+                .to_string(),
+        ),
+        429 => Some(
+            "Copilot is rate-limiting this account — wait a moment and try \
+             again."
+                .to_string(),
+        ),
+        401 => {
+            Some("Copilot rejected the session token. Run /login and sign in again.".to_string())
+        }
+        403 if lower.contains("saml") || lower.contains("sso") => Some(
+            "This token is not authorized for your organization's SAML SSO. \
+             Authorize it at github.com/settings/tokens, then run /login again."
+                .to_string(),
+        ),
+        403 => Some(
+            "Copilot refused the request — your organization's Copilot policy \
+             may block using it outside a supported editor."
+                .to_string(),
+        ),
+        _ => None,
+    }
+}
+
+/// The `error.code` tag out of a chat error body, when it sends one as a
+/// string. Copilot's codes (`model_not_supported`, `quota_exceeded`, …) are
+/// what tell two same-status failures apart.
+fn error_code(body: &str) -> Option<String> {
+    let parsed: serde_json::Value = serde_json::from_str(body).ok()?;
+    let code = parsed
+        .get("error")
+        .and_then(|e| e.get("code"))
+        .or_else(|| parsed.get("code"))?;
+    Some(code.as_str()?.to_string())
+}
+
 /// GitHub's own `message` out of an error body, trimmed to one readable line.
 /// `None` when the body isn't its usual `{"message": …}` shape or says nothing.
 fn github_message(body: &str) -> Option<String> {
@@ -1169,6 +1230,72 @@ mod tests {
     fn an_unrecognised_status_still_carries_githubs_own_words() {
         let advice = exchange_advice(500, r#"{"message":"upstream exploded"}"#);
         assert!(advice.contains("upstream exploded"), "{advice}");
+    }
+
+    // --- a failed chat request, as a sentence (docs/copilot.md) ---
+
+    #[test]
+    fn model_not_supported_names_the_model_and_the_way_out() {
+        // The error a user actually meets, and the rawest one: a wire body
+        // saying "The requested model is not supported" tells them nothing
+        // about *which* model or what to do instead.
+        let body = r#"{"error":{"message":"The requested model is not supported.",
+            "code":"model_not_supported","param":"model","type":"invalid_request_error"}}"#;
+        let advice = chat_advice(400, body, "claude-sonnet-4.6").expect("advised");
+        assert!(advice.contains("claude-sonnet-4.6"), "{advice}");
+        assert!(advice.contains("/model"), "the way out: {advice}");
+    }
+
+    #[test]
+    fn an_exhausted_quota_says_so_rather_than_reading_as_a_bad_request() {
+        // A metered free seat meets this one, and `402` is its own thing: the
+        // request was fine, the allowance is gone.
+        for body in [
+            r#"{"error":{"message":"You have exceeded your monthly quota","code":"quota_exceeded"}}"#,
+            r#"{"message":"You have no quota","code":"quota_exceeded"}"#,
+        ] {
+            let advice = chat_advice(402, body, "gpt-4o").expect("advised");
+            assert!(advice.contains("quota"), "{advice}");
+            assert!(
+                !advice.contains("not supported"),
+                "not a model problem: {advice}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_rate_limit_is_told_apart_from_an_exhausted_quota() {
+        let advice =
+            chat_advice(429, r#"{"error":{"message":"too many"}}"#, "gpt-4o").expect("advised");
+        assert!(
+            advice.contains("rate-limit") || advice.contains("rate limit"),
+            "{advice}"
+        );
+    }
+
+    #[test]
+    fn a_policy_403_points_at_the_organization_not_the_model() {
+        let body = "403 Unauthorized: not authorized to use this Copilot feature\n";
+        let advice = chat_advice(403, body, "gpt-4o").expect("advised");
+        assert!(
+            advice.contains("organization") || advice.contains("policy"),
+            "{advice}"
+        );
+    }
+
+    #[test]
+    fn an_ordinary_failure_gets_no_invented_advice() {
+        // Only the failures we can actually explain are rewritten; everything
+        // else keeps the provider's own body, which is more informative than a
+        // guess would be.
+        assert_eq!(
+            chat_advice(500, r#"{"error":{"message":"boom"}}"#, "m"),
+            None
+        );
+        assert_eq!(
+            chat_advice(400, r#"{"error":{"message":"bad json"}}"#, "m"),
+            None
+        );
     }
 
     // --- request identity ---

@@ -320,7 +320,28 @@ impl OpenAiClient {
         // detach-don't-join discipline, docs/interrupt.md).
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || run_transport(req, &tx));
-        drain_stream(&rx, cancel, on_delta)
+        drain_stream(&rx, cancel, on_delta).map_err(|e| self.explain(e))
+    }
+
+    /// Rewrite a failure the provider explains badly. Only GitHub Copilot has
+    /// such a mapping ([`super::copilot::chat_advice`]) — its wire bodies name
+    /// a `code` and nothing a user can act on, and the commonest of them
+    /// (`model_not_supported`) is not even about the request being malformed.
+    /// Every other provider's error passes through exactly as it did.
+    fn explain(&self, error: LlmError) -> LlmError {
+        let LlmError::Api { status, body } = &error else {
+            return error;
+        };
+        if self.cfg.auth != super::AuthScheme::GithubCopilot {
+            return error;
+        }
+        match super::copilot::chat_advice(*status, body, &self.cfg.model) {
+            Some(advice) => LlmError::Api {
+                status: *status,
+                body: advice,
+            },
+            None => error,
+        }
     }
 }
 
@@ -1239,6 +1260,42 @@ mod tests {
         assert_eq!(p["prompt_cache_key"], json!("alter-zero-42"));
         assert_eq!(p["reasoning"], json!({"effort": "high"}));
         assert!(p.get("reasoning_effort").is_none(), "{p}");
+    }
+
+    #[test]
+    fn only_a_copilot_config_has_its_failures_rewritten() {
+        let raw = r#"{"error":{"message":"The requested model is not supported.",
+            "code":"model_not_supported"}}"#;
+        let failure = || LlmError::Api {
+            status: 400,
+            body: raw.to_string(),
+        };
+        // Every other provider's error passes through byte-for-byte — its own
+        // body is the best account of what went wrong.
+        let mut plain = ModelConfig::fallback();
+        plain.model = "gpt-4o-mini".to_string();
+        let through = OpenAiClient::new(plain).explain(failure());
+        assert_eq!(through.to_string(), failure().to_string());
+
+        // Copilot's gets the sentence, naming the model it refused.
+        let mut copilot = ModelConfig::fallback();
+        copilot.auth = crate::llm::AuthScheme::GithubCopilot;
+        copilot.model = "claude-sonnet-4.6".to_string();
+        let explained = OpenAiClient::new(copilot).explain(failure()).to_string();
+        assert!(explained.contains("claude-sonnet-4.6"), "{explained}");
+        assert!(explained.contains("/model"), "{explained}");
+    }
+
+    #[test]
+    fn a_copilot_failure_we_cannot_explain_keeps_its_own_body() {
+        let failure = LlmError::Api {
+            status: 500,
+            body: r#"{"error":{"message":"upstream exploded"}}"#.to_string(),
+        };
+        let mut cfg = ModelConfig::fallback();
+        cfg.auth = crate::llm::AuthScheme::GithubCopilot;
+        let out = OpenAiClient::new(cfg).explain(failure).to_string();
+        assert!(out.contains("upstream exploded"), "{out}");
     }
 
     #[test]
