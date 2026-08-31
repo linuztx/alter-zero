@@ -499,6 +499,35 @@ pub(super) const TOOL_DIFF_ADD_BG: Color = Color::Rgb(0x21, 0x3A, 0x2B);
 /// tint); the removed text is additionally dimmed, codex-style.
 pub(super) const TOOL_DIFF_DEL_BG: Color = Color::Rgb(0x4A, 0x22, 0x1D);
 
+/// Background tint of the **characters that changed** on an added row — the
+/// character-level refinement's own colour (`docs/inline-diff.md`). A clearly
+/// brighter green than the row's [`TOOL_DIFF_ADD_BG`], because the two are
+/// read together: the muted row tint says *this line changed*, the bright mark
+/// says *here*. Bright enough to find at a glance, dark enough that the row's
+/// syntax colours still read over it.
+pub(super) const TOOL_DIFF_ADD_MARK_BG: Color = Color::Rgb(0x2E, 0x6F, 0x3E);
+
+/// Background tint of the characters that changed on a removed row — the
+/// [`TOOL_DIFF_ADD_MARK_BG`] twin over [`TOOL_DIFF_DEL_BG`].
+pub(super) const TOOL_DIFF_DEL_MARK_BG: Color = Color::Rgb(0x8B, 0x2F, 0x27);
+
+/// How much of a `-`/`+` line pair must be **common** for the character-level
+/// refinement to run at all, as a percentage of the longer line's
+/// non-whitespace display columns (`docs/inline-diff.md`). Below it the two
+/// lines are a replacement rather than an edit: there is no "what changed" to
+/// point at, and marking most of the line is noisier than marking none of it,
+/// so the row keeps its flat tint. Whitespace is excluded from the count so a
+/// shared indent alone never reads as similarity.
+pub(super) const INLINE_DIFF_MIN_COMMON_PCT: usize = 30;
+
+/// The most token-LCS cells one refined pair will fill. The common prefix and
+/// suffix are trimmed first, so a typical edit's changed middle is a token or
+/// two however long the line; past this bound (a minified bundle line) the
+/// whole middle is marked changed instead — the trimmed ends are still real
+/// common context, so the answer stays honest and the live cell keeps
+/// re-rendering inside its 32 ms frame.
+pub(super) const INLINE_DIFF_MAX_CELLS: usize = 40_000;
+
 /// How many numbered body rows a `write`/`edit` cell shows inline before the
 /// `… +N lines (ctrl+o to expand)` hint (Claude-Code's ~10-row Write preview;
 /// other tools keep the tighter [`TOOL_PEEK_LINES`]).

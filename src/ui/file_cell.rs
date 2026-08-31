@@ -4,6 +4,7 @@
 
 use super::assistant::code_content_rows;
 use super::inline::wrap_inline_hanging;
+use super::inline_diff::{RefineRow, refine_rows};
 use super::theme::*;
 use super::tool::{more_hint_line, tool_output_lines};
 use super::wrap::{cols, segments_cols, truncate_cols};
@@ -252,22 +253,20 @@ fn file_body_indent() -> usize {
     cols(TOOL_RESULT_PREFIX) + 1
 }
 
-/// One numbered row's styled content, clipped to `max_rows` display rows of
-/// `width` columns when the caller sets a budget — the numbered file cell's
-/// half of the per-line row budget (`docs/long-lines.md`). [`code_content_rows`]
+/// One numbered row's already-styled content ([`row_segments`]), clipped to
+/// `max_rows` display rows of `width` columns when the caller sets a budget —
+/// the numbered file cell's half of the per-line row budget
+/// (`docs/long-lines.md`). [`code_content_rows`]
 /// hard-breaks at exactly `width`, so `max_rows * width` columns **is**
 /// `max_rows` rows; the cut is marked with a dim [`TOOL_LINE_ELLIPSIS`] in the
-/// last column, which keeps whatever background tint the row carries. A row
-/// that fits comes back unclipped and unmarked.
+/// last column, which keeps the row's `bg` tint. A row that fits comes back
+/// unclipped and unmarked.
 fn clip_segments(
-    segs: &[highlight::Seg],
+    segments: Vec<(String, Style)>,
     width: usize,
     max_rows: Option<usize>,
+    bg: Option<Color>,
 ) -> Vec<(String, Style)> {
-    let segments: Vec<(String, Style)> = segs
-        .iter()
-        .map(|seg| (seg.text.clone(), seg.style))
-        .collect();
     let Some(max) = max_rows else {
         return segments;
     };
@@ -291,11 +290,106 @@ fn clip_segments(
             break;
         }
     }
+    let mark = Style::new().fg(TOOL_DIM_COLOR);
     kept.push((
         TOOL_LINE_ELLIPSIS.to_string(),
-        Style::new().fg(TOOL_DIM_COLOR),
+        bg.map_or(mark, |b| mark.bg(b)),
     ));
     kept
+}
+
+/// The largest index `<= at` that is a char boundary of `s`. Defensive: the
+/// changed ranges are token boundaries of the very line these segments came
+/// from, so this is a no-op in practice — but slicing a `&str` off one would
+/// panic, and a syntax highlighter is not something to bet a redraw on.
+fn floor_boundary(s: &str, at: usize) -> usize {
+    let mut i = at.min(s.len());
+    while i > 0 && !s.is_char_boundary(i) {
+        i -= 1;
+    }
+    i
+}
+
+/// Style one numbered row's syntax segments for display, splitting them at the
+/// `changed` byte ranges — the character-level refinement
+/// (`docs/inline-diff.md`).
+///
+/// The row's own `bg` tint sits under everything; the changed runs are lifted
+/// onto the brighter `mark_bg` and bolded, so the muted row tint answers *this
+/// line changed* while the bright one answers *here* — and only ever over
+/// characters that genuinely differ, never over text the edit left alone.
+/// On a removed row the
+/// unchanged text dims (codex's look) and the changed text deliberately does
+/// **not**: dimming the one run the eye is meant to find would defeat marking
+/// it at all.
+///
+/// With no `changed` ranges this is exactly the old uniform styling, which is
+/// what keeps an unrefined pair — and every `read`/`write` body — rendering
+/// byte-for-byte as it did before.
+fn row_segments(
+    segs: &[highlight::Seg],
+    changed: &[Range<usize>],
+    bg: Option<Color>,
+    mark_bg: Option<Color>,
+    dim_content: bool,
+) -> Vec<(String, Style)> {
+    let plain = |style: Style| {
+        let style = bg.map_or(style, |b| style.bg(b));
+        if dim_content {
+            style.add_modifier(Modifier::DIM)
+        } else {
+            style
+        }
+    };
+    if changed.is_empty() {
+        return segs
+            .iter()
+            .map(|seg| (seg.text.clone(), plain(seg.style)))
+            .collect();
+    }
+    let marked = |style: Style| {
+        mark_bg
+            .map_or(style, |b| style.bg(b))
+            .add_modifier(Modifier::BOLD)
+    };
+    let mut out: Vec<(String, Style)> = Vec::new();
+    let mut at = 0usize;
+    for seg in segs {
+        let end = at + seg.text.len();
+        let mut cur = at;
+        while cur < end {
+            // The run from `cur` is either inside a changed range (up to its
+            // end) or outside one (up to the next range's start).
+            let hit = changed.iter().find(|r| r.start <= cur && cur < r.end);
+            let stop = hit.map_or_else(
+                || {
+                    changed
+                        .iter()
+                        .map(|r| r.start)
+                        .filter(|&start| start > cur)
+                        .min()
+                        .unwrap_or(end)
+                },
+                |r| r.end,
+            );
+            let stop = stop.min(end);
+            let (lo, hi) = (
+                floor_boundary(&seg.text, cur - at),
+                floor_boundary(&seg.text, stop - at),
+            );
+            if hi > lo {
+                let style = if hit.is_some() {
+                    marked(seg.style)
+                } else {
+                    plain(seg.style)
+                };
+                out.push((seg.text[lo..hi].to_string(), style));
+            }
+            cur = stop;
+        }
+        at = end;
+    }
+    out
 }
 
 /// Build the display rows for one numbered source row: a dim right-aligned
@@ -303,7 +397,9 @@ fn clip_segments(
 /// syntax-highlighted — added rows on the dark-green tint, removed rows
 /// (their text dimmed) on the dark-red one, both padded to the full width.
 /// Long content wraps ([`code_content_rows`]); continuations indent under the
-/// content column and keep the tint.
+/// content column and keep the tint. `changed` are the row's character-level
+/// refinement ranges ([`row_segments`], `docs/inline-diff.md`) — empty for an
+/// unrefined row, which renders exactly as it always did.
 ///
 /// `max_rows` is the collapsed cell's per-line budget ([`clip_segments`],
 /// `docs/long-lines.md`): a minified `.json` line is cut to that many rows and
@@ -313,16 +409,17 @@ fn numbered_row_lines(
     gutter: &str,
     sign: Option<char>,
     segs: &[highlight::Seg],
+    changed: &[Range<usize>],
     indent_cols: usize,
     width: u16,
     max_rows: Option<usize>,
 ) -> Vec<Line<'static>> {
     let dim = Style::new().fg(TOOL_DIM_COLOR);
     let indent = " ".repeat(indent_cols);
-    let (bg, dim_content) = match sign {
-        Some('+') => (Some(TOOL_DIFF_ADD_BG), false),
-        Some('-') => (Some(TOOL_DIFF_DEL_BG), true),
-        _ => (None, false),
+    let (bg, mark_bg, dim_content) = match sign {
+        Some('+') => (Some(TOOL_DIFF_ADD_BG), Some(TOOL_DIFF_ADD_MARK_BG), false),
+        Some('-') => (Some(TOOL_DIFF_DEL_BG), Some(TOOL_DIFF_DEL_MARK_BG), true),
+        _ => (None, None, false),
     };
     let sign_style = match sign {
         Some('+') => Style::new().fg(TOOL_DIFF_ADD_COLOR),
@@ -337,7 +434,11 @@ fn numbered_row_lines(
         .saturating_sub(indent_cols + gutter_cols)
         .max(1);
 
-    let segments = clip_segments(segs, content_width, max_rows);
+    // The content spans arrive fully styled — tint, dim and word highlight
+    // baked in before the wrap, so a changed word split across two display
+    // rows keeps its mark on both.
+    let styled = row_segments(segs, changed, bg, mark_bg, dim_content);
+    let segments = clip_segments(styled, content_width, max_rows, bg);
     code_content_rows(&segments, content_width as u16)
         .into_iter()
         .enumerate()
@@ -354,18 +455,39 @@ fn numbered_row_lines(
             let mut row_cols = 0usize;
             for span in row {
                 row_cols += cols(&span.content);
-                let mut style = with_bg(span.style);
-                if dim_content {
-                    style = style.add_modifier(Modifier::DIM);
-                }
-                spans.push(Span::styled(span.content.into_owned(), style));
+                spans.push(span);
             }
+            // The pad takes the plain row tint, never the word one, so the
+            // bright block ends where the changed text ends instead of
+            // bleeding to the terminal's edge.
             let pad = content_width.saturating_sub(row_cols);
             if bg.is_some() && pad > 0 {
                 spans.push(Span::styled(" ".repeat(pad), with_bg(Style::new())));
             }
             Line::from(spans)
         })
+        .collect()
+}
+
+/// One parsed row as the character-level refinement sees it: a numbered row is its
+/// sign plus its content, everything else breaks the run (`docs/inline-diff.md`).
+fn refine_row(row: &FileRow) -> RefineRow<'_> {
+    match row {
+        FileRow::Numbered { sign, text, .. } => RefineRow::Line(sign.unwrap_or(' '), text),
+        FileRow::Gap(_) | FileRow::Note(_) => RefineRow::Break,
+    }
+}
+
+/// [`refine_row`] over a body whose rows all parsed ([`parse_file_cell`]).
+fn refine_input_rows(rows: &[FileRow]) -> Vec<RefineRow<'_>> {
+    rows.iter().map(refine_row).collect()
+}
+
+/// [`refine_row`] over a body parsed row by row ([`numbered_body_lines`]),
+/// where a line that didn't parse renders verbatim and breaks the run.
+fn refine_input(rows: &[Option<FileRow>]) -> Vec<RefineRow<'_>> {
+    rows.iter()
+        .map(|row| row.as_ref().map_or(RefineRow::Break, refine_row))
         .collect()
 }
 
@@ -396,21 +518,28 @@ pub(super) fn numbered_body_lines(
     let indent = " ".repeat(indent_cols);
     let note_width = (width as usize).saturating_sub(indent_cols).max(1);
     let source: Vec<&str> = body.lines().collect();
+    // Parse the whole body first: the refinement pairs a `-` run with the `+`
+    // run following it, which no per-row pass can see.
+    let parsed: Vec<Option<FileRow>> = source
+        .iter()
+        .map(|raw| parse_file_row(raw, signed))
+        .collect();
+    let changed = refine_rows(&refine_input(&parsed));
     let mut hl = highlight::Highlighter::new(lang);
     let mut out = Vec::new();
     let mut used = 0usize;
     for (i, raw) in source.iter().enumerate() {
-        let display = match parse_file_row(raw, signed) {
+        let display = match &parsed[i] {
             Some(FileRow::Numbered { gutter, sign, text }) => {
-                let segs = hl.line(&text);
-                numbered_row_lines(&gutter, sign, &segs, indent_cols, width, None)
+                let segs = hl.line(text);
+                numbered_row_lines(gutter, *sign, &segs, &changed[i], indent_cols, width, None)
             }
             Some(FileRow::Gap(raw) | FileRow::Note(raw)) => {
                 // Hunks re-synchronize at the gap; the lexer state resets too.
                 hl = highlight::Highlighter::new(lang);
                 vec![Line::from(vec![
                     Span::raw(indent.clone()),
-                    Span::styled(truncate_cols(&raw, note_width), dim),
+                    Span::styled(truncate_cols(raw, note_width), dim),
                 ])]
             }
             None => vec![Line::from(vec![
@@ -452,6 +581,7 @@ pub(super) fn file_cell_lines(
     // The collapsed cell also bounds ONE source line (`docs/long-lines.md`);
     // the Ctrl+O expansion is where the whole line lives, so it passes `None`.
     let line_rows = peek.then_some(TOOL_LINE_MAX_ROWS);
+    let changed = refine_rows(&refine_input_rows(&rows));
     let mut used = 0usize;
     let mut hidden = 0usize;
     let mut hl = highlight::Highlighter::new(lang);
@@ -471,7 +601,15 @@ pub(super) fn file_cell_lines(
             ])],
             FileRow::Numbered { gutter, sign, text } => {
                 let segs = hl.line(text);
-                numbered_row_lines(gutter, *sign, &segs, file_body_indent(), width, line_rows)
+                numbered_row_lines(
+                    gutter,
+                    *sign,
+                    &segs,
+                    &changed[i],
+                    file_body_indent(),
+                    width,
+                    line_rows,
+                )
             }
         };
         if used + display.len() > budget && used > 0 {

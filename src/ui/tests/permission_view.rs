@@ -1232,3 +1232,32 @@ fn an_agent_views_prompt_keeps_no_context_for_another_conversations_request() {
         "the viewed agent's own batch is not the answer to this: {lines:?}"
     );
 }
+
+#[test]
+fn an_edit_prompt_marks_the_characters_that_changed() {
+    // The preview is where "what exactly am I approving?" is load-bearing, so
+    // it gets the character-level refinement too (`docs/inline-diff.md`) — it shares
+    // `numbered_body_lines` with the cell. Here the timeout 30 -> 90.
+    use super::super::theme::{TOOL_DIFF_ADD_MARK_BG, TOOL_DIFF_DEL_MARK_BG};
+    let body = "11      log.info(\"start\")\n12 -    timeout_seconds = 30\n12 +    timeout_seconds = 90\n13      run()";
+    let app = app_with(request(PermissionKind::Edit, "script.py", body));
+    let lines = permission_lines(&app, 60, 40);
+    let marked = |bg| -> String {
+        lines
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .filter(|s| s.style.bg == Some(bg))
+            .map(|s| s.content.as_ref())
+            .collect()
+    };
+    assert_eq!(
+        marked(TOOL_DIFF_DEL_MARK_BG),
+        "3",
+        "only the digit that changed"
+    );
+    assert_eq!(
+        marked(TOOL_DIFF_ADD_MARK_BG),
+        "9",
+        "only the digit that changed"
+    );
+}

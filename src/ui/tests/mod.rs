@@ -22,6 +22,7 @@ mod footer;
 mod header;
 mod hooks_view;
 mod inline;
+mod inline_diff;
 mod layout;
 mod live;
 mod login_view;
