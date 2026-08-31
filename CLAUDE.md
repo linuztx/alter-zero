@@ -955,9 +955,17 @@ at the bottom: every framed body paints **bottom-anchored**
 stay on screen, and the skipped top **flows into the terminal's real
 scrollback** directly above the region (`ui::view_flow` — eligibility
 mirrors the render precedence, so the painted view is the one that flows,
-a covering ask/permission modal's own page included; the ↓ manager anchors
-but never flows, its details page
-live-tails) where the terminal's own scrolling reads the whole page — and
+a covering ask/permission modal's own page included; **every** framed view
+flows, the ↓ manager band with them — but what a flow is *signed* on is a
+per-view choice (`FlowSign`): a page that changes only on a keystroke signs
+its **rows**, so any edit re-signs and the rebuild re-flows them, while the
+manager's details page, the one page that ticks **between** keystrokes (its
+runtime advances and its output box tails at the open band's ~30 fps), signs
+the **shell it describes** and its flowed top *freezes* in scrollback rather
+than purge-rebuilding the screen every frame — anchoring alone used to drop
+those rows into no buffer at all, so the conversation ran straight into a
+headless output box, `docs/background.md`, `smoke.sh` Phase 105) where the
+terminal's own scrolling reads the whole page — and
 the four windowed pickers (`/model`, `/login`, `/settings`, `/skills`) are
 the same shape now: each render is one **line builder**
 (`model_view_lines`/`key_onboarding_lines`/`settings_view_lines`/

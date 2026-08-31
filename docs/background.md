@@ -237,8 +237,9 @@ geometry (updated 2026-08-08): the reservation is `ui::layout`'s
 all four views go through them, so none can drift (`docs/llm.md`).
 Tool cells still commit
 beneath the region as they resolve (commits stay allowed while the band is
-open), so the transition running-cell → committed-cell reads exactly like it
-does over the composer. One consequence of the band owning every key: the
+open — unless its page is flowing, where they pause like under any other
+flowed view and the flow-exit rebuild regenerates them), so the transition
+running-cell → committed-cell reads exactly like it does over the composer. One consequence of the band owning every key: the
 running cell's delayed `(ctrl+b to run in background)` hint is suppressed
 while the band is open — `App::command_elapsed` reads `None`, the
 permission-prompt rule — since Ctrl+B would not reach the runner from
@@ -269,6 +270,24 @@ inside the band.
   stop`. The shell keeps streaming into the box (the bg channel schedules
   frames; the draw tick re-arms ~30fps while the band is open so `Runtime`
   ticks).
+- **A page taller than the terminal flows its top into real scrollback**
+  (`docs/view-flow.md`). The band is bottom-anchored like every framed view,
+  so its interactive tail — the hints, the closing rule — always stays on
+  screen; the rows the anchor skips used to be dropped into **no buffer at
+  all**, which on a 24-row terminal ate the details page's top rule and left
+  the conversation running straight into a headless box (the reported bug:
+  *"it removes the line texts when I scroll up"*). They are committed above
+  the live region now, so the terminal's own scrolling reads the page whole.
+  The details page is the one page in the TUI that changes **between**
+  keystrokes — `Runtime` ticks, the output box fills — so its flow is signed
+  on the shell's id (`ui::view_flow`'s `FlowSign::Frozen`) rather than on its
+  rows: the flowed top **freezes** in scrollback where it was committed,
+  instead of re-signing the flow and purge-rebuilding the screen at the
+  band's own ~30 fps. A resize, `←` back to the list, or a different shell
+  re-signs it and the rebuild re-flows the page. Nothing about what the band
+  *draws* changes — the anchor, the fields, the box and the hints are exactly
+  as they were; the fix is only where the skipped rows go. The list page
+  changes on a keystroke, so it signs its rows like the menus do.
 - `x` returns `Action::KillBackground(id)`; the loop kills via the registry
   and the resulting `Exited` event removes the row (details falls back to the
   list; stopping the last shell closes the band — see above).

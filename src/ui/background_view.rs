@@ -212,8 +212,12 @@ pub fn background_view_lines(app: &App, width: u16) -> Vec<Line<'static>> {
 /// `docs/background.md`). Pure — `render_live` paints this.
 pub fn render_background_view(area: Rect, buf: &mut Buffer, app: &App) {
     // Bottom-anchored so a squeezed terminal keeps the band's interactive
-    // tail on screen — anchor only, never the scrollback flow: the details
-    // page live-tails a running shell, and per-frame content would churn the
-    // flow's purge rebuild every tick (`docs/view-flow.md`).
+    // tail on screen, and the rows that anchoring skips **flow** into real
+    // scrollback like every other framed view — the details page's top rule,
+    // its title and its fields used to be dropped into no buffer at all, so
+    // the conversation ran straight into a headless box (`docs/view-flow.md`).
+    // Because that page live-tails a running shell, its flow is signed on the
+    // shell rather than on its rows (`FlowSign::Frozen`): the flowed top
+    // freezes in scrollback instead of purge-rebuilding the screen every tick.
     super::view_flow::render_framed_tail(area, buf, background_view_lines(app, area.width));
 }

@@ -344,3 +344,168 @@ fn a_screen_tall_ask_modal_flows_its_top() {
     });
     assert!(view_flow(&small, width, 40, NO_CAP).is_none());
 }
+
+/// The ↓ background manager open on one shell's **details** page — the
+/// live-tailing page whose top used to be dropped into no buffer at all on a
+/// short terminal (`docs/background.md`).
+fn tall_background_app() -> App {
+    let mut app = App::new();
+    app.bg_started(
+        "bash_1",
+        "for i in $(seq 1 100); do echo $i; sleep 1; done",
+        None,
+        true,
+        None,
+    );
+    for i in 1..=20 {
+        app.bg_output("bash_1", &format!("{i}\n"));
+    }
+    app.set_background_runtime("bash_1", std::time::Duration::from_secs(64));
+    app.open_background_view();
+    app.background_view = Some(BackgroundView::Details {
+        id: "bash_1".to_string(),
+    });
+    app
+}
+
+#[test]
+fn the_background_managers_details_page_flows_its_top() {
+    // The reported bug: a details page taller than the terminal bottom-
+    // anchored, and the rows it skipped — the top rule, the `Shell details`
+    // title, the status/runtime fields — went into NO buffer at all, so
+    // scrolling the terminal up showed the conversation running straight
+    // into a headless box. They flow into real scrollback now, like every
+    // other framed view (`docs/view-flow.md`).
+    let app = tall_background_app();
+    let (width, height) = (60u16, 20u16);
+    let lines = crate::ui::background_view_lines(&app, width);
+    assert!(lines.len() > usize::from(height), "the page overflows");
+    let flow = view_flow(&app, width, height, NO_CAP).expect("the details page overflows");
+    let flowed: Vec<String> = flow.lines.iter().map(plain).collect();
+    let expected: Vec<String> = lines[..lines.len() - usize::from(height)]
+        .iter()
+        .map(plain)
+        .collect();
+    assert_eq!(flowed, expected, "the skipped top is what flows");
+    assert!(
+        flowed[0].starts_with('─'),
+        "the flow opens at the page's top rule: {flowed:?}"
+    );
+    assert!(
+        flowed.iter().any(|r| r.contains("Shell details")),
+        "the title rides the flow: {flowed:?}"
+    );
+    assert_eq!(
+        Some(flow.signature),
+        view_flow_signature(&app, width, height, NO_CAP),
+        "the signature helper matches the flow it stands for"
+    );
+}
+
+#[test]
+fn the_details_pages_flowed_top_freezes_while_the_shell_ticks() {
+    // The details page live-tails: its runtime advances every second and its
+    // output box grows, at the 32ms animation cadence the open band keeps
+    // running (`App::wants_animation_frames`). Signing those rows would
+    // purge-rebuild the whole screen thirty times a second, so this one page
+    // signs the **shell it describes** instead: the rows committed above the
+    // region freeze there, which is what scrollback holds anyway.
+    let mut app = tall_background_app();
+    let (width, height) = (60u16, 20u16);
+    let flowed: Vec<String> = view_flow(&app, width, height, NO_CAP)
+        .expect("overflows")
+        .lines
+        .iter()
+        .map(plain)
+        .collect();
+    assert!(
+        flowed.iter().any(|r| r.contains("Runtime:")),
+        "the ticking runtime row is inside the flow at this height: {flowed:?}"
+    );
+    let before = view_flow_signature(&app, width, height, NO_CAP).expect("overflows");
+    app.set_background_runtime("bash_1", std::time::Duration::from_secs(65));
+    app.bg_output("bash_1", "21\n");
+    let after = view_flow_signature(&app, width, height, NO_CAP).expect("still overflows");
+    assert_eq!(before, after, "a tick must not churn a purge rebuild");
+}
+
+#[test]
+fn a_real_move_off_the_details_page_re_signs_the_flow() {
+    // Freezing is only for the tick: everything that actually moves the page
+    // re-signs, and the boundary's purge rebuild re-flows it — a different
+    // shell, a walk back to the list, a resize.
+    let (width, height) = (60u16, 20u16);
+    let mut app = tall_background_app();
+    let details = view_flow_signature(&app, width, height, NO_CAP).expect("overflows");
+
+    let mut other = tall_background_app();
+    other.bg_started("bash_2", "ping x.com", None, true, None);
+    other.background_view = Some(BackgroundView::Details {
+        id: "bash_2".to_string(),
+    });
+    assert_ne!(
+        Some(details),
+        view_flow_signature(&other, width, height, NO_CAP),
+        "a different shell's page is a different flow"
+    );
+
+    assert_ne!(
+        Some(details),
+        view_flow_signature(&app, width, height - 2, NO_CAP),
+        "a resize re-signs: two more rows flow"
+    );
+
+    app.background_view = Some(BackgroundView::List { selected: 0 });
+    assert_ne!(
+        Some(details),
+        view_flow_signature(&app, width, height, NO_CAP),
+        "walking back to the list re-signs"
+    );
+}
+
+#[test]
+fn the_managers_list_page_signs_its_rows_like_every_other_menu() {
+    // Only the details page ticks. The list changes on a keystroke, so it
+    // keeps the ordinary rule — a selection move inside the flowed top
+    // re-signs, and the rebuild re-flows the moved `❯`.
+    let mut app = App::new();
+    for i in 0..3 {
+        app.bg_started(
+            &format!("bash_{i}"),
+            &format!("sleep {i}"),
+            None,
+            true,
+            None,
+        );
+    }
+    app.open_background_view();
+    let (width, height) = (60u16, 6u16);
+    let flowed: Vec<String> = view_flow(&app, width, height, NO_CAP)
+        .expect("the list overflows a 6-row terminal")
+        .lines
+        .iter()
+        .map(plain)
+        .collect();
+    assert!(
+        flowed.iter().any(|r| r.contains("❯ sleep 0")),
+        "the selected row is inside the flow at this height: {flowed:?}"
+    );
+    let before = view_flow_signature(&app, width, height, NO_CAP).expect("overflows");
+    app.background_view = Some(BackgroundView::List { selected: 1 });
+    let after = view_flow_signature(&app, width, height, NO_CAP).expect("still overflows");
+    assert_ne!(before, after, "a selection move re-signs the list's flow");
+
+    // …and so does a Details view whose shell has gone: it renders the LIST
+    // (`background_view_lines`' defensive fallback), a page that moves — so
+    // freezing it on the dead id would strand the roster mid-exit.
+    app.background_view = Some(BackgroundView::Details {
+        id: "ghost".to_string(),
+    });
+    let ghost = view_flow_signature(&app, width, height, NO_CAP).expect("the fallback list flows");
+    app.bg_exited("bash_2", Some(0), false);
+    assert_ne!(
+        Some(ghost),
+        view_flow_signature(&app, width, height, NO_CAP),
+        "the fallback list re-signs as its rows change"
+    );
+}

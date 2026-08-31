@@ -37,8 +37,24 @@ Two rules, both pure policy in `ui`, acted on by the boundary:
    region**, exactly where they visually belong: scrollback ends with the
    page's top, the screen shows the page's tail, and the terminal's own
    scrolling reads the whole thing as one piece. `ui::view_flow` is the pure
-   decision — which rows flow, and a **signature** (a hash of the flowed rows'
-   text at this width/height) identifying the flowed state.
+   decision — which rows flow, and a **signature** identifying the flowed
+   state (the flowed rows' text at this width/count, or — for a page that
+   ticks — a stable key naming it; see below).
+
+What the signature is computed from is the one per-view choice
+(`ui::view_flow`'s `FlowSign`). A page that changes only on a **keystroke**
+signs its **rows** — any edit to them re-signs, and the rebuild re-flows the
+new ones. That is every page but one: the ↓ manager's **details** page
+live-tails a running shell, so its runtime, its output box and its `Showing N
+lines` caption all move between keystrokes, at the 32 ms cadence an open band
+keeps running (`App::wants_animation_frames`). Signing its rows would
+purge-rebuild the whole screen thirty times a second, so it signs the **shell
+it describes** instead (`FlowSign::Frozen`) and its flowed top **freezes**
+where it was committed — a resize, a walk back to the list or a different
+shell still re-signs it, because the row count and the width are hashed in
+both regimes. Frozen text is what scrollback holds for everything else on the
+screen, and it is what the reported bug asked for: *"if it's not shown in the
+terminal window just freeze it instead of removing the detail."*
 
 The flowed rows are not history, so nothing may be left behind when they go
 stale. The boundary (`tui::view`) keeps the signature of what it last flowed
@@ -103,11 +119,23 @@ pathological page can't turn one navigation into an unbounded write.
   actually gets — building the flowed context without the budget is what
   keeps the page independent of `term_height` there — so
   `permission_height` and `render_permission` can never disagree.
-- **Bottom anchor only**: the ↓ background manager. Its details page
-  live-tails a running shell — per-frame content whose flow signature would
-  churn a purge rebuild every tick — and it is bounded by design
-  (`BG_OUTPUT_ROWS`), so anchoring alone keeps its interactive tail visible
-  on a squeezed terminal.
+- **Flow (frozen) + bottom anchor**: the ↓ background manager
+  (`docs/background.md`). Anchoring alone was the reported bug: on a terminal
+  a couple of rows shorter than the details page, the top rule, the `Shell
+  details` title and the status/runtime fields were skipped into **no buffer
+  at all**, so scrolling the terminal up ran the conversation straight into a
+  headless box. They flow now like every other page — the difference is only
+  what the flow is signed on. Its **list** page changes on a keystroke, so it
+  signs its rows like the menus. Its **details** page ticks, so it signs the
+  shell's id and the flowed rows freeze (above). A runtime that flowed reads
+  the value it had when the page was committed until something re-signs the
+  flow — stale, where it used to be *nowhere* — while the page still on
+  screen keeps tailing, unchanged, exactly as it was. Which rows those are is
+  a matter of how short the terminal is: the page is 26 rows, so 24 rows
+  flows the top rule alone and 18 flows the whole field block; the output box
+  only starts flowing below 15. A details view whose shell has gone renders
+  the *list* (`background_view_lines`' defensive fallback), so it signs like
+  one.
 - **Flow + bottom anchor, per page**: the `AskUserQuestion` modal
   (`docs/ask.md`). Its builder is a line builder like the rest — one flat
   row list per *page* (a question tab, the Submit review), the side-by-side
@@ -134,6 +162,15 @@ pathological page can't turn one navigation into an unbounded write.
   definition scrollback, which is what the flow commits. Reusing the rebuild
   path means no new viewport machinery — `write_above` already seats the
   region below an arbitrarily long tail.
+- **…letting the ↓ manager's details page sign its rows like the rest?** It
+  ticks at 31 fps, so every frame would re-sign the flow and answer with a
+  purge rebuild — the whole screen wiped and rewritten thirty times a second,
+  which loses the user's scroll position and flickers. Freezing the flowed
+  top is the trade: those rows go stale rather than missing.
+- **…shrinking the page (fewer `BG_OUTPUT_ROWS`) so it always fits?** That
+  changes the details view itself on exactly the terminals where its output
+  box is worth the most, to solve a problem the flow already solves. The
+  band's own TUI is untouched by this fix.
 - **…the permission prompt's cap-and-pad (`… +N lines`)?** It keeps the
   options on screen but hides the middle of the content — the exact complaint
   here. It stays right for the *prompt*, whose context rows tick (a live agent

@@ -98,6 +98,7 @@ cleanup() {
 	tmux kill-session -t "${S}_batch" 2>/dev/null
 	tmux kill-session -t "${S}_tableflush" 2>/dev/null
 	tmux kill-session -t "${S}_background" 2>/dev/null
+	tmux kill-session -t "${S}_bgflow" 2>/dev/null
 	tmux kill-session -t "${S}_staggered" 2>/dev/null
 	tmux kill-session -t "${S}_bgkill" 2>/dev/null
 	tmux kill-session -t "${S}_notty" 2>/dev/null
@@ -9713,6 +9714,139 @@ if printf '%s' "$chatgpt_back" | grep -qF "Waiting for the browser"; then
 fi
 tmux kill-session -t "$S104" 2>/dev/null
 echo "==== Phase 104: the browser sign-in page is worded for a link, not a code ===="
+
+
+# --- Phase 105: the ↓ MANAGER BAND FLOWS ITS PAGE TOP (docs/view-flow.md,
+# docs/background.md). On a terminal shorter than the details page, the band
+# bottom-anchors — and the rows the anchor skips used to be dropped into NO
+# buffer at all: the conversation ran straight into a headless output box, and
+# scrolling the terminal up never found the `Shell details` title, the status
+# or the command (the reported bug). They flow into real scrollback now, like
+# every other framed view — while the page itself keeps live-tailing, because
+# this one flow is signed on the SHELL rather than on its ticking rows
+# (`FlowSign::Frozen`), so the frozen top costs no purge rebuild per frame.
+# Closing the band purges the flowed rows and leaves the conversation intact. ---
+S105="${S}_bgflow"
+BGF_SCRIPT="$SMOKE_CFG/bgflow.sh"
+cat >"$BGF_SCRIPT" <<'EOS'
+i=0
+while [ $i -lt 900 ]; do
+	echo flowline$i
+	i=$((i + 1))
+	sleep 0.05
+done
+EOS
+# 18 rows: shorter than the details page (26 rows at this width), so the top
+# rule, the title and the whole field block are what the anchor skips.
+tmux new-session -d -s "$S105" -x 100 -y 18 "$APP"
+sleep 0.5
+# A committed cell above the band, so the close can be checked to leave the
+# conversation — the thing the user scrolls up for — untouched.
+tmux send-keys -t "$S105" -l "!echo FLOWCONV_MARKER_105"
+sleep 0.2
+tmux send-keys -t "$S105" Enter
+sleep 0.6
+tmux send-keys -t "$S105" -l "!sh $BGF_SCRIPT"
+sleep 0.2
+tmux send-keys -t "$S105" Enter
+# Wait past TOOL_BACKGROUND_HINT_DELAY, then hand the run to the registry.
+for _ in $(seq 1 80); do
+	if tmux capture-pane -t "$S105" -p | grep -qF "(ctrl+b to run in background)"; then
+		break
+	fi
+	sleep 0.1
+done
+tmux send-keys -t "$S105" C-b
+sleep 0.5
+tmux send-keys -t "$S105" Down # focus the footer's shell indicator
+sleep 0.3
+tmux send-keys -t "$S105" Enter # open the list
+sleep 0.4
+tmux send-keys -t "$S105" Enter # open the details page
+bgf_pane=""
+for _ in $(seq 1 40); do
+	bgf_pane="$(tmux capture-pane -t "$S105" -p)"
+	if printf '%s' "$bgf_pane" | grep -qF "flowline"; then
+		break
+	fi
+	sleep 0.1
+done
+bgf_full="$(tmux capture-pane -t "$S105" -p -S -200)"
+echo "==== Phase 105: the screen-tall details page (visible pane) ===="
+printf '%s\n' "$bgf_pane"
+# The visible screen keeps the page's TAIL — the hints and the closing rule.
+if ! printf '%s' "$bgf_pane" | grep -qF "to go back"; then
+	echo "FAIL: Phase 105 — the details tail (← to go back …) is not on screen" >&2
+	status=1
+fi
+if ! printf '%s\n' "$bgf_pane" | awk 'END { exit ($0 ~ /──/) ? 0 : 1 }'; then
+	echo "FAIL: Phase 105 — the bottom rule is not the last screen row" >&2
+	status=1
+fi
+# …and the page genuinely overflowed: its top is NOT on the visible screen…
+if printf '%s' "$bgf_pane" | grep -qF "Shell details"; then
+	echo "FAIL: Phase 105 — the page fits the pane; the fixture must overflow for this phase to test the flow" >&2
+	status=1
+fi
+# …but IS in the terminal's real scrollback, whole — the bug this phase guards.
+for expect in "Shell details" "Status:" "Runtime:" "Command:"; do
+	if ! printf '%s' "$bgf_full" | grep -qF "$expect"; then
+		echo "FAIL: Phase 105 — the flowed page top is missing '$expect' from scrollback+screen" >&2
+		printf '%s\n' "$bgf_full" >&2
+		status=1
+	fi
+done
+# The flow FREEZES: the page keeps tailing live (the box advances) while the
+# flowed rows stay put — committed once, never re-flowed per tick, and never
+# purge-rebuilt out from under the conversation above them.
+bgf_seq_before="$(printf '%s\n' "$bgf_pane" | grep -oE 'flowline[0-9]+' | tail -1)"
+bgf_seq_after="$bgf_seq_before"
+for _ in $(seq 1 40); do
+	bgf_later="$(tmux capture-pane -t "$S105" -p)"
+	bgf_seq_after="$(printf '%s\n' "$bgf_later" | grep -oE 'flowline[0-9]+' | tail -1)"
+	if [ -n "$bgf_seq_after" ] && [ "$bgf_seq_after" != "$bgf_seq_before" ]; then
+		break
+	fi
+	sleep 0.2
+done
+if [ "$bgf_seq_after" = "$bgf_seq_before" ]; then
+	echo "FAIL: Phase 105 — the details box stopped tailing under the flow ($bgf_seq_before)" >&2
+	status=1
+fi
+bgf_held="$(tmux capture-pane -t "$S105" -p -S -200)"
+echo "==== Phase 105: the flowed top after the page has ticked on ===="
+printf '%s\n' "$bgf_held" | grep -n "Shell details" || true
+bgf_titles="$(printf '%s\n' "$bgf_held" | grep -cF "Shell details" || true)"
+if [ "$bgf_titles" != "1" ]; then
+	echo "FAIL: Phase 105 — the flowed title is in scrollback $bgf_titles times, expected exactly 1" >&2
+	printf '%s\n' "$bgf_held" >&2
+	status=1
+fi
+if ! printf '%s' "$bgf_held" | grep -qF "FLOWCONV_MARKER_105"; then
+	echo "FAIL: Phase 105 — the conversation above the flowed page was lost from scrollback" >&2
+	status=1
+fi
+# Esc closes the band: the flowed rows purge, the conversation stays.
+tmux send-keys -t "$S105" Escape
+sleep 0.8
+bgf_closed="$(tmux capture-pane -t "$S105" -p -S -200)"
+echo "==== Phase 105: closed back to the composer ===="
+printf '%s\n' "$bgf_closed" | tail -14
+if printf '%s' "$bgf_closed" | grep -qF "Shell details"; then
+	echo "FAIL: Phase 105 — stale flowed rows survived the close (the purge should have wiped them)" >&2
+	status=1
+fi
+if ! printf '%s' "$bgf_closed" | grep -qF "FLOWCONV_MARKER_105"; then
+	echo "FAIL: Phase 105 — the conversation did not survive the flow-exit rebuild" >&2
+	status=1
+fi
+if ! printf '%s' "$bgf_closed" | grep -qF "Running in the background"; then
+	echo "FAIL: Phase 105 — the backgrounded cell did not survive the flow-exit rebuild" >&2
+	status=1
+fi
+tmux kill-session -t "$S105" 2>/dev/null
+rm -f "$BGF_SCRIPT"
+
 
 
 if [ "$status" -eq 0 ]; then
