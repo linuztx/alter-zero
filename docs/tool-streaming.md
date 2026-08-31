@@ -177,3 +177,13 @@ OPENROUTER_API_KEY=sk-... ALTER_ZERO_CA_FILE=/root/.ccr/ca-bundle.crt \
   cargo run --example tool_smoke -- openai/gpt-4o-mini \
   "Use bash to run: ping -c 10 google.com"
 ```
+
+## A short terminal freezes the cell instead of trimming it
+
+The live tail is the region's elastic content, so a terminal without room for
+the whole cell used to drop its rows — the `+N lines (Ns)` footer first, then
+the output rows, then the header — into no buffer at all. The strip
+bottom-anchors now and commits the rows it cannot paint into the terminal's own
+scrollback, frozen: the cell **scrolls**, keeping its newest rows and its
+`+N lines` footer on screen while its head stays readable by scrolling up.
+See `docs/strip-flow.md`.

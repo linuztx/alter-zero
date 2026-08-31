@@ -509,3 +509,137 @@ fn the_managers_list_page_signs_its_rows_like_every_other_menu() {
         "the fallback list re-signs as its rows change"
     );
 }
+
+/// A turn with a `bash` call streaming its output — the strip content the
+/// user reported losing on a short terminal (`docs/strip-flow.md`).
+fn streaming_bash_app() -> App {
+    let mut app = App::new();
+    app.begin_stream();
+    app.start_tool("Bash", "ping google.com -c 100 -4", None);
+    for i in 1..=20 {
+        app.push_tool_output(&format!("64 bytes from 1e100.net: icmp_seq={i}\n"));
+    }
+    app.set_status_times(std::time::Duration::from_secs(64), None);
+    app.set_command_elapsed(Some(std::time::Duration::from_secs(64)));
+    app
+}
+
+#[test]
+fn a_squeezed_strip_flows_the_rows_it_cannot_paint() {
+    // The reported bug: as the terminal shrinks, `preview_lines` trimmed the
+    // running cell from the END — the `+N lines` footer and the ctrl+b hint
+    // first, then the output rows, then the header — into no buffer at all.
+    // They flow into real scrollback now, so the cell **scrolls**: its top
+    // freezes above the region and the newest rows keep the screen.
+    let app = streaming_bash_app();
+    let (width, height) = (60u16, 11u16);
+    let want = crate::ui::preview_rows(&app, width);
+    let painted = crate::ui::fitted_preview_rows(&app, width, height);
+    assert!(
+        painted < want,
+        "the fixture must squeeze the preview ({painted} of {want} rows)"
+    );
+    let flow = view_flow(&app, width, height, NO_CAP).expect("the strip overflows");
+    let flowed: Vec<String> = flow.lines.iter().map(plain).collect();
+    assert_eq!(
+        flowed.len(),
+        usize::from(want - painted),
+        "exactly the rows the paint cannot show: {flowed:?}"
+    );
+    assert!(
+        flowed[0].contains("Bash(ping google.com -c 100 -4)"),
+        "the cell's header is what freezes above the region: {flowed:?}"
+    );
+}
+
+#[test]
+fn the_strips_flow_freezes_while_the_command_streams() {
+    // The strip ticks at the turn's 32ms animation cadence — the output
+    // tail, the elapsed, the breathing bullet. Signing its rows would
+    // purge-rebuild the screen thirty times a second, so it is signed on
+    // what the strip is *of* and the flowed rows freeze (the ↓ manager's
+    // rule, `docs/view-flow.md`).
+    let mut app = streaming_bash_app();
+    let (width, height) = (60u16, 11u16);
+    let before = view_flow_signature(&app, width, height, NO_CAP).expect("overflows");
+    app.push_tool_output("64 bytes from 1e100.net: icmp_seq=21\n");
+    app.set_status_times(std::time::Duration::from_secs(65), None);
+    let after = view_flow_signature(&app, width, height, NO_CAP).expect("still overflows");
+    assert_eq!(before, after, "a streamed line must not churn a rebuild");
+}
+
+#[test]
+fn a_new_call_and_a_resize_re_sign_the_strips_flow() {
+    let (width, height) = (60u16, 11u16);
+    let app = streaming_bash_app();
+    let first = view_flow_signature(&app, width, height, NO_CAP).expect("overflows");
+
+    let mut next = streaming_bash_app();
+    next.end_tool("done", true);
+    next.start_tool("Bash", "ping example.com -c 100 -4", None);
+    for i in 1..=20 {
+        next.push_tool_output(&format!("64 bytes from example: icmp_seq={i}\n"));
+    }
+    assert_ne!(
+        Some(first),
+        view_flow_signature(&next, width, height, NO_CAP),
+        "a different call is a different flow"
+    );
+    assert_ne!(
+        Some(first),
+        view_flow_signature(&app, width, height - 2, NO_CAP),
+        "a resize re-signs: two more rows flow"
+    );
+}
+
+#[test]
+fn a_strip_that_fits_flows_nothing() {
+    // The common case is untouched: a terminal with room for the whole cell
+    // paints it whole and commits nothing above the region.
+    let app = streaming_bash_app();
+    assert!(
+        view_flow(&app, 60, 40, NO_CAP).is_none(),
+        "nothing flows while the strip fits"
+    );
+    // …and neither does an idle session with no strip at all.
+    assert!(view_flow(&App::new(), 60, 6, NO_CAP).is_none());
+}
+
+#[test]
+fn a_starved_strip_flows_its_status_line_too() {
+    // Past the preview, `live_layout` starves the strip itself — on a
+    // terminal this short the status line is dropped as well. It freezes
+    // above the region rather than vanishing ("freeze the status indicator
+    // if it's not visible in the active window").
+    let app = streaming_bash_app();
+    let (width, height) = (60u16, 4u16);
+    let flow = view_flow(&app, width, height, NO_CAP).expect("the strip overflows");
+    let flowed: Vec<String> = flow.lines.iter().map(plain).collect();
+    assert!(
+        flowed.iter().any(|r| r.contains("esc to interrupt")),
+        "the status line rides the flow: {flowed:?}"
+    );
+    assert!(
+        flowed[0].contains("Bash(ping google.com -c 100 -4)"),
+        "the flow still opens at the strip's own top: {flowed:?}"
+    );
+}
+
+#[test]
+fn a_streaming_replys_frontier_never_flows() {
+    // A reply's preview is its **uncommitted** frontier: `StreamRender`
+    // commits every completed line to scrollback already, so its dropped
+    // rows are not lost — and flowing a frontier that grows per chunk would
+    // re-sign the flow on every chunk. Only live cells, which reach no
+    // buffer until they resolve, flow.
+    let mut app = App::new();
+    app.begin_stream();
+    for i in 0..40 {
+        app.push_chunk(&format!("word{i} "));
+    }
+    app.set_stream_preview_rows(8);
+    assert!(
+        view_flow(&app, 60, 10, NO_CAP).is_none(),
+        "the frontier is already committed row by row — nothing to freeze"
+    );
+}

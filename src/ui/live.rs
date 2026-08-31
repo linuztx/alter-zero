@@ -241,153 +241,189 @@ pub(super) fn preview_tool_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     lines
 }
 
-/// Paint the streaming strip into `strip`: the preview line(s) at its top, the
-/// status line under them, the queued messages below that, and the toast on
-/// its last row. Factored out of [`render_live_with_preview`]'s composer path
-/// so the ↓ manager band keeps the same strip above itself while it replaces
-/// the composer (`docs/background.md`). `preview`/`preview_n` are the
-/// already-built [`preview_lines`] and their [`preview_rows`] count (they must
-/// agree — the caller asserts it).
-/// Paint the checklist's already-built `lines` into the strip, `offset` rows
-/// down from its top — the one place the block's geometry lives, shared by
-/// the in-turn dress (under the status line) and the idle one (at the strip
-/// top). Clipped to the strip, which a short terminal can squeeze.
-fn paint_tasks(strip: Rect, buf: &mut Buffer, lines: Vec<Line<'static>>, rows: u16, offset: u16) {
-    let y = strip.y + offset;
-    let bottom = strip.y + strip.height;
-    if y >= bottom {
-        return;
-    }
-    let area = Rect {
-        x: strip.x,
-        y,
-        width: strip.width,
-        height: rows.min(bottom - y),
-    };
-    Paragraph::new(lines).render(area, buf);
-}
-
-#[allow(clippy::too_many_arguments)]
-fn render_strip(
-    strip: Rect,
-    buf: &mut Buffer,
+/// Every row of the streaming strip for `app` at `width`, in paint order:
+/// the preview slot and its trailing gap, the status line with the task
+/// checklist hanging off it and its trailing gap, the queued messages, and
+/// the toast on the last row. Exactly `strip_rows(has_status, preview_n,
+/// task_rows) + queued_rows + toast_rows` lines, so the rows `live_height` /
+/// `live_layout` reserve and the rows this draws agree by construction.
+///
+/// `preview_n` is the preview slot's size — `render_live` passes the content's
+/// **full ask**, so a squeezed region's strip is taller than its rect and the
+/// bottom anchor drops the head (which `ui::view_flow`'s strip branch
+/// commits to scrollback instead — `docs/strip-flow.md`); `render_strip_above` passes the
+/// rows its own split left, where nothing flows and the list fits exactly.
+pub(super) fn strip_lines(
     app: &App,
-    preview: Vec<Line<'static>>,
+    width: u16,
+    stream_preview: Option<&[Line<'static>]>,
     preview_n: u16,
-    has_status: bool,
-    queued: u16,
-    toast: u16,
-) {
+) -> Vec<Line<'static>> {
+    let mut lines = preview_lines(app, width, stream_preview, preview_n);
+    if !lines.is_empty() {
+        // The blank gap under the preview, so the reply/cell never touches
+        // the status line below it (GAP_ROWS).
+        lines.push(Line::default());
+    }
     // The task checklist directly under the status line (inside the status
     // slot, above its trailing gap — docs/task-tools.md). Built from the same
     // (app, width) as `task_rows`, so the reserved rows and the painted ones
     // agree by construction.
-    let tasks = super::tasks::task_lines(app, strip.width);
-    let tasks_n = u16::try_from(tasks.len()).unwrap_or(u16::MAX);
-    // Rows the preview slot (content + its trailing gap) / status each occupy at
-    // the strip's top (0 when absent).
-    let preview_slot = if preview_n > 0 {
-        preview_n + GAP_ROWS
-    } else {
-        0
-    };
-    let status_rows = if has_status {
-        STATUS_ROWS + tasks_n + STATUS_GAP_ROWS
-    } else if tasks_n > 0 {
-        tasks_n + STATUS_GAP_ROWS
-    } else {
-        0
-    };
-
-    // Strip preview at the top; the row below the last preview line is the blank
-    // gap. A running tool takes precedence (its coloured cell shows what's
-    // executing); otherwise the reply's last line previews. Nothing during the
-    // pre-stream pause / idle (an empty `preview` reserves no rows, no stray
-    // bullet — codex parity).
-    if preview_n > 0 {
-        let preview_area = Rect {
-            height: preview_n.min(strip.height),
-            ..strip
-        };
-        Paragraph::new(preview).render(preview_area, buf);
-    }
-
-    // The live status line, pinned below the preview (or at the strip top during
-    // the pause), just above the box, while a turn is in flight — suppressed for
-    // a `!` shell turn (has_status false), whose elapsed rides the preview above.
-    // An agent session view shows the *viewed agent's* synthesized status
-    // instead of the main turn's (docs/agent-tool.md).
+    let tasks = super::tasks::task_lines(app, width);
+    let has_status = strip_has_status(app);
     if has_status {
+        // The live status line, just above the box while a turn is in flight
+        // — suppressed for a `!` shell turn (has_status false), whose elapsed
+        // rides the preview above. An agent session view shows the *viewed
+        // agent's* synthesized status instead of the main turn's
+        // (docs/agent-tool.md). A blank row stands in if the status somehow
+        // went while `has_status` said otherwise, so the count still matches
+        // `strip_rows`' STATUS_ROWS.
         let line = if let Some(run) = app.viewed_agent() {
-            Some(status_line(&agent_view_status(run), strip.width))
+            Some(status_line(&agent_view_status(run), width))
         } else {
             // While some task is in progress the spinner wears its
             // activeForm instead of the turn's verb (docs/task-tools.md).
             app.status()
-                .map(|status| status_line_with_verb(status, app.task_verb(), strip.width))
+                .map(|status| status_line_with_verb(status, app.task_verb(), width))
         };
-        if let Some(line) = line {
-            let status_y = strip.y + preview_slot;
-            if status_y < strip.y + strip.height {
-                let status_area = Rect {
-                    x: strip.x,
-                    y: status_y,
-                    width: strip.width,
-                    height: STATUS_ROWS,
-                };
-                Paragraph::new(line).render(status_area, buf);
-            }
-        }
+        lines.push(line.unwrap_or_default());
         // The checklist's `⎿` rows hang directly off the status line —
         // Claude Code's live task list (docs/task-tools.md).
-        if tasks_n > 0 {
-            paint_tasks(strip, buf, tasks, tasks_n, preview_slot + STATUS_ROWS);
-        }
-    } else if tasks_n > 0 {
+        lines.extend(tasks);
+        lines.push(Line::default()); // STATUS_GAP_ROWS
+    } else if !tasks.is_empty() {
         // No status line to hang from (the turn is over, or a `!` shell run
         // owns the strip): the standalone block — its count line over the
         // rows — sits at the strip top instead, so a plan with work left
         // stays visible while the user reads and types (docs/task-tools.md).
-        paint_tasks(strip, buf, tasks, tasks_n, preview_slot);
+        lines.extend(tasks);
+        lines.push(Line::default());
     }
-
     // The queued messages, styled like sent user messages (❯ bullet, dark
     // background, wrapped), stacked below the status's gap and just above the
     // box's top rule — only while a turn streams (the only time the queue is
-    // non-empty). codex's pending-input preview, in our user-message style. The
-    // status slot is 0 rows for a shell turn (status_rows), so the queue sits
-    // flush under the preview's gap then.
-    if queued > 0 {
-        let q_y = strip.y + preview_slot + status_rows;
-        let strip_bottom = strip.y + strip.height;
-        if q_y < strip_bottom {
-            let q_area = Rect {
-                x: strip.x,
-                y: q_y,
-                width: strip.width,
-                height: queued.min(strip_bottom - q_y),
-            };
-            Paragraph::new(queued_lines(app, q_area.width)).render(q_area, buf);
-        }
-    }
-
+    // non-empty). codex's pending-input preview, in our user-message style.
+    lines.extend(queued_lines(app, width));
     // The transient toast, on the strip's very last row — directly above the
     // box's top rule, below the status/queue when a turn streams and directly
     // above the box when idle. Self-clears after a few seconds (the expiry is
     // timed at the boundary). See docs/toast.md.
-    if toast > 0 {
-        let strip_bottom = strip.y + strip.height;
-        let t_y = strip_bottom.saturating_sub(toast);
-        if t_y < strip_bottom {
-            let t_area = Rect {
-                x: strip.x,
-                y: t_y,
-                width: strip.width,
-                height: toast.min(strip_bottom - t_y),
-            };
-            Paragraph::new(toast_line(app, t_area.width)).render(t_area, buf);
-        }
+    if toast_rows(app) > 0 {
+        lines.push(toast_line(app, width));
     }
+    lines
+}
+
+/// Paint the streaming strip into `strip`, **bottom-anchored**: a strip whose
+/// content outgrew its rows keeps its *last* ones — the newest streamed rows,
+/// the `+N lines` footer, the status line — and its head goes to scrollback
+/// through `ui::view_flow`'s strip branch rather than nowhere at all
+/// (`docs/strip-flow.md`). A no-op reshuffle while everything fits, which is
+/// every terminal with room for the turn.
+fn render_strip(
+    strip: Rect,
+    buf: &mut Buffer,
+    app: &App,
+    stream_preview: Option<&[Line<'static>]>,
+    preview_n: u16,
+) {
+    super::view_flow::render_framed_tail(
+        strip,
+        buf,
+        strip_lines(app, strip.width, stream_preview, preview_n),
+    );
+}
+
+/// The preview rows the strip's **content** is built at in the conversation
+/// view — the content's full ask ([`preview_rows`]) for the live cells that
+/// reach no other buffer until they resolve (a running tool queue, an agent
+/// group, a thinking block), so the rows the region cannot paint can flow
+/// into scrollback instead of being trimmed away.
+///
+/// A streaming **reply's** frontier is the exception, and takes the reserved
+/// count ([`fitted_preview_rows`]) so it contributes nothing to the flow:
+/// `StreamRender` commits every completed line to scrollback as it lands, so
+/// the frontier's dropped rows are not lost — they are the rows *about to be*
+/// committed — and flowing a frontier that grows on every chunk would re-sign
+/// the flow, and purge-rebuild the screen, once per chunk
+/// (`docs/strip-flow.md`).
+pub(super) fn strip_content_preview_rows(app: &App, width: u16, term_height: u16) -> u16 {
+    if strip_preview_is_live_cells(app) {
+        preview_rows(app, width)
+    } else {
+        fitted_preview_rows(app, width, term_height)
+    }
+}
+
+/// Whether the preview slot is showing **live cells** — a running/queued tool
+/// call, a live agent group, or an open thinking phase — rather than a
+/// streaming reply's frontier. What [`strip_content_preview_rows`] branches
+/// on; mirrors [`preview_rows`]' own branch order.
+fn strip_preview_is_live_cells(app: &App) -> bool {
+    if let Some(run) = app.viewed_agent() {
+        return !run.tool_queue.is_empty() || run.reasoning().is_some();
+    }
+    app.agent_group().is_some() || !app.tool_queue().is_empty() || app.reasoning().is_some()
+}
+
+/// The rows the strip's content occupies at `preview_n` preview rows —
+/// [`strip_lines`]' length, without building it. The cheap early-out the flow
+/// check runs on every draw tick: a strip that fits its slice cannot flow, and
+/// wrapping every queued message to find that out would cost a build per frame
+/// (`docs/strip-flow.md`).
+///
+/// An over-estimate at worst, never an under-estimate: for a streaming reply's
+/// frontier the caller passes the *reserved* count and the fallback build can
+/// come back shorter, so "fits" here always means "fits".
+pub(super) fn strip_content_rows(app: &App, width: u16, preview_n: u16) -> u16 {
+    super::layout::strip_rows(
+        strip_has_status(app),
+        preview_n,
+        super::tasks::task_rows(app, width),
+    )
+    .saturating_add(queued_rows(app, width))
+    .saturating_add(toast_rows(app))
+}
+
+/// The key the strip's scrollback flow is **signed** on
+/// (`ui::view_flow`'s `FlowSign::Frozen`, `docs/strip-flow.md`): what the
+/// strip is *of*, with every ticking part left out.
+///
+/// The strip moves on its own at the turn's 32 ms animation cadence — output
+/// streams into the running cell, the elapsed and the token tally advance,
+/// the bullet breathes — so signing its rows would purge-rebuild the screen
+/// thirty times a second. This hashes only what a **structural** change moves:
+/// which conversation is on screen, whether a turn's status line is up, each
+/// queued call's name/arguments/status, the live agent group's members, and
+/// whether a thinking phase is open. A new call, a
+/// resolution, a new round or the turn ending re-signs it; a streamed line
+/// does not, so the flowed rows freeze where they were committed. (The width
+/// and the flowed row count are hashed by the caller, so a resize — and any
+/// change to how much overflows — re-signs too.)
+pub(super) fn strip_flow_key(app: &App) -> u64 {
+    use std::hash::{DefaultHasher, Hash, Hasher};
+    let mut hasher = DefaultHasher::new();
+    app.agent_view.hash(&mut hasher);
+    strip_has_status(app).hash(&mut hasher);
+    app.reasoning().is_some().hash(&mut hasher);
+    app.streaming_text().is_some().hash(&mut hasher);
+    let queue = app
+        .viewed_agent()
+        .map_or_else(|| app.tool_queue(), |run| &run.tool_queue);
+    queue.len().hash(&mut hasher);
+    for call in queue {
+        call.name.hash(&mut hasher);
+        call.args.hash(&mut hasher);
+        // `ToolStatus` is a plain enum with no payload — its debug name is a
+        // stable discriminant and needs no `Hash` derive on a public type.
+        format!("{:?}", call.status).hash(&mut hasher);
+    }
+    if let Some(group) = app.agent_group() {
+        group.background.hash(&mut hasher);
+        group.ids.hash(&mut hasher);
+    }
+    hasher.finish()
 }
 
 /// Paint the streaming strip above a **composer-replacing** inline view — the
@@ -414,22 +450,12 @@ fn render_strip_above(
         preview_rows(app, strip.width),
         strip_other_rows(app, strip.width),
     );
-    let preview = preview_lines(app, strip.width, stream_preview, preview_n);
     debug_assert_eq!(
         usize::from(preview_n),
-        preview.len(),
+        preview_lines(app, strip.width, stream_preview, preview_n).len(),
         "preview_rows() must equal the drawn preview_lines()"
     );
-    render_strip(
-        strip,
-        buf,
-        app,
-        preview,
-        preview_n,
-        strip_has_status(app),
-        queued_rows(app, strip.width),
-        toast_rows(app),
-    );
+    render_strip(strip, buf, app, stream_preview, preview_n);
 }
 
 /// [`render_live`], but with the streaming strip's assistant-preview line(s)
@@ -574,10 +600,9 @@ pub fn render_live_with_preview(
     // construction. The `debug_assert` catches any future drift (a desync would
     // reserve one height but paint another, unseating the box/cursor).
     let preview_n = fitted_preview_rows(app, area.width, area.height);
-    let preview = preview_lines(app, area.width, stream_preview, preview_n);
     debug_assert_eq!(
         usize::from(preview_n),
-        preview.len(),
+        preview_lines(app, area.width, stream_preview, preview_n).len(),
         "fitted_preview_rows() must equal the drawn preview_lines()"
     );
     let has_status = strip_has_status(app);
@@ -585,8 +610,18 @@ pub fn render_live_with_preview(
     let [strip, _, band_area, footer_area, agent_area] = live_layout(
         area, has_status, preview_n, tasks_n, queued, toast, band, footer, agent_rows,
     );
+    // The strip's *content* is built at the preview's full ask, not the rows
+    // the region reserved: a squeezed strip then bottom-anchors, keeping its
+    // newest rows on screen while its head flows into scrollback frozen
+    // (`ui::view_flow`'s strip branch, `docs/strip-flow.md`). They are the
+    // same list when
+    // everything fits, which is the ordinary terminal.
     render_strip(
-        strip, buf, app, preview, preview_n, has_status, queued, toast,
+        strip,
+        buf,
+        app,
+        stream_preview,
+        strip_content_preview_rows(app, area.width, area.height),
     );
 
     // The input box: a top/bottom rule framing the wrapped input rows. An

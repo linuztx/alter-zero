@@ -99,6 +99,8 @@ cleanup() {
 	tmux kill-session -t "${S}_tableflush" 2>/dev/null
 	tmux kill-session -t "${S}_background" 2>/dev/null
 	tmux kill-session -t "${S}_bgflow" 2>/dev/null
+	tmux kill-session -t "${S}_stripflow" 2>/dev/null
+	tmux kill-session -t "${S}_stripstatus" 2>/dev/null
 	tmux kill-session -t "${S}_staggered" 2>/dev/null
 	tmux kill-session -t "${S}_bgkill" 2>/dev/null
 	tmux kill-session -t "${S}_notty" 2>/dev/null
@@ -9847,6 +9849,142 @@ fi
 tmux kill-session -t "$S105" 2>/dev/null
 rm -f "$BGF_SCRIPT"
 
+
+
+# --- Phase 106: the STRIP FLOW (docs/strip-flow.md). The streaming strip is
+# the live region's only elastic content, and the rows it could not afford
+# were thrown away: on a short terminal a running command lost its
+# `+N lines (Ns)` footer and its ctrl+b hint first, then its output rows, then
+# its header, and past that the spinner status line — none of it in any
+# buffer. The strip bottom-anchors now and the rows it cannot paint FLOW into
+# the terminal's real scrollback, frozen: the strip keeps its newest rows and
+# its head stays readable by scrolling up. The turn's end purges the frozen
+# rows and commits the real cells exactly once. ---
+S106="${S}_stripflow"
+# 12 rows: room for the composer, the footer and the status line, but not for
+# a parallel batch's three cells — the regime the bug report was taken in.
+tmux new-session -d -s "$S106" -x 80 -y 12 "$APP"
+sleep 0.6
+tmux send-keys -t "$S106" -l "run three pings in parallel"
+sleep 0.2
+tmux send-keys -t "$S106" Enter
+sf_pane=""
+sf_full=""
+for _ in $(seq 1 400); do # the batch is announced a couple of seconds in
+	sf_pane="$(tmux capture-pane -t "$S106" -p)"
+	if printf '%s' "$sf_pane" | grep -qF "esc to interrupt" \
+		&& printf '%s' "$sf_pane" | grep -qF "Waiting…"; then
+		sf_full="$(tmux capture-pane -t "$S106" -p -S -80)"
+		break
+	fi
+	sleep 0.05
+done
+echo "==== Phase 106: the squeezed strip mid-batch (visible pane) ===="
+printf '%s\n' "$sf_pane"
+# The anchor keeps the strip's TAIL — the last queued sibling and, below it,
+# the spinner status line, which a starved strip used to clip away.
+for expect in "Bash(ping -c 20 x.invalid)" "esc to interrupt"; do
+	if ! printf '%s' "$sf_pane" | grep -qF "$expect"; then
+		echo "FAIL: Phase 106 — '$expect' is not on the squeezed screen" >&2
+		status=1
+	fi
+done
+# …and the strip genuinely overflowed: the running call at its head is NOT on
+# the visible screen…
+if printf '%s' "$sf_pane" | grep -qF "Bash(ping -c 20 google.com)"; then
+	echo "FAIL: Phase 106 — the strip fits the pane; the fixture must overflow for this phase to test the flow" >&2
+	status=1
+fi
+# …but IS in the terminal's real scrollback, running row and all, with the
+# conversation still above it. Exactly once: a flow re-committed per frame
+# would be a purge rebuild at 30fps.
+echo "==== Phase 106: the flowed strip head in scrollback ===="
+printf '%s\n' "$sf_full" | tail -18
+for expect in "Bash(ping -c 20 google.com)" "run three pings in parallel"; do
+	if ! printf '%s' "$sf_full" | grep -qF "$expect"; then
+		echo "FAIL: Phase 106 — the flowed strip head is missing '$expect' from scrollback+screen" >&2
+		printf '%s\n' "$sf_full" >&2
+		status=1
+	fi
+done
+# Its running row too — matched as a whole cell row (`⎿  Running…` alone),
+# never as the substring the demo's own narration also contains.
+if ! printf '%s\n' "$sf_full" | grep -qE '^[[:space:]]*⎿[[:space:]]+Running…[[:space:]]*$'; then
+	echo "FAIL: Phase 106 — the flowed head lost the running call's '⎿ Running…' row" >&2
+	printf '%s\n' "$sf_full" >&2
+	status=1
+fi
+sf_heads="$(printf '%s\n' "$sf_full" | grep -cF "Bash(ping -c 20 google.com)" || true)"
+if [ "$sf_heads" != "1" ]; then
+	echo "FAIL: Phase 106 — the flowed head is in scrollback $sf_heads times, expected exactly 1" >&2
+	status=1
+fi
+# The turn ends: the flow clears, the frozen rows are purged, and the three
+# cells commit — once each — with nothing of the strip left behind.
+sf_done=""
+for _ in $(seq 1 300); do
+	sf_done="$(tmux capture-pane -t "$S106" -p -S -120)"
+	if printf '%s' "$sf_done" | grep -qE 'Done for [0-9]+s'; then
+		break
+	fi
+	sleep 0.1
+done
+echo "==== Phase 106: the turn resolved, the frozen rows purged ===="
+printf '%s\n' "$sf_done" | tail -16
+if printf '%s' "$sf_done" | grep -qF "esc to interrupt"; then
+	echo "FAIL: Phase 106 — the frozen status line survived the turn (the purge should have wiped the strip)" >&2
+	status=1
+fi
+# The live cell rows, as whole rows: this demo's closing narration *quotes*
+# `⎿ Waiting…` mid-sentence, so a substring match would fail on the prose.
+for stale in "Waiting…" "Running…"; do
+	if printf '%s\n' "$sf_done" | grep -qE "^[[:space:]]*⎿[[:space:]]+${stale}[[:space:]]*\$"; then
+		echo "FAIL: Phase 106 — a frozen '⎿ $stale' row survived the turn (the purge should have wiped the strip)" >&2
+		status=1
+	fi
+done
+for cell in "Bash(ping -c 20 google.com)" "Bash(ping -c 20 facebook.com)" "Bash(ping -c 20 x.invalid)"; do
+	sf_n="$(printf '%s\n' "$sf_done" | grep -cF "$cell" || true)"
+	if [ "$sf_n" != "1" ]; then
+		echo "FAIL: Phase 106 — '$cell' committed $sf_n times, expected exactly 1" >&2
+		status=1
+	fi
+done
+if ! printf '%s' "$sf_done" | grep -qF "run three pings in parallel"; then
+	echo "FAIL: Phase 106 — the conversation did not survive the flow-exit rebuild" >&2
+	status=1
+fi
+tmux kill-session -t "$S106" 2>/dev/null
+
+# Phase 106b: the STATUS LINE itself. Past the preview slot `live_layout`
+# starves the strip, and the spinner row was simply not painted — the elapsed
+# and the token tally gone with it. It freezes into scrollback now
+# ("freeze the status indicator if it's not visible in the active window").
+# A wedged backend (ALTER_ZERO_STALL_MS) holds the turn open so the check is
+# not a race.
+S106B="${S}_stripstatus"
+APP_STALL="env $CFG_ENV_NOHIST ALTER_ZERO_STALL_MS=60000 $BIN"
+tmux new-session -d -s "$S106B" -x 80 -y 4 "$APP_STALL"
+sleep 0.8
+tmux send-keys -t "$S106B" -l "stall please"
+sleep 0.2
+tmux send-keys -t "$S106B" Enter
+sleep 2
+sf_st_pane="$(tmux capture-pane -t "$S106B" -p)"
+sf_st_full="$(tmux capture-pane -t "$S106B" -p -S -40)"
+echo "==== Phase 106b: a 4-row terminal — the status line is off-screen ===="
+printf '%s\n' "$sf_st_pane"
+if printf '%s' "$sf_st_pane" | grep -qF "esc to interrupt"; then
+	echo "FAIL: Phase 106b — the region fits the status line; the fixture must starve the strip" >&2
+	status=1
+fi
+echo "==== Phase 106b: …but frozen in scrollback ===="
+printf '%s\n' "$sf_st_full"
+if ! printf '%s' "$sf_st_full" | grep -qF "esc to interrupt"; then
+	echo "FAIL: Phase 106b — the starved status line vanished instead of freezing into scrollback" >&2
+	status=1
+fi
+tmux kill-session -t "$S106B" 2>/dev/null
 
 
 if [ "$status" -eq 0 ]; then

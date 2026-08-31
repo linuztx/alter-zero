@@ -294,6 +294,99 @@ pub fn live_height(
     .min(usize::from(term_height.max(1))) as u16
 }
 
+/// Every row count the conversation view's live region is built from, taken
+/// once for a given `(app, width, height)` so nothing downstream can hand
+/// [`live_height`] and [`live_layout`] different numbers. `render_live`
+/// builds one to lay the region out; [`strip_paint_rows`] builds the same one
+/// to learn how tall the strip will be (`docs/strip-flow.md`).
+pub(super) struct LiveRows {
+    pub(super) has_status: bool,
+    pub(super) preview: u16,
+    pub(super) tasks: u16,
+    pub(super) queued: u16,
+    pub(super) toast: u16,
+    pub(super) band: u16,
+    pub(super) footer: u16,
+    pub(super) agent: u16,
+}
+
+/// [`LiveRows`] for `app` at `width` inside a region of `height` rows — the
+/// one place these eight counts are derived.
+pub(super) fn live_rows(app: &App, width: u16, height: u16) -> LiveRows {
+    let band = band_rows(app, width);
+    LiveRows {
+        has_status: strip_has_status(app),
+        preview: fitted_preview_rows(app, width, height),
+        tasks: super::tasks::task_rows(app, width),
+        queued: queued_rows(app, width),
+        toast: toast_rows(app),
+        band,
+        footer: footer_rows(app, band),
+        agent: agent_list_rows(app),
+    }
+}
+
+/// [`live_height`] over a [`LiveRows`].
+pub(super) fn live_height_for(
+    input: &TextArea,
+    width: u16,
+    term_height: u16,
+    rows: &LiveRows,
+) -> u16 {
+    live_height(
+        input,
+        width,
+        term_height,
+        rows.has_status,
+        rows.preview,
+        rows.tasks,
+        rows.queued,
+        rows.toast,
+        rows.band,
+        rows.footer,
+        rows.agent,
+    )
+}
+
+/// [`live_layout`] over a [`LiveRows`].
+pub(super) fn live_layout_for(area: Rect, rows: &LiveRows) -> [Rect; 5] {
+    live_layout(
+        area,
+        rows.has_status,
+        rows.preview,
+        rows.tasks,
+        rows.queued,
+        rows.toast,
+        rows.band,
+        rows.footer,
+        rows.agent,
+    )
+}
+
+/// The rows the streaming strip actually gets in the **conversation view's**
+/// live region at this terminal size — [`live_layout`]'s strip slice, from
+/// the very numbers `render_live` passes it, so the strip flow and the strip
+/// paint can never disagree about how tall the strip is
+/// (`docs/strip-flow.md`).
+///
+/// Only the composer path: a composer-replacing view splits the region with
+/// [`view_split`] instead, and there the view's own page is what flows.
+#[must_use]
+pub fn strip_paint_rows(app: &App, width: u16, term_height: u16) -> u16 {
+    let rows = live_rows(app, width, term_height);
+    let height = live_height_for(&app.input, width, term_height, &rows);
+    live_layout_for(
+        Rect {
+            x: 0,
+            y: 0,
+            width,
+            height,
+        },
+        &rows,
+    )[0]
+    .height
+}
+
 /// The rows a **composer-replacing inline view** keeps *above* itself: the
 /// streaming strip ([`strip_rows`] — the preview, the status line and the task
 /// checklist with their gaps), the queued messages, and the toast row.

@@ -30,11 +30,11 @@ Two rules, both pure policy in `ui`, acted on by the boundary:
    hidden-cursor seat (`menu_marker_seat`) subtracts the same skip, so the `❯`
    the cursor parks on is the one actually painted.
 
-2. **The skipped top flows into real scrollback.** When the body exceeds the
-   whole terminal (`lines.len() > term_height` — the only case rule 1 can skip
-   anything, since the view body is bottom-pinned by `view_split` and squeezes
-   the strip first), the hidden top rows are **committed above the live
-   region**, exactly where they visually belong: scrollback ends with the
+2. **The skipped top flows into real scrollback.** When the page exceeds the
+   rows its painted tail gets — the whole terminal for a framed view (the body
+   is bottom-pinned by `view_split`, which squeezes the strip first), the
+   strip's own slice for the strip — the hidden top rows are **committed above
+   the live region**, exactly where they visually belong: scrollback ends with the
    page's top, the screen shows the page's tail, and the terminal's own
    scrolling reads the whole thing as one piece. `ui::view_flow` is the pure
    decision — which rows flow, and a **signature** identifying the flowed
@@ -44,12 +44,15 @@ Two rules, both pure policy in `ui`, acted on by the boundary:
 What the signature is computed from is the one per-view choice
 (`ui::view_flow`'s `FlowSign`). A page that changes only on a **keystroke**
 signs its **rows** — any edit to them re-signs, and the rebuild re-flows the
-new ones. That is every page but one: the ↓ manager's **details** page
+new ones. That is every page but the two that move on their own: the
+**streaming strip** (`docs/strip-flow.md`) and the ↓ manager's **details** page
 live-tails a running shell, so its runtime, its output box and its `Showing N
 lines` caption all move between keystrokes, at the 32 ms cadence an open band
-keeps running (`App::wants_animation_frames`). Signing its rows would
-purge-rebuild the whole screen thirty times a second, so it signs the **shell
-it describes** instead (`FlowSign::Frozen`) and its flowed top **freezes**
+keeps running (`App::wants_animation_frames`) — the strip moves at the same
+cadence for the same reason. Signing such rows would purge-rebuild the whole
+screen thirty times a second, so each signs **what it is of**
+(`FlowSign::Frozen`) — the shell the page describes, the call the strip shows —
+and the flowed top **freezes**
 where it was committed — a resize, a walk back to the list or a different
 shell still re-signs it, because the row count and the width are hashed in
 both regimes. Frozen text is what scrollback holds for everything else on the
@@ -136,6 +139,22 @@ pathological page can't turn one navigation into an unbounded write.
   only starts flowing below 15. A details view whose shell has gone renders
   the *list* (`background_view_lines`' defensive fallback), so it signs like
   one.
+- **Flow (frozen) + bottom anchor**: the **streaming strip** itself
+  (`docs/strip-flow.md`) — the running tool cell, the `● Thinking…` block, the
+  live agent tree, the spinner status line, the queued messages, the toast. It
+  is the region's only elastic content, so `preview_budget` used to *throw
+  away* the rows it could not afford: on a 13-row terminal a running `bash`
+  call lost its `+N lines` footer and its ctrl+b hint, on a 9-row one its whole
+  output block, on a 4-row one the status line. `ui::live::strip_lines` builds
+  it as one page now and `render_strip` paints it through
+  `render_framed_tail`, so the strip keeps its newest rows and its head flows.
+  Frozen, and for the same reason as the band's: the strip moves at the turn's
+  own 32 ms cadence, so it signs `ui::live::strip_flow_key` — what the strip is
+  *of* — rather than its rows. A streaming reply's **frontier** is excluded:
+  `StreamRender` commits its completed lines already, so nothing it drops is
+  lost, and flowing it would re-sign per chunk. Only while the composer is on
+  screen — a composer-replacing view splits the region with `view_split`, and
+  there that view's page is the one that flows.
 - **Flow + bottom anchor, per page**: the `AskUserQuestion` modal
   (`docs/ask.md`). Its builder is a line builder like the rest — one flat
   row list per *page* (a question tab, the Submit review), the side-by-side

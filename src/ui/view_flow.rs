@@ -73,6 +73,28 @@ enum FlowSign {
     Frozen(u64),
 }
 
+/// A flow-eligible page: its whole content, what its flow is signed on, and
+/// the rows its **painted tail** gets — the whole terminal for a framed view,
+/// which the region is clamped to and whose body `view_split` pins at the
+/// bottom, and the strip's own slice for the streaming strip
+/// (`docs/strip-flow.md`). Everything above that tail flows.
+struct FlowPage {
+    lines: Vec<Line<'static>>,
+    sign: FlowSign,
+    painted: u16,
+}
+
+impl FlowPage {
+    /// A framed view's page: signed on its rows, painted into the terminal.
+    fn framed(lines: Vec<Line<'static>>, term_height: u16) -> Self {
+        Self {
+            lines,
+            sign: FlowSign::Rows,
+            painted: term_height.max(1),
+        }
+    }
+}
+
 /// The rows of an open framed view that must flow into the terminal's real
 /// scrollback, with the signature identifying the flowed state. See
 /// [`view_flow`].
@@ -105,67 +127,69 @@ pub struct ViewFlow {
 ///
 /// Each branch returns the page **with** what its flow is signed on, so a
 /// view cannot acquire a flow without stating which changes to it matter.
-fn flow_view_lines(
-    app: &App,
-    width: u16,
-    term_height: u16,
-) -> Option<(Vec<Line<'static>>, FlowSign)> {
+fn flow_page(app: &App, width: u16, term_height: u16) -> Option<FlowPage> {
     if app.ask().is_some() {
         // The `AskUserQuestion` modal (`docs/ask.md`): its top-drop clamp
         // used to put the chip strip, the question and the first options in
         // no buffer at all on a short terminal.
-        return Some((super::ask_view::ask_lines(app, width), FlowSign::Rows));
+        return Some(FlowPage::framed(
+            super::ask_view::ask_lines(app, width),
+            term_height,
+        ));
     }
     if app.permission().is_some() {
-        return Some((
+        return Some(FlowPage::framed(
             super::permission_view::permission_lines(app, width, term_height),
-            FlowSign::Rows,
+            term_height,
         ));
     }
     if let Some(picker) = &app.model_picker {
-        return Some((
+        return Some(FlowPage::framed(
             super::model_view::model_view_lines(picker, width),
-            FlowSign::Rows,
+            term_height,
         ));
     }
     if let Some(onboarding) = &app.key_onboarding {
-        return Some((
+        return Some(FlowPage::framed(
             super::login_view::key_onboarding_lines(onboarding, width),
-            FlowSign::Rows,
+            term_height,
         ));
     }
     if app.settings_picker.is_some() {
-        return Some((
+        return Some(FlowPage::framed(
             super::settings_view::settings_view_lines(app, width),
-            FlowSign::Rows,
+            term_height,
         ));
     }
     if app.mascot_picker.is_some() {
-        return Some((
+        return Some(FlowPage::framed(
             super::mascot_view::mascot_view_lines(app, width),
-            FlowSign::Rows,
+            term_height,
         ));
     }
     if app.skills_menu.is_some() {
-        return Some((
+        return Some(FlowPage::framed(
             super::skills_view::skills_view_lines(app, width),
-            FlowSign::Rows,
+            term_height,
         ));
     }
     if app.hooks_menu.is_some() {
-        return Some((
+        return Some(FlowPage::framed(
             super::hooks_view::hooks_view_lines(app, width),
-            FlowSign::Rows,
+            term_height,
         ));
     }
     if app.trust_menu.is_some() {
-        return Some((
+        return Some(FlowPage::framed(
             super::trust_view::trust_view_lines(app, width),
-            FlowSign::Rows,
+            term_height,
         ));
     }
     if app.mcp_menu.is_some() {
-        return Some((super::mcp_view::mcp_view_lines(app, width), FlowSign::Rows));
+        return Some(FlowPage::framed(
+            super::mcp_view::mcp_view_lines(app, width),
+            term_height,
+        ));
     }
     if let Some(view) = &app.background_view {
         // The ↓ manager band, last in the render precedence. Its **details**
@@ -188,10 +212,33 @@ fn flow_view_lines(
             // that moves — so it signs like one.
             _ => FlowSign::Rows,
         };
-        return Some((
-            super::background_view::background_view_lines(app, width),
+        return Some(FlowPage {
+            lines: super::background_view::background_view_lines(app, width),
             sign,
-        ));
+            painted: term_height.max(1),
+        });
+    }
+    // No framed view is painted, so the composer is on screen and the
+    // **streaming strip** above it is what can overflow: a running tool
+    // cell whose output the region cannot fit, the status line under it.
+    // Those rows used to be trimmed into no buffer at all; they flow now,
+    // frozen like the band's (`docs/strip-flow.md`). Last, because every
+    // branch above replaces the composer — `view_split` squeezes the strip
+    // for them, and there the view's own page is the one that flows.
+    let painted = super::layout::strip_paint_rows(app, width, term_height);
+    let preview_n = super::live::strip_content_preview_rows(app, width, term_height);
+    // The row count first — this check runs on every draw tick, and a strip
+    // that fits must not cost a full build (`strip_content_rows`).
+    if super::live::strip_content_rows(app, width, preview_n) <= painted {
+        return None;
+    }
+    let lines = super::live::strip_lines(app, width, None, preview_n);
+    if lines.len() > usize::from(painted) {
+        return Some(FlowPage {
+            sign: FlowSign::Frozen(super::live::strip_flow_key(app)),
+            lines,
+            painted,
+        });
     }
     None
 }
@@ -206,11 +253,15 @@ fn flow_view_lines(
 /// so a pathological page can't turn one navigation into an unbounded write.
 #[must_use]
 pub fn view_flow(app: &App, width: u16, term_height: u16, max_rows: usize) -> Option<ViewFlow> {
-    let (mut lines, sign) = flow_view_lines(app, width, term_height)?;
-    // The region is clamped to the terminal and the body is bottom-pinned
-    // (`view_split` squeezes the strip first), so the painted tail is the
-    // page's last `term_height` rows — anything above them flows.
-    let skip = view_body_skip(lines.len(), term_height.max(1));
+    let FlowPage {
+        mut lines,
+        sign,
+        painted,
+    } = flow_page(app, width, term_height)?;
+    // The painted tail is the page's last `painted` rows — the whole terminal
+    // for a framed view, the strip's own slice for the streaming strip.
+    // Anything above them flows.
+    let skip = view_body_skip(lines.len(), painted);
     if skip == 0 {
         return None;
     }

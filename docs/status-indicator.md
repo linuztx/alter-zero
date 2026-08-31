@@ -367,3 +367,10 @@ same events straight from its streamed `tool_calls` deltas
   gap row between it and the box, and a committed `Done for Ns` after the turn
   settles. Phase 20 (longer startup delay): mid-pause the status shows
   `↑ N tokens` with no reply text, then the reply streams with the arrow `↓`.
+
+## …and on a terminal too short for it
+
+Past the preview slot, `live_layout` starves the strip itself, and the status
+row was simply not painted — the spinner, the elapsed and the token tally gone
+with it. It freezes into the terminal's real scrollback now, like every other
+strip row the region cannot show (`docs/strip-flow.md`).

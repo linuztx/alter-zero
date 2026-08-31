@@ -1298,7 +1298,24 @@ back **first** as the backstop. A **fixed** allowance was the reported bug:
 pressing `/` under a forming table on a small terminal asked for rows the
 terminal did not have and the constraint solver spent them on the strip, so
 the textarea vanished until the turn ended, `docs/table-streaming.md` *The
-preview slot is budgeted*), a blank gap row,
+preview slot is budgeted*. What the budget could not afford it used to
+**throw away** — a 13-row terminal lost a running command's `+N lines (Ns)`
+footer and its ctrl+b hint, a 9-row one its whole `⎿` output block, a 4-row
+one the spinner status line, none of it in any buffer — so the strip is one
+line builder now (`ui::live::strip_lines`, the exact rows `strip_rows` +
+`queued_rows` + `toast_rows` reserve) painted through the framed views'
+**bottom anchor**, and the rows it cannot paint **flow into real scrollback,
+frozen**: the cell *scrolls*, keeping its newest rows and its footer on
+screen while its head stays readable by scrolling up. Reserved rows are
+untouched (`fitted_preview_rows` still sizes the region, so the composer is
+protected exactly as before) — only the strip's *content* is built at the
+full ask (`strip_content_preview_rows`). Frozen for the band's reason: the
+strip moves at the turn's own 32 ms cadence, so it signs
+`ui::live::strip_flow_key` — what the strip is *of* — never its rows. A
+streaming reply's **frontier** is the one exclusion, since `StreamRender`
+commits its completed lines already and flowing it would re-sign per chunk;
+and the flow is the composer path's alone, a composer-replacing view's own
+page being what flows there. `docs/strip-flow.md`, `smoke.sh` Phase 106), a blank gap row,
 a codex-style **status line** (`(●•·   ) {verb}… ({elapsed}s · {↓|↑} {n} tokens ·
 Thinking for {m}s · esc to interrupt)` — opened by a comet spinner (a
 Larson-scanner sweep: a white head dragging a fading grey tail back and forth
