@@ -52,8 +52,9 @@ pub(crate) enum DeviceEvent {
         /// When it stops being valid, for the page's countdown.
         expires_at: std::time::Instant,
     },
-    /// The flow finished: the long-lived OAuth token to persist, or why not.
-    Done(Result<String, String>),
+    /// The flow finished: the long-lived OAuth token to persist plus the seat
+    /// it turned out to be, or why not.
+    Done(Result<(String, Option<String>), String>),
 }
 
 /// Run GitHub's device flow on a worker thread, reporting the code and then
@@ -93,7 +94,11 @@ pub(crate) fn spawn_device_login(
         // minute later (`docs/copilot.md`).
         let result = llm::copilot::poll_for_token(&device, &cancel).and_then(|token| {
             llm::copilot::authorize(&token)
-                .map(|_| token)
+                // The seat the exchange named rides back with the token: the
+                // plan is the question a sign-in leaves open, and a metered
+                // free seat's remaining quota is better stated now than
+                // discovered as a 402 mid-turn.
+                .map(|auth| (token, auth.plan))
                 .map_err(|e| e.to_string())
         });
         // A cancelled flow has no page left to report to — the user already

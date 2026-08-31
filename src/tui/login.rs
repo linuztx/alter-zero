@@ -81,7 +81,9 @@ impl Session<'_> {
                 self.device_expires = Some(expires_at);
                 self.app.set_device_code(&verification_uri, &user_code);
             }
-            DeviceEvent::Done(Ok(token)) => self.finish_device_login(&token),
+            DeviceEvent::Done(Ok((token, plan))) => {
+                self.finish_device_login(&token, plan.as_deref());
+            }
             DeviceEvent::Done(Err(reason)) => {
                 self.cancel_device_login();
                 self.app.fail_device_login(reason);
@@ -93,7 +95,7 @@ impl Session<'_> {
     /// var — the same `.env` store a pasted key lands in, so key resolution,
     /// the `/model` picker's ✓ and the next launch all pick it up with no
     /// second mechanism — then close the flow with a confirmation.
-    fn finish_device_login(&mut self, token: &str) {
+    fn finish_device_login(&mut self, token: &str, plan: Option<&str>) {
         self.cancel_device_login();
         let Some(provider) = self
             .app
@@ -117,8 +119,13 @@ impl Session<'_> {
         match self.models.save_api_key(&env_var, token) {
             Ok(()) => {
                 self.app.close_key_onboarding();
+                // Name the seat when the exchange did: "Signed in ✓" leaves
+                // open the one thing the user wants to know, and a metered
+                // free seat's remaining quota is better said now than met as
+                // a 402 mid-turn.
+                let seat = plan.map_or_else(|| name.clone(), |p| format!("{name} ({p})"));
                 self.toast(
-                    format!("Signed in to {name} — run /model to use it"),
+                    format!("Signed in to {seat} — run /model to use it"),
                     ToastKind::Info,
                 );
             }

@@ -275,19 +275,44 @@ up, rather than reporting `Signed in ✓` and letting `/model` fail cryptically 
 minute later.
 
 **A failure says what to do, and quotes GitHub.** `copilot::exchange_advice`
-maps the exchange's status to a sentence:
+turns the exchange's answer into a sentence, and the **order** is the design:
+a 403 there covers a dozen distinct states, so GitHub's own explanation wins
+wherever it sends one, and only where it says nothing do we infer from the
+status.
 
-| status | what it means | what the user is told |
-| --- | --- | --- |
-| `403` naming SAML/SSO | the org has not authorised this token | authorize it at `github.com/settings/tokens`, then `/login` again |
-| `403` | no usable Copilot entitlement | check `github.com/settings/copilot`; Copilot Free must be enabled there, and a Business/Enterprise seat may need an admin to allow third-party editors |
-| `401` | the OAuth token is dead | run `/login` again |
-| `404` | the token was minted by the wrong OAuth app — **not** a subscription problem, and the most misdiagnosed failure in this flow | run `/login` again |
+| the answer carries | what the user is told |
+| --- | --- |
+| `message` starting `API rate limit exceeded` | GitHub's REST rate limit is exhausted — **not** an entitlement problem, though it arrives as a 403 |
+| `error_details.notification_id: subscription_ended` | renew at `github.com/settings/copilot` |
+| `…: enterprise_managed_user_account` | an EMU account: the administrator must grant a seat |
+| `…: go_http_client` / `programmatic_token_generation` | the client was rejected — tokens requested too often, or from a client GitHub doesn't recognise |
+| any `error_details.message` (+ `url`) | **GitHub's own words and link**, verbatim |
+| `can_signup_for_limited: true` | this account is eligible for Copilot Free but hasn't accepted it — enable it at `github.com/settings/copilot` |
+| a 403 naming SAML/SSO | authorize the token for the org at `github.com/settings/tokens` |
+| a bare 403 | no usable Copilot entitlement |
+| `401` | the OAuth token is dead — run `/login` again |
+| `404` | the token was minted by the wrong OAuth app — **not** a subscription problem, and the most misdiagnosed failure in this flow |
 
-The advice is an *inference from the status*, and an inference can be wrong — a
-403 from an intercepting corporate proxy is not a missing subscription — so
-each sentence is followed by `(GitHub said: …)`, GitHub's own `message`. That
-clause is how a user tells when the advice doesn't fit.
+The inferred sentences are followed by `(GitHub said: …)` — its own `message`,
+or the raw body when the answer isn't JSON, which Copilot's 403s sometimes
+aren't (a bare `forbidden`, or `403 Unauthorized: not authorized to use this
+Copilot feature`). Dropping the evidence for those would drop it exactly where
+the advice is least likely to fit.
+
+**And a success names the seat.** `ExchangedToken::plan_note` reads the `sku` —
+`Copilot Free`, `Copilot for Students`, `Copilot Business`, `Copilot
+Enterprise` — plus a free seat's remaining `limited_user_quotas.chat`, so the
+confirmation reads `Signed in to GitHub Copilot (Copilot Free — 42 chat
+requests left this month)`. The plan is the question a sign-in otherwise leaves
+open, and a metered seat's allowance is better stated up front than met as a
+402 mid-turn. An absent or unrecognised `sku` says nothing — it is optional in
+GitHub's own validator, so its absence must not become a confident claim about
+the wrong plan.
+
+**Copilot Free works.** It is a *SKU*, not a separate auth path: the same
+device flow and the same exchange serve it, and `sku` comes back as
+`free_limited_copilot`. What differs is the model set (server-filtered, and in
+active churn — the picker discovers it rather than hardcoding) and the meter.
 
 The `/model` picker shows it. Its counter suffix collapses a failed provider to
 `GitHub Copilot unavailable`, which names the provider and nothing else; the

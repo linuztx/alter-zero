@@ -228,6 +228,23 @@ pub struct ExchangedToken {
     /// its own host, so this — not a hardcoded default — is the base to use.
     #[serde(default)]
     pub endpoints: Option<Endpoints>,
+    /// Which seat this is (`free_limited_copilot`, `copilot_enterprise_seat`,
+    /// …). **Optional in GitHub's own validator**, so its absence must never
+    /// become a claim about the user's plan.
+    #[serde(default)]
+    pub sku: Option<String>,
+    /// A metered seat's *remaining* allowance. Null for everyone else.
+    #[serde(default)]
+    pub limited_user_quotas: Option<LimitedQuotas>,
+}
+
+/// A free seat's remaining allowance, as the exchange reports it.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct LimitedQuotas {
+    #[serde(default)]
+    pub chat: Option<u64>,
+    #[serde(default)]
+    pub completions: Option<u64>,
 }
 
 /// The `endpoints` object, narrowed to the chat API's base.
@@ -268,6 +285,33 @@ impl ExchangedToken {
             return Duration::from_secs(300);
         }
         Duration::from_secs(self.refresh_in).saturating_sub(REFRESH_SKEW)
+    }
+
+    /// What this sign-in actually got, for the confirmation — `Copilot Free —
+    /// 42 chat requests left this month`, `Copilot Business`, … `None` when
+    /// the SKU is absent or one we don't recognise, because "Signed in ✓" is
+    /// better than a confident claim about the wrong plan.
+    ///
+    /// It exists because the plan is the question a sign-in leaves open. A
+    /// free seat is metered, so the number that runs out is the fact worth
+    /// stating up front rather than discovering as a 402 mid-turn.
+    #[must_use]
+    pub fn plan_note(&self) -> Option<String> {
+        let plan = match self.sku.as_deref()? {
+            "free_limited_copilot" => "Copilot Free",
+            "free_educational_quota" => "Copilot for Students",
+            "copilot_for_business_seat_quota" => "Copilot Business",
+            "copilot_enterprise_seat" => "Copilot Enterprise",
+            _ => return None,
+        };
+        let chat = self
+            .limited_user_quotas
+            .as_ref()
+            .and_then(|q| q.chat)
+            .map_or_else(String::new, |n| {
+                format!(" — {n} chat requests left this month")
+            });
+        Some(format!("{plan}{chat}"))
     }
 
     /// The account's chat API base, trailing slash trimmed — its own host for
@@ -354,6 +398,7 @@ fn form_body(pairs: &[(&str, &str)]) -> String {
 struct CachedBearer {
     bearer: String,
     api_base: String,
+    plan: Option<String>,
     good_until: std::time::Instant,
 }
 
@@ -371,6 +416,9 @@ pub struct CopilotAuth {
     pub bearer: String,
     /// The account's own API base, which outranks the configured one.
     pub api_base: String,
+    /// What seat this is, when the exchange named a recognisable one — the
+    /// sign-in confirmation's detail (see [`ExchangedToken::plan_note`]).
+    pub plan: Option<String>,
 }
 
 /// The live Copilot credentials for a stored OAuth token: cached while fresh,
@@ -388,12 +436,14 @@ pub fn authorize(oauth_token: &str) -> Result<CopilotAuth> {
         return Ok(CopilotAuth {
             bearer: hit.bearer.clone(),
             api_base: hit.api_base.clone(),
+            plan: hit.plan.clone(),
         });
     }
     let exchanged = exchange(oauth_token)?;
     let auth = CopilotAuth {
         bearer: exchanged.token.clone(),
         api_base: exchanged.api_base(),
+        plan: exchanged.plan_note(),
     };
     if let Ok(mut map) = cache.lock() {
         map.insert(
@@ -401,6 +451,7 @@ pub fn authorize(oauth_token: &str) -> Result<CopilotAuth> {
             CachedBearer {
                 bearer: auth.bearer.clone(),
                 api_base: auth.api_base.clone(),
+                plan: auth.plan.clone(),
                 good_until: now + exchanged.lifetime(),
             },
         );
@@ -425,60 +476,136 @@ pub fn forget(oauth_token: &str) {
 /// whether that user can actually use Copilot. So an account with no
 /// subscription signs in perfectly and then fails here — and reporting that as
 /// an auth failure sends the user back through `/login` forever, which cannot
-/// fix it. Pure, so every branch is testable with no network.
+/// fix it.
+///
+/// The order matters. **GitHub's own explanation wins** where it sends one: a
+/// 403 here covers a dozen distinct states (never signed up, subscription
+/// ended, managed account, trade restriction, blocked client) and its
+/// `error_details` names which, with the page that fixes it. Only where it
+/// says nothing do we infer from the status. Pure, so every branch is testable
+/// with no network.
 #[must_use]
 pub fn exchange_advice(status: u16, body: &str) -> String {
-    let flat = body.split_whitespace().collect::<Vec<_>>().join(" ");
-    let mentions = |needle: &str| flat.to_ascii_lowercase().contains(needle);
-    // What GitHub itself said, kept as evidence after the advice. The advice is
-    // an inference from the status, and an inference can be wrong — a 403 from
-    // an intercepting corporate proxy is not a missing subscription — so the
+    let parsed: Option<serde_json::Value> = serde_json::from_str(body).ok();
+    let field = |obj: Option<&serde_json::Value>, key: &str| -> Option<String> {
+        let text = obj?.get(key)?.as_str()?.trim();
+        (!text.is_empty()).then(|| text.split_whitespace().collect::<Vec<_>>().join(" "))
+    };
+    let details = parsed.as_ref().and_then(|p| p.get("error_details"));
+    let notification = field(details, "notification_id");
+    let can_signup = parsed
+        .as_ref()
+        .and_then(|p| p.get("can_signup_for_limited"))
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    // What GitHub itself said, kept as evidence after the advice. The advice
+    // is an inference, and an inference can be wrong — a 403 from an
+    // intercepting corporate proxy is not a missing subscription — so the
     // sentence that tells the user what to do is followed by the words that
     // let them tell when it doesn't fit.
     let quoted = github_message(body).map_or_else(String::new, |m| format!(" (GitHub said: {m})"));
+    // GitHub's REST rate limiter answers 403 too. Telling a rate-limited user
+    // to go buy Copilot is confident, actionable, and useless.
+    let top_message = field(parsed.as_ref(), "message").unwrap_or_default();
+    if top_message.starts_with("API rate limit exceeded") {
+        return format!(
+            "GitHub's API rate limit is exhausted — try again in a few minutes.{quoted}"
+        );
+    }
+
+    match notification.as_deref() {
+        Some("subscription_ended") => {
+            return format!(
+                "Your Copilot subscription has ended — renew it at \
+                 github.com/settings/copilot, then run /login again.{quoted}"
+            );
+        }
+        Some("enterprise_managed_user_account") => {
+            return format!(
+                "This is an Enterprise Managed User account — your \
+                 administrator has to grant it a Copilot seat.{quoted}"
+            );
+        }
+        Some("go_http_client" | "programmatic_token_generation") => {
+            return format!(
+                "GitHub rejected this client — Copilot tokens are being \
+                 requested too often, or from a client it doesn't recognise.\
+                 {quoted}"
+            );
+        }
+        _ => {}
+    }
+    // GitHub's own explanation and action link, where it sent one.
+    if status == 403
+        && let Some(message) = field(details, "message")
+    {
+        let link = field(details, "url").map_or_else(String::new, |u| format!(" See {u}."));
+        return format!("{message}{link}{quoted}");
+    }
+    // Eligible for Copilot Free but never accepted it — a 30-second fix, and
+    // the likeliest state for someone signing in with no paid plan.
+    if status == 403 && can_signup {
+        return format!(
+            "This account has no Copilot access yet — enable Copilot Free at \
+             github.com/settings/copilot, then run /login again.{quoted}"
+        );
+    }
     match status {
         // An org with SAML SSO refuses a token the user has not authorised for
         // it. A bare 403 here reads as "no subscription" and sends the user to
-        // the wrong page, so it is checked first.
-        403 if mentions("saml") || mentions("sso") => {
-            format!(
-                "This token is not authorized for your organization's SAML SSO. \
-                 Authorize it at github.com/settings/tokens, then run /login \
-                 again.{quoted}"
-            )
-        }
-        403 => {
-            format!(
-                "This GitHub account has no Copilot subscription the API can \
-                 use. Check github.com/settings/copilot — Copilot Free must be \
-                 enabled there, and a Business/Enterprise seat may need your \
-                 admin to allow third-party editors.{quoted}"
-            )
-        }
-        401 => {
-            format!(
-                "Your GitHub sign-in has expired or been revoked. Run /login \
-                 and sign in again.{quoted}"
-            )
-        }
+        // the wrong page.
+        403 if mentions_sso(body) => format!(
+            "This token is not authorized for your organization's SAML SSO. \
+             Authorize it at github.com/settings/tokens, then run /login \
+             again.{quoted}"
+        ),
+        403 => format!(
+            "This GitHub account has no Copilot subscription the API can use. \
+             Check github.com/settings/copilot — Copilot Free must be enabled \
+             there, and a Business/Enterprise seat may need your admin to \
+             allow third-party editors.{quoted}"
+        ),
+        401 => format!(
+            "Your GitHub sign-in has expired or been revoked. Run /login and \
+             sign in again.{quoted}"
+        ),
         // Not a subscription problem: a token minted by the wrong OAuth app
         // 404s here however good the subscription is.
-        404 => {
-            format!(
-                "GitHub would not issue a Copilot token for this sign-in. Run \
-                 /login and sign in again.{quoted}"
-            )
-        }
-        _ if flat.is_empty() => format!("GitHub answered {status}."),
-        _ => format!("GitHub answered {status}: {flat}"),
+        404 => format!(
+            "GitHub would not issue a Copilot token for this sign-in. Run \
+             /login and sign in again.{quoted}"
+        ),
+        // Nothing to advise: GitHub's own words *are* the message here, so
+        // they are stated plainly rather than quoted after an empty guess.
+        _ => match github_message(body) {
+            Some(message) => format!("GitHub answered {status}: {message}"),
+            None => format!("GitHub answered {status}."),
+        },
     }
+}
+
+/// Does this body name an SSO/SAML authorization problem?
+fn mentions_sso(body: &str) -> bool {
+    let lower = body.to_ascii_lowercase();
+    lower.contains("saml") || lower.contains("sso")
 }
 
 /// GitHub's own `message` out of an error body, trimmed to one readable line.
 /// `None` when the body isn't its usual `{"message": …}` shape or says nothing.
 fn github_message(body: &str) -> Option<String> {
-    let parsed: serde_json::Value = serde_json::from_str(body).ok()?;
-    let message = parsed.get("message")?.as_str()?;
+    // Copilot's own 403s are not always JSON — a bare `forbidden` and
+    // `403 Unauthorized: not authorized to use this Copilot feature` are both
+    // real — and dropping the evidence there drops it exactly where the advice
+    // is least likely to fit. An unparseable body *is* the message.
+    let message = match serde_json::from_str::<serde_json::Value>(body) {
+        Ok(parsed) => parsed
+            .get("error_details")
+            .and_then(|d| d.get("message"))
+            .or_else(|| parsed.get("message"))
+            .and_then(serde_json::Value::as_str)?
+            .to_string(),
+        Err(_) => body.to_string(),
+    };
     let flat = message.split_whitespace().collect::<Vec<_>>().join(" ");
     if flat.is_empty() {
         return None;
@@ -828,7 +955,146 @@ mod tests {
         assert_eq!(none.lifetime(), Duration::from_secs(300));
     }
 
+    // --- what plan the sign-in actually got (docs/copilot.md) ---
+
+    #[test]
+    fn a_free_seat_names_itself_and_its_remaining_chat_quota() {
+        // "Signed in ✓" says nothing about *what to*. A free seat is metered,
+        // so the number that runs out is the fact worth stating.
+        let token = ExchangedToken::parse(
+            r#"{"token":"t","refresh_in":1500,"sku":"free_limited_copilot",
+                "limited_user_quotas":{"chat":42,"completions":1873}}"#,
+        )
+        .unwrap();
+        let note = token.plan_note().expect("a free seat says so");
+        assert!(note.contains("Free"), "{note}");
+        assert!(note.contains("42"), "the quota that runs out: {note}");
+    }
+
+    #[test]
+    fn a_free_seat_without_a_quota_block_still_names_the_plan() {
+        let token = ExchangedToken::parse(r#"{"token":"t","sku":"free_limited_copilot"}"#).unwrap();
+        assert_eq!(token.plan_note().as_deref(), Some("Copilot Free"));
+    }
+
+    #[test]
+    fn a_paid_seat_is_named_by_its_own_sku() {
+        for (sku, want) in [
+            ("copilot_for_business_seat_quota", "Business"),
+            ("copilot_enterprise_seat", "Enterprise"),
+            ("free_educational_quota", "Student"),
+        ] {
+            let body = format!(r#"{{"token":"t","sku":"{sku}"}}"#);
+            let note = ExchangedToken::parse(&body).unwrap().plan_note();
+            assert!(
+                note.as_deref().is_some_and(|n| n.contains(want)),
+                "{sku} → {note:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_unknown_or_absent_sku_claims_nothing() {
+        // The SKU is optional in GitHub's own validator, so a missing one must
+        // not become a confident claim about the user's plan.
+        assert_eq!(
+            ExchangedToken::parse(r#"{"token":"t"}"#)
+                .unwrap()
+                .plan_note(),
+            None
+        );
+        assert_eq!(
+            ExchangedToken::parse(r#"{"token":"t","sku":"brand_new_tier_2027"}"#)
+                .unwrap()
+                .plan_note(),
+            None
+        );
+    }
+
     // --- the exchange's failures, as sentences (docs/copilot.md) ---
+
+    #[test]
+    fn a_rate_limited_403_is_not_read_as_a_missing_subscription() {
+        // GitHub's REST rate limiter answers 403 too. Telling a rate-limited
+        // user to go buy Copilot is the worst kind of wrong: it is confident,
+        // actionable, and sends them to a page that cannot help.
+        let body = r#"{"message":"API rate limit exceeded for user ID 12345.",
+            "documentation_url":"https://developer.github.com/v3/#rate-limiting","status":"403"}"#;
+        let advice = exchange_advice(403, body);
+        assert!(advice.contains("rate limit"), "{advice}");
+        assert!(
+            !advice.contains("subscription"),
+            "a rate limit is not an entitlement problem: {advice}"
+        );
+    }
+
+    #[test]
+    fn githubs_own_explanation_and_link_outrank_our_guess() {
+        // The exchange's 403 carries a server-supplied user-facing message and
+        // an action URL. GitHub knows which of a dozen states the account is
+        // in; we are inferring from a status code. Prefer its words.
+        let body = r#"{"can_signup_for_limited":true,
+            "error_details":{"message":"You do not have access to Copilot.",
+              "notification_id":"not_signed_up","title":"Access Denied",
+              "url":"https://github.com/settings/copilot?editor=vscode"}}"#;
+        let advice = exchange_advice(403, body);
+        assert!(
+            advice.contains("You do not have access to Copilot."),
+            "{advice}"
+        );
+        assert!(
+            advice.contains("https://github.com/settings/copilot?editor=vscode"),
+            "the action link: {advice}"
+        );
+    }
+
+    #[test]
+    fn an_eligible_account_is_told_copilot_free_is_one_click_away() {
+        // `can_signup_for_limited` means "entitled to Copilot Free but has not
+        // accepted it" — a 30-second fix, and the single most likely state for
+        // someone signing in with no paid plan.
+        let body = r#"{"can_signup_for_limited":true,
+            "error_details":{"notification_id":"not_signed_up"}}"#;
+        let advice = exchange_advice(403, body);
+        assert!(advice.contains("Copilot Free"), "{advice}");
+        assert!(advice.contains("github.com/settings/copilot"), "{advice}");
+    }
+
+    #[test]
+    fn an_ended_subscription_and_a_managed_account_each_say_their_own_thing() {
+        let ended = exchange_advice(
+            403,
+            r#"{"error_details":{"notification_id":"subscription_ended"}}"#,
+        );
+        assert!(
+            ended.contains("ended") || ended.contains("expired"),
+            "{ended}"
+        );
+        let emu = exchange_advice(
+            403,
+            r#"{"error_details":{"notification_id":"enterprise_managed_user_account"}}"#,
+        );
+        assert!(
+            emu.contains("administrator") || emu.contains("admin"),
+            "{emu}"
+        );
+    }
+
+    #[test]
+    fn a_plain_text_body_is_still_quoted_as_evidence() {
+        // Copilot's own 403s are not always JSON — `forbidden\n` and
+        // `403 Unauthorized: not authorized to use this Copilot feature\n`
+        // are both real. Dropping the evidence for those is dropping it
+        // exactly where the advice is least likely to fit.
+        let advice = exchange_advice(
+            403,
+            "403 Unauthorized: not authorized to use this feature\n",
+        );
+        assert!(
+            advice.contains("not authorized to use this feature"),
+            "{advice}"
+        );
+    }
 
     #[test]
     fn a_403_reads_as_a_missing_entitlement_not_a_broken_login() {
