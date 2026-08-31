@@ -177,6 +177,43 @@ fn model_load_status_suffix(picker: &ModelPicker) -> Option<(String, Color)> {
     }
 }
 
+/// Why each failed provider failed, wrapped under the list — the counter's
+/// `{provider} unavailable` suffix names *which* provider and nothing else,
+/// and the reason is the only thing that tells the user whether to re-run
+/// `/login`, wait out a 5xx, or check their subscription. Empty when every
+/// provider loaded, so a clean page is exactly what it was.
+///
+/// Bounded to [`MODEL_ERROR_MAX_ROWS`]: a provider that answers a blocked
+/// request with an HTML page would otherwise push the list off the frame.
+fn model_error_lines(picker: &ModelPicker, width: u16) -> Vec<Line<'static>> {
+    let mut rows: Vec<Line<'static>> = picker
+        .errors
+        .iter()
+        .flat_map(|e| {
+            model_wrapped_rows(
+                &format!("{}: {}", e.provider, e.message),
+                ERROR_COLOR,
+                width,
+            )
+        })
+        .collect();
+    if rows.len() > MODEL_ERROR_MAX_ROWS as usize {
+        rows.truncate(MODEL_ERROR_MAX_ROWS as usize);
+        // The cut has to show, or a reason clipped mid-sentence reads as a
+        // reason that simply ended there. The last kept row is a *wrapped* row,
+        // so it already fits the width — trimming to `width - 1` is what makes
+        // room for the marker instead of leaving it off.
+        if let Some(last) = rows.pop() {
+            let text: String = last.spans.iter().map(|s| s.content.as_ref()).collect();
+            let room = (width as usize).saturating_sub(1).max(1);
+            let mut cut = super::wrap::truncate_cols(text.trim_end(), room);
+            cut.push('…');
+            rows.push(Line::from(Span::styled(cut, Style::new().fg(ERROR_COLOR))));
+        }
+    }
+    rows
+}
+
 /// The `Model Name: {friendly}` line under the counter, naming the highlighted
 /// model, or a blank line when nothing is highlighted.
 fn model_name_line(picker: &ModelPicker, width: u16) -> Line<'static> {
@@ -230,6 +267,7 @@ pub(super) fn model_view_lines(picker: &ModelPicker, width: u16) -> Vec<Line<'st
         lines.push(model_counter_line(picker, width));
         lines.push(Line::default());
         lines.push(model_name_line(picker, width));
+        lines.extend(model_error_lines(picker, width));
         lines.push(Line::default());
     } else {
         // A placeholder (loading / error / needs-login / no match): the blank

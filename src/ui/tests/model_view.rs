@@ -1,7 +1,9 @@
 //! The inline `/model` picker (`docs/llm.md`).
 
 use super::*;
-use crate::ui::theme::{ERROR_COLOR, MODEL_MENU_MAX_ROWS, MODEL_SEARCH_ROW, MODEL_SELECTED_COLOR};
+use crate::ui::theme::{
+    ERROR_COLOR, MODEL_ERROR_MAX_ROWS, MODEL_MENU_MAX_ROWS, MODEL_SEARCH_ROW, MODEL_SELECTED_COLOR,
+};
 
 #[test]
 fn model_picker_frames_with_rules_and_no_header() {
@@ -267,4 +269,102 @@ fn a_cut_model_name_detail_ends_with_an_ellipsis() {
         .find(|l| l.contains("Model Name:"))
         .expect("the name row");
     assert!(name.trim_end().ends_with('…'), "{name:?}");
+}
+
+// --- a failed provider says WHY, not just that it failed (docs/llm.md) ---
+
+#[test]
+fn a_failed_provider_shows_its_reason_beneath_the_list() {
+    // The collapsed `{provider} unavailable` counter suffix is a dead end: it
+    // names the provider and nothing else, and the reason — the one thing that
+    // tells the user whether to re-run /login, wait, or check their seat — was
+    // recorded and never rendered anywhere.
+    use crate::ui::model_view::model_view_lines;
+    let mut picker = model_picker(three_models(), 0, "x");
+    picker.errors.push(ModelFetchError {
+        provider: "GitHub Copilot".into(),
+        message: "HTTP 403: no Copilot subscription on this account".into(),
+    });
+    let text = model_view_lines(&picker, 70)
+        .iter()
+        .map(plain)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(text.contains("GitHub Copilot unavailable"), "{text}");
+    assert!(
+        text.contains("no Copilot subscription on this account"),
+        "the reason is on the page: {text}"
+    );
+}
+
+#[test]
+fn every_failed_providers_reason_is_shown() {
+    use crate::ui::model_view::model_view_lines;
+    let mut picker = model_picker(three_models(), 0, "x");
+    for (provider, message) in [("GitHub Copilot", "boom"), ("OpenRouter", "kaboom")] {
+        picker.errors.push(ModelFetchError {
+            provider: provider.into(),
+            message: message.into(),
+        });
+    }
+    let text = model_view_lines(&picker, 70)
+        .iter()
+        .map(plain)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(text.contains("2 providers unavailable"), "{text}");
+    assert!(text.contains("boom") && text.contains("kaboom"), "{text}");
+}
+
+#[test]
+fn a_page_length_failure_reason_is_capped_not_left_to_own_the_picker() {
+    // A provider that answers a blocked request with an HTML page would
+    // otherwise push the list off the top of the frame.
+    use crate::ui::model_view::model_view_lines;
+    let mut picker = model_picker(three_models(), 0, "x");
+    picker.errors.push(ModelFetchError {
+        provider: "GitHub Copilot".into(),
+        message: "wordy ".repeat(400),
+    });
+    let lines = model_view_lines(&picker, 70);
+    let reason_rows = lines
+        .iter()
+        .map(plain)
+        .filter(|l| l.contains("wordy"))
+        .count();
+    assert!(
+        reason_rows <= MODEL_ERROR_MAX_ROWS as usize,
+        "the reason block is bounded, got {reason_rows} rows"
+    );
+    // …and the cut shows, or a reason clipped mid-sentence reads as one that
+    // simply ended there.
+    let last = lines
+        .iter()
+        .map(plain)
+        .rfind(|l| l.contains("wordy"))
+        .expect("a reason row");
+    assert!(last.trim_end().ends_with('…'), "{last:?}");
+    for line in &lines {
+        assert!(
+            crate::ui::wrap::cols(plain(line).trim_end()) <= 70,
+            "no row leaks past the width: {:?}",
+            plain(line)
+        );
+    }
+}
+
+#[test]
+fn a_clean_load_adds_no_reason_rows_at_all() {
+    use crate::ui::model_view::model_view_lines;
+    let picker = model_picker(three_models(), 0, "x");
+    let before = model_view_lines(&picker, 70).len();
+    let mut failed = model_picker(three_models(), 0, "x");
+    failed.errors.push(ModelFetchError {
+        provider: "GitHub Copilot".into(),
+        message: "boom".into(),
+    });
+    assert!(
+        model_view_lines(&failed, 70).len() > before,
+        "the block only exists when something failed"
+    );
 }

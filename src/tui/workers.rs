@@ -84,7 +84,18 @@ pub(crate) fn spawn_device_login(
         {
             return;
         }
-        let result = llm::copilot::poll_for_token(&device, &cancel);
+        // Approval is not access. GitHub's device flow authenticates the
+        // *user*; whether that user can actually call Copilot is only settled
+        // by the token exchange — an account with no subscription, or one an
+        // org's SSO has not authorised, signs in perfectly and fails later. So
+        // verify here, while the page that can explain it is still up, rather
+        // than reporting "Signed in ✓" and letting `/model` fail cryptically a
+        // minute later (`docs/copilot.md`).
+        let result = llm::copilot::poll_for_token(&device, &cancel).and_then(|token| {
+            llm::copilot::authorize(&token)
+                .map(|_| token)
+                .map_err(|e| e.to_string())
+        });
         // A cancelled flow has no page left to report to — the user already
         // walked away from it.
         if !cancel.is_cancelled() {

@@ -418,13 +418,83 @@ pub fn forget(oauth_token: &str) {
     }
 }
 
+/// What a failed token exchange *means*, as a sentence to show the user.
+///
+/// This mapping is the difference between a usable error and a loop: the
+/// device flow authenticates the **user**, and only this exchange checks
+/// whether that user can actually use Copilot. So an account with no
+/// subscription signs in perfectly and then fails here — and reporting that as
+/// an auth failure sends the user back through `/login` forever, which cannot
+/// fix it. Pure, so every branch is testable with no network.
+#[must_use]
+pub fn exchange_advice(status: u16, body: &str) -> String {
+    let flat = body.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mentions = |needle: &str| flat.to_ascii_lowercase().contains(needle);
+    // What GitHub itself said, kept as evidence after the advice. The advice is
+    // an inference from the status, and an inference can be wrong — a 403 from
+    // an intercepting corporate proxy is not a missing subscription — so the
+    // sentence that tells the user what to do is followed by the words that
+    // let them tell when it doesn't fit.
+    let quoted = github_message(body).map_or_else(String::new, |m| format!(" (GitHub said: {m})"));
+    match status {
+        // An org with SAML SSO refuses a token the user has not authorised for
+        // it. A bare 403 here reads as "no subscription" and sends the user to
+        // the wrong page, so it is checked first.
+        403 if mentions("saml") || mentions("sso") => {
+            format!(
+                "This token is not authorized for your organization's SAML SSO. \
+                 Authorize it at github.com/settings/tokens, then run /login \
+                 again.{quoted}"
+            )
+        }
+        403 => {
+            format!(
+                "This GitHub account has no Copilot subscription the API can \
+                 use. Check github.com/settings/copilot — Copilot Free must be \
+                 enabled there, and a Business/Enterprise seat may need your \
+                 admin to allow third-party editors.{quoted}"
+            )
+        }
+        401 => {
+            format!(
+                "Your GitHub sign-in has expired or been revoked. Run /login \
+                 and sign in again.{quoted}"
+            )
+        }
+        // Not a subscription problem: a token minted by the wrong OAuth app
+        // 404s here however good the subscription is.
+        404 => {
+            format!(
+                "GitHub would not issue a Copilot token for this sign-in. Run \
+                 /login and sign in again.{quoted}"
+            )
+        }
+        _ if flat.is_empty() => format!("GitHub answered {status}."),
+        _ => format!("GitHub answered {status}: {flat}"),
+    }
+}
+
+/// GitHub's own `message` out of an error body, trimmed to one readable line.
+/// `None` when the body isn't its usual `{"message": …}` shape or says nothing.
+fn github_message(body: &str) -> Option<String> {
+    let parsed: serde_json::Value = serde_json::from_str(body).ok()?;
+    let message = parsed.get("message")?.as_str()?;
+    let flat = message.split_whitespace().collect::<Vec<_>>().join(" ");
+    if flat.is_empty() {
+        return None;
+    }
+    let mut cut: String = flat.chars().take(200).collect();
+    if flat.chars().count() > 200 {
+        cut.push('…');
+    }
+    Some(cut)
+}
+
 /// Exchange a GitHub OAuth token for a Copilot bearer. Boundary code.
 ///
 /// # Errors
-/// Transport failures and non-2xx responses become an [`LlmError`]. A `404`
-/// here is reported specially: it means the *token* was minted by the wrong
-/// OAuth client, not that the user lacks a subscription — the single most
-/// misdiagnosed failure in this flow.
+/// Transport failures and non-2xx responses become an [`LlmError`], the latter
+/// carrying [`exchange_advice`]'s sentence rather than GitHub's raw body.
 fn exchange(oauth_token: &str) -> Result<ExchangedToken> {
     let client = super::http_client(OP_TIMEOUT)?;
     let resp = client
@@ -440,15 +510,14 @@ fn exchange(oauth_token: &str) -> Result<ExchangedToken> {
         .map_err(|e| LlmError::Http(e.to_string()))?;
     let status = resp.status().as_u16();
     let body = read_body(resp);
-    if status == 404 {
+    if !(200..300).contains(&status) {
+        // The advice, not the raw body: this is the one call whose failure the
+        // user can usually act on, and `{"message":"no access to chat"}` tells
+        // them nothing about which of the three causes it is.
         return Err(LlmError::Api {
             status,
-            body: "GitHub refused this token for Copilot. Run /login and sign in again."
-                .to_string(),
+            body: exchange_advice(status, &body),
         });
-    }
-    if !(200..300).contains(&status) {
-        return Err(LlmError::Api { status, body });
     }
     ExchangedToken::parse(&body)
 }
@@ -757,6 +826,83 @@ mod tests {
         // every request in a turn would pay an exchange.
         let none = ExchangedToken::parse(r#"{"token":"t"}"#).unwrap();
         assert_eq!(none.lifetime(), Duration::from_secs(300));
+    }
+
+    // --- the exchange's failures, as sentences (docs/copilot.md) ---
+
+    #[test]
+    fn a_403_reads_as_a_missing_entitlement_not_a_broken_login() {
+        // The device flow can approve perfectly well for an account that has
+        // no Copilot on it at all — GitHub authenticates the *user*, and only
+        // this exchange checks the subscription. Reporting that as an auth
+        // failure sends the user round the sign-in loop forever.
+        let advice = exchange_advice(403, r#"{"message":"no access to chat"}"#);
+        assert!(advice.contains("Copilot subscription"), "{advice}");
+        assert!(advice.contains("github.com/settings/copilot"), "{advice}");
+    }
+
+    #[test]
+    fn a_401_reads_as_a_dead_token() {
+        let advice = exchange_advice(401, "");
+        assert!(
+            advice.contains("expired") || advice.contains("revoked"),
+            "{advice}"
+        );
+        assert!(advice.contains("/login"), "the way out: {advice}");
+    }
+
+    #[test]
+    fn a_404_names_the_client_id_cause_rather_than_the_subscription() {
+        // The single most misdiagnosed failure in this flow: a token minted by
+        // the wrong OAuth app 404s here however good the subscription is.
+        let advice = exchange_advice(404, "");
+        assert!(advice.contains("/login"), "{advice}");
+        assert!(
+            !advice.contains("subscription"),
+            "a 404 is not a subscription problem: {advice}"
+        );
+    }
+
+    #[test]
+    fn an_sso_protected_token_says_which_organisation_to_authorise() {
+        // An org with SAML SSO rejects an unauthorised token with a distinctive
+        // body; without naming it the user sees a bare 403 and re-runs /login,
+        // which cannot fix it.
+        let body = r#"{"message":"Resource protected by organization SAML enforcement.
+            You must grant your OAuth token access to this organization."}"#;
+        let advice = exchange_advice(403, body);
+        assert!(
+            advice.contains("SAML") || advice.contains("SSO"),
+            "{advice}"
+        );
+        assert!(
+            advice.contains("authorize") || advice.contains("authorise"),
+            "{advice}"
+        );
+    }
+
+    #[test]
+    fn the_advice_keeps_githubs_own_words_as_evidence() {
+        // The advice is an inference from the status, and an inference can be
+        // wrong — a 403 from an intercepting corporate proxy is not a missing
+        // subscription. The quoted message is how the user tells.
+        let advice = exchange_advice(403, r#"{"message":"Blocked by network policy"}"#);
+        assert!(
+            advice.contains("Copilot subscription"),
+            "the advice: {advice}"
+        );
+        assert!(
+            advice.contains("GitHub said: Blocked by network policy"),
+            "the evidence: {advice}"
+        );
+        // A body with nothing quotable just omits the clause.
+        assert!(!exchange_advice(403, "").contains("GitHub said"));
+    }
+
+    #[test]
+    fn an_unrecognised_status_still_carries_githubs_own_words() {
+        let advice = exchange_advice(500, r#"{"message":"upstream exploded"}"#);
+        assert!(advice.contains("upstream exploded"), "{advice}");
     }
 
     // --- request identity ---

@@ -755,6 +755,13 @@ pub(super) const MODEL_STATUS_SEP: &str = "   ·   ";
 /// list shows what's landed so far and keeps growing). See `docs/llm.md`.
 pub(super) const MODEL_LOADING_MORE: &str = "loading more…";
 
+/// The most display rows a failed provider's *reason* block may take under the
+/// list. The collapsed `{provider} unavailable` note names the provider and
+/// nothing else, so the reason is rendered beneath it — but a provider that
+/// answers with an HTML page (an intercepting proxy, a captive portal) would
+/// otherwise push the model list off the top of the frame.
+pub(super) const MODEL_ERROR_MAX_ROWS: u16 = 3;
+
 // --- The `/login` API-key onboarding flow (docs/llm.md). A two-step inline
 // picker sharing the model picker's framed look and colours: step 1 lists the
 // providers to choose from (headerless, like `/model`), step 2 collects the key

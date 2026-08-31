@@ -261,6 +261,40 @@ and a record with no `capabilities` object isn't Copilot's, so every other
 provider's list passes through untouched. The picker will legitimately show a
 shorter list than the VS Code model picker does.
 
+## When it doesn't work
+
+Copilot has more ways to fail than a pasted key does, and most of them look
+alike from the outside — so two things exist purely to tell them apart.
+
+**Approval is not access.** GitHub's device flow authenticates the *user*;
+whether that user can call Copilot is only settled by the token exchange. An
+account with no subscription — or one an org's SSO has not authorised — signs
+in perfectly and then fails at the first request. So the worker runs the
+exchange **as part of signing in**, while the page that can explain it is still
+up, rather than reporting `Signed in ✓` and letting `/model` fail cryptically a
+minute later.
+
+**A failure says what to do, and quotes GitHub.** `copilot::exchange_advice`
+maps the exchange's status to a sentence:
+
+| status | what it means | what the user is told |
+| --- | --- | --- |
+| `403` naming SAML/SSO | the org has not authorised this token | authorize it at `github.com/settings/tokens`, then `/login` again |
+| `403` | no usable Copilot entitlement | check `github.com/settings/copilot`; Copilot Free must be enabled there, and a Business/Enterprise seat may need an admin to allow third-party editors |
+| `401` | the OAuth token is dead | run `/login` again |
+| `404` | the token was minted by the wrong OAuth app — **not** a subscription problem, and the most misdiagnosed failure in this flow | run `/login` again |
+
+The advice is an *inference from the status*, and an inference can be wrong — a
+403 from an intercepting corporate proxy is not a missing subscription — so
+each sentence is followed by `(GitHub said: …)`, GitHub's own `message`. That
+clause is how a user tells when the advice doesn't fit.
+
+The `/model` picker shows it. Its counter suffix collapses a failed provider to
+`GitHub Copilot unavailable`, which names the provider and nothing else; the
+reason now renders **beneath the list** (`model_error_lines`), red and wrapped,
+bounded to `MODEL_ERROR_MAX_ROWS` with the cut marked — a provider that answers
+with an HTML page would otherwise push the model list off the frame.
+
 ## The flow at the boundary
 
 `spawn_device_login` (`src/tui/workers.rs`) is the loop's fourth worker and the

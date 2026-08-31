@@ -47,11 +47,19 @@ fn counter_notes_a_provider_that_failed() {
         provider: "Agent Zero API".into(),
         message: "HTTP 401".into(),
     });
-    let mut buf = buffer(60, 12);
-    render_model_picker(buf.area, &mut buf, &picker);
-    let counter = row(&buf, 7, 60);
+    // Found by content, not by row index: the page grew a reason row under the
+    // list (`model_error_lines`) and it is bottom-anchored, so a fixed row
+    // number pins the assertion to a layout rather than to the behaviour.
+    let lines = crate::ui::model_view::model_view_lines(&picker, 60);
+    let counter = lines
+        .iter()
+        .map(plain)
+        .find(|l| l.contains("unavailable"))
+        .expect("the counter's failure note");
     assert!(counter.contains("Agent Zero API"), "{counter:?}");
-    assert!(counter.contains("unavailable"), "{counter:?}");
+    // …and the reason itself now sits below it, so the note is not a dead end.
+    let text = lines.iter().map(plain).collect::<Vec<_>>().join("\n");
+    assert!(text.contains("HTTP 401"), "{text}");
 }
 
 #[test]
