@@ -54,7 +54,7 @@ of per-area modules**, not single files — `src/app/` (`types`, `action`, `keys
 `agent`, `status`, `permission`, with the `App` struct itself in `mod.rs` so every submodule and
 the test tree keeps its private-field access), `src/ui/` (`theme`, `wrap`,
 `layout`, `assistant`, `inline`, `table`, `message`, `conversation`, `tool`,
-`file_cell`, `status`, `agent`, `menu`, `footer`, `header`, `hooks_view`, `live`, `transcript`,
+`file_cell`, `inline_diff`, `status`, `agent`, `menu`, `footer`, `header`, `hooks_view`, `live`, `transcript`,
 `context_view`, `resume_view`, `model_view`, `login_view`, `background_view`,
 `permission_view`, `settings_view`, `mascot_view`, `mcp_view`, `trust_view`, `view_flow`, `stream_render`), and **`src/stream/`** — the backend seam
 kept apart from the offline demo that used to crowd it: `event` (the whole
@@ -2232,7 +2232,31 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   dark-green/red background tints (`TOOL_DIFF_*_BG`), a 10-row inline peek
   (`FILE_PEEK_LINES`) with the `… +N lines` hint, everything in Ctrl+O;
   unparseable output (old rollouts, error bodies, a `read` placeholder) keeps
-  the legacy rendering. The backend's **system prompt** is assembled from two
+  the legacy rendering. And where a `-`/`+` pair is an **edit** of a line
+  rather than a replacement of one, the **characters that actually differ**
+  are lifted off the row tint onto a brighter one and bolded
+  (`ui::inline_diff`, `TOOL_DIFF_*_MARK_BG`, `docs/inline-diff.md`): the muted
+  row tint answers *did this line change*, the bright mark answers *where*, so
+  `Bruce Rivera` → `Bruce Rivero` marks the `a` and the `o` instead of painting
+  two flat blocks the eye has to compare character by character. The one
+  constraint the whole design serves is that **only what changed is
+  coloured** — the units are grapheme clusters, not words, because painting all
+  of `Rivera` says the surname changed when only its last letter did; adjacent
+  changed units coalesce into one run but unchanged text between two changes is
+  **never** bridged (the `0`s of `8080` → `9090` stay plain), and a `1` that
+  became `10` marks the added `0` alone, leaving the untouched `1` plain. The
+  removed row's marked run escapes that row's `DIM` (dimming the one thing the
+  eye is meant to find defeats marking it), and a pair too dissimilar to be an
+  edit is deliberately left flat, since a *replaced* line has no "what changed"
+  to point at and would come back speckled with whatever letters the two texts
+  coincidentally share (`refine_pair`'s guard, measured in non-whitespace
+  columns so a shared indent never reads as similarity). Cost is held by a
+  common prefix/suffix trim plus a cheap upper-bound check before any LCS table
+  is filled. It is derived from the parsed body rather than recorded, so the
+  model-facing output, the rollout and the derived context are byte-identical
+  and **old rollouts light up too**; both body builders share the pass, so the
+  Ctrl+O expansion and the **permission prompt's preview** — where "what
+  exactly am I approving?" is load-bearing — get it as well. The backend's **system prompt** is assembled from two
   `include_str!`d markdown files — the persona (`prompts/alter_zero.md`) and the
   runtime **environment context** of date/os/cwd (`prompts/environment.md`,
   folded in at the boundary via `backend::augment_with_environment` so the agent

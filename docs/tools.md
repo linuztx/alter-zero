@@ -498,6 +498,29 @@ sits **one column further in** (`ui::file_body_indent`), matching Claude Code:
   `#213A2B`/`#4A221D` tints — both padded to the full width like the
   user-message block. Context rows carry no tint. The `⋮` gap and `…` note
   rows stay dim.
+- Where a `-`/`+` pair is an **edit** of a line rather than a replacement of
+  one, the **characters that actually differ** are lifted onto a brighter tint
+  and bolded (`ui::inline_diff`, `docs/inline-diff.md`). So the muted row tint
+  answers *did this line change?* and the mark answers *where?*, without
+  reading the two lines against each other:
+
+  ```
+    ⎿  Updated hello.txt (+1 -1)
+        1 -Bruce River█          ← only the `a`, bright red, bold, undimmed
+        1 +Bruce River█          ← only the `o`, bright green, bold
+  ```
+
+  The rule is that **only what changed is coloured**: `Bruce River` is
+  identical on both sides, so it keeps the plain row tint. Nothing is marked
+  for being merely near an edit — a run of unchanged text between two changes
+  is never bridged, and a `1` that became `10` marks the added `0` alone,
+  leaving the `1` plain because it was not touched. The mark escapes the
+  removed row's `DIM` (dimming the one thing the eye should find defeats
+  marking it) and survives the wrap. A pair too dissimilar to be an edit is
+  left flat — a replaced line has no "what changed" to point at, and would
+  come back speckled with the letters the two texts coincidentally share.
+  Derived from the parsed body, so it lights up on rollouts recorded before it
+  existed, and the permission prompt's preview gets it too.
 - Long rows **wrap** (`code_content_rows`), continuations indented under the
   content column, keeping colour and tint — bounded, inline, to
   `TOOL_LINE_MAX_ROWS` rows per source line with a dim `…` marking the cut
@@ -509,8 +532,8 @@ sits **one column further in** (`ui::file_body_indent`), matching Claude Code:
   **file lines** here, the unit the gutter numbers and the expansion shows;
   the Ctrl+O transcript shows everything.
 
-All the styling is centralized `TOOL_DIFF_*`/`FILE_PEEK_LINES` consts in
-`ui/theme.rs`. Output that **doesn't** parse as the numbered format — a rollout
+All the styling is centralized `TOOL_DIFF_*`/`FILE_PEEK_LINES`/`INLINE_DIFF_*`
+consts in `ui/theme.rs`. Output that **doesn't** parse as the numbered format — a rollout
 recorded before this format existed, an error body, or a `read` placeholder
 like `(file is empty)` / offset-past-end — falls back to the legacy rendering
 (the `write`/`edit` first-char `+`/`-` colouring, or a `read`'s plain dim

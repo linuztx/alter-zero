@@ -4,10 +4,11 @@
 use super::*;
 use crate::ui::theme::{
     CODE_TAB_WIDTH, EXPAND_HINT, FILE_PEEK_LINES, TOOL_ARGS_COLOR, TOOL_DIFF_ADD_BG,
-    TOOL_DIFF_ADD_COLOR, TOOL_DIFF_DEL_BG, TOOL_DIFF_DEL_COLOR, TOOL_DIM_COLOR, TOOL_FAIL_COLOR,
-    TOOL_HEADER_MAX_ROWS, TOOL_LINE_ELLIPSIS, TOOL_LINE_MAX_ROWS, TOOL_OK_COLOR, TOOL_OUTPUT_COLOR,
-    TOOL_PEEK_LINES, TOOL_PEEK_ROWS, TOOL_PULSE_BRIGHT, TOOL_PULSE_DIM, TOOL_PULSE_PERIOD,
-    TOOL_RUNNING_COLOR, TOOL_WAITING_COLOR,
+    TOOL_DIFF_ADD_COLOR, TOOL_DIFF_ADD_MARK_BG, TOOL_DIFF_DEL_BG, TOOL_DIFF_DEL_COLOR,
+    TOOL_DIFF_DEL_MARK_BG, TOOL_DIM_COLOR, TOOL_FAIL_COLOR, TOOL_HEADER_MAX_ROWS,
+    TOOL_LINE_ELLIPSIS, TOOL_LINE_MAX_ROWS, TOOL_OK_COLOR, TOOL_OUTPUT_COLOR, TOOL_PEEK_LINES,
+    TOOL_PEEK_ROWS, TOOL_PULSE_BRIGHT, TOOL_PULSE_DIM, TOOL_PULSE_PERIOD, TOOL_RUNNING_COLOR,
+    TOOL_WAITING_COLOR,
 };
 use crate::ui::tool::{live_tool_lines, running_command_lines, tool_full_lines};
 use crate::ui::wrap::cols;
@@ -1153,20 +1154,34 @@ fn edit_cell_shows_numbered_hunks_with_diff_tints() {
         .find(|s| s.content.as_ref() == "+")
         .unwrap();
     assert_eq!(add_sign.style.fg, Some(TOOL_DIFF_ADD_COLOR));
-    // …every span past the `⎿` indent sits on the row's background tint…
+    // …every span past the `⎿` indent is tinted end to end — the row's own
+    // tint, or the brighter mark tint where the line actually changed
+    // (`docs/inline-diff.md`; here the `1` -> `2`).
     assert!(
         del.spans
             .iter()
             .skip(1)
-            .all(|s| s.style.bg == Some(TOOL_DIFF_DEL_BG)),
+            .all(|s| s.style.bg == Some(TOOL_DIFF_DEL_BG)
+                || s.style.bg == Some(TOOL_DIFF_DEL_MARK_BG)),
         "removed row is tinted red"
     );
     assert!(
         add.spans
             .iter()
             .skip(1)
-            .all(|s| s.style.bg == Some(TOOL_DIFF_ADD_BG)),
+            .all(|s| s.style.bg == Some(TOOL_DIFF_ADD_BG)
+                || s.style.bg == Some(TOOL_DIFF_ADD_MARK_BG)),
         "added row is tinted green"
+    );
+    assert_eq!(
+        on_bg(del, TOOL_DIFF_DEL_MARK_BG),
+        "1",
+        "only the `1` changed"
+    );
+    assert_eq!(
+        on_bg(add, TOOL_DIFF_ADD_MARK_BG),
+        "2",
+        "only the `2` changed"
     );
     // …the added text keeps its syntax colour, the removed text is dimmed,
     // and context rows are highlighted with no tint.
@@ -2179,4 +2194,169 @@ fn a_finished_peek_never_spends_more_rows_than_the_row_ceiling() {
         lines.last().unwrap().contains("ctrl+o to expand"),
         "the rest is behind the hint: {lines:?}"
     );
+}
+
+// --- character-level diff marking (docs/inline-diff.md) ---
+
+/// The spans of the one rendered row containing `needle`, past the `⎿` indent.
+fn diff_row<'a>(lines: &'a [Line<'a>], needle: &str) -> &'a Line<'a> {
+    lines
+        .iter()
+        .find(|l| plain(l).contains(needle))
+        .unwrap_or_else(|| panic!("no row containing {needle:?}"))
+}
+
+/// The text of every span on `line` carrying background `bg`.
+fn on_bg(line: &Line, bg: Color) -> String {
+    line.spans
+        .iter()
+        .filter(|s| s.style.bg == Some(bg))
+        .map(|s| s.content.as_ref())
+        .collect()
+}
+
+#[test]
+fn an_edited_line_lifts_only_the_changed_characters_onto_the_bright_tint() {
+    // The reported case: `Rivera` -> `Rivero`. The row still carries its muted
+    // tint, but *only the letter that changed* sits on the brighter one —
+    // `Bruce River` is untouched text, and marking it would point at an edit
+    // that never happened.
+    let output = "Updated hello.txt (+1 -1)\n1 -Bruce Rivera\n1 +Bruce Rivero";
+    let lines = tool_lines(&tool("Edit", "hello.txt", ToolStatus::Ok, output), 80);
+    let del = diff_row(&lines, "Rivera");
+    let add = diff_row(&lines, "Rivero");
+
+    assert_eq!(on_bg(del, TOOL_DIFF_DEL_MARK_BG), "a");
+    assert_eq!(on_bg(add, TOOL_DIFF_ADD_MARK_BG), "o");
+    // Everything the edit did not touch keeps the plain row tint — the two
+    // tints together are what say "this line changed, and *here*".
+    assert!(on_bg(del, TOOL_DIFF_DEL_BG).contains("Bruce River"));
+    assert!(on_bg(add, TOOL_DIFF_ADD_BG).contains("Bruce River"));
+}
+
+#[test]
+fn the_changed_run_is_bold_and_the_removed_one_escapes_the_row_dim() {
+    // A dimmed highlight would defeat its own purpose: the removed row dims
+    // its *unchanged* text (codex's look) and leaves the changed run bright.
+    let output = "Updated hello.txt (+1 -1)\n1 -Bruce Rivera\n1 +Bruce Rivero";
+    let lines = tool_lines(&tool("Edit", "hello.txt", ToolStatus::Ok, output), 80);
+
+    for (needle, mark_bg) in [
+        ("Rivera", TOOL_DIFF_DEL_MARK_BG),
+        ("Rivero", TOOL_DIFF_ADD_MARK_BG),
+    ] {
+        let row = diff_row(&lines, needle);
+        let marked: Vec<_> = row
+            .spans
+            .iter()
+            .filter(|s| s.style.bg == Some(mark_bg))
+            .collect();
+        assert!(!marked.is_empty(), "{needle} is marked");
+        assert!(
+            marked
+                .iter()
+                .all(|s| s.style.add_modifier.contains(Modifier::BOLD)),
+            "{needle} renders bold"
+        );
+        assert!(
+            marked
+                .iter()
+                .all(|s| !s.style.add_modifier.contains(Modifier::DIM)),
+            "{needle} is never dimmed — it is the thing to find"
+        );
+    }
+    // …while the removed row's unchanged *content* still dims (the gutter
+    // number and the `-` sign are chrome, and were never dimmed).
+    let del = diff_row(&lines, "Rivera");
+    let unchanged = del
+        .spans
+        .iter()
+        .find(|s| s.content.contains("Bruce"))
+        .expect("the unchanged half renders as its own span");
+    assert_eq!(unchanged.style.bg, Some(TOOL_DIFF_DEL_BG));
+    assert!(
+        unchanged.style.add_modifier.contains(Modifier::DIM),
+        "the removed row's unchanged text keeps codex's dim"
+    );
+}
+
+#[test]
+fn a_wholly_replaced_line_keeps_the_flat_row_tint() {
+    // No refinement when the two lines aren't related — the cell renders
+    // exactly as it did before this feature.
+    let output = "Updated a.py (+1 -1)\n1 -import os\n1 +def main(argv, env):";
+    let lines = tool_lines(&tool("Edit", "a.py", ToolStatus::Ok, output), 80);
+    let del = diff_row(&lines, "import os");
+    let add = diff_row(&lines, "def main");
+    assert_eq!(on_bg(del, TOOL_DIFF_DEL_MARK_BG), "");
+    assert_eq!(on_bg(add, TOOL_DIFF_ADD_MARK_BG), "");
+    assert!(
+        del.spans
+            .iter()
+            .skip(1)
+            .all(|s| s.style.bg == Some(TOOL_DIFF_DEL_BG))
+    );
+    assert!(
+        add.spans
+            .iter()
+            .skip(1)
+            .all(|s| s.style.bg == Some(TOOL_DIFF_ADD_BG))
+    );
+}
+
+#[test]
+fn context_and_write_rows_never_carry_a_mark_tint() {
+    // A `Wrote …` body is brand-new content: no pairs, nothing to refine.
+    let output = "Wrote 2 lines to a.txt\n1 alpha\n2 beta";
+    let lines = tool_lines(&tool("Write", "a.txt", ToolStatus::Ok, output), 80);
+    assert!(
+        lines
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .all(|s| s.style.bg != Some(TOOL_DIFF_ADD_MARK_BG)
+                && s.style.bg != Some(TOOL_DIFF_DEL_MARK_BG))
+    );
+}
+
+#[test]
+fn the_mark_tint_survives_a_wrap_onto_the_continuation_row() {
+    // A changed run too long for one display row keeps its tint on both, so a
+    // long line's highlight isn't silently lost at the wrap point.
+    let common = "value common_filler_text_that_is_quite_long_here";
+    let output = format!(
+        "Updated a.txt (+1 -1)\n1 -{common} {}\n1 +{common} {}",
+        "o".repeat(50),
+        "n".repeat(50)
+    );
+    // The Ctrl+O expansion, so the assertion is about the wrap and not about
+    // the collapsed cell's per-line row budget (`docs/long-lines.md`).
+    let lines = tool_full_lines(&tool("Edit", "a.txt", ToolStatus::Ok, &output), 40);
+    let rows: Vec<&Line> = lines
+        .iter()
+        .filter(|l| {
+            l.spans
+                .iter()
+                .any(|s| s.style.bg == Some(TOOL_DIFF_ADD_MARK_BG))
+        })
+        .collect();
+    assert!(rows.len() >= 2, "the changed run wraps onto a second row");
+    let tinted: String = rows
+        .iter()
+        .flat_map(|l| l.spans.iter())
+        .filter(|s| s.style.bg == Some(TOOL_DIFF_ADD_MARK_BG))
+        .map(|s| s.content.as_ref())
+        .collect();
+    assert_eq!(tinted, "n".repeat(50));
+}
+
+#[test]
+fn the_trailing_pad_keeps_the_row_tint_not_the_mark_tint() {
+    // The bright block must end where the changed text ends — otherwise it
+    // bleeds to the terminal's right edge and stops meaning "here".
+    let output = "Updated hello.txt (+1 -1)\n1 -Bruce Rivera\n1 +Bruce Rivero";
+    let lines = tool_lines(&tool("Edit", "hello.txt", ToolStatus::Ok, output), 80);
+    let add = diff_row(&lines, "Rivero");
+    let last = add.spans.last().unwrap();
+    assert!(last.content.ends_with(' '), "the row pads to full width");
+    assert_eq!(last.style.bg, Some(TOOL_DIFF_ADD_BG));
 }

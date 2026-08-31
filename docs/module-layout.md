@@ -74,6 +74,7 @@ widened for the split.
 | `conversation.rs` | The whole-history walk and the tail a purge rebuild (resize, `/clear`, a rewind) repaints. |
 | `tool.rs` | Tool cells: the `● name(args)` header, the `⎿` output block, a running command's live tail. |
 | `file_cell.rs` | The `read`/`write`/`edit` numbered-diff cell. |
+| `inline_diff.rs` | Character-level refinement of a diff cell's `-`/`+` pairs — which bytes of a line actually changed (`docs/inline-diff.md`). |
 | `status.rs` | The status line (spinner, shimmer, tally) and the `Done for Ns` summary. |
 | `agent.rs` | Subagent trees, cells, and the footer roster. |
 | `menu.rs` | The palette / `@` picker / `?` shortcuts bands. |
