@@ -146,14 +146,32 @@ struct VisibleBlock {
     skipped: u16,
 }
 
+/// Which screen buffer a picture was encoded **for**.
+///
+/// kitty (and Ghostty) keeps a separate image store per screen buffer, so an
+/// image transmitted on one is not addressable from the other and each needs
+/// its own encoding. The protocols that carry their whole payload in every
+/// render have nothing to keep per screen, so they share the primary's entry
+/// and are encoded exactly once.
+type Screen = bool;
+
+/// The primary screen — and the key every placement-free protocol uses.
+const PRIMARY: Screen = false;
+
+/// The alternate screen (the Ctrl+O / Ctrl+D / `/resume` overlay).
+const ALTERNATE: Screen = true;
+
 /// The terminal's graphics capability and the pictures encoded for it.
 pub struct ImageStore {
     picker: Option<Picker>,
-    encoded: HashMap<u32, Encoded>,
-    /// Placement ids in least-recently-drawn order (the tail is the newest).
+    encoded: HashMap<(u32, Screen), Encoded>,
+    /// Cache keys in least-recently-drawn order (the tail is the newest).
     /// A handful of entries at most, so a `Vec` beats a real LRU map.
-    order: Vec<u32>,
+    order: Vec<(u32, Screen)>,
     bytes: usize,
+    /// Which screen the terminal is showing — [`ImageStore::enter_screen`]
+    /// keeps it in step with the alternate-screen switch.
+    screen: Screen,
 }
 
 impl ImageStore {
@@ -167,6 +185,7 @@ impl ImageStore {
             encoded: HashMap::new(),
             order: Vec::new(),
             bytes: 0,
+            screen: PRIMARY,
         }
     }
 
@@ -231,6 +250,7 @@ impl ImageStore {
             encoded: HashMap::new(),
             order: Vec::new(),
             bytes: 0,
+            screen: PRIMARY,
         }
     }
 
@@ -275,7 +295,7 @@ impl ImageStore {
         self.bytes = 0;
     }
 
-    /// Drop the encodings a **screen switch** invalidates — and only those.
+    /// Follow the terminal onto the screen buffer it just switched to.
     ///
     /// kitty (and Ghostty, which implements its protocol) allocates a
     /// *separate image store per screen buffer* — `main_grman` and
@@ -286,24 +306,58 @@ impl ImageStore {
     /// addressable from the other, and a unicode placeholder that names it
     /// resolves to nothing — **silently**, since the lookup just returns and
     /// `q=2` suppresses replies. That is reserved rows with no picture in
-    /// them, which is exactly what the Ctrl+O transcript showed. There is no
-    /// public way to re-arm `ratatui_image`'s transmit flag, so the encoding
-    /// is dropped and the next frame rebuilds it (with a fresh random image
-    /// id, so the two screens' stores can't collide).
+    /// them, which is exactly what the Ctrl+O transcript showed before the
+    /// cache learned about screens.
     ///
-    /// The other three protocols are placement-free by construction — sixel,
-    /// iTerm2 and half-blocks carry their whole payload in every render — so
-    /// they survive the hop, and re-encoding them would be pure waste on a
-    /// Ctrl+O that is meant to open instantly
-    /// (`docs/tool-view-performance.md`).
-    pub fn invalidate_across_screens(&mut self) {
-        if self
-            .picker
+    /// So an encoding belongs to a screen. Arriving on the **alternate**
+    /// screen drops the ones encoded for it, because the terminal just
+    /// cleared that store; arriving back on the **primary** screen drops
+    /// nothing, because its store was never touched — which is what keeps a
+    /// Ctrl+O round trip from re-transmitting the whole picture on the way
+    /// out. A picture is megabytes on the wire (`ratatui_image` transmits raw
+    /// RGBA, so a 120x35-cell one is ~4.5 MB of base64), so that is the
+    /// difference between one upload per open and two.
+    ///
+    /// The other three protocols keep nothing per screen — sixel, iTerm2 and
+    /// half-blocks carry their whole payload in every render — so they share
+    /// the primary's entry and are encoded exactly once (the cache key drops
+    /// the screen component for them).
+    pub fn enter_screen(&mut self, alternate: bool) {
+        self.screen = alternate;
+        if !alternate || !self.per_screen() {
+            return;
+        }
+        let stale: Vec<(u32, Screen)> = self
+            .encoded
+            .keys()
+            .copied()
+            .filter(|&(_, screen)| screen == ALTERNATE)
+            .collect();
+        for key in stale {
+            self.drop_entry(key);
+        }
+    }
+
+    /// Whether this terminal's protocol keeps its images per screen buffer —
+    /// kitty's family, and only it.
+    fn per_screen(&self) -> bool {
+        self.picker
             .as_ref()
             .is_some_and(|picker| picker.protocol_type() == ProtocolType::Kitty)
-        {
-            self.invalidate();
+    }
+
+    /// The cache key for `id` on the screen now showing: per-screen only when
+    /// the protocol needs it to be ([`per_screen`](Self::per_screen)).
+    fn key(&self, id: u32) -> (u32, Screen) {
+        (id, self.per_screen() && self.screen)
+    }
+
+    /// Forget one cached encoding, refunding its share of the byte budget.
+    fn drop_entry(&mut self, key: (u32, Screen)) {
+        if let Some(entry) = self.encoded.remove(&key) {
+            self.bytes = self.bytes.saturating_sub(entry.bytes);
         }
+        self.order.retain(|other| *other != key);
     }
 
     /// Draw every reserved block in `buf`.
@@ -344,15 +398,16 @@ impl ImageStore {
             return;
         };
         self.encode(&place);
+        let key = self.key(id);
         // Touch: the entry just drawn is the newest.
-        if let Some(at) = self.order.iter().position(|&other| other == id) {
-            let id = self.order.remove(at);
-            self.order.push(id);
+        if let Some(at) = self.order.iter().position(|other| *other == key) {
+            let key = self.order.remove(at);
+            self.order.push(key);
         }
         let Some(Encoded {
             protocol: Some(protocol),
             ..
-        }) = self.encoded.get(&id)
+        }) = self.encoded.get(&key)
         else {
             return;
         };
@@ -376,7 +431,8 @@ impl ImageStore {
     /// Encode `place` if it isn't cached — decode the file, fit it into the
     /// reserved cells, and charge the result against the byte budget.
     fn encode(&mut self, place: &Placement) {
-        if self.encoded.contains_key(&place.id) {
+        let key = self.key(place.id);
+        if self.encoded.contains_key(&key) {
             return;
         }
         let Some(picker) = self.picker.as_ref() else {
@@ -401,24 +457,21 @@ impl ImageStore {
                 * 4
                 / 3
         });
-        self.encoded.insert(place.id, Encoded { protocol, bytes });
-        self.order.push(place.id);
+        self.encoded.insert(key, Encoded { protocol, bytes });
+        self.order.push(key);
         self.bytes = self.bytes.saturating_add(bytes);
-        self.evict(place.id);
+        self.evict(key);
     }
 
     /// Drop least-recently-drawn pictures until the store is back inside
     /// [`CACHE_MAX_BYTES`]. The entry just encoded is never the one dropped —
     /// it is about to be drawn.
-    fn evict(&mut self, keep: u32) {
+    fn evict(&mut self, keep: (u32, Screen)) {
         while self.bytes > CACHE_MAX_BYTES && self.order.len() > 1 {
-            let Some(at) = self.order.iter().position(|&id| id != keep) else {
+            let Some(&victim) = self.order.iter().find(|other| **other != keep) else {
                 break;
             };
-            let id = self.order.remove(at);
-            if let Some(entry) = self.encoded.remove(&id) {
-                self.bytes = self.bytes.saturating_sub(entry.bytes);
-            }
+            self.drop_entry(victim);
         }
     }
 }

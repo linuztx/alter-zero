@@ -198,26 +198,53 @@ kitty skips placeholder rows natively and half-blocks are ordinary cells.
 
 ### Screen switches
 
-A graphics **placement** belongs to the screen it was created on, and the
-kitty protocol transmits an image — creating that placement — exactly *once*
-per encoded protocol object. So a protocol carried across the hop to the
-alternate screen paints the Ctrl+O transcript with unicode placeholders
-pointing at a placement that only exists on the primary screen: reserved
-rows, and nothing in them. That was the first version's bug, and it is
-invisible to `capture-pane`, because the placeholders themselves are ordinary
-cells that a pane capture happily shows.
+kitty — and Ghostty, which implements its protocol — allocates a **separate
+image store per screen buffer**: `main_grman` and `alt_grman` in kitty's own
+source, and the protocol spec spells out that *"when switching from the main
+screen to the alternate screen buffer (1049 private mode) all images in the
+alternate screen must be cleared"*. An image transmitted on one screen is
+therefore not addressable from the other.
 
-So `enter_overlay` and `exit_overlay` both drop the encodings, exactly as the
-scrollback purge does. The first frame on each screen then transmits afresh,
-which is what puts the picture on *that* screen. The cost is one re-encode per
-**visible** picture per switch — `stamp` only draws blocks whose head row is
-in the frame, so that is usually one.
+That was the first version's bug. The kitty protocol transmits an image — and
+creates its `U=1` virtual placement — exactly *once* per encoded protocol
+object, so a protocol carried across the hop painted the Ctrl+O transcript
+with unicode placeholders naming an image the alternate screen's store had
+never heard of. The lookup just returns and `q=2` suppresses replies, so it
+failed **silently**: reserved rows with nothing in them.
 
-The other three protocols never had the problem: sixel, iTerm2 and half-blocks
-carry their whole payload in every render, so they are placement-free by
-construction. `smoke.sh` Phase 107b is the guard, and it reads the raw byte
-stream through `pipe-pane` rather than the pane text, since the pane text is
-exactly what cannot tell the two cases apart.
+So **an encoding belongs to a screen**. The cache is keyed on
+`(placement, screen)`, and `enter_overlay`/`exit_overlay` call
+`ImageStore::enter_screen`. Arriving on the *alternate* screen drops the
+entries encoded for it, because the terminal just cleared that store, so the
+first overlay frame transmits afresh — with a new random image id, so the two
+stores cannot collide. Arriving back on the *primary* screen drops
+**nothing**: its store was never touched, so the return costs no upload at
+all.
+
+That asymmetry earns its machinery, because a picture is not cheap on the
+wire. `ratatui_image` transmits kitty images as raw **RGBA**, so a 120×35-cell
+picture is ~3.4 MB of pixels and **~4.5 MB of base64** — measured, per upload.
+Before the cache knew about screens, a Ctrl+O round trip paid that twice; now
+it pays once, and the trip back measures 1.3 KB. What remains — one upload per
+*open* — is inherent: the alternate screen's store genuinely does not have the
+image, and nothing but a transmit can put it there.
+
+Only kitty pays any of this. Sixel, iTerm2 and half-blocks keep nothing per
+screen (they carry their whole payload in every render), so they share the
+primary's entry and are encoded exactly once — re-encoding them on a screen
+switch would be waste on a view that is meant to open instantly
+(`docs/tool-view-performance.md`).
+
+The abandoned image ids self-clean: kitty's quota is per buffer and *"existing
+images without placements will be preferentially deleted"* under pressure, and
+the next entry to the alternate screen clears its store outright.
+
+`smoke.sh` Phase 107b is the guard — a transmit on the way **in**, and
+**none** on the way back out. It reads the raw byte stream through
+`pipe-pane` rather than the pane text, because the pane text is exactly what
+cannot tell those cases apart: a kitty placeholder *is* an ordinary cell, so a
+capture looks identical whether or not the picture will appear, and identical
+again whether or not megabytes went with it.
 
 ### Resize
 
@@ -299,7 +326,8 @@ ALTER_ZERO_IMAGE_PROTOCOL=halfblocks ALTER_ZERO_IMAGE_CELL_SIZE=5x10 cargo run
 an image `read` of a real PNG: it asserts the picture's row count, that it
 starts at column 0, the blank row under the cell, that Ctrl+O draws the same
 picture, and that `/settings` **Show images** off purge-rebuilds without it.
-Phase 107b reads the raw byte stream and asserts a kitty transmit lands on
-**each** side of the switch to the alternate screen (see *Screen switches*).
+Phase 107b reads the raw byte stream and asserts a kitty transmit lands going
+**into** the alternate screen and none coming back out (see *Screen
+switches*).
 Phase 107c drives a picture taller than the pager and asserts the
 bottom-pinned open still draws its visible part.

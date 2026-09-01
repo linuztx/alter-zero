@@ -841,14 +841,13 @@ impl InlineViewport {
         //
         // [`draw_overlay`]: InlineViewport::draw_overlay
         self.overlay_prev = None;
-        // The pictures don't survive the hop either (`docs/images.md`): kitty
-        // keeps a *separate image store per screen buffer*, so one
-        // transmitted on the primary screen is not addressable from the
-        // alternate one and its placeholders resolve to nothing — reserved
-        // rows with no picture in them. Dropping those encodings makes the
-        // first overlay frame transmit afresh onto *this* screen. A no-op for
-        // the protocols that carry their payload every render.
-        self.images.invalidate_across_screens();
+        // The pictures don't come along either (`docs/images.md`): kitty keeps
+        // a *separate image store per screen buffer*, so one transmitted on
+        // the primary screen is not addressable from the alternate one and
+        // its placeholders resolve to nothing — reserved rows with no picture
+        // in them. Following the switch is what makes the first overlay frame
+        // transmit afresh onto *this* screen.
+        self.images.enter_screen(true);
         Ok(())
     }
 
@@ -865,11 +864,10 @@ impl InlineViewport {
         self.prev = None; // returning to a screen the inline view will repaint
         // The alternate screen is gone; a re-entry clears it and starts over.
         self.overlay_prev = None;
-        // And the pictures encoded *for* the alternate screen live in its
-        // store, not this one: the terminal restores the primary buffer with
-        // what was already drawn on it, but the next rebuild has to transmit
-        // again for this screen — the entry's rule in mirror.
-        self.images.invalidate_across_screens();
+        // Back on the primary screen, whose image store the overlay never
+        // touched — so its encodings are still good and the return costs no
+        // upload at all (`docs/images.md`).
+        self.images.enter_screen(false);
         Backend::flush(&mut self.backend)
     }
 
