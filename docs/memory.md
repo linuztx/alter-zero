@@ -253,6 +253,21 @@ leak.
   screenshot — a 4K one costs what a 1080p one does.
 - **The `data:` URL is one allocation**, the base64 appended onto its prefix
   instead of encoded into a string and copied in behind one.
+- **The payload is shrunk once per session, not once per turn.** An
+  attachment is re-sent with the context on every later turn, and each turn
+  used to decode and shrink it again — on a 4K screenshot, a 20 MB spike per
+  turn for as long as the picture stayed in context. `images::payload` keeps
+  the downscaled bytes on disk (`{session}/images/{key}`, keyed on the file's
+  path, size, mtime and the cap; `docs/scratchpad.md`) and `cached_downscale`
+  serves a later turn from that small file before the original is even
+  opened. The `read` tool's pictures go through the same cache.
+- **Nothing else is decoded whole without asking first.** A non-PNG picture
+  (a pasted JPEG photo, a `read` of one) decodes whole only under
+  `WHOLE_DECODE_MAX_PIXELS` (50 megapixels) and shrinks with
+  `thumbnail_exact` — a box filter with no `f32` working copy, where
+  `resize` allocated 16 bytes a pixel over the source width. The streaming
+  PNG decode is bounded in *time* by `FIT_MAX_SOURCE_PIXELS` (200 megapixels),
+  since it never holds the rows it walks.
 
 ### What it bought
 
@@ -269,25 +284,35 @@ Same procedure, same pictures:
 | picture 2 | 24.1 MB | 28.8 MB |
 | picture 3 | 29.4 MB | **29.5 MB** |
 
-A 3840x2160 screenshot: 19.1 MB after the paste, 29.4 MB after three sends —
+A 3840x2160 screenshot: 18.8 MB after the paste, 28.8 MB after three sends —
 the same numbers, because nothing left in the path is sized by the file.
-kitty settles at 37.9 MB for the three, its per-screen placements being the
+kitty settles at 36.9 MB for the three, its per-screen placements being the
 honest cost `docs/images.md` accounts for. What remains per send is the
 fitted picture and the protocol built from it, a few megabytes the threshold
 dance can still hold once per size class — bounded, and small.
 
-Live, against a real vision model on Venice: 22.9 MB after the paste, 25.3 MB
-after the answer, with a 54 MB peak in between that is the request body
-itself (the file, its base64, the JSON) and comes back.
+Live, against a real vision model on Venice: a 1080p paste read 22.9 MB after
+the paste and 25.3 MB after the answer, with a 54 MB peak in between that is
+the request body itself (the file, its base64, the JSON) and comes back. A 4K
+paste sent on **two** turns is where the payload cache shows: the first turn
+peaked at 63 MB building the 2000-pixel payload; the second turn, which used
+to decode and shrink the picture again and pushed the peak to 85 MB, now
+reads the cached copy and moves the peak not at all.
 
 The guards: `tests/clipboard_linux.rs` drives the read against a real X
 server on both transfer shapes (a whole property, and `INCR` segments) and
 requires the temp file to hold the owner's bytes *verbatim* — served at a
 non-default compression level and carrying a text chunk, which no
-decode-and-re-encode can reproduce — and `images::tests` pins the fitted
-decoder to a naive area-average oracle and its cell arithmetic to the
-encoder's own. The procedure itself is in `docs/image-paste.md`,
-*Measuring*.
+decode-and-re-encode can reproduce — plus an owner with only a JPEG;
+`images::tests` pins the fitted decoder to a naive area-average oracle and
+its cell arithmetic to the encoder's own, and the payload cache to
+write-once-read-back semantics; and `tests/image_paste_memory.rs` gates the
+resident growth of the streamed copy, the fitted decode and the payload
+shrink of a 2560x1440 screenshot the way `tests/model_parse_memory.rs` gates
+the `/model` parse — the streamed copy under 2 MB, the other two under their
+own output plus a few megabytes of slack, all an order of magnitude under the
+source's 15 MB of RGBA. The procedure for the end-to-end numbers is
+`scripts/paste_mem.sh` (`docs/image-paste.md`, *Measuring*).
 
 ## The rule
 
