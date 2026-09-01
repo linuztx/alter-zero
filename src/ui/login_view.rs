@@ -26,16 +26,28 @@ fn login_title(text: &str, width: u16) -> Line<'static> {
     model_placeholder_row(text, LOGIN_TITLE_COLOR, width)
 }
 
-/// One list row shared by the three `/login` lists: `{marker}{name}{gap}{tag}{✓}`.
-/// The selected row's marker and name light up cyan (the palette accent), the
-/// trailing `tag` (an env var, or a subscription's description) is dim, and an
-/// already-configured row carries a green ✓. Mirrors `model_row`.
-fn login_row(name: &str, tag: &str, configured: bool, selected: bool, width: u16) -> Line<'static> {
+/// One list row shared by the three `/login` lists: `{marker}{name}{✓}`.
+///
+/// The selected row's marker and name light up cyan (the palette accent) and
+/// an already-configured row carries a green ✓ — and that is the whole row.
+/// It used to trail a dim tag as well (the provider's env var, or the
+/// subscription's one-line description), which made the three lists read as
+/// three shapes and pushed the names apart; neither fact needs saying here.
+/// The env var is named by the step's own hint and by the save toast, and
+/// what signing in to a subscription means is the sign-in page's job.
+///
+/// The description **still steers the type-to-search**
+/// ([`KeyOnboarding::subscription_matches`]) — it left the display, not the
+/// data — so typing `chatgpt` or `github` finds its row whether or not the
+/// words are on screen. Mirrors `model_row`.
+///
+/// [`KeyOnboarding::subscription_matches`]: crate::app::KeyOnboarding::subscription_matches
+fn login_row(name: &str, configured: bool, selected: bool, width: u16) -> Line<'static> {
     let marker = if selected { MODEL_MARKER } else { "  " };
     let check = if configured { MODEL_ACTIVE_MARK } else { "" };
-    let reserved = cols(marker) + cols(tag) + cols(check);
+    let reserved = cols(marker) + cols(check);
     let name_room = (width as usize).saturating_sub(reserved).max(1);
-    // `…`-cut like the model id: the tag keeps its seat and the cut shows.
+    // `…`-cut like the model id: the ✓ keeps its seat and the cut shows.
     let name = ellipsize(name, name_room);
 
     let (marker_style, name_style) = if selected {
@@ -51,7 +63,6 @@ fn login_row(name: &str, tag: &str, configured: bool, selected: bool, width: u16
     Line::from(vec![
         Span::styled(marker.to_string(), marker_style),
         Span::styled(name, name_style),
-        Span::styled(tag.to_string(), Style::new().fg(MODEL_META_COLOR)),
         Span::styled(check.to_string(), Style::new().fg(MODEL_ACTIVE_COLOR)),
     ])
 }
@@ -62,22 +73,23 @@ fn login_row(name: &str, tag: &str, configured: bool, selected: bool, width: u16
 /// nothing. Its length is what the page height counts, so the reserved and the
 /// painted rows agree.
 fn login_list_lines(onboarding: &KeyOnboarding, width: u16) -> Vec<Line<'static>> {
-    // (name, tag, configured) per row — one shape for all three lists.
-    let rows: Vec<(String, String, bool)> = match onboarding.step {
+    // (name, configured) per row — one shape for all three lists. The method
+    // rows are never "configured": they are the question, not an answer.
+    let rows: Vec<(String, bool)> = match onboarding.step {
         KeyStep::Method => onboarding
             .method_matches()
             .into_iter()
-            .map(|m| (m.label().to_string(), String::new(), false))
+            .map(|m| (m.label().to_string(), false))
             .collect(),
         KeyStep::Subscription => onboarding
             .subscription_matches()
             .into_iter()
-            .map(|s| (s.name.clone(), format!("  {}", s.description), s.configured))
+            .map(|s| (s.name.clone(), s.configured))
             .collect(),
         _ => onboarding
             .matches()
             .into_iter()
-            .map(|p| (p.name.clone(), format!(" [{}]", p.env_var), p.configured))
+            .map(|p| (p.name.clone(), p.configured))
             .collect(),
     };
     if rows.is_empty() {
@@ -95,7 +107,7 @@ fn login_list_lines(onboarding: &KeyOnboarding, width: u16) -> Vec<Line<'static>
         .enumerate()
         .skip(offset)
         .take(max)
-        .map(|(i, (name, tag, configured))| login_row(name, tag, *configured, i == selected, width))
+        .map(|(i, (name, configured))| login_row(name, *configured, i == selected, width))
         .collect()
 }
 

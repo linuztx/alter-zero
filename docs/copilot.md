@@ -52,7 +52,7 @@ would say nothing they don't. Type-to-filter works here like every list step
 
   ❯
 
-→ GitHub Copilot  Sign in with your GitHub account ✓
+→ GitHub Copilot ✓
   (1/1)
 
   ↑↓ navigate  enter sign in  esc back
@@ -60,10 +60,13 @@ would say nothing they don't. Type-to-filter works here like every list step
 ────────────────────────────────────────────────────────────────────────────
 ```
 
-The row shape is the provider list's, with the file's `description` in the dim
-tail slot where a key row carries `[ENV_VAR]`, and the same green ✓ for
-"already signed in" — the *same* check, resolved the same way, because a
-subscription's token lives in the same store.
+The row shape is the provider list's — the name and, for "already signed in",
+the same green ✓, resolved the same way, because a subscription's token lives
+in the same store. Nothing else: both lists once trailed a dim tail (the
+file's `description` here, `[ENV_VAR]` on a key row), which made the two read
+as two shapes and pushed the names apart from each other. The `description`
+is still what `providers.toml` carries and what a future page may show; it is
+simply not what a list row is for.
 
 ### `KeyStep::Device`
 

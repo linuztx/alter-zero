@@ -336,8 +336,8 @@ in place; unlike it, it is a **two-step** flow.
 
   ❯ agent                                                (filter, cyan '❯')
 
-→ Agent Zero API   [A0_VENICE_API_KEY] ✓                 (selected '→'; ✓ = configured)
-  OpenRouter       [OPENROUTER_API_KEY]
+→ Agent Zero API ✓                                       (selected '→'; ✓ = configured)
+  OpenRouter
   (1/2)                                                  (position/total, dim)
 
   Keys are saved to ~/.alter-zero/.env                   (dim hint — the real path)

@@ -115,11 +115,16 @@ fn render_login_provider_step_frames_lists_and_marks_configured() {
     assert_eq!(buf[(2, 2)].fg, LOGIN_TITLE_COLOR, "titles are cyan");
     // The `❯` filter line.
     assert!(row(&buf, LOGIN_SEARCH_ROW, 60).contains('❯'));
-    // First provider row (y = LOGIN_SEARCH_ROW + 2 = 6): selected →, env tag,
-    // and a green ✓ because OpenRouter is configured.
+    // First provider row (y = LOGIN_SEARCH_ROW + 2 = 6): selected →, the name,
+    // and a green ✓ because OpenRouter is configured — and nothing else. The
+    // env var it saves under is named by the hint below and by the save
+    // toast; repeating it on every row only crowds the list.
     let first = row(&buf, 6, 60);
     assert!(first.starts_with("→ OpenRouter"), "{first:?}");
-    assert!(first.contains("[OPENROUTER_API_KEY]"), "{first:?}");
+    assert!(
+        !first.contains('[') && !first.contains("OPENROUTER_API_KEY"),
+        "the env var does not ride the row: {first:?}"
+    );
     assert!(
         first.contains('✓'),
         "configured provider has a check: {first:?}"
@@ -331,16 +336,17 @@ fn a_cut_provider_name_ends_with_an_ellipsis() {
     let onboarding = app.key_onboarding.as_mut().unwrap();
     onboarding.providers[0].name = "An Extremely Long Provider Display Name".into();
     let lines = key_onboarding_lines(onboarding, 30);
-    // The `[OPENROUTER_API_KEY]` tag reserves 21 columns, so at width 30 the
-    // name keeps only its first few — the row must still mark the cut.
+    // 38 columns of name into a 30-column row: the marker and the ✓ keep
+    // their seats and the name shows its cut.
     let row = lines
         .iter()
         .map(plain)
         .find(|l| l.contains("An E"))
         .expect("the provider row");
+    assert!(row.contains('…'), "the name marks its cut: {row:?}");
     assert!(
-        row.contains('…') && row.contains('['),
-        "the name marks its cut and the tag keeps its seat: {row:?}"
+        crate::ui::wrap::cols(row.trim_end()) <= 30,
+        "the row still fits the width: {row:?}"
     );
 }
 
@@ -370,7 +376,7 @@ fn the_method_step_offers_the_two_ways_in_with_no_counter() {
 }
 
 #[test]
-fn the_subscription_step_titles_itself_and_describes_each_row() {
+fn the_subscription_step_titles_itself_and_lists_each_row() {
     let app = login_app_subscription();
     let onboarding = app.key_onboarding.as_ref().unwrap();
     let mut buf = buffer(70, 12);
@@ -381,12 +387,39 @@ fn the_subscription_step_titles_itself_and_describes_each_row() {
     let entry = row(&buf, 6, 70);
     assert!(entry.starts_with("→ GitHub Copilot"), "{entry:?}");
     assert!(
-        entry.contains("Sign in with your GitHub account"),
-        "the description sits beside the name: {entry:?}"
+        !entry.contains("Sign in with your GitHub account"),
+        "the row is the name and its ✓, not a sentence: {entry:?}"
     );
     assert!(entry.contains('✓'), "already signed in: {entry:?}");
     assert!(row(&buf, 7, 70).contains("(1/1)"), "the counter");
     assert!(row(&buf, 9, 70).contains("enter sign in"), "the hint");
+}
+
+#[test]
+fn a_subscription_is_still_findable_by_words_the_row_no_longer_shows() {
+    // The one-line description left the *display*, not the data: it still
+    // steers the type-to-search, so a query matching only the description
+    // finds the row. Locking it here because a reader who greps the view for
+    // `.description` now finds nothing and could delete the field as dead.
+    let mut app = login_app_subscription();
+    let onboarding = app.key_onboarding.as_mut().unwrap();
+    let described = onboarding.subscriptions[0].description.clone();
+    assert!(
+        described.contains("GitHub"),
+        "the fixture's description: {described:?}"
+    );
+    onboarding.query = "sign in with your github".to_string();
+    assert_eq!(
+        onboarding.subscription_matches().len(),
+        1,
+        "a description-only query still finds its row"
+    );
+    // And the row it finds still shows none of those words.
+    let mut buf = buffer(70, 12);
+    render_key_onboarding(buf.area, &mut buf, app.key_onboarding.as_ref().unwrap());
+    let entry = row(&buf, 6, 70);
+    assert!(entry.contains("GitHub Copilot"), "{entry:?}");
+    assert!(!entry.contains("Sign in with your"), "{entry:?}");
 }
 
 // --- the device-code page (docs/copilot.md) ---

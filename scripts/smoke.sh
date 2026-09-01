@@ -9586,13 +9586,19 @@ sleep 0.4
 login_subs="$(tmux capture-pane -t "$S103" -p)"
 echo "==== Phase 103: the subscription list ===="
 printf '%s\n' "$login_subs"
-for want in "GitHub Copilot" "Sign in with your GitHub account" "enter sign in" \
-	"OpenAI (ChatGPT)" "Sign in with your ChatGPT"; do
+# The rows are names and their ✓, not sentences: the one-line descriptions
+# used to trail each name and were dropped so the three lists read as one
+# shape. What the list must still show is every subscription, by name.
+for want in "Anthropic Console" "GitHub Copilot" "OpenAI (ChatGPT)" "enter sign in"; do
 	if ! printf '%s' "$login_subs" | grep -qF "$want"; then
 		echo "FAIL: Phase 103 — the subscription list did not show \"$want\"" >&2
 		status=1
 	fi
 done
+if printf '%s' "$login_subs" | grep -qF "Sign in with your"; then
+	echo "FAIL: Phase 103 — a row still trails its description" >&2
+	status=1
+fi
 
 # Esc steps BACK to the root, not out of the flow.
 tmux send-keys -t "$S103" Escape
@@ -9620,6 +9626,13 @@ for want in "Agent Zero API" "OpenRouter" "Keys are saved to" "esc back"; do
 done
 if printf '%s' "$login_keys" | grep -qF "GitHub Copilot"; then
 	echo "FAIL: Phase 103 — a subscription provider was offered a key field" >&2
+	status=1
+fi
+# Nor does a row trail its env var. The step's own hint names the file every
+# key lands in, and the save toast names the variable — on the row it only
+# pushed the names apart.
+if printf '%s' "$login_keys" | grep -qF "_API_KEY]"; then
+	echo "FAIL: Phase 103 — a provider row still trails its env var" >&2
 	status=1
 fi
 
