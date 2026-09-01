@@ -23,8 +23,8 @@ should get the whole width the terminal has.
 
 ## The shape of it
 
-Three layers, split the way the crate always splits them
-(`src/images/`):
+Four modules over two layers — pure and boundary — split the way the crate
+always splits them (`src/images/`), plus `ui/image.rs` for the rows themselves:
 
 | module | what it is |
 | --- | --- |
@@ -32,14 +32,15 @@ Three layers, split the way the crate always splits them
 | `images::registry` | the process-global render policy (`/settings` plus what the terminal turned out to support) and the placement interner. |
 | `images::payload` | the other boundary: downscaling a picture before it is **uploaded**. |
 | `images::store` | the paint boundary: the terminal capability, the encoded pictures, and the pass that turns a reserved block into one. |
+| `ui::image` | pure. Which pictures a history item shows, and the marked rows they reserve under its cell. |
 
 The split is what makes the feature cheap to wire in. `ui` **reserves rows**;
 the boundary **draws into them**. A reserved block is `rows` ordinary
 `Line`s of `cols` spaces, each cell carrying a marker in its
 `underline_color` — so a picture travels through every path the crate already
 has (a scrollback commit is a `Vec<Line>` and always has been), and the
-boundary's `ImageStore::stamp` turns the markers into a picture in the one
-place every paint goes through.
+boundary's `ImageStore::stamp` turns the markers into a picture in each of the
+four places a paint goes through.
 
 ### The carrier
 
@@ -163,6 +164,12 @@ direct-emit path, had to learn them:
   `cell.symbol().cell_width()` — an image cell's symbol is hundreds of bytes
   of escape and exactly one column on screen, and only the `Cell` impl honours
   the `ForcedWidth` that says so.
+
+`term::draw_cells` additionally ends its cell run **behind** such a blob. The
+backend only re-addresses a cell that isn't adjacent to the one before it, and
+an escape blob can leave the cursor anywhere — a sixel placement clears its
+area row by row first — so the cell after it starts a fresh `draw`, which
+always opens with a cursor move.
 
 A block whose **head row** is scrolled off the top of the buffer — the Ctrl+O
 transcript showing the bottom half of a picture — is left blank: no protocol

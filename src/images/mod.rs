@@ -1,7 +1,8 @@
 //! Inline terminal images: a pasted screenshot and the `read` tool's image
 //! reads drawn as real pictures in the conversation (`docs/images.md`).
 //!
-//! Three layers, split the way the crate always splits them:
+//! Four modules over two layers — pure and boundary — split the way the crate
+//! always splits them:
 //!
 //! - [`geometry`] — pure. How many cells a picture takes at the terminal's
 //!   font size under the `/settings` **Image width** cap, and the per-cell
@@ -12,7 +13,8 @@
 //!   signature.
 //! - [`payload`] — the other boundary: downscaling a picture before it is
 //!   uploaded, which is what `/settings` **Auto-resize images** controls.
-//! - [`store`] — the I/O boundary. The terminal capability query, the encoded
+//! - [`store`] — the paint boundary. What this terminal can draw (from the
+//!   environment and `TIOCGWINSZ`, never a stdin round trip), the encoded
 //!   pictures, and the one pass that turns a reserved block into a picture in
 //!   a `Buffer`.
 

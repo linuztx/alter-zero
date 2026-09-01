@@ -144,10 +144,11 @@ syntect = { version = "5", default-features = false, features = ["default-onig"]
 # library — this crate's only other C dependency is syntect's oniguruma, and
 # chafa is not installed on a typical box) and `image-defaults` (which would
 # turn on every `image` codec; ours are declared above). The `crossterm`
-# feature only forwards to `ratatui/crossterm`, which ratatui already enables
-# here. Pinned to the 11.x line: it depends on `ratatui ^0.30.1`, the exact
-# version this crate uses, so the `Buffer`/`Cell` types are the same ones.
-ratatui-image = { version = "11.0.6", default-features = false }
+# feature only forwards to `ratatui/crossterm` — already on through ratatui's
+# own defaults, named here so it stays on if those ever change. Pinned to the
+# 11.x line: it depends on `ratatui ^0.30.1`, the exact version this crate
+# uses, so the `Buffer`/`Cell` types are the same ones.
+ratatui-image = { version = "11.0.6", default-features = false, features = ["crossterm"] }
 
 [dev-dependencies]
 # The REFERENCE tokenizer for `tokenizer`'s differential tests (tests only):

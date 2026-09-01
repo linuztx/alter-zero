@@ -1026,7 +1026,19 @@ impl InlineViewport {
                 run.clear();
                 run_id = id;
             }
+            // A cell carrying a graphics protocol's whole escape sequence
+            // (`ForcedWidth` — one column on screen, hundreds of bytes on the
+            // wire; `docs/images.md`) can leave the cursor anywhere: a sixel
+            // placement clears its area row by row first, and the backend only
+            // re-addresses a cell that isn't adjacent to the one before it. So
+            // the run ends *behind* the blob, and the next cell starts a fresh
+            // `draw` — which always opens with a cursor move.
+            let blob = matches!(item.2.diff_option, CellDiffOption::ForcedWidth(_));
             run.push(item);
+            if blob {
+                self.flush_cell_run(&run, run_id)?;
+                run.clear();
+            }
         }
         self.flush_cell_run(&run, run_id)
     }
