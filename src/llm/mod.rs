@@ -15,6 +15,7 @@
 //! shape as `DummyAi`, with no nested tokio runtime.
 
 pub mod agent;
+pub mod anthropic;
 pub mod approval;
 pub mod ask;
 pub mod auth;
@@ -22,6 +23,7 @@ pub mod backend;
 pub mod cache;
 pub mod chatgpt;
 pub mod classifier;
+pub mod claude;
 pub mod config;
 pub mod copilot;
 pub mod exec;

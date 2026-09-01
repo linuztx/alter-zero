@@ -207,6 +207,9 @@ impl ModelSession {
         // stays on disk and the next launch is a forced re-login
         // (`docs/chatgpt.md`).
         llm::chatgpt::set_store_path(env_file_path.clone());
+        // Anthropic rotates its refresh token the same way, and the write-back
+        // happens just as deep on a backend thread (`docs/claude.md`).
+        llm::claude::set_store_path(env_file_path.clone());
         // The persisted `/model` selection (`~/.alter-zero/config.json`): the
         // provider + model chosen last run, so it survives a restart.
         let settings_path = config::settings_file_path();

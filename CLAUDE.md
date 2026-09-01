@@ -221,7 +221,42 @@ included — a rung above `max` that no other provider names and that
 `ReasoningEffort` gained for it. Encrypted reasoning deliberately does **not**
 round-trip: carrying it would mean a new `ChatMessage` field threaded through
 `context`, the rollout and the transcript, so the model re-reasons each round
-— a quality cost, not an error) in `docs/chatgpt.md`; the **Ctrl+T thinking-mode
+— a quality cost, not an error) in `docs/chatgpt.md`; the **Anthropic
+provider** — Claude reached two ways over one **third wire format**
+(`wire_api = "anthropic"`, `src/llm/anthropic.rs`, `docs/claude.md`): a
+pasted Console key and an **account sign-in**, `auth = "anthropic_console"`,
+whose PKCE loopback runs on the same `/login` browser page ChatGPT's does and
+whose constants come from Anthropic's own published CLI. It is deliberately
+**not** the Claude Pro/Max subscription sign-in: Anthropic's usage policy does
+not permit a third-party client to offer Claude.ai login or route requests
+through subscription credentials, and making that one work would mean
+impersonating Claude Code down to a mandated *"You are Claude Code…"* first
+system block — so `no_client_identity_is_ever_injected_into_the_system_prompt`
+pins that the system array is the user's own prompt and nothing else. The
+credential's *placement* is what the seam gained: this is the one wire format
+whose API key is not a bearer (`x-api-key`, with `Authorization` reserved for
+OAuth and both together refused), decided from the **(scheme, wire format)
+pair** since an Anthropic key on a chat-completions shim is still a bearer —
+while an OAuth bearer additionally carries the `anthropic-beta:
+oauth-2025-04-20` a pasted key must not send. The two OAuth grants disagree
+about everything (form-encoded code exchange with *no* beta header; JSON
+refresh *requiring* one), refresh tokens rotate through the same write-back
+`docs/chatgpt.md` describes, and a sign-in granting no `user:inference` scope
+is refused **at the sign-in** rather than at the first turn. The translation
+is `responses.rs`'s contract over a stateful round: the system prompt hoists
+out of `messages` whole, a tool result is a `tool_result` block in a **user**
+message with a batch's results merged into **one** (splitting them teaches the
+model to stop calling tools in parallel), a tool call's arguments arrive as
+`input_json_delta` **partial JSON** keyed by content-block index (a parallel
+batch interleaves them), `max_tokens` is mandatory, `temperature` is never
+sent (removed from every current model, where it is a 400), and usage is
+**summed** — `input_tokens` is the *uncached remainder*, so reading it alone
+reports a few dozen tokens against a 1M window. `capabilities.effort` is the
+**Ctrl+T ladder itself** (the third provider to name one natively) beside
+`capabilities.image_input` and `max_input_tokens` — the window, not the
+`max_tokens` output cap sitting next to it — and the listing asks
+`limit=1000` because its default page of 20 truncates the catalog with no
+error anywhere) in `docs/claude.md`; the **Ctrl+T thinking-mode
 cycle** (a reasoning-capable model's effort — detected per model from the
 provider's `/v1/models`, shown beside the model name in the footer, cycled
 with a `Thinking: {mode}` toast, riding the request as the unified `reasoning`

@@ -34,6 +34,21 @@ pub enum AuthScheme {
     /// that looks configured and asks for a pasted key instead.
     #[serde(rename = "openai_chatgpt")]
     OpenAiChatGpt,
+    /// An Anthropic **Console** account: `/login` runs Anthropic's own PKCE
+    /// flow and stores the resulting **refresh** token, which each request
+    /// mints a short-lived access token from. Usage bills to the account's
+    /// API organisation, exactly as a pasted key does.
+    ///
+    /// Deliberately *not* the Claude Pro/Max subscription sign-in — see
+    /// `docs/claude.md` for the policy that rules that one out.
+    ///
+    /// `rename_all = "snake_case"` already spells this `anthropic_console`,
+    /// which is the value the provider file uses — unlike
+    /// [`Self::OpenAiChatGpt`] above, no explicit rename is needed. A test
+    /// pins it, since a mismatch degrades **silently** into
+    /// [`Self::ApiKey`]: a sign-in provider that looks configured and asks
+    /// for a pasted key instead.
+    AnthropicConsole,
     /// `Authorization: Bearer {api_key}` — a key the user pastes, and the
     /// scheme every OpenAI-compatible provider uses. The **fallback** for an
     /// unrecognised `auth` value too (`#[serde(other)]`, which serde requires
@@ -64,6 +79,12 @@ pub enum WireApi {
     /// typed items under a top-level `instructions`, and its own SSE event
     /// vocabulary. See `docs/chatgpt.md`.
     Responses,
+    /// Anthropic's **Messages** API: `{api_base}/messages`, a top-level
+    /// `system` beside a `messages` array of typed content blocks, and its own
+    /// SSE event vocabulary. Reached by a pasted key *or* by a Claude
+    /// subscription — which is exactly why it is a `wire_api` and not a
+    /// consequence of [`AuthScheme`]. See `docs/claude.md`.
+    Anthropic,
     /// **Chat Completions**: `{api_base}/chat/completions` with `messages`.
     /// The default, and the **fallback** for an unrecognised value
     /// (`#[serde(other)]`, which serde requires on the last variant) — a
@@ -544,6 +565,77 @@ api_base = "https://x/v1"
         let cfg = file.model_config(&sel).expect("shipped");
         assert_eq!(cfg.wire_api, WireApi::Responses);
         assert_eq!(cfg.auth, AuthScheme::OpenAiChatGpt);
+    }
+
+    #[test]
+    fn a_provider_can_declare_the_anthropic_console_sign_in() {
+        // The third sign-in: the stored secret is an OAuth refresh token, and
+        // every request mints the short-lived access token from it
+        // (`docs/claude.md`).
+        let text = r#"
+[providers.anthropic_console]
+name = "Anthropic Console"
+auth = "anthropic_console"
+description = "Sign in with your Anthropic account"
+[providers.anthropic_console.kwargs]
+api_base = "https://api.anthropic.com/v1"
+"#;
+        let file = ProvidersFile::parse(text).unwrap();
+        let console = file.get("anthropic_console").unwrap();
+        assert_eq!(console.auth, AuthScheme::AnthropicConsole);
+        assert!(console.auth.is_subscription());
+    }
+
+    #[test]
+    fn a_provider_can_declare_the_anthropic_wire_format() {
+        let text = r#"
+[providers.p]
+name = "P"
+wire_api = "anthropic"
+[providers.p.kwargs]
+api_base = "https://api.anthropic.com/v1"
+"#;
+        let file = ProvidersFile::parse(text).unwrap();
+        assert_eq!(file.get("p").unwrap().wire_api, WireApi::Anthropic);
+    }
+
+    #[test]
+    fn the_builtin_file_ships_both_anthropic_providers() {
+        // The same API, reached two ways: a pasted key and a sign-in. Both
+        // speak the Messages wire format; only `auth` differs.
+        let file = ProvidersFile::builtin();
+        let key = file.get("anthropic").expect("shipped");
+        assert_eq!(key.auth, AuthScheme::ApiKey);
+        assert_eq!(key.wire_api, WireApi::Anthropic);
+        assert_eq!(key.key_env("anthropic"), "ANTHROPIC_API_KEY");
+        assert_eq!(key.kwargs.api_base, "https://api.anthropic.com/v1");
+
+        let console = file.get("anthropic_console").expect("shipped");
+        assert_eq!(console.auth, AuthScheme::AnthropicConsole);
+        assert_eq!(console.wire_api, WireApi::Anthropic);
+        assert!(console.description.is_some(), "a sign-in row needs one");
+        assert_eq!(
+            console.key_env("anthropic_console"),
+            "ANTHROPIC_CONSOLE_REFRESH_TOKEN"
+        );
+    }
+
+    #[test]
+    fn both_anthropic_providers_send_the_api_version_header() {
+        // `anthropic-version` is required on every Messages API request; it is
+        // the API's own version pin, so it rides the file rather than the code.
+        let file = ProvidersFile::builtin();
+        for id in ["anthropic", "anthropic_console"] {
+            let provider = file.get(id).expect("shipped");
+            assert_eq!(
+                provider
+                    .extra_headers
+                    .get("anthropic-version")
+                    .map(String::as_str),
+                Some("2023-06-01"),
+                "{id} must pin the API version"
+            );
+        }
     }
 
     #[test]

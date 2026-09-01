@@ -382,11 +382,13 @@ in place; unlike it, it is a **two-step** flow.
   the question — and is the one list with no `(n/total)` counter.
 - **The subscription half** (`KeyStep::Subscription` → `KeyStep::Device`) is a
   provider sign-in rather than a secret to paste — GitHub Copilot's device code
-  (`docs/copilot.md`) or OpenAI ChatGPT's browser PKCE (`docs/chatgpt.md`),
-  chosen by the row's `SigninKind`. Both end in the same `.env` store, under the
-  provider's own `api_key_env`, which is what makes the fork cheap: `/model`,
-  the ✓ marks, the capability probe and the next launch need no second
-  mechanism.
+  (`docs/copilot.md`), OpenAI ChatGPT's browser PKCE (`docs/chatgpt.md`), or
+  Anthropic's Console PKCE (`docs/claude.md`), chosen by the row's
+  `SigninKind`. All three end in the same `.env` store, under the provider's
+  own `api_key_env`, which is what makes the fork cheap: `/model`, the ✓ marks,
+  the capability probe and the next launch need no second mechanism. The two
+  browser flows are the *same page* — a link and a wait — so they share
+  `SigninKind::BrowserLink` and differ only in their constants.
 - **Key step**: printable keys and Backspace edit the key, a **bracketed paste**
   (`App::paste_into_key_onboarding`) appends it with whitespace/newlines stripped
   (API keys are always pasted), `Enter` saves a non-empty key

@@ -99,3 +99,44 @@ originator = "codex_cli_rs"
 # The ChatGPT backend, which is a different world from `api.openai.com`: it
 # takes no API key, and the platform API takes no ChatGPT token.
 api_base = "https://chatgpt.com/backend-api/codex"
+
+# Anthropic's own API, reached with a **pasted key**. It speaks the Messages
+# API rather than chat completions — hence `wire_api` — and the key rides
+# `x-api-key` rather than `Authorization: Bearer`, which the auth seam decides
+# from the pair (`docs/claude.md`). `anthropic-version` is required on every
+# request; it pins the wire format, so it belongs in the file beside the base.
+[providers.anthropic]
+name = "Anthropic"
+wire_api = "anthropic"
+api_key_env = "ANTHROPIC_API_KEY"
+
+[providers.anthropic.extra_headers]
+anthropic-version = "2023-06-01"
+
+[providers.anthropic.kwargs]
+api_base = "https://api.anthropic.com/v1"
+
+# The same API reached with an **Anthropic account sign-in** instead of a
+# pasted key: `/login` runs Anthropic's own Console PKCE flow (docs/claude.md).
+# What `api_key_env` stores is the long-lived **refresh** token; every request
+# mints a short-lived access token from it, so nothing here is sent verbatim.
+# The `anthropic-beta: oauth-2025-04-20` an OAuth bearer additionally needs is
+# not here but in the auth seam — it is implied by the credential, not by the
+# provider, and a pasted key must not send it.
+#
+# This is deliberately NOT a Claude Pro/Max subscription sign-in: Anthropic's
+# usage policy does not permit a third-party client to offer Claude.ai login
+# or route requests through subscription credentials (docs/claude.md). Usage
+# here bills to the account's API organisation, exactly as a pasted key does.
+[providers.anthropic_console]
+name = "Anthropic Console"
+auth = "anthropic_console"
+wire_api = "anthropic"
+description = "Sign in with your Anthropic account (billed to your API org)"
+api_key_env = "ANTHROPIC_CONSOLE_REFRESH_TOKEN"
+
+[providers.anthropic_console.extra_headers]
+anthropic-version = "2023-06-01"
+
+[providers.anthropic_console.kwargs]
+api_base = "https://api.anthropic.com/v1"

@@ -223,7 +223,9 @@ pub(crate) fn subscription_choices(
 /// page is never guessed from what the flow happens to have filled in yet.
 fn signin_kind(auth: AuthScheme) -> SigninKind {
     match auth {
-        AuthScheme::OpenAiChatGpt => SigninKind::BrowserLink,
+        // Both are a browser page with a link and a wait; only the constants
+        // behind them differ (`docs/chatgpt.md`, `docs/claude.md`).
+        AuthScheme::OpenAiChatGpt | AuthScheme::AnthropicConsole => SigninKind::BrowserLink,
         AuthScheme::GithubCopilot | AuthScheme::ApiKey => SigninKind::DeviceCode,
     }
 }

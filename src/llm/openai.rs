@@ -146,6 +146,7 @@ impl OpenAiClient {
         let base = self.base_url(override_base);
         match self.cfg.wire_api {
             super::WireApi::Responses => format!("{base}/responses"),
+            super::WireApi::Anthropic => format!("{base}/messages"),
             super::WireApi::Chat => format!("{base}/chat/completions"),
         }
     }
@@ -155,6 +156,9 @@ impl OpenAiClient {
         match self.cfg.wire_api {
             super::WireApi::Responses => {
                 super::responses::build_payload(&self.cfg, &self.tools, messages)
+            }
+            super::WireApi::Anthropic => {
+                super::anthropic::build_payload(&self.cfg, &self.tools, messages)
             }
             super::WireApi::Chat => self.build_payload(messages),
         }
@@ -354,6 +358,7 @@ impl OpenAiClient {
         std::thread::spawn(move || run_transport(req, &tx));
         let outcome = match self.cfg.wire_api {
             super::WireApi::Responses => drain_responses(&rx, cancel, on_delta),
+            super::WireApi::Anthropic => drain_anthropic(&rx, cancel, on_delta),
             super::WireApi::Chat => drain_stream(&rx, cancel, on_delta),
         };
         outcome.map_err(|e| self.explain(e))
@@ -377,6 +382,16 @@ impl OpenAiClient {
             // and the wire body says only `invalid_token` — a sentence the
             // user cannot act on.
             super::AuthScheme::OpenAiChatGpt => super::chatgpt::auth_advice(*status, body),
+            // The Anthropic refusals a user can do something about are
+            // several and need different answers — an expired sign-in, a
+            // scope, a spend cap (`docs/claude.md`).
+            super::AuthScheme::AnthropicConsole => super::claude::auth_advice(*status, body),
+            // A pasted Anthropic key meets the same refusals, minus the ones
+            // about a sign-in: the advice module tells them apart by status
+            // and code, so it serves both.
+            super::AuthScheme::ApiKey if self.cfg.wire_api == super::WireApi::Anthropic => {
+                super::claude::auth_advice(*status, body)
+            }
             super::AuthScheme::ApiKey => None,
         };
         match advice {
@@ -523,6 +538,60 @@ fn drain_responses(
         }
         SseStep::Continue
     })?;
+    Ok(StreamOutcome {
+        text: super::thinking::ChatStreamResult {
+            response: text,
+            reasoning,
+        },
+        tool_calls,
+        finish_reason,
+        usage,
+    })
+}
+
+/// [`drain_stream`]'s Anthropic sibling, over the same [`pump_lines`] byte
+/// loop — so Esc is honoured identically on all three wire formats.
+///
+/// The fold itself lives in [`super::anthropic::MessageAccumulator`]: this
+/// API's round is stateful (a tool call opens, accumulates and closes across
+/// frames), so the classification is a fold rather than a pure per-frame
+/// parse, and keeping it pure is what makes it unit-testable.
+fn drain_anthropic(
+    rx: &Receiver<Result<Vec<u8>>>,
+    cancel: &CancelToken,
+    mut on_delta: impl FnMut(Delta),
+) -> Result<StreamOutcome> {
+    use super::anthropic::Step;
+
+    let mut acc = super::anthropic::MessageAccumulator::default();
+    let mut text = String::new();
+    let mut reasoning = String::new();
+    pump_lines(rx, cancel, &mut |line: &[u8]| {
+        let Ok(frame) = std::str::from_utf8(line) else {
+            return SseStep::Continue;
+        };
+        // The `event:` line names the same thing the payload's own `type`
+        // does, so only the data is read — one less place the two can
+        // disagree.
+        let Some(data) = sse_data(frame) else {
+            return SseStep::Continue;
+        };
+        match acc.on_frame(data) {
+            Step::Delta(delta) => {
+                text.push_str(&delta.response);
+                reasoning.push_str(&delta.reasoning);
+                on_delta(delta);
+                SseStep::Continue
+            }
+            Step::Continue => SseStep::Continue,
+            Step::Done => SseStep::Done,
+            Step::Failed(message) => SseStep::Fail(LlmError::Api {
+                status: 0,
+                body: message,
+            }),
+        }
+    })?;
+    let (tool_calls, finish_reason, usage) = acc.finish();
     Ok(StreamOutcome {
         text: super::thinking::ChatStreamResult {
             response: text,
@@ -1749,6 +1818,80 @@ mod tests {
         let mut deltas = Vec::new();
         let out = drain_stream(&rx, &CancelToken::new(), |d| deltas.push(d));
         (out, deltas)
+    }
+
+    /// The Anthropic drain's twin of [`drain_queued`].
+    fn drain_anthropic_queued(events: Vec<Result<Vec<u8>>>) -> (Result<StreamOutcome>, Vec<Delta>) {
+        let (tx, rx) = std::sync::mpsc::channel();
+        for e in events {
+            tx.send(e).unwrap();
+        }
+        drop(tx);
+        let mut deltas = Vec::new();
+        let out = drain_anthropic(&rx, &CancelToken::new(), |d| deltas.push(d));
+        (out, deltas)
+    }
+
+    #[test]
+    fn drain_anthropic_reads_a_whole_round_off_the_wire() {
+        // The frames are the ones the docs print, `event:` lines and all —
+        // which this drain ignores, reading each payload's own `type`.
+        let (out, deltas) = drain_anthropic_queued(vec![
+            Ok(b"event: message_start
+data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":25,\"cache_read_input_tokens\":100,\"output_tokens\":1}}}
+
+".to_vec()),
+            Ok(b"event: ping
+data: {\"type\":\"ping\"}
+
+".to_vec()),
+            Ok(b"event: content_block_delta
+data: {\"type\":\"content_bl".to_vec()),
+            Ok(b"ock_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Hi\"}}
+".to_vec()),
+            Ok(b"event: message_delta
+data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":9}}
+".to_vec()),
+            Ok(b"event: message_stop
+data: {\"type\":\"message_stop\"}
+".to_vec()),
+        ]);
+        let out = out.expect("a clean stream");
+        assert_eq!(out.text.response, "Hi");
+        assert_eq!(deltas.len(), 1, "the ping and the frames carry no text");
+        assert_eq!(out.finish_reason.as_deref(), Some("end_turn"));
+        let usage = out.usage.expect("usage");
+        assert_eq!(
+            usage.input, 125,
+            "the uncached remainder plus the cache read"
+        );
+        assert_eq!(usage.cached, 100);
+        assert_eq!(usage.output, 9);
+    }
+
+    #[test]
+    fn drain_anthropic_surfaces_an_in_band_error_frame() {
+        // A 529 arrives *after* a 200, as an SSE event.
+        let (out, _) = drain_anthropic_queued(vec![Ok(b"event: error
+data: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"Overloaded\"}}
+"
+        .to_vec())]);
+        let Err(LlmError::Api { body, .. }) = out else {
+            panic!("an in-band error must fail the stream: {out:?}");
+        };
+        assert_eq!(body, "Overloaded");
+    }
+
+    #[test]
+    fn drain_anthropic_stops_at_message_stop_and_ignores_later_bytes() {
+        let (out, deltas) = drain_anthropic_queued(vec![
+            Ok(b"data: {\"type\":\"message_stop\"}
+".to_vec()),
+            Ok(b"data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"late\"}}
+".to_vec()),
+        ]);
+        assert!(deltas.is_empty(), "nothing after the stop is read");
+        assert_eq!(out.expect("a clean stream").text.response, "");
     }
 
     #[test]

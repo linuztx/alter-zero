@@ -71,11 +71,61 @@ pub(crate) fn spawn_signin(
     cancel: CancelToken,
     tx: tokio::sync::mpsc::UnboundedSender<DeviceEvent>,
 ) {
-    if provider == CHATGPT_PROVIDER {
-        spawn_chatgpt_login(cancel, tx);
-    } else {
-        spawn_device_login(cancel, tx);
+    match provider.as_str() {
+        CHATGPT_PROVIDER => spawn_chatgpt_login(cancel, tx),
+        CLAUDE_PROVIDER => spawn_claude_login(cancel, tx),
+        _ => spawn_device_login(cancel, tx),
     }
+}
+
+/// The provider id whose sign-in is Anthropic's browser flow. Matching on the
+/// id keeps `workers` from needing the provider file, exactly as the ChatGPT
+/// arm above does: the *page* already knows its kind, and this only has to
+/// agree with it.
+const CLAUDE_PROVIDER: &str = "anthropic_console";
+
+/// Run Anthropic's Console PKCE flow: bind the callback port, publish the URL
+/// to open, then block until the browser comes back. See `docs/claude.md`.
+fn spawn_claude_login(cancel: CancelToken, tx: tokio::sync::mpsc::UnboundedSender<DeviceEvent>) {
+    std::thread::spawn(move || {
+        let signin = match llm::claude::begin_signin() {
+            Ok(signin) => signin,
+            Err(e) => {
+                let _ = tx.send(DeviceEvent::Done(Err(e.to_string())));
+                return;
+            }
+        };
+        // No loopback port means the browser cannot come back on its own and
+        // the user would have a code to paste — which this page has nowhere
+        // to take. Say so rather than showing a link that leads nowhere.
+        if !signin.is_loopback() {
+            let _ = tx.send(DeviceEvent::Done(Err(
+                "no local port was free for the sign-in to come back on —                  close whatever is holding one and try again."
+                    .to_string(),
+            )));
+            return;
+        }
+        if tx
+            .send(DeviceEvent::Code {
+                verification_uri: signin.url.clone(),
+                user_code: String::new(),
+                expires_at: std::time::Instant::now() + llm::claude::AUTH_TIMEOUT,
+            })
+            .is_err()
+        {
+            return;
+        }
+        let result = llm::claude::await_callback(&signin, &cancel)
+            // The organisation rides back with the token, as the plan does
+            // for the other two: which account the usage bills to is the
+            // question this sign-in leaves open, and a user with several
+            // orgs has just picked one in a browser.
+            .map(|(refresh, access)| (refresh, llm::claude::plan_label(&access)))
+            .map_err(|e| e.to_string());
+        if !cancel.is_cancelled() {
+            let _ = tx.send(DeviceEvent::Done(result));
+        }
+    });
 }
 
 /// The provider id whose sign-in is OpenAI's browser flow. Matching on the id

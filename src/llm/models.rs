@@ -131,6 +131,64 @@ fn copilot_capabilities(record: &serde_json::Value) -> Option<&serde_json::Value
     record.get("capabilities").filter(|c| c.is_object())
 }
 
+/// One record's `capabilities` object, when it is **Anthropic's** — the
+/// `{image_input, thinking, effort, …}` tree of `{supported: bool}` leaves
+/// that only the Messages API's `/v1/models` sends. Told apart from Copilot's
+/// same-named object by a key only this one has, so a Copilot record never
+/// reaches the sniffs below (and vice versa). See `docs/claude.md`.
+fn anthropic_capabilities(record: &serde_json::Value) -> Option<&serde_json::Value> {
+    let caps = record.get("capabilities").filter(|c| c.is_object())?;
+    (caps.get("image_input").is_some() || caps.get("thinking").is_some()).then_some(caps)
+}
+
+/// Is one `{ "supported": bool }` leaf on?
+fn supported(node: Option<&serde_json::Value>) -> bool {
+    node.and_then(|n| n.get("supported"))
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false)
+}
+
+/// An Anthropic record's reasoning capability.
+///
+/// The `effort` sub-object **is the Ctrl+T ladder** — a per-model list of
+/// which rungs the model accepts, the third provider to name one natively
+/// (`docs/reasoning.md`). Where it says nothing but `thinking` is supported,
+/// the model takes the older token-budget form instead, which has no levels:
+/// that is an on/off-only reasoner, and [`ThinkingMode::On`] is what drives
+/// it (`super::anthropic::thinking_body` reads the same distinction from the
+/// other end).
+///
+/// `None` when the record advertises no thinking at all.
+///
+/// [`ThinkingMode`]: super::reasoning::ThinkingMode
+fn anthropic_reasoning(caps: &serde_json::Value) -> Option<ReasoningSupport> {
+    let thinking = caps.get("thinking")?;
+    if !supported(Some(thinking)) {
+        return None;
+    }
+    let effort = caps.get("effort").filter(|e| supported(Some(e)));
+    let efforts: Vec<ReasoningEffort> = effort.map_or_else(Vec::new, |effort| {
+        ReasoningEffort::LADDER
+            .iter()
+            .copied()
+            .filter(|level| supported(effort.get(level.as_str())))
+            .collect()
+    });
+    Some(ReasoningSupport {
+        efforts,
+        // Most Anthropic models can be asked to stop thinking, but the ones
+        // whose thinking is always on answer `{"type": "disabled"}` with a
+        // 400 — so where the record names the leaf, it decides. Absent, the
+        // permissive answer stands: an explicit disable on a model that takes
+        // one, or (on the budgeted family) simply no `thinking` field.
+        can_disable: thinking
+            .get("types")
+            .and_then(|types| types.get("disabled"))
+            .is_none_or(|leaf| supported(Some(leaf))),
+        default_effort: None,
+    })
+}
+
 /// Can this client actually call the model? Copilot's list carries records
 /// this one can't use, and offering them puts models in the picker that fail
 /// every turn:
@@ -193,6 +251,9 @@ const DEFAULT_EFFORTS: [ReasoningEffort; 3] = [
 ///
 /// `None` when the record advertises no reasoning at all.
 fn reasoning_support_of(record: &serde_json::Value) -> Option<ReasoningSupport> {
+    if let Some(caps) = anthropic_capabilities(record) {
+        return anthropic_reasoning(caps);
+    }
     // The OpenRouter `reasoning` object.
     if let Some(reasoning) = record.get("reasoning").filter(|r| r.is_object()) {
         let mandatory = reasoning
@@ -354,6 +415,12 @@ fn reasoning_support_of(record: &serde_json::Value) -> Option<ReasoningSupport> 
 /// `None` when the record says nothing either way (a bare OpenAI-style list) —
 /// the backend then attaches images optimistically, exactly as before.
 fn vision_support_of(record: &serde_json::Value) -> Option<bool> {
+    // Anthropic's own `capabilities.image_input.supported`. Every leaf here
+    // is present with an explicit `true`/`false`, so absence of the key is
+    // "no vision" rather than "unknown".
+    if let Some(caps) = anthropic_capabilities(record) {
+        return Some(supported(caps.get("image_input")));
+    }
     if let Some(arch) = record.get("architecture").filter(|a| a.is_object()) {
         if let Some(inputs) = arch
             .get("input_modalities")
@@ -413,6 +480,15 @@ fn context_window_of(record: &serde_json::Value) -> Option<u64> {
     let raw = record
         .get("context_length")
         .and_then(serde_json::Value::as_u64)
+        .or_else(|| {
+            // Anthropic names the window `max_input_tokens` — there is no
+            // `context_length` and no `context_window` on this list at all,
+            // and `max_tokens` beside it is the *output* cap, so reading the
+            // wrong one gauges a 1M window against 128K.
+            record
+                .get("max_input_tokens")
+                .and_then(serde_json::Value::as_u64)
+        })
         .or_else(|| {
             record
                 .get("model_spec")?
@@ -498,14 +574,23 @@ fn catalog_or_error(models: Vec<ModelEntry>, auth: super::AuthScheme) -> Result<
 /// (`docs/chatgpt.md`).
 #[must_use]
 pub fn models_endpoint(cfg: &ModelConfig) -> String {
-    models_url(&cfg.api_model_base, cfg.auth)
+    models_url(&cfg.api_model_base, cfg.auth, cfg.wire_api)
 }
 
-/// The `/models` URL for a base and auth scheme — the one place the
-/// ChatGPT backend's required query parameter is added.
+/// The `/models` URL for a base, auth scheme and wire format — the one place
+/// each listing's required query parameter is added.
+///
+/// The two that need one need it for opposite reasons, which is why they read
+/// different fields: the ChatGPT backend's `client_version` is a property of
+/// the **credential's** backend, while Anthropic's page size is a property of
+/// the **listing**, and its pasted-key provider is an ordinary
+/// [`AuthScheme::ApiKey`](super::AuthScheme::ApiKey).
 #[must_use]
-fn models_url(base: &str, auth: super::AuthScheme) -> String {
+fn models_url(base: &str, auth: super::AuthScheme, wire: super::WireApi) -> String {
     let base = base.trim_end_matches('/');
+    if wire == super::WireApi::Anthropic {
+        return format!("{base}/models?limit={ANTHROPIC_PAGE_SIZE}");
+    }
     match auth {
         super::AuthScheme::OpenAiChatGpt => {
             // Required, and load-bearing: the backend filters the catalog by
@@ -519,6 +604,12 @@ fn models_url(base: &str, auth: super::AuthScheme) -> String {
         _ => format!("{base}/models"),
     }
 }
+
+/// The page size the Anthropic listing asks for. Its default is **20**, which
+/// silently truncates the catalog to whichever models happen to sort first —
+/// a `/model` picker missing half the models with no error anywhere. 1000 is
+/// the endpoint's own maximum and comfortably one page.
+const ANTHROPIC_PAGE_SIZE: u32 = 1000;
 
 /// GET the provider's model list (boundary — real HTTP). Polls `cancel` so a
 /// closed picker doesn't leave the worker running.
@@ -540,10 +631,10 @@ pub fn fetch_models(cfg: &ModelConfig, cancel: &CancelToken) -> Result<Vec<Model
     // outranks the configured one (`docs/copilot.md`), and the credential's
     // own identity headers ride along (`docs/chatgpt.md`).
     let auth = super::auth::request_auth(cfg)?;
-    let url = auth
-        .base
-        .as_ref()
-        .map_or_else(|| models_endpoint(cfg), |base| models_url(base, cfg.auth));
+    let url = auth.base.as_ref().map_or_else(
+        || models_endpoint(cfg),
+        |base| models_url(base, cfg.auth, cfg.wire_api),
+    );
     let mut req = client.get(&url).header("accept", "application/json");
     if let Some(key) = &auth.bearer {
         req = req.bearer_auth(key);
@@ -584,6 +675,187 @@ const MODELS_BODY_MAX_BYTES: u64 = 8 * 1024 * 1024;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // --- Anthropic's `/v1/models` (docs/claude.md) ---
+
+    /// One record in the shape Anthropic's listing actually sends.
+    fn anthropic_record(extra: &str) -> String {
+        format!(
+            r#"{{"data":[{{"id":"claude-opus-5","type":"model",
+                "display_name":"Claude Opus 5","created_at":"2026-07-24T00:00:00Z",
+                "max_input_tokens":1000000,"max_tokens":128000,
+                "capabilities":{{{extra}}}}}]}}"#
+        )
+    }
+
+    #[test]
+    fn an_anthropic_record_reports_its_window_from_max_input_tokens() {
+        // There is no `context_length` and no `context_window` on this list,
+        // and the `max_tokens` beside it is the *output* cap — reading the
+        // wrong one gauges a 1M window against 128K.
+        let body = anthropic_record(r#""image_input":{"supported":true}"#);
+        let models = parse_models(&body, "anthropic").unwrap();
+        assert_eq!(models[0].context, Some(1_000_000));
+        assert_eq!(models[0].display_name, "Claude Opus 5");
+    }
+
+    #[test]
+    fn an_anthropic_record_reports_vision_from_image_input() {
+        let seeing = anthropic_record(r#""image_input":{"supported":true}"#);
+        assert_eq!(
+            parse_models(&seeing, "anthropic").unwrap()[0].vision,
+            Some(true)
+        );
+        // Every leaf here is explicit, so `false` is an answer, not a silence.
+        let blind = anthropic_record(r#""image_input":{"supported":false}"#);
+        assert_eq!(
+            parse_models(&blind, "anthropic").unwrap()[0].vision,
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn an_anthropic_effort_object_is_the_ctrl_t_ladder_itself() {
+        // The third provider to name the ladder natively (docs/reasoning.md).
+        let body = anthropic_record(
+            r#""image_input":{"supported":true},
+               "thinking":{"supported":true,"types":{"adaptive":{"supported":true}}},
+               "effort":{"supported":true,
+                 "low":{"supported":true},"medium":{"supported":true},
+                 "high":{"supported":true},"xhigh":{"supported":true},
+                 "max":{"supported":true}}"#,
+        );
+        let reasoning = parse_models(&body, "anthropic").unwrap()[0]
+            .reasoning
+            .clone()
+            .expect("a reasoning-capable model");
+        assert_eq!(
+            reasoning.efforts,
+            vec![
+                ReasoningEffort::Low,
+                ReasoningEffort::Medium,
+                ReasoningEffort::High,
+                ReasoningEffort::XHigh,
+                ReasoningEffort::Max,
+            ]
+        );
+        assert!(reasoning.can_disable);
+    }
+
+    #[test]
+    fn an_anthropic_effort_object_offers_only_the_rungs_it_names() {
+        let body = anthropic_record(
+            r#""thinking":{"supported":true},
+               "effort":{"supported":true,
+                 "low":{"supported":true},"medium":{"supported":true},
+                 "high":{"supported":true},
+                 "xhigh":{"supported":false},"max":{"supported":false}}"#,
+        );
+        let reasoning = parse_models(&body, "anthropic").unwrap()[0]
+            .reasoning
+            .clone()
+            .expect("reasoning");
+        assert_eq!(
+            reasoning.efforts,
+            vec![
+                ReasoningEffort::Low,
+                ReasoningEffort::Medium,
+                ReasoningEffort::High
+            ]
+        );
+    }
+
+    #[test]
+    fn an_anthropic_model_that_cannot_stop_thinking_is_not_offered_the_off_rung() {
+        // `thinking: {"type": "disabled"}` is a 400 on the models whose
+        // thinking is always on. Ctrl+T must not be able to reach a mode that
+        // fails every request — so where the record says so, `Off` goes away.
+        let body = anthropic_record(
+            r#""thinking":{"supported":true,
+                 "types":{"adaptive":{"supported":true},"disabled":{"supported":false}}},
+               "effort":{"supported":true,"high":{"supported":true},"max":{"supported":true}}"#,
+        );
+        let reasoning = parse_models(&body, "anthropic").unwrap()[0]
+            .reasoning
+            .clone()
+            .expect("reasoning");
+        assert!(!reasoning.can_disable);
+        assert!(
+            !reasoning.modes().contains(&crate::llm::ThinkingMode::Off),
+            "{:?}",
+            reasoning.modes()
+        );
+        // A record that says nothing keeps the old, permissive answer.
+        let quiet = anthropic_record(r#""thinking":{"supported":true}"#);
+        assert!(
+            parse_models(&quiet, "anthropic").unwrap()[0]
+                .reasoning
+                .as_ref()
+                .unwrap()
+                .can_disable
+        );
+    }
+
+    #[test]
+    fn an_anthropic_model_with_thinking_but_no_efforts_is_an_on_off_reasoner() {
+        // The older budgeted family: it thinks, but takes no effort level —
+        // which is the mode `anthropic::thinking_body` maps to `budget_tokens`.
+        let body = anthropic_record(
+            r#""thinking":{"supported":true,"types":{"enabled":{"supported":true}}}"#,
+        );
+        let reasoning = parse_models(&body, "anthropic").unwrap()[0]
+            .reasoning
+            .clone()
+            .expect("reasoning");
+        assert!(reasoning.efforts.is_empty());
+        assert_eq!(reasoning.modes().len(), 2, "just Off and On");
+    }
+
+    #[test]
+    fn an_anthropic_model_that_says_it_cannot_think_offers_no_ctrl_t() {
+        let body = anthropic_record(r#""thinking":{"supported":false}"#);
+        assert_eq!(parse_models(&body, "anthropic").unwrap()[0].reasoning, None);
+        let silent = anthropic_record(r#""image_input":{"supported":true}"#);
+        assert_eq!(
+            parse_models(&silent, "anthropic").unwrap()[0].reasoning,
+            None
+        );
+    }
+
+    #[test]
+    fn a_copilot_capabilities_object_never_reaches_the_anthropic_sniffs() {
+        // Both providers send a `capabilities` object and they are nothing
+        // alike; telling them apart by a key only one has is what keeps each
+        // sniff to its own shape.
+        let copilot = r#"{"data":[{"id":"gpt-4o","capabilities":{"type":"chat",
+            "limits":{"max_prompt_tokens":63997},"supports":{"vision":true}}}]}"#;
+        let models = parse_models(copilot, "github_copilot").unwrap();
+        assert_eq!(models[0].context, Some(63_997), "copilot's own rule stands");
+        assert_eq!(models[0].vision, Some(true));
+    }
+
+    #[test]
+    fn the_anthropic_listing_asks_for_a_page_big_enough_to_hold_the_catalog() {
+        // Its default page is 20: without an explicit limit the picker
+        // silently shows whichever models sort first, with no error anywhere.
+        let mut cfg = ModelConfig::fallback();
+        cfg.api_model_base = "https://api.anthropic.com/v1".to_string();
+        cfg.wire_api = super::super::WireApi::Anthropic;
+        // The pasted-key provider is an ordinary ApiKey scheme, so the page
+        // size has to key on the wire format rather than on `auth`.
+        assert_eq!(
+            models_endpoint(&cfg),
+            "https://api.anthropic.com/v1/models?limit=1000"
+        );
+        cfg.auth = super::super::AuthScheme::AnthropicConsole;
+        assert_eq!(
+            models_endpoint(&cfg),
+            "https://api.anthropic.com/v1/models?limit=1000"
+        );
+        // Every other provider's URL is what it always was.
+        let plain = ModelConfig::fallback();
+        assert_eq!(models_endpoint(&plain), "https://api.openai.com/v1/models");
+    }
 
     // --- context window (docs/compact.md: the footer gauge + auto-compact) ---
 
