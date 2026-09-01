@@ -9654,12 +9654,17 @@ tmux send-keys -t "$S104" -l "/login"
 sleep 0.2
 tmux send-keys -t "$S104" Enter
 sleep 0.5
-# Enter opens the subscription list; the ChatGPT row is second (the list is
-# alphabetical by provider id: github_copilot, then openai_chatgpt).
+# Enter opens the subscription list, then the row is picked by NAME rather
+# than by counting Downs: the list is alphabetical by provider id, so every
+# subscription added ahead of `openai_chatgpt` used to shift this phase onto
+# the wrong sign-in page — and the failure reads as "the browser page fell
+# back to the device wording", which blames the code under test rather than
+# the walk. `chatgpt` matches this row's id, name and description, and no
+# other row's anything.
 tmux send-keys -t "$S104" Enter
 sleep 0.4
-tmux send-keys -t "$S104" Down
-sleep 0.2
+tmux send-keys -t "$S104" -l "chatgpt"
+sleep 0.3
 tmux send-keys -t "$S104" Enter
 sleep 1.2
 chatgpt_page="$(tmux capture-pane -t "$S104" -p)"
