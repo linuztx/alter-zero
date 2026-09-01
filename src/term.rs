@@ -841,16 +841,14 @@ impl InlineViewport {
         //
         // [`draw_overlay`]: InlineViewport::draw_overlay
         self.overlay_prev = None;
-        // The pictures don't survive the hop either (`docs/images.md`). A
-        // graphics **placement** belongs to the screen it was created on, and
-        // the kitty protocol transmits its image — and creates that placement
-        // — exactly once per encoded protocol object. Carrying one across the
-        // switch therefore paints the alternate screen with placeholders
-        // referring to a placement that only exists on the primary screen:
-        // reserved rows, and nothing in them. Dropping the encodings makes
-        // the first overlay frame transmit afresh, which is what puts the
-        // picture on *this* screen.
-        self.images.invalidate();
+        // The pictures don't survive the hop either (`docs/images.md`): kitty
+        // keeps a *separate image store per screen buffer*, so one
+        // transmitted on the primary screen is not addressable from the
+        // alternate one and its placeholders resolve to nothing — reserved
+        // rows with no picture in them. Dropping those encodings makes the
+        // first overlay frame transmit afresh onto *this* screen. A no-op for
+        // the protocols that carry their payload every render.
+        self.images.invalidate_across_screens();
         Ok(())
     }
 
@@ -867,12 +865,11 @@ impl InlineViewport {
         self.prev = None; // returning to a screen the inline view will repaint
         // The alternate screen is gone; a re-entry clears it and starts over.
         self.overlay_prev = None;
-        // And the pictures encoded *for* that screen are placed on it, so the
-        // primary screen must not reuse them: the terminal restores its own
-        // buffer (the pictures already drawn there are still drawn), but the
-        // next rebuild has to transmit again for this screen — the entry's
-        // rule in mirror.
-        self.images.invalidate();
+        // And the pictures encoded *for* the alternate screen live in its
+        // store, not this one: the terminal restores the primary buffer with
+        // what was already drawn on it, but the next rebuild has to transmit
+        // again for this screen — the entry's rule in mirror.
+        self.images.invalidate_across_screens();
         Backend::flush(&mut self.backend)
     }
 

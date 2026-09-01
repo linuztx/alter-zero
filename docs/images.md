@@ -171,9 +171,30 @@ an escape blob can leave the cursor anywhere — a sixel placement clears its
 area row by row first — so the cell after it starts a fresh `draw`, which
 always opens with a cursor move.
 
-A block whose **head row** is scrolled off the top of the buffer — the Ctrl+O
-transcript showing the bottom half of a picture — is left blank: no protocol
-here can start a picture partway down.
+### Drawing into exactly the reserved cells
+
+`stamp` reads a block's extent **back off the carriers** — where its visible
+rows are, how wide they are, and how many of its rows are above the frame —
+rather than taking it from the placement. Two things follow, and both were
+bugs in the first version.
+
+A block is drawn into the reserved run and nothing more, so a picture the
+frame cut short can never paint over what was drawn below it: the pager's own
+`─── 100% ───` separator and its key-hint rows.
+
+And a block whose **head row is above the frame still draws**. This is the
+ordinary case, not an edge: Ctrl+O opens pinned to the *bottom*, so any
+picture taller than the pager's body starts above the window and its first
+visible row carries a non-zero row index. Rendering only from a head row drew
+a screenful of reserved-but-empty rows on the most common open there is
+(`smoke.sh` Phase 107c measures 0 rows before the fix, 10 after). The row
+index is the slice offset, handed to `ratatui_image`'s
+`SlicedImage`/`SlicedProtocol` as a negative `SignedPosition`.
+
+Slicing is also what gives **sixel and iTerm2** clipping at all — both decline
+to draw an image larger than the area they are given. `SlicedProtocol` strips
+sixel bands at render time and cuts an iTerm2 image into one protocol per row;
+kitty skips placeholder rows natively and half-blocks are ordinary cells.
 
 ### Screen switches
 
@@ -258,14 +279,9 @@ was a bad idea.
 
 ## Known limits
 
-* A picture whose **top row** is scrolled out of the buffer isn't drawn (the
-  Ctrl+O transcript, mid-scroll). `ratatui_image::sliced` could clip one, at
-  the cost of a second protocol object per placement.
 * Under **tmux/screen** the protocol guess is deliberately conservative:
   half-blocks unless the outer terminal is a known iTerm2-family one.
   `ALTER_ZERO_IMAGE_PROTOCOL` overrides it for a passthrough-enabled setup.
-* Sixel and iTerm2 cannot clip, so a block the region cuts short simply isn't
-  drawn there (kitty and half-blocks honour `allow_clipping`).
 * The live **streaming preview** doesn't draw a picture: a `read` has no image
   until it resolves, and the committed cell is one frame away.
 
@@ -283,6 +299,7 @@ ALTER_ZERO_IMAGE_PROTOCOL=halfblocks ALTER_ZERO_IMAGE_CELL_SIZE=5x10 cargo run
 an image `read` of a real PNG: it asserts the picture's row count, that it
 starts at column 0, the blank row under the cell, that Ctrl+O draws the same
 picture, and that `/settings` **Show images** off purge-rebuilds without it.
-Phase 107b then reads the raw byte stream and asserts a kitty transmit lands
-on **each** side of the switch to the alternate screen (see *Screen
-switches*).
+Phase 107b reads the raw byte stream and asserts a kitty transmit lands on
+**each** side of the switch to the alternate screen (see *Screen switches*).
+Phase 107c drives a picture taller than the pager and asserts the
+bottom-pinned open still draws its visible part.

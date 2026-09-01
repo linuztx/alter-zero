@@ -14,9 +14,9 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Color;
 use ratatui::widgets::Widget;
+use ratatui_image::Resize;
 use ratatui_image::picker::{Picker, ProtocolType};
-use ratatui_image::protocol::Protocol;
-use ratatui_image::{Image, Resize};
+use ratatui_image::sliced::{SignedPosition, SlicedImage, SlicedProtocol};
 
 use super::geometry::{FontSize, carrier_parts};
 use super::registry::{Placement, placement};
@@ -109,11 +109,41 @@ pub fn kitty_from_env(term: Option<&str>, term_program: Option<&str>, kitty_id: 
 const CACHE_MAX_BYTES: usize = 24 * 1024 * 1024;
 
 /// One encoded picture plus what it costs.
+///
+/// A [`SlicedProtocol`] rather than a plain `Protocol`, because a block can be
+/// **cut by the frame it lands in**: the Ctrl+O transcript opens pinned to the
+/// bottom, so a picture taller than the pager's body starts *above* the
+/// window, and a plain protocol can only draw from its own first row. The
+/// sliced form takes a signed position and clips at either end — natively for
+/// kitty (a placeholder skip), sixel (band stripping) and half-blocks, and by
+/// slicing the picture into one protocol per row for iTerm2, which can do
+/// neither.
 struct Encoded {
     /// `None` once the file has failed to load — remembered so a broken path
     /// isn't re-read on every frame of every turn.
-    protocol: Option<Protocol>,
+    protocol: Option<SlicedProtocol>,
     bytes: usize,
+}
+
+/// One reserved block as the frame actually holds it: where its visible rows
+/// are, how far its **head** row sits above them, and how wide it is.
+///
+/// Collected from the carriers rather than taken from the placement, so the
+/// picture is drawn into exactly the cells that were reserved — never over the
+/// pager's separator and key hints below them, and never guessing at rows the
+/// line builder trimmed.
+struct VisibleBlock {
+    /// Leftmost reserved column of the block's first visible row.
+    x: u16,
+    /// Reserved columns on that row.
+    cols: u16,
+    /// The block's first visible row.
+    first_y: u16,
+    /// Its last visible row.
+    last_y: u16,
+    /// How many of the block's rows are above the frame — `0` when its head
+    /// row is visible, which is the ordinary case.
+    skipped: u16,
 }
 
 /// The terminal's graphics capability and the pictures encoded for it.
@@ -245,18 +275,52 @@ impl ImageStore {
         self.bytes = 0;
     }
 
+    /// Drop the encodings a **screen switch** invalidates — and only those.
+    ///
+    /// kitty (and Ghostty, which implements its protocol) allocates a
+    /// *separate image store per screen buffer* — `main_grman` and
+    /// `alt_grman` in kitty's own source, and the protocol spec spells out
+    /// that "when switching from the main screen to the alternate screen
+    /// buffer (1049 private mode) all images in the alternate screen must be
+    /// cleared". An image transmitted on one screen is therefore not
+    /// addressable from the other, and a unicode placeholder that names it
+    /// resolves to nothing — **silently**, since the lookup just returns and
+    /// `q=2` suppresses replies. That is reserved rows with no picture in
+    /// them, which is exactly what the Ctrl+O transcript showed. There is no
+    /// public way to re-arm `ratatui_image`'s transmit flag, so the encoding
+    /// is dropped and the next frame rebuilds it (with a fresh random image
+    /// id, so the two screens' stores can't collide).
+    ///
+    /// The other three protocols are placement-free by construction — sixel,
+    /// iTerm2 and half-blocks carry their whole payload in every render — so
+    /// they survive the hop, and re-encoding them would be pure waste on a
+    /// Ctrl+O that is meant to open instantly
+    /// (`docs/tool-view-performance.md`).
+    pub fn invalidate_across_screens(&mut self) {
+        if self
+            .picker
+            .as_ref()
+            .is_some_and(|picker| picker.protocol_type() == ProtocolType::Kitty)
+        {
+            self.invalidate();
+        }
+    }
+
     /// Draw every reserved block in `buf`.
     ///
     /// The single pass every paint path runs before its cells reach the
     /// terminal (`term`'s `visible_cells` rule: a path that skips it shows
     /// blank rows in that view alone). Reserved cells carry
-    /// [`super::geometry::carrier`]; a block's **head row** (row 0) is where
-    /// the picture is rendered from, and every carrier is cleared afterwards
-    /// so it can never paint as a real underline colour.
+    /// [`super::geometry::carrier`] — a placement id and a row index — and
+    /// every carrier is cleared afterwards so it can never paint as a real
+    /// underline colour.
     ///
-    /// A block whose head row is scrolled off the top of `buf` — a picture
-    /// the Ctrl+O transcript is showing the bottom half of — is left blank:
-    /// no protocol here can start a picture partway down.
+    /// The picture is drawn into exactly the reserved cells this frame holds,
+    /// which is what makes a **cut** block work: the Ctrl+O transcript opens
+    /// pinned to the bottom, so a picture taller than the pager's body starts
+    /// above the window, and its first visible row carries a non-zero row
+    /// index. That index is the slice offset ([`SignedPosition`]), so the
+    /// visible part draws instead of nothing at all.
     pub fn stamp(&mut self, buf: &mut Buffer) {
         // The overwhelmingly common session shows no picture at all, and this
         // runs on every frame of every paint path — so the walk below is
@@ -268,33 +332,14 @@ impl ImageStore {
             clear_carriers(buf);
             return;
         }
-        let area = buf.area;
-        let mut heads: Vec<(u16, u16, u32)> = Vec::new();
-        for y in area.top()..area.bottom() {
-            for x in area.left()..area.right() {
-                let Some(cell) = buf.cell_mut((x, y)) else {
-                    continue;
-                };
-                let Some((id, row)) = carrier_parts(cell.underline_color) else {
-                    continue;
-                };
-                cell.underline_color = Color::Reset;
-                if row == 0
-                    && heads
-                        .last()
-                        .is_none_or(|&(_, hy, hid)| hy != y || hid != id)
-                {
-                    heads.push((x, y, id));
-                }
-            }
-        }
-        for (x, y, id) in heads {
-            self.draw(buf, x, y, id);
+        for (id, block) in visible_blocks(buf) {
+            self.draw(buf, id, &block);
         }
     }
 
-    /// Render placement `id` at `(x, y)` in `buf`, encoding it on first use.
-    fn draw(&mut self, buf: &mut Buffer, x: u16, y: u16, id: u32) {
+    /// Render placement `id` into the cells `block` names, encoding it on
+    /// first use.
+    fn draw(&mut self, buf: &mut Buffer, id: u32, block: &VisibleBlock) {
         let Some(place) = placement(id) else {
             return;
         };
@@ -311,18 +356,21 @@ impl ImageStore {
         else {
             return;
         };
-        let area = buf.area;
-        let width = place.cols.min(area.right().saturating_sub(x));
-        let height = place.rows.min(area.bottom().saturating_sub(y));
-        if width == 0 || height == 0 {
+        let height = block.last_y.saturating_sub(block.first_y).saturating_add(1);
+        if block.cols == 0 || height == 0 {
             return;
         }
-        // `allow_clipping` so a block the region cut short still draws the
-        // part that fits (kitty and half-blocks honour it; the protocols that
-        // cannot clip decline, which is the old behaviour).
-        Image::new(protocol)
-            .allow_clipping(true)
-            .render(Rect::new(x, y, width, height), buf);
+        // The area is the reserved run and nothing more, so a picture the
+        // frame cut short can never paint over what was drawn below it — the
+        // pager's own separator and key-hint rows. The position is relative to
+        // that area, and negative by however many of the block's rows are
+        // above it.
+        let area = Rect::new(block.x, block.first_y, block.cols, height);
+        let position = SignedPosition {
+            x: 0,
+            y: -i16::try_from(block.skipped).unwrap_or(i16::MAX),
+        };
+        SlicedImage::new(protocol, position).render(area, buf);
     }
 
     /// Encode `place` if it isn't cached — decode the file, fit it into the
@@ -339,7 +387,9 @@ impl ImageStore {
             .ok()
             .and_then(|reader| reader.with_guessed_format().ok())
             .and_then(|reader| reader.decode().ok())
-            .and_then(|image| picker.new_protocol(image, size, Resize::Fit(None)).ok());
+            .and_then(|image| {
+                SlicedProtocol::new_with_resize(picker, image, size, Resize::Fit(None)).ok()
+            });
         let font = picker.font_size();
         let bytes = protocol.as_ref().map_or(0, |_| {
             // The pixels the encoder had to carry, plus base64's third.
@@ -371,6 +421,61 @@ impl ImageStore {
             }
         }
     }
+}
+
+/// The reserved blocks `buf` holds, keyed by placement id, with every carrier
+/// **cleared** on the way through (it must never reach the terminal as a real
+/// underline colour — the [`crate::links`] rule).
+///
+/// A block is identified by its id *and* its head row's position, which the
+/// carrier's row index gives even when that row is above the frame: two
+/// pictures of the same file at the same size share an id, and this is what
+/// keeps them apart.
+fn visible_blocks(buf: &mut Buffer) -> Vec<(u32, VisibleBlock)> {
+    let area = buf.area;
+    // A frame holds a handful of blocks at most, so a `Vec` scan beats a map —
+    // and it keeps them in the order they were met, which is deterministic.
+    let mut blocks: Vec<(u32, i32, VisibleBlock)> = Vec::new();
+    for y in area.top()..area.bottom() {
+        for x in area.left()..area.right() {
+            let Some(cell) = buf.cell_mut((x, y)) else {
+                continue;
+            };
+            let Some((id, row)) = carrier_parts(cell.underline_color) else {
+                continue;
+            };
+            cell.underline_color = Color::Reset;
+            let head = i32::from(y) - i32::from(row);
+            let Some((_, _, block)) = blocks
+                .iter_mut()
+                .find(|(other, other_head, _)| *other == id && *other_head == head)
+            else {
+                // First cell of this block in the frame. The scan runs
+                // top-down and left-to-right, so this row is its topmost
+                // visible one and this column its leftmost.
+                blocks.push((
+                    id,
+                    head,
+                    VisibleBlock {
+                        x,
+                        cols: 1,
+                        first_y: y,
+                        last_y: y,
+                        skipped: row,
+                    },
+                ));
+                continue;
+            };
+            if y == block.first_y {
+                block.cols = block.cols.saturating_add(1);
+            }
+            block.last_y = block.last_y.max(y);
+        }
+    }
+    blocks
+        .into_iter()
+        .map(|(id, _, block)| (id, block))
+        .collect()
 }
 
 /// Strip every image carrier from `buf` without drawing anything — what a
