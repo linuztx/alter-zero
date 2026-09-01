@@ -659,6 +659,10 @@ pub fn tool_commit_lines(
                 // Unreachable: the walk above only ever crosses tool cells.
                 _ => break,
             }
+            // An image `read` commits its picture with its cell, so the live
+            // commit and the rebuild ([`conversation_lines`]) write the same
+            // rows (`docs/images.md`).
+            lines.extend(super::image::image_block_lines(&items[i], width));
             i += 1;
         }
     }

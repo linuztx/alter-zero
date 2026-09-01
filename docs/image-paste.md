@@ -1,5 +1,11 @@
 # Ctrl+V image paste
 
+
+> The pasted screenshot is also **drawn** in the conversation, under its own
+> user bubble — see `docs/images.md`, which additionally covers the
+> `/settings` **Auto-resize images** row that downscales a large paste before
+> it is uploaded.
+
 Pressing **Ctrl+V** (or **Ctrl+Alt+V**) reads an image off the system clipboard
 on a background worker, writes it to a temporary image file (a verbatim copy
 when a pasted file is already in an accepted format, a PNG otherwise), and

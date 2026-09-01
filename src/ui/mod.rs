@@ -46,6 +46,7 @@ mod file_cell;
 mod footer;
 mod header;
 mod hooks_view;
+mod image;
 mod inline;
 mod inline_diff;
 mod layout;
@@ -89,6 +90,7 @@ pub use self::footer::{
 };
 pub use self::header::{header_lines, startup_notice_lines};
 pub use self::hooks_view::{hooks_menu_height, hooks_view_lines, render_hooks_menu};
+pub use self::image::{image_block_lines, image_lines, item_images};
 pub use self::layout::{
     Repin, background_view_height, cursor_position, cursor_visible, fitted_preview_rows,
     key_onboarding_height, live_height, modal_needs_rebuild, model_picker_height,

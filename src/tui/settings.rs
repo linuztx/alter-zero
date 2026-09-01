@@ -12,7 +12,10 @@
 //! (`tui::stream`'s `ThinkingStart` arm and `App::should_auto_compact`), so
 //! there is no second copy to keep in step.
 
+use std::io;
+
 use alter_zero::app::ToastKind;
+use alter_zero::images::{self, DEFAULT_FONT_SIZE, ImagePolicy};
 use alter_zero::project_doc;
 use alter_zero::settings::{SettingAvailability, SettingKey};
 
@@ -184,6 +187,30 @@ impl Session<'_> {
             hooks: self.models.hooks_available(),
             // Nothing to toggle when no `SKILL.md` loaded (`docs/skills.md`).
             skills: !self.skill_registry.is_empty(),
+            // Whether this terminal can draw a picture (`docs/images.md`).
+            images: self.term.image_capability().0,
+        });
+    }
+
+    /// Publish the session's image policy — the three `/settings` rows over
+    /// the two facts only the terminal knows (whether it can draw at all, and
+    /// how big a cell is).
+    ///
+    /// The policy is process-global rather than an argument on every line
+    /// builder ([`crate::images::registry`] explains why), so this is the one
+    /// place it is written: bootstrap calls it once, and every cycle of an
+    /// image row calls it again. Pure `ui` reads it to reserve a picture's
+    /// rows; the `read` executor reads its `auto_resize` to decide whether to
+    /// downscale before uploading.
+    pub(crate) fn sync_image_policy(&mut self) {
+        let (available, font, _) = self.term.image_capability();
+        let settings = self.app.settings();
+        images::set_policy(ImagePolicy {
+            show: settings.show_images,
+            max_cols: settings.image_width,
+            auto_resize: settings.auto_resize_images,
+            font: font.unwrap_or(DEFAULT_FONT_SIZE),
+            available,
         });
     }
 
@@ -193,8 +220,14 @@ impl Session<'_> {
     ///
     /// A rebuild here rebinds the **next** turn's backend — the running one
     /// streams on its own thread, untouched (the `/model` switch's rule).
-    pub(crate) fn apply_setting(&mut self, key: SettingKey) {
+    pub(crate) fn apply_setting(&mut self, key: SettingKey) -> io::Result<()> {
         let settings = *self.app.settings();
+        // The two display rows change how many rows every committed picture
+        // occupies, so the conversation has to be rebuilt from history for
+        // the change to be visible at all — the `/mascot` switch's rule, and
+        // the same purge a resize runs. The encoded pictures go with it: the
+        // new width is a different placement (`docs/images.md`).
+        let mut rebuild = false;
         match key {
             // Offering (or withholding) the tools changes the request's shape,
             // so the backend is rebuilt around the new tool set — and the
@@ -237,6 +270,22 @@ impl Session<'_> {
                 self.models.set_skills(settings.skills_active());
                 self.sync_system_reminder();
             }
+            // The picture geometry: republish the policy, drop the encoded
+            // pictures, and rebuild so the committed ones change with it.
+            SettingKey::ShowImages | SettingKey::ImageWidth => {
+                self.sync_image_policy();
+                self.term.invalidate_images();
+                // The Ctrl+O transcript's frozen prefix is pinned on the
+                // history generation, and this changes what those rows *are*
+                // without changing history — so a warm cache would keep
+                // serving rows that still reserve a picture the inline view
+                // just dropped (`docs/images.md`).
+                self.app.invalidate_rendered_history();
+                rebuild = true;
+            }
+            // Read by the `read` executor per call — nothing to redraw, since
+            // this row is about the request and not the screen.
+            SettingKey::AutoResizeImages => self.sync_image_policy(),
             // Read where they are used — nothing to rebuild.
             SettingKey::HideThinking | SettingKey::AutoCompact => {}
             // Shift+Tab's path owns this one; the menu never routes it here.
@@ -249,5 +298,11 @@ impl Session<'_> {
         config::save_session_settings(self.settings_path.as_deref(), &self.saved_settings);
         let value = settings.value_text(key, self.app.permission_mode());
         self.toast(format!("{}: {value}", key.label()), ToastKind::Info);
+        // After the toast, so the rebuilt frame already carries it (the
+        // `/mascot` switch's ordering).
+        if rebuild {
+            self.repaint_active_view()?;
+        }
+        Ok(())
     }
 }

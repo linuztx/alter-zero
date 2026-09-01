@@ -496,21 +496,18 @@ fn run_read(arguments: &str, vision: Option<bool>) -> ToolOutcome {
 /// message. Every failure is a recoverable error the model reads.
 fn read_image(path: &str, bytes: &[u8]) -> ToolOutcome {
     const MB: f64 = 1024.0 * 1024.0;
-    if bytes.len() > tools::READ_IMAGE_MAX_BYTES {
-        return ToolOutcome::error(format!(
-            "image {path} is too large to attach ({:.1} MB; the limit is {:.2} MB) — \
-             downscale or convert it with a bash command first",
-            bytes.len() as f64 / MB,
-            tools::READ_IMAGE_MAX_BYTES as f64 / MB,
-        ));
-    }
     // Sniff the content (magic bytes), the clipboard module's pattern — an
     // io::Error is impossible over an in-memory cursor but handled anyway.
     let reader = match image::ImageReader::new(std::io::Cursor::new(bytes)).with_guessed_format() {
         Ok(reader) => reader,
         Err(err) => return ToolOutcome::error(format!("could not inspect {path}: {err}")),
     };
-    let Some((mime, label)) = reader.format().and_then(vision_format) else {
+    // The sniffed format is kept, not just its MIME: the auto-resize below
+    // needs a decoder for it.
+    let Some((format, (mime, label))) = reader
+        .format()
+        .and_then(|format| Some((format, vision_format(format)?)))
+    else {
         return ToolOutcome::error(format!(
             "{path} is not a supported image (its content is not png/jpeg/gif/webp) — \
              read it as text or convert it first"
@@ -522,11 +519,44 @@ fn read_image(path: &str, bytes: &[u8]) -> ToolOutcome {
             return ToolOutcome::error(format!("could not decode {path} as an image: {err}"));
         }
     };
+    // `/settings` **Auto-resize images**: a 12-megapixel photo is megabytes of
+    // base64 the model reads no better than the same picture at 2000 pixels,
+    // and past the byte cap it could not be sent at all. The *file* is
+    // untouched — only what rides the request shrinks — so the fact line
+    // leads with the file's own size and names the sent one after
+    // (`docs/images.md`).
+    let sent = crate::images::downscale_for_model(bytes, format);
+    let (payload, mime, label) = match &sent {
+        Some(small) => {
+            let (mime, label) = vision_format(small.format).unwrap_or((mime, label));
+            (small.bytes.as_slice(), mime, label)
+        }
+        None => (bytes, mime, label),
+    };
+    if payload.len() > tools::READ_IMAGE_MAX_BYTES {
+        return ToolOutcome::error(format!(
+            "image {path} is too large to attach ({:.1} MB; the limit is {:.2} MB) — \
+             turn on Auto-resize images in /settings, or downscale it with a bash command first",
+            payload.len() as f64 / MB,
+            tools::READ_IMAGE_MAX_BYTES as f64 / MB,
+        ));
+    }
     let url = format!(
         "data:{mime};base64,{}",
-        crate::clipboard::base64_encode(bytes)
+        crate::clipboard::base64_encode(payload)
     );
-    ToolOutcome::ok(tools::format_read_image(label, width, height, bytes.len())).with_image(url)
+    let text = match &sent {
+        Some(small) => tools::format_read_image_resized(
+            label,
+            width,
+            height,
+            bytes.len(),
+            small.size,
+            small.bytes.len(),
+        ),
+        None => tools::format_read_image(label, width, height, bytes.len()),
+    };
+    ToolOutcome::ok(text).with_image(url)
 }
 
 /// The `(MIME, display label)` for a sniffed format — `None` for anything a
@@ -868,7 +898,11 @@ mod tests {
     }
 
     #[test]
-    fn read_of_an_oversized_image_is_a_recoverable_error() {
+    fn an_oversized_file_that_is_not_an_image_says_exactly_that() {
+        // Megabytes of zeroes named `.png`. The sniff runs before the size
+        // check now — auto-resize can rescue an oversized *picture*, so
+        // "too large" would be the wrong first answer — and what this file
+        // actually is is not a picture at all.
         let path = temp_path("read-image-huge.png");
         std::fs::write(&path, vec![0u8; tools::READ_IMAGE_MAX_BYTES + 1]).unwrap();
         let out = exec("read", &format!(r#"{{"path":"{}"}}"#, path.display()));
@@ -876,10 +910,40 @@ mod tests {
         assert!(!out.ok, "got {}", out.output);
         assert!(out.image.is_none());
         assert!(
-            out.output.contains("too large"),
-            "the model is told why and can downscale: {}",
+            out.output.contains("not a supported image"),
+            "the model learns what is actually wrong: {}",
             out.output
         );
+    }
+
+    #[test]
+    fn an_image_past_the_resize_cap_is_downscaled_not_refused() {
+        // `/settings` **Auto-resize images**, on by default: the file keeps
+        // its own size (which is what the cell draws), and the fact line names
+        // the original first and what was uploaded after (`docs/images.md`).
+        let path = temp_path("read-image-big.png");
+        image::RgbImage::from_pixel(3000, 2000, image::Rgb([10, 120, 220]))
+            .save_with_format(&path, image::ImageFormat::Png)
+            .unwrap();
+        let out = exec("read", &format!(r#"{{"path":"{}"}}"#, path.display()));
+        std::fs::remove_file(&path).ok();
+        assert!(out.ok, "got {}", out.output);
+        assert!(
+            out.output.starts_with("Read image (PNG, 3000x2000,"),
+            "the file's own facts lead: {}",
+            out.output
+        );
+        assert!(
+            out.output.contains("sent resized to 2000x1333"),
+            "and the uploaded size is named: {}",
+            out.output
+        );
+        assert_eq!(
+            crate::images::read_image_size(&out.output),
+            Some((3000, 2000)),
+            "the renderer still reads the size of the file it will draw"
+        );
+        assert!(out.image.is_some(), "the pixels still ride along");
     }
 
     #[test]

@@ -387,6 +387,15 @@ impl Session<'_> {
     pub(crate) fn on_image_paste(&mut self, result: Result<PathBuf, String>) {
         match result {
             Ok(path) => {
+                // Read the header once, here at the boundary, so the pure line
+                // builders can reserve the right rows for the picture under
+                // the bubble it will be sent with (`docs/images.md`). A path
+                // whose size never lands simply isn't drawn.
+                if let Some(name) = path.to_str()
+                    && let Some(px) = image_dimensions(&path)
+                {
+                    alter_zero::images::remember_size(name, px);
+                }
                 self.app.attach_image(path);
                 // A known non-vision model can't see the paste: warn at once with
                 // a toast — the attachment still rides the request as a text note
@@ -413,4 +422,15 @@ impl Session<'_> {
         self.dispatch_file_search();
         self.frame.schedule_frame();
     }
+}
+
+/// The pixel size of the image at `path`, read from its header — no full
+/// decode, so a 12-megapixel screenshot costs a few hundred bytes of I/O.
+fn image_dimensions(path: &std::path::Path) -> Option<(u32, u32)> {
+    image::ImageReader::open(path)
+        .ok()?
+        .with_guessed_format()
+        .ok()?
+        .into_dimensions()
+        .ok()
 }

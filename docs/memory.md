@@ -171,6 +171,21 @@ not at all across further keystrokes: the allocations are uniform,
 short-lived and immediately reused. It is CPU churn, not a memory problem,
 and this document is about memory.
 
+## Inline images pay the same rent
+
+A kitty placement holds the whole picture as base64 RGBA — a 120-column
+screenshot at a 10x20 cell is 1200x600 pixels, ~2.9 MB of pixels and ~3.8 MB
+of base64 — so the encoded-picture store is bounded in **bytes**, not entries
+(`docs/images.md`). The budget is charged from the placement's own geometry
+rather than from the encoder's internals, and the least-recently-drawn picture
+is evicted past 24 MB; meeting it again costs one re-encode, never a wrong
+picture.
+
+The model-facing downscale is bounded the other way round: decoding is
+`4 x width x height` bytes resident, so it declines outright past 50
+megapixels (or 64 MB of source), and the caller refuses the read instead of
+materialising a 12000x12000 scan to discover it shouldn't have.
+
 ## The rule
 
 The pattern generalises past this one function: **do not build a tree of a

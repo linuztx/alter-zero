@@ -120,8 +120,8 @@ fn every_row_shows_its_label_and_value_and_the_first_is_marked() {
     assert!(first.starts_with("→ Hide thinking"), "{first:?}");
     assert!(first.contains("false"), "{first:?}");
     let second = row(&buf, 5, 78);
-    assert!(second.starts_with("  Error retry"), "{second:?}");
-    assert!(second.contains('3'), "{second:?}");
+    assert!(second.starts_with("  Show images"), "{second:?}");
+    assert!(second.contains("true"), "{second:?}");
     // The selected row's marker takes the picker family's cyan accent.
     assert_eq!(buf[(0, 4)].fg, MODEL_SELECTED_COLOR);
 }
@@ -141,13 +141,13 @@ fn the_values_line_up_in_a_column() {
     };
     assert_eq!(
         value_col(4, 'f'),
-        value_col(5, '3'),
+        value_col(5, 't'),
         "the value column is shared"
     );
     assert_eq!(
         value_col(4, 'f'),
-        // marker (2) + the widest label ("Permission mode", 15) + the gap (3).
-        2 + 15 + 3,
+        // marker (2) + the widest label ("Auto-resize images", 18) + the gap (3).
+        2 + 18 + 3,
         "sized off the widest visible label"
     );
 }
@@ -161,8 +161,8 @@ fn an_off_value_is_dimmed_and_an_on_value_is_not() {
     let at = u16::try_from(line.find("false").unwrap()).unwrap();
     assert_eq!(buf[(at, 4)].fg, SETTINGS_VALUE_OFF_COLOR, "false is dim");
     let line = row(&buf, 5, 78);
-    let at = u16::try_from(line.find('3').unwrap()).unwrap();
-    assert_eq!(buf[(at, 5)].fg, SETTINGS_VALUE_COLOR, "a live count is not");
+    let at = u16::try_from(line.find("true").unwrap()).unwrap();
+    assert_eq!(buf[(at, 5)].fg, SETTINGS_VALUE_COLOR, "a live value is not");
 }
 
 #[test]
@@ -179,7 +179,7 @@ fn the_counter_and_description_track_the_selection() {
     // description = counter + gap + 1.
     let description = row(&buf, 4 + rows + 2, 78);
     assert!(
-        description.contains(SettingKey::ErrorRetry.description()),
+        description.contains(SettingKey::ShowImages.description()),
         "{description:?}"
     );
 }
@@ -224,6 +224,7 @@ fn an_unavailable_row_is_labelled_and_dimmed() {
         checkpoints: false,
         hooks: true,
         skills: true,
+        images: true,
     });
     let buf = render(&app, 78);
     let all = SettingKey::ALL.len();

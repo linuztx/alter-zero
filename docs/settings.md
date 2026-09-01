@@ -15,12 +15,15 @@ per change.
   ❯
 
 → Hide thinking           false
+  Show images             true
+  Image width             120
+  Auto-resize images      true
   Error retry             3
   Tools                   true
   Permission mode         manual
   ...
   Max tool calls          0
-  (1/9)
+  (1/14)
 
   Hide the model's chain-of-thought…
 
@@ -31,13 +34,16 @@ per change.
 
 ## The settings
 
-Ten rows, each one a knob the running session actually reads. Every value
+Fourteen rows, each one a knob the running session actually reads. Every value
 **cycles** — there is no free-text field anywhere, so Enter and Space mean the
 same thing on every row and the menu never needs an edit mode.
 
 | Setting | Values | What it changes |
 |---|---|---|
 | **Hide thinking** | `false` / `true` | Whether the model's chain-of-thought streams in the live `● Thinking…` cell and collapses into a `Thought for …` line (`docs/thinking-stream.md`). `true` restores the counted-and-dropped behaviour. Seeded from `ALTER_ZERO_SHOW_THINKING`. |
+| **Show images** | `true` / `false` | Whether a pasted screenshot and the `read` tool's image reads are drawn as pictures in the conversation (`docs/images.md`). `false (unavailable)` when the terminal can't draw one. Cycling it purge-rebuilds, so committed pictures appear or vanish at once. |
+| **Image width** | `60` / `80` / `120` | An inline picture's width **cap**, in columns — clamped to the terminal, and never used to blow a small picture up. Cycling it purge-rebuilds like **Show images**. |
+| **Auto-resize images** | `true` / `false` | Whether a large picture is downscaled to 2000×2000 before it is **sent to the model** (`docs/images.md`). Nothing to do with the display, so the row stays available even on a terminal that can't draw. |
 | **Error retry** | `0` / `1` / `2` / `3` / `5` / `10` | How many times a failed request is retried before the error surfaces (`llm::retry`, the `retrying n/N` status). Was the fixed `MAX_RETRIES = 3`. |
 | **Tools** | `true` / `false` | Whether `bash`/`read`/`write`/`edit`/`agent` are offered to the model at all (`docs/tools.md`). Seeded from `ALTER_ZERO_TOOLS`. Off also withdraws both halves of the `<system-reminder>` — the skills listing and the agent-type listing (`docs/subagents.md`): a roster for a tool the request never carries is a dead end. |
 | **Permission mode** | `manual` / `edit` / `auto` / `master` | The same posture Shift+Tab cycles (`docs/permissions.md`) — the row is a second door onto one state, not a copy of it. |

@@ -641,11 +641,39 @@ fn chat_message(
 /// which [`chat_message`] surfaces as a text note.
 fn image_data_url(path: &Path) -> Option<String> {
     let bytes = std::fs::read(path).ok()?;
+    let mime = image_mime(path);
+    // `/settings` **Auto-resize images**: a retina screenshot is several
+    // megabytes of base64 on every turn it stays in context, so it is
+    // downscaled on the way out — the temp file itself, and so the picture
+    // drawn in the conversation, is untouched (`docs/images.md`).
+    let sent =
+        image_format(mime).and_then(|format| crate::images::downscale_for_model(&bytes, format));
+    let (payload, mime) = match &sent {
+        Some(small) => (
+            small.bytes.as_slice(),
+            match small.format {
+                image::ImageFormat::Jpeg => "image/jpeg",
+                _ => "image/png",
+            },
+        ),
+        None => (bytes.as_slice(), mime),
+    };
     Some(format!(
-        "data:{};base64,{}",
-        image_mime(path),
-        crate::clipboard::base64_encode(&bytes)
+        "data:{mime};base64,{}",
+        crate::clipboard::base64_encode(payload)
     ))
+}
+
+/// The decoder for an attachment's MIME — the inverse of [`image_mime`],
+/// `None` for anything this build cannot re-encode.
+fn image_format(mime: &str) -> Option<image::ImageFormat> {
+    match mime {
+        "image/jpeg" => Some(image::ImageFormat::Jpeg),
+        "image/png" => Some(image::ImageFormat::Png),
+        "image/gif" => Some(image::ImageFormat::Gif),
+        "image/webp" => Some(image::ImageFormat::WebP),
+        _ => None,
+    }
 }
 
 /// The MIME type for an attachment path, by extension. The clipboard paste

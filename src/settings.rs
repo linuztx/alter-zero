@@ -9,6 +9,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::images::{DEFAULT_IMAGE_WIDTH, IMAGE_WIDTH_CHOICES};
 use crate::permission::PermissionMode;
 
 /// The retry counts **Error retry** cycles through — 0 (never retry) up to a
@@ -44,6 +45,13 @@ pub const PERMISSIONS_DISABLED_LABEL: &str = "disabled";
 pub enum SettingKey {
     /// Hide the model's streamed chain-of-thought (`docs/thinking-stream.md`).
     HideThinking,
+    /// Draw pictures inline in the conversation (`docs/images.md`).
+    ShowImages,
+    /// How wide, in columns, an inline picture may be (`docs/images.md`).
+    ImageWidth,
+    /// Downscale a large image before it is **sent to the model**
+    /// (`docs/images.md`) — nothing to do with the display.
+    AutoResizeImages,
     /// How many times a failed request is retried (`llm::retry`).
     ErrorRetry,
     /// Offer `bash`/`read`/`write`/`edit`/`agent` to the model (`docs/tools.md`).
@@ -70,6 +78,9 @@ impl SettingKey {
     /// Every setting, in menu order.
     pub const ALL: &'static [Self] = &[
         Self::HideThinking,
+        Self::ShowImages,
+        Self::ImageWidth,
+        Self::AutoResizeImages,
         Self::ErrorRetry,
         Self::Tools,
         Self::PermissionMode,
@@ -87,6 +98,9 @@ impl SettingKey {
     pub const fn label(self) -> &'static str {
         match self {
             Self::HideThinking => "Hide thinking",
+            Self::ShowImages => "Show images",
+            Self::ImageWidth => "Image width",
+            Self::AutoResizeImages => "Auto-resize images",
             Self::ErrorRetry => "Error retry",
             Self::Tools => "Tools",
             Self::PermissionMode => "Permission mode",
@@ -106,6 +120,13 @@ impl SettingKey {
         match self {
             Self::HideThinking => {
                 "Hide the model's chain-of-thought instead of streaming it above the composer"
+            }
+            Self::ShowImages => {
+                "Render pasted screenshots and image reads as pictures in the terminal"
+            }
+            Self::ImageWidth => "Preferred inline image width in terminal columns",
+            Self::AutoResizeImages => {
+                "Resize large images to 2000x2000 before sending them to the model"
             }
             Self::ErrorRetry => {
                 "How many times a failed request is retried before the error is shown"
@@ -154,6 +175,11 @@ pub struct SettingAvailability {
     /// reports `false (unavailable)` rather than offering a toggle over an
     /// empty set.
     pub skills: bool,
+    /// Whether this terminal can draw a picture at all (`docs/images.md`) —
+    /// the boundary's `ImageStore`. Without one the display rows report
+    /// `false (unavailable)`; **Auto-resize images** stays available either
+    /// way, since it is about the request, not the screen.
+    pub images: bool,
 }
 
 impl Default for SettingAvailability {
@@ -163,6 +189,7 @@ impl Default for SettingAvailability {
             checkpoints: true,
             hooks: true,
             skills: true,
+            images: true,
         }
     }
 }
@@ -187,6 +214,18 @@ pub struct SessionSettings {
     /// Hide the streamed chain-of-thought (default `false` — it shows).
     #[serde(skip_serializing_if = "is_false")]
     pub hide_thinking: bool,
+    /// Draw pictures inline (default `true` — a terminal that can't draw one
+    /// reports the row unavailable anyway).
+    #[serde(skip_serializing_if = "is_true")]
+    pub show_images: bool,
+    /// An inline picture's width cap in columns (default
+    /// [`DEFAULT_IMAGE_WIDTH`]).
+    #[serde(skip_serializing_if = "is_default_image_width")]
+    pub image_width: u16,
+    /// Downscale a large image before sending it to the model (default
+    /// `true`).
+    #[serde(skip_serializing_if = "is_true")]
+    pub auto_resize_images: bool,
     /// Retries per failed request (default 3).
     #[serde(skip_serializing_if = "is_default_retry")]
     pub error_retry: u32,
@@ -227,6 +266,9 @@ impl Default for SessionSettings {
     fn default() -> Self {
         Self {
             hide_thinking: false,
+            show_images: true,
+            image_width: DEFAULT_IMAGE_WIDTH,
+            auto_resize_images: true,
             error_retry: crate::llm::retry::MAX_RETRIES,
             tools: true,
             checkpoints: true,
@@ -247,6 +289,15 @@ impl SessionSettings {
     #[must_use]
     pub const fn show_thinking(&self) -> bool {
         !self.hide_thinking
+    }
+
+    /// Whether a picture is actually drawn: the **Show images** row **and**
+    /// whether the terminal can draw one
+    /// ([`checkpoints_active`](Self::checkpoints_active)'s twin,
+    /// `docs/images.md`).
+    #[must_use]
+    pub const fn images_active(&self) -> bool {
+        self.show_images && self.availability.images
     }
 
     /// Whether per-turn checkpoints actually snapshot: the knob **and** the
@@ -295,6 +346,9 @@ impl SessionSettings {
             SettingKey::Checkpoints => self.availability.checkpoints,
             SettingKey::Hooks => self.availability.hooks,
             SettingKey::Skills => self.availability.skills,
+            // The two display rows need a terminal that can draw; the payload
+            // row does not (`docs/images.md`).
+            SettingKey::ShowImages | SettingKey::ImageWidth => self.availability.images,
             SettingKey::PermissionMode => mode.is_some(),
             _ => true,
         }
@@ -309,6 +363,9 @@ impl SessionSettings {
     pub fn value_text(&self, key: SettingKey, mode: Mode) -> String {
         let text = match key {
             SettingKey::HideThinking => bool_text(self.hide_thinking),
+            SettingKey::ShowImages => bool_text(self.images_active()),
+            SettingKey::ImageWidth => self.image_width.to_string(),
+            SettingKey::AutoResizeImages => bool_text(self.auto_resize_images),
             SettingKey::ErrorRetry => self.error_retry.to_string(),
             SettingKey::Tools => bool_text(self.tools),
             SettingKey::PermissionMode => mode.map_or_else(
@@ -340,6 +397,11 @@ impl SessionSettings {
         }
         match key {
             SettingKey::HideThinking => self.hide_thinking = !self.hide_thinking,
+            SettingKey::ShowImages => self.show_images = !self.show_images,
+            SettingKey::ImageWidth => {
+                self.image_width = next_in(IMAGE_WIDTH_CHOICES, &self.image_width);
+            }
+            SettingKey::AutoResizeImages => self.auto_resize_images = !self.auto_resize_images,
             SettingKey::ErrorRetry => self.error_retry = next_in(RETRY_CHOICES, &self.error_retry),
             SettingKey::Tools => self.tools = !self.tools,
             SettingKey::PermissionMode => return false,
@@ -370,6 +432,9 @@ impl SessionSettings {
     pub fn copy_value(&mut self, key: SettingKey, live: &Self) {
         match key {
             SettingKey::HideThinking => self.hide_thinking = live.hide_thinking,
+            SettingKey::ShowImages => self.show_images = live.show_images,
+            SettingKey::ImageWidth => self.image_width = live.image_width,
+            SettingKey::AutoResizeImages => self.auto_resize_images = live.auto_resize_images,
             SettingKey::ErrorRetry => self.error_retry = live.error_retry,
             SettingKey::Tools => self.tools = live.tools,
             SettingKey::Checkpoints => self.checkpoints = live.checkpoints,
@@ -414,6 +479,11 @@ fn is_true(v: &bool) -> bool {
 #[allow(clippy::trivially_copy_pass_by_ref)]
 fn is_default_retry(v: &u32) -> bool {
     *v == crate::llm::retry::MAX_RETRIES
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)]
+fn is_default_image_width(v: &u16) -> bool {
+    *v == DEFAULT_IMAGE_WIDTH
 }
 
 #[allow(clippy::trivially_copy_pass_by_ref)]

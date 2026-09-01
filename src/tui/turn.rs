@@ -85,6 +85,12 @@ impl Session<'_> {
             if committing {
                 self.term
                     .insert_before(ui::message_lines(Role::User, text, width));
+                // A Ctrl+V-pasted screenshot draws under its own bubble, the
+                // rows taken from the item just recorded so the commit and the
+                // rebuild agree (`docs/images.md`).
+                if let Some(item) = self.app.history.last() {
+                    self.term.insert_before(ui::image_block_lines(item, width));
+                }
                 self.term.insert_before(vec![Line::default()]);
             }
         }

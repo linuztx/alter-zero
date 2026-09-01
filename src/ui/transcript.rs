@@ -101,6 +101,10 @@ fn transcript_item_lines(item: &HistoryItem, width: u16) -> (Vec<Line<'static>>,
         // the transcript is its record.
         HistoryItem::HookNote(n) => lines.extend(hook_note_lines(n, width)),
     }
+    // The transcript draws the same pictures the inline view does — the
+    // reserved rows are ordinary lines, so the overlay's paint stamps them
+    // exactly as scrollback's does (`docs/images.md`).
+    lines.extend(super::image::image_block_lines(item, width));
     if !is_shell_header(item) {
         lines.push(Line::default());
     }

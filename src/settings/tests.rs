@@ -198,6 +198,7 @@ fn an_unavailable_checkpoint_row_shows_its_effective_value_not_the_stored_one() 
             checkpoints: false,
             hooks: true,
             skills: true,
+            images: true,
         },
         ..SessionSettings::default()
     };
@@ -217,6 +218,7 @@ fn an_unavailable_setting_says_so_and_refuses_to_cycle() {
             checkpoints: false,
             hooks: true,
             skills: true,
+            images: true,
         },
         ..SessionSettings::default()
     };
@@ -332,6 +334,7 @@ fn availability_is_never_persisted() {
             checkpoints: false,
             hooks: true,
             skills: true,
+            images: true,
         },
         ..SessionSettings::default()
     };
@@ -355,6 +358,7 @@ fn skills_are_not_offered_with_tools_off() {
             checkpoints: true,
             hooks: true,
             skills: true,
+            images: true,
         },
         ..SessionSettings::default()
     };

@@ -470,6 +470,11 @@ impl<'t> Session<'t> {
         // actually run — so an unavailable row says so from the first frame.
         *self.app.settings_mut() = settings;
         self.sync_setting_availability();
+        // Publish the image policy before the first line is built: the row
+        // reservation is pure and reads it, so a picture drawn on the very
+        // first frame (a `/resume`d conversation's image read) is already the
+        // right size (`docs/images.md`).
+        self.sync_image_policy();
         // The footer's model name + cwd, formatted here at the boundary (the
         // set_clock pattern: the pure core never reads the environment) —
         // docs/footer.md — together with the system prompts and the gauge.

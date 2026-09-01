@@ -28,6 +28,9 @@ the fix is to qualify the path if the target is still public
 
 Toolchain: Rust **edition 2024**, `ratatui = 0.30.1` (crossterm is re-exported as
 `ratatui::crossterm` — import it from there, not as a separate crate), plus
+`ratatui-image` for the inline pictures (`default-features = false`: its
+default `chafa-dyn` links a C library we don't have, and `image-defaults`
+would turn on every `image` codec — see `docs/images.md`),
 `unicode-width` for display-width math, `unicode-segmentation` for the textarea's
 grapheme-aware cursor/wrapping, and **`tokio`** (current-thread runtime) +
 `tokio-stream` for the async event loop. The `Cargo.toml` `crossterm` entry exists
@@ -39,7 +42,7 @@ build (`unsafe_code = "forbid"`, plus `warnings` and `clippy::all` denied).
 ## Architecture
 
 A **library** (`src/lib.rs` → `app`, `stream`, `ui`, `term`, `frame`, `paste`,
-`session`, `subprocess`, `history`, `textarea`, `file_search`, `clipboard`, `context`, `background`, `scratchpad`, `agents`, `subagents`, `frontmatter`, `ask`, `tasks`, `skills`, `steer`, `mcp`, `trust`, `checkpoint`, `project_doc`, `permission`, `settings`, `cli`, `links`) holds the logic; **`src/main.rs`** is a 77-line shell —
+`session`, `subprocess`, `history`, `textarea`, `file_search`, `clipboard`, `context`, `background`, `scratchpad`, `agents`, `subagents`, `frontmatter`, `ask`, `tasks`, `skills`, `steer`, `mcp`, `trust`, `checkpoint`, `project_doc`, `permission`, `settings`, `cli`, `links`, `images`) holds the logic; **`src/main.rs`** is a 77-line shell —
 the detached-exec hook, the CLI resolution, the viewport, the loop — over
 **`src/tui/`**, the binary-private tree that drives the codex-style **async
 (tokio) `select!`** loop (`event_loop`, `actions`, `turn`, `stream`, `agent`,
@@ -317,7 +320,65 @@ the box) in `docs/file-search.md`; the large-paste `[Pasted Content N chars]`
 placeholder (bracketed paste → a compact placeholder, expanded back on send) in
 `docs/paste.md`; the **Ctrl+V image paste** (clipboard image → temp PNG → an
 `[Image #N]` composer placeholder whose path rides a separate typed channel to
-the backend) in `docs/image-paste.md`; the **Esc-Esc backtrack** (edit a
+the backend) in `docs/image-paste.md`; the **inline images** (`docs/images.md`:
+a pasted screenshot and the `read` tool's image reads drawn as **real
+pictures** in the conversation — kitty / iTerm2 / sixel where the terminal
+speaks one, unicode half-blocks everywhere else, via **`ratatui-image`** —
+flush at the left margin under the cell that produced them, one blank row
+apart, in the terminal's real scrollback **and** in the Ctrl+O transcript.
+The split is the crate's usual one and is what makes it cheap: pure `ui`
+**reserves rows** (a block is `rows` ordinary `Line`s of `cols` spaces, each
+cell carrying a marker in its `underline_color` — so a picture rides every
+path a `Vec<Line>` already rides) and the boundary **draws into them**
+(`images::store::ImageStore::stamp`, run in the four paint paths —
+`write_above_chunk`, `paint_live`, `paint_reflow`, `draw_overlay` — the
+`visible_cells` rule, since a path that skips it shows blank rows in that
+view alone). The carrier shares [`links`]' 24-bit `underline_color` channel
+by **splitting** it rather than sharing it — bit 23 set means an image, and
+`LINK_ID_MAX` dropped to `0x7F_FFFF` — so a URL can never decode as a
+picture; below the flag it packs `(placement id, row index)`, and the row
+index is what lets the stamp find a block's top-left corner. Placements
+intern on `(path, cols, rows)`, which is what makes a **resize** correct: a
+narrower terminal is a different id, so the boundary re-encodes instead of
+re-placing the old size (every resize purge-rebuilds from history anyway,
+which is what re-measures the picture — and the purge drops the encoded
+protocols, since a kitty placement transmits its pixels once and one that
+outlived the `ESC[3J` would place an image the terminal may have dropped).
+The geometry is `image_budget` then `fit_cells`, both pure: the **Image
+width** cap clamped to the terminal less a two-column gutter, then a row cap
+that is that width *as a square pixel box* (`⌈max_cols × cell_w / cell_h⌉` —
+without it a 600×4000 portrait screenshot spends the whole width budget on
+its width and takes four hundred rows to match), then `ratatui_image`'s own
+`Resize::Fit` — proportional and **shrink-only**, so a 32×32 icon stays a
+handful of cells instead of being blown up blurry to fill 120 columns.
+`fit_cells` deliberately *reproduces* the encoder's arithmetic rather than
+inventing its own, because a row of disagreement is a blank gap under every
+picture; a differential test pins the two together against the real
+`Resize::Fit`. The pixel size comes from the `read` tool's own fact line
+(`images::read_image_size` — the only record that survives a `/resume`,
+since the rollout keeps the cell's text and not the file's header) or, for a
+paste, from the header the boundary read when the paste landed. Terminal
+detection **never reads stdin**: `ratatui_image`'s `Picker::from_query_stdio`
+spawns a reader thread behind a 2 s timeout and never joins it, so on a
+terminal that doesn't answer that thread eats the user's keystrokes
+(observed under tmux — a 2 s stall and then every key swallowed), which is
+invariant 1, so the cell size comes from `TIOCGWINSZ` and the protocol from
+the environment, falling to half-blocks;
+`ALTER_ZERO_IMAGE_PROTOCOL`/`ALTER_ZERO_IMAGE_CELL_SIZE` override both and
+`ALTER_ZERO_IMAGES` gates it. The encoded pictures are bounded in **bytes**
+(a kitty placement is the whole picture as base64 RGBA), estimated from the
+placement's own geometry, since this process idles in a terminal all day
+(`docs/memory.md`). Three `/settings` rows: **Show images** and **Image
+width** (60/80/120, a *cap*) republish the policy and purge-rebuild so
+committed pictures change at once, while **Auto-resize images** is a
+different kind of thing entirely — the *payload*, not the screen: a
+12-megapixel photo is megabytes of base64 a provider refuses or bills in
+full and a model reads no better than the same picture at 2000 pixels, so
+the two paths that upload pixels downscale first (a JPEG stays a JPEG, since
+a photo as PNG *grows*), leaving the file — and so the picture on screen —
+untouched, which is why an auto-resized read's fact line leads with the
+file's own dimensions and names the sent ones after; `smoke.sh` Phase 107);
+the **Esc-Esc backtrack** (edit a
 previous user message: prime → transcript preview → rewind + prefill) in
 `docs/backtrack.md`; the **`/resume` session picker** (every conversation
 recorded to a rollout JSONL file, listed in a full-screen picker whose Enter
@@ -1244,7 +1305,9 @@ the **`/settings` menu** (`docs/settings.md`: the knobs that were only ever
 a hard-coded `agent::MAX_TOOL_ITERATIONS`, and an always-on auto-compaction —
 made *visible and changeable mid-session*
 in the `/model` picker's inline frame, the third composer-replacing picker:
-eleven rows (**Hide thinking**, **Error retry**, **Tools**, **Permission
+fourteen rows (**Hide thinking**, **Show images**, **Image width**,
+**Auto-resize images** — the three from `docs/images.md` — **Error retry**,
+**Tools**, **Permission
 mode**, **Checkpoints**, **Auto compact**, **Project docs**, **Hooks**,
 **Skills**, **Temperature**,
 **Max tool calls** — whose `0` default means *no limit*, since a cap that
@@ -2146,7 +2209,15 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   screen), and missing any one leaves the bug alive in that view alone. Printing
   a shadow spends a third column on a two-column glyph, shifting the rest of the
   row: the emoji that tore a table's right border off the grid
-  (`docs/table-streaming.md` *Wide glyphs*, `smoke.sh` Phase 41).
+  (`docs/table-streaming.md` *Wide glyphs*, `smoke.sh` Phase 41). The same
+  emitter owes the **graphics protocols** two more rules (`docs/images.md`): a
+  `CellDiffOption::Skip` cell is never written (the escape already painted
+  those columns, and a space over them punches a hole in the picture), and the
+  shadow count comes from `Cell::cell_width()`, never
+  `cell.symbol().cell_width()` — an image cell's symbol is hundreds of bytes of
+  escape and exactly one column on screen, and only the `Cell` impl honours the
+  `ForcedWidth` that says so. `Buffer::diff` honours both itself, so the diff
+  paths came for free; `visible_cells` is the one that had to learn them.
 - **The input line is a `textarea::TextArea`, not a `String`.** Route all editing
   through it (`insert_char`/`delete_backward`/`move_*`/`take`/…), never raw string
   `push`/`pop`; read it with `.text()`. Its cursor is a byte offset on a grapheme
@@ -2162,6 +2233,13 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   expresses — is the wrong change. Anything a hook must **block** on runs on
   the backend's own thread and **must poll the turn's `CancelToken`** on the
   20 ms cadence, or Esc silently stops working for as long as the hook takes.
+- **A picture is reserved in `ui` and drawn at the boundary** (`docs/images.md`).
+  Pure line builders never open an image file: they call `images::place` and
+  emit marked blank rows, and `ImageStore::stamp` turns them into a picture in
+  the four paint paths. A change that opens a file from `ui`, or that draws in
+  three of those four places, is the wrong change — and `fit_cells` must keep
+  agreeing with `ratatui_image`'s own `Resize::Fit` to the cell, which its
+  differential test is there to keep true.
 - **Swapping in a real AI** means implementing `stream::ReplySource` (use `DummyAi`
   as a template) and changing the single `let backend = …;` line in
   `tui::event_loop::run`. `spawn(prompt, images, tx, cancel)` hands you the text prompt

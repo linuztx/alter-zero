@@ -692,6 +692,20 @@ impl App {
         self.history_generation
     }
 
+    /// Bump [`history_generation`](Self::history_generation) without touching
+    /// history: what a change to the way history is *rendered* needs.
+    ///
+    /// The Ctrl+O transcript's cache freezes a prefix of rendered rows pinned
+    /// on `(generation, width, cwd)`, which is exactly right for a history
+    /// that only grows — but a `/settings` row can change what those rows
+    /// **are** without changing what is in them. Turning **Show images** off
+    /// is the case that needs it: the inline view purge-rebuilds and drops
+    /// the pictures, while a warm transcript cache would keep serving the
+    /// rows that still reserve them (`docs/images.md`).
+    pub const fn invalidate_rendered_history(&mut self) {
+        self.history_generation += 1;
+    }
+
     /// Inject the wall-clock used to stamp recorded items (called once at the I/O
     /// boundary in `main.rs`). Each recorded message/tool then stores `clock()`'s
     /// value, which is shown **only** in the Ctrl+O transcript.

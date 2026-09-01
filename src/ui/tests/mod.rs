@@ -21,6 +21,7 @@ mod context_view;
 mod footer;
 mod header;
 mod hooks_view;
+mod image;
 mod inline;
 mod inline_diff;
 mod layout;

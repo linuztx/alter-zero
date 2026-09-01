@@ -1,0 +1,255 @@
+# Inline images
+
+A pasted screenshot and the `read` tool's image reads are drawn as **real
+pictures** in the conversation — in the terminal's own scrollback, in the
+live region, and in the Ctrl+O transcript — instead of only being described by
+a fact line. Where the terminal speaks a graphics protocol (kitty, iTerm2,
+sixel) those are real pixels; everywhere else they are unicode half-blocks,
+which are ordinary coloured cells and therefore work in every terminal,
+scrollback and resize included.
+
+```
+● Read(/home/me/shots/cat.png)
+  ⎿  Read image (JPEG, 700x689, 63 KB)
+
+<the picture, flush at the left margin>
+
+● Downloaded ✅ — a kitten asleep on a MacBook charger.
+```
+
+One blank row above it, one below, and the block starts at **column 0** — it
+is deliberately *not* indented into the cell's `⎿` gutter, because a picture
+should get the whole width the terminal has.
+
+## The shape of it
+
+Three layers, split the way the crate always splits them
+(`src/images/`):
+
+| module | what it is |
+| --- | --- |
+| `images::geometry` | pure. The cell footprint a picture takes, and the per-cell carrier that marks the rows reserved for it. |
+| `images::registry` | the process-global render policy (`/settings` plus what the terminal turned out to support) and the placement interner. |
+| `images::payload` | the other boundary: downscaling a picture before it is **uploaded**. |
+| `images::store` | the paint boundary: the terminal capability, the encoded pictures, and the pass that turns a reserved block into one. |
+
+The split is what makes the feature cheap to wire in. `ui` **reserves rows**;
+the boundary **draws into them**. A reserved block is `rows` ordinary
+`Line`s of `cols` spaces, each cell carrying a marker in its
+`underline_color` — so a picture travels through every path the crate already
+has (a scrollback commit is a `Vec<Line>` and always has been), and the
+boundary's `ImageStore::stamp` turns the markers into a picture in the one
+place every paint goes through.
+
+### The carrier
+
+`links` already used `Style::underline_color` as a per-cell carrier — the one
+channel that survives `Span` → `Cell` → every paint path. Images ride the same
+24-bit space, split rather than shared: **bit 23 set** means an image marker
+(`images::geometry::IMAGE_CARRIER_FLAG`), and `links::LINK_ID_MAX` was lowered
+to `0x7F_FFFF` accordingly, so a URL can never decode as a picture or the
+reverse. Below the flag a marker packs `(placement id, row index)` — 15 bits
+and 8 — and the row index is what lets the stamp find a block's top-left
+corner without scanning for it.
+
+`term::draw_cells` strips a link carrier before the cells go out; the image
+stamp clears its own markers for the same reason — a carrier must never paint
+as a real underline colour.
+
+### The placement interner
+
+`images::place(path, px, avail_cols)` interns `(path, cols, rows)` to a small
+id, because an id is all that fits in a cell. Interning on the **size** as
+well as the path is what makes a resize correct: a narrower terminal produces a
+different placement id, so the boundary encodes a fresh picture instead of
+re-placing the old one at the wrong size.
+
+### Where the pixel size comes from
+
+The row reservation is pure, so it can't open the file. Two sources, and only
+two:
+
+* An **image read** — the `read` tool's own fact line already carries it
+  (`Read image (JPEG, 700x689, 63 KB)`), so `images::read_image_size` parses
+  it back out. That is also the only record that survives a `/resume`: the
+  rollout keeps the cell's text, not the file's header.
+* A **Ctrl+V paste** — no such line, so the boundary reads the header once
+  when the paste lands (`images::remember_size`, from `tui::workers`). A path
+  with no entry simply isn't drawn, which is the right answer for a resumed
+  session whose per-session temp file is long gone.
+
+## The geometry
+
+`images::image_budget` then `images::fit_cells`, both pure:
+
+```
+usable    = terminal width − IMAGE_GUTTER_COLS (2)
+max_cols  = min(/settings Image width, usable)
+max_rows  = ceil(max_cols × cell_w / cell_h)        ← the square pixel box
+(cols, rows) = Fit(image px) into (max_cols, max_rows)
+```
+
+Two things are worth spelling out.
+
+**The row cap is the width cap as a square pixel box.** `max_cols` columns is
+`max_cols × cell_w` pixels across; the same count of pixels *down* is
+`max_rows` rows. Without it a 600×4000 portrait screenshot spends the whole
+width budget on its width and then takes four hundred rows to match. With it,
+a tall image is bounded by its height and comes out narrow — which is the
+reference harness's fix for exactly this bug.
+
+**`Image width` is a cap, not a target.** The fit is `ratatui_image`'s
+`Resize::Fit`: proportional, and **shrink-only**. A 32×32 icon stays a
+handful of cells rather than being blown up to fill 120 columns, where the
+terminal's resampling would just make it blurry.
+
+`fit_cells` deliberately reproduces `ratatui_image`'s own arithmetic rather
+than inventing its own, because the reservation and the encoder must agree to
+the cell — a row of disagreement is a blank gap under every picture.
+`images::tests::fit_cells_reproduces_the_encoders_own_arithmetic` is a
+differential test against the real `Resize::Fit` over a matrix of fonts,
+image sizes and budgets.
+
+## Detecting the terminal
+
+`ImageStore::detect` runs once in `InlineViewport::init` and **never reads
+stdin**.
+
+`ratatui_image` ships a `Picker::from_query_stdio` that asks the terminal
+directly, and it is the more accurate answer — but it cannot be used here. It
+spawns a reader thread on stdin behind a two-second timeout and *never joins
+it*, so on a terminal that does not answer, that thread outlives the query and
+eats the user's keystrokes. Observed under tmux while building this: a
+two-second startup stall, and then every key swallowed. That is CLAUDE.md
+invariant 1 — one stdin reader — and it is not negotiable.
+
+So, like the reference harness:
+
+* **cell size** from the tty's own `ws_xpixel`/`ws_ypixel` (`TIOCGWINSZ` via
+  `rustix`), which is an ioctl and not a round trip. Zeroes mean "unknown" and
+  fall back to a 1:2 cell — only the *ratio* matters, since it is what decides
+  a picture's row count;
+* **protocol** from `ratatui_image`'s own env sniff (the iTerm2 family, plus a
+  multiplexer's outer terminal) plus kitty/ghostty, which announce themselves
+  in `TERM` / `TERM_PROGRAM` / `KITTY_WINDOW_ID` — and *not* under a
+  multiplexer, where exactly that answer goes stale;
+* anything undetected falls to **half-blocks**.
+
+`ALTER_ZERO_IMAGE_PROTOCOL` (`kitty` / `iterm2` / `sixel` / `halfblocks`) and
+`ALTER_ZERO_IMAGE_CELL_SIZE` (`9x18`) override both;
+`ALTER_ZERO_IMAGES=0` turns the whole feature off.
+
+## Painting
+
+`ImageStore::stamp(buf)` runs in **four** places, and missing one leaves the
+bug alive in that view alone (the `visible_cells` rule):
+
+| path | what it draws |
+| --- | --- |
+| `write_above_chunk` | a scrollback commit — a picture is written into the terminal's real scrollback once, and scrolls with the text from then on |
+| `paint_live` | the live region |
+| `paint_reflow` | the live region of a purge rebuild (its tail goes through `write_above`) |
+| `draw_overlay` | the Ctrl+O / Ctrl+D alternate screen — stamped *before* the diff, so an unchanged page stays silent (`docs/overlay-repaint.md`) |
+
+`ratatui_image` renders by stashing the whole graphics escape into a `Cell`'s
+symbol and marking the covered cells `CellDiffOption::Skip` (half-blocks are
+ordinary cells and need none of that). `Buffer::diff` honours both flags
+itself, so the diff paths came for free — but `term::visible_cells`, the
+direct-emit path, had to learn them:
+
+* a `Skip` cell is **never written**: the escape already painted those
+  columns, and a space over them punches a hole in the picture;
+* the shadow count comes from `Cell::cell_width()`, never
+  `cell.symbol().cell_width()` — an image cell's symbol is hundreds of bytes
+  of escape and exactly one column on screen, and only the `Cell` impl honours
+  the `ForcedWidth` that says so.
+
+A block whose **head row** is scrolled off the top of the buffer — the Ctrl+O
+transcript showing the bottom half of a picture — is left blank: no protocol
+here can start a picture partway down.
+
+### Resize
+
+Every resize purge-rebuilds the conversation from history (invariant 3), which
+re-runs `images::place` at the new width and so re-encodes every picture to
+fit. The purge also drops the encoded pictures
+(`ImageStore::invalidate`, from `clear_scrollback_and_screen`): a kitty
+placement transmits its pixels once per encoded protocol, so one that outlived
+the `ESC[3J` would place an image the terminal may already have dropped.
+
+### Memory
+
+A kitty placement holds the whole picture as base64 RGBA — a 120-column
+screenshot at a 10×20 cell is 1200×600 pixels, ~2.9 MB of pixels and ~3.8 MB
+of base64 — and this process idles in the user's terminal all day
+(`docs/memory.md`). So the store is bounded by **bytes**, estimated from the
+placement's own geometry rather than by counting entries: past
+`CACHE_MAX_BYTES` (24 MB) the least-recently-drawn picture is dropped. Meeting
+it again costs one re-encode, never a wrong picture.
+
+## The `/settings` rows
+
+| row | default | what it does |
+| --- | --- | --- |
+| **Show images** | `true` | draw pictures inline at all. Unavailable — `false (unavailable)` — when the terminal can't draw one. |
+| **Image width** | `120` | the width **cap** in columns; cycles 60 / 80 / 120. |
+| **Auto-resize images** | `true` | downscale a large picture before it is **sent to the model**. Nothing to do with the display, so it stays available either way. |
+
+Cycling either display row republishes the policy, drops the encoded pictures
+and purge-rebuilds the conversation, so committed pictures change size (or
+disappear) at once — the `/mascot` switch's rule. They persist in
+`settings.json` as a diff from the defaults like every other knob
+(`docs/settings.md`).
+
+**Auto-resize images** is the payload row, and it is deliberately a different
+kind of thing: a 12-megapixel phone photo is megabytes of base64 that a
+provider either refuses outright or bills in full, and a model reads it no
+better than the same picture at 2000 pixels. So the two paths that upload
+pixels — the `read` tool's image branch and a Ctrl+V attachment — run their
+bytes through `images::payload` first. A JPEG stays a JPEG (a photo re-encoded
+as PNG *grows*); everything else becomes PNG. The **file** is untouched, which
+is why the picture on screen is unaffected, and why an auto-resized read's
+fact line leads with the file's own dimensions and names the sent ones after:
+
+```
+Read image (PNG, 4000x3000, 4.6 MB; sent resized to 2000x1500, 1.1 MB)
+```
+
+That order is load-bearing twice: the model needs the original dimensions to
+map a coordinate it reads off the picture back to the file, and
+`images::read_image_size` takes the **first** `WxH` as the size of the picture
+it is about to draw from disk — which is the original.
+
+With the row off, an oversized image is refused as before (the error now
+points at the setting). The downscale also declines outright past 50
+megapixels or 64 MB of source bytes: decoding is `4 × width × height` bytes
+resident, and shrinking a 12000×12000 scan would cost 576 MB to discover it
+was a bad idea.
+
+## Known limits
+
+* A picture whose **top row** is scrolled out of the buffer isn't drawn (the
+  Ctrl+O transcript, mid-scroll). `ratatui_image::sliced` could clip one, at
+  the cost of a second protocol object per placement.
+* Under **tmux/screen** the protocol guess is deliberately conservative:
+  half-blocks unless the outer terminal is a known iTerm2-family one.
+  `ALTER_ZERO_IMAGE_PROTOCOL` overrides it for a passthrough-enabled setup.
+* Sixel and iTerm2 cannot clip, so a block the region cuts short simply isn't
+  drawn there (kitty and half-blocks honour `allow_clipping`).
+* The live **streaming preview** doesn't draw a picture: a `read` has no image
+  until it resolves, and the committed cell is one frame away.
+
+## Driving it by hand
+
+`cargo run --example make_test_image -- shot.png 640 400` writes a gradient
+with a white diagonal — a wrong aspect ratio or a clipped row is obvious at a
+glance. Then ask a vision model to `read` it, or force a protocol:
+
+```
+ALTER_ZERO_IMAGE_PROTOCOL=halfblocks ALTER_ZERO_IMAGE_CELL_SIZE=5x10 cargo run
+```
+
+`smoke.sh` Phase 107 does exactly that against a handcrafted rollout carrying
+an image `read` of a real PNG: it asserts the picture's row count, that it
+starts at column 0, the blank row under the cell, that Ctrl+O draws the same
+picture, and that `/settings` **Show images** off purge-rebuilds without it.

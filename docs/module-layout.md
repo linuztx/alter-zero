@@ -75,6 +75,7 @@ widened for the split.
 | `tool.rs` | Tool cells: the `● name(args)` header, the `⎿` output block, a running command's live tail. |
 | `file_cell.rs` | The `read`/`write`/`edit` numbered-diff cell. |
 | `inline_diff.rs` | Character-level refinement of a diff cell's `-`/`+` pairs — which bytes of a line actually changed (`docs/inline-diff.md`). |
+| `image.rs` | The rows a picture reserves under a cell — the pure half of the inline images (`docs/images.md`). |
 | `status.rs` | The status line (spinner, shimmer, tally) and the `Done for Ns` summary. |
 | `agent.rs` | Subagent trees, cells, and the footer roster. |
 | `menu.rs` | The palette / `@` picker / `?` shortcuts bands. |

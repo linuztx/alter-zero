@@ -186,7 +186,13 @@ fn unbalanced(s: &str, open: char, close: char) -> bool {
 /// Ids are 24-bit (they ride an RGB triple) and 1-based: id `0` — plain black
 /// — is reserved as "not a link", so a real `Rgb(0, 0, 0)` underline could
 /// never be mistaken for one.
-const LINK_ID_MAX: u32 = 0xFF_FFFF;
+///
+/// The **top bit is not ours**: the same channel carries the inline-image
+/// blocks' per-cell marker ([`crate::images::geometry::IMAGE_CARRIER_FLAG`]),
+/// so the space is split rather than shared and a picture can never decode as
+/// a URL. Ids run to `0x7F_FFFF` — eight million distinct URLs in one session,
+/// which no conversation reaches.
+const LINK_ID_MAX: u32 = 0x7F_FFFF;
 
 /// The process-global URL interner (append-only; render cache, not app
 /// state). `ids` and `urls` grow in lockstep: `urls[id - 1]` is the URL
@@ -251,16 +257,20 @@ pub fn linked(style: Style, url: &str) -> Style {
 }
 
 /// Decode a cell's underline colour back to the link id it carries — the
-/// pure inverse of [`linked`]'s stamp. Only a non-zero RGB triple decodes;
-/// every other colour kind (and `Rgb(0, 0, 0)`, the reserved id) is an
-/// ordinary colour, not ours.
+/// pure inverse of [`linked`]'s stamp. Only a non-zero RGB triple **below the
+/// image flag** decodes; every other colour kind (and `Rgb(0, 0, 0)`, the
+/// reserved id) is an ordinary colour, not ours — as is anything with
+/// [`IMAGE_CARRIER_FLAG`] set, which is an image block's marker
+/// (`docs/images.md`).
+///
+/// [`IMAGE_CARRIER_FLAG`]: crate::images::geometry::IMAGE_CARRIER_FLAG
 #[must_use]
 pub fn carrier_id(underline_color: Color) -> Option<u32> {
     let Color::Rgb(r, g, b) = underline_color else {
         return None;
     };
     let id = u32::from(r) << 16 | u32::from(g) << 8 | u32::from(b);
-    (id != 0).then_some(id)
+    (id != 0 && id <= LINK_ID_MAX).then_some(id)
 }
 
 /// The link target a marked `style` carries (test/inspection convenience:
@@ -496,6 +506,15 @@ mod tests {
         assert_eq!(carrier_id(Color::Cyan), None);
         assert_eq!(carrier_id(Color::Rgb(0, 0, 3)), Some(3));
         assert_eq!(carrier_id(Color::Rgb(1, 2, 3)), Some(0x01_02_03));
+        // The top bit belongs to the inline-image blocks (`docs/images.md`),
+        // so a picture's marker must never decode as a URL here.
+        assert_eq!(carrier_id(Color::Rgb(0x80, 0x01, 0x00)), None);
+        assert_eq!(carrier_id(Color::Rgb(0xFF, 0xFF, 0xFF)), None);
+        assert_eq!(
+            carrier_id(Color::Rgb(0x7F, 0xFF, 0xFF)),
+            Some(LINK_ID_MAX),
+            "and the last id below the flag still does"
+        );
     }
 
     #[test]

@@ -1200,6 +1200,34 @@ pub fn format_read_image(format: &str, width: u32, height: u32, bytes: usize) ->
     )
 }
 
+/// [`format_read_image`] for a read that `/settings` **Auto-resize images**
+/// shrank before uploading (`docs/images.md`): the **file's own** facts
+/// first, then what was actually sent.
+///
+/// That order is load-bearing twice over. The model needs the original
+/// dimensions to map a coordinate it reads off the picture back to the file,
+/// and the renderer takes the first `WxH` on the line as the size of the
+/// picture it is about to draw from disk
+/// ([`crate::images::read_image_size`]) — which is the original, since the
+/// downscale never touched the file.
+#[must_use]
+pub fn format_read_image_resized(
+    format: &str,
+    width: u32,
+    height: u32,
+    bytes: usize,
+    sent: (u32, u32),
+    sent_bytes: usize,
+) -> String {
+    format!(
+        "{READ_IMAGE_HEAD}({format}, {width}x{height}, {size}; sent resized to {sw}x{sh}, {ssize})",
+        size = human_size(bytes),
+        sw = sent.0,
+        sh = sent.1,
+        ssize = human_size(sent_bytes),
+    )
+}
+
 /// Was this `read` output an image read ([`format_read_image`])? The context
 /// replay uses it to reconstruct the follow-up attachment message.
 #[must_use]

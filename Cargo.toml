@@ -108,7 +108,7 @@ regex = "1"
 # binary is absent — macOS, minimal images). This crate forbids `unsafe` (no
 # libc/pre_exec), and rustix is already in the tree via crossterm — `process`
 # just enables its setsid wrapper.
-rustix = { version = "1", features = ["process"] }
+rustix = { version = "1", features = ["process", "termios"] }
 # Real token counting for the status-line tally (`tokenizer` module): the
 # o200k_base split pattern's `(?i:…)` groups and `(?!\S)` lookahead need a
 # backtracking engine — the same one `tiktoken-rs` uses for it. The vocabulary
@@ -135,6 +135,19 @@ fancy-regex = "0.17"
 # incrementally so streaming stays prefix-stable (CLAUDE.md invariant 2).
 two-face = { version = "0.5", default-features = false, features = ["syntect-default-onig"] }
 syntect = { version = "5", default-features = false, features = ["default-onig"] }
+
+# Terminal graphics for the inline image cells (docs/images.md): a pasted
+# screenshot and the `read` tool's image reads render as real pixels where the
+# terminal can (kitty / iTerm2 / sixel), and as unicode half-blocks everywhere
+# else. `default-features = false` drops two things we must not take: the
+# `chafa-dyn` feature (a build-time `pkg-config` link against the chafa C
+# library — this crate's only other C dependency is syntect's oniguruma, and
+# chafa is not installed on a typical box) and `image-defaults` (which would
+# turn on every `image` codec; ours are declared above). The `crossterm`
+# feature only forwards to `ratatui/crossterm`, which ratatui already enables
+# here. Pinned to the 11.x line: it depends on `ratatui ^0.30.1`, the exact
+# version this crate uses, so the `Buffer`/`Cell` types are the same ones.
+ratatui-image = { version = "11.0.6", default-features = false }
 
 [dev-dependencies]
 # The REFERENCE tokenizer for `tokenizer`'s differential tests (tests only):

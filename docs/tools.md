@@ -260,6 +260,10 @@ live in **`docs/tty-detach.md`**.
 
 ## Image reads (`read` on a png/jpg/jpeg/gif/webp)
 
+The cell additionally **draws** the picture below itself, and
+`/settings` **Auto-resize images** decides whether an oversized one is
+downscaled before it is uploaded — both in `docs/images.md`.
+
 `read` is not text-only: a path with an image extension comes back **visually**,
 Claude-Code style, so the model can look at screenshots, downloaded pictures, or
 plots it just generated.

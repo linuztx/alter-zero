@@ -52,7 +52,7 @@ use std::io::{self, Stdout, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use ratatui::backend::{Backend, ClearType, CrosstermBackend};
-use ratatui::buffer::{Buffer, Cell, CellWidth};
+use ratatui::buffer::{Buffer, Cell, CellDiffOption, CellWidth};
 use ratatui::crossterm::cursor::{Hide, Show};
 use ratatui::crossterm::event::{
     DisableBracketedPaste, EnableBracketedPaste, KeyboardEnhancementFlags,
@@ -70,6 +70,7 @@ use ratatui::text::Line;
 use ratatui::widgets::{Paragraph, Widget};
 
 use crate::app::App;
+use crate::images::{self, ImageStore};
 use crate::links;
 use crate::ui;
 
@@ -169,6 +170,16 @@ pub struct InlineViewport {
     ///
     /// [`init`]: InlineViewport::init
     hyperlinks: bool,
+    /// The terminal's graphics capability and the pictures encoded for it
+    /// (`docs/images.md`). Built once in [`init`] — from the environment and
+    /// `TIOCGWINSZ`, deliberately **never** from a stdin round trip
+    /// (invariant 1; `ImageStore::detect` explains what that cost). Every
+    /// paint path stamps the reserved blocks through it just before the cells
+    /// go out, which is the [`visible_cells`] rule: a path that skips the
+    /// stamp shows blank rows in that view alone.
+    ///
+    /// [`init`]: InlineViewport::init
+    images: ImageStore,
 }
 
 impl InlineViewport {
@@ -241,6 +252,17 @@ impl InlineViewport {
         let top = cursor.y.saturating_sub(scrolled);
 
         let view = Rect::new(0, top, size.width, height);
+        // What graphics this terminal speaks and how big a cell is. No stdin
+        // round trip and no query escape: the environment plus `TIOCGWINSZ`,
+        // because `ratatui_image`'s own stdio probe leaks a reader thread that
+        // eats keystrokes on a terminal that never answers (invariant 1 —
+        // `ImageStore::detect`). Anything undetected degrades to unicode
+        // half-blocks, which are ordinary cells and need no protocol at all.
+        let images = if images::images_disabled(std::env::var(images::IMAGES_ENV).ok().as_deref()) {
+            ImageStore::disabled()
+        } else {
+            ImageStore::detect()
+        };
         backend.hide_cursor()?;
         Ok(Self {
             backend,
@@ -255,7 +277,28 @@ impl InlineViewport {
             hyperlinks: !links::hyperlinks_disabled(
                 std::env::var(links::HYPERLINKS_ENV).ok().as_deref(),
             ),
+            images,
         })
+    }
+
+    /// What this terminal can do about pictures: whether one can be drawn at
+    /// all, its cell size in pixels, and the protocol's name — the three
+    /// facts the loop pushes into [`crate::images::set_policy`] at bootstrap
+    /// (the `set_clock` pattern). See `docs/images.md`.
+    #[must_use]
+    pub fn image_capability(&self) -> (bool, Option<images::FontSize>, Option<&'static str>) {
+        (
+            self.images.is_available(),
+            self.images.font_size(),
+            self.images.protocol_name(),
+        )
+    }
+
+    /// Drop every encoded picture, so the next paint re-encodes from the file.
+    /// The loop calls this when `/settings` changes the image geometry; the
+    /// scrollback purge (`clear_scrollback_and_screen`) does it for itself.
+    pub fn invalidate_images(&mut self) {
+        self.images.invalidate();
     }
 
     /// The full terminal area, `(0, 0, width, height)` — not the live region,
@@ -422,6 +465,7 @@ impl InlineViewport {
         self.view = Rect::new(0, repin.top, self.screen.width, height);
         let mut buf = Buffer::empty(self.view);
         render(self.view, &mut buf);
+        self.images.stamp(&mut buf);
         self.paint_frame(&buf, &repin, height, app)?;
         Ok(buf)
     }
@@ -545,6 +589,11 @@ impl InlineViewport {
         let area = Rect::new(0, 0, self.screen.width, height);
         let mut buffer = Buffer::empty(area);
         Paragraph::new(lines).render(area, &mut buffer);
+        // Turn the reserved blocks into pictures *before* the rows are
+        // addressed: a committed image is written into the terminal's real
+        // scrollback exactly once, and scrolls with the text from then on
+        // (`docs/images.md`).
+        self.images.stamp(&mut buffer);
         let mut cells = buffer.content.as_slice();
 
         // i32 so the running sums never underflow/overflow a u16.
@@ -614,6 +663,13 @@ impl InlineViewport {
     fn clear_scrollback_and_screen(&mut self) -> io::Result<()> {
         write!(self.backend, "\x1b[r\x1b[0m\x1b[H\x1b[2J\x1b[3J\x1b[H")?;
         self.prev = None;
+        // The purge takes the pictures with it: a kitty placement transmits
+        // its pixels once per encoded protocol, so one that outlived the
+        // purge would place an image the terminal may already have dropped.
+        // Re-encoding is the price of a rebuild that is actually correct —
+        // and the rebuild is re-measuring every picture for the new width
+        // anyway (`docs/images.md`).
+        self.images.invalidate();
         Ok(())
     }
 
@@ -739,6 +795,7 @@ impl InlineViewport {
         };
         let mut buf = Buffer::empty(self.view);
         render(self.view, &mut buf);
+        self.images.stamp(&mut buf);
         self.paint_frame(&buf, &repin, height, app)?;
         Ok(buf)
     }
@@ -828,6 +885,9 @@ impl InlineViewport {
         }
         let mut buf = Buffer::empty(self.screen);
         render(self.screen, &mut buf);
+        // Stamp before the diff, so the baseline describes the picture too and
+        // a still page stays silent (`docs/images.md`, `docs/overlay-repaint.md`).
+        self.images.stamp(&mut buf);
         let paint = overlay_paint(self.overlay_prev.as_ref(), &buf);
         // Nothing moved: emit NOTHING. Not a cell, not a synchronized-update
         // bracket, not a cursor move — the whole point is that a terminal
@@ -1183,8 +1243,20 @@ fn visible_cells(
                 return None;
             }
             let cell = &cells[i];
+            // A cell the graphics protocol covers must never be written: the
+            // escape already painted those columns, and a space over them
+            // punches a hole in the picture (`docs/images.md`). `Buffer::diff`
+            // honours this itself, so only the direct-emit paths need it.
+            if matches!(cell.diff_option, CellDiffOption::Skip) {
+                i += 1;
+                continue;
+            }
             let col = i % width;
-            let shadow = (cell.symbol().cell_width() as usize)
+            // `Cell::cell_width`, never `cell.symbol().cell_width()`: an image
+            // cell's symbol is the whole escape sequence, hundreds of bytes
+            // wide as text and exactly one column on screen, and only the
+            // `Cell` impl honours the `ForcedWidth` that says so.
+            let shadow = (cell.cell_width() as usize)
                 .saturating_sub(1)
                 .min(width - 1 - col);
             if shadow > 0 && cell.symbol().contains('\u{FE0F}') {

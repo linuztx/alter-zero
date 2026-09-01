@@ -206,7 +206,7 @@ impl Session<'_> {
                 // Esc/Ctrl+C dismissed the menu: nothing to reap; the region
                 // collapses back to the composer on the next draw.
             }
-            Action::SettingChanged(key) => self.apply_setting(key),
+            Action::SettingChanged(key) => self.apply_setting(key)?,
             Action::OpenMascotPicker => {
                 // The pure open already happened (the catalog is a const —
                 // nothing to fetch or inject); after_key schedules the frame.

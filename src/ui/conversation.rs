@@ -70,6 +70,11 @@ pub fn conversation_lines(history: &[HistoryItem], width: u16) -> Vec<Line<'stat
             // the chain-of-thought expands in Ctrl+O (docs/thinking-stream.md).
             HistoryItem::Reasoning(r) => lines.extend(reasoning_lines(r, width)),
         }
+        // A picture the item carries — an image `read`'s result, a message's
+        // Ctrl+V attachments — hangs below the cell, one blank row apart and
+        // flush at the left margin (`docs/images.md`). Empty for everything
+        // else, and for every session where images are off.
+        lines.extend(super::image::image_block_lines(item, width));
         // Blank spacer after every item — except a shell command's header:
         // its cell stays flush ([`is_shell_header`]).
         if !is_shell_header(item) {

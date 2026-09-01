@@ -31,6 +31,10 @@
 //! - [`frontmatter`] — the `---` YAML frontmatter parse a `SKILL.md` and an
 //!   agent definition share: the block split, its scalars, the listing trim
 //!   (pure; see `docs/skills.md`, `docs/subagents.md`).
+//! - [`images`]      — inline terminal images: the cell footprint a picture
+//!   takes, the per-cell carrier that reserves its rows, and the boundary
+//!   store that encodes it for whatever the terminal can draw
+//!   (see `docs/images.md`).
 //! - [`highlight`]   — grammar-accurate syntax highlighting for code blocks:
 //!   syntect + two_face (~250 TextMate grammars, Catppuccin Mocha theme — codex
 //!   parity), driven incrementally per line so it stays prefix-stable.
@@ -122,6 +126,7 @@ pub mod frontmatter;
 pub mod highlight;
 pub mod history;
 pub mod hooks;
+pub mod images;
 pub mod links;
 pub mod llm;
 pub mod markdown;

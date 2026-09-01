@@ -100,7 +100,7 @@ fn up_and_down_move_the_selection_wrapping_at_the_ends() {
     app.on_key(key(KeyCode::Down));
     assert_eq!(
         app.highlighted_setting().map(|r| r.key),
-        Some(SettingKey::ErrorRetry)
+        Some(SettingKey::ShowImages)
     );
     app.on_key(key(KeyCode::End));
     assert_eq!(
@@ -166,6 +166,7 @@ fn cycling_an_unavailable_setting_explains_itself_instead() {
         checkpoints: false,
         hooks: true,
         skills: true,
+        images: true,
     });
     type_query(&mut app, "checkpoint");
     let row = app.highlighted_setting().unwrap();
