@@ -1237,6 +1237,79 @@ fn empty_key_enter_is_a_noop() {
     assert!(app.key_onboarding.is_some(), "still waiting for a key");
 }
 
+// --- a host-configured provider's field (docs/ollama.md) ---
+
+#[test]
+fn enter_on_an_empty_host_field_saves_the_default_host() {
+    // A local Ollama needs no secret: the field asks where the server is,
+    // and Enter with nothing typed takes the default — which is what makes
+    // the provider "configured" from then on.
+    let mut app = host_app();
+    assert!(
+        app.key_onboarding
+            .as_ref()
+            .unwrap()
+            .chosen_provider()
+            .unwrap()
+            .key_kind
+            .is_host()
+    );
+    let action = app.on_key(key(KeyCode::Enter));
+    assert_eq!(
+        action,
+        Action::SaveApiKey {
+            provider: "ollama".into(),
+            env_var: "OLLAMA_HOST".into(),
+            key: "http://127.0.0.1:11434".into(),
+        }
+    );
+    assert!(app.key_onboarding.is_none(), "saving closes the flow");
+}
+
+#[test]
+fn a_typed_host_is_saved_as_typed() {
+    // Ollama's own grammar is accepted verbatim (`myhost:11434`, `0.0.0.0`,
+    // `https://host`) — the config normalizes it, not the field.
+    let mut app = host_app();
+    type_chars(&mut app, "myhost:11434");
+    let action = app.on_key(key(KeyCode::Enter));
+    assert_eq!(
+        action,
+        Action::SaveApiKey {
+            provider: "ollama".into(),
+            env_var: "OLLAMA_HOST".into(),
+            key: "myhost:11434".into(),
+        }
+    );
+}
+
+#[test]
+fn a_pasted_host_keeps_its_punctuation_and_loses_its_newline() {
+    let mut app = host_app();
+    app.paste_into_key_onboarding("http://192.168.1.5:11434/\n");
+    assert_eq!(
+        app.key_onboarding.as_ref().unwrap().key_input,
+        "http://192.168.1.5:11434/"
+    );
+}
+
+#[test]
+fn a_secret_field_still_refuses_an_empty_enter() {
+    // The empty-Enter default is the host field's alone: a key provider
+    // with nothing typed has nothing to save.
+    let mut app = key_app("openrouter");
+    assert!(
+        !app.key_onboarding
+            .as_ref()
+            .unwrap()
+            .chosen_provider()
+            .unwrap()
+            .key_kind
+            .is_host()
+    );
+    assert_eq!(app.on_key(key(KeyCode::Enter)), Action::None);
+}
+
 #[test]
 fn history_generation_bumps_on_every_non_append_mutation() {
     // The Ctrl+O transcript cache freezes rendered history items and only

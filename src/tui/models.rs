@@ -251,6 +251,7 @@ impl ModelSession {
             .filter(|s| !s.is_empty())
             .or(saved_model);
         let stall_ms = config::stall_ms();
+        let env_context_window = config::context_window_override();
         // The saved thinking blob describes the saved (provider, model)
         // pairing — like saved_model it applies only when that exact selection
         // resolved. Outer None = support unknown (the probe below finds out);
@@ -285,6 +286,10 @@ impl ModelSession {
                     temperature,
                     startup_thinking.as_ref().map(|(_, mode)| *mode),
                     saved_vision,
+                    // The window the first request is built with — the env
+                    // override outranking the saved one, as the gauge's own
+                    // `context_window` reads them (docs/ollama.md).
+                    env_context_window.or(saved_context),
                 )
             })
             .filter(ModelConfig::is_usable);
@@ -342,8 +347,16 @@ impl ModelSession {
             .then(|| active_provider.as_deref().zip(env_model.as_deref()))
             .flatten()
             .map(|(p, m)| {
-                let cfg =
-                    config::model_config_for(&providers, &env_file, p, m, temperature, None, None);
+                let cfg = config::model_config_for(
+                    &providers,
+                    &env_file,
+                    p,
+                    m,
+                    temperature,
+                    None,
+                    None,
+                    None,
+                );
                 (p.to_string(), cfg)
             });
         Self {
@@ -360,7 +373,7 @@ impl ModelSession {
             system_prompt,
             prompt_context,
             stall_ms,
-            env_context_window: config::context_window_override(),
+            env_context_window,
             active_provider,
             active_model,
             active_vision: real_backend.then_some(saved_vision).flatten(),
@@ -486,13 +499,16 @@ impl ModelSession {
     // ----- rebuilding -----
 
     /// The resolved config for a provider/model with the given capabilities,
-    /// or `None` when the provider isn't in the table.
+    /// or `None` when the provider isn't in the table. `context` is the
+    /// window a request is built with — the env override outranks it here
+    /// exactly as it outranks the gauge (`docs/ollama.md`).
     fn config_for(
         &self,
         provider: &str,
         model: &str,
         thinking: Option<ThinkingMode>,
         vision: Option<bool>,
+        context: Option<u64>,
     ) -> Option<ModelConfig> {
         config::model_config_for(
             &self.providers,
@@ -502,7 +518,17 @@ impl ModelSession {
             self.temperature,
             thinking,
             vision,
+            self.env_context_window.or(context),
         )
+    }
+
+    /// Does this provider's wire **send** the context window? Only Ollama's
+    /// (`options.num_ctx`), so only there does learning the window change
+    /// what a request looks like.
+    fn wire_sends_context(&self, provider: &str) -> bool {
+        self.providers
+            .get(provider)
+            .is_some_and(|p| p.wire_api == llm::WireApi::Ollama)
     }
 
     /// Rebuild the backend for `cfg` with the **full** shared attachment set —
@@ -555,6 +581,7 @@ impl ModelSession {
                     &self.active_model.clone(),
                     self.active_thinking,
                     self.active_vision,
+                    self.active_context,
                 )
                 .filter(ModelConfig::is_usable)
         {
@@ -760,7 +787,7 @@ impl ModelSession {
     ) -> bool {
         let mode = thinking.map(|(_, mode)| *mode);
         let Some(cfg) = self
-            .config_for(provider, id, mode, vision)
+            .config_for(provider, id, mode, vision, context)
             .filter(ModelConfig::is_usable)
         else {
             return false;
@@ -804,6 +831,7 @@ impl ModelSession {
                     &self.active_model.clone(),
                     Some(mode),
                     self.active_vision,
+                    self.active_context,
                 )
                 .filter(ModelConfig::is_usable)
         {
@@ -857,23 +885,27 @@ impl ModelSession {
                 (support, mode)
             });
         let vision = entry.and_then(|entry| entry.vision);
+        let context = entry.and_then(|entry| entry.context);
         // Rebind when something actually changes a request: a thinking mode to
-        // ride it, or a known-blind model whose attachments must degrade
-        // (Some(true)/None both attach — nothing to rebind for).
-        if (thinking.is_some() || vision == Some(false))
+        // ride it, a known-blind model whose attachments must degrade
+        // (Some(true)/None both attach — nothing to rebind for), or — on the
+        // one wire that sends it — a window now known (docs/ollama.md).
+        let window_matters = context.is_some() && self.wire_sends_context(provider);
+        if (thinking.is_some() || vision == Some(false) || window_matters)
             && let Some(cfg) = self
                 .config_for(
                     provider,
                     &self.active_model.clone(),
                     thinking.as_ref().map(|(_, mode)| *mode),
                     vision,
+                    context,
                 )
                 .filter(ModelConfig::is_usable)
         {
             self.rebuild(cfg);
         }
         self.active_vision = vision;
-        self.active_context = entry.and_then(|entry| entry.context);
+        self.active_context = context;
         self.active_thinking = thinking.as_ref().map(|(_, mode)| *mode);
         self.persist(thinking.as_ref());
         Some(thinking)
@@ -901,7 +933,13 @@ impl ModelSession {
         self.active_provider
             .as_deref()
             .and_then(|provider| {
-                self.config_for(provider, &self.active_model, thinking, self.active_vision)
+                self.config_for(
+                    provider,
+                    &self.active_model,
+                    thinking,
+                    self.active_vision,
+                    self.active_context,
+                )
             })
             .filter(ModelConfig::is_usable)
             .map(|cfg| {
@@ -970,7 +1008,7 @@ impl ModelSession {
         let cancel = CancelToken::new();
         self.fetch_cancel = Some(cancel.clone());
         for choice in &configured {
-            let cfg = self.config_for(&choice.id, &self.active_model, None, None);
+            let cfg = self.config_for(&choice.id, &self.active_model, None, None, None);
             spawn_model_fetch(choice.name.clone(), cfg, cancel.clone(), tx.clone());
         }
         configured.len()
@@ -1314,7 +1352,8 @@ impl Session<'_> {
         } else {
             // A subscription has no env var to "set" — you sign in to it, and
             // naming GITHUB_COPILOT_TOKEN would send the user looking for a
-            // key to paste that does not exist (`docs/copilot.md`).
+            // key to paste that does not exist (`docs/copilot.md`). A
+            // host-configured provider never lands here: no key, no refusal.
             let fix = if self.models.is_subscription(provider) {
                 "run /login and sign in".to_string()
             } else {

@@ -59,10 +59,48 @@ pub struct ProviderChoice {
     pub id: String,
     /// The human-readable label (the `providers.toml` `name`).
     pub name: String,
-    /// The environment variable its key is stored under (e.g. `OPENROUTER_API_KEY`).
+    /// The environment variable the field's value is stored under — the key's
+    /// (`OPENROUTER_API_KEY`), or the host's for a [`KeyKind::Host`] row
+    /// (`OLLAMA_HOST`).
     pub env_var: String,
-    /// Whether a key already resolves for it (shown with a ✓).
+    /// Whether the provider is already configured (shown with a ✓): a key
+    /// resolves, or — for a host-configured one — it is pointed at.
     pub configured: bool,
+    /// What the key step asks this row for.
+    pub key_kind: KeyKind,
+}
+
+/// What the `/login` key step collects for a provider: a **secret** to paste
+/// (masked, required), or — for a server that needs none, like a local
+/// Ollama — the **host** it listens on (shown as typed, and defaulted by an
+/// empty Enter, since the default is what nearly everyone wants). See
+/// `docs/ollama.md`.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum KeyKind {
+    /// An API key: masked to dots, and nothing is saved until one is typed.
+    #[default]
+    Secret,
+    /// A server address in the provider's own grammar; `default` is what an
+    /// empty Enter saves, and what the empty field shows.
+    Host { default: String },
+}
+
+impl KeyKind {
+    /// Is this the host field?
+    #[must_use]
+    pub const fn is_host(&self) -> bool {
+        matches!(self, Self::Host { .. })
+    }
+
+    /// What an empty Enter saves — the host's default, or nothing for a
+    /// secret.
+    #[must_use]
+    pub fn empty_value(&self) -> Option<&str> {
+        match self {
+            Self::Secret => None,
+            Self::Host { default } => (!default.is_empty()).then_some(default.as_str()),
+        }
+    }
 }
 
 /// How a subscription's sign-in asks the user to prove who they are. The two
@@ -381,9 +419,11 @@ impl App {
     ///   browser flow, the link — once there is one,
     ///   `Esc` cancels the sign-in back to the subscription list, `Ctrl+C`
     ///   closes.
-    /// - **Key** (masked entry): printable keys and Backspace edit the key,
-    ///   `Enter` saves a non-empty key ([`Action::SaveApiKey`]) and closes,
-    ///   `Esc` steps *back* to the provider list, `Ctrl+C` closes.
+    /// - **Key** (masked entry — or a host shown plain, [`KeyKind`]):
+    ///   printable keys and Backspace edit the field, `Enter` saves a
+    ///   non-empty value ([`Action::SaveApiKey`]) — or a host field's default
+    ///   when nothing was typed — and closes, `Esc` steps *back* to the
+    ///   provider list, `Ctrl+C` closes.
     ///
     /// Owns **every** key while open (routed at the top of [`on_key`]).
     ///
@@ -529,19 +569,26 @@ impl App {
         }
     }
 
-    /// Keys on the masked key-entry step.
+    /// Keys on the key-entry step (masked for a secret, plain for a host).
     fn on_key_login_key(&mut self, key: KeyEvent) -> Action {
         let Some(onboarding) = self.key_onboarding.as_mut() else {
             return Action::None;
         };
         match key.code {
             KeyCode::Enter => {
-                let entered = onboarding.key_input.trim().to_string();
-                if entered.is_empty() {
-                    return Action::None;
-                }
                 let Some(choice) = onboarding.chosen_provider() else {
                     return Action::None;
+                };
+                // An empty secret is nothing to save; an empty host is the
+                // default — the one nearly every local server listens on.
+                let typed = onboarding.key_input.trim();
+                let entered = if typed.is_empty() {
+                    match choice.key_kind.empty_value() {
+                        Some(default) => default.to_string(),
+                        None => return Action::None,
+                    }
+                } else {
+                    typed.to_string()
                 };
                 let action = Action::SaveApiKey {
                     provider: choice.id.clone(),

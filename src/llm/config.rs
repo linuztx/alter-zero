@@ -49,6 +49,12 @@ pub enum AuthScheme {
     /// [`Self::ApiKey`]: a sign-in provider that looks configured and asks
     /// for a pasted key instead.
     AnthropicConsole,
+    /// A key that is **accepted but not required**: Ollama's local server
+    /// takes no credential at all, while a hosted one (or a proxy in front
+    /// of one) takes an ordinary bearer — so a stored key rides as
+    /// `Authorization: Bearer` exactly as [`Self::ApiKey`]'s does, and none
+    /// stored is not a reason to fall back to the dummy. See `docs/ollama.md`.
+    OptionalKey,
     /// `Authorization: Bearer {api_key}` — a key the user pastes, and the
     /// scheme every OpenAI-compatible provider uses. The **fallback** for an
     /// unrecognised `auth` value too (`#[serde(other)]`, which serde requires
@@ -64,7 +70,15 @@ impl AuthScheme {
     /// split `/login` shows its two lists on.
     #[must_use]
     pub fn is_subscription(self) -> bool {
-        !matches!(self, Self::ApiKey)
+        !matches!(self, Self::ApiKey | Self::OptionalKey)
+    }
+
+    /// Can a request go out with no credential stored at all? Only
+    /// [`Self::OptionalKey`] — every other scheme's request is unauthenticated
+    /// without one, which the boundary answers with the dummy backend.
+    #[must_use]
+    pub fn key_optional(self) -> bool {
+        matches!(self, Self::OptionalKey)
     }
 }
 
@@ -85,6 +99,12 @@ pub enum WireApi {
     /// subscription — which is exactly why it is a `wire_api` and not a
     /// consequence of [`AuthScheme`]. See `docs/claude.md`.
     Anthropic,
+    /// Ollama's **native** chat API: `{api_base}/api/chat`, an NDJSON stream
+    /// rather than SSE, tool-call arguments as objects, images as bare
+    /// base64, and — the reason it exists beside Ollama's own OpenAI-compatible
+    /// `/v1` — an `options.num_ctx` the session sets the context window with.
+    /// See `docs/ollama.md`.
+    Ollama,
     /// **Chat Completions**: `{api_base}/chat/completions` with `messages`.
     /// The default, and the **fallback** for an unrecognised value
     /// (`#[serde(other)]`, which serde requires on the last variant) — a
@@ -119,6 +139,13 @@ pub struct Provider {
     /// `<ID_UPPERCASE>_API_KEY` (see [`Provider::key_env`]).
     #[serde(default)]
     pub api_key_env: Option<String>,
+    /// An environment variable whose value **replaces** [`Kwargs::api_base`]
+    /// when set — Ollama's own `OLLAMA_HOST`, in Ollama's own grammar
+    /// (`docs/ollama.md`). Resolved at the boundary like the key (process
+    /// env, then the `.env` store) and handed in as [`Selection::api_base`].
+    /// `None` for a provider whose base only the file names.
+    #[serde(default)]
+    pub api_base_env: Option<String>,
     /// Static request headers merged into every call (e.g. OpenRouter's
     /// `HTTP-Referer` / `X-Title`). Empty by default.
     #[serde(default)]
@@ -253,18 +280,44 @@ impl ProvidersFile {
     #[must_use]
     pub fn model_config(&self, sel: &Selection) -> Option<ModelConfig> {
         let provider = self.providers.get(&sel.provider_id)?;
+        // The boundary's resolved `api_base_env` value outranks the file's
+        // base — and on the Ollama wire both are spelled in `OLLAMA_HOST`'s
+        // grammar, so both go through it (a full URL comes out unchanged).
+        let override_base = sel
+            .api_base
+            .as_deref()
+            .map(str::trim)
+            .filter(|base| !base.is_empty());
+        let api_base = match (provider.wire_api, override_base) {
+            (WireApi::Ollama, base) => {
+                super::ollama::host_url(base.unwrap_or(&provider.kwargs.api_base))
+            }
+            (_, Some(base)) => base.trim_end_matches('/').to_string(),
+            (_, None) => provider.kwargs.api_base.clone(),
+        };
+        // The listing follows the chat base wherever the file doesn't name a
+        // separate one — an overridden host lists from that host too.
+        let api_model_base = match provider
+            .api_model_base
+            .as_deref()
+            .filter(|base| !base.is_empty())
+        {
+            Some(explicit) if override_base.is_none() => explicit.trim_end_matches('/').to_string(),
+            _ => api_base.trim_end_matches('/').to_string(),
+        };
         Some(ModelConfig {
             provider_id: sel.provider_id.clone(),
             provider_name: provider.name.clone(),
             model: sel.model.clone(),
-            api_base: provider.kwargs.api_base.clone(),
-            api_model_base: provider.models_base(),
+            api_base,
+            api_model_base,
             api_key: sel.api_key.clone(),
             auth: provider.auth,
             wire_api: provider.wire_api,
             temperature: sel.temperature,
             thinking: sel.thinking,
             vision: sel.vision,
+            context: sel.context,
             cache_key: sel.cache_key.clone(),
             extra_headers: provider
                 .extra_headers
@@ -294,6 +347,16 @@ pub struct Selection {
     /// of letting the provider fail the turn; `None` attaches optimistically.
     /// See `docs/tools.md`.
     pub vision: Option<bool>,
+    /// The context window the session gauges against, when known — the
+    /// same number the footer's `{used}/{window}` reads. It rides the config
+    /// because the Ollama wire **sends** it (`options.num_ctx`): the window
+    /// the server holds must be the one the gauge claims (`docs/ollama.md`).
+    /// Every other wire ignores it. `None` = unknown.
+    pub context: Option<u64>,
+    /// The boundary's resolved [`Provider::api_base_env`] value, replacing the
+    /// file's base when set (Ollama's `OLLAMA_HOST`). `None` or empty leaves
+    /// the file's base in force.
+    pub api_base: Option<String>,
     /// A stable per-session cache-affinity key, sent as the request's
     /// `prompt_cache_key` (and, for OpenRouter, `session_id`) so repeated
     /// requests land on the same provider/server and hit its warm prompt
@@ -322,6 +385,9 @@ pub struct ModelConfig {
     pub thinking: Option<ThinkingMode>,
     /// The model's image-input support (see [`Selection::vision`]).
     pub vision: Option<bool>,
+    /// The session's context window (see [`Selection::context`]) — sent as
+    /// `options.num_ctx` on the Ollama wire, ignored by every other.
+    pub context: Option<u64>,
     /// The per-session cache-affinity key (see [`Selection::cache_key`]).
     pub cache_key: Option<String>,
     pub extra_headers: Vec<(String, String)>,
@@ -345,17 +411,21 @@ impl ModelConfig {
             temperature: None,
             thinking: None,
             vision: None,
+            context: None,
             cache_key: None,
             extra_headers: Vec::new(),
             extra_body: serde_json::Map::new(),
         }
     }
 
-    /// Is there enough here to talk to a real endpoint? (a non-empty base and a
-    /// key). The boundary falls back to the dummy backend when this is false.
+    /// Is there enough here to talk to a real endpoint? A non-empty base, and
+    /// a key — unless the scheme says a key is optional (a local Ollama
+    /// server). The boundary falls back to the dummy backend when this is
+    /// false.
     #[must_use]
     pub fn is_usable(&self) -> bool {
-        !self.api_base.is_empty() && self.api_key.as_ref().is_some_and(|k| !k.is_empty())
+        let keyed = self.api_key.as_ref().is_some_and(|k| !k.is_empty());
+        !self.api_base.is_empty() && (keyed || self.auth.key_optional())
     }
 }
 
@@ -711,6 +781,8 @@ api_base = "https://a/v1"
             temperature: Some(0.7),
             thinking: None,
             vision: None,
+            context: None,
+            api_base: None,
             cache_key: None,
         };
         let cfg = file.model_config(&sel).expect("resolves");
@@ -782,5 +854,133 @@ api_base = "https://a/v1"
     #[test]
     fn malformed_toml_is_an_error_not_a_panic() {
         assert!(ProvidersFile::parse("this is not = = toml").is_err());
+    }
+
+    // --- Ollama: the fourth wire format, and a key that is optional (docs/ollama.md) ---
+
+    #[test]
+    fn a_provider_can_declare_the_ollama_wire_format() {
+        let text = r#"
+[providers.p]
+name = "P"
+wire_api = "ollama"
+[providers.p.kwargs]
+api_base = "http://127.0.0.1:11434"
+"#;
+        let file = ProvidersFile::parse(text).unwrap();
+        assert_eq!(file.get("p").unwrap().wire_api, WireApi::Ollama);
+    }
+
+    #[test]
+    fn an_optional_key_provider_is_usable_without_a_key() {
+        // A local server takes no credential at all, so "no key" must not
+        // mean "fall back to the dummy" — the rule every other provider
+        // lives by. A stored key still rides as a bearer (a hosted server).
+        let text = r#"
+[providers.p]
+name = "P"
+auth = "optional_key"
+wire_api = "ollama"
+[providers.p.kwargs]
+api_base = "http://127.0.0.1:11434"
+"#;
+        let file = ProvidersFile::parse(text).unwrap();
+        let provider = file.get("p").unwrap();
+        assert_eq!(provider.auth, AuthScheme::OptionalKey);
+        assert!(!provider.auth.is_subscription(), "it is keyed, optionally");
+        assert!(provider.auth.key_optional());
+        assert!(!AuthScheme::ApiKey.key_optional());
+        let sel = Selection {
+            provider_id: "p".to_string(),
+            model: "qwen3:8b".to_string(),
+            ..Selection::default()
+        };
+        let cfg = file.model_config(&sel).expect("resolves");
+        assert!(cfg.is_usable(), "no key needed");
+        let mut blank = cfg.clone();
+        blank.api_base = String::new();
+        assert!(!blank.is_usable(), "a base is still needed");
+    }
+
+    #[test]
+    fn the_builtin_file_ships_ollama_local_and_cloud() {
+        let file = ProvidersFile::builtin();
+        let local = file.get("ollama").expect("shipped");
+        assert_eq!(local.wire_api, WireApi::Ollama);
+        assert_eq!(local.auth, AuthScheme::OptionalKey);
+        assert_eq!(local.key_env("ollama"), "OLLAMA_API_KEY");
+        assert_eq!(local.api_base_env.as_deref(), Some("OLLAMA_HOST"));
+        assert_eq!(local.kwargs.api_base, "http://127.0.0.1:11434");
+
+        let cloud = file.get("ollama_cloud").expect("shipped");
+        assert_eq!(cloud.wire_api, WireApi::Ollama);
+        assert_eq!(cloud.auth, AuthScheme::ApiKey, "the cloud needs its key");
+        assert_eq!(cloud.key_env("ollama_cloud"), "OLLAMA_API_KEY");
+        assert_eq!(cloud.api_base_env, None);
+        assert_eq!(cloud.kwargs.api_base, "https://ollama.com");
+    }
+
+    #[test]
+    fn a_selections_base_override_is_normalized_for_the_ollama_wire() {
+        // `OLLAMA_HOST` is spelled in Ollama's own grammar (`localhost:11434`,
+        // `0.0.0.0`, `https://host`) and resolved at the boundary; the config
+        // carries it as a full URL, for the listing and the chat alike.
+        let file = ProvidersFile::builtin();
+        let sel = Selection {
+            provider_id: "ollama".to_string(),
+            model: "qwen3:8b".to_string(),
+            api_base: Some("myhost:11434".to_string()),
+            ..Selection::default()
+        };
+        let cfg = file.model_config(&sel).expect("resolves");
+        assert_eq!(cfg.api_base, "http://myhost:11434");
+        assert_eq!(cfg.api_model_base, "http://myhost:11434");
+        // No override: the file's base, still normalized.
+        let plain = file
+            .model_config(&Selection {
+                provider_id: "ollama".to_string(),
+                model: "qwen3:8b".to_string(),
+                ..Selection::default()
+            })
+            .unwrap();
+        assert_eq!(plain.api_base, "http://127.0.0.1:11434");
+        // An empty override is no override.
+        let empty = file
+            .model_config(&Selection {
+                provider_id: "ollama".to_string(),
+                model: "qwen3:8b".to_string(),
+                api_base: Some(String::new()),
+                ..Selection::default()
+            })
+            .unwrap();
+        assert_eq!(empty.api_base, "http://127.0.0.1:11434");
+        // On any other wire the override is taken as the URL it is, slash
+        // trimmed like the file's own base.
+        let other = file
+            .model_config(&Selection {
+                provider_id: "openrouter".to_string(),
+                model: "m".to_string(),
+                api_base: Some("https://proxy.example/v1/".to_string()),
+                ..Selection::default()
+            })
+            .unwrap();
+        assert_eq!(other.api_base, "https://proxy.example/v1");
+        assert_eq!(other.api_model_base, "https://proxy.example/v1");
+    }
+
+    #[test]
+    fn model_config_carries_the_selections_context_window() {
+        // The window the session gauges against rides the config, because the
+        // Ollama wire sends it as `options.num_ctx` (docs/ollama.md).
+        let file = ProvidersFile::builtin();
+        let sel = Selection {
+            provider_id: "ollama".to_string(),
+            model: "qwen3:8b".to_string(),
+            context: Some(32_768),
+            ..Selection::default()
+        };
+        let cfg = file.model_config(&sel).expect("resolves");
+        assert_eq!(cfg.context, Some(32_768));
+        assert_eq!(ModelConfig::fallback().context, None);
     }
 }

@@ -33,7 +33,8 @@ network calls are boundary code (like `main.rs`/`term.rs`), verified by hand.
 | `llm/thinking.rs` | `ThinkingSplitter` — peels `<think>`/`<reasoning>` tags (and native `reasoning` deltas) out of the stream | **pure** |
 | `llm/reasoning.rs` | `ThinkingMode`/`ReasoningSupport` — the Ctrl+T thinking-mode cycle + its request body (`docs/reasoning.md`) | **pure** |
 | `llm/openai.rs` | `OpenAiClient` — endpoint/payload build (pure) + the blocking SSE stream (boundary) | split |
-| `llm/models.rs` | `/v1/models` response → `Vec<ModelEntry>` (parse pure; fetch boundary; each entry carries its model's reasoning capability — `docs/reasoning.md`; records decode one at a time off borrowed `RawValue` slices, never a whole-list tree — `docs/memory.md`) | split |
+| `llm/models.rs` | `/v1/models` response → `Vec<ModelEntry>` (parse pure; fetch boundary; each entry carries its model's reasoning capability — `docs/reasoning.md`; records decode one at a time off borrowed `RawValue` slices, never a whole-list tree — `docs/memory.md`; the Ollama wire's `/api/tags` + `/api/show` walk lives here too) | split |
+| `llm/ollama.rs` | Ollama's **native** wire format (`wire_api = "ollama"`): the `OLLAMA_HOST` grammar, the `/api/chat` body (`options.num_ctx` — the reason it exists beside Ollama's `/v1`), the NDJSON fold, the catalog parse with the context-window rule, and the explained refusals (`docs/ollama.md`) | **pure** |
 | `llm/backend.rs` | `LlmBackend: ReplySource` — bridges the SSE deltas to `StreamEvent`s | boundary |
 
 ### Why blocking `reqwest`, a transport thread, and a hand-rolled SSE reader
@@ -119,10 +120,13 @@ comments for the block shape. Two of its keys change how a provider is *reached*
 rather than what it is called, and both degrade to their default on a value this
 build doesn't know: `auth` decides which `/login` list the provider appears in
 and what the `Authorization` header gets (`docs/copilot.md`,
-`docs/chatgpt.md`), and `wire_api` decides whether requests take the Chat
-Completions or the Responses shape (`docs/chatgpt.md`). They are deliberately
-independent — how you authenticate and what shape the request takes are two
-questions. Resolution order for the file: `ALTER_ZERO_PROVIDERS_FILE`
+`docs/chatgpt.md`, `docs/ollama.md` — whose `optional_key` is the scheme for
+a server that needs none), and `wire_api` decides whether requests take the
+Chat Completions, Responses, Messages or native-Ollama shape
+(`docs/chatgpt.md`, `docs/claude.md`, `docs/ollama.md`). They are
+deliberately independent — how you authenticate and what shape the request
+takes are two questions. A third optional key, `api_base_env`, names an
+environment variable that replaces the base (Ollama's `OLLAMA_HOST`). Resolution order for the file: `ALTER_ZERO_PROVIDERS_FILE`
 → `./providers.toml` → `~/.alter-zero/providers.toml` → a built-in default with the
 two shipped providers (`a0_venice` — the Agent Zero/Venice proxy — and `openrouter`).
 
@@ -139,6 +143,7 @@ default — and can be switched live by `/model`:
 | `<PROVIDER>_API_KEY` | per-provider key, e.g. `OPENROUTER_API_KEY` | unset |
 | `ALTER_ZERO_CONFIG_DIR` | the config home (holds `.env` + `config.json`) | `~/.alter-zero` |
 | `ALTER_ZERO_ENV_FILE` | the `.env` key store `/login` reads and writes (and where a rotated ChatGPT refresh token is written back — `docs/chatgpt.md`) | `{config_home}/.env` |
+| `OLLAMA_HOST` / `OLLAMA_API_KEY` / `OLLAMA_CONTEXT_LENGTH` | the Ollama provider's host (pointing at it is what configures it), optional bearer, and mirrored server default window (`docs/ollama.md`) | unset |
 | `ALTER_ZERO_TEMPERATURE` | sampling temperature | provider/omit |
 | `ALTER_ZERO_TOOLS` | falsy (`0`/`false`/`no`/`off`) disables the `bash`/`read`/`write`/`edit` tools (see `docs/tools.md`) | tools on |
 | `ALTER_ZERO_SYSTEM_PROMPT` | override the "Alter Zero" persona; empty sends no system prompt. Any non-empty prompt still gets the runtime environment context (date/os/cwd, `docs/environment.md`) folded on | persona in `prompts/alter_zero.md` |
@@ -146,7 +151,8 @@ default — and can be switched live by `/model`:
 
 **The dummy is the fallback, never a surprise.** The real backend activates only
 when `ALTER_ZERO_DUMMY` is unset **and** a provider, a model, and an API key all
-resolve. Otherwise the app uses `DummyAi`. `smoke.sh` sets none of these, so it
+resolve — the key being optional for a provider whose `auth` says so (a local
+Ollama, `docs/ollama.md`). Otherwise the app uses `DummyAi`. `smoke.sh` sets none of these, so it
 always gets the dummy — the canned replies, the `dummy_model_name` footer, and the
 scripted tool calls its assertions depend on are untouched.
 
@@ -389,7 +395,9 @@ in place; unlike it, it is a **two-step** flow.
   the capability probe and the next launch need no second mechanism. The two
   browser flows are the *same page* — a link and a wait — so they share
   `SigninKind::BrowserLink` and differ only in their constants.
-- **Key step**: printable keys and Backspace edit the key, a **bracketed paste**
+- **Key step**, or a **host field** for a provider that needs no key (Ollama:
+  the title asks for the host, the value shows as typed, and an empty Enter
+  saves the default — `docs/ollama.md`): printable keys and Backspace edit the key, a **bracketed paste**
   (`App::paste_into_key_onboarding`) appends it with whitespace/newlines stripped
   (API keys are always pasted), `Enter` saves a non-empty key
   (`Action::SaveApiKey { provider, env_var, key }`) and closes, `Esc` steps *back*

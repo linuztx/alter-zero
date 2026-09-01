@@ -20,7 +20,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use alter_zero::app::{ProviderChoice, SigninKind, SubscriptionChoice};
+use alter_zero::app::{KeyKind, ProviderChoice, SigninKind, SubscriptionChoice};
 use alter_zero::checkpoint;
 use alter_zero::llm::{
     self, AuthScheme, EnvFile, ModelConfig, ProvidersFile, ReasoningSupport, Selection, Settings,
@@ -104,13 +104,20 @@ pub(crate) fn resolve_api_key(
 }
 
 /// Build the resolved [`ModelConfig`] for a provider/model (with the resolved
-/// key + temperature + thinking mode + vision support merged in), or `None`
-/// when the provider isn't in the file. `thinking` is the mode riding the
-/// request payload — `None` for a model with no reasoning (or a fetch that
-/// doesn't care, like the `/models` listing). See `docs/reasoning.md`.
-/// `vision` is the model's known image-input support — `Some(false)` makes
-/// the backend degrade attachments instead of letting the provider fail the
-/// turn; `None` = unknown, attach optimistically. See `docs/tools.md`.
+/// key + temperature + thinking mode + vision support + context window
+/// merged in), or `None` when the provider isn't in the file. `thinking` is
+/// the mode riding the request payload — `None` for a model with no
+/// reasoning (or a fetch that doesn't care, like the `/models` listing). See
+/// `docs/reasoning.md`. `vision` is the model's known image-input support —
+/// `Some(false)` makes the backend degrade attachments instead of letting
+/// the provider fail the turn; `None` = unknown, attach optimistically. See
+/// `docs/tools.md`. `context` is the window the session gauges against,
+/// which the Ollama wire sends as `options.num_ctx` (`docs/ollama.md`).
+///
+/// A provider whose base is environment-configurable (`api_base_env` —
+/// Ollama's `OLLAMA_HOST`) has that variable resolved here, the way the key
+/// is: the process env first, then the `.env` store.
+#[allow(clippy::too_many_arguments)] // the capability trio plus the window, resolved together
 pub(crate) fn model_config_for(
     providers: &ProvidersFile,
     env_file: &EnvFile,
@@ -119,6 +126,7 @@ pub(crate) fn model_config_for(
     temperature: Option<f32>,
     thinking: Option<ThinkingMode>,
     vision: Option<bool>,
+    context: Option<u64>,
 ) -> Option<ModelConfig> {
     let sel = Selection {
         provider_id: provider.to_string(),
@@ -127,9 +135,23 @@ pub(crate) fn model_config_for(
         temperature,
         thinking,
         vision,
+        context,
+        api_base: resolve_api_base(providers, env_file, provider),
         cache_key: Some(session_cache_key().to_string()),
     };
     providers.model_config(&sel)
+}
+
+/// A provider's environment-configured base (`api_base_env`), when the file
+/// names such a variable and it resolves (process env, then `.env`). `None`
+/// leaves the file's base in force.
+pub(crate) fn resolve_api_base(
+    providers: &ProvidersFile,
+    env_file: &EnvFile,
+    provider: &str,
+) -> Option<String> {
+    let var = providers.get(provider)?.api_base_env.as_deref()?;
+    resolve_env(env_file, var)
 }
 
 /// The per-session cache-affinity key every backend build shares, minted once
@@ -183,16 +205,40 @@ fn choices_where(
         .into_iter()
         .filter(|id| providers.get(id).is_some_and(&keep))
         .map(|id| {
-            let name = providers
-                .get(&id)
-                .map_or_else(|| id.clone(), |p| p.name.clone());
-            let env_var = key_env_name(providers, &id);
-            let configured = resolve_api_key(providers, env_file, &id).is_some();
+            let provider = providers.get(&id);
+            let name = provider.map_or_else(|| id.clone(), |p| p.name.clone());
+            let keyed = resolve_api_key(providers, env_file, &id).is_some();
+            // A provider that needs no key is configured by being *pointed
+            // at* instead: its host variable resolving (`OLLAMA_HOST`, which
+            // `/login` writes), or the environment naming it the active
+            // provider outright (`docs/ollama.md`). Without that rule every
+            // `/model` open would fetch from a server most users don't run
+            // and paint its refusal in red.
+            let host_var = provider
+                .filter(|p| p.auth.key_optional())
+                .and_then(|p| p.api_base_env.clone());
+            let pointed_at = host_var
+                .as_deref()
+                .is_some_and(|var| resolve_env(env_file, var).is_some())
+                || std::env::var("ALTER_ZERO_PROVIDER").ok().as_deref() == Some(id.as_str());
+            let configured = keyed || pointed_at;
+            // What `/login` asks for, and what its Enter saves: the host
+            // for a host-configured provider, the key for everyone else.
+            let (env_var, key_kind) = match host_var {
+                Some(var) => (
+                    var,
+                    KeyKind::Host {
+                        default: provider.map_or_else(String::new, |p| p.kwargs.api_base.clone()),
+                    },
+                ),
+                None => (key_env_name(providers, &id), KeyKind::Secret),
+            };
             ProviderChoice {
                 id,
                 name,
                 env_var,
                 configured,
+                key_kind,
             }
         })
         .collect()
@@ -226,7 +272,9 @@ fn signin_kind(auth: AuthScheme) -> SigninKind {
         // Both are a browser page with a link and a wait; only the constants
         // behind them differ (`docs/chatgpt.md`, `docs/claude.md`).
         AuthScheme::OpenAiChatGpt | AuthScheme::AnthropicConsole => SigninKind::BrowserLink,
-        AuthScheme::GithubCopilot | AuthScheme::ApiKey => SigninKind::DeviceCode,
+        AuthScheme::GithubCopilot | AuthScheme::ApiKey | AuthScheme::OptionalKey => {
+            SigninKind::DeviceCode
+        }
     }
 }
 

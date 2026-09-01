@@ -31,6 +31,7 @@ pub mod hooks;
 pub mod keystore;
 pub mod mcp;
 pub mod models;
+pub mod ollama;
 pub mod openai;
 pub mod reasoning;
 pub mod responses;

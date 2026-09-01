@@ -40,6 +40,8 @@ fn backend() -> LlmBackend {
         temperature: Some(0.0),
         thinking: None,
         vision: None,
+        context: None,
+        api_base: None,
         cache_key: None,
     };
     let cfg = providers.model_config(&sel).expect("a0_venice is built in");

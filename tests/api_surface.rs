@@ -43,6 +43,7 @@ use alter_zero::app::{
     HooksMenu,
     InputHistory,
     InterruptedTurn,
+    KeyKind,
     KeyOnboarding,
     KeyStep,
     LoginMethod,

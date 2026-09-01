@@ -591,6 +591,12 @@ fn models_url(base: &str, auth: super::AuthScheme, wire: super::WireApi) -> Stri
     if wire == super::WireApi::Anthropic {
         return format!("{base}/models?limit={ANTHROPIC_PAGE_SIZE}");
     }
+    // Ollama's native listing — its `/v1/models` names the models and
+    // nothing else, where `/api/tags` (and each `/api/show`) carries the
+    // window and the capabilities (`docs/ollama.md`).
+    if wire == super::WireApi::Ollama {
+        return format!("{base}/api/tags");
+    }
     match auth {
         super::AuthScheme::OpenAiChatGpt => {
             // Required, and load-bearing: the backend filters the catalog by
@@ -662,7 +668,112 @@ pub fn fetch_models(cfg: &ModelConfig, cancel: &CancelToken) -> Result<Vec<Model
         .take(MODELS_BODY_MAX_BYTES)
         .read_to_string(&mut body)
         .map_err(|e| LlmError::Http(e.to_string()))?;
+    if cfg.wire_api == super::WireApi::Ollama {
+        let base = auth
+            .base
+            .clone()
+            .unwrap_or_else(|| cfg.api_model_base.clone());
+        return ollama_catalog(&client, cfg, &auth, &base, &body, cancel);
+    }
     catalog_or_error(parse_models(&body, &cfg.provider_id)?, cfg.auth)
+}
+
+/// The Ollama catalog (boundary — real HTTP): the `/api/tags` body already
+/// in hand names the models, and one `POST /api/show` per model fills in
+/// what the listing may not say — the window, the capabilities, and the
+/// Modelfile's own `num_ctx`, which only the show carries and which the
+/// window rule must honour (`docs/ollama.md`). A show that fails keeps the
+/// tags record as it was rather than dropping the model. Sequential, the
+/// cancel polled between calls: a closed picker stops the walk.
+///
+/// The server's configured default window is read off this process's
+/// `OLLAMA_CONTEXT_LENGTH`, a mirror of the server's own; the cloud, which
+/// serves every model at its maximum, is told by its host.
+fn ollama_catalog(
+    client: &reqwest::blocking::Client,
+    cfg: &ModelConfig,
+    auth: &super::auth::RequestAuth,
+    base: &str,
+    tags: &str,
+    cancel: &CancelToken,
+) -> Result<Vec<ModelEntry>> {
+    use super::ollama;
+    let server_default = std::env::var(ollama::CONTEXT_LENGTH_ENV)
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .filter(|&n| n > 0);
+    let uncapped = ollama::is_cloud_host(base);
+    let show_url = format!("{}/api/show", base.trim_end_matches('/'));
+    let mut out = Vec::new();
+    for record in ollama::tags_records(tags)? {
+        if cancel.is_cancelled() {
+            return Err(LlmError::Cancelled);
+        }
+        let shown = ollama_show(client, cfg, auth, &show_url, &record.name)
+            .and_then(|body| ollama::show_record(&record.name, &body))
+            .ok();
+        let record = match shown {
+            // The show is the fuller account, but a listing that already
+            // said something is not contradicted by a show that says nothing.
+            Some(mut shown) => {
+                if shown.capabilities.is_none() {
+                    shown.capabilities = record.capabilities;
+                }
+                if shown.context_length.is_none() {
+                    shown.context_length = record.context_length;
+                }
+                if shown.family.is_empty() {
+                    shown.family = record.family;
+                }
+                shown.remote |= record.remote;
+                shown
+            }
+            None => record,
+        };
+        if let Some(entry) = ollama::entry_of(&record, &cfg.provider_id, server_default, uncapped) {
+            out.push(entry);
+        }
+    }
+    out.sort_by(|a, b| a.id.cmp(&b.id));
+    Ok(out)
+}
+
+/// One `POST /api/show` for `model`, its body bounded like the listing's.
+fn ollama_show(
+    client: &reqwest::blocking::Client,
+    cfg: &ModelConfig,
+    auth: &super::auth::RequestAuth,
+    url: &str,
+    model: &str,
+) -> Result<String> {
+    let mut req = client
+        .post(url)
+        .header("accept", "application/json")
+        .json(&serde_json::json!({"model": model}));
+    if let Some(key) = &auth.bearer {
+        req = req.bearer_auth(key);
+    }
+    for (k, v) in &cfg.extra_headers {
+        req = req.header(k, v);
+    }
+    for (k, v) in &auth.headers {
+        req = req.header(k, v);
+    }
+    let mut resp = req.send().map_err(|e| LlmError::Http(e.to_string()))?;
+    if !resp.status().is_success() {
+        let status = resp.status().as_u16();
+        let mut body = String::new();
+        let _ = (&mut resp)
+            .take(MODELS_BODY_MAX_BYTES)
+            .read_to_string(&mut body);
+        return Err(LlmError::Api { status, body });
+    }
+    let mut body = String::new();
+    (&mut resp)
+        .take(MODELS_BODY_MAX_BYTES)
+        .read_to_string(&mut body)
+        .map_err(|e| LlmError::Http(e.to_string()))?;
+    Ok(body)
 }
 
 /// The most a `/models` response body may buffer — the `SHELL_OUTPUT_MAX_BYTES`

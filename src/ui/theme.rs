@@ -901,6 +901,13 @@ pub(super) const LOGIN_PROVIDER_HINT_PREFIX: &str = "Keys are saved to ";
 /// The dim hint under the key-entry field.
 pub(super) const LOGIN_KEY_HINT: &str = "Enter to save · Esc to go back";
 
+/// The hint under a **host** field ([`KeyKind::Host`]): an empty Enter saves
+/// the default the field shows (`docs/ollama.md`).
+///
+/// [`KeyKind::Host`]: crate::app::KeyKind::Host
+pub(super) const LOGIN_HOST_HINT: &str =
+    "Enter to save (empty = the default shown) · Esc to go back";
+
 /// The dim placeholder shown in the key field before anything is entered.
 pub(super) const LOGIN_KEY_PLACEHOLDER: &str = "paste your API key, then press Enter";
 

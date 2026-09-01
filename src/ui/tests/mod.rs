@@ -9,7 +9,8 @@
 use super::*;
 
 use crate::app::{
-    FileSearch, Message, ModelFetchError, ProviderChoice, RetryInfo, SigninKind, SubscriptionChoice,
+    FileSearch, KeyKind, Message, ModelFetchError, ProviderChoice, RetryInfo, SigninKind,
+    SubscriptionChoice,
 };
 
 mod agent;
@@ -314,14 +315,32 @@ fn login_choices() -> Vec<ProviderChoice> {
             name: "OpenRouter".into(),
             env_var: "OPENROUTER_API_KEY".into(),
             configured: true,
+            key_kind: KeyKind::Secret,
         },
         ProviderChoice {
             id: "together".into(),
             name: "Together AI".into(),
             env_var: "TOGETHER_API_KEY".into(),
             configured: false,
+            key_kind: KeyKind::Secret,
         },
     ]
+}
+
+/// A host-configured provider row — Ollama's, whose `/login` field asks for
+/// where the server is rather than a secret (`docs/ollama.md`). Kept out of
+/// [`login_choices`] so the provider-step geometry the layout tests pin
+/// stays two rows.
+pub(super) fn host_choice() -> ProviderChoice {
+    ProviderChoice {
+        id: "ollama".into(),
+        name: "Ollama".into(),
+        env_var: "OLLAMA_HOST".into(),
+        configured: false,
+        key_kind: KeyKind::Host {
+            default: "http://127.0.0.1:11434".into(),
+        },
+    }
 }
 
 /// The `/login` flow parked on its root (the method step).

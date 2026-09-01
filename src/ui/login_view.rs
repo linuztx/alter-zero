@@ -148,22 +148,40 @@ pub(super) fn login_key_prompt(name: &str) -> String {
     }
 }
 
-/// The `/login` masked key field: the entered key rendered as [`LOGIN_MASK_CHAR`]
-/// dots (one per character, truncated to width), or a dim placeholder when empty.
+/// The host step's title: `Enter your Ollama host` — what it wants, not a
+/// key it doesn't (`docs/ollama.md`).
+pub(super) fn login_host_prompt(name: &str) -> String {
+    format!("Enter your {name} host")
+}
+
+/// The `/login` key field. A **secret** is rendered as [`LOGIN_MASK_CHAR`]
+/// dots (one per character, truncated to width) over a dim placeholder when
+/// empty; a **host** ([`KeyKind::Host`]) is shown as typed — a URL typed blind
+/// is a URL typed wrong — over its default, which is what an empty Enter
+/// saves.
 fn login_key_field(onboarding: &KeyOnboarding, width: u16) -> Line<'static> {
     let room = (width as usize)
         .saturating_sub(cols(MODEL_INDENT) + cols(MODEL_PROMPT))
         .max(1);
-    let body = if onboarding.key_input.is_empty() {
-        Span::styled(
+    let kind = onboarding.chosen_provider().map(|choice| &choice.key_kind);
+    let body = match (kind, onboarding.key_input.is_empty()) {
+        (Some(KeyKind::Host { default }), true) => {
+            Span::styled(ellipsize(default, room), Style::new().fg(MODEL_META_COLOR))
+        }
+        (Some(KeyKind::Host { .. }), false) => Span::styled(
+            truncate_cols(&onboarding.key_input, room),
+            Style::new().fg(MODEL_ID_COLOR),
+        ),
+        (_, true) => Span::styled(
             ellipsize(LOGIN_KEY_PLACEHOLDER, room),
             Style::new().fg(MODEL_META_COLOR),
-        )
-    } else {
-        let dots: String = (0..onboarding.key_input.chars().count())
-            .map(|_| LOGIN_MASK_CHAR)
-            .collect();
-        Span::styled(truncate_cols(&dots, room), Style::new().fg(MODEL_ID_COLOR))
+        ),
+        (_, false) => {
+            let dots: String = (0..onboarding.key_input.chars().count())
+                .map(|_| LOGIN_MASK_CHAR)
+                .collect();
+            Span::styled(truncate_cols(&dots, room), Style::new().fg(MODEL_ID_COLOR))
+        }
     };
     login_prompt_line(Line::from(vec![body]))
 }
@@ -407,17 +425,29 @@ pub(super) fn key_onboarding_lines(onboarding: &KeyOnboarding, width: u16) -> Ve
             None => vec![model_rule(width), Line::default(), model_rule(width)],
         },
         KeyStep::Key => {
-            let name = onboarding
-                .chosen_provider()
-                .map_or("the provider", |c| c.name.as_str());
+            let chosen = onboarding.chosen_provider();
+            let name = chosen.map_or("the provider", |c| c.name.as_str());
+            // A host field asks for where the server is and defaults on an
+            // empty Enter; a secret field asks for the key and waits for one.
+            let host = chosen.is_some_and(|c| c.key_kind.is_host());
+            let title = if host {
+                login_host_prompt(name)
+            } else {
+                login_key_prompt(name)
+            };
+            let hint = if host {
+                LOGIN_HOST_HINT
+            } else {
+                LOGIN_KEY_HINT
+            };
             vec![
                 model_rule(width),
                 Line::default(),
-                login_title(&login_key_prompt(name), width),
+                login_title(&title, width),
                 Line::default(),
                 login_key_field(onboarding, width),
                 Line::default(),
-                model_placeholder_row(LOGIN_KEY_HINT, MODEL_META_COLOR, width),
+                model_placeholder_row(hint, MODEL_META_COLOR, width),
                 Line::default(),
                 model_rule(width),
             ]

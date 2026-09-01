@@ -9,6 +9,14 @@
 #     chat-completions endpoint; other keys are forwarded in the request body.
 #   - `api_key_env` (optional) names the environment variable the API key is read
 #     from; it defaults to `<ID_UPPERCASE>_API_KEY` (e.g. `OPENROUTER_API_KEY`).
+#   - `api_base_env` (optional) names an environment variable whose value
+#     replaces `kwargs.api_base` when set (Ollama's `OLLAMA_HOST`).
+#   - `auth` (optional) is how the provider authenticates: a pasted key by
+#     default, a subscription sign-in (`github_copilot`, `openai_chatgpt`,
+#     `anthropic_console`), or `optional_key` for a server that needs none.
+#   - `wire_api` (optional) is the request shape: chat completions by default,
+#     `responses`, `anthropic`, or `ollama` (docs/chatgpt.md, docs/claude.md,
+#     docs/ollama.md).
 #
 # The active provider/model is chosen with `ALTER_ZERO_PROVIDER` /
 # `ALTER_ZERO_MODEL`, or interactively with the `/model` picker, and persists to
@@ -66,6 +74,39 @@ Openai-Intent = "conversation-panel"
 # a Business/Enterprise seat gets its own host); this is the individual
 # default and the fallback.
 api_base = "https://api.githubcopilot.com"
+
+# Ollama, the local model server, over its **native** API rather than its
+# OpenAI-compatible `/v1` — hence `wire_api` (docs/ollama.md). The native wire
+# is what lets a request set the context window (`options.num_ctx`), which
+# `/v1` silently drops; without it every model runs at the server's default
+# (4096 tokens on most machines) and the conversation is silently truncated.
+# No key is needed for a local server (`auth = "optional_key"`): the provider
+# is *pointed at* instead, with `OLLAMA_HOST` — Ollama's own variable, in its
+# own grammar (`localhost:11434`, `0.0.0.0`, `https://host`), which `/login`
+# writes for you — and a stored `OLLAMA_API_KEY` rides as a bearer for a
+# server that wants one. The listing is `/api/tags` + `/api/show`, which is
+# where the context window, vision, tools and thinking come from.
+[providers.ollama]
+name = "Ollama"
+auth = "optional_key"
+wire_api = "ollama"
+api_key_env = "OLLAMA_API_KEY"
+api_base_env = "OLLAMA_HOST"
+
+[providers.ollama.kwargs]
+api_base = "http://127.0.0.1:11434"
+
+# Ollama's hosted models (ollama.com), reached directly with an API key from
+# ollama.com/settings/keys — the same wire, an ordinary pasted key. A local
+# server signed in with `ollama signin` lists its `-cloud` models under the
+# `ollama` provider above instead.
+[providers.ollama_cloud]
+name = "Ollama Cloud"
+wire_api = "ollama"
+api_key_env = "OLLAMA_API_KEY"
+
+[providers.ollama_cloud.kwargs]
+api_base = "https://ollama.com"
 
 [providers.openrouter]
 name = "OpenRouter"

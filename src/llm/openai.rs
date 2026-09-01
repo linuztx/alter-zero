@@ -147,6 +147,7 @@ impl OpenAiClient {
         match self.cfg.wire_api {
             super::WireApi::Responses => format!("{base}/responses"),
             super::WireApi::Anthropic => format!("{base}/messages"),
+            super::WireApi::Ollama => format!("{base}/api/chat"),
             super::WireApi::Chat => format!("{base}/chat/completions"),
         }
     }
@@ -159,6 +160,9 @@ impl OpenAiClient {
             }
             super::WireApi::Anthropic => {
                 super::anthropic::build_payload(&self.cfg, &self.tools, messages)
+            }
+            super::WireApi::Ollama => {
+                super::ollama::build_payload(&self.cfg, &self.tools, messages)
             }
             super::WireApi::Chat => self.build_payload(messages),
         }
@@ -327,9 +331,14 @@ impl OpenAiClient {
         // than the file names. See `docs/copilot.md`.
         let auth = super::auth::request_auth(&self.cfg)?;
         let url = self.request_url(auth.base.as_deref());
+        // Ollama streams NDJSON rather than SSE; the header names which.
+        let accept = match self.cfg.wire_api {
+            super::WireApi::Ollama => "application/x-ndjson",
+            _ => "text/event-stream",
+        };
         let mut req = client
             .post(url)
-            .header("accept", "text/event-stream")
+            .header("accept", accept)
             .header("content-type", "application/json")
             .json(&self.request_payload(&messages));
         if let Some(key) = &auth.bearer {
@@ -359,6 +368,7 @@ impl OpenAiClient {
         let outcome = match self.cfg.wire_api {
             super::WireApi::Responses => drain_responses(&rx, cancel, on_delta),
             super::WireApi::Anthropic => drain_anthropic(&rx, cancel, on_delta),
+            super::WireApi::Ollama => drain_ollama(&rx, cancel, on_delta),
             super::WireApi::Chat => drain_stream(&rx, cancel, on_delta),
         };
         outcome.map_err(|e| self.explain(e))
@@ -369,8 +379,33 @@ impl OpenAiClient {
     /// and nothing a user can act on (and the commonest of them,
     /// `model_not_supported`, is not even about the request being malformed),
     /// and a ChatGPT 401 means a sign-in to redo rather than a request to fix.
-    /// Every pasted-key provider's error passes through exactly as it did.
+    /// Every pasted-key provider's error passes through exactly as it did —
+    /// except on the Ollama wire, whose failures are mostly about the
+    /// *machine* (the server not running, a model not pulled, a capability
+    /// the model lacks) and say so in words a user can act on
+    /// (`docs/ollama.md`).
     fn explain(&self, error: LlmError) -> LlmError {
+        if self.cfg.wire_api == super::WireApi::Ollama {
+            return match error {
+                LlmError::Http(message) => {
+                    let base = self.base_url(None);
+                    match super::ollama::connection_advice(&base, &message) {
+                        Some(advice) => LlmError::Http(advice),
+                        None => LlmError::Http(message),
+                    }
+                }
+                LlmError::Api { status, body } => {
+                    match super::ollama::advice(status, &body, &self.cfg.model) {
+                        Some(advice) => LlmError::Api {
+                            status,
+                            body: advice,
+                        },
+                        None => LlmError::Api { status, body },
+                    }
+                }
+                other => other,
+            };
+        }
         let LlmError::Api { status, body } = &error else {
             return error;
         };
@@ -392,7 +427,7 @@ impl OpenAiClient {
             super::AuthScheme::ApiKey if self.cfg.wire_api == super::WireApi::Anthropic => {
                 super::claude::auth_advice(*status, body)
             }
-            super::AuthScheme::ApiKey => None,
+            super::AuthScheme::ApiKey | super::AuthScheme::OptionalKey => None,
         };
         match advice {
             Some(advice) => LlmError::Api {
@@ -597,6 +632,54 @@ fn drain_anthropic(
             response: text,
             reasoning,
         },
+        tool_calls,
+        finish_reason,
+        usage,
+    })
+}
+
+/// [`drain_stream`]'s Ollama sibling, over the same [`pump_lines`] byte
+/// loop — an NDJSON stream is one JSON object per line, which is exactly
+/// what the line pump already hands out — so Esc is honoured identically on
+/// all four wire formats. The fold is [`super::ollama::ChatAccumulator`]'s.
+fn drain_ollama(
+    rx: &Receiver<Result<Vec<u8>>>,
+    cancel: &CancelToken,
+    mut on_delta: impl FnMut(Delta),
+) -> Result<StreamOutcome> {
+    use super::ollama::Step;
+
+    let mut acc = super::ollama::ChatAccumulator::default();
+    pump_lines(rx, cancel, &mut |line: &[u8]| {
+        let Ok(text) = std::str::from_utf8(line) else {
+            return SseStep::Continue;
+        };
+        match acc.on_line(text) {
+            Step::Delta(delta) => {
+                on_delta(delta);
+                // The final frame can carry text of its own; it is still the
+                // final frame.
+                if acc.is_finished() {
+                    SseStep::Done
+                } else {
+                    SseStep::Continue
+                }
+            }
+            Step::Continue => SseStep::Continue,
+            Step::Done => SseStep::Done,
+            Step::Failed(message) => SseStep::Fail(LlmError::Api {
+                status: 0,
+                body: message,
+            }),
+        }
+    })?;
+    if let Some(tail) = acc.flush() {
+        on_delta(tail);
+    }
+    let text = acc.text();
+    let (tool_calls, finish_reason, usage) = acc.finish();
+    Ok(StreamOutcome {
+        text,
         tool_calls,
         finish_reason,
         usage,

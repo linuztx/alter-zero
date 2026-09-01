@@ -43,6 +43,8 @@ fn main() {
             temperature: Some(0.0),
             thinking: None,
             vision: None,
+            context: None,
+            api_base: None,
             // The production shape (main.rs::session_cache_key): a per-process
             // affinity key so multi-round turns pin to one warm cache
             // (docs/prompt-caching.md).

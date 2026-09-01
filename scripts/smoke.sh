@@ -19,6 +19,11 @@ for _key_var in $(env | sed -n 's/^\([A-Za-z0-9_]*API_KEY\)=.*/\1/p'); do
 	unset "$_key_var"
 done
 unset _key_var
+# The Ollama provider is configured by being *pointed at* rather than keyed
+# (docs/ollama.md): a developer's own `OLLAMA_HOST` (or an exported
+# `ALTER_ZERO_PROVIDER=ollama`) would make the /model phases fetch from a
+# server the suite doesn't run instead of reading `run /login to add one`.
+unset OLLAMA_HOST ALTER_ZERO_PROVIDER
 
 BIN="${1:-target/debug/alter-zero}"
 S="alterzero_smoke_$$"

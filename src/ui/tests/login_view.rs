@@ -4,7 +4,7 @@ use super::*;
 
 /// The key step's whole page height (see `key_onboarding_lines`).
 const LOGIN_KEY_ROWS: u16 = 9;
-use crate::ui::login_view::login_key_prompt;
+use crate::ui::login_view::{login_host_prompt, login_key_prompt};
 use crate::ui::theme::{
     DEVICE_CURSOR_ROW, ERROR_COLOR, LOGIN_KEY_INPUT_ROW, LOGIN_SEARCH_ROW, LOGIN_TITLE_COLOR,
     MODEL_META_COLOR, MODEL_SELECTED_COLOR,
@@ -177,6 +177,69 @@ fn login_key_prompt_avoids_a_doubled_api() {
         login_key_prompt("OpenRouter"),
         "Enter your OpenRouter API key"
     );
+}
+
+/// The flow parked on the **host** field — Ollama's row, added as a third
+/// choice for these tests alone.
+fn login_app_host() -> App {
+    let mut app = App::new();
+    let mut choices = login_choices();
+    choices.push(host_choice());
+    app.open_key_onboarding(choices, login_subscriptions(), "~/.alter-zero/.env");
+    let onboarding = app.key_onboarding.as_mut().unwrap();
+    onboarding.step = KeyStep::Key;
+    onboarding.chosen = Some(2);
+    assert!(onboarding.chosen_provider().unwrap().key_kind.is_host());
+    app
+}
+
+#[test]
+fn render_login_host_step_asks_for_the_host_and_shows_it_unmasked() {
+    // A host is not a secret: the title says what it wants, the field shows
+    // what was typed (a URL typed blind is a URL typed wrong), and the hint
+    // says an empty Enter takes the default (docs/ollama.md).
+    let mut app = login_app_host();
+    app.key_onboarding.as_mut().unwrap().key_input = "myhost:11434".into();
+    let onboarding = app.key_onboarding.as_ref().unwrap();
+    let mut buf = buffer(60, LOGIN_KEY_ROWS);
+    render_key_onboarding(buf.area, &mut buf, onboarding);
+    assert!(
+        row(&buf, 2, 60).contains("Enter your Ollama host"),
+        "{:?}",
+        row(&buf, 2, 60)
+    );
+    assert!(
+        !row(&buf, 2, 60).contains("API key"),
+        "not a key: {:?}",
+        row(&buf, 2, 60)
+    );
+    let field = row(&buf, LOGIN_KEY_INPUT_ROW, 60);
+    assert!(field.contains("myhost:11434"), "unmasked: {field:?}");
+    assert!(!field.contains('•'), "no dots: {field:?}");
+    let hint = row(&buf, LOGIN_KEY_INPUT_ROW + 2, 60);
+    assert!(
+        hint.contains("Enter to save") && hint.contains("empty"),
+        "{hint:?}"
+    );
+}
+
+#[test]
+fn render_login_host_step_offers_the_default_when_empty() {
+    let app = login_app_host();
+    let onboarding = app.key_onboarding.as_ref().unwrap();
+    let mut buf = buffer(60, LOGIN_KEY_ROWS);
+    render_key_onboarding(buf.area, &mut buf, onboarding);
+    let field = row(&buf, LOGIN_KEY_INPUT_ROW, 60);
+    assert!(
+        field.contains("http://127.0.0.1:11434"),
+        "the default is the placeholder: {field:?}"
+    );
+    assert!(!field.contains("paste your API key"), "{field:?}");
+}
+
+#[test]
+fn login_host_prompt_names_the_provider() {
+    assert_eq!(login_host_prompt("Ollama"), "Enter your Ollama host");
 }
 
 #[test]

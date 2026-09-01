@@ -144,7 +144,7 @@ without a real terminal.
 | `src/textarea.rs` | The editable multi-line input: a movable grapheme-aware cursor, wrapped ↑/↓, insert/delete anywhere. | ✅ |
 | `src/ui/`    | Pure rendering, one module per area (`docs/module-layout.md`): display-width word-wrap, styled message/tool lines, the live-region geometry, the status line, the bands + footer, commit bookkeeping. All styling lives in `ui/theme.rs`. | ✅ |
 | `src/stream/` | The backend seam, one module per area (`docs/module-layout.md`): the `StreamEvent` protocol, the `ReplySource` trait, a `CancelToken` — and the offline `DummyAi` in its own `dummy/` subtree, whose scenario registry decides which canned demo a prompt plays (`docs/dummy-backend.md`). | ✅ (pure parts, token & dummy) |
-| `src/llm/` | The real OpenAI-compatible backend: `providers.toml` config, the streaming SSE client, the reasoning splitter, the `/v1/models` listing, the `.env` key store (`/login`), the GitHub Copilot device sign-in and the OpenAI ChatGPT browser sign-in (each with its own token exchange), the Responses wire format, the `config.json` model store (`/model`), and the `ReplySource` bridge. | ✅ (pure cores) |
+| `src/llm/` | The real OpenAI-compatible backend: `providers.toml` config, the streaming SSE client, the reasoning splitter, the `/v1/models` listing, the `.env` key store (`/login`), the GitHub Copilot device sign-in and the OpenAI ChatGPT browser sign-in (each with its own token exchange), the Responses, Messages and native-Ollama wire formats, the `config.json` model store (`/model`), and the `ReplySource` bridge. | ✅ (pure cores) |
 | `src/hooks/` | Lifecycle hooks (`docs/hooks.md`): the `hooks.json` format, which handlers an event selects, the JSON payload each writes to a handler's stdin and the verdict its stdout is parsed back into. The spawn lives in `src/llm/hooks.rs`. | ✅ |
 | `src/file_search.rs` | The pure core of the `@` file picker: token detection, fuzzy matching, ranking. | ✅ |
 | `src/frame.rs` | The frame scheduler: coalesces redraw requests into ticks, rate-limited to 120 fps. | ✅ (pure parts) |
@@ -236,7 +236,16 @@ Or sign in from inside the app with **`/login`**, which asks how first —
   `/models` listing feeds the same context-window gauge, vision degradation
   and Ctrl+T ladder every other provider gets.
 - **An API key** is the old flow: pick a provider (**Agent Zero API**,
-  **OpenRouter**) and paste its key.
+  **Anthropic**, **OpenRouter**, **Ollama Cloud**) and paste its key.
+- **Ollama** (`docs/ollama.md`) — local models, no key: pick **Ollama** in the
+  same list and press Enter to accept the default host (or type one in
+  Ollama's own `OLLAMA_HOST` grammar), and `/model` lists what `ollama pull`
+  fetched, each row carrying its context window, vision and thinking off
+  `/api/tags` + `/api/show`. The backend speaks Ollama's **native** API rather
+  than its OpenAI-compatible `/v1`, because only the native one lets a request
+  set the context window (`options.num_ctx`) — without it every model runs at
+  the server's 4096-token default and the conversation is silently truncated.
+  The window the footer gauges against is the window the server holds.
 
 Either way the secret lands in `~/.alter-zero/.env` (git-ignored) so it
 persists across runs. The dummy stays the default and the fallback — the real backend
@@ -405,8 +414,8 @@ mid-turn — and persist to `~/.alter-zero/settings.json` as a diff from the
 defaults; an `ALTER_ZERO_*` override still wins for the run it was set in, but
 never gets saved on top of your choice.
 
-Providers live in `providers.toml` (repo root; an Agent-Zero/Venice proxy and
-OpenRouter ship by default). To plug in a *non*-OpenAI-shaped
+Providers live in `providers.toml` (repo root; an Agent-Zero/Venice proxy,
+OpenRouter, Anthropic, the two subscriptions and Ollama ship by default). To plug in a *non*-OpenAI-shaped
 backend instead, implement `ReplySource` (with `DummyAi`/`LlmBackend` as
 templates) — `spawn(prompt, images, tx, cancel)` streams `StreamEvent::Chunk(..)`
 per token, polls the `CancelToken`, then sends `StreamDone` (or `Error(msg)`);

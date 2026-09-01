@@ -69,7 +69,8 @@ impl RequestAuth {
 ///
 /// - **[`AuthScheme::ApiKey`]** → the stored key and nothing else, with **no
 ///   I/O at all**. Every ordinary provider's path is byte-identical to what
-///   it was before the subscriptions existed.
+///   it was before the subscriptions existed. [`AuthScheme::OptionalKey`] is
+///   the same answer, a stored key or none (`docs/ollama.md`).
 /// - **[`AuthScheme::GithubCopilot`]** → the exchanged Copilot bearer and the
 ///   account's own host (`docs/copilot.md`).
 /// - **[`AuthScheme::OpenAiChatGpt`]** → an access token minted from the
@@ -97,7 +98,10 @@ pub(crate) fn request_auth(cfg: &ModelConfig) -> Result<RequestAuth> {
         AuthScheme::ApiKey if cfg.wire_api == WireApi::Anthropic => {
             Ok(RequestAuth::keyed_header("x-api-key", cfg.api_key.clone()))
         }
-        AuthScheme::ApiKey => Ok(RequestAuth::key(cfg.api_key.clone())),
+        // A key that is optional rides exactly as a required one does when
+        // it is there — and, unlike every other scheme, its absence is not a
+        // request that cannot be made (`docs/ollama.md`).
+        AuthScheme::ApiKey | AuthScheme::OptionalKey => Ok(RequestAuth::key(cfg.api_key.clone())),
         AuthScheme::AnthropicConsole => {
             let Some(refresh) = stored else {
                 return Ok(RequestAuth::default());

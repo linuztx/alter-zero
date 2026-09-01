@@ -287,20 +287,58 @@ pub(super) fn sample_choices() -> Vec<ProviderChoice> {
             name: "Agent Zero API".into(),
             env_var: "A0_VENICE_API_KEY".into(),
             configured: false,
+            key_kind: KeyKind::Secret,
         },
         ProviderChoice {
             id: "openrouter".into(),
             name: "OpenRouter".into(),
             env_var: "OPENROUTER_API_KEY".into(),
             configured: true,
+            key_kind: KeyKind::Secret,
         },
         ProviderChoice {
             id: "together".into(),
             name: "Together AI".into(),
             env_var: "TOGETHER_API_KEY".into(),
             configured: false,
+            key_kind: KeyKind::Secret,
         },
     ]
+}
+
+/// A host-configured provider row — Ollama's, whose `/login` field asks for
+/// where the server is rather than a secret (`docs/ollama.md`).
+pub(super) fn host_choice() -> ProviderChoice {
+    ProviderChoice {
+        id: "ollama".into(),
+        name: "Ollama".into(),
+        env_var: "OLLAMA_HOST".into(),
+        configured: false,
+        key_kind: KeyKind::Host {
+            default: "http://127.0.0.1:11434".into(),
+        },
+    }
+}
+
+/// The flow parked on the host field for [`host_choice`]'s provider.
+pub(super) fn host_app() -> App {
+    let mut app = App::new();
+    let mut choices = sample_choices();
+    choices.push(host_choice());
+    app.open_key_onboarding(choices, sample_subscriptions(), "~/.alter-zero/.env");
+    app.on_key(key(KeyCode::Down)); // "Use an API key"
+    app.on_key(key(KeyCode::Enter));
+    {
+        let onboarding = app.key_onboarding.as_mut().unwrap();
+        onboarding.selected = onboarding
+            .matches()
+            .iter()
+            .position(|p| p.id == "ollama")
+            .unwrap();
+    }
+    app.on_key(key(KeyCode::Enter));
+    assert_eq!(app.key_onboarding.as_ref().unwrap().step, KeyStep::Key);
+    app
 }
 
 /// The subscription rows the boundary injects — one, GitHub Copilot.

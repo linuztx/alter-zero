@@ -259,7 +259,42 @@ reports a few dozen tokens against a 1M window. `capabilities.effort` is the
 `capabilities.image_input` and `max_input_tokens` — the window, not the
 `max_tokens` output cap sitting next to it — and the listing asks
 `limit=1000` because its default page of 20 truncates the catalog with no
-error anywhere) in `docs/claude.md`; the **Ctrl+T thinking-mode
+error anywhere) in `docs/claude.md`; the **Ollama provider** — local models
+over a **fourth wire format** (`wire_api = "ollama"`, `src/llm/ollama.rs`,
+`docs/ollama.md`), Ollama's *native* `/api/chat` rather than its
+OpenAI-compatible `/v1`, for the one thing `/v1` cannot carry:
+`options.num_ctx`. Ollama loads a model at a 4096-token context on most
+machines and truncates a longer prompt **silently** from the front, so the
+window the footer gauges against is the window the request asks for —
+`ModelConfig::context`, filled from the same `context_window()` the gauge
+reads, the startup probe rebinding on this wire alone once the listing
+names it; the per-model rule is the Modelfile's own `num_ctx` (only
+`/api/show` carries it, which is why the catalog shows every model), else
+`OLLAMA_CONTEXT_LENGTH`, else the 32K `DEFAULT_NUM_CTX_CAP`, never past the
+model's maximum, the cloud uncapped, `ALTER_ZERO_CONTEXT_WINDOW` outranking
+all of it. No key is needed (`auth = "optional_key"`, the one scheme
+`is_usable` accepts keyless; a stored `OLLAMA_API_KEY` still rides as a
+bearer for the cloud or a proxy), so the provider is **configured by being
+pointed at** — `OLLAMA_HOST` resolving (`api_base_env`, Ollama's own grammar
+ported as `ollama::host_url`), a key, or `ALTER_ZERO_PROVIDER` — which is
+what keeps every `/model` open from fetching a server most users don't run;
+`/login`'s row for it is a **host field** (`KeyKind::Host`: shown as typed,
+an empty Enter saving the default) rather than a masked secret. The catalog
+is `/api/tags` plus one `/api/show` per model, answering all three
+capability questions natively — `vision`/`thinking` off the explicit
+`capabilities` list (absence is *no*; an embedding-only model is not
+offered), the window as above; `thinking` makes an on/off reasoner
+(`think: true/false`, on by default — the seeded mode says so) except the
+gpt-oss family, whose thinking is a `low/medium/high` **level** with no Off.
+The stream is NDJSON over the shared `pump_lines`, a tool call landing
+**whole** with **object** arguments (and sent back as one — a string is a
+400), an image riding as bare base64 in `images`, a tool result naming its
+tool, usage the final frame's `prompt_eval_count`/`eval_count` (verified to
+report the whole prompt on a cache hit), and the machine-shaped refusals —
+server not running, model not pulled, `does not support tools/thinking`, an
+image on a blind model — rewritten into what to do. `tests/live_ollama.rs`
+drives it against a real server; `smoke.sh` unsets `OLLAMA_HOST` beside its
+key scrub for hermeticity; the **Ctrl+T thinking-mode
 cycle** (a reasoning-capable model's effort — detected per model from the
 provider's `/v1/models`, shown beside the model name in the footer, cycled
 with a `Thinking: {mode}` toast, riding the request as the unified `reasoning`
