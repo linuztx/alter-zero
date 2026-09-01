@@ -7,11 +7,13 @@
 //! base64-encodes it — codex parity). A file already in an accepted format is
 //! **copied verbatim** (no decode/re-encode — the fast path), and so — on
 //! Linux — is a screenshot: the owner offers it as `image/png`, and the
-//! `linux` half streams those bytes to the temp file instead of letting
-//! arboard decode them to RGBA for us to encode straight back, a round trip
-//! that cost ~24 MB of transient memory per paste and left a residue behind
-//! (`docs/memory.md`). Anything else is transcoded to PNG, encoded straight
-//! into the file rather than through a growing in-memory buffer. The event
+//! `linux` half streams those bytes to the temp file — before arboard is even
+//! constructed — instead of letting arboard decode them to RGBA for us to
+//! encode straight back, a round trip that cost ~24 MB of transient memory
+//! per paste and left a residue behind (`docs/memory.md`); the stream is
+//! capped at [`CLIPBOARD_IMAGE_MAX_BYTES`] so an owner can't fill the disk.
+//! Anything else is transcoded to PNG, encoded straight into the file rather
+//! than through a growing in-memory buffer. The event
 //! loop calls this on a **background thread**
 //! (`main.rs::spawn_image_paste`): a large screenshot's PNG encode takes real
 //! time, and running it on the loop would freeze the status animations. The
@@ -27,11 +29,94 @@
 //! attach/placeholder logic in `App` ([`crate::app::App::attach_image`]), and
 //! the `base64`/OSC 52 framing below (like `frame`'s rate-limit math).
 
-use std::io::Write;
-use std::path::PathBuf;
+use std::io::{self, Read, Write};
+use std::path::{Path, PathBuf};
 
 #[cfg(target_os = "linux")]
 mod linux;
+
+/// The most bytes a clipboard image may stream into the temp file before the
+/// paste is refused — a bound on the *file*, since the streaming paths never
+/// hold the picture in memory (the `SHELL_OUTPUT_MAX_BYTES` posture: an owner
+/// that streams forever must not fill the disk). Public so the memory gate
+/// (`tests/image_paste_memory.rs`) can name what it drives against.
+pub const CLIPBOARD_IMAGE_MAX_BYTES: u64 = 256 * 1024 * 1024;
+
+/// The buffer the streaming paths move bytes through — with the odd property
+/// slice or pipe read, the whole of what a streamed paste costs in memory.
+const STREAM_BUF_BYTES: usize = 64 * 1024;
+
+/// Why a streamed clipboard image produced no temp file.
+#[derive(Debug)]
+pub(crate) enum StreamError {
+    /// The stream passed [`CLIPBOARD_IMAGE_MAX_BYTES`]. Terminal: the paste is
+    /// refused outright rather than handed to a path that would *decode* the
+    /// very picture the cap exists to keep out of memory.
+    TooLarge(String),
+    /// Anything else — a server that couldn't be reached, an owner that
+    /// stalled, a header that didn't parse. The caller may fall through.
+    Failed(String),
+}
+
+impl StreamError {
+    fn into_message(self) -> String {
+        match self {
+            Self::TooLarge(message) | Self::Failed(message) => message,
+        }
+    }
+}
+
+/// A writer that refuses to pass `max` bytes — `InvalidData` the moment a
+/// stream would exceed it — so a runaway or lying clipboard owner is cut off
+/// rather than filling the disk. Pure over the inner writer, so it is
+/// unit-tested with a cap of a kilobyte.
+pub(crate) struct CappedWriter<W: Write> {
+    inner: W,
+    written: u64,
+    max: u64,
+    exceeded: bool,
+}
+
+impl<W: Write> CappedWriter<W> {
+    pub(crate) fn new(inner: W, max: u64) -> Self {
+        Self {
+            inner,
+            written: 0,
+            max,
+            exceeded: false,
+        }
+    }
+
+    /// Whether a write was refused for passing the cap.
+    pub(crate) fn exceeded(&self) -> bool {
+        self.exceeded
+    }
+
+    #[cfg(test)]
+    pub(crate) fn into_inner(self) -> W {
+        self.inner
+    }
+}
+
+impl<W: Write> Write for CappedWriter<W> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        let room = self.max.saturating_sub(self.written);
+        if u64::try_from(buf.len()).unwrap_or(u64::MAX) > room {
+            self.exceeded = true;
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("the image exceeds {} bytes", self.max),
+            ));
+        }
+        let n = self.inner.write(buf)?;
+        self.written += n as u64;
+        Ok(n)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.inner.flush()
+    }
+}
 
 /// Read an image from the system clipboard, returning the path to a freshly
 /// written temporary image file (kept on disk for the backend to read by
@@ -45,11 +130,27 @@ mod linux;
 ///
 /// Mirrors codex: prefer an image *file* on the clipboard (e.g. one copied in
 /// a GUI file manager) — copied verbatim when it is already in an accepted
-/// format, transcoded to PNG otherwise (`temp_image_from_files`) — then, on
-/// Linux, the owner's own `image/png` bytes streamed to disk (`linux`),
-/// and last the raw RGBA image bytes (e.g. a screenshot on macOS or
-/// Windows, where the OS hands over pixels), which are PNG-encoded.
+/// format, transcoded to PNG otherwise (`temp_image_from_files`) — preceded,
+/// on Linux, by the owner's own encoded bytes streamed to disk (`linux` —
+/// `image/png` first, then `jpeg`/`gif`/`webp`), and followed by the raw
+/// RGBA image bytes (e.g. a screenshot on macOS or Windows, where the OS
+/// hands over pixels), which are PNG-encoded.
 pub fn read_clipboard_image() -> Result<PathBuf, String> {
+    // Linux first, and before arboard is so much as constructed (each
+    // construction is an X11 connection and a serving thread, torn down again
+    // at the end): the owner offers a screenshot as `image/png` already — the
+    // one target arboard would ask it for — so take the bytes as bytes,
+    // streamed to the temp file, instead of having them decoded to RGBA only
+    // to encode them back (`linux`). Nothing found, or a read that failed,
+    // falls through to arboard's own path, so the worst case is unchanged; a
+    // stream past the byte cap is the one refusal that does not fall through.
+    #[cfg(target_os = "linux")]
+    match linux::stream_image_to_temp() {
+        Ok(Some(path)) => return Ok(path),
+        Err(StreamError::TooLarge(reason)) => return Err(reason),
+        Ok(None) | Err(StreamError::Failed(_)) => {}
+    }
+
     let mut clipboard =
         arboard::Clipboard::new().map_err(|e| format!("clipboard unavailable: {e}"))?;
 
@@ -61,20 +162,86 @@ pub fn read_clipboard_image() -> Result<PathBuf, String> {
         return result;
     }
 
-    // On Linux the owner offers a screenshot as `image/png` already — and
-    // that is all arboard ever asks it for — so take the bytes as bytes,
-    // streamed to the temp file, instead of having them decoded to RGBA only
-    // to encode them back (`linux`). Whatever the direct read can't settle
-    // falls through to arboard's own path, so the worst case is unchanged.
-    #[cfg(target_os = "linux")]
-    if let Ok(Some(path)) = linux::stream_png_to_temp() {
-        return Ok(path);
-    }
-
     // Raw image bytes (e.g. a screenshot) — rebuild and PNG-encode.
     let image = clipboard_raw_image(&mut clipboard)
         .ok_or_else(|| "no image on the clipboard".to_string())?;
     encode_png_to_temp(&image)
+}
+
+/// Stream an **already-encoded** image — the clipboard's own `image/png`
+/// bytes — into a kept temp file with extension `ext`, verbatim: no decode,
+/// no re-encode, and never more than a buffer's worth of it in memory at
+/// once. The header must parse as a picture once written
+/// (`image::image_dimensions` reads only the header), so a source that lied
+/// is refused with its file removed; a stream past
+/// [`CLIPBOARD_IMAGE_MAX_BYTES`] is refused the same way. Public for the
+/// memory gate, which has no clipboard to stream from.
+pub fn stream_encoded_image_to_temp(reader: &mut impl Read, ext: &str) -> Result<PathBuf, String> {
+    stream_encoded_image_to_temp_in(
+        &std::env::temp_dir(),
+        reader,
+        ext,
+        CLIPBOARD_IMAGE_MAX_BYTES,
+    )
+}
+
+/// [`stream_encoded_image_to_temp`] with the temp directory and the byte cap
+/// spelled out — the testable half, so a refused stream can be shown to
+/// leave nothing behind without writing a quarter of a gigabyte to prove it.
+fn stream_encoded_image_to_temp_in(
+    dir: &Path,
+    reader: &mut impl Read,
+    ext: &str,
+    max: u64,
+) -> Result<PathBuf, String> {
+    match stream_into_temp(dir, ext, max, |out| {
+        io::copy(reader, out)
+            .map(Some)
+            .map_err(|e| format!("could not stream the image: {e}"))
+    }) {
+        Ok(Some(path)) => Ok(path),
+        Ok(None) => Err("the clipboard image was empty".to_string()),
+        Err(error) => Err(error.into_message()),
+    }
+}
+
+/// Stream one encoded image into a kept temp file with extension `ext`.
+///
+/// `fill` writes the bytes to the writer it is handed — through a buffer and
+/// under the byte cap — answering `Ok(None)` when the source turned out to
+/// hold nothing (the file is then discarded and `Ok(None)` returned). The
+/// header is parsed before the file is kept, so an owner that lied about its
+/// target is refused with its file removed. Shared by the Linux clipboard
+/// reads and the reader-based [`stream_encoded_image_to_temp`].
+pub(crate) fn stream_into_temp(
+    dir: &Path,
+    ext: &str,
+    max: u64,
+    fill: impl FnOnce(&mut dyn Write) -> Result<Option<u64>, String>,
+) -> Result<Option<PathBuf>, StreamError> {
+    let tmp = tempfile::Builder::new()
+        .prefix("alter-zero-clipboard-")
+        .suffix(&format!(".{ext}"))
+        .tempfile_in(dir)
+        .map_err(|e| StreamError::Failed(format!("could not create a temp file: {e}")))?;
+    {
+        let mut out = CappedWriter::new(
+            io::BufWriter::with_capacity(STREAM_BUF_BYTES, tmp.as_file()),
+            max,
+        );
+        match fill(&mut out) {
+            Ok(Some(_)) => {}
+            // Every early return drops `tmp`, which deletes the file.
+            Ok(None) => return Ok(None),
+            Err(reason) if out.exceeded() => return Err(StreamError::TooLarge(reason)),
+            Err(reason) => return Err(StreamError::Failed(reason)),
+        }
+        out.flush()
+            .map_err(|e| StreamError::Failed(format!("could not write the image: {e}")))?;
+    }
+    image::image_dimensions(tmp.path())
+        .map_err(|e| StreamError::Failed(format!("the clipboard image did not parse: {e}")))?;
+    keep_temp(tmp).map(Some).map_err(StreamError::Failed)
 }
 
 /// Produce the temp file for the first usable image among `files`, or `None`
@@ -391,6 +558,115 @@ mod tests {
         assert_eq!(path.extension().unwrap(), "png");
         assert!(image::open(&path).is_ok(), "the copy is a valid PNG");
         let _ = std::fs::remove_file(path);
+    }
+
+    // ===== the streamed clipboard image (docs/image-paste.md) =====
+
+    fn tiny_png() -> Vec<u8> {
+        let mut out = std::io::Cursor::new(Vec::new());
+        image::RgbaImage::from_fn(3, 2, |x, y| {
+            image::Rgba([x as u8 * 40, y as u8 * 90, 7, 255])
+        })
+        .write_to(&mut out, image::ImageFormat::Png)
+        .unwrap();
+        out.into_inner()
+    }
+
+    #[test]
+    fn a_capped_writer_passes_everything_under_the_cap() {
+        let data: Vec<u8> = (0..300_000u32).map(|i| (i % 251) as u8).collect();
+        let mut out = CappedWriter::new(Vec::new(), 1 << 20);
+        std::io::copy(&mut &data[..], &mut out).unwrap();
+        assert_eq!(out.into_inner(), data, "bytes verbatim, in order");
+    }
+
+    #[test]
+    fn a_capped_writer_refuses_a_stream_past_the_cap() {
+        use std::io::Read as _;
+        let mut out = CappedWriter::new(Vec::new(), 1024);
+        let err = std::io::copy(&mut std::io::repeat(7).take(1025), &mut out).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+        // Exactly at the cap is fine: the cap bounds the file, it is not a
+        // strict inequality that turns a legitimate size into an error.
+        let mut out = CappedWriter::new(Vec::new(), 1024);
+        std::io::copy(&mut std::io::repeat(7).take(1024), &mut out).unwrap();
+        assert_eq!(out.into_inner().len(), 1024);
+    }
+
+    #[test]
+    fn an_encoded_clipboard_image_streams_verbatim_into_a_temp_file() {
+        // The clipboard already holds a PNG, so its bytes go straight to the
+        // temp file — never decoded, never re-encoded, never held whole.
+        let dir = tempfile::tempdir().unwrap();
+        let png = tiny_png();
+        let path = stream_encoded_image_to_temp_in(dir.path(), &mut &png[..], "png", 1 << 20)
+            .expect("the encoded bytes are accepted");
+        assert_eq!(path.parent().unwrap(), dir.path());
+        assert_eq!(path.extension().unwrap(), "png");
+        assert_eq!(std::fs::read(&path).unwrap(), png, "bytes verbatim");
+        assert!(
+            path.file_name()
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .starts_with("alter-zero-clipboard-"),
+            "the same temp-file family the other paths write"
+        );
+    }
+
+    #[test]
+    fn junk_bytes_on_the_image_target_are_refused_and_leave_no_file() {
+        // An owner that advertises image/png but serves garbage: the header
+        // check refuses it — the caller falls through to arboard — and the
+        // half-written temp file goes with the refusal.
+        let dir = tempfile::tempdir().unwrap();
+        let junk = b"definitely not a png".to_vec();
+        assert!(
+            stream_encoded_image_to_temp_in(dir.path(), &mut &junk[..], "png", 1 << 20).is_err()
+        );
+        assert_eq!(
+            std::fs::read_dir(dir.path()).unwrap().count(),
+            0,
+            "a refused stream leaves nothing behind"
+        );
+    }
+
+    #[test]
+    fn an_empty_image_target_is_refused_too() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(
+            stream_encoded_image_to_temp_in(dir.path(), &mut &b""[..], "png", 1 << 20).is_err()
+        );
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn a_stream_past_the_byte_cap_is_a_refusal_the_caller_can_tell_apart() {
+        // A runaway owner is cut off at the cap — and reported as *too large*,
+        // not as "nothing here": falling through to arboard would have it
+        // decode the very picture the cap exists to keep out of memory.
+        use std::io::Read as _;
+        let dir = tempfile::tempdir().unwrap();
+        let mut endless = std::io::repeat(0x89).take(4096);
+        let err = stream_encoded_image_to_temp_in(dir.path(), &mut endless, "png", 1024)
+            .expect_err("refused");
+        assert!(err.contains("exceeds"), "{err}");
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn the_png_fallback_round_trips_the_pixels_exactly() {
+        // The decode path's encoder streams into the temp file — no whole-PNG
+        // buffer — and PNG is lossless, so what comes back is pixel-identical.
+        let original = image::RgbaImage::from_fn(5, 4, |x, y| {
+            image::Rgba([x as u8 * 50, y as u8 * 60, 3, 200])
+        });
+        let path =
+            encode_png_to_temp(&image::DynamicImage::ImageRgba8(original.clone())).expect("encode");
+        let back = image::open(&path).unwrap().into_rgba8();
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(back.dimensions(), (5, 4));
+        assert_eq!(back.into_raw(), original.into_raw());
     }
 
     #[test]

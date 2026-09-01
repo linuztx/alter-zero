@@ -7,26 +7,35 @@
 //! that upload pixels — the `read` tool's image branch and a Ctrl+V
 //! attachment — run their bytes through here first.
 //!
-//! Boundary code (it decodes and re-encodes); the shrink-only aspect math it
-//! sits on is the pure [`super::resize_target`], and a PNG's shrink is the
-//! streaming [`super::fitted`] decode, so a 4K screenshot costs its 2000-pixel
-//! target to send — on every turn it stays in context — rather than its own
-//! 33 MB (`docs/memory.md`).
+//! Two things keep that from being the memory spike it used to be
+//! (`docs/memory.md`). The shrink itself rides [`super::fitted`]: a PNG is
+//! area-averaged **as its rows stream past**, so the file's own pixel count
+//! never lands on the heap, and anything else is thumbnailed without the
+//! resampler's `f32` pass, and refused whole past
+//! [`super::WHOLE_DECODE_MAX_PIXELS`]. And the result is **kept on disk** — one
+//! sidecar per picture under the session's temp root
+//! ([`set_payload_cache_dir`]), keyed on the file's path, size, mtime and the
+//! cap — because an attachment is re-sent with the context on **every later
+//! turn**, and each of those used to decode and shrink the original all over
+//! again. A later turn now reads a small file it already has
+//! ([`cached_downscale`]) and touches the original only to `stat` it.
+//!
+//! Boundary code (it decodes, re-encodes and writes); the key and the
+//! shrink-only aspect math it sits on are pure and tested.
 
-use image::{DynamicImage, ImageFormat, imageops::FilterType};
+use std::io::Cursor;
+use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
 
-use super::{AUTO_RESIZE_MAX_PIXELS, auto_resizing, fitted, resize_target};
+use image::{DynamicImage, ImageFormat};
+
+use super::fitted::{decode_png_fitted, whole_decode_fits};
+use super::{AUTO_RESIZE_MAX_PIXELS, auto_resizing, resize_target};
 
 /// The JPEG quality a downscaled photo is re-encoded at — the reference
 /// harness's 80, indistinguishable from the original at this size and a
 /// fraction of a PNG of the same picture.
 const JPEG_QUALITY: u8 = 80;
-
-/// The most pixels a picture may have before the downscale declines to touch
-/// it. Decoding is `4 × width × height` bytes of resident memory
-/// (`docs/memory.md`), so a 12000×12000 scan would cost 576 MB to shrink —
-/// past this the caller refuses the read instead, and says so.
-const MAX_DECODE_PIXELS: u64 = 50_000_000;
 
 /// The most *source* bytes the downscale will decode, for the shapes where
 /// the pixel count alone doesn't bound the work (a deeply-layered PNG, an
@@ -57,8 +66,55 @@ pub fn downscale_for_model(bytes: &[u8], format: ImageFormat) -> Option<Downscal
     downscale_to(bytes, format, AUTO_RESIZE_MAX_PIXELS)
 }
 
+/// [`downscale_for_model`] for the picture **at `path`**, through the disk
+/// cache: a payload built on an earlier turn is read back, and one built now
+/// is written for the next. `bytes` is the file's content, which the callers
+/// already hold — the `read` tool read it for its fact line, the request
+/// builder to fall back to the original. The same `None` cases as the
+/// uncached form; the cache never changes *what* is sent, only what it costs.
+#[must_use]
+pub fn downscale_for_model_at(
+    path: &Path,
+    bytes: &[u8],
+    format: ImageFormat,
+) -> Option<Downscaled> {
+    if !auto_resizing() {
+        return None;
+    }
+    if let Some(hit) = cached_downscale(path, format) {
+        return Some(hit);
+    }
+    let small = downscale_to(bytes, format, AUTO_RESIZE_MAX_PIXELS)?;
+    if let Some(sidecar) = sidecar(path, format, AUTO_RESIZE_MAX_PIXELS) {
+        remember(&sidecar, &small.bytes);
+    }
+    Some(small)
+}
+
+/// The payload already built for the picture at `path`, if this session's
+/// cache holds one for the file **as it is now** — same size and mtime — and
+/// the setting is on. Nothing is decoded: the sidecar is read and its header
+/// asked for the size. `None` is "build it", never an error.
+#[must_use]
+pub fn cached_downscale(path: &Path, format: ImageFormat) -> Option<Downscaled> {
+    if !auto_resizing() {
+        return None;
+    }
+    let sidecar = sidecar(path, format, AUTO_RESIZE_MAX_PIXELS)?;
+    let bytes = std::fs::read(&sidecar).ok()?;
+    let format = payload_format(format);
+    let size = image::ImageReader::with_format(Cursor::new(&bytes), format)
+        .into_dimensions()
+        .ok()?;
+    Some(Downscaled {
+        bytes,
+        format,
+        size,
+    })
+}
+
 /// [`downscale_for_model`] with the cap spelled out — the testable half,
-/// which does not consult the policy.
+/// which does not consult the policy or the cache.
 #[must_use]
 pub fn downscale_to(bytes: &[u8], format: ImageFormat, max: u32) -> Option<Downscaled> {
     if bytes.len() > MAX_DECODE_BYTES {
@@ -67,14 +123,11 @@ pub fn downscale_to(bytes: &[u8], format: ImageFormat, max: u32) -> Option<Downs
     // Ask the header for the size before decoding a single pixel: that read is
     // a few hundred bytes, and it is what keeps an absurd image from being
     // materialised in memory just to discover it is absurd.
-    let px = image::ImageReader::with_format(std::io::Cursor::new(bytes), format)
+    let px = image::ImageReader::with_format(Cursor::new(bytes), format)
         .into_dimensions()
         .ok()?;
-    if u64::from(px.0) * u64::from(px.1) > MAX_DECODE_PIXELS {
-        return None;
-    }
     let (width, height) = resize_target(px, max)?;
-    let resized = shrink(bytes, format, (width, height))?;
+    let resized = shrink(bytes, format, px, (width, height))?;
     let size = (resized.width(), resized.height());
     let (encoded, format) = encode(&resized, format)?;
     (encoded.len() < bytes.len()).then_some(Downscaled {
@@ -87,25 +140,44 @@ pub fn downscale_to(bytes: &[u8], format: ImageFormat, max: u32) -> Option<Downs
 /// `bytes` decoded and shrunk to `target`. A PNG streams through the fitted
 /// decoder, which holds the target and one row rather than the whole
 /// picture; anything else — or a PNG the streaming decoder declines — is
-/// decoded whole and shrunk with `Triangle`, over the default nearest
-/// neighbour, because this picture is going to a model and nearest-neighbour
-/// downscaling of text in a screenshot drops whole strokes.
-fn shrink(bytes: &[u8], format: ImageFormat, target: (u32, u32)) -> Option<DynamicImage> {
+/// decoded whole (refused past [`super::WHOLE_DECODE_MAX_PIXELS`], where the whole
+/// decode would be the spike this module exists to avoid) and thumbnailed: a
+/// box filter that keeps a screenshot's thin strokes where nearest-neighbour
+/// drops them, and unlike `resize` needs no `f32` working copy of the source.
+fn shrink(
+    bytes: &[u8],
+    format: ImageFormat,
+    px: (u32, u32),
+    target: (u32, u32),
+) -> Option<DynamicImage> {
     if format == ImageFormat::Png
-        && let Ok(image) = fitted::decode_png_fitted(std::io::Cursor::new(bytes), |_| target)
+        && let Ok(image) = decode_png_fitted(Cursor::new(bytes), |_| target)
     {
         return Some(image);
     }
+    if !whole_decode_fits(px) {
+        return None;
+    }
     let image = image::load_from_memory_with_format(bytes, format).ok()?;
-    Some(image.resize(target.0, target.1, FilterType::Triangle))
+    Some(image.thumbnail_exact(target.0, target.1))
 }
 
-/// Re-encode `image`: a JPEG source stays JPEG (a photo as PNG grows), and
-/// everything else — PNG, GIF, WebP — becomes PNG, which is the only other
+/// What a source `format` is re-encoded as: a JPEG stays JPEG (a photo as
+/// PNG grows), everything else — PNG, GIF, WebP — becomes PNG, the only other
 /// format this build has an encoder for.
-fn encode(image: &DynamicImage, source: ImageFormat) -> Option<(Vec<u8>, ImageFormat)> {
-    let mut out = std::io::Cursor::new(Vec::new());
+fn payload_format(source: ImageFormat) -> ImageFormat {
     if source == ImageFormat::Jpeg {
+        ImageFormat::Jpeg
+    } else {
+        ImageFormat::Png
+    }
+}
+
+/// Re-encode `image` as [`payload_format`] says.
+fn encode(image: &DynamicImage, source: ImageFormat) -> Option<(Vec<u8>, ImageFormat)> {
+    let mut out = Cursor::new(Vec::new());
+    let format = payload_format(source);
+    if format == ImageFormat::Jpeg {
         // JPEG has no alpha channel; handing it RGBA is an encoder error.
         image
             .to_rgb8()
@@ -114,8 +186,95 @@ fn encode(image: &DynamicImage, source: ImageFormat) -> Option<(Vec<u8>, ImageFo
                 JPEG_QUALITY,
             ))
             .ok()?;
-        return Some((out.into_inner(), ImageFormat::Jpeg));
+    } else {
+        image.write_to(&mut out, ImageFormat::Png).ok()?;
     }
-    image.write_to(&mut out, ImageFormat::Png).ok()?;
-    Some((out.into_inner(), ImageFormat::Png))
+    Some((out.into_inner(), format))
+}
+
+// --- The disk cache ---
+
+fn cache_dir_cell() -> &'static Mutex<Option<PathBuf>> {
+    static DIR: OnceLock<Mutex<Option<PathBuf>>> = OnceLock::new();
+    DIR.get_or_init(|| Mutex::new(None))
+}
+
+/// Publish where this session keeps its downscaled payloads — the boundary's
+/// one write, at startup (`{session_root}/images`, created there). `None`
+/// (the default, and every unit test) means every turn builds its payloads
+/// afresh, as before the cache existed.
+pub fn set_payload_cache_dir(dir: Option<PathBuf>) {
+    if let Ok(mut guard) = cache_dir_cell().lock() {
+        *guard = dir;
+    }
+}
+
+fn payload_cache_dir() -> Option<PathBuf> {
+    cache_dir_cell().lock().ok()?.clone()
+}
+
+/// The sidecar's file name for the picture at `path` in a given state, under
+/// a given cap: 32 hex digits of a SHA-256 over all four, so a changed file
+/// (a new size or mtime) or a changed cap is a different entry and a stale
+/// payload can never be served. Pure, tested.
+#[must_use]
+pub fn payload_cache_key(path: &Path, len: u64, mtime_nanos: u128, max: u32) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(path.as_os_str().as_encoded_bytes());
+    hasher.update(len.to_le_bytes());
+    hasher.update(mtime_nanos.to_le_bytes());
+    hasher.update(max.to_le_bytes());
+    hasher
+        .finalize()
+        .iter()
+        .take(16)
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+/// The file's size and modification time, the two facts the key is made of.
+fn file_state(path: &Path) -> Option<(u64, u128)> {
+    let meta = std::fs::metadata(path).ok()?;
+    let mtime = meta
+        .modified()
+        .ok()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_nanos();
+    Some((meta.len(), mtime))
+}
+
+/// Where the payload for `path` lives, if a cache dir is set and the file can
+/// be described.
+fn sidecar(path: &Path, format: ImageFormat, max: u32) -> Option<PathBuf> {
+    let dir = payload_cache_dir()?;
+    let (len, mtime) = file_state(path)?;
+    let ext = if payload_format(format) == ImageFormat::Jpeg {
+        "jpg"
+    } else {
+        "png"
+    };
+    Some(dir.join(format!(
+        "{}.{ext}",
+        payload_cache_key(path, len, mtime, max)
+    )))
+}
+
+/// Write `bytes` at `sidecar` — through a temp file and a rename, so a turn
+/// reading the cache on another thread never sees a half-written payload.
+/// Best-effort: a cache that can't be written costs a rebuild next turn.
+fn remember(sidecar: &Path, bytes: &[u8]) {
+    let Some(dir) = sidecar.parent() else {
+        return;
+    };
+    let Ok(tmp) = tempfile::Builder::new()
+        .prefix(".payload-")
+        .tempfile_in(dir)
+    else {
+        return;
+    };
+    if std::fs::write(tmp.path(), bytes).is_ok() {
+        let _ = tmp.persist(sidecar);
+    }
 }

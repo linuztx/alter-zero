@@ -105,6 +105,11 @@ impl<'t> Session<'t> {
         // about no scratchpad and its writes there get no exemption.
         let session_tmp = config::session_tmp_root(&session_id);
         let scratchpad_dir = config::prepare_scratchpad(&session_tmp);
+        // Beside it, `images/` (docs/images.md "Memory"): the backend re-sends
+        // every attached picture on every later turn, so the shrunk copy it
+        // builds is kept here and read back instead of being decoded from the
+        // original each time.
+        alter_zero::images::set_payload_cache_dir(config::prepare_image_cache(&session_tmp));
 
         // The background-shell registry (docs/background.md): processes launched
         // by the model's `run_in_background` bash calls (or moved back with

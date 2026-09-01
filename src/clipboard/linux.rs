@@ -1,4 +1,4 @@
-//! Linux: the clipboard's `image/png` bytes, streamed straight to the temp
+//! Linux: the clipboard's own encoded image, streamed straight to the temp
 //! file.
 //!
 //! A screenshot tool puts its picture on the clipboard **as a PNG** — under
@@ -13,20 +13,28 @@
 //! dynamic `mmap` threshold past their own size, which is what later turned
 //! every same-sized buffer into a permanent heap residue (`docs/memory.md`).
 //!
-//! So on Linux the paste asks the owner for the PNG itself and **copies the
-//! bytes to the temp file as they arrive**: a Wayland offer is a pipe
+//! So on Linux the paste asks the owner for the encoded bytes itself and
+//! **copies them to the temp file as they arrive**: a Wayland offer is a pipe
 //! (`wl-clipboard-rs`, the crate arboard's Wayland backend is built on), and
 //! an X11 selection is fetched a bounded slice at a time — `INCR` segments
 //! as the owner sends them, each property read in 1 MiB pieces — so the read
-//! holds about a megabyte whatever the picture weighs. No decode, no encode,
-//! and a paste that was slower than the screenshot tool is now a file copy.
+//! holds about a megabyte whatever the picture weighs. It asks for
+//! `image/png` first and the other formats the backend accepts after it
+//! ([`TARGETS`]), each landing under its own extension, and it runs **before
+//! arboard is constructed**, since that construction is an X11 connection and
+//! a serving thread of its own. No decode, no encode, and a paste that was
+//! slower than the screenshot tool is now a file copy.
 //!
-//! Anything the direct read cannot settle — no `image/png` offered, a
+//! Anything the direct read cannot settle — no encoded target offered, a
 //! server it can't reach, a transfer that stalls — answers `Ok(None)` or
-//! `Err`, and the caller falls through to arboard's own path, so the worst
-//! case is exactly what it was. Boundary I/O: `tests/clipboard_linux.rs`
-//! drives it against a real X server (both transfer shapes) under Xvfb, and
-//! `scripts/smoke.sh` covers the no-clipboard failure.
+//! [`StreamError::Failed`], and the caller falls through to arboard's own
+//! path, so the worst case is exactly what it was. The one exception is a
+//! stream past [`super::CLIPBOARD_IMAGE_MAX_BYTES`], which is refused
+//! outright ([`StreamError::TooLarge`]): handing it to a path that decodes
+//! would be the very cost the cap exists to prevent. Boundary I/O:
+//! `tests/clipboard_linux.rs` drives it against a real X server (both
+//! transfer shapes, a second format, and a clipboard with nothing to offer)
+//! under Xvfb, and `scripts/smoke.sh` covers the no-server failure.
 
 use std::io::{self, Write};
 use std::path::PathBuf;
@@ -40,7 +48,19 @@ use x11rb::protocol::xproto::{
 use x11rb::rust_connection::RustConnection;
 use x11rb::{COPY_DEPTH_FROM_PARENT, COPY_FROM_PARENT, CURRENT_TIME, NONE};
 
-/// How long the selection owner gets to answer the conversion request —
+use super::StreamError;
+
+/// The encoded targets worth asking for, best first, with the temp-file
+/// extension each is written under — the same accepted set the pasted-file
+/// path copies verbatim (`super::accepted_image_extension`).
+const TARGETS: [(&str, &str); 4] = [
+    ("image/png", "png"),
+    ("image/jpeg", "jpg"),
+    ("image/gif", "gif"),
+    ("image/webp", "webp"),
+];
+
+/// How long the selection owner gets to answer a conversion request —
 /// arboard's own budget, since an owner may render the picture on demand.
 const FIRST_REPLY_TIMEOUT: Duration = Duration::from_secs(4);
 
@@ -52,214 +72,286 @@ const SEGMENT_TIMEOUT: Duration = Duration::from_secs(2);
 /// picture weighs. (arboard fetches a property whole.)
 const PROPERTY_SLICE_LONGS: u32 = 256 * 1024;
 
-/// Stream the clipboard's PNG into a kept temp file, or `Ok(None)` when the
-/// clipboard offers no PNG (or what it offers isn't one) — the caller then
-/// takes arboard's path. `Err` is a read that started and failed.
-pub(super) fn stream_png_to_temp() -> Result<Option<PathBuf>, String> {
-    let tmp = tempfile::Builder::new()
-        .prefix("alter-zero-clipboard-")
-        .suffix(".png")
-        .tempfile()
-        .map_err(|e| format!("could not create a temp file: {e}"))?;
-    let streamed = {
-        let mut out = io::BufWriter::new(tmp.as_file());
-        let streamed = stream_png(&mut out)?;
-        out.flush()
-            .map_err(|e| format!("could not write the image: {e}"))?;
-        streamed
-    };
-    if streamed.is_none() || image::image_dimensions(tmp.path()).is_err() {
-        // Nothing offered, or an owner that mislabelled its data: the temp
-        // file goes with the guard, and arboard gets its turn.
-        return Ok(None);
-    }
-    super::keep_temp(tmp).map(Some)
-}
-
-/// Copy the clipboard's `image/png` bytes to `out`: the Wayland offer when a
-/// compositor is reachable, else the X11 selection (arboard's own fallback
-/// order). `Ok(Some(bytes))` on a transfer, `Ok(None)` when no PNG is on
-/// offer.
-fn stream_png(out: &mut impl Write) -> Result<Option<u64>, String> {
-    if std::env::var_os("WAYLAND_DISPLAY").is_some() {
-        match wayland_stream_png(out) {
-            Ok(done) => return Ok(done),
+/// Stream the clipboard's encoded image into a kept temp file, or `Ok(None)`
+/// when no display server offered one — the caller then takes arboard's
+/// path. Tries the compositor the environment names: Wayland when
+/// `WAYLAND_DISPLAY` is set (arboard's own order), then X11 when `DISPLAY`
+/// is — XWayland included, since a Wayland session with no data-control
+/// protocol still serves its clipboard over X11.
+pub(super) fn stream_image_to_temp() -> Result<Option<PathBuf>, StreamError> {
+    let set = |name: &str| std::env::var_os(name).is_some_and(|v| !v.is_empty());
+    if set("WAYLAND_DISPLAY") {
+        match wayland_stream() {
+            Ok(found) => return Ok(found),
             // A compositor this can't talk to falls back to X11 — arboard's
             // rule, since WAYLAND_DISPLAY alone doesn't prove a data-control
             // protocol is there.
             Err(WaylandFailure::Unavailable) => {}
-            Err(WaylandFailure::Read(e)) => return Err(e),
+            Err(WaylandFailure::Stream(error)) => return Err(error),
         }
     }
-    x11_stream_png(out)
+    if !set("DISPLAY") {
+        return Ok(None);
+    }
+    x11_stream()
 }
 
 /// Why a Wayland read didn't deliver: no compositor to ask (try X11), or a
-/// transfer that failed (report it).
+/// stream that failed or was refused (report it).
 enum WaylandFailure {
     Unavailable,
-    Read(String),
+    Stream(StreamError),
 }
 
-/// The Wayland half: the offer arrives on a pipe, and a pipe copies to a file
-/// in a stack buffer.
-fn wayland_stream_png(out: &mut impl Write) -> Result<Option<u64>, WaylandFailure> {
+/// The Wayland half: an offer arrives on a pipe, and a pipe copies to a file
+/// through a stack buffer.
+fn wayland_stream() -> Result<Option<PathBuf>, WaylandFailure> {
     use wl_clipboard_rs::paste::{ClipboardType, Error, MimeType, Seat, get_contents};
-    match get_contents(
-        ClipboardType::Regular,
-        Seat::Unspecified,
-        MimeType::Specific("image/png"),
-    ) {
-        Ok((mut pipe, _mime)) => io::copy(&mut pipe, out)
-            .map(Some)
-            .map_err(|e| WaylandFailure::Read(format!("could not read the clipboard: {e}"))),
-        Err(Error::ClipboardEmpty | Error::NoMimeType) => Ok(None),
-        Err(
-            Error::SocketOpenError(_) | Error::WaylandConnection(_) | Error::MissingProtocol { .. },
-        ) => Err(WaylandFailure::Unavailable),
-        Err(e) => Err(WaylandFailure::Read(format!("Wayland: {e}"))),
+    let dir = std::env::temp_dir();
+    for (mime, ext) in TARGETS {
+        match get_contents(
+            ClipboardType::Regular,
+            Seat::Unspecified,
+            MimeType::Specific(mime),
+        ) {
+            Ok((mut pipe, _mime)) => {
+                let stored =
+                    super::stream_into_temp(&dir, ext, super::CLIPBOARD_IMAGE_MAX_BYTES, |out| {
+                        io::copy(&mut pipe, out)
+                            .map(Some)
+                            .map_err(|e| format!("could not read the clipboard: {e}"))
+                    })
+                    .map_err(WaylandFailure::Stream)?;
+                if let Some(path) = stored {
+                    return Ok(Some(path));
+                }
+            }
+            // The owner has other targets but not this one — ask for the next.
+            Err(Error::NoMimeType) => {}
+            Err(Error::ClipboardEmpty) => return Ok(None),
+            Err(
+                Error::SocketOpenError(_)
+                | Error::WaylandConnection(_)
+                | Error::MissingProtocol { .. },
+            ) => return Err(WaylandFailure::Unavailable),
+            Err(e) => {
+                return Err(WaylandFailure::Stream(StreamError::Failed(format!(
+                    "Wayland: {e}"
+                ))));
+            }
+        }
     }
+    Ok(None)
 }
 
 fn x11_err(e: impl std::fmt::Display) -> String {
     format!("X11: {e}")
 }
 
-/// The X11 half: ask the owner to convert `CLIPBOARD` to `image/png` into a
-/// property on a window of ours, then copy that property out — whole, or in
-/// the `INCR` segments a large picture arrives in.
-fn x11_stream_png(out: &mut impl Write) -> Result<Option<u64>, String> {
-    let (conn, screen) = RustConnection::connect(None).map_err(x11_err)?;
-    let root = conn
-        .setup()
-        .roots
-        .get(screen)
-        .ok_or_else(|| x11_err("no screen"))?
-        .root;
-    let win = conn.generate_id().map_err(x11_err)?;
-    conn.create_window(
-        COPY_DEPTH_FROM_PARENT,
-        win,
-        root,
-        0,
-        0,
-        1,
-        1,
-        0,
-        WindowClass::COPY_FROM_PARENT,
-        COPY_FROM_PARENT,
-        // The owner's segments announce themselves as property changes on
-        // our window; nothing else is wanted.
-        &CreateWindowAux::new().event_mask(EventMask::PROPERTY_CHANGE),
-    )
-    .map_err(x11_err)?;
-    let atom = |name: &str| -> Result<Atom, String> {
-        Ok(conn
+/// The X11 half: one connection, one hidden window, and a selection request
+/// per candidate target — the property copied out whole, or in the `INCR`
+/// segments a large picture arrives in.
+fn x11_stream() -> Result<Option<PathBuf>, StreamError> {
+    let x11 = X11::connect().map_err(StreamError::Failed)?;
+    let dir = std::env::temp_dir();
+    let mut found = None;
+    for (mime, ext) in TARGETS {
+        let target = x11.atom(mime).map_err(StreamError::Failed)?;
+        match super::stream_into_temp(&dir, ext, super::CLIPBOARD_IMAGE_MAX_BYTES, |out| {
+            x11.fetch(target, out)
+        }) {
+            Ok(Some(path)) => {
+                found = Some(path);
+                break;
+            }
+            // Not offered — ask for the next target.
+            Ok(None) => {}
+            Err(error) => {
+                x11.close();
+                return Err(error);
+            }
+        }
+    }
+    x11.close();
+    Ok(found)
+}
+
+/// One X11 connection with the window the owner's answers land on.
+struct X11 {
+    conn: RustConnection,
+    win: u32,
+    clipboard: Atom,
+    incr: Atom,
+    property: Atom,
+}
+
+impl X11 {
+    fn connect() -> Result<Self, String> {
+        let (conn, screen) = RustConnection::connect(None).map_err(x11_err)?;
+        let root = conn
+            .setup()
+            .roots
+            .get(screen)
+            .ok_or_else(|| x11_err("no screen"))?
+            .root;
+        let win = conn.generate_id().map_err(x11_err)?;
+        conn.create_window(
+            COPY_DEPTH_FROM_PARENT,
+            win,
+            root,
+            0,
+            0,
+            1,
+            1,
+            0,
+            WindowClass::COPY_FROM_PARENT,
+            COPY_FROM_PARENT,
+            // The owner's segments announce themselves as property changes on
+            // our window; nothing else is wanted.
+            &CreateWindowAux::new().event_mask(EventMask::PROPERTY_CHANGE),
+        )
+        .map_err(x11_err)?;
+        let mut x11 = Self {
+            conn,
+            win,
+            clipboard: NONE,
+            incr: NONE,
+            property: NONE,
+        };
+        x11.clipboard = x11.atom("CLIPBOARD")?;
+        x11.incr = x11.atom("INCR")?;
+        x11.property = x11.atom("ALTER_ZERO_CLIPBOARD")?;
+        Ok(x11)
+    }
+
+    fn atom(&self, name: &str) -> Result<Atom, String> {
+        Ok(self
+            .conn
             .intern_atom(false, name.as_bytes())
             .map_err(x11_err)?
             .reply()
             .map_err(x11_err)?
             .atom)
-    };
-    let clipboard = atom("CLIPBOARD")?;
-    let png = atom("image/png")?;
-    let incr = atom("INCR")?;
-    let property = atom("ALTER_ZERO_CLIPBOARD")?;
-    conn.delete_property(win, property).map_err(x11_err)?;
-    conn.convert_selection(win, clipboard, png, property, CURRENT_TIME)
-        .map_err(x11_err)?;
-    conn.flush().map_err(x11_err)?;
+    }
 
-    let mut deadline = Instant::now() + FIRST_REPLY_TIMEOUT;
-    let mut incremental = false;
-    let mut written = 0u64;
-    while Instant::now() < deadline {
-        let Some(event) = conn.poll_for_event().map_err(x11_err)? else {
-            std::thread::sleep(Duration::from_millis(1));
-            continue;
-        };
-        match event {
-            Event::SelectionNotify(ev) if ev.requestor == win && ev.selection == clipboard => {
-                // A `NONE` property is the owner declining the target: it has
-                // no PNG to give (ICCCM §2.2).
-                if ev.property == NONE || ev.target != png {
-                    return Ok(None);
-                }
-                // Ask only for the property's type first: a zero-length read
-                // answers with the type and the size, and nothing else.
-                let head = conn
-                    .get_property(false, win, property, AtomEnum::ANY, 0, 0)
-                    .map_err(x11_err)?
-                    .reply()
-                    .map_err(x11_err)?;
-                if head.type_ == incr {
-                    // INCR: the property holds a size hint, and *deleting* it
-                    // is what tells the owner to start sending segments.
-                    conn.get_property(true, win, property, incr, 0, 1)
+    /// Let the window go; the connection itself closes with the value.
+    fn close(&self) {
+        let _ = self.conn.destroy_window(self.win);
+        let _ = self.conn.flush();
+    }
+
+    /// Ask the owner to convert `CLIPBOARD` to `target` into our property and
+    /// copy the answer to `out`. `Ok(None)` when the owner declines the
+    /// target — it has no such picture.
+    fn fetch(&self, target: Atom, out: &mut dyn Write) -> Result<Option<u64>, String> {
+        let conn = &self.conn;
+        conn.delete_property(self.win, self.property)
+            .map_err(x11_err)?;
+        conn.convert_selection(
+            self.win,
+            self.clipboard,
+            target,
+            self.property,
+            CURRENT_TIME,
+        )
+        .map_err(x11_err)?;
+        conn.flush().map_err(x11_err)?;
+
+        let mut deadline = Instant::now() + FIRST_REPLY_TIMEOUT;
+        let mut incremental = false;
+        let mut written = 0u64;
+        while Instant::now() < deadline {
+            let Some(event) = conn.poll_for_event().map_err(x11_err)? else {
+                std::thread::sleep(Duration::from_millis(1));
+                continue;
+            };
+            match event {
+                Event::SelectionNotify(ev)
+                    if ev.requestor == self.win && ev.selection == self.clipboard =>
+                {
+                    // A `NONE` property is the owner declining the target: it
+                    // has no such picture to give (ICCCM §2.2).
+                    if ev.property == NONE || ev.target != target {
+                        return Ok(None);
+                    }
+                    // Ask only for the property's type first: a zero-length
+                    // read answers with the type and the size, nothing else.
+                    let head = conn
+                        .get_property(false, self.win, self.property, AtomEnum::ANY, 0, 0)
                         .map_err(x11_err)?
                         .reply()
                         .map_err(x11_err)?;
-                    conn.flush().map_err(x11_err)?;
-                    incremental = true;
+                    if head.type_ == self.incr {
+                        // INCR: the property holds a size hint, and *deleting*
+                        // it is what tells the owner to start sending segments.
+                        conn.get_property(true, self.win, self.property, self.incr, 0, 1)
+                            .map_err(x11_err)?
+                            .reply()
+                            .map_err(x11_err)?;
+                        conn.flush().map_err(x11_err)?;
+                        incremental = true;
+                        deadline = Instant::now() + SEGMENT_TIMEOUT;
+                    } else if head.type_ == target {
+                        written += self.drain_property(target, out)?;
+                        return Ok(Some(written));
+                    } else {
+                        return Err(x11_err(
+                            "the clipboard owner answered with an unexpected type",
+                        ));
+                    }
+                }
+                Event::PropertyNotify(ev)
+                    if incremental
+                        && ev.window == self.win
+                        && ev.atom == self.property
+                        && ev.state == Property::NEW_VALUE =>
+                {
+                    // One segment; an empty one closes the transfer.
+                    let segment = self.drain_property(target, out)?;
+                    if segment == 0 {
+                        return Ok(Some(written));
+                    }
+                    written += segment;
                     deadline = Instant::now() + SEGMENT_TIMEOUT;
-                } else if head.type_ == png {
-                    written += drain_property(&conn, win, property, png, out)?;
-                    return Ok(Some(written));
-                } else {
-                    return Err(x11_err(
-                        "the clipboard owner answered with an unexpected type",
-                    ));
                 }
+                _ => {}
             }
-            Event::PropertyNotify(ev)
-                if incremental
-                    && ev.window == win
-                    && ev.atom == property
-                    && ev.state == Property::NEW_VALUE =>
-            {
-                // One segment; an empty one closes the transfer.
-                let segment = drain_property(&conn, win, property, png, out)?;
-                if segment == 0 {
-                    return Ok(Some(written));
-                }
-                written += segment;
-                deadline = Instant::now() + SEGMENT_TIMEOUT;
-            }
-            _ => {}
         }
+        Err(x11_err("the clipboard owner did not answer in time"))
     }
-    Err(x11_err("the clipboard owner did not answer in time"))
-}
 
-/// Copy `property` to `out` a slice at a time and delete it — the delete
-/// happens on the last slice, which under `INCR` is the owner's cue for the
-/// next segment. Returns the bytes copied.
-fn drain_property(
-    conn: &RustConnection,
-    win: u32,
-    property: Atom,
-    type_: Atom,
-    out: &mut impl Write,
-) -> Result<u64, String> {
-    let mut offset = 0u32;
-    let mut total = 0u64;
-    loop {
-        let reply = conn
-            .get_property(true, win, property, type_, offset, PROPERTY_SLICE_LONGS)
-            .map_err(x11_err)?
-            .reply()
-            .map_err(x11_err)?;
-        if reply.format == 0 && reply.bytes_after > 0 {
-            return Err(x11_err("the clipboard property changed type mid-transfer"));
+    /// Copy our property to `out` a slice at a time and delete it — the
+    /// delete happens on the last slice, which under `INCR` is the owner's
+    /// cue for the next segment. Returns the bytes copied.
+    fn drain_property(&self, type_: Atom, out: &mut dyn Write) -> Result<u64, String> {
+        let mut offset = 0u32;
+        let mut total = 0u64;
+        loop {
+            let reply = self
+                .conn
+                .get_property(
+                    true,
+                    self.win,
+                    self.property,
+                    type_,
+                    offset,
+                    PROPERTY_SLICE_LONGS,
+                )
+                .map_err(x11_err)?
+                .reply()
+                .map_err(x11_err)?;
+            if reply.format == 0 && reply.bytes_after > 0 {
+                return Err(x11_err("the clipboard property changed type mid-transfer"));
+            }
+            out.write_all(&reply.value)
+                .map_err(|e| format!("could not write the image: {e}"))?;
+            total += reply.value.len() as u64;
+            if reply.bytes_after == 0 {
+                return Ok(total);
+            }
+            offset = offset
+                .checked_add(PROPERTY_SLICE_LONGS)
+                .ok_or_else(|| x11_err("the clipboard image is too large"))?;
         }
-        out.write_all(&reply.value)
-            .map_err(|e| format!("could not write the image: {e}"))?;
-        total += reply.value.len() as u64;
-        if reply.bytes_after == 0 {
-            return Ok(total);
-        }
-        offset = offset
-            .checked_add(PROPERTY_SLICE_LONGS)
-            .ok_or_else(|| x11_err("the clipboard image is too large"))?;
     }
 }

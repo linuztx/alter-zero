@@ -18,9 +18,19 @@
 #[path = "support/x11_owner.rs"]
 mod owner;
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use owner::Owner;
+
+/// There is one `CLIPBOARD` selection per display, and `cargo test` runs
+/// tests on parallel threads — so each test holds this while it owns the
+/// selection, or the JPEG-only owner answers the PNG test's request.
+fn selection_lock() -> MutexGuard<'static, ()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
 
 /// A screenshot-shaped PNG whose bytes a decode-and-re-encode could never
 /// reproduce: encoded at a non-default compression level and carrying a text
@@ -74,6 +84,7 @@ fn a_png_on_the_clipboard_streams_to_the_temp_file_verbatim() {
     if !has_display() {
         return;
     }
+    let _selection = selection_lock();
     let png = Arc::new(served_png(1920, 1080));
     // Whole in one property, then in INCR segments the way GTK and Qt hand
     // over anything larger than a few hundred kilobytes.
@@ -99,12 +110,48 @@ fn a_png_on_the_clipboard_streams_to_the_temp_file_verbatim() {
     }
 }
 
+/// A photo-shaped JPEG, for an owner that has no PNG to offer.
+fn served_jpeg(w: u32, h: u32) -> Vec<u8> {
+    let image = image::RgbImage::from_fn(w, h, |x, y| {
+        image::Rgb([(x * 255 / w) as u8, (y * 255 / h) as u8, 90])
+    });
+    let mut out = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::ImageRgb8(image)
+        .write_to(&mut out, image::ImageFormat::Jpeg)
+        .expect("encode");
+    out.into_inner()
+}
+
+#[test]
+#[ignore = "needs an X server (DISPLAY) — run under Xvfb"]
+fn an_owner_with_only_a_jpeg_streams_it_under_its_own_extension() {
+    if !has_display() {
+        return;
+    }
+    let _selection = selection_lock();
+    // The owner declines `image/png`, so the read asks for the next accepted
+    // target and keeps the bytes under the extension that matches them —
+    // never transcoded, and never handed to arboard (which asks for PNG only).
+    let jpeg = Arc::new(served_jpeg(640, 480));
+    let _owner =
+        Owner::serve_as("image/jpeg", Some(Arc::clone(&jpeg)), None).expect("own the selection");
+    let path = alter_zero::clipboard::read_clipboard_image().expect("a temp file");
+    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    assert!(name.ends_with(".jpg"), "kept as what it is: {name}");
+    assert!(
+        std::fs::read(&path).expect("read") == *jpeg,
+        "the JPEG bytes verbatim"
+    );
+    let _ = std::fs::remove_file(&path);
+}
+
 #[test]
 #[ignore = "needs an X server (DISPLAY) — run under Xvfb"]
 fn a_clipboard_with_no_picture_is_reported_as_before() {
     if !has_display() {
         return;
     }
+    let _selection = selection_lock();
     // An owner that offers no image/png at all: the direct read finds nothing
     // and the paste fails with the message the red notice always carried.
     let _owner = Owner::serve(None, None).expect("own the selection");

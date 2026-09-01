@@ -524,8 +524,9 @@ fn read_image(path: &str, bytes: &[u8]) -> ToolOutcome {
     // and past the byte cap it could not be sent at all. The *file* is
     // untouched — only what rides the request shrinks — so the fact line
     // leads with the file's own size and names the sent one after
-    // (`docs/images.md`).
-    let sent = crate::images::downscale_for_model(bytes, format);
+    // (`docs/images.md`). Through the session's payload cache: a picture the
+    // model reads twice is shrunk once.
+    let sent = crate::images::downscale_for_model_at(std::path::Path::new(path), bytes, format);
     let (payload, mime, label) = match &sent {
         Some(small) => {
             let (mime, label) = vision_format(small.format).unwrap_or((mime, label));

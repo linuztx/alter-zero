@@ -38,6 +38,30 @@ clipboard I/O boundary (like `term.rs`): a port of codex's
 `paste_image_as_png` + `paste_image_to_temp_png`, **run on a worker thread**
 (see *Async delivery* below):
 
+0. **The owner's own encoded bytes, streamed (Linux)** — before arboard is
+   so much as constructed, since each construction is an X11 connection and a
+   serving thread torn down again at the end: a screenshot tool puts its
+   picture on the clipboard *as a PNG* — the `image/png` X11 target, the
+   `image/png` Wayland MIME — and that is the only shape arboard asks a Linux
+   owner for before decoding it to RGBA. `clipboard::linux::stream_image_to_temp`
+   asks for it directly and copies the bytes to the temp file as they arrive:
+   a Wayland offer is a pipe (`wl-clipboard-rs`, the crate arboard's own
+   Wayland backend is built on); an X11 selection is a `ConvertSelection`
+   whose answer is fetched a 1 MiB property slice at a time, `INCR` segments
+   as the owner sends them (GTK and Qt hand over anything larger than a few
+   hundred kilobytes that way). `image/png` is asked for first and the other
+   formats the backend accepts after it — `image/jpeg`, `gif`, `webp`, each
+   landing under its own extension — so an owner with only a photo is served
+   verbatim too. No decode, no encode, about a megabyte in hand whatever the
+   picture weighs; the stream is capped at `CLIPBOARD_IMAGE_MAX_BYTES`
+   (256 MiB), and a stream past it is the one refusal that does **not** fall
+   through — handing it to a path that decodes would be the very cost the cap
+   exists to prevent. An owner that offers no encoded target, a server the
+   read can't reach, or a transfer that stalls all fall through to the steps
+   below, so the worst case is exactly what it was. `docs/memory.md` has the
+   numbers: the round trip this replaces was a ~24 MB spike per paste and —
+   through glibc's dynamic `mmap` threshold — the reason later pictures
+   *stuck*.
 1. `arboard::Clipboard::new()` — failure (no display / headless / no clipboard
    server) returns `Err("clipboard unavailable: …")`.
 2. **Files first**: if the clipboard holds a file list (e.g. a file copied from
@@ -49,28 +73,13 @@ clipboard I/O boundary (like `term.rs`): a port of codex's
    (content-sniffed via `with_guessed_format`, so a mislabelled image still
    works) is transcoded to PNG. This half is filesystem-only, so unlike the
    clipboard half it **is** unit-tested headless.
-3. **The owner's own PNG, streamed (Linux)**: a screenshot tool puts its
-   picture on the clipboard *as a PNG* — the `image/png` X11 target, the
-   `image/png` Wayland MIME — and that is the only shape arboard asks a Linux
-   owner for before decoding it to RGBA. `clipboard::linux::stream_png_to_temp`
-   asks for it directly and copies the bytes to the temp file as they arrive:
-   a Wayland offer is a pipe (`wl-clipboard-rs`, the crate arboard's own
-   Wayland backend is built on); an X11 selection is a `ConvertSelection`
-   whose answer is fetched a 1 MiB property slice at a time, `INCR` segments
-   as the owner sends them (GTK and Qt hand over anything larger than a few
-   hundred kilobytes that way). No decode, no encode, about a megabyte in hand
-   whatever the picture weighs. An owner that offers no PNG, a server the read
-   can't reach, or a transfer that stalls all fall through to the next step,
-   so the worst case is exactly what it was. `docs/memory.md` has the numbers:
-   the round trip this replaces was a ~24 MB spike per paste and — through
-   glibc's dynamic `mmap` threshold — the reason later pictures *stuck*.
-4. **Raw image fallback**: otherwise `clipboard.get_image()` yields raw RGBA
-   (a screenshot on macOS or Windows, where the OS hands over pixels);
-   rebuild an `image::RgbaImage` and PNG-encode it **straight into the temp
-   file** through a `BufWriter` — not into a growing in-memory vector copied
-   to disk afterwards. `Err("no image on the clipboard")` when no path yields
-   an image.
-5. Either way the bytes land in a *kept* temp file (`tempfile::Builder` prefix
+3. **Raw image fallback**: otherwise `clipboard.get_image()` yields raw RGBA
+   (a screenshot on macOS or Windows, where the OS hands over pixels — and
+   Linux when step 0 found nothing); rebuild an `image::RgbaImage` and
+   PNG-encode it **straight into the temp file** through a `BufWriter` — not
+   into a growing in-memory vector copied to disk afterwards. `Err("no image
+   on the clipboard")` when no path yields an image.
+4. Either way the bytes land in a *kept* temp file (`tempfile::Builder` prefix
    `alter-zero-clipboard-`) whose path is returned — always **our own copy**,
    never the user's original (the discard cleanup deletes what this returns);
    the backend reads the file (the TUI never base64-encodes it — codex parity).
@@ -242,15 +251,23 @@ renders `[Image #N]` as a text marker. The `?` shortcuts band gains a
   `Failed to paste image` notice appears and the app stays alive. The happy
   path's composer half (a path → placeholder) is covered by the `attach_image`
   unit tests — codex tests it the same way.
+- `clipboard.rs` also unit-tests the streaming core headless: `CappedWriter`
+  (bytes verbatim under the cap, `InvalidData` past it, the cap itself
+  allowed) and `stream_encoded_image_to_temp_in` (an encoded PNG lands
+  verbatim in a fresh `alter-zero-clipboard-*.png`; junk, an empty target or
+  a stream past the cap is refused and leaves **no** file), plus the streamed
+  `encode_png_to_temp` round-tripping pixels exactly. `tests/image_paste_memory.rs`
+  gates what each stage may cost the resident set (`docs/memory.md`).
 - `tests/clipboard_linux.rs` (ignored by default — it needs an X server):
   the read itself, against a real one. `tests/support/x11_owner.rs` is a
-  minimal selection owner that serves one `image/png` payload the way a
+  minimal selection owner that serves one encoded payload the way a
   screenshot tool does — whole in a single property, or in `INCR` segments —
   and the test requires the temp file to hold the served bytes **verbatim**
   on both shapes. The served PNG is encoded at a non-default compression
   level and carries a text chunk, so no decode-and-re-encode could reproduce
-  it: byte equality is proof the bytes were streamed. A second test owns the
-  clipboard with no picture and checks the failure message is the one the red
+  it: byte equality is proof the bytes were streamed. An owner that has only
+  a JPEG (and declines `image/png`) must land its bytes verbatim under `.jpg`,
+  and an owner with no picture at all must fail with the message the red
   notice always carried. Run it under a virtual server:
 
   ```
@@ -265,17 +282,21 @@ lets a headless box drive the real clipboard path:
 
 ```
 Xvfb :99 -screen 0 1280x800x24 &
-DISPLAY=:99 cargo run --example clipboard_owner -- 1920 1080 &   # serves a PNG, INCR
-DISPLAY=:99 ALTER_ZERO_DUMMY=1 cargo run                          # Ctrl+V, then Enter
+cargo build && cargo build --example clipboard_owner
+scripts/paste_mem.sh target/debug/alter-zero 1920x1080 3 halfblocks 1
 ```
 
-`clipboard_owner` is the same selection owner the integration test uses,
-serving a screenshot-shaped picture (a gradient with per-pixel noise, so it
-compresses like a real one) in 256 KB `INCR` segments — which is also how
-it serves a 4K picture arboard's own owner cannot. Sample the process's
-`VmRSS` and `VmHWM` from `/proc/<pid>/status` after each paste and each
-send; the two `docs/memory.md` tables are exactly that, five pastes and
-three paste-and-send rounds, under half-blocks and under kitty.
+`scripts/paste_mem.sh` drives the real binary in tmux: `clipboard_owner` — the
+same selection owner the integration test uses — serves a screenshot-shaped
+picture (a gradient with per-pixel noise, so it compresses like a real one) in
+256 KB `INCR` segments, which is also how it serves a 4K picture arboard's own
+owner cannot; the script presses Ctrl+V the asked number of times, optionally
+sends each picture in a turn, and prints the process's `VmRSS` and `VmHWM`
+from `/proc/<pid>/status` after every step. The `docs/memory.md` tables are
+exactly its output: five pastes, and three paste-and-send rounds, under
+half-blocks and under kitty. For the per-stage cost without a display server,
+`tests/image_paste_memory.rs` measures the streamed copy, the fitted decode and
+the payload shrink in one process.
 
 ## What is intentionally *not* here (scope)
 

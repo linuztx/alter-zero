@@ -325,11 +325,13 @@ the box) in `docs/file-search.md`; the large-paste `[Pasted Content N chars]`
 placeholder (bracketed paste → a compact placeholder, expanded back on send) in
 `docs/paste.md`; the **Ctrl+V image paste** (clipboard image → temp PNG → an
 `[Image #N]` composer placeholder whose path rides a separate typed channel to
-the backend — on Linux the owner's own `image/png` bytes are **streamed** to
-the file by `clipboard::linux`, a Wayland pipe or 1 MiB X11 property slices
-with `INCR` segments, never decoded: arboard's decode-to-RGBA plus our
-re-encode was a ~24 MB spike per paste and the block that taught glibc to
-keep the next one, `docs/memory.md`) in `docs/image-paste.md`; the **inline images** (`docs/images.md`:
+the backend — on Linux the owner's own encoded bytes are **streamed** to
+the file by `clipboard::linux` *before arboard is constructed*: `image/png`
+first, then `jpeg`/`gif`/`webp`, a Wayland pipe or 1 MiB X11 property slices
+with `INCR` segments, capped at `CLIPBOARD_IMAGE_MAX_BYTES` and never
+decoded, since arboard's decode-to-RGBA plus our re-encode was a ~24 MB
+spike per paste and the block that taught glibc to keep the next one,
+`docs/memory.md`) in `docs/image-paste.md`; the **inline images** (`docs/images.md`:
 a pasted screenshot and the `read` tool's image reads drawn as **real
 pictures** in the conversation — kitty / iTerm2 / sixel where the terminal
 speaks one, unicode half-blocks everywhere else, via **`ratatui-image`** —
@@ -418,7 +420,13 @@ placement's own geometry, since this process idles in a terminal all day
 `images::fitted` streams the file's rows through an area-average shrink into
 the reserved block (or the model's 2000-pixel cap), so the decode peak is the
 block's ~3 MB rather than the file's 8–33 MB, the whole-picture decode having
-been the residue three pasted screenshots left behind as a 103 MB process. Three `/settings` rows: **Show images** and **Image
+been the residue three pasted screenshots left behind as a 103 MB process;
+anything else decodes whole — refused past `WHOLE_DECODE_MAX_PIXELS` — and
+`thumbnail_exact`s into the box with no `f32` pass. The model payload rides
+the same fit and is **cached on disk per session** (`{session}/images/`,
+`images::payload` — keyed on path, size, mtime and cap; `cached_downscale`
+serves a re-sent attachment without opening the original), and
+`tests/image_paste_memory.rs` gates all three stages' resident growth. Three `/settings` rows: **Show images** and **Image
 width** (60/80/120, a *cap*) republish the policy and purge-rebuild so
 committed pictures change at once, while **Auto-resize images** is a
 different kind of thing entirely — the *payload*, not the screen: a

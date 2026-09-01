@@ -660,3 +660,223 @@ fn decode_png_fitted_refuses_what_is_not_a_png() {
             .is_err()
     );
 }
+
+// ===== the decoder's bounds (`fitted`) =====
+
+/// CRC-32 (IEEE) — for re-signing a hand-edited PNG chunk in a test.
+fn crc32(data: &[u8]) -> u32 {
+    let mut crc = 0xFFFF_FFFFu32;
+    for &byte in data {
+        crc ^= u32::from(byte);
+        for _ in 0..8 {
+            crc = if crc & 1 == 1 {
+                (crc >> 1) ^ 0xEDB8_8320
+            } else {
+                crc >> 1
+            };
+        }
+    }
+    !crc
+}
+
+/// Re-sign a PNG's IHDR after its bytes were edited in place (the chunk data
+/// is bytes 16..29, its CRC covers the type and the data: 12..29).
+fn resign_ihdr(png: &mut [u8]) {
+    let crc = crc32(&png[12..29]);
+    png[29..33].copy_from_slice(&crc.to_be_bytes());
+}
+
+#[test]
+fn decode_png_fitted_declines_an_interlaced_picture() {
+    // An Adam7 picture's rows don't arrive top to bottom, so it is left to
+    // the whole decode — decided from the header, before a single pixel.
+    let mut png = png_of(&image::DynamicImage::ImageRgba8(rgba_grid(4, 4)));
+    png[28] = 1; // IHDR's interlace method
+    resign_ihdr(&mut png);
+    let header = png::Decoder::new(std::io::Cursor::new(&png[..]))
+        .read_info()
+        .expect("the header still parses");
+    assert!(header.info().interlaced, "the edit took");
+    assert!(fitted::decode_png_fitted(std::io::Cursor::new(&png[..]), |px| px).is_err());
+}
+
+#[test]
+fn decode_png_fitted_expands_a_palette_picture() {
+    // `image` can't write an indexed PNG, so the png crate writes one: four
+    // palette entries with a tRNS alpha each, which the decoder expands to
+    // RGBA rows exactly as a whole decode through `image` would.
+    let (w, h) = (64u32, 40u32);
+    let mut bytes = Vec::new();
+    {
+        let mut enc = png::Encoder::new(&mut bytes, w, h);
+        enc.set_color(png::ColorType::Indexed);
+        enc.set_depth(png::BitDepth::Eight);
+        enc.set_palette(vec![10, 20, 30, 200, 100, 0, 0, 0, 255, 255, 255, 255]);
+        enc.set_trns(vec![255, 128, 255, 0]);
+        let mut writer = enc.write_header().unwrap();
+        let data: Vec<u8> = (0..w * h).map(|i| ((i / 3) % 4) as u8).collect();
+        writer.write_image_data(&data).unwrap();
+    }
+    let whole = image::load_from_memory_with_format(&bytes, image::ImageFormat::Png)
+        .unwrap()
+        .into_rgba8();
+    let got = fitted::decode_png_fitted(std::io::Cursor::new(&bytes[..]), |px| px)
+        .expect("an indexed PNG streams");
+    assert!(got.color().has_alpha(), "the tRNS alpha is kept");
+    assert_eq!(got.into_rgba8(), whole);
+}
+
+#[test]
+fn decode_png_fitted_refuses_a_header_past_the_streaming_bound() {
+    // Streaming never holds the picture, so the bound is on *time*: a header
+    // claiming 20000x20000 is refused before a row is read.
+    let mut png = png_of(&image::DynamicImage::ImageRgba8(rgba_grid(4, 4)));
+    png[16..20].copy_from_slice(&20_000u32.to_be_bytes());
+    png[20..24].copy_from_slice(&20_000u32.to_be_bytes());
+    resign_ihdr(&mut png);
+    let err =
+        fitted::decode_png_fitted(std::io::Cursor::new(&png[..]), |px| px).expect_err("refused");
+    assert!(err.contains("pixels"), "{err}");
+    assert!(
+        u64::from(20_000u32) * 20_000 > fitted::FIT_MAX_SOURCE_PIXELS,
+        "the fixture is past the bound"
+    );
+}
+
+#[test]
+fn a_whole_decode_is_refused_past_fifty_megapixels() {
+    // Decoding whole is 4 bytes a pixel resident, so the non-PNG paths ask
+    // first: a 7000x7000 photo (49 MP) decodes, a 7100x7100 one (50.4 MP) is
+    // declined rather than materialised to discover it shouldn't have been.
+    assert!(fitted::whole_decode_fits((7000, 7000)));
+    assert!(!fitted::whole_decode_fits((7100, 7100)));
+    assert_eq!(fitted::WHOLE_DECODE_MAX_PIXELS, 50_000_000);
+}
+
+// ===== the payload cache (`payload`, docs/images.md "Memory") =====
+
+#[test]
+fn payload_cache_key_names_the_file_its_state_and_the_cap() {
+    let path = std::path::Path::new("/tmp/a.png");
+    let a = payload_cache_key(path, 100, 5, 2000);
+    assert_eq!(a, payload_cache_key(path, 100, 5, 2000), "deterministic");
+    assert_ne!(
+        a,
+        payload_cache_key(std::path::Path::new("/tmp/b.png"), 100, 5, 2000),
+        "the path"
+    );
+    assert_ne!(a, payload_cache_key(path, 101, 5, 2000), "the size");
+    assert_ne!(a, payload_cache_key(path, 100, 6, 2000), "the mtime");
+    assert_ne!(a, payload_cache_key(path, 100, 5, 1000), "the cap");
+    assert!(
+        a.len() == 32 && a.chars().all(|c| c.is_ascii_hexdigit()),
+        "a bare file name, never a path: {a}"
+    );
+}
+
+#[test]
+fn a_downscaled_payload_is_written_once_and_read_back_without_decoding() {
+    let _guard = policy_lock();
+    let cache = tempfile::tempdir().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("shot.png");
+    std::fs::write(&path, encode_png(3000, 2000)).unwrap();
+    set_payload_cache_dir(Some(cache.path().to_path_buf()));
+    set_policy(ImagePolicy {
+        auto_resize: true,
+        ..ImagePolicy::default()
+    });
+
+    assert!(
+        cached_downscale(&path, image::ImageFormat::Png).is_none(),
+        "nothing cached yet"
+    );
+    let bytes = std::fs::read(&path).unwrap();
+    let first = downscale_for_model_at(&path, &bytes, image::ImageFormat::Png).expect("shrunk");
+    assert_eq!(first.size, (2000, 1333));
+    let entries: Vec<_> = std::fs::read_dir(cache.path())
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .collect();
+    assert_eq!(entries.len(), 1, "one sidecar per picture");
+    assert_eq!(
+        std::fs::read(&entries[0]).unwrap(),
+        first.bytes,
+        "the sidecar IS the payload"
+    );
+
+    let hit = cached_downscale(&path, image::ImageFormat::Png).expect("served from disk");
+    assert_eq!(hit.bytes, first.bytes);
+    assert_eq!(hit.size, first.size);
+    assert_eq!(hit.format, first.format);
+    // Asking again computes nothing new: still the one file.
+    downscale_for_model_at(&path, &bytes, image::ImageFormat::Png).expect("shrunk");
+    assert_eq!(std::fs::read_dir(cache.path()).unwrap().count(), 1);
+
+    // A changed file is a different key — a stale sidecar is never served.
+    std::fs::write(&path, encode_png(3000, 2001)).unwrap();
+    assert!(cached_downscale(&path, image::ImageFormat::Png).is_none());
+
+    set_payload_cache_dir(None);
+    set_policy(ImagePolicy::default());
+}
+
+#[test]
+fn without_a_cache_dir_the_payload_is_computed_and_nothing_is_written() {
+    let _guard = policy_lock();
+    set_payload_cache_dir(None);
+    set_policy(ImagePolicy {
+        auto_resize: true,
+        ..ImagePolicy::default()
+    });
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("shot.png");
+    std::fs::write(&path, encode_png(3000, 2000)).unwrap();
+    let bytes = std::fs::read(&path).unwrap();
+    assert!(downscale_for_model_at(&path, &bytes, image::ImageFormat::Png).is_some());
+    assert!(cached_downscale(&path, image::ImageFormat::Png).is_none());
+    assert_eq!(
+        std::fs::read_dir(dir.path()).unwrap().count(),
+        1,
+        "the picture's own directory gains no sidecar"
+    );
+    set_policy(ImagePolicy::default());
+}
+
+#[test]
+fn the_setting_off_serves_no_cached_payload_either() {
+    let _guard = policy_lock();
+    let cache = tempfile::tempdir().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("shot.png");
+    std::fs::write(&path, encode_png(3000, 2000)).unwrap();
+    set_payload_cache_dir(Some(cache.path().to_path_buf()));
+    set_policy(ImagePolicy {
+        auto_resize: true,
+        ..ImagePolicy::default()
+    });
+    let bytes = std::fs::read(&path).unwrap();
+    downscale_for_model_at(&path, &bytes, image::ImageFormat::Png).expect("cached");
+    set_policy(ImagePolicy {
+        auto_resize: false,
+        ..ImagePolicy::default()
+    });
+    assert!(
+        cached_downscale(&path, image::ImageFormat::Png).is_none(),
+        "with the row off the original goes up, whatever the cache holds"
+    );
+    assert!(downscale_for_model_at(&path, &bytes, image::ImageFormat::Png).is_none());
+    set_payload_cache_dir(None);
+    set_policy(ImagePolicy::default());
+}
+
+#[test]
+fn a_jpeg_payload_is_shrunk_to_the_target_without_a_whole_source_resample() {
+    // The non-PNG path thumbnails (a box filter with no f32 pass); the result
+    // is the right size, a JPEG, and smaller than the source.
+    let bytes = encode_jpeg(3000, 2000);
+    let small = downscale_to(&bytes, image::ImageFormat::Jpeg, 2000).expect("shrunk");
+    assert_eq!(small.size, (2000, 1333));
+    assert_eq!(small.format, image::ImageFormat::Jpeg);
+    assert!(small.bytes.len() < bytes.len());
+}

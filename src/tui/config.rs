@@ -463,6 +463,18 @@ pub(crate) fn prepare_scratchpad(session_root: &Path) -> Option<PathBuf> {
     std::fs::create_dir_all(&dir).ok().map(|()| dir)
 }
 
+/// The session's image-payload cache, **created**: `{session_root}/images`,
+/// where the backend keeps the downscaled copy of every picture it sends so a
+/// later turn re-sending an attachment reads a small file instead of decoding
+/// the original again (`docs/images.md` "Memory"). `None` when it could not
+/// be created — payloads are then rebuilt per turn, exactly as before the
+/// cache existed. Not gated with the scratchpad: it is the backend's own
+/// working space, never something the model is told about.
+pub(crate) fn prepare_image_cache(session_root: &Path) -> Option<PathBuf> {
+    let dir = scratchpad::images_dir(session_root);
+    std::fs::create_dir_all(&dir).ok().map(|()| dir)
+}
+
 /// What one checkpoint snapshot may cost before the feature switches itself
 /// off for the session — `ALTER_ZERO_CHECKPOINT_MAX_FILES` /
 /// `ALTER_ZERO_CHECKPOINT_MAX_BYTES` over the defaults, each accepting a

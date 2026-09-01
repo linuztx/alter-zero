@@ -640,30 +640,48 @@ fn chat_message(
 /// vision shape. Boundary code (file I/O); `None` when the file is unreadable,
 /// which [`chat_message`] surfaces as a text note.
 fn image_data_url(path: &Path) -> Option<String> {
-    let bytes = std::fs::read(path).ok()?;
     let mime = image_mime(path);
+    let format = image_format(mime);
     // `/settings` **Auto-resize images**: a retina screenshot is several
     // megabytes of base64 on every turn it stays in context, so it is
     // downscaled on the way out — the temp file itself, and so the picture
-    // drawn in the conversation, is untouched (`docs/images.md`).
+    // drawn in the conversation, is untouched (`docs/images.md`). The
+    // downscaled copy is kept on disk for the session, so a turn that
+    // re-sends an earlier attachment reads that small file and never opens
+    // the original — building it fresh each turn was a decode-and-shrink of
+    // the whole picture per image per request (`docs/memory.md`).
+    if let Some(format) = format
+        && let Some(small) = crate::images::cached_downscale(path, format)
+    {
+        return Some(data_url(&small.bytes, payload_mime(small.format)));
+    }
+    let bytes = std::fs::read(path).ok()?;
     let sent =
-        image_format(mime).and_then(|format| crate::images::downscale_for_model(&bytes, format));
+        format.and_then(|format| crate::images::downscale_for_model_at(path, &bytes, format));
     let (payload, mime) = match &sent {
-        Some(small) => (
-            small.bytes.as_slice(),
-            match small.format {
-                image::ImageFormat::Jpeg => "image/jpeg",
-                _ => "image/png",
-            },
-        ),
+        Some(small) => (small.bytes.as_slice(), payload_mime(small.format)),
         None => (bytes.as_slice(), mime),
     };
-    // The prefix first, the encoding appended onto it: a multi-megabyte
-    // attachment is one allocation this way, not an encoded string copied
-    // into a second one (`docs/memory.md`).
+    Some(data_url(payload, mime))
+}
+
+/// The base64 `data:` URL for an image payload — the prefix first, the
+/// encoding appended onto it, so a multi-megabyte attachment is one
+/// allocation rather than an encoded string copied into a second one
+/// (`docs/memory.md`).
+fn data_url(payload: &[u8], mime: &str) -> String {
     let mut url = format!("data:{mime};base64,");
     crate::clipboard::base64_encode_into(payload, &mut url);
-    Some(url)
+    url
+}
+
+/// The MIME a downscaled payload is sent under — the two formats the
+/// re-encoder writes.
+fn payload_mime(format: image::ImageFormat) -> &'static str {
+    match format {
+        image::ImageFormat::Jpeg => "image/jpeg",
+        _ => "image/png",
+    }
 }
 
 /// The decoder for an attachment's MIME — the inverse of [`image_mime`],

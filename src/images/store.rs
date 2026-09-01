@@ -512,38 +512,62 @@ impl ImageStore {
     }
 }
 
-/// Decode the picture at `path` for a block `box_px` pixels big.
+/// Decode the picture at `path` **no larger than** a block `box_px` pixels
+/// big.
 ///
 /// A PNG — every paste, and most screenshots a `read` meets — is decoded
 /// **fitted**: its rows stream through [`super::fitted`]'s area average and
 /// only the shrunk picture is ever held, so the peak is the block's size
 /// (~3 MB at 120 columns) rather than the file's (8 MB for a 1080p
 /// screenshot, 33 MB for 4K), and the buffer glibc was left holding after
-/// each picture with it (`docs/memory.md`). The encoder then finds a picture
-/// that already fits and builds the protocol from it as it is. Everything
-/// else — and a PNG the streaming decoder declines, such as an interlaced
-/// one — is decoded whole by `image`, as before.
-fn load_fitted(path: &str, box_px: (u32, u32)) -> Option<image::DynamicImage> {
+/// each picture with it (`docs/memory.md`). Everything else — and a PNG the
+/// streaming decoder declines, such as an interlaced one — is decoded whole,
+/// refused past [`super::WHOLE_DECODE_MAX_PIXELS`] (where the whole decode
+/// would be the spike this exists to avoid), and **thumbnailed** into the
+/// box: a box filter with no `f32` working copy of the source. Either way
+/// the encoder then finds a picture that already fits and builds the
+/// protocol from it as it is. Public for the memory gate
+/// (`tests/image_paste_memory.rs`); `None` when the file is missing, not an
+/// image, or refused.
+#[must_use]
+pub fn load_fitted(path: &str, box_px: (u32, u32)) -> Option<image::DynamicImage> {
     let reader = image::ImageReader::open(path)
         .ok()?
         .with_guessed_format()
         .ok()?;
-    if reader.format() != Some(image::ImageFormat::Png) {
-        return reader.decode().ok();
-    }
-    // The sniff seeks back to the start, so the same handle serves the
-    // streaming decode — and, should that decline, the whole one.
-    let mut file = reader.into_inner();
-    match super::fitted::decode_png_fitted(&mut file, |px| super::fitted::fit_box(px, box_px)) {
-        Ok(image) => Some(image),
-        Err(_) => {
-            use std::io::Seek as _;
-            file.seek(std::io::SeekFrom::Start(0)).ok()?;
-            image::ImageReader::with_format(file, image::ImageFormat::Png)
-                .decode()
-                .ok()
+    if reader.format() == Some(image::ImageFormat::Png) {
+        // The sniff seeks back to the start, so the same handle serves the
+        // streaming decode.
+        let mut file = reader.into_inner();
+        if let Ok(image) =
+            super::fitted::decode_png_fitted(&mut file, |px| super::fitted::fit_box(px, box_px))
+        {
+            return Some(image);
         }
     }
+    // The header first, so an absurd picture is refused before a single
+    // pixel of it is materialised.
+    let px = image::ImageReader::open(path)
+        .ok()?
+        .with_guessed_format()
+        .ok()?
+        .into_dimensions()
+        .ok()?;
+    if !super::fitted::whole_decode_fits(px) {
+        return None;
+    }
+    let image = image::ImageReader::open(path)
+        .ok()?
+        .with_guessed_format()
+        .ok()?
+        .decode()
+        .ok()?;
+    let target = super::fitted::fit_box(px, box_px);
+    Some(if target == px {
+        image
+    } else {
+        image.thumbnail_exact(target.0, target.1)
+    })
 }
 
 /// The reserved blocks `buf` holds, keyed by placement id, with every carrier

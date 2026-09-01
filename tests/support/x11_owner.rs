@@ -39,7 +39,9 @@ struct Atoms {
     clipboard: Atom,
     targets: Atom,
     incr: Atom,
-    png: Atom,
+    /// The one encoded target this owner serves (`image/png` unless told
+    /// otherwise).
+    image: Atom,
 }
 
 impl Owner {
@@ -48,6 +50,16 @@ impl Owner {
     /// whole otherwise. `None` owns the selection but offers no picture at
     /// all (the "nothing to paste" case).
     pub fn serve(
+        payload: Option<Arc<Vec<u8>>>,
+        incr_chunk: Option<usize>,
+    ) -> Result<Owner, String> {
+        Self::serve_as("image/png", payload, incr_chunk)
+    }
+
+    /// [`Owner::serve`] under a target of the caller's choosing — an owner
+    /// that has only a JPEG, say, and declines `image/png`.
+    pub fn serve_as(
+        mime: &str,
         payload: Option<Arc<Vec<u8>>>,
         incr_chunk: Option<usize>,
     ) -> Result<Owner, String> {
@@ -80,7 +92,7 @@ impl Owner {
             clipboard: atom("CLIPBOARD")?,
             targets: atom("TARGETS")?,
             incr: atom("INCR")?,
-            png: atom("image/png")?,
+            image: atom(mime)?,
         };
         conn.set_selection_owner(win, atoms.clipboard, CURRENT_TIME)
             .map_err(|e| e.to_string())?;
@@ -144,7 +156,7 @@ fn handle(
     if req.target == atoms.targets {
         let mut targets = vec![atoms.targets];
         if payload.is_some() {
-            targets.push(atoms.png);
+            targets.push(atoms.image);
         }
         conn.change_property32(
             PropMode::REPLACE,
@@ -156,7 +168,7 @@ fn handle(
         .map_err(e)?;
         return notify(conn, req, property);
     }
-    let Some(png) = payload.filter(|_| req.target == atoms.png) else {
+    let Some(png) = payload.filter(|_| req.target == atoms.image) else {
         return notify(conn, req, NONE);
     };
     match incr_chunk {
@@ -186,7 +198,7 @@ fn handle(
                     PropMode::REPLACE,
                     req.requestor,
                     property,
-                    atoms.png,
+                    atoms.image,
                     &png[offset..end],
                 )
                 .map_err(e)?;
@@ -204,7 +216,7 @@ fn handle(
             conn.flush().map_err(e)
         }
         _ => {
-            conn.change_property8(PropMode::REPLACE, req.requestor, property, atoms.png, png)
+            conn.change_property8(PropMode::REPLACE, req.requestor, property, atoms.image, png)
                 .map_err(e)?;
             notify(conn, req, property)
         }

@@ -29,6 +29,25 @@ use std::io::{BufRead, Seek};
 
 use image::{DynamicImage, RgbaImage};
 
+/// The most pixels a picture may have before a **whole** decode is refused
+/// outright — the non-PNG paths, and a PNG the streaming decoder declines.
+/// Decoding is `4 × width × height` bytes resident, so a 12000×12000 scan
+/// would cost 576 MB just to discover it should have been declined.
+pub const WHOLE_DECODE_MAX_PIXELS: u64 = 50_000_000;
+
+/// The most source pixels the streaming decode will walk. It never holds
+/// them, so this bounds **time**, not memory — a row-by-row pass over a
+/// 200-megapixel file is a few seconds on the main thread, and anything
+/// bigger is not a picture anyone pasted.
+pub const FIT_MAX_SOURCE_PIXELS: u64 = 200_000_000;
+
+/// Whether a picture of `px` pixels may be decoded **whole** — four bytes a
+/// pixel resident — under [`WHOLE_DECODE_MAX_PIXELS`]. Pure.
+#[must_use]
+pub fn whole_decode_fits(px: (u32, u32)) -> bool {
+    u64::from(px.0) * u64::from(px.1) <= WHOLE_DECODE_MAX_PIXELS
+}
+
 /// Shrink `px` proportionally until it fits inside `box_px`, never growing.
 ///
 /// This is `ratatui_image`'s own `Resize::Fit` arithmetic — which is the
@@ -222,8 +241,9 @@ impl Downsampler {
 /// one, so a re-encode for the model doesn't grow by a channel of `255`s.
 ///
 /// `Err` for anything that isn't a PNG this can stream — a different format,
-/// a corrupt file, or an **interlaced** picture, whose rows arrive out of
-/// order; the callers fall back to a whole decode for those.
+/// a corrupt or truncated file, an **interlaced** picture (whose rows arrive
+/// out of order), or one past [`FIT_MAX_SOURCE_PIXELS`]; the callers fall
+/// back to a whole decode for those, which has its own, tighter bound.
 pub fn decode_png_fitted<R: BufRead + Seek>(
     reader: R,
     target_for: impl FnOnce((u32, u32)) -> (u32, u32),
@@ -238,6 +258,12 @@ pub fn decode_png_fitted<R: BufRead + Seek>(
         return Err("an interlaced PNG is decoded whole".to_string());
     }
     let source = (info.width, info.height);
+    if u64::from(source.0) * u64::from(source.1) > FIT_MAX_SOURCE_PIXELS {
+        return Err(format!(
+            "{}x{} is more than {FIT_MAX_SOURCE_PIXELS} pixels — too large to stream",
+            source.0, source.1
+        ));
+    }
     let (color, depth) = reader.output_color_type();
     if depth != png::BitDepth::Eight {
         return Err(format!("unexpected sample depth {depth:?}"));
@@ -247,9 +273,15 @@ pub fn decode_png_fitted<R: BufRead + Seek>(
     let target = target_for(source);
     let mut down = Downsampler::new(source, target);
     let mut rgba = vec![0u8; source.0 as usize * 4];
+    let mut rows = 0u32;
     while let Some(row) = reader.next_row().map_err(|e| e.to_string())? {
         expand_to_rgba(row.data(), channels, &mut rgba);
         down.push_row(&rgba);
+        rows += 1;
+    }
+    if rows < source.1 {
+        // A truncated file: fewer rows than the header promised.
+        return Err(format!("only {rows} of {} rows arrived", source.1));
     }
     let fitted = down.finish();
     Ok(if has_alpha {
