@@ -175,6 +175,29 @@ A block whose **head row** is scrolled off the top of the buffer — the Ctrl+O
 transcript showing the bottom half of a picture — is left blank: no protocol
 here can start a picture partway down.
 
+### Screen switches
+
+A graphics **placement** belongs to the screen it was created on, and the
+kitty protocol transmits an image — creating that placement — exactly *once*
+per encoded protocol object. So a protocol carried across the hop to the
+alternate screen paints the Ctrl+O transcript with unicode placeholders
+pointing at a placement that only exists on the primary screen: reserved
+rows, and nothing in them. That was the first version's bug, and it is
+invisible to `capture-pane`, because the placeholders themselves are ordinary
+cells that a pane capture happily shows.
+
+So `enter_overlay` and `exit_overlay` both drop the encodings, exactly as the
+scrollback purge does. The first frame on each screen then transmits afresh,
+which is what puts the picture on *that* screen. The cost is one re-encode per
+**visible** picture per switch — `stamp` only draws blocks whose head row is
+in the frame, so that is usually one.
+
+The other three protocols never had the problem: sixel, iTerm2 and half-blocks
+carry their whole payload in every render, so they are placement-free by
+construction. `smoke.sh` Phase 107b is the guard, and it reads the raw byte
+stream through `pipe-pane` rather than the pane text, since the pane text is
+exactly what cannot tell the two cases apart.
+
 ### Resize
 
 Every resize purge-rebuilds the conversation from history (invariant 3), which
@@ -260,3 +283,6 @@ ALTER_ZERO_IMAGE_PROTOCOL=halfblocks ALTER_ZERO_IMAGE_CELL_SIZE=5x10 cargo run
 an image `read` of a real PNG: it asserts the picture's row count, that it
 starts at column 0, the blank row under the cell, that Ctrl+O draws the same
 picture, and that `/settings` **Show images** off purge-rebuilds without it.
+Phase 107b then reads the raw byte stream and asserts a kitty transmit lands
+on **each** side of the switch to the alternate screen (see *Screen
+switches*).

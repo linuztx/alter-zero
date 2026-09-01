@@ -344,6 +344,17 @@ re-placing the old size (every resize purge-rebuilds from history anyway,
 which is what re-measures the picture — and the purge drops the encoded
 protocols, since a kitty placement transmits its pixels once and one that
 outlived the `ESC[3J` would place an image the terminal may have dropped).
+**A screen switch drops them for the same reason and it is not optional**: a
+graphics placement belongs to the screen it was made on, so a protocol
+carried across the hop to the alternate screen paints the Ctrl+O transcript
+with placeholders pointing at a placement that only exists on the primary
+screen — reserved rows with nothing in them, which is invisible to
+`capture-pane` because the placeholders *are* ordinary cells. `enter_overlay`
+and `exit_overlay` therefore invalidate too, and `smoke.sh` Phase 107b reads
+the raw byte stream (`pipe-pane`, not the pane text) to assert a kitty
+transmit lands on each side of the switch. The other three protocols were
+never affected — sixel, iTerm2 and half-blocks carry their whole payload in
+every render.
 The geometry is `image_budget` then `fit_cells`, both pure: the **Image
 width** cap clamped to the terminal less a two-column gutter, then a row cap
 that is that width *as a square pixel box* (`⌈max_cols × cell_w / cell_h⌉` —
