@@ -13,16 +13,21 @@
 //!   signature.
 //! - [`payload`] — the other boundary: downscaling a picture before it is
 //!   uploaded, which is what `/settings` **Auto-resize images** controls.
+//! - [`fitted`] — pure. A PNG decoded at the size it will be shown or sent,
+//!   streaming its rows through an area-average shrink so the source picture
+//!   is never held whole (`docs/memory.md`).
 //! - [`store`] — the paint boundary. What this terminal can draw (from the
 //!   environment and `TIOCGWINSZ`, never a stdin round trip), the encoded
 //!   pictures, and the one pass that turns a reserved block into a picture in
 //!   a `Buffer`.
 
+pub mod fitted;
 pub mod geometry;
 pub mod payload;
 pub mod registry;
 pub mod store;
 
+pub use fitted::{Downsampler, decode_png_fitted, fit_box};
 pub use geometry::{
     AUTO_RESIZE_MAX_PIXELS, DEFAULT_FONT_SIZE, DEFAULT_IMAGE_WIDTH, FontSize, IMAGE_GUTTER_COLS,
     IMAGE_ID_MAX, IMAGE_MAX_ROWS, IMAGE_WIDTH_CHOICES, carrier, carrier_parts, fit_cells,

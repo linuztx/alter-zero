@@ -51,6 +51,12 @@ arboard = { version = "3", features = ["wayland-data-control"] }
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif", "webp"] }
 # Write the decoded image to a kept temporary PNG the backend reads by path.
 tempfile = "3"
+# The PNG decoder `image` itself sits on, used directly for its row-streaming
+# reader (`images::fitted`, docs/memory.md): a picture is shrunk row by row to
+# the size it will be shown or sent, so the whole decoded frame — 33 MB for a
+# 4K screenshot — is never materialised. Already compiled into every build via
+# `image`; declaring it costs nothing new.
+png = "0.18"
 # The /resume session files (docs/resume.md): each conversation is recorded as
 # a codex-style JSONL "rollout" file and parsed back on resume. serde/serde_json
 # serialize the `session` module's OWN record types (the on-disk format) — the
@@ -149,6 +155,16 @@ syntect = { version = "5", default-features = false, features = ["default-onig"]
 # 11.x line: it depends on `ratatui ^0.30.1`, the exact version this crate
 # uses, so the `Buffer`/`Cell` types are the same ones.
 ratatui-image = { version = "11.0.6", default-features = false, features = ["crossterm"] }
+
+# Linux only: the two clipboard backends arboard itself is built on, reached
+# directly for one operation arboard has no API for — reading the clipboard's
+# `image/png` bytes *as bytes* (`clipboard::linux`, docs/image-paste.md).
+# arboard decodes them to RGBA and we would re-encode that to PNG, a round
+# trip that cost tens of megabytes per paste to produce the bytes we were
+# handed. Same versions arboard pins, so nothing new is compiled.
+[target.'cfg(target_os = "linux")'.dependencies]
+x11rb = "0.13"
+wl-clipboard-rs = "0.9"
 
 [dev-dependencies]
 # The REFERENCE tokenizer for `tokenizer`'s differential tests (tests only):

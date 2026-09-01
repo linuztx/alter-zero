@@ -8,11 +8,14 @@
 //! attachment — run their bytes through here first.
 //!
 //! Boundary code (it decodes and re-encodes); the shrink-only aspect math it
-//! sits on is the pure [`super::resize_target`].
+//! sits on is the pure [`super::resize_target`], and a PNG's shrink is the
+//! streaming [`super::fitted`] decode, so a 4K screenshot costs its 2000-pixel
+//! target to send — on every turn it stays in context — rather than its own
+//! 33 MB (`docs/memory.md`).
 
 use image::{DynamicImage, ImageFormat, imageops::FilterType};
 
-use super::{AUTO_RESIZE_MAX_PIXELS, auto_resizing, resize_target};
+use super::{AUTO_RESIZE_MAX_PIXELS, auto_resizing, fitted, resize_target};
 
 /// The JPEG quality a downscaled photo is re-encoded at — the reference
 /// harness's 80, indistinguishable from the original at this size and a
@@ -71,11 +74,7 @@ pub fn downscale_to(bytes: &[u8], format: ImageFormat, max: u32) -> Option<Downs
         return None;
     }
     let (width, height) = resize_target(px, max)?;
-    let image = image::load_from_memory_with_format(bytes, format).ok()?;
-    // `Triangle` over the default nearest neighbour: this picture is going to
-    // a model, and nearest-neighbour downscaling of text in a screenshot
-    // drops whole strokes.
-    let resized = image.resize(width, height, FilterType::Triangle);
+    let resized = shrink(bytes, format, (width, height))?;
     let size = (resized.width(), resized.height());
     let (encoded, format) = encode(&resized, format)?;
     (encoded.len() < bytes.len()).then_some(Downscaled {
@@ -83,6 +82,22 @@ pub fn downscale_to(bytes: &[u8], format: ImageFormat, max: u32) -> Option<Downs
         format,
         size,
     })
+}
+
+/// `bytes` decoded and shrunk to `target`. A PNG streams through the fitted
+/// decoder, which holds the target and one row rather than the whole
+/// picture; anything else — or a PNG the streaming decoder declines — is
+/// decoded whole and shrunk with `Triangle`, over the default nearest
+/// neighbour, because this picture is going to a model and nearest-neighbour
+/// downscaling of text in a screenshot drops whole strokes.
+fn shrink(bytes: &[u8], format: ImageFormat, target: (u32, u32)) -> Option<DynamicImage> {
+    if format == ImageFormat::Png
+        && let Ok(image) = fitted::decode_png_fitted(std::io::Cursor::new(bytes), |_| target)
+    {
+        return Some(image);
+    }
+    let image = image::load_from_memory_with_format(bytes, format).ok()?;
+    Some(image.resize(target.0, target.1, FilterType::Triangle))
 }
 
 /// Re-encode `image`: a JPEG source stays JPEG (a photo as PNG grows), and

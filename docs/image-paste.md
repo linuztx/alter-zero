@@ -49,10 +49,28 @@ clipboard I/O boundary (like `term.rs`): a port of codex's
    (content-sniffed via `with_guessed_format`, so a mislabelled image still
    works) is transcoded to PNG. This half is filesystem-only, so unlike the
    clipboard half it **is** unit-tested headless.
-3. **Raw image fallback**: otherwise `clipboard.get_image()` yields raw RGBA
-   (e.g. a screenshot); rebuild an `image::RgbaImage` and PNG-encode it.
-   `Err("no image on the clipboard")` when neither path yields an image.
-4. Either way the bytes land in a *kept* temp file (`tempfile::Builder` prefix
+3. **The owner's own PNG, streamed (Linux)**: a screenshot tool puts its
+   picture on the clipboard *as a PNG* — the `image/png` X11 target, the
+   `image/png` Wayland MIME — and that is the only shape arboard asks a Linux
+   owner for before decoding it to RGBA. `clipboard::linux::stream_png_to_temp`
+   asks for it directly and copies the bytes to the temp file as they arrive:
+   a Wayland offer is a pipe (`wl-clipboard-rs`, the crate arboard's own
+   Wayland backend is built on); an X11 selection is a `ConvertSelection`
+   whose answer is fetched a 1 MiB property slice at a time, `INCR` segments
+   as the owner sends them (GTK and Qt hand over anything larger than a few
+   hundred kilobytes that way). No decode, no encode, about a megabyte in hand
+   whatever the picture weighs. An owner that offers no PNG, a server the read
+   can't reach, or a transfer that stalls all fall through to the next step,
+   so the worst case is exactly what it was. `docs/memory.md` has the numbers:
+   the round trip this replaces was a ~24 MB spike per paste and — through
+   glibc's dynamic `mmap` threshold — the reason later pictures *stuck*.
+4. **Raw image fallback**: otherwise `clipboard.get_image()` yields raw RGBA
+   (a screenshot on macOS or Windows, where the OS hands over pixels);
+   rebuild an `image::RgbaImage` and PNG-encode it **straight into the temp
+   file** through a `BufWriter` — not into a growing in-memory vector copied
+   to disk afterwards. `Err("no image on the clipboard")` when no path yields
+   an image.
+5. Either way the bytes land in a *kept* temp file (`tempfile::Builder` prefix
    `alter-zero-clipboard-`) whose path is returned — always **our own copy**,
    never the user's original (the discard cleanup deletes what this returns);
    the backend reads the file (the TUI never base64-encodes it — codex parity).
@@ -79,7 +97,9 @@ release binary was always fast — that is why codex feels instant): dependencie
 compile at `opt-level = 3` and our crate at `opt-level = 1` (the PNG encoder is
 generic over the writer, so it monomorphises *into this crate* and would
 otherwise run unoptimised). Measured on a 1920×1080 RGBA encode: ~1.6 s at the
-old dev settings → ~60 ms now (~25 ms in release).
+old dev settings → ~60 ms now (~25 ms in release). On Linux the common case no
+longer encodes at all — the owner's PNG is copied — so a paste costs what a
+file copy costs, in time and in memory.
 
 On `Ok(path)` the loop calls `App::attach_image(path)`; on `Err(msg)` it commits a
 red `Failed to paste image: {msg}` notice (codex's `new_error_event`), using the
@@ -95,10 +115,12 @@ disk deliberately: the backend reads them by path — possibly again on a
 history re-send — so they fall to the OS temp cleaner, codex-style.
 
 `Cargo.toml` gains `arboard` (with `wayland-data-control`), `image`
-(`jpeg,png,gif,webp`, default features off), and `tempfile`. The crates are
-pure-Rust on Linux (`arboard` → `x11rb`/`wl-clipboard`), so they build in CI with
-no system packages. **Out of scope for v1** (additive later): codex's WSL
-PowerShell fallback and its Android `cfg` stub.
+(`jpeg,png,gif,webp`, default features off), and `tempfile` — plus, on Linux
+only, `x11rb` and `wl-clipboard-rs` reached directly for the streamed
+`image/png` read: the two backends arboard itself is built on, at the versions
+it pins, so nothing new is compiled. The crates are pure-Rust on Linux, so
+they build in CI with no system packages. **Out of scope for v1** (additive
+later): codex's WSL PowerShell fallback and its Android `cfg` stub.
 
 ## The model (pure, unit-tested)
 
@@ -217,15 +239,49 @@ renders `[Image #N]` as a text marker. The `?` shortcuts band gains a
   and emits nothing at 0; `DummyAi::spawn` carries the new parameter.
 - `scripts/smoke.sh`: a phase pressing Ctrl+V with **no image on the clipboard**
   (the headless CI reality — `arboard` errors) asserts the red
-  `Failed to paste image` notice appears and the app stays alive. The happy path
-  (a real clipboard image → placeholder) can only be exercised on a desktop with
-  a clipboard server, so it is covered by the `attach_image` unit tests, not
-  smoke — codex tests it the same way.
+  `Failed to paste image` notice appears and the app stays alive. The happy
+  path's composer half (a path → placeholder) is covered by the `attach_image`
+  unit tests — codex tests it the same way.
+- `tests/clipboard_linux.rs` (ignored by default — it needs an X server):
+  the read itself, against a real one. `tests/support/x11_owner.rs` is a
+  minimal selection owner that serves one `image/png` payload the way a
+  screenshot tool does — whole in a single property, or in `INCR` segments —
+  and the test requires the temp file to hold the served bytes **verbatim**
+  on both shapes. The served PNG is encoded at a non-default compression
+  level and carries a text chunk, so no decode-and-re-encode could reproduce
+  it: byte equality is proof the bytes were streamed. A second test owns the
+  clipboard with no picture and checks the failure message is the one the red
+  notice always carried. Run it under a virtual server:
+
+  ```
+  Xvfb :99 & DISPLAY=:99 cargo test --test clipboard_linux -- --ignored
+  ```
+
+## Measuring
+
+`docs/memory.md` has the before/after numbers; this is how they were taken,
+so they can be taken again. Everything runs against `Xvfb`, which is what
+lets a headless box drive the real clipboard path:
+
+```
+Xvfb :99 -screen 0 1280x800x24 &
+DISPLAY=:99 cargo run --example clipboard_owner -- 1920 1080 &   # serves a PNG, INCR
+DISPLAY=:99 ALTER_ZERO_DUMMY=1 cargo run                          # Ctrl+V, then Enter
+```
+
+`clipboard_owner` is the same selection owner the integration test uses,
+serving a screenshot-shaped picture (a gradient with per-pixel noise, so it
+compresses like a real one) in 256 KB `INCR` segments — which is also how
+it serves a 4K picture arboard's own owner cannot. Sample the process's
+`VmRSS` and `VmHWM` from `/proc/<pid>/status` after each paste and each
+send; the two `docs/memory.md` tables are exactly that, five pastes and
+three paste-and-send rounds, under half-blocks and under kitty.
 
 ## What is intentionally *not* here (scope)
 
 - **WSL PowerShell fallback** and the **Android** `cfg` stub.
-- **Inline image display** in the terminal (sixel/kitty) — the marker is text.
+- **Inline image display in the composer** — the marker is text there; the
+  picture itself is drawn under the sent bubble (`docs/images.md`).
 - The composer does not guard the cursor from stepping *into* `[Image #N]` (same
   limitation as the text placeholder — `docs/paste.md`); atomic Backspace/Delete
   covers the common case.

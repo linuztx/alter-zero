@@ -541,10 +541,8 @@ fn read_image(path: &str, bytes: &[u8]) -> ToolOutcome {
             tools::READ_IMAGE_MAX_BYTES as f64 / MB,
         ));
     }
-    let url = format!(
-        "data:{mime};base64,{}",
-        crate::clipboard::base64_encode(payload)
-    );
+    let mut url = format!("data:{mime};base64,");
+    crate::clipboard::base64_encode_into(payload, &mut url);
     let text = match &sent {
         Some(small) => tools::format_read_image_resized(
             label,

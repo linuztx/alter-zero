@@ -658,10 +658,12 @@ fn image_data_url(path: &Path) -> Option<String> {
         ),
         None => (bytes.as_slice(), mime),
     };
-    Some(format!(
-        "data:{mime};base64,{}",
-        crate::clipboard::base64_encode(payload)
-    ))
+    // The prefix first, the encoding appended onto it: a multi-megabyte
+    // attachment is one allocation this way, not an encoded string copied
+    // into a second one (`docs/memory.md`).
+    let mut url = format!("data:{mime};base64,");
+    crate::clipboard::base64_encode_into(payload, &mut url);
+    Some(url)
 }
 
 /// The decoder for an attachment's MIME — the inverse of [`image_mime`],

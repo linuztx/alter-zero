@@ -475,14 +475,14 @@ impl ImageStore {
             return;
         };
         let size = ratatui::layout::Size::new(place.cols, place.rows);
-        let protocol = image::ImageReader::open(&place.path)
-            .ok()
-            .and_then(|reader| reader.with_guessed_format().ok())
-            .and_then(|reader| reader.decode().ok())
-            .and_then(|image| {
-                SlicedProtocol::new_with_resize(picker, image, size, Resize::Fit(None)).ok()
-            });
         let font = picker.font_size();
+        let box_px = (
+            u32::from(place.cols) * u32::from(font.width),
+            u32::from(place.rows) * u32::from(font.height),
+        );
+        let protocol = load_fitted(&place.path, box_px).and_then(|image| {
+            SlicedProtocol::new_with_resize(picker, image, size, Resize::Fit(None)).ok()
+        });
         let bytes = protocol.as_ref().map_or(0, |_| {
             // The pixels the encoder had to carry, plus base64's third.
             usize::from(place.cols)
@@ -508,6 +508,40 @@ impl ImageStore {
                 break;
             };
             self.drop_entry(victim);
+        }
+    }
+}
+
+/// Decode the picture at `path` for a block `box_px` pixels big.
+///
+/// A PNG — every paste, and most screenshots a `read` meets — is decoded
+/// **fitted**: its rows stream through [`super::fitted`]'s area average and
+/// only the shrunk picture is ever held, so the peak is the block's size
+/// (~3 MB at 120 columns) rather than the file's (8 MB for a 1080p
+/// screenshot, 33 MB for 4K), and the buffer glibc was left holding after
+/// each picture with it (`docs/memory.md`). The encoder then finds a picture
+/// that already fits and builds the protocol from it as it is. Everything
+/// else — and a PNG the streaming decoder declines, such as an interlaced
+/// one — is decoded whole by `image`, as before.
+fn load_fitted(path: &str, box_px: (u32, u32)) -> Option<image::DynamicImage> {
+    let reader = image::ImageReader::open(path)
+        .ok()?
+        .with_guessed_format()
+        .ok()?;
+    if reader.format() != Some(image::ImageFormat::Png) {
+        return reader.decode().ok();
+    }
+    // The sniff seeks back to the start, so the same handle serves the
+    // streaming decode — and, should that decline, the whole one.
+    let mut file = reader.into_inner();
+    match super::fitted::decode_png_fitted(&mut file, |px| super::fitted::fit_box(px, box_px)) {
+        Ok(image) => Some(image),
+        Err(_) => {
+            use std::io::Seek as _;
+            file.seek(std::io::SeekFrom::Start(0)).ok()?;
+            image::ImageReader::with_format(file, image::ImageFormat::Png)
+                .decode()
+                .ok()
         }
     }
 }

@@ -23,13 +23,14 @@ should get the whole width the terminal has.
 
 ## The shape of it
 
-Four modules over two layers — pure and boundary — split the way the crate
+Five modules over two layers — pure and boundary — split the way the crate
 always splits them (`src/images/`), plus `ui/image.rs` for the rows themselves:
 
 | module | what it is |
 | --- | --- |
 | `images::geometry` | pure. The cell footprint a picture takes, and the per-cell carrier that marks the rows reserved for it. |
 | `images::registry` | the process-global render policy (`/settings` plus what the terminal turned out to support) and the placement interner. |
+| `images::fitted` | pure. A PNG decoded at the size it will be shown or sent — rows streamed through an area-average shrink, so the whole picture is never held (`docs/memory.md`). |
 | `images::payload` | the other boundary: downscaling a picture before it is **uploaded**. |
 | `images::store` | the paint boundary: the terminal capability, the encoded pictures, and the pass that turns a reserved block into one. |
 | `ui::image` | pure. Which pictures a history item shows, and the marked rows they reserve under its cell. |
@@ -171,6 +172,28 @@ an escape blob can leave the cursor anywhere — a sixel placement clears its
 area row by row first — so the cell after it starts a fresh `draw`, which
 always opens with a cursor move.
 
+### Decoding at the fitted size
+
+`ImageStore::encode` used to decode the file whole and hand the picture to
+`ratatui_image` to shrink — `4 × width × height` bytes for a moment, 8 MB for
+a 1080p screenshot and 33 MB for a 4K one, to produce a block of ~3 MB. And
+not only for a moment: that buffer is exactly the size glibc's dynamic `mmap`
+threshold learns to keep, so every picture after the first left it behind
+(`docs/memory.md`, *Pasting a screenshot*).
+
+A PNG — every paste, and most screenshots a `read` meets — now goes through
+`images::fitted::decode_png_fitted` instead. The `png` crate hands out one row
+at a time, and an area-averaging `Downsampler` folds each row into the
+destination row it belongs to, so only the *fitted* picture is ever held: the
+peak is the block plus one row, whatever the file holds. The target is
+`fit_box` — `Resize::Fit`'s own arithmetic, pinned to it by a differential
+test the way `fit_cells` is — so the encoder receives a picture that already
+fits and builds the protocol from it as is. Anything else, and an interlaced
+PNG (whose rows arrive out of order), is decoded whole as before. The
+decoder is pure and reads from any seekable buffer, so `images::tests` checks
+it against a naive area-average oracle, at the source size (an exact copy)
+and across every colour type the format has.
+
 ### Drawing into exactly the reserved cells
 
 `stamp` reads a block's extent **back off the carriers** — where its visible
@@ -282,7 +305,9 @@ of base64 — and this process idles in the user's terminal all day
 (`docs/memory.md`). So the store is bounded by **bytes**, estimated from the
 placement's own geometry rather than by counting entries: past
 `CACHE_MAX_BYTES` (24 MB) the least-recently-drawn picture is dropped. Meeting
-it again costs one re-encode, never a wrong picture.
+it again costs one re-encode, never a wrong picture. And the decode that
+fills an entry is bounded by the block, not by the file (*Decoding at the
+fitted size*): drawing a 4K screenshot costs what drawing a 1080p one does.
 
 ## The `/settings` rows
 
@@ -304,7 +329,11 @@ provider either refuses outright or bills in full, and a model reads it no
 better than the same picture at 2000 pixels. So the two paths that upload
 pixels — the `read` tool's image branch and a Ctrl+V attachment — run their
 bytes through `images::payload` first. A JPEG stays a JPEG (a photo re-encoded
-as PNG *grows*); everything else becomes PNG. The **file** is untouched, which
+as PNG *grows*); everything else becomes PNG. A PNG is shrunk by the same
+streaming decoder the display uses, fitted straight to the 2000-pixel
+target, so sending a 4K screenshot — on every turn it stays in context —
+costs the target's ~9 MB rather than the picture's 33; the other formats
+decode whole and shrink with `Triangle`. The **file** is untouched, which
 is why the picture on screen is unaffected, and why an auto-resized read's
 fact line leads with the file's own dimensions and names the sent ones after:
 
@@ -335,7 +364,10 @@ was a bad idea.
 
 `cargo run --example make_test_image -- shot.png 640 400` writes a gradient
 with a white diagonal — a wrong aspect ratio or a clipped row is obvious at a
-glance. Then ask a vision model to `read` it, or force a protocol:
+glance. Then ask a vision model to `read` it, or force a protocol; for the
+paste path, `cargo run --example clipboard_owner -- 1920 1080` serves a
+screenshot-shaped PNG on the X11 clipboard for Ctrl+V to pick up
+(`docs/image-paste.md`, *Measuring*):
 
 ```
 ALTER_ZERO_IMAGE_PROTOCOL=halfblocks ALTER_ZERO_IMAGE_CELL_SIZE=5x10 cargo run

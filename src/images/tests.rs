@@ -399,3 +399,264 @@ fn the_retransmit_gate_is_off_unless_asked_for() {
     assert!(retransmit_forced(Some("true")));
     assert!(retransmit_forced(Some("yes")));
 }
+
+// ===== the fitted decode (`fitted`) =====
+
+/// A picture whose every pixel differs, so a shrink that sampled instead of
+/// averaging — or averaged the wrong neighbours — shows up in the numbers.
+fn rgba_grid(w: u32, h: u32) -> image::RgbaImage {
+    image::RgbaImage::from_fn(w, h, |x, y| {
+        let v = |k: u32| u8::try_from((x * 7 + y * 13 + k * 31) % 256).unwrap_or(0);
+        image::Rgba([v(0), v(1), v(2), 255u8.saturating_sub(v(3) / 2)])
+    })
+}
+
+/// Area averaging written the slow, obvious way — one pass over every source
+/// pixel per destination pixel — as an independent oracle for the streaming
+/// downsampler.
+fn naive_area_average(src: &image::RgbaImage, tw: u32, th: u32) -> image::RgbaImage {
+    let (sw, sh) = src.dimensions();
+    let (sx, sy) = (f64::from(tw) / f64::from(sw), f64::from(th) / f64::from(sh));
+    image::RgbaImage::from_fn(tw, th, |dx, dy| {
+        let mut acc = [0f64; 4];
+        let mut weight = 0f64;
+        for y in 0..sh {
+            let (top, bottom) = (f64::from(y) * sy, f64::from(y + 1) * sy);
+            let oy = bottom.min(f64::from(dy + 1)) - top.max(f64::from(dy));
+            if oy <= 0.0 {
+                continue;
+            }
+            for x in 0..sw {
+                let (left, right) = (f64::from(x) * sx, f64::from(x + 1) * sx);
+                let ox = right.min(f64::from(dx + 1)) - left.max(f64::from(dx));
+                if ox <= 0.0 {
+                    continue;
+                }
+                let w = ox * oy;
+                for (c, a) in acc.iter_mut().enumerate() {
+                    *a += w * f64::from(src.get_pixel(x, y)[c]);
+                }
+                weight += w;
+            }
+        }
+        image::Rgba(acc.map(|a| (a / weight).round().clamp(0.0, 255.0) as u8))
+    })
+}
+
+fn assert_close(actual: &image::RgbaImage, expected: &image::RgbaImage, what: &str) {
+    assert_eq!(actual.dimensions(), expected.dimensions(), "{what}: size");
+    for (x, y, px) in actual.enumerate_pixels() {
+        let want = expected.get_pixel(x, y);
+        for c in 0..4 {
+            let (a, b) = (i16::from(px[c]), i16::from(want[c]));
+            assert!(
+                (a - b).abs() <= 1,
+                "{what}: pixel ({x},{y}) channel {c}: got {a}, expected {b}"
+            );
+        }
+    }
+}
+
+#[test]
+fn fit_box_reproduces_the_encoders_own_fit() {
+    // The fitted decode must hand the encoder a picture already at the size
+    // `Resize::Fit` would have shrunk it to — same arithmetic, same cells —
+    // or the reservation and the drawing disagree by a row. Pixels are
+    // checked against the `image` crate's own `resize` (which is what the
+    // encoder calls), cells against `fit_cells`.
+    let fonts = [(10u16, 20u16), (7, 15), (9, 18)];
+    let sizes = [
+        (1u32, 1u32),
+        (32, 32),
+        (700, 689),
+        (1920, 1080),
+        (600, 4000),
+        (4000, 600),
+    ];
+    let budgets = [(60u16, 30u16), (120, 60), (37, 91), (1, 1)];
+    for font in fonts {
+        for px in sizes {
+            for budget in budgets {
+                let box_px = (
+                    u32::from(budget.0) * u32::from(font.0),
+                    u32::from(budget.1) * u32::from(font.1),
+                );
+                let fitted = fitted::fit_box(px, box_px);
+                assert!(
+                    fitted.0 <= px.0 && fitted.1 <= px.1,
+                    "shrink-only: {px:?} into {box_px:?} gave {fitted:?}"
+                );
+                if px.0 > box_px.0 || px.1 > box_px.1 {
+                    let theirs =
+                        image(px.0, px.1).resize(box_px.0, box_px.1, image::imageops::Nearest);
+                    assert_eq!(
+                        fitted,
+                        (theirs.width(), theirs.height()),
+                        "font {font:?} {px:?} {budget:?}"
+                    );
+                } else {
+                    assert_eq!(fitted, px, "a picture inside the box is left alone");
+                }
+                let cells = (
+                    (f64::from(fitted.0) / f64::from(font.0)).ceil() as u16,
+                    (f64::from(fitted.1) / f64::from(font.1)).ceil() as u16,
+                );
+                assert_eq!(
+                    cells,
+                    fit_cells(px, font, budget),
+                    "font {font:?} {px:?} {budget:?}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn a_downsampler_at_the_source_size_is_an_exact_copy() {
+    let src = rgba_grid(7, 5);
+    let mut down = fitted::Downsampler::new((7, 5), (7, 5));
+    for row in src.rows() {
+        let bytes: Vec<u8> = row.flat_map(|p| p.0).collect();
+        down.push_row(&bytes);
+    }
+    assert_eq!(down.finish(), src);
+}
+
+#[test]
+fn a_downsampler_halves_by_averaging_each_two_by_two_block() {
+    // A 4x4 checkerboard of 200s and 100s: every 2x2 block averages to 150.
+    let src = image::RgbaImage::from_fn(4, 4, |x, y| {
+        let v = if (x + y) % 2 == 0 { 200 } else { 100 };
+        image::Rgba([v, v, v, 255])
+    });
+    let mut down = fitted::Downsampler::new((4, 4), (2, 2));
+    for row in src.rows() {
+        let bytes: Vec<u8> = row.flat_map(|p| p.0).collect();
+        down.push_row(&bytes);
+    }
+    let out = down.finish();
+    assert_eq!(out.dimensions(), (2, 2));
+    for px in out.pixels() {
+        assert_eq!(px.0, [150, 150, 150, 255]);
+    }
+}
+
+#[test]
+fn a_downsampler_weights_a_fractional_overlap_by_its_area() {
+    // Three pixels into two: the middle source pixel is split evenly, so the
+    // left result is (0·1 + 60·½)/1.5 = 20 and the right (60·½ + 120·1)/1.5 = 100.
+    let mut down = fitted::Downsampler::new((3, 1), (2, 1));
+    down.push_row(&[0, 0, 0, 255, 60, 60, 60, 255, 120, 120, 120, 255]);
+    let out = down.finish();
+    assert_eq!(out.get_pixel(0, 0).0, [20, 20, 20, 255]);
+    assert_eq!(out.get_pixel(1, 0).0, [100, 100, 100, 255]);
+}
+
+#[test]
+fn a_downsampler_matches_the_naive_area_average_at_an_awkward_ratio() {
+    // 37x23 → 11x7: nothing divides evenly, so every destination pixel
+    // straddles source pixels in both directions.
+    let src = rgba_grid(37, 23);
+    let mut down = fitted::Downsampler::new((37, 23), (11, 7));
+    for row in src.rows() {
+        let bytes: Vec<u8> = row.flat_map(|p| p.0).collect();
+        down.push_row(&bytes);
+    }
+    assert_close(
+        &down.finish(),
+        &naive_area_average(&src, 11, 7),
+        "37x23 → 11x7",
+    );
+}
+
+fn png_of(image: &image::DynamicImage) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    image
+        .write_to(
+            &mut std::io::Cursor::new(&mut bytes),
+            image::ImageFormat::Png,
+        )
+        .expect("encode");
+    bytes
+}
+
+#[test]
+fn decode_png_fitted_shrinks_to_the_target_the_caller_picks() {
+    let src = rgba_grid(64, 48);
+    let bytes = png_of(&image::DynamicImage::ImageRgba8(src.clone()));
+    let seen = std::cell::Cell::new(None);
+    let out = fitted::decode_png_fitted(std::io::Cursor::new(&bytes), |px| {
+        seen.set(Some(px));
+        (32, 24)
+    })
+    .expect("decodes");
+    assert_eq!(
+        seen.get(),
+        Some((64, 48)),
+        "the header size is what the caller sees"
+    );
+    assert_close(
+        &out.to_rgba8(),
+        &naive_area_average(&src, 32, 24),
+        "64x48 → 32x24",
+    );
+}
+
+#[test]
+fn decode_png_fitted_at_the_source_size_is_the_whole_picture() {
+    let src = rgba_grid(19, 11);
+    let bytes = png_of(&image::DynamicImage::ImageRgba8(src.clone()));
+    let out = fitted::decode_png_fitted(std::io::Cursor::new(&bytes), |px| px).expect("decodes");
+    assert_eq!(out.to_rgba8(), src);
+}
+
+#[test]
+fn decode_png_fitted_reads_every_colour_type_the_format_has() {
+    // Gray, gray+alpha, RGB, RGBA and 16-bit RGB all arrive as 8-bit rows once
+    // the decoder normalises them; a source without alpha stays without it,
+    // so a re-encode for the model doesn't grow by a channel of 255s.
+    let rgb = image::DynamicImage::ImageRgb8(image::RgbImage::from_fn(6, 4, |x, y| {
+        image::Rgb([
+            u8::try_from(x * 40).unwrap(),
+            u8::try_from(y * 60).unwrap(),
+            7,
+        ])
+    }));
+    let gray = image::DynamicImage::ImageLuma8(image::GrayImage::from_fn(6, 4, |x, _| {
+        image::Luma([u8::try_from(x * 40).unwrap()])
+    }));
+    let gray_a = image::DynamicImage::ImageLumaA8(image::GrayAlphaImage::from_fn(6, 4, |x, y| {
+        image::LumaA([u8::try_from(x * 40).unwrap(), u8::try_from(y * 60).unwrap()])
+    }));
+    let rgb16 = image::DynamicImage::ImageRgb16(image::ImageBuffer::from_fn(6, 4, |x, y| {
+        image::Rgb([
+            u16::try_from(x * 40 * 257).unwrap(),
+            u16::try_from(y * 60 * 257).unwrap(),
+            7 * 257,
+        ])
+    }));
+    for (label, source) in [
+        ("rgb", &rgb),
+        ("gray", &gray),
+        ("gray+alpha", &gray_a),
+        ("rgb16", &rgb16),
+    ] {
+        let out = fitted::decode_png_fitted(std::io::Cursor::new(png_of(source)), |px| px)
+            .unwrap_or_else(|e| panic!("{label}: {e}"));
+        assert_eq!(out.to_rgba8(), source.to_rgba8(), "{label}");
+        assert_eq!(
+            out.color().has_alpha(),
+            source.color().has_alpha(),
+            "{label}: alpha is kept exactly when the source had one"
+        );
+    }
+}
+
+#[test]
+fn decode_png_fitted_refuses_what_is_not_a_png() {
+    assert!(fitted::decode_png_fitted(std::io::Cursor::new(encode_jpeg(8, 8)), |px| px).is_err());
+    assert!(
+        fitted::decode_png_fitted(std::io::Cursor::new(b"not a picture".as_slice()), |px| px)
+            .is_err()
+    );
+}

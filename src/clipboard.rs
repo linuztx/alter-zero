@@ -5,8 +5,14 @@
 //! image off the system clipboard (raw bytes, or a copied image *file*) and
 //! write it to a kept temp file whose path the backend reads (the TUI never
 //! base64-encodes it — codex parity). A file already in an accepted format is
-//! **copied verbatim** (no decode/re-encode — the fast path); anything else is
-//! transcoded to PNG. The event loop calls this on a **background thread**
+//! **copied verbatim** (no decode/re-encode — the fast path), and so — on
+//! Linux — is a screenshot: the owner offers it as `image/png`, and the
+//! `linux` half streams those bytes to the temp file instead of letting
+//! arboard decode them to RGBA for us to encode straight back, a round trip
+//! that cost ~24 MB of transient memory per paste and left a residue behind
+//! (`docs/memory.md`). Anything else is transcoded to PNG, encoded straight
+//! into the file rather than through a growing in-memory buffer. The event
+//! loop calls this on a **background thread**
 //! (`main.rs::spawn_image_paste`): a large screenshot's PNG encode takes real
 //! time, and running it on the loop would freeze the status animations. The
 //! **write** side ([`copy_to_clipboard`]) is codex's `/copy` path: set the
@@ -24,6 +30,9 @@
 use std::io::Write;
 use std::path::PathBuf;
 
+#[cfg(target_os = "linux")]
+mod linux;
+
 /// Read an image from the system clipboard, returning the path to a freshly
 /// written temporary image file (kept on disk for the backend to read by
 /// path). **Blocking** — the loop runs it on a worker thread
@@ -36,9 +45,10 @@ use std::path::PathBuf;
 ///
 /// Mirrors codex: prefer an image *file* on the clipboard (e.g. one copied in
 /// a GUI file manager) — copied verbatim when it is already in an accepted
-/// format, transcoded to PNG otherwise (`temp_image_from_files`) — falling
-/// back to the raw RGBA image bytes (e.g. a screenshot), which are always
-/// PNG-encoded.
+/// format, transcoded to PNG otherwise (`temp_image_from_files`) — then, on
+/// Linux, the owner's own `image/png` bytes streamed to disk (`linux`),
+/// and last the raw RGBA image bytes (e.g. a screenshot on macOS or
+/// Windows, where the OS hands over pixels), which are PNG-encoded.
 pub fn read_clipboard_image() -> Result<PathBuf, String> {
     let mut clipboard =
         arboard::Clipboard::new().map_err(|e| format!("clipboard unavailable: {e}"))?;
@@ -49,6 +59,16 @@ pub fn read_clipboard_image() -> Result<PathBuf, String> {
         && let Some(result) = temp_image_from_files(&files)
     {
         return result;
+    }
+
+    // On Linux the owner offers a screenshot as `image/png` already — and
+    // that is all arboard ever asks it for — so take the bytes as bytes,
+    // streamed to the temp file, instead of having them decoded to RGBA only
+    // to encode them back (`linux`). Whatever the direct read can't settle
+    // falls through to arboard's own path, so the worst case is unchanged.
+    #[cfg(target_os = "linux")]
+    if let Ok(Some(path)) = linux::stream_png_to_temp() {
+        return Ok(path);
     }
 
     // Raw image bytes (e.g. a screenshot) — rebuild and PNG-encode.
@@ -110,17 +130,27 @@ fn copy_file_to_temp(path: &std::path::Path, ext: &str) -> Result<PathBuf, Strin
 
 /// PNG-encode `image` into a kept temp file — the transcode path for raw
 /// clipboard bytes and for file formats not on the verbatim-copy list.
+///
+/// The encoder writes **into the file**, through a buffer, rather than into
+/// an in-memory vector that is copied to disk afterwards: that vector grew by
+/// doubling to hold a whole screenshot's PNG, and its freed capacity was the
+/// largest block the paste released — the one that raised glibc's dynamic
+/// `mmap` threshold and turned later same-sized buffers into a permanent
+/// residue (`docs/memory.md`).
 fn encode_png_to_temp(image: &image::DynamicImage) -> Result<PathBuf, String> {
-    let mut png = Vec::new();
-    image
-        .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
-        .map_err(|e| format!("could not encode the image: {e}"))?;
     let tmp = tempfile::Builder::new()
         .prefix("alter-zero-clipboard-")
         .suffix(".png")
         .tempfile()
         .map_err(|e| format!("could not create a temp file: {e}"))?;
-    std::fs::write(tmp.path(), &png).map_err(|e| format!("could not write the image: {e}"))?;
+    {
+        let mut out = std::io::BufWriter::new(tmp.as_file());
+        image
+            .write_to(&mut out, image::ImageFormat::Png)
+            .map_err(|e| format!("could not encode the image: {e}"))?;
+        out.flush()
+            .map_err(|e| format!("could not write the image: {e}"))?;
+    }
     keep_temp(tmp)
 }
 
@@ -242,6 +272,15 @@ const BASE64_ALPHABET: &[u8; 64] =
 #[must_use]
 pub(crate) fn base64_encode(bytes: &[u8]) -> String {
     let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    base64_encode_into(bytes, &mut out);
+    out
+}
+
+/// [`base64_encode`], appended onto `out` — so a `data:` URL can be built
+/// around a multi-megabyte image in one allocation instead of encoding into a
+/// string and copying it into a second one behind the prefix.
+pub(crate) fn base64_encode_into(bytes: &[u8], out: &mut String) {
+    out.reserve(bytes.len().div_ceil(3) * 4);
     for chunk in bytes.chunks(3) {
         let b0 = chunk[0] as usize;
         let b1 = chunk.get(1).copied().unwrap_or(0) as usize;
@@ -260,7 +299,6 @@ pub(crate) fn base64_encode(bytes: &[u8]) -> String {
             '='
         });
     }
-    out
 }
 
 /// The OSC 52 "set clipboard" escape carrying `text` (base64-encoded), or an
