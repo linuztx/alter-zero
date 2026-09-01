@@ -1683,6 +1683,14 @@ pub(super) const AGENT_SECTION_COLOR: Color = TOOL_OK_COLOR;
 /// render site.
 pub(super) const AGENT_VIEW_RULE_TAIL: &str = "─";
 
+/// The most of that top rule the label may take: **half** its width, the rest
+/// staying rule. A `description` is the model's own sentence and can run the
+/// width of the terminal, and ratatui skids an over-wide right-aligned title
+/// off its **left** end — so an unclipped label ate the whole frame *and* lost
+/// the head of the very text it was showing. Past this budget the description
+/// is cut with [`TOOL_HEADER_ELLIPSIS`] instead (`docs/agent-tool.md`).
+pub(super) const AGENT_VIEW_LABEL_DIVISOR: usize = 2;
+
 /// Indent of a Ctrl+O agent cell's section bodies (under the `⎿  ` corner's
 /// label, one level further in) and of its nested tool-header lines.
 pub(super) const AGENT_BODY_INDENT: &str = "       ";

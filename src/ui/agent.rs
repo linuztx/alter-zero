@@ -47,6 +47,27 @@ fn clip_cols(text: &str, max: usize) -> String {
     clipped
 }
 
+/// The agent session view's composer label — ` {description} ` — clipped to
+/// what the top rule can spare, or `None` when it can spare nothing.
+///
+/// The label is right-aligned *inside* the rule, and ratatui skids an
+/// over-wide right-aligned line off its **left** end rather than cutting its
+/// right: a wordy description therefore ate the whole frame and lost its own
+/// head, reading as a stray sentence with a `─` after it. So the budget is
+/// spent here instead — at most `width / AGENT_VIEW_LABEL_DIVISOR` columns
+/// for the label, its two padding spaces and the [`AGENT_VIEW_RULE_TAIL`]
+/// included, the description cut with [`TOOL_HEADER_ELLIPSIS`] — which keeps
+/// the *head* (what the agent is for) and always leaves the rest reading as a
+/// rule (`docs/agent-tool.md`).
+pub(super) fn agent_view_rule_label(description: &str, width: u16) -> Option<String> {
+    let chrome = cols(" ") * 2 + cols(AGENT_VIEW_RULE_TAIL);
+    let budget = (usize::from(width) / AGENT_VIEW_LABEL_DIVISOR).saturating_sub(chrome);
+    if budget == 0 {
+        return None;
+    }
+    Some(format!(" {} ", clip_cols(description, budget)))
+}
+
 /// One `⎿  {activity}` row — the dim gutter (`prefix`: the tree's own
 /// indent + rail + corner, or the lone cell's [`TOOL_RESULT_PREFIX`]) and the
 /// clipped activity in `color`. The one row every agent's state is drawn as,

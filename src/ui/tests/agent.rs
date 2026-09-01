@@ -829,3 +829,62 @@ fn an_agents_ctrl_o_cell_lists_only_the_calls_it_ran() {
         "only the running call is listed"
     );
 }
+
+#[test]
+fn a_long_agent_description_is_clipped_so_the_composer_rule_survives() {
+    // The reported bug: a wordy `description` filled the whole top rule, and
+    // ratatui's right-aligned title skids an over-wide line off its LEFT end,
+    // so the frame read as a sentence with a stray `─` — the head of the
+    // description gone and no rule at all. The label is clipped to at most
+    // half the rule now, closed with `…` (docs/agent-tool.md).
+    let mut app = App::new();
+    app.set_session_info("dummy_model_name", "~/repo");
+    app.begin_stream();
+    app.start_agent_group(
+        false,
+        &[crate::stream::AgentSpec {
+            id: "a1".into(),
+            description: "An agent tasked with confirming its status and \
+                          acknowledging the requested description length"
+                .into(),
+            agent_type: "general-purpose".into(),
+            prompt: "status?".into(),
+            background: false,
+        }],
+    );
+    app.open_agent_view("a1");
+    let area = Rect::new(0, 0, 76, 24);
+    let mut buf = Buffer::empty(area);
+    render_live(area, &mut buf, &app);
+    // The composer's top rule is the row directly above the `❯` prompt.
+    let rows: Vec<String> = (0..24).map(|y| row(&buf, y, 76)).collect();
+    let prompt = rows
+        .iter()
+        .position(|r| r.starts_with('❯'))
+        .expect("the composer prompt");
+    // Half the 76-column rule stays rule; the label keeps the description's
+    // HEAD, closes with `…`, and the tail glyph still shuts the frame.
+    assert_eq!(
+        rows[prompt - 1].trim_end(),
+        format!("{} An agent tasked with confirming it… ─", "─".repeat(38))
+    );
+}
+
+#[test]
+fn the_composer_label_keeps_a_short_description_whole_and_gives_up_on_a_narrow_rule() {
+    use crate::ui::agent::agent_view_rule_label;
+    // Inside the budget nothing is cut — the ordinary case, padded for the rule.
+    assert_eq!(
+        agent_view_rule_label("Fetch Warsaw", 80).as_deref(),
+        Some(" Fetch Warsaw ")
+    );
+    // Past it the HEAD is kept (what the agent is for), closed with `…`, and
+    // the whole label — padding and rule tail included — fits in half the rule.
+    let label = agent_view_rule_label(&"x".repeat(200), 80).expect("a label");
+    assert!(label.ends_with("… "), "{label}");
+    assert_eq!(cols(&label) + cols("─"), 40, "half of 80: {label}");
+    // A rule with no room for even one column of description shows none: a
+    // lone ` … ─` names nothing, and the frame is worth more than the hint.
+    assert_eq!(agent_view_rule_label("Fetch Warsaw", 6), None);
+    assert_eq!(agent_view_rule_label("Fetch Warsaw", 0), None);
+}

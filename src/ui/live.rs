@@ -7,7 +7,7 @@
 //! `docs/parallel-tools.md`, a streaming command's tail in
 //! `docs/tool-streaming.md`.
 
-use super::agent::agent_view_preview_lines;
+use super::agent::{agent_view_preview_lines, agent_view_rule_label};
 use super::layout::{
     fit_preview_rows, input_box, key_onboarding_rows, live_layout, model_picker_rows,
     strip_other_rows, view_split,
@@ -633,16 +633,20 @@ pub fn render_live_with_preview(
     let mut block = Block::new()
         .borders(Borders::TOP | Borders::BOTTOM)
         .border_style(Style::new().fg(BORDER_COLOR));
-    if let Some(run) = app.viewed_agent() {
+    // A description is the model's own sentence, so the label is clipped to
+    // half the rule before it is right-aligned into it: ratatui cuts an
+    // over-wide right-aligned title off its LEFT end, which ate the whole
+    // frame and lost the head of the description with it.
+    if let Some(label) = app
+        .viewed_agent()
+        .and_then(|run| agent_view_rule_label(&run.description, bx.frame.width))
+    {
         // The dim label with a border cell after it, so the rule resumes for
         // one glyph past the text (`── {description} ─`) and the label reads
         // as embedded in the frame rather than dangling off its right end.
         block = block.title_top(
             Line::from(vec![
-                Span::styled(
-                    format!(" {} ", run.description),
-                    Style::new().fg(TOOL_DIM_COLOR),
-                ),
+                Span::styled(label, Style::new().fg(TOOL_DIM_COLOR)),
                 Span::styled(
                     AGENT_VIEW_RULE_TAIL.to_string(),
                     Style::new().fg(BORDER_COLOR),

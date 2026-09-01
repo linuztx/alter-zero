@@ -181,8 +181,19 @@ zero new plumbing. The TUI cell is a new `HistoryItem::AgentNotice` —
   description as a right-aligned label **embedded in the rule** — the rule
   resumes for one border cell after the text (`── {description} ─`, the
   `AGENT_VIEW_RULE_TAIL` glyph) so the label reads as part of the frame
-  rather than dangling off its right end — and the composer **chats with the
-  agent**, and it is the **main session's mid-turn queue one level down**
+  rather than dangling off its right end, and **clipped to half that rule**
+  (`agent_view_rule_label`, `width / AGENT_VIEW_LABEL_DIVISOR`, the two
+  padding spaces and the tail glyph counted in) with the rest of the
+  description cut by `TOOL_HEADER_ELLIPSIS`: a `description` is the model's
+  own sentence and can run the width of the terminal, and ratatui skids an
+  over-wide **right**-aligned title off its **left** end, so an unclipped
+  label ate the whole frame *and* lost the head of the very text it was
+  showing — `─── An agent tasked with confirming it… ─`, not `h confirming
+  its status and acknowledging the requested description length ─`. A rule
+  with no room for even one column of description carries no label at all (a
+  lone ` … ─` names nothing, and the frame is worth more than the hint). And
+  the composer **chats with the agent**, and it is the **main session's
+  mid-turn queue one level down**
   (`docs/queue.md`): while the agent runs, Enter parks the draft on its own
   queue — shown above the box as the same inset `  ❯ …` row, `AgentRun::queued`
   — and its loop takes it at the next round boundary (`run_agent`'s
