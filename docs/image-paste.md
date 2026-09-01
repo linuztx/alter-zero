@@ -7,11 +7,17 @@
 > it is uploaded.
 
 Pressing **Ctrl+V** (or **Ctrl+Alt+V**) reads an image off the system clipboard
-on a background worker, writes it to a temporary image file (a verbatim copy
-when a pasted file is already in an accepted format, a PNG otherwise), and
-drops a compact `[Image #N]` placeholder into the composer — the real file
-path is remembered off to the side and handed to the backend, alongside the
-message text, when the turn is sent. This is a focused port
+on a background worker, saves it into the session's **paste folder** —
+`{config_home}/image-cache/{session}/N.{ext}`, numbered in paste order (a
+verbatim copy when the clipboard already holds an encoded picture or a pasted
+file is in an accepted format, a PNG otherwise) — and drops a compact
+`[Image #N]` placeholder into the composer. The real file path is remembered
+off to the side and handed to the backend, alongside the message text, when
+the turn is sent — and the model is **told** it: on the wire the placeholder
+reads `[Image #1: /home/me/.alter-zero/image-cache/773c1c6cb321/1.png]`, so
+the model knows where the picture it is looking at was saved and can `read` it
+again or hand the path to a tool (*Where a paste is saved*, below). This is a
+focused port
 of openai/codex's clipboard image paste (`tui/src/clipboard_paste.rs` +
 `bottom_pane/chat_composer/attachment_state.rs`). It builds directly on the
 large-text-paste placeholder machinery already in `docs/paste.md` — the image
@@ -33,8 +39,9 @@ clipboard read happens at the boundary in `main.rs`.
 
 ## Clipboard read (the I/O boundary)
 
-`crate::clipboard::read_clipboard_image() -> Result<PathBuf, String>` is the
-clipboard I/O boundary (like `term.rs`): a port of codex's
+`crate::clipboard::read_clipboard_image(dir) -> Result<PathBuf, String>` —
+`dir` the session's paste folder — is the clipboard I/O boundary (like
+`term.rs`): a port of codex's
 `paste_image_as_png` + `paste_image_to_temp_png`, **run on a worker thread**
 (see *Async delivery* below):
 
@@ -43,8 +50,9 @@ clipboard I/O boundary (like `term.rs`): a port of codex's
    serving thread torn down again at the end: a screenshot tool puts its
    picture on the clipboard *as a PNG* — the `image/png` X11 target, the
    `image/png` Wayland MIME — and that is the only shape arboard asks a Linux
-   owner for before decoding it to RGBA. `clipboard::linux::stream_image_to_temp`
-   asks for it directly and copies the bytes to the temp file as they arrive:
+   owner for before decoding it to RGBA. `clipboard::linux::stream_image_into`
+   asks for it directly and copies the bytes into the paste folder as they
+   arrive:
    a Wayland offer is a pipe (`wl-clipboard-rs`, the crate arboard's own
    Wayland backend is built on); an X11 selection is a `ConvertSelection`
    whose answer is fetched a 1 MiB property slice at a time, `INCR` segments
@@ -65,10 +73,10 @@ clipboard I/O boundary (like `term.rs`): a port of codex's
 1. `arboard::Clipboard::new()` — failure (no display / headless / no clipboard
    server) returns `Err("clipboard unavailable: …")`.
 2. **Files first**: if the clipboard holds a file list (e.g. a file copied from
-   a GUI file manager), `temp_image_from_files` takes the first usable entry —
+   a GUI file manager), `image_from_files` takes the first usable entry —
    a file already in an accepted format (`png`/`jpg`/`jpeg`/`gif`/`webp`,
    header-validated with `image::image_dimensions`, which reads only the
-   header) is **copied verbatim** to the temp file, extension preserved: no
+   header) is **copied verbatim** into the paste folder, extension preserved: no
    decode, no re-encode, effectively instant. Any other file that decodes
    (content-sniffed via `with_guessed_format`, so a mislabelled image still
    works) is transcoded to PNG. This half is filesystem-only, so unlike the
@@ -76,13 +84,72 @@ clipboard I/O boundary (like `term.rs`): a port of codex's
 3. **Raw image fallback**: otherwise `clipboard.get_image()` yields raw RGBA
    (a screenshot on macOS or Windows, where the OS hands over pixels — and
    Linux when step 0 found nothing); rebuild an `image::RgbaImage` and
-   PNG-encode it **straight into the temp file** through a `BufWriter` — not
+   PNG-encode it **straight into its file** through a `BufWriter` — not
    into a growing in-memory vector copied to disk afterwards. `Err("no image
    on the clipboard")` when no path yields an image.
-4. Either way the bytes land in a *kept* temp file (`tempfile::Builder` prefix
-   `alter-zero-clipboard-`) whose path is returned — always **our own copy**,
+4. Either way the bytes land in the paste folder as its next number —
+   `1.png`, `2.jpg`, … — whose path is returned: always **our own copy**,
    never the user's original (the discard cleanup deletes what this returns);
-   the backend reads the file (the TUI never base64-encodes it — codex parity).
+   the backend reads the file (the TUI never base64-encodes it — codex
+   parity). The next section has the folder and the numbering.
+
+## Where a paste is saved
+
+**The folder** is `clipboard::paste_store_dir(config_home, session)` =
+`{config_home}/image-cache/{session}` — `~/.alter-zero/image-cache/773c1c6cb321/`
+by default, moving with the rest of the config home under
+`ALTER_ZERO_CONFIG_DIR`; with no config home at all (no `HOME`, no override)
+the same layout under the system temp dir (`tui::config::paste_store_dir`).
+The session id is the one the scratchpad tree and the hooks payloads carry
+(`docs/scratchpad.md`). Under the config home rather than `/tmp` because the
+pictures a conversation carries are **re-sent on every later request** and
+**drawn again on a `/resume`** (`docs/context.md`, `docs/images.md`), and an
+OS temp cleaner used to take them out from under both. The folder is created
+on the first paste — a session that never pastes never makes one — by the
+worker, since that is file I/O like the rest of the read.
+
+**The name** is the folder's next number: `clipboard::next_image_number` is
+one past the highest numbered name present, `1` in an empty folder, and only a
+name whose stem is a number counts — so pastes read in paste order, `1.png`,
+`2.png`, `3.jpg`, and a paste can never take a name the folder already holds.
+
+**Every path stages first.** The bytes go to a hidden
+`.alter-zero-paste-*.{ext}` file *inside* the folder (`clipboard::store_image`
+for the streamed, copied and reader-based paths, the PNG encoder writing into
+one directly): inside, so the final move is a same-filesystem rename; hidden,
+so a half-written picture stays out of a listing and its non-numeric stem out
+of the count. The header is parsed, then `keep_numbered` **reserves** the next
+number with an exclusive create and renames the staging file onto it. A double
+Ctrl+V is two workers that can scan the same "next" number, but an exclusive
+create can't be won twice, so the loser simply takes the one after — no paste
+is ever overwritten by another. A refused paste (junk bytes, the byte cap, an
+encode error) drops its staging file and leaves the folder exactly as it was.
+
+**The model is told the path.** `paste::annotate_image_placeholders` (pure,
+`paste.rs`) runs where the request is assembled —
+`llm::backend::chat_message`'s vision branch — and turns each `[Image #N]` in
+the message text into `[Image #N: {path}]`, pairing placeholders with the
+message's recorded paths in text order (the order `paste::distribute_images`
+stores them). A placeholder with no path keeps its shape; a path no
+placeholder claims (one edited away) is still named on a closing `[attached
+image: {path}]` line, since the picture rides the request regardless — and
+the backend's `[image unavailable: {path}]` note follows it when the file
+can't be read. The recorded message, the transcript and the composer keep the
+bare `[Image #N]` (codex parity), and Ctrl+D shows that placeholder over the
+dim `image:` attachment row; only the wire text merges the two. A rollout
+recorded when pastes still went to `/tmp` annotates the same way — the path
+is whatever the message recorded.
+
+**A resumed session finds its pictures.** A paste has no fact line to reserve
+its rows from (`docs/images.md`, *Where the pixel size comes from*), so after
+a `/resume`, `--continue` or `--resume` load `Session::remember_loaded_image_sizes`
+reads every pasted picture's header again (`images::remember_size`) and the
+pictures draw as they did — the reason the folder lives where it does.
+
+**Nothing here deletes a submitted paste.** The folder is the record of what
+the conversation carries and grows with the pastes; `rm -rf
+~/.alter-zero/image-cache/{session}` retires a session's pictures, after which
+its messages carry the `[image unavailable: …]` note instead.
 
 ## Async delivery (why paste can't freeze the UI)
 
@@ -115,13 +182,15 @@ red `Failed to paste image: {msg}` notice (codex's `new_error_event`), using the
 same mid-stream flush-segment ordering as a slash-command `Notice` so the notice
 slots correctly if a reply is streaming.
 
-**Temp-file lifecycle**: an attachment that is *dropped without being submitted*
+**File lifecycle**: an attachment that is *dropped without being submitted*
 — an atomic placeholder Backspace/Delete, a Ctrl+C-cleared draft, a `/clear`'d
 queue — lands its path in `App::take_discarded_images`, which the loop drains
-after each key event to `remove_file` the orphaned PNG (the pure core records
-the drops; the file I/O stays at the boundary). *Submitted* images are left on
-disk deliberately: the backend reads them by path — possibly again on a
-history re-send — so they fall to the OS temp cleaner, codex-style.
+after each key event to `remove_file` the orphaned picture (the pure core
+records the drops; the file I/O stays at the boundary). *Submitted* images
+stay in the paste folder deliberately: the backend reads them by path — again
+on every history re-send — a `/resume` draws them, and the model is told the
+path, so unlike codex's temp files they are **not** left to an OS temp cleaner
+(*Where a paste is saved*).
 
 `Cargo.toml` gains `arboard` (with `wayland-data-control`), `image`
 (`jpeg,png,gif,webp`, default features off), and `tempfile` — plus, on Linux
@@ -135,7 +204,7 @@ later): codex's WSL PowerShell fallback and its Android `cfg` stub.
 
 ```rust
 // App — parallel to `pasted: Vec<(String, String)>` (text pastes)
-pub images: Vec<(String, PathBuf)>,   // (placeholder, temp-png path), insertion order
+pub images: Vec<(String, PathBuf)>,   // (placeholder, saved-picture path), insertion order
 ```
 
 `App::attach_image(path)` (pure — tested by passing a fake `PathBuf`, exactly how
@@ -230,14 +299,25 @@ renders `[Image #N]` as a text marker. The `?` shortcuts band gains a
 ## Tests
 
 - `clipboard.rs`: the file half of the read — `accepted_image_extension` (the
-  verbatim-copy allowlist) and `temp_image_from_files` (a real PNG copies
-  byte-identical to a fresh temp path; a junk file with an image extension is
-  rejected; an unlisted extension still decodes via content sniffing and
-  transcodes to PNG) — filesystem-only, so testable headless; only the
-  clipboard half stays boundary-untested.
+  verbatim-copy allowlist) and `image_from_files` (a real PNG copies
+  byte-identical into the paste folder as `1.png`; a junk file with an image
+  extension is rejected and saves nothing; an unlisted extension still decodes
+  via content sniffing and transcodes to PNG) — filesystem-only, so testable
+  headless; only the clipboard half stays boundary-untested. And the folder
+  itself: `paste_store_dir` (the session folder under the config home),
+  `next_image_number` (one past the highest numbered name, non-numeric names
+  ignored), pastes numbered in order across every path with no staging file
+  left behind, a picture already in the folder never overwritten, and the
+  folder created on first use.
 - `paste.rs`: `next_image_placeholder` (base `#1`, `#k+1` disambiguation, gaps
-  after deletion) and the generalised `placeholder_to_delete` over a
-  `(String, PathBuf)` list.
+  after deletion), the generalised `placeholder_to_delete` over a
+  `(String, PathBuf)` list, and `annotate_image_placeholders` (each
+  placeholder gains its path in text order, text without images is untouched,
+  an unclaimed path is named on a closing line, a bracket that is not a
+  placeholder is left alone).
+- `llm/backend.rs`: an image-carrying message's text part reads
+  `[Image #1: {path}] …`; an unreadable attachment is noted, an unclaimed one
+  named.
 - `app/composer.rs`: `attach_image` (inserts `[Image #N]`, records the pair, at the
   cursor), the round-trip (attach then Enter → `Action::Submit("[Image #1] …")`
   *and* `take_submission_images()` yields the path), atomic deletion (one
@@ -253,22 +333,24 @@ renders `[Image #N]` as a text marker. The `?` shortcuts band gains a
   unit tests — codex tests it the same way.
 - `clipboard.rs` also unit-tests the streaming core headless: `CappedWriter`
   (bytes verbatim under the cap, `InvalidData` past it, the cap itself
-  allowed) and `stream_encoded_image_to_temp_in` (an encoded PNG lands
-  verbatim in a fresh `alter-zero-clipboard-*.png`; junk, an empty target or
-  a stream past the cap is refused and leaves **no** file), plus the streamed
-  `encode_png_to_temp` round-tripping pixels exactly. `tests/image_paste_memory.rs`
+  allowed) and `stream_encoded_image_into_capped` (an encoded PNG lands
+  verbatim as the folder's next number; junk, an empty target or a stream
+  past the cap is refused and leaves the folder empty), plus the streamed
+  `encode_png_into` round-tripping pixels exactly. `tests/image_paste_memory.rs`
   gates what each stage may cost the resident set (`docs/memory.md`).
 - `tests/clipboard_linux.rs` (ignored by default — it needs an X server):
   the read itself, against a real one. `tests/support/x11_owner.rs` is a
   minimal selection owner that serves one encoded payload the way a
   screenshot tool does — whole in a single property, or in `INCR` segments —
-  and the test requires the temp file to hold the served bytes **verbatim**
-  on both shapes. The served PNG is encoded at a non-default compression
+  and the test requires the saved file — `1.png`, then `2.png` for the second
+  shape — to hold the served bytes **verbatim**. The served PNG is encoded at
+  a non-default compression
   level and carries a text chunk, so no decode-and-re-encode could reproduce
   it: byte equality is proof the bytes were streamed. An owner that has only
-  a JPEG (and declines `image/png`) must land its bytes verbatim under `.jpg`,
+  a JPEG (and declines `image/png`) must land its bytes verbatim as `1.jpg`,
   and an owner with no picture at all must fail with the message the red
-  notice always carried. Run it under a virtual server:
+  notice always carried and leave the folder empty. Run it under a virtual
+  server:
 
   ```
   Xvfb :99 & DISPLAY=:99 cargo test --test clipboard_linux -- --ignored

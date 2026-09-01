@@ -180,6 +180,10 @@ pub(crate) struct Session<'t> {
     file_req_tx: std::sync::mpsc::Sender<String>,
     file_rx: tokio::sync::mpsc::UnboundedReceiver<FileSearchResult>,
     last_file_query: Option<String>,
+    /// Where this session's pasted images are saved —
+    /// `{config_home}/image-cache/{session}`, numbered in paste order
+    /// (`docs/image-paste.md`). Handed to each paste worker, which creates it.
+    paste_dir: PathBuf,
     /// A Ctrl+V clipboard read's result channel (`docs/image-paste.md`).
     img_tx: tokio::sync::mpsc::UnboundedSender<Result<PathBuf, String>>,
     img_rx: tokio::sync::mpsc::UnboundedReceiver<Result<PathBuf, String>>,

@@ -118,7 +118,6 @@ cleanup() {
 	rm -rf /tmp/alter-zero-smoke-init-* 2>/dev/null
 	[ -n "${CTRLO_DIR:-}" ] && rm -rf "$CTRLO_DIR" 2>/dev/null
 	rm -f /tmp/alter-zero-shell-*.txt 2>/dev/null
-	rm -f /tmp/alter-zero-clipboard-*.png 2>/dev/null
 	[ -n "${RESUME_DIR:-}" ] && rm -rf "$RESUME_DIR" 2>/dev/null
 	[ -n "${SMOKE_CFG:-}" ] && rm -rf "$SMOKE_CFG" 2>/dev/null
 	[ -n "${SMOKE_SKILLS:-}" ] && rm -rf "$SMOKE_SKILLS" 2>/dev/null

@@ -1,5 +1,5 @@
-//! Linux: the clipboard's own encoded image, streamed straight to the temp
-//! file.
+//! Linux: the clipboard's own encoded image, streamed straight into the
+//! paste folder.
 //!
 //! A screenshot tool puts its picture on the clipboard **as a PNG** — under
 //! X11 as the `image/png` target, under Wayland as the `image/png` MIME
@@ -14,7 +14,7 @@
 //! every same-sized buffer into a permanent heap residue (`docs/memory.md`).
 //!
 //! So on Linux the paste asks the owner for the encoded bytes itself and
-//! **copies them to the temp file as they arrive**: a Wayland offer is a pipe
+//! **copies them into the paste folder as they arrive**: a Wayland offer is a pipe
 //! (`wl-clipboard-rs`, the crate arboard's Wayland backend is built on), and
 //! an X11 selection is fetched a bounded slice at a time — `INCR` segments
 //! as the owner sends them, each property read in 1 MiB pieces — so the read
@@ -37,7 +37,7 @@
 //! under Xvfb, and `scripts/smoke.sh` covers the no-server failure.
 
 use std::io::{self, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use x11rb::connection::Connection;
@@ -50,8 +50,8 @@ use x11rb::{COPY_DEPTH_FROM_PARENT, COPY_FROM_PARENT, CURRENT_TIME, NONE};
 
 use super::StreamError;
 
-/// The encoded targets worth asking for, best first, with the temp-file
-/// extension each is written under — the same accepted set the pasted-file
+/// The encoded targets worth asking for, best first, with the extension
+/// each is saved under — the same accepted set the pasted-file
 /// path copies verbatim (`super::accepted_image_extension`).
 const TARGETS: [(&str, &str); 4] = [
     ("image/png", "png"),
@@ -72,16 +72,17 @@ const SEGMENT_TIMEOUT: Duration = Duration::from_secs(2);
 /// picture weighs. (arboard fetches a property whole.)
 const PROPERTY_SLICE_LONGS: u32 = 256 * 1024;
 
-/// Stream the clipboard's encoded image into a kept temp file, or `Ok(None)`
-/// when no display server offered one — the caller then takes arboard's
+/// Stream the clipboard's encoded image into the paste folder `dir` (its
+/// next number, `super::store_image`), or `Ok(None)` when no display server
+/// offered one — the caller then takes arboard's
 /// path. Tries the compositor the environment names: Wayland when
 /// `WAYLAND_DISPLAY` is set (arboard's own order), then X11 when `DISPLAY`
 /// is — XWayland included, since a Wayland session with no data-control
 /// protocol still serves its clipboard over X11.
-pub(super) fn stream_image_to_temp() -> Result<Option<PathBuf>, StreamError> {
+pub(super) fn stream_image_into(dir: &Path) -> Result<Option<PathBuf>, StreamError> {
     let set = |name: &str| std::env::var_os(name).is_some_and(|v| !v.is_empty());
     if set("WAYLAND_DISPLAY") {
-        match wayland_stream() {
+        match wayland_stream(dir) {
             Ok(found) => return Ok(found),
             // A compositor this can't talk to falls back to X11 — arboard's
             // rule, since WAYLAND_DISPLAY alone doesn't prove a data-control
@@ -93,7 +94,7 @@ pub(super) fn stream_image_to_temp() -> Result<Option<PathBuf>, StreamError> {
     if !set("DISPLAY") {
         return Ok(None);
     }
-    x11_stream()
+    x11_stream(dir)
 }
 
 /// Why a Wayland read didn't deliver: no compositor to ask (try X11), or a
@@ -105,9 +106,8 @@ enum WaylandFailure {
 
 /// The Wayland half: an offer arrives on a pipe, and a pipe copies to a file
 /// through a stack buffer.
-fn wayland_stream() -> Result<Option<PathBuf>, WaylandFailure> {
+fn wayland_stream(dir: &Path) -> Result<Option<PathBuf>, WaylandFailure> {
     use wl_clipboard_rs::paste::{ClipboardType, Error, MimeType, Seat, get_contents};
-    let dir = std::env::temp_dir();
     for (mime, ext) in TARGETS {
         match get_contents(
             ClipboardType::Regular,
@@ -116,7 +116,7 @@ fn wayland_stream() -> Result<Option<PathBuf>, WaylandFailure> {
         ) {
             Ok((mut pipe, _mime)) => {
                 let stored =
-                    super::stream_into_temp(&dir, ext, super::CLIPBOARD_IMAGE_MAX_BYTES, |out| {
+                    super::store_image(dir, ext, super::CLIPBOARD_IMAGE_MAX_BYTES, |out| {
                         io::copy(&mut pipe, out)
                             .map(Some)
                             .map_err(|e| format!("could not read the clipboard: {e}"))
@@ -151,13 +151,12 @@ fn x11_err(e: impl std::fmt::Display) -> String {
 /// The X11 half: one connection, one hidden window, and a selection request
 /// per candidate target — the property copied out whole, or in the `INCR`
 /// segments a large picture arrives in.
-fn x11_stream() -> Result<Option<PathBuf>, StreamError> {
+fn x11_stream(dir: &Path) -> Result<Option<PathBuf>, StreamError> {
     let x11 = X11::connect().map_err(StreamError::Failed)?;
-    let dir = std::env::temp_dir();
     let mut found = None;
     for (mime, ext) in TARGETS {
         let target = x11.atom(mime).map_err(StreamError::Failed)?;
-        match super::stream_into_temp(&dir, ext, super::CLIPBOARD_IMAGE_MAX_BYTES, |out| {
+        match super::store_image(dir, ext, super::CLIPBOARD_IMAGE_MAX_BYTES, |out| {
             x11.fetch(target, out)
         }) {
             Ok(Some(path)) => {

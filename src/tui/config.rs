@@ -463,6 +463,21 @@ pub(crate) fn prepare_scratchpad(session_root: &Path) -> Option<PathBuf> {
     std::fs::create_dir_all(&dir).ok().map(|()| dir)
 }
 
+/// Where this session's **pasted images** are saved: `{config_home}/image-cache/{session}`
+/// (`clipboard::paste_store_dir`, docs/image-paste.md) — under the config
+/// home rather than `/tmp`, so a picture pasted today is still there for a
+/// `/resume` tomorrow. With no config home at all (no `HOME`, no override)
+/// the same layout under the system temp dir. Created by the paste worker,
+/// not here: a session that never pastes never makes the folder.
+pub(crate) fn paste_store_dir(session: &str) -> PathBuf {
+    match config_home() {
+        Some(home) => alter_zero::clipboard::paste_store_dir(&home, session),
+        None => std::env::temp_dir()
+            .join("alter-zero-image-cache")
+            .join(session),
+    }
+}
+
 /// The session's image-payload cache, **created**: `{session_root}/images`,
 /// where the backend keeps the downscaled copy of every picture it sends so a
 /// later turn re-sending an attachment reads a small file instead of decoding

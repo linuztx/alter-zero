@@ -323,10 +323,14 @@ the carrier and brackets marked runs, `ALTER_ZERO_HYPERLINKS` gating emission)
 in `docs/links.md`; the `@` file-path picker (async walk+rank file search below
 the box) in `docs/file-search.md`; the large-paste `[Pasted Content N chars]`
 placeholder (bracketed paste → a compact placeholder, expanded back on send) in
-`docs/paste.md`; the **Ctrl+V image paste** (clipboard image → temp PNG → an
-`[Image #N]` composer placeholder whose path rides a separate typed channel to
-the backend — on Linux the owner's own encoded bytes are **streamed** to
-the file by `clipboard::linux` *before arboard is constructed*: `image/png`
+`docs/paste.md`; the **Ctrl+V image paste** (clipboard image → the session's
+paste folder, `{config_home}/image-cache/{session}/N.{ext}` numbered in paste
+order, staged and header-checked before it takes its number → an `[Image #N]`
+composer placeholder whose path rides a separate typed channel to the backend
+and reaches the model as `[Image #N: {path}]` in the message text, so it knows
+where the picture was saved and a `/resume` finds it again — on Linux the
+owner's own encoded bytes are **streamed** into that folder by
+`clipboard::linux` *before arboard is constructed*: `image/png`
 first, then `jpeg`/`gif`/`webp`, a Wayland pipe or 1 MiB X11 property slices
 with `INCR` segments, capped at `CLIPBOARD_IMAGE_MAX_BYTES` and never
 decoded, since arboard's decode-to-RGBA plus our re-encode was a ~24 MB

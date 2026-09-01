@@ -76,9 +76,13 @@ two:
   it back out. That is also the only record that survives a `/resume`: the
   rollout keeps the cell's text, not the file's header.
 * A **Ctrl+V paste** — no such line, so the boundary reads the header once
-  when the paste lands (`images::remember_size`, from `tui::workers`). A path
-  with no entry simply isn't drawn, which is the right answer for a resumed
-  session whose per-session temp file is long gone.
+  when the paste lands (`images::remember_size`, from `tui::workers`) — and
+  again for every pasted picture a loaded conversation carries
+  (`Session::remember_loaded_image_sizes`, after a `/resume`, `--continue` or
+  `--resume` load), since pastes are saved under the config home
+  (`{config_home}/image-cache/{session}/N.png`, `docs/image-paste.md`) and
+  are usually still there. A path with no entry — a picture someone deleted —
+  simply isn't drawn.
 
 ## The geometry
 

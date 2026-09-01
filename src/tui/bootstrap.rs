@@ -105,6 +105,9 @@ impl<'t> Session<'t> {
         // about no scratchpad and its writes there get no exemption.
         let session_tmp = config::session_tmp_root(&session_id);
         let scratchpad_dir = config::prepare_scratchpad(&session_tmp);
+        // Where Ctrl+V pastes land (docs/image-paste.md): the config home,
+        // not /tmp, so a resumed session still finds its pictures.
+        let paste_dir = config::paste_store_dir(&session_id);
         // Beside it, `images/` (docs/images.md "Memory"): the backend re-sends
         // every attached picture on every later turn, so the shrunk copy it
         // builds is kept here and read back instead of being decoded from the
@@ -406,6 +409,7 @@ impl<'t> Session<'t> {
             last_file_query: None,
             img_tx,
             img_rx,
+            paste_dir,
             device_tx,
             device_rx,
             device_cancel: None,
@@ -658,6 +662,7 @@ impl<'t> Session<'t> {
                 let restored = self.restore_final_checkpoint(&session_checkpoints);
                 let count = items.len();
                 self.app.load_session(items);
+                self.remember_loaded_image_sizes();
                 // The checklist came back with the conversation — the shared
                 // registry follows, exactly like the `/resume` picker's load
                 // (docs/task-tools.md).

@@ -171,8 +171,11 @@ context entry. It is generic over `encode_image: Fn(&Path) -> Option<String>`
 ## Vision: images on the wire
 
 `app::Message` gains `images: Vec<PathBuf>` — a user message *owns* its
-Ctrl+V attachments (the `[Image #N]` placeholders stay in the text; the paths
-ride beside it). The submit path stages the whole `(placeholder, path)` pairs
+Ctrl+V attachments (the `[Image #N]` placeholders stay in the recorded text;
+the paths ride beside it — and on the wire each placeholder is annotated with
+its path, `[Image #N: {path}]`, so the model knows where the picture was saved:
+`paste::annotate_image_placeholders`, `docs/image-paste.md`). The submit path
+stages the whole `(placeholder, path)` pairs
 and records each path onto the message whose text carries its placeholder, in
 text-occurrence order (`paste::distribute_images` — so a merged batch's
 duplicate `[Image #1]`s resolve to their own drafts' paths, and a
@@ -184,7 +187,7 @@ strings so a non-UTF8 path can't panic the recorder). The interrupt-undo
 occurrences zipped back over each message's recorded paths
 (`paste::image_placeholder_occurrences`), any pairs backing a clobbered draft
 discarded first, and — for a backtrack — the dropped *later* user messages'
-orphaned attachments queued for temp-file deletion.
+orphaned attachments queued for deletion.
 
 `ChatMessage.content` is now `MessageContent::Text(String) |
 Parts(Vec<ContentPart>)` (serde-`untagged`, so imageless messages keep the
@@ -194,14 +197,16 @@ then one `image_url` part per attachment, each a
 `data:image/{png,jpeg,gif,webp};base64,…` URL (`image_data_url`, reusing
 `clipboard`'s tested RFC 4648 encoder; MIME by extension, PNG default —
 the clipboard writer only produces those formats). Encoding happens **on the
-backend thread**, never the event loop. An attachment whose temp file has
-vanished (e.g. the OS cleaned `/tmp` between sessions) is *noted in the text*
+backend thread**, never the event loop. An attachment whose file has vanished
+(a paste folder someone cleared — pastes live under the config home now, so
+an OS temp cleaner no longer takes them) is *noted in the text*
 (`[image unavailable: {path}]`) rather than dropped silently.
 
 Because past user messages keep their paths, earlier turns' images are
 **re-sent on every later request** — the model can be asked a follow-up about
 an image three turns back (codex re-sends the same way). This is also why
-submitted temp files are deliberately left on disk (`docs/image-paste.md`).
+submitted pastes are deliberately kept in the session's paste folder
+(`docs/image-paste.md`).
 
 ## The Ctrl+D context-debug view
 
@@ -225,7 +230,7 @@ system prompt:                        (amber tag — the backend's prompt)
 user:                                 (blue tag — CONTEXT_USER_COLOR, the one
                                        blue the running bullet left behind)
   [Image #1] what's in this picture?
-  image: /tmp/alter-zero-clipboard-x.png    (dim attachment row)
+  image: /home/me/.alter-zero/image-cache/773c1c6cb321/1.png    (dim attachment row)
 assistant:                            (green tag)
   Let me look at the file.
   → read({"path":"src/main.rs"})      (purple — the native tool call)

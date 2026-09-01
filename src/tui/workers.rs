@@ -333,11 +333,14 @@ pub(crate) fn dispatch_file_search(
 /// *sends* — never a stdin reader (invariant 1). Each Ctrl+V spawns its own
 /// worker, so a double-press attaches two placeholders in completion order —
 /// what codex's synchronous handler does too, minus the UI freeze.
-pub(crate) fn spawn_image_paste(tx: tokio::sync::mpsc::UnboundedSender<Result<PathBuf, String>>) {
+pub(crate) fn spawn_image_paste(
+    dir: PathBuf,
+    tx: tokio::sync::mpsc::UnboundedSender<Result<PathBuf, String>>,
+) {
     std::thread::spawn(move || {
         // The receiver only closes at shutdown — a failed send just means
         // there is nothing left to attach to.
-        let _ = tx.send(clipboard::read_clipboard_image());
+        let _ = tx.send(clipboard::read_clipboard_image(&dir));
     });
 }
 
@@ -426,7 +429,7 @@ impl Session<'_> {
 
 /// The pixel size of the image at `path`, read from its header — no full
 /// decode, so a 12-megapixel screenshot costs a few hundred bytes of I/O.
-fn image_dimensions(path: &std::path::Path) -> Option<(u32, u32)> {
+pub(crate) fn image_dimensions(path: &std::path::Path) -> Option<(u32, u32)> {
     image::ImageReader::open(path)
         .ok()?
         .with_guessed_format()

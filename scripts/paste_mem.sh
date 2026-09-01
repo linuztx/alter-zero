@@ -49,7 +49,6 @@ cleanup() {
 	tmux kill-session -t "$S" 2>/dev/null
 	[ -n "${OWNER_PID:-}" ] && kill "$OWNER_PID" 2>/dev/null
 	rm -rf "$CFG"
-	rm -f /tmp/alter-zero-clipboard-* 2>/dev/null
 }
 trap cleanup EXIT
 

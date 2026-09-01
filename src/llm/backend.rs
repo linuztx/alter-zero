@@ -616,7 +616,10 @@ fn chat_message(
         }
         return ChatMessage::new(role, text);
     }
-    let mut text = message.text.clone();
+    // The model is told where each picture was saved — `[Image #1:
+    // /home/…/image-cache/{session}/1.png]` — so it can `read` it again or
+    // hand the path to a tool (docs/image-paste.md).
+    let mut text = crate::paste::annotate_image_placeholders(&message.text, &message.images);
     let mut image_parts = Vec::new();
     for path in &message.images {
         match encode_image(path) {
@@ -1868,10 +1871,12 @@ mod tests {
             tool_call_id: None,
         }];
         let msgs = build_messages(None, "", &context, fake_encode);
+        // The text names the picture's path beside its placeholder, so the
+        // model knows where what it is looking at was saved.
         assert_eq!(
             msgs[0].content,
             MessageContent::Parts(vec![
-                ContentPart::text("[Image #1] what is this?"),
+                ContentPart::text("[Image #1: /tmp/shot.png] what is this?"),
                 ContentPart::image("data:image/png;base64,/tmp/shot.png"),
             ])
         );
@@ -1926,10 +1931,15 @@ mod tests {
             tool_call_id: None,
         }];
         let msgs = build_messages(None, "", &context, failing_encode);
-        // No image encoded → back to plain text, with the loss noted.
+        // No image encoded → back to plain text, with the loss noted. The
+        // text has no placeholder to carry the path, so the attachment line
+        // names where the picture was saved and the note that it could not be
+        // read now.
         assert_eq!(
             msgs[0].content,
-            MessageContent::Text("look\n[image unavailable: /tmp/gone.png]".into())
+            MessageContent::Text(
+                "look\n[attached image: /tmp/gone.png]\n[image unavailable: /tmp/gone.png]".into()
+            )
         );
     }
 
@@ -1949,7 +1959,10 @@ mod tests {
         assert_eq!(
             msgs[0].content,
             MessageContent::Parts(vec![
-                ContentPart::text("both\n[image unavailable: /tmp/gone.png]"),
+                ContentPart::text(
+                    "both\n[attached image: /tmp/gone.png]\n[attached image: /tmp/ok.png]\n\
+                     [image unavailable: /tmp/gone.png]"
+                ),
                 ContentPart::image("data:image/png;base64,OK"),
             ])
         );

@@ -238,7 +238,7 @@ leak.
 ### What changed
 
 - **The paste streams the PNG.** `clipboard::linux` asks the owner for
-  `image/png` itself and copies the bytes to the temp file as they arrive: a
+  `image/png` itself and copies the bytes into the paste folder as they arrive: a
   Wayland offer is a pipe, an X11 selection is fetched a 1 MiB property slice
   at a time, `INCR` segments included. No decode, no encode, never more than
   about a megabyte in hand — and a 4K screenshot, which arboard could not read
@@ -301,7 +301,7 @@ reads the cached copy and moves the peak not at all.
 
 The guards: `tests/clipboard_linux.rs` drives the read against a real X
 server on both transfer shapes (a whole property, and `INCR` segments) and
-requires the temp file to hold the owner's bytes *verbatim* — served at a
+requires the saved file to hold the owner's bytes *verbatim* — served at a
 non-default compression level and carrying a text chunk, which no
 decode-and-re-encode can reproduce — plus an owner with only a JPEG;
 `images::tests` pins the fitted decoder to a naive area-average oracle and

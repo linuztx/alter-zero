@@ -1,5 +1,5 @@
 //! The Ctrl+V image read on Linux must **stream** the clipboard's `image/png`
-//! bytes to the temp file — never decode them to RGBA and re-encode
+//! bytes into the paste folder — never decode them to RGBA and re-encode
 //! (`docs/image-paste.md`). That round trip cost tens of megabytes per paste
 //! to produce the bytes the clipboard owner had already handed over.
 //!
@@ -80,32 +80,33 @@ fn has_display() -> bool {
 
 #[test]
 #[ignore = "needs an X server (DISPLAY) — run under Xvfb"]
-fn a_png_on_the_clipboard_streams_to_the_temp_file_verbatim() {
+fn a_png_on_the_clipboard_streams_into_the_paste_folder_verbatim() {
     if !has_display() {
         return;
     }
     let _selection = selection_lock();
+    let store = tempfile::tempdir().expect("a paste folder");
     let png = Arc::new(served_png(1920, 1080));
     // Whole in one property, then in INCR segments the way GTK and Qt hand
-    // over anything larger than a few hundred kilobytes.
-    for (label, chunk) in [("whole", None), ("INCR", Some(200_000))] {
+    // over anything larger than a few hundred kilobytes — the second paste
+    // taking the folder's next number.
+    for (label, chunk, saved_as) in [("whole", None, "1.png"), ("INCR", Some(200_000), "2.png")] {
         let owner = Owner::serve(Some(Arc::clone(&png)), chunk).expect("own the selection");
-        let path = alter_zero::clipboard::read_clipboard_image()
+        let path = alter_zero::clipboard::read_clipboard_image(store.path())
             .unwrap_or_else(|e| panic!("{label}: paste failed: {e}"));
-        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-        assert!(
-            name.starts_with("alter-zero-clipboard-") && name.ends_with(".png"),
-            "{label}: our own temp copy, named as the paste names it: {name}"
+        assert_eq!(
+            path,
+            store.path().join(saved_as),
+            "{label}: our own copy, saved as the folder's next number"
         );
-        let copied = std::fs::read(&path).expect("read the temp file");
+        let copied = std::fs::read(&path).expect("read the saved file");
         assert!(
             copied == *png,
-            "{label}: the temp file must hold the served bytes verbatim \
+            "{label}: the saved file must hold the served bytes verbatim \
              ({} bytes served, {} written)",
             png.len(),
             copied.len()
         );
-        let _ = std::fs::remove_file(&path);
         drop(owner);
     }
 }
@@ -132,17 +133,16 @@ fn an_owner_with_only_a_jpeg_streams_it_under_its_own_extension() {
     // The owner declines `image/png`, so the read asks for the next accepted
     // target and keeps the bytes under the extension that matches them —
     // never transcoded, and never handed to arboard (which asks for PNG only).
+    let store = tempfile::tempdir().expect("a paste folder");
     let jpeg = Arc::new(served_jpeg(640, 480));
     let _owner =
         Owner::serve_as("image/jpeg", Some(Arc::clone(&jpeg)), None).expect("own the selection");
-    let path = alter_zero::clipboard::read_clipboard_image().expect("a temp file");
-    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-    assert!(name.ends_with(".jpg"), "kept as what it is: {name}");
+    let path = alter_zero::clipboard::read_clipboard_image(store.path()).expect("a saved file");
+    assert_eq!(path, store.path().join("1.jpg"), "kept as what it is");
     assert!(
         std::fs::read(&path).expect("read") == *jpeg,
         "the JPEG bytes verbatim"
     );
-    let _ = std::fs::remove_file(&path);
 }
 
 #[test]
@@ -153,8 +153,16 @@ fn a_clipboard_with_no_picture_is_reported_as_before() {
     }
     let _selection = selection_lock();
     // An owner that offers no image/png at all: the direct read finds nothing
-    // and the paste fails with the message the red notice always carried.
+    // and the paste fails with the message the red notice always carried —
+    // and saves nothing.
+    let store = tempfile::tempdir().expect("a paste folder");
     let _owner = Owner::serve(None, None).expect("own the selection");
-    let err = alter_zero::clipboard::read_clipboard_image().expect_err("nothing to paste");
+    let err =
+        alter_zero::clipboard::read_clipboard_image(store.path()).expect_err("nothing to paste");
     assert_eq!(err, "no image on the clipboard");
+    assert_eq!(
+        std::fs::read_dir(store.path()).expect("list").count(),
+        0,
+        "a failed paste leaves the folder empty"
+    );
 }

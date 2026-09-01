@@ -1,8 +1,8 @@
 //! A pasted screenshot's memory cost must stay proportional to what is
 //! **produced**, never to the picture's own pixel count (`docs/memory.md`).
 //!
-//! The three places a Ctrl+V paste touches pixels — the paste worker's temp
-//! file, the picture drawn under its bubble, and the payload sent to the
+//! The three places a Ctrl+V paste touches pixels — the paste worker's saved
+//! copy, the picture drawn under its bubble, and the payload sent to the
 //! model — each used to decode the whole screenshot (four bytes a pixel:
 //! 8 MB for 1080p, 15 MB for 1440p) and shrink it from there, all of it
 //! transient heap that glibc's dynamic `mmap` threshold then kept: three
@@ -71,7 +71,7 @@ fn shrinking_a_pasted_screenshot_never_materialises_its_pixels() {
         (16, 16),
     ));
     drop(
-        alter_zero::clipboard::stream_encoded_image_to_temp(&mut &warm[..], "png")
+        alter_zero::clipboard::stream_encoded_image_into(dir.path(), &mut &warm[..], "png")
             .map(std::fs::remove_file),
     );
 
@@ -79,13 +79,13 @@ fn shrinking_a_pasted_screenshot_never_materialises_its_pixels() {
     let path = dir.path().join("shot.png");
     std::fs::write(&path, &png).expect("write");
 
-    // 1. The paste worker's streamed path: the clipboard's bytes copied to
-    //    the temp file. Nothing about the picture is decoded at all.
+    // 1. The paste worker's streamed path: the clipboard's bytes copied into
+    //    the paste folder. Nothing about the picture is decoded at all.
     let before = rss_bytes().expect("rss");
-    let temp =
-        alter_zero::clipboard::stream_encoded_image_to_temp(&mut &png[..], "png").expect("streams");
+    let saved = alter_zero::clipboard::stream_encoded_image_into(dir.path(), &mut &png[..], "png")
+        .expect("streams");
     let growth = rss_bytes().expect("rss").saturating_sub(before);
-    let _ = std::fs::remove_file(&temp);
+    let _ = std::fs::remove_file(&saved);
     assert!(
         growth < 2 * 1024 * 1024,
         "streaming the clipboard's {}-byte PNG to disk grew the resident set by {growth} \
