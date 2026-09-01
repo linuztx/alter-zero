@@ -350,19 +350,24 @@ the alternate screen's images are cleared on the 1049 switch — so a protocol
 carried across the hop painted the Ctrl+O transcript with placeholders naming
 an image that screen's store had never heard of, failing **silently** (the
 lookup returns, `q=2` suppresses replies) as reserved rows with nothing in
-them. So an encoding **belongs to a screen**: the cache is keyed
-`(placement, screen)` and `enter_overlay`/`exit_overlay` call `enter_screen`
-— arriving on the alternate screen drops the entries encoded for it (the
-terminal just cleared that store), arriving back on the primary drops
-**nothing** (its store was never touched). That asymmetry is the difference
-between one upload per Ctrl+O and two, and an upload is not cheap:
-`ratatui_image` transmits kitty images as raw RGBA, so a 120×35-cell picture
-measures **~4.5 MB of base64**, against 1.3 KB for the trip back. Only kitty
-pays any of it — sixel, iTerm2 and half-blocks keep nothing per screen and
-share the primary's entry. `smoke.sh` Phase 107b guards both halves by reading
-the **raw byte stream** (`pipe-pane`, not the pane text, which cannot tell the
-cases apart — a placeholder *is* an ordinary cell): a transmit going in, none
-coming back.
+them. So an encoding **belongs to a screen** and, once made, keeps: the cache is
+keyed `(placement, screen)`, `enter_overlay`/`exit_overlay` call
+`enter_screen`, and each screen uploads a given picture **once, ever**. That
+the alternate screen's copy survives the switch is verified, not assumed —
+kitty's clear filter opens `if (ref->is_virtual_ref) return false;`, the
+image behind it is not collected because that virtual ref counts as a ref,
+and the spec exempts virtual placements from the very deletion classes the
+switch and our `ESC [ 2 J` use (kitty ≥ 0.28, Ghostty ≥ 1.1). It matters
+because an upload is not cheap: `ratatui_image` transmits kitty images as raw
+RGBA, so a 120×35-cell picture measures **~4.5 MB of base64** — and one
+Ctrl+O toggle went 4.53 MB / 4.53 MB / 4.53 MB (open/close/reopen) to
+4.53 MB / 1.3 KB / **19.6 KB**. `ALTER_ZERO_IMAGE_RETRANSMIT=1` takes the
+conservative path for a terminal that speaks the protocol but not that part
+of it; we cannot ask it, since the reply would need a second stdin reader.
+Only kitty pays any of this — sixel, iTerm2 and half-blocks keep nothing per
+screen and share the primary's entry. `smoke.sh` Phase 107b guards all three
+legs off the **raw byte stream** (`pipe-pane`, not the pane text, which cannot
+tell the cases apart — a placeholder *is* an ordinary cell).
 And a block is **drawn into exactly the reserved cells the frame holds** —
 their extent read back off the carriers, never taken from the placement — via
 `ratatui_image`'s `SlicedProtocol`/`SlicedImage` at the row offset the first

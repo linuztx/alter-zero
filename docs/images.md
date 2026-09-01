@@ -212,22 +212,41 @@ with unicode placeholders naming an image the alternate screen's store had
 never heard of. The lookup just returns and `q=2` suppresses replies, so it
 failed **silently**: reserved rows with nothing in them.
 
-So **an encoding belongs to a screen**. The cache is keyed on
-`(placement, screen)`, and `enter_overlay`/`exit_overlay` call
-`ImageStore::enter_screen`. Arriving on the *alternate* screen drops the
-entries encoded for it, because the terminal just cleared that store, so the
-first overlay frame transmits afresh — with a new random image id, so the two
-stores cannot collide. Arriving back on the *primary* screen drops
-**nothing**: its store was never touched, so the return costs no upload at
-all.
+So **an encoding belongs to a screen** — and, once made, it keeps. The cache
+is keyed on `(placement, screen)` and `enter_overlay`/`exit_overlay` call
+`ImageStore::enter_screen`, which now only follows the switch: each screen
+uploads a given picture **once, ever**, and every later visit redraws
+placeholders alone.
 
-That asymmetry earns its machinery, because a picture is not cheap on the
-wire. `ratatui_image` transmits kitty images as raw **RGBA**, so a 120×35-cell
-picture is ~3.4 MB of pixels and **~4.5 MB of base64** — measured, per upload.
-Before the cache knew about screens, a Ctrl+O round trip paid that twice; now
-it pays once, and the trip back measures 1.3 KB. What remains — one upload per
-*open* — is inherent: the alternate screen's store genuinely does not have the
-image, and nothing but a transmit can put it there.
+That the alternate screen's copy survives is not an assumption. The clear on
+the 1049 switch spares exactly the placements this protocol uses — kitty's
+filter opens `if (ref->is_virtual_ref) return false;` — and the image behind
+it is not collected either, because that virtual ref *counts* as a ref
+(`filter_refs` frees an image only when `!vt_size(&img->refs_by_internal_id)`).
+The published spec says the same from the other side: a virtual placement is
+never touched by the `a`/`c`/`p`/`q`/`x`/`y`/`z` deletion classes, which is
+what both the switch and our `ESC [ 2 J` use. Verified in kitty from 0.28
+(when placeholders shipped) through current, and in Ghostty from 1.1.
+
+It matters because a picture is not cheap on the wire. `ratatui_image`
+transmits kitty images as raw **RGBA**, so a 120×35-cell picture is ~3.4 MB of
+pixels and **~4.5 MB of base64**. Measured across one Ctrl+O toggle:
+
+| | first version | per-screen cache | + retention |
+| --- | --- | --- | --- |
+| open | 4.53 MB | 4.53 MB | 4.53 MB |
+| close | 4.53 MB | 1.3 KB | 1.3 KB |
+| reopen | 4.53 MB | 4.53 MB | **19.6 KB** |
+
+The one upload that remains is the honest one: the alternate screen's store
+genuinely does not have the picture the first time you open it.
+
+`ALTER_ZERO_IMAGE_RETRANSMIT=1` takes the conservative path — re-upload on
+every switch — for a terminal that speaks the protocol but not that part of
+it. Without it such a terminal would show the picture on the first Ctrl+O and
+blank rows on the second. We cannot ask it which kind it is: the reply would
+have to be read off stdin, and this crate has exactly one stdin reader
+(invariant 1).
 
 Only kitty pays any of this. Sixel, iTerm2 and half-blocks keep nothing per
 screen (they carry their whole payload in every render), so they share the
@@ -239,8 +258,8 @@ The abandoned image ids self-clean: kitty's quota is per buffer and *"existing
 images without placements will be preferentially deleted"* under pressure, and
 the next entry to the alternate screen clears its store outright.
 
-`smoke.sh` Phase 107b is the guard — a transmit on the way **in**, and
-**none** on the way back out. It reads the raw byte stream through
+`smoke.sh` Phase 107b is the guard — a transmit on the way **in**, none on the
+way back out, and none on a reopen. It reads the raw byte stream through
 `pipe-pane` rather than the pane text, because the pane text is exactly what
 cannot tell those cases apart: a kitty placeholder *is* an ordinary cell, so a
 capture looks identical whether or not the picture will appear, and identical

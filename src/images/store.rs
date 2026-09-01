@@ -35,6 +35,26 @@ pub const IMAGE_PROTOCOL_ENV: &str = "ALTER_ZERO_IMAGE_PROTOCOL";
 /// rows tall a picture of a given width comes out.
 pub const IMAGE_CELL_SIZE_ENV: &str = "ALTER_ZERO_IMAGE_CELL_SIZE";
 
+/// Re-upload a picture every time the terminal switches screen buffers,
+/// instead of trusting it to keep a virtually-placed image
+/// ([`ImageStore::enter_screen`] explains why it normally doesn't have to).
+/// The escape hatch for a terminal that speaks the kitty protocol but clears
+/// virtual placements on the 1049 switch: pictures would otherwise go blank
+/// on the *second* Ctrl+O. Costs one upload per open — megabytes for a large
+/// picture — so it is off by default.
+pub const IMAGE_RETRANSMIT_ENV: &str = "ALTER_ZERO_IMAGE_RETRANSMIT";
+
+/// Whether [`IMAGE_RETRANSMIT_ENV`] asks for a re-upload on every screen
+/// switch: any value but the falsy spellings turns it on (the inverse of the
+/// other gates, since this one is off by default). Pure.
+#[must_use]
+pub fn retransmit_forced(value: Option<&str>) -> bool {
+    !matches!(
+        value.map(|v| v.trim().to_ascii_lowercase()).as_deref(),
+        None | Some("" | "0" | "false" | "no" | "off")
+    )
+}
+
 /// Whether inline images should be **off**, given [`IMAGES_ENV`]'s value —
 /// [`crate::links::hyperlinks_disabled`]'s twin, same falsy spellings.
 #[must_use]
@@ -155,11 +175,9 @@ struct VisibleBlock {
 /// and are encoded exactly once.
 type Screen = bool;
 
-/// The primary screen — and the key every placement-free protocol uses.
+/// The primary screen — and the key every placement-free protocol uses. The
+/// alternate screen (the Ctrl+O / Ctrl+D / `/resume` overlay) is its inverse.
 const PRIMARY: Screen = false;
-
-/// The alternate screen (the Ctrl+O / Ctrl+D / `/resume` overlay).
-const ALTERNATE: Screen = true;
 
 /// The terminal's graphics capability and the pictures encoded for it.
 pub struct ImageStore {
@@ -172,6 +190,9 @@ pub struct ImageStore {
     /// Which screen the terminal is showing — [`ImageStore::enter_screen`]
     /// keeps it in step with the alternate-screen switch.
     screen: Screen,
+    /// [`IMAGE_RETRANSMIT_ENV`]: drop a screen's encodings when the terminal
+    /// switches onto it, instead of trusting it to have kept them.
+    retransmit: bool,
 }
 
 impl ImageStore {
@@ -186,6 +207,7 @@ impl ImageStore {
             order: Vec::new(),
             bytes: 0,
             screen: PRIMARY,
+            retransmit: false,
         }
     }
 
@@ -251,6 +273,7 @@ impl ImageStore {
             order: Vec::new(),
             bytes: 0,
             screen: PRIMARY,
+            retransmit: retransmit_forced(env(IMAGE_RETRANSMIT_ENV).as_deref()),
         }
     }
 
@@ -309,14 +332,27 @@ impl ImageStore {
     /// them, which is exactly what the Ctrl+O transcript showed before the
     /// cache learned about screens.
     ///
-    /// So an encoding belongs to a screen. Arriving on the **alternate**
-    /// screen drops the ones encoded for it, because the terminal just
-    /// cleared that store; arriving back on the **primary** screen drops
-    /// nothing, because its store was never touched — which is what keeps a
-    /// Ctrl+O round trip from re-transmitting the whole picture on the way
-    /// out. A picture is megabytes on the wire (`ratatui_image` transmits raw
-    /// RGBA, so a 120x35-cell one is ~4.5 MB of base64), so that is the
-    /// difference between one upload per open and two.
+    /// So an encoding belongs to a screen — and, once made, it **keeps**.
+    /// The alternate screen's clear spares exactly the placements this
+    /// protocol uses: kitty's own filter opens `if (ref->is_virtual_ref)
+    /// return false;`, and the image behind it is not collected either, since
+    /// that virtual ref counts as a ref. The published spec says the same
+    /// thing from the other side — a virtual placement is never touched by
+    /// the `a`/`c`/`p`/`q`/`x`/`y`/`z` deletion classes, which is what both
+    /// the 1049 switch and `ESC [ 2 J` use. Verified in kitty from 0.28 (when
+    /// placeholders shipped) through current, and in Ghostty from 1.1.
+    ///
+    /// That is worth the machinery, because a picture is not cheap on the
+    /// wire: `ratatui_image` transmits kitty images as raw RGBA, so a
+    /// 120x35-cell one measures ~4.5 MB of base64. Each screen uploads it
+    /// once, ever; every later visit redraws placeholders alone.
+    ///
+    /// [`IMAGE_RETRANSMIT_ENV`] takes the conservative path for a terminal
+    /// that speaks the protocol but not that part of it — without it, such a
+    /// terminal would show the picture on the first Ctrl+O and blank rows on
+    /// the second. We cannot ask it: the reply would have to be read off
+    /// stdin, and this crate has exactly one stdin reader (CLAUDE.md
+    /// invariant 1).
     ///
     /// The other three protocols keep nothing per screen — sixel, iTerm2 and
     /// half-blocks carry their whole payload in every render — so they share
@@ -324,14 +360,14 @@ impl ImageStore {
     /// the screen component for them).
     pub fn enter_screen(&mut self, alternate: bool) {
         self.screen = alternate;
-        if !alternate || !self.per_screen() {
+        if !self.retransmit || !self.per_screen() {
             return;
         }
         let stale: Vec<(u32, Screen)> = self
             .encoded
             .keys()
             .copied()
-            .filter(|&(_, screen)| screen == ALTERNATE)
+            .filter(|&(_, screen)| screen == alternate)
             .collect();
         for key in stale {
             self.drop_entry(key);

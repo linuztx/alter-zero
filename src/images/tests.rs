@@ -385,3 +385,17 @@ fn the_setting_is_what_decides_whether_a_picture_is_downscaled_at_all() {
     );
     set_policy(ImagePolicy::default());
 }
+
+#[test]
+fn the_retransmit_gate_is_off_unless_asked_for() {
+    // The inverse of the other gates: this one costs megabytes per Ctrl+O, so
+    // it stays off until a terminal is found that needs it.
+    assert!(!retransmit_forced(None));
+    assert!(!retransmit_forced(Some("")));
+    assert!(!retransmit_forced(Some("0")));
+    assert!(!retransmit_forced(Some("false")));
+    assert!(!retransmit_forced(Some(" OFF ")));
+    assert!(retransmit_forced(Some("1")));
+    assert!(retransmit_forced(Some("true")));
+    assert!(retransmit_forced(Some("yes")));
+}

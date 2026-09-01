@@ -34,8 +34,9 @@ pub use registry::{
     remember_size, set_policy, showing,
 };
 pub use store::{
-    IMAGE_CELL_SIZE_ENV, IMAGE_PROTOCOL_ENV, IMAGES_ENV, ImageStore, images_disabled,
-    kitty_from_env, parse_cell_size, protocol_from_name, under_multiplexer,
+    IMAGE_CELL_SIZE_ENV, IMAGE_PROTOCOL_ENV, IMAGE_RETRANSMIT_ENV, IMAGES_ENV, ImageStore,
+    images_disabled, kitty_from_env, parse_cell_size, protocol_from_name, retransmit_forced,
+    under_multiplexer,
 };
 
 /// The pixel size an image `read`'s own fact line reports.

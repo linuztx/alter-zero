@@ -10235,15 +10235,21 @@ sleep 1.5
 img_kitty_tx() { grep -ao "$(printf '\033')_G[^;]*a=T" 2>/dev/null | wc -l; }
 img_tx_before="$(head -c "$img_split" "$IMG_RAW" | img_kitty_tx)"
 img_tx_after="$(tail -c +$((img_split + 1)) "$IMG_RAW" | img_kitty_tx)"
-# …and coming back costs nothing: the primary screen's store was never
-# touched by the overlay, so its encoding is still good. A picture is
-# megabytes on the wire, so re-uploading it on the way out is exactly the
-# flicker the per-screen cache exists to avoid.
+# …and it is uploaded ONCE per screen, not once per keypress. A picture is
+# megabytes on the wire (raw RGBA — 4.5 MB of base64 for a 120x35-cell one),
+# so re-uploading it on the way out, or on every reopen, is the flicker the
+# per-screen cache exists to avoid. Coming back costs nothing because the
+# overlay never touched the primary screen's store; reopening costs nothing
+# because a virtually-placed image survives the 1049 switch.
 img_split_back="$(stat -c%s "$IMG_RAW" 2>/dev/null || echo 0)"
 tmux send-keys -t "$S107B" C-o
 sleep 1.5
 img_tx_back="$(tail -c +$((img_split_back + 1)) "$IMG_RAW" | img_kitty_tx)"
-echo "==== Phase 107b: kitty transmits — inline=$img_tx_before overlay=$img_tx_after back=$img_tx_back (cell seen=$img_tx_inline) ===="
+img_split_again="$(stat -c%s "$IMG_RAW" 2>/dev/null || echo 0)"
+tmux send-keys -t "$S107B" C-o
+sleep 1.5
+img_tx_again="$(tail -c +$((img_split_again + 1)) "$IMG_RAW" | img_kitty_tx)"
+echo "==== Phase 107b: kitty transmits — inline=$img_tx_before overlay=$img_tx_after back=$img_tx_back reopen=$img_tx_again (cell seen=$img_tx_inline) ===="
 tmux kill-session -t "$S107B" 2>/dev/null
 rm -rf "$IMG_DIR2" "$IMG_SESS2" "$(dirname "$IMG_RAW")"
 if [ "$img_tx_inline" != 1 ]; then
@@ -10260,6 +10266,10 @@ if [ "$img_tx_after" -lt 1 ]; then
 fi
 if [ "$img_tx_back" -ne 0 ]; then
 	echo "FAIL: Phase 107b — returning from the overlay re-uploaded the picture ($img_tx_back transmits); the primary screen's encoding must survive the round trip" >&2
+	status=1
+fi
+if [ "$img_tx_again" -ne 0 ]; then
+	echo "FAIL: Phase 107b — reopening the overlay re-uploaded the picture ($img_tx_again transmits); a virtually-placed image survives the 1049 switch, so each screen uploads once" >&2
 	status=1
 fi
 
