@@ -51,6 +51,18 @@ pub fn tasks_dir(root: &Path) -> PathBuf {
     root.join(TASKS_LEAF)
 }
 
+/// The name of the image-payload cache leaf under the session root.
+const IMAGES_LEAF: &str = "images";
+
+/// The backend's image-payload cache — `{root}/images`, holding the
+/// downscaled copy of every picture sent to the model, so a turn that
+/// re-sends an earlier attachment reads a small file instead of decoding the
+/// original again (`docs/images.md` "Memory").
+#[must_use]
+pub fn images_dir(root: &Path) -> PathBuf {
+    root.join(IMAGES_LEAF)
+}
+
 /// Is `path` a file **strictly inside** `root`?
 ///
 /// The predicate behind the permission gate's scratchpad exemption
@@ -112,6 +124,12 @@ mod tests {
         assert_eq!(
             tasks_dir(&root),
             PathBuf::from("/tmp/alter-zero-1000/18cea7cc0aee22c0-5d77f/tasks")
+        );
+        // The downscaled image payloads the backend re-sends each turn
+        // (docs/images.md "Memory") live beside them.
+        assert_eq!(
+            images_dir(&root),
+            PathBuf::from("/tmp/alter-zero-1000/18cea7cc0aee22c0-5d77f/images")
         );
     }
 

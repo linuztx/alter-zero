@@ -107,7 +107,7 @@ impl Session<'_> {
                 // freeze the status animations and swallow keystrokes if run
                 // inline. The result arrives on the image channel, which attaches
                 // it or commits the red notice.
-                workers::spawn_image_paste(self.img_tx.clone());
+                workers::spawn_image_paste(self.paste_dir.clone(), self.img_tx.clone());
             }
             Action::RunShell(command) => {
                 // `!command` from an idle composer: echo it, then run it locally

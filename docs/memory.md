@@ -186,6 +186,139 @@ The model-facing downscale is bounded the other way round: decoding is
 megapixels (or 64 MB of source), and the caller refuses the read instead of
 materialising a 12000x12000 scan to discover it shouldn't have.
 
+## Pasting a screenshot: the round trip that stuck
+
+The report was "every Ctrl+V of an image grows the process, past 100 MB".
+Reproduced under a virtual X server — `Xvfb :99`, the `clipboard_owner`
+example serving a 1920x1080 screenshot-shaped PNG (a gradient with per-pixel
+noise, so it compresses like a real one), the binary in tmux, `VmRSS` and
+`VmHWM` sampled after each step:
+
+| paste only, five times | RSS | peak |
+|---|---|---|
+| startup | 18.0 MB | 18.0 MB |
+| paste 1 | 24.3 MB | 42.5 MB |
+| paste 2 … 5 | 19.0 MB | 42.8 MB |
+
+| paste + send, three times | after the paste | after the send |
+|---|---|---|
+| picture 1 | 24.1 MB | 41.2 MB |
+| picture 2 | 59.9 MB | 78.9 MB |
+| picture 3 | 103.1 MB | 103.3 MB |
+
+(half-blocks; under kitty the same run reached **122.5 MB**.) A paste alone
+was a 24 MB spike that mostly came back. *Sending* the picture is what stuck,
+~20 MB a time, and it never came back.
+
+### Three costs, and why they compounded
+
+**The paste decoded and re-encoded bytes it had been handed.** On Linux a
+screenshot tool puts its picture on the clipboard as a PNG, and `image/png`
+is the one target arboard asks an owner for — after which it decodes it to
+RGBA and hands the pixels over, and `read_clipboard_image` PNG-encoded them
+back onto disk. For 1920x1080 that is an 8.3 MB RGBA buffer, an encoder's
+working set and an output `Vec` doubling its way past 8 MiB, all to
+reproduce the owner's bytes.
+
+**The display decoded the picture whole to draw a small one.** Committing the
+user bubble draws the picture under it (`docs/images.md`), and
+`ImageStore::encode` decoded the whole PNG — `4 x width x height` again —
+before shrinking it to the ~118-column block, which is ~3 MB.
+
+**glibc kept the second one.** `malloc` serves a block above its `mmap`
+threshold with a private mapping that `free` really does return — but the
+threshold is *dynamic*: freeing such a block raises it to that block's size
+(up to 32 MiB), so the *next* block of that size is carved from the heap,
+where a free that isn't at the very top returns nothing to the OS. The
+paste's 8 MiB output vector lifted the threshold past the RGBA size, and from
+then on every whole-picture decode — the render's, and a re-send's — landed
+in the heap and stayed. That is the +20 MB per send, and why it read as a
+leak.
+
+### What changed
+
+- **The paste streams the PNG.** `clipboard::linux` asks the owner for
+  `image/png` itself and copies the bytes into the paste folder as they arrive: a
+  Wayland offer is a pipe, an X11 selection is fetched a 1 MiB property slice
+  at a time, `INCR` segments included. No decode, no encode, never more than
+  about a megabyte in hand — and a 4K screenshot, which arboard could not read
+  at all on X11 (its own owner-side transfer exceeds the server's request
+  limit), pastes in the same memory as a small one. Whatever the direct read
+  can't settle falls through to arboard's path, and that path now encodes
+  straight into the file rather than through a growing vector.
+- **A PNG is decoded at the size it will be shown or sent.** `images::fitted`
+  streams the file's rows through an area-average shrink and materialises
+  only the target: the reserved block for the display (~3 MB at 120 columns),
+  the 2000-pixel cap for the model. The peak no longer scales with the
+  screenshot — a 4K one costs what a 1080p one does.
+- **The `data:` URL is one allocation**, the base64 appended onto its prefix
+  instead of encoded into a string and copied in behind one.
+- **The payload is shrunk once per session, not once per turn.** An
+  attachment is re-sent with the context on every later turn, and each turn
+  used to decode and shrink it again — on a 4K screenshot, a 20 MB spike per
+  turn for as long as the picture stayed in context. `images::payload` keeps
+  the downscaled bytes on disk (`{session}/images/{key}`, keyed on the file's
+  path, size, mtime and the cap; `docs/scratchpad.md`) and `cached_downscale`
+  serves a later turn from that small file before the original is even
+  opened. The `read` tool's pictures go through the same cache. The directory
+  is bounded at `PAYLOAD_CACHE_MAX_BYTES` (64 MiB): before a new copy lands,
+  `cache_eviction` names the oldest sidecars to drop so it fits. A copy
+  larger than the whole cap empties the cache and is still written — the cap
+  bounds what is *kept*, and refusing to cache a big picture would restore
+  the per-turn decode this exists to remove.
+- **Nothing else is decoded whole without asking first.** A non-PNG picture
+  (a pasted JPEG photo, a `read` of one) decodes whole only under
+  `WHOLE_DECODE_MAX_PIXELS` (50 megapixels) and shrinks with
+  `thumbnail_exact` — a box filter with no `f32` working copy, where
+  `resize` allocated 16 bytes a pixel over the source width. The streaming
+  PNG decode is bounded in *time* by `FIT_MAX_SOURCE_PIXELS` (200 megapixels),
+  since it never holds the rows it walks.
+
+### What it bought
+
+Same procedure, same pictures:
+
+| paste only, five times | RSS | peak |
+|---|---|---|
+| startup | 18.0 MB | 18.0 MB |
+| paste 1 … 5 | **19.1 MB** | **19.1 MB** |
+
+| paste + send, three times | after the paste | after the send |
+|---|---|---|
+| picture 1 | 19.1 MB | 24.1 MB |
+| picture 2 | 24.1 MB | 28.8 MB |
+| picture 3 | 29.4 MB | **29.5 MB** |
+
+A 3840x2160 screenshot: 18.8 MB after the paste, 28.8 MB after three sends —
+the same numbers, because nothing left in the path is sized by the file.
+kitty settles at 36.9 MB for the three, its per-screen placements being the
+honest cost `docs/images.md` accounts for. What remains per send is the
+fitted picture and the protocol built from it, a few megabytes the threshold
+dance can still hold once per size class — bounded, and small.
+
+Live, against a real vision model on Venice: a 1080p paste read 22.9 MB after
+the paste and 25.3 MB after the answer, with a 54 MB peak in between that is
+the request body itself (the file, its base64, the JSON) and comes back. A 4K
+paste sent on **two** turns is where the payload cache shows: the first turn
+peaked at 63 MB building the 2000-pixel payload; the second turn, which used
+to decode and shrink the picture again and pushed the peak to 85 MB, now
+reads the cached copy and moves the peak not at all.
+
+The guards: `tests/clipboard_linux.rs` drives the read against a real X
+server on both transfer shapes (a whole property, and `INCR` segments) and
+requires the saved file to hold the owner's bytes *verbatim* — served at a
+non-default compression level and carrying a text chunk, which no
+decode-and-re-encode can reproduce — plus an owner with only a JPEG;
+`images::tests` pins the fitted decoder to a naive area-average oracle and
+its cell arithmetic to the encoder's own, and the payload cache to
+write-once-read-back semantics; and `tests/image_paste_memory.rs` gates the
+resident growth of the streamed copy, the fitted decode and the payload
+shrink of a 2560x1440 screenshot the way `tests/model_parse_memory.rs` gates
+the `/model` parse — the streamed copy under 2 MB, the other two under their
+own output plus a few megabytes of slack, all an order of magnitude under the
+source's 15 MB of RGBA. The procedure for the end-to-end numbers is
+`scripts/paste_mem.sh` (`docs/image-paste.md`, *Measuring*).
+
 ## The rule
 
 The pattern generalises past this one function: **do not build a tree of a
@@ -197,3 +330,10 @@ running all day. `src/llm/models.rs` was the only place in the tree parsing a
 large external list this way; the other `Vec<Value>`s (`llm::tools`'
 tool specs, the MCP manager's tool specs) are small, fixed schemas the app
 *sends*.
+
+The same rule wears a second coat for pictures: **never decode a picture
+whole to make a small one, and never decode what you were handed encoded.** A
+screenshot is the largest single allocation this process ever sees, and the
+allocator's dynamic threshold turns the second such allocation into a
+permanent one. `images::fitted` streams rows; `clipboard::linux` streams
+bytes.

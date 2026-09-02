@@ -33,6 +33,7 @@ dependencies = [
  "fancy-regex 0.17.0",
  "getrandom 0.3.4",
  "image",
+ "png",
  "ratatui",
  "ratatui-image",
  "regex",
@@ -51,6 +52,8 @@ dependencies = [
  "unicode-segmentation",
  "unicode-width",
  "url",
+ "wl-clipboard-rs",
+ "x11rb",
 ]
 
 [[package]]

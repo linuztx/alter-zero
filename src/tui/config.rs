@@ -511,6 +511,88 @@ pub(crate) fn prepare_scratchpad(session_root: &Path) -> Option<PathBuf> {
     std::fs::create_dir_all(&dir).ok().map(|()| dir)
 }
 
+/// Where this session's **pasted images** are saved: `{config_home}/image-cache/{session}`
+/// (`clipboard::paste_store_dir`, docs/image-paste.md) — under the config
+/// home rather than `/tmp`, so a picture pasted today is still there for a
+/// `/resume` tomorrow. With no config home at all (no `HOME`, no override)
+/// the same layout under the system temp dir. Created by the paste worker,
+/// not here: a session that never pastes never makes the folder.
+pub(crate) fn paste_store_dir(session: &str) -> PathBuf {
+    match config_home() {
+        Some(home) => alter_zero::clipboard::paste_store_dir(&home, session),
+        None => std::env::temp_dir()
+            .join("alter-zero-image-cache")
+            .join(session),
+    }
+}
+
+/// Read `ALTER_ZERO_IMAGE_CACHE_MAX_BYTES`, else
+/// [`clipboard::IMAGE_CACHE_MAX_BYTES`]; `0` means no limit.
+fn image_cache_cap() -> u64 {
+    std::env::var("ALTER_ZERO_IMAGE_CACHE_MAX_BYTES")
+        .ok()
+        .and_then(|raw| raw.trim().parse::<u64>().ok())
+        .unwrap_or(alter_zero::clipboard::IMAGE_CACHE_MAX_BYTES)
+}
+
+/// Delete the paste folders the image cache can no longer afford
+/// (`clipboard::evictable_paste_dirs` — oldest first, empty ones always,
+/// never the live session's `keep`), so the store a `/resume` reads from
+/// stays bounded without an age rule that would drop a conversation still
+/// worth resuming (`docs/image-paste.md`).
+///
+/// Best-effort and **stat-only**: it sums each folder's file sizes without
+/// reading a byte, so a store of a few hundred sessions costs milliseconds
+/// at startup. A root that isn't there yet is nothing to sweep.
+pub(crate) fn sweep_image_cache(keep: &Path) {
+    let Some(root) = keep.parent() else {
+        return;
+    };
+    let Ok(read) = std::fs::read_dir(root) else {
+        return;
+    };
+    let entries: Vec<(PathBuf, u64, std::time::SystemTime)> = read
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
+        .map(|entry| {
+            let dir = entry.path();
+            let bytes = folder_bytes(&dir);
+            let modified = entry
+                .metadata()
+                .and_then(|meta| meta.modified())
+                .unwrap_or(std::time::UNIX_EPOCH);
+            (dir, bytes, modified)
+        })
+        .collect();
+    for stale in alter_zero::clipboard::evictable_paste_dirs(&entries, image_cache_cap(), keep) {
+        let _ = std::fs::remove_dir_all(stale);
+    }
+}
+
+/// The bytes `dir`'s own files occupy — one `read_dir` and a `stat` each, no
+/// recursion (a paste folder holds pictures, not a tree).
+fn folder_bytes(dir: &Path) -> u64 {
+    std::fs::read_dir(dir).map_or(0, |read| {
+        read.filter_map(Result::ok)
+            .filter_map(|entry| entry.metadata().ok())
+            .filter(std::fs::Metadata::is_file)
+            .map(|meta| meta.len())
+            .sum()
+    })
+}
+
+/// The session's image-payload cache, **created**: `{session_root}/images`,
+/// where the backend keeps the downscaled copy of every picture it sends so a
+/// later turn re-sending an attachment reads a small file instead of decoding
+/// the original again (`docs/images.md` "Memory"). `None` when it could not
+/// be created — payloads are then rebuilt per turn, exactly as before the
+/// cache existed. Not gated with the scratchpad: it is the backend's own
+/// working space, never something the model is told about.
+pub(crate) fn prepare_image_cache(session_root: &Path) -> Option<PathBuf> {
+    let dir = scratchpad::images_dir(session_root);
+    std::fs::create_dir_all(&dir).ok().map(|()| dir)
+}
+
 /// What one checkpoint snapshot may cost before the feature switches itself
 /// off for the session — `ALTER_ZERO_CHECKPOINT_MAX_FILES` /
 /// `ALTER_ZERO_CHECKPOINT_MAX_BYTES` over the defaults, each accepting a

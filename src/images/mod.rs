@@ -12,31 +12,44 @@
 //!   `ui` line builders can reserve a block without a new argument on every
 //!   signature.
 //! - [`payload`] — the other boundary: downscaling a picture before it is
-//!   uploaded, which is what `/settings` **Auto-resize images** controls.
+//!   uploaded, which is what `/settings` **Auto-resize images** controls —
+//!   and keeping the result on disk for the session, since an attachment is
+//!   re-sent on every later turn.
+//! - [`fitted`] — pure. A PNG decoded at the size it will be shown or sent,
+//!   streaming its rows through an area-average shrink so the source picture
+//!   is never held whole (`docs/memory.md`).
 //! - [`store`] — the paint boundary. What this terminal can draw (from the
 //!   environment and `TIOCGWINSZ`, never a stdin round trip), the encoded
 //!   pictures, and the one pass that turns a reserved block into a picture in
 //!   a `Buffer`.
 
+pub mod fitted;
 pub mod geometry;
 pub mod payload;
 pub mod registry;
 pub mod store;
 
+pub use fitted::{
+    Downsampler, FIT_MAX_SOURCE_PIXELS, WHOLE_DECODE_MAX_PIXELS, decode_png_fitted, fit_box,
+    whole_decode_fits,
+};
 pub use geometry::{
     AUTO_RESIZE_MAX_PIXELS, DEFAULT_FONT_SIZE, DEFAULT_IMAGE_WIDTH, FontSize, IMAGE_GUTTER_COLS,
     IMAGE_ID_MAX, IMAGE_MAX_ROWS, IMAGE_WIDTH_CHOICES, carrier, carrier_parts, fit_cells,
     image_budget, image_cells,
 };
-pub use payload::{Downscaled, downscale_for_model, downscale_to};
+pub use payload::{
+    Downscaled, PAYLOAD_CACHE_MAX_BYTES, cache_eviction, cached_downscale, downscale_for_model,
+    downscale_for_model_at, downscale_to, payload_cache_key, set_payload_cache_dir,
+};
 pub use registry::{
     ImagePolicy, Placement, any_placements, auto_resizing, known_size, place, placement, policy,
     remember_size, set_policy, showing,
 };
 pub use store::{
     IMAGE_CELL_SIZE_ENV, IMAGE_PROTOCOL_ENV, IMAGE_RETRANSMIT_ENV, IMAGES_ENV, ImageStore,
-    images_disabled, kitty_from_env, parse_cell_size, protocol_from_name, retransmit_forced,
-    under_multiplexer,
+    images_disabled, kitty_from_env, load_fitted, parse_cell_size, protocol_from_name,
+    retransmit_forced, under_multiplexer,
 };
 
 /// The pixel size an image `read`'s own fact line reports.

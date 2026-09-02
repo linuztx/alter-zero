@@ -475,14 +475,14 @@ impl ImageStore {
             return;
         };
         let size = ratatui::layout::Size::new(place.cols, place.rows);
-        let protocol = image::ImageReader::open(&place.path)
-            .ok()
-            .and_then(|reader| reader.with_guessed_format().ok())
-            .and_then(|reader| reader.decode().ok())
-            .and_then(|image| {
-                SlicedProtocol::new_with_resize(picker, image, size, Resize::Fit(None)).ok()
-            });
         let font = picker.font_size();
+        let box_px = (
+            u32::from(place.cols) * u32::from(font.width),
+            u32::from(place.rows) * u32::from(font.height),
+        );
+        let protocol = load_fitted(&place.path, box_px).and_then(|image| {
+            SlicedProtocol::new_with_resize(picker, image, size, Resize::Fit(None)).ok()
+        });
         let bytes = protocol.as_ref().map_or(0, |_| {
             // The pixels the encoder had to carry, plus base64's third.
             usize::from(place.cols)
@@ -510,6 +510,64 @@ impl ImageStore {
             self.drop_entry(victim);
         }
     }
+}
+
+/// Decode the picture at `path` **no larger than** a block `box_px` pixels
+/// big.
+///
+/// A PNG — every paste, and most screenshots a `read` meets — is decoded
+/// **fitted**: its rows stream through [`super::fitted`]'s area average and
+/// only the shrunk picture is ever held, so the peak is the block's size
+/// (~3 MB at 120 columns) rather than the file's (8 MB for a 1080p
+/// screenshot, 33 MB for 4K), and the buffer glibc was left holding after
+/// each picture with it (`docs/memory.md`). Everything else — and a PNG the
+/// streaming decoder declines, such as an interlaced one — is decoded whole,
+/// refused past [`super::WHOLE_DECODE_MAX_PIXELS`] (where the whole decode
+/// would be the spike this exists to avoid), and **thumbnailed** into the
+/// box: a box filter with no `f32` working copy of the source. Either way
+/// the encoder then finds a picture that already fits and builds the
+/// protocol from it as it is. Public for the memory gate
+/// (`tests/image_paste_memory.rs`); `None` when the file is missing, not an
+/// image, or refused.
+#[must_use]
+pub fn load_fitted(path: &str, box_px: (u32, u32)) -> Option<image::DynamicImage> {
+    let reader = image::ImageReader::open(path)
+        .ok()?
+        .with_guessed_format()
+        .ok()?;
+    if reader.format() == Some(image::ImageFormat::Png) {
+        // The sniff seeks back to the start, so the same handle serves the
+        // streaming decode.
+        let mut file = reader.into_inner();
+        if let Ok(image) =
+            super::fitted::decode_png_fitted(&mut file, |px| super::fitted::fit_box(px, box_px))
+        {
+            return Some(image);
+        }
+    }
+    // The header first, so an absurd picture is refused before a single
+    // pixel of it is materialised.
+    let px = image::ImageReader::open(path)
+        .ok()?
+        .with_guessed_format()
+        .ok()?
+        .into_dimensions()
+        .ok()?;
+    if !super::fitted::whole_decode_fits(px) {
+        return None;
+    }
+    let image = image::ImageReader::open(path)
+        .ok()?
+        .with_guessed_format()
+        .ok()?
+        .decode()
+        .ok()?;
+    let target = super::fitted::fit_box(px, box_px);
+    Some(if target == px {
+        image
+    } else {
+        image.thumbnail_exact(target.0, target.1)
+    })
 }
 
 /// The reserved blocks `buf` holds, keyed by placement id, with every carrier

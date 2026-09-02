@@ -23,14 +23,15 @@ should get the whole width the terminal has.
 
 ## The shape of it
 
-Four modules over two layers — pure and boundary — split the way the crate
+Five modules over two layers — pure and boundary — split the way the crate
 always splits them (`src/images/`), plus `ui/image.rs` for the rows themselves:
 
 | module | what it is |
 | --- | --- |
 | `images::geometry` | pure. The cell footprint a picture takes, and the per-cell carrier that marks the rows reserved for it. |
 | `images::registry` | the process-global render policy (`/settings` plus what the terminal turned out to support) and the placement interner. |
-| `images::payload` | the other boundary: downscaling a picture before it is **uploaded**. |
+| `images::fitted` | pure. A PNG decoded at the size it will be shown or sent — rows streamed through an area-average shrink, so the whole picture is never held (`docs/memory.md`). |
+| `images::payload` | the other boundary: downscaling a picture before it is **uploaded**, and keeping the result on disk for the session so a re-sent attachment is never shrunk twice. |
 | `images::store` | the paint boundary: the terminal capability, the encoded pictures, and the pass that turns a reserved block into one. |
 | `ui::image` | pure. Which pictures a history item shows, and the marked rows they reserve under its cell. |
 
@@ -75,9 +76,13 @@ two:
   it back out. That is also the only record that survives a `/resume`: the
   rollout keeps the cell's text, not the file's header.
 * A **Ctrl+V paste** — no such line, so the boundary reads the header once
-  when the paste lands (`images::remember_size`, from `tui::workers`). A path
-  with no entry simply isn't drawn, which is the right answer for a resumed
-  session whose per-session temp file is long gone.
+  when the paste lands (`images::remember_size`, from `tui::workers`) — and
+  again for every pasted picture a loaded conversation carries
+  (`Session::remember_loaded_image_sizes`, after a `/resume`, `--continue` or
+  `--resume` load), since pastes are saved under the config home
+  (`{config_home}/image-cache/{session}/N.png`, `docs/image-paste.md`) and
+  are usually still there. A path with no entry — a picture someone deleted —
+  simply isn't drawn.
 
 ## The geometry
 
@@ -170,6 +175,36 @@ backend only re-addresses a cell that isn't adjacent to the one before it, and
 an escape blob can leave the cursor anywhere — a sixel placement clears its
 area row by row first — so the cell after it starts a fresh `draw`, which
 always opens with a cursor move.
+
+### Decoding at the fitted size
+
+`ImageStore::encode` used to decode the file whole and hand the picture to
+`ratatui_image` to shrink — `4 × width × height` bytes for a moment, 8 MB for
+a 1080p screenshot and 33 MB for a 4K one, to produce a block of ~3 MB. And
+not only for a moment: that buffer is exactly the size glibc's dynamic `mmap`
+threshold learns to keep, so every picture after the first left it behind
+(`docs/memory.md`, *Pasting a screenshot*).
+
+A PNG — every paste, and most screenshots a `read` meets — now goes through
+`images::fitted::decode_png_fitted` instead. The `png` crate hands out one row
+at a time, and an area-averaging `Downsampler` folds each row into the
+destination row it belongs to, so only the *fitted* picture is ever held: the
+peak is the block plus one row, whatever the file holds. The target is
+`fit_box` — `Resize::Fit`'s own arithmetic, pinned to it by a differential
+test the way `fit_cells` is — so the encoder receives a picture that already
+fits and builds the protocol from it as is. Anything else, and an interlaced
+PNG (whose rows arrive out of order), is decoded **whole** — refused past
+`WHOLE_DECODE_MAX_PIXELS` (50 megapixels, where the whole decode would be the
+spike this exists to avoid) — and `thumbnail_exact`ed into the box, a box
+filter with no `f32` working copy of the source, where the encoder's own
+`resize` would have allocated one 16 bytes a pixel over the source width. The
+streaming decode itself is bounded in *time* rather than memory
+(`FIT_MAX_SOURCE_PIXELS`, 200 megapixels: it never holds the rows it walks).
+The decoder is pure and reads from any seekable buffer, so `images::tests`
+checks it against a naive area-average oracle, at the source size (an exact
+copy), across every colour type the format has — a palette with `tRNS`
+included — and requires it to decline an interlaced picture, a truncated one
+and a header past the bound before reading a row.
 
 ### Drawing into exactly the reserved cells
 
@@ -282,7 +317,9 @@ of base64 — and this process idles in the user's terminal all day
 (`docs/memory.md`). So the store is bounded by **bytes**, estimated from the
 placement's own geometry rather than by counting entries: past
 `CACHE_MAX_BYTES` (24 MB) the least-recently-drawn picture is dropped. Meeting
-it again costs one re-encode, never a wrong picture.
+it again costs one re-encode, never a wrong picture. And the decode that
+fills an entry is bounded by the block, not by the file (*Decoding at the
+fitted size*): drawing a 4K screenshot costs what drawing a 1080p one does.
 
 ## The `/settings` rows
 
@@ -304,7 +341,27 @@ provider either refuses outright or bills in full, and a model reads it no
 better than the same picture at 2000 pixels. So the two paths that upload
 pixels — the `read` tool's image branch and a Ctrl+V attachment — run their
 bytes through `images::payload` first. A JPEG stays a JPEG (a photo re-encoded
-as PNG *grows*); everything else becomes PNG. The **file** is untouched, which
+as PNG *grows*); everything else becomes PNG. A PNG is shrunk by the same
+streaming decoder the display uses, fitted straight to the 2000-pixel
+target, so shrinking a 4K screenshot costs the target's ~9 MB rather than the
+picture's 33; the other formats decode whole (refused past
+`WHOLE_DECODE_MAX_PIXELS`) and `thumbnail_exact` into it, with no `f32` pass.
+
+And it is done **once**. An attachment is re-sent with the context on every
+later turn, and each of those turns used to decode and shrink the original
+all over again — on a 4K screenshot, a 20 MB spike per turn for as long as
+the picture stayed in context. The downscaled bytes are now **kept on disk
+for the session** (`images::payload`'s sidecar under
+`{tmp}/alter-zero-{uid}/{session}/images/`, `docs/scratchpad.md`), keyed on
+the file's path, size, mtime and the cap, and a later turn serves the request
+from that small file — `cached_downscale`, consulted before the original is
+even opened. The key is what makes a stale payload impossible: a changed file
+is a different entry. With the row off nothing is cached or served, exactly
+as before; `downscale_to`, the uncached core, is what the unit tests drive,
+and the cache has tests of its own (written once, read back without a decode,
+nothing written without a cache dir, nothing served with the row off). The
+`read` tool's images go through the same cache, so a picture the model reads
+twice is shrunk once. The **file** is untouched, which
 is why the picture on screen is unaffected, and why an auto-resized read's
 fact line leads with the file's own dimensions and names the sent ones after:
 
@@ -335,7 +392,10 @@ was a bad idea.
 
 `cargo run --example make_test_image -- shot.png 640 400` writes a gradient
 with a white diagonal — a wrong aspect ratio or a clipped row is obvious at a
-glance. Then ask a vision model to `read` it, or force a protocol:
+glance. Then ask a vision model to `read` it, or force a protocol; for the
+paste path, `cargo run --example clipboard_owner -- 1920 1080` serves a
+screenshot-shaped PNG on the X11 clipboard for Ctrl+V to pick up
+(`docs/image-paste.md`, *Measuring*):
 
 ```
 ALTER_ZERO_IMAGE_PROTOCOL=halfblocks ALTER_ZERO_IMAGE_CELL_SIZE=5x10 cargo run

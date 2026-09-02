@@ -19,8 +19,19 @@ named children instead of one flat pile.
 ```text
 {tmp}/alter-zero-{uid}/{session}/
 ├── scratchpad/            the agent's temp files
-└── tasks/                 {id}.output — background shells' interim output
+├── tasks/                 {id}.output — background shells' interim output
+└── images/                the downscaled copy of every picture sent to the model
 ```
+
+The `images/` leaf is the backend's own working space, never something the
+model is told about: an attached picture is re-sent with the context on every
+later turn, and the payload built for it — shrunk to the **Auto-resize
+images** cap — is kept here so those turns read a small file instead of
+decoding the original again (`docs/images.md` "Memory"). It is created
+beside the scratchpad at bootstrap (`tui::config::prepare_image_cache`) and
+published through `images::set_payload_cache_dir`; unlike the scratchpad it is
+not gated by `ALTER_ZERO_SCRATCHPAD`, since it carries no prompt and no
+permission exemption.
 
 e.g. `/tmp/alter-zero-1000/18cea7cc0aee22c0-5d77f/scratchpad`.
 

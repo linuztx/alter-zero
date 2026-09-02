@@ -14,6 +14,7 @@ cargo fmt --check                           # formatting gate
 cargo doc --no-deps --lib                   # intra-doc links must resolve
 cargo build && bash scripts/smoke.sh        # drive the real binary in tmux
 cargo run --release --example mem_probe     # /model parse RSS (docs/memory.md)
+DISPLAY=:99 cargo test --test clipboard_linux -- --ignored   # the X11 paste read, under Xvfb
 ```
 
 The standard pre-commit gate used throughout this project is: `cargo fmt --check`
@@ -30,7 +31,11 @@ Toolchain: Rust **edition 2024**, `ratatui = 0.30.1` (crossterm is re-exported a
 `ratatui::crossterm` — import it from there, not as a separate crate), plus
 `ratatui-image` for the inline pictures (`default-features = false`: its
 default `chafa-dyn` links a C library we don't have, and `image-defaults`
-would turn on every `image` codec — see `docs/images.md`),
+would turn on every `image` codec — see `docs/images.md`), `png` reached
+directly for its row-streaming decoder (`images::fitted`, `docs/memory.md`),
+and — Linux only — `x11rb` + `wl-clipboard-rs`, arboard's own backends at
+arboard's own versions, for the clipboard's `image/png` bytes
+(`clipboard::linux`, `docs/image-paste.md`),
 `unicode-width` for display-width math, `unicode-segmentation` for the textarea's
 grapheme-aware cursor/wrapping, and **`tokio`** (current-thread runtime) +
 `tokio-stream` for the async event loop. The `Cargo.toml` `crossterm` entry exists
@@ -353,9 +358,24 @@ the carrier and brackets marked runs, `ALTER_ZERO_HYPERLINKS` gating emission)
 in `docs/links.md`; the `@` file-path picker (async walk+rank file search below
 the box) in `docs/file-search.md`; the large-paste `[Pasted Content N chars]`
 placeholder (bracketed paste → a compact placeholder, expanded back on send) in
-`docs/paste.md`; the **Ctrl+V image paste** (clipboard image → temp PNG → an
-`[Image #N]` composer placeholder whose path rides a separate typed channel to
-the backend) in `docs/image-paste.md`; the **inline images** (`docs/images.md`:
+`docs/paste.md`; the **Ctrl+V image paste** (clipboard image → the session's
+paste folder, `{config_home}/image-cache/{session}/N.{ext}` numbered in paste
+order, staged and header-checked before it takes its number → an `[Image #N]`
+composer placeholder whose path rides a separate typed channel to the backend
+and reaches the model as `[Image #N: {path}]` in the message text — stamped by
+`context::context_messages`, so Ctrl+D shows exactly what the wire carries —
+so it knows where the picture was saved and a `/resume` finds it again (the
+store bounded by
+**size** and not age, oldest session folders evicted past
+`IMAGE_CACHE_MAX_BYTES`, since a rollout is kept indefinitely and a calendar
+rule would break a conversation still worth resuming) — on Linux the
+owner's own encoded bytes are **streamed** into that folder by
+`clipboard::linux` *before arboard is constructed*: `image/png`
+first, then `jpeg`/`gif`/`webp`, a Wayland pipe or 1 MiB X11 property slices
+with `INCR` segments, capped at `CLIPBOARD_IMAGE_MAX_BYTES` and never
+decoded, since arboard's decode-to-RGBA plus our re-encode was a ~24 MB
+spike per paste and the block that taught glibc to keep the next one,
+`docs/memory.md`) in `docs/image-paste.md`; the **inline images** (`docs/images.md`:
 a pasted screenshot and the `read` tool's image reads drawn as **real
 pictures** in the conversation — kitty / iTerm2 / sixel where the terminal
 speaks one, unicode half-blocks everywhere else, via **`ratatui-image`** —
@@ -440,7 +460,17 @@ the environment, falling to half-blocks;
 `ALTER_ZERO_IMAGES` gates it. The encoded pictures are bounded in **bytes**
 (a kitty placement is the whole picture as base64 RGBA), estimated from the
 placement's own geometry, since this process idles in a terminal all day
-(`docs/memory.md`). Three `/settings` rows: **Show images** and **Image
+(`docs/memory.md`) — and a PNG is **decoded at its fitted size**:
+`images::fitted` streams the file's rows through an area-average shrink into
+the reserved block (or the model's 2000-pixel cap), so the decode peak is the
+block's ~3 MB rather than the file's 8–33 MB, the whole-picture decode having
+been the residue three pasted screenshots left behind as a 103 MB process;
+anything else decodes whole — refused past `WHOLE_DECODE_MAX_PIXELS` — and
+`thumbnail_exact`s into the box with no `f32` pass. The model payload rides
+the same fit and is **cached on disk per session** (`{session}/images/`,
+`images::payload` — keyed on path, size, mtime and cap; `cached_downscale`
+serves a re-sent attachment without opening the original), and
+`tests/image_paste_memory.rs` gates all three stages' resident growth. Three `/settings` rows: **Show images** and **Image
 width** (60/80/120, a *cap*) republish the policy and purge-rebuild so
 committed pictures change at once, while **Auto-resize images** is a
 different kind of thing entirely — the *payload*, not the screen: a
@@ -1877,8 +1907,9 @@ of bug:
 
 The loop is an async (`tokio`, current-thread) `select!` over five sources —
 input, reply events, draw ticks, `@` file-search results, and finished Ctrl+V
-clipboard reads (each paste's read + decode + encode runs on its own worker
-thread so the loop — and the status animations — never block on it);
+clipboard reads (each paste's read — a byte copy on Linux, a decode + encode
+on the fallback path — runs on its own worker thread so the loop — and the
+status animations — never block on it);
 `select!`'s randomized branch order gives input/draw fairness for free. Every state
 change calls `frame.schedule_frame()`; the `frame` scheduler coalesces those into a
 single draw tick, rate-limited to 120 fps (`MIN_FRAME_INTERVAL`). A paste/fast-type
@@ -2277,7 +2308,14 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   end-to-end numbers plus what measured as noise and stays unchanged
   (`ModelPicker::matches`' per-keystroke churn; the marginal cost of a second
   cached HTTP client — the models fetch shares the chat client for the
-  thread, the pool and the warm connection, not for megabytes).
+  thread, the pool and the warm connection, not for megabytes). The rule's
+  picture-shaped twin: **never decode a picture whole to make a small one,
+  and never decode what you were handed encoded** — `images::fitted` streams
+  a PNG's rows into its fitted size and `clipboard::linux` streams the
+  clipboard's PNG to disk, because a screenshot is the largest allocation
+  this process ever makes and glibc's dynamic `mmap` threshold turns the
+  second such allocation into a permanent one (three pasted screenshots
+  measured a 103 MB process the other way; `docs/memory.md`).
 - **All width math goes through `cols()`** (display columns via `unicode-width`),
   never `chars().count()` — so CJK/emoji wrap and pad correctly. Measuring right
   is only half of it: a **wide glyph occupies one `Buffer` cell plus a blank

@@ -321,9 +321,104 @@ pub fn placeholder_spans<T>(text: &str, pastes: &[(String, T)]) -> Vec<Range<usi
     spans
 }
 
+/// The model-facing form of a message carrying pasted images: every
+/// `[Image #N]` placeholder, in text order, becomes `[Image #N: {path}]` —
+/// paired with the message's recorded paths in the same order
+/// ([`distribute_images`] stores them that way) — so the model knows where
+/// on disk each picture it is looking at was saved, and can `read` it again
+/// or hand the path to a tool. A placeholder with no path left is kept as it
+/// is, and a path no placeholder claims (one edited away) is still named on a
+/// closing `[attached image: {path}]` line — the backend's `[image
+/// unavailable: …]` note's shape — since it rides the request as a picture
+/// regardless. See `docs/image-paste.md`.
+#[must_use]
+pub fn annotate_image_placeholders(text: &str, paths: &[std::path::PathBuf]) -> String {
+    let mut out = String::with_capacity(text.len() + paths.len() * 64);
+    let mut rest = text;
+    let mut paths = paths.iter();
+    while let Some(start) = rest.find("[Image #") {
+        let after = &rest[start + "[Image #".len()..];
+        match after.find(']') {
+            Some(end) if after[..end].parse::<usize>().is_ok() => {
+                out.push_str(&rest[..start]);
+                match paths.next() {
+                    Some(path) => {
+                        out.push_str("[Image #");
+                        out.push_str(&after[..end]);
+                        out.push_str(": ");
+                        out.push_str(&path.display().to_string());
+                        out.push(']');
+                    }
+                    None => out.push_str(&rest[start..start + "[Image #".len() + end + 1]),
+                }
+                rest = &after[end + 1..];
+            }
+            _ => {
+                out.push_str(&rest[..start + "[Image #".len()]);
+                rest = after;
+            }
+        }
+    }
+    out.push_str(rest);
+    for path in paths {
+        out.push_str("\n[attached image: ");
+        out.push_str(&path.display().to_string());
+        out.push(']');
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use super::*;
+
+    // ===== the model-facing image paths (docs/image-paste.md) =====
+
+    #[test]
+    fn annotate_pairs_each_placeholder_with_its_path_in_text_order() {
+        let paths = [
+            PathBuf::from("/h/.alter-zero/image-cache/s/1.png"),
+            PathBuf::from("/h/.alter-zero/image-cache/s/2.jpg"),
+        ];
+        assert_eq!(
+            super::annotate_image_placeholders("[Image #1] and [Image #2] compare", &paths),
+            "[Image #1: /h/.alter-zero/image-cache/s/1.png] and [Image #2: /h/.alter-zero/image-cache/s/2.jpg] compare"
+        );
+    }
+
+    #[test]
+    fn annotate_leaves_text_without_images_alone() {
+        assert_eq!(
+            super::annotate_image_placeholders("plain text", &[]),
+            "plain text"
+        );
+        assert_eq!(
+            super::annotate_image_placeholders("[Image #1] unbacked", &[]),
+            "[Image #1] unbacked",
+            "a placeholder with no path keeps its shape"
+        );
+    }
+
+    #[test]
+    fn annotate_names_a_path_no_placeholder_claims() {
+        // The picture still rides the request, so the model is told where it is.
+        let paths = [PathBuf::from("/p/1.png"), PathBuf::from("/p/2.png")];
+        assert_eq!(
+            super::annotate_image_placeholders("[Image #1] only one marker", &paths),
+            "[Image #1: /p/1.png] only one marker\n[attached image: /p/2.png]"
+        );
+    }
+
+    #[test]
+    fn annotate_ignores_a_bracket_that_is_not_a_placeholder() {
+        let paths = [PathBuf::from("/p/1.png")];
+        assert_eq!(
+            super::annotate_image_placeholders("[Image #x] then [Image #3]", &paths),
+            "[Image #x] then [Image #3: /p/1.png]"
+        );
+    }
 
     /// `n` characters spaced `gap` apart starting at `base`, fed in order; returns
     /// the burst flag after each.

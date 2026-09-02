@@ -123,7 +123,6 @@ cleanup() {
 	rm -rf /tmp/alter-zero-smoke-init-* 2>/dev/null
 	[ -n "${CTRLO_DIR:-}" ] && rm -rf "$CTRLO_DIR" 2>/dev/null
 	rm -f /tmp/alter-zero-shell-*.txt 2>/dev/null
-	rm -f /tmp/alter-zero-clipboard-*.png 2>/dev/null
 	[ -n "${RESUME_DIR:-}" ] && rm -rf "$RESUME_DIR" 2>/dev/null
 	[ -n "${SMOKE_CFG:-}" ] && rm -rf "$SMOKE_CFG" 2>/dev/null
 	[ -n "${SMOKE_SKILLS:-}" ] && rm -rf "$SMOKE_SKILLS" 2>/dev/null
@@ -10137,6 +10136,26 @@ if printf '%s' "$img_after" | grep -qF "Read image (PNG, 100x60"; then
 	img_cell_kept=1
 fi
 echo "==== Phase 107: overlay=$img_overlay row_seen=$img_row_seen gone_after_toggle=$img_gone cell_kept=$img_cell_kept ===="
+# …and back ON: the rebuild must redraw the picture — and the setting must
+# not stay off, because it persists to settings.json in the config home the
+# whole suite shares, where it would blank every picture the phases after
+# this one (107b, 107c) expect to see.
+tmux send-keys -t "$S107" -l "/settings"
+sleep 0.3
+tmux send-keys -t "$S107" Enter
+sleep 0.5
+tmux send-keys -t "$S107" Down
+sleep 0.2
+img_row_off=0
+if tmux capture-pane -t "$S107" -p | grep -qE 'Show images +false'; then
+	img_row_off=1
+fi
+tmux send-keys -t "$S107" Enter
+sleep 1.0
+tmux send-keys -t "$S107" Escape
+sleep 0.8
+img_back_rows="$(img_between "$(tmux capture-pane -t "$S107" -p -S -60)" | grep -cve '^[[:space:]]*$')"
+echo "==== Phase 107: Show images back on — row_off_seen=$img_row_off rows=$img_back_rows ===="
 tmux kill-session -t "$S107" 2>/dev/null
 rm -rf "$IMG_DIR" "$IMG_SESS"
 if [ "$img_listed" != 1 ] || [ "$img_loaded" != 1 ]; then
@@ -10169,6 +10188,14 @@ if [ "$img_gone" != 1 ]; then
 fi
 if [ "$img_cell_kept" != 1 ]; then
 	echo "FAIL: Phase 107 — the rebuild lost the tool cell along with the picture" >&2
+	status=1
+fi
+if [ "$img_row_off" != 1 ]; then
+	echo "FAIL: Phase 107 — /settings did not show Show images as false after the toggle" >&2
+	status=1
+fi
+if [ "$img_back_rows" -ne 6 ]; then
+	echo "FAIL: Phase 107 — turning Show images back on did not redraw the picture (rows=$img_back_rows)" >&2
 	status=1
 fi
 
