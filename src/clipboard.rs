@@ -96,6 +96,61 @@ pub fn next_image_number<'a>(names: impl IntoIterator<Item = &'a str>) -> u32 {
         .map_or(1, |highest| highest.saturating_add(1))
 }
 
+/// How many bytes of pasted pictures are kept under
+/// `{config_home}/image-cache` before the oldest sessions' folders are
+/// swept. A **size** bound rather than an age one: a rollout is kept
+/// indefinitely, so a conversation stays resumable for as long as the user
+/// has it, and dropping its pictures after N days would break one that is
+/// still perfectly good while there is disk to spare. Here nothing is
+/// deleted until the store actually gets big, and then only the oldest.
+/// `ALTER_ZERO_IMAGE_CACHE_MAX_BYTES` overrides it, `0` meaning no limit
+/// (the `ALTER_ZERO_CHECKPOINT_MAX_BYTES` convention).
+pub const IMAGE_CACHE_MAX_BYTES: u64 = 512 * 1024 * 1024;
+
+/// Which session folders under the image cache to delete so the store fits
+/// `cap` bytes, in the order they go — never `keep`, the live session's own.
+///
+/// Empty folders go first and unconditionally: one is what a paste that
+/// failed after creating its directory leaves behind, and deleting it loses
+/// nothing. Past that the **oldest** folders go, one at a time, only until
+/// the total fits — so a big store costs the conversations nobody has
+/// touched in longest, and a store inside the cap costs nothing at all.
+/// `cap` of `0` is no limit. Pure: the boundary lists the directory, sums
+/// each folder, and removes what this names (`tui::config::sweep_image_cache`).
+#[must_use]
+pub fn evictable_paste_dirs(
+    entries: &[(PathBuf, u64, std::time::SystemTime)],
+    cap: u64,
+    keep: &Path,
+) -> Vec<PathBuf> {
+    let mut candidates: Vec<&(PathBuf, u64, std::time::SystemTime)> =
+        entries.iter().filter(|(dir, ..)| dir != keep).collect();
+    // Oldest first — the sweep's whole order, and the empty ones read off
+    // the front of it below.
+    candidates.sort_by_key(|(_, _, modified)| *modified);
+    let mut out: Vec<PathBuf> = Vec::new();
+    let mut total: u64 = entries.iter().map(|(_, bytes, _)| *bytes).sum();
+    for (dir, bytes, _) in &candidates {
+        if *bytes == 0 {
+            out.push(dir.clone());
+        }
+    }
+    if cap == 0 {
+        return out;
+    }
+    for (dir, bytes, _) in candidates {
+        if total <= cap {
+            break;
+        }
+        if *bytes == 0 {
+            continue; // already swept, and it frees nothing anyway
+        }
+        total = total.saturating_sub(*bytes);
+        out.push(dir.clone());
+    }
+    out
+}
+
 /// Why a streamed clipboard image produced no file.
 #[derive(Debug)]
 pub(crate) enum StreamError {
@@ -686,6 +741,84 @@ mod tests {
         let png = tiny_png();
         let path = stream_encoded_image_into(&dir, &mut &png[..], "png").unwrap();
         assert_eq!(path, dir.join("1.png"));
+    }
+
+    // ===== bounding the store (docs/image-paste.md) =====
+
+    /// `(folder, bytes, age-in-days)` → the shape the sweep weighs.
+    fn folders(rows: &[(&str, u64, u64)]) -> Vec<(PathBuf, u64, std::time::SystemTime)> {
+        let day = std::time::Duration::from_secs(86_400);
+        rows.iter()
+            .map(|(name, bytes, age)| {
+                (
+                    PathBuf::from(format!("/c/image-cache/{name}")),
+                    *bytes,
+                    std::time::UNIX_EPOCH + day * 400 - day * u32::try_from(*age).unwrap(),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_store_inside_the_cap_evicts_nothing() {
+        let entries = folders(&[("a", 40, 90), ("b", 30, 2)]);
+        assert!(
+            evictable_paste_dirs(&entries, 100, Path::new("/c/image-cache/b")).is_empty(),
+            "an old folder is kept while there is room — a conversation stays resumable"
+        );
+    }
+
+    #[test]
+    fn a_store_over_the_cap_evicts_the_oldest_until_it_fits() {
+        // Oldest first, and only as far as the cap needs: the newest
+        // conversations keep their pictures.
+        let entries = folders(&[("old", 50, 90), ("mid", 50, 40), ("new", 50, 1)]);
+        assert_eq!(
+            evictable_paste_dirs(&entries, 120, Path::new("/c/image-cache/new")),
+            vec![PathBuf::from("/c/image-cache/old")],
+            "one eviction is enough to fit 150 into 120"
+        );
+        assert_eq!(
+            evictable_paste_dirs(&entries, 60, Path::new("/c/image-cache/new")),
+            vec![
+                PathBuf::from("/c/image-cache/old"),
+                PathBuf::from("/c/image-cache/mid"),
+            ]
+        );
+    }
+
+    #[test]
+    fn the_live_sessions_folder_is_never_evicted() {
+        // Even as the oldest and over the cap: the pictures the open
+        // conversation is still sending must not go.
+        let entries = folders(&[("mine", 500, 900), ("other", 10, 1)]);
+        assert_eq!(
+            evictable_paste_dirs(&entries, 1, Path::new("/c/image-cache/mine")),
+            vec![PathBuf::from("/c/image-cache/other")],
+            "everything else goes first, and the live folder stays regardless"
+        );
+    }
+
+    #[test]
+    fn an_empty_folder_goes_whatever_the_cap_says() {
+        // A paste that failed after creating the folder leaves an empty one.
+        // Deleting it loses nothing, so it never waits for the cap.
+        let entries = folders(&[("empty", 0, 3), ("kept", 10, 2)]);
+        assert_eq!(
+            evictable_paste_dirs(&entries, 10_000, Path::new("/c/image-cache/kept")),
+            vec![PathBuf::from("/c/image-cache/empty")]
+        );
+    }
+
+    #[test]
+    fn a_cap_of_zero_means_no_limit() {
+        // The `ALTER_ZERO_CHECKPOINT_MAX_BYTES` convention: 0 disables the
+        // bound rather than evicting everything.
+        let entries = folders(&[("a", 900, 90), ("b", 900, 2)]);
+        assert_eq!(
+            evictable_paste_dirs(&entries, 0, Path::new("/c/image-cache/b")),
+            Vec::<PathBuf>::new()
+        );
     }
 
     // ===== Ctrl+V file fast path (docs/image-paste.md) =====

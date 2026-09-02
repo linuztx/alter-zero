@@ -465,10 +465,11 @@ unit-tested must be unit-tested.
   send the paths travel a
   separate typed channel to the backend (`ReplySource::spawn`'s
   `images: Vec<PathBuf>` parameter) — a real vision backend attaches the files,
-  the dummy acknowledges the count — and the wire text names each picture's
-  path beside its placeholder (`[Image #N: {path}]`,
-  `paste::annotate_image_placeholders`), so the model knows where it was
-  saved. A failed read commits a red `Failed to paste image: {msg}` notice; a
+  the dummy acknowledges the count — and the derived context names each
+  picture's path beside its placeholder (`[Image #N: {path}]`,
+  `paste::annotate_image_placeholders` in `context_messages`, so Ctrl+D shows
+  what the wire carries). A failed read commits a red
+  `Failed to paste image: {msg}` notice; a
   discarded attachment's file is deleted at the boundary
   (`App::take_discarded_images`).
 - **Images are drawn, not just described** (`docs/images.md`): a pasted

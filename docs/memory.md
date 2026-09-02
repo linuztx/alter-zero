@@ -260,7 +260,12 @@ leak.
   the downscaled bytes on disk (`{session}/images/{key}`, keyed on the file's
   path, size, mtime and the cap; `docs/scratchpad.md`) and `cached_downscale`
   serves a later turn from that small file before the original is even
-  opened. The `read` tool's pictures go through the same cache.
+  opened. The `read` tool's pictures go through the same cache. The directory
+  is bounded at `PAYLOAD_CACHE_MAX_BYTES` (64 MiB): before a new copy lands,
+  `cache_eviction` names the oldest sidecars to drop so it fits. A copy
+  larger than the whole cap empties the cache and is still written — the cap
+  bounds what is *kept*, and refusing to cache a big picture would restore
+  the per-turn decode this exists to remove.
 - **Nothing else is decoded whole without asking first.** A non-PNG picture
   (a pasted JPEG photo, a `read` of one) decodes whole only under
   `WHOLE_DECODE_MAX_PIXELS` (50 megapixels) and shrinks with

@@ -39,8 +39,8 @@ pub use geometry::{
     image_budget, image_cells,
 };
 pub use payload::{
-    Downscaled, cached_downscale, downscale_for_model, downscale_for_model_at, downscale_to,
-    payload_cache_key, set_payload_cache_dir,
+    Downscaled, PAYLOAD_CACHE_MAX_BYTES, cache_eviction, cached_downscale, downscale_for_model,
+    downscale_for_model_at, downscale_to, payload_cache_key, set_payload_cache_dir,
 };
 pub use registry::{
     ImagePolicy, Placement, any_placements, auto_resizing, known_size, place, placement, policy,

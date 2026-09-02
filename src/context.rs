@@ -510,10 +510,16 @@ fn derive_into(out: &mut Vec<ContextMessage>, history: &[HistoryItem]) {
                 push_text(out, ContextRole::User, note.text.clone(), vec![]);
             }
             HistoryItem::Message(message) => match message.role {
+                // A pasted picture's placeholder names the file it was saved
+                // at *here*, not in the request builder: the derived context
+                // is what the model reads, so annotating any lower would
+                // leave Ctrl+D showing text the wire never carried
+                // (`docs/image-paste.md`). Per message, before the merge, so
+                // each draft's `[Image #1]` names its own picture.
                 Role::User => push_text(
                     out,
                     ContextRole::User,
-                    message.text.clone(),
+                    crate::paste::annotate_image_placeholders(&message.text, &message.images),
                     message.images.clone(),
                 ),
                 Role::Assistant => {
@@ -852,7 +858,11 @@ mod tests {
         let ctx = context_messages(&history);
         assert_eq!(ctx.len(), 1);
         assert_eq!(ctx[0].role, ContextRole::User);
-        assert_eq!(ctx[0].text, "[Image #1] what is this?");
+        // The derived context *is* the wire text, so the placeholder names
+        // the file the picture was saved at here — not one layer lower in
+        // the request builder, where Ctrl+D could not see it
+        // (`docs/image-paste.md`).
+        assert_eq!(ctx[0].text, "[Image #1: /tmp/shot.png] what is this?");
         assert_eq!(ctx[0].images, vec![PathBuf::from("/tmp/shot.png")]);
     }
 
@@ -1265,7 +1275,11 @@ mod tests {
         ];
         let ctx = context_messages(&history);
         assert_eq!(ctx.len(), 1);
-        assert_eq!(ctx[0].text, "[Image #1] first\n\n[Image #1] second");
+        assert_eq!(
+            ctx[0].text, "[Image #1: /a.png] first\n\n[Image #1: /b.png] second",
+            "each draft's placeholder names its own picture — the annotation \
+             runs per message, before the merge"
+        );
         assert_eq!(
             ctx[0].images,
             vec![PathBuf::from("/a.png"), PathBuf::from("/b.png")]

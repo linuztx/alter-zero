@@ -880,3 +880,74 @@ fn a_jpeg_payload_is_shrunk_to_the_target_without_a_whole_source_resample() {
     assert_eq!(small.format, image::ImageFormat::Jpeg);
     assert!(small.bytes.len() < bytes.len());
 }
+
+// ===== the payload cache's bound (docs/memory.md) =====
+
+/// `(sidecar, bytes, age-in-days)` → what the eviction weighs.
+fn sidecars(rows: &[(&str, u64, u64)]) -> Vec<(std::path::PathBuf, u64, std::time::SystemTime)> {
+    let day = std::time::Duration::from_secs(86_400);
+    rows.iter()
+        .map(|(name, bytes, age)| {
+            (
+                std::path::PathBuf::from(format!("/s/images/{name}")),
+                *bytes,
+                std::time::UNIX_EPOCH + day * 400 - day * u32::try_from(*age).unwrap(),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn a_payload_cache_with_room_for_the_new_copy_evicts_nothing() {
+    let entries = sidecars(&[("a", 10, 9), ("b", 20, 1)]);
+    assert!(cache_eviction(&entries, 30, 100).is_empty());
+}
+
+#[test]
+fn a_full_payload_cache_evicts_the_oldest_until_the_new_copy_fits() {
+    // The incoming copy counts against the cap, so the room made is for it
+    // and not merely for what is already there.
+    let entries = sidecars(&[("old", 40, 30), ("mid", 40, 20), ("new", 40, 1)]);
+    assert_eq!(
+        cache_eviction(&entries, 20, 140),
+        Vec::<std::path::PathBuf>::new(),
+        "120 held + 20 incoming is exactly 140: the cap bounds the cache, it \
+         is not a strict inequality (`CappedWriter`'s rule)"
+    );
+    assert_eq!(
+        cache_eviction(&entries, 20, 130),
+        vec![std::path::PathBuf::from("/s/images/old")],
+        "one over, so the oldest goes and no more"
+    );
+    assert_eq!(
+        cache_eviction(&entries, 20, 60),
+        vec![
+            std::path::PathBuf::from("/s/images/old"),
+            std::path::PathBuf::from("/s/images/mid"),
+        ]
+    );
+}
+
+#[test]
+fn a_payload_cap_of_zero_means_no_limit() {
+    let entries = sidecars(&[("a", 900, 9)]);
+    assert_eq!(
+        cache_eviction(&entries, 900, 0),
+        Vec::<std::path::PathBuf>::new()
+    );
+}
+
+#[test]
+fn an_incoming_copy_larger_than_the_whole_cap_empties_the_cache_and_no_more() {
+    // Nothing that can be evicted makes it fit, so the cache is cleared and
+    // the copy is still written: the cap bounds what is *kept*, and refusing
+    // to cache would mean decoding the picture again on every later turn.
+    let entries = sidecars(&[("a", 10, 9), ("b", 10, 1)]);
+    assert_eq!(
+        cache_eviction(&entries, 500, 100),
+        vec![
+            std::path::PathBuf::from("/s/images/a"),
+            std::path::PathBuf::from("/s/images/b"),
+        ]
+    );
+}

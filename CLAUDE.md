@@ -327,8 +327,13 @@ placeholder (bracketed paste → a compact placeholder, expanded back on send) i
 paste folder, `{config_home}/image-cache/{session}/N.{ext}` numbered in paste
 order, staged and header-checked before it takes its number → an `[Image #N]`
 composer placeholder whose path rides a separate typed channel to the backend
-and reaches the model as `[Image #N: {path}]` in the message text, so it knows
-where the picture was saved and a `/resume` finds it again — on Linux the
+and reaches the model as `[Image #N: {path}]` in the message text — stamped by
+`context::context_messages`, so Ctrl+D shows exactly what the wire carries —
+so it knows where the picture was saved and a `/resume` finds it again (the
+store bounded by
+**size** and not age, oldest session folders evicted past
+`IMAGE_CACHE_MAX_BYTES`, since a rollout is kept indefinitely and a calendar
+rule would break a conversation still worth resuming) — on Linux the
 owner's own encoded bytes are **streamed** into that folder by
 `clipboard::linux` *before arboard is constructed*: `image/png`
 first, then `jpeg`/`gif`/`webp`, a Wayland pipe or 1 MiB X11 property slices

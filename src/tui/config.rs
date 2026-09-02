@@ -478,6 +478,61 @@ pub(crate) fn paste_store_dir(session: &str) -> PathBuf {
     }
 }
 
+/// Read `ALTER_ZERO_IMAGE_CACHE_MAX_BYTES`, else
+/// [`clipboard::IMAGE_CACHE_MAX_BYTES`]; `0` means no limit.
+fn image_cache_cap() -> u64 {
+    std::env::var("ALTER_ZERO_IMAGE_CACHE_MAX_BYTES")
+        .ok()
+        .and_then(|raw| raw.trim().parse::<u64>().ok())
+        .unwrap_or(alter_zero::clipboard::IMAGE_CACHE_MAX_BYTES)
+}
+
+/// Delete the paste folders the image cache can no longer afford
+/// (`clipboard::evictable_paste_dirs` — oldest first, empty ones always,
+/// never the live session's `keep`), so the store a `/resume` reads from
+/// stays bounded without an age rule that would drop a conversation still
+/// worth resuming (`docs/image-paste.md`).
+///
+/// Best-effort and **stat-only**: it sums each folder's file sizes without
+/// reading a byte, so a store of a few hundred sessions costs milliseconds
+/// at startup. A root that isn't there yet is nothing to sweep.
+pub(crate) fn sweep_image_cache(keep: &Path) {
+    let Some(root) = keep.parent() else {
+        return;
+    };
+    let Ok(read) = std::fs::read_dir(root) else {
+        return;
+    };
+    let entries: Vec<(PathBuf, u64, std::time::SystemTime)> = read
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
+        .map(|entry| {
+            let dir = entry.path();
+            let bytes = folder_bytes(&dir);
+            let modified = entry
+                .metadata()
+                .and_then(|meta| meta.modified())
+                .unwrap_or(std::time::UNIX_EPOCH);
+            (dir, bytes, modified)
+        })
+        .collect();
+    for stale in alter_zero::clipboard::evictable_paste_dirs(&entries, image_cache_cap(), keep) {
+        let _ = std::fs::remove_dir_all(stale);
+    }
+}
+
+/// The bytes `dir`'s own files occupy — one `read_dir` and a `stat` each, no
+/// recursion (a paste folder holds pictures, not a tree).
+fn folder_bytes(dir: &Path) -> u64 {
+    std::fs::read_dir(dir).map_or(0, |read| {
+        read.filter_map(Result::ok)
+            .filter_map(|entry| entry.metadata().ok())
+            .filter(std::fs::Metadata::is_file)
+            .map(|meta| meta.len())
+            .sum()
+    })
+}
+
 /// The session's image-payload cache, **created**: `{session_root}/images`,
 /// where the backend keeps the downscaled copy of every picture it sends so a
 /// later turn re-sending an attachment reads a small file instead of decoding

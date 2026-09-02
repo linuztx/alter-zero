@@ -264,10 +264,74 @@ fn sidecar(path: &Path, format: ImageFormat, max: u32) -> Option<PathBuf> {
 /// Write `bytes` at `sidecar` — through a temp file and a rename, so a turn
 /// reading the cache on another thread never sees a half-written payload.
 /// Best-effort: a cache that can't be written costs a rebuild next turn.
+/// How many bytes of downscaled payloads one session keeps on disk before
+/// the oldest are dropped. The cache exists so a re-sent attachment is never
+/// decoded twice (`docs/memory.md`); it is not a reason for a long session
+/// that pasted forty screenshots to hold every shrunk copy of them forever.
+/// `0` is no limit.
+pub const PAYLOAD_CACHE_MAX_BYTES: u64 = 64 * 1024 * 1024;
+
+/// Which cached payloads to delete, oldest first, so `incoming` bytes fit
+/// under `cap` beside what is already there. `cap` of `0` is no limit.
+///
+/// An `incoming` larger than the whole cap empties the cache and stops —
+/// the copy is still written. The cap bounds what is *kept*, and refusing to
+/// cache a big picture would mean decoding it again on every turn it stays
+/// in context, which is the cost this cache exists to remove. Pure: the
+/// boundary stats the directory and removes what this names.
+#[must_use]
+pub fn cache_eviction(
+    entries: &[(PathBuf, u64, std::time::SystemTime)],
+    incoming: u64,
+    cap: u64,
+) -> Vec<PathBuf> {
+    if cap == 0 {
+        return Vec::new();
+    }
+    let mut oldest: Vec<&(PathBuf, u64, std::time::SystemTime)> = entries.iter().collect();
+    oldest.sort_by_key(|(_, _, modified)| *modified);
+    let mut total: u64 = entries
+        .iter()
+        .map(|(_, bytes, _)| *bytes)
+        .sum::<u64>()
+        .saturating_add(incoming);
+    let mut out = Vec::new();
+    for (path, bytes, _) in oldest {
+        if total <= cap {
+            break;
+        }
+        total = total.saturating_sub(*bytes);
+        out.push(path.clone());
+    }
+    out
+}
+
+/// Make room for `bytes` under [`PAYLOAD_CACHE_MAX_BYTES`] by deleting the
+/// oldest sidecars in `dir` ([`cache_eviction`]). Best-effort and stat-only.
+fn evict_for(dir: &Path, bytes: u64) {
+    let Ok(read) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let entries: Vec<(PathBuf, u64, std::time::SystemTime)> = read
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let meta = entry.metadata().ok()?;
+            if !meta.is_file() {
+                return None;
+            }
+            Some((entry.path(), meta.len(), meta.modified().ok()?))
+        })
+        .collect();
+    for stale in cache_eviction(&entries, bytes, PAYLOAD_CACHE_MAX_BYTES) {
+        let _ = std::fs::remove_file(stale);
+    }
+}
+
 fn remember(sidecar: &Path, bytes: &[u8]) {
     let Some(dir) = sidecar.parent() else {
         return;
     };
+    evict_for(dir, bytes.len() as u64);
     let Ok(tmp) = tempfile::Builder::new()
         .prefix(".payload-")
         .tempfile_in(dir)

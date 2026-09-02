@@ -68,12 +68,16 @@ fn context_lines_list_image_attachments_under_their_message() {
         .map(|l| plain(l).trim_end().to_string())
         .collect();
     assert!(
-        texts.iter().any(|t| t == "  [Image #1] what is this?"),
-        "the placeholder stays raw in the text: {texts:?}"
+        texts
+            .iter()
+            .any(|t| t == "  [Image #1: /tmp/shot.png] what is this?"),
+        "the placeholder names the saved file, exactly as the wire carries \
+         it — this view is what was sent (`docs/image-paste.md`): {texts:?}"
     );
     assert!(
         texts.iter().any(|t| t == "  image: /tmp/shot.png"),
-        "the attachment path lists beneath: {texts:?}"
+        "and the attachment still lists beneath, as the picture that rides \
+         beside the text: {texts:?}"
     );
 }
 

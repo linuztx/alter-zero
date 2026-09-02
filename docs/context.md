@@ -172,10 +172,12 @@ context entry. It is generic over `encode_image: Fn(&Path) -> Option<String>`
 
 `app::Message` gains `images: Vec<PathBuf>` — a user message *owns* its
 Ctrl+V attachments (the `[Image #N]` placeholders stay in the recorded text;
-the paths ride beside it — and on the wire each placeholder is annotated with
-its path, `[Image #N: {path}]`, so the model knows where the picture was saved:
-`paste::annotate_image_placeholders`, `docs/image-paste.md`). The submit path
-stages the whole `(placeholder, path)` pairs
+the paths ride beside it — and **this derivation** annotates each placeholder
+with its path, `[Image #N: {path}]`, so the model knows where the picture was
+saved and Ctrl+D shows the same text the wire carries:
+`paste::annotate_image_placeholders`, run per message before the merge so a
+batch's drafts each name their own pictures — `docs/image-paste.md`). The
+submit path stages the whole `(placeholder, path)` pairs
 and records each path onto the message whose text carries its placeholder, in
 text-occurrence order (`paste::distribute_images` — so a merged batch's
 duplicate `[Image #1]`s resolve to their own drafts' paths, and a
@@ -229,7 +231,7 @@ system prompt:                        (amber tag — the backend's prompt)
   ## Environment · Date … OS … CWD …                       (docs/environment.md)
 user:                                 (blue tag — CONTEXT_USER_COLOR, the one
                                        blue the running bullet left behind)
-  [Image #1] what's in this picture?
+  [Image #1: /home/me/.alter-zero/image-cache/773c1c6cb321/1.png] what's in this picture?
   image: /home/me/.alter-zero/image-cache/773c1c6cb321/1.png    (dim attachment row)
 assistant:                            (green tag)
   Let me look at the file.

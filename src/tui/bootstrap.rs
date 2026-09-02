@@ -108,6 +108,9 @@ impl<'t> Session<'t> {
         // Where Ctrl+V pastes land (docs/image-paste.md): the config home,
         // not /tmp, so a resumed session still finds its pictures.
         let paste_dir = config::paste_store_dir(&session_id);
+        // The store is durable, so it needs a bound: the oldest sessions'
+        // folders go once it outgrows its cap (docs/image-paste.md).
+        config::sweep_image_cache(&paste_dir);
         // Beside it, `images/` (docs/images.md "Memory"): the backend re-sends
         // every attached picture on every later turn, so the shrunk copy it
         // builds is kept here and read back instead of being decoded from the

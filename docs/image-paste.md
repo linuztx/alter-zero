@@ -126,19 +126,33 @@ is ever overwritten by another. A refused paste (junk bytes, the byte cap, an
 encode error) drops its staging file and leaves the folder exactly as it was.
 
 **The model is told the path.** `paste::annotate_image_placeholders` (pure,
-`paste.rs`) runs where the request is assembled —
-`llm::backend::chat_message`'s vision branch — and turns each `[Image #N]` in
-the message text into `[Image #N: {path}]`, pairing placeholders with the
-message's recorded paths in text order (the order `paste::distribute_images`
-stores them). A placeholder with no path keeps its shape; a path no
+`paste.rs`) runs in `context::context_messages`, where the conversation the
+model reads is derived, and turns each `[Image #N]` in the message text into
+`[Image #N: {path}]`, pairing placeholders with the message's recorded paths
+in text order (the order `paste::distribute_images` stores them) — per
+message, *before* adjacent user entries merge, so each draft's `[Image #1]`
+names its own picture. A placeholder with no path keeps its shape; a path no
 placeholder claims (one edited away) is still named on a closing `[attached
 image: {path}]` line, since the picture rides the request regardless — and
 the backend's `[image unavailable: {path}]` note follows it when the file
-can't be read. The recorded message, the transcript and the composer keep the
-bare `[Image #N]` (codex parity), and Ctrl+D shows that placeholder over the
-dim `image:` attachment row; only the wire text merges the two. A rollout
-recorded when pastes still went to `/tmp` annotates the same way — the path
-is whatever the message recorded.
+can't be read.
+
+It runs *there* and not in the request builder because `context_messages` is
+what Ctrl+D renders, and that view's contract is that it shows what was sent
+(the rule every two-text tool call follows). Annotating one layer lower, in
+`llm::backend::chat_message`, left the debug view showing a bare `[Image #1]`
+the wire never carried. One place, both readers. The recorded message, the
+transcript and the composer still keep the bare placeholder (codex parity) —
+only the derived context names the file, over the dim `image:` attachment row
+that lists the same picture as an attachment. A rollout recorded when pastes
+still went to `/tmp` annotates the same way: the path is whatever the message
+recorded.
+
+The folder itself is deliberately **not** named in the system prompt. Naming
+it there would spend tokens on every turn of every session to answer a
+question only a session that actually pastes ever asks — and that session is
+told the answer anyway, on the picture's own placeholder, in the turn where
+it matters.
 
 **A resumed session finds its pictures.** A paste has no fact line to reserve
 its rows from (`docs/images.md`, *Where the pixel size comes from*), so after
@@ -146,10 +160,26 @@ a `/resume`, `--continue` or `--resume` load `Session::remember_loaded_image_siz
 reads every pasted picture's header again (`images::remember_size`) and the
 pictures draw as they did — the reason the folder lives where it does.
 
-**Nothing here deletes a submitted paste.** The folder is the record of what
-the conversation carries and grows with the pastes; `rm -rf
-~/.alter-zero/image-cache/{session}` retires a session's pictures, after which
-its messages carry the `[image unavailable: …]` note instead.
+**The store is bounded, by size and not by age.** A durable folder that
+never forgets grows without end, so at startup `tui::config::sweep_image_cache`
+sums each session folder under `image-cache` (one `read_dir` and a `stat` per
+file — no byte is read, so a few hundred sessions cost milliseconds) and
+deletes what `clipboard::evictable_paste_dirs` names: every **empty** folder,
+which is what a paste that failed after creating its directory leaves and
+whose deletion loses nothing, and then the **oldest** folders one at a time
+until the store fits `IMAGE_CACHE_MAX_BYTES` (512 MiB;
+`ALTER_ZERO_IMAGE_CACHE_MAX_BYTES` overrides, `0` means no limit). The live
+session's own folder is never a candidate.
+
+A **size** rule rather than an age one, which is where this parts company
+with the sibling branch that pruned anything older than a fortnight: a
+rollout is kept indefinitely, so a conversation stays resumable for as long
+as the user keeps it, and dropping its pictures on a calendar would break one
+that is still perfectly good while there is disk to spare. Here nothing goes
+until the store is actually big, and then the cost falls on the conversations
+nobody has opened in longest. `rm -rf ~/.alter-zero/image-cache/{session}`
+retires one by hand; either way its messages then carry the `[image
+unavailable: …]` note.
 
 ## Async delivery (why paste can't freeze the UI)
 
@@ -315,9 +345,15 @@ renders `[Image #N]` as a text marker. The `?` shortcuts band gains a
   placeholder gains its path in text order, text without images is untouched,
   an unclaimed path is named on a closing line, a bracket that is not a
   placeholder is left alone).
-- `llm/backend.rs`: an image-carrying message's text part reads
-  `[Image #1: {path}] …`; an unreadable attachment is noted, an unclaimed one
-  named.
+- `context.rs`: a user message's placeholder names its saved file, and a
+  merged batch annotates each draft with its own pictures first.
+- `llm/backend.rs`: the request builder splits the (already annotated) text
+  and the pictures into parts and does not touch the text; an unreadable
+  attachment is still noted.
+- `clipboard.rs`: `evictable_paste_dirs` — a store inside the cap evicts
+  nothing however old, an over-cap store loses the oldest until it fits, an
+  empty folder always goes, the live session's folder never does, and a cap
+  of `0` is no limit.
 - `app/composer.rs`: `attach_image` (inserts `[Image #N]`, records the pair, at the
   cursor), the round-trip (attach then Enter → `Action::Submit("[Image #1] …")`
   *and* `take_submission_images()` yields the path), atomic deletion (one
