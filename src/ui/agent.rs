@@ -59,13 +59,18 @@ fn clip_cols(text: &str, max: usize) -> String {
 /// included, the description cut with [`TOOL_HEADER_ELLIPSIS`] — which keeps
 /// the *head* (what the agent is for) and always leaves the rest reading as a
 /// rule (`docs/agent-tool.md`).
+///
+/// `None` once the budget cannot hold the mark **and** one real character
+/// beside it: a lone ` … ─` names nothing, so a rule that narrow keeps its
+/// frame rather than spending it on punctuation. A description that *fits*
+/// still rides there — the mark is what needs the room, and nothing is cut.
 pub(super) fn agent_view_rule_label(description: &str, width: u16) -> Option<String> {
     let chrome = cols(" ") * 2 + cols(AGENT_VIEW_RULE_TAIL);
     let budget = (usize::from(width) / AGENT_VIEW_LABEL_DIVISOR).saturating_sub(chrome);
-    if budget == 0 {
-        return None;
+    if cols(description) <= budget {
+        return (budget > 0).then(|| format!(" {description} "));
     }
-    Some(format!(" {} ", clip_cols(description, budget)))
+    (budget > cols(TOOL_HEADER_ELLIPSIS)).then(|| format!(" {} ", clip_cols(description, budget)))
 }
 
 /// One `⎿  {activity}` row — the dim gutter (`prefix`: the tree's own

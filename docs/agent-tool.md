@@ -190,8 +190,10 @@ zero new plumbing. The TUI cell is a new `HistoryItem::AgentNotice` —
   label ate the whole frame *and* lost the head of the very text it was
   showing — `─── An agent tasked with confirming it… ─`, not `h confirming
   its status and acknowledging the requested description length ─`. A rule
-  with no room for even one column of description carries no label at all (a
-  lone ` … ─` names nothing, and the frame is worth more than the hint). And
+  that cannot hold the mark **and** one real character beside it carries no
+  label at all (a lone ` … ─` names nothing, and the frame is worth more than
+  the hint) — though a description that *fits* still rides at that width,
+  since the mark is what needs the room and nothing is cut. And
   the composer **chats with the agent**, and it is the **main session's
   mid-turn queue one level down**
   (`docs/queue.md`): while the agent runs, Enter parks the draft on its own

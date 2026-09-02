@@ -873,18 +873,45 @@ fn a_long_agent_description_is_clipped_so_the_composer_rule_survives() {
 #[test]
 fn the_composer_label_keeps_a_short_description_whole_and_gives_up_on_a_narrow_rule() {
     use crate::ui::agent::agent_view_rule_label;
+    let long = "An agent tasked with confirming its status and acknowledging \
+                the requested description length";
     // Inside the budget nothing is cut — the ordinary case, padded for the rule.
     assert_eq!(
         agent_view_rule_label("Fetch Warsaw", 80).as_deref(),
         Some(" Fetch Warsaw ")
     );
-    // Past it the HEAD is kept (what the agent is for), closed with `…`, and
-    // the whole label — padding and rule tail included — fits in half the rule.
-    let label = agent_view_rule_label(&"x".repeat(200), 80).expect("a label");
-    assert!(label.ends_with("… "), "{label}");
-    assert_eq!(cols(&label) + cols("─"), 40, "half of 80: {label}");
-    // A rule with no room for even one column of description shows none: a
-    // lone ` … ─` names nothing, and the frame is worth more than the hint.
-    assert_eq!(agent_view_rule_label("Fetch Warsaw", 6), None);
-    assert_eq!(agent_view_rule_label("Fetch Warsaw", 0), None);
+    // A rule wide enough for the whole thing shows the whole thing.
+    assert_eq!(
+        agent_view_rule_label(long, 400).as_deref(),
+        Some(format!(" {long} ").as_str())
+    );
+    // Past the budget the HEAD is kept (what the agent is for), closed with
+    // `…`, and the whole label — its padding and the rule tail counted in —
+    // stays inside half the rule at every width.
+    for width in [12u16, 24, 40, 60, 76, 80] {
+        let label = agent_view_rule_label(long, width).expect("wide enough for a label");
+        assert!(
+            long.starts_with(label.trim().trim_end_matches('…')),
+            "clipped from the end at {width}: {label:?}"
+        );
+        assert!(
+            label.ends_with("… "),
+            "the cut is marked at {width}: {label:?}"
+        );
+        assert!(
+            cols(&label) + cols("─") <= usize::from(width) / 2,
+            "at most half the rule at {width}: {label:?}"
+        );
+    }
+    // A rule with no room for the mark AND one real character beside it shows
+    // no label at all: a lone ` … ─` names nothing, and the frame is worth
+    // more than the hint.
+    assert_eq!(agent_view_rule_label(long, 9), None);
+    assert_eq!(agent_view_rule_label(long, 8), None);
+    assert_eq!(agent_view_rule_label(long, 6), None);
+    assert_eq!(agent_view_rule_label(long, 0), None);
+    // …but a description that *fits* still rides at that width: the mark is
+    // what needs the room, so there is nothing to spend it on when nothing is
+    // cut (width 8 → a one-column budget).
+    assert_eq!(agent_view_rule_label("x", 8).as_deref(), Some(" x "));
 }

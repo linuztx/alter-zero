@@ -689,7 +689,14 @@ a walk back onto `main` the way to forget one); Enter on an agent opens its **in
 view** — a purge-rebuild showing the agent's own transcript under the banner,
 the composer's top rule labelled with its description **embedded in the
 rule** (`── {description} ─`, the rule resuming for one border cell after
-the text), its **commits keyed on what the fold recorded** — the transcript's
+the text) and **budgeted to half of it** (a `description` is whatever the
+model wrote, and a right-aligned title too long to fit is trimmed from the
+**left**, so an unbudgeted paragraph ate the rule whole and left a sentence
+fragment with a border glyph stuck on its end; `ui::agent`'s
+`agent_view_rule_label` clips it from the **end** with `TOOL_HEADER_ELLIPSIS`
+instead, keeping the head that says what the agent is, and drops the label
+outright once the rule cannot hold the mark plus one real character beside
+it), its **commits keyed on what the fold recorded** — the transcript's
 new `Tool`/`Summary` item, through the same builders a rebuild uses
 (`Session::commit_agent_tail`; keying on the *event* is what dropped a
 subagent's `write`/`edit` cells when the file tools moved onto
