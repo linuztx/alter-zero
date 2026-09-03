@@ -83,12 +83,12 @@ Quitting a session that recorded a conversation prints how to get back into it
 
 ```
 Resume this session with:
-alter0 --resume 18a9f2c33d41e5b6-1a2b
+alter-zero --resume 18a9f2c33d41e5b6-1a2b
 ```
 
-`alter0 --continue` (`-c`) reopens the newest conversation recorded in the
-current directory without asking, `alter0 --resume {id}` (`-r`) a specific one
-by that id (a unique prefix works too), and a bare `alter0 --resume` boots
+`alter-zero --continue` (`-c`) reopens the newest conversation recorded in the
+current directory without asking, `alter-zero --resume {id}` (`-r`) a specific
+one by that id (a unique prefix works too), and a bare `alter-zero --resume` boots
 straight into the `/resume` session picker. Once you've chatted, **Esc Esc** steps back
 to edit a previous message, codex-style (see `docs/backtrack.md`): the first
 Esc arms it, the second previews the conversation with the last user message

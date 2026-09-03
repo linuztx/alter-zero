@@ -66,7 +66,7 @@ async fn tui_main(startup: Option<Startup>) -> io::Result<()> {
     // The exit hint (docs/cli.md): printed AFTER restore so its two lines land
     // below the box in normal terminal flow — only when the session recorded a
     // conversation (`run` returns the active rollout's id then), echoing the
-    // bin name the user actually invoked (`alter-zero` or the `alter0` alias).
+    // bin name the user actually invoked (`argv[0]`'s basename).
     if let Ok(Some(session_id)) = &result {
         let arg0 = std::env::args().next();
         println!(

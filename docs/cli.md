@@ -69,8 +69,8 @@ about the on-disk format changes; the id merely becomes *addressable*:
   `--resume --help` doesn't eat `--help` as an id).
 - `resume_hint(bin, id)` — the exit hint exactly as shown above (two lines,
   no indent). `bin_name(arg0)` derives the printed program name from how the
-  user actually invoked it (`alter0` stays `alter0` — the crate ships both
-  bin names), falling back to `alter-zero`.
+  user actually invoked it (a renamed or symlinked install echoes the name
+  that was run), falling back to `alter-zero`.
 - `USAGE` — the `--help` text; `main` prints it verbatim.
 
 ### The boundary (main.rs)

@@ -415,7 +415,7 @@ where
 ///
 /// ```text
 /// Resume this session with:
-/// alter0 --resume 18a9f2c33d41e5b6-1a2b
+/// alter-zero --resume 18a9f2c33d41e5b6-1a2b
 /// ```
 #[must_use]
 pub fn resume_hint(bin: &str, session_id: &str) -> String {
@@ -423,9 +423,9 @@ pub fn resume_hint(bin: &str, session_id: &str) -> String {
 }
 
 /// The program name the hint prints — how the user actually invoked us
-/// (`argv[0]`'s basename: the crate ships both `alter-zero` and the `alter0`
-/// alias, and the hint should echo whichever was run), falling back to the
-/// canonical `alter-zero` when `argv[0]` is absent or empty.
+/// (`argv[0]`'s basename, so a renamed or symlinked install echoes the name
+/// that was actually run), falling back to the canonical `alter-zero` when
+/// `argv[0]` is absent or empty.
 #[must_use]
 pub fn bin_name(arg0: Option<&str>) -> String {
     arg0.map(std::path::Path::new)
@@ -518,16 +518,16 @@ mod tests {
     #[test]
     fn resume_hint_is_the_two_line_command() {
         assert_eq!(
-            resume_hint("alter0", "18a9f2c3-1a2b"),
-            "Resume this session with:\nalter0 --resume 18a9f2c3-1a2b",
+            resume_hint("alter-zero", "18a9f2c3-1a2b"),
+            "Resume this session with:\nalter-zero --resume 18a9f2c3-1a2b",
         );
     }
 
     #[test]
     fn bin_name_basenames_argv0_and_falls_back() {
-        assert_eq!(bin_name(Some("target/debug/alter0")), "alter0");
+        assert_eq!(bin_name(Some("target/debug/alter-zero")), "alter-zero");
         assert_eq!(bin_name(Some("/usr/local/bin/alter-zero")), "alter-zero");
-        assert_eq!(bin_name(Some("alter0")), "alter0");
+        assert_eq!(bin_name(Some("az")), "az");
         assert_eq!(bin_name(Some("")), "alter-zero");
         assert_eq!(bin_name(None), "alter-zero");
     }
