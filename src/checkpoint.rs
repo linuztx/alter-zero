@@ -138,8 +138,8 @@ pub fn exclude_file_contents() -> String {
 /// Why checkpoints are off for a session — the boundary's reason, shown to
 /// the user as a one-row toast on the first frame. The feature disabling
 /// itself *silently* is what made the reported startup lag so hard to place:
-/// "alter0 takes seconds to boot in `/tmp`" and "checkpoints do nothing here"
-/// are the same fact seen from two sides.
+/// "alter-zero takes seconds to boot in `/tmp`" and "checkpoints do nothing
+/// here" are the same fact seen from two sides.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CheckpointRefusal {
     /// A filesystem root (`/`, a drive root), or an empty cwd with no parent.
@@ -270,7 +270,7 @@ pub const SYSTEM_ROOTS: &[&str] = &[
 /// Shared scratch and mount parents: the directory **itself** is refused —
 /// it belongs to every program on the box, not to one project — while a
 /// project *inside* it (`/tmp/scratch`, `/mnt/data/proj`) is ordinary and
-/// checkpoints as before. This is the list that answers "alter0 lags in
+/// checkpoints as before. This is the list that answers "alter-zero lags in
 /// `/tmp`".
 pub const SHARED_PARENTS: &[&str] = &[
     "/export",
@@ -345,7 +345,8 @@ pub struct CheckpointEnv<'a> {
 
 /// Whether `cwd` is a directory checkpoints may snapshot at all — the
 /// project-scope guard beside the env gate, and the first half of the answer
-/// to "alter0 takes seconds to boot here" (the second is [`SnapshotBudget`]).
+/// to "alter-zero takes seconds to boot here" (the second is
+/// [`SnapshotBudget`]).
 ///
 /// The session-start snapshot `git add -A`s the whole cwd *before the first
 /// frame paints*, in raw mode with Ctrl+C dead, and hashing is O(bytes): a
@@ -355,7 +356,7 @@ pub struct CheckpointEnv<'a> {
 /// - a **filesystem root** — never a project, and `git clean -fd` there is the
 ///   whole disk;
 /// - the **home directory** or an ancestor of it — the user's entire tree (the
-///   original "alter0 hangs in `~`" bug);
+///   original "alter-zero hangs in `~`" bug);
 /// - **alter-zero's own state directory** and everything under it: it holds
 ///   the rollouts, the input history, and every project's checkpoint store, so
 ///   a restore's `git clean -fd` there deletes other sessions' records. (A cwd
@@ -980,7 +981,7 @@ mod tests {
         }
     }
 
-    // ===== cwd_scope (the "alter0 hangs in a huge directory" guard) =====
+    // ===== cwd_scope (the "alter-zero hangs in a huge directory" guard) =====
 
     /// The usual layout: `$HOME=/home/user`, state dir `~/.alter-zero`, store
     /// root `~/.alter-zero/checkpoints`, `$TMPDIR` unset.

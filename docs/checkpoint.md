@@ -121,7 +121,8 @@ that were never this session's to touch. Refused, each with its own
 
 - **`FilesystemRoot`** — `/`, a drive root, or an empty unknowable cwd.
 - **`HomeDirectory`** — the home directory itself or an ancestor of it
-  (`/home`): the user's entire tree (the original "alter0 hangs in `~`" bug).
+  (`/home`): the user's entire tree (the original "alter-zero hangs in `~`"
+  bug).
 - **`StateDirectory`** — alter-zero's own `~/.alter-zero` **and everything
   under it**: it holds the rollouts, the input history, and every project's
   checkpoint store, so a restore's `git clean -fd` there deletes other
@@ -226,7 +227,7 @@ Every refusal raises a one-row `Checkpoints off — {reason}` toast on the first
 frame (`CheckpointRefusal`'s `Display`), and `/settings` shows **Checkpoints**
 as `false (unavailable)`. The toast is suppressed when the user had already
 turned checkpoints off — a refusal is only news when it took something away.
-Disabling itself in silence is what made this hard to place: "alter0 takes
+Disabling itself in silence is what made this hard to place: "alter-zero takes
 seconds to boot in `/tmp`" and "checkpoints do nothing here" were the same
 fact seen from two sides.
 

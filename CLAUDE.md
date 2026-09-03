@@ -584,7 +584,7 @@ the row unavailable). Running out of *time* is its own verdict
 (`ProbeOutcome::OutOfTime` → `TooSlow`), never folded into "too big": a probe
 that timed out learned nothing about the size. Every refusal raises a one-row `Checkpoints off —
 {reason}` toast, suppressed only when the user had already turned checkpoints
-off: going quiet is what made "alter0 takes seconds to boot in `/tmp`" and
+off: going quiet is what made "alter-zero takes seconds to boot in `/tmp`" and
 "checkpoints do nothing here" read as two unrelated bugs — and a session-start
 snapshot that *does* run announces itself the same way: the probe's bound
 `SnapshotCost` becomes the pure `checkpoint::snapshot_notice` row
