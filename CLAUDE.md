@@ -136,7 +136,20 @@ with a **live banner preview** rendered by the header's own builder, the
 choice persisted in `mascot.json` and the switch's purge rebuild redrawing
 the banner at once) in `docs/mascot.md`; the **`/login` sign-in fork** (the
 flow's root now asks *how* you sign in — **Use a subscription** or **Use an
-API key** — because GitHub Copilot is not a key you paste: `auth =
+API key** — because GitHub Copilot is not a key you paste. Below that root the
+two lists carry **no heading** (each used to repeat the row that opened it, in
+cyan, for two rows that said nothing the hint below them doesn't) and every
+row states its own reachability — `{name} · ✔ configured` when a key or token
+resolves, `{name} · ◯ unconfigured` when none does — only the **`✔` is
+coloured** (the `/model` picker's green: the mark is what the eye hunts for
+down a column of names, while its word, the `◯` and the ` · ` stay dim, a
+status being a fact rather than an alert) — since the absence of a mark is a
+poor answer to the one question a sign-in list is opened to ask — while the **key step introduces the provider it is asking
+for**: the file's own `description` and a linked `Create a key at
+{api_key_url}` (`Install it from …` for a keyless one) between the title and
+the field, wrapped never clipped, omitted whole when the file says neither,
+which is also what made the field's row stop being a constant —
+`login_prompt_row` finds the `❯` in the page the paint just built. `auth =
 "github_copilot"` in `providers.toml` puts it in the subscription list, where
 Enter runs GitHub's **device flow** on the loop's fourth worker (the one that
 runs for *minutes*) and the page shows the one-time code in a rounded box over

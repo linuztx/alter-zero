@@ -9603,6 +9603,19 @@ if printf '%s' "$login_subs" | grep -qF "Sign in with your"; then
 	echo "FAIL: Phase 103 — a row still trails its description" >&2
 	status=1
 fi
+# Every row says whether it is reachable. The suite scrubs the key store, so
+# each one must read as unconfigured — and say so, rather than leaving the
+# reader to notice a missing mark.
+if ! printf '%s' "$login_subs" | grep -qF "◯ unconfigured"; then
+	echo "FAIL: Phase 103 — a subscription row does not report its configured status" >&2
+	status=1
+fi
+# …and the list opens straight onto its filter: the heading that used to
+# repeat the row that opened it is gone.
+if printf '%s' "$login_subs" | grep -qF "Use a subscription"; then
+	echo "FAIL: Phase 103 — the subscription list still carries a heading" >&2
+	status=1
+fi
 
 # Esc steps BACK to the root, not out of the flow.
 tmux send-keys -t "$S103" Escape
@@ -9637,6 +9650,43 @@ fi
 # pushed the names apart.
 if printf '%s' "$login_keys" | grep -qF "_API_KEY]"; then
 	echo "FAIL: Phase 103 — a provider row still trails its env var" >&2
+	status=1
+fi
+if ! printf '%s' "$login_keys" | grep -qF "◯ unconfigured"; then
+	echo "FAIL: Phase 103 — a provider row does not report its configured status" >&2
+	status=1
+fi
+if printf '%s' "$login_keys" | grep -qF "Use an API key"; then
+	echo "FAIL: Phase 103 — the provider list still carries a heading" >&2
+	status=1
+fi
+
+# Enter on the highlighted provider opens the key step — which introduces the
+# provider it is asking a secret for and links the page that secret is made
+# on, read from `providers.toml` (docs/llm.md). A page that asks for a key and
+# says nothing about where to get one is the thing this replaces.
+tmux send-keys -t "$S103" Enter
+sleep 0.4
+login_key_step="$(tmux capture-pane -t "$S103" -p)"
+echo "==== Phase 103: the key step introduces its provider ===="
+printf '%s\n' "$login_key_step"
+for want in "Enter your Agent Zero API key" "Venice.ai" "Create a key at" "agent-zero.ai"; do
+	if ! printf '%s' "$login_key_step" | grep -qF "$want"; then
+		echo "FAIL: Phase 103 — the key step did not show \"$want\"" >&2
+		status=1
+	fi
+done
+# The block wraps rather than clipping: the description's own last word has to
+# survive, or the sentence stops mid-thought.
+if ! printf '%s' "$login_key_step" | grep -qF "holders."; then
+	echo "FAIL: Phase 103 — the key step clipped its description" >&2
+	status=1
+fi
+# Esc steps back to the provider list, as it always did.
+tmux send-keys -t "$S103" Escape
+sleep 0.3
+if ! tmux capture-pane -t "$S103" -p | grep -qF "Keys are saved to"; then
+	echo "FAIL: Phase 103 — Esc on the key step did not return to the provider list" >&2
 	status=1
 fi
 

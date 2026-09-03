@@ -63,11 +63,18 @@ pub struct ProviderChoice {
     /// (`OPENROUTER_API_KEY`), or the host's for a [`KeyKind::Host`] row
     /// (`OLLAMA_HOST`).
     pub env_var: String,
-    /// Whether the provider is already configured (shown with a ✓): a key
-    /// resolves, or — for a host-configured one — it is pointed at.
+    /// Whether the provider is already configured (the row's `✔ configured`):
+    /// a key resolves, or — for a host-configured one — it is pointed at.
     pub configured: bool,
     /// What the key step asks this row for.
     pub key_kind: KeyKind,
+    /// One line saying what the provider is, shown on the key step above the
+    /// field (`providers.toml`'s `description`). Empty when the file names
+    /// none, which drops the block rather than printing a blank.
+    pub description: String,
+    /// Where this provider's keys are created (`providers.toml`'s
+    /// `api_key_url`), linked under the description. Empty when unnamed.
+    pub key_url: String,
 }
 
 /// What the `/login` key step collects for a provider: a **secret** to paste
@@ -282,9 +289,12 @@ impl KeyOnboarding {
         self.subscription_matches().get(self.selected).copied()
     }
 
-    /// Providers whose id or name contains the query (case-insensitive
-    /// substring; every provider for an empty query), keeping the injected
-    /// order.
+    /// Providers whose id, name or description contains the query
+    /// (case-insensitive substring; every provider for an empty query),
+    /// keeping the injected order. The description is matched for the same
+    /// reason the subscription list matches its own: the row shows a name,
+    /// and a user hunting for `claude` or `local` is describing what they
+    /// want rather than naming it.
     #[must_use]
     pub fn matches(&self) -> Vec<&ProviderChoice> {
         let query = self.query.to_lowercase();
@@ -294,6 +304,7 @@ impl KeyOnboarding {
                 query.is_empty()
                     || p.id.to_lowercase().contains(&query)
                     || p.name.to_lowercase().contains(&query)
+                    || p.description.to_lowercase().contains(&query)
             })
             .collect()
     }

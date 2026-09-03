@@ -343,8 +343,8 @@ in place; unlike it, it is a **two-step** flow.
 
   ❯ agent                                                (filter, cyan '❯')
 
-→ Agent Zero API ✓                                       (selected '→'; ✓ = configured)
-  OpenRouter
+→ Agent Zero API · ✔ configured                          (selected '→'; green ✔ = a key resolves)
+  OpenRouter · ◯ unconfigured                            (no key yet; the word stays dim)
   (1/2)                                                  (position/total, dim)
 
   Keys are saved to ~/.alter-zero/.env                   (dim hint — the real path)
@@ -357,7 +357,12 @@ in place; unlike it, it is a **two-step** flow.
 ```
 ────────────────────────────────────────────────
 
-  Enter your Agent Zero API key                          (periwinkle #96a0d5, names the provider)
+  Enter your OpenRouter API key                          (periwinkle #96a0d5, names the provider)
+
+  One key for hundreds of models from every major        (the file's `description`, wrapped)
+  lab — OpenAI, Anthropic, Google, Meta and more —
+  billed from a single balance.
+  Create a key at https://openrouter.ai/…/keys           (the file's `api_key_url`, an OSC 8 link)
 
   ❯ ••••••••••••••••••••                                 (masked field, cyan '❯')
 
@@ -383,10 +388,30 @@ in place; unlike it, it is a **two-step** flow.
   being the root, closes instead — and `Ctrl+C` closes from anywhere. Every
   step change resets the shared filter and selection, so a list always opens at
   the top with a clean query.
-- **Every title is cyan** (`LOGIN_TITLE_COLOR`, the palette accent the whole
-  picker family selects with), so the flow's headings read as one rather than
-  as a colour of their own. The method step carries none — its two rows *are*
-  the question — and is the one list with no `(n/total)` counter.
+- **Every row says whether it is configured** — `{name} · ✔ configured` when a
+  key or token already resolves, `{name} · ◯ unconfigured` when none does
+  (`login_row`, `LOGIN_CONFIGURED` / `LOGIN_UNCONFIGURED`). Both halves are
+  spelled out on purpose: the row used to carry a green ✓ when configured and
+  *nothing at all* when not, so the one question a sign-in list is opened to
+  answer was answered by the absence of a mark. **Only the `✔` is coloured** —
+  the green the `/model` picker's ✓ wears, because the mark is what the eye
+  hunts for down a column of names — while its word, the `◯`, and the ` · `
+  ahead of them stay dim: a status is a fact about a row rather than an alert,
+  and colouring the whole tail made a list of facts read as a column of them.
+  The method root's two rows carry no status at all (`status: None`) — they
+  are the question, not something that can be configured.
+- **No list carries a title** (updated 2026-09-03). The subscription and
+  provider steps used to repeat the method row that opened them as a cyan
+  heading (`Use a subscription` / `Use an API key`); it said nothing the rows
+  and the hint below them don't, and it cost every row two lines of a region
+  already sharing the terminal with a running turn. All three lists are one
+  shape now — rule, gap, `❯` filter — and the root never had one: there the
+  two rows *are* the question. The method step is also the one list with no
+  `(n/total)` counter.
+- **The remaining titles are cyan** (`LOGIN_TITLE_COLOR`, the palette accent
+  the whole picker family selects with) — the sign-in page's `Sign in to
+  {provider}` and the key step's `Enter your {provider} API key` — so the
+  flow's headings read as one rather than as a colour of their own.
 - **The subscription half** (`KeyStep::Subscription` → `KeyStep::Device`) is a
   provider sign-in rather than a secret to paste — GitHub Copilot's device code
   (`docs/copilot.md`), OpenAI ChatGPT's browser PKCE (`docs/chatgpt.md`), or
@@ -405,6 +430,26 @@ in place; unlike it, it is a **two-step** flow.
   to the provider list, `Ctrl+C` closes. The field is masked to `•` glyphs — the
   plaintext key never touches the screen. The prompt names the provider, avoiding
   a doubled "API" when its name already ends in it (`login_key_prompt`).
+- **The key step introduces the provider it is asking for** (added 2026-09-03):
+  between the title and the field sit the provider file's own `description` and
+  a `Create a key at {api_key_url}` line — a keyless provider's reads `Install
+  it from …`, since it has no key to create (`docs/ollama.md`). Both are dim,
+  the URL a real OSC 8 hyperlink like every other URL this flow shows
+  (`docs/links.md`), and the block **wraps rather than clips**: a description
+  that stops mid-word explains nothing and a truncated link opens nothing,
+  while the page's height is its own line count so a continuation row costs
+  only itself (`docs/view-flow.md`). A provider the file describes in no words
+  gets exactly the page it had before — the block is omitted whole, never left
+  as a band of blanks (`provider_about_lines` over the shared `login_page`
+  block-joiner). The `description` also steers the provider list's
+  type-to-search, as it already did the subscription list's, so `claude` finds
+  **Anthropic** and `local` finds **Ollama**.
+- **The `❯` row is found, not counted.** The key field used to sit on a
+  constant row, which stopped being true the moment a description of the
+  terminal's own width moved in above it, so `cursor_position` reads the row
+  back out of the page the paint just built (`login_prompt_row`, the
+  `menu_marker_seat` rule) instead of a `LOGIN_KEY_INPUT_ROW` that could
+  drift from it.
 - On save, the loop `EnvFile::upsert`s the key into `~/.alter-zero/.env` (creating
   the config home first), refreshes its in-memory copy (so the next `/model`
   fetch/switch resolves it immediately), and commits a
@@ -415,9 +460,12 @@ in place; unlike it, it is a **two-step** flow.
 ### Styling
 
 The `/login` flow reuses the `/model` picker's colours (indent, cyan `❯` prompt /
-selection, dim meta, green ✓, `→` marker) plus the `LOGIN_*` strings and geometry
-consts in `ui/theme.rs` — including the periwinkle `LOGIN_KEY_PROMPT_COLOR` (`#96a0d5`)
-that names the provider on the key step. Retheme there.
+selection, dim meta, green ✔/✓, `→` marker) plus the
+`LOGIN_*` strings and geometry consts in `ui/theme.rs` — the row's
+`LOGIN_STATUS_SEP` / `LOGIN_CONFIGURED` / `LOGIN_UNCONFIGURED`, the key step's
+`LOGIN_KEY_URL_PREFIX` / `LOGIN_HOST_URL_PREFIX`, and the periwinkle
+`LOGIN_KEY_PROMPT_COLOR` (`#96a0d5`) that names the provider on the key step.
+Retheme there.
 
 ## Known limitations (v1)
 

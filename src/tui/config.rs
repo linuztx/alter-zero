@@ -233,12 +233,23 @@ fn choices_where(
                 ),
                 None => (key_env_name(providers, &id), KeyKind::Secret),
             };
+            // What the key step introduces the provider with, and where its
+            // keys are made: both come from the file, so adding a provider is
+            // still one `[providers.<id>]` block (`docs/llm.md`).
+            let description = provider
+                .and_then(|p| p.description.clone())
+                .unwrap_or_default();
+            let key_url = provider
+                .and_then(|p| p.api_key_url.clone())
+                .unwrap_or_default();
             ProviderChoice {
                 id,
                 name,
                 env_var,
                 configured,
                 key_kind,
+                description,
+                key_url,
             }
         })
         .collect()

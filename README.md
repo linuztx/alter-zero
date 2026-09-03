@@ -236,7 +236,12 @@ Or sign in from inside the app with **`/login`**, which asks how first —
   `/models` listing feeds the same context-window gauge, vision degradation
   and Ctrl+T ladder every other provider gets.
 - **An API key** is the old flow: pick a provider (**Agent Zero API**,
-  **Anthropic**, **OpenRouter**, **Ollama Cloud**) and paste its key.
+  **Anthropic**, **OpenRouter**, **Ollama Cloud**) and paste its key. Every row
+  says whether it is reachable already — a green `✔` beside a dim
+  `configured`, or a wholly dim `◯ unconfigured` — and the key page
+  introduces the provider in a line
+  and links the page its keys are created on, so "where do I get one?" is
+  answered without leaving the flow.
 - **Ollama** (`docs/ollama.md`) — local models, no key: pick **Ollama** in the
   same list and press Enter to accept the default host (or type one in
   Ollama's own `OLLAMA_HOST` grammar), and `/model` lists what `ollama pull`

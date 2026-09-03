@@ -127,10 +127,21 @@ pub struct Provider {
     /// The wire format its requests take — Chat Completions by default.
     #[serde(default)]
     pub wire_api: WireApi,
-    /// What signing in means, shown beside the name in `/login`'s
-    /// subscription list. Only a subscription provider needs one.
+    /// One line saying what this provider *is*. A subscription's says what
+    /// signing in means; a pasted-key provider's introduces it on `/login`'s
+    /// key step, above the field and the page its keys are made on — "Enter
+    /// your OpenRouter API key" being an instruction, not an explanation.
+    /// Either way it also steers `/login`'s type-to-search, so a provider is
+    /// findable by what it does and not only by what it is called.
     #[serde(default)]
     pub description: Option<String>,
+    /// Where this provider's API keys are created — linked under the
+    /// description on `/login`'s key step, so a user who hasn't got a key can
+    /// go and make one instead of leaving the flow to search for the page. A
+    /// provider that takes no key (Ollama) names where the **server** comes
+    /// from instead; the field is the link, the wording is the view's.
+    #[serde(default)]
+    pub api_key_url: Option<String>,
     /// Endpoint whose `/models` the picker lists. Falls back to
     /// [`Kwargs::api_base`] when unset.
     #[serde(default)]
@@ -654,6 +665,29 @@ api_base = "https://api.anthropic.com/v1"
         let console = file.get("anthropic_console").unwrap();
         assert_eq!(console.auth, AuthScheme::AnthropicConsole);
         assert!(console.auth.is_subscription());
+    }
+
+    #[test]
+    fn every_shipped_key_provider_describes_itself_and_names_its_key_page() {
+        // `/login`'s key step introduces the provider it is asking a secret
+        // for, over a link to the page that secret is made on. Both come from
+        // this file, so a provider added without them silently ships a page
+        // that asks for a key and says nothing about where to get one — which
+        // is the page this pair exists to replace.
+        let file = ProvidersFile::builtin();
+        for id in file.ids() {
+            let provider = file.get(&id).expect("listed");
+            if provider.auth.is_subscription() {
+                continue; // signed in to, never keyed — its page is the sign-in
+            }
+            let described = provider.description.as_deref().unwrap_or_default();
+            assert!(!described.is_empty(), "{id} has no description");
+            let url = provider.api_key_url.as_deref().unwrap_or_default();
+            assert!(
+                url.starts_with("https://"),
+                "{id} names no https key page: {url:?}"
+            );
+        }
     }
 
     #[test]

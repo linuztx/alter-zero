@@ -2,6 +2,8 @@
 //! its device-code page, the API-key provider list and its masked key field.
 //! See `docs/llm.md` and `docs/copilot.md`.
 
+use crate::app::ProviderChoice;
+
 use super::model_view::{model_linked_rows, model_placeholder_row, model_rule, model_wrapped_rows};
 use super::theme::*;
 use super::wrap::{cols, ellipsize, truncate_cols};
@@ -26,15 +28,32 @@ fn login_title(text: &str, width: u16) -> Line<'static> {
     model_placeholder_row(text, LOGIN_TITLE_COLOR, width)
 }
 
-/// One list row shared by the three `/login` lists: `{marker}{name}{✓}`.
+/// One list row shared by the three `/login` lists:
+/// `{marker}{name} · {✔ configured | ◯ unconfigured}`.
 ///
-/// The selected row's marker and name light up cyan (the palette accent) and
-/// an already-configured row carries a green ✓ — and that is the whole row.
-/// It used to trail a dim tag as well (the provider's env var, or the
-/// subscription's one-line description), which made the three lists read as
-/// three shapes and pushed the names apart; neither fact needs saying here.
-/// The env var is named by the step's own hint and by the save toast, and
-/// what signing in to a subscription means is the sign-in page's job.
+/// The selected row's marker and name light up cyan (the palette accent), and
+/// a row that names something *reachable* — a provider, a subscription —
+/// closes with its **status**: `✔ configured` when a key or token already
+/// resolves, `◯ unconfigured` when none does. `status` is `None` for the
+/// method root's two rows, which are the question rather than an answer and
+/// so have nothing to report.
+///
+/// Only the **`✔` is coloured** — the green the `/model` picker's ✓ wears —
+/// because the mark is what the eye hunts for down a column of names. Its
+/// word, the `◯`, and the separator ahead of them stay dim: a status is a
+/// fact about a row rather than an alert, and colouring the whole tail made a
+/// list of facts read as a column of them.
+///
+/// Spelling the negative out is the point. The row used to carry a green ✓
+/// when configured and *nothing at all* when not, so "no key yet" had to be
+/// read off the absence of a mark — the one question a sign-in list is opened
+/// to answer, answered by a blank.
+///
+/// The row still says only this much. It used to trail a dim tag as well (the
+/// provider's env var, or the subscription's one-line description), which made
+/// the three lists read as three shapes and pushed the names apart; the env
+/// var is named by the step's own hint and by the save toast, and what a
+/// subscription means is the sign-in page's job.
 ///
 /// The description **still steers the type-to-search**
 /// ([`KeyOnboarding::subscription_matches`]) — it left the display, not the
@@ -42,12 +61,29 @@ fn login_title(text: &str, width: u16) -> Line<'static> {
 /// words are on screen. Mirrors `model_row`.
 ///
 /// [`KeyOnboarding::subscription_matches`]: crate::app::KeyOnboarding::subscription_matches
-fn login_row(name: &str, configured: bool, selected: bool, width: u16) -> Line<'static> {
+fn login_row(name: &str, status: Option<bool>, selected: bool, width: u16) -> Line<'static> {
     let marker = if selected { MODEL_MARKER } else { "  " };
-    let check = if configured { MODEL_ACTIVE_MARK } else { "" };
-    let reserved = cols(marker) + cols(check);
+    let tag = status.map(|configured| {
+        if configured {
+            (
+                LOGIN_CONFIGURED_MARK,
+                LOGIN_CONFIGURED_LABEL,
+                MODEL_ACTIVE_COLOR,
+            )
+        } else {
+            (
+                LOGIN_UNCONFIGURED_MARK,
+                LOGIN_UNCONFIGURED_LABEL,
+                MODEL_META_COLOR,
+            )
+        }
+    });
+    let reserved = cols(marker)
+        + tag.map_or(0, |(mark, label, _)| {
+            cols(LOGIN_STATUS_SEP) + cols(mark) + cols(label)
+        });
     let name_room = (width as usize).saturating_sub(reserved).max(1);
-    // `…`-cut like the model id: the ✓ keeps its seat and the cut shows.
+    // `…`-cut like the model id: the status keeps its seat and the cut shows.
     let name = ellipsize(name, name_room);
 
     let (marker_style, name_style) = if selected {
@@ -60,11 +96,17 @@ fn login_row(name: &str, configured: bool, selected: bool, width: u16) -> Line<'
     } else {
         (Style::default(), Style::new().fg(MODEL_ID_COLOR))
     };
-    Line::from(vec![
+    let mut spans = vec![
         Span::styled(marker.to_string(), marker_style),
         Span::styled(name, name_style),
-        Span::styled(check.to_string(), Style::new().fg(MODEL_ACTIVE_COLOR)),
-    ])
+    ];
+    if let Some((mark, label, mark_color)) = tag {
+        let dim = Style::new().fg(MODEL_META_COLOR);
+        spans.push(Span::styled(LOGIN_STATUS_SEP, dim));
+        spans.push(Span::styled(mark, Style::new().fg(mark_color)));
+        spans.push(Span::styled(label, dim));
+    }
+    Line::from(spans)
 }
 
 /// The rows of whichever list the current step shows, windowed
@@ -73,23 +115,23 @@ fn login_row(name: &str, configured: bool, selected: bool, width: u16) -> Line<'
 /// nothing. Its length is what the page height counts, so the reserved and the
 /// painted rows agree.
 fn login_list_lines(onboarding: &KeyOnboarding, width: u16) -> Vec<Line<'static>> {
-    // (name, configured) per row — one shape for all three lists. The method
-    // rows are never "configured": they are the question, not an answer.
-    let rows: Vec<(String, bool)> = match onboarding.step {
+    // (name, status) per row — one shape for all three lists. The method rows
+    // report **no** status: they are the question, not an answer.
+    let rows: Vec<(String, Option<bool>)> = match onboarding.step {
         KeyStep::Method => onboarding
             .method_matches()
             .into_iter()
-            .map(|m| (m.label().to_string(), false))
+            .map(|m| (m.label().to_string(), None))
             .collect(),
         KeyStep::Subscription => onboarding
             .subscription_matches()
             .into_iter()
-            .map(|s| (s.name.clone(), s.configured))
+            .map(|s| (s.name.clone(), Some(s.configured)))
             .collect(),
         _ => onboarding
             .matches()
             .into_iter()
-            .map(|p| (p.name.clone(), p.configured))
+            .map(|p| (p.name.clone(), Some(p.configured)))
             .collect(),
     };
     if rows.is_empty() {
@@ -107,7 +149,7 @@ fn login_list_lines(onboarding: &KeyOnboarding, width: u16) -> Vec<Line<'static>
         .enumerate()
         .skip(offset)
         .take(max)
-        .map(|(i, (name, configured))| login_row(name, *configured, i == selected, width))
+        .map(|(i, (name, status))| login_row(name, *status, i == selected, width))
         .collect()
 }
 
@@ -341,6 +383,17 @@ fn device_page_lines(device: &DeviceLogin, width: u16) -> Vec<Line<'static>> {
         width,
     )]);
 
+    login_page(blocks, width)
+}
+
+/// A framed `/login` page built from content **blocks**: top rule, gap, each
+/// non-empty block separated by exactly one blank row, gap, bottom rule.
+///
+/// An empty block contributes nothing at all, which is what lets a page grow
+/// and shrink without leaving a band of blanks behind — the sign-in page
+/// before its code has arrived, the key page of a provider the file describes
+/// in no words.
+fn login_page(blocks: Vec<Vec<Line<'static>>>, width: u16) -> Vec<Line<'static>> {
     let mut lines = vec![model_rule(width), Line::default()];
     for (i, block) in blocks.into_iter().filter(|b| !b.is_empty()).enumerate() {
         if i > 0 {
@@ -353,21 +406,66 @@ fn device_page_lines(device: &DeviceLogin, width: u16) -> Vec<Line<'static>> {
     lines
 }
 
-/// A `/login` list page: top rule, gap, an optional cyan title, the `❯` filter,
-/// gap, the windowed list, a `(n/total)` counter, gap, the step's dim hint
-/// rows, gap, bottom rule. The method step is the root and carries no title —
-/// the two rows *are* the question.
+/// What the key step says about the provider it is asking for: the one-line
+/// description from `providers.toml` over the page its keys are created on,
+/// both dim, the URL a real hyperlink like every other URL this flow shows
+/// (`docs/links.md`).
+///
+/// **Wrapped, never cut.** A description that stops mid-word explains nothing
+/// and a clipped link opens nothing; the page's height is its own line count
+/// (`docs/view-flow.md`), so a continuation row costs only itself.
+///
+/// Empty when the file names neither, so a provider with nothing to add gets
+/// exactly the page it had before.
+fn provider_about_lines(choice: &ProviderChoice, width: u16) -> Vec<Line<'static>> {
+    let mut text = choice.description.clone();
+    if !choice.key_url.is_empty() {
+        if !text.is_empty() {
+            text.push('\n');
+        }
+        // A provider that takes no key has none to create: what its link is
+        // for is the server the host field is asking about (`docs/ollama.md`).
+        text.push_str(if choice.key_kind.is_host() {
+            LOGIN_HOST_URL_PREFIX
+        } else {
+            LOGIN_KEY_URL_PREFIX
+        });
+        text.push_str(&choice.key_url);
+    }
+    if text.is_empty() {
+        return Vec::new();
+    }
+    model_linked_rows(&text, MODEL_META_COLOR, width)
+}
+
+/// The row of `lines` carrying the `❯` prompt — a list step's filter, or the
+/// key step's field — and `None` on a page that has neither (the sign-in
+/// page, which is a wait rather than a field).
+///
+/// **Found, not counted.** The key field used to sit on a constant row, which
+/// stopped being true the moment the provider's description block moved in
+/// above it: that block is as tall as the terminal is narrow. Reading the row
+/// back out of the very page the paint builds is `menu_marker_seat`'s rule,
+/// and it cannot drift from what is on screen.
+pub(super) fn login_prompt_row(lines: &[Line<'static>]) -> Option<u16> {
+    lines
+        .iter()
+        .position(|line| line.spans.iter().any(|s| s.content == MODEL_PROMPT))
+        .and_then(|row| u16::try_from(row).ok())
+}
+
+/// A `/login` list page: top rule, gap, the `❯` filter, gap, the windowed
+/// list, a `(n/total)` counter, gap, the step's dim hint rows, gap, bottom
+/// rule.
+///
+/// **No title.** The two lists below the root used to repeat the method row
+/// that opened them (`Use a subscription` / `Use an API key`) as a cyan
+/// heading, which said nothing the rows and the hint under them don't — and
+/// cost every row two lines of a region that is already sharing the terminal
+/// with a running turn. All three lists are one shape now, and the root never
+/// had one to begin with: there its two rows *are* the question.
 fn list_page_lines(onboarding: &KeyOnboarding, width: u16) -> Vec<Line<'static>> {
     let mut lines = vec![model_rule(width), Line::default()];
-    let title = match onboarding.step {
-        KeyStep::Method => None,
-        KeyStep::Subscription => Some(LOGIN_METHOD_SUBSCRIPTION),
-        _ => Some(LOGIN_METHOD_API_KEY),
-    };
-    if let Some(title) = title {
-        lines.push(login_title(title, width));
-        lines.push(Line::default());
-    }
     lines.push(login_prompt_line(Line::from(onboarding.query.clone())));
     lines.push(Line::default());
     lines.extend(login_list_lines(onboarding, width));
@@ -408,11 +506,12 @@ fn list_page_lines(onboarding: &KeyOnboarding, width: u16) -> Vec<Line<'static>>
 
 /// The whole framed page as lines, per step — the three lists share
 /// [`list_page_lines`], the device page is [`device_page_lines`], and the key
-/// step is a fixed height: top rule, gap, a cyan `Enter your {provider} API
-/// key` title, gap, the masked `❯` field, gap, a dim `Enter to save · Esc to
-/// go back` hint, gap, bottom rule. What [`render_key_onboarding`] paints
-/// (bottom-anchored) and `layout::key_onboarding_rows` counts, so the reserved
-/// height and the painted rows can never disagree (`docs/view-flow.md`).
+/// step is a cyan `Enter your {provider} API key` title over what the provider
+/// file says the provider *is* ([`provider_about_lines`] — omitted when it
+/// says nothing), the masked `❯` field, and a dim `Enter to save · Esc to go
+/// back` hint. What [`render_key_onboarding`] paints (bottom-anchored) and
+/// `layout::key_onboarding_rows` counts, so the reserved height and the
+/// painted rows can never disagree (`docs/view-flow.md`).
 pub(super) fn key_onboarding_lines(onboarding: &KeyOnboarding, width: u16) -> Vec<Line<'static>> {
     match onboarding.step {
         KeyStep::Method | KeyStep::Subscription | KeyStep::Provider => {
@@ -440,17 +539,15 @@ pub(super) fn key_onboarding_lines(onboarding: &KeyOnboarding, width: u16) -> Ve
             } else {
                 LOGIN_KEY_HINT
             };
-            vec![
-                model_rule(width),
-                Line::default(),
-                login_title(&title, width),
-                Line::default(),
-                login_key_field(onboarding, width),
-                Line::default(),
-                model_placeholder_row(hint, MODEL_META_COLOR, width),
-                Line::default(),
-                model_rule(width),
-            ]
+            login_page(
+                vec![
+                    vec![login_title(&title, width)],
+                    chosen.map_or_else(Vec::new, |c| provider_about_lines(c, width)),
+                    vec![login_key_field(onboarding, width)],
+                    vec![model_placeholder_row(hint, MODEL_META_COLOR, width)],
+                ],
+                width,
+            )
         }
     }
 }

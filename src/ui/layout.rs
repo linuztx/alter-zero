@@ -1092,21 +1092,30 @@ pub fn cursor_position(area: Rect, app: &App) -> (u16, u16) {
     // line: the provider filter (step 1) or the masked key field (step 2) —
     // again inside its own frame, below the strip, shifted by the anchor.
     if let Some(onboarding) = &app.key_onboarding {
+        // Built once and read twice — the page's height *and* the row its `❯`
+        // landed on. The key step's field has no fixed row any more (the
+        // provider's description block above it is as tall as the terminal is
+        // narrow), so the seat is found in the very page the paint builds
+        // rather than counted alongside it (`login_prompt_row`).
+        let lines = super::login_view::key_onboarding_lines(onboarding, area.width);
+        let prompt = super::login_view::login_prompt_row(&lines);
         let (query_cols, row) = match onboarding.step {
-            // The method step is the root and carries no title, so its filter
-            // sits two rows higher than the titled lists below it.
-            KeyStep::Method => (cols(&onboarding.query), LOGIN_METHOD_SEARCH_ROW),
-            KeyStep::Subscription | KeyStep::Provider => {
-                (cols(&onboarding.query), LOGIN_SEARCH_ROW)
-            }
             // The device page has no field at all; the (hidden — see
             // `cursor_visible`) caret parks at the frame's top, off the code
             // and out of the way of the countdown's redraws.
             KeyStep::Device => (0, DEVICE_CURSOR_ROW),
             // One mask glyph per key character sits after the prompt.
-            KeyStep::Key => (onboarding.key_input.chars().count(), LOGIN_KEY_INPUT_ROW),
+            KeyStep::Key => (
+                onboarding.key_input.chars().count(),
+                prompt.unwrap_or(DEVICE_CURSOR_ROW),
+            ),
+            // The three lists are one shape — none carries a title — so their
+            // filter is the frame's first content row.
+            KeyStep::Method | KeyStep::Subscription | KeyStep::Provider => {
+                (cols(&onboarding.query), prompt.unwrap_or(DEVICE_CURSOR_ROW))
+            }
         };
-        let rows = key_onboarding_rows(onboarding, area.width);
+        let rows = u16::try_from(lines.len()).unwrap_or(u16::MAX);
         let [_, body] = view_split(area, rows);
         let x = cols(MODEL_INDENT) + cols(MODEL_PROMPT) + query_cols;
         let x = area.x + (x.min(usize::from(area.width.saturating_sub(1))) as u16);

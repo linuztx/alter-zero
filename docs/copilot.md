@@ -48,25 +48,31 @@ would say nothing they don't. Type-to-filter works here like every list step
 ```
 ────────────────────────────────────────────────────────────────────────────
 
-  Use a subscription
-
   ❯
 
-→ GitHub Copilot ✓
-  (1/1)
+→ GitHub Copilot · ✔ configured
+  OpenAI (ChatGPT) · ◯ unconfigured
+  (1/2)
 
   ↑↓ navigate  enter sign in  esc back
 
 ────────────────────────────────────────────────────────────────────────────
 ```
 
-The row shape is the provider list's — the name and, for "already signed in",
-the same green ✓, resolved the same way, because a subscription's token lives
-in the same store. Nothing else: both lists once trailed a dim tail (the
-file's `description` here, `[ENV_VAR]` on a key row), which made the two read
-as two shapes and pushed the names apart from each other. The `description`
-is still what `providers.toml` carries and what a future page may show; it is
+The row shape is the provider list's — the name and its **configured status**,
+resolved the same way, because a subscription's token lives in the same store,
+its `✔` green like the `/model` picker's ✓ and everything beside it dim, since
+the mark is what the eye hunts for and the word is a plain fact. Nothing else:
+both lists once trailed a dim tail (the file's `description` here, `[ENV_VAR]`
+on a key row), which made the two read as two shapes and pushed the names
+apart from each other. The `description` still steers the type-to-search and
+now introduces a *keyed* provider on the key step (`docs/llm.md`); it is
 simply not what a list row is for.
+
+No title either (updated 2026-09-03). This page used to open on a cyan
+`Use a subscription` heading — the row that opened it, repeated — which said
+nothing the hint under the list doesn't and pushed every row two lines down.
+All three lists open straight onto their filter now.
 
 ### `KeyStep::Device`
 
@@ -146,11 +152,14 @@ open for content that does not exist yet:
 
 ### `KeyStep::Provider` / `KeyStep::Key`
 
-Unchanged but for the cyan `Use an API key` title, a second dim hint row naming
-the step's keys, and Esc now stepping *back* to the method root rather than
-closing outright. The list shows exactly the providers whose key is pasted —
-**Agent Zero API** and **OpenRouter** — with a subscription provider filtered
-out, since offering a key field for a flow that has none is a dead end.
+Unchanged but for the `✔ configured` / `◯ unconfigured` status each row now
+carries, a second dim hint row naming the step's keys, Esc now stepping *back*
+to the method root rather than closing outright, and the key step's own
+description-and-key-page block (`docs/llm.md`). The list shows exactly the
+providers whose key is pasted — **Agent Zero API**, **Anthropic**,
+**OpenRouter**, **Ollama Cloud**, **Ollama** — with a subscription provider
+filtered out, since offering a key field for a flow that has none is a dead
+end.
 
 ## What a provider file says
 

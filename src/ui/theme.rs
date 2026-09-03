@@ -804,9 +804,26 @@ pub(super) const MODEL_ERROR_MAX_ROWS: u16 = 3;
 /// heading rather than a fourth colour to learn.
 pub(super) const LOGIN_TITLE_COLOR: Color = MODEL_SELECTED_COLOR;
 
-/// The method step's two rows, in order — the root of the flow.
-pub(super) const LOGIN_METHOD_SUBSCRIPTION: &str = "Use a subscription";
-pub(super) const LOGIN_METHOD_API_KEY: &str = "Use an API key";
+/// The separator between a `/login` row's name and its configured status.
+pub(super) const LOGIN_STATUS_SEP: &str = " · ";
+
+/// What a provider / subscription row says about itself: whether this session
+/// can actually reach it. Both states are **spelled out**, where a bare row
+/// used to mean "no key yet" — a fact the reader could only take from the
+/// *absence* of a mark two columns further right, which is a poor way to
+/// answer the one question a sign-in list is opened to answer.
+///
+/// Split into a **mark** and a **label** because they are coloured
+/// differently. The `✔` keeps the green the `/model` picker's ✓ wears
+/// ([`MODEL_ACTIVE_COLOR`]) — it is the thing worth finding down a list of
+/// names — while its word, the `◯`, and the separator before them stay dim
+/// ([`MODEL_META_COLOR`]): a status is a fact about a row rather than an
+/// alert, and colouring the whole tail made a list of facts read as a column
+/// of them.
+pub(super) const LOGIN_CONFIGURED_MARK: &str = "✔";
+pub(super) const LOGIN_CONFIGURED_LABEL: &str = " configured";
+pub(super) const LOGIN_UNCONFIGURED_MARK: &str = "◯";
+pub(super) const LOGIN_UNCONFIGURED_LABEL: &str = " unconfigured";
 
 /// The dim hint under the method step (the root: Esc closes).
 pub(super) const LOGIN_METHOD_HINT: &str = "↑↓ navigate  enter select  escape/ctrl+c cancel";
@@ -908,6 +925,12 @@ pub(super) const LOGIN_KEY_HINT: &str = "Enter to save · Esc to go back";
 pub(super) const LOGIN_HOST_HINT: &str =
     "Enter to save (empty = the default shown) · Esc to go back";
 
+/// What the key step's link is introduced by: the page a **key** is created
+/// on, or — for a provider that takes none — where the server the host field
+/// asks about comes from (`docs/ollama.md`).
+pub(super) const LOGIN_KEY_URL_PREFIX: &str = "Create a key at ";
+pub(super) const LOGIN_HOST_URL_PREFIX: &str = "Install it from ";
+
 /// The dim placeholder shown in the key field before anything is entered.
 pub(super) const LOGIN_KEY_PLACEHOLDER: &str = "paste your API key, then press Enter";
 
@@ -920,20 +943,6 @@ pub(super) const LOGIN_NO_MATCH: &str = "No matching providers";
 /// The most provider rows shown at once (longer lists scroll to keep the
 /// selection **centered**, like the `/model` list — `centered_window`).
 pub(super) const LOGIN_MENU_MAX_ROWS: u16 = 8;
-
-/// The row the **method** step's `❯` filter sits on — top(0) gap(1)
-/// search(2). It is the flow's root and carries no title, so its filter sits
-/// two rows above the titled lists'.
-pub(super) const LOGIN_METHOD_SEARCH_ROW: u16 = 2;
-
-/// The row the subscription / provider `❯` filter sits on — top(0) gap(1)
-/// title(2) gap(3) search(4). Shared by [`render_key_onboarding`] and
-/// [`cursor_position`].
-pub(super) const LOGIN_SEARCH_ROW: u16 = 4;
-
-/// The row the key-entry `❯` field sits on — top(0) gap(1) prompt(2) gap(3)
-/// input(4).
-pub(super) const LOGIN_KEY_INPUT_ROW: u16 = 4;
 
 // --- The inline `/settings` menu (docs/settings.md). The `/model` picker's
 // framed shape with one extra row — the key hint under the description — and a

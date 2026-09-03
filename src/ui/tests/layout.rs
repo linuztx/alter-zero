@@ -503,9 +503,9 @@ fn model_picker_height_covers_the_chrome_plus_list() {
 #[test]
 fn key_onboarding_height_covers_both_steps() {
     let mut app = login_app_provider();
-    // Provider step: 12 chrome (the cyan title and its gap, and the two hint
-    // rows) + 2 provider rows.
-    assert_eq!(key_onboarding_height(&app, 74, 40), Some(14));
+    // Provider step: 10 chrome (the two hint rows included; no title) + 2
+    // provider rows.
+    assert_eq!(key_onboarding_height(&app, 74, 40), Some(12));
     // Clamped to the terminal height.
     assert_eq!(key_onboarding_height(&app, 74, 6), Some(6));
     // Key step: a fixed height.
@@ -570,8 +570,8 @@ fn the_login_flow_reserves_the_strip_above_it() {
     let preview = preview_rows(&app, 74);
     assert_eq!(preview, 1, "a streaming reply previews its last row");
     let strip = preview + GAP_ROWS + STATUS_ROWS + STATUS_GAP_ROWS;
-    // Provider step: 12 chrome + 2 provider rows, over the strip.
-    assert_eq!(key_onboarding_height(&app, 74, 40), Some(strip + 14));
+    // Provider step: 10 chrome + 2 provider rows, over the strip.
+    assert_eq!(key_onboarding_height(&app, 74, 40), Some(strip + 12));
     // The key step is a fixed height — over the same strip.
     app.key_onboarding.as_mut().unwrap().step = KeyStep::Key;
     assert_eq!(
