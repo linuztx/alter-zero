@@ -32,6 +32,7 @@
 //!
 //! Pure and unit-tested — the HTTP lives in [`super::openai`].
 
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 
 use serde_json::{Value, json};
@@ -40,7 +41,7 @@ use super::config::ModelConfig;
 use super::openai::Delta;
 use super::reasoning::ThinkingMode;
 use super::tools::ToolCallRequest;
-use super::{ChatMessage, ContentPart, MessageContent};
+use super::{CacheControl, ChatMessage, ContentPart, MessageContent};
 use crate::stream::TokenUsage;
 
 /// The `max_tokens` every request carries, since the API requires one and the
@@ -63,7 +64,9 @@ pub const THINKING_BUDGET: u64 = 10_000;
 // The request body
 // ---------------------------------------------------------------------------
 
-/// Build the streamed request body for `messages`.
+/// Build the streamed request body for `messages` — as a JSON tree, the
+/// tests' view of the request. The wire streams a [`RequestSource`], which
+/// writes the same request from the messages **by reference**.
 ///
 /// `max_tokens` and `stream` are mandatory here rather than conventional, and
 /// `temperature` is deliberately **never sent**: the sampling parameters were
@@ -71,35 +74,75 @@ pub const THINKING_BUDGET: u64 = 10_000;
 /// blames the request rather than the field. See `docs/claude.md`.
 #[must_use]
 pub fn build_payload(cfg: &ModelConfig, tools: &[Value], messages: &[ChatMessage]) -> Value {
-    let (system, input) = build_messages(messages);
-    let mut payload = json!({
-        "model": cfg.model,
-        "max_tokens": MAX_TOKENS,
-        "messages": input,
-        "stream": true,
-    });
-    if !system.is_empty() {
-        payload["system"] = json!(system);
-    }
+    serde_json::to_value(request(cfg, tools, messages)).unwrap_or(Value::Null)
+}
+
+/// The Messages request as it is serialized: the hoisted `system` blocks and
+/// the `messages` **borrowed from the conversation** — a picture's base64 is
+/// the session's one shared encoding, a slice of it, never a copy into a tree
+/// (`docs/memory.md`) — beside every other field in one small map.
+#[derive(serde::Serialize)]
+struct Request<'a> {
+    #[serde(flatten)]
+    fields: serde_json::Map<String, Value>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    system: Vec<Block<'a>>,
+    messages: Vec<Message<'a>>,
+}
+
+fn request<'a>(cfg: &ModelConfig, tools: &[Value], messages: &'a [ChatMessage]) -> Request<'a> {
+    let (mut system, mut input) = blocks_of(messages);
+    let mut fields = serde_json::Map::new();
+    fields.insert("model".to_string(), json!(cfg.model));
+    fields.insert("max_tokens".to_string(), json!(MAX_TOKENS));
+    fields.insert("stream".to_string(), json!(true));
     if !tools.is_empty() {
-        payload["tools"] = json!(anthropic_tools(tools));
+        fields.insert("tools".to_string(), json!(anthropic_tools(tools)));
     }
     if let Some(mode) = cfg.thinking {
-        payload["thinking"] = thinking_body(mode);
+        fields.insert("thinking".to_string(), thinking_body(mode));
         // The effort ladder is `output_config`'s, not `thinking`'s — the two
         // are separate parameters, and putting the level inside the thinking
         // object is an unknown-field 400.
         if let Some(effort) = super::reasoning::effort_label(mode) {
-            payload["output_config"] = json!({"effort": effort});
+            fields.insert("output_config".to_string(), json!({"effort": effort}));
         }
     }
-    apply_cache_breakpoints(&mut payload);
-    if let Some(obj) = payload.as_object_mut() {
-        for (k, v) in &cfg.extra_body {
-            obj.insert(k.clone(), v.clone());
+    apply_cache_breakpoints(&mut system, &mut input);
+    for (k, v) in &cfg.extra_body {
+        fields.insert(k.clone(), v.clone());
+    }
+    Request {
+        fields,
+        system,
+        messages: input,
+    }
+}
+
+/// The request as owned data the serializer thread writes from
+/// ([`super::body::BodySource`]): the config, the tool specs and the round's
+/// messages, their pictures shared.
+pub struct RequestSource {
+    cfg: ModelConfig,
+    tools: Vec<Value>,
+    messages: Vec<ChatMessage>,
+}
+
+impl RequestSource {
+    #[must_use]
+    pub fn new(cfg: ModelConfig, tools: Vec<Value>, messages: Vec<ChatMessage>) -> Self {
+        Self {
+            cfg,
+            tools,
+            messages,
         }
     }
-    payload
+}
+
+impl super::body::BodySource for RequestSource {
+    fn write_to(&self, out: &mut dyn std::io::Write) -> serde_json::Result<()> {
+        serde_json::to_writer(out, &request(&self.cfg, &self.tools, &self.messages))
+    }
 }
 
 /// The request's `thinking` object for a mode.
@@ -133,6 +176,84 @@ pub fn thinking_body(mode: ThinkingMode) -> Value {
 }
 
 /// Split `messages` into the top-level `system` blocks and the `messages`
+/// array — as JSON trees, the tests' view of `blocks_of`.
+#[must_use]
+pub fn build_messages(messages: &[ChatMessage]) -> (Vec<Value>, Vec<Value>) {
+    let (system, input) = blocks_of(messages);
+    (
+        system
+            .iter()
+            .map(|block| serde_json::to_value(block).unwrap_or(Value::Null))
+            .collect(),
+        input
+            .iter()
+            .map(|message| serde_json::to_value(message).unwrap_or(Value::Null))
+            .collect(),
+    )
+}
+
+/// One content block of a Messages request. Every variant can carry the
+/// prompt-caching breakpoint ([`apply_cache_breakpoints`] marks whichever
+/// block comes last), and a block borrows the message it came from wherever
+/// it can — the picture's bytes always.
+#[derive(Debug, serde::Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum Block<'a> {
+    Text {
+        text: Cow<'a, str>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        cache_control: Option<CacheControl>,
+    },
+    Image {
+        source: Source<'a>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        cache_control: Option<CacheControl>,
+    },
+    ToolUse {
+        id: &'a str,
+        name: &'a str,
+        input: Value,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        cache_control: Option<CacheControl>,
+    },
+    ToolResult {
+        tool_use_id: &'a str,
+        content: Cow<'a, str>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        cache_control: Option<CacheControl>,
+    },
+}
+
+impl Block<'_> {
+    /// Put an ephemeral breakpoint on this block.
+    fn mark(&mut self) {
+        let slot = match self {
+            Block::Text { cache_control, .. }
+            | Block::Image { cache_control, .. }
+            | Block::ToolUse { cache_control, .. }
+            | Block::ToolResult { cache_control, .. } => cache_control,
+        };
+        *slot = Some(CacheControl::EPHEMERAL);
+    }
+}
+
+/// An `image` block's `source`: a `data:` URL **split** into its media type
+/// and payload — both slices of the shared encoding — or an `http(s)` URL.
+#[derive(Debug, serde::Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum Source<'a> {
+    Base64 { media_type: &'a str, data: &'a str },
+    Url { url: &'a str },
+}
+
+/// One `messages` entry: a role over its content blocks.
+#[derive(Debug, serde::Serialize)]
+struct Message<'a> {
+    role: &'static str,
+    content: Vec<Block<'a>>,
+}
+
+/// Split `messages` into the top-level `system` blocks and the `messages`
 /// array.
 ///
 /// System messages are **hoisted** (each its own text block, in order) —
@@ -140,31 +261,40 @@ pub fn thinking_body(mode: ThinkingMode) -> Value {
 /// folded into `user`/`assistant` messages, with **consecutive same-role
 /// messages merged**: a round's several `tool` results are one user message,
 /// not several.
-#[must_use]
-pub fn build_messages(messages: &[ChatMessage]) -> (Vec<Value>, Vec<Value>) {
-    let mut system: Vec<Value> = Vec::new();
-    let mut out: Vec<Value> = Vec::new();
+fn blocks_of(messages: &[ChatMessage]) -> (Vec<Block<'_>>, Vec<Message<'_>>) {
+    let mut system: Vec<Block<'_>> = Vec::new();
+    let mut out: Vec<Message<'_>> = Vec::new();
     for message in messages {
         match message.role.as_str() {
             "system" | "developer" => {
                 let text = flatten_text(&message.content);
                 if !text.is_empty() {
-                    system.push(json!({"type": "text", "text": text}));
+                    system.push(Block::Text {
+                        text,
+                        cache_control: None,
+                    });
                 }
             }
             "tool" => {
-                let block = json!({
-                    "type": "tool_result",
-                    "tool_use_id": message.tool_call_id.clone().unwrap_or_default(),
-                    "content": flatten_text(&message.content),
-                });
+                let block = Block::ToolResult {
+                    tool_use_id: message.tool_call_id.as_deref().unwrap_or(""),
+                    content: flatten_text(&message.content),
+                    cache_control: None,
+                };
                 push_block("user", block, &mut out);
             }
             "assistant" => {
                 // The text the model wrote, then the calls it made — the
                 // order they happened in, and the order the API expects.
                 if let Some(text) = non_empty(flatten_text(&message.content)) {
-                    push_block("assistant", json!({"type": "text", "text": text}), &mut out);
+                    push_block(
+                        "assistant",
+                        Block::Text {
+                            text,
+                            cache_control: None,
+                        },
+                        &mut out,
+                    );
                 }
                 for call in &message.tool_calls {
                     push_block("assistant", tool_use_block(call), &mut out);
@@ -184,95 +314,123 @@ pub fn build_messages(messages: &[ChatMessage]) -> (Vec<Value>, Vec<Value>) {
 /// in the Chat Completions currency and must arrive here as an **object**; a
 /// string that doesn't parse (a call the model truncated) degrades to `{}`
 /// rather than failing the whole request.
-fn tool_use_block(call: &super::ToolCallSpec) -> Value {
+fn tool_use_block(call: &super::ToolCallSpec) -> Block<'_> {
     let input = serde_json::from_str::<Value>(&call.function.arguments)
         .ok()
         .filter(Value::is_object)
         .unwrap_or_else(|| json!({}));
-    json!({
-        "type": "tool_use",
-        "id": call.id,
-        "name": call.function.name,
-        "input": input,
-    })
+    Block::ToolUse {
+        id: &call.id,
+        name: &call.function.name,
+        input,
+        cache_control: None,
+    }
 }
 
 /// Append `block` to the last message when it already has `role`, else open a
 /// new one. This is what merges a parallel batch's results into a single user
 /// message.
-fn push_block(role: &str, block: Value, out: &mut Vec<Value>) {
+fn push_block<'a>(role: &'static str, block: Block<'a>, out: &mut Vec<Message<'a>>) {
     if let Some(last) = out.last_mut()
-        && last.get("role").and_then(Value::as_str) == Some(role)
-        && let Some(content) = last.get_mut("content").and_then(Value::as_array_mut)
+        && last.role == role
     {
-        content.push(block);
+        last.content.push(block);
         return;
     }
-    out.push(json!({"role": role, "content": [block]}));
+    out.push(Message {
+        role,
+        content: vec![block],
+    });
 }
 
 /// A user-side message's content blocks. Text is a `text` block; an image is
 /// an `image` block whose `source` is the **split** `data:` URL — the media
 /// type and the payload are separate fields here, where Chat Completions
 /// carries one string.
-fn user_content(content: &MessageContent) -> Vec<Value> {
+fn user_content(content: &MessageContent) -> Vec<Block<'_>> {
     match content {
-        MessageContent::Text(text) => non_empty(text.clone())
-            .map(|text| vec![json!({"type": "text", "text": text})])
+        MessageContent::Text(text) => non_empty(Cow::Borrowed(text.as_str()))
+            .map(|text| {
+                vec![Block::Text {
+                    text,
+                    cache_control: None,
+                }]
+            })
             .unwrap_or_default(),
         MessageContent::Parts(parts) => parts
             .iter()
             .filter_map(|part| match part {
                 ContentPart::Text { text, .. } => {
-                    non_empty(text.clone()).map(|text| json!({"type": "text", "text": text}))
+                    non_empty(Cow::Borrowed(text.as_str())).map(|text| Block::Text {
+                        text,
+                        cache_control: None,
+                    })
                 }
-                ContentPart::ImageUrl { image_url } => image_block(&image_url.url),
+                ContentPart::ImageUrl { image_url } => {
+                    image_source(&image_url.url).map(|source| Block::Image {
+                        source,
+                        cache_control: None,
+                    })
+                }
             })
             .collect(),
     }
 }
 
-/// One `image` content block for a URL, or `None` for a value this API has no
-/// source shape for — dropping the part beats 400ing the whole turn over it.
-///
-/// A `data:` URL becomes a `base64` source (its media type and payload
-/// separated); an `http(s)` URL becomes a `url` source.
+/// One `image` content block for a URL as a JSON tree — the tests' view of
+/// `image_source` — or `None` for a value this API has no source shape
+/// for.
 #[must_use]
 pub fn image_block(url: &str) -> Option<Value> {
+    let block = Block::Image {
+        source: image_source(url)?,
+        cache_control: None,
+    };
+    Some(serde_json::to_value(block).unwrap_or(Value::Null))
+}
+
+/// An `image` block's source for a URL, or `None` for a value this API has
+/// no source shape for — dropping the part beats 400ing the whole turn over
+/// it.
+///
+/// A `data:` URL becomes a `base64` source (its media type and payload
+/// separated, both borrowed from the URL); an `http(s)` URL becomes a `url`
+/// source.
+fn image_source(url: &str) -> Option<Source<'_>> {
     if let Some(rest) = url.strip_prefix("data:") {
         let (media_type, data) = rest.split_once(";base64,")?;
         if media_type.is_empty() || data.is_empty() {
             return None;
         }
-        return Some(json!({
-            "type": "image",
-            "source": {"type": "base64", "media_type": media_type, "data": data},
-        }));
+        return Some(Source::Base64 { media_type, data });
     }
     if url.starts_with("https://") || url.starts_with("http://") {
-        return Some(json!({"type": "image", "source": {"type": "url", "url": url}}));
+        return Some(Source::Url { url });
     }
     None
 }
 
 /// A message's text, with any image parts dropped — what a `tool_result` and
-/// an assistant echo need.
-fn flatten_text(content: &MessageContent) -> String {
+/// an assistant echo need. Borrowed when the content is one string, joined
+/// (and so owned) when it is parts.
+fn flatten_text(content: &MessageContent) -> Cow<'_, str> {
     match content {
-        MessageContent::Text(text) => text.clone(),
-        MessageContent::Parts(parts) => parts
-            .iter()
-            .filter_map(|part| match part {
-                ContentPart::Text { text, .. } => Some(text.as_str()),
-                ContentPart::ImageUrl { .. } => None,
-            })
-            .collect::<Vec<_>>()
-            .join("\n"),
+        MessageContent::Text(text) => Cow::Borrowed(text.as_str()),
+        MessageContent::Parts(parts) => Cow::Owned(
+            parts
+                .iter()
+                .filter_map(|part| match part {
+                    ContentPart::Text { text, .. } => Some(text.as_str()),
+                    ContentPart::ImageUrl { .. } => None,
+                })
+                .collect::<Vec<_>>()
+                .join("\n"),
+        ),
     }
 }
 
 /// `Some(text)` when it carries anything — an empty text block is a 400 here.
-fn non_empty(text: String) -> Option<String> {
+fn non_empty(text: Cow<'_, str>) -> Option<Cow<'_, str>> {
     (!text.trim().is_empty()).then_some(text)
 }
 
@@ -300,7 +458,7 @@ pub fn anthropic_tools(tools: &[Value]) -> Vec<Value> {
         .collect()
 }
 
-/// Mark the built payload with up to three `cache_control` breakpoints —
+/// Mark the request with up to three `cache_control` breakpoints —
 /// [`super::cache`]'s placement rule, applied to this API's own shape rather
 /// than to a chat-completions `messages` array:
 ///
@@ -316,40 +474,18 @@ pub fn anthropic_tools(tools: &[Value]) -> Vec<Value> {
 /// own API caching is *always* explicit. The four-breakpoint ceiling is the
 /// same one [`super::cache::MAX_BREAKPOINTS`] states, and three is what this
 /// places by construction.
-pub fn apply_cache_breakpoints(payload: &mut Value) {
-    if let Some(system) = payload
-        .get_mut("system")
-        .and_then(Value::as_array_mut)
-        .and_then(|blocks| blocks.last_mut())
-    {
-        mark(system);
+fn apply_cache_breakpoints(system: &mut [Block<'_>], messages: &mut [Message<'_>]) {
+    if let Some(block) = system.last_mut() {
+        block.mark();
     }
-    let Some(messages) = payload.get_mut("messages").and_then(Value::as_array_mut) else {
-        return;
-    };
     let last = messages.len().checked_sub(1);
     // The newest user message *before* the frontier, so the two breakpoints
     // are never the same block.
-    let previous = last.and_then(|last| {
-        messages[..last]
-            .iter()
-            .rposition(|m| m.get("role").and_then(Value::as_str) == Some("user"))
-    });
+    let previous = last.and_then(|last| messages[..last].iter().rposition(|m| m.role == "user"));
     for index in [previous, last].into_iter().flatten() {
-        if let Some(block) = messages[index]
-            .get_mut("content")
-            .and_then(Value::as_array_mut)
-            .and_then(|blocks| blocks.last_mut())
-        {
-            mark(block);
+        if let Some(block) = messages[index].content.last_mut() {
+            block.mark();
         }
-    }
-}
-
-/// Put an ephemeral breakpoint on one content block.
-fn mark(block: &mut Value) {
-    if let Some(obj) = block.as_object_mut() {
-        obj.insert("cache_control".to_string(), json!({"type": "ephemeral"}));
     }
 }
 
@@ -1236,5 +1372,30 @@ mod tests {
             r#"{"type":"message_delta","delta":{"stop_reason":"refusal"},"usage":{"output_tokens":3}}"#,
         ]);
         assert_eq!(steps[1], Step::Continue, "the partial is the answer");
+    }
+
+    #[test]
+    fn the_request_borrows_a_pictures_bytes_rather_than_copying_them() {
+        // The whole point of the typed request (`docs/memory.md`): an image
+        // block's `data` is a slice of the session's one shared encoding.
+        let url = crate::llm::AttachmentUrl::from("data:image/png;base64,AAAA");
+        let messages_in = [ChatMessage::with_parts(
+            "user",
+            vec![ContentPart::text("look"), ContentPart::image(url.clone())],
+        )];
+        let (_, messages) = blocks_of(&messages_in);
+        let Block::Image {
+            source: Source::Base64 { data, media_type },
+            ..
+        } = &messages[0].content[1]
+        else {
+            panic!("an image block: {:?}", messages[0].content);
+        };
+        let payload = &url["data:image/png;base64,".len()..];
+        assert!(
+            std::ptr::eq(data.as_ptr(), payload.as_ptr()) && data.len() == payload.len(),
+            "the block points into the shared encoding"
+        );
+        assert_eq!(*media_type, "image/png");
     }
 }

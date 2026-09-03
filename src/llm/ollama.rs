@@ -28,6 +28,7 @@
 //! Pure and unit-tested — the HTTP lives in [`super::openai`] (the chat
 //! stream) and [`super::models`] (the catalog fetch).
 
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::net::IpAddr;
 
@@ -158,7 +159,9 @@ pub fn is_cloud_host(base: &str) -> bool {
 // The request body
 // ---------------------------------------------------------------------------
 
-/// Build the streamed `/api/chat` body for `messages`.
+/// Build the streamed `/api/chat` body for `messages` — as a JSON tree, the
+/// tests' view of the request. The wire streams a [`RequestSource`], which
+/// writes the same request from the messages **by reference**.
 ///
 /// The window rides as `options.num_ctx` and the temperature beside it; the
 /// tool specs pass through untouched (Ollama's schema *is* the Chat
@@ -168,16 +171,29 @@ pub fn is_cloud_host(base: &str) -> bool {
 /// without a stale `num_ctx` beside it overriding the gauge.
 #[must_use]
 pub fn build_payload(cfg: &ModelConfig, tools: &[Value], messages: &[ChatMessage]) -> Value {
-    let mut payload = json!({
-        "model": cfg.model,
-        "messages": build_messages(messages),
-        "stream": true,
-    });
+    serde_json::to_value(request(cfg, tools, messages)).unwrap_or(Value::Null)
+}
+
+/// The `/api/chat` request as it is serialized: the `messages` **borrowed
+/// from the conversation** — a picture's base64 is a slice of the session's
+/// one shared encoding, never a copy into a tree (`docs/memory.md`) — beside
+/// every other field in one small map.
+#[derive(serde::Serialize)]
+struct Request<'a> {
+    #[serde(flatten)]
+    fields: serde_json::Map<String, Value>,
+    messages: Vec<Message<'a>>,
+}
+
+fn request<'a>(cfg: &ModelConfig, tools: &[Value], messages: &'a [ChatMessage]) -> Request<'a> {
+    let mut fields = serde_json::Map::new();
+    fields.insert("model".to_string(), json!(cfg.model));
+    fields.insert("stream".to_string(), json!(true));
     if !tools.is_empty() {
-        payload["tools"] = json!(tools);
+        fields.insert("tools".to_string(), json!(tools));
     }
     if let Some(mode) = cfg.thinking {
-        payload["think"] = think_value(mode);
+        fields.insert("think".to_string(), think_value(mode));
     }
     let mut options = serde_json::Map::new();
     if let Some(window) = cfg.context {
@@ -186,23 +202,50 @@ pub fn build_payload(cfg: &ModelConfig, tools: &[Value], messages: &[ChatMessage
     if let Some(temperature) = cfg.temperature {
         options.insert("temperature".to_string(), json!(temperature));
     }
-    if let Some(obj) = payload.as_object_mut() {
-        for (key, value) in &cfg.extra_body {
-            if key == "options" {
-                if let Some(table) = value.as_object() {
-                    for (k, v) in table {
-                        options.entry(k.clone()).or_insert_with(|| v.clone());
-                    }
+    for (key, value) in &cfg.extra_body {
+        if key == "options" {
+            if let Some(table) = value.as_object() {
+                for (k, v) in table {
+                    options.entry(k.clone()).or_insert_with(|| v.clone());
                 }
-                continue;
             }
-            obj.insert(key.clone(), value.clone());
+            continue;
         }
+        fields.insert(key.clone(), value.clone());
     }
     if !options.is_empty() {
-        payload["options"] = Value::Object(options);
+        fields.insert("options".to_string(), Value::Object(options));
     }
-    payload
+    Request {
+        fields,
+        messages: messages_of(messages),
+    }
+}
+
+/// The request as owned data the serializer thread writes from
+/// ([`super::body::BodySource`]): the config, the tool specs and the round's
+/// messages, their pictures shared.
+pub struct RequestSource {
+    cfg: ModelConfig,
+    tools: Vec<Value>,
+    messages: Vec<ChatMessage>,
+}
+
+impl RequestSource {
+    #[must_use]
+    pub fn new(cfg: ModelConfig, tools: Vec<Value>, messages: Vec<ChatMessage>) -> Self {
+        Self {
+            cfg,
+            tools,
+            messages,
+        }
+    }
+}
+
+impl super::body::BodySource for RequestSource {
+    fn write_to(&self, out: &mut dyn std::io::Write) -> serde_json::Result<()> {
+        serde_json::to_writer(out, &request(&self.cfg, &self.tools, &self.messages))
+    }
 }
 
 /// The request's `think` field for a mode: a bool for the on/off reasoners
@@ -233,45 +276,77 @@ pub const fn think_level(effort: ReasoningEffort) -> &'static str {
     }
 }
 
+/// The `messages` array as JSON trees — the tests' view of `messages_of`.
+#[must_use]
+pub fn build_messages(messages: &[ChatMessage]) -> Vec<Value> {
+    messages_of(messages)
+        .iter()
+        .map(|message| serde_json::to_value(message).unwrap_or(Value::Null))
+        .collect()
+}
+
+/// One `messages` entry, borrowed from the conversation: the role and text
+/// every message has, the call id and tool name a result names, the calls
+/// an assistant made, and the bare base64 of a user message's pictures.
+#[derive(Debug, serde::Serialize)]
+struct Message<'a> {
+    role: &'a str,
+    content: Cow<'a, str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_call_id: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_name: Option<&'a str>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    tool_calls: Vec<Value>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    images: Vec<&'a str>,
+}
+
+impl<'a> Message<'a> {
+    fn plain(role: &'a str, content: Cow<'a, str>) -> Self {
+        Self {
+            role,
+            content,
+            tool_call_id: None,
+            tool_name: None,
+            tool_calls: Vec::new(),
+            images: Vec::new(),
+        }
+    }
+}
+
 /// The `messages` array. System and user messages keep their roles; an
 /// image part becomes the message's `images` array of bare base64; an
 /// assistant call carries its `arguments` as an **object** (a string is a
 /// 400 here); and a tool result names the tool it answers, read off the
 /// assistant call seen earlier in the same list.
-#[must_use]
-pub fn build_messages(messages: &[ChatMessage]) -> Vec<Value> {
-    let mut names: BTreeMap<String, String> = BTreeMap::new();
+fn messages_of(messages: &[ChatMessage]) -> Vec<Message<'_>> {
+    let mut names: BTreeMap<&str, &str> = BTreeMap::new();
     let mut out = Vec::with_capacity(messages.len());
     for message in messages {
         out.push(match message.role.as_str() {
-            "system" | "developer" => {
-                json!({"role": "system", "content": flatten_text(&message.content)})
-            }
+            "system" | "developer" => Message::plain("system", flatten_text(&message.content)),
             "tool" => {
-                let mut result = json!({"role": "tool", "content": flatten_text(&message.content)});
-                if let Some(id) = &message.tool_call_id {
-                    result["tool_call_id"] = json!(id);
-                    if let Some(name) = names.get(id) {
-                        result["tool_name"] = json!(name);
-                    }
+                let id = message.tool_call_id.as_deref();
+                Message {
+                    tool_call_id: id,
+                    tool_name: id.and_then(|id| names.get(id).copied()),
+                    ..Message::plain("tool", flatten_text(&message.content))
                 }
-                result
             }
             "assistant" => {
-                let mut turn =
-                    json!({"role": "assistant", "content": flatten_text(&message.content)});
-                if !message.tool_calls.is_empty() {
-                    let calls: Vec<Value> = message
-                        .tool_calls
-                        .iter()
-                        .map(|call| {
-                            names.insert(call.id.clone(), call.function.name.clone());
-                            tool_call_value(call)
-                        })
-                        .collect();
-                    turn["tool_calls"] = json!(calls);
+                let calls: Vec<Value> = message
+                    .tool_calls
+                    .iter()
+                    .map(|call| {
+                        names.insert(&call.id, &call.function.name);
+                        tool_call_value(call)
+                    })
+                    .collect();
+                Message {
+                    tool_calls: calls,
+                    ..Message::plain("assistant", flatten_text(&message.content))
                 }
-                turn
             }
             role => user_message(role, &message.content),
         });
@@ -297,25 +372,22 @@ fn tool_call_value(call: &super::ToolCallSpec) -> Value {
 
 /// A user-side message: plain text as-is; a parts message flattened to its
 /// text with the images split off into `images` — the payload of each
-/// `data:` URL, no prefix, no media type. A URL that is not a `data:` one
-/// has no pixels to send and is dropped rather than 400ing the turn.
-fn user_message(role: &str, content: &MessageContent) -> Value {
+/// `data:` URL, no prefix, no media type, a slice of the shared encoding. A
+/// URL that is not a `data:` one has no pixels to send and is dropped rather
+/// than 400ing the turn.
+fn user_message<'a>(role: &'a str, content: &'a MessageContent) -> Message<'a> {
     match content {
-        MessageContent::Text(text) => json!({"role": role, "content": text}),
-        MessageContent::Parts(parts) => {
-            let mut out = json!({"role": role, "content": flatten_text(content)});
-            let images: Vec<&str> = parts
+        MessageContent::Text(text) => Message::plain(role, Cow::Borrowed(text.as_str())),
+        MessageContent::Parts(parts) => Message {
+            images: parts
                 .iter()
                 .filter_map(|part| match part {
                     ContentPart::ImageUrl { image_url } => base64_payload(&image_url.url),
                     ContentPart::Text { .. } => None,
                 })
-                .collect();
-            if !images.is_empty() {
-                out["images"] = json!(images);
-            }
-            out
-        }
+                .collect(),
+            ..Message::plain(role, flatten_text(content))
+        },
     }
 }
 
@@ -326,18 +398,21 @@ fn base64_payload(url: &str) -> Option<&str> {
     (!payload.is_empty()).then_some(payload)
 }
 
-/// A message's text, with any image parts dropped.
-fn flatten_text(content: &MessageContent) -> String {
+/// A message's text, with any image parts dropped. Borrowed when the
+/// content is one string, joined (and so owned) when it is parts.
+fn flatten_text(content: &MessageContent) -> Cow<'_, str> {
     match content {
-        MessageContent::Text(text) => text.clone(),
-        MessageContent::Parts(parts) => parts
-            .iter()
-            .filter_map(|part| match part {
-                ContentPart::Text { text, .. } => Some(text.as_str()),
-                ContentPart::ImageUrl { .. } => None,
-            })
-            .collect::<Vec<_>>()
-            .join("\n"),
+        MessageContent::Text(text) => Cow::Borrowed(text.as_str()),
+        MessageContent::Parts(parts) => Cow::Owned(
+            parts
+                .iter()
+                .filter_map(|part| match part {
+                    ContentPart::Text { text, .. } => Some(text.as_str()),
+                    ContentPart::ImageUrl { .. } => None,
+                })
+                .collect::<Vec<_>>()
+                .join("\n"),
+        ),
     }
 }
 
@@ -1572,6 +1647,24 @@ mod tests {
             connection_advice("http://127.0.0.1:11434", "operation timed out"),
             None,
             "only a refusal is the server being down"
+        );
+    }
+
+    #[test]
+    fn the_request_borrows_a_pictures_bytes_rather_than_copying_them() {
+        // The whole point of the typed request (`docs/memory.md`): a
+        // message's `images` entry is a slice of the shared encoding.
+        let url = crate::llm::AttachmentUrl::from("data:image/png;base64,AAAA");
+        let messages_in = [ChatMessage::with_parts(
+            "user",
+            vec![ContentPart::text("look"), ContentPart::image(url.clone())],
+        )];
+        let messages = messages_of(&messages_in);
+        let payload = &url["data:image/png;base64,".len()..];
+        let image = messages[0].images[0];
+        assert!(
+            std::ptr::eq(image.as_ptr(), payload.as_ptr()) && image.len() == payload.len(),
+            "the entry points into the shared encoding"
         );
     }
 }

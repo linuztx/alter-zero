@@ -13,6 +13,7 @@ use std::time::Duration;
 use serde::Deserialize;
 use serde_json::json;
 
+use super::body::{BodyReader, BodySource, streamed_request};
 use super::config::ModelConfig;
 use super::thinking::ThinkingSplitter;
 use super::tools::ToolCallRequest;
@@ -153,22 +154,6 @@ impl OpenAiClient {
         }
     }
 
-    /// This request's body, in whichever wire format the provider speaks.
-    fn request_payload(&self, messages: &[ChatMessage]) -> serde_json::Value {
-        match self.cfg.wire_api {
-            super::WireApi::Responses => {
-                super::responses::build_payload(&self.cfg, &self.tools, messages)
-            }
-            super::WireApi::Anthropic => {
-                super::anthropic::build_payload(&self.cfg, &self.tools, messages)
-            }
-            super::WireApi::Ollama => {
-                super::ollama::build_payload(&self.cfg, &self.tools, messages)
-            }
-            super::WireApi::Chat => self.build_payload(messages),
-        }
-    }
-
     /// The streamed request body as a JSON tree — `chat_request` serialized
     /// whole. The **tests'** view of the request; the wire takes
     /// [`request_stream`](Self::request_stream), which never builds this tree.
@@ -302,11 +287,14 @@ impl OpenAiClient {
     /// provider speaks, with the byte count the `Content-Length` header
     /// carries: a serializer thread writes the JSON into a bounded pipe of
     /// small chunks and the transport reads it out as it uploads
-    /// ([`streamed_request`]). A body carrying a picture is never held whole
-    /// — not built, not buffered, not freed behind the send — which is what
-    /// keeps a turn from allocating anything picture-sized at all
-    /// (`docs/memory.md`). `messages` is taken by value: the round's copy of
-    /// the conversation, its pictures shared, moves to that thread.
+    /// ([`streamed_request`]). Every wire writes its request from the
+    /// messages **by reference** — a picture's base64 is the session's one
+    /// shared encoding, borrowed — so a body carrying a picture is never held
+    /// whole and never copied: not built, not buffered, not freed behind the
+    /// send, which is what keeps a turn from allocating anything
+    /// picture-sized at all (`docs/memory.md`). `messages` is taken by
+    /// value: the round's copy of the conversation, its pictures shared,
+    /// moves to that thread.
     ///
     /// # Errors
     /// A message that can't be serialized — which no [`ChatMessage`] is.
@@ -315,7 +303,21 @@ impl OpenAiClient {
             super::WireApi::Chat => {
                 streamed_request(self.chat_request(Cow::Owned(messages)).into_owned())
             }
-            _ => streamed_request(self.request_payload(&messages)),
+            super::WireApi::Responses => streamed_request(super::responses::RequestSource::new(
+                self.cfg.clone(),
+                self.tools.clone(),
+                messages,
+            )),
+            super::WireApi::Anthropic => streamed_request(super::anthropic::RequestSource::new(
+                self.cfg.clone(),
+                self.tools.clone(),
+                messages,
+            )),
+            super::WireApi::Ollama => streamed_request(super::ollama::RequestSource::new(
+                self.cfg.clone(),
+                self.tools.clone(),
+                messages,
+            )),
         }
     }
 
@@ -511,136 +513,9 @@ impl ChatRequest<'_> {
     }
 }
 
-/// How many bytes a serialized `value` is — a counting pass over the output
-/// that allocates nothing, so the `Content-Length` of a streamed body is
-/// known before a byte of it exists. A second walk over the text, a few
-/// milliseconds on the largest body this app sends.
-///
-/// # Errors
-/// A value that can't be serialized.
-pub fn serialized_len<T: serde::Serialize + ?Sized>(value: &T) -> Result<usize> {
-    struct Counter(usize);
-    impl std::io::Write for Counter {
-        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-            self.0 += buf.len();
-            Ok(buf.len())
-        }
-        fn flush(&mut self) -> std::io::Result<()> {
-            Ok(())
-        }
-    }
-    let mut counter = Counter(0);
-    serde_json::to_writer(&mut counter, value)
-        .map_err(|e| LlmError::Http(format!("could not encode the request: {e}")))?;
-    Ok(counter.0)
-}
-
-/// How much of a streamed body is in flight at once: the chunk a serializer
-/// thread hands over, times the pipe's depth. Kilobytes, whatever the body
-/// weighs.
-pub const BODY_CHUNK_BYTES: usize = 64 * 1024;
-
-/// How many chunks the body pipe holds before the serializer waits for the
-/// transport to catch up.
-const BODY_PIPE_DEPTH: usize = 4;
-
-/// `value` serialized **as it is uploaded**: the JSON is written by its own
-/// thread into a bounded pipe of [`BODY_CHUNK_BYTES`] chunks, and the
-/// [`BodyReader`] the transport pumps takes them out the other end. The whole
-/// body exists nowhere — not as the `Vec` `reqwest`'s `.json()` builds
-/// (grown by doubling, and freed behind the send into an arena that keeps
-/// it), so a request carrying a picture costs the process kilobytes rather
-/// than the picture again per round (`docs/memory.md`). The byte count comes
-/// from a counting pass first ([`serialized_len`]), so the request is
-/// `Content-Length`-framed like the buffered form was.
-///
-/// A reader dropped early — an Esc that ended the transport — breaks the
-/// pipe, and the serializer thread ends on its next write.
-///
-/// # Errors
-/// A value that can't be serialized (the counting pass finds out first).
-pub fn streamed_request<T: serde::Serialize + Send + 'static>(
-    value: T,
-) -> Result<(BodyReader, u64)> {
-    let len = serialized_len(&value)?;
-    let (tx, rx) = std::sync::mpsc::sync_channel(BODY_PIPE_DEPTH);
-    std::thread::spawn(move || {
-        let mut writer = PipeWriter {
-            tx,
-            buf: Vec::with_capacity(BODY_CHUNK_BYTES),
-        };
-        if serde_json::to_writer(&mut writer, &value).is_ok() {
-            let _ = std::io::Write::flush(&mut writer);
-        }
-    });
-    Ok((
-        BodyReader {
-            rx,
-            current: Vec::new(),
-            pos: 0,
-        },
-        len as u64,
-    ))
-}
-
-/// The serializer's end of the body pipe: fills one chunk and hands it over.
-struct PipeWriter {
-    tx: std::sync::mpsc::SyncSender<Vec<u8>>,
-    buf: Vec<u8>,
-}
-
-impl PipeWriter {
-    fn hand_over(&mut self) -> std::io::Result<()> {
-        let chunk = std::mem::replace(&mut self.buf, Vec::with_capacity(BODY_CHUNK_BYTES));
-        self.tx
-            .send(chunk)
-            .map_err(|_| std::io::Error::from(std::io::ErrorKind::BrokenPipe))
-    }
-}
-
-impl std::io::Write for PipeWriter {
-    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-        // Fill the chunk to its size and no further, so a chunk never grows
-        // past [`BODY_CHUNK_BYTES`] however long one serialized string is.
-        let room = BODY_CHUNK_BYTES - self.buf.len();
-        let take = bytes.len().min(room);
-        self.buf.extend_from_slice(&bytes[..take]);
-        if self.buf.len() >= BODY_CHUNK_BYTES {
-            self.hand_over()?;
-        }
-        Ok(take)
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        if self.buf.is_empty() {
-            return Ok(());
-        }
-        self.hand_over()
-    }
-}
-
-/// The transport's end of the body pipe — the `Read` a
-/// [`reqwest::blocking::Body::sized`] pumps in its own small reads.
-pub struct BodyReader {
-    rx: std::sync::mpsc::Receiver<Vec<u8>>,
-    current: Vec<u8>,
-    pos: usize,
-}
-
-impl Read for BodyReader {
-    fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
-        if self.pos >= self.current.len() {
-            // The serializer dropping its end — done, or gone — is EOF.
-            let Ok(next) = self.rx.recv() else {
-                return Ok(0);
-            };
-            self.current = next;
-            self.pos = 0;
-        }
-        let n = out.len().min(self.current.len() - self.pos);
-        out[..n].copy_from_slice(&self.current[self.pos..self.pos + n]);
-        self.pos += n;
-        Ok(n)
+impl BodySource for ChatRequest<'static> {
+    fn write_to(&self, out: &mut dyn std::io::Write) -> serde_json::Result<()> {
+        serde_json::to_writer(out, self)
     }
 }
 
@@ -2520,17 +2395,7 @@ mod body_tests {
         ]
     }
 
-    /// Everything the stream yields, read the way the transport reads it.
-    fn drain(mut body: BodyReader) -> Vec<u8> {
-        let mut out = Vec::new();
-        let mut buf = [0u8; 8192];
-        loop {
-            match body.read(&mut buf).expect("reads") {
-                0 => return out,
-                n => out.extend_from_slice(&buf[..n]),
-            }
-        }
-    }
+    use crate::llm::body::drain;
 
     #[test]
     fn the_streamed_body_is_the_payload_serialized_without_a_tree_of_the_messages() {
@@ -2577,43 +2442,5 @@ mod body_tests {
             messages[0].content == MessageContent::Text("persona".into()),
             "the caller's messages are untouched"
         );
-    }
-
-    #[test]
-    fn the_body_pipe_hands_over_bounded_chunks_and_the_declared_length() {
-        // A body several chunks long: what the reader yields is the exact
-        // serialization, no read ever spans more than one chunk, and the
-        // count the header carries matches.
-        let value = json!({"a": [1, 2, 3], "picture": "x".repeat(3 * BODY_CHUNK_BYTES + 17)});
-        let expected = serde_json::to_vec(&value).unwrap();
-        assert_eq!(serialized_len(&value).unwrap(), expected.len());
-        let (mut body, len) = streamed_request(value).expect("streams");
-        assert_eq!(len as usize, expected.len());
-        let mut out = Vec::new();
-        let mut buf = vec![0u8; 4 * BODY_CHUNK_BYTES];
-        loop {
-            match body.read(&mut buf).unwrap() {
-                0 => break,
-                n => {
-                    assert!(n <= BODY_CHUNK_BYTES, "a read of {n} bytes spans chunks");
-                    out.extend_from_slice(&buf[..n]);
-                }
-            }
-        }
-        assert_eq!(out, expected);
-    }
-
-    #[test]
-    fn a_reader_dropped_early_ends_the_serializer_quietly() {
-        // An Esc that ends the transport drops its end of the pipe; the
-        // serializer thread must finish rather than block forever on a full
-        // pipe.
-        let value = json!({"picture": "x".repeat(64 * BODY_CHUNK_BYTES)});
-        let (body, _) = streamed_request(value).expect("streams");
-        drop(body);
-        // Nothing to assert but that this test returns: a wedged writer
-        // would leave a thread parked, not a failure — so give it a moment
-        // and count the threads that are still ours.
-        std::thread::sleep(std::time::Duration::from_millis(50));
     }
 }

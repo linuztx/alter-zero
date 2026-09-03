@@ -407,14 +407,22 @@ every turn.
   swept at every turn start to the pictures the context still carries
   (`retain_attachments`; a `/clear` empties it) so a backtracked or compacted
   picture lets its megabytes go.
-- **No tree of the messages, ever.** The Chat request is `ChatRequest`, the
-  messages **by reference** beside a small map of every other field, and
-  the prompt-caching breakpoints mark a shallow typed copy
-  (`cache::apply_cache_breakpoints` over `ChatMessage`s, `docs/prompt-caching.md`)
-  instead of rewriting a JSON tree; `build_payload` — the tree — is now the
-  tests' view of the request and nothing the wire builds.
-- **The body is never held whole.** `openai::streamed_request` serializes
-  the request on its own thread into a bounded pipe of 64 KB chunks
+- **No tree of the messages, ever — on any wire.** The Chat request is
+  `ChatRequest`, the messages **by reference** beside a small map of every
+  other field, and the prompt-caching breakpoints mark a shallow typed copy
+  (`cache::apply_cache_breakpoints` over `ChatMessage`s,
+  `docs/prompt-caching.md`) instead of rewriting a JSON tree. The three
+  translated wires — Anthropic's Messages API, OpenAI's Responses API,
+  Ollama's `/api/chat` — build typed requests too, every block, item and
+  message **borrowing** from the conversation, so an image block's base64 is
+  a slice of the shared encoding rather than a `Value::String` copy of it
+  (each module's `the_request_borrows_a_pictures_bytes_rather_than_copying_them`
+  pins the pointer). `build_payload` — the tree — is now the tests' view of
+  a request on every wire and nothing the wire builds.
+- **The body is never held whole.** `llm::body::streamed_request` takes
+  each wire's request as a `BodySource` — owned data that writes its typed,
+  borrowed form — and serializes it on its own thread into a bounded pipe of
+  64 KB chunks
   (`BODY_CHUNK_BYTES`, four deep) that the transport pumps as it uploads,
   the `Content-Length` known from a counting pass that allocates nothing.
   An intermediate version serialized into a buffer sized **exactly once**
@@ -472,7 +480,7 @@ bytes.
 
 And a third for the request: **never allocate anything picture-sized per
 turn.** An attachment is encoded once and shared (`images::attachment`), the
-request is serialized from the messages by reference, and the body leaves the
-process through a pipe of small chunks rather than as a buffer
-(`openai::streamed_request`). A block that size, asked for every turn on a
+request is serialized from the messages by reference on every wire, and the
+body leaves the process through a pipe of small chunks rather than as a buffer
+(`llm::body::streamed_request`). A block that size, asked for every turn on a
 fresh thread, is a block glibc will keep in some arena sooner or later.

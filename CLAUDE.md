@@ -474,12 +474,14 @@ once per session** (`images::attachment` — the base64 `data:` URL streamed
 from the sidecar or the file into the one string the session keeps, handed
 to every later request by reference as `AttachmentUrl`, bounded at
 `ATTACHMENT_CACHE_MAX_BYTES`, swept at each turn start to the pictures the
-context still carries; the Chat request is then serialized **from the
-messages by reference, straight into the upload** — `openai::ChatRequest`
-written by a serializer thread into a bounded pipe of 64 KB chunks that the
-transport pumps (`streamed_request`, the `Content-Length` from a counting
-pass), never as a `Value` tree of the conversation and never as a
-whole-body buffer, the cache breakpoints marking a shallow typed copy —
+context still carries; the request is then serialized **from the
+messages by reference, straight into the upload** on every wire —
+`openai::ChatRequest`, and the Messages/Responses/`/api/chat` translations'
+typed borrowed requests, each a `llm::body::BodySource` written by a
+serializer thread into a bounded pipe of 64 KB chunks that the transport
+pumps (`streamed_request`, the `Content-Length` from a counting pass), never
+as a `Value` tree of the conversation and never as a whole-body buffer, the
+cache breakpoints marking a shallow typed copy —
 because every turn used to re-read the paste, re-encode it, copy it into a
 tree and grow the body by doubling, five picture-sized blocks a round that
 glibc's arenas kept, +14 MB whenever a turn landed on a new one, and even
@@ -2336,9 +2338,10 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   turn** — an attachment is encoded once per session and shared
   (`images::attachment`, `AttachmentUrl`), and the request body is
   serialized from the messages by reference **as it uploads**, through a
-  pipe of small chunks (`openai::streamed_request`) — never built whole; a
-  change that rebuilds the conversation as a `Value` per round, clones a
-  `data:` URL into a `String`, or buffers the body is the wrong change,
+  pipe of small chunks (`llm::body::streamed_request`, every wire's request
+  a typed, borrowing `BodySource`) — never built whole; a change that
+  rebuilds the conversation as a `Value` per round, clones a `data:` URL
+  into a `String`, or buffers the body is the wrong change,
   because each such block lands on a thread arena's heap and stays (an
   exactly-sized body freed per round measured a body's worth per arena) —
   which read as "RAM grows every message" (`tests/image_turn_memory.rs`
