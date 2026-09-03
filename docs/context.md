@@ -100,8 +100,9 @@ validating provider rejects arguments that are not a JSON object.
 An **image `read`** (detected from the stored record: `name == "Read"` + the
 `Read image ` output marker) additionally replays the follow-up user note the
 live loop attached — `llm::tools::image_attachment_note` over the path as an
-`images` attachment — so later turns keep *seeing* the image, re-encoded per
-request like a Ctrl+V paste (`docs/tools.md`).
+`images` attachment — so later turns keep *seeing* the image, served from the
+session's one shared encoding like a Ctrl+V paste (`docs/tools.md`,
+`docs/memory.md`).
 
 ### The result the model read, not the cell it saw
 

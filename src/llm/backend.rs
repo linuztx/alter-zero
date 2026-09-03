@@ -24,6 +24,7 @@ use super::{ChatMessage, ContentPart, LlmError, ToolCallSpec};
 use crate::agents::{AgentEvent, AgentRegistry};
 use crate::ask::AskGate;
 use crate::context::ContextMessage;
+use crate::images::AttachmentUrl;
 use crate::permission::PermissionGate;
 use crate::steer::SteerQueue;
 use crate::stream::{
@@ -529,8 +530,10 @@ pub fn os_release_name(contents: &str) -> Option<String> {
 /// then the whole conversation context in order — the multi-turn memory (see
 /// `docs/context.md`). A context message with image attachments becomes the
 /// multimodal parts form, each attachment encoded to a `data:` URL by
-/// `encode_image` (the injected I/O seam — `image_data_url` in production,
-/// a fake in tests, keeping this pure). An attachment that fails to encode
+/// `encode_image` (the injected I/O seam —
+/// [`crate::images::attachment_data_url`] in production, the session's one
+/// shared encoding of each picture; a fake in tests, keeping this pure). An
+/// attachment that fails to encode
 /// (its temp file may have been cleaned away) is noted in the text instead of
 /// being dropped silently. Should the context ever be empty, the bare
 /// `prompt` is sent so the request is never user-less.
@@ -538,11 +541,11 @@ pub fn os_release_name(contents: &str) -> Option<String> {
 /// Equivalent to [`build_messages_for`] with unknown vision (attach
 /// optimistically) — the shape every pre-vision-detection caller used.
 #[must_use]
-pub fn build_messages(
+pub fn build_messages<U: Into<AttachmentUrl>>(
     system_prompt: Option<&str>,
     prompt: &str,
     context: &[ContextMessage],
-    encode_image: impl Fn(&Path) -> Option<String>,
+    encode_image: impl Fn(&Path) -> Option<U>,
 ) -> Vec<ChatMessage> {
     build_messages_for(None, system_prompt, prompt, context, encode_image)
 }
@@ -555,12 +558,12 @@ pub fn build_messages(
 /// "No endpoints found that support image input"). `Some(true)`/`None`
 /// attach exactly as before. See `docs/tools.md`.
 #[must_use]
-pub fn build_messages_for(
+pub fn build_messages_for<U: Into<AttachmentUrl>>(
     vision: Option<bool>,
     system_prompt: Option<&str>,
     prompt: &str,
     context: &[ContextMessage],
-    encode_image: impl Fn(&Path) -> Option<String>,
+    encode_image: impl Fn(&Path) -> Option<U>,
 ) -> Vec<ChatMessage> {
     let mut messages = Vec::new();
     if let Some(sys) = system_prompt {
@@ -580,10 +583,10 @@ pub fn build_messages_for(
 /// imageless, or the multimodal parts array when attachments encode — unless
 /// the model is a known non-vision one, in which case attachments become
 /// `[image omitted: …]` text notes (see [`build_messages_for`]).
-fn chat_message(
+fn chat_message<U: Into<AttachmentUrl>>(
     message: &ContextMessage,
     vision: Option<bool>,
-    encode_image: &impl Fn(&Path) -> Option<String>,
+    encode_image: &impl Fn(&Path) -> Option<U>,
 ) -> ChatMessage {
     let role = message.role.wire_name();
     // A tool result carries its call id; an assistant entry may carry the native
@@ -640,82 +643,6 @@ fn chat_message(
     ChatMessage::with_parts(role, parts)
 }
 
-/// Read an attached image and embed it as a base64 `data:` URL — the OpenAI
-/// vision shape. Boundary code (file I/O); `None` when the file is unreadable,
-/// which [`chat_message`] surfaces as a text note.
-fn image_data_url(path: &Path) -> Option<String> {
-    let mime = image_mime(path);
-    let format = image_format(mime);
-    // `/settings` **Auto-resize images**: a retina screenshot is several
-    // megabytes of base64 on every turn it stays in context, so it is
-    // downscaled on the way out — the temp file itself, and so the picture
-    // drawn in the conversation, is untouched (`docs/images.md`). The
-    // downscaled copy is kept on disk for the session, so a turn that
-    // re-sends an earlier attachment reads that small file and never opens
-    // the original — building it fresh each turn was a decode-and-shrink of
-    // the whole picture per image per request (`docs/memory.md`).
-    if let Some(format) = format
-        && let Some(small) = crate::images::cached_downscale(path, format)
-    {
-        return Some(data_url(&small.bytes, payload_mime(small.format)));
-    }
-    let bytes = std::fs::read(path).ok()?;
-    let sent =
-        format.and_then(|format| crate::images::downscale_for_model_at(path, &bytes, format));
-    let (payload, mime) = match &sent {
-        Some(small) => (small.bytes.as_slice(), payload_mime(small.format)),
-        None => (bytes.as_slice(), mime),
-    };
-    Some(data_url(payload, mime))
-}
-
-/// The base64 `data:` URL for an image payload — the prefix first, the
-/// encoding appended onto it, so a multi-megabyte attachment is one
-/// allocation rather than an encoded string copied into a second one
-/// (`docs/memory.md`).
-fn data_url(payload: &[u8], mime: &str) -> String {
-    let mut url = format!("data:{mime};base64,");
-    crate::clipboard::base64_encode_into(payload, &mut url);
-    url
-}
-
-/// The MIME a downscaled payload is sent under — the two formats the
-/// re-encoder writes.
-fn payload_mime(format: image::ImageFormat) -> &'static str {
-    match format {
-        image::ImageFormat::Jpeg => "image/jpeg",
-        _ => "image/png",
-    }
-}
-
-/// The decoder for an attachment's MIME — the inverse of [`image_mime`],
-/// `None` for anything this build cannot re-encode.
-fn image_format(mime: &str) -> Option<image::ImageFormat> {
-    match mime {
-        "image/jpeg" => Some(image::ImageFormat::Jpeg),
-        "image/png" => Some(image::ImageFormat::Png),
-        "image/gif" => Some(image::ImageFormat::Gif),
-        "image/webp" => Some(image::ImageFormat::WebP),
-        _ => None,
-    }
-}
-
-/// The MIME type for an attachment path, by extension. The clipboard paste
-/// only ever writes the accepted formats (`docs/image-paste.md`); PNG — its
-/// transcode target — is the default.
-fn image_mime(path: &Path) -> &'static str {
-    let ext = path
-        .extension()
-        .and_then(|e| e.to_str())
-        .map(str::to_ascii_lowercase);
-    match ext.as_deref() {
-        Some("jpg" | "jpeg") => "image/jpeg",
-        Some("gif") => "image/gif",
-        Some("webp") => "image/webp",
-        _ => "image/png",
-    }
-}
-
 impl ReplySource for LlmBackend {
     fn spawn(
         &self,
@@ -750,8 +677,23 @@ impl ReplySource for LlmBackend {
             // thread so a large image never stalls the event loop. A known
             // non-vision model gets omission notes instead of parts
             // (docs/tools.md).
-            let mut messages =
-                build_messages_for(vision, system.as_deref(), &prompt, &context, image_data_url);
+            // The pictures this context carries are the ones the session
+            // keeps encoded for the wire; every other — a backtracked paste,
+            // one `/compact` left behind — is let go here, and each of these
+            // is encoded on the first turn that sends it and shared by every
+            // turn after (`docs/memory.md`).
+            let carried: Vec<&Path> = context
+                .iter()
+                .flat_map(|message| message.images.iter().map(PathBuf::as_path))
+                .collect();
+            crate::images::retain_attachments(&carried);
+            let mut messages = build_messages_for(
+                vision,
+                system.as_deref(),
+                &prompt,
+                &context,
+                crate::images::attachment_data_url,
+            );
             // The turn's opening hooks (docs/hooks.md): the SessionStart
             // drain, then UserPromptSubmit — here on the backend thread, the
             // codex placement, so nothing ever blocks the loop or the first
@@ -1960,28 +1902,6 @@ mod tests {
                 ContentPart::image("data:image/png;base64,OK"),
             ])
         );
-    }
-
-    #[test]
-    fn image_mime_maps_the_accepted_extensions() {
-        assert_eq!(image_mime(Path::new("a.png")), "image/png");
-        assert_eq!(image_mime(Path::new("a.JPG")), "image/jpeg");
-        assert_eq!(image_mime(Path::new("a.jpeg")), "image/jpeg");
-        assert_eq!(image_mime(Path::new("a.gif")), "image/gif");
-        assert_eq!(image_mime(Path::new("a.webp")), "image/webp");
-        assert_eq!(image_mime(Path::new("no-extension")), "image/png");
-    }
-
-    #[test]
-    fn image_data_url_embeds_the_file_as_base64() {
-        // The one boundary helper, exercised with a real temp file.
-        let dir = std::env::temp_dir();
-        let path = dir.join("alter-zero-test-image-data-url.png");
-        std::fs::write(&path, b"foobar").unwrap();
-        let url = image_data_url(&path).expect("readable file encodes");
-        std::fs::remove_file(&path).ok();
-        assert_eq!(url, "data:image/png;base64,Zm9vYmFy");
-        assert!(image_data_url(Path::new("/definitely/not/here.png")).is_none());
     }
 
     #[test]

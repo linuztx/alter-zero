@@ -43,9 +43,13 @@ OpenAI-compatible providers split in two:
 The pure [`llm::cache`](../src/llm/cache.rs) module owns the split:
 `needs_cache_breakpoints(model)` is true for the namespaced `anthropic/…` and
 `qwen/…` ids (the OpenRouter form; everything else stays untouched), and
-`apply_cache_breakpoints(messages)` rewrites the wire `messages` JSON — after
-serialization, so the `ChatMessage` types and every other provider's payload
-stay byte-identical.
+`apply_cache_breakpoints(messages)` marks the round's **copy** of the
+`ChatMessage`s — typed, through the `cache_control` field on a text part
+(`skip_serializing_if` absent, so every other provider's payload stays
+byte-identical). It used to rewrite the serialized JSON tree instead, which
+meant building a `Value` of the whole conversation per round — a copy of a
+pasted picture's megabytes of base64 each time (`docs/memory.md`); the copy
+it marks now is shallow, the pictures shared by reference.
 
 ## Breakpoint placement (≤ 3 of Anthropic's 4)
 

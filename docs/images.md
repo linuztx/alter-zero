@@ -32,6 +32,7 @@ always splits them (`src/images/`), plus `ui/image.rs` for the rows themselves:
 | `images::registry` | the process-global render policy (`/settings` plus what the terminal turned out to support) and the placement interner. |
 | `images::fitted` | pure. A PNG decoded at the size it will be shown or sent — rows streamed through an area-average shrink, so the whole picture is never held (`docs/memory.md`). |
 | `images::payload` | the other boundary: downscaling a picture before it is **uploaded**, and keeping the result on disk for the session so a re-sent attachment is never shrunk twice. |
+| `images::attachment` | the wire's copy of a picture: its base64 `data:` URL, encoded **once** per session — streamed from the file or the payload sidecar — and shared by reference by every request that re-sends it (`docs/memory.md`). |
 | `images::store` | the paint boundary: the terminal capability, the encoded pictures, and the pass that turns a reserved block into one. |
 | `ui::image` | pure. Which pictures a history item shows, and the marked rows they reserve under its cell. |
 
@@ -361,7 +362,16 @@ as before; `downscale_to`, the uncached core, is what the unit tests drive,
 and the cache has tests of its own (written once, read back without a decode,
 nothing written without a cache dir, nothing served with the row off). The
 `read` tool's images go through the same cache, so a picture the model reads
-twice is shrunk once. The **file** is untouched, which
+twice is shrunk once. And the **encoding** is done once too: what the wire
+carries is the payload as a base64 `data:` URL, and `images::attachment`
+builds that string on the first turn that sends the picture — streamed
+straight from the sidecar (or the file, when it already fits) into the one
+string the session keeps — and hands every later request the same string by
+reference, keyed on the path and validated against the file's size and mtime
+plus this row's setting (so flipping the row rebuilds it). Bounded at
+`ATTACHMENT_CACHE_MAX_BYTES` and swept at every turn start to the pictures
+the context still carries, it is what makes a turn after the paste cost
+nothing picture-sized (`docs/memory.md`). The **file** is untouched, which
 is why the picture on screen is unaffected, and why an auto-resized read's
 fact line leads with the file's own dimensions and names the sent ones after:
 

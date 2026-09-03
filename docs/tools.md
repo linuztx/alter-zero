@@ -298,9 +298,12 @@ plots it just generated.
   the stored record (`name == "Read"` + the `Read image ` output marker — a
   text read always starts with a numbered gutter row, `(file …`, or a
   `could not read …` error, so the marker can't collide) and replays the same
-  note with the path as an `images` attachment. `build_messages` re-encodes it
-  each request; a since-deleted file degrades to the existing
-  `[image unavailable: …]` text note instead of failing the turn.
+  note with the path as an `images` attachment. `build_messages` attaches the
+  session's one shared encoding of it each request — the `read` handed its
+  payload to `images::remember_attachment`, so no later turn reads or
+  base64s the file again (`docs/memory.md`); a since-deleted file degrades
+  to the existing `[image unavailable: …]` text note instead of failing the
+  turn.
 - **Size cap**: `READ_IMAGE_MAX_BYTES` (3.75 MB raw, so the base64 form stays
   under the strictest mainstream provider's 5 MB per-image limit — Claude
   Code's own bound). An oversized file fails with a recoverable "downscale or

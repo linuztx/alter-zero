@@ -542,8 +542,10 @@ fn read_image(path: &str, bytes: &[u8]) -> ToolOutcome {
             tools::READ_IMAGE_MAX_BYTES as f64 / MB,
         ));
     }
-    let mut url = format!("data:{mime};base64,");
-    crate::clipboard::base64_encode_into(payload, &mut url);
+    // The session keeps this one encoding: every later turn re-sends the
+    // picture, and reads it back from the cache rather than from the file
+    // (`docs/memory.md`).
+    let url = crate::images::remember_attachment(std::path::Path::new(path), payload, mime);
     let text = match &sent {
         Some(small) => tools::format_read_image_resized(
             label,

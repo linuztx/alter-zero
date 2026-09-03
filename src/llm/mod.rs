@@ -45,6 +45,7 @@ pub mod tools;
 
 use std::time::Duration;
 
+pub use crate::images::AttachmentUrl;
 pub use backend::LlmBackend;
 pub use config::{AuthScheme, ModelConfig, ProvidersFile, Selection, WireApi};
 pub use keystore::EnvFile;
@@ -126,25 +127,54 @@ pub enum MessageContent {
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ContentPart {
-    Text { text: String },
-    ImageUrl { image_url: ImageUrl },
+    Text {
+        text: String,
+        /// A prompt-caching breakpoint (`docs/prompt-caching.md`), set on the
+        /// round's copy of the messages by [`cache::apply_cache_breakpoints`]
+        /// for the models that need one; absent — and unserialized — on
+        /// every other part.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        cache_control: Option<CacheControl>,
+    },
+    ImageUrl {
+        image_url: ImageUrl,
+    },
+}
+
+/// The `cache_control: {"type": "ephemeral"}` marker an explicit-caching
+/// provider reads a breakpoint from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+pub struct CacheControl {
+    #[serde(rename = "type")]
+    pub kind: &'static str,
+}
+
+impl CacheControl {
+    /// The one marker the providers define.
+    pub const EPHEMERAL: Self = Self { kind: "ephemeral" };
 }
 
 /// The `image_url` object of an image part. `url` is a base64 `data:` URL —
-/// the attachment is embedded, never fetched.
+/// the attachment is embedded, never fetched — held by reference: it is the
+/// session's one encoding of the picture ([`AttachmentUrl`]), which every
+/// copy of the messages shares rather than duplicating megabytes of base64
+/// per round (`docs/memory.md`).
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct ImageUrl {
-    pub url: String,
+    pub url: AttachmentUrl,
 }
 
 impl ContentPart {
     #[must_use]
     pub fn text(t: impl Into<String>) -> Self {
-        Self::Text { text: t.into() }
+        Self::Text {
+            text: t.into(),
+            cache_control: None,
+        }
     }
 
     #[must_use]
-    pub fn image(url: impl Into<String>) -> Self {
+    pub fn image(url: impl Into<AttachmentUrl>) -> Self {
         Self::ImageUrl {
             image_url: ImageUrl { url: url.into() },
         }
@@ -367,6 +397,34 @@ mod tests {
                     {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
                 ],
             })
+        );
+    }
+
+    #[test]
+    fn cloning_a_message_shares_its_image_bytes() {
+        // A turn's request is built from a copy of the conversation and every
+        // agentic round copies it again: an attachment's megabytes of base64
+        // must ride those copies by reference (`docs/memory.md`).
+        let msg = ChatMessage::with_parts(
+            "user",
+            vec![
+                ContentPart::text("look"),
+                ContentPart::image("data:image/png;base64,AAAA"),
+            ],
+        );
+        let copy = msg.clone();
+        let (MessageContent::Parts(a), MessageContent::Parts(b)) = (&msg.content, &copy.content)
+        else {
+            panic!("parts");
+        };
+        let (ContentPart::ImageUrl { image_url: a }, ContentPart::ImageUrl { image_url: b }) =
+            (&a[1], &b[1])
+        else {
+            panic!("an image part");
+        };
+        assert!(
+            AttachmentUrl::ptr_eq(&a.url, &b.url),
+            "one allocation, shared"
         );
     }
 

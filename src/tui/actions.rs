@@ -379,6 +379,9 @@ impl Session<'_> {
         // docs/interrupt.md.
         self.abandon_inflight();
         self.render.reset();
+        // …and the pictures the wiped conversation kept encoded for the wire
+        // (`docs/memory.md`): nothing re-sends them now.
+        alter_zero::images::clear_attachments();
         // A fresh slate kills the background shells too (clear_conversation
         // already forgot them, so their Exited events find nothing and owe no
         // notice — docs/background.md). Notes already posted for the wiped

@@ -2399,7 +2399,7 @@ mod tests {
             panic!("the attachment is a multimodal parts message: {attachment:?}");
         };
         assert_eq!(parts.len(), 2, "one text note + one image: {parts:?}");
-        let ContentPart::Text { text } = &parts[0] else {
+        let ContentPart::Text { text, .. } = &parts[0] else {
             panic!("a text note leads: {parts:?}");
         };
         assert!(text.starts_with("[image] "), "got {text}");
@@ -2407,7 +2407,7 @@ mod tests {
         let ContentPart::ImageUrl { image_url } = &parts[1] else {
             panic!("the pixels follow the note: {parts:?}");
         };
-        assert_eq!(image_url.url, "data:image/png;base64,AAAA");
+        assert_eq!(&*image_url.url, "data:image/png;base64,AAAA");
         // The tool result itself stays the plain text the cell shows.
         assert_eq!(seen[2].role, "tool");
         assert!(

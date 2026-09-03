@@ -469,8 +469,24 @@ anything else decodes whole — refused past `WHOLE_DECODE_MAX_PIXELS` — and
 `thumbnail_exact`s into the box with no `f32` pass. The model payload rides
 the same fit and is **cached on disk per session** (`{session}/images/`,
 `images::payload` — keyed on path, size, mtime and cap; `cached_downscale`
-serves a re-sent attachment without opening the original), and
-`tests/image_paste_memory.rs` gates all three stages' resident growth. Three `/settings` rows: **Show images** and **Image
+serves a re-sent attachment without opening the original), **and encoded
+once per session** (`images::attachment` — the base64 `data:` URL streamed
+from the sidecar or the file into the one string the session keeps, handed
+to every later request by reference as `AttachmentUrl`, bounded at
+`ATTACHMENT_CACHE_MAX_BYTES`, swept at each turn start to the pictures the
+context still carries; the Chat request is then serialized **from the
+messages by reference, straight into the upload** — `openai::ChatRequest`
+written by a serializer thread into a bounded pipe of 64 KB chunks that the
+transport pumps (`streamed_request`, the `Content-Length` from a counting
+pass), never as a `Value` tree of the conversation and never as a
+whole-body buffer, the cache breakpoints marking a shallow typed copy —
+because every turn used to re-read the paste, re-encode it, copy it into a
+tree and grow the body by doubling, five picture-sized blocks a round that
+glibc's arenas kept, +14 MB whenever a turn landed on a new one, and even
+one exactly-sized body per round still left a body's worth per arena: the
+reported RAM-grows-per-message bug, `docs/memory.md`), and
+`tests/image_paste_memory.rs` gates all three stages' resident growth while
+`tests/image_turn_memory.rs` gates the turns after the paste. Three `/settings` rows: **Show images** and **Image
 width** (60/80/120, a *cap*) republish the policy and purge-rebuild so
 committed pictures change at once, while **Auto-resize images** is a
 different kind of thing entirely — the *payload*, not the screen: a
@@ -2315,7 +2331,19 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   clipboard's PNG to disk, because a screenshot is the largest allocation
   this process ever makes and glibc's dynamic `mmap` threshold turns the
   second such allocation into a permanent one (three pasted screenshots
-  measured a 103 MB process the other way; `docs/memory.md`).
+  measured a 103 MB process the other way; `docs/memory.md`). And its
+  request-shaped third coat: **never allocate anything picture-sized per
+  turn** — an attachment is encoded once per session and shared
+  (`images::attachment`, `AttachmentUrl`), and the request body is
+  serialized from the messages by reference **as it uploads**, through a
+  pipe of small chunks (`openai::streamed_request`) — never built whole; a
+  change that rebuilds the conversation as a `Value` per round, clones a
+  `data:` URL into a `String`, or buffers the body is the wrong change,
+  because each such block lands on a thread arena's heap and stays (an
+  exactly-sized body freed per round measured a body's worth per arena) —
+  which read as "RAM grows every message" (`tests/image_turn_memory.rs`
+  gates it, `examples/image_turn_probe.rs` and `scripts/turn_mem.sh`
+  measure it).
 - **All width math goes through `cols()`** (display columns via `unicode-width`),
   never `chars().count()` — so CJK/emoji wrap and pad correctly. Measuring right
   is only half of it: a **wide glyph occupies one `Buffer` cell plus a blank
@@ -2449,7 +2477,8 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   `run_agent` attaches them after the round's tool results as a user-role parts
   message (tool-role content rejects image parts on most providers) and
   `context_messages` replays the same note on later turns from the output
-  marker, the path re-encoded per request like a Ctrl+V paste; and a model
+  marker, the path served from the session's one shared encoding like a Ctrl+V
+paste (`images::remember_attachment`, `docs/memory.md`); and a model
   whose `/v1/models` record says it **can't** see images (`ModelEntry::vision`
   — detected beside the reasoning support, riding the selection into
   `ModelConfig::vision` and `config.json`) degrades gracefully instead of

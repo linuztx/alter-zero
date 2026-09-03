@@ -296,7 +296,9 @@ carried the attachments end to end. **The real `LlmBackend` has vision now**:
 the recorded user message keeps its attachment paths, and each request embeds
 them as base64 `data:` URLs in OpenAI's multimodal parts form — past turns'
 images re-send with the conversation context, so follow-up questions about an
-earlier image work. See `docs/context.md`. The mid-turn message **queue carries the
+earlier image work — from the **session's one encoding** of each picture
+(`images::attachment_data_url`, built on the first turn that sends it and
+shared by reference after; `docs/memory.md`). See `docs/context.md`. The mid-turn message **queue carries the
 attachments with the batch**: `queue_draft` stages the `(placeholder, path)`
 pairs into the `QueuedTurn::Messages` entry (an Enter merging into a batch
 merges its images too, in attach order), the queue flush dispatches the paths
@@ -403,6 +405,13 @@ Xvfb :99 -screen 0 1280x800x24 &
 cargo build && cargo build --example clipboard_owner
 scripts/paste_mem.sh target/debug/alter-zero 1920x1080 3 halfblocks 1
 ```
+
+`scripts/turn_mem.sh` is its sibling for the turns *after* the paste — one
+paste, one send, then N text follow-ups that each re-send the picture, with
+the same samples after every step (`LIVE=1` drives a real provider from
+`ALTER_ZERO_PROVIDER`/`ALTER_ZERO_MODEL`); its numbers are `docs/memory.md`'s
+*Every turn re-sent the picture* tables, and `examples/image_turn_probe.rs`
+replays the request build alone, with no network, for the per-stage cost.
 
 `scripts/paste_mem.sh` drives the real binary in tmux: `clipboard_owner` — the
 same selection owner the integration test uses — serves a screenshot-shaped

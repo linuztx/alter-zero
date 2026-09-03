@@ -333,7 +333,7 @@ fn flatten_text(content: &MessageContent) -> String {
         MessageContent::Parts(parts) => parts
             .iter()
             .filter_map(|part| match part {
-                ContentPart::Text { text } => Some(text.as_str()),
+                ContentPart::Text { text, .. } => Some(text.as_str()),
                 ContentPart::ImageUrl { .. } => None,
             })
             .collect::<Vec<_>>()

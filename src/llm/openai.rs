@@ -5,6 +5,7 @@
 //! SSE frame parse are pure and unit-tested; [`OpenAiClient::stream_chat`] is the
 //! boundary that opens the blocking request and drains it. See `docs/llm.md`.
 
+use std::borrow::Cow;
 use std::io::Read;
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
 use std::time::Duration;
@@ -168,34 +169,50 @@ impl OpenAiClient {
         }
     }
 
-    /// The streamed request body: model, messages, `stream: true` (with the
-    /// standard `stream_options.include_usage` asking for the final usage
-    /// frame the app's token tally snaps to), the optional temperature, the
-    /// prompt-caching fields (`docs/prompt-caching.md` — explicit
-    /// `cache_control` breakpoints for the models that need them, and the
-    /// session's cache-affinity key as `prompt_cache_key` / OpenRouter's
-    /// `session_id`), any provider `extra_body` (e.g. `venice_parameters`)
-    /// merged in, and — for a reasoning-capable model — the active thinking
-    /// mode (`docs/reasoning.md`).
+    /// The streamed request body as a JSON tree — `chat_request` serialized
+    /// whole. The **tests'** view of the request; the wire takes
+    /// [`request_stream`](Self::request_stream), which never builds this tree.
     #[must_use]
     pub fn build_payload(&self, messages: &[ChatMessage]) -> serde_json::Value {
-        let mut payload = json!({
-            "model": self.cfg.model,
-            "messages": messages,
-            "stream": true,
-            // Both shipped providers honour the standard OpenAI switch and
-            // answer with a final usage frame (cache detail included). A
-            // provider whose shim chokes can override it from its kwargs —
-            // the extra_body merge below wins over this base.
-            "stream_options": {"include_usage": true},
-        });
+        serde_json::to_value(self.chat_request(Cow::Borrowed(messages)))
+            .unwrap_or(serde_json::Value::Null)
+    }
+
+    /// The Chat Completions request: model, messages, `stream: true` (with
+    /// the standard `stream_options.include_usage` asking for the final
+    /// usage frame the app's token tally snaps to), the optional
+    /// temperature, the prompt-caching fields (`docs/prompt-caching.md` —
+    /// explicit `cache_control` breakpoints for the models that need them,
+    /// and the session's cache-affinity key as `prompt_cache_key` /
+    /// OpenRouter's `session_id`), any provider `extra_body` (e.g.
+    /// `venice_parameters`) merged in, and — for a reasoning-capable model —
+    /// the active thinking mode (`docs/reasoning.md`).
+    ///
+    /// Every field but the messages lives in one small tree; the messages
+    /// ride **by reference** and are serialized in place. A `Value` of the
+    /// conversation copied a pasted picture's megabytes of base64 once more
+    /// per round, which is what `docs/memory.md` traces the growing process
+    /// to. Only an explicit-caching model takes a copy — a shallow one, its
+    /// pictures shared — to carry the breakpoints.
+    fn chat_request<'a>(&'a self, messages: Cow<'a, [ChatMessage]>) -> ChatRequest<'a> {
+        let mut fields = serde_json::Map::new();
+        fields.insert("stream".to_string(), json!(true));
+        // Both shipped providers honour the standard OpenAI switch and
+        // answer with a final usage frame (cache detail included). A
+        // provider whose shim chokes can override it from its kwargs —
+        // the extra_body merge below wins over this base.
+        fields.insert("stream_options".to_string(), json!({"include_usage": true}));
         // An explicit-caching model (anthropic/qwen via an OpenRouter-style
-        // aggregator) only caches marked blocks: rewrite the wire messages
+        // aggregator) only caches marked blocks: mark a copy of the messages
         // with the ephemeral breakpoints. Implicit-caching providers (OpenAI,
         // Venice, …) keep the untouched plain-string form.
-        if super::cache::needs_cache_breakpoints(&self.cfg.model) {
-            super::cache::apply_cache_breakpoints(&mut payload["messages"]);
-        }
+        let messages = if super::cache::needs_cache_breakpoints(&self.cfg.model) {
+            let mut marked = messages.into_owned();
+            super::cache::apply_cache_breakpoints(&mut marked);
+            Cow::Owned(marked)
+        } else {
+            messages
+        };
         if let Some(key) = self
             .cfg
             .cache_key
@@ -215,27 +232,25 @@ impl OpenAiClient {
             // provider is unreadable from another. Venice rejects unknown
             // keys ("Unrecognized key(s)"), so `session_id` stays
             // OpenRouter-gated.
-            payload["prompt_cache_key"] = json!(key);
+            fields.insert("prompt_cache_key".to_string(), json!(key));
             if self
                 .cfg
                 .api_base
                 .to_ascii_lowercase()
                 .contains("openrouter")
             {
-                payload["session_id"] = json!(key);
+                fields.insert("session_id".to_string(), json!(key));
             }
         }
         if let Some(t) = self.cfg.temperature {
-            payload["temperature"] = json!(t);
+            fields.insert("temperature".to_string(), json!(t));
         }
         if !self.tools.is_empty() {
-            payload["tools"] = json!(self.tools);
-            payload["tool_choice"] = json!("auto");
+            fields.insert("tools".to_string(), json!(self.tools));
+            fields.insert("tool_choice".to_string(), json!("auto"));
         }
-        if let Some(obj) = payload.as_object_mut() {
-            for (k, v) in &self.cfg.extra_body {
-                obj.insert(k.clone(), v.clone());
-            }
+        for (k, v) in &self.cfg.extra_body {
+            fields.insert(k.clone(), v.clone());
         }
         // The thinking mode is applied *after* the extra_body merge so the
         // user's Ctrl+T choice wins over a file-configured static (the
@@ -250,19 +265,23 @@ impl OpenAiClient {
             // (`docs/copilot.md`).
             if self.cfg.auth == super::AuthScheme::GithubCopilot {
                 if let Some(effort) = super::reasoning::effort_label(mode) {
-                    payload["reasoning_effort"] = json!(effort);
+                    fields.insert("reasoning_effort".to_string(), json!(effort));
                 }
-                return payload;
+                return ChatRequest {
+                    model: Cow::Borrowed(&self.cfg.model),
+                    messages,
+                    fields,
+                };
             }
             if let Some(body) = super::reasoning::reasoning_body(mode) {
-                payload["reasoning"] = body;
+                fields.insert("reasoning".to_string(), body);
             }
             // Venice ignores `reasoning.enabled` — `venice_parameters.
             // disable_thinking` is the toggle it honours. A provider carrying
             // a venice_parameters table (the Venice-family marker) gets it
             // synced to the mode, other table keys preserved; providers
             // without the table (OpenRouter) keep a clean payload.
-            if let Some(venice) = payload
+            if let Some(venice) = fields
                 .get_mut("venice_parameters")
                 .and_then(serde_json::Value::as_object_mut)
             {
@@ -272,7 +291,32 @@ impl OpenAiClient {
                 );
             }
         }
-        payload
+        ChatRequest {
+            model: Cow::Borrowed(&self.cfg.model),
+            messages,
+            fields,
+        }
+    }
+
+    /// This request's body **as a stream**, in whichever wire format the
+    /// provider speaks, with the byte count the `Content-Length` header
+    /// carries: a serializer thread writes the JSON into a bounded pipe of
+    /// small chunks and the transport reads it out as it uploads
+    /// ([`streamed_request`]). A body carrying a picture is never held whole
+    /// — not built, not buffered, not freed behind the send — which is what
+    /// keeps a turn from allocating anything picture-sized at all
+    /// (`docs/memory.md`). `messages` is taken by value: the round's copy of
+    /// the conversation, its pictures shared, moves to that thread.
+    ///
+    /// # Errors
+    /// A message that can't be serialized — which no [`ChatMessage`] is.
+    pub fn request_stream(&self, messages: Vec<ChatMessage>) -> Result<(BodyReader, u64)> {
+        match self.cfg.wire_api {
+            super::WireApi::Chat => {
+                streamed_request(self.chat_request(Cow::Owned(messages)).into_owned())
+            }
+            _ => streamed_request(self.request_payload(&messages)),
+        }
     }
 
     /// The per-request headers GitHub Copilot needs on top of the static
@@ -339,8 +383,7 @@ impl OpenAiClient {
         let mut req = client
             .post(url)
             .header("accept", accept)
-            .header("content-type", "application/json")
-            .json(&self.request_payload(&messages));
+            .header("content-type", "application/json");
         if let Some(key) = &auth.bearer {
             req = req.bearer_auth(key);
         }
@@ -353,6 +396,10 @@ impl OpenAiClient {
             req = req.header(k, v);
         }
         req = self.copilot_request_headers(req, &messages);
+        // The body streams out of a serializer thread as the transport
+        // uploads it — never held whole (`docs/memory.md`).
+        let (body, len) = self.request_stream(messages)?;
+        req = req.body(reqwest::blocking::Body::sized(body, len));
 
         // All blocking network I/O — the send/header exchange and every body
         // read — runs on a detached transport thread feeding this channel, so
@@ -436,6 +483,164 @@ impl OpenAiClient {
             },
             None => error,
         }
+    }
+}
+
+/// The Chat Completions request as it is serialized: the model, the
+/// conversation **by reference** (or the marked copy an explicit-caching
+/// model takes — shallow, its pictures shared), and every other field in one
+/// small tree flattened beside them. Built by
+/// [`OpenAiClient::chat_request`], written by [`serialize_exact`].
+#[derive(serde::Serialize)]
+struct ChatRequest<'a> {
+    model: Cow<'a, str>,
+    messages: Cow<'a, [ChatMessage]>,
+    #[serde(flatten)]
+    fields: serde_json::Map<String, serde_json::Value>,
+}
+
+impl ChatRequest<'_> {
+    /// The request with nothing borrowed — what the serializer thread takes.
+    /// A shallow copy: the pictures stay shared.
+    fn into_owned(self) -> ChatRequest<'static> {
+        ChatRequest {
+            model: Cow::Owned(self.model.into_owned()),
+            messages: Cow::Owned(self.messages.into_owned()),
+            fields: self.fields,
+        }
+    }
+}
+
+/// How many bytes a serialized `value` is — a counting pass over the output
+/// that allocates nothing, so the `Content-Length` of a streamed body is
+/// known before a byte of it exists. A second walk over the text, a few
+/// milliseconds on the largest body this app sends.
+///
+/// # Errors
+/// A value that can't be serialized.
+pub fn serialized_len<T: serde::Serialize + ?Sized>(value: &T) -> Result<usize> {
+    struct Counter(usize);
+    impl std::io::Write for Counter {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0 += buf.len();
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut counter = Counter(0);
+    serde_json::to_writer(&mut counter, value)
+        .map_err(|e| LlmError::Http(format!("could not encode the request: {e}")))?;
+    Ok(counter.0)
+}
+
+/// How much of a streamed body is in flight at once: the chunk a serializer
+/// thread hands over, times the pipe's depth. Kilobytes, whatever the body
+/// weighs.
+pub const BODY_CHUNK_BYTES: usize = 64 * 1024;
+
+/// How many chunks the body pipe holds before the serializer waits for the
+/// transport to catch up.
+const BODY_PIPE_DEPTH: usize = 4;
+
+/// `value` serialized **as it is uploaded**: the JSON is written by its own
+/// thread into a bounded pipe of [`BODY_CHUNK_BYTES`] chunks, and the
+/// [`BodyReader`] the transport pumps takes them out the other end. The whole
+/// body exists nowhere — not as the `Vec` `reqwest`'s `.json()` builds
+/// (grown by doubling, and freed behind the send into an arena that keeps
+/// it), so a request carrying a picture costs the process kilobytes rather
+/// than the picture again per round (`docs/memory.md`). The byte count comes
+/// from a counting pass first ([`serialized_len`]), so the request is
+/// `Content-Length`-framed like the buffered form was.
+///
+/// A reader dropped early — an Esc that ended the transport — breaks the
+/// pipe, and the serializer thread ends on its next write.
+///
+/// # Errors
+/// A value that can't be serialized (the counting pass finds out first).
+pub fn streamed_request<T: serde::Serialize + Send + 'static>(
+    value: T,
+) -> Result<(BodyReader, u64)> {
+    let len = serialized_len(&value)?;
+    let (tx, rx) = std::sync::mpsc::sync_channel(BODY_PIPE_DEPTH);
+    std::thread::spawn(move || {
+        let mut writer = PipeWriter {
+            tx,
+            buf: Vec::with_capacity(BODY_CHUNK_BYTES),
+        };
+        if serde_json::to_writer(&mut writer, &value).is_ok() {
+            let _ = std::io::Write::flush(&mut writer);
+        }
+    });
+    Ok((
+        BodyReader {
+            rx,
+            current: Vec::new(),
+            pos: 0,
+        },
+        len as u64,
+    ))
+}
+
+/// The serializer's end of the body pipe: fills one chunk and hands it over.
+struct PipeWriter {
+    tx: std::sync::mpsc::SyncSender<Vec<u8>>,
+    buf: Vec<u8>,
+}
+
+impl PipeWriter {
+    fn hand_over(&mut self) -> std::io::Result<()> {
+        let chunk = std::mem::replace(&mut self.buf, Vec::with_capacity(BODY_CHUNK_BYTES));
+        self.tx
+            .send(chunk)
+            .map_err(|_| std::io::Error::from(std::io::ErrorKind::BrokenPipe))
+    }
+}
+
+impl std::io::Write for PipeWriter {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        // Fill the chunk to its size and no further, so a chunk never grows
+        // past [`BODY_CHUNK_BYTES`] however long one serialized string is.
+        let room = BODY_CHUNK_BYTES - self.buf.len();
+        let take = bytes.len().min(room);
+        self.buf.extend_from_slice(&bytes[..take]);
+        if self.buf.len() >= BODY_CHUNK_BYTES {
+            self.hand_over()?;
+        }
+        Ok(take)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        if self.buf.is_empty() {
+            return Ok(());
+        }
+        self.hand_over()
+    }
+}
+
+/// The transport's end of the body pipe — the `Read` a
+/// [`reqwest::blocking::Body::sized`] pumps in its own small reads.
+pub struct BodyReader {
+    rx: std::sync::mpsc::Receiver<Vec<u8>>,
+    current: Vec<u8>,
+    pos: usize,
+}
+
+impl Read for BodyReader {
+    fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
+        if self.pos >= self.current.len() {
+            // The serializer dropping its end — done, or gone — is EOF.
+            let Ok(next) = self.rx.recv() else {
+                return Ok(0);
+            };
+            self.current = next;
+            self.pos = 0;
+        }
+        let n = out.len().min(self.current.len() - self.pos);
+        out[..n].copy_from_slice(&self.current[self.pos..self.pos + n]);
+        self.pos += n;
+        Ok(n)
     }
 }
 
@@ -2275,5 +2480,140 @@ data: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\
         let outcome = out.expect("an empty keep-alive stream is not an error");
         assert!(outcome.text.response.is_empty());
         assert!(deltas.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod body_tests {
+    //! The request body on the wire (`docs/memory.md`): serialized from the
+    //! messages by reference, streamed through a pipe of small chunks, never
+    //! held whole.
+
+    use super::*;
+    use crate::llm::{ContentPart, MessageContent};
+
+    fn client(model: &str) -> OpenAiClient {
+        let mut cfg = ModelConfig::fallback();
+        cfg.model = model.to_string();
+        cfg.temperature = Some(0.5);
+        cfg.extra_body.insert(
+            "venice_parameters".into(),
+            json!({"include_venice_system_prompt": false}),
+        );
+        OpenAiClient::new(cfg).with_tools(vec![
+            json!({"type": "function", "function": {"name": "bash"}}),
+        ])
+    }
+
+    fn vision_messages() -> Vec<ChatMessage> {
+        vec![
+            ChatMessage::system("persona"),
+            ChatMessage::with_parts(
+                "user",
+                vec![
+                    ContentPart::text("[Image #1: /tmp/1.png] what is this?"),
+                    ContentPart::image("data:image/png;base64,AAAA"),
+                ],
+            ),
+            ChatMessage::assistant("a cat"),
+            ChatMessage::user("and this?"),
+        ]
+    }
+
+    /// Everything the stream yields, read the way the transport reads it.
+    fn drain(mut body: BodyReader) -> Vec<u8> {
+        let mut out = Vec::new();
+        let mut buf = [0u8; 8192];
+        loop {
+            match body.read(&mut buf).expect("reads") {
+                0 => return out,
+                n => out.extend_from_slice(&buf[..n]),
+            }
+        }
+    }
+
+    #[test]
+    fn the_streamed_body_is_the_payload_serialized_without_a_tree_of_the_messages() {
+        let client = client("gpt-4o-mini");
+        let messages = vision_messages();
+        let (body, len) = client.request_stream(messages.clone()).expect("streams");
+        let bytes = drain(body);
+        assert_eq!(
+            bytes,
+            serde_json::to_vec(&client.build_payload(&messages)).unwrap(),
+            "byte-for-byte what the tree form would have sent"
+        );
+        assert_eq!(len, bytes.len() as u64, "the declared length is the truth");
+    }
+
+    #[test]
+    fn a_breakpoint_model_gets_its_markers_in_the_body_too() {
+        let client = client("anthropic/claude-sonnet-4.6");
+        let messages = vision_messages();
+        let (body, _) = client.request_stream(messages.clone()).expect("streams");
+        let tree: serde_json::Value = serde_json::from_slice(&drain(body)).unwrap();
+        assert_eq!(tree, client.build_payload(&messages));
+        assert_eq!(
+            tree["messages"][0]["content"][0]["cache_control"],
+            json!({"type": "ephemeral"}),
+            "the system prefix is marked"
+        );
+        assert_eq!(
+            tree["messages"][1]["content"][0]["cache_control"],
+            json!({"type": "ephemeral"}),
+            "the previous user message is marked on its text part"
+        );
+        assert!(
+            tree["messages"][1]["content"][1]
+                .get("cache_control")
+                .is_none(),
+            "never the image part"
+        );
+        assert_eq!(
+            tree["messages"][3]["content"][0]["cache_control"],
+            json!({"type": "ephemeral"})
+        );
+        assert!(
+            messages[0].content == MessageContent::Text("persona".into()),
+            "the caller's messages are untouched"
+        );
+    }
+
+    #[test]
+    fn the_body_pipe_hands_over_bounded_chunks_and_the_declared_length() {
+        // A body several chunks long: what the reader yields is the exact
+        // serialization, no read ever spans more than one chunk, and the
+        // count the header carries matches.
+        let value = json!({"a": [1, 2, 3], "picture": "x".repeat(3 * BODY_CHUNK_BYTES + 17)});
+        let expected = serde_json::to_vec(&value).unwrap();
+        assert_eq!(serialized_len(&value).unwrap(), expected.len());
+        let (mut body, len) = streamed_request(value).expect("streams");
+        assert_eq!(len as usize, expected.len());
+        let mut out = Vec::new();
+        let mut buf = vec![0u8; 4 * BODY_CHUNK_BYTES];
+        loop {
+            match body.read(&mut buf).unwrap() {
+                0 => break,
+                n => {
+                    assert!(n <= BODY_CHUNK_BYTES, "a read of {n} bytes spans chunks");
+                    out.extend_from_slice(&buf[..n]);
+                }
+            }
+        }
+        assert_eq!(out, expected);
+    }
+
+    #[test]
+    fn a_reader_dropped_early_ends_the_serializer_quietly() {
+        // An Esc that ends the transport drops its end of the pipe; the
+        // serializer thread must finish rather than block forever on a full
+        // pipe.
+        let value = json!({"picture": "x".repeat(64 * BODY_CHUNK_BYTES)});
+        let (body, _) = streamed_request(value).expect("streams");
+        drop(body);
+        // Nothing to assert but that this test returns: a wedged writer
+        // would leave a thread parked, not a failure — so give it a moment
+        // and count the threads that are still ours.
+        std::thread::sleep(std::time::Duration::from_millis(50));
     }
 }

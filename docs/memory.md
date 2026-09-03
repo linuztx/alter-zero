@@ -319,6 +319,138 @@ own output plus a few megabytes of slack, all an order of magnitude under the
 source's 15 MB of RGBA. The procedure for the end-to-end numbers is
 `scripts/paste_mem.sh` (`docs/image-paste.md`, *Measuring*).
 
+## Every turn re-sent the picture
+
+The report after the paste was fixed was the picture's *afterlife*: "every
+time I send a new message the RAM increases", with a screenshot pasted once
+and drawn in the conversation. Reproduced with `scripts/turn_mem.sh` — the
+same harness as above, one paste, one send, then plain-text follow-ups that
+each re-send the picture with the context — against a real vision model on
+Venice, a 1920x1200 screenshot-shaped PNG of 6.3 MB:
+
+| before, halfblocks | RSS | peak |
+|---|---|---|
+| startup | 22.0 MB | 22.0 MB |
+| after the send | 25.7 MB | 58.1 MB |
+| follow-up 1 | **39.3 MB** | 63.1 MB |
+| follow-ups 2–6 | 39.3 MB | 63.2 MB |
+| follow-up 7 | **53.2 MB** | 77.0 MB |
+| follow-up 8 | 53.2 MB | 77.0 MB |
+
+| before, kitty | RSS | peak |
+|---|---|---|
+| after the send | 29.1 MB | 60.5 MB |
+| follow-up 1 | **42.7 MB** | 66.4 MB |
+| follow-up 2 | **56.5 MB** | 80.2 MB |
+| follow-ups 3–6 | 56.6 MB | 80.2 MB |
+
+Not every message, but a step of **~14 MB** every few, and never back —
+open-ended over a session. The step is the picture: 6 MB of file plus 8 MB
+of base64.
+
+### What a turn did with a picture
+
+The conversation is re-sent whole on every request (`docs/context.md`), so
+the attachment rides every later turn, and each of those turns — and each
+agentic round within it — rebuilt it from scratch on a fresh backend thread:
+
+1. `image_data_url` read the **file whole** (6 MB) and base64-encoded it
+   into a new string (8 MB); the payload cache only helps a picture the
+   auto-resize *shrank*, and this one already fit the 2000-pixel cap;
+2. the messages were **cloned** for the round (`messages.to_vec()` into
+   `stream_chat`) — a deep copy of that 8 MB string;
+3. `build_payload` built a `serde_json::Value` **tree** of the whole request
+   — the string copied once more into a `Value::String`;
+4. `reqwest`'s `.json()` serialized the tree into a `Vec` grown **by
+   doubling**, ending at 16 MB of capacity for an 8.4 MB body, every step of
+   the growth a copy freed behind it;
+5. the body went to the transport thread and was freed there.
+
+Five picture-sized blocks a round, ~46 MB of transient traffic, and — the
+part that made it *stay* — none of it mmapped. glibc's dynamic `mmap`
+threshold had already been raised past 8 MB by an earlier free (the same
+mechanism *Pasting a screenshot* describes), so every one of those blocks was
+carved from a **thread arena's heap** instead: `strace` shows the turn's
+thread growing its arena by exactly 6,172,672 and then 8,404,992 bytes
+(`mprotect`), and nothing ever giving them back — a heap only shrinks from
+its top, the trim threshold is twice the mmap threshold, and the small
+long-lived allocations that follow pin what is below them. Each backend
+thread takes an arena from glibc's free list; when the list happens to be
+empty (a transport thread, a tool, a paste worker alive at the same moment),
+the turn lands on a **new** arena and leaves the picture's worth in it. That
+is the step, and why it came every few messages rather than every one.
+
+`examples/image_turn_probe.rs` replays the request path with no network
+(one turn per thread, the body handed to a second thread like the transport)
+and reproduces the shape: +8 MB resident after the second turn, a 46 MB
+peak, flat after. Run under `MALLOC_MMAP_THRESHOLD_=65536` — a fixed
+threshold, no dynamic raise — the residue vanishes and the peak drops by
+14 MB, which is the allocator confirming the diagnosis. The fix cannot be
+that knob (it is an `mallopt` behind `unsafe`, and it would tax every small
+allocation in the process); it is to stop asking for picture-sized blocks
+every turn.
+
+### What changed
+
+- **An attachment is encoded once per session and shared.**
+  `images::attachment` keeps each picture's `data:` URL under its path,
+  validated against an [`AttachmentStamp`] — the file's size and mtime plus
+  the **Auto-resize images** setting, everything that decides what goes up —
+  and hands every request the same string by reference: `AttachmentUrl` is
+  an `Arc`, so the round's copy of the messages and the marked copy an
+  explicit-caching model takes are shallow. The one encoding is **streamed**
+  into its string from the file or the payload sidecar (`base64_encode_reader`,
+  a 48 KB buffer), so building it costs exactly what it keeps; the original
+  is read whole only to shrink it, once. The `read` tool hands the payload it
+  already has to the same cache (`remember_attachment`). Bounded at
+  `ATTACHMENT_CACHE_MAX_BYTES` (32 MB, least recently sent first out) and
+  swept at every turn start to the pictures the context still carries
+  (`retain_attachments`; a `/clear` empties it) so a backtracked or compacted
+  picture lets its megabytes go.
+- **No tree of the messages, ever.** The Chat request is `ChatRequest`, the
+  messages **by reference** beside a small map of every other field, and
+  the prompt-caching breakpoints mark a shallow typed copy
+  (`cache::apply_cache_breakpoints` over `ChatMessage`s, `docs/prompt-caching.md`)
+  instead of rewriting a JSON tree; `build_payload` — the tree — is now the
+  tests' view of the request and nothing the wire builds.
+- **The body is never held whole.** `openai::streamed_request` serializes
+  the request on its own thread into a bounded pipe of 64 KB chunks
+  (`BODY_CHUNK_BYTES`, four deep) that the transport pumps as it uploads,
+  the `Content-Length` known from a counting pass that allocates nothing.
+  An intermediate version serialized into a buffer sized **exactly once**
+  and still measured a body-sized step (+7.5 MB) every few turns: an 8.4 MB
+  body a few bytes larger than the last one lands under the page-rounded
+  threshold the last one's free set, and is carved from the arena like
+  everything else. The only way not to keep a body's worth per arena is not
+  to build the body.
+
+### What it bought
+
+Same harness, same picture, same model:
+
+| after, halfblocks | RSS | peak |
+|---|---|---|
+| startup | 22.1 MB | 22.1 MB |
+| after the send | 32.6 MB | 36.7 MB |
+| follow-ups 1–8 | **32.7 → 33.2 MB** | 36.7 MB |
+
+| after, kitty | RSS | peak |
+|---|---|---|
+| after the send | 36.9 MB | 45.2 MB |
+| follow-ups 1–6 | **37.0 → 37.5 MB** | 45.2 MB |
+
+The send now costs the one encoding the session keeps (8.4 MB of base64
+for this picture — the honest price of re-sending it every turn without
+rebuilding it) and the follow-ups cost the words in them; the peak is a
+third of what it was and never moves again. The probe reads the same way:
+the resident set flat to the kilobyte across seven turns and three rounds a
+turn, and no turn raising the peak at all. `tests/image_turn_memory.rs` is
+the gate — six follow-up turns after the one that carries a 1920x1200 paste
+may grow neither the resident set nor the peak by more than 2 MB — and
+`scripts/turn_mem.sh` is how the tables above are taken again.
+
+[`AttachmentStamp`]: ../src/images/attachment.rs
+
 ## The rule
 
 The pattern generalises past this one function: **do not build a tree of a
@@ -337,3 +469,10 @@ screenshot is the largest single allocation this process ever sees, and the
 allocator's dynamic threshold turns the second such allocation into a
 permanent one. `images::fitted` streams rows; `clipboard::linux` streams
 bytes.
+
+And a third for the request: **never allocate anything picture-sized per
+turn.** An attachment is encoded once and shared (`images::attachment`), the
+request is serialized from the messages by reference, and the body leaves the
+process through a pipe of small chunks rather than as a buffer
+(`openai::streamed_request`). A block that size, asked for every turn on a
+fresh thread, is a block glibc will keep in some arena sooner or later.

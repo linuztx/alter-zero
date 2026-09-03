@@ -951,3 +951,237 @@ fn an_incoming_copy_larger_than_the_whole_cap_empties_the_cache_and_no_more() {
         ]
     );
 }
+
+// ===== the attachment cache (`attachment`, docs/memory.md "Every turn re-sent the picture") =====
+
+/// A picture's `data:` URL as the wire carries it — the reference the cache's
+/// output is checked against.
+fn data_url_of(mime: &str, bytes: &[u8]) -> String {
+    let mut url = format!("data:{mime};base64,");
+    crate::clipboard::base64_encode_into(bytes, &mut url);
+    url
+}
+
+#[test]
+fn an_attachment_is_encoded_once_and_shared_after() {
+    let _guard = policy_lock();
+    set_policy(ImagePolicy::default());
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("shot.png");
+    let png = encode_png(100, 80);
+    std::fs::write(&path, &png).unwrap();
+
+    let first = attachment_data_url(&path).expect("a readable picture encodes");
+    assert_eq!(&*first, data_url_of("image/png", &png));
+    let again = attachment_data_url(&path).expect("still there");
+    assert!(
+        AttachmentUrl::ptr_eq(&first, &again),
+        "a later turn shares the one encoding rather than building another"
+    );
+}
+
+#[test]
+fn a_rewritten_attachment_is_encoded_afresh() {
+    let _guard = policy_lock();
+    set_policy(ImagePolicy::default());
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("shot.png");
+    std::fs::write(&path, encode_png(100, 80)).unwrap();
+    let first = attachment_data_url(&path).expect("encodes");
+
+    let replacement = encode_png(120, 80);
+    std::fs::write(&path, &replacement).unwrap();
+    // A rewrite within the same clock tick keeps the mtime; bump it so the
+    // stamp the cache validates against moves the way a real edit's does.
+    let file = std::fs::File::options().write(true).open(&path).unwrap();
+    file.set_modified(std::time::SystemTime::now() + std::time::Duration::from_secs(5))
+        .unwrap();
+    let second = attachment_data_url(&path).expect("encodes");
+    assert!(
+        !AttachmentUrl::ptr_eq(&first, &second),
+        "a changed file is a new entry"
+    );
+    assert_eq!(&*second, data_url_of("image/png", &replacement));
+}
+
+#[test]
+fn a_missing_attachment_encodes_to_nothing() {
+    let _guard = policy_lock();
+    set_policy(ImagePolicy::default());
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("gone.png");
+    assert!(attachment_data_url(&path).is_none());
+    std::fs::write(&path, encode_png(10, 10)).unwrap();
+    assert!(attachment_data_url(&path).is_some());
+    std::fs::remove_file(&path).unwrap();
+    assert!(
+        attachment_data_url(&path).is_none(),
+        "a picture deleted from under the cache is not served from it"
+    );
+}
+
+#[test]
+fn the_read_tools_payload_is_remembered_for_the_turns_after() {
+    // The `read` tool has the bytes in hand; what it sends is what every later
+    // turn re-sends, so it hands the encoding to the cache instead of leaving
+    // the next request to read and encode the file again.
+    let _guard = policy_lock();
+    set_policy(ImagePolicy::default());
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("shot.jpg");
+    let jpeg = encode_jpeg(64, 48);
+    std::fs::write(&path, &jpeg).unwrap();
+    let remembered = remember_attachment(&path, &jpeg, "image/jpeg");
+    assert_eq!(&*remembered, data_url_of("image/jpeg", &jpeg));
+    let later = attachment_data_url(&path).expect("served");
+    assert!(AttachmentUrl::ptr_eq(&remembered, &later));
+}
+
+#[test]
+fn retain_attachments_keeps_only_the_pictures_still_in_the_conversation() {
+    let _guard = policy_lock();
+    set_policy(ImagePolicy::default());
+    let dir = tempfile::tempdir().unwrap();
+    let kept = dir.path().join("kept.png");
+    let dropped = dir.path().join("dropped.png");
+    std::fs::write(&kept, encode_png(10, 10)).unwrap();
+    std::fs::write(&dropped, encode_png(12, 10)).unwrap();
+    let kept_url = attachment_data_url(&kept).unwrap();
+    let dropped_url = attachment_data_url(&dropped).unwrap();
+    retain_attachments(&[kept.as_path()]);
+    assert!(AttachmentUrl::ptr_eq(
+        &kept_url,
+        &attachment_data_url(&kept).unwrap()
+    ));
+    assert!(
+        !AttachmentUrl::ptr_eq(&dropped_url, &attachment_data_url(&dropped).unwrap()),
+        "a picture the context no longer carries is let go"
+    );
+    clear_attachments();
+    assert!(!AttachmentUrl::ptr_eq(
+        &kept_url,
+        &attachment_data_url(&kept).unwrap()
+    ));
+}
+
+#[test]
+fn the_attachment_cache_is_bounded_by_bytes_and_keeps_the_newest() {
+    // Pure: the cache struct itself, with a tiny cap.
+    let mut cache = AttachmentCache::with_cap(100);
+    let stamp = AttachmentStamp::new(1, 1, true);
+    let url = |n: usize| AttachmentUrl::from("x".repeat(n));
+    cache.insert("a".into(), stamp, url(60));
+    cache.insert("b".into(), stamp, url(60));
+    assert!(
+        cache.get("a", stamp).is_none(),
+        "the older entry went to make room"
+    );
+    assert!(cache.get("b", stamp).is_some());
+    assert_eq!(cache.bytes(), 60);
+
+    cache.insert("a".into(), stamp, url(30));
+    assert!(
+        cache.get("b", stamp).is_some(),
+        "touched: b is now the newest"
+    );
+    cache.insert("c".into(), stamp, url(40));
+    assert!(
+        cache.get("a", stamp).is_none(),
+        "a was the least recently used"
+    );
+    assert!(cache.get("b", stamp).is_some() && cache.get("c", stamp).is_some());
+    assert_eq!(
+        cache.bytes(),
+        100,
+        "the cap is a bound, not a strict inequality"
+    );
+
+    cache.insert("big".into(), stamp, url(500));
+    assert!(
+        cache.get("big", stamp).is_some(),
+        "a picture larger than the whole cap is still kept — it is what the next turn sends"
+    );
+    assert!(cache.get("b", stamp).is_none() && cache.get("c", stamp).is_none());
+    assert_eq!(cache.bytes(), 500);
+
+    let other = AttachmentStamp::new(2, 1, true);
+    assert!(
+        cache.get("big", other).is_none(),
+        "a different file state (or setting) is a miss, never a stale picture"
+    );
+}
+
+#[test]
+fn streamed_base64_matches_the_slice_encoder() {
+    // The streaming encoder feeds the file through a small buffer; every
+    // chunk boundary must land where the slice encoder's 3-byte groups do.
+    let mut seed = 7u32;
+    let bytes: Vec<u8> = (0..200_003)
+        .map(|_| {
+            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            (seed >> 24) as u8
+        })
+        .collect();
+    for n in (0..=70).chain([4095, 4096, 4097, 49_151, 49_152, 49_153, 200_003]) {
+        let mut expected = String::new();
+        crate::clipboard::base64_encode_into(&bytes[..n], &mut expected);
+        let mut streamed = String::new();
+        base64_encode_reader(&bytes[..n], n, &mut streamed).unwrap();
+        assert_eq!(streamed, expected, "{n} bytes");
+    }
+}
+
+#[test]
+fn an_oversized_attachment_is_downscaled_before_it_is_encoded() {
+    let _guard = policy_lock();
+    set_payload_cache_dir(None);
+    set_policy(ImagePolicy {
+        auto_resize: true,
+        ..ImagePolicy::default()
+    });
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("big.png");
+    let png = encode_png(3000, 2000);
+    std::fs::write(&path, &png).unwrap();
+    let small = downscale_to(&png, image::ImageFormat::Png, 2000).expect("shrinks");
+    assert_eq!(
+        &*attachment_data_url(&path).unwrap(),
+        data_url_of("image/png", &small.bytes),
+        "what goes up is the 2000-pixel payload"
+    );
+    set_policy(ImagePolicy {
+        auto_resize: false,
+        ..ImagePolicy::default()
+    });
+    assert_eq!(
+        &*attachment_data_url(&path).unwrap(),
+        data_url_of("image/png", &png),
+        "with the row off the file goes up verbatim — the entry re-keys on the setting"
+    );
+    set_policy(ImagePolicy::default());
+}
+
+#[test]
+fn a_fitting_attachment_goes_up_verbatim_under_its_own_mime() {
+    let _guard = policy_lock();
+    set_policy(ImagePolicy::default());
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("photo.jpeg");
+    let jpeg = encode_jpeg(80, 60);
+    std::fs::write(&path, &jpeg).unwrap();
+    assert_eq!(
+        &*attachment_data_url(&path).unwrap(),
+        data_url_of("image/jpeg", &jpeg)
+    );
+}
+
+#[test]
+fn attachment_mime_follows_the_extension_with_png_as_the_default() {
+    let p = std::path::Path::new;
+    assert_eq!(attachment_mime(p("a.png")), "image/png");
+    assert_eq!(attachment_mime(p("a.JPG")), "image/jpeg");
+    assert_eq!(attachment_mime(p("a.jpeg")), "image/jpeg");
+    assert_eq!(attachment_mime(p("a.gif")), "image/gif");
+    assert_eq!(attachment_mime(p("a.webp")), "image/webp");
+    assert_eq!(attachment_mime(p("no-extension")), "image/png");
+}

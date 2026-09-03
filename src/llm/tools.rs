@@ -71,7 +71,7 @@ pub struct ToolOutcome {
     /// follow-up **user** message — never part of `output`, which stays the
     /// small human/model-readable text (byte-capped, cell-displayed,
     /// token-counted, session-recorded). See `docs/tools.md`.
-    pub image: Option<String>,
+    pub image: Option<crate::images::AttachmentUrl>,
     /// `Some(snapshot)` when the call was a **task tool** op
     /// (`docs/task-tools.md`): the post-call state of the shared task list,
     /// which `run_agent` surfaces as `StreamEvent::TaskCall` — the single
@@ -151,7 +151,7 @@ impl ToolOutcome {
 
     /// Attach an image's `data:` URL (the `read` tool's image branch).
     #[must_use]
-    pub fn with_image(mut self, url: impl Into<String>) -> Self {
+    pub fn with_image(mut self, url: impl Into<crate::images::AttachmentUrl>) -> Self {
         self.image = Some(url.into());
         self
     }

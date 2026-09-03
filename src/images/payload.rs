@@ -162,6 +162,30 @@ fn shrink(
     Some(image.thumbnail_exact(target.0, target.1))
 }
 
+/// The sidecar holding the payload already built for the picture at `path`
+/// — the file **as it is now**, under the setting on — and the format it was
+/// re-encoded as, so the request can stream those bytes without opening the
+/// original or decoding anything. `None` is "no payload cached", never an
+/// error.
+#[must_use]
+pub fn cached_payload_file(path: &Path, format: ImageFormat) -> Option<(PathBuf, ImageFormat)> {
+    if !auto_resizing() {
+        return None;
+    }
+    let sidecar = sidecar(path, format, AUTO_RESIZE_MAX_PIXELS)?;
+    sidecar.is_file().then(|| (sidecar, payload_format(format)))
+}
+
+/// The MIME a downscaled payload is sent under — the two formats the
+/// re-encoder writes.
+#[must_use]
+pub fn payload_mime(format: ImageFormat) -> &'static str {
+    match format {
+        ImageFormat::Jpeg => "image/jpeg",
+        _ => "image/png",
+    }
+}
+
 /// What a source `format` is re-encoded as: a JPEG stays JPEG (a photo as
 /// PNG grows), everything else — PNG, GIF, WebP — becomes PNG, the only other
 /// format this build has an encoder for.

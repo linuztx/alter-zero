@@ -223,7 +223,7 @@ fn user_content(content: &MessageContent) -> Vec<Value> {
         MessageContent::Parts(parts) => parts
             .iter()
             .filter_map(|part| match part {
-                ContentPart::Text { text } => {
+                ContentPart::Text { text, .. } => {
                     non_empty(text.clone()).map(|text| json!({"type": "text", "text": text}))
                 }
                 ContentPart::ImageUrl { image_url } => image_block(&image_url.url),
@@ -263,7 +263,7 @@ fn flatten_text(content: &MessageContent) -> String {
         MessageContent::Parts(parts) => parts
             .iter()
             .filter_map(|part| match part {
-                ContentPart::Text { text } => Some(text.as_str()),
+                ContentPart::Text { text, .. } => Some(text.as_str()),
                 ContentPart::ImageUrl { .. } => None,
             })
             .collect::<Vec<_>>()
@@ -915,12 +915,10 @@ mod tests {
         let message = ChatMessage {
             role: "user".to_string(),
             content: MessageContent::Parts(vec![
-                ContentPart::Text {
-                    text: "what is this".to_string(),
-                },
+                ContentPart::text("what is this"),
                 ContentPart::ImageUrl {
                     image_url: ImageUrl {
-                        url: "data:image/jpeg;base64,ZZZZ".to_string(),
+                        url: "data:image/jpeg;base64,ZZZZ".into(),
                     },
                 },
             ]),

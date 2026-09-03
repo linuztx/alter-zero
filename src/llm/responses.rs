@@ -133,9 +133,9 @@ fn user_content(content: &MessageContent) -> Vec<Value> {
         MessageContent::Parts(parts) => parts
             .iter()
             .map(|part| match part {
-                ContentPart::Text { text } => json!({"type": "input_text", "text": text}),
+                ContentPart::Text { text, .. } => json!({"type": "input_text", "text": text}),
                 ContentPart::ImageUrl { image_url } => {
-                    json!({"type": "input_image", "image_url": image_url.url})
+                    json!({"type": "input_image", "image_url": image_url.url.as_str()})
                 }
             })
             .collect(),
@@ -158,7 +158,7 @@ fn flatten_text(content: &MessageContent) -> String {
         MessageContent::Parts(parts) => parts
             .iter()
             .filter_map(|part| match part {
-                ContentPart::Text { text } => Some(text.as_str()),
+                ContentPart::Text { text, .. } => Some(text.as_str()),
                 ContentPart::ImageUrl { .. } => None,
             })
             .collect::<Vec<_>>()
@@ -389,7 +389,7 @@ mod tests {
                 ContentPart::text("look"),
                 ContentPart::ImageUrl {
                     image_url: ImageUrl {
-                        url: "data:image/png;base64,AAA".to_string(),
+                        url: "data:image/png;base64,AAA".into(),
                     },
                 },
             ]),

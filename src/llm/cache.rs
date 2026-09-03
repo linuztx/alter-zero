@@ -9,14 +9,16 @@
 //! `cache_control: {"type": "ephemeral"}` breakpoint.
 //!
 //! [`needs_cache_breakpoints`] tells the payload builder which world a model
-//! id lives in, and [`apply_cache_breakpoints`] rewrites the wire `messages`
-//! array with the breakpoints — on the serialized JSON, so the whole
-//! [`crate::llm::ChatMessage`] family stays byte-identical for every other
-//! provider. Pure and unit-tested; verified live against OpenRouter's
-//! Anthropic routing (a breakpointed second request read its whole prefix
-//! from cache at ~1/10th the input price).
+//! id lives in, and [`apply_cache_breakpoints`] marks the round's **copy** of
+//! the [`crate::llm::ChatMessage`]s with the breakpoints — typed, on the
+//! messages themselves, so the body is still serialized from them by
+//! reference (a pasted picture's base64 is never copied into a tree of the
+//! request; `docs/memory.md`) and an implicit-caching provider's messages
+//! stay byte-identical. Pure and unit-tested; verified live against
+//! OpenRouter's Anthropic routing (a breakpointed second request read its
+//! whole prefix from cache at ~1/10th the input price).
 
-use serde_json::{Value, json};
+use super::{CacheControl, ChatMessage, ContentPart, MessageContent};
 
 /// The most `cache_control` breakpoints one request may carry (Anthropic's
 /// limit is 4). [`apply_cache_breakpoints`] places at most 3 by construction —
@@ -37,8 +39,9 @@ pub fn needs_cache_breakpoints(model: &str) -> bool {
     model.starts_with("anthropic/") || model.starts_with("qwen/")
 }
 
-/// Mark the wire `messages` array (the JSON the provider receives) with up to
-/// three `cache_control: {"type":"ephemeral"}` breakpoints:
+/// Mark `messages` — the round's copy of the conversation, as the provider
+/// receives it — with up to three `cache_control: {"type":"ephemeral"}`
+/// breakpoints:
 ///
 /// 1. the **system message** — the big stable prefix (persona + environment)
 ///    shared by every request;
@@ -51,28 +54,25 @@ pub fn needs_cache_breakpoints(model: &str) -> bool {
 ///
 /// A plain-string content converts to the one-text-part array form (the only
 /// shape that can carry `cache_control`); a parts array gets the marker on its
-/// last non-empty text part (image parts can't carry one). Messages with
-/// empty/absent content are skipped — an empty marked text block would be
-/// rejected. Anything that isn't a message array is left untouched.
-pub fn apply_cache_breakpoints(messages: &mut Value) {
-    let Some(list) = messages.as_array_mut() else {
-        return;
-    };
+/// last non-empty text part (image parts can't carry one, and their shared
+/// bytes are never copied). Messages with empty content are skipped — an
+/// empty marked text block would be rejected.
+pub fn apply_cache_breakpoints(messages: &mut [ChatMessage]) {
     let mut targets: Vec<usize> = Vec::new();
-    if let Some(system) = list
+    if let Some(system) = messages
         .iter()
-        .position(|m| role_of(m) == Some("system") && markable(m))
+        .position(|m| m.role == "system" && markable(m))
     {
         targets.push(system);
     }
-    let last = list.iter().rposition(markable);
+    let last = messages.iter().rposition(markable);
     if let Some(last) = last {
         if !targets.contains(&last) {
             targets.push(last);
         }
-        if let Some(prev_user) = list[..last]
+        if let Some(prev_user) = messages[..last]
             .iter()
-            .rposition(|m| role_of(m) == Some("user") && markable(m))
+            .rposition(|m| m.role == "user" && markable(m))
             && !targets.contains(&prev_user)
         {
             targets.push(prev_user);
@@ -80,61 +80,52 @@ pub fn apply_cache_breakpoints(messages: &mut Value) {
     }
     debug_assert!(targets.len() < MAX_BREAKPOINTS);
     for index in targets {
-        mark(&mut list[index]);
+        mark(&mut messages[index]);
     }
-}
-
-/// The message's `role` string, when present.
-fn role_of(message: &Value) -> Option<&str> {
-    message.get("role").and_then(Value::as_str)
 }
 
 /// Can this message carry a breakpoint? — a non-empty string content, or a
 /// parts array with at least one non-empty text part.
-fn markable(message: &Value) -> bool {
-    match message.get("content") {
-        Some(Value::String(text)) => !text.trim().is_empty(),
-        Some(Value::Array(parts)) => parts.iter().any(is_markable_text_part),
-        _ => false,
+fn markable(message: &ChatMessage) -> bool {
+    match &message.content {
+        MessageContent::Text(text) => !text.trim().is_empty(),
+        MessageContent::Parts(parts) => parts.iter().any(is_markable_text_part),
     }
 }
 
 /// Is this content part a text part whose text is non-empty?
-fn is_markable_text_part(part: &Value) -> bool {
-    part.get("type").and_then(Value::as_str) == Some("text")
-        && part
-            .get("text")
-            .and_then(Value::as_str)
-            .is_some_and(|t| !t.trim().is_empty())
+fn is_markable_text_part(part: &ContentPart) -> bool {
+    matches!(part, ContentPart::Text { text, .. } if !text.trim().is_empty())
 }
 
 /// Set the breakpoint on one (already [`markable`]) message: a string content
 /// is wrapped into the one-text-part array carrying `cache_control`; a parts
 /// array gets it on the **last** non-empty text part.
-fn mark(message: &mut Value) {
-    let Some(content) = message.get_mut("content") else {
-        return;
-    };
-    match content {
-        Value::String(text) => {
-            *content = json!([{
-                "type": "text",
-                "text": std::mem::take(text),
-                "cache_control": {"type": "ephemeral"},
+fn mark(message: &mut ChatMessage) {
+    match &mut message.content {
+        MessageContent::Text(text) => {
+            let text = std::mem::take(text);
+            message.content = MessageContent::Parts(vec![ContentPart::Text {
+                text,
+                cache_control: Some(CacheControl::EPHEMERAL),
             }]);
         }
-        Value::Array(parts) => {
-            if let Some(part) = parts.iter_mut().rev().find(|p| is_markable_text_part(p)) {
-                part["cache_control"] = json!({"type": "ephemeral"});
+        MessageContent::Parts(parts) => {
+            if let Some(ContentPart::Text { cache_control, .. }) =
+                parts.iter_mut().rev().find(|p| is_markable_text_part(p))
+            {
+                *cache_control = Some(CacheControl::EPHEMERAL);
             }
         }
-        _ => {}
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use serde_json::{Value, json};
+
     use super::*;
+    use crate::llm::{AttachmentUrl, ToolCallSpec};
 
     #[test]
     fn explicit_caching_models_are_the_namespaced_anthropic_and_qwen_ids() {
@@ -168,32 +159,41 @@ mod tests {
     }
 
     /// The marked form of `text` — the one-text-part array with the ephemeral
-    /// breakpoint.
+    /// breakpoint, as the wire sees it.
     fn marked(text: &str) -> Value {
         json!([{"type": "text", "text": text, "cache_control": {"type": "ephemeral"}}])
     }
 
+    /// A message's `content` as the wire carries it.
+    fn content(message: &ChatMessage) -> Value {
+        serde_json::to_value(&message.content).unwrap()
+    }
+
+    fn tool_call_message() -> ChatMessage {
+        ChatMessage::assistant_tool_calls("", vec![ToolCallSpec::function("c1", "bash", "{}")])
+    }
+
     #[test]
     fn the_system_prompt_and_the_last_message_get_breakpoints() {
-        let mut messages = json!([
-            {"role": "system", "content": "persona"},
-            {"role": "user", "content": "hi"},
-            {"role": "assistant", "content": "hello!"},
-            {"role": "user", "content": "and again"},
-        ]);
+        let mut messages = vec![
+            ChatMessage::system("persona"),
+            ChatMessage::user("hi"),
+            ChatMessage::assistant("hello!"),
+            ChatMessage::user("and again"),
+        ];
         apply_cache_breakpoints(&mut messages);
         assert_eq!(
-            messages[0]["content"],
+            content(&messages[0]),
             marked("persona"),
             "the system prefix caches"
         );
         assert_eq!(
-            messages[3]["content"],
+            content(&messages[3]),
             marked("and again"),
             "the frontier caches"
         );
         assert_eq!(
-            messages[2]["content"],
+            content(&messages[2]),
             json!("hello!"),
             "in-between messages stay plain strings"
         );
@@ -201,43 +201,41 @@ mod tests {
 
     #[test]
     fn the_previous_user_message_gets_the_third_breakpoint() {
-        let mut messages = json!([
-            {"role": "system", "content": "persona"},
-            {"role": "user", "content": "first"},
-            {"role": "assistant", "content": "one"},
-            {"role": "user", "content": "second"},
-        ]);
+        let mut messages = vec![
+            ChatMessage::system("persona"),
+            ChatMessage::user("first"),
+            ChatMessage::assistant("one"),
+            ChatMessage::user("second"),
+        ];
         apply_cache_breakpoints(&mut messages);
         assert_eq!(
-            messages[1]["content"],
+            content(&messages[1]),
             marked("first"),
             "the previous user message caches"
         );
-        assert_eq!(messages[3]["content"], marked("second"));
+        assert_eq!(content(&messages[3]), marked("second"));
     }
 
     #[test]
     fn at_most_three_breakpoints_are_placed_on_a_long_conversation() {
-        let mut messages = json!([
-            {"role": "system", "content": "persona"},
-            {"role": "user", "content": "a"},
-            {"role": "assistant", "content": "b"},
-            {"role": "user", "content": "c"},
-            {"role": "assistant", "content": "d"},
-            {"role": "user", "content": "e"},
-            {"role": "assistant", "content": "f"},
-            {"role": "user", "content": "g"},
-        ]);
+        let mut messages = vec![
+            ChatMessage::system("persona"),
+            ChatMessage::user("a"),
+            ChatMessage::assistant("b"),
+            ChatMessage::user("c"),
+            ChatMessage::assistant("d"),
+            ChatMessage::user("e"),
+            ChatMessage::assistant("f"),
+            ChatMessage::user("g"),
+        ];
         apply_cache_breakpoints(&mut messages);
         let marks = messages
-            .as_array()
-            .unwrap()
             .iter()
-            .filter(|m| m["content"].is_array())
+            .filter(|m| matches!(m.content, MessageContent::Parts(_)))
             .count();
         assert_eq!(marks, 3, "system + frontier + previous user, nothing else");
         assert!(
-            messages[1]["content"].is_string(),
+            matches!(messages[1].content, MessageContent::Text(_)),
             "older messages untouched"
         );
     }
@@ -247,21 +245,21 @@ mod tests {
         // Mid-agentic-round the request ends on a tool result; the moving
         // breakpoint lands on it so the round's results cache too (verified
         // accepted by OpenRouter's Anthropic routing).
-        let mut messages = json!([
-            {"role": "system", "content": "persona"},
-            {"role": "user", "content": "run it"},
-            {"role": "assistant", "content": "", "tool_calls": [{"id": "c1"}]},
-            {"role": "tool", "tool_call_id": "c1", "content": "Exit code: 0"},
-        ]);
+        let mut messages = vec![
+            ChatMessage::system("persona"),
+            ChatMessage::user("run it"),
+            tool_call_message(),
+            ChatMessage::tool_result("c1", "Exit code: 0"),
+        ];
         apply_cache_breakpoints(&mut messages);
-        assert_eq!(messages[3]["content"], marked("Exit code: 0"));
+        assert_eq!(content(&messages[3]), marked("Exit code: 0"));
         assert_eq!(
-            messages[1]["content"],
+            content(&messages[1]),
             marked("run it"),
             "previous user message still caches"
         );
         assert_eq!(
-            messages[2]["content"],
+            content(&messages[2]),
             json!(""),
             "the empty assistant tool-call content is never marked (the provider rejects empty text blocks)"
         );
@@ -271,28 +269,26 @@ mod tests {
     fn an_empty_frontier_falls_back_to_the_previous_cacheable_message() {
         // A trailing assistant message with empty content (a pure tool-call
         // request) can't carry a breakpoint — the frontier walks back.
-        let mut messages = json!([
-            {"role": "user", "content": "hi"},
-            {"role": "assistant", "content": "", "tool_calls": [{"id": "c1"}]},
-        ]);
+        let mut messages = vec![ChatMessage::user("hi"), tool_call_message()];
         apply_cache_breakpoints(&mut messages);
-        assert_eq!(messages[0]["content"], marked("hi"));
-        assert_eq!(messages[1]["content"], json!(""));
+        assert_eq!(content(&messages[0]), marked("hi"));
+        assert_eq!(content(&messages[1]), json!(""));
     }
 
     #[test]
     fn a_parts_message_gets_the_marker_on_its_last_text_part_only() {
         // A vision message: the image part can't carry cache_control — the
         // marker rides the last non-empty text part, parts order preserved.
-        let mut messages = json!([
-            {"role": "user", "content": [
-                {"type": "text", "text": "look at this"},
-                {"type": "image_url", "image_url": {"url": "data:image/png;base64,AA"}},
-            ]},
-        ]);
+        let mut messages = vec![ChatMessage::with_parts(
+            "user",
+            vec![
+                ContentPart::text("look at this"),
+                ContentPart::image("data:image/png;base64,AA"),
+            ],
+        )];
         apply_cache_breakpoints(&mut messages);
         assert_eq!(
-            messages[0]["content"],
+            content(&messages[0]),
             json!([
                 {"type": "text", "text": "look at this", "cache_control": {"type": "ephemeral"}},
                 {"type": "image_url", "image_url": {"url": "data:image/png;base64,AA"}},
@@ -302,20 +298,18 @@ mod tests {
 
     #[test]
     fn a_message_with_only_image_parts_is_not_markable() {
-        let mut messages = json!([
-            {"role": "user", "content": "hi"},
-            {"role": "user", "content": [
-                {"type": "image_url", "image_url": {"url": "data:image/png;base64,AA"}},
-            ]},
-        ]);
+        let mut messages = vec![
+            ChatMessage::user("hi"),
+            ChatMessage::with_parts("user", vec![ContentPart::image("data:image/png;base64,AA")]),
+        ];
         apply_cache_breakpoints(&mut messages);
         assert_eq!(
-            messages[0]["content"],
+            content(&messages[0]),
             marked("hi"),
             "the frontier walked back past the image-only message"
         );
         assert!(
-            messages[1]["content"].as_array().unwrap()[0]
+            content(&messages[1]).as_array().unwrap()[0]
                 .get("cache_control")
                 .is_none()
         );
@@ -324,32 +318,54 @@ mod tests {
     #[test]
     fn a_lone_system_message_is_marked_once_not_twice() {
         // system == frontier: the two rules dedupe to one breakpoint.
-        let mut messages = json!([{"role": "system", "content": "persona"}]);
+        let mut messages = vec![ChatMessage::system("persona")];
         apply_cache_breakpoints(&mut messages);
-        assert_eq!(messages[0]["content"], marked("persona"));
+        assert_eq!(content(&messages[0]), marked("persona"));
     }
 
     #[test]
-    fn whitespace_only_and_absent_content_are_skipped() {
-        let mut messages = json!([
-            {"role": "system", "content": "   "},
-            {"role": "user"},
-            {"role": "user", "content": "real"},
-        ]);
+    fn whitespace_only_content_is_skipped() {
+        let mut messages = vec![
+            ChatMessage::system("   "),
+            ChatMessage::with_parts("user", vec![ContentPart::text(" ")]),
+            ChatMessage::user("real"),
+        ];
         apply_cache_breakpoints(&mut messages);
         assert_eq!(
-            messages[0]["content"],
+            content(&messages[0]),
             json!("   "),
             "a blank system prompt is not marked"
         );
-        assert!(messages[1].get("content").is_none());
-        assert_eq!(messages[2]["content"], marked("real"));
+        assert!(
+            content(&messages[1])[0].get("cache_control").is_none(),
+            "a blank text part is not marked either"
+        );
+        assert_eq!(content(&messages[2]), marked("real"));
     }
 
     #[test]
-    fn a_non_array_value_is_left_untouched() {
-        let mut not_messages = json!("oops");
-        apply_cache_breakpoints(&mut not_messages);
-        assert_eq!(not_messages, json!("oops"));
+    fn marking_shares_the_image_bytes_rather_than_copying_them() {
+        // The breakpoints are applied to the round's copy of the messages;
+        // that copy, marked or not, must never duplicate an attachment.
+        let original = ChatMessage::with_parts(
+            "user",
+            vec![
+                ContentPart::text("look"),
+                ContentPart::image("data:image/png;base64,AA"),
+            ],
+        );
+        let mut messages = vec![original.clone()];
+        apply_cache_breakpoints(&mut messages);
+        let url_of = |m: &ChatMessage| match &m.content {
+            MessageContent::Parts(parts) => match &parts[1] {
+                ContentPart::ImageUrl { image_url } => image_url.url.clone(),
+                other => panic!("{other:?}"),
+            },
+            other => panic!("{other:?}"),
+        };
+        assert!(AttachmentUrl::ptr_eq(
+            &url_of(&original),
+            &url_of(&messages[0])
+        ));
     }
 }

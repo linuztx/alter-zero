@@ -296,7 +296,9 @@ pub fn latest_user_text(messages: &[super::ChatMessage]) -> String {
         .find_map(|message| match &message.content {
             super::MessageContent::Text(text) if !text.trim().is_empty() => Some(text.clone()),
             super::MessageContent::Parts(parts) => parts.iter().find_map(|part| match part {
-                super::ContentPart::Text { text } if !text.trim().is_empty() => Some(text.clone()),
+                super::ContentPart::Text { text, .. } if !text.trim().is_empty() => {
+                    Some(text.clone())
+                }
                 _ => None,
             }),
             _ => None,

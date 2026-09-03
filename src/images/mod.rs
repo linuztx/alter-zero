@@ -15,6 +15,9 @@
 //!   uploaded, which is what `/settings` **Auto-resize images** controls —
 //!   and keeping the result on disk for the session, since an attachment is
 //!   re-sent on every later turn.
+//! - [`attachment`] — the wire's copy of a picture, encoded **once** per
+//!   session and shared by reference by every request that re-sends it, so a
+//!   turn allocates nothing picture-sized (`docs/memory.md`).
 //! - [`fitted`] — pure. A PNG decoded at the size it will be shown or sent,
 //!   streaming its rows through an area-average shrink so the source picture
 //!   is never held whole (`docs/memory.md`).
@@ -23,12 +26,18 @@
 //!   pictures, and the one pass that turns a reserved block into a picture in
 //!   a `Buffer`.
 
+pub mod attachment;
 pub mod fitted;
 pub mod geometry;
 pub mod payload;
 pub mod registry;
 pub mod store;
 
+pub use attachment::{
+    ATTACHMENT_CACHE_MAX_BYTES, AttachmentCache, AttachmentStamp, AttachmentUrl,
+    attachment_data_url, attachment_mime, base64_encode_reader, clear_attachments,
+    remember_attachment, retain_attachments,
+};
 pub use fitted::{
     Downsampler, FIT_MAX_SOURCE_PIXELS, WHOLE_DECODE_MAX_PIXELS, decode_png_fitted, fit_box,
     whole_decode_fits,
@@ -39,8 +48,9 @@ pub use geometry::{
     image_budget, image_cells,
 };
 pub use payload::{
-    Downscaled, PAYLOAD_CACHE_MAX_BYTES, cache_eviction, cached_downscale, downscale_for_model,
-    downscale_for_model_at, downscale_to, payload_cache_key, set_payload_cache_dir,
+    Downscaled, PAYLOAD_CACHE_MAX_BYTES, cache_eviction, cached_downscale, cached_payload_file,
+    downscale_for_model, downscale_for_model_at, downscale_to, payload_cache_key, payload_mime,
+    set_payload_cache_dir,
 };
 pub use registry::{
     ImagePolicy, Placement, any_placements, auto_resizing, known_size, place, placement, policy,
