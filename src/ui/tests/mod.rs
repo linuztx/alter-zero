@@ -316,6 +316,8 @@ fn login_choices() -> Vec<ProviderChoice> {
             env_var: "OPENROUTER_API_KEY".into(),
             configured: true,
             key_kind: KeyKind::Secret,
+            description: String::new(),
+            key_url: String::new(),
         },
         ProviderChoice {
             id: "together".into(),
@@ -323,6 +325,8 @@ fn login_choices() -> Vec<ProviderChoice> {
             env_var: "TOGETHER_API_KEY".into(),
             configured: false,
             key_kind: KeyKind::Secret,
+            description: String::new(),
+            key_url: String::new(),
         },
     ]
 }
@@ -340,6 +344,8 @@ pub(super) fn host_choice() -> ProviderChoice {
         key_kind: KeyKind::Host {
             default: "http://127.0.0.1:11434".into(),
         },
+        description: String::new(),
+        key_url: String::new(),
     }
 }
 

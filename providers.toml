@@ -7,6 +7,13 @@
 #   - Everything under `kwargs` is passed through to the client as-is, so nested
 #     tables (like `venice_parameters`) round-trip fine. `kwargs.api_base` is the
 #     chat-completions endpoint; other keys are forwarded in the request body.
+#   - `description` (optional) is the one line saying what the provider is. A
+#     subscription's says what signing in means; a pasted-key provider's is shown
+#     on `/login`'s key step above the field. Either way it steers `/login`'s
+#     type-to-search, so a provider is findable by what it does.
+#   - `api_key_url` (optional) is where this provider's keys are created — linked
+#     under the description on that same step, so a user without a key can go and
+#     make one. A provider that takes no key names where the *server* comes from.
 #   - `api_key_env` (optional) names the environment variable the API key is read
 #     from; it defaults to `<ID_UPPERCASE>_API_KEY` (e.g. `OPENROUTER_API_KEY`).
 #   - `api_base_env` (optional) names an environment variable whose value
@@ -34,6 +41,8 @@
 
 [providers.a0_venice]
 name = "Agent Zero API"
+description = "Venice.ai's private, uncensored models through the Agent Zero proxy, with a free daily quota for A0T token holders."
+api_key_url = "https://agent-zero.ai/p/community/api-dashboard/"
 # Chat completions go through the Agent Zero proxy (kwargs.api_base below), but
 # its `/models` isn't served there — the model list comes from Venice directly,
 # which the `sk-a0-…` key is also valid against. So the two bases differ.
@@ -88,6 +97,8 @@ api_base = "https://api.githubcopilot.com"
 # where the context window, vision, tools and thinking come from.
 [providers.ollama]
 name = "Ollama"
+description = "Open models running locally on your own machine — nothing leaves it, and no key is needed. Point this at the server."
+api_key_url = "https://ollama.com/download"
 auth = "optional_key"
 wire_api = "ollama"
 api_key_env = "OLLAMA_API_KEY"
@@ -102,6 +113,8 @@ api_base = "http://127.0.0.1:11434"
 # `ollama` provider above instead.
 [providers.ollama_cloud]
 name = "Ollama Cloud"
+description = "Ollama's hosted service: the same open models, run on their datacenter GPUs instead of your machine."
+api_key_url = "https://ollama.com/settings/keys"
 wire_api = "ollama"
 api_key_env = "OLLAMA_API_KEY"
 
@@ -110,6 +123,8 @@ api_base = "https://ollama.com"
 
 [providers.openrouter]
 name = "OpenRouter"
+description = "One key for hundreds of models from every major lab — OpenAI, Anthropic, Google, Meta and more — billed from a single balance."
+api_key_url = "https://openrouter.ai/workspaces/default/keys"
 api_model_base = "https://openrouter.ai/api/v1"
 
 [providers.openrouter.kwargs]
@@ -148,6 +163,8 @@ api_base = "https://chatgpt.com/backend-api/codex"
 # request; it pins the wire format, so it belongs in the file beside the base.
 [providers.anthropic]
 name = "Anthropic"
+description = "Claude models straight from Anthropic's own API, billed per token to your API organisation. Keys start with sk-ant-."
+api_key_url = "https://platform.claude.com/settings/keys"
 wire_api = "anthropic"
 api_key_env = "ANTHROPIC_API_KEY"
 

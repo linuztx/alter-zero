@@ -2,12 +2,24 @@
 
 use super::*;
 
-/// The key step's whole page height (see `key_onboarding_lines`).
+/// The key step's whole page height for a provider the file describes in no
+/// words (see `key_onboarding_lines`); a description block grows it.
 const LOGIN_KEY_ROWS: u16 = 9;
+
+/// The row every list step's `❯` filter sits on — top(0) gap(1) search(2).
+/// Pinned *here* rather than in the theme: it is a claim about the page's
+/// shape, which is a thing to test, while the paint finds its own caret seat
+/// in the page it just built (`login_prompt_row`).
+const LOGIN_SEARCH_ROW: u16 = 2;
+
+/// The row the key step's `❯` field sits on when nothing stands between it
+/// and the title — top(0) gap(1) title(2) gap(3) field(4). A described
+/// provider pushes it down, which is the whole reason the seat is found and
+/// not counted.
+const LOGIN_KEY_INPUT_ROW: u16 = 4;
 use crate::ui::login_view::{login_host_prompt, login_key_prompt};
 use crate::ui::theme::{
-    DEVICE_CURSOR_ROW, ERROR_COLOR, LOGIN_KEY_INPUT_ROW, LOGIN_SEARCH_ROW, LOGIN_TITLE_COLOR,
-    MODEL_META_COLOR, MODEL_SELECTED_COLOR,
+    DEVICE_CURSOR_ROW, ERROR_COLOR, LOGIN_TITLE_COLOR, MODEL_META_COLOR, MODEL_SELECTED_COLOR,
 };
 
 /// The row the code box's top border lands on, found by content — the page's
@@ -100,47 +112,45 @@ fn all_failed_picker_shows_one_red_row_per_provider() {
 fn render_login_provider_step_frames_lists_and_marks_configured() {
     let app = login_app_provider();
     let onboarding = app.key_onboarding.as_ref().unwrap();
-    // rule(0) gap(1) title(2) gap(3) ❯(4) gap(5) rows(6,7) counter(8) gap(9)
-    // path(10) nav(11) gap(12) rule(13).
-    let mut buf = buffer(60, 14);
+    // rule(0) gap(1) ❯(2) gap(3) rows(4,5) counter(6) gap(7) path(8) nav(9)
+    // gap(10) rule(11).
+    let mut buf = buffer(60, 12);
     render_key_onboarding(buf.area, &mut buf, onboarding);
     assert!(row(&buf, 0, 60).starts_with('─'), "top rule");
     assert!(row(&buf, 1, 60).trim().is_empty(), "gap under the rule");
-    // The cyan title says which half of `/login` you are in.
-    assert!(
-        row(&buf, 2, 60).contains("Use an API key"),
-        "{:?}",
-        row(&buf, 2, 60)
-    );
-    assert_eq!(buf[(2, 2)].fg, LOGIN_TITLE_COLOR, "titles are cyan");
-    // The `❯` filter line.
+    // The `❯` filter line, straight under the rule — no heading over it.
     assert!(row(&buf, LOGIN_SEARCH_ROW, 60).contains('❯'));
-    // First provider row (y = LOGIN_SEARCH_ROW + 2 = 6): selected →, the name,
-    // and a green ✓ because OpenRouter is configured — and nothing else. The
-    // env var it saves under is named by the hint below and by the save
-    // toast; repeating it on every row only crowds the list.
-    let first = row(&buf, 6, 60);
+    // First provider row (y = LOGIN_SEARCH_ROW + 2 = 4): selected →, the name,
+    // and its configured status — and nothing else. The env var it saves under
+    // is named by the hint below and by the save toast; repeating it on every
+    // row only crowds the list.
+    let first = row(&buf, 4, 60);
     assert!(first.starts_with("→ OpenRouter"), "{first:?}");
     assert!(
         !first.contains('[') && !first.contains("OPENROUTER_API_KEY"),
         "the env var does not ride the row: {first:?}"
     );
     assert!(
-        first.contains('✓'),
-        "configured provider has a check: {first:?}"
+        first.contains("✔ configured"),
+        "a configured provider says so: {first:?}"
     );
-    // Together AI (row 1, y=7) is not configured → no check.
-    assert!(!row(&buf, 7, 60).contains('✓'));
+    // Together AI (row 1, y=5) has no key — and says *that*, rather than
+    // leaving the reader to notice a missing mark.
+    assert!(
+        row(&buf, 5, 60).contains("◯ unconfigured"),
+        "{:?}",
+        row(&buf, 5, 60)
+    );
     // The hints name the real .env path and the step's own key grammar.
     assert!(
-        row(&buf, 10, 60).contains("Keys are saved to ~/.alter-zero/.env"),
+        row(&buf, 8, 60).contains("Keys are saved to ~/.alter-zero/.env"),
         "hint: {:?}",
-        row(&buf, 10, 60)
+        row(&buf, 8, 60)
     );
     assert!(
-        row(&buf, 11, 60).contains("esc back"),
+        row(&buf, 9, 60).contains("esc back"),
         "{:?}",
-        row(&buf, 11, 60)
+        row(&buf, 9, 60)
     );
 }
 
@@ -258,12 +268,11 @@ fn render_live_shows_the_onboarding_when_open() {
     // the region's bottom — the strip above it owns any slack).
     let mut buf = buffer(60, key_onboarding_height(&app, 60, 40).unwrap());
     render_live(buf.area, &mut buf, &app);
-    // The onboarding stands in for the composer: top rule, cyan title, `❯`
-    // filter, and the provider list.
+    // The onboarding stands in for the composer: top rule, `❯` filter, and
+    // the provider list.
     assert!(row(&buf, 0, 60).starts_with('─'), "top rule");
-    assert!(row(&buf, 2, 60).contains("Use an API key"), "the title");
     assert!(row(&buf, LOGIN_SEARCH_ROW, 60).contains('❯'), "filter line");
-    assert!(row(&buf, 6, 60).contains("OpenRouter"), "a provider row");
+    assert!(row(&buf, 4, 60).contains("OpenRouter"), "a provider row");
 }
 
 #[test]
@@ -327,19 +336,17 @@ fn an_unmatched_provider_filter_collapses_to_placeholder_and_hint() {
         .map(|l| plain(l).trim_end().to_string())
         .collect();
     let is_rule = |t: &str| !t.is_empty() && t.chars().all(|c| c == '─');
-    assert_eq!(texts.len(), 12, "the collapsed page is 12 rows: {texts:?}");
+    assert_eq!(texts.len(), 10, "the collapsed page is 10 rows: {texts:?}");
     assert!(is_rule(&texts[0]), "{texts:?}");
     assert_eq!(texts[1], "", "{texts:?}");
-    assert!(texts[2].contains("Use an API key"), "{texts:?}");
+    assert!(texts[2].contains('❯'), "{texts:?}");
     assert_eq!(texts[3], "", "{texts:?}");
-    assert!(texts[4].contains('❯'), "{texts:?}");
-    assert_eq!(texts[5], "", "{texts:?}");
-    assert!(texts[6].contains("No matching providers"), "{texts:?}");
-    assert_eq!(texts[7], "", "one gap under the placeholder: {texts:?}");
-    assert!(texts[8].contains("Keys are saved"), "the hint: {texts:?}");
-    assert!(texts[9].contains("esc back"), "the key hint: {texts:?}");
-    assert_eq!(texts[10], "", "{texts:?}");
-    assert!(is_rule(&texts[11]), "{texts:?}");
+    assert!(texts[4].contains("No matching providers"), "{texts:?}");
+    assert_eq!(texts[5], "", "one gap under the placeholder: {texts:?}");
+    assert!(texts[6].contains("Keys are saved"), "the hint: {texts:?}");
+    assert!(texts[7].contains("esc back"), "the key hint: {texts:?}");
+    assert_eq!(texts[8], "", "{texts:?}");
+    assert!(is_rule(&texts[9]), "{texts:?}");
 }
 
 #[test]
@@ -439,23 +446,24 @@ fn the_method_step_offers_the_two_ways_in_with_no_counter() {
 }
 
 #[test]
-fn the_subscription_step_titles_itself_and_lists_each_row() {
+fn the_subscription_step_lists_each_row_under_its_filter() {
     let app = login_app_subscription();
     let onboarding = app.key_onboarding.as_ref().unwrap();
-    let mut buf = buffer(70, 12);
+    let mut buf = buffer(70, 10);
     render_key_onboarding(buf.area, &mut buf, onboarding);
-    assert!(row(&buf, 2, 70).contains("Use a subscription"), "the title");
-    assert_eq!(buf[(2, 2)].fg, LOGIN_TITLE_COLOR, "titles are cyan");
     assert!(row(&buf, LOGIN_SEARCH_ROW, 70).contains('❯'), "the filter");
-    let entry = row(&buf, 6, 70);
+    let entry = row(&buf, 4, 70);
     assert!(entry.starts_with("→ GitHub Copilot"), "{entry:?}");
     assert!(
         !entry.contains("Sign in with your GitHub account"),
-        "the row is the name and its ✓, not a sentence: {entry:?}"
+        "the row is the name and its status, not a sentence: {entry:?}"
     );
-    assert!(entry.contains('✓'), "already signed in: {entry:?}");
-    assert!(row(&buf, 7, 70).contains("(1/1)"), "the counter");
-    assert!(row(&buf, 9, 70).contains("enter sign in"), "the hint");
+    assert!(
+        entry.contains("✔ configured"),
+        "already signed in: {entry:?}"
+    );
+    assert!(row(&buf, 5, 70).contains("(1/1)"), "the counter");
+    assert!(row(&buf, 7, 70).contains("enter sign in"), "the hint");
 }
 
 #[test]
@@ -478,9 +486,9 @@ fn a_subscription_is_still_findable_by_words_the_row_no_longer_shows() {
         "a description-only query still finds its row"
     );
     // And the row it finds still shows none of those words.
-    let mut buf = buffer(70, 12);
+    let mut buf = buffer(70, 10);
     render_key_onboarding(buf.area, &mut buf, app.key_onboarding.as_ref().unwrap());
-    let entry = row(&buf, 6, 70);
+    let entry = row(&buf, 4, 70);
     assert!(entry.contains("GitHub Copilot"), "{entry:?}");
     assert!(!entry.contains("Sign in with your"), "{entry:?}");
 }
@@ -875,4 +883,278 @@ fn the_device_seat_does_not_move_when_the_code_arrives() {
         seat_of(&app),
         "the seat holds still across the growth"
     );
+}
+
+// --- every list row says whether it is configured (docs/llm.md) ---
+
+/// The foreground of the first span of `line` containing `needle`.
+fn span_fg(line: &Line, needle: &str) -> Option<ratatui::style::Color> {
+    line.spans
+        .iter()
+        .find(|s| s.content.contains(needle))
+        .and_then(|s| s.style.fg)
+}
+
+/// The row of a built `/login` page whose text contains `needle`.
+fn page_row(onboarding: &KeyOnboarding, width: u16, needle: &str) -> Line<'static> {
+    crate::ui::login_view::key_onboarding_lines(onboarding, width)
+        .into_iter()
+        .find(|l| plain(l).contains(needle))
+        .unwrap_or_else(|| panic!("no row matched {needle:?}"))
+}
+
+#[test]
+fn a_provider_row_says_whether_its_key_is_configured() {
+    // A bare row used to mean "no key yet" — a fact the reader could only get
+    // from the *absence* of a ✓ two columns further right. Both states are
+    // now spelled out, so the list answers "which of these can I use?" at a
+    // glance.
+    //
+    // **Only the ✔ is coloured.** The mark is the thing worth finding down a
+    // list — it wears the green the `/model` picker's ✓ does — while the word
+    // beside it is a plain fact and stays dim, so a list of statuses reads as
+    // statuses rather than as a column of alerts.
+    use crate::ui::theme::{
+        LOGIN_CONFIGURED_LABEL, LOGIN_CONFIGURED_MARK, LOGIN_UNCONFIGURED_LABEL,
+        LOGIN_UNCONFIGURED_MARK, MODEL_ACTIVE_COLOR, MODEL_META_COLOR,
+    };
+    let app = login_app_provider();
+    let onboarding = app.key_onboarding.as_ref().unwrap();
+    let keyed = page_row(onboarding, 60, "OpenRouter");
+    assert_eq!(
+        plain(&keyed).trim_end(),
+        format!("→ OpenRouter · {LOGIN_CONFIGURED_MARK}{LOGIN_CONFIGURED_LABEL}")
+    );
+    assert_eq!(
+        span_fg(&keyed, LOGIN_CONFIGURED_MARK),
+        Some(MODEL_ACTIVE_COLOR),
+        "the ✔ is green"
+    );
+    assert_eq!(
+        span_fg(&keyed, LOGIN_CONFIGURED_LABEL),
+        Some(MODEL_META_COLOR),
+        "the word beside it is not"
+    );
+
+    let bare = page_row(onboarding, 60, "Together AI");
+    assert_eq!(
+        plain(&bare).trim_end(),
+        format!("  Together AI · {LOGIN_UNCONFIGURED_MARK}{LOGIN_UNCONFIGURED_LABEL}")
+    );
+    // Nothing to find on a row with no key: the ◯ is dim like its word, so the
+    // green marks are the only thing standing out down the list.
+    assert_eq!(
+        span_fg(&bare, LOGIN_UNCONFIGURED_MARK),
+        Some(MODEL_META_COLOR)
+    );
+    assert_eq!(
+        span_fg(&bare, LOGIN_UNCONFIGURED_LABEL),
+        Some(MODEL_META_COLOR)
+    );
+}
+
+#[test]
+fn a_subscription_row_says_whether_it_is_signed_in() {
+    use crate::ui::theme::{LOGIN_CONFIGURED_LABEL, LOGIN_CONFIGURED_MARK};
+    let app = login_app_subscription();
+    let onboarding = app.key_onboarding.as_ref().unwrap();
+    let row = page_row(onboarding, 70, "GitHub Copilot");
+    assert_eq!(
+        plain(&row).trim_end(),
+        format!("→ GitHub Copilot · {LOGIN_CONFIGURED_MARK}{LOGIN_CONFIGURED_LABEL}")
+    );
+}
+
+#[test]
+fn the_method_root_rows_carry_no_configured_status() {
+    // The two ways in are the *question*, not an answer: neither is a thing
+    // that can be configured, so neither wears a status.
+    let app = login_app();
+    let onboarding = app.key_onboarding.as_ref().unwrap();
+    for name in ["Use a subscription", "Use an API key"] {
+        let row = plain(&page_row(onboarding, 70, name));
+        assert!(!row.contains("configured"), "{row:?}");
+    }
+}
+
+// --- the two list steps carry no heading (docs/llm.md) ---
+
+/// A built `/login` page as trailing-trimmed row texts.
+fn page_texts(onboarding: &KeyOnboarding, width: u16) -> Vec<String> {
+    crate::ui::login_view::key_onboarding_lines(onboarding, width)
+        .iter()
+        .map(|l| plain(l).trim_end().to_string())
+        .collect()
+}
+
+#[test]
+fn the_two_list_steps_open_straight_onto_their_filter() {
+    // The subscription and provider pages used to repeat the method row that
+    // opened them as a cyan heading. It says nothing the hint under the list
+    // and the rows themselves don't, and it pushed every row two lines down —
+    // so all three lists are one shape now: rule, gap, filter.
+    for app in [login_app_subscription(), login_app_provider()] {
+        let onboarding = app.key_onboarding.as_ref().unwrap();
+        let texts = page_texts(onboarding, 70);
+        assert!(
+            texts[2].contains('❯'),
+            "the filter is the first content row: {texts:?}"
+        );
+        for heading in ["Use a subscription", "Use an API key"] {
+            assert!(
+                !texts.iter().any(|t| t.contains(heading)),
+                "no {heading:?} heading: {texts:?}"
+            );
+        }
+    }
+    // The root still asks its question — there its two rows *are* the answer
+    // set, not a heading over one.
+    let app = login_app();
+    let texts = page_texts(app.key_onboarding.as_ref().unwrap(), 70);
+    assert!(texts[2].contains('❯'), "{texts:?}");
+    assert!(texts[4].contains("Use a subscription"), "{texts:?}");
+}
+
+// --- the key step introduces the provider it is asking for (docs/llm.md) ---
+
+/// The flow parked on the key step of a provider that carries a description
+/// and the page its keys are created on.
+fn login_app_described(key_kind: KeyKind) -> App {
+    let mut app = App::new();
+    let choice = ProviderChoice {
+        id: "openrouter".into(),
+        name: "OpenRouter".into(),
+        env_var: "OPENROUTER_API_KEY".into(),
+        configured: false,
+        key_kind,
+        description: "One key for models from every major lab, billed from a single balance."
+            .into(),
+        key_url: "https://openrouter.ai/workspaces/default/keys".into(),
+    };
+    app.open_key_onboarding(vec![choice], Vec::new(), "~/.alter-zero/.env");
+    let onboarding = app.key_onboarding.as_mut().unwrap();
+    onboarding.step = KeyStep::Key;
+    onboarding.chosen = Some(0);
+    app
+}
+
+#[test]
+fn the_key_step_describes_the_provider_and_links_its_key_page() {
+    // "Enter your OpenRouter API key" tells a reader who already knows what
+    // OpenRouter is nothing, and tells everyone else nothing at all — least
+    // of all *where* the key they are being asked to paste comes from.
+    let app = login_app_described(KeyKind::Secret);
+    let onboarding = app.key_onboarding.as_ref().unwrap();
+    let lines = crate::ui::login_view::key_onboarding_lines(onboarding, 70);
+    let text = lines.iter().map(plain).collect::<Vec<_>>().join("\n");
+    assert!(text.contains("every major lab"), "the description: {text}");
+    assert!(
+        text.contains("Create a key at https://openrouter.ai/workspaces/default/keys"),
+        "the key page: {text}"
+    );
+    // …and the URL is a real hyperlink, like every other URL this flow shows.
+    assert_eq!(
+        link_targets(&lines),
+        vec!["https://openrouter.ai/workspaces/default/keys".to_string()]
+    );
+    // The description sits between the title and the field, so the field is
+    // still the last thing above the hint.
+    let texts = page_texts(onboarding, 70);
+    let title = texts.iter().position(|t| t.contains("Enter your")).unwrap();
+    let about = texts.iter().position(|t| t.contains("major lab")).unwrap();
+    let field = texts.iter().position(|t| t.contains('❯')).unwrap();
+    assert!(title < about && about < field, "{texts:?}");
+}
+
+#[test]
+fn a_narrow_key_page_wraps_the_description_rather_than_cutting_it() {
+    // Every row of the block must survive: a description clipped at the width
+    // is a sentence that stops mid-word, and a clipped URL is a dead link.
+    let app = login_app_described(KeyKind::Secret);
+    let onboarding = app.key_onboarding.as_ref().unwrap();
+    let lines = crate::ui::login_view::key_onboarding_lines(onboarding, 40);
+    for line in &lines {
+        assert!(
+            crate::ui::wrap::cols(plain(line).trim_end()) <= 40,
+            "no row leaks past the width: {:?}",
+            plain(line)
+        );
+    }
+    let joined = lines.iter().map(plain).collect::<Vec<_>>().join(" ");
+    assert!(
+        joined.contains("single balance."),
+        "the description's tail survives: {joined}"
+    );
+    // A URL is one long word, so the wrap hard-breaks it; stripping spaces
+    // reassembles it wherever it broke — and each fragment still carries the
+    // whole target (docs/links.md).
+    assert!(
+        joined
+            .replace(' ', "")
+            .contains("openrouter.ai/workspaces/default/keys"),
+        "the URL's tail survives: {joined}"
+    );
+    assert!(
+        link_targets(&lines)
+            .iter()
+            .all(|u| u == "https://openrouter.ai/workspaces/default/keys"),
+        "every fragment opens the whole page"
+    );
+}
+
+#[test]
+fn a_host_field_points_at_the_software_rather_than_a_key_page() {
+    // A keyless provider has no key to create: what its link is for is the
+    // server the host field is asking about (docs/ollama.md).
+    let app = login_app_described(KeyKind::Host {
+        default: "http://127.0.0.1:11434".into(),
+    });
+    let onboarding = app.key_onboarding.as_ref().unwrap();
+    let text = page_texts(onboarding, 70).join("\n");
+    assert!(text.contains("Install it from https://"), "{text}");
+    assert!(!text.contains("Create a key at"), "{text}");
+}
+
+#[test]
+fn a_provider_with_nothing_to_say_keeps_the_bare_key_page() {
+    // The block is omitted whole — never a blank band under the title.
+    let app = login_app_key();
+    let onboarding = app.key_onboarding.as_ref().unwrap();
+    let texts = page_texts(onboarding, 70);
+    assert_eq!(texts.len(), usize::from(LOGIN_KEY_ROWS), "{texts:?}");
+    for pair in texts.windows(2) {
+        assert!(
+            !(pair[0].is_empty() && pair[1].is_empty()),
+            "no stacked blanks: {texts:?}"
+        );
+    }
+}
+
+#[test]
+fn the_cursor_follows_the_key_field_below_a_description_block() {
+    // The field's row is no longer a constant — a description of any length
+    // sits above it — so the seat is found in the page the paint builds.
+    let mut app = login_app_described(KeyKind::Secret);
+    app.key_onboarding.as_mut().unwrap().key_input = "abcd".into();
+    let area = Rect::new(0, 0, 70, key_onboarding_height(&app, 70, 40).unwrap());
+    let (x, y) = cursor_position(area, &app);
+    let onboarding = app.key_onboarding.as_ref().unwrap();
+    let field = page_texts(onboarding, 70)
+        .iter()
+        .position(|t| t.contains('❯'))
+        .unwrap() as u16;
+    assert_eq!(y, field, "the caret sits on the field row");
+    // indent(2) + "❯ "(2) + 4 mask glyphs = 8.
+    assert_eq!(x, 8);
+}
+
+#[test]
+fn a_provider_is_findable_by_the_words_of_its_description() {
+    // The provider list filters on the description for the same reason the
+    // subscription list does: the row shows a name, and a user hunting for
+    // "claude" or "local" is describing what they want, not naming it.
+    let app = login_app_described(KeyKind::Secret);
+    let mut onboarding = app.key_onboarding.clone().unwrap();
+    onboarding.query = "major lab".into();
+    assert_eq!(onboarding.matches().len(), 1);
 }
