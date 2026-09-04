@@ -1261,3 +1261,18 @@ fn an_edit_prompt_marks_the_characters_that_changed() {
         "only the digit that changed"
     );
 }
+
+#[test]
+fn a_full_amend_row_keeps_the_caret_inside_the_width() {
+    // Tab's amend field keeps one column for the caret like the composer
+    // (docs/textarea.md): a row of text never pushes it past the edge.
+    let mut app = app_with(request(PermissionKind::Write, "hello.py", WRITE_BODY));
+    app.on_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+    for n in 1..=200 {
+        app.on_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
+        let height = permission_height(&app, 70, 40).unwrap();
+        let area = Rect::new(0, 0, 70, height);
+        let (x, _) = cursor_position(area, &app);
+        assert!(x < 70, "{n} chars: the caret sits at column {x}");
+    }
+}

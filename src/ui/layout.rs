@@ -244,9 +244,24 @@ pub fn strip_has_status(app: &App) -> bool {
 }
 
 /// Columns the input field's text occupies: the box spans the full width (no side
-/// borders) minus the prompt/indent that prefixes every text row.
+/// borders) minus the prompt/indent that prefixes every text row, minus the
+/// caret's own column ([`text_field_width`]).
 fn field_width(width: u16) -> u16 {
-    width.saturating_sub(BULLET_WIDTH).max(1)
+    text_field_width(width.saturating_sub(BULLET_WIDTH))
+}
+
+/// The text width of a field painted into `cells` columns: one less, kept for
+/// the caret ([`CURSOR_COLUMN`]). The textarea lets a row fill every column
+/// it is given, and the caret at the end of a full row sits one past it — so
+/// the last cell is spoken for, that seat exists, and a word that would have
+/// landed in it wraps to the next row instead (Claude Code's rule). The
+/// alternative was the text flush against the terminal's edge with the caret
+/// dropped to an empty row below, which read as a newline the user never
+/// typed (`docs/textarea.md`). Every field that renders the textarea sizes
+/// itself through here — the composer, the ask modal's entries, Tab's amend
+/// field — so the three cannot disagree.
+pub(super) fn text_field_width(cells: u16) -> u16 {
+    cells.saturating_sub(CURSOR_COLUMN).max(1)
 }
 
 /// Height of the bottom live region for the current `input` at this terminal

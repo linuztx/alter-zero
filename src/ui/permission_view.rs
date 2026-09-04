@@ -164,9 +164,9 @@ fn hint_row(pairs: &[(&str, &str)]) -> Line<'static> {
 /// The width available to the amend field's text — the region minus the
 /// inset and the `❯ ` prompt. Shared with [`cursor_position`].
 pub(super) fn amend_field_width(width: u16) -> u16 {
-    width
-        .saturating_sub((cols(PERMISSION_INDENT) + cols(PERMISSION_MARKER)) as u16)
-        .max(1)
+    super::layout::text_field_width(
+        width.saturating_sub((cols(PERMISSION_INDENT) + cols(PERMISSION_MARKER)) as u16),
+    )
 }
 
 /// Tab's amend field in place of the option rows: the composer's wrapped rows

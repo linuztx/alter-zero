@@ -4,9 +4,9 @@
 //! The walk over the whole history lives in
 //! [`conversation`](super::conversation).
 
-use super::assistant::assistant_lines;
+use super::assistant::{assistant_lines, expand_code_tabs};
 use super::theme::*;
-use super::wrap::cols;
+use super::wrap::{cols, wrap_output};
 use super::*;
 
 /// Build the styled, wrapped lines for one message.
@@ -41,7 +41,14 @@ pub fn message_lines(role: Role, text: &str, width: u16) -> Vec<Line<'static>> {
         Style::default()
     };
     let cw = content_width as usize;
-    wrap_text(text, content_width)
+    // Literal text keeps its own spacing — a run of spaces the user typed, a
+    // pasted line's indentation, a `!` command's quoted spaces — wrapped at
+    // word boundaries with the whitespace preserved ([`wrap_output`], the tool
+    // output rows' wrapper), tabs expanded for display like a code block's
+    // (a tab paints as zero cells but measures as one, which left the dark
+    // row a column short of the edge). The composer shows the draft that
+    // way, so the bubble it becomes agrees with it (`docs/textarea.md`).
+    wrap_output(&expand_code_tabs(text), content_width)
         .into_iter()
         .enumerate()
         .map(|(i, line)| {

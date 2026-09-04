@@ -34,6 +34,11 @@ pub(super) const INDENT: &str = "  ";
 /// Columns a bullet/indent occupies, subtracted from the content width.
 pub(super) const BULLET_WIDTH: u16 = 2;
 
+/// The column every text field keeps past its text for the caret — the cell
+/// the cursor sits in at the end of a row the wrap left exactly full
+/// (`layout::text_field_width`, `docs/textarea.md`).
+pub(super) const CURSOR_COLUMN: u16 = 1;
+
 // --- Assistant markdown rendering (fenced code blocks + ATX headings;
 // `docs/markdown.md`). Code sits under the bullet (no gutter, no language
 // label), rendered VERBATIM (indentation preserved, no word-wrap) — the fix
@@ -213,6 +218,13 @@ pub(super) const TOOL_HEADER_MAX_ROWS: usize = 3;
 /// The marker spliced in (before the closing `)`) when a header is truncated at
 /// [`TOOL_HEADER_MAX_ROWS`].
 pub(super) const TOOL_HEADER_ELLIPSIS: &str = "…";
+
+/// The parens framing a header's arguments — `● {name}({args})`. The opening
+/// one rides the name's row (so an argument too wide for what is left beside
+/// the name spills to the continuation row whole), the closing one the last
+/// argument row; both wear the arguments' bold white (`tool_header_lines`).
+pub(super) const TOOL_HEADER_OPEN: &str = "(";
+pub(super) const TOOL_HEADER_CLOSE: &str = ")";
 
 /// The share of the terminal a wrapped header may spend aligning its
 /// continuation rows under the opening `(`: at most one part in this many.

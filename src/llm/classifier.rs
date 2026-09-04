@@ -33,7 +33,7 @@ use std::collections::VecDeque;
 
 use super::config::ModelConfig;
 use super::openai::OpenAiClient;
-use super::tools::{display_name, summarize_call};
+use super::tools::{display_name, flatten_one_line, summarize_call};
 use crate::permission::{ClassifierVerdict, PermissionKind, PermissionRequest, mcp_label};
 use crate::stream::CancelToken;
 
@@ -138,7 +138,9 @@ fn truncate_chars(text: &str, max: usize) -> String {
 /// at [`CONTEXT_ACTION_MAX_CHARS`].
 fn action_line(name: &str, arguments: &str) -> String {
     let display = display_name(name);
-    let summary = summarize_call(name, arguments);
+    // One action, one line: a `bash` summary keeps the command's newlines for
+    // the cell header, which here would break the list's row-per-action shape.
+    let summary = flatten_one_line(&summarize_call(name, arguments));
     let line = if summary.is_empty() {
         display
     } else {
@@ -588,6 +590,19 @@ mod tests {
         assert!(block.contains("> do this"), "got {block}");
         assert!(block.contains("> ## and that"), "got {block}");
         assert!(!block.contains("\n## and that"), "got {block}");
+    }
+
+    #[test]
+    fn the_context_lists_a_multiline_command_on_one_line() {
+        // The summary keeps a `bash` command's newlines for the cell header;
+        // the action list is one row per action, so they flatten here.
+        let mut context = ctx("task");
+        context.record_call(
+            "bash",
+            &serde_json::json!({"command": "cd foo\n  ls   -la"}).to_string(),
+        );
+        let block = context.render();
+        assert!(block.contains("Bash(cd foo ls -la)"), "got {block}");
     }
 
     #[test]

@@ -880,8 +880,20 @@ pub fn summarize_call(name: &str, arguments: &str) -> String {
             .and_then(Value::as_str)
             .map(str::to_string)
     };
+    // A `bash` command keeps its whitespace: a newline separates statements
+    // and a run of spaces inside quotes is data, so the flattened `cd foo ls`
+    // that `cd foo\nls` used to summarize as showed a *different* command.
+    // The cell header renders it line by line (`ui::tool_header_lines`); the
+    // one-line surfaces — the agent roster's activity row, the classifier's
+    // action list — flatten it themselves with [`flatten_one_line`].
+    if name == "bash"
+        && let Some(command) = field("command")
+    {
+        return command.trim().to_string();
+    }
     let summary = match name {
-        "bash" => field("command"),
+        // Handled above; an unparseable call falls back to the flatten below.
+        "bash" => None,
         "read" | "write" | "edit" => field("path"),
         AGENT_TOOL_NAME => field("description"),
         // `● Skill(dataviz)` — the name alone, the reference's header. The
@@ -924,8 +936,13 @@ pub fn summarize_call(name: &str, arguments: &str) -> String {
     flatten_one_line(&summary)
 }
 
-/// Collapse a possibly multi-line string to a single spaced line (for a header).
-fn flatten_one_line(s: &str) -> String {
+/// Collapse a possibly multi-line string to a single spaced line — the
+/// one-row surfaces' view of a summary [`summarize_call`] keeps verbatim (a
+/// `bash` command's newlines and space runs): the agent roster's clipped
+/// `{Name}: {args}` activity row and the auto mode classifier's `Name(args)`
+/// action list.
+#[must_use]
+pub fn flatten_one_line(s: &str) -> String {
     s.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
@@ -1863,11 +1880,32 @@ mod tests {
     }
 
     #[test]
-    fn summarize_call_flattens_a_multiline_command() {
+    fn summarize_call_keeps_a_bash_command_verbatim() {
+        // A command's whitespace is meaning — a newline separates statements,
+        // a run of spaces inside quotes is data — so the summary keeps the
+        // command as written (trimmed), and the header renders it line by
+        // line (`ui::tool_header_lines`). The one-line surfaces flatten it
+        // themselves ([`flatten_one_line`]).
         assert_eq!(
-            summarize_call("bash", "{\"command\":\"echo one\\n echo two\"}"),
-            "echo one echo two"
+            summarize_call(
+                "bash",
+                "{\"command\":\"echo one\\n  echo \\\"a   b\\\"\\n\"}"
+            ),
+            "echo one\n  echo \"a   b\""
         );
+    }
+
+    #[test]
+    fn summarize_call_still_flattens_prose_summaries() {
+        // A description or a question is prose for a one-line header.
+        assert_eq!(
+            summarize_call(
+                AGENT_TOOL_NAME,
+                "{\"description\":\"Explore\\nthe   repo\"}"
+            ),
+            "Explore the repo"
+        );
+        assert_eq!(flatten_one_line("cd foo\n  ls   -la\n"), "cd foo ls -la");
     }
 
     #[test]

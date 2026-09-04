@@ -554,7 +554,10 @@ quiet; Ctrl+O carries the full story:
   rather than aligning its continuation rows under the opening `(`
   (`TOOL_HEADER_ALIGN_SHARE` — past a third of the width the alignment costs
   more than it buys), so the arguments get the row instead of a ragged
-  column.
+  column — and when even the first argument does not fit beside the name
+  (forty columns leave eight past `● Deepwiki - ask_question (MCP)(`), it
+  spills to the continuation row **whole**, the `(` staying with the name,
+  rather than hard-breaking as `(repoName` / `: "…"` (`docs/tools.md`).
 
 **How one line can be both**: the aggregation is a property of the
 *history*, not of a live buffer, so scrollback and the resize repaint derive

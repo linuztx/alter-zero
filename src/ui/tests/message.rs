@@ -451,3 +451,49 @@ fn conversation_lines_keep_the_shell_cell_flush() {
         .collect();
     assert_eq!(texts, vec!["! pwd", "  ⎿  /home", ""]);
 }
+
+// --- literal roles echo their text's own spacing (docs/textarea.md) ---
+
+#[test]
+fn user_messages_keep_their_spacing() {
+    // What was typed is what is echoed: the composer shows a run of spaces
+    // and a line's indentation as typed, so the bubble it becomes must agree
+    // instead of collapsing `a    b` to `a b` and dropping the indent.
+    let lines = message_lines(Role::User, "a    b\n    indented", 40);
+    assert_eq!(plain(&lines[0]).trim_end(), "❯ a    b");
+    assert_eq!(plain(&lines[1]).trim_end(), "      indented");
+}
+
+#[test]
+fn a_shell_header_keeps_the_commands_spacing() {
+    // `! echo "a   b"` is a command — its spaces are data.
+    let lines = message_lines(Role::Shell, "echo \"a   b\"", 40);
+    assert_eq!(plain(&lines[0]).trim_end(), "! echo \"a   b\"");
+}
+
+#[test]
+fn user_messages_expand_tabs_for_display() {
+    // A tab paints as zero cells (ratatui drops control characters) but
+    // measures as one, which would leave the dark row a column short of the
+    // edge; it expands like a code block's, the record untouched.
+    let lines = message_lines(Role::User, "a\tb", 20);
+    assert_eq!(plain(&lines[0]).trim_end(), "❯ a    b");
+    let total: usize = lines[0]
+        .spans
+        .iter()
+        .map(|s| cols(s.content.as_ref()))
+        .sum();
+    assert_eq!(total, 20, "the background still fills the row");
+}
+
+#[test]
+fn user_messages_still_wrap_at_word_boundaries() {
+    // Width 12 → content 10: the message breaks at spaces and every
+    // continuation starts at a word, as before.
+    let lines = message_lines(Role::User, "hello world again", 12);
+    let rows: Vec<String> = lines
+        .iter()
+        .map(|l| plain(l).trim_end().to_string())
+        .collect();
+    assert_eq!(rows, vec!["❯ hello", "  world", "  again"]);
+}

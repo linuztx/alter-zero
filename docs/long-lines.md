@@ -132,7 +132,13 @@ diverge exactly where the old count lied.
 The count is exact rather than estimated: `WrapMode` (`ui/wrap.rs`) pairs each
 wrapper with its own row **counter** and **clip**, all three driven by one
 range-emitting scan, so a hint can never count rows a different wrapper would
-have produced. The Ctrl+O view wraps command output with the same `wrap_output`
+have produced. The scan's one rule beyond greedy breaking: a break that lands
+on an **exactly-full** row consumes the whitespace run after it. Carrying the
+run over used to seat the space at the head of the next row (`total` /
+` 12`, one column out of line) or — before another full-width word — leave it
+as a row of its own, a phantom blank row inside `hello` / ` ` / `world` that
+the `+N lines` hint then counted; a space that *fits* still stays at the end
+of the row it broke on, so column-aligned output that fits is untouched. The Ctrl+O view wraps command output with the same `wrap_output`
 and diff bodies with the same `wrap_verbatim`, so `+N` is what the expansion
 adds, row for row. Counting is allocation-free, which is what lets the running
 tail's footer use it every animation frame without wrapping the retained buffer

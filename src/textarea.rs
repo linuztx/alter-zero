@@ -372,11 +372,11 @@ impl TextArea {
             self.preferred_col.get_or_insert(target);
             let prev = &rows[row - 1];
             let pos = self.pos_at_col(prev.start, prev.end, target);
-            // Byte-abutting rows (a hard-broken word chunk, the end-of-text
-            // sentinel) share their boundary byte with this row's start;
-            // clamping to `prev.end` would leave the cursor exactly where it
-            // was — and with `preferred_col` now pinned, every further ↑
-            // would repeat the no-op. Step strictly into the previous row.
+            // Byte-abutting rows (a hard-broken word's chunks) share their
+            // boundary byte with this row's start; clamping to `prev.end`
+            // would leave the cursor exactly where it was — and with
+            // `preferred_col` now pinned, every further ↑ would repeat the
+            // no-op. Step strictly into the previous row.
             self.cursor = if pos == self.cursor {
                 prev_grapheme(&self.text, pos)
             } else {
@@ -505,7 +505,12 @@ impl TextArea {
 
     /// The cursor's `(visual row, display column)` at `width`. The row is the last
     /// wrapped row starting at or before the cursor (so a cursor at a wrap point
-    /// shows at the next row's start), and the column is the display width up to it.
+    /// shows at the next row's start), and the column is the display width up
+    /// to it — `width` itself at the end of a row the wrap left exactly full.
+    /// That column is the cell every caller keeps past its text width for the
+    /// caret (`ui::layout::text_field_width`, `docs/textarea.md`), so the
+    /// cursor always has a cell on its own row and never needs an empty row
+    /// below it.
     #[must_use]
     pub fn cursor_row_col(&self, width: u16) -> (usize, usize) {
         let rows = self.wrapped_rows(width);
@@ -560,10 +565,15 @@ fn next_grapheme(text: &str, pos: usize) -> usize {
 /// than `width` (short of a single grapheme wider than the whole field).
 /// `width == 0` disables wrapping (split on `'\n'` only).
 ///
-/// Always returns at least one range (the empty draft is one empty row); when the
-/// last row ends exactly full at the end of the text, an empty trailing range
-/// follows it — the row the end-of-text cursor sits on. The clean re-derivation
-/// of codex's `wrap_ranges` on top of our own greedy algorithm.
+/// Always returns at least one range (the empty draft is one empty row). A row
+/// exactly `width` wide gets **no** empty row after it: the cursor at its end
+/// sits at column `width`, the cell every caller keeps past its text width for
+/// the caret (`ui::layout::text_field_width`) — which is also why a word that
+/// would land in the field's last column wraps to the next row instead,
+/// Claude Code's rule. codex's `wrap_ranges` seats that cursor on an empty
+/// sentinel row instead, and so did this one: the text flush against the
+/// terminal's edge with the caret alone on the row below read as a newline
+/// the user never typed (`docs/textarea.md`).
 fn wrap_rows(text: &str, width: u16) -> Vec<Range<usize>> {
     let mut rows = Vec::new();
     let mut line_start = 0;
@@ -575,17 +585,6 @@ fn wrap_rows(text: &str, width: u16) -> Vec<Range<usize>> {
             Some(i) => line_start += i + 1, // step past the '\n'
             None => break,
         }
-    }
-    // codex's `+1` sentinel byte, re-derived: when the last row ends exactly full
-    // at the very end of the text, an empty trailing row seats the end-of-text
-    // cursor at the start of the next row instead of one column past the field
-    // (the partition_point rule — see `docs/textarea.md`).
-    let last_row_exactly_full = width > 0
-        && rows
-            .last()
-            .is_some_and(|r| r.end == text.len() && cols(&text[r.clone()]) == width as usize);
-    if last_row_exactly_full {
-        rows.push(text.len()..text.len());
     }
     rows
 }
@@ -877,16 +876,15 @@ mod tests {
     #[test]
     fn wrap_breaks_on_word_boundaries_and_consumes_the_space() {
         let ta = TextArea::from_text("hello world");
-        assert_eq!(rows(&ta, 5), vec!["hello", "world", ""]);
-        // The space (byte 5) is consumed at the break: rows are [0,5) and [6,11),
-        // plus the empty sentinel row for the end-of-text cursor ("world" is full).
-        assert_eq!(ta.wrapped_rows(5), vec![0..5, 6..11, 11..11]);
+        assert_eq!(rows(&ta, 5), vec!["hello", "world"]);
+        // The space (byte 5) is consumed at the break: rows are [0,5) and
+        // [6,11) — and nothing after a full last row: the cursor's cell is the
+        // column the caller keeps past `width` (docs/textarea.md).
+        assert_eq!(ta.wrapped_rows(5), vec![0..5, 6..11]);
     }
 
     #[test]
     fn wrap_keeps_text_that_fits_on_one_row() {
-        // Width 12 > the text's 11 columns (an *exactly* full row instead gets
-        // the end-of-text sentinel row — see the sentinel tests below).
         let ta = TextArea::from_text("hello world");
         assert_eq!(rows(&ta, 12), vec!["hello world"]);
     }
@@ -921,8 +919,7 @@ mod tests {
     #[test]
     fn wrap_measures_wide_chars_as_two_columns() {
         let ta = TextArea::from_text("你好世界");
-        // "世界" fills its row, so the end-of-text sentinel row follows.
-        assert_eq!(rows(&ta, 4), vec!["你好", "世界", ""]);
+        assert_eq!(rows(&ta, 4), vec!["你好", "世界"]);
     }
 
     #[test]
@@ -961,49 +958,99 @@ mod tests {
     fn cursor_row_col_maps_through_a_soft_wrap() {
         let ta = at("hello world", 6); // just before "world"
         assert_eq!(ta.cursor_row_col(5), (1, 0), "start of the wrapped 2nd row");
-        let ta = at("hello world", 5); // just after "hello"
-        assert_eq!(ta.cursor_row_col(5), (0, 5), "end of the 1st row");
+        // Just after "hello", before the space the wrap consumed: the end of
+        // a full row is column 5 — the cell past `width` every caller keeps
+        // for the caret (docs/textarea.md), so it stays on its own row.
+        let ta = at("hello world", 5);
+        assert_eq!(ta.cursor_row_col(5), (0, 5), "the reserved column");
+    }
+
+    #[test]
+    fn cursor_row_col_at_the_end_of_a_short_row() {
+        // After "abc" (three of five columns) the cursor sits at the end of
+        // its row, before the consumed space.
+        let ta = at("abc def", 3);
+        assert_eq!(ta.wrapped_rows(5), vec![0..3, 4..7]);
+        assert_eq!(ta.cursor_row_col(5), (0, 3));
+    }
+
+    #[test]
+    fn the_end_of_a_full_line_before_a_newline_keeps_its_row() {
+        // A hard `\n` really ends the row: the cursor before it stays on
+        // that row (at its end), not at the head of the next logical line.
+        let ta = at("abcde\nfg", 5);
+        assert_eq!(ta.wrapped_rows(5), vec![0..5, 6..8]);
+        assert_eq!(ta.cursor_row_col(5), (0, 5));
+    }
+
+    #[test]
+    fn vertical_motion_from_the_reserved_column_aims_for_that_column() {
+        // From the reserved column after the full "abcde", ↓ aims for column
+        // 5 on the short "fgh" (clamped to its end), then finds it again on
+        // "ijklm"; ↑ retraces the same seats.
+        let mut ta = at("abcde fgh ijklm", 5);
+        assert_eq!(ta.wrapped_rows(5), vec![0..5, 6..9, 10..15]);
+        assert_eq!(ta.cursor_row_col(5), (0, 5));
+        ta.move_down();
+        assert_eq!(
+            ta.cursor_row_col(5),
+            (1, 3),
+            "clamped to the short row's end"
+        );
+        ta.move_down();
+        assert_eq!(
+            ta.cursor_row_col(5),
+            (2, 5),
+            "the preferred column restored"
+        );
+        ta.move_up();
+        assert_eq!(ta.cursor_row_col(5), (1, 3));
+        ta.move_up();
+        assert_eq!(ta.cursor_row_col(5), (0, 5));
     }
 
     #[test]
     fn cursor_row_col_at_the_very_end() {
-        // "world" fills its row exactly, so the end-of-text cursor sits at the
-        // start of the empty sentinel row below — never at col == width.
+        // "world" fills its row exactly: the end-of-text cursor sits in the
+        // reserved column after it — on its row, never on an extra one.
         let ta = at("hello world", 11);
-        assert_eq!(ta.cursor_row_col(5), (2, 0));
+        assert_eq!(ta.cursor_row_col(5), (1, 5));
     }
 
     #[test]
-    fn an_exactly_full_last_row_reserves_an_empty_row_for_the_cursor() {
+    fn a_full_last_row_keeps_the_cursor_on_it_in_the_reserved_column() {
+        // A row exactly `width` wide is the last one: no empty row follows it
+        // for the cursor, whose cell is the column the caller keeps past
+        // `width`. An empty trailing row here is what read as a newline the
+        // user never typed (docs/textarea.md).
         let ta = TextArea::from_text("abcde");
-        assert_eq!(ta.wrapped_rows(5), vec![0..5, 5..5]);
-        assert_eq!(ta.row_count(5), 2, "the box reserves the cursor's row");
-        assert_eq!(ta.cursor_row_col(5), (1, 0));
+        assert_eq!(ta.wrapped_rows(5), vec![0..5]);
+        assert_eq!(ta.row_count(5), 1, "the box grows for text, not the caret");
+        assert_eq!(ta.cursor_row_col(5), (0, 5));
     }
 
     #[test]
-    fn a_trailing_space_run_ending_exactly_at_the_width_gets_the_sentinel_row() {
+    fn a_trailing_space_run_ending_exactly_at_the_width_stays_one_row() {
         let ta = TextArea::from_text("hi   ");
-        assert_eq!(ta.wrapped_rows(5), vec![0..5, 5..5]);
-        assert_eq!(ta.cursor_row_col(5), (1, 0));
+        assert_eq!(ta.wrapped_rows(5), vec![0..5]);
+        assert_eq!(ta.cursor_row_col(5), (0, 5));
     }
 
     #[test]
-    fn the_sentinel_row_appears_only_for_a_full_row_at_the_very_end() {
-        // An exactly-full row mid-text gets none; a not-full last row either…
+    fn text_ending_in_a_newline_has_its_empty_last_row() {
+        // A full row followed by more text gets nothing extra…
         let ta = TextArea::from_text("abcde\nab");
         assert_eq!(ta.wrapped_rows(5), vec![0..5, 6..8]);
-        // …and text ending in '\n' already has its empty last row.
+        // …and text ending in '\n' has its empty last row: that one is real.
         let ta = TextArea::from_text("abcde\n");
         assert_eq!(ta.wrapped_rows(5), vec![0..5, 6..6]);
     }
 
     #[test]
-    fn cursor_row_col_lands_on_the_sentinel_after_multi_line_text() {
-        // The last logical line exactly fills its row → sentinel after it.
+    fn cursor_row_col_at_the_end_of_a_full_last_line_of_multi_line_text() {
         let ta = at("ab\nabcde", 8);
-        assert_eq!(ta.wrapped_rows(5), vec![0..2, 3..8, 8..8]);
-        assert_eq!(ta.cursor_row_col(5), (2, 0));
+        assert_eq!(ta.wrapped_rows(5), vec![0..2, 3..8]);
+        assert_eq!(ta.cursor_row_col(5), (1, 5));
     }
 
     // ===== vertical movement across wrapped rows (warm cache) =====
@@ -1048,14 +1095,12 @@ mod tests {
     }
 
     #[test]
-    fn vertical_motion_crosses_the_sentinel_row() {
+    fn down_from_a_full_last_row_lands_in_its_reserved_column() {
         let mut ta = at("abcdefghij", 7); // row 1 ("fghij"), col 2
         let _ = ta.wrapped_rows(5); // warm the cache (as a render would)
-        ta.move_down(); // onto the empty sentinel row
-        assert_eq!(ta.cursor_row_col(5), (2, 0));
+        ta.move_down(); // the last row: snaps to the very end
         assert_eq!(ta.cursor(), 10);
-        ta.move_up();
-        assert_eq!(ta.cursor_row_col(5), (1, 2), "preferred column restored");
+        assert_eq!(ta.cursor_row_col(5), (1, 5), "the reserved column");
     }
 
     #[test]
@@ -1084,7 +1129,7 @@ mod tests {
     #[test]
     fn an_edit_invalidates_the_wrap_cache() {
         let mut ta = TextArea::from_text("hello world");
-        assert_eq!(ta.wrapped_rows(5), vec![0..5, 6..11, 11..11]);
+        assert_eq!(ta.wrapped_rows(5), vec![0..5, 6..11]);
         ta.set_text("hi");
         assert_eq!(ta.wrapped_rows(5), vec![0..2], "re-wrapped after the edit");
     }
@@ -1222,22 +1267,17 @@ mod tests {
 
     #[test]
     fn move_up_from_an_abutting_row_boundary_still_moves() {
-        // "hello world" at width 5 wraps to [0..5, 6..11, 11..11] — the
-        // sentinel row abuts row 1 byte-exactly. A cursor parked on the
+        // A hard-broken word's chunks abut byte-exactly: "abcdefghijklmno"
+        // at width 5 wraps to [0..5, 5..10, 10..15]. A cursor parked on a
         // shared boundary byte with a pinned preferred_col at (or past) the
         // previous row's width used to compute a "previous-row" position
         // equal to itself, so every further ↑ was a permanent no-op.
-        let mut ta = TextArea::from_text("hello world");
-        for _ in 0..6 {
-            ta.move_left(); // byte 5 — the consumed break space (col 5)
-        }
-        assert_eq!(ta.cursor(), 5);
+        let mut ta = at("abcdefghijklmno", 15); // row 2, the reserved column
         let _ = ta.wrapped_rows(5); // warm the cache at width 5
-        ta.move_down(); // pins preferred_col 5, lands on the sentinel row
-        assert_eq!(ta.cursor(), 11);
+        ta.move_up(); // pins preferred_col 5: lands on byte 10, the boundary
+        assert_eq!(ta.cursor(), 10);
         ta.move_up();
-        assert_ne!(ta.cursor(), 11, "↑ must move off the boundary");
-        ta.move_up();
-        assert!(ta.cursor() <= 5, "a second ↑ keeps climbing");
+        assert_ne!(ta.cursor(), 10, "↑ must move off the boundary");
+        assert!(ta.cursor() < 10, "and keeps climbing");
     }
 }
