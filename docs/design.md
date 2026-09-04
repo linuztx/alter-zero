@@ -512,7 +512,13 @@ unit-tested must be unit-tested.
   cwd, `--resume {id}` one by id (the filename segment
   `session::rollout_file_id` extracts; unique prefixes and plain paths work
   too), and bare `--resume` boots into this picker — the loaded transcript
-  committed under the banner via `insert_before`, never a startup purge.
+  committed under the banner via `insert_before`, never a startup purge. A
+  quoted `[PROMPT]` positional (`alter-zero "fix the failing test"`,
+  `alter-zero --resume {id} "…"`) is submitted as the first turn of
+  whichever session those open, and `--help` is a titled page — `Alter
+  Zero` in the app's bold-cyan heading colour over a description, `Usage:`,
+  `Commands:`, `Arguments:` and `Options:` — plain through a pipe or under
+  `NO_COLOR`, its grammar errors clap-shaped (`docs/cli.md`).
 - **Quit:** Ctrl+C, the `/quit` command, or Esc in the conversation while
   **idle, with an empty composer and no previous user message to edit** —
   mid-turn Esc interrupts, once a user message exists idle Esc arms the

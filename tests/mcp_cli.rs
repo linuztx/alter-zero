@@ -198,19 +198,31 @@ fn failures_exit_1_and_grammar_errors_exit_2() {
         assert_eq!(out.status.code(), Some(1), "{args:?}");
         assert!(stderr(&out).contains("No MCP server named \"nope\""));
     }
-    // Grammar errors: exit 2 with the mcp usage as the trailer.
+    // Grammar errors: exit 2 with the clap-shaped trailer — `error:`, the
+    // mcp `Usage:` block, the pointer at --help (docs/cli.md).
     let out = mcp(&file, &["add", "x", "--url", "https://u", "--", "cmd"]);
     assert_eq!(out.status.code(), Some(2));
-    assert!(stderr(&out).contains("not both"), "{}", stderr(&out));
+    let text = stderr(&out);
     assert!(
-        stderr(&out).contains("alter-zero mcp — manage MCP servers"),
-        "{}",
-        stderr(&out)
+        text.starts_with(
+            "error: pass a --url or a command, not both\n\nUsage: alter-zero mcp add "
+        ),
+        "{text}"
     );
-    // Help: exit 0 on stdout.
+    assert!(text.contains("\n       alter-zero mcp list\n"), "{text}");
+    assert!(
+        text.ends_with("For more information, try '--help'.\n"),
+        "{text}"
+    );
+    // Help: exit 0 on stdout, the page titled by its command.
     let out = mcp(&file, &["--help"]);
     assert!(out.status.success());
-    assert!(stdout(&out).contains("Usage:"), "{}", stdout(&out));
+    assert_eq!(stdout(&out).lines().next(), Some("alter-zero mcp"));
+    assert!(
+        stdout(&out).contains("Usage: alter-zero mcp add"),
+        "{}",
+        stdout(&out)
+    );
 }
 
 #[test]

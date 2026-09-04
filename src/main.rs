@@ -39,7 +39,8 @@ fn main() -> io::Result<()> {
     // The detached-exec helper hook FIRST (see the module doc): a helper re-exec
     // never returns from here, so nothing above it may touch the terminal.
     alter_zero::subprocess::run_detached_exec_if_requested();
-    // --continue/--resume resolve to a rollout *path* here, before the tokio
+    // --continue/--resume resolve to a rollout *path* here — and a quoted
+    // [PROMPT] rides along to become the first turn — before the tokio
     // runtime and the terminal boot (docs/cli.md): --help/--version and every
     // resolution failure print to normal cooked-mode stdio and exit — no TUI
     // flash, no raw mode to restore.
@@ -51,7 +52,7 @@ fn main() -> io::Result<()> {
 }
 
 #[tokio::main(flavor = "current_thread")]
-async fn tui_main(startup: Option<Startup>) -> io::Result<()> {
+async fn tui_main(startup: Startup) -> io::Result<()> {
     // Build the o200k_base token counter (a one-time vocabulary scan + hash
     // table + split-regex compile, docs/tokenizer.md) off the interactive
     // path, concurrently with terminal init, so the first turn's

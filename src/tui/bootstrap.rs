@@ -45,7 +45,7 @@ use super::models::{HookSetup, ModelSession};
 use super::permission::PermissionStore;
 use super::recorder::SessionRecorder;
 use super::shell::{SHELL_POLL_INTERVAL, SHELL_QUIT_KILL_WINDOW};
-use super::startup::{LoadedSession, Startup};
+use super::startup::{LoadedSession, Startup, StartupSession};
 use super::view::RESIZE_REFLOW_MAX_ROWS;
 use super::workers::{ModelFetch, spawn_file_search_worker, spawn_model_fetch};
 use super::{Session, StatusClocks, config, host};
@@ -55,13 +55,15 @@ impl<'t> Session<'t> {
     /// first frame.
     ///
     /// `startup` is the CLI's `--continue`/`--resume` directive (`docs/cli.md`),
-    /// applied before that frame: a `Load` restores the code state, installs the
-    /// transcript and adopts the file for further recording; a `Picker` boots
-    /// straight into the `/resume` overlay.
-    pub(crate) fn bootstrap(
-        term: &'t mut InlineViewport,
-        startup: Option<Startup>,
-    ) -> io::Result<Self> {
+    /// applied before that frame — a `Load` restores the code state, installs
+    /// the transcript and adopts the file for further recording; a `Picker`
+    /// boots straight into the `/resume` overlay — plus the `[PROMPT]`, which
+    /// is submitted as the first turn once the frame is scheduled.
+    pub(crate) fn bootstrap(term: &'t mut InlineViewport, startup: Startup) -> io::Result<Self> {
+        let Startup {
+            session: startup,
+            prompt,
+        } = startup;
         // Backend → loop (the streamed reply). A tokio channel so the loop can
         // `select!` on it; the backend thread sends without touching the runtime.
         let (tx, reply_rx) = tokio::sync::mpsc::unbounded_channel::<StreamEvent>();
@@ -469,6 +471,15 @@ impl<'t> Session<'t> {
         session.report_trust_state(trust_error);
         let picker = session.apply_startup(startup);
         session.paint_first_frame(picker)?;
+        // The [PROMPT] shortcut (docs/cli.md): the message given on the
+        // command line becomes the first turn — after the loaded transcript
+        // (if any) and the banner are queued, so its bubble lands under
+        // them, exactly where a fast Enter would have put it. The grammar
+        // already refused the one pairing with no sound meaning (a prompt
+        // behind the interactive picker).
+        if let Some(prompt) = prompt {
+            session.submit_startup_prompt(prompt);
+        }
 
         Ok(session)
     }
@@ -652,9 +663,9 @@ impl<'t> Session<'t> {
     /// checkpoint chain included).
     ///
     /// Returns whether to boot into the `/resume` picker.
-    fn apply_startup(&mut self, startup: Option<Startup>) -> bool {
+    fn apply_startup(&mut self, startup: Option<StartupSession>) -> bool {
         match startup {
-            Some(Startup::Load(loaded)) => {
+            Some(StartupSession::Load(loaded)) => {
                 let LoadedSession {
                     path,
                     text,
@@ -688,7 +699,7 @@ impl<'t> Session<'t> {
                 }
                 false
             }
-            Some(Startup::Picker) => true,
+            Some(StartupSession::Picker) => true,
             None => false,
         }
     }

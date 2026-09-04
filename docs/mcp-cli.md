@@ -105,9 +105,12 @@ alter-zero mcp list
   (`mcp::parse_server_entry` — the same `parse_server` every file read
   uses), so a README's `{"type":"http","url":…}` snippet round-trips
   through the one schema; there is no second parser to drift.
-- `-h/--help` anywhere in the `mcp` arguments prints `MCP_USAGE` (exit 0)
-  — except after `--`, where tokens are the command's own. Bare
-  `alter-zero mcp` is a usage error naming the subcommands.
+- `-h/--help` anywhere in the `mcp` arguments prints the `mcp` help page
+  (exit 0) — `cli::help(HelpPage::Mcp, style)`, the main `--help`'s own
+  renderer (`docs/cli.md`): the command as its title in the heading style,
+  the description, the six `Usage:` forms, the aligned `Options:` — except
+  after `--`, where tokens are the command's own. Bare `alter-zero mcp` is
+  a usage error naming the subcommands.
 
 ### The writers (pure, `src/mcp/config.rs`)
 
@@ -167,7 +170,8 @@ TUI.
   closed by the `Remove with: {bin} mcp remove {name}` hint line.
 
 Exit codes follow the house contract (`docs/cli.md`): **2** for grammar
-errors (`{message}` + `MCP_USAGE` on stderr — unknown flag, missing name,
+errors (the clap-shaped `error: {message}` over the `mcp` `Usage:` block on
+stderr, `cli::usage_error(HelpPage::Mcp, …)` — unknown flag, missing name,
 bad `--env`/`--header`/JSON, conflicting forms), **1** for resolution
 failures (duplicate name, unknown name, unparseable file, no config home,
 a failed write — one plain stderr line), **0** for success and help.

@@ -12,10 +12,11 @@
 
 use std::path::{Path, PathBuf};
 
-use alter_zero::cli::{self, McpCli};
+use alter_zero::cli::{self, HelpPage, McpCli};
 use alter_zero::mcp::{self, McpServerConfig, McpWriteError};
 
 use super::config;
+use super::startup::stdout_style;
 
 /// Run one `mcp` subcommand and return the process exit code: `0` success,
 /// `1` resolution failures (unknown name, unparseable file, nowhere to
@@ -24,7 +25,9 @@ use super::config;
 pub(crate) fn run(cmd: &McpCli) -> i32 {
     match cmd {
         McpCli::Help => {
-            println!("{}", cli::MCP_USAGE);
+            // The subcommand's page, through the same renderer and colour
+            // rule as the main `--help` (docs/cli.md).
+            println!("{}", cli::help(HelpPage::Mcp, stdout_style()));
             0
         }
         McpCli::Add { name, config } => {

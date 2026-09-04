@@ -43,14 +43,11 @@ use super::startup::Startup;
 
 /// Run the app to completion.
 ///
-/// `startup` is the CLI's `--continue`/`--resume` directive, applied before the
-/// first frame (`docs/cli.md`). Returns the active session's id when the run
-/// recorded a conversation — the exit hint `main` prints after the terminal is
-/// restored — else `None`.
-pub(crate) async fn run(
-    term: &mut InlineViewport,
-    startup: Option<Startup>,
-) -> io::Result<Option<String>> {
+/// `startup` is the CLI's `--continue`/`--resume` directive plus the optional
+/// `[PROMPT]`, applied before the first frame (`docs/cli.md`). Returns the
+/// active session's id when the run recorded a conversation — the exit hint
+/// `main` prints after the terminal is restored — else `None`.
+pub(crate) async fn run(term: &mut InlineViewport, startup: Startup) -> io::Result<Option<String>> {
     let mut session = Session::bootstrap(term, startup)?;
     loop {
         tokio::select! {

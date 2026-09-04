@@ -89,7 +89,16 @@ alter-zero --resume 18a9f2c33d41e5b6-1a2b
 `alter-zero --continue` (`-c`) reopens the newest conversation recorded in the
 current directory without asking, `alter-zero --resume {id}` (`-r`) a specific
 one by that id (a unique prefix works too), and a bare `alter-zero --resume` boots
-straight into the `/resume` session picker. Once you've chatted, **Esc Esc** steps back
+straight into the `/resume` session picker.
+
+A quoted message is the **first turn** — `alter-zero "fix the failing test"`
+boots straight into that conversation, and `alter-zero --resume {id} "and now
+the docs"` (or `-c "…"`) sends it into the reopened one; the prompt is sent
+verbatim, one quoted argument (`--` before it if it starts with a dash).
+`alter-zero --help` lays it all out: the page opens on **Alter Zero** in the
+app's cyan over a `Usage:` line, the `[PROMPT]` argument, the options and the
+`mcp` subcommand, coloured on a terminal and plain through a pipe or under
+`NO_COLOR` (`docs/cli.md`). Once you've chatted, **Esc Esc** steps back
 to edit a previous message, codex-style (see `docs/backtrack.md`): the first
 Esc arms it, the second previews the conversation with the last user message
 highlighted, Esc/←/→ pick an older/newer one, and Enter rewinds the

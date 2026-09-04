@@ -1,17 +1,23 @@
-//! Command-line arguments — the pure core of `--continue` / `--resume`
-//! (see `docs/cli.md`).
+//! Command-line arguments — the pure core of `--help`, the `[PROMPT]`
+//! shortcut, `--continue` and `--resume` (see `docs/cli.md`).
 //!
 //! Claude-Code-style session flags: `--continue` reopens the newest
 //! conversation recorded in the current directory, `--resume {id}` a
-//! specific one, bare `--resume` boots into the `/resume` picker — and a
-//! quit that recorded anything prints [`resume_hint`]'s copy-paste command.
+//! specific one, bare `--resume` boots into the `/resume` picker, a quoted
+//! `[PROMPT]` is sent as the first turn of whichever session those open —
+//! and a quit that recorded anything prints [`resume_hint`]'s copy-paste
+//! command.
 //!
 //! This module owns the parse (`argv` → [`Cli`], with usage errors as
-//! `Err(message)`), the [`USAGE`] text, and the exit hint's exact shape.
-//! Everything impure — reading `std::env::args`, resolving a flag to a
-//! rollout *path* (the sessions-dir scan), printing, exiting — stays at the
-//! boundary in `main.rs`, which runs the parse *after* the detached-exec
-//! hook (invariant 1: a helper re-exec never parses TUI flags).
+//! `Err(message)`), the two `--help` pages ([`help`], rendered plain or in
+//! the app's colour by [`HelpStyle`]), the usage-error trailer
+//! ([`usage_error`]), the colour rule ([`colour_enabled`]) and the exit
+//! hint's exact shape. Everything impure — reading `std::env::args`,
+//! asking whether stdout is a terminal, resolving a flag to a rollout
+//! *path* (the sessions-dir scan), printing, exiting — stays at the
+//! boundary (`tui::startup`), which runs the parse *after* the
+//! detached-exec hook (invariant 1: a helper re-exec never parses TUI
+//! flags).
 //!
 //! A first argument of `mcp` routes to the subcommand family instead
 //! (`docs/mcp-cli.md`): `mcp add`/`add-json`/`remove`/`get`/`list` manage
@@ -22,26 +28,50 @@
 
 use std::collections::BTreeMap;
 
+use unicode_width::UnicodeWidthStr;
+
 use crate::mcp::{self, McpServerConfig};
 
-/// One parsed invocation. `Run` is the flagless default; the rest map
-/// one-to-one onto the flags in [`USAGE`].
+/// One parsed invocation: a TUI run ([`Cli::Session`] — the flagless
+/// default included), one of the two print-and-exit flags, or the `mcp`
+/// subcommand family.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Cli {
-    /// No arguments: start a fresh session (the pre-CLI behaviour).
-    Run,
-    /// `--continue` / `-c`: resume the newest session recorded in this cwd.
-    Continue,
-    /// `--resume [id]` / `-r`: resume the named session — or, bare, open
-    /// the `/resume` picker as the first screen.
-    Resume(Option<String>),
-    /// `--help` / `-h`: print [`USAGE`] and exit.
+    /// Run the TUI: how the session starts, plus the optional `[PROMPT]`
+    /// sent as its first turn.
+    Session(SessionArgs),
+    /// `--help` / `-h`: print the main [`help`] page and exit.
     Help,
     /// `--version` / `-V`: print the version line and exit.
     Version,
     /// `mcp …` as the first argument: manage the user MCP config file
     /// (`docs/mcp-cli.md`).
     Mcp(McpCli),
+}
+
+/// A TUI run's arguments (`docs/cli.md`): which conversation to open, and
+/// the message to send into it first — `None` opens on an empty composer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionArgs {
+    /// How the session starts.
+    pub start: SessionStart,
+    /// The `[PROMPT]` positional, verbatim: the first turn of a fresh
+    /// session, or the next turn of the one `--continue`/`--resume {id}`
+    /// reopens. Never blank (the parse refuses one), never combined with
+    /// the bare picker (likewise).
+    pub prompt: Option<String>,
+}
+
+/// How a TUI run begins — the session flags, one-to-one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SessionStart {
+    /// No session flag: a fresh conversation.
+    Fresh,
+    /// `--continue` / `-c`: resume the newest session recorded in this cwd.
+    Continue,
+    /// `--resume [id]` / `-r`: resume the named session — or, bare, open
+    /// the `/resume` picker as the first screen.
+    Resume(Option<String>),
 }
 
 /// One parsed `mcp` subcommand (`docs/mcp-cli.md`). `add` and `add-json`
@@ -63,74 +93,354 @@ pub enum McpCli {
     /// `mcp list`.
     List,
     /// `-h`/`--help` anywhere in the `mcp` arguments (outside a `--`
-    /// command): print [`MCP_USAGE`] and exit 0.
+    /// command): print the [`HelpPage::Mcp`] page and exit 0.
     Help,
 }
 
-/// The `--help` text (and the trailer under a usage error).
-pub const USAGE: &str = "\
-alter-zero — an inline terminal AI coding agent
+// ===== the --help pages (docs/cli.md) =====
 
-Usage: alter-zero [OPTIONS]
-       alter-zero mcp <COMMAND>
+/// The `--help` page's description: what running the command *does*, in
+/// one line — both references' shape (codex's "If no subcommand is
+/// specified, options will be forwarded to the interactive CLI", Claude
+/// Code's "starts an interactive session by default, use -p/--print for
+/// non-interactive output"). A help page is opened to find out how to
+/// invoke something, so the line answers that and leaves what the app *is*
+/// to the README; the sections below carry the rest. Under 80 columns like
+/// every row on the page — nothing is wrapped at render time, so the page
+/// reads in the source exactly as it prints.
+pub const DESCRIPTION: &str = "\
+Starts an interactive session by default — a quoted PROMPT is its first turn.";
 
-Commands:
-  mcp                 Manage MCP servers in the user config file — see
-                      alter-zero mcp --help
+/// Which `--help` page: the binary's own, or the `mcp` subcommand's
+/// (`docs/mcp-cli.md`). Both render through the one [`help`] renderer, so
+/// they share a look.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HelpPage {
+    /// `alter-zero --help`.
+    Main,
+    /// `alter-zero mcp --help`.
+    Mcp,
+}
 
-Options:
-  -c, --continue      Continue the most recent conversation recorded in this
-                      directory
-  -r, --resume [ID]   Resume a conversation — by the session id the exit hint
-                      prints, or picked from a list when no id is given
-  -h, --help          Print help
-  -V, --version       Print version";
+/// How a page is dressed. `Plain` emits no escape sequence at all — what a
+/// pipe, a log file and the tests receive; `Ansi` colours the title and the
+/// section headings **bold cyan** (the app's accent hue in the terminal's
+/// own palette — the banner's cyan, the pickers' selection colour), bolds
+/// the literals (`alter-zero`, `mcp`, the flags) and leaves the
+/// placeholders (`[PROMPT]`, `<COMMAND>`, `[ID]`) bare, the way clap and
+/// cargo dress theirs. The two renderings differ by escapes alone; the
+/// boundary picks one per stream with [`colour_enabled`] and `IsTerminal`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HelpStyle {
+    Plain,
+    Ansi,
+}
 
-/// The `mcp --help` text (and the trailer under an `mcp` usage error) —
-/// `docs/mcp-cli.md`.
-pub const MCP_USAGE: &str = "\
-alter-zero mcp — manage MCP servers in the user config file
+impl HelpStyle {
+    /// A section heading, or the page title.
+    fn heading(self, text: &str) -> String {
+        self.wrap("1;36", text)
+    }
 
-Usage:
-  alter-zero mcp add <name> --url <URL> [--transport http|sse] [-H \"Name: Value\"]...
-  alter-zero mcp add <name> [-e KEY=VALUE]... [--] <command> [args...]
-  alter-zero mcp add-json <name> <json>
-  alter-zero mcp remove <name>
-  alter-zero mcp get <name>
-  alter-zero mcp list
+    /// A command word or a flag.
+    fn literal(self, text: &str) -> String {
+        self.wrap("1", text)
+    }
 
-Options:
-  -t, --transport <T>  Pin the transport — http or sse with --url, stdio with
-                       a command; a bare --url tries streamable HTTP first and
-                       falls back to legacy SSE
-  -e, --env KEY=VALUE  Environment variable for a stdio server (repeatable)
-  -H, --header <H>     \"Name: Value\" header for a remote server (repeatable)
-  -h, --help           Print help
+    /// A usage error's `error:` lead.
+    fn error(self, text: &str) -> String {
+        self.wrap("1;31", text)
+    }
 
-The servers land in the user MCP config (ALTER_ZERO_MCP_FILE, else
-~/.alter-zero/mcp.json); manage them live with /mcp inside the app.";
+    /// `ESC[{sgr}m{text}ESC[0m` under `Ansi`, the bare text under `Plain`.
+    /// An empty text emits nothing either way — an empty escape pair is
+    /// noise a stripped comparison would still catch.
+    fn wrap(self, sgr: &str, text: &str) -> String {
+        match self {
+            Self::Ansi if !text.is_empty() => format!("\x1b[{sgr}m{text}\x1b[0m"),
+            Self::Ansi | Self::Plain => text.to_string(),
+        }
+    }
+}
+
+/// Columns of indent before every section row.
+const HELP_INDENT: usize = 2;
+/// Columns between a section's widest literal cell and the descriptions.
+const HELP_GAP: usize = 3;
+/// The continuation indent under `Usage: ` — the label's own width, so
+/// every further form aligns with the first.
+const USAGE_CONTINUATION: &str = "       ";
+
+/// One help page's content — rendered by [`help`], never printed as-is.
+struct HelpDoc {
+    /// The first line, in the heading style: the product's name on the
+    /// main page (`Alter Zero`, [`crate::APP_NAME`]), the command on the
+    /// subcommand's (`alter-zero mcp`).
+    title: &'static str,
+    /// The paragraph under it, plain and pre-wrapped.
+    description: &'static str,
+    /// The `Usage:` forms as `(literal, rest)` — the command words bolded,
+    /// the placeholders after them bare.
+    usage: &'static [(&'static str, &'static str)],
+    /// The sections in print order.
+    sections: &'static [Section],
+}
+
+/// A heading over aligned rows.
+struct Section {
+    heading: &'static str,
+    rows: &'static [Row],
+}
+
+/// One `  {literal}{placeholder}   {description}` row. The description's
+/// further lines continue at the description column.
+struct Row {
+    /// The bold part (`-r, --resume`, `mcp`) — empty for a bare positional.
+    literal: &'static str,
+    /// The bare part beside it (` [ID]`, `[PROMPT]`), leading space included.
+    placeholder: &'static str,
+    description: &'static str,
+}
+
+const MAIN_DOC: HelpDoc = HelpDoc {
+    title: crate::APP_NAME,
+    description: DESCRIPTION,
+    usage: &[
+        ("alter-zero", " [OPTIONS] [PROMPT]"),
+        ("alter-zero mcp", " <COMMAND>"),
+    ],
+    sections: &[
+        Section {
+            heading: "Commands:",
+            rows: &[Row {
+                literal: "mcp",
+                placeholder: "",
+                description: "Manage MCP servers in the user config file — see\n\
+                              alter-zero mcp --help",
+            }],
+        },
+        Section {
+            heading: "Arguments:",
+            rows: &[Row {
+                literal: "",
+                placeholder: "[PROMPT]",
+                description: "Send this message as the first turn — of a new\n\
+                              conversation, or of the one --continue/--resume reopens",
+            }],
+        },
+        Section {
+            heading: "Options:",
+            rows: &[
+                Row {
+                    literal: "-c, --continue",
+                    placeholder: "",
+                    description: "Continue the most recent conversation recorded in this\n\
+                                  directory",
+                },
+                Row {
+                    literal: "-r, --resume",
+                    placeholder: " [ID]",
+                    description: "Resume a conversation — by the session id the exit hint\n\
+                                  prints, or picked from a list when no id is given",
+                },
+                Row {
+                    literal: "-h, --help",
+                    placeholder: "",
+                    description: "Print help",
+                },
+                Row {
+                    literal: "-V, --version",
+                    placeholder: "",
+                    description: "Print version",
+                },
+            ],
+        },
+    ],
+};
+
+const MCP_DOC: HelpDoc = HelpDoc {
+    title: "alter-zero mcp",
+    description: "\
+Manage MCP servers in the user config file (ALTER_ZERO_MCP_FILE, else
+~/.alter-zero/mcp.json) from a script — inside the app, /mcp manages them live.",
+    usage: &[
+        (
+            "alter-zero mcp add",
+            " <name> --url <URL> [--transport http|sse] [-H \"Name: Value\"]...",
+        ),
+        (
+            "alter-zero mcp add",
+            " <name> [-e KEY=VALUE]... [--] <command> [args...]",
+        ),
+        ("alter-zero mcp add-json", " <name> <json>"),
+        ("alter-zero mcp remove", " <name>"),
+        ("alter-zero mcp get", " <name>"),
+        ("alter-zero mcp list", ""),
+    ],
+    sections: &[Section {
+        heading: "Options:",
+        rows: &[
+            Row {
+                literal: "-t, --transport",
+                placeholder: " <T>",
+                description: "Pin the transport — http or sse with --url, stdio with\n\
+                              a command; a bare --url tries streamable HTTP first and\n\
+                              falls back to legacy SSE",
+            },
+            Row {
+                literal: "-e, --env",
+                placeholder: " KEY=VALUE",
+                description: "Environment variable for a stdio server (repeatable)",
+            },
+            Row {
+                literal: "-H, --header",
+                placeholder: " <H>",
+                description: "\"Name: Value\" header for a remote server (repeatable)",
+            },
+            Row {
+                literal: "-h, --help",
+                placeholder: "",
+                description: "Print help",
+            },
+        ],
+    }],
+};
+
+impl HelpPage {
+    const fn doc(self) -> &'static HelpDoc {
+        match self {
+            Self::Main => &MAIN_DOC,
+            Self::Mcp => &MCP_DOC,
+        }
+    }
+}
+
+/// Render a `--help` page (`docs/cli.md`): the title, the description, the
+/// `Usage:` forms (each further one indented to the first), then each
+/// section's heading over its rows — two columns of indent, the literal
+/// cell padded to the page's widest, three more columns, the description,
+/// its further lines continuing at that column. Padding is
+/// measured on the plain text, so the columns line up under either style.
+/// No trailing newline: the caller's `println!` supplies it.
+#[must_use]
+pub fn help(page: HelpPage, style: HelpStyle) -> String {
+    let doc = page.doc();
+    let mut out = style.heading(doc.title);
+    out.push_str("\n\n");
+    out.push_str(doc.description);
+    out.push_str("\n\n");
+    out.push_str(&usage_block(doc, style));
+    // One description column for the whole page — the widest cell of ANY
+    // section — so `mcp`, `[PROMPT]` and the options read as one table.
+    let column = HELP_INDENT
+        + HELP_GAP
+        + doc
+            .sections
+            .iter()
+            .flat_map(|section| section.rows)
+            .map(|row| row.literal.width() + row.placeholder.width())
+            .max()
+            .unwrap_or(0);
+    for section in doc.sections {
+        out.push_str("\n\n");
+        out.push_str(&style.heading(section.heading));
+        for row in section.rows {
+            let cell_width = HELP_INDENT + row.literal.width() + row.placeholder.width();
+            for (i, line) in row.description.lines().enumerate() {
+                out.push('\n');
+                if i == 0 {
+                    out.push_str(&" ".repeat(HELP_INDENT));
+                    out.push_str(&style.literal(row.literal));
+                    out.push_str(row.placeholder);
+                    out.push_str(&" ".repeat(column - cell_width));
+                } else {
+                    out.push_str(&" ".repeat(column));
+                }
+                out.push_str(line);
+            }
+        }
+    }
+    out
+}
+
+/// The `Usage:` block alone — the page's forms, no title or sections.
+fn usage_block(doc: &HelpDoc, style: HelpStyle) -> String {
+    let mut out = String::new();
+    for (i, (literal, rest)) in doc.usage.iter().enumerate() {
+        if i == 0 {
+            out.push_str(&style.heading("Usage:"));
+            out.push(' ');
+        } else {
+            out.push('\n');
+            out.push_str(USAGE_CONTINUATION);
+        }
+        out.push_str(&style.literal(literal));
+        out.push_str(rest);
+    }
+    out
+}
+
+/// The trailer under a grammar error, clap's shape: `error: {message}`, the
+/// page's `Usage:` block, and where the rest is. Printed to stderr with
+/// exit 2 by the boundary; the `error:` lead is bold red under `Ansi`.
+#[must_use]
+pub fn usage_error(page: HelpPage, message: &str, style: HelpStyle) -> String {
+    format!(
+        "{} {message}\n\n{}\n\nFor more information, try '--help'.",
+        style.error("error:"),
+        usage_block(page.doc(), style)
+    )
+}
+
+/// Whether a terminal may be coloured, given the two environment variables
+/// that say otherwise: `NO_COLOR` set to anything non-empty
+/// (<https://no-color.org>) or `TERM=dumb`. The boundary ANDs this with
+/// whether the stream is actually a terminal — a pipe gets [`HelpStyle::Plain`]
+/// without being asked.
+#[must_use]
+pub fn colour_enabled(no_color: Option<&str>, term: Option<&str>) -> bool {
+    no_color.is_none_or(str::is_empty) && term != Some("dumb")
+}
+
+// ===== the argument grammar (docs/cli.md) =====
 
 /// Parse the process arguments (without `argv[0]`). Usage errors — unknown
-/// flags, stray positionals, a value on `--continue`, more than one session
-/// flag — come back as `Err(message)`; the boundary prints the message plus
-/// [`USAGE`] to stderr and exits 2. `--help`/`--version` win wherever they
-/// appear (so `--resume --help` prints help rather than eating `--help` as
-/// an id); `--resume`'s id may be the next argument or `=`-attached, and a
-/// following `-`-leading argument is never taken as an id.
+/// flags, a second positional, a blank prompt, a value on `--continue`,
+/// more than one session flag, a prompt with the bare picker — come back
+/// as `Err(message)`; the boundary prints [`usage_error`] to stderr and
+/// exits 2. `--help`/`--version` win wherever they appear before a `--`
+/// (so `--resume --help` prints help rather than eating `--help` as an
+/// id); `--resume`'s id may be the next argument or `=`-attached, and a
+/// following `-`-leading argument is never taken as an id. The one
+/// positional is the `[PROMPT]`, anywhere among the flags; `--` ends the
+/// flags so a dash-leading prompt is reachable.
 pub fn parse<I>(args: I) -> Result<Cli, String>
 where
     I: IntoIterator<Item = String>,
 {
-    let mut session: Option<Cli> = None;
+    let mut start: Option<SessionStart> = None;
+    let mut prompt: Option<String> = None;
     let mut args = args.into_iter().peekable();
     // `mcp` routes as the FIRST argument only (docs/mcp-cli.md) — anywhere
-    // else it stays the stray positional it always was, so the session-flag
-    // grammar is untouched.
+    // else it is a prompt like any other word, so the session grammar is
+    // untouched.
     if args.peek().is_some_and(|first| first == "mcp") {
         args.next();
         return parse_mcp(args).map(Cli::Mcp);
     }
     while let Some(arg) = args.next() {
+        if arg == "--" {
+            // The flags end here: what follows is the prompt — and exactly
+            // one argument of it.
+            for rest in args.by_ref() {
+                take_prompt(&mut prompt, rest)?;
+            }
+            break;
+        }
+        if !is_flag(&arg) {
+            take_prompt(&mut prompt, arg)?;
+            continue;
+        }
         // `--flag=value` splits here; a bare flag carries no value.
         let (flag, value) = match arg.split_once('=') {
             Some((flag, value)) => (flag.to_string(), Some(value.to_string())),
@@ -143,29 +453,66 @@ where
                 if value.is_some() {
                     return Err(format!("{flag} takes no value"));
                 }
-                Cli::Continue
+                SessionStart::Continue
             }
             "--resume" | "-r" => {
                 // The id is the attached value, else the next argument —
-                // unless that argument is itself a flag. An empty attached
-                // value (`--resume=`) is bare.
-                let id = value
-                    .filter(|value| !value.is_empty())
-                    .or_else(|| args.next_if(|next| !next.starts_with('-')));
-                Cli::Resume(id)
+                // unless that argument is itself a flag. An explicitly
+                // empty attached value (`--resume=`) is bare and never goes
+                // hunting for the next argument. Otherwise greedy, like
+                // Claude Code's: `--resume "fix the bug"` names a session,
+                // not a prompt.
+                let id = match value {
+                    Some(id) if !id.is_empty() => Some(id),
+                    Some(_) => None,
+                    None => args.next_if(|next| !next.starts_with('-')),
+                };
+                SessionStart::Resume(id)
             }
             _ => return Err(format!("unrecognized argument: {arg}")),
         };
-        if session.replace(picked).is_some() {
+        if start.replace(picked).is_some() {
             return Err("pass at most one of --continue / --resume".to_string());
         }
     }
-    Ok(session.unwrap_or(Cli::Run))
+    let start = start.unwrap_or(SessionStart::Fresh);
+    // The picker is interactive and dismissable: a prompt parked behind it
+    // would either start a fresh conversation on Esc or have to be dropped,
+    // so the grammar says no up front (docs/cli.md).
+    if prompt.is_some() && start == SessionStart::Resume(None) {
+        return Err(
+            "--resume needs a session id to send a prompt into (or use --continue)".to_string(),
+        );
+    }
+    Ok(Cli::Session(SessionArgs { start, prompt }))
+}
+
+/// A flag is a dash plus something; a lone `-` is a positional.
+fn is_flag(arg: &str) -> bool {
+    arg.starts_with('-') && arg.len() > 1
+}
+
+/// Take `arg` as the `[PROMPT]`: the one positional, non-blank. A second
+/// one is refused by name with the quoting hint — never joined, since
+/// `alter-zero write a -c program` would otherwise read `-c` as
+/// `--continue` and lose a word of the prompt (Claude Code errors here too).
+fn take_prompt(slot: &mut Option<String>, arg: String) -> Result<(), String> {
+    if slot.is_some() {
+        return Err(format!(
+            "unexpected argument: {arg} (quote the prompt so the shell passes it as one argument)"
+        ));
+    }
+    if arg.trim().is_empty() {
+        return Err("the prompt is empty".to_string());
+    }
+    *slot = Some(arg);
+    Ok(())
 }
 
 /// Parse the arguments after a leading `mcp` (`docs/mcp-cli.md`). Usage
 /// errors come back as `Err(message)` exactly like [`parse`]'s; the boundary
-/// prints the message plus [`MCP_USAGE`] to stderr and exits 2.
+/// prints [`usage_error`]'s trailer for the [`HelpPage::Mcp`] page to stderr
+/// and exits 2.
 fn parse_mcp<I>(mut args: std::iter::Peekable<I>) -> Result<McpCli, String>
 where
     I: Iterator<Item = String>,
@@ -446,29 +793,41 @@ mod tests {
 
     // ===== parse (docs/cli.md) =====
 
+    /// A TUI run: how it starts, plus its optional `[PROMPT]`.
+    fn session(start: SessionStart, prompt: Option<&str>) -> Result<Cli, String> {
+        Ok(Cli::Session(SessionArgs {
+            start,
+            prompt: prompt.map(str::to_string),
+        }))
+    }
+
     #[test]
     fn no_args_is_a_plain_run() {
-        assert_eq!(parsed(&[]), Ok(Cli::Run));
+        assert_eq!(parsed(&[]), session(SessionStart::Fresh, None));
     }
 
     #[test]
     fn continue_parses_long_and_short() {
-        assert_eq!(parsed(&["--continue"]), Ok(Cli::Continue));
-        assert_eq!(parsed(&["-c"]), Ok(Cli::Continue));
+        assert_eq!(
+            parsed(&["--continue"]),
+            session(SessionStart::Continue, None)
+        );
+        assert_eq!(parsed(&["-c"]), session(SessionStart::Continue, None));
     }
 
     #[test]
     fn bare_resume_parses_to_the_picker() {
-        assert_eq!(parsed(&["--resume"]), Ok(Cli::Resume(None)));
-        assert_eq!(parsed(&["-r"]), Ok(Cli::Resume(None)));
+        let picker = session(SessionStart::Resume(None), None);
+        assert_eq!(parsed(&["--resume"]), picker);
+        assert_eq!(parsed(&["-r"]), picker);
         // An empty attached id is bare too — `--resume=` must not go
         // hunting for a session whose id is "".
-        assert_eq!(parsed(&["--resume="]), Ok(Cli::Resume(None)));
+        assert_eq!(parsed(&["--resume="]), picker);
     }
 
     #[test]
     fn resume_takes_an_id_separate_attached_or_short() {
-        let want = Ok(Cli::Resume(Some("18a9f2c3-1a2b".into())));
+        let want = session(SessionStart::Resume(Some("18a9f2c3-1a2b".into())), None);
         assert_eq!(parsed(&["--resume", "18a9f2c3-1a2b"]), want);
         assert_eq!(parsed(&["--resume=18a9f2c3-1a2b"]), want);
         assert_eq!(parsed(&["-r", "18a9f2c3-1a2b"]), want);
@@ -488,16 +847,15 @@ mod tests {
         assert_eq!(parsed(&["--version"]), Ok(Cli::Version));
         assert_eq!(parsed(&["-V"]), Ok(Cli::Version));
         assert_eq!(parsed(&["--continue", "--help"]), Ok(Cli::Help));
+        assert_eq!(parsed(&["a prompt", "--version"]), Ok(Cli::Version));
     }
 
     #[test]
-    fn unknown_arguments_are_usage_errors_naming_the_culprit() {
+    fn unknown_flags_are_usage_errors_naming_the_culprit() {
         let err = parsed(&["--frobnicate"]).expect_err("unknown flag");
         assert!(err.contains("--frobnicate"), "{err}");
-        let err = parsed(&["hello"]).expect_err("stray positional");
-        assert!(err.contains("hello"), "{err}");
-        let err = parsed(&["--resume", "id", "extra"]).expect_err("trailing junk");
-        assert!(err.contains("extra"), "{err}");
+        let err = parsed(&["-x"]).expect_err("unknown short flag");
+        assert!(err.contains("-x"), "{err}");
     }
 
     #[test]
@@ -511,6 +869,109 @@ mod tests {
         assert!(parsed(&["--continue", "--resume"]).is_err());
         assert!(parsed(&["-r", "abc", "-c"]).is_err());
         assert!(parsed(&["-c", "-c"]).is_err());
+    }
+
+    // ===== the [PROMPT] shortcut (docs/cli.md) =====
+
+    #[test]
+    fn a_positional_is_the_prompt_of_a_fresh_session() {
+        assert_eq!(
+            parsed(&["fix the failing test"]),
+            session(SessionStart::Fresh, Some("fix the failing test"))
+        );
+        // Verbatim: a leading `!` or `/` is message text here, not the
+        // composer's shell or slash grammar.
+        assert_eq!(
+            parsed(&["/init please"]),
+            session(SessionStart::Fresh, Some("/init please"))
+        );
+    }
+
+    #[test]
+    fn the_prompt_rides_with_continue_and_resume_before_or_after_the_flag() {
+        let id = || SessionStart::Resume(Some("18a9f2c3-1a2b".into()));
+        assert_eq!(
+            parsed(&["-c", "and the docs"]),
+            session(SessionStart::Continue, Some("and the docs"))
+        );
+        assert_eq!(
+            parsed(&["and the docs", "--continue"]),
+            session(SessionStart::Continue, Some("and the docs"))
+        );
+        assert_eq!(
+            parsed(&["--resume", "18a9f2c3-1a2b", "and the docs"]),
+            session(id(), Some("and the docs"))
+        );
+        assert_eq!(
+            parsed(&["and the docs", "-r", "18a9f2c3-1a2b"]),
+            session(id(), Some("and the docs"))
+        );
+        assert_eq!(
+            parsed(&["--resume=18a9f2c3-1a2b", "and the docs"]),
+            session(id(), Some("and the docs"))
+        );
+    }
+
+    #[test]
+    fn double_dash_ends_the_flags_so_a_dash_leading_prompt_is_reachable() {
+        assert_eq!(
+            parsed(&["--", "-v is not a flag here"]),
+            session(SessionStart::Fresh, Some("-v is not a flag here"))
+        );
+        assert_eq!(
+            parsed(&["-c", "--", "--continue"]),
+            session(SessionStart::Continue, Some("--continue"))
+        );
+        // Even `--help` is prose after the separator.
+        assert_eq!(
+            parsed(&["--", "--help"]),
+            session(SessionStart::Fresh, Some("--help"))
+        );
+    }
+
+    #[test]
+    fn a_second_positional_is_a_usage_error_with_the_quote_hint() {
+        // Never joined: `alter-zero write a -c program` would otherwise
+        // read `-c` as --continue and lose a word of the prompt.
+        let err = parsed(&["fix", "the bug"]).expect_err("two positionals");
+        assert!(err.contains("the bug") && err.contains("quote"), "{err}");
+        let err = parsed(&["--", "a", "b"]).expect_err("two after --");
+        assert!(err.contains('b') && err.contains("quote"), "{err}");
+        let err = parsed(&["a", "-c", "b"]).expect_err("one each side of a flag");
+        assert!(err.contains("unexpected argument: b"), "{err}");
+        let err = parsed(&["--resume", "id", "extra", "more"]).expect_err("trailing junk");
+        assert!(err.contains("more"), "{err}");
+    }
+
+    #[test]
+    fn a_blank_prompt_is_a_usage_error() {
+        let err = parsed(&[""]).expect_err("empty");
+        assert!(err.contains("empty"), "{err}");
+        let err = parsed(&["   "]).expect_err("blank");
+        assert!(err.contains("empty"), "{err}");
+    }
+
+    #[test]
+    fn a_prompt_with_the_bare_picker_is_refused() {
+        let err = parsed(&["fix it", "--resume"]).expect_err("picker + prompt");
+        assert!(
+            err.contains("--resume") && err.contains("session id") && err.contains("--continue"),
+            "{err}"
+        );
+        let err = parsed(&["--resume=", "fix it"]).expect_err("picker + prompt");
+        assert!(err.contains("--resume"), "{err}");
+    }
+
+    #[test]
+    fn resume_still_takes_the_next_argument_as_its_id_greedily() {
+        // Claude Code's rule: `--resume "fix the bug"` looks "fix the bug"
+        // up as an id (and fails at resolution) rather than guessing it was
+        // a prompt — the prompt for a reopened session names the session
+        // first.
+        assert_eq!(
+            parsed(&["--resume", "fix the bug"]),
+            session(SessionStart::Resume(Some("fix the bug".into())), None)
+        );
     }
 
     // ===== the exit hint (docs/cli.md) =====
@@ -530,6 +991,195 @@ mod tests {
         assert_eq!(bin_name(Some("az")), "az");
         assert_eq!(bin_name(Some("")), "alter-zero");
         assert_eq!(bin_name(None), "alter-zero");
+    }
+
+    // ===== the --help page (docs/cli.md) =====
+
+    /// The plain main page — exactly what a pipe receives, and what the
+    /// design doc shows.
+    const MAIN_PAGE: &str = "\
+Alter Zero
+
+Starts an interactive session by default — a quoted PROMPT is its first turn.
+
+Usage: alter-zero [OPTIONS] [PROMPT]
+       alter-zero mcp <COMMAND>
+
+Commands:
+  mcp                 Manage MCP servers in the user config file — see
+                      alter-zero mcp --help
+
+Arguments:
+  [PROMPT]            Send this message as the first turn — of a new
+                      conversation, or of the one --continue/--resume reopens
+
+Options:
+  -c, --continue      Continue the most recent conversation recorded in this
+                      directory
+  -r, --resume [ID]   Resume a conversation — by the session id the exit hint
+                      prints, or picked from a list when no id is given
+  -h, --help          Print help
+  -V, --version       Print version";
+
+    /// Strip every `ESC[…m` sequence.
+    fn strip_ansi(text: &str) -> String {
+        let mut out = String::new();
+        let mut rest = text;
+        while let Some(start) = rest.find("\x1b[") {
+            out.push_str(&rest[..start]);
+            let after = &rest[start + 2..];
+            let end = after.find('m').expect("a closed SGR sequence");
+            rest = &after[end + 1..];
+        }
+        out.push_str(rest);
+        out
+    }
+
+    #[test]
+    fn the_plain_main_page_is_the_documented_one() {
+        assert_eq!(help(HelpPage::Main, HelpStyle::Plain), MAIN_PAGE);
+    }
+
+    #[test]
+    fn the_main_page_opens_on_the_product_name() {
+        // `Alter Zero` — the one constant the app speaks its name from —
+        // not the binary's `alter-zero`, which the Usage line names.
+        let page = help(HelpPage::Main, HelpStyle::Plain);
+        assert_eq!(page.lines().next(), Some(crate::APP_NAME));
+        assert!(page.contains("\nUsage: alter-zero "), "{page}");
+    }
+
+    #[test]
+    fn main_help_fits_eighty_columns_with_no_trailing_blanks() {
+        use unicode_width::UnicodeWidthStr;
+        for line in help(HelpPage::Main, HelpStyle::Plain).lines() {
+            assert!(line.width() <= 80, "{line:?}");
+            assert_eq!(line.trim_end(), line, "{line:?}");
+        }
+    }
+
+    #[test]
+    fn ansi_help_strips_back_to_the_plain_page() {
+        for page in [HelpPage::Main, HelpPage::Mcp] {
+            let styled = help(page, HelpStyle::Ansi);
+            let plain = help(page, HelpStyle::Plain);
+            assert_ne!(styled, plain, "{page:?} is dressed");
+            assert_eq!(strip_ansi(&styled), plain, "{page:?}");
+        }
+    }
+
+    #[test]
+    fn ansi_help_dresses_the_title_headings_and_literals() {
+        let styled = help(HelpPage::Main, HelpStyle::Ansi);
+        let heading = |text: &str| format!("\x1b[1;36m{text}\x1b[0m");
+        // The title wears the heading style — the same colour as Usage /
+        // Commands / Options.
+        assert!(styled.starts_with(&heading("Alter Zero")), "{styled}");
+        for h in ["Usage:", "Commands:", "Arguments:", "Options:"] {
+            assert!(
+                styled.contains(&heading(h)),
+                "{h} styled as a heading:\n{styled}"
+            );
+        }
+        // Literals are bold; placeholders wear nothing.
+        assert!(
+            styled.contains("\x1b[1malter-zero\x1b[0m [OPTIONS] [PROMPT]"),
+            "{styled}"
+        );
+        assert!(
+            styled.contains("\x1b[1malter-zero mcp\x1b[0m <COMMAND>"),
+            "{styled}"
+        );
+        assert!(
+            styled.contains("\x1b[1m-r, --resume\x1b[0m [ID]   Resume"),
+            "{styled}"
+        );
+        assert!(styled.contains("\n  [PROMPT]            Send"), "{styled}");
+        assert!(!styled.contains("\x1b[1m[PROMPT]"), "{styled}");
+        // An empty literal never emits an empty escape pair.
+        assert!(!styled.contains("\x1b[1m\x1b[0m"), "{styled}");
+    }
+
+    #[test]
+    fn the_mcp_page_is_titled_by_its_command_over_the_six_usage_lines() {
+        let page = help(HelpPage::Mcp, HelpStyle::Plain);
+        assert_eq!(page.lines().next(), Some("alter-zero mcp"));
+        assert!(
+            page.contains("\nUsage: alter-zero mcp add <name> --url <URL> [--transport http|sse]"),
+            "{page}"
+        );
+        assert_eq!(
+            page.matches("\n       alter-zero mcp ").count(),
+            5,
+            "{page}"
+        );
+        assert!(page.contains("\n       alter-zero mcp list\n"), "{page}");
+        // The options column is the widest cell plus the gap.
+        assert!(
+            page.contains("\nOptions:\n  -t, --transport <T>   Pin the transport"),
+            "{page}"
+        );
+        assert!(
+            page.contains("\n  -e, --env KEY=VALUE   Environment"),
+            "{page}"
+        );
+        assert!(page.contains("ALTER_ZERO_MCP_FILE"), "{page}");
+        let styled = help(HelpPage::Mcp, HelpStyle::Ansi);
+        assert!(
+            styled.starts_with("\x1b[1;36malter-zero mcp\x1b[0m\n"),
+            "{styled}"
+        );
+        assert!(
+            styled.contains("\x1b[1malter-zero mcp add-json\x1b[0m <name>"),
+            "{styled}"
+        );
+    }
+
+    #[test]
+    fn a_usage_error_is_the_error_line_the_usage_block_and_the_help_pointer() {
+        let text = usage_error(
+            HelpPage::Main,
+            "unrecognized argument: --frob",
+            HelpStyle::Plain,
+        );
+        assert_eq!(
+            text,
+            "error: unrecognized argument: --frob\n\n\
+             Usage: alter-zero [OPTIONS] [PROMPT]\n       alter-zero mcp <COMMAND>\n\n\
+             For more information, try '--help'."
+        );
+        let styled = usage_error(HelpPage::Main, "x", HelpStyle::Ansi);
+        assert!(
+            styled.starts_with("\x1b[1;31merror:\x1b[0m x\n"),
+            "{styled}"
+        );
+        assert_eq!(
+            strip_ansi(&styled),
+            usage_error(HelpPage::Main, "x", HelpStyle::Plain)
+        );
+        let mcp = usage_error(
+            HelpPage::Mcp,
+            "mcp add needs a server name",
+            HelpStyle::Plain,
+        );
+        assert!(
+            mcp.starts_with("error: mcp add needs a server name\n\nUsage: alter-zero mcp add "),
+            "{mcp}"
+        );
+        assert!(
+            mcp.ends_with("       alter-zero mcp list\n\nFor more information, try '--help'."),
+            "{mcp}"
+        );
+    }
+
+    #[test]
+    fn colour_is_on_unless_no_color_is_set_or_the_terminal_is_dumb() {
+        assert!(colour_enabled(None, Some("xterm-256color")));
+        assert!(colour_enabled(None, None));
+        // https://no-color.org: only a NON-empty NO_COLOR disables.
+        assert!(colour_enabled(Some(""), Some("xterm")));
+        assert!(!colour_enabled(Some("1"), Some("xterm")));
+        assert!(!colour_enabled(None, Some("dumb")));
     }
 
     // ===== the mcp subcommand (docs/mcp-cli.md) =====
@@ -810,8 +1460,10 @@ mod tests {
 
     #[test]
     fn mcp_is_a_first_argument_only() {
-        // Anywhere else it stays the stray positional it always was.
-        let err = parsed(&["--continue", "mcp"]).expect_err("not a subcommand here");
-        assert!(err.contains("mcp"), "{err}");
+        // Anywhere else it is a word of the prompt like any other.
+        assert_eq!(
+            parsed(&["--continue", "mcp"]),
+            session(SessionStart::Continue, Some("mcp"))
+        );
     }
 }

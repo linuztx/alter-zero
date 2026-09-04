@@ -14,6 +14,8 @@
 //! - [`Session::start_compact_turn`] — codex's summarization turn, whose reply is
 //!   diverted into the compact buffer instead of the transcript
 //!   (`docs/compact.md`).
+//! - [`Session::submit_startup_prompt`] — the `[PROMPT]` given on the command
+//!   line, submitted at bootstrap exactly as Enter would have (`docs/cli.md`).
 //!
 //! The end of a turn is one function too: [`Session::dispatch_after_turn`], run
 //! at *every* turn-end site (`StreamDone`, a backend error, both Esc-interrupt
@@ -137,6 +139,22 @@ impl Session<'_> {
             &self.app.history,
         );
         self.spawn_reply(prompt, paths, context);
+    }
+
+    /// The `[PROMPT]` CLI shortcut (`docs/cli.md`): the message given on the
+    /// command line, submitted as the session's first turn the way the
+    /// `Submit` key arm submits a draft — recorded into the ↑ input history
+    /// (it *was* submitted), then [`Session::start_turn`] on a batch of one
+    /// with no attachments. Called once by `bootstrap`, after the session
+    /// directive is applied and the first frame is scheduled, so a
+    /// `--continue`/`--resume` load's transcript sits above the new bubble
+    /// and the turn appends to the adopted rollout file.
+    pub(crate) fn submit_startup_prompt(&mut self, prompt: String) {
+        self.app.input_history.record(&prompt);
+        self.start_turn(TurnInput {
+            texts: vec![prompt],
+            images: Vec::new(),
+        });
     }
 
     /// Run a `!command` locally as a turn (the `Action::RunShell` arm; see

@@ -157,6 +157,8 @@ cleanup() {
 	tmux kill-session -t "${S}_mcpera" 2>/dev/null
 	[ -n "${MCP88_CFG:-}" ] && rm -rf "$MCP88_CFG" 2>/dev/null
 	[ -n "${MCP88_DIR:-}" ] && rm -rf "$MCP88_DIR" 2>/dev/null
+	tmux kill-session -t "${S}_cliprompt" 2>/dev/null
+	[ -n "${CLIP_DIR:-}" ] && rm -rf "$CLIP_DIR" 2>/dev/null
 }
 trap cleanup EXIT
 
@@ -10543,6 +10545,173 @@ if [ "$img_clip_inline" -lt 15 ]; then
 fi
 if [ "$img_clip_overlay" -lt 8 ]; then
 	echo "FAIL: Phase 107c — the bottom-pinned Ctrl+O pager drew $img_clip_overlay rows of a picture whose head is above the window; a cut block must still draw its visible part" >&2
+	status=1
+fi
+
+
+# --- Phase 108: the [PROMPT] CLI shortcut and the --help page (docs/cli.md).
+# `alter-zero "hello there"` boots STRAIGHT into that turn — the ❯ bubble, the
+# streamed reply and the Done summary appear with no key pressed — and its
+# quit still prints the resume hint; `--resume {id} "again please"` reloads
+# the transcript and runs the prompt as the next turn in the SAME rollout
+# file; `-c "…"` does the same for the newest session here. And the help
+# page: on the pane's tty it opens on 'Alter Zero' in the bold-cyan heading
+# escape and carries the [PROMPT] argument, through a pipe the same page
+# holds no escape at all, and a grammar error prints the clap-shaped trailer
+# with exit 2. The pane must OUTLIVE the app to capture what it prints after
+# restore, so each launch is wrapped in a shell that holds the pane open. ---
+S108="${S}_cliprompt"
+CLIP_DIR="$(mktemp -d /tmp/alter-zero-smoke-cliprompt-XXXXXX)"
+CLIPAPP="env $CFG_ENV_NOHIST ALTER_ZERO_SESSIONS_DIR=$CLIP_DIR ALTER_ZERO_STARTUP_DELAY_MS=$SMOKE_STARTUP_MS $BIN"
+tmux new-session -d -s "$S108" -x 80 -y 24 "$CLIPAPP \"$USER_MSG\"; echo CLI_APP_EXITED; sleep 60"
+clip_first_pane=""
+for _ in $(seq 1 134); do # the shortcut's turn → "Done for", no key pressed
+	clip_first_pane="$(tmux capture-pane -t "$S108" -p -S -60)"
+	if printf '%s' "$clip_first_pane" | grep -qF "Done for"; then
+		break
+	fi
+	sleep 0.15
+done
+echo "==== Phase 108: alter-zero \"$USER_MSG\" — the turn ran from the command line ===="
+printf '%s\n' "$clip_first_pane"
+tmux send-keys -t "$S108" C-c # quit (empty composer)
+for _ in $(seq 1 40); do
+	if tmux capture-pane -t "$S108" -p | grep -qF "CLI_APP_EXITED"; then
+		break
+	fi
+	sleep 0.1
+done
+clip_quit_pane="$(tmux capture-pane -t "$S108" -p -S -80)"
+clip_hint_id="$(printf '%s\n' "$clip_quit_pane" | sed -n 's/.*--resume \([a-f0-9-]*\).*/\1/p' | tail -1)"
+tmux kill-session -t "$S108" 2>/dev/null
+# --resume {id} "prompt": the transcript reloads and the prompt runs next.
+tmux new-session -d -s "$S108" -x 80 -y 24 "$CLIPAPP --resume $clip_hint_id \"again please\"; echo CLI_APP_EXITED; sleep 60"
+clip_resume_pane=""
+for _ in $(seq 1 134); do # the loaded turn's summary + the new turn's → 2× "Done for"
+	clip_resume_pane="$(tmux capture-pane -t "$S108" -p -S -100)"
+	if [ "$(printf '%s' "$clip_resume_pane" | grep -cF "Done for")" -ge 2 ]; then
+		break
+	fi
+	sleep 0.15
+done
+sleep 0.3
+echo "==== Phase 108: --resume {id} \"again please\" (reloaded, then the prompt's turn) ===="
+printf '%s\n' "$clip_resume_pane"
+tmux kill-session -t "$S108" 2>/dev/null
+# -c "prompt": the newest session here, plus a third turn.
+tmux new-session -d -s "$S108" -x 80 -y 24 "$CLIPAPP -c \"and once more\"; echo CLI_APP_EXITED; sleep 60"
+clip_continue_pane=""
+for _ in $(seq 1 134); do
+	clip_continue_pane="$(tmux capture-pane -t "$S108" -p -S -140)"
+	if [ "$(printf '%s' "$clip_continue_pane" | grep -cF "Done for")" -ge 3 ]; then
+		break
+	fi
+	sleep 0.15
+done
+sleep 0.3
+clip_files="$(find "$CLIP_DIR" -type f -name 'rollout-*.jsonl' | wc -l | tr -d ' ')"
+echo "==== Phase 108: -c \"and once more\" (rollout files: $clip_files) ===="
+printf '%s\n' "$clip_continue_pane" | tail -20
+tmux kill-session -t "$S108" 2>/dev/null
+# The help page on a real tty: the raw pane (escapes kept — tmux re-encodes
+# the binary's `ESC[1;36m` as its own `ESC[1m ESC[36m`, so the check is on
+# the cyan `36m` landing right before the word) opens on the bold-cyan title.
+tmux new-session -d -s "$S108" -x 100 -y 40 "$BIN --help; echo CLI_APP_EXITED; sleep 60"
+for _ in $(seq 1 40); do
+	if tmux capture-pane -t "$S108" -p | grep -qF "CLI_APP_EXITED"; then
+		break
+	fi
+	sleep 0.1
+done
+clip_help_raw="$(tmux capture-pane -t "$S108" -p -e)"
+clip_help_text="$(tmux capture-pane -t "$S108" -p)"
+echo "==== Phase 108: --help on the pane's tty ===="
+printf '%s\n' "$clip_help_text" | head -24
+tmux kill-session -t "$S108" 2>/dev/null
+# …and through a pipe: the same words, no escape anywhere.
+clip_help_piped="$("$BIN" --help 2>&1)"
+clip_help_piped_exit=$?
+clip_usage_err="$("$BIN" fix "the bug" 2>&1)"
+clip_usage_err_exit=$?
+echo "==== Phase 108: a grammar error → exit $clip_usage_err_exit ===="
+printf '%s\n' "$clip_usage_err"
+rm -rf "$CLIP_DIR" 2>/dev/null
+
+# Phase 108: the [PROMPT] shortcut and the --help page.
+if ! printf '%s' "$clip_first_pane" | grep -qF "❯ $USER_MSG"; then
+	echo "FAIL: Phase 108 — the command-line prompt was not committed as the user bubble" >&2
+	status=1
+fi
+if ! printf '%s' "$clip_first_pane" | grep -qF "$EXPECT_REPLY"; then
+	echo "FAIL: Phase 108 — the command-line prompt's turn never streamed its reply" >&2
+	status=1
+fi
+if ! printf '%s' "$clip_first_pane" | grep -qF "Done for"; then
+	echo "FAIL: Phase 108 — the command-line prompt's turn never settled" >&2
+	status=1
+fi
+if ! printf '%s' "$clip_quit_pane" | grep -qF "Resume this session with:"; then
+	echo "FAIL: Phase 108 — quitting the shortcut's session printed no resume hint" >&2
+	status=1
+fi
+if [ -z "$clip_hint_id" ]; then
+	echo "FAIL: Phase 108 — no '--resume {id}' line under the hint" >&2
+	status=1
+fi
+if ! printf '%s' "$clip_resume_pane" | grep -qF "❯ $USER_MSG"; then
+	echo "FAIL: Phase 108 — --resume {id} \"prompt\" did not reload the first turn" >&2
+	status=1
+fi
+if ! printf '%s' "$clip_resume_pane" | grep -qF "❯ again please"; then
+	echo "FAIL: Phase 108 — --resume {id} \"prompt\" did not run the prompt as the next turn" >&2
+	status=1
+fi
+if [ "$(printf '%s' "$clip_resume_pane" | grep -cF "Done for")" -lt 2 ]; then
+	echo "FAIL: Phase 108 — the resumed session's prompt turn never settled" >&2
+	status=1
+fi
+if ! printf '%s' "$clip_continue_pane" | grep -qF "❯ and once more"; then
+	echo "FAIL: Phase 108 — -c \"prompt\" did not run the prompt as the next turn" >&2
+	status=1
+fi
+if [ "$clip_files" != "1" ]; then
+	echo "FAIL: Phase 108 — the prompt turns should append to the SAME rollout file, found $clip_files files" >&2
+	status=1
+fi
+if [ "$(printf '%s\n' "$clip_help_text" | head -1)" != "Alter Zero" ]; then
+	echo "FAIL: Phase 108 — --help on a tty does not open on 'Alter Zero' (got '$(printf '%s\n' "$clip_help_text" | head -1)')" >&2
+	status=1
+fi
+if ! printf '%s' "$clip_help_raw" | grep -qF "36mAlter Zero"; then
+	echo "FAIL: Phase 108 — --help on a tty does not wear the bold-cyan heading escape on its title" >&2
+	status=1
+fi
+if ! printf '%s' "$clip_help_raw" | grep -qF "36mUsage:"; then
+	echo "FAIL: Phase 108 — --help on a tty does not wear the heading escape on 'Usage:'" >&2
+	status=1
+fi
+if ! printf '%s' "$clip_help_text" | grep -qF "[PROMPT]"; then
+	echo "FAIL: Phase 108 — --help does not name the [PROMPT] argument" >&2
+	status=1
+fi
+if [ "$clip_help_piped_exit" != "0" ] || [ "$(printf '%s\n' "$clip_help_piped" | head -1)" != "Alter Zero" ]; then
+	echo "FAIL: Phase 108 — piped --help should exit 0 opening on 'Alter Zero' (exit $clip_help_piped_exit)" >&2
+	status=1
+fi
+if printf '%s' "$clip_help_piped" | grep -qF "$(printf '\033')"; then
+	echo "FAIL: Phase 108 — piped --help carries an escape sequence" >&2
+	status=1
+fi
+if [ "$clip_usage_err_exit" != "2" ]; then
+	echo "FAIL: Phase 108 — a grammar error should exit 2, got $clip_usage_err_exit" >&2
+	status=1
+fi
+if ! printf '%s' "$clip_usage_err" | grep -qF "error: unexpected argument: the bug"; then
+	echo "FAIL: Phase 108 — the grammar error does not lead with clap's 'error:' line naming the culprit" >&2
+	status=1
+fi
+if ! printf '%s' "$clip_usage_err" | grep -qF "For more information, try '--help'."; then
+	echo "FAIL: Phase 108 — the grammar error does not close on the --help pointer" >&2
 	status=1
 fi
 

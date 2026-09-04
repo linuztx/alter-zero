@@ -120,7 +120,7 @@ opening the viewport, running the loop — and everything else lives here:
 | `login.rs` | The `/login` flow's boundary half: opening it, running a subscription's sign-in — a device code or a browser PKCE flow, per provider — and persisting what it mints (`docs/copilot.md`, `docs/chatgpt.md`). |
 | `config.rs` | Reading the environment: providers, keys, settings, permission rules, paths. |
 | `bootstrap.rs` | `Session::bootstrap` / `shutdown` / `after_iteration` — assembly, teardown, loop-bottom work. |
-| `startup.rs` | The `--continue`/`--resume` argument resolution (`docs/cli.md`). |
+| `startup.rs` | The `--continue`/`--resume`/`[PROMPT]` argument resolution and the styled `--help` / usage-error printing (`docs/cli.md`). |
 | `recorder.rs` | `SessionRecorder`: mirroring history to a rollout file (`docs/resume.md`). |
 | `resume.rs` | Finding recorded sessions on disk, and the `/resume` + backtrack arms. |
 | `history_store.rs` | `InputHistoryStore` (`docs/history-persistence.md`). |

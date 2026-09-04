@@ -520,7 +520,26 @@ loads it back and appends the turns that follow to the same file — and its
 `--resume {id}` one by id (bare `--resume` boots into the picker), the flags
 resolved to a rollout path in `main()` *after* the detached-exec hook and
 *before* the terminal boots (fail-fast on stderr, the pure parse in `cli`,
-the id lookup via `session::rollout_file_id`/`latest_for_cwd`), the loaded
+the id lookup via `session::rollout_file_id`/`latest_for_cwd`) — plus the
+**`[PROMPT]` shortcut**: one quoted positional (`alter-zero "fix the failing
+test"`, `alter-zero --resume {id} "and now the docs"`, `-c "…"`) submitted
+as the first turn of whichever session those open, through
+`Session::submit_startup_prompt` — the Enter path minus the composer, so it
+records into ↑ recall and `start_turn`s like a typed message; strict (a
+second positional is a usage error carrying a quote hint, never a join that
+would read a stray `-c` as `--continue`; a blank prompt and a prompt behind
+the bare picker are refused; `--` ends the flags; `--resume` still takes the
+next token as its id greedily, Claude Code's rule) — and the **`--help`
+page**: `Alter Zero` (`APP_NAME`) on the first line in the app's bold-cyan
+heading style over a one-line description, then clap's shape — an inline
+`Usage:` with continuation lines, `Commands:` / `Arguments:` / `Options:`
+rows aligned on one page-wide column, literals bold, placeholders bare —
+from one `cli::help(page, style)` renderer that `mcp --help` shares
+(`HelpPage::Mcp`), `HelpStyle::Plain` on a pipe, under `NO_COLOR` or
+`TERM=dumb` (`cli::colour_enabled`, ANDed with `IsTerminal` at the boundary),
+and a grammar error the clap-shaped `error: {message}` + `Usage:` block +
+`For more information, try '--help'.` (`cli::usage_error`, stderr, exit 2)
+instead of the old whole-page dump — the loaded
 transcript committed under the banner through `insert_before` — never a
 startup Purge, the user's terminal scrollback survives — and a quit that
 recorded anything printing `Resume this session with: {bin} --resume {id}`
