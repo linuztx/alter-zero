@@ -47,10 +47,10 @@ same thing on every row and the menu never needs an edit mode.
 | **Error retry** | `0` / `1` / `2` / `3` / `5` / `10` | How many times a failed request is retried before the error surfaces (`llm::retry`, the `retrying n/N` status). Was the fixed `MAX_RETRIES = 3`. |
 | **Tools** | `true` / `false` | Whether `bash`/`read`/`write`/`edit`/`agent` are offered to the model at all (`docs/tools.md`). Seeded from `ALTER_ZERO_TOOLS`. Off also withdraws both halves of the `<system-reminder>` — the skills listing and the agent-type listing (`docs/subagents.md`): a roster for a tool the request never carries is a dead end. |
 | **Permission mode** | `manual` / `edit` / `auto` / `master` | The same posture Shift+Tab cycles (`docs/permissions.md`) — the row is a second door onto one state, not a copy of it. |
-| **Checkpoints** | `true` / `false` | Per-turn working-directory snapshots (`docs/checkpoint.md`). Seeded from `ALTER_ZERO_CHECKPOINTS`; forced to `false`, unchangeably, when the store can't run at all (no git, no config home, or a cwd the feature refuses — see *Unavailable settings*). |
+| **Checkpoints** | **`false`** / `true` | Per-turn working-directory snapshots (`docs/checkpoint.md`). **Off until a directory turns it on** (`docs/per-directory-state.md`); seeded from `ALTER_ZERO_CHECKPOINTS`; forced to `false`, unchangeably, when the store can't run at all (no git, no config home, or a cwd the feature refuses — see *Unavailable settings*). |
 | **Auto compact** | `true` / `false` | Whether the loop runs the summarization turn on its own past 90 % of the context window (`docs/compact.md`). `/compact` by hand is unaffected. |
 | **Project docs** | `true` / `false` | Whether the project's `AGENTS.md` files are re-read each turn into the context's leading user entry (`docs/project-doc.md`). Seeded from `ALTER_ZERO_PROJECT_DOC_MAX_BYTES=0`. |
-| **Hooks** | `true` / `false` | Whether the user's `~/.alter-zero/hooks.json` lifecycle hooks run — around tool calls, turns, and the session boundaries (`docs/hooks.md`). Seeded from `ALTER_ZERO_HOOKS`; **unavailable** when no hooks file resolved or it had nothing runnable in it. |
+| **Hooks** | **`false`** / `true` | Whether the user's `~/.alter-zero/hooks.json` lifecycle hooks run — around tool calls, turns, and the session boundaries (`docs/hooks.md`). **Off until a directory turns it on** (`docs/per-directory-state.md`); seeded from `ALTER_ZERO_HOOKS`; **unavailable** when no hooks file resolved or it had nothing runnable in it. |
 | **Skills** | `true` / `false` | Whether the `skill` tool is offered and the `<system-reminder>` listing rides the context (`docs/skills.md`). Seeded from `ALTER_ZERO_SKILLS`; **unavailable** when no `SKILL.md` loaded — there is nothing to turn on. |
 | **Temperature** | `default` / `0.0` / `0.3` / `0.5` / `0.7` / `1.0` | The sampling temperature every request carries; `default` sends none and leaves it to the provider. Seeded from `ALTER_ZERO_TEMPERATURE`. |
 | **Max tool calls** | **`0`** / `5` / `10` / `20` / `50` / `100` | How many tool **calls** one turn may run before it gives up (`llm::agent::run_agent`'s cap). **`0` is no limit, and the default** — see below. |
@@ -230,33 +230,62 @@ fixed for the ↓ manager band in `docs/background.md`).
 
 `~/.alter-zero/settings.json`, its own file beside `config.json` (the `/model`
 selection) and `permissions.json` (the per-project rules) — one file per feature
-that owns it, so a write can never clobber a neighbour's state. The format is
-pure ([`settings::SessionSettings`], every field optional and skipped when it
-equals the default) and the read/write is the boundary's
-(`tui::config::load_saved_settings` / `save_session_settings`), best-effort like
-the others: a read-only home must never kill the TUI. The file reads as a **diff
+that owns it, so a write can never clobber a neighbour's state — and, like both
+of those, keyed **per working directory** inside (`docs/per-directory-state.md`):
+the knobs you set in a project are that project's. The format is pure
+([`settings::SettingsFile`]: one [`settings::SessionSettings`] entry per
+directory under `projects`, every field optional and skipped when it equals
+the default, over the file's top-level keys — the **seed** a directory with no
+entry starts from, which is also the whole of a file written before settings
+were per directory, so a saved file keeps applying everywhere until a directory
+changes something). The read/write is the boundary's
+(`tui::config::load_settings_file` / `save_setting`), best-effort like the
+others: a read-only home must never kill the TUI. Each entry reads as a **diff
 from the defaults** — only what you actually changed is in it:
 
 ```json
 {
-  "hide_thinking": true,
-  "error_retry": 5,
-  "temperature": 0.7
+  "projects": {
+    "/home/user/work/api": {
+      "hide_thinking": true,
+      "error_retry": 5,
+      "temperature": 0.7
+    }
+  }
 }
 ```
 
+An entry is a whole blob, never a layer over the seed (the diff format cannot
+tell a `true` left at its default from one deliberately chosen), and it is
+kept even once it equals the defaults — dropping it would let the seed back in.
+
 Precedence at startup is the same rule the rest of the app follows — **the
 environment wins**: an explicitly set `ALTER_ZERO_*` variable overrides the saved
-value for that one setting (`tui::config::apply_setting_overrides`). Anything
-neither set nor saved takes its default.
+value for that one setting (`tui::config::apply_setting_overrides` — including
+`ALTER_ZERO_HOOKS`, which seeds the **Hooks** row the way `ALTER_ZERO_TOOLS`
+seeds **Tools**). Anything neither set nor saved takes its default.
 
-And, as with `ALTER_ZERO_MODEL`, the environment **never sticks**. The session
-keeps the file's own blob beside the live one (`Session::saved_settings`) and a
-save is a read-modify-write that moves across **only the key the user cycled**
-(`SessionSettings::copy_value`). Writing the merged blob back instead would have
-quietly persisted an override set for one run: turn `Error retry` up in a shell
-that happens to export `ALTER_ZERO_TOOLS=0`, and every later session in every
-other directory would have started with tools off.
+And, as with `ALTER_ZERO_MODEL`, the environment **never sticks**. A save is a
+read-modify-write over the file itself: the directory's entry is re-read (else
+the seed), **only the key the user cycled** moves across from the live blob
+(`SessionSettings::copy_value` / `SettingsFile::record_value`), and the entry
+is written back. Writing the merged live blob instead would have quietly
+persisted an override set for one run: turn `Error retry` up in a shell that
+happens to export `ALTER_ZERO_TOOLS=0`, and every later session in that
+directory would have started with tools off.
+
+### Hooks and checkpoints default to off
+
+The two knobs that run *code* on the user's behalf — a `hooks.json` handler
+around every tool call, a whole-cwd `git add -A` before the first frame — are
+**off** until a directory turns them on. A hooks file written for one project
+used to fire in every project, and a checkpoint store for a tree you opened
+once to read a file cost seconds at startup and a copy of the tree under
+`~/.alter-zero`. With settings per directory the opt-in is one cycle in the
+directory that wants it, recorded there as `"hooks": true` /
+`"checkpoints": true`. `ALTER_ZERO_HOOKS=1` / `ALTER_ZERO_CHECKPOINTS=1` turn
+either on for a run without saving anything — which is how `smoke.sh`'s hooks
+and checkpoint phases get them.
 
 ## Testing
 
@@ -264,4 +293,6 @@ The pure model (`src/settings.rs`), the picker state (`src/app/settings.rs`) and
 the renderer (`src/ui/settings_view.rs`) are unit-tested. The boundary — the
 backend rebuild, the checkpoint flip, the file write — is covered by
 `scripts/smoke.sh` Phase 67, which opens the menu, searches, cycles a value, and
-checks the toast and the collapsed composer.
+checks the toast and the collapsed composer; Phase 109 drives the per-directory
+half (a knob cycled in one directory, the defaults in the next, both against
+one config home).

@@ -20,6 +20,11 @@
 //!   `ALTER_ZERO_MODEL` selection is used but never written back to
 //!   `config.json`, so persisting its reasoning state can't hijack the saved
 //!   default (see [`ModelSession::persist`]).
+//! - **The selection is the working directory's.** `config.json` keeps one
+//!   entry per cwd (`docs/per-directory-state.md`): a `/model` switch here
+//!   is this directory's from now on, and a directory launched in for the
+//!   first time takes the last selection made anywhere and pins it as its own
+//!   at startup — so a switch elsewhere never moves it afterwards.
 //!
 //! The dummy backend is the fallback throughout, so the app always runs
 //! offline; a real model activates only when a provider, a model and a key all
@@ -32,8 +37,8 @@ use alter_zero::agents::AgentRegistry;
 use alter_zero::app::{ProviderChoice, SubscriptionChoice, ToastKind};
 use alter_zero::background::BackgroundRegistry;
 use alter_zero::llm::{
-    self, EnvFile, LlmBackend, ModelConfig, ModelEntry, ProvidersFile, ReasoningSupport,
-    ThinkingMode,
+    self, EnvFile, LlmBackend, ModelConfig, ModelEntry, ModelSelection, ProvidersFile,
+    ReasoningSupport, ThinkingMode,
 };
 use alter_zero::permission::PermissionGate;
 use alter_zero::settings::SessionSettings;
@@ -63,8 +68,12 @@ pub(crate) struct ModelSession {
     env_path_display: String,
     /// `config.json`'s path; `None` disables persistence (no config home).
     settings_path: Option<std::path::PathBuf>,
-    /// The (provider, model) pair `config.json` currently records. Thinking /
-    /// vision / context writes attach to **this** pair only.
+    /// The working directory as `config.json` keys its entries — which entry
+    /// this session reads and writes (`docs/per-directory-state.md`).
+    project: String,
+    /// The (provider, model) pair `config.json` currently records **for this
+    /// directory**. Thinking / vision / context writes attach to **this** pair
+    /// only.
     persisted_selection: Option<(String, String)>,
     /// The sampling temperature riding every request — seeded from
     /// `ALTER_ZERO_TEMPERATURE`, then owned by the `/settings` **Temperature**
@@ -210,10 +219,15 @@ impl ModelSession {
         // Anthropic rotates its refresh token the same way, and the write-back
         // happens just as deep on a backend thread (`docs/claude.md`).
         llm::claude::set_store_path(env_file_path.clone());
-        // The persisted `/model` selection (`~/.alter-zero/config.json`): the
-        // provider + model chosen last run, so it survives a restart.
+        // The persisted `/model` selection (`~/.alter-zero/config.json`), per
+        // working directory (docs/per-directory-state.md): this directory's
+        // own entry, or — launched in for the first time — the last selection
+        // made anywhere, pinned as this directory's own right here so a later
+        // switch elsewhere never moves it.
+        let project = cwd.display().to_string();
         let settings_path = config::settings_file_path();
-        let saved = config::load_settings(settings_path.as_deref());
+        let saved = config::adopt_selection(settings_path.as_deref(), &project);
+        let saved_provider = saved.as_ref().map(|s| s.provider.clone());
         // The `/settings` knobs the backend is built around — already merged
         // with their `ALTER_ZERO_*` overrides by the caller
         // (`config::apply_setting_overrides`, docs/settings.md).
@@ -236,16 +250,16 @@ impl ModelSession {
         let active_provider = std::env::var("ALTER_ZERO_PROVIDER")
             .ok()
             .filter(|s| !s.is_empty())
-            .or_else(|| saved.provider.clone())
+            .or_else(|| saved_provider.clone())
             .or_else(|| providers.default_provider());
         // The saved provider/model are ONE selection: pairing the saved model
         // with a *different* (env-overridden) provider would ask that provider
         // for a model it may not serve, so the saved model applies only when
         // the resolved provider is the one it was saved with.
         let saved_model = saved
-            .model
-            .clone()
-            .filter(|_| active_provider == saved.provider);
+            .as_ref()
+            .map(|s| s.model.clone())
+            .filter(|_| active_provider == saved_provider);
         let env_model = std::env::var("ALTER_ZERO_MODEL")
             .ok()
             .filter(|s| !s.is_empty())
@@ -257,19 +271,26 @@ impl ModelSession {
         // resolved. Outer None = support unknown (the probe below finds out);
         // Some(None) = known non-reasoner; Some(Some(state)) = seed the
         // Ctrl+T cycle. See docs/reasoning.md.
-        let selection_is_saved =
-            active_provider == saved.provider && env_model.is_some() && env_model == saved.model;
+        let selection_is_saved = active_provider == saved_provider
+            && env_model.is_some()
+            && env_model == saved.as_ref().map(|s| s.model.clone());
         let saved_thinking: Option<Option<Thinking>> = saved
-            .thinking
             .as_ref()
+            .and_then(|s| s.thinking.as_ref())
             .filter(|_| selection_is_saved)
             .map(llm::ThinkingSettings::to_seed);
         let startup_thinking = saved_thinking.clone().flatten();
         // The saved model's image-input support and context window — like
         // saved_thinking they apply only to that exact selection; `None` =
         // unknown (the probe finds out).
-        let saved_vision: Option<bool> = saved.vision.filter(|_| selection_is_saved);
-        let saved_context: Option<u64> = saved.context.filter(|_| selection_is_saved);
+        let saved_vision: Option<bool> = saved
+            .as_ref()
+            .and_then(|s| s.vision)
+            .filter(|_| selection_is_saved);
+        let saved_context: Option<u64> = saved
+            .as_ref()
+            .and_then(|s| s.context)
+            .filter(|_| selection_is_saved);
 
         // A real model activates only when a provider, a model and a key all
         // resolve — and `ALTER_ZERO_DUMMY` isn't forcing the dummy. Anything else
@@ -365,7 +386,10 @@ impl ModelSession {
             env_file,
             env_file_path,
             settings_path,
-            persisted_selection: saved.provider.clone().zip(saved.model.clone()),
+            project,
+            persisted_selection: saved
+                .as_ref()
+                .map(|s| (s.provider.clone(), s.model.clone())),
             temperature,
             tools,
             max_retries,
@@ -805,13 +829,15 @@ impl ModelSession {
         // probe is stale.
         self.probe_pending = false;
         self.persisted_selection = Some((provider.to_string(), id.to_string()));
-        config::save_settings(
+        // This directory's choice from now on — and the last one made
+        // anywhere, which is what the next new directory starts with.
+        config::save_selection(
             self.settings_path.as_deref(),
-            provider,
-            id,
-            Some(config::thinking_settings_of(thinking)),
-            vision,
-            context,
+            &self.project,
+            &ModelSelection::new(provider, id)
+                .with_thinking(Some(config::thinking_settings_of(thinking)))
+                .with_vision(vision)
+                .with_context(context),
         );
         true
     }
@@ -840,9 +866,9 @@ impl ModelSession {
     }
 
     /// Persist the active selection's reasoning state beside it. Only writes
-    /// onto the pair `config.json` already records: an env-overridden
-    /// selection never writes back (env always wins, never sticks), so
-    /// persisting its thinking would hijack the saved default.
+    /// onto the pair `config.json` already records for this directory: an
+    /// env-overridden selection never writes back (env always wins, never
+    /// sticks), so persisting its thinking would hijack the saved default.
     pub(crate) fn persist(&self, thinking: Option<&Thinking>) {
         let Some(provider) = self.active_provider.as_deref() else {
             return;
@@ -852,13 +878,13 @@ impl ModelSession {
             .as_ref()
             .is_some_and(|(p, m)| p == provider && *m == self.active_model)
         {
-            config::save_settings(
+            config::save_capabilities(
                 self.settings_path.as_deref(),
-                provider,
-                &self.active_model,
-                Some(config::thinking_settings_of(thinking)),
-                self.active_vision,
-                self.active_context,
+                &self.project,
+                &ModelSelection::new(provider, &self.active_model)
+                    .with_thinking(Some(config::thinking_settings_of(thinking)))
+                    .with_vision(self.active_vision)
+                    .with_context(self.active_context),
             );
         }
     }

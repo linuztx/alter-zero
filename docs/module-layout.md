@@ -118,7 +118,7 @@ opening the viewport, running the loop — and everything else lives here:
 | `commit.rs` | Scrollback commits — the one place invariant 4 is enforced — and the toast. |
 | `models.rs` | `ModelSession`: the backend and every knob that selects it, plus the `/model`, Ctrl+T and probe arms (`docs/llm.md`). |
 | `login.rs` | The `/login` flow's boundary half: opening it, running a subscription's sign-in — a device code or a browser PKCE flow, per provider — and persisting what it mints (`docs/copilot.md`, `docs/chatgpt.md`). |
-| `config.rs` | Reading the environment: providers, keys, settings, permission rules, paths. |
+| `config.rs` | Reading the environment: providers, keys, the per-directory `/model` selections and `/settings` knobs (`docs/per-directory-state.md`), permission rules, paths. |
 | `bootstrap.rs` | `Session::bootstrap` / `shutdown` / `after_iteration` — assembly, teardown, loop-bottom work. |
 | `startup.rs` | The `--continue`/`--resume`/`[PROMPT]` argument resolution and the styled `--help` / usage-error printing (`docs/cli.md`). |
 | `recorder.rs` | `SessionRecorder`: mirroring history to a rollout file (`docs/resume.md`). |
@@ -250,7 +250,7 @@ Each doc now sits with the item it describes.
 The per-feature docs under `docs/` name the boundary as `main.rs` in prose —
 "the boundary (`main.rs`)", "`main.rs` reads the env", and so on. Every
 *symbol-qualified* reference was updated to its new path (`tui::turn`'s
-`Session::start_turn`, `tui::config::save_settings`, …), so a search for the
+`Session::start_turn`, `tui::config::save_selection`, …), so a search for the
 name lands in the right module; where a doc says `main.rs` on its own, read it
 as "the boundary", and the table above says which module holds it.
 

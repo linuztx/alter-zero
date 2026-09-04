@@ -320,7 +320,9 @@ unit-tested must be unit-tested.
   headerless), and
   `Enter` rebuilds the backend for the chosen model, updates the footer, and
   **persists the choice** to `~/.alter-zero/config.json` (`llm::settings::Settings`)
-  so it's the default next run. With no provider configured it shows a cyan
+  so it's the default next run **in this working directory** — a directory
+  launched in for the first time takes the last choice made anywhere and pins
+  it as its own (`docs/per-directory-state.md`). With no provider configured it shows a cyan
   `run /login` hint instead of a list. **Opens mid-turn** (unlike `/resume`) —
   and replaces the composer *only*: the streaming strip keeps its rows above
   the picker, so the running turn's status line and live tool cell stay

@@ -561,7 +561,9 @@ code**, not just the transcript: rewinding restores the working directory to the
 the pure mapping/format is `checkpoint` + `session::parse_checkpoints`, the git
 I/O is `checkpoint::CheckpointStore`, turn-end snapshots ride
 `dispatch_after_turn`, and restores hang off the `ResumeSession` /
-`ConfirmBacktrack` arms; gated by `ALTER_ZERO_CHECKPOINTS` **and by the cwd
+`ConfirmBacktrack` arms; gated by the per-directory `/settings` **Checkpoints**
+knob — **off until a directory turns it on**, `ALTER_ZERO_CHECKPOINTS` seeding
+it for a run (`docs/per-directory-state.md`) — **and by the cwd
 being worth snapshotting at all** — because the session-start snapshot's
 whole-cwd `git add -A` runs *before the first frame paints*, in raw mode where
 Ctrl+C is an unread key event, and hashing is O(bytes): a 235 MB cwd measured
@@ -1186,8 +1188,9 @@ path the recorder publishes into a shared cell). User-level config only — a
 project layer needs a trust model, and layers
 would union, so it stays purely additive; a malformed file is a red startup
 toast, not a silent "no hooks". `/settings` gains a **Hooks** row, unavailable
-when no file resolved; `ALTER_ZERO_HOOKS` / `ALTER_ZERO_HOOKS_FILE` gate and
-locate it; the offline `hook` scenario drives the tool-path shape and the
+when no file resolved and **off until a directory turns it on**
+(`docs/per-directory-state.md`); `ALTER_ZERO_HOOKS` seeds it for a run and
+`ALTER_ZERO_HOOKS_FILE` locates the file; the offline `hook` scenario drives the tool-path shape and the
 `prompt-block` scenario the rollback, `smoke.sh` Phases 72 and 73) in
 `docs/hooks.md`; and the **read-only `/hooks` menu** (Claude Code's `/hooks`
 browser, `docs/hooks-menu.md`: the fourth composer-replacing inline picker —
@@ -1501,12 +1504,23 @@ reloads or drops `App::user_instructions` at once, and **Hide thinking** /
 (`tui::stream`'s `ThinkingStart` arm and `App::should_auto_compact`), so
 there is no second copy to drift. It persists to its own
 `~/.alter-zero/settings.json` — beside `config.json` and `permissions.json`,
-one file per feature that owns it — as a **diff from the defaults** (only
-what the user changed reaches the wire), written as a **read-modify-write**
-over the blob the file itself holds (`Session::saved_settings` +
-`SessionSettings::copy_value`) so an `ALTER_ZERO_*` override merged in at
+one file per feature that owns it — **per working directory**
+(`settings::SettingsFile`, `docs/per-directory-state.md`: one entry per cwd
+under `projects`, each a **diff from the defaults** so only what the user
+changed reaches the wire, over the file's top-level keys — the seed a
+directory with no entry starts from, and the whole of a pre-directory file),
+written as a **read-modify-write** over the file itself (the directory's
+entry re-read, `SessionSettings::copy_value` moving across only the cycled
+key, `SettingsFile::record_value`) so an `ALTER_ZERO_*` override merged in at
 startup can never *stick*: the environment wins for the run, per setting,
-and only the row the user actually cycled is saved).
+and only the row the user actually cycled is saved. **Hooks** and
+**Checkpoints** default to `false` — each runs code on the user's behalf, so a
+directory opts in. The `/model` selection is per directory the same way
+(`llm::settings::Settings`'s `projects` map over the top-level **last**
+selection, which a directory launched in for the first time adopts and pins
+as its own at startup — `ModelSession::resolve` via `config::adopt_selection`
+— so a switch elsewhere never moves it; `switch_to` records the directory's
+entry *and* the last selection, `persist` only the directory's own pair).
 
 ### The runtime model and its invariants
 

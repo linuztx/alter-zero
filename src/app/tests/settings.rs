@@ -162,6 +162,8 @@ fn cycling_an_unavailable_setting_explains_itself_instead() {
     // The host can't run checkpoints — the row says `(unavailable)` and the
     // press raises a toast rather than silently doing nothing.
     let mut app = settings_app();
+    // The directory had turned checkpoints on; this host can't serve them.
+    app.settings_mut().checkpoints = true;
     app.set_setting_availability(SettingAvailability {
         checkpoints: false,
         hooks: true,

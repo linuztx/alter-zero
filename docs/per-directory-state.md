@@ -1,0 +1,168 @@
+# Per-directory state — `/model` and `/settings` remember the directory
+
+The model you pick and the knobs you set are facts about a **project**, not
+about you: the repo that needs a frontier model beside the scratch directory
+that runs a cheap local one, the project whose formatter hooks you want beside
+the clone you have never audited. Until now both files were one blob for the
+whole user — a `/model` switch in one terminal changed what every other
+directory started with, and turning checkpoints off for a huge tree turned
+them off everywhere. `config.json` and `settings.json` are keyed by working
+directory now, the way `permissions.json` and `skills.json` already were.
+
+## The rule
+
+Both files keep a **`projects` map keyed by the cwd's absolute path**, read
+and written as a **read-modify-write** (re-read the file, replace this
+directory's entry, write it back), so two sessions in two directories never
+clobber each other. The top level of each file keeps its old shape, so a file
+written before this change still loads — and the two files answer "what does
+a directory I have never launched in start with?" differently, on purpose:
+
+| | `config.json` (`/model`) | `settings.json` (`/settings`) |
+|---|---|---|
+| a directory's own entry | `projects[cwd]` | `projects[cwd]` |
+| a directory with no entry starts from | the **last** selection made anywhere — the top-level fields | the **seed** — the top-level keys, which are also the pre-change file |
+| when a directory gets its entry | **at its first launch**: the last selection is pinned as its own right then | **at its first cycled knob**: the seed copied in with that one key moved |
+| what moves the top level | every `/model` switch (it *is* the last selection) | nothing the app does — edit it by hand to change what a new directory starts with |
+| the environment (`ALTER_ZERO_*`) | wins for the run, never written | wins for the run, never written |
+
+The asymmetry follows from what the top level *is*. The model's "last
+selection" moves with every switch, so a directory that merely *followed* it
+would change under you whenever you picked something elsewhere — the very
+coupling this removes — which is why a new directory **pins** its copy at the
+first launch and is independent from then on. The settings' seed never moves,
+so a directory without an entry cannot drift; its entry can wait until it
+actually changes something, and the file stays a plain diff until then.
+
+"A directory" is the process cwd exactly as `permissions.json` keys it
+(`Session::cwd`, not the git root): `repo/` and `repo/src` are two entries.
+
+## `config.json`
+
+```json
+{
+  "provider": "openrouter",
+  "model": "openai/gpt-4o-mini",
+  "thinking": { "supported": false },
+  "projects": {
+    "/home/user/work/api": {
+      "provider": "a0_venice",
+      "model": "llama-3.3-70b",
+      "vision": false,
+      "context": 131072
+    }
+  }
+}
+```
+
+`llm::settings::Settings` is the pure format. The top-level fields — the pair
+plus the model's `thinking` blob, `vision` and `context`
+(`docs/reasoning.md`, `docs/tools.md`, `docs/compact.md`) — are the last
+selection made anywhere; each `projects` entry is a `ModelSelection`, the
+same five fields with the pair required. Five pure operations, each
+unit-tested:
+
+- `selection_for(dir)` — the directory's entry, else the last selection.
+- `adopt(dir)` — pin the last selection as `dir`'s entry when it has none;
+  `true` when that changed the file (the boundary writes only then).
+- `record(dir, sel)` — a `/model` choice made in `dir`: its entry **and** the
+  last selection.
+- `record_capabilities(dir, sel)` — what Ctrl+T or the startup probe learned
+  about the model `dir` records: replaces the entry only when it names that
+  same pair (so an env-overridden selection never writes back), and moves
+  the last selection with it only when *it* is that pair too — a new
+  directory then seeds without a probe.
+- `last()` / `project(dir)` — the two halves, read back.
+
+At the boundary (`tui::config`, `tui::models`): `ModelSession::resolve`
+calls `adopt_selection` (load → `adopt` → write if changed → the entry), and
+everything downstream — the env-vs-saved precedence, `selection_is_saved`,
+the thinking/vision/context seeds, `persisted_selection` — reads that entry
+exactly as it used to read the flat file. `switch_to` writes through
+`save_selection` (`record`), `persist` through `save_capabilities`
+(`record_capabilities`); both are read-modify-writes. `ModelSession::project`
+is the key.
+
+## `settings.json`
+
+```json
+{
+  "hide_thinking": true,
+  "projects": {
+    "/home/user/work/api": { "hide_thinking": true, "error_retry": 5 },
+    "/home/user/work/huge-monorepo": { "hide_thinking": true, "checkpoints": true }
+  }
+}
+```
+
+`settings::SettingsFile` is the pure format: `seed` (the flattened top-level
+keys) over `projects`, each a `SessionSettings`. An entry is a **whole blob**
+— a diff from the *defaults*, like the seed itself — never a layer over the
+seed. The diff format could not express layering: a `true` left at its
+default is indistinguishable from one deliberately chosen, so a directory
+whose seed says `error_retry: 5` would have no way to say "back to 3". That
+is also why an entry is **kept even when it equals the defaults** — dropping
+it would let the seed back in, and a directory that cycled a knob back to
+its default has chosen that default.
+
+- `settings_for(dir)` — the entry, else the seed (availability is a host
+  fact the boundary injects afterwards).
+- `record_value(dir, key, live)` — take the entry (else the seed), move
+  across **only `key`'s value** from the live blob
+  (`SessionSettings::copy_value`), keep it as the entry.
+
+That second operation is the write path (`tui::config::save_setting`, from
+`Session::apply_setting`), and it is what keeps an `ALTER_ZERO_*` override
+from sticking: the live blob carries the environment, but only the cycled
+key crosses. The re-read file is the base now — the session no longer keeps
+a `saved_settings` copy of its own, since the file's entry for this directory
+*is* that copy, and re-reading it also keeps what a second session in the
+same directory saved meanwhile.
+
+### Hooks and checkpoints are off until a directory turns them on
+
+Both defaults flipped from `true` to `false` with this change. Each runs
+*code* on the user's behalf — a `hooks.json` handler around every tool call,
+a whole-cwd `git add -A` before the first frame — and neither is something
+you want on in a directory you did not choose it for: a hooks file written
+for one project fires in every project, and a checkpoint store for a tree you
+opened once to read a file costs seconds at startup and a copy of the tree
+under `~/.alter-zero`. With settings per directory, opting **in** is one
+`/settings` cycle in the directory that wants it, recorded as
+`"hooks": true` / `"checkpoints": true` in that directory's entry (the diff
+predicates flipped with the defaults, so the file still records only what
+changed).
+
+Two consequences at the boundary:
+
+- **`ALTER_ZERO_HOOKS` seeds the Hooks row** (`apply_setting_overrides`, the
+  `ALTER_ZERO_TOOLS` pattern) instead of being ANDed over it. The old gate
+  could only ever turn hooks *off*; with the row off by default the variable
+  must be able to turn them on for a run — `smoke.sh`'s hooks phases set
+  `ALTER_ZERO_HOOKS=1` the way the checkpoint phases set
+  `ALTER_ZERO_CHECKPOINTS=1`. Like every override it wins for the run and is
+  never saved.
+- The checkpoint refusal toast (`Checkpoints off — …`) is silent by default,
+  since it was only ever raised when the user had asked for checkpoints; a
+  directory that turned them on still hears why it did not get them.
+
+## What is *not* per directory
+
+- **`.env`** — a key is the user's, not a project's; `/login` is unchanged.
+- **`mascot.json`** — the banner is the user's.
+- **`permissions.json`**, **`skills.json`** — already per project; unchanged.
+- The **project-level `.alter-zero/`** layer (`docs/project-config.md`) is
+  a different axis: files *inside* the project, behind `/trust`. Both files
+  here live in the user's config home, keyed by directory, and need no trust
+  gate — nothing in them executes.
+
+## Testing
+
+The pure formats are unit-tested (`src/llm/settings.rs`, `src/settings/tests.rs`:
+the compat of a flat file, the pin, the read-modify-write, the whole-blob
+rule, the new defaults). `scripts/smoke.sh` Phase 109 drives the boundary
+end to end against one config home from two directories: a knob cycled in
+the first stays there, the second starts at the defaults (hooks and
+checkpoints off), and a pre-seeded last model is pinned per directory. The
+live `/model` write is exercised against a real provider in the tmux run
+described in the commit.
