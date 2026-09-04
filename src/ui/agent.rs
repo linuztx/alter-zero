@@ -806,6 +806,7 @@ pub(super) fn agent_view_preview_lines(
     pulse: Duration,
     width: u16,
     stream_preview: Option<&[Line<'static>]>,
+    paths: &PathDisplay,
 ) -> Vec<Line<'static>> {
     if !run.tool_queue.is_empty() {
         let mut lines = Vec::new();
@@ -823,6 +824,7 @@ pub(super) fn agent_view_preview_lines(
                 run.runtime,
                 pulse,
                 width,
+                paths,
             ));
         }
         return lines;
@@ -863,5 +865,6 @@ pub(super) fn agent_preview_rows(app: &App, run: &crate::agents::AgentRun, width
     {
         return app.stream_preview_rows();
     }
-    u16::try_from(agent_view_preview_lines(run, app.pulse(), width, None).len()).unwrap_or(u16::MAX)
+    u16::try_from(agent_view_preview_lines(run, app.pulse(), width, None, app.path_display()).len())
+        .unwrap_or(u16::MAX)
 }

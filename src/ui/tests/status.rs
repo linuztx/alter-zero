@@ -12,7 +12,11 @@ use crate::ui::theme::{
 #[test]
 fn edit_cell_colours_the_summary_counts() {
     let output = "Updated a.rs (+6 -2)\n1 +x";
-    let lines = tool_lines(&tool("Edit", "a.rs", ToolStatus::Ok, output), 80);
+    let lines = tool_lines(
+        &tool("Edit", "a.rs", ToolStatus::Ok, output),
+        80,
+        &PathDisplay::VERBATIM,
+    );
     let summary = &lines[1];
     let plus = summary
         .spans
@@ -490,7 +494,7 @@ fn conversation_lines_renders_a_committed_turn_summary() {
             cached: 0,
         }),
     ];
-    let texts: Vec<String> = conversation_lines(&history, 80)
+    let texts: Vec<String> = conversation_lines(&history, 80, &PathDisplay::VERBATIM)
         .iter()
         .map(|l| plain(l).trim_end().to_string())
         .collect();

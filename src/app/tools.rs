@@ -3,6 +3,7 @@
 //! See `docs/tools.md` and `docs/parallel-tools.md`.
 
 use super::*;
+use std::path::{Path, PathBuf};
 
 /// The output recorded on a tool that was still running when the user
 /// interrupted: it resolves as [`ToolStatus::Failed`] with this explanation
@@ -341,5 +342,143 @@ impl ToolCall {
     #[must_use]
     pub fn context_text(&self) -> &str {
         self.context_output.as_deref().unwrap_or(&self.output)
+    }
+}
+
+/// How a file tool's path reads on the screen (`docs/tools.md` *Path
+/// display*): a `Read`/`Write`/`Edit` argument under the session's cwd shows
+/// **relative** to it (`hello.py`, `src/app.rs`), one outside the cwd but
+/// under the home directory shows **`~`-relative** (`~/hello.py`), and
+/// anything else shows **absolute** (`/tmp/x.py`; another user's home is not
+/// `~`). The two surfaces that name the file — the `● Write({path})` header
+/// and the `Wrote N lines to {path}` / `Updated {path} (+A -D)` corner head
+/// — apply it at render time, inline and in the Ctrl+O transcript alike; the
+/// record underneath keeps the model's own absolute argument, which is what
+/// the derived context (Ctrl+D), the rollout, the classifier's action log and
+/// the permission rules read.
+///
+/// Pure and lexical: `.`/`..` collapse, a relative input resolves against the
+/// cwd first, symlinks are never consulted, and containment is component-wise
+/// (`/home/user2` is not under `/home/user`). Injected at the I/O boundary
+/// ([`App::set_path_display`]) like the clock; the [`VERBATIM`](Self::VERBATIM)
+/// default — no cwd — leaves every path exactly as recorded, which is what
+/// every unit test renders with.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PathDisplay {
+    /// The absolute working directory, or `None` for the verbatim policy.
+    cwd: Option<PathBuf>,
+    /// The absolute home directory, when one is known.
+    home: Option<PathBuf>,
+}
+
+impl PathDisplay {
+    /// The policy that shortens nothing — the unit-test default, and what a
+    /// session whose cwd is unreadable falls back to.
+    pub const VERBATIM: Self = Self {
+        cwd: None,
+        home: None,
+    };
+
+    /// The policy for a session launched in `cwd` with the user's `home`. A
+    /// relative `cwd` has nothing to relate a path to and yields the verbatim
+    /// policy; a relative `home` is dropped, leaving no `~` rule.
+    #[must_use]
+    pub fn new(cwd: impl Into<PathBuf>, home: Option<PathBuf>) -> Self {
+        let cwd: PathBuf = cwd.into();
+        Self {
+            cwd: cwd.is_absolute().then_some(cwd),
+            home: home.filter(|home| home.is_absolute()),
+        }
+    }
+
+    /// `path` as the screen shows it: relative under the cwd (`.` for the cwd
+    /// itself), `~`-relative under home (`~` for home itself), absolute
+    /// otherwise — or unchanged under the verbatim policy, for an empty path,
+    /// and for a path on a different root than the cwd (a Windows drive
+    /// mismatch).
+    #[must_use]
+    pub fn display(&self, path: &str) -> String {
+        let Some(cwd) = &self.cwd else {
+            return path.to_string();
+        };
+        if path.is_empty() {
+            return String::new();
+        }
+        let Some((cwd_root, cwd_parts)) = absolute_parts(cwd) else {
+            return path.to_string();
+        };
+        let given = Path::new(path);
+        let resolved = if given.is_absolute() {
+            given.to_path_buf()
+        } else {
+            cwd.join(given)
+        };
+        let Some((root, parts)) = absolute_parts(&resolved) else {
+            return path.to_string();
+        };
+        if root != cwd_root {
+            return path.to_string();
+        }
+        if let Some(rest) = parts.strip_prefix(cwd_parts.as_slice()) {
+            return if rest.is_empty() {
+                ".".to_string()
+            } else {
+                rest.join("/")
+            };
+        }
+        if let Some(home) = &self.home
+            && let Some((home_root, home_parts)) = absolute_parts(home)
+            && home_root == root
+            && let Some(rest) = parts.strip_prefix(home_parts.as_slice())
+        {
+            return if rest.is_empty() {
+                "~".to_string()
+            } else {
+                format!("~/{}", rest.join("/"))
+            };
+        }
+        format!("{root}/{}", parts.join("/"))
+    }
+}
+
+/// An absolute path split lexically into its root prefix (empty on Unix, the
+/// drive on Windows) and its normal components, `.` dropped and `..`
+/// collapsed (saturating at the root). `None` for a relative path.
+fn absolute_parts(path: &Path) -> Option<(String, Vec<String>)> {
+    use std::path::Component;
+    let mut root = String::new();
+    let mut absolute = false;
+    let mut parts: Vec<String> = Vec::new();
+    for component in path.components() {
+        match component {
+            Component::Prefix(prefix) => {
+                root.push_str(&prefix.as_os_str().to_string_lossy());
+            }
+            Component::RootDir => absolute = true,
+            Component::CurDir => {}
+            Component::ParentDir => {
+                parts.pop();
+            }
+            Component::Normal(seg) => parts.push(seg.to_string_lossy().into_owned()),
+        }
+    }
+    absolute.then_some((root, parts))
+}
+
+impl App {
+    /// Inject the session's file-path display rule ([`PathDisplay`]) — called
+    /// once at the I/O boundary with the process cwd and the user's home,
+    /// like [`set_clock`](App::set_clock). Every `Read`/`Write`/`Edit` cell
+    /// the session paints, inline or in the Ctrl+O transcript, reads its path
+    /// through it; the records themselves are untouched.
+    pub fn set_path_display(&mut self, paths: PathDisplay) {
+        self.path_display = paths;
+    }
+
+    /// The session's file-path display rule — [`PathDisplay::VERBATIM`]
+    /// until the boundary injects one.
+    #[must_use]
+    pub fn path_display(&self) -> &PathDisplay {
+        &self.path_display
     }
 }

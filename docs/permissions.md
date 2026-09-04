@@ -47,6 +47,11 @@ rather than a command, so it wears the same shape (`docs/mcp.md`).
 
 A `write` whose target **already exists** is an `Edit` — it shows the diff, not
 the whole file, exactly as the resulting `Updated {path} (+A -D)` cell will.
+The file row under the title names the file the way that cell will too —
+relative under the cwd, `~`-relative under home, absolute elsewhere
+(`docs/tools.md` *Path display*, through `App::path_display`); the request's
+own `target` stays the model's verbatim path, which is what the rule engine
+and the model see.
 
 The body is the same numbered, syntax-highlighted, `+`/`-`-tinted block the
 finished `write`/`edit` cell renders (`ui/file_cell.rs`'s

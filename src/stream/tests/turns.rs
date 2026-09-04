@@ -1,6 +1,7 @@
 //! The pure scripted turns: [`turn_events`]'s whole event order.
 
 use super::*;
+use crate::app::PathDisplay;
 
 #[test]
 fn a_table_prompt_streams_a_pure_table_turn() {
@@ -277,7 +278,7 @@ fn rendered_cell(prompt: &str, name: &str) -> Vec<ratatui::text::Line<'static>> 
         approval_note: None,
         batch: None,
     };
-    crate::ui::tool_lines(&call, 80)
+    crate::ui::tool_lines(&call, 80, &PathDisplay::VERBATIM)
 }
 
 /// A rendered line's text, styles dropped.

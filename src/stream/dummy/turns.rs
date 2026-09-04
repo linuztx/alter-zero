@@ -155,8 +155,8 @@ impl ScriptedCall {
 
     /// A `write` creating `path` with `content` — resolving with the real
     /// executor's report (`llm::exec::describe_change` calls the same
-    /// [`crate::llm::tools::write_report`]; the demo's paths are already
-    /// cwd-relative, so no `display_path` step is needed).
+    /// [`crate::llm::tools::write_report`] over the verbatim path; the TUI's
+    /// `PathDisplay` rule reads the demo's cwd-relative paths as they are).
     pub(super) fn write(path: &str, content: &str) -> Self {
         Self {
             name: "Write",

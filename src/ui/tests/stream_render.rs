@@ -611,10 +611,17 @@ fn repaint_tail_repaints_committed_rows_of_a_still_open_line() {
         "several wrapped rows are stable: {committed:?}"
     );
     let full = format!("{before} and more");
-    let tail: Vec<String> = repaint_tail(&[], Some(&full), &mut render, width, 100)
-        .iter()
-        .map(plain)
-        .collect();
+    let tail: Vec<String> = repaint_tail(
+        &[],
+        Some(&full),
+        &mut render,
+        width,
+        100,
+        &PathDisplay::VERBATIM,
+    )
+    .iter()
+    .map(plain)
+    .collect();
     assert_eq!(tail, committed);
 }
 

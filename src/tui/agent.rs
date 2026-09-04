@@ -327,9 +327,12 @@ impl Session<'_> {
                 // A resolved call — its collapsed cell, through the same
                 // history-derived builder the rebuild uses, which also holds
                 // an MCP run's members until the run ends (`docs/mcp.md`).
-                Some(HistoryItem::Tool(_)) => {
-                    ui::tool_commit_lines(&run.history, &run.tool_queue, width)
-                }
+                Some(HistoryItem::Tool(_)) => ui::tool_commit_lines(
+                    &run.history,
+                    &run.tool_queue,
+                    width,
+                    self.app.path_display(),
+                ),
                 // The turn's `Done for Ns · {n} tokens` receipt
                 // (`docs/agent-tool.md`).
                 Some(HistoryItem::Summary(summary)) => Some(ui::summary_lines(summary, width)),

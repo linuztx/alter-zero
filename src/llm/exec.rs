@@ -640,26 +640,17 @@ fn run_edit(arguments: &str) -> ToolOutcome {
 /// ([`tools::write_report`]); a change to existing content is an
 /// `Updated {path} (+A -D)` head over the numbered diff hunks
 /// ([`tools::update_report`]). The numbers match the `read` tool's, so the
-/// model can cite them in a follow-up `edit`; the head's path is the compact
-/// cwd-relative display form ([`tools::display_path`] — `../` climbs for a
-/// target outside the cwd), while the cell header keeps the model's own
-/// argument verbatim.
+/// model can cite them in a follow-up `edit`; the head names the model's own
+/// `path` argument **verbatim**, exactly as the cell header does. How that
+/// path *reads* on screen — relative under the cwd, `~`-relative under home,
+/// absolute elsewhere — is the TUI's `PathDisplay` rule, applied at render
+/// time to both surfaces, so the record, the rollout and the model all keep
+/// the absolute path (`docs/tools.md` *Path display*).
 fn describe_change(path: &str, old: &str, new: &str, created: bool) -> String {
-    let shown = shown_path(path);
     if created {
-        tools::write_report(&shown, new)
+        tools::write_report(path, new)
     } else {
-        tools::update_report(&shown, old, new)
-    }
-}
-
-/// The display form of a tool path — [`tools::display_path`] against the
-/// process cwd (the same directory every relative tool path resolves in), the
-/// path unchanged when the cwd is unreadable.
-fn shown_path(path: &str) -> String {
-    match std::env::current_dir() {
-        Ok(cwd) => tools::display_path(path, &cwd),
-        Err(_) => path.to_string(),
+        tools::update_report(path, old, new)
     }
 }
 
@@ -1023,14 +1014,10 @@ mod tests {
         assert!(out.output.contains("could not read"));
     }
 
-    /// The head's expected display path — the same cwd-relative form
-    /// `describe_change` derives, computed against the test process's cwd so
-    /// the assertion holds wherever the temp dir lives.
+    /// The head's expected path: the argument **verbatim** — the TUI shortens
+    /// it at render time (`docs/tools.md` *Path display*), never the record.
     fn shown(path: &Path) -> String {
-        tools::display_path(
-            &path.display().to_string(),
-            &std::env::current_dir().unwrap(),
-        )
+        path.display().to_string()
     }
 
     #[test]
@@ -1045,9 +1032,10 @@ mod tests {
         std::fs::remove_file(&path).ok();
         assert!(out.ok);
         assert_eq!(written, "one\ntwo\n");
-        // The Claude-Code head over the cwd-relative display path — the temp
-        // dir is outside the cwd, so the path shows as a `../` climb, never
-        // the whole absolute argument.
+        // The Claude-Code head over the argument verbatim — the temp dir is
+        // outside the cwd, and the record still names the whole absolute
+        // path: the cwd-relative / `~`-relative look is the TUI's to derive
+        // at render time (`docs/tools.md` *Path display*), never baked in.
         assert_eq!(
             out.output.lines().next(),
             Some(format!("Wrote 2 lines to {}", shown(&path)).as_str()),
@@ -1055,8 +1043,8 @@ mod tests {
             out.output
         );
         assert!(
-            shown(&path).starts_with("../"),
-            "the temp file lives outside the cwd: {}",
+            shown(&path).starts_with('/'),
+            "the head keeps the absolute argument: {}",
             shown(&path)
         );
         // The body echoes the new file as numbered lines (the TUI's preview

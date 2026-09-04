@@ -72,6 +72,7 @@ pub(super) fn tool_header_lines(
     width: u16,
     max_rows: Option<usize>,
     pulse: Option<Duration>,
+    paths: &PathDisplay,
 ) -> Vec<Line<'static>> {
     let bullet_style = Style::new()
         .fg(tool_status_color(tool.status, pulse))
@@ -97,6 +98,13 @@ pub(super) fn tool_header_lines(
     // `key: "value"` form at render time instead.
     let args = if crate::mcp::is_mcp_display_name(&tool.name) {
         crate::mcp::pretty_args(&tool.args)
+    } else if is_file_tool(tool) {
+        // A file tool's summary **is** its path, and the header shows it the
+        // way the session reads paths — relative under the cwd, `~`-relative
+        // under home, absolute elsewhere (`docs/tools.md` *Path display*).
+        // The record keeps the model's absolute argument: this, like the MCP
+        // capitalization above, lives only at the render seam.
+        paths.display(&tool.args)
     } else {
         tool.args.clone()
     };
@@ -218,6 +226,13 @@ pub(super) fn is_command_tool(tool: &ToolCall) -> bool {
     !tool.shell && COMMAND_TOOL_NAMES.contains(&tool.name.as_str())
 }
 
+/// Is this a model **file tool** (`read`/`write`/`edit`) — whose `args`
+/// summary is a path the header shows through the session's
+/// [`PathDisplay`] rule? See [`FILE_TOOL_NAMES`] and `docs/tools.md`.
+pub(super) fn is_file_tool(tool: &ToolCall) -> bool {
+    !tool.shell && FILE_TOOL_NAMES.contains(&tool.name.as_str())
+}
+
 /// The dim `… +N lines (ctrl+o to expand)` hint under a capped peek.
 pub(super) fn more_hint_line(hidden: usize) -> Line<'static> {
     let dim = Style::new().fg(TOOL_DIM_COLOR);
@@ -335,8 +350,9 @@ pub(super) fn running_command_lines(
     elapsed: Duration,
     pulse: Duration,
     width: u16,
+    paths: &PathDisplay,
 ) -> Vec<Line<'static>> {
-    let mut lines = tool_header_lines(tool, width, Some(TOOL_HEADER_MAX_ROWS), Some(pulse));
+    let mut lines = tool_header_lines(tool, width, Some(TOOL_HEADER_MAX_ROWS), Some(pulse), paths);
     let peek_width = (width as usize)
         .saturating_sub(cols(TOOL_RESULT_PREFIX))
         .max(1);
@@ -419,8 +435,8 @@ fn approval_note_row(tool: &ToolCall) -> Option<Line<'static>> {
 /// lasts forever, so it must never capture a frame of the pulse.
 /// `live_tool_lines` is the animated one. See `docs/tool-pulse.md`.
 #[must_use]
-pub fn tool_lines(tool: &ToolCall, width: u16) -> Vec<Line<'static>> {
-    tool_cell_lines(tool, width, None)
+pub fn tool_lines(tool: &ToolCall, width: u16, paths: &PathDisplay) -> Vec<Line<'static>> {
+    tool_cell_lines(tool, width, None, paths)
 }
 
 /// [`tool_lines`] for the **live region**: identical, except a running bullet
@@ -429,8 +445,13 @@ pub fn tool_lines(tool: &ToolCall, width: u16) -> Vec<Line<'static>> {
 /// so the moving colour can't be frozen into scrollback. See
 /// `docs/tool-pulse.md`.
 #[must_use]
-pub(super) fn live_tool_lines(tool: &ToolCall, width: u16, pulse: Duration) -> Vec<Line<'static>> {
-    tool_cell_lines(tool, width, Some(pulse))
+pub(super) fn live_tool_lines(
+    tool: &ToolCall,
+    width: u16,
+    pulse: Duration,
+    paths: &PathDisplay,
+) -> Vec<Line<'static>> {
+    tool_cell_lines(tool, width, Some(pulse), paths)
 }
 
 /// The shared body of [`tool_lines`] / [`live_tool_lines`] — `pulse` is `Some`
@@ -444,8 +465,13 @@ pub(super) fn live_tool_lines(tool: &ToolCall, width: u16, pulse: Duration) -> V
 /// Ctrl+O transcript ([`tool_full_lines`]), the rollout, a `/resume` — and a
 /// *failed* MCP call keeps the note on its loud generic cell, where it still
 /// explains why the call ran at all.
-fn tool_cell_lines(tool: &ToolCall, width: u16, pulse: Option<Duration>) -> Vec<Line<'static>> {
-    let mut lines = tool_cell_body(tool, width, pulse);
+fn tool_cell_lines(
+    tool: &ToolCall,
+    width: u16,
+    pulse: Option<Duration>,
+    paths: &PathDisplay,
+) -> Vec<Line<'static>> {
+    let mut lines = tool_cell_body(tool, width, pulse, paths);
     let quiet_mcp =
         tool.status == ToolStatus::Ok && crate::mcp::display_server(&tool.name).is_some();
     if !quiet_mcp {
@@ -656,6 +682,7 @@ pub fn tool_commit_lines(
     history: &[HistoryItem],
     queue: &VecDeque<ToolCall>,
     width: u16,
+    paths: &PathDisplay,
 ) -> Option<Vec<Line<'static>>> {
     let HistoryItem::Tool(last) = history.last()? else {
         return None;
@@ -692,7 +719,7 @@ pub fn tool_commit_lines(
             i += len;
         } else {
             match &items[i] {
-                HistoryItem::Tool(tool) => lines.extend(tool_lines(tool, width)),
+                HistoryItem::Tool(tool) => lines.extend(tool_lines(tool, width, paths)),
                 // Unreachable: the walk above only ever crosses tool cells.
                 _ => break,
             }
@@ -793,7 +820,12 @@ pub(super) fn mcp_batch_lines(
 
 /// [`tool_cell_lines`] minus the trailing provenance note, so every branch's
 /// early return stays as it was and the note lands exactly once.
-fn tool_cell_body(tool: &ToolCall, width: u16, pulse: Option<Duration>) -> Vec<Line<'static>> {
+fn tool_cell_body(
+    tool: &ToolCall,
+    width: u16,
+    pulse: Option<Duration>,
+    paths: &PathDisplay,
+) -> Vec<Line<'static>> {
     // The resolved ask cell replaces the whole header with its outcome
     // headline (`docs/ask.md`).
     if let Some(lines) = ask_cell_lines(tool, width, pulse, /*cap=*/ true) {
@@ -818,7 +850,7 @@ fn tool_cell_body(tool: &ToolCall, width: u16, pulse: Option<Duration>) -> Vec<L
         if tool.shell {
             return vec![row];
         }
-        let mut lines = tool_header_lines(tool, width, Some(TOOL_HEADER_MAX_ROWS), pulse);
+        let mut lines = tool_header_lines(tool, width, Some(TOOL_HEADER_MAX_ROWS), pulse, paths);
         lines.push(row);
         return lines;
     }
@@ -849,8 +881,8 @@ fn tool_cell_body(tool: &ToolCall, width: u16, pulse: Option<Duration>) -> Vec<L
     // codex-style — numbers, hunk gaps, tints, syntax colour
     // ([`file_cell_lines`]); output that doesn't parse (old sessions, error
     // bodies) falls through to the legacy first-char colouring below.
-    if let Some(body) = file_cell_lines(tool, width, true) {
-        let mut lines = tool_header_lines(tool, width, Some(TOOL_HEADER_MAX_ROWS), pulse);
+    if let Some(body) = file_cell_lines(tool, width, true, paths) {
+        let mut lines = tool_header_lines(tool, width, Some(TOOL_HEADER_MAX_ROWS), pulse, paths);
         lines.extend(body);
         return lines;
     }
@@ -859,7 +891,7 @@ fn tool_cell_body(tool: &ToolCall, width: u16, pulse: Option<Duration>) -> Vec<L
     // `+`/`-` rows are diff-coloured (the codex trick shows inline, not just in
     // the Ctrl+O view). Other backend tools keep the single collapsed peek line.
     if is_diff_tool(tool) && tool.status != ToolStatus::Running && !out_lines.is_empty() {
-        let mut lines = tool_header_lines(tool, width, Some(TOOL_HEADER_MAX_ROWS), pulse);
+        let mut lines = tool_header_lines(tool, width, Some(TOOL_HEADER_MAX_ROWS), pulse, paths);
         // Wrap verbatim (a diff body is code, never reflowed at spaces) and
         // colour every wrapped row by the SOURCE line's `+`/`-` marker, so a
         // continuation row keeps its tint — the Ctrl+O view colours the same
@@ -903,7 +935,7 @@ fn tool_cell_body(tool: &ToolCall, width: u16, pulse: Option<Duration>) -> Vec<L
                 |i, text, _| output_row(i, text),
             ),
         };
-        let mut lines = tool_header_lines(tool, width, Some(TOOL_HEADER_MAX_ROWS), pulse);
+        let mut lines = tool_header_lines(tool, width, Some(TOOL_HEADER_MAX_ROWS), pulse, paths);
         lines.extend(peek);
         return lines;
     }
@@ -917,7 +949,7 @@ fn tool_cell_body(tool: &ToolCall, width: u16, pulse: Option<Duration>) -> Vec<L
     // with a one-line budget, so it word-wraps to the width, is clipped to
     // [`TOOL_LINE_MAX_ROWS`] rows when pathological, and hides its remainder
     // behind an honest row count (`docs/long-lines.md`).
-    let mut lines = tool_header_lines(tool, width, Some(TOOL_HEADER_MAX_ROWS), pulse);
+    let mut lines = tool_header_lines(tool, width, Some(TOOL_HEADER_MAX_ROWS), pulse, paths);
     match tool.status {
         ToolStatus::Waiting => lines.push(result_row(0, TOOL_WAITING.to_string())),
         ToolStatus::Running => lines.push(result_row(0, TOOL_RUNNING.to_string())),
@@ -1060,8 +1092,12 @@ fn result_peek_block(
 /// above it); a backend tool keeps its coloured `● name(args)` header over the
 /// gutter. An over-cap shell output ([`ToolCall::truncated`]) appends a dim
 /// [`TOOL_TRUNCATED_MARKER`] line to show the rest was dropped.
-pub(super) fn tool_full_lines(tool: &ToolCall, width: u16) -> Vec<Line<'static>> {
-    let mut lines = tool_full_body(tool, width);
+pub(super) fn tool_full_lines(
+    tool: &ToolCall,
+    width: u16,
+    paths: &PathDisplay,
+) -> Vec<Line<'static>> {
+    let mut lines = tool_full_body(tool, width, paths);
     // The classifier's provenance row closes the expanded cell too
     // (docs/permissions.md).
     lines.extend(approval_note_row(tool));
@@ -1070,7 +1106,7 @@ pub(super) fn tool_full_lines(tool: &ToolCall, width: u16) -> Vec<Line<'static>>
 
 /// [`tool_full_lines`] minus the trailing provenance note (the
 /// [`tool_cell_body`] split).
-fn tool_full_body(tool: &ToolCall, width: u16) -> Vec<Line<'static>> {
+fn tool_full_body(tool: &ToolCall, width: u16, paths: &PathDisplay) -> Vec<Line<'static>> {
     // At rest: the transcript is a pager over a cached, incrementally-built
     // row list (`docs/tool-view-performance.md`) whose refresh short-circuits
     // on a signature that has no clock in it. Animating here would either not
@@ -1090,16 +1126,16 @@ fn tool_full_body(tool: &ToolCall, width: u16) -> Vec<Line<'static>> {
         if tool.shell {
             return vec![row];
         }
-        let mut lines = tool_header_lines(tool, width, None, pulse);
+        let mut lines = tool_header_lines(tool, width, None, pulse, paths);
         lines.push(row);
         return lines;
     }
     // A numbered `write`/`edit` cell renders wholesale (numbers, tints,
     // syntax colour — [`file_cell_lines`], uncapped here); everything else
     // goes through the plain row pipeline below.
-    if let Some(body) = file_cell_lines(tool, width, false) {
+    if let Some(body) = file_cell_lines(tool, width, false, paths) {
         // The Ctrl+O transcript view never truncates the header (`None`).
-        let mut lines = tool_header_lines(tool, width, None, pulse);
+        let mut lines = tool_header_lines(tool, width, None, pulse, paths);
         lines.extend(body);
         if tool.truncated {
             lines.push(gutter_row(1, TOOL_TRUNCATED_MARKER.to_string(), None));
@@ -1163,7 +1199,7 @@ fn tool_full_body(tool: &ToolCall, width: u16) -> Vec<Line<'static>> {
         result.collect()
     } else {
         // The Ctrl+O transcript view shows the whole command (`None`).
-        let mut lines = tool_header_lines(tool, width, None, pulse);
+        let mut lines = tool_header_lines(tool, width, None, pulse, paths);
         lines.extend(result);
         lines
     }

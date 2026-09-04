@@ -112,7 +112,7 @@ pub(super) fn preview_lines(
         // kind of `StreamRender` (`docs/agent-view-streaming.md`).
         let streaming = run.tool_queue.is_empty() && run.reasoning().is_none();
         trim_preview(
-            agent_view_preview_lines(run, app.pulse(), width, stream_preview),
+            agent_view_preview_lines(run, app.pulse(), width, stream_preview, app.path_display()),
             rows,
             streaming,
         )
@@ -171,6 +171,7 @@ pub(super) fn live_call_lines(
     elapsed: Duration,
     pulse: Duration,
     width: u16,
+    paths: &PathDisplay,
 ) -> Vec<Line<'static>> {
     if tool.shell && tool.status == ToolStatus::Running {
         return vec![shell_running_line(elapsed)];
@@ -179,9 +180,9 @@ pub(super) fn live_call_lines(
         && tool.status == ToolStatus::Running
         && !command_display_lines(tool).is_empty()
     {
-        return running_command_lines(tool, elapsed, pulse, width);
+        return running_command_lines(tool, elapsed, pulse, width, paths);
     }
-    live_tool_lines(tool, width, pulse)
+    live_tool_lines(tool, width, pulse, paths)
 }
 
 /// The live tool queue rendered as preview rows: each call's collapsed cell,
@@ -219,7 +220,13 @@ pub(super) fn preview_tool_lines(app: &App, width: u16) -> Vec<Line<'static>> {
         if i > 0 || !lines.is_empty() {
             lines.push(Line::default()); // blank row between batch cells
         }
-        lines.extend(live_call_lines(tool, elapsed, pulse, width));
+        lines.extend(live_call_lines(
+            tool,
+            elapsed,
+            pulse,
+            width,
+            app.path_display(),
+        ));
         // A running command (a model `bash` call or the `!` shell) can be
         // moved to the background with Ctrl+B — hint it under the live cell,
         // but only once the command has been running a few seconds

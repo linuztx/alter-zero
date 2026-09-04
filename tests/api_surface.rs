@@ -59,6 +59,7 @@ use alter_zero::app::{
     ModelFetchError,
     ModelLoad,
     ModelPicker,
+    PathDisplay,
     PermissionPrompt,
     ProviderChoice,
     QueuedTurn,

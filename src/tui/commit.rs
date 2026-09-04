@@ -85,8 +85,12 @@ impl Session<'_> {
     /// otherwise flush against the stale strip-inflated height and scroll the
     /// box off the bottom (invariant 3).
     pub(crate) fn commit_tool_cell(&mut self, committing: bool, width: u16) -> bool {
-        let Some(lines) = ui::tool_commit_lines(&self.app.history, self.app.tool_queue(), width)
-        else {
+        let Some(lines) = ui::tool_commit_lines(
+            &self.app.history,
+            self.app.tool_queue(),
+            width,
+            self.app.path_display(),
+        ) else {
             return false;
         };
         if committing && !lines.is_empty() {
@@ -177,9 +181,12 @@ impl Session<'_> {
             // The resolved (failed) call — and any MCP siblings whose lines
             // its run was holding — through the shared commit path
             // (`docs/mcp.md`). The viewport was reseated just above.
-            if let Some(lines) =
-                ui::tool_commit_lines(&self.app.history, self.app.tool_queue(), width)
-                && !lines.is_empty()
+            if let Some(lines) = ui::tool_commit_lines(
+                &self.app.history,
+                self.app.tool_queue(),
+                width,
+                self.app.path_display(),
+            ) && !lines.is_empty()
             {
                 self.term.insert_before(lines);
                 self.term.insert_before(vec![Line::default()]);

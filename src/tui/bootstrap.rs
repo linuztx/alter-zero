@@ -93,6 +93,12 @@ impl<'t> Session<'t> {
 
         let cwd = std::env::current_dir().unwrap_or_default();
         let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+        // How a `Read`/`Write`/`Edit` cell names its file (`docs/tools.md`
+        // *Path display*): relative under this cwd, `~`-relative under home,
+        // absolute elsewhere — injected once, like the clock, so the pure
+        // renderers never read the environment. An unreadable cwd (the
+        // `unwrap_or_default` above) leaves the verbatim policy.
+        app.set_path_display(alter_zero::app::PathDisplay::new(cwd.clone(), home.clone()));
 
         // The session id, minted ONCE (it is nanos-derived — a second call is a
         // different id) and shared by everything that needs one: the temp tree
@@ -727,8 +733,12 @@ impl<'t> Session<'t> {
         // picker's mid-session purge exists to drop the *previous* conversation's
         // rows; at startup there are none). Capped like every full rebuild.
         if !self.app.history.is_empty() {
-            let lines: Vec<Line<'static>> =
-                ui::repaint_lines(&self.app.history, width, RESIZE_REFLOW_MAX_ROWS);
+            let lines: Vec<Line<'static>> = ui::repaint_lines(
+                &self.app.history,
+                width,
+                RESIZE_REFLOW_MAX_ROWS,
+                self.app.path_display(),
+            );
             self.term.insert_before(lines);
         }
         self.frame.schedule_frame(); // first paint

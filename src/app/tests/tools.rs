@@ -357,3 +357,114 @@ fn background_tool_resolves_the_front_call_as_backgrounded() {
         "the backgrounded cell is history — it repaints and rides context"
     );
 }
+
+// --- the file tools' path display (docs/tools.md "Path display") ---
+
+/// The session policy of the worked example: launched in
+/// `~/Codes/tests`, home `/home/linuztx`.
+fn paths() -> PathDisplay {
+    PathDisplay::new(
+        "/home/linuztx/Codes/tests",
+        Some(std::path::PathBuf::from("/home/linuztx")),
+    )
+}
+
+#[test]
+fn a_path_under_the_cwd_reads_relative_to_it() {
+    let paths = paths();
+    assert_eq!(
+        paths.display("/home/linuztx/Codes/tests/hello.py"),
+        "hello.py"
+    );
+    assert_eq!(
+        paths.display("/home/linuztx/Codes/tests/hello/hello.py"),
+        "hello/hello.py"
+    );
+    assert_eq!(paths.display("/home/linuztx/Codes/tests"), ".");
+    // Trailing separators and dot segments collapse lexically.
+    assert_eq!(paths.display("/home/linuztx/Codes/tests/dir/"), "dir");
+    assert_eq!(
+        paths.display("/home/linuztx/Codes/tests/./a/../hello.py"),
+        "hello.py"
+    );
+}
+
+#[test]
+fn a_path_outside_the_cwd_but_under_home_reads_tilde_relative() {
+    let paths = paths();
+    assert_eq!(paths.display("/home/linuztx/hello.py"), "~/hello.py");
+    // Even a near sibling — the rule is "where is it", not "how far away":
+    // a `../other/x.py` climb says less than `~/Codes/other/x.py` does.
+    assert_eq!(
+        paths.display("/home/linuztx/Codes/other/x.py"),
+        "~/Codes/other/x.py"
+    );
+    assert_eq!(paths.display("/home/linuztx"), "~");
+}
+
+#[test]
+fn a_path_outside_home_reads_absolute() {
+    let paths = paths();
+    assert_eq!(paths.display("/tmp/x.py"), "/tmp/x.py");
+    assert_eq!(paths.display("/etc/hosts"), "/etc/hosts");
+    assert_eq!(paths.display("/tmp/./a/../x.py"), "/tmp/x.py");
+    // Another user's home is not `~` — nor is a directory whose name merely
+    // starts with the home's (component-wise containment).
+    assert_eq!(paths.display("/home/other/x.py"), "/home/other/x.py");
+    assert_eq!(paths.display("/home/linuztxx/f"), "/home/linuztxx/f");
+}
+
+#[test]
+fn a_relative_path_resolves_against_the_cwd_first() {
+    let paths = paths();
+    assert_eq!(paths.display("hello.py"), "hello.py");
+    assert_eq!(paths.display("./src/../hello.py"), "hello.py");
+    // A climb out of the cwd lands wherever it lands, and reads by the same
+    // rule as an absolute path there.
+    assert_eq!(paths.display("../sib/f.txt"), "~/Codes/sib/f.txt");
+    assert_eq!(paths.display("."), ".");
+}
+
+#[test]
+fn without_a_home_the_tilde_rule_is_skipped() {
+    let paths = PathDisplay::new("/home/linuztx/Codes/tests", None);
+    assert_eq!(
+        paths.display("/home/linuztx/hello.py"),
+        "/home/linuztx/hello.py"
+    );
+    assert_eq!(
+        paths.display("/home/linuztx/Codes/tests/hello.py"),
+        "hello.py"
+    );
+}
+
+#[test]
+fn the_verbatim_policy_leaves_every_path_as_given() {
+    // The unit-test default (and the policy of a session whose cwd is
+    // unreadable): the header echoes the argument exactly.
+    for path in [
+        "/home/linuztx/Codes/tests/hello.py",
+        "/home/linuztx/hello.py",
+        "/tmp/./x.py",
+        "../rel/path.txt",
+    ] {
+        assert_eq!(PathDisplay::VERBATIM.display(path), path);
+        assert_eq!(PathDisplay::default().display(path), path);
+    }
+    // A relative cwd has nothing to relate to: verbatim as well.
+    assert_eq!(
+        PathDisplay::new("relative", None).display("/tmp/x.py"),
+        "/tmp/x.py"
+    );
+}
+
+#[test]
+fn the_app_holds_the_verbatim_policy_until_the_boundary_injects_one() {
+    let mut app = App::new();
+    assert_eq!(*app.path_display(), PathDisplay::VERBATIM);
+    app.set_path_display(paths());
+    assert_eq!(
+        app.path_display().display("/home/linuztx/hello.py"),
+        "~/hello.py"
+    );
+}

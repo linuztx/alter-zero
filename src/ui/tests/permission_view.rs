@@ -1276,3 +1276,69 @@ fn a_full_amend_row_keeps_the_caret_inside_the_width() {
         assert!(x < 70, "{n} chars: the caret sits at column {x}");
     }
 }
+
+#[test]
+fn the_target_row_reads_by_the_cells_path_rule() {
+    // The prompt names the file the way the cell it becomes will
+    // (`docs/tools.md` "Path display"): relative under the cwd, `~`-relative
+    // under home, absolute elsewhere. The request's own `target` stays the
+    // verbatim path — it is what the rule engine and the model see.
+    let paths = PathDisplay::new(
+        "/home/linuztx/Codes/tests",
+        Some(std::path::PathBuf::from("/home/linuztx")),
+    );
+    let mut app = app_with(request(
+        PermissionKind::Write,
+        "/home/linuztx/hello.py",
+        WRITE_BODY,
+    ));
+    app.set_path_display(paths.clone());
+    let lines = rows(&app, 60, 40);
+    assert_eq!(lines[2].trim(), "Create file");
+    assert_eq!(
+        lines[3].trim(),
+        "~/hello.py",
+        "the target shortens: {lines:?}"
+    );
+    let mut app = app_with(request(
+        PermissionKind::Edit,
+        "/home/linuztx/Codes/tests/script.py",
+        EDIT_BODY,
+    ));
+    app.set_path_display(paths.clone());
+    assert_eq!(rows(&app, 60, 40)[3].trim(), "script.py");
+    let mut app = app_with(request(PermissionKind::Write, "/tmp/x.py", WRITE_BODY));
+    app.set_path_display(paths);
+    assert_eq!(rows(&app, 60, 40)[3].trim(), "/tmp/x.py");
+}
+
+#[test]
+fn the_pending_cell_above_the_prompt_shortens_with_its_header() {
+    // The cell that raised the prompt and the prompt's own target name the
+    // file identically.
+    let mut app = App::new();
+    app.set_path_display(PathDisplay::new(
+        "/home/linuztx/Codes/tests",
+        Some(std::path::PathBuf::from("/home/linuztx")),
+    ));
+    app.begin_stream();
+    app.start_tool_batch(&[ToolCallSummary {
+        name: "Write".to_string(),
+        args: "/home/linuztx/Codes/tests/tt.py".to_string(),
+    }]);
+    app.open_permission(request(
+        PermissionKind::Write,
+        "/home/linuztx/Codes/tests/tt.py",
+        WRITE_BODY,
+    ));
+    let lines = rows(&app, 70, 40);
+    assert_eq!(
+        lines[0], "● Write(tt.py)",
+        "the context cell shortens: {lines:?}"
+    );
+    assert_eq!(lines[1], "  ⎿  Waiting…");
+    assert!(
+        lines.iter().any(|l| l.trim() == "tt.py"),
+        "…and so does the target row: {lines:?}"
+    );
+}

@@ -44,7 +44,7 @@ widened for the split.
 | `file_picker.rs` | The `@` picker's query round-trip and path insertion. |
 | `input_history.rs` | `InputHistory` (↑/↓ recall) and `HistorySearch` (Ctrl+R). |
 | `queue.rs` | `QueuedTurn`, the mid-turn queue, and the messages handed to the running turn (`docs/queue.md`). |
-| `tools.rs` | The tool-call batch queue and how a call resolves. |
+| `tools.rs` | The tool-call batch queue, how a call resolves, and `PathDisplay` — the cwd-relative / `~`-relative / absolute rule a file tool's path is *shown* by (`docs/tools.md` *Path display*), injected at the boundary. |
 | `turn.rs` | Turn lifecycle: begin/stream/interrupt/finish, the status tally, the summary. |
 | `compact.rs` | `/compact`, auto-compaction, and the context gauge. |
 | `backtrack.rs` | The Esc-Esc backtrack. |

@@ -318,7 +318,9 @@ fn live_a_parallel_deepwiki_batch_renders_as_one_cell() {
             }
             StreamEvent::ToolEnd { output, ok, .. } => {
                 app.end_tool(output, *ok);
-                if let Some(lines) = ui::tool_commit_lines(&app.history, app.tool_queue(), 80) {
+                if let Some(lines) =
+                    ui::tool_commit_lines(&app.history, app.tool_queue(), 80, app.path_display())
+                {
                     committed.extend(lines.iter().map(plain));
                 }
             }

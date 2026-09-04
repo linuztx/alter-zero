@@ -35,7 +35,11 @@ pub fn committed_history<'a>(
 /// peek), with a blank spacer after every item. Used to repaint after a resize
 /// clears the screen, or when returning from the tool-output view.
 #[must_use]
-pub fn conversation_lines(history: &[HistoryItem], width: u16) -> Vec<Line<'static>> {
+pub fn conversation_lines(
+    history: &[HistoryItem],
+    width: u16,
+    paths: &PathDisplay,
+) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     let mut index = 0;
     while index < history.len() {
@@ -60,7 +64,7 @@ pub fn conversation_lines(history: &[HistoryItem], width: u16) -> Vec<Line<'stat
             // Ctrl+O transcript is its record (docs/hooks.md).
             HistoryItem::HookNote(_) => continue,
             HistoryItem::Message(m) => lines.extend(message_lines(m.role, &m.text, width)),
-            HistoryItem::Tool(t) => lines.extend(tool_lines(t, width)),
+            HistoryItem::Tool(t) => lines.extend(tool_lines(t, width, paths)),
             HistoryItem::Summary(s) => lines.extend(summary_lines(s, width)),
             HistoryItem::Background(n) => lines.extend(background_notice_lines(n, width)),
             HistoryItem::AgentGroup(g) => lines.extend(agent_group_lines(g, width)),
@@ -90,8 +94,13 @@ pub fn conversation_lines(history: &[HistoryItem], width: u16) -> Vec<Line<'stat
 /// need to repaint what was on screen; capping at `max_rows` also avoids
 /// re-scrolling content the terminal already kept.
 #[must_use]
-pub fn repaint_lines(history: &[HistoryItem], width: u16, max_rows: usize) -> Vec<Line<'static>> {
-    keep_last_rows(conversation_lines(history, width), max_rows)
+pub fn repaint_lines(
+    history: &[HistoryItem],
+    width: u16,
+    max_rows: usize,
+    paths: &PathDisplay,
+) -> Vec<Line<'static>> {
+    keep_last_rows(conversation_lines(history, width, paths), max_rows)
 }
 
 /// The repaint tail for a mid-stream conversation rebuild
@@ -110,8 +119,9 @@ pub fn repaint_tail(
     render: &mut StreamRender,
     width: u16,
     max_rows: usize,
+    paths: &PathDisplay,
 ) -> Vec<Line<'static>> {
-    let mut lines = conversation_lines(history, width);
+    let mut lines = conversation_lines(history, width, paths);
     if let Some(text) = streaming.filter(|text| !text.is_empty()) {
         lines.extend(render.committed_rows(text, width));
     }

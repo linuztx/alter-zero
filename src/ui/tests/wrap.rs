@@ -326,7 +326,11 @@ fn tool_lines_wraps_a_long_command_output_line_instead_of_clipping() {
     // disappear past the terminal edge (the reported bug;
     // docs/tool-streaming.md).
     let long = "0123456789".repeat(6); // 60 cols
-    let lines = tool_lines(&tool("Bash", "cat log", ToolStatus::Ok, &long), 40);
+    let lines = tool_lines(
+        &tool("Bash", "cat log", ToolStatus::Ok, &long),
+        40,
+        &PathDisplay::VERBATIM,
+    );
     // width 40 − the 5-col `  ⎿  ` gutter = 35 content cols → 2 rows, and a
     // single source line → no hint.
     let body: Vec<String> = lines[1..].iter().map(plain).collect();
@@ -352,7 +356,10 @@ fn a_finished_shell_output_wraps_a_long_line_showing_every_line() {
                sudo: a password is required";
     let mut t = tool("sudo pacman -Rns steam", "", ToolStatus::Ok, out);
     t.shell = true;
-    let lines: Vec<String> = tool_lines(&t, 50).iter().map(plain).collect();
+    let lines: Vec<String> = tool_lines(&t, 50, &PathDisplay::VERBATIM)
+        .iter()
+        .map(plain)
+        .collect();
     let joined = lines.join("\n");
     assert!(
         joined.contains("either use the -S option"),
@@ -378,7 +385,13 @@ fn running_command_lines_wraps_a_long_tail_line_instead_of_clipping() {
     // width: every streamed column stays visible in the live cell.
     let long = "0123456789".repeat(6); // 60 cols
     let t = tool("Bash", "cat log", ToolStatus::Running, &long);
-    let lines = running_command_lines(&t, Duration::from_secs(1), Duration::ZERO, 40);
+    let lines = running_command_lines(
+        &t,
+        Duration::from_secs(1),
+        Duration::ZERO,
+        40,
+        &PathDisplay::VERBATIM,
+    );
     // width 40 − the 5-col `  ⎿  ` gutter = 35 content cols → 2 rows.
     let body: Vec<String> = lines[1..].iter().map(plain).collect();
     assert_eq!(body.len(), 2, "the 60-col line wraps to two rows: {body:?}");
@@ -417,7 +430,11 @@ fn tool_lines_wraps_a_long_header_aligned_under_the_open_paren() {
     // no part of the command is lost.
     let cmd = "curl -s \"wttr.in/Warsaw?format=%C+%t+%w+%h\" 2>/dev/null \
                || echo \"wttr.in unavailable, trying alternative...\"";
-    let lines = tool_lines(&tool("Bash", cmd, ToolStatus::Ok, "out"), 80);
+    let lines = tool_lines(
+        &tool("Bash", cmd, ToolStatus::Ok, "out"),
+        80,
+        &PathDisplay::VERBATIM,
+    );
     let header: Vec<String> = lines
         .iter()
         .take_while(|l| !plain(l).contains('⎿'))
@@ -482,7 +499,11 @@ fn tool_lines_truncates_a_very_long_header_with_an_ellipsis() {
                && echo \"Current time: $(date)\" \
                && echo \"System uptime: $(uptime)\" \
                && echo \"Memory usage: $(free -h | grep Mem)\"; done";
-    let lines = tool_lines(&tool("Bash", cmd, ToolStatus::Ok, "out"), 50);
+    let lines = tool_lines(
+        &tool("Bash", cmd, ToolStatus::Ok, "out"),
+        50,
+        &PathDisplay::VERBATIM,
+    );
     let header: Vec<String> = lines
         .iter()
         .take_while(|l| !plain(l).contains('⎿'))
@@ -540,7 +561,11 @@ fn edit_full_view_colours_wrapped_continuation_rows_by_their_source_line() {
     let removed = format!("-{}", "y".repeat(60));
     let output = format!("Updated a.rs (+1 -1)\n{added}\n{removed}");
     let width = 24; // body width ~20 → the 61-char lines wrap into several rows
-    let lines = tool_full_lines(&tool("Edit", "a.rs", ToolStatus::Ok, &output), width);
+    let lines = tool_full_lines(
+        &tool("Edit", "a.rs", ToolStatus::Ok, &output),
+        width,
+        &PathDisplay::VERBATIM,
+    );
     let content_fg = |l: &Line| l.spans.last().unwrap().style.fg;
     let add_rows: Vec<_> = lines.iter().filter(|l| plain(l).contains('x')).collect();
     let del_rows: Vec<_> = lines.iter().filter(|l| plain(l).contains('y')).collect();
@@ -574,7 +599,11 @@ fn file_cell_wraps_long_rows_under_the_content_column() {
     // the content column and keep the row's tint, and no row overflows.
     let output = format!("Updated a.rs (+1 -0)\n1 +{}", "x".repeat(60));
     let width = 30u16;
-    let lines = tool_full_lines(&tool("Edit", "a.rs", ToolStatus::Ok, &output), width);
+    let lines = tool_full_lines(
+        &tool("Edit", "a.rs", ToolStatus::Ok, &output),
+        width,
+        &PathDisplay::VERBATIM,
+    );
     let rows: Vec<_> = lines.iter().filter(|l| plain(l).contains('x')).collect();
     assert!(rows.len() > 1, "the 60-char row wrapped");
     let cont = plain(rows[1]);
@@ -599,7 +628,11 @@ fn tool_lines_wraps_a_peek_line_within_the_width_preserving_content() {
     // so no content is lost. A 50-col line at width 30 (25 content cols)
     // fits the row budget → two wrapped rows, no hint, every column kept.
     let long = "abcdefghij".repeat(5); // 50 cols
-    let lines = tool_lines(&tool("Bash", "y", ToolStatus::Ok, &long), 30);
+    let lines = tool_lines(
+        &tool("Bash", "y", ToolStatus::Ok, &long),
+        30,
+        &PathDisplay::VERBATIM,
+    );
     for line in &lines {
         assert!(cols(&plain(line)) <= 30, "no line exceeds the width");
     }
@@ -626,7 +659,10 @@ fn a_shell_tools_full_output_keeps_its_whitespace_verbatim() {
         "/home/me\n│   ├── a\n    indented   run",
     );
     t.shell = true;
-    let lines: Vec<String> = tool_full_lines(&t, 80).iter().map(plain).collect();
+    let lines: Vec<String> = tool_full_lines(&t, 80, &PathDisplay::VERBATIM)
+        .iter()
+        .map(plain)
+        .collect();
     assert_eq!(
         lines,
         vec!["  ⎿  /home/me", "     │   ├── a", "         indented   run",],
@@ -713,7 +749,7 @@ fn a_truncated_shell_output_appends_an_ellipsis_marker_in_the_full_view() {
     let mut t = tool("tree ~/", "", ToolStatus::Ok, "/home/me\n├── a\n├── b");
     t.shell = true;
     t.truncated = true;
-    let lines: Vec<String> = tool_full_lines(&t, 70)
+    let lines: Vec<String> = tool_full_lines(&t, 70, &PathDisplay::VERBATIM)
         .iter()
         .map(|l| plain(l).trim_end().to_string())
         .collect();
@@ -731,7 +767,7 @@ fn a_complete_shell_output_has_no_truncation_marker() {
     // When the output was kept in full, no `…` marker is appended.
     let mut t = tool("ls", "", ToolStatus::Ok, "a\nb");
     t.shell = true;
-    let lines: Vec<String> = tool_full_lines(&t, 70)
+    let lines: Vec<String> = tool_full_lines(&t, 70, &PathDisplay::VERBATIM)
         .iter()
         .map(|l| plain(l).trim_end().to_string())
         .collect();

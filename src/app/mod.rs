@@ -91,7 +91,9 @@ pub use self::skill_picker::SkillPicker;
 pub use self::skills_menu::{SkillMenuRow, SkillsMenu};
 pub use self::status::{RetryInfo, ThinkingState, TokenArrow, TurnStatus, TurnSummary};
 pub use self::tasks::TaskCallRecord;
-pub use self::tools::{ERROR_TOOL_OUTPUT, INTERRUPT_TOOL_OUTPUT, ToolCall, ToolStatus};
+pub use self::tools::{
+    ERROR_TOOL_OUTPUT, INTERRUPT_TOOL_OUTPUT, PathDisplay, ToolCall, ToolStatus,
+};
 pub use self::trust_menu::TrustMenu;
 pub use self::turn::{
     DONE_VERBS, INTERRUPT_NOTICE, InterruptedTurn, SHELL_VERB, StreamError, WORKING_VERBS,
@@ -470,6 +472,12 @@ pub struct App {
     /// ([`App::set_session_info`]). `None` — the unit-test default — means no
     /// footer row. See `docs/footer.md`.
     pub session: Option<SessionInfo>,
+    /// How a file tool's path reads on screen — the cwd-relative /
+    /// `~`-relative / absolute rule of [`PathDisplay`], injected once at the
+    /// I/O boundary ([`App::set_path_display`]) beside the session info. The
+    /// verbatim default is what every unit test, and a session whose cwd is
+    /// unreadable, renders with (`docs/tools.md` *Path display*).
+    path_display: PathDisplay,
     /// The active model's reasoning capability and chosen thinking mode —
     /// `None` when the model doesn't support reasoning (or support is
     /// unknown, e.g. the dummy backend). Injected at the boundary

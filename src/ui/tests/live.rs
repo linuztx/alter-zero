@@ -468,7 +468,7 @@ fn a_long_shell_output_caps_the_preview_with_an_expand_hint() {
         .join("\n");
     let mut t = tool("seq 6", "", ToolStatus::Ok, &output);
     t.shell = true;
-    let lines: Vec<String> = tool_lines(&t, 60)
+    let lines: Vec<String> = tool_lines(&t, 60, &PathDisplay::VERBATIM)
         .iter()
         .map(|l| plain(l).trim_end().to_string())
         .collect();
@@ -662,10 +662,11 @@ fn the_running_preview_hints_ctrl_b_but_the_committed_cell_does_not() {
             .any(|l| l.trim() == "(ctrl+b to run in background)"),
         "the running preview hints Ctrl+B: {preview:?}"
     );
-    let committed: Vec<String> = tool_lines(app.current_tool().unwrap(), 60)
-        .iter()
-        .map(plain)
-        .collect();
+    let committed: Vec<String> =
+        tool_lines(app.current_tool().unwrap(), 60, &PathDisplay::VERBATIM)
+            .iter()
+            .map(plain)
+            .collect();
     assert!(
         !committed.iter().any(|l| l.contains("ctrl+b")),
         "the commit-path cell never carries the hint: {committed:?}"

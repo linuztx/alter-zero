@@ -778,6 +778,7 @@ fn a_failed_command_cell_surfaces_its_exit_code() {
     let lines = tool_lines(
         &tool("Bash", "false", ToolStatus::Failed, "Exit code: 3\nboom"),
         80,
+        &PathDisplay::VERBATIM,
     );
     let body: Vec<String> = lines[1..].iter().map(plain).collect();
     assert!(
@@ -794,6 +795,7 @@ fn a_failed_command_cell_with_no_body_still_says_why() {
     let lines = tool_lines(
         &tool("Bash", "false", ToolStatus::Failed, "Exit code: 3"),
         80,
+        &PathDisplay::VERBATIM,
     );
     let body: Vec<String> = lines[1..].iter().map(plain).collect();
     assert_eq!(body.len(), 1, "one row: {body:?}");
@@ -813,6 +815,7 @@ fn a_signal_killed_command_cell_says_so() {
             "Exit code: killed by signal",
         ),
         80,
+        &PathDisplay::VERBATIM,
     );
     assert!(
         plain(&lines[1]).contains("Error: killed by signal"),
@@ -827,7 +830,11 @@ fn bash_cell_output_aligns_under_the_two_space_corner() {
     // opens at `  ⎿  {line}` (col 5) and the `… +N lines` hint aligns under
     // it.
     let out = "l1\nl2\nl3\nl4\nl5\nl6";
-    let lines = tool_lines(&tool("Bash", "seq 6", ToolStatus::Ok, out), 80);
+    let lines = tool_lines(
+        &tool("Bash", "seq 6", ToolStatus::Ok, out),
+        80,
+        &PathDisplay::VERBATIM,
+    );
     assert_eq!(plain(&lines[0]), "● Bash(seq 6)");
     assert_eq!(plain(&lines[1]), "  ⎿  l1");
     assert_eq!(
@@ -842,7 +849,11 @@ fn read_cell_full_view_shows_every_row_uncapped() {
         .map(|i| format!("{i:>2} row {i}"))
         .collect::<Vec<_>>()
         .join("\n");
-    let lines = tool_full_lines(&tool("Read", "big.txt", ToolStatus::Ok, &body), 80);
+    let lines = tool_full_lines(
+        &tool("Read", "big.txt", ToolStatus::Ok, &body),
+        80,
+        &PathDisplay::VERBATIM,
+    );
     assert_eq!(lines.len(), 2 + 30, "header + summary + every row");
     assert!(plain(lines.last().unwrap()).contains("30 row 30"));
 }
@@ -850,7 +861,11 @@ fn read_cell_full_view_shows_every_row_uncapped() {
 #[test]
 fn edit_cell_renders_the_hunk_gap_dim() {
     let output = "Updated a.rs (+2 -0)\n1 +first()\n  ⋮\n9 +second()";
-    let lines = tool_full_lines(&tool("Edit", "a.rs", ToolStatus::Ok, output), 80);
+    let lines = tool_full_lines(
+        &tool("Edit", "a.rs", ToolStatus::Ok, output),
+        80,
+        &PathDisplay::VERBATIM,
+    );
     let gap = lines
         .iter()
         .find(|l| plain(l).trim_end().ends_with('⋮'))
@@ -908,7 +923,10 @@ fn a_rejected_cell_shows_the_amended_instructions_and_never_the_model_text() {
         approval_note: None,
         batch: None,
     };
-    for lines in [tool_lines(&tool, 80), tool_full_lines(&tool, 80)] {
+    for lines in [
+        tool_lines(&tool, 80, &PathDisplay::VERBATIM),
+        tool_full_lines(&tool, 80, &PathDisplay::VERBATIM),
+    ] {
         let texts: Vec<String> = lines.iter().map(plain).collect();
         let joined = texts.join("\n");
         assert!(texts[0].contains("Write(hello.py)"), "{texts:?}");
@@ -926,7 +944,9 @@ fn a_rejected_cell_shows_the_amended_instructions_and_never_the_model_text() {
         );
     }
     assert_eq!(
-        tool_lines(&tool, 80)[0].spans[0].style.fg,
+        tool_lines(&tool, 80, &PathDisplay::VERBATIM)[0].spans[0]
+            .style
+            .fg,
         Some(TOOL_FAIL_COLOR),
         "a refused call keeps the red bullet"
     );
@@ -952,7 +972,10 @@ fn a_backgrounded_tool_cell_shows_the_fixed_row_not_its_output() {
         approval_note: None,
         batch: None,
     };
-    for lines in [tool_lines(&tool, 60), tool_full_lines(&tool, 60)] {
+    for lines in [
+        tool_lines(&tool, 60, &PathDisplay::VERBATIM),
+        tool_full_lines(&tool, 60, &PathDisplay::VERBATIM),
+    ] {
         let texts: Vec<String> = lines.iter().map(plain).collect();
         assert_eq!(texts.len(), 2, "header + the fixed row: {texts:?}");
         assert!(texts[0].contains("Bash(ping -c 50 google.com)"));
@@ -966,7 +989,9 @@ fn a_backgrounded_tool_cell_shows_the_fixed_row_not_its_output() {
         );
     }
     assert_eq!(
-        tool_lines(&tool, 60)[0].spans[0].style.fg,
+        tool_lines(&tool, 60, &PathDisplay::VERBATIM)[0].spans[0]
+            .style
+            .fg,
         Some(TOOL_OK_COLOR),
         "a backgrounded launch gets the green bullet"
     );
@@ -987,7 +1012,10 @@ fn a_backgrounded_shell_cell_is_the_headerless_fixed_row() {
         approval_note: None,
         batch: None,
     };
-    let texts: Vec<String> = tool_lines(&tool, 60).iter().map(plain).collect();
+    let texts: Vec<String> = tool_lines(&tool, 60, &PathDisplay::VERBATIM)
+        .iter()
+        .map(plain)
+        .collect();
     assert_eq!(texts.len(), 1);
     assert_eq!(
         texts[0].trim(),

@@ -319,7 +319,7 @@ fn context_chunks(app: &App, width: u16) -> Vec<Vec<Line<'static>>> {
         {
             return Vec::new();
         }
-        return queue_chunks(run.tool_queue.iter(), width);
+        return queue_chunks(run.tool_queue.iter(), width, app.path_display());
     }
     let mut chunks = Vec::new();
     let agents = live_agent_group_lines(app, width);
@@ -335,7 +335,11 @@ fn context_chunks(app: &App, width: u16) -> Vec<Vec<Line<'static>>> {
     {
         return vec![batch];
     }
-    chunks.extend(queue_chunks(app.tool_queue().iter(), width));
+    chunks.extend(queue_chunks(
+        app.tool_queue().iter(),
+        width,
+        app.path_display(),
+    ));
     chunks
 }
 
@@ -346,8 +350,9 @@ fn context_chunks(app: &App, width: u16) -> Vec<Vec<Line<'static>>> {
 fn queue_chunks<'a>(
     queue: impl Iterator<Item = &'a ToolCall>,
     width: u16,
+    paths: &PathDisplay,
 ) -> Vec<Vec<Line<'static>>> {
-    queue.map(|tool| tool_lines(tool, width)).collect()
+    queue.map(|tool| tool_lines(tool, width, paths)).collect()
 }
 
 /// The dim summary row standing in for the sibling cells the cap collapsed —
@@ -499,7 +504,15 @@ pub fn permission_lines(app: &App, width: u16, term_height: u16) -> Vec<Line<'st
     let framing = if framed { 2 } else { 0 };
     let mut frame = vec![rule(width), Line::default(), title_row(request, width)];
     if file_change {
-        frame.push(text_row(&request.target, PERMISSION_TARGET_COLOR, width));
+        // The file named the way the cell it becomes will name it —
+        // relative under the cwd, `~`-relative under home, absolute elsewhere
+        // (`docs/tools.md` *Path display*). The request's own `target` stays
+        // verbatim: it is what the rule engine and the model see.
+        frame.push(text_row(
+            &app.path_display().display(&request.target),
+            PERMISSION_TARGET_COLOR,
+            width,
+        ));
     } else {
         // A command — and an MCP call, whose body names the tool the same way
         // (`docs/mcp.md`) — gaps here instead: its target *is* the body.

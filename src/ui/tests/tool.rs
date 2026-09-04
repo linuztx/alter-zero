@@ -28,7 +28,11 @@ fn gutter_content(row: &str) -> &str {
 
 #[test]
 fn tool_lines_header_shows_name_and_args() {
-    let lines = tool_lines(&tool("Bash", "cargo test", ToolStatus::Ok, "a\nb\nc"), 80);
+    let lines = tool_lines(
+        &tool("Bash", "cargo test", ToolStatus::Ok, "a\nb\nc"),
+        80,
+        &PathDisplay::VERBATIM,
+    );
     assert_eq!(plain(&lines[0]), "● Bash(cargo test)");
 }
 
@@ -36,7 +40,11 @@ fn tool_lines_header_shows_name_and_args() {
 fn tool_lines_header_omits_the_parens_when_args_are_empty() {
     // A `!` shell command is a tool with no args (name = the command), so
     // its header reads `● {command}`, not `● {command}()`.
-    let lines = tool_lines(&tool("echo hi", "", ToolStatus::Ok, "hi"), 80);
+    let lines = tool_lines(
+        &tool("echo hi", "", ToolStatus::Ok, "hi"),
+        80,
+        &PathDisplay::VERBATIM,
+    );
     assert_eq!(plain(&lines[0]), "● echo hi");
 }
 
@@ -50,7 +58,7 @@ fn an_answered_ask_cell_promotes_the_headline_to_the_header() {
                   · What's your favorite way to drink coffee? → Black\n\
                   · Pick a snack → Chips, Fruit";
     let cell = tool("AskUserQuestion", "ignored", ToolStatus::Ok, output);
-    let lines = tool_lines(&cell, 100);
+    let lines = tool_lines(&cell, 100, &PathDisplay::VERBATIM);
     assert_eq!(plain(&lines[0]), "● User answered Alter Zero's questions:");
     let bullet = &lines[0].spans[0];
     assert_eq!(
@@ -71,7 +79,7 @@ fn an_answered_ask_cell_promotes_the_headline_to_the_header() {
         "the headline replaces the tool-name header"
     );
     // The Ctrl+O transcript renders the same header with the rows uncapped.
-    let full = tool_full_lines(&cell, 100);
+    let full = tool_full_lines(&cell, 100, &PathDisplay::VERBATIM);
     assert_eq!(plain(&full[0]), "● User answered Alter Zero's questions:");
     assert!(plain(&full[2]).contains("· Pick a snack → Chips, Fruit"));
 }
@@ -81,7 +89,7 @@ fn a_declined_ask_cell_is_red_and_lists_the_questions() {
     let output = "User declined to answer questions\n\
                   · Which code style do you prefer? (Arrow function / One-liner)";
     let cell = tool("AskUserQuestion", "ignored", ToolStatus::Failed, output);
-    let lines = tool_lines(&cell, 100);
+    let lines = tool_lines(&cell, 100, &PathDisplay::VERBATIM);
     assert_eq!(plain(&lines[0]), "● User declined to answer questions");
     assert_eq!(lines[0].spans[0].style.fg, Some(TOOL_FAIL_COLOR));
     assert!(plain(&lines[1]).contains("(Arrow function / One-liner)"));
@@ -93,7 +101,7 @@ fn a_running_ask_cell_keeps_the_generic_header() {
     // `● AskUserQuestion(…)` header stands (mostly hidden behind the modal;
     // the Ctrl+O transcript shows it).
     let cell = tool("AskUserQuestion", "Pick one?", ToolStatus::Running, "");
-    let lines = tool_lines(&cell, 100);
+    let lines = tool_lines(&cell, 100, &PathDisplay::VERBATIM);
     assert!(
         plain(&lines[0]).starts_with("● AskUserQuestion(Pick one?)"),
         "got {:?}",
@@ -115,7 +123,11 @@ fn a_classifier_allowed_bash_cell_appends_the_note_row() {
     // The reference transcript: the collapsed cell's output peek (and its
     // `… +N lines` hint) first, then a fresh dim `⎿` row with the note.
     let output = "Exit code: 0\ntotal 40\na\nb\nc\nd\ne\nf";
-    let lines = tool_lines(&noted("Bash", "ls -la", ToolStatus::Ok, output), 80);
+    let lines = tool_lines(
+        &noted("Bash", "ls -la", ToolStatus::Ok, output),
+        80,
+        &PathDisplay::VERBATIM,
+    );
     let texts: Vec<String> = lines.iter().map(plain).collect();
     assert_eq!(
         texts.last().map(String::as_str),
@@ -139,6 +151,7 @@ fn the_note_shows_in_the_expanded_transcript_view_too() {
     let lines = tool_full_lines(
         &noted("Bash", "ls -la", ToolStatus::Ok, "Exit code: 0\ntotal 40"),
         80,
+        &PathDisplay::VERBATIM,
     );
     let texts: Vec<String> = lines.iter().map(plain).collect();
     assert_eq!(
@@ -154,7 +167,11 @@ fn the_note_waits_for_the_call_to_resolve() {
     // request) show it once the command has finished — a running cell keeps
     // its live look untouched.
     for status in [ToolStatus::Waiting, ToolStatus::Running] {
-        let lines = tool_lines(&noted("Bash", "ls -la", status, ""), 80);
+        let lines = tool_lines(
+            &noted("Bash", "ls -la", status, ""),
+            80,
+            &PathDisplay::VERBATIM,
+        );
         assert!(
             !lines.iter().map(plain).any(|t| t.contains("Allowed by")),
             "no note while {status:?}"
@@ -164,6 +181,7 @@ fn the_note_waits_for_the_call_to_resolve() {
     let lines = tool_lines(
         &noted("Bash", "ls /gone", ToolStatus::Failed, "Exit code: 2"),
         80,
+        &PathDisplay::VERBATIM,
     );
     assert!(
         lines
@@ -183,6 +201,7 @@ fn a_noted_backgrounded_cell_keeps_its_fixed_row_over_the_note() {
             "launch text",
         ),
         80,
+        &PathDisplay::VERBATIM,
     );
     let texts: Vec<String> = lines.iter().map(plain).collect();
     assert!(
@@ -200,7 +219,11 @@ fn a_noted_backgrounded_cell_keeps_its_fixed_row_over_the_note() {
 
 #[test]
 fn an_unnoted_cell_is_byte_identical_to_before_the_feature() {
-    let plain_cell = tool_lines(&tool("Bash", "ls", ToolStatus::Ok, "Exit code: 0\nout"), 80);
+    let plain_cell = tool_lines(
+        &tool("Bash", "ls", ToolStatus::Ok, "Exit code: 0\nout"),
+        80,
+        &PathDisplay::VERBATIM,
+    );
     assert!(
         !plain_cell
             .iter()
@@ -217,7 +240,7 @@ fn tool_lines_colours_the_bullet_by_status() {
         (ToolStatus::Ok, TOOL_OK_COLOR),
         (ToolStatus::Failed, TOOL_FAIL_COLOR),
     ] {
-        let lines = tool_lines(&tool("X", "y", status, "out"), 80);
+        let lines = tool_lines(&tool("X", "y", status, "out"), 80, &PathDisplay::VERBATIM);
         assert_eq!(
             lines[0].spans[0].style.fg,
             Some(color),
@@ -231,7 +254,11 @@ fn a_running_bullet_is_the_permission_prompts_grey_never_blue() {
     // The running `●` used to be blue. It now reads like the grey bullet the
     // permission prompt shows over its pending call — one muted palette for
     // "in flight", the green/red resolution the only colour that lands.
-    let lines = tool_lines(&tool("Bash", "cargo test", ToolStatus::Running, ""), 80);
+    let lines = tool_lines(
+        &tool("Bash", "cargo test", ToolStatus::Running, ""),
+        80,
+        &PathDisplay::VERBATIM,
+    );
     assert_eq!(lines[0].spans[0].style.fg, Some(TOOL_DIM_COLOR));
 }
 
@@ -243,7 +270,11 @@ fn a_running_bullet_breathes_across_the_pulse_period() {
     // only ever dips **below** the resting grey; its peak is that same grey, so
     // the bullet never brightens toward white.
     let call = tool("Bash", "cargo test", ToolStatus::Running, "");
-    let bullet = |at: Duration| live_tool_lines(&call, 80, at)[0].spans[0].style.fg;
+    let bullet = |at: Duration| {
+        live_tool_lines(&call, 80, at, &PathDisplay::VERBATIM)[0].spans[0]
+            .style
+            .fg
+    };
     let half = TOOL_PULSE_PERIOD / 2;
     assert_eq!(bullet(Duration::ZERO), Some(rgb(TOOL_PULSE_DIM)));
     assert_eq!(bullet(half), Some(rgb(TOOL_PULSE_BRIGHT)));
@@ -272,7 +303,9 @@ fn only_a_running_bullet_pulses() {
         let call = tool("X", "y", status, "out");
         for at in [Duration::ZERO, TOOL_PULSE_PERIOD / 2] {
             assert_eq!(
-                live_tool_lines(&call, 80, at)[0].spans[0].style.fg,
+                live_tool_lines(&call, 80, at, &PathDisplay::VERBATIM)[0].spans[0]
+                    .style
+                    .fg,
                 Some(color),
                 "{status:?} never animates"
             );
@@ -287,7 +320,9 @@ fn a_committed_cell_never_carries_a_pulse_frame() {
     // never be committed mid-breath.
     let call = tool("Bash", "cargo test", ToolStatus::Running, "");
     assert_eq!(
-        tool_lines(&call, 80)[0].spans[0].style.fg,
+        tool_lines(&call, 80, &PathDisplay::VERBATIM)[0].spans[0]
+            .style
+            .fg,
         Some(TOOL_RUNNING_COLOR)
     );
     // The peak of the breath *is* the resting grey — the pulse only dips below
@@ -309,7 +344,11 @@ fn tool_lines_collapses_a_command_output_to_a_multiline_peek_plus_hint() {
     // `… +N lines (ctrl+o to expand)` hint (docs/tool-streaming.md), like the
     // `!` shell cell. (This is the mock's finished state.)
     let out = "l1\nl2\nl3\nl4\nl5\nl6";
-    let lines = tool_lines(&tool("Bash", "seq 6", ToolStatus::Ok, out), 80);
+    let lines = tool_lines(
+        &tool("Bash", "seq 6", ToolStatus::Ok, out),
+        80,
+        &PathDisplay::VERBATIM,
+    );
     assert_eq!(
         lines.len(),
         TOOL_PEEK_LINES + 2,
@@ -342,10 +381,14 @@ fn a_finished_peek_shows_the_first_lines_fully_wrapped() {
     // siblings still show. Three lines here, the first wrapping to 2 rows →
     // all three visible in the 4-row block, no hint.
     let out = format!("{}\nbee\nsea", "a".repeat(60)); // 35 content cols → 2 rows
-    let lines: Vec<String> = tool_lines(&tool("Bash", "cat log", ToolStatus::Ok, &out), 40)
-        .iter()
-        .map(plain)
-        .collect();
+    let lines: Vec<String> = tool_lines(
+        &tool("Bash", "cat log", ToolStatus::Ok, &out),
+        40,
+        &PathDisplay::VERBATIM,
+    )
+    .iter()
+    .map(plain)
+    .collect();
     let joined = lines.join("\n");
     assert!(
         joined.contains("bee") && joined.contains("sea"),
@@ -367,10 +410,14 @@ fn a_finished_peek_bounds_rows_and_hints_when_one_line_overflows_the_budget() {
     // (docs/long-lines.md).
     let long = "x".repeat(600); // 35 content cols → 18 rows uncapped
     let out = vec![long; 4].join("\n");
-    let lines: Vec<String> = tool_lines(&tool("Bash", "cat big", ToolStatus::Ok, &out), 40)
-        .iter()
-        .map(plain)
-        .collect();
+    let lines: Vec<String> = tool_lines(
+        &tool("Bash", "cat big", ToolStatus::Ok, &out),
+        40,
+        &PathDisplay::VERBATIM,
+    )
+    .iter()
+    .map(plain)
+    .collect();
     assert_eq!(
         lines.len(),
         1 + TOOL_PEEK_ROWS + 1,
@@ -394,10 +441,14 @@ fn a_finished_command_peek_skips_the_output_s_leading_blank_lines() {
     // used to spend the cell's first row on nothing. The peek opens at the
     // first line that has something on it (docs/long-lines.md).
     let out = "\nl1\nl2\nl3\nl4\nl5";
-    let lines: Vec<String> = tool_lines(&tool("Bash", "seq", ToolStatus::Ok, out), 80)
-        .iter()
-        .map(plain)
-        .collect();
+    let lines: Vec<String> = tool_lines(
+        &tool("Bash", "seq", ToolStatus::Ok, out),
+        80,
+        &PathDisplay::VERBATIM,
+    )
+    .iter()
+    .map(plain)
+    .collect();
     assert_eq!(
         lines.len(),
         1 + TOOL_PEEK_LINES + 1,
@@ -421,10 +472,14 @@ fn a_finished_command_peek_stops_at_the_first_blank_line() {
     // cell stops rather than spending a row on it (and rather than hopping the
     // gap, which would read as one run of lines that isn't one).
     let out = "l1\nl2\n\nl3\nl4\nl5";
-    let lines: Vec<String> = tool_lines(&tool("Bash", "seq", ToolStatus::Ok, out), 80)
-        .iter()
-        .map(plain)
-        .collect();
+    let lines: Vec<String> = tool_lines(
+        &tool("Bash", "seq", ToolStatus::Ok, out),
+        80,
+        &PathDisplay::VERBATIM,
+    )
+    .iter()
+    .map(plain)
+    .collect();
     assert_eq!(
         lines.len(),
         1 + 2 + 1,
@@ -445,10 +500,14 @@ fn a_finished_command_peek_keeps_a_blank_only_output_as_it_is() {
     // renders exactly as before rather than collapsing to an empty cell whose
     // hint has no `⎿` corner to hang from.
     let out = "\n\n\n";
-    let lines: Vec<String> = tool_lines(&tool("Bash", "printf", ToolStatus::Ok, out), 80)
-        .iter()
-        .map(plain)
-        .collect();
+    let lines: Vec<String> = tool_lines(
+        &tool("Bash", "printf", ToolStatus::Ok, out),
+        80,
+        &PathDisplay::VERBATIM,
+    )
+    .iter()
+    .map(plain)
+    .collect();
     assert_eq!(
         lines.len(),
         1 + 3,
@@ -467,7 +526,10 @@ fn a_shell_cell_peek_follows_the_same_first_block_rule() {
     // peek skips the leading blanks and stops at the first interior one too.
     let mut t = tool("printf '\\n\\nout\\n'", "", ToolStatus::Ok, "\n\nout\ntail");
     t.shell = true;
-    let lines: Vec<String> = tool_lines(&t, 80).iter().map(plain).collect();
+    let lines: Vec<String> = tool_lines(&t, 80, &PathDisplay::VERBATIM)
+        .iter()
+        .map(plain)
+        .collect();
     assert_eq!(lines.len(), 3, "the block's two rows + hint: {lines:?}");
     assert_eq!(gutter_content(&lines[0]), "out", "{lines:?}");
     assert_eq!(gutter_content(&lines[1]), "tail", "{lines:?}");
@@ -483,10 +545,14 @@ fn a_blank_line_inside_a_wrapped_first_block_still_closes_the_peek() {
     // wrapping line inside the block still shows whole and the blank after it
     // still ends the cell.
     let out = format!("{}\n\nafter", "a".repeat(60)); // 35 content cols → 2 rows
-    let lines: Vec<String> = tool_lines(&tool("Bash", "cat", ToolStatus::Ok, &out), 40)
-        .iter()
-        .map(plain)
-        .collect();
+    let lines: Vec<String> = tool_lines(
+        &tool("Bash", "cat", ToolStatus::Ok, &out),
+        40,
+        &PathDisplay::VERBATIM,
+    )
+    .iter()
+    .map(plain)
+    .collect();
     assert_eq!(
         lines.len(),
         1 + 2 + 1,
@@ -506,7 +572,10 @@ fn a_finished_peek_wraps_the_sudo_error_at_word_boundaries() {
                askpass helper";
     let mut t = tool("sudo pacman -Rns steam", "", ToolStatus::Failed, out);
     t.shell = true;
-    let rows: Vec<String> = tool_lines(&t, 66).iter().map(plain).collect();
+    let rows: Vec<String> = tool_lines(&t, 66, &PathDisplay::VERBATIM)
+        .iter()
+        .map(plain)
+        .collect();
     assert!(
         rows.iter().any(|r| r.contains("askpass")),
         "askpass stays intact on one row: {rows:?}"
@@ -525,6 +594,7 @@ fn the_full_view_surfaces_the_exit_code_on_failure_too() {
     let lines = tool_full_lines(
         &tool("Bash", "false", ToolStatus::Failed, "Exit code: 2\nnope"),
         80,
+        &PathDisplay::VERBATIM,
     );
     let all = lines.iter().map(plain).collect::<Vec<_>>().join("\n");
     assert!(
@@ -540,7 +610,11 @@ fn a_diff_peek_continuation_row_keeps_the_source_line_colour() {
     // because their own first char has no marker — the Ctrl+O view already
     // colours by source line (diff_line_color before wrapping).
     let long = format!("+{}", "a".repeat(60));
-    let lines = tool_lines(&tool("Edit", "f", ToolStatus::Ok, &long), 40);
+    let lines = tool_lines(
+        &tool("Edit", "f", ToolStatus::Ok, &long),
+        40,
+        &PathDisplay::VERBATIM,
+    );
     let rows: Vec<_> = lines[1..].iter().collect();
     assert!(
         rows.len() >= 2,
@@ -564,7 +638,11 @@ fn a_non_command_tool_with_raw_multiline_output_keeps_a_single_peek_line() {
     // dummy's canned `Read`, or an unknown tool) keeps the compact single
     // peek line + hint — so its committed footprint is unchanged
     // (docs/tool-streaming.md; guards the resize/reflow layout, smoke Phase 17).
-    let lines = tool_lines(&tool("Read", "f", ToolStatus::Ok, "one\ntwo\nthree"), 80);
+    let lines = tool_lines(
+        &tool("Read", "f", ToolStatus::Ok, "one\ntwo\nthree"),
+        80,
+        &PathDisplay::VERBATIM,
+    );
     assert_eq!(
         lines.len(),
         3,
@@ -591,7 +669,11 @@ fn tool_lines_strips_the_leading_exit_code_frame_from_a_bash_cell() {
     // replay, but the display drops that first line so the cell reads like
     // the real command output (docs/tool-streaming.md).
     let out = "Exit code: 0\nhello\nworld";
-    let lines = tool_lines(&tool("Bash", "echo", ToolStatus::Ok, out), 80);
+    let lines = tool_lines(
+        &tool("Bash", "echo", ToolStatus::Ok, out),
+        80,
+        &PathDisplay::VERBATIM,
+    );
     let all: String = lines.iter().map(plain).collect::<Vec<_>>().join("\n");
     assert!(
         !all.contains("Exit code"),
@@ -613,7 +695,13 @@ fn running_command_lines_tails_recent_output_with_the_elapsed() {
         .collect::<Vec<_>>()
         .join("\n");
     let t = tool("Bash", "ping -c 10 x", ToolStatus::Running, &out);
-    let lines = running_command_lines(&t, Duration::from_secs(9), Duration::ZERO, 80);
+    let lines = running_command_lines(
+        &t,
+        Duration::from_secs(9),
+        Duration::ZERO,
+        80,
+        &PathDisplay::VERBATIM,
+    );
     assert_eq!(plain(&lines[0]), "● Bash(ping -c 10 x)");
     let body: Vec<String> = lines[1..].iter().map(plain).collect();
     assert!(
@@ -645,7 +733,13 @@ fn running_footers_humanize_the_elapsed_past_a_minute() {
         .collect::<Vec<_>>()
         .join("\n");
     let t = tool("Bash", "ping -c 200 x", ToolStatus::Running, &out);
-    let lines = running_command_lines(&t, Duration::from_secs(123), Duration::ZERO, 80);
+    let lines = running_command_lines(
+        &t,
+        Duration::from_secs(123),
+        Duration::ZERO,
+        80,
+        &PathDisplay::VERBATIM,
+    );
     assert_eq!(
         plain(lines.last().unwrap()).trim(),
         "+5 lines (2m 3s)",
@@ -665,7 +759,13 @@ fn running_command_lines_without_overflow_shows_no_footer() {
     // Fewer lines than the window: show them all, no `+N lines` footer (the
     // status line carries the timer).
     let t = tool("Bash", "echo", ToolStatus::Running, "a\nb");
-    let lines = running_command_lines(&t, Duration::from_secs(1), Duration::ZERO, 80);
+    let lines = running_command_lines(
+        &t,
+        Duration::from_secs(1),
+        Duration::ZERO,
+        80,
+        &PathDisplay::VERBATIM,
+    );
     assert_eq!(
         lines.len(),
         3,
@@ -688,7 +788,13 @@ fn running_command_lines_tail_window_counts_display_rows_when_lines_wrap() {
     let long = "x".repeat(70); // 35 content cols → exactly 2 rows
     let out = format!("alpha\nbeta\ngamma\n{long}");
     let t = tool("Bash", "cat log", ToolStatus::Running, &out);
-    let lines = running_command_lines(&t, Duration::from_secs(7), Duration::ZERO, 40);
+    let lines = running_command_lines(
+        &t,
+        Duration::from_secs(7),
+        Duration::ZERO,
+        40,
+        &PathDisplay::VERBATIM,
+    );
     let body: Vec<String> = lines[1..].iter().map(plain).collect();
     assert_eq!(body.len(), 5, "4 tail rows + the footer: {body:?}");
     assert!(
@@ -713,7 +819,11 @@ fn tool_full_lines_strips_the_exit_code_frame_from_a_bash_cell() {
     // The Ctrl+O full view shows the whole body but, like the inline cell,
     // drops the `Exit code: N` frame line (docs/tool-streaming.md).
     let out = "Exit code: 0\nalpha\nbeta";
-    let lines = tool_full_lines(&tool("Bash", "echo", ToolStatus::Ok, out), 80);
+    let lines = tool_full_lines(
+        &tool("Bash", "echo", ToolStatus::Ok, out),
+        80,
+        &PathDisplay::VERBATIM,
+    );
     let all: String = lines.iter().map(plain).collect::<Vec<_>>().join("\n");
     assert!(
         !all.contains("Exit code"),
@@ -727,14 +837,22 @@ fn tool_full_lines_strips_the_exit_code_frame_from_a_bash_cell() {
 
 #[test]
 fn tool_lines_single_line_output_has_no_expand_hint() {
-    let lines = tool_lines(&tool("Bash", "echo hi", ToolStatus::Ok, "hi"), 80);
+    let lines = tool_lines(
+        &tool("Bash", "echo hi", ToolStatus::Ok, "hi"),
+        80,
+        &PathDisplay::VERBATIM,
+    );
     assert_eq!(lines.len(), 2, "header + peek only, nothing hidden");
     assert!(plain(&lines[1]).contains("hi"));
 }
 
 #[test]
 fn tool_lines_running_shows_a_running_peek() {
-    let lines = tool_lines(&tool("Bash", "sleep 1", ToolStatus::Running, ""), 80);
+    let lines = tool_lines(
+        &tool("Bash", "sleep 1", ToolStatus::Running, ""),
+        80,
+        &PathDisplay::VERBATIM,
+    );
     assert_eq!(lines.len(), 2);
     assert!(
         plain(&lines[1]).to_lowercase().contains("running"),
@@ -747,7 +865,11 @@ fn tool_lines_running_shows_a_running_peek() {
 fn tool_lines_running_backend_peek_reads_running_capitalized() {
     // The running `⎿` row reads `Running…` (capital, like the shell cell) so
     // the live preview under the header matches Claude-Code's look.
-    let lines = tool_lines(&tool("Bash", "sleep 1", ToolStatus::Running, ""), 80);
+    let lines = tool_lines(
+        &tool("Bash", "sleep 1", ToolStatus::Running, ""),
+        80,
+        &PathDisplay::VERBATIM,
+    );
     assert!(
         plain(&lines[1]).contains("Running…"),
         "backend running peek is capitalised: {:?}",
@@ -760,7 +882,11 @@ fn tool_lines_waiting_shows_a_waiting_peek() {
     // A not-yet-started call in a parallel batch renders `● name(args)` over
     // a dim `⎿ Waiting…` row — the queued-but-not-running state. See
     // `docs/parallel-tools.md`.
-    let lines = tool_lines(&tool("Bash", "ping x.com", ToolStatus::Waiting, ""), 80);
+    let lines = tool_lines(
+        &tool("Bash", "ping x.com", ToolStatus::Waiting, ""),
+        80,
+        &PathDisplay::VERBATIM,
+    );
     assert_eq!(lines.len(), 2, "header + waiting peek");
     assert!(
         plain(&lines[0]).contains("Bash(ping x.com)"),
@@ -780,7 +906,11 @@ fn tool_lines_colours_a_waiting_bullet_dim_and_still() {
     // what tells them apart in the live region is that the running one moves
     // (`docs/tool-pulse.md`),
     // since the call hasn't started.
-    let lines = tool_lines(&tool("Bash", "ping x.com", ToolStatus::Waiting, ""), 80);
+    let lines = tool_lines(
+        &tool("Bash", "ping x.com", ToolStatus::Waiting, ""),
+        80,
+        &PathDisplay::VERBATIM,
+    );
     let bullet = lines[0].spans.first().expect("a bullet span");
     assert_eq!(
         bullet.style.fg,
@@ -794,7 +924,11 @@ fn tool_header_body_is_bold_white_parens_included() {
     // The whole `(...)` header body — the command text AND its framing parens
     // — reads like a normal reply (bold + the white assistant colour), so a
     // bash command and its brackets are all noticeable rather than dim.
-    let lines = tool_lines(&tool("Bash", "cargo test", ToolStatus::Ok, "out"), 80);
+    let lines = tool_lines(
+        &tool("Bash", "cargo test", ToolStatus::Ok, "out"),
+        80,
+        &PathDisplay::VERBATIM,
+    );
     let arg = lines[0]
         .spans
         .iter()
@@ -840,7 +974,11 @@ fn tool_full_lines_keeps_the_whole_header_untruncated() {
                && echo \"Current time: $(date)\" \
                && echo \"System uptime: $(uptime)\" \
                && echo \"Memory usage: $(free -h | grep Mem)\"; done";
-    let lines = tool_full_lines(&tool("Bash", cmd, ToolStatus::Ok, "out"), 50);
+    let lines = tool_full_lines(
+        &tool("Bash", cmd, ToolStatus::Ok, "out"),
+        50,
+        &PathDisplay::VERBATIM,
+    );
     let header: Vec<String> = lines
         .iter()
         .take_while(|l| !plain(l).contains('⎿'))
@@ -870,7 +1008,11 @@ fn edit_tool_inline_peek_colours_the_diff_rows() {
     // An `edit` cell shows its diff inline (codex's trick): a `+` row is
     // green, a `-` row is red, the summary/context dim.
     let output = "Updated a.rs (+1 -1)\n keep\n-old\n+new";
-    let lines = tool_lines(&tool("Edit", "a.rs", ToolStatus::Ok, output), 80);
+    let lines = tool_lines(
+        &tool("Edit", "a.rs", ToolStatus::Ok, output),
+        80,
+        &PathDisplay::VERBATIM,
+    );
     assert_eq!(
         plain(&lines[0]),
         "● Edit(a.rs)",
@@ -897,6 +1039,7 @@ fn a_non_diff_tool_peek_is_not_diff_coloured() {
     let lines = tool_lines(
         &tool("Bash", "diff a b", ToolStatus::Ok, "-removed\n+added"),
         80,
+        &PathDisplay::VERBATIM,
     );
     let fg = lines[1].spans.last().unwrap().style.fg;
     assert_eq!(
@@ -912,7 +1055,11 @@ fn a_non_diff_tool_peek_is_not_diff_coloured() {
 fn tool_output_content_is_white_the_corner_stays_dim() {
     // A finished tool's output under the ⎿ gutter is the noticeable white
     // output colour, while the ⎿ corner glyph itself stays a dim delimiter.
-    let lines = tool_lines(&tool("Bash", "echo hi", ToolStatus::Ok, "hello world"), 80);
+    let lines = tool_lines(
+        &tool("Bash", "echo hi", ToolStatus::Ok, "hello world"),
+        80,
+        &PathDisplay::VERBATIM,
+    );
     let out = lines
         .iter()
         .find(|l| plain(l).contains("hello world"))
@@ -944,7 +1091,11 @@ fn tool_running_and_waiting_placeholders_stay_dim() {
     // The `Running…`/`Waiting…` placeholders are meta, not output, so they
     // keep the dim colour even though real output is now white.
     for status in [ToolStatus::Running, ToolStatus::Waiting] {
-        let lines = tool_lines(&tool("Bash", "sleep 1", status, ""), 80);
+        let lines = tool_lines(
+            &tool("Bash", "sleep 1", status, ""),
+            80,
+            &PathDisplay::VERBATIM,
+        );
         let row = lines
             .iter()
             .find(|l| {
@@ -964,7 +1115,11 @@ fn tool_running_and_waiting_placeholders_stay_dim() {
 #[test]
 fn write_tool_full_view_colours_the_diff() {
     let output = "Updated a.rs (+1 -0)\n keep\n+added";
-    let lines = tool_full_lines(&tool("Write", "a.rs", ToolStatus::Ok, output), 80);
+    let lines = tool_full_lines(
+        &tool("Write", "a.rs", ToolStatus::Ok, output),
+        80,
+        &PathDisplay::VERBATIM,
+    );
     let add = lines.iter().find(|l| plain(l).contains("+added")).unwrap();
     assert_eq!(
         add.spans.last().unwrap().style.fg,
@@ -979,7 +1134,11 @@ fn write_cell_shows_numbered_syntax_highlighted_rows() {
     // and renders as Claude-Code's Write preview: dim right-aligned line
     // numbers, the content syntax-highlighted by the path's extension.
     let output = "Created hello.py (2 lines)\n1 def main():\n2     x = \"hi\"";
-    let lines = tool_lines(&tool("Write", "hello.py", ToolStatus::Ok, output), 80);
+    let lines = tool_lines(
+        &tool("Write", "hello.py", ToolStatus::Ok, output),
+        80,
+        &PathDisplay::VERBATIM,
+    );
     assert_eq!(plain(&lines[0]), "● Write(hello.py)");
     assert_eq!(plain(&lines[1]), "  ⎿  Created hello.py (2 lines)");
     let row1 = &lines[2];
@@ -1014,6 +1173,7 @@ fn write_cell_parses_the_live_wrote_head() {
     let lines = tool_lines(
         &tool("Write", "/repo/nested/hello.py", ToolStatus::Ok, output),
         80,
+        &PathDisplay::VERBATIM,
     );
     assert_eq!(plain(&lines[0]), "● Write(/repo/nested/hello.py)");
     assert_eq!(plain(&lines[1]), "  ⎿  Wrote 2 lines to nested/hello.py");
@@ -1044,6 +1204,7 @@ fn file_summary_head_wraps_under_the_corner_instead_of_clipping() {
     let lines = tool_lines(
         &tool("Write", "/x/readme.md", ToolStatus::Ok, &output),
         width,
+        &PathDisplay::VERBATIM,
     );
     let head_rows: Vec<String> = lines[1..]
         .iter()
@@ -1070,7 +1231,11 @@ fn an_updated_head_keeps_its_count_colours_when_it_wraps() {
     // The `(+A -D)` dress survives the head wrap: wherever the counts land,
     // they stay green/red.
     let output = "Updated ../../some/long/path/chain/into/the/tree/main.rs (+3 -1)\n1 +x";
-    let lines = tool_lines(&tool("Edit", "/x/main.rs", ToolStatus::Ok, output), 40);
+    let lines = tool_lines(
+        &tool("Edit", "/x/main.rs", ToolStatus::Ok, output),
+        40,
+        &PathDisplay::VERBATIM,
+    );
     let add = lines
         .iter()
         .flat_map(|l| l.spans.iter())
@@ -1090,7 +1255,11 @@ fn an_image_read_cell_is_one_concise_fact_row() {
     // `⎿ Read image (PNG, 512x512, 17 KB)` — the executor's whole output, so
     // the cell is the header plus exactly one output row, no hint.
     let output = "Read image (PNG, 512x512, 17 KB)";
-    let lines = tool_lines(&tool("Read", "flower.png", ToolStatus::Ok, output), 80);
+    let lines = tool_lines(
+        &tool("Read", "flower.png", ToolStatus::Ok, output),
+        80,
+        &PathDisplay::VERBATIM,
+    );
     assert_eq!(plain(&lines[0]), "● Read(flower.png)");
     assert_eq!(plain(&lines[1]), "  ⎿  Read image (PNG, 512x512, 17 KB)");
     assert_eq!(lines.len(), 2, "no hint, no second row: {lines:?}");
@@ -1106,7 +1275,11 @@ fn a_generic_cell_peek_line_wraps_instead_of_clipping() {
     // docs/long-lines.md).
     let long = "could not read /home/u/missing/file.txt: no such file";
     let width: u16 = 40;
-    let lines = tool_lines(&tool("Read", "file.txt", ToolStatus::Failed, long), width);
+    let lines = tool_lines(
+        &tool("Read", "file.txt", ToolStatus::Failed, long),
+        width,
+        &PathDisplay::VERBATIM,
+    );
     let body: Vec<String> = lines[1..].iter().map(plain).collect();
     assert!(body.len() > 1, "the peek wrapped: {body:?}");
     // `wrap_output` keeps each boundary space at the end of its row, so
@@ -1135,7 +1308,11 @@ fn a_generic_cell_still_hints_the_lines_behind_the_wrapped_peek() {
     // Only the first source line peeks; the rest stay behind the accurate
     // `… +N lines` hint, wrap or no wrap.
     let output = "first line of the body that is long enough to wrap at this width\nsecond\nthird";
-    let lines = tool_lines(&tool("Teleport", "x", ToolStatus::Ok, output), 40);
+    let lines = tool_lines(
+        &tool("Teleport", "x", ToolStatus::Ok, output),
+        40,
+        &PathDisplay::VERBATIM,
+    );
     let hint = plain(lines.last().unwrap());
     assert!(
         hint.contains("+2 lines") && hint.contains("ctrl+o"),
@@ -1161,7 +1338,11 @@ fn file_cell_uses_claude_code_gutter_spacing() {
         .collect::<Vec<_>>()
         .join("\n");
     let output = format!("Created f.txt (12 lines)\n{body}");
-    let lines = tool_lines(&tool("Write", "f.txt", ToolStatus::Ok, &output), 80);
+    let lines = tool_lines(
+        &tool("Write", "f.txt", ToolStatus::Ok, &output),
+        80,
+        &PathDisplay::VERBATIM,
+    );
     assert_eq!(plain(&lines[1]), "  ⎿  Created f.txt (12 lines)");
     assert_eq!(plain(&lines[2]), "       1 line 1");
     assert_eq!(
@@ -1176,7 +1357,11 @@ fn read_cell_shows_numbered_syntax_highlighted_rows() {
     // the corner, then dim right-aligned line numbers with the content
     // syntax-highlighted by the path's extension — no diff sign or tint.
     let output = "1 def main():\n2     return 42";
-    let lines = tool_lines(&tool("Read", "app.py", ToolStatus::Ok, output), 80);
+    let lines = tool_lines(
+        &tool("Read", "app.py", ToolStatus::Ok, output),
+        80,
+        &PathDisplay::VERBATIM,
+    );
     assert_eq!(plain(&lines[0]), "● Read(app.py)");
     assert_eq!(plain(&lines[1]), "  ⎿  Read 2 lines");
     let row = &lines[2];
@@ -1215,7 +1400,11 @@ fn read_cell_peek_caps_at_file_peek_lines_with_the_expand_hint() {
         .map(|i| format!("{i:>2} row {i}"))
         .collect::<Vec<_>>()
         .join("\n");
-    let lines = tool_lines(&tool("Read", "big.txt", ToolStatus::Ok, &body), 80);
+    let lines = tool_lines(
+        &tool("Read", "big.txt", ToolStatus::Ok, &body),
+        80,
+        &PathDisplay::VERBATIM,
+    );
     // header + summary + FILE_PEEK_LINES rows + the hint.
     assert_eq!(lines.len(), 2 + FILE_PEEK_LINES + 1);
     assert!(
@@ -1231,6 +1420,7 @@ fn read_cell_placeholder_output_falls_back_to_a_plain_peek() {
     let lines = tool_lines(
         &tool("Read", "x.txt", ToolStatus::Ok, "(file x.txt is empty)"),
         80,
+        &PathDisplay::VERBATIM,
     );
     assert_eq!(plain(&lines[0]), "● Read(x.txt)");
     assert!(plain(&lines[1]).contains("(file x.txt is empty)"));
@@ -1248,7 +1438,11 @@ fn edit_cell_shows_numbered_hunks_with_diff_tints() {
     // codex's diff cell: numbered rows, `+` rows on the dark-green tint,
     // `-` rows dimmed on the dark-red tint, context syntax-highlighted.
     let output = "Updated a.rs (+1 -1)\n 9  before()\n10 -let x = 1;\n10 +let x = 2;\n11  after()";
-    let lines = tool_lines(&tool("Edit", "a.rs", ToolStatus::Ok, output), 80);
+    let lines = tool_lines(
+        &tool("Edit", "a.rs", ToolStatus::Ok, output),
+        80,
+        &PathDisplay::VERBATIM,
+    );
     assert_eq!(plain(&lines[1]), "  ⎿  Updated a.rs (+1 -1)");
     let del = lines.iter().find(|l| plain(l).contains("-let")).unwrap();
     let add = lines.iter().find(|l| plain(l).contains("+let")).unwrap();
@@ -1341,6 +1535,7 @@ fn file_cell_summary_head_is_white_not_dim() {
             "Created f.txt (2 lines)\n1 a\n2 b",
         ),
         80,
+        &PathDisplay::VERBATIM,
     );
     let w_head = write[1]
         .spans
@@ -1353,7 +1548,11 @@ fn file_cell_summary_head_is_white_not_dim() {
         "a write summary head is white"
     );
 
-    let read = tool_lines(&tool("Read", "f.txt", ToolStatus::Ok, "1 a\n2 b"), 80);
+    let read = tool_lines(
+        &tool("Read", "f.txt", ToolStatus::Ok, "1 a\n2 b"),
+        80,
+        &PathDisplay::VERBATIM,
+    );
     let r_head = read[1]
         .spans
         .iter()
@@ -1373,6 +1572,7 @@ fn file_cell_summary_head_is_white_not_dim() {
             "Updated a.rs (+1 -1)\n1 +x\n2 -y",
         ),
         80,
+        &PathDisplay::VERBATIM,
     );
     let e_head = edit[1]
         .spans
@@ -1400,7 +1600,11 @@ fn write_cell_peek_caps_at_file_peek_lines_with_the_expand_hint() {
         .collect::<Vec<_>>()
         .join("\n");
     let output = format!("Created big.txt (30 lines)\n{body}");
-    let lines = tool_lines(&tool("Write", "big.txt", ToolStatus::Ok, &output), 80);
+    let lines = tool_lines(
+        &tool("Write", "big.txt", ToolStatus::Ok, &output),
+        80,
+        &PathDisplay::VERBATIM,
+    );
     // header + summary + FILE_PEEK_LINES numbered rows + the hint.
     assert_eq!(lines.len(), 2 + FILE_PEEK_LINES + 1);
     let hint = plain(lines.last().unwrap());
@@ -1417,7 +1621,11 @@ fn write_cell_full_view_shows_every_numbered_row() {
         .collect::<Vec<_>>()
         .join("\n");
     let output = format!("Created big.txt (30 lines)\n{body}");
-    let lines = tool_full_lines(&tool("Write", "big.txt", ToolStatus::Ok, &output), 80);
+    let lines = tool_full_lines(
+        &tool("Write", "big.txt", ToolStatus::Ok, &output),
+        80,
+        &PathDisplay::VERBATIM,
+    );
     assert_eq!(lines.len(), 2 + 30, "header + summary + every row");
     assert!(plain(lines.last().unwrap()).contains("30 line 30"));
 }
@@ -1430,6 +1638,7 @@ fn a_bash_cell_with_a_created_looking_output_gets_no_diff_tint() {
     let lines = tool_lines(
         &tool("Bash", "gen", ToolStatus::Ok, "Created x (1 line)\n1 hi"),
         80,
+        &PathDisplay::VERBATIM,
     );
     assert!(
         lines
@@ -1442,7 +1651,11 @@ fn a_bash_cell_with_a_created_looking_output_gets_no_diff_tint() {
 
 #[test]
 fn tool_full_lines_colours_the_header_by_status() {
-    let lines = tool_full_lines(&tool("Read", "f", ToolStatus::Ok, "x"), 80);
+    let lines = tool_full_lines(
+        &tool("Read", "f", ToolStatus::Ok, "x"),
+        80,
+        &PathDisplay::VERBATIM,
+    );
     assert_eq!(lines[0].spans[0].style.fg, Some(TOOL_OK_COLOR));
 }
 
@@ -1460,6 +1673,7 @@ fn a_backend_tools_full_output_hangs_under_the_gutter_verbatim() {
             "total 8\n-rw-  1 user   42 a",
         ),
         80,
+        &PathDisplay::VERBATIM,
     )
     .iter()
     .map(plain)
@@ -1525,7 +1739,7 @@ fn a_shell_tool_renders_headerless_output_only() {
     // itself contributes only the `⎿` output lines, flush below it.
     let mut t = tool("pwd", "", ToolStatus::Ok, "/home/user/alter-zero");
     t.shell = true;
-    let lines = tool_lines(&t, 60);
+    let lines = tool_lines(&t, 60, &PathDisplay::VERBATIM);
     assert_eq!(plain(&lines[0]), "  ⎿  /home/user/alter-zero");
     assert!(
         !plain(&lines[0]).contains("pwd"),
@@ -1537,7 +1751,7 @@ fn a_shell_tool_renders_headerless_output_only() {
 fn a_running_shell_tool_peeks_running() {
     let mut t = tool("sleep 5", "", ToolStatus::Running, "");
     t.shell = true;
-    let lines = tool_lines(&t, 60);
+    let lines = tool_lines(&t, 60, &PathDisplay::VERBATIM);
     assert_eq!(plain(&lines[0]), "  ⎿  Running…", "the mock's running cell");
 }
 
@@ -1552,7 +1766,7 @@ fn a_short_shell_output_shows_every_line_aligned_under_the_corner() {
         "index.html\nscript.js\nstyles.css",
     );
     t.shell = true;
-    let lines: Vec<String> = tool_lines(&t, 60)
+    let lines: Vec<String> = tool_lines(&t, 60, &PathDisplay::VERBATIM)
         .iter()
         .map(|l| plain(l).trim_end().to_string())
         .collect();
@@ -1572,7 +1786,10 @@ fn tool_peek_expands_tabs_for_display() {
     // stored output stays byte-exact.
     let mut t = tool("pwd", "", ToolStatus::Ok, "name\tsize");
     t.shell = true;
-    let texts: Vec<String> = tool_lines(&t, 80).iter().map(plain).collect();
+    let texts: Vec<String> = tool_lines(&t, 80, &PathDisplay::VERBATIM)
+        .iter()
+        .map(plain)
+        .collect();
     assert!(
         !texts.iter().any(|l| l.contains('\t')),
         "no raw tab reaches a painted row: {texts:?}"
@@ -1587,7 +1804,10 @@ fn tool_peek_expands_tabs_for_display() {
 #[test]
 fn tool_full_lines_expand_tabs_for_display() {
     let t = tool("bash", "cat Makefile", ToolStatus::Ok, "target:\n\tcc -o x");
-    let texts: Vec<String> = tool_full_lines(&t, 80).iter().map(plain).collect();
+    let texts: Vec<String> = tool_full_lines(&t, 80, &PathDisplay::VERBATIM)
+        .iter()
+        .map(plain)
+        .collect();
     assert!(
         !texts.iter().any(|l| l.contains('\t')),
         "no raw tab reaches the expanded view: {texts:?}"
@@ -1619,7 +1839,11 @@ fn a_running_mcp_cell_collapses_to_calling_server() {
     // One line and nothing else: the arguments (and the result) are Ctrl+O's
     // story, so the inline cell doesn't echo a peek of the question
     // (`docs/mcp.md`).
-    let lines = tool_lines(&mcp_tool(ToolStatus::Running, ""), 100);
+    let lines = tool_lines(
+        &mcp_tool(ToolStatus::Running, ""),
+        100,
+        &PathDisplay::VERBATIM,
+    );
     assert_eq!(lines.len(), 1);
     assert_eq!(
         plain(&lines[0]),
@@ -1629,7 +1853,11 @@ fn a_running_mcp_cell_collapses_to_calling_server() {
 
 #[test]
 fn a_waiting_mcp_sibling_shows_the_waiting_row() {
-    let lines = tool_lines(&mcp_tool(ToolStatus::Waiting, ""), 100);
+    let lines = tool_lines(
+        &mcp_tool(ToolStatus::Waiting, ""),
+        100,
+        &PathDisplay::VERBATIM,
+    );
     assert!(plain(&lines[0]).starts_with(&format!("● {MCP_CALLING_PREFIX}Deepwiki…")));
     assert!(plain(&lines[1]).contains("Waiting…"));
 }
@@ -1641,6 +1869,7 @@ fn a_resolved_mcp_cell_is_the_bullet_less_called_line() {
     let lines = tool_lines(
         &mcp_tool(ToolStatus::Ok, "{\"result\": \"long json…\"}"),
         100,
+        &PathDisplay::VERBATIM,
     );
     assert_eq!(lines.len(), 1);
     assert_eq!(
@@ -1664,7 +1893,10 @@ fn a_resolved_mcp_cell_stays_quiet_without_the_classifier_note() {
     // stays off the quiet cell; the Ctrl+O transcript keeps the record.
     let mut cell = mcp_tool(ToolStatus::Ok, "done");
     cell.approval_note = Some("Allowed by auto mode classifier".to_string());
-    let texts: Vec<String> = tool_lines(&cell, 100).iter().map(plain).collect();
+    let texts: Vec<String> = tool_lines(&cell, 100, &PathDisplay::VERBATIM)
+        .iter()
+        .map(plain)
+        .collect();
     assert_eq!(
         texts,
         vec![format!("{MCP_CALLED_PREFIX}Deepwiki{EXPAND_HINT}")],
@@ -1672,7 +1904,10 @@ fn a_resolved_mcp_cell_stays_quiet_without_the_classifier_note() {
     );
     // The expanded transcript still closes with the note — the record that
     // no human approved this call survives where the full story lives.
-    let full: Vec<String> = tool_full_lines(&cell, 100).iter().map(plain).collect();
+    let full: Vec<String> = tool_full_lines(&cell, 100, &PathDisplay::VERBATIM)
+        .iter()
+        .map(plain)
+        .collect();
     assert_eq!(
         full.last().map(String::as_str),
         Some("  ⎿  Allowed by auto mode classifier"),
@@ -1686,7 +1921,10 @@ fn a_failed_noted_mcp_cell_keeps_the_note() {
     // explains why the call ran at all — only the quiet Ok line drops it.
     let mut cell = mcp_tool(ToolStatus::Failed, "server exploded");
     cell.approval_note = Some("Allowed by auto mode classifier".to_string());
-    let texts: Vec<String> = tool_lines(&cell, 120).iter().map(plain).collect();
+    let texts: Vec<String> = tool_lines(&cell, 120, &PathDisplay::VERBATIM)
+        .iter()
+        .map(plain)
+        .collect();
     assert_eq!(
         texts.last().map(String::as_str),
         Some("  ⎿  Allowed by auto mode classifier"),
@@ -1696,7 +1934,11 @@ fn a_failed_noted_mcp_cell_keeps_the_note() {
 
 #[test]
 fn a_failed_mcp_cell_keeps_the_loud_generic_form() {
-    let lines = tool_lines(&mcp_tool(ToolStatus::Failed, "server exploded"), 120);
+    let lines = tool_lines(
+        &mcp_tool(ToolStatus::Failed, "server exploded"),
+        120,
+        &PathDisplay::VERBATIM,
+    );
     // The full header — pretty-printed args, not the raw JSON — over the
     // error peek, red bullet.
     let head = plain(&lines[0]);
@@ -1718,7 +1960,7 @@ fn a_wide_mcp_header_wraps_to_the_bullets_own_hanging_indent() {
     // and the args get the whole width (`docs/mcp.md`).
     let mut cell = mcp_tool(ToolStatus::Ok, "");
     cell.args = r#"{"repoName":"linuztx/flaredantic","question":"What is this project about? What does it do, what problem does it solve, and how is it typically used?"}"#.to_string();
-    let lines = tool_full_lines(&cell, 76);
+    let lines = tool_full_lines(&cell, 76, &PathDisplay::VERBATIM);
     assert_eq!(
         plain(&lines[0]),
         "● Deepwiki - ask_question (MCP)(repoName: \"linuztx/flaredantic\", question:"
@@ -1740,7 +1982,7 @@ fn a_narrow_header_still_aligns_under_its_opening_paren() {
         ToolStatus::Ok,
         "",
     );
-    let lines = tool_full_lines(&cell, 40);
+    let lines = tool_full_lines(&cell, 40, &PathDisplay::VERBATIM);
     assert_eq!(plain(&lines[0]), "● Bash(echo one two three four five six");
     assert_eq!(plain(&lines[1]), "      seven eight nine ten eleven");
 }
@@ -1748,7 +1990,7 @@ fn a_narrow_header_still_aligns_under_its_opening_paren() {
 #[test]
 fn the_ctrl_o_view_shows_the_full_mcp_story() {
     let cell = mcp_tool(ToolStatus::Ok, "{\n  \"result\": \"Flaredantic is…\"\n}");
-    let lines = tool_full_lines(&cell, 120);
+    let lines = tool_full_lines(&cell, 120, &PathDisplay::VERBATIM);
     let head = plain(&lines[0]);
     assert!(
         head.starts_with("● Deepwiki - ask_question (MCP)("),
@@ -1833,7 +2075,7 @@ fn a_mixed_batchs_mcp_cell_commits_exactly_once() {
     // decision and the flush must agree on what was held (`docs/mcp.md`).
     let mut app = app_calling(&["deepwiki - ask_question (MCP)", "Bash"]);
     app.end_tool("{\"answer\":\"…\"}", true);
-    let first = tool_commit_lines(&app.history, app.tool_queue(), 100)
+    let first = tool_commit_lines(&app.history, app.tool_queue(), 100, &PathDisplay::VERBATIM)
         .expect("a mixed batch's MCP cell is never held");
     assert_eq!(
         first.iter().map(plain).collect::<Vec<_>>(),
@@ -1841,21 +2083,23 @@ fn a_mixed_batchs_mcp_cell_commits_exactly_once() {
     );
     app.start_tool("Bash", "ls", None);
     app.end_tool("ok", true);
-    let second: Vec<String> = tool_commit_lines(&app.history, app.tool_queue(), 100)
-        .expect("the bash cell commits")
-        .iter()
-        .map(plain)
-        .collect();
+    let second: Vec<String> =
+        tool_commit_lines(&app.history, app.tool_queue(), 100, &PathDisplay::VERBATIM)
+            .expect("the bash cell commits")
+            .iter()
+            .map(plain)
+            .collect();
     assert!(
         !second.iter().any(|row| row.contains(MCP_CALLED_PREFIX)),
         "the bash commit re-emitted the already-committed MCP line: {second:?}"
     );
     assert!(second[0].starts_with("● Bash("), "{second:?}");
     // And the repaint from history shows the line exactly once.
-    let repaint: Vec<String> = crate::ui::conversation_lines(&app.history, 100)
-        .iter()
-        .map(plain)
-        .collect();
+    let repaint: Vec<String> =
+        crate::ui::conversation_lines(&app.history, 100, &PathDisplay::VERBATIM)
+            .iter()
+            .map(plain)
+            .collect();
     assert_eq!(
         repaint
             .iter()
@@ -1880,28 +2124,30 @@ fn a_non_mcp_sibling_never_reflushes_the_committed_run() {
     ]);
     app.end_tool("{\"answer\":\"…\"}", true);
     assert_eq!(
-        tool_commit_lines(&app.history, app.tool_queue(), 100),
+        tool_commit_lines(&app.history, app.tool_queue(), 100, &PathDisplay::VERBATIM),
         None,
         "the first call holds: the batch's next call is still MCP"
     );
     app.start_tool("deepwiki - read_wiki_structure (MCP)", "", None);
     app.end_tool("{\"topics\":[]}", true);
-    let run: Vec<String> = tool_commit_lines(&app.history, app.tool_queue(), 100)
-        .expect("the MCP run ends here — the batch continues non-MCP")
-        .iter()
-        .map(plain)
-        .collect();
+    let run: Vec<String> =
+        tool_commit_lines(&app.history, app.tool_queue(), 100, &PathDisplay::VERBATIM)
+            .expect("the MCP run ends here — the batch continues non-MCP")
+            .iter()
+            .map(plain)
+            .collect();
     assert_eq!(
         run,
         vec![format!("{MCP_CALLED_PREFIX}Deepwiki 2 times{EXPAND_HINT}")]
     );
     app.start_tool("Bash", "ls", None);
     app.end_tool("ok", true);
-    let second: Vec<String> = tool_commit_lines(&app.history, app.tool_queue(), 100)
-        .expect("the bash cell commits")
-        .iter()
-        .map(plain)
-        .collect();
+    let second: Vec<String> =
+        tool_commit_lines(&app.history, app.tool_queue(), 100, &PathDisplay::VERBATIM)
+            .expect("the bash cell commits")
+            .iter()
+            .map(plain)
+            .collect();
     assert!(
         !second.iter().any(|row| row.contains(MCP_CALLED_PREFIX)),
         "the bash commit re-flushed the committed run: {second:?}"
@@ -1920,20 +2166,21 @@ fn a_finished_parallel_mcp_run_commits_one_aggregated_line() {
     ]);
     app.end_tool("{\"answer\":\"…\"}", true);
     assert_eq!(
-        tool_commit_lines(&app.history, app.tool_queue(), 100),
+        tool_commit_lines(&app.history, app.tool_queue(), 100, &PathDisplay::VERBATIM),
         None,
         "the run's first call holds its commit"
     );
     app.start_tool("deepwiki - read_wiki_structure (MCP)", "", None);
     app.end_tool("{\"topics\":[]}", true);
-    let lines = tool_commit_lines(&app.history, app.tool_queue(), 100).expect("the run committed");
+    let lines = tool_commit_lines(&app.history, app.tool_queue(), 100, &PathDisplay::VERBATIM)
+        .expect("the run committed");
     assert_eq!(lines.len(), 1);
     assert_eq!(
         plain(&lines[0]),
         format!("{MCP_CALLED_PREFIX}Deepwiki 2 times{EXPAND_HINT}")
     );
     // And the repaint from history agrees, line for line.
-    let repaint = crate::ui::conversation_lines(&app.history, 100);
+    let repaint = crate::ui::conversation_lines(&app.history, 100, &PathDisplay::VERBATIM);
     assert_eq!(plain(&repaint[0]), plain(&lines[0]));
     assert_eq!(repaint.len(), 2, "one line + its spacer: {repaint:?}");
 }
@@ -1958,16 +2205,17 @@ fn a_rebuild_mid_run_leaves_the_held_cell_to_the_strip() {
         committed.is_empty(),
         "…but not yet committed: {committed:?}"
     );
-    assert!(crate::ui::conversation_lines(committed, 100).is_empty());
+    assert!(crate::ui::conversation_lines(committed, 100, &PathDisplay::VERBATIM).is_empty());
     // Once the run ends, the rebuild has the whole run — as its one line.
     app.start_tool("deepwiki - read_wiki_structure (MCP)", "", None);
     app.end_tool("{\"topics\":[]}", true);
     let committed = crate::ui::committed_history(&app.history, app.tool_queue());
     assert_eq!(committed.len(), 2);
-    let rebuilt: Vec<String> = crate::ui::conversation_lines(committed, 100)
-        .iter()
-        .map(plain)
-        .collect();
+    let rebuilt: Vec<String> =
+        crate::ui::conversation_lines(committed, 100, &PathDisplay::VERBATIM)
+            .iter()
+            .map(plain)
+            .collect();
     assert_eq!(
         rebuilt,
         vec![
@@ -1989,7 +2237,8 @@ fn a_failed_call_still_flushes_the_run_it_ends() {
     app.end_tool("{\"answer\":\"…\"}", true);
     app.start_tool("deepwiki - read_wiki_structure (MCP)", "", None);
     app.end_tool("server exploded", false);
-    let lines = tool_commit_lines(&app.history, app.tool_queue(), 100).expect("the run committed");
+    let lines = tool_commit_lines(&app.history, app.tool_queue(), 100, &PathDisplay::VERBATIM)
+        .expect("the run committed");
     let texts: Vec<String> = lines.iter().map(plain).collect();
     assert_eq!(
         texts[0],
@@ -1998,10 +2247,11 @@ fn a_failed_call_still_flushes_the_run_it_ends() {
     assert_eq!(texts[1], "");
     assert!(texts[2].starts_with("● Deepwiki - read_wiki_structure (MCP)("));
     assert!(texts.iter().any(|t| t.contains("server exploded")));
-    let repaint: Vec<String> = crate::ui::conversation_lines(&app.history, 100)
-        .iter()
-        .map(plain)
-        .collect();
+    let repaint: Vec<String> =
+        crate::ui::conversation_lines(&app.history, 100, &PathDisplay::VERBATIM)
+            .iter()
+            .map(plain)
+            .collect();
     assert_eq!(repaint[..texts.len()], texts[..]);
 }
 
@@ -2014,10 +2264,11 @@ fn two_sequential_mcp_calls_are_not_one_parallel_run() {
         app.start_tool("deepwiki - ask_question (MCP)", "{}", None);
         app.end_tool("{}", true);
     }
-    let repaint: Vec<String> = crate::ui::conversation_lines(&app.history, 100)
-        .iter()
-        .map(plain)
-        .collect();
+    let repaint: Vec<String> =
+        crate::ui::conversation_lines(&app.history, 100, &PathDisplay::VERBATIM)
+            .iter()
+            .map(plain)
+            .collect();
     let called = format!("{MCP_CALLED_PREFIX}Deepwiki{EXPAND_HINT}");
     assert_eq!(
         repaint,
@@ -2027,7 +2278,11 @@ fn two_sequential_mcp_calls_are_not_one_parallel_run() {
 
 #[test]
 fn a_narrow_terminal_drops_the_mcp_hint_before_the_label() {
-    let lines = tool_lines(&mcp_tool(ToolStatus::Running, ""), 20);
+    let lines = tool_lines(
+        &mcp_tool(ToolStatus::Running, ""),
+        20,
+        &PathDisplay::VERBATIM,
+    );
     let head = plain(&lines[0]);
     assert!(head.starts_with("● Calling Deepwiki…"), "got {head:?}");
     assert!(!head.contains("ctrl+o"), "no room for the hint at 20 cols");
@@ -2041,10 +2296,14 @@ fn a_finished_peek_clips_one_pathological_line_to_the_per_line_budget() {
     // ceiling (12 rows) on one source line. It now shows its head —
     // TOOL_LINE_MAX_ROWS rows — marked with the `…` that says it continues.
     let long = "x".repeat(600); // 35 content cols → 18 rows uncapped
-    let lines: Vec<String> = tool_lines(&tool("Bash", "cat big", ToolStatus::Ok, &long), 40)
-        .iter()
-        .map(plain)
-        .collect();
+    let lines: Vec<String> = tool_lines(
+        &tool("Bash", "cat big", ToolStatus::Ok, &long),
+        40,
+        &PathDisplay::VERBATIM,
+    )
+    .iter()
+    .map(plain)
+    .collect();
     assert_eq!(
         lines.len(),
         1 + TOOL_LINE_MAX_ROWS + 1,
@@ -2072,10 +2331,14 @@ fn a_finished_peek_hint_counts_rows_hidden_inside_a_long_line() {
     // `+1 lines` while hiding 15 rows of JSON — the number the user reads is
     // what expanding actually adds.
     let out = format!("/home/u/.local/bin/yt-dlp\n{}", "x".repeat(600));
-    let lines: Vec<String> = tool_lines(&tool("Bash", "curl -s …", ToolStatus::Ok, &out), 40)
-        .iter()
-        .map(plain)
-        .collect();
+    let lines: Vec<String> = tool_lines(
+        &tool("Bash", "curl -s …", ToolStatus::Ok, &out),
+        40,
+        &PathDisplay::VERBATIM,
+    )
+    .iter()
+    .map(plain)
+    .collect();
     assert_eq!(
         lines.len(),
         1 + 1 + TOOL_LINE_MAX_ROWS + 1,
@@ -2094,10 +2357,14 @@ fn a_clipped_line_still_leaves_room_for_the_line_after_it() {
     // still shows that the output continues (before, one line ate the whole
     // block). What the ceiling then hides is counted in the hint.
     let out = format!("{}\nbee\nsea", "x".repeat(600));
-    let lines: Vec<String> = tool_lines(&tool("Bash", "cat log", ToolStatus::Ok, &out), 40)
-        .iter()
-        .map(plain)
-        .collect();
+    let lines: Vec<String> = tool_lines(
+        &tool("Bash", "cat log", ToolStatus::Ok, &out),
+        40,
+        &PathDisplay::VERBATIM,
+    )
+    .iter()
+    .map(plain)
+    .collect();
     assert!(
         lines.iter().any(|l| l.contains("bee")),
         "the line after the blob still shows: {lines:?}"
@@ -2118,10 +2385,14 @@ fn a_finished_peek_hint_counts_whole_hidden_lines_in_rows_too() {
     // Past the source-line budget the hint counts the hidden lines' ROWS: two
     // hidden lines, one of which wraps to three rows, reads `+4 lines`.
     let out = format!("a\nb\nc\nd\ne\n{}", "x".repeat(100)); // 100 cols → 3 rows
-    let lines: Vec<String> = tool_lines(&tool("Bash", "cat log", ToolStatus::Ok, &out), 40)
-        .iter()
-        .map(plain)
-        .collect();
+    let lines: Vec<String> = tool_lines(
+        &tool("Bash", "cat log", ToolStatus::Ok, &out),
+        40,
+        &PathDisplay::VERBATIM,
+    )
+    .iter()
+    .map(plain)
+    .collect();
     assert!(
         lines.last().unwrap().contains("+4 lines"),
         "`e` (1 row) + the 3-row line: {lines:?}"
@@ -2135,6 +2406,7 @@ fn everyday_short_output_counts_the_same_as_before() {
     let lines: Vec<String> = tool_lines(
         &tool("Bash", "seq 6", ToolStatus::Ok, "l1\nl2\nl3\nl4\nl5\nl6"),
         80,
+        &PathDisplay::VERBATIM,
     )
     .iter()
     .map(plain)
@@ -2148,7 +2420,10 @@ fn a_shell_cell_clips_a_pathological_line_too() {
     // way (a `! curl` of a JSON API used to paint twelve rows).
     let mut t = tool("curl -s api", "", ToolStatus::Ok, &"x".repeat(600));
     t.shell = true;
-    let lines: Vec<String> = tool_lines(&t, 40).iter().map(plain).collect();
+    let lines: Vec<String> = tool_lines(&t, 40, &PathDisplay::VERBATIM)
+        .iter()
+        .map(plain)
+        .collect();
     assert_eq!(
         lines.len(),
         TOOL_LINE_MAX_ROWS + 1,
@@ -2162,10 +2437,14 @@ fn a_generic_backend_cell_clips_its_single_peeked_line() {
     // A non-command backend tool (an image read's fact line, an error body)
     // peeks ONE source line — bounded by the same per-line budget.
     let long = "x".repeat(600);
-    let lines: Vec<String> = tool_lines(&tool("WebFetch", "https://x", ToolStatus::Ok, &long), 40)
-        .iter()
-        .map(plain)
-        .collect();
+    let lines: Vec<String> = tool_lines(
+        &tool("WebFetch", "https://x", ToolStatus::Ok, &long),
+        40,
+        &PathDisplay::VERBATIM,
+    )
+    .iter()
+    .map(plain)
+    .collect();
     assert_eq!(
         lines.len(),
         1 + TOOL_LINE_MAX_ROWS + 1,
@@ -2181,10 +2460,14 @@ fn a_read_cell_clips_a_very_long_file_line() {
     // dozens of rows inline. It is clipped and marked like any other line —
     // but the hint keeps counting FILE lines, the unit the gutter numbers.
     let body = format!(" 1 {}\n 2 short\n 3 tail", "x".repeat(400));
-    let lines: Vec<String> = tool_lines(&tool("Read", "min.json", ToolStatus::Ok, &body), 80)
-        .iter()
-        .map(plain)
-        .collect();
+    let lines: Vec<String> = tool_lines(
+        &tool("Read", "min.json", ToolStatus::Ok, &body),
+        80,
+        &PathDisplay::VERBATIM,
+    )
+    .iter()
+    .map(plain)
+    .collect();
     assert_eq!(
         lines.len(),
         2 + TOOL_LINE_MAX_ROWS + 2,
@@ -2209,7 +2492,11 @@ fn the_ctrl_o_view_never_clips_a_long_line() {
     // The expansion is where the whole line lives; clipping it would leave
     // the text nowhere.
     let long = "x".repeat(600);
-    let lines = tool_full_lines(&tool("Bash", "cat big", ToolStatus::Ok, &long), 40);
+    let lines = tool_full_lines(
+        &tool("Bash", "cat big", ToolStatus::Ok, &long),
+        40,
+        &PathDisplay::VERBATIM,
+    );
     let joined: String = lines[1..]
         .iter()
         .map(|l| plain(l).chars().skip(5).collect::<String>())
@@ -2228,10 +2515,16 @@ fn the_running_tail_footer_counts_hidden_rows() {
     // above the window is 18 rows, not "1 line".
     let out = format!("{}\nw\nx\ny\nz", "x".repeat(600));
     let t = tool("Bash", "curl -s api", ToolStatus::Running, &out);
-    let lines: Vec<String> = running_command_lines(&t, Duration::from_secs(3), Duration::ZERO, 40)
-        .iter()
-        .map(plain)
-        .collect();
+    let lines: Vec<String> = running_command_lines(
+        &t,
+        Duration::from_secs(3),
+        Duration::ZERO,
+        40,
+        &PathDisplay::VERBATIM,
+    )
+    .iter()
+    .map(plain)
+    .collect();
     let footer = lines.last().unwrap();
     assert!(
         footer.contains("+18 lines (3s)"),
@@ -2244,10 +2537,14 @@ fn a_write_cell_clips_a_very_long_line_under_its_summary() {
     // The `Wrote …` head keeps its row; the pathological content line under it
     // is bounded like any other, and the short line after it still shows.
     let body = format!("Wrote 2 lines to min.js\n 1 {}\n 2 ok", "z".repeat(400));
-    let lines: Vec<String> = tool_lines(&tool("Write", "min.js", ToolStatus::Ok, &body), 80)
-        .iter()
-        .map(plain)
-        .collect();
+    let lines: Vec<String> = tool_lines(
+        &tool("Write", "min.js", ToolStatus::Ok, &body),
+        80,
+        &PathDisplay::VERBATIM,
+    )
+    .iter()
+    .map(plain)
+    .collect();
     assert_eq!(
         lines.len(),
         2 + TOOL_LINE_MAX_ROWS + 1,
@@ -2262,7 +2559,11 @@ fn a_clipped_diff_row_keeps_its_tint_across_the_marker() {
     // An added row's dark-green tint pads the whole row; the `…` that marks
     // the cut sits inside it, so the band doesn't break one column early.
     let body = format!("Updated min.js (+1 -0)\n 1 +{}\n 2  ctx", "z".repeat(400));
-    let lines = tool_lines(&tool("Edit", "min.js", ToolStatus::Ok, &body), 80);
+    let lines = tool_lines(
+        &tool("Edit", "min.js", ToolStatus::Ok, &body),
+        80,
+        &PathDisplay::VERBATIM,
+    );
     let cut_row = &lines[1 + TOOL_LINE_MAX_ROWS];
     assert!(
         plain(cut_row).ends_with(TOOL_LINE_ELLIPSIS),
@@ -2296,10 +2597,14 @@ fn a_finished_peek_never_spends_more_rows_than_the_row_ceiling() {
         "RLSTATE=".to_string() + &"b".repeat(200),
         "<script>".to_string() + &"c".repeat(200),
     );
-    let lines: Vec<String> = tool_lines(&tool("Bash", "curl -s …", ToolStatus::Ok, &out), 60)
-        .iter()
-        .map(plain)
-        .collect();
+    let lines: Vec<String> = tool_lines(
+        &tool("Bash", "curl -s …", ToolStatus::Ok, &out),
+        60,
+        &PathDisplay::VERBATIM,
+    )
+    .iter()
+    .map(plain)
+    .collect();
     assert_eq!(
         lines.len(),
         1 + TOOL_PEEK_ROWS + 1,
@@ -2337,7 +2642,11 @@ fn an_edited_line_lifts_only_the_changed_characters_onto_the_bright_tint() {
     // `Bruce River` is untouched text, and marking it would point at an edit
     // that never happened.
     let output = "Updated hello.txt (+1 -1)\n1 -Bruce Rivera\n1 +Bruce Rivero";
-    let lines = tool_lines(&tool("Edit", "hello.txt", ToolStatus::Ok, output), 80);
+    let lines = tool_lines(
+        &tool("Edit", "hello.txt", ToolStatus::Ok, output),
+        80,
+        &PathDisplay::VERBATIM,
+    );
     let del = diff_row(&lines, "Rivera");
     let add = diff_row(&lines, "Rivero");
 
@@ -2354,7 +2663,11 @@ fn the_changed_run_is_bold_and_the_removed_one_escapes_the_row_dim() {
     // A dimmed highlight would defeat its own purpose: the removed row dims
     // its *unchanged* text (codex's look) and leaves the changed run bright.
     let output = "Updated hello.txt (+1 -1)\n1 -Bruce Rivera\n1 +Bruce Rivero";
-    let lines = tool_lines(&tool("Edit", "hello.txt", ToolStatus::Ok, output), 80);
+    let lines = tool_lines(
+        &tool("Edit", "hello.txt", ToolStatus::Ok, output),
+        80,
+        &PathDisplay::VERBATIM,
+    );
 
     for (needle, mark_bg) in [
         ("Rivera", TOOL_DIFF_DEL_MARK_BG),
@@ -2400,7 +2713,11 @@ fn a_wholly_replaced_line_keeps_the_flat_row_tint() {
     // No refinement when the two lines aren't related — the cell renders
     // exactly as it did before this feature.
     let output = "Updated a.py (+1 -1)\n1 -import os\n1 +def main(argv, env):";
-    let lines = tool_lines(&tool("Edit", "a.py", ToolStatus::Ok, output), 80);
+    let lines = tool_lines(
+        &tool("Edit", "a.py", ToolStatus::Ok, output),
+        80,
+        &PathDisplay::VERBATIM,
+    );
     let del = diff_row(&lines, "import os");
     let add = diff_row(&lines, "def main");
     assert_eq!(on_bg(del, TOOL_DIFF_DEL_MARK_BG), "");
@@ -2423,7 +2740,11 @@ fn a_wholly_replaced_line_keeps_the_flat_row_tint() {
 fn context_and_write_rows_never_carry_a_mark_tint() {
     // A `Wrote …` body is brand-new content: no pairs, nothing to refine.
     let output = "Wrote 2 lines to a.txt\n1 alpha\n2 beta";
-    let lines = tool_lines(&tool("Write", "a.txt", ToolStatus::Ok, output), 80);
+    let lines = tool_lines(
+        &tool("Write", "a.txt", ToolStatus::Ok, output),
+        80,
+        &PathDisplay::VERBATIM,
+    );
     assert!(
         lines
             .iter()
@@ -2445,7 +2766,11 @@ fn the_mark_tint_survives_a_wrap_onto_the_continuation_row() {
     );
     // The Ctrl+O expansion, so the assertion is about the wrap and not about
     // the collapsed cell's per-line row budget (`docs/long-lines.md`).
-    let lines = tool_full_lines(&tool("Edit", "a.txt", ToolStatus::Ok, &output), 40);
+    let lines = tool_full_lines(
+        &tool("Edit", "a.txt", ToolStatus::Ok, &output),
+        40,
+        &PathDisplay::VERBATIM,
+    );
     let rows: Vec<&Line> = lines
         .iter()
         .filter(|l| {
@@ -2469,7 +2794,11 @@ fn the_trailing_pad_keeps_the_row_tint_not_the_mark_tint() {
     // The bright block must end where the changed text ends — otherwise it
     // bleeds to the terminal's right edge and stops meaning "here".
     let output = "Updated hello.txt (+1 -1)\n1 -Bruce Rivera\n1 +Bruce Rivero";
-    let lines = tool_lines(&tool("Edit", "hello.txt", ToolStatus::Ok, output), 80);
+    let lines = tool_lines(
+        &tool("Edit", "hello.txt", ToolStatus::Ok, output),
+        80,
+        &PathDisplay::VERBATIM,
+    );
     let add = diff_row(&lines, "Rivero");
     let last = add.spans.last().unwrap();
     assert!(last.content.ends_with(' '), "the row pads to full width");
@@ -2483,7 +2812,11 @@ fn tool_header_keeps_the_commands_space_runs() {
     // A quoted run of spaces is part of the command: `echo "a    b"` must
     // not read as `echo "a b"` — the permission prompt already shows the
     // command byte-exact, so the cell it becomes has to agree with it.
-    let lines = tool_lines(&tool("Bash", "echo \"a    b\"", ToolStatus::Ok, "out"), 80);
+    let lines = tool_lines(
+        &tool("Bash", "echo \"a    b\"", ToolStatus::Ok, "out"),
+        80,
+        &PathDisplay::VERBATIM,
+    );
     assert_eq!(plain(&lines[0]), "● Bash(echo \"a    b\")");
 }
 
@@ -2494,7 +2827,11 @@ fn tool_header_renders_a_multiline_command_line_by_line() {
     // of the command takes a header row of its own, aligned under the `(`,
     // the closing paren riding the last one (Claude Code's multi-line
     // `Bash(…)` header).
-    let lines = tool_lines(&tool("Bash", "cd foo\nls -la", ToolStatus::Ok, "out"), 80);
+    let lines = tool_lines(
+        &tool("Bash", "cd foo\nls -la", ToolStatus::Ok, "out"),
+        80,
+        &PathDisplay::VERBATIM,
+    );
     assert_eq!(plain(&lines[0]), "● Bash(cd foo");
     assert_eq!(plain(&lines[1]), "      ls -la)");
     assert!(
@@ -2516,7 +2853,7 @@ fn tool_header_spills_a_first_word_that_fits_the_continuation_row_whole() {
         ToolStatus::Failed,
         "err",
     );
-    let lines = tool_lines(&call, 40);
+    let lines = tool_lines(&call, 40, &PathDisplay::VERBATIM);
     assert_eq!(plain(&lines[0]), "● Deepwiki - ask_question (MCP)(");
     assert!(
         plain(&lines[1]).starts_with("  repoName: \"linuztx/flaredantic\","),
@@ -2545,7 +2882,7 @@ fn a_spilled_header_still_shows_a_full_budget_of_argument_rows() {
         ToolStatus::Failed,
         "err",
     );
-    let lines = tool_lines(&call, 40);
+    let lines = tool_lines(&call, 40, &PathDisplay::VERBATIM);
     let header: Vec<String> = lines
         .iter()
         .map(plain)
@@ -2570,7 +2907,11 @@ fn tool_header_truncation_never_leaves_a_space_before_the_ellipsis() {
     // right after a space. The marker attaches to the last kept word.
     let cmd = "word ".repeat(100);
     for width in 20..60u16 {
-        let lines = tool_lines(&tool("Bash", cmd.trim_end(), ToolStatus::Ok, "out"), width);
+        let lines = tool_lines(
+            &tool("Bash", cmd.trim_end(), ToolStatus::Ok, "out"),
+            width,
+            &PathDisplay::VERBATIM,
+        );
         let cut = lines
             .iter()
             .map(plain)
@@ -2589,6 +2930,262 @@ fn tool_header_expands_tabs_in_a_command_for_display() {
     // A tab paints as zero cells (ratatui drops control characters), which
     // would glue `cut` to `-f1` on screen; the header expands it like the
     // code-block and output paths do, byte-exact in the record.
-    let lines = tool_lines(&tool("Bash", "cut\t-f1", ToolStatus::Ok, "out"), 80);
+    let lines = tool_lines(
+        &tool("Bash", "cut\t-f1", ToolStatus::Ok, "out"),
+        80,
+        &PathDisplay::VERBATIM,
+    );
     assert_eq!(plain(&lines[0]), "● Bash(cut    -f1)");
+}
+
+// --- the path a file cell shows (docs/tools.md "Path display") ---
+
+/// The worked example's session: launched in `~/Codes/tests`, home
+/// `/home/linuztx`. The record keeps the model's absolute argument; only the
+/// two surfaces that show it — the header and the corner head — shorten.
+fn session_paths() -> PathDisplay {
+    PathDisplay::new(
+        "/home/linuztx/Codes/tests",
+        Some(std::path::PathBuf::from("/home/linuztx")),
+    )
+}
+
+#[test]
+fn a_file_tool_header_shows_the_path_relative_to_the_cwd() {
+    let paths = session_paths();
+    let output = "Wrote 1 line to /home/linuztx/Codes/tests/hello.py\n1 print(\"Hello, world!\")";
+    let cell = tool(
+        "Write",
+        "/home/linuztx/Codes/tests/hello.py",
+        ToolStatus::Ok,
+        output,
+    );
+    let lines = tool_lines(&cell, 80, &paths);
+    assert_eq!(plain(&lines[0]), "● Write(hello.py)");
+    assert_eq!(plain(&lines[1]), "  ⎿  Wrote 1 line to hello.py");
+    assert_eq!(plain(&lines[2]), "      1 print(\"Hello, world!\")");
+    let output = "Wrote 1 line to /home/linuztx/Codes/tests/hello/hello.py\n1 print()";
+    let nested = tool(
+        "Write",
+        "/home/linuztx/Codes/tests/hello/hello.py",
+        ToolStatus::Ok,
+        output,
+    );
+    let lines = tool_lines(&nested, 80, &paths);
+    assert_eq!(plain(&lines[0]), "● Write(hello/hello.py)");
+    assert_eq!(plain(&lines[1]), "  ⎿  Wrote 1 line to hello/hello.py");
+}
+
+#[test]
+fn a_file_under_home_but_outside_the_cwd_shows_tilde_relative() {
+    let paths = session_paths();
+    let output = "Wrote 1 line to /home/linuztx/hello.py\n1 print()";
+    let cell = tool("Write", "/home/linuztx/hello.py", ToolStatus::Ok, output);
+    let lines = tool_lines(&cell, 80, &paths);
+    assert_eq!(plain(&lines[0]), "● Write(~/hello.py)");
+    assert_eq!(plain(&lines[1]), "  ⎿  Wrote 1 line to ~/hello.py");
+}
+
+#[test]
+fn a_file_outside_home_keeps_its_absolute_path() {
+    let paths = session_paths();
+    let output = "Updated /tmp/notes.txt (+1 -1)\n1 -a\n1 +b";
+    let cell = tool("Edit", "/tmp/notes.txt", ToolStatus::Ok, output);
+    let lines = tool_lines(&cell, 80, &paths);
+    assert_eq!(plain(&lines[0]), "● Edit(/tmp/notes.txt)");
+    assert_eq!(plain(&lines[1]), "  ⎿  Updated /tmp/notes.txt (+1 -1)");
+}
+
+#[test]
+fn the_read_header_shortens_and_its_synthesized_head_is_unchanged() {
+    let paths = session_paths();
+    let cell = tool(
+        "Read",
+        "/home/linuztx/Codes/tests/src/app.rs",
+        ToolStatus::Ok,
+        "1 fn main() {}\n2 // end",
+    );
+    let lines = tool_lines(&cell, 80, &paths);
+    assert_eq!(plain(&lines[0]), "● Read(src/app.rs)");
+    assert_eq!(plain(&lines[1]), "  ⎿  Read 2 lines");
+}
+
+#[test]
+fn the_edit_head_keeps_its_counts_coloured_after_the_path_is_shortened() {
+    let paths = session_paths();
+    let output = "Updated /home/linuztx/Codes/tests/a.rs (+1 -1)\n1 -old\n1 +new";
+    let cell = tool(
+        "Edit",
+        "/home/linuztx/Codes/tests/a.rs",
+        ToolStatus::Ok,
+        output,
+    );
+    let lines = tool_lines(&cell, 80, &paths);
+    assert_eq!(plain(&lines[0]), "● Edit(a.rs)");
+    assert_eq!(plain(&lines[1]), "  ⎿  Updated a.rs (+1 -1)");
+    let head = &lines[1];
+    assert!(
+        head.spans
+            .iter()
+            .any(|s| s.content.as_ref() == "+1" && s.style.fg == Some(TOOL_DIFF_ADD_COLOR)),
+        "the added count stays green: {:?}",
+        head.spans
+    );
+    assert!(
+        head.spans
+            .iter()
+            .any(|s| s.content.as_ref() == "-1" && s.style.fg == Some(TOOL_DIFF_DEL_COLOR)),
+        "the removed count stays red: {:?}",
+        head.spans
+    );
+}
+
+#[test]
+fn the_legacy_created_head_shortens_its_path_too() {
+    let paths = session_paths();
+    let output = "Created /home/linuztx/Codes/tests/hello.py (1 lines)\n1 print()";
+    let cell = tool(
+        "Write",
+        "/home/linuztx/Codes/tests/hello.py",
+        ToolStatus::Ok,
+        output,
+    );
+    let lines = tool_lines(&cell, 80, &paths);
+    assert_eq!(plain(&lines[1]), "  ⎿  Created hello.py (1 lines)");
+}
+
+#[test]
+fn an_old_rollouts_climbing_head_reads_by_the_same_rule() {
+    // A rollout recorded before the rule carries the executor's old `../`
+    // climb in its head. It resolves against the cwd and reads where the
+    // file actually is — so the header (the verbatim argument) and the head
+    // agree instead of naming the same file two ways.
+    let paths = session_paths();
+    let output = "Wrote 2 lines to ../../hello.py\n1 a\n2 b";
+    let cell = tool("Write", "/home/linuztx/hello.py", ToolStatus::Ok, output);
+    let lines = tool_lines(&cell, 80, &paths);
+    assert_eq!(plain(&lines[0]), "● Write(~/hello.py)");
+    assert_eq!(plain(&lines[1]), "  ⎿  Wrote 2 lines to ~/hello.py");
+}
+
+#[test]
+fn a_head_that_is_not_in_the_format_passes_through_untouched() {
+    // A failure body, a `(file is empty)` placeholder: no path to find, and
+    // nothing rewritten — the legacy rendering keeps every byte.
+    let paths = session_paths();
+    let output = "could not write /home/linuztx/x.py: permission denied";
+    let cell = tool("Write", "/home/linuztx/x.py", ToolStatus::Failed, output);
+    let lines = tool_lines(&cell, 80, &paths);
+    assert_eq!(
+        plain(&lines[0]),
+        "● Write(~/x.py)",
+        "the header still shortens"
+    );
+    assert!(
+        plain(&lines[1]).contains("could not write /home/linuztx/x.py"),
+        "the body is the record: {:?}",
+        plain(&lines[1])
+    );
+}
+
+#[test]
+fn the_transcript_expansion_shortens_the_header_and_head_alike() {
+    let paths = session_paths();
+    let output = "Wrote 1 line to /home/linuztx/hello.py\n1 print()";
+    let cell = tool("Write", "/home/linuztx/hello.py", ToolStatus::Ok, output);
+    let lines = tool_full_lines(&cell, 80, &paths);
+    assert_eq!(plain(&lines[0]), "● Write(~/hello.py)");
+    assert_eq!(plain(&lines[1]), "  ⎿  Wrote 1 line to ~/hello.py");
+}
+
+#[test]
+fn only_a_file_tools_arguments_are_shortened() {
+    // A `bash` command is not a path, however many it embeds; an agent's
+    // description is prose. Only `Read`/`Write`/`Edit` name a file.
+    let paths = session_paths();
+    let cmd = "python3 /home/linuztx/Codes/tests/hello.py";
+    let cell = tool("Bash", cmd, ToolStatus::Ok, "Exit code: 0\nhi");
+    assert_eq!(
+        plain(&tool_lines(&cell, 80, &paths)[0]),
+        format!("● Bash({cmd})")
+    );
+    let cell = tool(
+        "Agent",
+        "/home/linuztx/Codes/tests/x",
+        ToolStatus::Ok,
+        "done",
+    );
+    assert_eq!(
+        plain(&tool_lines(&cell, 80, &paths)[0]),
+        "● Agent(/home/linuztx/Codes/tests/x)"
+    );
+}
+
+#[test]
+fn the_verbatim_policy_renders_the_recorded_path_exactly() {
+    // The unit-test default (and a session whose cwd is unreadable): nothing
+    // shortens, so every other test in this file describes the rows it
+    // always did.
+    let output = "Wrote 1 line to /home/linuztx/hello.py\n1 print()";
+    let cell = tool("Write", "/home/linuztx/hello.py", ToolStatus::Ok, output);
+    let lines = tool_lines(&cell, 80, &PathDisplay::VERBATIM);
+    assert_eq!(plain(&lines[0]), "● Write(/home/linuztx/hello.py)");
+    assert_eq!(
+        plain(&lines[1]),
+        "  ⎿  Wrote 1 line to /home/linuztx/hello.py"
+    );
+}
+
+#[test]
+fn the_live_cell_shortens_the_header_too() {
+    // The strip's live cell — a `Write` waiting on the permission gate wears
+    // the header it will commit with (`docs/permissions.md`).
+    let paths = session_paths();
+    let cell = tool("Write", "/home/linuztx/hello.py", ToolStatus::Running, "");
+    let lines = live_tool_lines(&cell, 80, Duration::ZERO, &paths);
+    assert_eq!(plain(&lines[0]), "● Write(~/hello.py)");
+}
+
+#[test]
+fn the_commit_and_the_rebuild_shorten_alike() {
+    // The scrollback commit and a resize's rebuild come from the same
+    // history through the same policy, so the two can never disagree.
+    let paths = session_paths();
+    let output = "Wrote 1 line to /home/linuztx/hello.py\n1 print()";
+    let history = vec![HistoryItem::Tool(tool(
+        "Write",
+        "/home/linuztx/hello.py",
+        ToolStatus::Ok,
+        output,
+    ))];
+    let committed =
+        tool_commit_lines(&history, &VecDeque::new(), 80, &paths).expect("a resolved cell commits");
+    assert_eq!(plain(&committed[0]), "● Write(~/hello.py)");
+    assert_eq!(plain(&committed[1]), "  ⎿  Wrote 1 line to ~/hello.py");
+    let rebuilt = conversation_lines(&history, 80, &paths);
+    assert_eq!(plain(&rebuilt[0]), "● Write(~/hello.py)");
+    assert_eq!(plain(&rebuilt[1]), "  ⎿  Wrote 1 line to ~/hello.py");
+}
+
+#[test]
+fn the_transcript_reads_the_apps_policy() {
+    // The Ctrl+O transcript renders through `App`, whose policy the boundary
+    // injects once at startup (`App::set_path_display`).
+    let mut app = App::new();
+    app.set_path_display(session_paths());
+    app.history.push(HistoryItem::Tool(tool(
+        "Read",
+        "/home/linuztx/hello.py",
+        ToolStatus::Ok,
+        "1 x",
+    )));
+    let lines: Vec<String> = transcript_lines(&app, 80).iter().map(plain).collect();
+    assert!(
+        lines.iter().any(|l| l == "● Read(~/hello.py)"),
+        "the transcript shortens the header: {lines:?}"
+    );
+    assert!(
+        !lines.iter().any(|l| l.contains("/home/linuztx")),
+        "…and shows the absolute path nowhere: {lines:?}"
+    );
 }

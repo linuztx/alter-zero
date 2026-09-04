@@ -64,7 +64,11 @@ fn transcript_build(app: &App, width: u16) -> (Vec<Line<'static>>, Option<Range<
 /// The second value is `Some(message-row count)` for a **user** message — the
 /// span the Esc-Esc backtrack preview reverses (its timestamp line below stays
 /// normal; see `docs/backtrack.md`) — `None` for everything else.
-fn transcript_item_lines(item: &HistoryItem, width: u16) -> (Vec<Line<'static>>, Option<usize>) {
+fn transcript_item_lines(
+    item: &HistoryItem,
+    width: u16,
+    paths: &PathDisplay,
+) -> (Vec<Line<'static>>, Option<usize>) {
     let mut lines = Vec::new();
     let mut user_rows = None;
     match item {
@@ -78,11 +82,11 @@ fn transcript_item_lines(item: &HistoryItem, width: u16) -> (Vec<Line<'static>>,
                 lines.extend(user_stamp_lines(&m.timestamp, width));
             }
         }
-        HistoryItem::Tool(t) => lines.extend(tool_full_lines(t, width)),
+        HistoryItem::Tool(t) => lines.extend(tool_full_lines(t, width, paths)),
         // A task call is invisible inline but the transcript is the full
         // record: expand it as an ordinary tool cell —
         // `● TaskCreate(subject)` over its `⎿` result (docs/task-tools.md).
-        HistoryItem::TaskCall(t) => lines.extend(tool_full_lines(&t.as_tool_call(), width)),
+        HistoryItem::TaskCall(t) => lines.extend(tool_full_lines(&t.as_tool_call(), width, paths)),
         HistoryItem::Summary(s) => lines.extend(summary_lines(s, width)),
         HistoryItem::Background(n) => lines.extend(background_notice_lines(n, width)),
         // The transcript expands the group into one `● Agent({description})`
@@ -125,7 +129,7 @@ pub fn agent_transcript_lines(app: &App, width: u16) -> Option<Vec<Line<'static>
     lines.push(Line::default());
     let chrome_rows = lines.len();
     for item in &run.history {
-        let (rows, _) = transcript_item_lines(item, width);
+        let (rows, _) = transcript_item_lines(item, width, app.path_display());
         lines.extend(rows);
     }
     if let Some(text) = run.streaming.as_deref().filter(|text| !text.is_empty()) {
@@ -140,7 +144,7 @@ pub fn agent_transcript_lines(app: &App, width: u16) -> Option<Vec<Line<'static>
         lines.push(Line::default());
     }
     for tool in &run.tool_queue {
-        lines.extend(tool_full_lines(tool, width));
+        lines.extend(tool_full_lines(tool, width, app.path_display()));
         lines.push(Line::default());
     }
     // …and what the user typed into this agent while it works — the messages
@@ -394,7 +398,7 @@ impl TranscriptCache {
         // Append the not-yet-rendered items (all of them after a reset). The
         // generation guarantees the cached prefix is a prefix of `history`.
         for item in app.history.get(self.items.len()..).unwrap_or(&[]) {
-            let (rows, user_rows) = transcript_item_lines(item, width);
+            let (rows, user_rows) = transcript_item_lines(item, width, app.path_display());
             self.items.push(RenderedItem {
                 rows: rows.len(),
                 user_rows,
@@ -478,7 +482,8 @@ impl TranscriptCache {
             }
         }
         for tool in app.tool_queue() {
-            self.lines.extend(tool_full_lines(tool, width));
+            self.lines
+                .extend(tool_full_lines(tool, width, app.path_display()));
             self.lines.push(Line::default());
         }
         if !app.queued.is_empty() || !app.steered.is_empty() {

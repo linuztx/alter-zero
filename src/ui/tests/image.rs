@@ -197,7 +197,7 @@ fn a_pasted_attachment_draws_under_its_own_bubble() {
 fn the_conversation_puts_the_picture_between_the_cell_and_the_spacer() {
     let _guard = drawing(120);
     let history = vec![image_read("/tmp/cat.png", (700, 689))];
-    let lines = conversation_lines(&history, 100);
+    let lines = conversation_lines(&history, 100, &PathDisplay::VERBATIM);
     let marks: Vec<usize> = lines
         .iter()
         .enumerate()

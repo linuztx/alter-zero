@@ -466,6 +466,7 @@ impl Session<'_> {
             &mut self.render,
             screen.width,
             RESIZE_REFLOW_MAX_ROWS,
+            self.app.path_display(),
         );
         // Re-emit the header banner atop the rebuilt tail — it lives outside
         // `history` and would otherwise be lost (docs/header.md).
@@ -528,7 +529,7 @@ impl Session<'_> {
         // (`docs/agent-view-streaming.md`).
         let preview = self.stream_preview_lines();
         let height = self.live_region_height();
-        let mut tail = ui::conversation_lines(&history, screen.width);
+        let mut tail = ui::conversation_lines(&history, screen.width, self.app.path_display());
         if let Some(text) = &streaming {
             tail.extend(self.agent_render.committed_rows(text, screen.width));
         }

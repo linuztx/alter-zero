@@ -552,6 +552,14 @@ pub(super) const FILE_PEEK_LINES: usize = 10;
 /// A `!` shell command is never one (its output is command output).
 pub(super) const DIFF_TOOL_NAMES: [&str; 2] = ["Edit", "Write"];
 
+/// The model tools whose one-line `args` summary **is a file path**
+/// (`Read`/`Write`/`Edit`): their `● name(args)` header shows it through the
+/// session's [`PathDisplay`](crate::app::PathDisplay) rule — relative under
+/// the cwd, `~`-relative under home, absolute elsewhere (`docs/tools.md`
+/// *Path display*). `Bash`'s summary is a command and every other tool's is
+/// prose or JSON, so those echo the record verbatim.
+pub(super) const FILE_TOOL_NAMES: [&str; 3] = ["Read", "Write", "Edit"];
+
 /// The model tools whose output is **command output** — a shell run, streamed
 /// and framed with an `Exit code: N` line. They render like the `!` shell cell
 /// (a multi-line `⎿` peek, the frame stripped for display) and **tail** their
