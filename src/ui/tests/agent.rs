@@ -1,7 +1,7 @@
 //! Subagent rendering (`docs/agent-tool.md`).
 
 use super::*;
-use crate::ui::agent::agent_group_full_lines;
+use crate::ui::agent::{AgentCellView, agent_cell_lines, agent_group_full_lines};
 use crate::ui::live::preview_lines;
 use crate::ui::theme::{
     TOOL_DIM_COLOR, TOOL_FAIL_COLOR, TOOL_OK_COLOR, TOOL_OUTPUT_COLOR, TOOL_PULSE_BRIGHT,
@@ -309,7 +309,7 @@ fn agent_cell_lines_expand_prompt_response_and_done() {
         agents: vec![agent_entry("a1", "Fetch Warsaw", AgentStatus::Done)],
         timestamp: String::new(),
     };
-    let texts: Vec<String> = agent_group_full_lines(&group, 100)
+    let texts: Vec<String> = agent_group_full_lines(&group, 100, &PathDisplay::VERBATIM)
         .iter()
         .map(plain)
         .collect();
@@ -328,7 +328,7 @@ fn agent_cell_lines_expand_prompt_response_and_done() {
     // An interrupted agent ends with the bare Interrupted footer instead.
     let mut stopped = group;
     stopped.agents[0].status = AgentStatus::Interrupted;
-    let texts: Vec<String> = agent_group_full_lines(&stopped, 100)
+    let texts: Vec<String> = agent_group_full_lines(&stopped, 100, &PathDisplay::VERBATIM)
         .iter()
         .map(plain)
         .collect();
@@ -914,4 +914,148 @@ fn the_composer_label_keeps_a_short_description_whole_and_gives_up_on_a_narrow_r
     // what needs the room, so there is nothing to spend it on when nothing is
     // cut (width 8 → a one-column budget).
     assert_eq!(agent_view_rule_label("x", 8).as_deref(), Some(" x "));
+}
+
+// ===== The file tools' path display on the agent surfaces (docs/tools.md) =====
+
+/// The worked example's session policy: launched in `~/Codes/tests`.
+fn session_paths() -> PathDisplay {
+    PathDisplay::new(
+        "/home/linuztx/Codes/tests",
+        Some(std::path::PathBuf::from("/home/linuztx")),
+    )
+}
+
+#[test]
+fn a_live_agents_file_activity_row_shortens_its_path() {
+    // The sticky `Write: {path}` row reads by the same rule the cell's
+    // header does — `~/hello.py`, never the record's `/home/linuztx/…` — on
+    // the lone cell and on every tree row alike. The run's own
+    // `last_activity` keeps the verbatim path.
+    let mut app = App::new();
+    app.set_path_display(session_paths());
+    app.begin_stream();
+    app.start_agent_group(false, &[spec("a1", "Write the notes", false)]);
+    app.apply_agent_event(
+        "a1",
+        &crate::stream::StreamEvent::ToolStart {
+            name: "Write".into(),
+            args: "/home/linuztx/hello.py".into(),
+            detail: None,
+            arguments: None,
+        },
+    );
+    let texts: Vec<String> = live_agent_group_lines(&app, 80).iter().map(plain).collect();
+    assert_eq!(texts[1], "  ⎿  Write: ~/hello.py", "{texts:?}");
+    assert_eq!(
+        app.agent("a1").unwrap().activity(),
+        "Write: /home/linuztx/hello.py",
+        "the record keeps the absolute path"
+    );
+
+    let mut app = App::new();
+    app.set_path_display(session_paths());
+    app.begin_stream();
+    app.start_agent_group(
+        false,
+        &[
+            spec("a1", "Write the notes", false),
+            spec("a2", "Check the tests", false),
+        ],
+    );
+    app.apply_agent_event(
+        "a1",
+        &crate::stream::StreamEvent::ToolStart {
+            name: "Read".into(),
+            args: "/home/linuztx/Codes/tests/src/app.rs".into(),
+            detail: None,
+            arguments: None,
+        },
+    );
+    // A bash description is prose, not a path — untouched even when it
+    // names one.
+    app.apply_agent_event(
+        "a2",
+        &crate::stream::StreamEvent::ToolStart {
+            name: "Bash".into(),
+            args: "cat /home/linuztx/Codes/tests/x".into(),
+            detail: Some("Reading /home/linuztx/Codes/tests/x".into()),
+            arguments: None,
+        },
+    );
+    let texts: Vec<String> = live_agent_group_lines(&app, 100)
+        .iter()
+        .map(plain)
+        .collect();
+    assert!(
+        texts.iter().any(|t| t.contains("Read: src/app.rs")),
+        "the tree row shortens the read's path: {texts:?}"
+    );
+    assert!(
+        texts
+            .iter()
+            .any(|t| t.contains("Bash: Reading /home/linuztx/Codes/tests/x")),
+        "a description passes through: {texts:?}"
+    );
+}
+
+#[test]
+fn the_transcripts_nested_agent_headers_shorten_their_paths() {
+    // The Ctrl+O expansion lists the nested calls an agent ran as
+    // `Name(args)` headers: a file tool's shortens like the main
+    // transcript's cell header, every other tool's stays as recorded.
+    let entry = crate::app::AgentGroupEntry {
+        id: "a1".to_string(),
+        description: "Write the notes".to_string(),
+        agent_type: "general-purpose".to_string(),
+        prompt: "Write the notes".to_string(),
+        status: crate::agents::AgentStatus::Done,
+        tool_uses: 3,
+        tokens: 1_000,
+        secs: 9,
+        result: "Done.".to_string(),
+        tool_headers: vec![
+            "Write(/home/linuztx/Codes/tests/notes.md)".to_string(),
+            "Edit(/home/linuztx/notes.md)".to_string(),
+            "Bash(cat /home/linuztx/Codes/tests/notes.md)".to_string(),
+        ],
+        output: "Done.".to_string(),
+    };
+    let texts: Vec<String> = agent_cell_lines(
+        &AgentCellView::of_entry(&entry, false),
+        80,
+        &session_paths(),
+    )
+    .iter()
+    .map(plain)
+    .collect();
+    assert!(
+        texts.iter().any(|t| t.trim() == "Write(notes.md)"),
+        "{texts:?}"
+    );
+    assert!(
+        texts.iter().any(|t| t.trim() == "Edit(~/notes.md)"),
+        "{texts:?}"
+    );
+    assert!(
+        texts
+            .iter()
+            .any(|t| t.trim() == "Bash(cat /home/linuztx/Codes/tests/notes.md)"),
+        "{texts:?}"
+    );
+    // The verbatim policy renders the record exactly.
+    let texts: Vec<String> = agent_cell_lines(
+        &AgentCellView::of_entry(&entry, false),
+        80,
+        &PathDisplay::VERBATIM,
+    )
+    .iter()
+    .map(plain)
+    .collect();
+    assert!(
+        texts
+            .iter()
+            .any(|t| t.trim() == "Write(/home/linuztx/Codes/tests/notes.md)"),
+        "{texts:?}"
+    );
 }

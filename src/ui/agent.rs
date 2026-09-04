@@ -104,6 +104,42 @@ fn agent_status_color(status: crate::agents::AgentStatus) -> Color {
 /// One agent's two tree rows: the connector + description + dim counters,
 /// then the rail + `⎿  {status}`. Rows truncate at the width (Claude Code's
 /// truncate-end), so the tree never wraps.
+/// A sticky `{Name}: {args}` activity row with a file tool's path shown by
+/// the session's [`PathDisplay`] rule — `Write: ~/x.py` where the run's
+/// record says `Write: /home/u/x.py` (`docs/tools.md` *Path display*). Only
+/// the three file tools' rows carry a path (`FILE_TOOL_NAMES`; a `bash`
+/// call's row is its description or command, an MCP call's `Server: tool`,
+/// a settled agent's a label), so every other row passes through untouched.
+/// `AgentRun::last_activity` keeps the verbatim path: this is the render
+/// seam, like the cell header's.
+fn display_activity(activity: &str, paths: &PathDisplay) -> String {
+    for name in FILE_TOOL_NAMES {
+        if let Some(path) = activity
+            .strip_prefix(name)
+            .and_then(|rest| rest.strip_prefix(": "))
+        {
+            return format!("{name}: {}", paths.display(path));
+        }
+    }
+    activity.to_string()
+}
+
+/// A nested `Name(args)` header of the Ctrl+O agent expansion with a file
+/// tool's path shown by the same rule — `Write(notes.md)` for the recorded
+/// `Write(/home/u/repo/notes.md)` — every other tool's header as recorded.
+fn display_nested_header(header: &str, paths: &PathDisplay) -> String {
+    for name in FILE_TOOL_NAMES {
+        if let Some(args) = header
+            .strip_prefix(name)
+            .and_then(|rest| rest.strip_prefix('('))
+            .and_then(|rest| rest.strip_suffix(')'))
+        {
+            return format!("{name}({})", paths.display(args));
+        }
+    }
+    header.to_string()
+}
+
 fn agent_tree_rows(
     is_last: bool,
     description: &str,
@@ -216,7 +252,7 @@ fn single_live_agent_lines(
     )];
     lines.push(agent_activity_row(
         TOOL_RESULT_PREFIX,
-        &run.activity(),
+        &display_activity(&run.activity(), app.path_display()),
         agent_status_color(run.status),
         width,
     ));
@@ -347,7 +383,7 @@ pub fn live_agent_group_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     )];
     let count = runs.len();
     for (i, run) in runs.iter().enumerate() {
-        let activity = run.activity();
+        let activity = display_activity(&run.activity(), app.path_display());
         lines.extend(agent_tree_rows(
             i + 1 == count,
             &run.description,
@@ -416,7 +452,7 @@ pub(super) struct AgentCellView {
 }
 
 impl AgentCellView {
-    fn of_entry(entry: &crate::app::AgentGroupEntry, background: bool) -> Self {
+    pub(super) fn of_entry(entry: &crate::app::AgentGroupEntry, background: bool) -> Self {
         Self {
             description: entry.description.clone(),
             status: entry.status,
@@ -477,7 +513,11 @@ impl AgentCellView {
 /// headers it ran, the `⎿ Response:` block once a final response exists, and
 /// the `⎿ Done ({n} tool uses · {tokens} tokens · {s}s)` /
 /// `⎿ Interrupted` / `⎿ Failed` footer. See `docs/agent-tool.md`.
-pub(super) fn agent_cell_lines(cell: &AgentCellView, width: u16) -> Vec<Line<'static>> {
+pub(super) fn agent_cell_lines(
+    cell: &AgentCellView,
+    width: u16,
+    paths: &PathDisplay,
+) -> Vec<Line<'static>> {
     let bullet_color = match cell.status {
         crate::agents::AgentStatus::Done => TOOL_OK_COLOR,
         crate::agents::AgentStatus::Failed | crate::agents::AgentStatus::Interrupted => {
@@ -526,7 +566,10 @@ pub(super) fn agent_cell_lines(cell: &AgentCellView, width: u16) -> Vec<Line<'st
             .saturating_sub(cols(AGENT_NESTED_INDENT) as u16)
             .max(1);
         for header in &cell.tool_headers {
-            for (i, row) in wrap_text(header, nested_width).into_iter().enumerate() {
+            // A file tool's path reads by the session's rule here too
+            // (`docs/tools.md` *Path display*); the entry keeps the record.
+            let header = display_nested_header(header, paths);
+            for (i, row) in wrap_text(&header, nested_width).into_iter().enumerate() {
                 let indent = if i == 0 {
                     AGENT_NESTED_INDENT.to_string()
                 } else {
@@ -585,6 +628,7 @@ pub(super) fn agent_cell_lines(cell: &AgentCellView, width: u16) -> Vec<Line<'st
 pub(super) fn agent_group_full_lines(
     group: &crate::app::AgentGroup,
     width: u16,
+    paths: &PathDisplay,
 ) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     for (i, entry) in group.agents.iter().enumerate() {
@@ -594,6 +638,7 @@ pub(super) fn agent_group_full_lines(
         lines.extend(agent_cell_lines(
             &AgentCellView::of_entry(entry, group.background),
             width,
+            paths,
         ));
     }
     lines

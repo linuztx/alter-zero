@@ -275,8 +275,12 @@ zero new plumbing. The TUI cell is a new `HistoryItem::AgentNotice` —
   `{Name}: {detail}` — **one grammar for every call** (`agents::activity_line`):
   a `bash` call's model-supplied `description`
   (`Bash: Fetching current weather…`), else the call's args summary
-  (`Write: game.py`, `Read: /home/…` — never the cell header's
-  `Write({args})`, whose parens read as clutter on a dim clipped one-liner),
+  (`Write: game.py`, `Read: ~/notes/today.md` — a file tool's path shown
+  by the same relative / `~`-relative / absolute rule as its cell header
+  (`ui::agent::display_activity`, `docs/tools.md` *Path display*), the
+  run's `last_activity` keeping the absolute argument; never the cell
+  header's `Write({args})`, whose parens read as clutter on a dim clipped
+  one-liner),
   and an MCP call as the **capitalized server over the tool**
   (`Deepwiki: ask_question` — the full `deepwiki - ask_question (MCP)`
   display name is a mouthful for this row); a call with nothing to say
@@ -322,7 +326,10 @@ zero new plumbing. The TUI cell is a new `HistoryItem::AgentNotice` —
   transcript.
 - **Ctrl+O**: each `AgentGroup` entry expands as its own cell —
   `● Agent({description})` / `⎿ Prompt:` (indented block) / the nested tool
-  headers the agent ran (`Bash(curl …)`) / `⎿ Response:` (the final text) /
+  headers the agent ran (`Bash(curl …)`, a file tool's path shown by the
+  cells' relative / `~`-relative / absolute rule — `Write(notes.md)` for the
+  recorded `Write(/home/u/repo/notes.md)`, `ui::agent::display_nested_header`,
+  `docs/tools.md` *Path display*) / `⎿ Response:` (the final text) /
   `⎿ Done ({n} tool uses · {tokens} tokens · {elapsed})` or `⎿ Interrupted`. The
   **live tail** walks `App::agent_group` + the roster the same way (activity
   `Running…`), and the `TranscriptSig` fingerprints the roster generation so

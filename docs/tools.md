@@ -609,8 +609,11 @@ launched in `~/Codes/tests`):
   action log and the permission rules all keep the absolute path — a model
   reading its own history back sees exactly what it sent — while the inline
   cell, the live strip's running cell, the Ctrl+O transcript, a subagent
-  session view and the permission prompt's target row (`docs/permissions.md`)
-  all show the short form. Because the rule is derived from the record, a
+  session view, the permission prompt's target row (`docs/permissions.md`),
+  the live agent tree's `Write: {path}` activity row and the Ctrl+O agent
+  expansion's nested `Write({path})` headers (`ui::agent`'s
+  `display_activity` / `display_nested_header`, `docs/agent-tool.md`) all
+  show the short form. Because the rule is derived from the record, a
   session **resumed from another directory** reads its paths relative to
   where it is *now*, and a rollout recorded before the rule (its heads
   carrying the executor's old `../` climb) reads by it too: the climb

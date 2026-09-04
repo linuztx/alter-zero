@@ -93,7 +93,7 @@ fn transcript_item_lines(
         // cell per subagent — prompt, nested tool headers, response, and the
         // Done/Interrupted footer (docs/agent-tool.md); the inline view shows
         // the collapsed tree cell.
-        HistoryItem::AgentGroup(g) => lines.extend(agent_group_full_lines(g, width)),
+        HistoryItem::AgentGroup(g) => lines.extend(agent_group_full_lines(g, width, paths)),
         HistoryItem::AgentNotice(n) => lines.extend(agent_notice_lines(n, width)),
         // The transcript expands the marker with its summary body — the
         // inline view keeps it collapsed (docs/compact.md).
@@ -475,8 +475,11 @@ impl TranscriptCache {
         if let Some(live) = app.agent_group() {
             for id in &live.ids {
                 if let Some(run) = app.agent(id) {
-                    self.lines
-                        .extend(agent_cell_lines(&AgentCellView::of_run(run), width));
+                    self.lines.extend(agent_cell_lines(
+                        &AgentCellView::of_run(run),
+                        width,
+                        app.path_display(),
+                    ));
                     self.lines.push(Line::default());
                 }
             }
