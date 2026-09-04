@@ -2418,6 +2418,38 @@ fn tool_header_spills_a_first_word_that_fits_the_continuation_row_whole() {
 }
 
 #[test]
+fn a_spilled_header_still_shows_a_full_budget_of_argument_rows() {
+    // The cap counts the rows the **arguments** take: when they spill (nothing
+    // fits beside a long name), row 0 carries none, so the budget applies to
+    // the rows below it. Otherwise a spilled header would show one row less of
+    // the call than an ordinary one — paying for the readable spill with the
+    // content it was meant to make readable.
+    let call = tool(
+        "deepwiki - ask_question (MCP)",
+        r#"{"repoName":"linuztx/flaredantic","question":"How does the tunnel client work?"}"#,
+        ToolStatus::Failed,
+        "err",
+    );
+    let lines = tool_lines(&call, 40);
+    let header: Vec<String> = lines
+        .iter()
+        .map(plain)
+        .take_while(|row| !row.contains('⎿'))
+        .collect();
+    assert_eq!(header[0], "● Deepwiki - ask_question (MCP)(");
+    assert_eq!(
+        header.len(),
+        TOOL_HEADER_MAX_ROWS + 1,
+        "the name's own row is not one of the argument rows: {header:?}"
+    );
+    let joined = header.join("");
+    assert!(
+        joined.ends_with("work?\")") && !joined.contains(TOOL_HEADER_ELLIPSIS),
+        "the whole call fits its budget now: {joined:?}"
+    );
+}
+
+#[test]
 fn tool_header_truncation_never_leaves_a_space_before_the_ellipsis() {
     // The `…)` cut lands wherever the row budget runs out — which can be
     // right after a space. The marker attaches to the last kept word.

@@ -452,7 +452,10 @@ a forty-column terminal used to show; `docs/mcp.md`).
 rows, the remainder replaced by `…)` (`TOOL_HEADER_ELLIPSIS`, fitted within the
 width) so a huge command can't flood the cell; the marker attaches to the
 last kept word — a kept row can end in the space its wrap broke at, and
-`word …)` would read as a cut after a *missing* word:
+`word …)` would read as a cut after a *missing* word. The budget counts the
+rows the **arguments** take, so a spilled header's name-and-`(` row does not
+spend one of them — otherwise the spill would cost the cell the content it
+was made to keep readable:
 
 ```
 ● Bash(for i in {1..5}; do echo "=== Iteration $i ===" && echo "Current

@@ -150,6 +150,15 @@ pub(super) fn tool_header_lines(
     // command is still in Ctrl+O. The marker attaches to the last kept word: a
     // kept row can end in the space its wrap broke at, and `word …)` would read
     // as a cut after a missing word rather than mid-command.
+    //
+    // The budget counts the rows the **arguments** take. A spilled header's
+    // first row carries none — it is the name and its `(` — so it does not
+    // spend one, or the spill would cost the cell the very content it was
+    // made to keep readable.
+    let max_rows = match (max_rows, rows.first()) {
+        (Some(max), Some(first)) if first.is_empty() => Some(max.saturating_add(1)),
+        (max, _) => max,
+    };
     if let Some(max) = max_rows
         && rows.len() > max.max(1)
     {
