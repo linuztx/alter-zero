@@ -629,7 +629,7 @@ when they happened to be short. The **block** is budgeted in display rows now
 — `TOOL_PEEK_ROWS` (4) of them, beside the `TOOL_PEEK_LINES` (4) source-line
 budget, whichever runs out first — so a `bash` cell is four rows whatever
 shape its output has, and it is the same window the running tail already
-showed, so the cell doesn't resize when it settles. Inside it a source line
+showed, so the cell never *grows* when it settles. Inside it a source line
 spends at most `TOOL_LINE_MAX_ROWS` rows of a **collapsed** cell — the peek,
 the shell cell, the generic one-line peek and the numbered file cell alike,
 never Ctrl+O and never the permission preview, where the whole line is the
@@ -643,7 +643,22 @@ shows", and their gutter numbers them). The counting is exact and
 allocation-free — `ui::wrap`'s `WrapMode` pairs each wrapper with its own row
 counter and clip over one range-emitting scan, so a hint can never count rows
 a different wrapper would have produced and the running tail's footer can
-measure the whole retained buffer every animation frame); and the **session scratchpad** (Claude-Code's
+measure the whole retained buffer every animation frame. And what the block is
+a peek *of* is the output's **first block**, not its first four lines
+(`BlankPolicy::FirstBlock`): a blank line costs a full row of a four-row cell
+and says nothing, so leading blanks are skipped and the first blank after them
+closes the peek — a `\n`-led output stops spending a quarter of the budget on
+nothing, and a `git status`-shaped one stops painting a gap and then a fragment
+of the *next* section as though the two were adjacent. The hidden-row count
+stays exact (a skipped blank is a row Ctrl+O paints, so it is counted like any
+other — dropping them from the tally would re-open the `+1 lines` lie in a
+politer dress), an all-blank output is left exactly as it was (no first block
+to prefer, and an empty window would strand the hint with no `⎿` corner), and
+only the two exec cells take the rule — the backend `bash` tool and the `!`
+shell command, one cell shape by design — while a diff body's spacing (content)
+and an ask cell's `· Q → A` rows keep `BlankPolicy::Keep` and render
+byte-identically; the running *tail* keeps its blanks too, being what the
+command just printed); and the **session scratchpad** (Claude-Code's
 temp directory, `docs/scratchpad.md`: one per-user, per-session temp root —
 `{tmp}/alter-zero-{uid}/{session}/` — holding the agent's `scratchpad/`
 beside the background shells' `tasks/` (the pure `scratchpad` module's

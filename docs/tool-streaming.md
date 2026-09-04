@@ -24,8 +24,10 @@ Running (live, in the strip above the box):        Finished (committed to scroll
 
 The two states are deliberately asymmetric — while **running** you want the
 **tail** (what just happened); once **finished** you want the **head** with an
-expand hint. Both cap at `TOOL_PEEK_ROWS` (4) display rows, so the cell is the
-same size streaming and settled.
+expand hint. Both cap at `TOOL_PEEK_ROWS` (4) display rows, so the cell never
+grows when it settles. (It can settle *shorter*: the finished head is the
+output's first **block**, so a blank line ends it — `docs/long-lines.md`. The
+running tail keeps its blanks, being what the command just printed.)
 
 ## The protocol — `StreamEvent::ToolOutput`
 
@@ -79,7 +81,10 @@ A **command-style** tool (a non-shell backend tool that is not a `read`/`write`/
 `edit` file cell — in practice `bash`) now renders its output as a multi-line
 `⎿` block, like the `!` shell cell:
 
-- **Finished** (`tool_lines`): the head of the output — at most
+- **Finished** (`tool_lines`): the head of the output — its first **block**
+  (leading blank lines skipped, the first blank line after them closing the
+  peek: a four-row cell cannot afford a row that says nothing, and hopping the
+  gap would present two stretches of output as one), bounded to at most
   `TOOL_PEEK_ROWS` display **rows** and at most `TOOL_PEEK_LINES` source
   lines, whichever runs out first — then `… +N lines (ctrl+o to expand)`,
   via the shared `result_peek_block`. Each line **word-wraps, spaces

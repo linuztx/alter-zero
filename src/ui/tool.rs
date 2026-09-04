@@ -463,6 +463,7 @@ fn ask_cell_lines(
             peek_width,
             WrapMode::Output,
             TOOL_PEEK_LINES,
+            BlankPolicy::Keep,
             |i, text, _| output_row(i, text),
         ));
     } else {
@@ -802,6 +803,7 @@ fn tool_cell_body(tool: &ToolCall, width: u16, pulse: Option<Duration>) -> Vec<L
                 peek_width,
                 WrapMode::Output,
                 TOOL_PEEK_LINES,
+                BlankPolicy::FirstBlock,
                 |i, text, _| output_row(i, text),
             ),
         };
@@ -831,6 +833,7 @@ fn tool_cell_body(tool: &ToolCall, width: u16, pulse: Option<Duration>) -> Vec<L
             peek_width,
             WrapMode::Verbatim,
             TOOL_PEEK_LINES,
+            BlankPolicy::Keep,
             |i, text, src| gutter_row(i, text, diff_line_color(src)),
         ));
         return lines;
@@ -860,6 +863,7 @@ fn tool_cell_body(tool: &ToolCall, width: u16, pulse: Option<Duration>) -> Vec<L
                 peek_width,
                 WrapMode::Output,
                 TOOL_PEEK_LINES,
+                BlankPolicy::FirstBlock,
                 |i, text, _| output_row(i, text),
             ),
         };
@@ -887,10 +891,52 @@ fn tool_cell_body(tool: &ToolCall, width: u16, pulse: Option<Duration>) -> Vec<L
             peek_width,
             WrapMode::Output,
             1,
+            BlankPolicy::Keep,
             |i, text, _| output_row(i, text),
         )),
     }
     lines
+}
+
+/// How a peek block treats a **blank** source line — a row with nothing on it
+/// but spaces (`docs/long-lines.md`).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum BlankPolicy {
+    /// Every line as it comes. A diff body's spacing is content, and an ask
+    /// cell's `· Q → A` rows have no blanks to skip.
+    Keep,
+    /// Command output: the peek is the output's **first block** — any leading
+    /// blank lines are skipped, and the first blank line after them closes it.
+    /// A four-row cell cannot afford to spend rows on nothing, and a peek that
+    /// hopped the gap would read as one run of lines that isn't one.
+    FirstBlock,
+}
+
+impl BlankPolicy {
+    /// The slice of `out_lines` this policy shows. [`Self::Keep`] is the whole
+    /// slice — and so is [`Self::FirstBlock`] over an output with no non-blank
+    /// line anywhere: there is no first block to prefer, and an empty window
+    /// would leave the hint with no `⎿` corner to hang from.
+    fn window(self, out_lines: &[String]) -> std::ops::Range<usize> {
+        let all = 0..out_lines.len();
+        if self != Self::FirstBlock {
+            return all;
+        }
+        let Some(start) = out_lines.iter().position(|line| !is_blank_row(line)) else {
+            return all;
+        };
+        let end = out_lines[start..]
+            .iter()
+            .position(|line| is_blank_row(line))
+            .map_or(out_lines.len(), |n| start + n);
+        start..end
+    }
+}
+
+/// Whether a display line paints as an empty row. Tabs are already expanded by
+/// [`split_display_lines`], so trimming spaces is the whole test.
+fn is_blank_row(line: &str) -> bool {
+    line.trim().is_empty()
 }
 
 /// The head peek of `out_lines`: its first `budget_lines` **source lines** —
@@ -906,6 +952,11 @@ fn tool_cell_body(tool: &ToolCall, width: u16, pulse: Option<Duration>) -> Vec<L
 /// terminal edge, and no single line can fill the cell with wrapped noise
 /// (`docs/long-lines.md`).
 ///
+/// `blanks` picks the window those budgets are then spent inside
+/// ([`BlankPolicy`]): command output shows its **first block**, so a leading
+/// `\n` never costs the cell its first row and a blank line closes the peek
+/// rather than being painted as one; everything else keeps every line.
+///
 /// [`TOOL_PEEK_ROWS`] is the block's ceiling, in **display rows** — the unit
 /// the cell is read in — so four wrapping lines cost the cell exactly what
 /// four short ones do (`docs/long-lines.md`): it binds the moment a line
@@ -913,26 +964,37 @@ fn tool_cell_body(tool: &ToolCall, width: u16, pulse: Option<Duration>) -> Vec<L
 /// `… +N lines` hint counts **display rows** not shown — the rows pressing
 /// Ctrl+O actually adds, counted with the same `mode` the expansion wraps
 /// with — instead of source lines, which is how 1.8 KB of hidden JSON used to
-/// report itself as `+1 lines`. Counting allocates nothing
-/// ([`WrapMode::rows`]), so this stays cheap even on a 64 KiB output.
+/// report itself as `+1 lines`. That count stays exact under a window: the
+/// blanks skipped above the block and the one that closed it are rows the
+/// expansion adds, so they are counted like any other hidden row. Counting
+/// allocates nothing ([`WrapMode::rows`]), so this stays cheap even on a
+/// 64 KiB output.
 fn result_peek_block(
     out_lines: &[String],
     peek_width: usize,
     mode: WrapMode,
     budget_lines: usize,
+    blanks: BlankPolicy,
     row: impl Fn(usize, String, &str) -> Line<'static>,
 ) -> Vec<Line<'static>> {
     let wrap_width = u16::try_from(peek_width).unwrap_or(u16::MAX);
+    let rows_of = |lines: &[String]| {
+        lines
+            .iter()
+            .map(|line| mode.rows(line, wrap_width))
+            .sum::<usize>()
+    };
+    let window = blanks.window(out_lines);
+    let block = &out_lines[window.clone()];
+    // Everything outside the window is hidden whole: the blanks skipped above
+    // the block, and the blank that closed it with all that follows.
+    let mut hidden = rows_of(&out_lines[..window.start]) + rows_of(&out_lines[window.end..]);
     let mut lines: Vec<Line> = Vec::new();
-    let mut hidden = 0usize; // display rows the cell doesn't show
-    for (i, line) in out_lines.iter().enumerate() {
+    for (i, line) in block.iter().enumerate() {
         let room = TOOL_PEEK_ROWS.saturating_sub(lines.len());
         if i >= budget_lines || room == 0 {
             // Past the budget: every remaining line is hidden whole.
-            hidden += out_lines[i..]
-                .iter()
-                .map(|rest| mode.rows(rest, wrap_width))
-                .sum::<usize>();
+            hidden += rows_of(&block[i..]);
             break;
         }
         let (rows, cut) = mode.clip(line, wrap_width, TOOL_LINE_MAX_ROWS.min(room));

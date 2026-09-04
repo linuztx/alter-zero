@@ -18,6 +18,12 @@ fn rgb((r, g, b): (u8, u8, u8)) -> Color {
     Color::Rgb(r, g, b)
 }
 
+/// The content of a `⎿` gutter row — the corner (or a continuation row's
+/// matching indent) stripped, so a test can name the text a row carries.
+fn gutter_content(row: &str) -> &str {
+    row.trim_start().trim_start_matches('⎿').trim_start()
+}
+
 // --- tool_lines (collapsed, colour-by-status) ---
 
 #[test]
@@ -379,6 +385,115 @@ fn a_finished_peek_bounds_rows_and_hints_when_one_line_overflows_the_budget() {
         hint.contains(&format!("+{} lines", 4 * 18 - TOOL_PEEK_ROWS)),
         "every row hidden under the ceiling is counted: {hint:?}"
     );
+}
+
+#[test]
+fn a_finished_command_peek_skips_the_output_s_leading_blank_lines() {
+    // A command whose output opens on a blank line (a `\n` before the real
+    // first row — an `echo` with a leading newline, a formatter's spacer)
+    // used to spend the cell's first row on nothing. The peek opens at the
+    // first line that has something on it (docs/long-lines.md).
+    let out = "\nl1\nl2\nl3\nl4\nl5";
+    let lines: Vec<String> = tool_lines(&tool("Bash", "seq", ToolStatus::Ok, out), 80)
+        .iter()
+        .map(plain)
+        .collect();
+    assert_eq!(
+        lines.len(),
+        1 + TOOL_PEEK_LINES + 1,
+        "header + {TOOL_PEEK_LINES} content rows + hint — no blank row: {lines:?}"
+    );
+    assert_eq!(
+        gutter_content(&lines[1]),
+        "l1",
+        "the peek opens at the first non-blank line: {lines:?}"
+    );
+    let hint = lines.last().unwrap();
+    assert!(
+        hint.contains("+2 lines"),
+        "the skipped blank is still counted as a hidden row, with l5: {hint:?}"
+    );
+}
+
+#[test]
+fn a_finished_command_peek_stops_at_the_first_blank_line() {
+    // The peek is the output's first **block**: once a blank line arrives the
+    // cell stops rather than spending a row on it (and rather than hopping the
+    // gap, which would read as one run of lines that isn't one).
+    let out = "l1\nl2\n\nl3\nl4\nl5";
+    let lines: Vec<String> = tool_lines(&tool("Bash", "seq", ToolStatus::Ok, out), 80)
+        .iter()
+        .map(plain)
+        .collect();
+    assert_eq!(
+        lines.len(),
+        1 + 2 + 1,
+        "header + the two rows before the blank + hint: {lines:?}"
+    );
+    assert_eq!(gutter_content(&lines[1]), "l1", "{lines:?}");
+    assert_eq!(gutter_content(&lines[2]), "l2", "{lines:?}");
+    let hint = lines.last().unwrap();
+    assert!(
+        hint.contains("+4 lines"),
+        "the blank and everything under it are hidden rows: {hint:?}"
+    );
+}
+
+#[test]
+fn a_finished_command_peek_keeps_a_blank_only_output_as_it_is() {
+    // Nothing to prefer when there is no non-blank line anywhere: the block
+    // renders exactly as before rather than collapsing to an empty cell whose
+    // hint has no `⎿` corner to hang from.
+    let out = "\n\n\n";
+    let lines: Vec<String> = tool_lines(&tool("Bash", "printf", ToolStatus::Ok, out), 80)
+        .iter()
+        .map(plain)
+        .collect();
+    assert_eq!(
+        lines.len(),
+        1 + 3,
+        "header + the three blank rows: {lines:?}"
+    );
+    assert!(
+        !lines.iter().any(|l| l.contains("ctrl+o to expand")),
+        "nothing is hidden: {lines:?}"
+    );
+}
+
+#[test]
+fn a_shell_cell_peek_follows_the_same_first_block_rule() {
+    // The `!` shell cell is the same exec cell as the backend `bash` one
+    // (docs/shell-command.md) — headerless, same gutter, same budget — so its
+    // peek skips the leading blanks and stops at the first interior one too.
+    let mut t = tool("printf '\\n\\nout\\n'", "", ToolStatus::Ok, "\n\nout\ntail");
+    t.shell = true;
+    let lines: Vec<String> = tool_lines(&t, 80).iter().map(plain).collect();
+    assert_eq!(lines.len(), 3, "the block's two rows + hint: {lines:?}");
+    assert_eq!(gutter_content(&lines[0]), "out", "{lines:?}");
+    assert_eq!(gutter_content(&lines[1]), "tail", "{lines:?}");
+    assert!(
+        lines[2].contains("+2 lines"),
+        "the two skipped blanks are counted: {lines:?}"
+    );
+}
+
+#[test]
+fn a_blank_line_inside_a_wrapped_first_block_still_closes_the_peek() {
+    // The block rule is applied to **source** lines before wrapping, so a
+    // wrapping line inside the block still shows whole and the blank after it
+    // still ends the cell.
+    let out = format!("{}\n\nafter", "a".repeat(60)); // 35 content cols → 2 rows
+    let lines: Vec<String> = tool_lines(&tool("Bash", "cat", ToolStatus::Ok, &out), 40)
+        .iter()
+        .map(plain)
+        .collect();
+    assert_eq!(
+        lines.len(),
+        1 + 2 + 1,
+        "header + the long line's two wrapped rows + hint: {lines:?}"
+    );
+    let hint = lines.last().unwrap();
+    assert!(hint.contains("+2 lines"), "the blank and `after`: {hint:?}");
 }
 
 #[test]

@@ -40,12 +40,13 @@ lines while the user reads it in **rows**.
 
 > A collapsed cell's output block spends at most **`TOOL_PEEK_ROWS`** display
 > rows, of which any one source line may spend at most
-> **`TOOL_LINE_MAX_ROWS`**; the cut is **visible**, and an unnumbered cell's
-> `+N lines` hint counts the **rows** the expansion will add.
+> **`TOOL_LINE_MAX_ROWS`**; the cut is **visible**; an unnumbered cell's
+> `+N lines` hint counts the **rows** the expansion will add; and a command
+> cell spends none of those rows on a **blank** line.
 
-Four parts. The first three landed together and bounded the *line*; the fourth
+Five parts. The first three landed together and bounded the *line*; the fourth
 (§0 below, added after the mess came back in a second dress) bounds the
-*block*.
+*block*; the fifth (§4) decides what the block is *of*.
 
 ### 0. Rows, not lines (`TOOL_PEEK_ROWS = 4`)
 
@@ -86,7 +87,9 @@ four rows.
 
 It is also the window the **running** tail already used
 (`running_command_lines` shows the last four *rows*), so head and tail are
-literally the same size now: a `bash` cell does not resize when it settles.
+budgeted the same: a `bash` cell does not *grow* when it settles. (It can
+settle shorter — §4 ends the block at the first blank line — but the tail is
+still the ceiling.)
 
 The per-line budget keeps its job inside the smaller block: it is what
 guarantees the blob does not take all four rows, leaving one for the line
@@ -145,6 +148,73 @@ and 2 — a minified `.json` line is clipped to `TOOL_LINE_MAX_ROWS` with a dim
 `FILE_PEEK_LINES` budget entirely, so one long line could paint a hundred rows
 inline).
 
+### 4. The peek is the output's first block, not its first four lines
+
+Everything above budgets the peek. This part decides *what it is a peek of* —
+and the honest answer had been "whatever the first four lines happen to be,
+including the empty ones".
+
+A blank line costs a full row of a four-row cell and says nothing. Two shapes
+are ordinary enough to hit constantly:
+
+```
+● Bash(./build.sh)                              ● Bash(git status -sb)
+  ⎿                                               ⎿  ## main...origin/main
+     Building…                                       M src/ui/tool.rs
+     Linking…
+     Done                                            Untracked files:
+     … +16 lines (ctrl+o to expand)                  … +16 lines (ctrl+o to expand)
+```
+
+The left cell spends its first row on a leading `\n` — a quarter of the whole
+budget on nothing — and shows three lines where four would fit. The right one
+paints a gap in the middle and then a fragment of the *next* section, which
+reads as one run of lines that isn't one: `M src/ui/tool.rs` and `Untracked
+files:` are not adjacent in the output, and the cell says they are.
+
+So the block is the output's **first block**:
+
+> Leading blank lines are skipped; the first blank line after them closes the
+> peek.
+
+```
+● Bash(./build.sh)                              ● Bash(git status -sb)
+  ⎿  Building…                                    ⎿  ## main...origin/main
+     Linking…                                         M src/ui/tool.rs
+     Done                                             … +18 lines (ctrl+o to expand)
+     … +17 lines (ctrl+o to expand)
+```
+
+Four content rows where the output has four, two where the first block has two
+— never a row of nothing, and never two stretches of output presented as one.
+
+Three details make it hold up:
+
+- **The count stays exact.** A skipped leading blank and the blank that closed
+  the block are rows Ctrl+O will paint, so they are counted like any other
+  hidden row (§3). The hint answers "how much more is there", not "how much
+  more that I judged interesting" — the version of this rule that quietly
+  dropped blanks from the count would have re-opened the `+1 lines` lie in a
+  politer dress.
+- **An all-blank output is left exactly as it was.** With no non-blank line
+  anywhere there is no first block to prefer, and an empty window would leave
+  the `… +N lines` hint hanging with no `⎿` corner above it. The policy
+  no-ops (`BlankPolicy::window` returns the whole slice).
+- **Only command output gets it.** A diff body's spacing is content, and an
+  ask cell's `· Q → A` rows have no blanks to skip — those cells pass
+  `BlankPolicy::Keep`, so their rendering is byte-identical. The two that pass
+  `FirstBlock` are the two exec cells: the backend `bash` tool and the `!`
+  shell command, which are one cell shape by design
+  (`docs/shell-command.md`).
+
+The rule is applied to **source** lines, before wrapping, so a wrapping line
+inside the block still shows whole up to its own budget (§1) and the blank
+after it still ends the cell.
+
+The running *tail* is deliberately untouched: it shows the last rows as they
+stream, where a blank line is part of what the command just printed and
+dropping it would make the tail disagree with the terminal.
+
 ## Where it does *not* apply
 
 - **Ctrl+O** (`tool_full_lines`, `file_cell_lines(peek: false)`) — the
@@ -196,6 +266,7 @@ against a local copy of the page from the report.)
 | `TOOL_PEEK_ROWS`, `TOOL_LINE_MAX_ROWS`, `TOOL_LINE_ELLIPSIS` | `ui/theme.rs` |
 | `WrapMode::{wrap, rows, clip}` — one scan, three uses | `ui/wrap.rs` |
 | The collapsed output peek (`result_peek_block`) | `ui/tool.rs` |
+| The first-block window (`BlankPolicy`, `is_blank_row`) | `ui/tool.rs` |
 | The running tail's `+N lines ({secs}s)` footer | `ui/tool.rs` (`running_command_lines`) |
 | The numbered file cell's per-line clip | `ui/file_cell.rs` (`numbered_row_lines`) |
 

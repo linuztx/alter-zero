@@ -64,6 +64,7 @@ cleanup() {
 	tmux kill-session -t "${S}_shortcuts" 2>/dev/null
 	tmux kill-session -t "${S}_longline" 2>/dev/null
 	tmux kill-session -t "${S}_peekrows" 2>/dev/null
+	tmux kill-session -t "${S}_peekblank" 2>/dev/null
 	tmux kill-session -t "${S}_queue" 2>/dev/null
 	tmux kill-session -t "${S}_queueint" 2>/dev/null
 	tmux kill-session -t "${S}_altup" 2>/dev/null
@@ -8467,6 +8468,61 @@ fi
 tmux send-keys -t "$S92B" C-o
 sleep 0.3
 tmux kill-session -t "$S92B" 2>/dev/null
+
+# The third part of the same rule (docs/long-lines.md "The peek is the output's
+# first block"): a BLANK line costs a full row of a four-row cell and says
+# nothing. Leading blanks are skipped and the first blank after the content
+# closes the peek, so an output shaped `\n\nfirst\nsecond\n\nhidden` shows
+# exactly `first` + `second` — no empty gutter row above them, and no fragment
+# of the next block below — while the hint still counts every hidden row
+# (the two leading blanks, the closing blank, and `hidden` = 4). ---
+S92C="${S}_peekblank"
+tmux new-session -d -s "$S92C" -x 80 -y 24 "$APP"
+sleep 0.4
+tmux send-keys -t "$S92C" -l "!printf '\n\nfirst\nsecond\n\nhidden\n'"
+sleep 0.2
+tmux send-keys -t "$S92C" Enter
+pb_pane=""
+for _ in $(seq 1 60); do # up to ~6s
+	pb_pane="$(tmux capture-pane -t "$S92C" -p -S -40)"
+	if printf '%s' "$pb_pane" | grep -qF "lines (ctrl+o to expand)"; then
+		break
+	fi
+	sleep 0.1
+done
+echo "==== Phase 92: captured pane (the peek is the output's first block) ===="
+printf '%s\n' "$pb_pane"
+if ! printf '%s' "$pb_pane" | grep -qE '⎿ +first'; then
+	echo "FAIL: Phase 92 — the peek does not open on the first non-blank line" >&2
+	status=1
+fi
+if ! printf '%s' "$pb_pane" | grep -qE '^ +second$'; then
+	echo "FAIL: Phase 92 — the first block's second line is missing from the peek" >&2
+	status=1
+fi
+# Anchored to a gutter row: the echoed `! printf …` header names `hidden` too.
+if printf '%s' "$pb_pane" | grep -qE '^ +hidden$'; then
+	echo "FAIL: Phase 92 — the peek hopped the blank line into the next block" >&2
+	status=1
+fi
+if ! printf '%s' "$pb_pane" | grep -qF "… +4 lines (ctrl+o to expand)"; then
+	echo "FAIL: Phase 92 — the hint does not count the skipped blank rows" >&2
+	status=1
+fi
+# Ctrl+O still holds the blanks and the block below them — the cell is a peek,
+# not a filter.
+tmux send-keys -t "$S92C" C-o
+sleep 0.5
+pb_view="$(tmux capture-pane -t "$S92C" -p)"
+echo "==== Phase 92: captured pane (Ctrl+O — the whole output, blanks included) ===="
+printf '%s\n' "$pb_view"
+if ! printf '%s' "$pb_view" | grep -qE '^ +hidden$'; then
+	echo "FAIL: Phase 92 — the transcript dropped the block the peek hid" >&2
+	status=1
+fi
+tmux send-keys -t "$S92C" C-o
+sleep 0.3
+tmux kill-session -t "$S92C" 2>/dev/null
 
 
 # --- Phase 93: the Ctrl+D view's CLASSIFIER PAGE (docs/permissions.md). Auto
