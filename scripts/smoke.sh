@@ -7709,8 +7709,18 @@ if [ "$mcp84_bad_exit" -ne 2 ]; then
 	echo "FAIL: Phase 84 — a grammar error exited $mcp84_bad_exit (want 2)" >&2
 	status=1
 fi
-if ! printf '%s' "$mcp84_bad" | grep -qF "alter-zero mcp — manage MCP servers"; then
-	echo "FAIL: Phase 84 — the grammar error is missing the mcp usage trailer" >&2
+# The clap-shaped trailer (docs/cli.md): `error: {message}`, the mcp `Usage:`
+# block, `For more information, try '--help'.` — never the whole page.
+for expect in "error: mcp add needs a --url or a command" \
+	"Usage: alter-zero mcp add <name>" \
+	"For more information, try '--help'."; do
+	if ! printf '%s' "$mcp84_bad" | grep -qF "$expect"; then
+		echo "FAIL: Phase 84 — the grammar error is missing '$expect'" >&2
+		status=1
+	fi
+done
+if printf '%s' "$mcp84_bad" | grep -qF "alter-zero mcp — manage MCP servers"; then
+	echo "FAIL: Phase 84 — a grammar error dumped the whole help page instead of the usage trailer" >&2
 	status=1
 fi
 APP_MCP84="env ALTER_ZERO_PROJECT_CONFIG=0 ALTER_ZERO_CONFIG_DIR=$MCP84_CFG ALTER_ZERO_CHECKPOINTS=0 ALTER_ZERO_HISTORY_FILE=/dev/null ALTER_ZERO_STARTUP_DELAY_MS=$SMOKE_STARTUP_MS $BIN"
