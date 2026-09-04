@@ -2509,8 +2509,10 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   over the numbered contents, `Updated {path} (+A -D)` over numbered diff
   (both heads showing the cwd-relative `tools::display_path` — `../` climbs
   outside the cwd — while the header records the argument verbatim and
-  **shows** it by the **path display rule** — `app::PathDisplay`,
-  `docs/tools.md` *Path display*: relative under the cwd (`hello.py`),
+  **shows** it by the **path display rule** — `llm::tools::header_path`,
+  `display_path`'s sibling over one lexical core, carried by the session
+  policy `app::PathDisplay`, `docs/tools.md` *Path display*: relative under
+  the cwd (`hello.py`),
   `~`-relative outside it but under home (`~/hello.py`), absolute elsewhere
   (`/tmp/x.py`) — applied by `ui::tool_header_lines` at render time, inline,
   in the live strip, in Ctrl+O, on the permission prompt's target row and on

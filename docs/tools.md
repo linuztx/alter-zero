@@ -575,10 +575,13 @@ sits **one column further in** (`ui::file_body_indent`), matching Claude Code:
 ### Path display
 
 The `● Read/Write/Edit({path})` **header** shows the path the way Claude Code
-does, by **where it is** relative to the session (`app::PathDisplay`; the
-worked example is launched in `~/Codes/tests`). The corner head under it is
-the executor's own record — `tools::display_path`'s cwd-relative form, a
-`../` climb outside the cwd — and is never rewritten:
+does, by **where it is** relative to the session (`tools::header_path`, the
+corner row's `display_path`'s sibling over the same lexical core, carried by
+the session policy `app::PathDisplay`; the worked example is launched in
+`~/Codes/tests`). The corner head under it is the executor's own record —
+`display_path`'s cwd-relative form, a `../` climb outside the cwd — and is
+never rewritten. The two answer different questions: the header says *which
+file*, the corner row where it is from here:
 
 ```
 ● Write(hello.py)                      ← /home/linuztx/Codes/tests/hello.py, under the cwd
@@ -604,16 +607,21 @@ the executor's own record — `tools::display_path`'s cwd-relative form, a
 - **It is a render-time rule, and only a render-time rule.** The header's
   record — `ToolCall::args`, the verbatim summary — is untouched;
   `ui::tool_header_lines` shortens the painted row through the session's
-  policy. So the derived context (Ctrl+D), the rollout, the auto mode
-  classifier's `Name(args)` action log and the permission rules all keep the
-  absolute path — a model reading its own history back sees exactly what it
-  sent — while the inline cell, the live strip's running cell, the Ctrl+O
-  transcript, a subagent session view, the permission prompt's target row
-  (`docs/permissions.md`), the live agent tree's `Write: {path}` activity
-  row and the Ctrl+O agent expansion's nested `Write({path})` headers
-  (`ui::agent`'s `display_activity` / `display_nested_header`,
-  `docs/agent-tool.md`) all show the short form. A session **resumed from
-  another directory** reads its headers relative to where it is *now*.
+  policy (`ui::tool::shown_args`, the one place that says "a file tool's
+  summary is a path"). So the derived context (Ctrl+D), the rollout, the
+  auto mode classifier's `Name(args)` action log and the permission rules
+  all keep the absolute path — a model reading its own history back sees
+  exactly what it sent — while the inline cell, the live strip's running
+  cell, the Ctrl+O transcript, a subagent session view, the permission
+  prompt's target row (`docs/permissions.md`), the live agent tree's
+  `Write: {path}` activity row (`AgentRun::activity_shown` over the
+  recorded `last_call`) and the Ctrl+O agent expansion's nested
+  `Write({path})` headers (`app::file_tool_header`, the inverse of the
+  `tool_header_text` that wrote them; `docs/agent-tool.md`) all show the
+  short form. Because the record is what is shortened *from*, a session
+  **resumed from another directory** reads its headers relative to where
+  it is *now* — a rollout that stored the short form instead would name a
+  different file after the move.
 - **The corner head is the executor's, not the renderer's.** `Wrote {N}
   lines to {path}` / `Updated {path} (+A -D)` carry the path the executor
   chose when it wrote the cell (`describe_change` → `tools::display_path`
@@ -622,10 +630,11 @@ the executor's own record — `tools::display_path`'s cwd-relative form, a
   `Created {path} ({N} lines)` head included. The two rows can therefore name
   the same file two ways (`~/hello.py` over `../../hello.py`): the header says
   where the file is, the head how the executor reached it.
-- **Only a file tool's summary is a path.** `FILE_TOOL_NAMES`
-  (`Read`/`Write`/`Edit`) gates it: a `Bash` command embeds paths the shell
-  will resolve, an `Agent`'s summary is prose, an MCP call's is JSON, and the
-  `!` shell cell has no header — those echo the record verbatim.
+- **Only a file tool's summary is a path.** `tools::is_file_tool`
+  (`Read`/`Write`/`Edit`, by display name) gates it: a `Bash` command embeds
+  paths the shell will resolve, an `Agent`'s summary is prose, an MCP call's
+  is JSON, and the `!` shell cell has no header — those echo the record
+  verbatim.
 - **Injected, never read.** The policy is the process cwd plus `$HOME`,
   handed to `App::set_path_display` once at bootstrap like the clock, so the
   pure renderers never touch the environment; `PathDisplay::VERBATIM` — the

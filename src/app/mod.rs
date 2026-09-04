@@ -59,6 +59,7 @@ pub use self::action::{Action, McpOp};
 pub use self::agent::{
     AGENT_STOPPED_OUTPUT, AgentGroup, AgentGroupEntry, AgentGroupLive, AgentNotice, AgentStop,
 };
+pub(crate) use self::agent::{file_tool_header, tool_header_text};
 pub use self::ask::{AskAnswerState, AskInput, AskPrompt, AskRow, ask_row_number, ask_rows};
 pub use self::background::{BackgroundNotice, BackgroundShell, BackgroundView, BgCompletion};
 pub use self::backtrack::{Backtrack, CHECKPOINT_RESTORED_NOTICE, CHECKPOINT_REWOUND_NOTICE};

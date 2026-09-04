@@ -98,15 +98,13 @@ pub(super) fn tool_header_lines(
     // `key: "value"` form at render time instead.
     let args = if crate::mcp::is_mcp_display_name(&tool.name) {
         crate::mcp::pretty_args(&tool.args)
-    } else if is_file_tool(tool) {
+    } else {
         // A file tool's summary **is** its path, and the header shows it the
         // way the session reads paths — relative under the cwd, `~`-relative
         // under home, absolute elsewhere (`docs/tools.md` *Path display*).
         // The record keeps the model's absolute argument: this, like the MCP
         // capitalization above, lives only at the render seam.
-        paths.display(&tool.args)
-    } else {
-        tool.args.clone()
+        shown_args(&tool.name, &tool.args, paths)
     };
     if args.is_empty() {
         return vec![Line::from(vec![bullet(), name()])];
@@ -226,11 +224,20 @@ pub(super) fn is_command_tool(tool: &ToolCall) -> bool {
     !tool.shell && COMMAND_TOOL_NAMES.contains(&tool.name.as_str())
 }
 
-/// Is this a model **file tool** (`read`/`write`/`edit`) — whose `args`
-/// summary is a path the header shows through the session's
-/// [`PathDisplay`] rule? See [`FILE_TOOL_NAMES`] and `docs/tools.md`.
-pub(super) fn is_file_tool(tool: &ToolCall) -> bool {
-    !tool.shell && FILE_TOOL_NAMES.contains(&tool.name.as_str())
+/// A call's `args` summary as the screen shows it: a file tool's path
+/// through the session's [`PathDisplay`] rule (`docs/tools.md` *Path
+/// display*), every other tool's — a `bash` command, an agent's prose, an
+/// MCP call's JSON — verbatim. The one place that says "a file tool's
+/// summary is a path", shared by the cell header, the agent tree's sticky
+/// activity row and the Ctrl+O agent cell's nested headers. `name` is the
+/// display name (`crate::llm::tools::is_file_tool`); a `!` shell cell's
+/// empty summary passes through empty.
+pub(super) fn shown_args(name: &str, args: &str, paths: &PathDisplay) -> String {
+    if crate::llm::tools::is_file_tool(name) {
+        paths.display(args)
+    } else {
+        args.to_string()
+    }
 }
 
 /// The dim `… +N lines (ctrl+o to expand)` hint under a capped peek.

@@ -276,10 +276,11 @@ zero new plumbing. The TUI cell is a new `HistoryItem::AgentNotice` —
   a `bash` call's model-supplied `description`
   (`Bash: Fetching current weather…`), else the call's args summary
   (`Write: game.py`, `Read: ~/notes/today.md` — a file tool's path shown
-  by the same relative / `~`-relative / absolute rule as its cell header
-  (`ui::agent::display_activity`, `docs/tools.md` *Path display*), the
-  run's `last_activity` keeping the absolute argument; never the cell
-  header's `Write({args})`, whose parens read as clutter on a dim clipped
+  by the same relative / `~`-relative / absolute rule as its cell header:
+  the run keeps the newest call as it came (`AgentRun::last_call`) and the
+  renderer asks `activity_shown` for the row with the session's rule
+  applied, `docs/tools.md` *Path display*; never the cell header's
+  `Write({args})`, whose parens read as clutter on a dim clipped
   one-liner),
   and an MCP call as the **capitalized server over the tool**
   (`Deepwiki: ask_question` — the full `deepwiki - ask_question (MCP)`
@@ -287,7 +288,7 @@ zero new plumbing. The TUI cell is a new `HistoryItem::AgentNotice` —
   after the colon shows the bare name — held between calls (never dropping
   to `Working…`) so the row keeps its context while the agent reasons over
   a result (`StreamEvent::ToolStart` carries the `detail`;
-  `AgentRun::last_activity`). A **lone** agent renders the tool-cell shape
+  `AgentRun::last_call`). A **lone** agent renders the tool-cell shape
   instead of a one-row tree: `● Agent({description})` over that same one
   `⎿ {activity}` row — `⎿ Initializing…`, then
   `⎿ Bash: Fetch public repos for linuztx` / `⎿ Bash: curl -s https://…`.
@@ -328,8 +329,10 @@ zero new plumbing. The TUI cell is a new `HistoryItem::AgentNotice` —
   `● Agent({description})` / `⎿ Prompt:` (indented block) / the nested tool
   headers the agent ran (`Bash(curl …)`, a file tool's path shown by the
   cells' relative / `~`-relative / absolute rule — `Write(notes.md)` for the
-  recorded `Write(/home/u/repo/notes.md)`, `ui::agent::display_nested_header`,
-  `docs/tools.md` *Path display*) / `⎿ Response:` (the final text) /
+  recorded `Write(/home/u/repo/notes.md)`: `app::tool_header_text` writes
+  the one-liner and `app::file_tool_header` is its inverse, so the cell
+  reads the path back without ui re-parsing the grammar; `docs/tools.md`
+  *Path display*) / `⎿ Response:` (the final text) /
   `⎿ Done ({n} tool uses · {tokens} tokens · {elapsed})` or `⎿ Interrupted`. The
   **live tail** walks `App::agent_group` + the roster the same way (activity
   `Running…`), and the `TranscriptSig` fingerprints the roster generation so

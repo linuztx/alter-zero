@@ -162,14 +162,19 @@ pub struct AgentRun {
     /// longer [`AGENT_STOPPED_LINGER`] so the red `◯` is there to be read
     /// (and cleared) instead of vanishing under the keypress.
     pub stopped_by_user: bool,
-    /// The **sticky** activity line — the `{Name}: {detail}` row
-    /// `activity_line` builds from the newest [`StreamEvent::ToolStart`]
-    /// (a `bash` call's model-supplied `description`, else its args summary;
-    /// an MCP call as `{Server}: {tool}`). Kept until the *next* tool
-    /// starts, so the tree row shows what the agent is doing (or just did)
-    /// rather than dropping to a generic `Working…` between calls
-    /// (`docs/agent-tool.md`).
-    pub last_activity: Option<String>,
+    /// The **newest call** the agent started — what the sticky
+    /// `{Name}: {detail}` activity row is built from ([`activity`] /
+    /// [`activity_shown`], over `activity_line`: a `bash` call's
+    /// model-supplied `description`, else its args summary; an MCP call as
+    /// `{Server}: {tool}`). Kept until the *next* tool starts, so the tree
+    /// row shows what the agent is doing (or just did) rather than dropping
+    /// to a generic `Working…` between calls (`docs/agent-tool.md`). The
+    /// record as it came: a file tool's path is the model's own, shown by
+    /// the session's rule only when the row is painted.
+    ///
+    /// [`activity`]: AgentRun::activity
+    /// [`activity_shown`]: AgentRun::activity_shown
+    pub last_call: Option<AgentCall>,
     /// The **open** thinking phase's chain-of-thought, or `None` outside one
     /// — what the agent session view's strip previews while the phase runs
     /// (`ui::live_reasoning_lines`). Opened only by
@@ -235,7 +240,7 @@ impl AgentRun {
             error: None,
             hidden: false,
             stopped_by_user: false,
-            last_activity: None,
+            last_call: None,
             reasoning: None,
             round_reasoning: Vec::new(),
             thinking: None,
@@ -386,7 +391,11 @@ impl AgentRun {
             } => {
                 self.flush_segment();
                 self.tool_uses += 1;
-                self.last_activity = Some(activity_line(name, args, detail.as_deref()));
+                self.last_call = Some(AgentCall {
+                    name: name.clone(),
+                    args: args.clone(),
+                    detail: detail.clone(),
+                });
                 match self.tool_queue.front_mut() {
                     Some(front) if front.status == ToolStatus::Waiting => {
                         front.status = ToolStatus::Running;
@@ -729,19 +738,37 @@ impl AgentRun {
     }
 
     /// The tree row's activity: what the agent is doing — or, between tool
-    /// calls, what it just did (the sticky [`last_activity`] holds until the
+    /// calls, what it just did (the sticky [`last_call`] holds until the
     /// next call starts, so the row keeps its context instead of dropping to
-    /// `Working…` while the agent reasons over a result).
+    /// `Working…` while the agent reasons over a result). The record's own
+    /// text, a file tool's path as the model sent it.
     ///
-    /// [`last_activity`]: AgentRun::last_activity
+    /// [`last_call`]: AgentRun::last_call
     #[must_use]
     pub fn activity(&self) -> String {
+        self.activity_shown(|_, args| args.to_string())
+    }
+
+    /// [`activity`](Self::activity) with the newest call's `args` summary
+    /// shown the way the caller says — `show_args(name, args)` maps it to
+    /// its display form (the TUI hands in its session's path rule, so a
+    /// file tool's row reads `Write: ~/x.py`; `docs/tools.md` *Path
+    /// display*) — over the same grammar. The labels, a `bash` call's
+    /// description and the record itself are untouched.
+    #[must_use]
+    pub fn activity_shown(&self, show_args: impl FnOnce(&str, &str) -> String) -> String {
         match self.status {
             AgentStatus::Pending => AgentStatus::Pending.label().to_string(),
-            AgentStatus::Running => self
-                .last_activity
-                .clone()
-                .unwrap_or_else(|| "Working…".to_string()),
+            AgentStatus::Running => self.last_call.as_ref().map_or_else(
+                || "Working…".to_string(),
+                |call| {
+                    activity_line(
+                        &call.name,
+                        &show_args(&call.name, &call.args),
+                        call.detail.as_deref(),
+                    )
+                },
+            ),
             settled => settled.label().to_string(),
         }
     }
@@ -845,6 +872,19 @@ impl AgentRun {
         }
         self.tool_queue.clear();
     }
+}
+
+/// The call an agent's sticky activity row names ([`AgentRun::last_call`]):
+/// the [`StreamEvent::ToolStart`] fields the row's grammar
+/// (`activity_line`) reads, kept as they came.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentCall {
+    /// The display name (`Write`, `Bash`, an MCP `server - tool (MCP)`).
+    pub name: String,
+    /// The one-line args summary — a file tool's path, a command, JSON.
+    pub args: String,
+    /// The model's own description, when the call carried one (`bash`).
+    pub detail: Option<String>,
 }
 
 /// The sticky `{Name}: {detail}` activity row for one starting call — the one
@@ -1355,6 +1395,38 @@ mod tests {
         // Late events after settling are dropped.
         assert!(!run.apply(&chunk("late")));
         assert_eq!(run.result.as_deref(), Some("It is 19°C."));
+    }
+
+    #[test]
+    fn the_activity_row_shows_a_file_tools_args_the_way_the_caller_says() {
+        // The record keeps the call as it came (`activity` — the roster's
+        // own text); a renderer hands `activity_shown` how a file tool's
+        // path should read (`docs/tools.md` "Path display") and the row is
+        // built from the same grammar. Every other row passes through.
+        let shorten = |name: &str, args: &str| {
+            if name == "Write" {
+                args.replace("/home/u/", "~/")
+            } else {
+                args.to_string()
+            }
+        };
+        let mut run = AgentRun::new("a1", "d", GENERAL_PURPOSE, "p", false);
+        assert_eq!(run.activity_shown(shorten), "Initializing…");
+        assert!(!run.apply(&StreamEvent::ToolStart {
+            name: "Write".into(),
+            args: "/home/u/x.py".into(),
+            detail: None,
+            arguments: None,
+        }));
+        assert_eq!(run.activity(), "Write: /home/u/x.py");
+        assert_eq!(run.activity_shown(shorten), "Write: ~/x.py");
+        assert!(!run.apply(&StreamEvent::ToolStart {
+            name: "Bash".into(),
+            args: "cat /home/u/x.py".into(),
+            detail: Some("Reading /home/u/x.py".into()),
+            arguments: None,
+        }));
+        assert_eq!(run.activity_shown(shorten), "Bash: Reading /home/u/x.py");
     }
 
     #[test]

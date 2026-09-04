@@ -187,10 +187,38 @@ fn agent_tool_headers(agent: &AgentRun) -> Vec<String> {
         .history
         .iter()
         .filter_map(|item| match item {
-            HistoryItem::Tool(tool) => Some(format!("{}({})", tool.name, tool.args)),
+            HistoryItem::Tool(tool) => Some(tool_header_text(&tool.name, &tool.args)),
             _ => None,
         })
         .collect()
+}
+
+/// The nested `Name(args)` one-liner of one tool call an agent ran — the
+/// Ctrl+O agent cell's summary row ([`agent_tool_headers`], and the live
+/// cell's for a call still on the run); [`file_tool_header`] is its inverse.
+/// The `args` are the call's summary as recorded — a file tool's path the
+/// model's own — so the entry round-trips the rollout unchanged and the cell
+/// shows the path by the session's rule at paint time (`docs/tools.md` *Path
+/// display*).
+pub(crate) fn tool_header_text(name: &str, args: &str) -> String {
+    format!("{name}({args})")
+}
+
+/// The `(name, path)` of a recorded [`tool_header_text`] one-liner **when it
+/// is a file tool's** (`Read`/`Write`/`Edit`) — what the Ctrl+O agent cell
+/// re-shows with the path by the session's rule. `None` for every other
+/// tool's header, which the cell renders as recorded: a `Bash(…)` command or
+/// an MCP `server - tool (MCP)` name carries parentheses of its own, and only
+/// the three file names are known to have none, which is what makes the
+/// first `(` theirs.
+pub(crate) fn file_tool_header(header: &str) -> Option<(&str, &str)> {
+    let open = header.find('(')?;
+    let name = &header[..open];
+    if !crate::llm::tools::is_file_tool(name) {
+        return None;
+    }
+    let args = header[open + 1..].strip_suffix(')')?;
+    Some((name, args))
 }
 
 impl App {

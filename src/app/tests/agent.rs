@@ -959,3 +959,33 @@ fn alt_up_in_an_agent_view_prefers_the_follow_up_queue() {
         "the steered row is untouched"
     );
 }
+
+#[test]
+fn a_nested_tool_header_splits_back_into_its_name_and_path() {
+    // `tool_header_text` writes the Ctrl+O agent cell's nested `Name(args)`
+    // one-liners; `file_tool_header` is its inverse for the three file tools,
+    // so the cell can show a recorded header's path by the session's rule
+    // (docs/tools.md "Path display") without ui re-parsing the grammar.
+    for (name, path) in [
+        ("Write", "/home/u/repo/a.py"),
+        ("Read", "/home/u/x (copy).py"),
+        ("Edit", ""),
+    ] {
+        let text = agent::tool_header_text(name, path);
+        assert_eq!(text, format!("{name}({path})"));
+        assert_eq!(agent::file_tool_header(&text), Some((name, path)), "{text}");
+    }
+    // Every other tool's header renders as recorded — including one whose
+    // name or args carry parentheses of their own.
+    assert_eq!(agent::file_tool_header("Bash(echo (hi))"), None);
+    assert_eq!(
+        agent::file_tool_header(r#"deepwiki - ask_question (MCP)({"q":"x"})"#),
+        None
+    );
+    assert_eq!(agent::file_tool_header("Write(a.py"), None, "unclosed");
+    assert_eq!(
+        agent::file_tool_header("Writer(a.py)"),
+        None,
+        "a prefix is not the name"
+    );
+}

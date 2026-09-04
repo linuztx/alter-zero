@@ -3,7 +3,7 @@
 //! See `docs/agent-tool.md`.
 
 use super::theme::*;
-use super::tool::{result_row, tool_pulse_color};
+use super::tool::{result_row, shown_args, tool_pulse_color};
 use super::wrap::{cols, truncate_cols};
 use super::*;
 
@@ -104,42 +104,6 @@ fn agent_status_color(status: crate::agents::AgentStatus) -> Color {
 /// One agent's two tree rows: the connector + description + dim counters,
 /// then the rail + `⎿  {status}`. Rows truncate at the width (Claude Code's
 /// truncate-end), so the tree never wraps.
-/// A sticky `{Name}: {args}` activity row with a file tool's path shown by
-/// the session's [`PathDisplay`] rule — `Write: ~/x.py` where the run's
-/// record says `Write: /home/u/x.py` (`docs/tools.md` *Path display*). Only
-/// the three file tools' rows carry a path (`FILE_TOOL_NAMES`; a `bash`
-/// call's row is its description or command, an MCP call's `Server: tool`,
-/// a settled agent's a label), so every other row passes through untouched.
-/// `AgentRun::last_activity` keeps the verbatim path: this is the render
-/// seam, like the cell header's.
-fn display_activity(activity: &str, paths: &PathDisplay) -> String {
-    for name in FILE_TOOL_NAMES {
-        if let Some(path) = activity
-            .strip_prefix(name)
-            .and_then(|rest| rest.strip_prefix(": "))
-        {
-            return format!("{name}: {}", paths.display(path));
-        }
-    }
-    activity.to_string()
-}
-
-/// A nested `Name(args)` header of the Ctrl+O agent expansion with a file
-/// tool's path shown by the same rule — `Write(notes.md)` for the recorded
-/// `Write(/home/u/repo/notes.md)` — every other tool's header as recorded.
-fn display_nested_header(header: &str, paths: &PathDisplay) -> String {
-    for name in FILE_TOOL_NAMES {
-        if let Some(args) = header
-            .strip_prefix(name)
-            .and_then(|rest| rest.strip_prefix('('))
-            .and_then(|rest| rest.strip_suffix(')'))
-        {
-            return format!("{name}({})", paths.display(args));
-        }
-    }
-    header.to_string()
-}
-
 fn agent_tree_rows(
     is_last: bool,
     description: &str,
@@ -252,7 +216,7 @@ fn single_live_agent_lines(
     )];
     lines.push(agent_activity_row(
         TOOL_RESULT_PREFIX,
-        &display_activity(&run.activity(), app.path_display()),
+        &run.activity_shown(|name, args| shown_args(name, args, app.path_display())),
         agent_status_color(run.status),
         width,
     ));
@@ -383,7 +347,7 @@ pub fn live_agent_group_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     )];
     let count = runs.len();
     for (i, run) in runs.iter().enumerate() {
-        let activity = display_activity(&run.activity(), app.path_display());
+        let activity = run.activity_shown(|name, args| shown_args(name, args, app.path_display()));
         lines.extend(agent_tree_rows(
             i + 1 == count,
             &run.description,
@@ -472,7 +436,9 @@ impl AgentCellView {
             .history
             .iter()
             .filter_map(|item| match item {
-                HistoryItem::Tool(tool) => Some(format!("{}({})", tool.name, tool.args)),
+                HistoryItem::Tool(tool) => {
+                    Some(crate::app::tool_header_text(&tool.name, &tool.args))
+                }
                 _ => None,
             })
             .collect();
@@ -488,7 +454,7 @@ impl AgentCellView {
             .front()
             .filter(|tool| tool.status == ToolStatus::Running)
         {
-            tool_headers.push(format!("{}({})", running.name, running.args));
+            tool_headers.push(crate::app::tool_header_text(&running.name, &running.args));
         }
         Self {
             description: run.description.clone(),
@@ -566,9 +532,16 @@ pub(super) fn agent_cell_lines(
             .saturating_sub(cols(AGENT_NESTED_INDENT) as u16)
             .max(1);
         for header in &cell.tool_headers {
-            // A file tool's path reads by the session's rule here too
-            // (`docs/tools.md` *Path display*); the entry keeps the record.
-            let header = display_nested_header(header, paths);
+            // A recorded `Name(args)` one-liner — a file tool's shows its
+            // path by the session's rule (`docs/tools.md` *Path display*),
+            // every other as recorded; `app::file_tool_header` is the
+            // formatter's own inverse, so the grammar lives in one place.
+            let header = match crate::app::file_tool_header(header) {
+                Some((name, path)) => {
+                    crate::app::tool_header_text(name, &shown_args(name, path, paths))
+                }
+                None => header.clone(),
+            };
             for (i, row) in wrap_text(&header, nested_width).into_iter().enumerate() {
                 let indent = if i == 0 {
                     AGENT_NESTED_INDENT.to_string()

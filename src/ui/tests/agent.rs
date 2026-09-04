@@ -1059,3 +1059,53 @@ fn the_transcripts_nested_agent_headers_shorten_their_paths() {
         "{texts:?}"
     );
 }
+
+#[test]
+fn a_live_agent_cells_nested_headers_shorten_from_the_record() {
+    // The transcript tail builds a live agent's cell from its own tool
+    // calls — the record, not a formatted string — and shows a file tool's
+    // path by the session's rule like the committed entry does.
+    let mut app = App::new();
+    app.set_path_display(session_paths());
+    app.begin_stream();
+    app.start_agent_group(false, &[spec("a1", "Write the notes", false)]);
+    app.apply_agent_event(
+        "a1",
+        &crate::stream::StreamEvent::ToolStart {
+            name: "Write".into(),
+            args: "/home/linuztx/notes.md".into(),
+            detail: None,
+            arguments: None,
+        },
+    );
+    app.apply_agent_event(
+        "a1",
+        &crate::stream::StreamEvent::ToolEnd {
+            output: "Wrote 1 line to ../../notes.md\n1 x".into(),
+            ok: true,
+            truncated: false,
+        },
+    );
+    app.apply_agent_event(
+        "a1",
+        &crate::stream::StreamEvent::ToolStart {
+            name: "Read".into(),
+            args: "/home/linuztx/Codes/tests/a.rs".into(),
+            detail: None,
+            arguments: None,
+        },
+    );
+    let run = app.agent("a1").expect("the run is on the roster");
+    let texts: Vec<String> = agent_cell_lines(&AgentCellView::of_run(run), 80, app.path_display())
+        .iter()
+        .map(plain)
+        .collect();
+    assert!(
+        texts.iter().any(|t| t.trim() == "Write(~/notes.md)"),
+        "{texts:?}"
+    );
+    assert!(
+        texts.iter().any(|t| t.trim() == "Read(a.rs)"),
+        "the running call too: {texts:?}"
+    );
+}

@@ -1149,6 +1149,76 @@ pub fn display_path(path: &str, cwd: &std::path::Path) -> String {
     }
 }
 
+/// The `● Read/Write/Edit({path})` **header's** form of a file tool's path —
+/// where the file *is*, the way a person at that terminal reads it (Claude
+/// Code's look, `docs/tools.md` *Path display*): under `cwd` by its relative
+/// path (`hello.py`, `hello/hello.py`; the cwd itself is `.`), outside it but
+/// under `home` by its `~` form (`~/hello.py`; home itself is `~`), anything
+/// else by its absolute path (`/tmp/hello.py`; another user's home is not
+/// `~`). The corner row beneath keeps [`display_path`]'s cwd-relative `../`
+/// climb — the two answer different questions: the header says *which
+/// file*, the corner row says where it is from here.
+///
+/// Display only: the tool schemas ask the model for **absolute** paths and
+/// the record keeps them — the call's verbatim `arguments` and `args`
+/// summary, the executor's acks and the derived context never go through
+/// here; `app::PathDisplay` is the session policy that calls it at render
+/// time. Purely lexical like [`display_path`] — `.`/`..` collapse,
+/// containment is component-wise (`/home/userx` is not under `/home/user`),
+/// symlinks are never consulted — but a **relative** input resolves against
+/// `cwd` first, so `../sib/f.txt` reads as where it lands rather than as the
+/// climb the model spelled; a relative `cwd`, an empty path and a path on a
+/// different root than `cwd` (a Windows drive mismatch) stay as given.
+#[must_use]
+pub fn header_path(path: &str, cwd: &std::path::Path, home: Option<&std::path::Path>) -> String {
+    if path.is_empty() {
+        return String::new();
+    }
+    let Some((cwd_root, cwd_parts)) = absolute_parts(cwd) else {
+        return path.to_string(); // a relative cwd — nothing to relate to
+    };
+    let given = std::path::Path::new(path);
+    let resolved = if given.is_absolute() {
+        given.to_path_buf()
+    } else {
+        cwd.join(given)
+    };
+    let Some((root, parts)) = absolute_parts(&resolved) else {
+        return path.to_string();
+    };
+    if root != cwd_root {
+        return path.to_string(); // different roots: keep the absolute path
+    }
+    if let Some(rest) = parts.strip_prefix(cwd_parts.as_slice()) {
+        return if rest.is_empty() {
+            ".".to_string()
+        } else {
+            rest.join("/")
+        };
+    }
+    if let Some((home_root, home_parts)) = home.and_then(absolute_parts)
+        && home_root == root
+        && let Some(rest) = parts.strip_prefix(home_parts.as_slice())
+    {
+        return if rest.is_empty() {
+            "~".to_string()
+        } else {
+            format!("~/{}", rest.join("/"))
+        };
+    }
+    format!("{root}/{}", parts.join("/"))
+}
+
+/// Is this **display** name one of the file tools whose `args` summary is a
+/// path — `Read`/`Write`/`Edit`, the cells `ui::file_cell` renders as
+/// numbered file changes, whose header shows that path through
+/// [`header_path`]? `Bash`'s summary is a command and every other tool's is
+/// prose or JSON.
+#[must_use]
+pub fn is_file_tool(display_name: &str) -> bool {
+    matches!(display_name, "Read" | "Write" | "Edit")
+}
+
 /// An absolute path split lexically into its root prefix (empty on Unix, the
 /// drive on Windows) and its normal components, `.` dropped and `..` collapsed
 /// (saturating at the root). `None` for a relative path.
@@ -2327,6 +2397,89 @@ mod tests {
             "../README.md"
         );
         assert_eq!(display_path("/repo/sub/dir/", cwd), "dir");
+    }
+
+    #[test]
+    fn header_path_reads_relative_under_the_cwd_tilde_under_home_else_absolute() {
+        // The header's rule (docs/tools.md "Path display") beside the corner
+        // row's `display_path`: the two answer different questions — the
+        // header says which file, the corner row where it is from here.
+        let cwd = std::path::Path::new("/home/linuztx/Codes/tests");
+        let home = Some(std::path::Path::new("/home/linuztx"));
+        assert_eq!(
+            header_path("/home/linuztx/Codes/tests/hello.py", cwd, home),
+            "hello.py"
+        );
+        assert_eq!(
+            header_path("/home/linuztx/Codes/tests/hello/hello.py", cwd, home),
+            "hello/hello.py"
+        );
+        assert_eq!(
+            header_path("/home/linuztx/hello.py", cwd, home),
+            "~/hello.py"
+        );
+        assert_eq!(
+            display_path("/home/linuztx/hello.py", cwd),
+            "../../hello.py",
+            "the corner row's form is unchanged"
+        );
+        assert_eq!(
+            header_path("/home/linuztx/Codes/other/x.py", cwd, home),
+            "~/Codes/other/x.py"
+        );
+        assert_eq!(header_path("/tmp/hello.py", cwd, home), "/tmp/hello.py");
+        assert_eq!(header_path("/tmp/./a/../x.py", cwd, home), "/tmp/x.py");
+        assert_eq!(header_path("/home/linuztx/Codes/tests", cwd, home), ".");
+        assert_eq!(header_path("/home/linuztx/Codes/tests/", cwd, home), ".");
+        assert_eq!(header_path("/home/linuztx", cwd, home), "~");
+        // Component-wise: a neighbour whose name merely starts the same is
+        // not inside.
+        assert_eq!(
+            header_path("/home/linuztx-old/x.py", cwd, home),
+            "/home/linuztx-old/x.py"
+        );
+        assert_eq!(
+            header_path("/home/linuztx/Codes/tests-old/x.py", cwd, home),
+            "~/Codes/tests-old/x.py"
+        );
+        // No known home: absolute outside the cwd.
+        assert_eq!(
+            header_path("/home/linuztx/hello.py", cwd, None),
+            "/home/linuztx/hello.py"
+        );
+    }
+
+    #[test]
+    fn header_path_resolves_a_relative_input_against_the_cwd_first() {
+        // Unlike the corner row, which keeps a relative input's own `..`
+        // climb, the header names where the file *is* — one rule whichever
+        // way the model spelled the path.
+        let cwd = std::path::Path::new("/home/linuztx/Codes/tests");
+        let home = Some(std::path::Path::new("/home/linuztx"));
+        assert_eq!(header_path("hello.py", cwd, home), "hello.py");
+        assert_eq!(header_path("./src/../README.md", cwd, home), "README.md");
+        assert_eq!(header_path("../sib/f.txt", cwd, home), "~/Codes/sib/f.txt");
+        assert_eq!(
+            header_path("../../../../etc/hosts", cwd, home),
+            "/etc/hosts"
+        );
+        assert_eq!(header_path(".", cwd, home), ".");
+        assert_eq!(header_path("", cwd, home), "");
+        // A relative cwd has nothing to relate to: the path as given.
+        assert_eq!(
+            header_path("/tmp/x.py", std::path::Path::new("rel"), home),
+            "/tmp/x.py"
+        );
+        assert_eq!(
+            header_path("../x.py", std::path::Path::new("rel"), home),
+            "../x.py"
+        );
+    }
+
+    #[test]
+    fn is_file_tool_names_the_three_file_tools_by_display_name() {
+        assert!(is_file_tool("Read") && is_file_tool("Write") && is_file_tool("Edit"));
+        assert!(!is_file_tool("Bash") && !is_file_tool("Agent") && !is_file_tool("read"));
     }
 
     // ===== the write/update reports (docs/tools.md) =====
