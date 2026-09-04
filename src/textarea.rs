@@ -361,15 +361,14 @@ impl TextArea {
     /// preserving the preferred column. Falls back to logical-line motion when the
     /// cache is cold; from the first row, snaps to the very start.
     pub fn move_up(&mut self) {
-        if let Some(rows) = self.cached_rows() {
-            let row = row_of(&rows, self.cursor);
-            let target = self.target_col(rows[row].start);
+        if let Some((width, rows)) = self.cached_wrap() {
+            let (row, col) = self.seat(&rows, width);
             if row == 0 {
                 self.cursor = 0;
                 self.preferred_col = None;
                 return;
             }
-            self.preferred_col.get_or_insert(target);
+            let target = *self.preferred_col.get_or_insert(col);
             let prev = &rows[row - 1];
             let pos = self.pos_at_col(prev.start, prev.end, target);
             // Byte-abutting rows (a hard-broken word chunk, the end-of-text
@@ -401,15 +400,14 @@ impl TextArea {
     ///
     /// [`move_up`]: TextArea::move_up
     pub fn move_down(&mut self) {
-        if let Some(rows) = self.cached_rows() {
-            let row = row_of(&rows, self.cursor);
-            let target = self.target_col(rows[row].start);
+        if let Some((width, rows)) = self.cached_wrap() {
+            let (row, col) = self.seat(&rows, width);
             if row + 1 >= rows.len() {
                 self.cursor = self.text.len();
                 self.preferred_col = None;
                 return;
             }
-            self.preferred_col.get_or_insert(target);
+            let target = *self.preferred_col.get_or_insert(col);
             let next = &rows[row + 1];
             self.cursor = self.pos_at_col(next.start, next.end, target);
             return;
@@ -481,11 +479,15 @@ impl TextArea {
         self.wrap_cache.borrow().as_ref().unwrap().rows.clone()
     }
 
-    /// The cached wrapped rows *without* recomputing — `None` when the cache is
-    /// cold (between an edit and the next render). Vertical motion uses this so it
-    /// never needs to know the terminal width.
-    fn cached_rows(&self) -> Option<Vec<Range<usize>>> {
-        self.wrap_cache.borrow().as_ref().map(|c| c.rows.clone())
+    /// The cached wrapped rows — and the width they were wrapped at — *without*
+    /// recomputing: `None` when the cache is cold (between an edit and the next
+    /// render). Vertical motion uses this so it never needs to be told the
+    /// terminal width.
+    fn cached_wrap(&self) -> Option<(u16, Vec<Range<usize>>)> {
+        self.wrap_cache
+            .borrow()
+            .as_ref()
+            .map(|c| (c.width, c.rows.clone()))
     }
 
     /// The visible text of each wrapped row at `width` (for rendering).
@@ -503,16 +505,47 @@ impl TextArea {
         self.wrapped_rows(width).len().max(1)
     }
 
-    /// The cursor's `(visual row, display column)` at `width`. The row is the last
-    /// wrapped row starting at or before the cursor (so a cursor at a wrap point
-    /// shows at the next row's start), and the column is the display width up to it.
+    /// The cursor's `(visual row, display column)` at `width` — the row is the
+    /// last wrapped row starting at or before the cursor and the column the
+    /// display width up to it, except at the end of a row the wrap left exactly
+    /// full, which seats on the next row's start (the private `seat` rule).
     #[must_use]
     pub fn cursor_row_col(&self, width: u16) -> (usize, usize) {
         let rows = self.wrapped_rows(width);
-        let row = row_of(&rows, self.cursor);
+        self.seat(&rows, width)
+    }
+
+    /// The cursor's `(visual row, display column)` over `rows` wrapped at
+    /// `width` — the seat [`cursor_row_col`] reports and vertical motion starts
+    /// from, so the two always agree on which row the cursor is on.
+    ///
+    /// The row is the last wrapped row starting at or before the cursor (so a
+    /// cursor at a wrap point shows at the next row's start), the column the
+    /// display width up to it — except at the **end of a row the wrap left
+    /// exactly full**, before the whitespace it consumed at the break: that
+    /// column is one past the field, where the terminal would clamp the caret
+    /// onto the row's last glyph, so the seat is the next row's start — where
+    /// the next typed grapheme lands (the soft-break twin of the end-of-text
+    /// sentinel row). A hard `'\n'` keeps its end-of-row seat, its row really
+    /// being over; a hard-broken word's rows abut byte-exactly and already seat
+    /// the boundary on the later row.
+    ///
+    /// [`cursor_row_col`]: TextArea::cursor_row_col
+    fn seat(&self, rows: &[Range<usize>], width: u16) -> (usize, usize) {
+        let row = row_of(rows, self.cursor);
         let r = &rows[row];
         let end = self.cursor.min(r.end);
-        (row, cols(&self.text[r.start..end]))
+        let col = cols(&self.text[r.start..end]);
+        if width > 0
+            && self.cursor == r.end
+            && col == usize::from(width)
+            && let Some(next) = rows.get(row + 1)
+            && next.start > r.end
+            && !self.text[r.end..next.start].contains('\n')
+        {
+            return (row + 1, 0);
+        }
+        (row, col)
     }
 }
 
@@ -961,8 +994,52 @@ mod tests {
     fn cursor_row_col_maps_through_a_soft_wrap() {
         let ta = at("hello world", 6); // just before "world"
         assert_eq!(ta.cursor_row_col(5), (1, 0), "start of the wrapped 2nd row");
-        let ta = at("hello world", 5); // just after "hello"
-        assert_eq!(ta.cursor_row_col(5), (0, 5), "end of the 1st row");
+        // Just after "hello", before the space the wrap consumed: "hello"
+        // fills its row, so col 5 would be one past the field — the seat is
+        // the next row's start, where the next typed character lands.
+        let ta = at("hello world", 5);
+        assert_eq!(ta.cursor_row_col(5), (1, 0), "seated inside the field");
+    }
+
+    #[test]
+    fn the_end_of_a_row_that_is_not_full_keeps_its_own_seat() {
+        // Only an exactly-full row moves the seat: after "abc" (three of five
+        // columns) the cursor sits at the end of its own row, before the
+        // consumed space, where the next character will show.
+        let ta = at("abc def", 3);
+        assert_eq!(ta.wrapped_rows(5), vec![0..3, 4..7]);
+        assert_eq!(ta.cursor_row_col(5), (0, 3));
+    }
+
+    #[test]
+    fn the_end_of_a_full_line_before_a_newline_keeps_its_row() {
+        // A hard `\n` really ends the row: the cursor before it stays on
+        // that row (at its end), not at the head of the next logical line.
+        let ta = at("abcde\nfg", 5);
+        assert_eq!(ta.wrapped_rows(5), vec![0..5, 6..8]);
+        assert_eq!(ta.cursor_row_col(5), (0, 5));
+    }
+
+    #[test]
+    fn vertical_motion_starts_from_the_seated_row_at_an_exact_fit() {
+        // Seated at the head of row 1 (the cursor sits after the full "abcde",
+        // before the consumed space), ↓ goes to row 2's head and ↑ back to
+        // row 0 — the rows the user sees the cursor on, not the byte range
+        // that happens to contain it.
+        let mut ta = at("abcde fgh ijklm", 5);
+        assert_eq!(ta.wrapped_rows(5), vec![0..5, 6..9, 10..15, 15..15]);
+        assert_eq!(ta.cursor_row_col(5), (1, 0));
+        ta.move_down();
+        assert_eq!(ta.cursor(), 10, "onto the head of `ijklm`");
+        assert_eq!(ta.cursor_row_col(5), (2, 0));
+        ta.move_up();
+        ta.move_up();
+        assert_eq!(
+            ta.cursor(),
+            0,
+            "back up through the seated row to the start"
+        );
+        assert_eq!(ta.cursor_row_col(5), (0, 0));
     }
 
     #[test]

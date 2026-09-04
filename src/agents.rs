@@ -866,6 +866,9 @@ fn activity_line(name: &str, args: &str, detail: Option<&str>) -> String {
     ) {
         return format!("{}: {tool}", crate::mcp::capitalize_server(server));
     }
+    // One dim clipped row: a `bash` summary keeps the command's newlines and
+    // space runs for the cell header, flattened here to the row's one line.
+    let args = crate::llm::tools::flatten_one_line(args);
     if args.is_empty() {
         return name.to_string();
     }
@@ -1352,6 +1355,20 @@ mod tests {
         // Late events after settling are dropped.
         assert!(!run.apply(&chunk("late")));
         assert_eq!(run.result.as_deref(), Some("It is 19°C."));
+    }
+
+    #[test]
+    fn a_multiline_command_flattens_on_the_activity_row() {
+        // The summary keeps a `bash` command's newlines for the cell header
+        // (`docs/tools.md`); the roster's one dim clipped row flattens them.
+        let mut run = AgentRun::new("a1", "d", GENERAL_PURPOSE, "p", false);
+        assert!(!run.apply(&StreamEvent::ToolStart {
+            name: "Bash".into(),
+            args: "cd foo\n  ls   -la".into(),
+            detail: None,
+            arguments: None,
+        }));
+        assert_eq!(run.activity(), "Bash: cd foo ls -la");
     }
 
     #[test]

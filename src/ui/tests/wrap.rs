@@ -875,3 +875,56 @@ fn wrap_mode_clip_marks_a_cut_that_lands_on_a_word_boundary() {
     );
     assert!(cols(last) <= 12, "still fits: {last:?}");
 }
+
+#[test]
+fn wrap_output_never_emits_a_whitespace_only_row_at_an_exact_fit() {
+    // A word that ends exactly at the width, followed by a space and another
+    // full-width word, used to leave the boundary space as a row of its own —
+    // a phantom blank row inside `ls`/`cat` output (and a `+1 lines` the hint
+    // then counted). The break consumes the boundary whitespace instead.
+    assert_eq!(wrap_output("hello world", 5), vec!["hello", "world"]);
+    // A longer run at the break is consumed whole, never carried over.
+    assert_eq!(wrap_output("abcd   ef", 4), vec!["abcd", "ef"]);
+}
+
+#[test]
+fn wrap_output_continuations_never_start_with_the_break_space() {
+    // The same exact fit with a short word after it: the space used to land
+    // at the head of the next row, indenting `ef` by one column.
+    assert_eq!(wrap_output("abcd ef", 4), vec!["abcd", "ef"]);
+    assert_eq!(wrap_output("total 12", 5), vec!["total", "12"]);
+}
+
+#[test]
+fn wrap_output_keeps_the_break_space_when_it_fits() {
+    // Unchanged: a space that fits on the row stays at its end, so a row
+    // that broke at a word boundary still ends in the space the source had.
+    assert_eq!(wrap_output("abc def", 4), vec!["abc ", "def"]);
+    assert_eq!(wrap_output("ab   cd", 4), vec!["ab  ", "cd"]);
+}
+
+#[test]
+fn wrap_output_drops_trailing_whitespace_that_overflows_an_exact_fit() {
+    // Trailing spaces past an exactly-full row have no row to live on: the
+    // line ends with the full row, not an extra blank one.
+    assert_eq!(wrap_output("abcd  ", 4), vec!["abcd"]);
+}
+
+#[test]
+fn wrap_mode_rows_agrees_with_wrap_at_an_exact_fit() {
+    for (text, width) in [
+        ("hello world", 5u16),
+        ("abcd ef", 4),
+        ("abcd   ef", 4),
+        ("abcd  ", 4),
+    ] {
+        assert_eq!(
+            WrapMode::Output.rows(text, width),
+            wrap_output(text, width).len(),
+            "{text:?} @ {width}"
+        );
+        let (rows, hidden) = WrapMode::Output.clip(text, width, 10);
+        assert_eq!(rows, wrap_output(text, width), "{text:?} @ {width}");
+        assert_eq!(hidden, 0);
+    }
+}

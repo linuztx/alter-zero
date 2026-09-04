@@ -421,9 +421,38 @@ the paren, not one column past it), so the whole command reads clean:
   ⎿  Partly cloudy +19°C ↓8km/h 83%
 ```
 
+**The command's own spacing survives the header.** The summary a `bash` call
+records (`tools::summarize_call`) is the command **verbatim** (trimmed), and
+the header wraps it with the same whitespace-preserving word wrap the output
+rows under it use (`ui::wrap_output_hanging`, the hanging-indent form of
+`wrap_output`): a run of spaces inside quotes stays a run — `echo "a    b"`
+never reads as `echo "a b"` — and a **newline takes a row of its own**, the
+closing `)` riding the last one, because a newline is a statement boundary
+and the old one-line flatten showed `cd foo\nls` as the different command
+`cd foo ls` (a heredoc's body merged into its opening line). Tabs expand for
+display like a code block's. The permission prompt that asked about the same
+command already showed it this way, so the cell it becomes agrees with it:
+
+```
+● Bash(cat > hello.py <<'EOF'
+      print("hi")
+      EOF)
+```
+
+Only the header keeps it: the one-row surfaces — the agent roster's
+`{Name}: {args}` activity row and the auto mode classifier's `Name(args)`
+action list — flatten the summary themselves (`tools::flatten_one_line`).
+The `(` rides the **name's** row rather than the first argument word, so an
+argument too wide for what is left beside the name spills to the continuation
+row **whole** — `● Deepwiki - ask_question (MCP)(` over `repoName: "…"` —
+instead of being hard-broken across the two (`(repoName` / `: "…"`, the shape
+a forty-column terminal used to show; `docs/mcp.md`).
+
 **A very long header is capped inline** at `TOOL_HEADER_MAX_ROWS` (3) wrapped
 rows, the remainder replaced by `…)` (`TOOL_HEADER_ELLIPSIS`, fitted within the
-width) so a huge command can't flood the cell:
+width) so a huge command can't flood the cell; the marker attaches to the
+last kept word — a kept row can end in the space its wrap broke at, and
+`word …)` would read as a cut after a *missing* word:
 
 ```
 ● Bash(for i in {1..5}; do echo "=== Iteration $i ===" && echo "Current

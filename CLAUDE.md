@@ -2404,8 +2404,9 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   boundary and the wrap cache is filled by the render path (`wrapped_rows`), which
   is why `App::on_key` (and so `move_up`/`move_down`) stays width-agnostic. The
   textarea wraps faithfully (preserving spaces) into byte ranges — distinct from
-  `ui::wrap_text`, which is for **messages** and collapses whitespace. See
-  `docs/textarea.md`.
+  `ui::wrap_text`, which is for the **assistant's markdown** and collapses
+  whitespace (a user's own bubble, a `!` shell header and a `Bash(…)` header
+  keep what was typed — `ui::wrap_output`). See `docs/textarea.md`.
 - **Adding a lifecycle-hook event** (`docs/hooks.md`) is *one defaulted method
   on `llm::hooks::HookSink` plus one call site*. That property is the design;
   a change that makes it untrue — a closure per event on `run_agent`, a new

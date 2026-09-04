@@ -44,9 +44,9 @@ the vim/element/kill-buffer/keymap state.
 
 ## Wrapping: byte ranges, not strings
 
-`ui::wrap_text` (used for finished messages) returns `Vec<String>` and collapses
-runs of whitespace — fine for prose, wrong for an editor, and it loses the byte
-offsets the cursor needs. The textarea instead wraps to **byte ranges**
+`ui::wrap_text` (used for the assistant's markdown) returns `Vec<String>` and
+collapses runs of whitespace — fine for prose, wrong for an editor, and it loses
+the byte offsets the cursor needs. The textarea instead wraps to **byte ranges**
 (`wrap_rows(text, width) -> Vec<Range<usize>>`):
 
 - Each range is the *displayed* slice of one visual row (`text[start..end]`),
@@ -64,6 +64,12 @@ offsets the cursor needs. The textarea instead wraps to **byte ranges**
   on (and the box reserves), keeping the cursor inside the field instead of one
   column past it.
 
+What the draft becomes once sent keeps its spacing too: a user message, a
+`!` shell header and the notices render through `ui::wrap_output` (word
+boundaries, whitespace preserved, tabs expanded for display), so `a    b`
+and a pasted line's indentation look in the bubble as they did in the box.
+Only the assistant's markdown collapses runs of spaces, as markdown does.
+
 codex's own `wrap_ranges` is built on the `textwrap` crate (Cow/​pointer math and
 a `+1` sentinel byte). We don't depend on `textwrap`, so this is a clean
 re-derivation of the same idea on top of our existing greedy algorithm; it is
@@ -76,7 +82,15 @@ the empty trailing range above is the sentinel's *effect*, re-derived.
   whose `start <= cursor`; the column is the display width of
   `text[row.start .. min(cursor, row.end)]`. Preferring the later row at a shared
   boundary matches codex's `partition_point` rule, so a cursor sitting exactly at
-  a wrap point shows at the start of the next row.
+  a wrap point shows at the start of the next row. One more case seats there:
+  the cursor at the **end of a row the wrap left exactly full**, before the
+  space it consumed at the break (`hello|` / `world` at width 5). Its own row
+  would put it at `col == width`, one past the field — the terminal clamps
+  that onto the row's last glyph — so `TextArea::seat` puts it at the next
+  row's start, which is where the next typed character lands anyway (the
+  soft-break twin of the end-of-text sentinel row). A hard `'\n'` keeps its
+  end-of-row seat: that row really is over. Vertical motion starts from the
+  same seat, so ↑/↓ move from the row the cursor is *shown* on.
 - **(row, target_col) → cursor**: walk graphemes across the row accumulating
   display width until it exceeds `target_col`. Used by vertical motion.
 

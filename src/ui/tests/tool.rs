@@ -5,10 +5,10 @@ use super::*;
 use crate::ui::theme::{
     CODE_TAB_WIDTH, EXPAND_HINT, FILE_PEEK_LINES, TOOL_ARGS_COLOR, TOOL_DIFF_ADD_BG,
     TOOL_DIFF_ADD_COLOR, TOOL_DIFF_ADD_MARK_BG, TOOL_DIFF_DEL_BG, TOOL_DIFF_DEL_COLOR,
-    TOOL_DIFF_DEL_MARK_BG, TOOL_DIM_COLOR, TOOL_FAIL_COLOR, TOOL_HEADER_MAX_ROWS,
-    TOOL_LINE_ELLIPSIS, TOOL_LINE_MAX_ROWS, TOOL_OK_COLOR, TOOL_OUTPUT_COLOR, TOOL_PEEK_LINES,
-    TOOL_PEEK_ROWS, TOOL_PULSE_BRIGHT, TOOL_PULSE_DIM, TOOL_PULSE_PERIOD, TOOL_RUNNING_COLOR,
-    TOOL_WAITING_COLOR,
+    TOOL_DIFF_DEL_MARK_BG, TOOL_DIM_COLOR, TOOL_FAIL_COLOR, TOOL_HEADER_ELLIPSIS,
+    TOOL_HEADER_MAX_ROWS, TOOL_LINE_ELLIPSIS, TOOL_LINE_MAX_ROWS, TOOL_OK_COLOR, TOOL_OUTPUT_COLOR,
+    TOOL_PEEK_LINES, TOOL_PEEK_ROWS, TOOL_PULSE_BRIGHT, TOOL_PULSE_DIM, TOOL_PULSE_PERIOD,
+    TOOL_RUNNING_COLOR, TOOL_WAITING_COLOR,
 };
 use crate::ui::tool::{live_tool_lines, running_command_lines, tool_full_lines};
 use crate::ui::wrap::cols;
@@ -2359,4 +2359,89 @@ fn the_trailing_pad_keeps_the_row_tint_not_the_mark_tint() {
     let last = add.spans.last().unwrap();
     assert!(last.content.ends_with(' '), "the row pads to full width");
     assert_eq!(last.style.bg, Some(TOOL_DIFF_ADD_BG));
+}
+
+// --- the header keeps the command's own spacing (docs/tools.md) ---
+
+#[test]
+fn tool_header_keeps_the_commands_space_runs() {
+    // A quoted run of spaces is part of the command: `echo "a    b"` must
+    // not read as `echo "a b"` — the permission prompt already shows the
+    // command byte-exact, so the cell it becomes has to agree with it.
+    let lines = tool_lines(&tool("Bash", "echo \"a    b\"", ToolStatus::Ok, "out"), 80);
+    assert_eq!(plain(&lines[0]), "● Bash(echo \"a    b\")");
+}
+
+#[test]
+fn tool_header_renders_a_multiline_command_line_by_line() {
+    // A newline is a statement boundary in a shell script: `cd foo\nls -la`
+    // flattened to `cd foo ls -la` reads as a different command. Each line
+    // of the command takes a header row of its own, aligned under the `(`,
+    // the closing paren riding the last one (Claude Code's multi-line
+    // `Bash(…)` header).
+    let lines = tool_lines(&tool("Bash", "cd foo\nls -la", ToolStatus::Ok, "out"), 80);
+    assert_eq!(plain(&lines[0]), "● Bash(cd foo");
+    assert_eq!(plain(&lines[1]), "      ls -la)");
+    assert!(
+        plain(&lines[2]).contains('⎿'),
+        "the output follows the header"
+    );
+}
+
+#[test]
+fn tool_header_spills_a_first_word_that_fits_the_continuation_row_whole() {
+    // At 40 columns `● Deepwiki - ask_question (MCP)(` leaves eight columns on
+    // its row: `repoName:` used to be hard-broken across the rows as
+    // `repoName` / `: "linuztx/…"`. A first word that fits a continuation row
+    // moves down whole; the `(` stays with the name, so the header reads as
+    // a call whose arguments spill onto the next row.
+    let call = tool(
+        "deepwiki - ask_question (MCP)",
+        r#"{"repoName":"linuztx/flaredantic","question":"What is it?"}"#,
+        ToolStatus::Failed,
+        "err",
+    );
+    let lines = tool_lines(&call, 40);
+    assert_eq!(plain(&lines[0]), "● Deepwiki - ask_question (MCP)(");
+    assert!(
+        plain(&lines[1]).starts_with("  repoName: \"linuztx/flaredantic\","),
+        "the first argument moves down whole: {:?}",
+        plain(&lines[1])
+    );
+    for l in &lines {
+        assert!(
+            cols(&plain(l)) <= 40,
+            "row stays within the width: {:?}",
+            plain(l)
+        );
+    }
+}
+
+#[test]
+fn tool_header_truncation_never_leaves_a_space_before_the_ellipsis() {
+    // The `…)` cut lands wherever the row budget runs out — which can be
+    // right after a space. The marker attaches to the last kept word.
+    let cmd = "word ".repeat(100);
+    for width in 20..60u16 {
+        let lines = tool_lines(&tool("Bash", cmd.trim_end(), ToolStatus::Ok, "out"), width);
+        let cut = lines
+            .iter()
+            .map(plain)
+            .find(|row| row.contains(&format!("{TOOL_HEADER_ELLIPSIS})")))
+            .unwrap_or_else(|| panic!("a capped header at {width}"));
+        assert!(
+            !cut.contains(&format!(" {TOOL_HEADER_ELLIPSIS}")),
+            "no space before the ellipsis at {width}: {cut:?}"
+        );
+        assert!(cols(&cut) <= usize::from(width), "fits at {width}: {cut:?}");
+    }
+}
+
+#[test]
+fn tool_header_expands_tabs_in_a_command_for_display() {
+    // A tab paints as zero cells (ratatui drops control characters), which
+    // would glue `cut` to `-f1` on screen; the header expands it like the
+    // code-block and output paths do, byte-exact in the record.
+    let lines = tool_lines(&tool("Bash", "cut\t-f1", ToolStatus::Ok, "out"), 80);
+    assert_eq!(plain(&lines[0]), "● Bash(cut    -f1)");
 }

@@ -4,10 +4,9 @@
 
 use super::assistant::expand_code_tabs;
 use super::file_cell::{diff_line_color, file_cell_lines, gutter_row, is_diff_tool};
-use super::inline::wrap_inline_hanging;
 use super::theme::*;
 use super::wrap::{
-    WrapMode, blend, cols, truncate_cols, truncate_spans, wrap_output, wrap_verbatim,
+    WrapMode, blend, cols, truncate_cols, wrap_output, wrap_output_hanging, wrap_verbatim,
 };
 use super::*;
 
@@ -58,11 +57,15 @@ pub(super) fn tool_pulse_color(elapsed: Duration) -> Color {
 /// When the header overflows `width` the args **word-wrap** across continuation
 /// rows, each indented to align **under the opening `(`** (the width of
 /// `● {name}`), so a long command reads clean and is never clipped at the
-/// terminal edge — Claude-Code's wrapped `Bash(…)` header. `max_rows` caps how
-/// many rows are shown: `Some(n)` (the inline peek and the live preview) keeps
-/// the first `n` and splices [`TOOL_HEADER_ELLIPSIS`] + `)` onto the last so a
-/// huge command doesn't flood the cell; `None` (the Ctrl+O transcript) renders
-/// the whole thing. A `!` shell command is a tool with no args (name = the
+/// terminal edge — Claude-Code's wrapped `Bash(…)` header. The args' own
+/// whitespace survives the wrap ([`wrap_output_hanging`]: a run of spaces
+/// inside quotes stays, a newline takes a row of its own, like the permission
+/// prompt that asked about the same command), and an argument too wide for
+/// the name's row spills to the next one whole. `max_rows` caps how many rows
+/// are shown: `Some(n)` (the inline peek and the live preview) keeps the first
+/// `n` and splices [`TOOL_HEADER_ELLIPSIS`] + `)` onto the last so a huge
+/// command doesn't flood the cell; `None` (the Ctrl+O transcript) renders the
+/// whole thing. A `!` shell command is a tool with no args (name = the
 /// command), so it stays a bare single `● {command}` line.
 pub(super) fn tool_header_lines(
     tool: &ToolCall,
@@ -104,9 +107,8 @@ pub(super) fn tool_header_lines(
         .fg(TOOL_ARGS_COLOR)
         .add_modifier(Modifier::BOLD);
     // Continuation rows indent to align under the opening `(`, which sits right
-    // after `● {name}` — wrapping `(args)` as one run, parens and args alike bold
-    // white (a uniform, noticeable header body) — so the wrapped rows land
-    // exactly beneath the `(`.
+    // after `● {name}` — parens and args alike bold white (a uniform, noticeable
+    // header body) — so the wrapped rows land exactly beneath it.
     //
     // That reads best while the name is short. A long one — an MCP call's
     // `deepwiki - ask_question (MCP)` is 31 columns — would spend a third of a
@@ -114,24 +116,40 @@ pub(super) fn tool_header_lines(
     // header wider than [`TOOL_HEADER_ALIGN_SHARE`] of the width falls back to
     // the bullet's own two columns and the args get the whole row
     // (`docs/mcp.md`). The two rows then have **different** budgets — the first
-    // is what is left beside `● {name}`, the rest what is left beside the
-    // indent — which is exactly [`wrap_inline_hanging`].
+    // is what is left beside `● {name}(`, the rest what is left beside the
+    // indent — which is exactly [`wrap_output_hanging`].
     let aligned = cols(TOOL_BULLET) + cols(&display);
     let indent_cols = if aligned > (width as usize) / TOOL_HEADER_ALIGN_SHARE {
         cols(TOOL_BULLET)
     } else {
         aligned
     };
-    let first_width = (width as usize).saturating_sub(aligned).max(1);
+    // The `(` rides the name's row rather than the first argument word, so an
+    // argument too wide for what is left beside the name spills to the
+    // continuation row **whole** (`Name(` over `repoName: …`) instead of being
+    // hard-broken across the two (`(repoName` / `: …`).
+    let first_width = (width as usize)
+        .saturating_sub(aligned + cols(TOOL_HEADER_OPEN))
+        .max(1);
     let body_width = (width as usize).saturating_sub(indent_cols).max(1);
-    let mut rows = wrap_inline_hanging(
-        &[(format!("({args})"), args_style)],
-        first_width as u16,
-        body_width as u16,
-    );
+    // The arguments keep their own whitespace — a run of spaces inside quotes
+    // is data, a newline a statement boundary that takes a row of its own —
+    // wrapped at word boundaries like the output rows under them, with tabs
+    // expanded for display the same way (the record stays byte-exact). The
+    // closing `)` rides the last line.
+    let body = format!("{}{TOOL_HEADER_CLOSE}", expand_code_tabs(&args));
+    // A wrapped row keeps the space its break fell on at its end; it paints
+    // as nothing, so it is dropped here — the rows read the same and the
+    // transcript's text stays clean.
+    let mut rows: Vec<String> = wrap_output_hanging(&body, first_width as u16, body_width as u16)
+        .into_iter()
+        .map(|row| row.trim_end().to_string())
+        .collect();
     // Cap a very long header: keep the first `max` rows and replace the tail with
-    // `…)` (fitted within the body width, the same bold white) — the whole command
-    // is still in Ctrl+O.
+    // `…)` (fitted within the row's own width, the same bold white) — the whole
+    // command is still in Ctrl+O. The marker attaches to the last kept word: a
+    // kept row can end in the space its wrap broke at, and `word …)` would read
+    // as a cut after a missing word rather than mid-command.
     if let Some(max) = max_rows
         && rows.len() > max.max(1)
     {
@@ -142,20 +160,29 @@ pub(super) fn tool_header_lines(
             body_width
         };
         if let Some(last) = rows.last_mut() {
-            let keep = room.saturating_sub(cols(TOOL_HEADER_ELLIPSIS) + cols(")"));
-            *last = truncate_spans(last, keep);
-            last.push(Span::styled(format!("{TOOL_HEADER_ELLIPSIS})"), args_style));
+            let keep = room.saturating_sub(cols(TOOL_HEADER_ELLIPSIS) + cols(TOOL_HEADER_CLOSE));
+            let mut cut = truncate_cols(last, keep);
+            cut.truncate(cut.trim_end().len());
+            cut.push_str(TOOL_HEADER_ELLIPSIS);
+            cut.push_str(TOOL_HEADER_CLOSE);
+            *last = cut;
         }
     }
     rows.into_iter()
         .enumerate()
-        .map(|(i, mut body_spans)| {
+        .map(|(i, row)| {
             let mut spans = if i == 0 {
-                vec![bullet(), name()]
+                vec![
+                    bullet(),
+                    name(),
+                    Span::styled(TOOL_HEADER_OPEN.to_string(), args_style),
+                ]
             } else {
                 vec![Span::raw(" ".repeat(indent_cols))]
             };
-            spans.append(&mut body_spans);
+            if !row.is_empty() {
+                spans.push(Span::styled(row, args_style));
+            }
             Line::from(spans)
         })
         .collect()

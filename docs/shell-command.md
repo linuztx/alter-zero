@@ -253,8 +253,9 @@ The `?` shortcuts band gains a `! for shell command` entry.
   the Ctrl+O `tool_full_lines` is headerless too
   (no `● ls` bullet) and shows the retained output uncapped under `⎿`,
   word-wrapped with whitespace preserved (`wrap_output` — `ls -l`/`tree`
-  alignment survives, prose breaks at words; `wrap_text` stays for
-  messages); a
+  alignment survives, prose breaks at words; `wrap_text` stays for the
+  assistant's markdown — the `! command` header itself and a user's bubble
+  wrap with `wrap_output` too, `docs/textarea.md`); a
   truncated output (`tool.truncated` set) appends a dim `…`
   (`TOOL_TRUNCATED_MARKER`) line after the last retained line in the expanded
   view, while a complete output appends nothing; `conversation_lines` and

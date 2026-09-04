@@ -214,6 +214,13 @@ pub(super) const TOOL_HEADER_MAX_ROWS: usize = 3;
 /// [`TOOL_HEADER_MAX_ROWS`].
 pub(super) const TOOL_HEADER_ELLIPSIS: &str = "…";
 
+/// The parens framing a header's arguments — `● {name}({args})`. The opening
+/// one rides the name's row (so an argument too wide for what is left beside
+/// the name spills to the continuation row whole), the closing one the last
+/// argument row; both wear the arguments' bold white (`tool_header_lines`).
+pub(super) const TOOL_HEADER_OPEN: &str = "(";
+pub(super) const TOOL_HEADER_CLOSE: &str = ")";
+
 /// The share of the terminal a wrapped header may spend aligning its
 /// continuation rows under the opening `(`: at most one part in this many.
 /// Past it (an MCP call's `● deepwiki - ask_question (MCP)` is 31 columns —

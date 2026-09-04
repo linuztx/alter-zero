@@ -125,8 +125,9 @@ pub(super) fn wrap_verbatim(text: &str, width: u16) -> Vec<String> {
 /// (`sudo: …`) should break cleanly at spaces, yet a line's exact spaces must
 /// survive so `ls -l` columns / indentation that already fit are untouched —
 /// only an over-wide line reflows. The boundary space stays at the end of the
-/// current row (so concatenating the rows reconstructs the line byte-exactly)
-/// and continuation rows start at a word. A single word wider than `width` is
+/// current row when it fits there; a run that overflows an exactly-full row is
+/// consumed at the break, so continuation rows always start at a word and no
+/// row is ever the boundary whitespace alone. A single word wider than `width` is
 /// hard-broken on grapheme boundaries, measured in display columns (like
 /// [`wrap_segment`]'s hard break). `width == 0` disables wrapping. Used by the
 /// command/shell peek ([`result_peek_block`]), the running tail
@@ -134,6 +135,58 @@ pub(super) fn wrap_verbatim(text: &str, width: u16) -> Vec<String> {
 /// so the three wrap identically.
 pub(super) fn wrap_output(text: &str, width: u16) -> Vec<String> {
     WrapMode::Output.wrap(text, width)
+}
+
+/// [`wrap_output`] with a **hanging indent**: the first row of `text`'s first
+/// line wraps to `first` columns — the room left beside a lead the caller
+/// prints on that row (a tool header's `● {name}(`) — and every other row,
+/// the later lines' included, to `rest`, the room left beside the indent they
+/// are printed at. Equal widths are exactly [`wrap_output`].
+///
+/// A first word too wide for `first` but not for `rest` leaves the first row
+/// **empty** and opens the continuation whole, instead of being hard-broken
+/// across the two rows (`(repoName` / `: "…"` — the reported MCP header at
+/// forty columns): the caller's lead then stands alone on its row and the
+/// arguments spill under it. See
+/// [`tool_header_lines`](super::tool::tool_header_lines).
+pub(super) fn wrap_output_hanging(text: &str, first: u16, rest: u16) -> Vec<String> {
+    let mut lines = text.split('\n');
+    let mut out = Vec::new();
+    if let Some(head) = lines.next() {
+        out.extend(hanging_first_line(head, first, rest));
+    }
+    for line in lines {
+        out.extend(WrapMode::Output.wrap(line, rest));
+    }
+    out
+}
+
+/// The rows of [`wrap_output_hanging`]'s first (`'\n'`-free) line: its first
+/// row at `first`, the rest re-wrapped at `rest` from where that row ended —
+/// which is the same greedy decision a single scan at two widths would make,
+/// since a row's break depends only on the text from its own start.
+fn hanging_first_line(line: &str, first: u16, rest: u16) -> Vec<String> {
+    if first == 0 || rest == 0 {
+        return vec![line.to_string()];
+    }
+    if first == rest {
+        return WrapMode::Output.wrap(line, rest);
+    }
+    // The spill: the leading word fits a continuation row but not the first.
+    let head = line.split(char::is_whitespace).next().unwrap_or_default();
+    let head_w = cols(head);
+    if head_w > usize::from(first) && head_w <= usize::from(rest) {
+        let mut rows = vec![String::new()];
+        rows.extend(WrapMode::Output.wrap(line, rest));
+        return rows;
+    }
+    let mut ranges: Vec<Range<usize>> = Vec::new();
+    WrapMode::Output.scan(line, usize::from(first), &mut |r| ranges.push(r));
+    let mut rows = vec![line[ranges[0].clone()].to_string()];
+    if let Some(second) = ranges.get(1) {
+        rows.extend(WrapMode::Output.wrap(&line[second.start..], rest));
+    }
+    rows
 }
 
 /// Which wrapper a collapsed cell measures and builds its rows with — the
@@ -163,13 +216,39 @@ impl WrapMode {
         let mut cur_w = 0usize; // display width of `line[start..idx]`
         let mut brk: Option<usize> = None; // byte index past the last space
         let mut idx = 0usize; // byte index just past the graphemes consumed
-        for g in line.graphemes(true) {
+        let mut emitted = false; // whether any row has been emitted yet
+        let mut graphemes = line.grapheme_indices(true).peekable();
+        while let Some((_, g)) = graphemes.next() {
             let g_w = cols(g);
+            let is_space = g.chars().all(char::is_whitespace);
             if cur_w > 0 && cur_w + g_w > width {
                 match (self, brk) {
+                    // The row is exactly full and the next thing is
+                    // whitespace: the row ends here and the whitespace run is
+                    // **consumed at the break**, so the continuation starts at
+                    // a word. Carrying the run over used to leave the boundary
+                    // space at the head of the next row — `total` / ` 12` —
+                    // or, before another full-width word, as a row of its own:
+                    // a phantom blank row inside `hello` / ` ` / `world` that
+                    // the `+N lines` hint then counted (`docs/long-lines.md`).
+                    (Self::Output, _) if is_space => {
+                        emit(start..idx);
+                        emitted = true;
+                        while graphemes
+                            .peek()
+                            .is_some_and(|(_, next)| next.chars().all(char::is_whitespace))
+                        {
+                            graphemes.next();
+                        }
+                        start = graphemes.peek().map_or(line.len(), |(i, _)| *i);
+                        idx = start;
+                        cur_w = 0;
+                        brk = None;
+                        continue;
+                    }
                     // Break at the last space: it stays at the end of the
                     // current row, the partial word after it carries to the
-                    // next (so concatenating rows rebuilds the line exactly).
+                    // next.
                     (Self::Output, Some(bp)) => {
                         emit(start..bp);
                         start = bp;
@@ -183,15 +262,20 @@ impl WrapMode {
                         cur_w = 0;
                     }
                 }
+                emitted = true;
                 brk = None;
             }
             idx += g.len();
             cur_w += g_w;
-            if self == Self::Output && g.chars().all(char::is_whitespace) {
+            if self == Self::Output && is_space {
                 brk = Some(idx);
             }
         }
-        emit(start..line.len());
+        // The last row — unless a consumed trailing run left nothing after an
+        // exactly-full row (an empty line still gets its one empty row).
+        if !emitted || start < line.len() {
+            emit(start..line.len());
+        }
     }
 
     /// `text` wrapped to `width` display columns, this mode's way — the body of
@@ -356,28 +440,6 @@ pub(super) fn truncate_cols(s: &str, max: usize) -> String {
         }
         out.push_str(g);
         w += gw;
-    }
-    out
-}
-
-/// Keep the leading graphemes of `spans` that fit within `max` display columns,
-/// preserving each span's style (a span-aware [`truncate_cols`]). Used to make
-/// room for the `…)` when a header is truncated at [`TOOL_HEADER_MAX_ROWS`].
-pub(super) fn truncate_spans(spans: &[Span<'static>], max: usize) -> Vec<Span<'static>> {
-    let mut out: Vec<Span<'static>> = Vec::new();
-    let mut used = 0usize;
-    for span in spans {
-        let w = cols(&span.content);
-        if used + w <= max {
-            out.push(span.clone());
-            used += w;
-        } else {
-            let kept = truncate_cols(&span.content, max - used);
-            if !kept.is_empty() {
-                out.push(Span::styled(kept, span.style));
-            }
-            break;
-        }
     }
     out
 }
