@@ -40,8 +40,8 @@ definitions + JSON schemas live in [`llm::tools`](../src/llm/tools.rs)
 | --- | --- | --- |
 | `bash` | `command` (req), `timeout` (opt, ms — default 120 000, cap 600 000; the pre-rename alias `timeout_ms` still parses) | `sh -c command` with **no controlling terminal** (`crate::subprocess` — a `/dev/tty` password prompt fails fast), stdin `/dev/null`, stdout+stderr captured, byte-capped, killed on timeout/cancel |
 | `read` | `path` (req — absolute, like the other two), `offset` (opt 1-based line), `limit` (opt, default 2000 lines) | read the file: text returns numbered lines (a dynamic-width gutter); an **image** (png/jpg/jpeg/gif/webp) is attached visually so the model can see it (`offset`/`limit` ignored — see "Image reads" below) |
-| `write` | `path` (req — the schema asks for an **absolute** path), `content` (req) | create parent dirs, write the file; **show** `Wrote {N} lines to {path}` over the numbered contents for a new file, or the numbered diff hunks vs the previous content — the path recorded verbatim and *shown* relative / `~`-relative / absolute by the TUI ("Path display" below) — while the *model* reads a one-line ack |
-| `edit` | `path` (req — absolute, like `write`'s), `old_string` (req), `new_string` (req), `replace_all` (opt) | exact string replacement; error if `old_string` is absent, or non-unique without `replace_all`; **show** `Updated {path} (+A -D)` over the numbered diff hunks, the path shown like `write`'s — the model again reads the ack |
+| `write` | `path` (req — the schema asks for an **absolute** path), `content` (req) | create parent dirs, write the file; **show** `Wrote {N} lines to {path}` over the numbered contents for a new file, or the numbered diff hunks vs the previous content — the head's path shown cwd-relative (`tools::display_path`, `../` climbs outside the cwd), the `● Write({path})` header by the TUI's own rule ("Path display" below) — while the *model* reads a one-line ack |
+| `edit` | `path` (req — absolute, like `write`'s), `old_string` (req), `new_string` (req), `replace_all` (opt) | exact string replacement; error if `old_string` is absent, or non-unique without `replace_all`; **show** `Updated {path} (+A -D)` over the numbered diff hunks, the path shown cwd-relative like `write`'s — the model again reads the ack |
 
 `read`/`write`/`edit` are separate JSON tools rather than one `apply_patch`
 grammar: they work on any function-calling model, and `edit`'s exact
@@ -180,11 +180,12 @@ cores in `llm::tools`:
   file is a `Wrote {N} lines to <path>` head over the **numbered contents**
   (`tools::write_report` — `{n:>W} {text}` rows, the numbers matching `read`'s
   so the model can cite them to `edit`); overwriting is reported like an edit
-  (`tools::update_report`). The head names the model's own (absolute, per
-  the schema) `path` argument **verbatim**, exactly as the `● Write({path})`
-  header does — the record never shortens; how both *read* on screen is the
-  TUI's path display rule ("Path display" below, applied at render time).
-  What the **model** reads is the one-line ack below.
+  (`tools::update_report`). The head's path is the compact cwd-relative
+  display form (`tools::display_path` — `src/main.rs` under the cwd, a
+  `../../README.md` climb outside it), while the `● Write({path})` header
+  records the model's own (absolute, per the schema) argument verbatim and
+  *shows* it by the TUI's path display rule ("Path display" below, applied
+  at render time). What the **model** reads is the one-line ack below.
 - **`edit`** — the pure `apply_edit` engine does the exact replacement; the
   executor writes it back and reports `Updated <path> (+A -D)` over the
   **numbered diff hunks** (`render_numbered_diff` — only each change run plus
@@ -210,7 +211,7 @@ Replaced 3 occurrences.
 ```
 
 (`tools::write_ack` / `tools::edit_ack` over the model's own path argument —
-the absolute one it sent, which the cell's record carries too. A
+the absolute one it sent, not the cell head's cwd-relative display form. A
 `write` over an existing file says *overwritten* rather than borrowing
 `edit`'s "updated": that the file was already there is a fact only the
 executor knows, and a model that expected to create it should hear so. The
@@ -573,11 +574,11 @@ sits **one column further in** (`ui::file_body_indent`), matching Claude Code:
 
 ### Path display
 
-The two surfaces that name a file — the `● Read/Write/Edit({path})` header
-and the `Wrote {N} lines to {path}` / `Updated {path} (+A -D)` corner head —
-show the path the way Claude Code does, by **where it is** relative to the
-session (`app::PathDisplay`, the rule of `docs/tools.md`'s worked example,
-launched in `~/Codes/tests`):
+The `● Read/Write/Edit({path})` **header** shows the path the way Claude Code
+does, by **where it is** relative to the session (`app::PathDisplay`; the
+worked example is launched in `~/Codes/tests`). The corner head under it is
+the executor's own record — `tools::display_path`'s cwd-relative form, a
+`../` climb outside the cwd — and is never rewritten:
 
 ```
 ● Write(hello.py)                      ← /home/linuztx/Codes/tests/hello.py, under the cwd
@@ -585,9 +586,9 @@ launched in `~/Codes/tests`):
 ● Write(hello/hello.py)                ← …/Codes/tests/hello/hello.py, still under it
   ⎿  Wrote 1 line to hello/hello.py
 ● Write(~/hello.py)                    ← /home/linuztx/hello.py: outside the cwd, under home
-  ⎿  Wrote 1 line to ~/hello.py
+  ⎿  Wrote 1 line to ../../hello.py
 ● Edit(/tmp/notes.txt)                 ← outside home: absolute
-  ⎿  Updated /tmp/notes.txt (+1 -1)
+  ⎿  Updated ../../../../tmp/notes.txt (+1 -1)
 ```
 
 - **Under the cwd → relative** (`hello.py`, `src/app.rs`; the cwd itself is
@@ -600,31 +601,31 @@ launched in `~/Codes/tests`):
   the cwd first, and symlinks are never consulted. The schema asks the model
   for absolute paths, so this is what every header used to spend most of its
   row on.
-- **It is a render-time rule, and only a render-time rule.** The executor
-  records the model's argument verbatim in `ToolCall::args` *and* in the head
-  it writes (`describe_change` → `tools::write_report`/`update_report`), and
-  `ui::tool_header_lines` / `ui::file_cell_lines`'s `display_file_head`
-  shorten the two painted rows through the session's policy. So the derived
-  context (Ctrl+D), the rollout, the auto mode classifier's `Name(args)`
-  action log and the permission rules all keep the absolute path — a model
-  reading its own history back sees exactly what it sent — while the inline
-  cell, the live strip's running cell, the Ctrl+O transcript, a subagent
-  session view, the permission prompt's target row (`docs/permissions.md`),
-  the live agent tree's `Write: {path}` activity row and the Ctrl+O agent
-  expansion's nested `Write({path})` headers (`ui::agent`'s
-  `display_activity` / `display_nested_header`, `docs/agent-tool.md`) all
-  show the short form. Because the rule is derived from the record, a
-  session **resumed from another directory** reads its paths relative to
-  where it is *now*, and a rollout recorded before the rule (its heads
-  carrying the executor's old `../` climb) reads by it too: the climb
-  resolves against the cwd and lands where the file is.
+- **It is a render-time rule, and only a render-time rule.** The header's
+  record — `ToolCall::args`, the verbatim summary — is untouched;
+  `ui::tool_header_lines` shortens the painted row through the session's
+  policy. So the derived context (Ctrl+D), the rollout, the auto mode
+  classifier's `Name(args)` action log and the permission rules all keep the
+  absolute path — a model reading its own history back sees exactly what it
+  sent — while the inline cell, the live strip's running cell, the Ctrl+O
+  transcript, a subagent session view, the permission prompt's target row
+  (`docs/permissions.md`), the live agent tree's `Write: {path}` activity
+  row and the Ctrl+O agent expansion's nested `Write({path})` headers
+  (`ui::agent`'s `display_activity` / `display_nested_header`,
+  `docs/agent-tool.md`) all show the short form. A session **resumed from
+  another directory** reads its headers relative to where it is *now*.
+- **The corner head is the executor's, not the renderer's.** `Wrote {N}
+  lines to {path}` / `Updated {path} (+A -D)` carry the path the executor
+  chose when it wrote the cell (`describe_change` → `tools::display_path`
+  against the process cwd — `hello.py` under it, `../../hello.py` above it)
+  and the file cell paints that text as it is, old rollouts and the legacy
+  `Created {path} ({N} lines)` head included. The two rows can therefore name
+  the same file two ways (`~/hello.py` over `../../hello.py`): the header says
+  where the file is, the head how the executor reached it.
 - **Only a file tool's summary is a path.** `FILE_TOOL_NAMES`
   (`Read`/`Write`/`Edit`) gates it: a `Bash` command embeds paths the shell
   will resolve, an `Agent`'s summary is prose, an MCP call's is JSON, and the
-  `!` shell cell has no header — those echo the record verbatim. A head that
-  isn't in the `Wrote`/`Updated`/legacy `Created` shape (a failure body, a
-  `read`'s synthesized `Read N lines`, which carries no path) passes through
-  untouched.
+  `!` shell cell has no header — those echo the record verbatim.
 - **Injected, never read.** The policy is the process cwd plus `$HOME`,
   handed to `App::set_path_display` once at bootstrap like the clock, so the
   pure renderers never touch the environment; `PathDisplay::VERBATIM` — the

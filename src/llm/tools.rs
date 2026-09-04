@@ -1091,6 +1091,88 @@ pub fn format_read(content: &str, offset: Option<usize>, limit: Option<usize>) -
     out
 }
 
+/// The compact display form of a file tool's `path` for the summary line —
+/// Claude-Code's look: a file under `cwd` reads by its relative path
+/// (`src/main.rs`), one outside it climbs with `../` segments
+/// (`../../README.md`). The tool schemas ask the model for **absolute** paths
+/// and the `● Write({path})` header echoes the argument verbatim, so the
+/// corner row uses this shorter form instead of repeating the whole prefix.
+/// Purely lexical — `.`/`..` collapse, symlinks are never consulted; a
+/// relative input is already cwd-relative and only normalizes; an absolute
+/// path on a different root than `cwd` (a Windows drive mismatch) stays as
+/// given.
+#[must_use]
+pub fn display_path(path: &str, cwd: &std::path::Path) -> String {
+    use std::path::Component;
+    let p = std::path::Path::new(path);
+    if !p.is_absolute() {
+        // Already cwd-relative: collapse `.` and `x/..`, keep leading `..`s.
+        let mut parts: Vec<String> = Vec::new();
+        for component in p.components() {
+            match component {
+                Component::CurDir => {}
+                Component::ParentDir => {
+                    if parts.last().is_some_and(|last| last != "..") {
+                        parts.pop();
+                    } else {
+                        parts.push("..".to_string());
+                    }
+                }
+                other => parts.push(other.as_os_str().to_string_lossy().into_owned()),
+            }
+        }
+        return if parts.is_empty() {
+            ".".to_string()
+        } else {
+            parts.join("/")
+        };
+    }
+    let (Some((path_root, path_parts)), Some((cwd_root, cwd_parts))) =
+        (absolute_parts(p), absolute_parts(cwd))
+    else {
+        return path.to_string(); // a relative cwd — nothing to relate to
+    };
+    if path_root != cwd_root {
+        return path.to_string(); // different roots: keep the absolute path
+    }
+    let common = path_parts
+        .iter()
+        .zip(&cwd_parts)
+        .take_while(|(a, b)| a == b)
+        .count();
+    let mut out: Vec<String> = vec!["..".to_string(); cwd_parts.len() - common];
+    out.extend(path_parts[common..].iter().cloned());
+    if out.is_empty() {
+        ".".to_string()
+    } else {
+        out.join("/")
+    }
+}
+
+/// An absolute path split lexically into its root prefix (empty on Unix, the
+/// drive on Windows) and its normal components, `.` dropped and `..` collapsed
+/// (saturating at the root). `None` for a relative path.
+fn absolute_parts(p: &std::path::Path) -> Option<(String, Vec<String>)> {
+    use std::path::Component;
+    let mut root = String::new();
+    let mut absolute = false;
+    let mut parts: Vec<String> = Vec::new();
+    for component in p.components() {
+        match component {
+            Component::Prefix(prefix) => {
+                root.push_str(&prefix.as_os_str().to_string_lossy());
+            }
+            Component::RootDir => absolute = true,
+            Component::CurDir => {}
+            Component::ParentDir => {
+                parts.pop();
+            }
+            Component::Normal(seg) => parts.push(seg.to_string_lossy().into_owned()),
+        }
+    }
+    absolute.then_some((root, parts))
+}
+
 /// The raw-byte ceiling for an image `read` — 3.75 MB, so the base64 form
 /// (4/3 inflation) stays under the strictest mainstream provider's 5 MB
 /// per-image limit. Claude Code's Read uses the same bound. Past it the read
@@ -1432,12 +1514,11 @@ pub fn render_numbered_diff(diff: &Diff) -> String {
 
 /// The `write` tool's report for brand-new content — Claude-Code's
 /// `Wrote {N} lines to {path}` head over the numbered contents
-/// ([`render_numbered_content`]). `path` is echoed as the caller gives it —
-/// the executor passes the model's own argument verbatim, and the TUI shows
-/// it relative / `~`-relative / absolute at render time (`docs/tools.md`
-/// *Path display*); the head is exactly what the cell parses. Shared with
-/// the offline dummy so a scripted `Write` cell is byte-for-byte the live
-/// one (`docs/dummy-backend.md`).
+/// ([`render_numbered_content`]). `path` is the display form the caller chose
+/// (the executor passes the cwd-relative [`display_path`]); the head doubles
+/// as the model-facing result, exactly what the cell shows. Shared with the
+/// offline dummy so a scripted `Write` cell is byte-for-byte the live one
+/// (`docs/dummy-backend.md`).
 #[must_use]
 pub fn write_report(path: &str, content: &str) -> String {
     let lines = content.lines().count();
@@ -1456,10 +1537,9 @@ pub fn write_report(path: &str, content: &str) -> String {
 /// The `write`/`edit` report for a change to existing content — the
 /// `Updated {path} (+A -D)` head over the numbered diff hunks
 /// ([`render_numbered_diff`]), or `No changes to {path}` when the diff is
-/// empty. `path` is echoed as given, like [`write_report`]'s — the
-/// executor's verbatim argument, shortened only where it is painted. The
-/// [`write_report`] twin, shared with the offline dummy for the same
-/// byte-parity.
+/// empty. `path` is the display form the caller chose (the executor passes
+/// the cwd-relative [`display_path`]). The [`write_report`] twin, shared with
+/// the offline dummy for the same byte-parity.
 #[must_use]
 pub fn update_report(path: &str, old: &str, new: &str) -> String {
     let diff = diff_lines(old, new);
@@ -2199,6 +2279,54 @@ mod tests {
         assert!(!is_image_read_output("1 alpha\n2 beta"));
         assert!(!is_image_read_output("(file a.txt is empty)"));
         assert!(!is_image_read_output("could not read a.png: missing"));
+    }
+
+    // ===== path display (docs/tools.md) =====
+
+    #[test]
+    fn display_path_shows_a_file_under_the_cwd_by_its_relative_path() {
+        let cwd = std::path::Path::new("/home/linuztx/Codes/tests");
+        assert_eq!(
+            display_path("/home/linuztx/Codes/tests/readme.md", cwd),
+            "readme.md"
+        );
+        assert_eq!(
+            display_path("/home/linuztx/Codes/tests/src/app.rs", cwd),
+            "src/app.rs"
+        );
+    }
+
+    #[test]
+    fn display_path_climbs_out_of_the_cwd_with_parent_segments() {
+        // The user-visible contract: a target outside the cwd reads as a
+        // `../` climb, never the whole absolute path.
+        let cwd = std::path::Path::new("/home/linuztx/Codes/tests/a/b");
+        assert_eq!(
+            display_path("/home/linuztx/Codes/tests/readme.md", cwd),
+            "../../readme.md"
+        );
+        assert_eq!(
+            display_path("/etc/hosts", std::path::Path::new("/home/user")),
+            "../../etc/hosts"
+        );
+    }
+
+    #[test]
+    fn display_path_keeps_a_relative_input_and_normalizes_lexically() {
+        let cwd = std::path::Path::new("/repo");
+        assert_eq!(display_path("README.md", cwd), "README.md");
+        assert_eq!(display_path("./src/../README.md", cwd), "README.md");
+        assert_eq!(display_path("../other/file.txt", cwd), "../other/file.txt");
+    }
+
+    #[test]
+    fn display_path_resolves_dot_segments_in_an_absolute_path() {
+        let cwd = std::path::Path::new("/repo/sub");
+        assert_eq!(
+            display_path("/repo/./sub/../README.md", cwd),
+            "../README.md"
+        );
+        assert_eq!(display_path("/repo/sub/dir/", cwd), "dir");
     }
 
     // ===== the write/update reports (docs/tools.md) =====

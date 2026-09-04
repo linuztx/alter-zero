@@ -350,11 +350,14 @@ impl ToolCall {
 /// **relative** to it (`hello.py`, `src/app.rs`), one outside the cwd but
 /// under the home directory shows **`~`-relative** (`~/hello.py`), and
 /// anything else shows **absolute** (`/tmp/x.py`; another user's home is not
-/// `~`). The two surfaces that name the file — the `● Write({path})` header
-/// and the `Wrote N lines to {path}` / `Updated {path} (+A -D)` corner head
-/// — apply it at render time, inline and in the Ctrl+O transcript alike; the
-/// record underneath keeps the model's own absolute argument, which is what
-/// the derived context (Ctrl+D), the rollout, the classifier's action log and
+/// `~`). The `● Write({path})` header applies it at render time — inline, in
+/// the live strip and in the Ctrl+O transcript alike, as do the permission
+/// prompt's target row and the agent rows that name a file — while the
+/// `Wrote N lines to {path}` / `Updated {path} (+A -D)` corner head under it
+/// stays what the executor recorded: its own cwd-relative form
+/// (`llm::tools::display_path`, a `../` climb outside the cwd). The record
+/// underneath keeps the model's own absolute argument, which is what the
+/// derived context (Ctrl+D), the rollout, the classifier's action log and
 /// the permission rules read.
 ///
 /// Pure and lexical: `.`/`..` collapse, a relative input resolves against the

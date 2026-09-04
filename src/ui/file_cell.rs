@@ -181,60 +181,6 @@ fn file_cell_lang(args: &str) -> Option<&str> {
     (!stem.is_empty() && !ext.is_empty() && !ext.contains(' ')).then_some(ext)
 }
 
-/// The summary head with its path shown by the session's [`PathDisplay`]
-/// rule (`docs/tools.md` *Path display*): `Wrote {N} lines to {path}`,
-/// `Updated {path} (+A -D)` and the legacy `Created {path} ({N} lines)` each
-/// name the file the way the `● Write({path})` header above them does —
-/// relative under the cwd, `~`-relative under home, absolute elsewhere. A
-/// head in any other shape (the synthesized `Read N lines`, which carries no
-/// path) passes through untouched. The record keeps the executor's verbatim
-/// path; only the painted row changes, which is also what lets a rollout
-/// recorded with the old `../` climb read by the same rule.
-fn display_file_head(head: &str, paths: &PathDisplay) -> String {
-    if let Some(rest) = head.strip_prefix("Wrote ")
-        && let Some((count, path)) = rest.split_once(" to ")
-        && is_line_count(count)
-    {
-        return format!("Wrote {count} to {}", paths.display(path));
-    }
-    if let Some(rest) = head.strip_prefix("Updated ")
-        && let Some(open) = rest.rfind(" (+")
-        && is_diff_counts(&rest[open + 1..])
-    {
-        let (path, counts) = rest.split_at(open);
-        return format!("Updated {}{counts}", paths.display(path));
-    }
-    if let Some(rest) = head.strip_prefix("Created ")
-        && let Some(open) = rest.rfind(" (")
-        && let Some(count) = rest[open + 2..].strip_suffix(')')
-        && is_line_count(count)
-    {
-        let (path, tail) = rest.split_at(open);
-        return format!("Created {}{tail}", paths.display(path));
-    }
-    head.to_string()
-}
-
-/// Is `s` a head's `{N} line`/`{N} lines` clause?
-fn is_line_count(s: &str) -> bool {
-    s.split_once(' ').is_some_and(|(n, unit)| {
-        !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()) && matches!(unit, "line" | "lines")
-    })
-}
-
-/// Is `s` an `Updated` head's `(+A -D)` clause?
-fn is_diff_counts(s: &str) -> bool {
-    s.strip_prefix("(+")
-        .and_then(|t| t.strip_suffix(')'))
-        .and_then(|t| t.split_once(" -"))
-        .is_some_and(|(a, d)| {
-            !a.is_empty()
-                && !d.is_empty()
-                && a.chars().all(|c| c.is_ascii_digit())
-                && d.chars().all(|c| c.is_ascii_digit())
-        })
-}
-
 /// The summary head of a file cell (`Wrote …`/`Updated …`/`Read N lines`) in
 /// the white output colour ([`TOOL_OUTPUT_COLOR`]) so it's as noticeable as the
 /// output, with its `(+A -D)` counts coloured green/red (codex's header counts);
@@ -623,10 +569,8 @@ pub(super) fn file_cell_lines(
     tool: &ToolCall,
     width: u16,
     peek: bool,
-    paths: &PathDisplay,
 ) -> Option<Vec<Line<'static>>> {
     let (head, rows) = parse_file_cell(tool)?;
-    let head = display_file_head(&head, paths);
     let lang = file_cell_lang(&tool.args);
     let dim = Style::new().fg(TOOL_DIM_COLOR);
     let indent = " ".repeat(file_body_indent());

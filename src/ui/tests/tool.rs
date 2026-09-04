@@ -2938,11 +2938,12 @@ fn tool_header_expands_tabs_in_a_command_for_display() {
     assert_eq!(plain(&lines[0]), "● Bash(cut    -f1)");
 }
 
-// --- the path a file cell shows (docs/tools.md "Path display") ---
+// --- the path a file tool's header shows (docs/tools.md "Path display") ---
 
 /// The worked example's session: launched in `~/Codes/tests`, home
-/// `/home/linuztx`. The record keeps the model's absolute argument; only the
-/// two surfaces that show it — the header and the corner head — shorten.
+/// `/home/linuztx`. The **header** shortens through the policy; the corner
+/// head is the executor's own record (`tools::display_path` — `hello.py`
+/// under the cwd, a `../../hello.py` climb outside it) and is never rewritten.
 fn session_paths() -> PathDisplay {
     PathDisplay::new(
         "/home/linuztx/Codes/tests",
@@ -2953,7 +2954,8 @@ fn session_paths() -> PathDisplay {
 #[test]
 fn a_file_tool_header_shows_the_path_relative_to_the_cwd() {
     let paths = session_paths();
-    let output = "Wrote 1 line to /home/linuztx/Codes/tests/hello.py\n1 print(\"Hello, world!\")";
+    // The executor's head for a file under the cwd is already relative.
+    let output = "Wrote 1 line to hello.py\n1 print(\"Hello, world!\")";
     let cell = tool(
         "Write",
         "/home/linuztx/Codes/tests/hello.py",
@@ -2964,7 +2966,7 @@ fn a_file_tool_header_shows_the_path_relative_to_the_cwd() {
     assert_eq!(plain(&lines[0]), "● Write(hello.py)");
     assert_eq!(plain(&lines[1]), "  ⎿  Wrote 1 line to hello.py");
     assert_eq!(plain(&lines[2]), "      1 print(\"Hello, world!\")");
-    let output = "Wrote 1 line to /home/linuztx/Codes/tests/hello/hello.py\n1 print()";
+    let output = "Wrote 1 line to hello/hello.py\n1 print()";
     let nested = tool(
         "Write",
         "/home/linuztx/Codes/tests/hello/hello.py",
@@ -2978,22 +2980,28 @@ fn a_file_tool_header_shows_the_path_relative_to_the_cwd() {
 
 #[test]
 fn a_file_under_home_but_outside_the_cwd_shows_tilde_relative() {
+    // The header reads `~/hello.py`; the corner head keeps the executor's
+    // `../../hello.py` climb exactly as recorded — the reference look.
     let paths = session_paths();
-    let output = "Wrote 1 line to /home/linuztx/hello.py\n1 print()";
+    let output = "Wrote 1 line to ../../hello.py\n1 print(\"Hello, World!\")";
     let cell = tool("Write", "/home/linuztx/hello.py", ToolStatus::Ok, output);
     let lines = tool_lines(&cell, 80, &paths);
     assert_eq!(plain(&lines[0]), "● Write(~/hello.py)");
-    assert_eq!(plain(&lines[1]), "  ⎿  Wrote 1 line to ~/hello.py");
+    assert_eq!(plain(&lines[1]), "  ⎿  Wrote 1 line to ../../hello.py");
+    assert_eq!(plain(&lines[2]), "      1 print(\"Hello, World!\")");
 }
 
 #[test]
 fn a_file_outside_home_keeps_its_absolute_path() {
     let paths = session_paths();
-    let output = "Updated /tmp/notes.txt (+1 -1)\n1 -a\n1 +b";
+    let output = "Updated ../../../../tmp/notes.txt (+1 -1)\n1 -a\n1 +b";
     let cell = tool("Edit", "/tmp/notes.txt", ToolStatus::Ok, output);
     let lines = tool_lines(&cell, 80, &paths);
     assert_eq!(plain(&lines[0]), "● Edit(/tmp/notes.txt)");
-    assert_eq!(plain(&lines[1]), "  ⎿  Updated /tmp/notes.txt (+1 -1)");
+    assert_eq!(
+        plain(&lines[1]),
+        "  ⎿  Updated ../../../../tmp/notes.txt (+1 -1)"
+    );
 }
 
 #[test]
@@ -3011,9 +3019,9 @@ fn the_read_header_shortens_and_its_synthesized_head_is_unchanged() {
 }
 
 #[test]
-fn the_edit_head_keeps_its_counts_coloured_after_the_path_is_shortened() {
+fn the_edit_head_keeps_its_counts_coloured_beside_a_shortened_header() {
     let paths = session_paths();
-    let output = "Updated /home/linuztx/Codes/tests/a.rs (+1 -1)\n1 -old\n1 +new";
+    let output = "Updated a.rs (+1 -1)\n1 -old\n1 +new";
     let cell = tool(
         "Edit",
         "/home/linuztx/Codes/tests/a.rs",
@@ -3041,46 +3049,31 @@ fn the_edit_head_keeps_its_counts_coloured_after_the_path_is_shortened() {
 }
 
 #[test]
-fn the_legacy_created_head_shortens_its_path_too() {
+fn the_corner_head_is_the_record_and_is_never_rewritten() {
+    // Whatever the executor put in the head stays — an absolute path in a
+    // hand-written or old record, the legacy `Created` head, a failure body.
+    // Only the header derives from the policy.
     let paths = session_paths();
-    let output = "Created /home/linuztx/Codes/tests/hello.py (1 lines)\n1 print()";
-    let cell = tool(
-        "Write",
-        "/home/linuztx/Codes/tests/hello.py",
-        ToolStatus::Ok,
-        output,
-    );
-    let lines = tool_lines(&cell, 80, &paths);
-    assert_eq!(plain(&lines[1]), "  ⎿  Created hello.py (1 lines)");
-}
-
-#[test]
-fn an_old_rollouts_climbing_head_reads_by_the_same_rule() {
-    // A rollout recorded before the rule carries the executor's old `../`
-    // climb in its head. It resolves against the cwd and reads where the
-    // file actually is — so the header (the verbatim argument) and the head
-    // agree instead of naming the same file two ways.
-    let paths = session_paths();
-    let output = "Wrote 2 lines to ../../hello.py\n1 a\n2 b";
+    let output = "Wrote 1 line to /home/linuztx/hello.py\n1 print()";
     let cell = tool("Write", "/home/linuztx/hello.py", ToolStatus::Ok, output);
     let lines = tool_lines(&cell, 80, &paths);
     assert_eq!(plain(&lines[0]), "● Write(~/hello.py)");
-    assert_eq!(plain(&lines[1]), "  ⎿  Wrote 2 lines to ~/hello.py");
-}
-
-#[test]
-fn a_head_that_is_not_in_the_format_passes_through_untouched() {
-    // A failure body, a `(file is empty)` placeholder: no path to find, and
-    // nothing rewritten — the legacy rendering keeps every byte.
-    let paths = session_paths();
+    assert_eq!(
+        plain(&lines[1]),
+        "  ⎿  Wrote 1 line to /home/linuztx/hello.py"
+    );
+    let output = "Created /home/linuztx/x.py (1 lines)\n1 print()";
+    let cell = tool("Write", "/home/linuztx/x.py", ToolStatus::Ok, output);
+    let lines = tool_lines(&cell, 80, &paths);
+    assert_eq!(plain(&lines[0]), "● Write(~/x.py)");
+    assert_eq!(
+        plain(&lines[1]),
+        "  ⎿  Created /home/linuztx/x.py (1 lines)"
+    );
     let output = "could not write /home/linuztx/x.py: permission denied";
     let cell = tool("Write", "/home/linuztx/x.py", ToolStatus::Failed, output);
     let lines = tool_lines(&cell, 80, &paths);
-    assert_eq!(
-        plain(&lines[0]),
-        "● Write(~/x.py)",
-        "the header still shortens"
-    );
+    assert_eq!(plain(&lines[0]), "● Write(~/x.py)");
     assert!(
         plain(&lines[1]).contains("could not write /home/linuztx/x.py"),
         "the body is the record: {:?}",
@@ -3089,13 +3082,13 @@ fn a_head_that_is_not_in_the_format_passes_through_untouched() {
 }
 
 #[test]
-fn the_transcript_expansion_shortens_the_header_and_head_alike() {
+fn the_transcript_expansion_shortens_the_header_alike() {
     let paths = session_paths();
-    let output = "Wrote 1 line to /home/linuztx/hello.py\n1 print()";
+    let output = "Wrote 1 line to ../../hello.py\n1 print()";
     let cell = tool("Write", "/home/linuztx/hello.py", ToolStatus::Ok, output);
     let lines = tool_full_lines(&cell, 80, &paths);
     assert_eq!(plain(&lines[0]), "● Write(~/hello.py)");
-    assert_eq!(plain(&lines[1]), "  ⎿  Wrote 1 line to ~/hello.py");
+    assert_eq!(plain(&lines[1]), "  ⎿  Wrote 1 line to ../../hello.py");
 }
 
 #[test]
@@ -3126,14 +3119,11 @@ fn the_verbatim_policy_renders_the_recorded_path_exactly() {
     // The unit-test default (and a session whose cwd is unreadable): nothing
     // shortens, so every other test in this file describes the rows it
     // always did.
-    let output = "Wrote 1 line to /home/linuztx/hello.py\n1 print()";
+    let output = "Wrote 1 line to ../../hello.py\n1 print()";
     let cell = tool("Write", "/home/linuztx/hello.py", ToolStatus::Ok, output);
     let lines = tool_lines(&cell, 80, &PathDisplay::VERBATIM);
     assert_eq!(plain(&lines[0]), "● Write(/home/linuztx/hello.py)");
-    assert_eq!(
-        plain(&lines[1]),
-        "  ⎿  Wrote 1 line to /home/linuztx/hello.py"
-    );
+    assert_eq!(plain(&lines[1]), "  ⎿  Wrote 1 line to ../../hello.py");
 }
 
 #[test]
@@ -3151,7 +3141,7 @@ fn the_commit_and_the_rebuild_shorten_alike() {
     // The scrollback commit and a resize's rebuild come from the same
     // history through the same policy, so the two can never disagree.
     let paths = session_paths();
-    let output = "Wrote 1 line to /home/linuztx/hello.py\n1 print()";
+    let output = "Wrote 1 line to ../../hello.py\n1 print()";
     let history = vec![HistoryItem::Tool(tool(
         "Write",
         "/home/linuztx/hello.py",
@@ -3161,10 +3151,10 @@ fn the_commit_and_the_rebuild_shorten_alike() {
     let committed =
         tool_commit_lines(&history, &VecDeque::new(), 80, &paths).expect("a resolved cell commits");
     assert_eq!(plain(&committed[0]), "● Write(~/hello.py)");
-    assert_eq!(plain(&committed[1]), "  ⎿  Wrote 1 line to ~/hello.py");
+    assert_eq!(plain(&committed[1]), "  ⎿  Wrote 1 line to ../../hello.py");
     let rebuilt = conversation_lines(&history, 80, &paths);
     assert_eq!(plain(&rebuilt[0]), "● Write(~/hello.py)");
-    assert_eq!(plain(&rebuilt[1]), "  ⎿  Wrote 1 line to ~/hello.py");
+    assert_eq!(plain(&rebuilt[1]), "  ⎿  Wrote 1 line to ../../hello.py");
 }
 
 #[test]

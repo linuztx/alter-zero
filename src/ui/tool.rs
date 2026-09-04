@@ -881,7 +881,7 @@ fn tool_cell_body(
     // codex-style — numbers, hunk gaps, tints, syntax colour
     // ([`file_cell_lines`]); output that doesn't parse (old sessions, error
     // bodies) falls through to the legacy first-char colouring below.
-    if let Some(body) = file_cell_lines(tool, width, true, paths) {
+    if let Some(body) = file_cell_lines(tool, width, true) {
         let mut lines = tool_header_lines(tool, width, Some(TOOL_HEADER_MAX_ROWS), pulse, paths);
         lines.extend(body);
         return lines;
@@ -1133,7 +1133,7 @@ fn tool_full_body(tool: &ToolCall, width: u16, paths: &PathDisplay) -> Vec<Line<
     // A numbered `write`/`edit` cell renders wholesale (numbers, tints,
     // syntax colour — [`file_cell_lines`], uncapped here); everything else
     // goes through the plain row pipeline below.
-    if let Some(body) = file_cell_lines(tool, width, false, paths) {
+    if let Some(body) = file_cell_lines(tool, width, false) {
         // The Ctrl+O transcript view never truncates the header (`None`).
         let mut lines = tool_header_lines(tool, width, None, pulse, paths);
         lines.extend(body);

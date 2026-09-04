@@ -2507,17 +2507,18 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   a **numbered file change** (codex's `diff_render` look in the `⎿` gutter —
   `ui/file_cell.rs`'s `file_cell_lines`): the executor emits `Wrote {N} lines to {path}`
   over the numbered contents, `Updated {path} (+A -D)` over numbered diff
-  (both heads recording the model's absolute argument **verbatim**, like the
-  header; what the screen shows is the **path display rule** —
-  `app::PathDisplay`, `docs/tools.md` *Path display*: relative under the
-  cwd (`hello.py`), `~`-relative outside it but under home (`~/hello.py`),
-  absolute elsewhere (`/tmp/x.py`) — applied by `ui::tool_header_lines` and
-  the file cell's `display_file_head` at render time, inline, in the live
-  strip, in Ctrl+O and on the permission prompt's target row alike, from a
-  cwd + `$HOME` policy the boundary injects once (`App::set_path_display`),
-  so Ctrl+D, the rollout, the classifier's action log and the permission
-  rules keep the absolute path the model sent; the legacy
-  `Created {path} ({N} lines)` head still parses for old rollouts)
+  (both heads showing the cwd-relative `tools::display_path` — `../` climbs
+  outside the cwd — while the header records the argument verbatim and
+  **shows** it by the **path display rule** — `app::PathDisplay`,
+  `docs/tools.md` *Path display*: relative under the cwd (`hello.py`),
+  `~`-relative outside it but under home (`~/hello.py`), absolute elsewhere
+  (`/tmp/x.py`) — applied by `ui::tool_header_lines` at render time, inline,
+  in the live strip, in Ctrl+O, on the permission prompt's target row and on
+  the agent rows that name a file alike, from a cwd + `$HOME` policy the
+  boundary injects once (`App::set_path_display`), so Ctrl+D, the rollout,
+  the classifier's action log and the permission rules keep the absolute
+  path the model sent; the legacy `Created {path} ({N} lines)` head still
+  parses for old rollouts)
   **hunks** (3 context lines, `⋮` between distant hunks — the pure
   `tools::render_numbered_content`/`render_numbered_diff`) — but **only on the
   cell**: a `write`/`edit` resolves through the ask tool's two-text split
