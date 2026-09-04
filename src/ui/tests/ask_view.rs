@@ -612,3 +612,19 @@ fn render_ask_paints_the_region() {
         "the options painted: {all:?}"
     );
 }
+
+#[test]
+fn a_full_entry_row_keeps_the_caret_inside_the_width() {
+    // The Other entry keeps one column for the caret like the composer
+    // (docs/textarea.md): however long the text, the caret's column is
+    // inside the 80 the prompt was laid out in — never one past its edge.
+    let mut app = App::new();
+    open(&mut app, vec![coffee_question()]);
+    app.on_key(key(KeyCode::Char('4'))); // the Other row
+    for n in 1..=200 {
+        app.on_key(key(KeyCode::Char('x')));
+        let (x, _) =
+            super::super::ask_view::ask_cursor(&app, 80, 40).expect("a caret while editing");
+        assert!(x < 80, "{n} chars: the caret sits at column {x}");
+    }
+}

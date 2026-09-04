@@ -59,10 +59,24 @@ the byte offsets the cursor needs. The textarea instead wraps to **byte ranges**
   so no row — and no cursor column — ever grows wider than the field.
 - Consecutive rows may have a byte *gap* between them — the whitespace consumed
   at a soft break — so the ranges are display ranges, not a strict tiling.
-- When the last row ends **exactly full** at the very end of the text, an empty
-  trailing range (`len..len`) follows it — the row the end-of-text cursor sits
-  on (and the box reserves), keeping the cursor inside the field instead of one
-  column past it.
+- A row may fill every column of `width`, and the cursor at the end of such
+  a row sits at `col == width`, one past it. That cell exists because **every
+  field keeps one column past its text width for the caret**
+  (`ui::layout::text_field_width`, `CURSOR_COLUMN`): the composer wraps its
+  draft at `terminal − 2 (the prompt) − 1`, and the ask modal's entries and
+  Tab's amend field size themselves through the same helper. So a word that
+  would land in the field's last column wraps to the next row instead —
+  Claude Code's rule:
+
+  ```
+  ❯ ..................................................................
+    who
+  ```
+
+  The alternative — letting the text fill the row and seating the caret on an
+  empty row below it (codex's `+1` sentinel, which this textarea used to
+  re-derive) — put the draft flush against the terminal's edge with the caret
+  alone on the row beneath, which read as a newline the user never typed.
 
 What the draft becomes once sent keeps its spacing too: a user message, a
 `!` shell header and the notices render through `ui::wrap_output` (word
@@ -71,26 +85,20 @@ and a pasted line's indentation look in the bubble as they did in the box.
 Only the assistant's markdown collapses runs of spaces, as markdown does.
 
 codex's own `wrap_ranges` is built on the `textwrap` crate (Cow/​pointer math and
-a `+1` sentinel byte). We don't depend on `textwrap`, so this is a clean
-re-derivation of the same idea on top of our existing greedy algorithm; it is
-unit-tested from scratch rather than mirroring codex's sentinel arithmetic —
-the empty trailing range above is the sentinel's *effect*, re-derived.
+a `+1` sentinel byte for the end-of-text cursor). We don't depend on `textwrap`,
+so this is a clean re-derivation of the same greedy algorithm, unit-tested from
+scratch — minus the sentinel: the caret's column above is what stands in for it.
 
 ### Cursor ↔ (row, col)
 
 - **cursor → (row, col)** (`cursor_row_col`): the row is the *last* wrapped row
   whose `start <= cursor`; the column is the display width of
-  `text[row.start .. min(cursor, row.end)]`. Preferring the later row at a shared
-  boundary matches codex's `partition_point` rule, so a cursor sitting exactly at
-  a wrap point shows at the start of the next row. One more case seats there:
-  the cursor at the **end of a row the wrap left exactly full**, before the
-  space it consumed at the break (`hello|` / `world` at width 5). Its own row
-  would put it at `col == width`, one past the field — the terminal clamps
-  that onto the row's last glyph — so `TextArea::seat` puts it at the next
-  row's start, which is where the next typed character lands anyway (the
-  soft-break twin of the end-of-text sentinel row). A hard `'\n'` keeps its
-  end-of-row seat: that row really is over. Vertical motion starts from the
-  same seat, so ↑/↓ move from the row the cursor is *shown* on.
+  `text[row.start .. min(cursor, row.end)]` — `width` itself at the end of a
+  row the wrap left exactly full, which is the reserved column above.
+  Preferring the later row at a shared boundary matches codex's
+  `partition_point` rule, so a cursor sitting exactly at a hard-broken word's
+  chunk boundary shows at the start of the next row; at a soft break the
+  consumed space keeps the cursor before it on its own row.
 - **(row, target_col) → cursor**: walk graphemes across the row accumulating
   display width until it exceeds `target_col`. Used by vertical motion.
 

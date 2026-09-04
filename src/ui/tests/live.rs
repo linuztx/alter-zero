@@ -994,3 +994,41 @@ fn every_band_and_terminal_size_keeps_the_composer() {
         }
     }
 }
+
+// --- the caret's own column (docs/textarea.md) ---
+
+#[test]
+fn a_word_that_would_touch_the_box_edge_wraps_instead() {
+    // Claude Code's rule: one column of the field is the caret's, so a draft
+    // never fills a row to the terminal's edge — `who` moves to the next row
+    // and the caret sits after it. Filling the row used to leave the caret
+    // no cell, and the wrap added an empty row for it, which read as a
+    // newline the user never typed.
+    let mut app = App::new();
+    app.input.insert_str(&format!("{} who", ".".repeat(66)));
+    assert_eq!(
+        live_height(&app.input, 72, 24, false, 0, 0, 0, 0, 0, 0, 0),
+        4,
+        "two rules + two text rows, no empty third"
+    );
+    let area = Rect::new(0, 0, 72, 4);
+    let mut buf = Buffer::empty(area);
+    render_live(area, &mut buf, &app);
+    assert_eq!(row(&buf, 1, 72).trim_end(), format!("❯ {}", ".".repeat(66)));
+    assert_eq!(row(&buf, 2, 72).trim_end(), "  who");
+    assert_eq!(cursor_position(area, &app), (5, 2), "right after `who`");
+}
+
+#[test]
+fn the_caret_never_leaves_the_box_while_typing() {
+    // Every draft length — the exact fits included — seats the caret inside
+    // the 72 columns: a full row keeps its last column for the caret.
+    let mut app = App::new();
+    for n in 1..=200 {
+        app.input.insert_char('x');
+        let height = live_height(&app.input, 72, 40, false, 0, 0, 0, 0, 0, 0, 0);
+        let area = Rect::new(0, 0, 72, height);
+        let (x, _) = cursor_position(area, &app);
+        assert!(x < 72, "{n} chars: the caret sits at column {x}");
+    }
+}

@@ -34,6 +34,11 @@ pub(super) const INDENT: &str = "  ";
 /// Columns a bullet/indent occupies, subtracted from the content width.
 pub(super) const BULLET_WIDTH: u16 = 2;
 
+/// The column every text field keeps past its text for the caret — the cell
+/// the cursor sits in at the end of a row the wrap left exactly full
+/// (`layout::text_field_width`, `docs/textarea.md`).
+pub(super) const CURSOR_COLUMN: u16 = 1;
+
 // --- Assistant markdown rendering (fenced code blocks + ATX headings;
 // `docs/markdown.md`). Code sits under the bullet (no gutter, no language
 // label), rendered VERBATIM (indentation preserved, no word-wrap) — the fix

@@ -2406,7 +2406,12 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   textarea wraps faithfully (preserving spaces) into byte ranges — distinct from
   `ui::wrap_text`, which is for the **assistant's markdown** and collapses
   whitespace (a user's own bubble, a `!` shell header and a `Bash(…)` header
-  keep what was typed — `ui::wrap_output`). See `docs/textarea.md`.
+  keep what was typed — `ui::wrap_output`). Every field that renders it sizes
+  its text width through `ui::layout::text_field_width`, which keeps **one
+  column for the caret**: a word that would land in the field's last column
+  wraps to the next row (Claude Code's rule), so the caret always has a cell
+  on its own row and the box never grows an empty row for it. See
+  `docs/textarea.md`.
 - **Adding a lifecycle-hook event** (`docs/hooks.md`) is *one defaulted method
   on `llm::hooks::HookSink` plus one call site*. That property is the design;
   a change that makes it untrue — a closure per event on `run_agent`, a new

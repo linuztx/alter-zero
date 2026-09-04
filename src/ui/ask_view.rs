@@ -397,7 +397,7 @@ fn other_rows(
         Style::default()
     };
     if prompt.input_mode == AskInput::Other {
-        let field = u16::try_from(room).unwrap_or(u16::MAX).max(1);
+        let field = super::layout::text_field_width(u16::try_from(room).unwrap_or(u16::MAX));
         let (crow, ccol) = app.input.cursor_row_col(field);
         *cursor = Some((at_line + crow, content_col() + ccol));
         let continuation = " ".repeat(content_col());
@@ -595,7 +595,7 @@ fn build_preview_page(
         .max(1);
     let label = || Span::styled(ASK_NOTES_LABEL.to_string(), Style::new().fg(ASK_DESC_COLOR));
     if prompt.input_mode == AskInput::Notes {
-        let field = u16::try_from(notes_room).unwrap_or(u16::MAX).max(1);
+        let field = super::layout::text_field_width(u16::try_from(notes_room).unwrap_or(u16::MAX));
         let (crow, ccol) = app.input.cursor_row_col(field);
         *cursor = Some((lines.len() + crow, panel_x + cols(ASK_NOTES_LABEL) + ccol));
         let continuation = " ".repeat(panel_x + cols(ASK_NOTES_LABEL));
