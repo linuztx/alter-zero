@@ -162,9 +162,9 @@ pub(super) fn wrap_output_hanging(text: &str, first: u16, rest: u16) -> Vec<Stri
 }
 
 /// The rows of [`wrap_output_hanging`]'s first (`'\n'`-free) line: its first
-/// row at `first`, the rest re-wrapped at `rest` from where that row ended —
-/// which is the same greedy decision a single scan at two widths would make,
-/// since a row's break depends only on the text from its own start.
+/// row at `first`, every later row at `rest` — one scan at the two widths
+/// ([`WrapMode::scan_hanging`]), so the decision to fill the first row with
+/// an over-wide token knows the width of the rows it would continue on.
 fn hanging_first_line(line: &str, first: u16, rest: u16) -> Vec<String> {
     if first == 0 || rest == 0 {
         return vec![line.to_string()];
@@ -180,22 +180,20 @@ fn hanging_first_line(line: &str, first: u16, rest: u16) -> Vec<String> {
         rows.extend(WrapMode::Output.wrap(line, rest));
         return rows;
     }
-    let mut ranges: Vec<Range<usize>> = Vec::new();
-    WrapMode::Output.scan(line, usize::from(first), &mut |r| ranges.push(r));
-    let mut rows = vec![line[ranges[0].clone()].to_string()];
-    if let Some(second) = ranges.get(1) {
-        rows.extend(WrapMode::Output.wrap(&line[second.start..], rest));
-    }
+    let mut rows = Vec::new();
+    WrapMode::Output.scan_hanging(line, usize::from(first), usize::from(rest), &mut |r| {
+        rows.push(line[r].to_string());
+    });
     rows
 }
 
 /// Which wrapper a collapsed cell measures and builds its rows with — the
-/// pairing of [`wrap_output`] / [`wrap_verbatim`] with the row **count** and
-/// the **clip** that have to agree with them, kept in one type so a
-/// `+N lines` hint can never count rows a *different* wrapper would have
-/// produced (`docs/long-lines.md`). All three ride one range-emitting scan per
-/// mode, so counting builds no rows at all — which is what lets the running
-/// tail's footer measure the whole retained buffer every animation frame.
+/// pairing of [`wrap_output`] / [`wrap_verbatim`] with the row **count** that
+/// has to agree with them, kept in one type so a `+N lines` hint can never
+/// count rows a *different* wrapper would have produced
+/// (`docs/long-lines.md`). Both ride one range-emitting scan per mode, so
+/// counting builds no rows at all — which is what lets the running tail's
+/// footer measure the whole retained buffer every animation frame.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(super) enum WrapMode {
     /// Word boundaries, whitespace preserved — command and shell output
@@ -208,15 +206,29 @@ pub(super) enum WrapMode {
 
 impl WrapMode {
     /// Emit the byte range of every display row one `'\n'`-free `line` wraps to
-    /// at `width` (> 0) columns — the single scan behind [`Self::wrap`],
-    /// [`Self::rows`] and [`Self::clip`]. Measured per grapheme cluster in
-    /// display columns like every other width decision in this module.
+    /// at `width` (> 0) columns — the single scan behind [`Self::wrap`] and
+    /// [`Self::rows`]. Measured per grapheme cluster in display columns like
+    /// every other width decision in this module.
     fn scan(self, line: &str, width: usize, emit: &mut dyn FnMut(Range<usize>)) {
+        self.scan_hanging(line, width, width, emit);
+    }
+
+    /// [`Self::scan`] with a **hanging indent**: the first row has `first`
+    /// columns, every later row `rest` (both > 0, `first <= rest`) — the two
+    /// budgets a tool header's rows have ([`wrap_output_hanging`]).
+    fn scan_hanging(
+        self,
+        line: &str,
+        first: usize,
+        rest: usize,
+        emit: &mut dyn FnMut(Range<usize>),
+    ) {
         let mut start = 0usize; // byte index the current row opens at
         let mut cur_w = 0usize; // display width of `line[start..idx]`
         let mut brk: Option<usize> = None; // byte index past the last space
         let mut idx = 0usize; // byte index just past the graphemes consumed
         let mut emitted = false; // whether any row has been emitted yet
+        let mut width = first; // the current row's budget
         let mut graphemes = line.grapheme_indices(true).peekable();
         while let Some((_, g)) = graphemes.next() {
             let g_w = cols(g);
@@ -244,12 +256,22 @@ impl WrapMode {
                         idx = start;
                         cur_w = 0;
                         brk = None;
+                        width = rest;
                         continue;
                     }
                     // Break at the last space: it stays at the end of the
                     // current row, the partial word after it carries to the
-                    // next.
-                    (Self::Output, Some(bp)) => {
+                    // next — unless that word fits on **no** row and moving
+                    // it down would only cost a row, in which case it fills
+                    // this row from where it stands (`fills_from_here`).
+                    (Self::Output, Some(bp))
+                        if !fills_from_here(
+                            line,
+                            bp,
+                            width.saturating_sub(cols(&line[start..bp])),
+                            rest,
+                        ) =>
+                    {
                         emit(start..bp);
                         start = bp;
                         cur_w = cols(&line[start..idx]);
@@ -264,6 +286,7 @@ impl WrapMode {
                 }
                 emitted = true;
                 brk = None;
+                width = rest;
             }
             idx += g.len();
             cur_w += g_w;
@@ -307,59 +330,32 @@ impl WrapMode {
         }
         n
     }
-
-    /// One source `line` wrapped to `width` and clipped to `max_rows` display
-    /// rows: the rows to paint — the last ending in [`TOOL_LINE_ELLIPSIS`] when
-    /// anything was cut — plus the number of rows dropped.
-    ///
-    /// The per-line budget a collapsed cell spends on one source line
-    /// (`docs/long-lines.md`): without it a single pathological line (a
-    /// minified bundle, a 2 KB JSON body) fills the whole cell with wrapped
-    /// noise and reports it as one hidden "line". A line that fits comes back
-    /// byte-identical to [`Self::wrap`], unmarked.
-    pub(super) fn clip(self, line: &str, width: u16, max_rows: usize) -> (Vec<String>, usize) {
-        let mut kept: Vec<String> = Vec::new();
-        let mut hidden = 0usize;
-        {
-            let mut push = |text: &str| {
-                if kept.len() < max_rows {
-                    kept.push(text.to_string());
-                } else {
-                    hidden += 1;
-                }
-            };
-            for seg in line.split('\n') {
-                if width == 0 {
-                    push(seg);
-                } else {
-                    self.scan(seg, width as usize, &mut |r| push(&seg[r]));
-                }
-            }
-        }
-        if hidden > 0
-            && let Some(last) = kept.last_mut()
-        {
-            *last = mark_clipped(last, width as usize);
-        }
-        (kept, hidden)
-    }
 }
 
-/// The last kept row of a clipped line, marked: its trailing whitespace
-/// replaced by [`TOOL_LINE_ELLIPSIS`] and the text cut back far enough that the
-/// row still ends inside `width` columns (`0` = unbounded, matching the
-/// wrappers' "no wrapping"). The row-level sibling of [`ellipsize`] — which
-/// marks a row cut *at* the width, where this marks one cut *below* its own
-/// wrapped remainder.
-fn mark_clipped(row: &str, width: usize) -> String {
-    let room = if width == 0 {
-        usize::MAX
-    } else {
-        width.saturating_sub(cols(TOOL_LINE_ELLIPSIS))
-    };
-    let mut out = truncate_cols(row.trim_end(), room);
-    out.push_str(TOOL_LINE_ELLIPSIS);
-    out
+/// Whether the word opening at byte `bp` fills the current row from where it
+/// stands rather than moving down whole — Ink's wrap (wrap-ansi's `hard`
+/// mode), which is what gives Claude Code's `Bash(…)` header its filled rows
+/// (`docs/tools.md` *Long headers*). A word that fits a `rest`-wide row
+/// never does: it moves down whole, the ordinary word wrap. One that fits on
+/// **no** row is going to be hard-broken anyway, so the only question is
+/// where its first piece goes: it starts here, in the `remaining` columns
+/// this row has left, unless starting on the next row would cost strictly
+/// fewer rows — a tie moves it down, so a token that gains nothing from the
+/// fill still opens a row of its own.
+fn fills_from_here(line: &str, bp: usize, remaining: usize, rest: usize) -> bool {
+    let word_end = line[bp..]
+        .find(char::is_whitespace)
+        .map_or(line.len(), |i| bp + i);
+    let word_w = cols(&line[bp..word_end]);
+    if word_w <= rest {
+        return false;
+    }
+    // The rows the word adds beyond this one, starting here (its first piece
+    // in `remaining`) versus starting on a fresh row (one row to get there,
+    // then the pieces). wrap-ansi's own arithmetic, kept so the two agree.
+    let breaks_here = 1 + word_w.saturating_sub(remaining + 1) / rest;
+    let breaks_next = (word_w - 1) / rest;
+    breaks_next >= breaks_here
 }
 
 /// Total display width of a cell's styled `segments` (the *rendered* width, so a

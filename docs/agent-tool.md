@@ -299,8 +299,8 @@ zero new plumbing. The TUI cell is a new `HistoryItem::AgentNotice` —
   row, clipped at the width** (`agent_activity_row` over `clip_cols`, the
   cut marked `…`; red via `agent_status_color` once an agent has failed or
   been stopped). A lone agent's *running* call used to break that shape here
-  alone: its white `Bash(…)` header char-wrapped over up to
-  `TOOL_HEADER_MAX_ROWS` rows above a dim `Running…` line, which read as the
+  alone: its white `Bash(…)` header wrapped over several rows above a dim
+  `Running…` line, which read as the
   main turn's own running cell and grew the strip under counters that tick
   every frame. The bullet's breathing grey already says the call is running,
   so the row says *what* is running and nothing more.

@@ -169,55 +169,61 @@ pub(super) const MCP_CALLING_PREFIX: &str = "Calling ";
 pub(super) const MCP_CALLING_SUFFIX: &str = "…";
 pub(super) const MCP_CALLED_PREFIX: &str = "Called ";
 
-/// How many output **source lines** a collapsed cell shows inline before
-/// collapsing the rest behind a `… +N lines (ctrl+o to expand)` hint
-/// (Claude-Code's exec-cell preview). The full output is always in the Ctrl+O
-/// view. Paired with [`TOOL_PEEK_ROWS`], the same number of **display rows**:
-/// whichever budget runs out first ends the peek, so ordinary output reads
-/// line for line while a wrapping one still stops at four rows.
-pub(super) const TOOL_PEEK_LINES: usize = 4;
-
 /// How many wrapped display **rows** ONE source line may spend in a collapsed
-/// cell (`docs/long-lines.md`). Past this it shows its head and stops, marked
-/// with [`TOOL_LINE_ELLIPSIS`]. Three rows keeps the everyday case — a `sudo`
-/// error wrapping to 2–3 rows at a narrow width — fully visible, while inside
-/// the [`TOOL_PEEK_ROWS`] block it also guarantees that a pathological first
-/// line (a minified bundle, a 2 KB JSON body from `curl`) still leaves a row
-/// for the line *after* it: the peek shows that the output continues rather
-/// than spending itself on one blob.
+/// **numbered file cell** (`ui/file_cell.rs`, `docs/long-lines.md`). Past this
+/// it shows its head and stops, marked with [`TOOL_LINE_ELLIPSIS`], so a
+/// minified `.json` line in a `read`/`write` peek paints three rows instead of
+/// dozens while the short lines after it still show. The exec cells need no
+/// per-line budget of their own: their whole block folds at
+/// [`TOOL_FOLD_ROWS`], which bounds a blob and everything else alike.
 pub(super) const TOOL_LINE_MAX_ROWS: usize = 3;
 
-/// The marker closing a row whose source line was cut at
+/// The marker closing a numbered row whose source line was cut at
 /// [`TOOL_LINE_MAX_ROWS`]: without it a clipped line reads as a line that
-/// simply ended, and a complete `ls` row is indistinguishable from the head of
-/// a 2 KB blob. Fitted so the row still ends inside the width, like
+/// simply ended, and a complete row is indistinguishable from the head of a
+/// 2 KB blob. Fitted so the row still ends inside the width, like
 /// [`ellipsize`]'s cut.
 pub(super) const TOOL_LINE_ELLIPSIS: &str = "…";
 
-/// **The** budget a collapsed peek is bounded by: wrapped display **rows**, the
-/// unit the user reads the cell in (`docs/long-lines.md`). It used to be the
-/// *product* of the two budgets ([`TOOL_PEEK_LINES`] source lines each free to
-/// spend [`TOOL_LINE_MAX_ROWS`] rows), which let four wrapping lines paint
-/// twelve rows of a `curl` body inline — every one of them within its own
-/// budget, and the cell three times the size the same output has when its
-/// lines happen to be short. Four rows is what a `bash` cell costs now,
-/// whatever shape its output has; the rest is one `ctrl+o` away.
-///
-/// It is the same window the **running** tail shows (`running_command_lines`),
-/// so a command's cell is the same size while it streams and after it settles
-/// — the peek stops moving, it doesn't resize.
+/// The window the **running** command tail shows (`running_command_lines`):
+/// the last four wrapped display **rows** of what the command has printed,
+/// under the `+N lines (Ns)` footer — the unit the user reads the cell in
+/// (`docs/long-lines.md`). It is also the ceiling of the **settled** block,
+/// hint included: [`TOOL_FOLD_ROWS`] rows over the `… +N lines` hint, or
+/// `TOOL_FOLD_ROWS + 1` rows shown whole — so a `bash` cell never *grows*
+/// when it settles, whatever shape its output has; the rest is one `ctrl+o`
+/// away.
 pub(super) const TOOL_PEEK_ROWS: usize = 4;
 
-/// How many wrapped rows a tool's `● name(args)` header shows **inline** (and in
-/// the live preview) before the rest is cut with [`TOOL_HEADER_ELLIPSIS`] — so a
-/// very long `bash` command doesn't flood the cell. The Ctrl+O transcript view
-/// (`tool_full_lines`) passes `None` and renders the whole command. Claude-Code's
-/// truncated command header.
-pub(super) const TOOL_HEADER_MAX_ROWS: usize = 3;
-
-/// The marker spliced in (before the closing `)`) when a header is truncated at
-/// [`TOOL_HEADER_MAX_ROWS`].
+/// The marker spliced in (before the closing `)`) when a collapsed header's
+/// command is cut at [`TOOL_HEADER_MAX_LINES`] lines or
+/// [`TOOL_HEADER_MAX_COLS`] columns (`tool_header_lines`).
 pub(super) const TOOL_HEADER_ELLIPSIS: &str = "…";
+
+/// How many **lines** of a command the collapsed header shows before the rest
+/// is cut — Claude Code's `Bash(…)` header keeps two (`docs/tools.md`
+/// *Long headers*). The Ctrl+O transcript shows every line.
+pub(super) const TOOL_HEADER_MAX_LINES: usize = 2;
+
+/// How many display **columns** of a command the collapsed header shows
+/// before the rest is cut with [`TOOL_HEADER_ELLIPSIS`] — Claude Code's 160,
+/// a budget on the *text* rather than on rows, so the same command is cut at
+/// the same character in every terminal width and never floods the cell.
+pub(super) const TOOL_HEADER_MAX_COLS: usize = 160;
+
+/// How many display **rows** of its output a settled exec cell shows *above
+/// the fold* — Claude Code's three — before the rest collapses behind the
+/// `… +N lines (ctrl+o to expand)` hint (`docs/long-lines.md`). An output of
+/// exactly `TOOL_FOLD_ROWS + 1` rows shows whole: a hint hiding one row would
+/// cost the very row it hides. So the block is at most [`TOOL_PEEK_ROWS`]
+/// rows either way, hint included.
+pub(super) const TOOL_FOLD_ROWS: usize = 3;
+
+/// The size cap on the display-only JSON reshaping of an exec cell's output
+/// (`docs/long-lines.md` *Pretty JSON*): an output longer than this many
+/// bytes is shown as it came — Claude Code's own 10 000-character guard,
+/// which bounds the `Value` tree the reshaping parses per render.
+pub(super) const TOOL_JSON_PRETTY_MAX_BYTES: usize = 10_000;
 
 /// The parens framing a header's arguments — `● {name}({args})`. The opening
 /// one rides the name's row (so an argument too wide for what is left beside

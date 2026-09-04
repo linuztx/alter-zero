@@ -14,8 +14,8 @@ Running (live, in the strip above the box):        Finished (committed to scroll
   ⎿  64 bytes from … icmp_seq=6 … time=68.3 ms         ⎿  PING google.com (142.250.205.238) …
      64 bytes from … icmp_seq=7 … time=247 ms             64 bytes from … icmp_seq=1 … time=32.1 ms
      64 bytes from … icmp_seq=8 … time=332 ms             64 bytes from … icmp_seq=2 … time=71.1 ms
-     64 bytes from … icmp_seq=9 … time=144 ms             64 bytes from … icmp_seq=3 … time=41.0 ms
-     +5 lines (9s)                                        … +10 lines (ctrl+o to expand)
+     64 bytes from … icmp_seq=9 … time=144 ms             … +11 lines (ctrl+o to expand)
+     +5 lines (9s)
 
 ● Bash(ping -c 10 facebook.com)                     (a parallel batch's not-yet-run
   ⎿  Waiting…                                        siblings stay `⎿ Waiting…` until
@@ -24,10 +24,13 @@ Running (live, in the strip above the box):        Finished (committed to scroll
 
 The two states are deliberately asymmetric — while **running** you want the
 **tail** (what just happened); once **finished** you want the **head** with an
-expand hint. Both cap at `TOOL_PEEK_ROWS` (4) display rows, so the cell never
-grows when it settles. (It can settle *shorter*: the finished head is the
-output's first **block**, so a blank line ends it — `docs/long-lines.md`. The
-running tail keeps its blanks, being what the command just printed.)
+expand hint. The tail shows the last `TOOL_PEEK_ROWS` (4) display rows; the
+head **folds** at `TOOL_FOLD_ROWS` (3) rows over the hint — Claude Code's
+fold, at most the same four rows hint included — so the cell never grows when
+it settles. (It can settle *shorter*: the finished head is the output's first
+**block**, so a blank line ends it — `docs/long-lines.md`. The running tail
+keeps its blanks, being what the command just printed, and shows the output
+as printed where the settled cell reshapes a JSON line for display.)
 
 ## The protocol — `StreamEvent::ToolOutput`
 
@@ -81,20 +84,22 @@ A **command-style** tool (a non-shell backend tool that is not a `read`/`write`/
 `edit` file cell — in practice `bash`) now renders its output as a multi-line
 `⎿` block, like the `!` shell cell:
 
-- **Finished** (`tool_lines`): the head of the output — its first **block**
-  (leading blank lines skipped, the first blank line after them closing the
-  peek: a four-row cell cannot afford a row that says nothing, and hopping the
-  gap would present two stretches of output as one), bounded to at most
-  `TOOL_PEEK_ROWS` display **rows** and at most `TOOL_PEEK_LINES` source
-  lines, whichever runs out first — then `… +N lines (ctrl+o to expand)`,
-  via the shared `result_peek_block`. Each line **word-wraps, spaces
-  preserved** (`wrap_output`, the same wrapper the Ctrl+O view uses — a prose
-  error like `sudo`'s breaks at words, never mid-"askpass"; `ls -l` columns
-  that fit stay byte-exact) rather than clipping at the terminal edge, so a
-  long line's tail no longer disappears — and each line is bounded to
-  `TOOL_LINE_MAX_ROWS` rows of the block, its cut closed by a `…`, so one
-  pathological line (a minified bundle, a 2 KB `curl` body) can't spend the
-  whole cell on itself and the line after it still gets a row
+- **Finished** (`tool_lines`): the head of the output's display lines
+  (`exec_display_lines` — the frame stripped, a JSON line reshaped, trailing
+  blank lines dropped) — its first **block** (leading blank lines skipped, the
+  first blank line after them closing the peek: a three-row fold cannot
+  afford a row that says nothing, and hopping the gap would present two
+  stretches of output as one), **folded** at `TOOL_FOLD_ROWS` display
+  **rows** — then `… +N lines (ctrl+o to expand)`, via the shared
+  `result_peek_block`; an output of exactly `TOOL_FOLD_ROWS + 1` rows shows
+  whole, since a hint hiding one row costs the row it hides. Each line
+  **word-wraps, spaces preserved** (`wrap_output`, the same wrapper the
+  Ctrl+O view uses — a prose error like `sudo`'s breaks at words, never
+  mid-"askpass"; `ls -l` columns that fit stay byte-exact; a token wider than
+  any row fills the row it is on, Claude Code's wrap) rather than clipping at
+  the terminal edge, so a long line's tail no longer disappears — and the fold
+  is what bounds one pathological line (a minified bundle, a 2 KB `curl`
+  body): it shows three rows of it and the hint says the rest follows
   (`docs/long-lines.md`). The `+N lines` hint
   counts the **display rows** it didn't show — what pressing Ctrl+O actually
   adds, counted with the same wrapper the expansion uses — instead of source

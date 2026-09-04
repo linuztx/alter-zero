@@ -628,20 +628,29 @@ noise under a hint claiming `+1 lines` was hidden, and then let FOUR wrapping
 lines do the same thing legally, each inside its own per-line budget: a
 `curl | grep` of a web page cost ten rows where the same four lines cost four
 when they happened to be short. The **block** is budgeted in display rows now
-— `TOOL_PEEK_ROWS` (4) of them, beside the `TOOL_PEEK_LINES` (4) source-line
-budget, whichever runs out first — so a `bash` cell is four rows whatever
-shape its output has, and it is the same window the running tail already
-showed, so the cell never *grows* when it settles. Inside it a source line
-spends at most `TOOL_LINE_MAX_ROWS` rows of a **collapsed** cell — the peek,
-the shell cell, the generic one-line peek and the numbered file cell alike,
-never Ctrl+O and never the permission preview, where the whole line is the
-point — which is what leaves a row for the line *after* a blob, so the peek
-still shows that the output continues; its cut is closed by
-`TOOL_LINE_ELLIPSIS` so a clipped line can't read as a line that simply
-ended, and the `… +N lines` hint counts the **display rows** the expansion
-adds rather than source lines (the numbered file cells
-keep counting *file* lines: the rule is "count in the unit the expansion
-shows", and their gutter numbers them). The counting is exact and
+— it **folds** Claude Code's way, `TOOL_FOLD_ROWS` (3) rows over the `… +N
+lines` hint, an output of exactly four rows shown whole since a hint hiding
+one row costs the row it hides — so a `bash` cell is at most four rows
+whatever shape its output has, hint included, and the running tail's
+`TOOL_PEEK_ROWS` (4) window is the same ceiling, so the cell never *grows*
+when it settles. The fold is what bounds a blob: it shows three rows of it
+as they are and the hint under them says the rest follows (Claude Code's
+look — no `…` on the row); only the numbered file cell keeps a per-line
+budget, `TOOL_LINE_MAX_ROWS` rows closed by `TOOL_LINE_ELLIPSIS`, since its
+ten-line peek has no row ceiling of its own — never in Ctrl+O and never in
+the permission preview, where the whole line is the point. The `… +N lines`
+hint counts the **display rows** the expansion adds rather than source lines
+(the numbered file cells keep counting *file* lines: the rule is "count in
+the unit the expansion shows", and their gutter numbers them). And what the
+settled cell shows is the output's **display lines** (`ui::exec_display_lines`,
+shared with Ctrl+O so the hint counts exactly what the expansion adds): the
+`Exit code` frame stripped, **a line that is a JSON document reshaped with
+two-space indentation** — Claude Code's tool result does the same, which is
+why its `curl` of an API reads `{` / `"batchcomplete": "",` where a compact
+line read as a wall of braces; only a line that round-trips is reshaped, and
+an output past `TOOL_JSON_PRETTY_MAX_BYTES` is left alone whole — and
+trailing blank lines dropped (an all-blank output reads `(no output)`); the
+running tail shows the output as printed. The counting is exact and
 allocation-free — `ui::wrap`'s `WrapMode` pairs each wrapper with its own row
 counter and clip over one range-emitting scan, so a hint can never count rows
 a different wrapper would have produced and the running tail's footer can
@@ -2310,15 +2319,14 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   hint (`shell_mode_line`) and the red `! ` that doubles as the composer
   prompt while `App::shell_mode` is on and as the `Role::Shell` exec-cell
   header bullet in `message_lines`; shell `tool_lines`/`tool_full_lines` are
-  headerless `⎿` blocks — inline up to `TOOL_PEEK_ROWS` aligned display rows
-  (and `TOOL_PEEK_LINES` source lines), each wrapped
+  headerless `⎿` blocks — inline folded at `TOOL_FOLD_ROWS` aligned display
+  rows (an output of exactly four rows shown whole), each wrapped
   (`result_row` does the corner/continuation indent; a line wider than the
   terminal **word-wraps with spaces preserved** like the Ctrl+O view
   (`wrap_output`, via `result_peek_block`)
-  rather than clipping, and is bounded to `TOOL_LINE_MAX_ROWS` rows closed by
-  `TOOL_LINE_ELLIPSIS` inside the `TOOL_PEEK_ROWS` block ceiling — the budget
-  in the unit the cell is *read* in, keeping four wrapping lines from costing
-  three times what four short ones do; `docs/long-lines.md`) then `… +N lines (ctrl+o
+  rather than clipping — the fold is the budget, in the unit the cell is
+  *read* in, keeping four wrapping lines from costing three times what four
+  short ones do; `docs/long-lines.md`) then `… +N lines (ctrl+o
   to expand)` (counting display **rows**, what expanding adds), `⎿ Running…` live, the retained output uncapped in the Ctrl+O view;
   output over `tui::shell`'s `SHELL_OUTPUT_MAX_BYTES` is **capped in memory** as it's
   read (`tui::shell::append_capped`, codex's pattern — bounds peak RSS so `! tree ~/`

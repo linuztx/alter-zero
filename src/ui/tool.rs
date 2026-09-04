@@ -54,23 +54,30 @@ pub(super) fn tool_pulse_color(elapsed: Duration) -> Color {
 /// by the inline collapsed view ([`tool_lines`]) and the full-screen transcript
 /// ([`tool_full_lines`]).
 ///
-/// When the header overflows `width` the args **word-wrap** across continuation
+/// When the header overflows `width` the args **wrap** across continuation
 /// rows, each indented to align **under the opening `(`** (the width of
 /// `● {name}`), so a long command reads clean and is never clipped at the
-/// terminal edge — Claude-Code's wrapped `Bash(…)` header. The args' own
-/// whitespace survives the wrap ([`wrap_output_hanging`]: a run of spaces
-/// inside quotes stays, a newline takes a row of its own, like the permission
-/// prompt that asked about the same command), and an argument too wide for
-/// the name's row spills to the next one whole. `max_rows` caps how many rows
-/// are shown: `Some(n)` (the inline peek and the live preview) keeps the first
-/// `n` and splices [`TOOL_HEADER_ELLIPSIS`] + `)` onto the last so a huge
-/// command doesn't flood the cell; `None` (the Ctrl+O transcript) renders the
-/// whole thing. A `!` shell command is a tool with no args (name = the
-/// command), so it stays a bare single `● {command}` line.
+/// terminal edge — Claude Code's wrapped `Bash(…)` header, row for row: words
+/// move down whole, and a token that fits on **no** row — a long URL — fills
+/// the row it stands on before it is broken (`wrap_output_hanging`, the
+/// hanging-indent form of [`wrap_output`]), so every row runs to the edge
+/// instead of the first stopping short of the token. The args' own
+/// whitespace survives the wrap (a run of spaces inside quotes stays, a
+/// newline takes a row of its own, like the permission prompt that asked
+/// about the same command), and an argument too wide for the name's row
+/// spills to the next one whole. `collapsed` — the inline peek and the live
+/// preview — **cuts** the command Claude Code's way ([`header_cut`]): its
+/// first [`TOOL_HEADER_MAX_LINES`] lines and [`TOOL_HEADER_MAX_COLS`]
+/// columns, then [`TOOL_HEADER_ELLIPSIS`] + `)`, so a huge command doesn't
+/// flood the cell; the Ctrl+O transcript passes `false` and renders the
+/// whole thing. A `bash` command's `"$(cat <<'EOF' … EOF)"` message is shown
+/// as the quoted message itself on both surfaces ([`collapse_heredoc`]). A
+/// `!` shell command is a tool with no args (name = the command), so it
+/// stays a bare single `● {command}` line.
 pub(super) fn tool_header_lines(
     tool: &ToolCall,
     width: u16,
-    max_rows: Option<usize>,
+    collapsed: bool,
     pulse: Option<Duration>,
     paths: &PathDisplay,
 ) -> Vec<Line<'static>> {
@@ -98,6 +105,11 @@ pub(super) fn tool_header_lines(
     // `key: "value"` form at render time instead.
     let args = if crate::mcp::is_mcp_display_name(&tool.name) {
         crate::mcp::pretty_args(&tool.args)
+    } else if is_command_tool(tool) {
+        // The commit idiom's scaffolding says nothing about the command —
+        // the header shows the message it carries (render-time only; the
+        // record, the prompt and the replay keep the command verbatim).
+        collapse_heredoc(&tool.args).unwrap_or_else(|| tool.args.clone())
     } else {
         // A file tool's summary **is** its path, and the header shows it the
         // way the session reads paths — relative under the cwd, `~`-relative
@@ -138,51 +150,30 @@ pub(super) fn tool_header_lines(
         .saturating_sub(aligned + cols(TOOL_HEADER_OPEN))
         .max(1);
     let body_width = (width as usize).saturating_sub(indent_cols).max(1);
+    // The collapsed cut is a budget on the **text** — the same command is cut
+    // at the same character in every width — made before the wrap, so the
+    // `…` lands where the text ends and the `)` rides after it, whatever row
+    // that falls on. The cut text is trimmed, so the marker attaches to the
+    // last kept word: `word …)` would read as a cut after a *missing* word.
+    let (shown, cut) = if collapsed {
+        header_cut(&args)
+    } else {
+        (std::borrow::Cow::Borrowed(args.as_str()), false)
+    };
+    let marker = if cut { TOOL_HEADER_ELLIPSIS } else { "" };
     // The arguments keep their own whitespace — a run of spaces inside quotes
     // is data, a newline a statement boundary that takes a row of its own —
     // wrapped at word boundaries like the output rows under them, with tabs
     // expanded for display the same way (the record stays byte-exact). The
     // closing `)` rides the last line.
-    let body = format!("{}{TOOL_HEADER_CLOSE}", expand_code_tabs(&args));
+    let body = format!("{}{marker}{TOOL_HEADER_CLOSE}", expand_code_tabs(&shown));
     // A wrapped row keeps the space its break fell on at its end; it paints
     // as nothing, so it is dropped here — the rows read the same and the
     // transcript's text stays clean.
-    let mut rows: Vec<String> = wrap_output_hanging(&body, first_width as u16, body_width as u16)
+    let rows: Vec<String> = wrap_output_hanging(&body, first_width as u16, body_width as u16)
         .into_iter()
         .map(|row| row.trim_end().to_string())
         .collect();
-    // Cap a very long header: keep the first `max` rows and replace the tail with
-    // `…)` (fitted within the row's own width, the same bold white) — the whole
-    // command is still in Ctrl+O. The marker attaches to the last kept word: a
-    // kept row can end in the space its wrap broke at, and `word …)` would read
-    // as a cut after a missing word rather than mid-command.
-    //
-    // The budget counts the rows the **arguments** take. A spilled header's
-    // first row carries none — it is the name and its `(` — so it does not
-    // spend one, or the spill would cost the cell the very content it was
-    // made to keep readable.
-    let max_rows = match (max_rows, rows.first()) {
-        (Some(max), Some(first)) if first.is_empty() => Some(max.saturating_add(1)),
-        (max, _) => max,
-    };
-    if let Some(max) = max_rows
-        && rows.len() > max.max(1)
-    {
-        rows.truncate(max.max(1));
-        let room = if rows.len() == 1 {
-            first_width
-        } else {
-            body_width
-        };
-        if let Some(last) = rows.last_mut() {
-            let keep = room.saturating_sub(cols(TOOL_HEADER_ELLIPSIS) + cols(TOOL_HEADER_CLOSE));
-            let mut cut = truncate_cols(last, keep);
-            cut.truncate(cut.trim_end().len());
-            cut.push_str(TOOL_HEADER_ELLIPSIS);
-            cut.push_str(TOOL_HEADER_CLOSE);
-            *last = cut;
-        }
-    }
     rows.into_iter()
         .enumerate()
         .map(|(i, row)| {
@@ -201,6 +192,83 @@ pub(super) fn tool_header_lines(
             Line::from(spans)
         })
         .collect()
+}
+
+/// The collapsed header's cut of a call's `args` — Claude Code's
+/// `Bash(…)` rule, ported whole: the first [`TOOL_HEADER_MAX_LINES`] lines,
+/// then at most [`TOOL_HEADER_MAX_COLS`] display columns, trimmed at both
+/// ends when anything was cut (so the `…` the caller appends never follows a
+/// space or a blank line). Returns the text to show and whether it was cut;
+/// text within both budgets comes back untouched.
+///
+/// A budget on the text rather than on rows is what makes the header
+/// predictable: the same command shows the same characters in a 40-column
+/// terminal and a 200-column one, and a multi-line script shows its first
+/// two statements rather than however many the width happened to fit.
+pub(super) fn header_cut(args: &str) -> (std::borrow::Cow<'_, str>, bool) {
+    let mut kept = args;
+    let mut cut = false;
+    if let Some((at, _)) = args.match_indices('\n').nth(TOOL_HEADER_MAX_LINES - 1) {
+        kept = &args[..at];
+        cut = true;
+    }
+    if cols(kept) > TOOL_HEADER_MAX_COLS {
+        let head = truncate_cols(kept, TOOL_HEADER_MAX_COLS);
+        return (std::borrow::Cow::Owned(head.trim().to_string()), true);
+    }
+    if cut {
+        (std::borrow::Cow::Borrowed(kept.trim()), true)
+    } else {
+        (std::borrow::Cow::Borrowed(args), false)
+    }
+}
+
+/// A `bash` command's `"$(cat <<'EOF'\n{body}\nEOF\n)"` message collapsed into
+/// the quoted message itself — `git commit -m "$(cat <<'EOF'\nAdd X\nEOF\n)"`
+/// shows as `git commit -m "Add X"` — Claude Code's header rule for the
+/// idiom every commit with a body uses: the `cat` scaffolding is how a
+/// multi-line string reaches the shell, not what the command does. `None`
+/// when the command is not that shape, which leaves it shown verbatim. The
+/// shape is Claude Code's own (its regex, ported): the opener must sit on the
+/// command's first line, the body runs to the first `EOF` line that is
+/// followed by the closing `)"`, and whatever trails the closer must stay on
+/// its line — a command that goes on after it is not the idiom. Display
+/// only: the record keeps the command byte-exact.
+pub(super) fn collapse_heredoc(cmd: &str) -> Option<String> {
+    const OPENER: &str = "$(cat <<'EOF'";
+    if !cmd.contains("\"$(cat <<'EOF'") {
+        return None;
+    }
+    let first_line_end = cmd.find('\n')?;
+    let first_line = &cmd[..first_line_end];
+    let at = first_line.find(OPENER)?;
+    // The opener must close its line: the body starts on the next one.
+    if at + OPENER.len() != first_line_end {
+        return None;
+    }
+    let head = cmd[..at].strip_suffix('"').unwrap_or(&cmd[..at]);
+    let after = &cmd[first_line_end + 1..];
+    // The body ends at the first newline followed by an `EOF` line and the
+    // `)"` closer (whitespace, newlines included, allowed between them).
+    let mut search = 0usize;
+    while let Some(rel) = after[search..].find('\n') {
+        let nl = search + rel;
+        let rest = after[nl + 1..].trim_start();
+        if let Some(rest) = rest.strip_prefix("EOF\n")
+            && let Some(tail) = rest.trim_start().strip_prefix(")\"")
+            && !tail.contains('\n')
+        {
+            let body = &after[..nl];
+            return Some(format!(
+                "{} \"{}\"{}",
+                head.trim(),
+                body.trim(),
+                tail.trim()
+            ));
+        }
+        search = nl + 1;
+    }
+    None
 }
 
 /// A dim `⎿` result row — for the `Running…`/`Waiting…`/`(no output)`
@@ -330,6 +398,85 @@ pub(super) fn command_display_lines(tool: &ToolCall) -> Vec<String> {
     split_display_lines(&command_display_output(&tool.output))
 }
 
+/// The lines a **settled** exec cell shows of its output — the `bash` tool
+/// and the `!` shell command, one cell shape (`docs/shell-command.md`) — on
+/// the inline peek and in the Ctrl+O expansion alike, so the peek's `+N
+/// lines` hint counts exactly the rows the expansion adds. Display only, the
+/// record byte-exact: the `Exit code: N` frame reframed
+/// ([`command_display_output`]; a shell command's output is never framed),
+/// each line that is a JSON document reshaped with two-space indentation
+/// ([`prettify_json_lines`] — Claude Code's tool result does the same, which
+/// is why its `curl` of an API reads `{` / `"batchcomplete": "",` where a
+/// compact line read as a wall of braces), tabs expanded, and trailing blank
+/// lines dropped (`docs/long-lines.md`) — a formatter's closing newlines are
+/// nothing to show and nothing to hide. A generic backend cell whose output
+/// is not the numbered file format shares it (the same result surface in
+/// Claude Code). The running tail ([`running_command_lines`]) deliberately
+/// does not: what is still streaming is shown as it was printed.
+pub(super) fn exec_display_lines(tool: &ToolCall) -> Vec<String> {
+    let body: std::borrow::Cow<'_, str> = if tool.shell {
+        std::borrow::Cow::Borrowed(tool.output.as_str())
+    } else {
+        command_display_output(&tool.output)
+    };
+    let mut lines = split_display_lines(&prettify_json_lines(&body));
+    while lines.last().is_some_and(|line| is_blank_row(line)) {
+        lines.pop();
+    }
+    lines
+}
+
+/// `text` with every line that is a whole JSON document reshaped for display
+/// — Claude Code's rule, ported: an output longer than
+/// [`TOOL_JSON_PRETTY_MAX_BYTES`] is left alone whole (the bound on what a
+/// render may parse), and a line is reshaped only when it **round-trips**
+/// ([`pretty_json_line`]). Borrowed back unchanged when nothing qualifies,
+/// which is every output that is not JSON.
+fn prettify_json_lines(text: &str) -> std::borrow::Cow<'_, str> {
+    if text.len() > TOOL_JSON_PRETTY_MAX_BYTES {
+        return std::borrow::Cow::Borrowed(text);
+    }
+    let mut changed = false;
+    let lines: Vec<std::borrow::Cow<'_, str>> = text
+        .split('\n')
+        .map(|line| match pretty_json_line(line) {
+            Some(pretty) => {
+                changed = true;
+                std::borrow::Cow::Owned(pretty)
+            }
+            None => std::borrow::Cow::Borrowed(line),
+        })
+        .collect();
+    if changed {
+        std::borrow::Cow::Owned(lines.join("\n"))
+    } else {
+        std::borrow::Cow::Borrowed(text)
+    }
+}
+
+/// One output line as a two-space-indented JSON document, when it is one:
+/// it parses as a JSON object or array **and** re-serializes to the same
+/// text once whitespace is ignored — Claude Code's guard, so a document the
+/// command never printed is never shown: duplicate keys (the last wins in the
+/// parse), a number the serializer would spell differently, an escape it
+/// would resolve, all stay verbatim. Prose, scalars and partial JSON are
+/// `None`. The parse is bounded by the caller's size cap and transient — a
+/// render's `Value`, dropped with the rows (`docs/memory.md`'s rule is about
+/// trees built to read a few fields of a body that is kept).
+fn pretty_json_line(line: &str) -> Option<String> {
+    let trimmed = line.trim();
+    if !(trimmed.starts_with('{') || trimmed.starts_with('[')) {
+        return None;
+    }
+    let value: serde_json::Value = serde_json::from_str(trimmed).ok()?;
+    let compact = serde_json::to_string(&value).ok()?;
+    let squash = |s: &str| s.chars().filter(|c| !c.is_whitespace()).collect::<String>();
+    if squash(trimmed) != squash(&compact) {
+        return None;
+    }
+    serde_json::to_string_pretty(&value).ok()
+}
+
 /// The live preview for a **running** command-style backend tool (`bash`): the
 /// coloured `● name(args)` header, the **last** [`TOOL_PEEK_ROWS`] display
 /// **rows** of its output under the `⎿` gutter (the *tail* — what just
@@ -359,7 +506,7 @@ pub(super) fn running_command_lines(
     width: u16,
     paths: &PathDisplay,
 ) -> Vec<Line<'static>> {
-    let mut lines = tool_header_lines(tool, width, Some(TOOL_HEADER_MAX_ROWS), Some(pulse), paths);
+    let mut lines = tool_header_lines(tool, width, /*collapsed=*/ true, Some(pulse), paths);
     let peek_width = (width as usize)
         .saturating_sub(cols(TOOL_RESULT_PREFIX))
         .max(1);
@@ -428,14 +575,13 @@ fn approval_note_row(tool: &ToolCall) -> Option<Line<'static>> {
 /// Build the styled lines for one tool call as shown **inline**.
 ///
 /// A `!` shell command is **headerless** — its `Role::Shell` header (`! pwd`)
-/// sits flush above (docs/shell-command.md) — and shows up to
-/// `TOOL_PEEK_LINES` of its output as a `⎿` block (each line aligned under
-/// the corner) — and at most `TOOL_PEEK_ROWS` display **rows** of it, so a
-/// wrapping line costs the cell no more than a short one — then a
-/// `… +N lines (ctrl+o to expand)` hint when more is hidden (Claude-Code's
-/// exec cell). A backend tool keeps its coloured
-/// `● name(args)` header and a single collapsed peek line. The full output is
-/// only rendered in the separate tool-output view, never here.
+/// sits flush above (docs/shell-command.md) — and shows its output as a `⎿`
+/// block (each line aligned under the corner) folded at `TOOL_FOLD_ROWS`
+/// display **rows** — so a wrapping line costs the cell no more than a short
+/// one — then a `… +N lines (ctrl+o to expand)` hint when more is hidden
+/// (Claude-Code's exec cell). A backend tool keeps its coloured
+/// `● name(args)` header over the same folded peek. The full output is only
+/// rendered in the separate tool-output view, never here.
 ///
 /// A **running** bullet renders at rest (the flat grey) — this is the renderer
 /// that feeds scrollback commits and the frozen transcript, where a colour
@@ -531,7 +677,6 @@ fn ask_cell_lines(
             rest,
             peek_width,
             WrapMode::Output,
-            TOOL_PEEK_LINES,
             BlankPolicy::Keep,
             |i, text, _| output_row(i, text),
         ));
@@ -857,27 +1002,27 @@ fn tool_cell_body(
         if tool.shell {
             return vec![row];
         }
-        let mut lines = tool_header_lines(tool, width, Some(TOOL_HEADER_MAX_ROWS), pulse, paths);
+        let mut lines = tool_header_lines(tool, width, /*collapsed=*/ true, pulse, paths);
         lines.push(row);
         return lines;
     }
 
     if tool.shell {
-        // The running/empty single-row states; else the head peek, bounded
-        // by TOOL_PEEK_LINES source lines AND TOOL_PEEK_ROWS display rows.
+        // The running/empty single-row states; else the head peek — the
+        // exec cell's display lines folded at TOOL_FOLD_ROWS display rows.
         // (Truncation of an over-cap output is marked only in the expanded view;
         // inline, the `… +N lines (ctrl+o to expand)` hint already signals more.)
+        let display = exec_display_lines(tool);
         return match tool.status {
             // A shell command is never batched, so it is never `Waiting`; the
             // arm is here only to keep the match total and correct if it ever is.
             ToolStatus::Waiting => vec![result_row(0, TOOL_WAITING.to_string())],
             ToolStatus::Running => vec![result_row(0, TOOL_RUNNING.to_string())],
-            _ if out_lines.is_empty() => vec![result_row(0, TOOL_NO_OUTPUT.to_string())],
+            _ if display.is_empty() => vec![result_row(0, TOOL_NO_OUTPUT.to_string())],
             _ => result_peek_block(
-                &out_lines,
+                &display,
                 peek_width,
                 WrapMode::Output,
-                TOOL_PEEK_LINES,
                 BlankPolicy::FirstBlock,
                 |i, text, _| output_row(i, text),
             ),
@@ -889,7 +1034,7 @@ fn tool_cell_body(
     // ([`file_cell_lines`]); output that doesn't parse (old sessions, error
     // bodies) falls through to the legacy first-char colouring below.
     if let Some(body) = file_cell_lines(tool, width, true) {
-        let mut lines = tool_header_lines(tool, width, Some(TOOL_HEADER_MAX_ROWS), pulse, paths);
+        let mut lines = tool_header_lines(tool, width, /*collapsed=*/ true, pulse, paths);
         lines.extend(body);
         return lines;
     }
@@ -898,7 +1043,7 @@ fn tool_cell_body(
     // `+`/`-` rows are diff-coloured (the codex trick shows inline, not just in
     // the Ctrl+O view). Other backend tools keep the single collapsed peek line.
     if is_diff_tool(tool) && tool.status != ToolStatus::Running && !out_lines.is_empty() {
-        let mut lines = tool_header_lines(tool, width, Some(TOOL_HEADER_MAX_ROWS), pulse, paths);
+        let mut lines = tool_header_lines(tool, width, /*collapsed=*/ true, pulse, paths);
         // Wrap verbatim (a diff body is code, never reflowed at spaces) and
         // colour every wrapped row by the SOURCE line's `+`/`-` marker, so a
         // continuation row keeps its tint — the Ctrl+O view colours the same
@@ -907,7 +1052,6 @@ fn tool_cell_body(
             &out_lines,
             peek_width,
             WrapMode::Verbatim,
-            TOOL_PEEK_LINES,
             BlankPolicy::Keep,
             |i, text, src| gutter_row(i, text, diff_line_color(src)),
         ));
@@ -915,14 +1059,15 @@ fn tool_cell_body(
     }
 
     // A backend **command tool** (`bash`): coloured header (wrapped when long)
-    // over a multi-line `⎿` peek — the *head*, up to TOOL_PEEK_LINES lines and
-    // TOOL_PEEK_ROWS rows, then `… +N lines (ctrl+o to expand)`, like the `!`
-    // shell cell (the mock's finished state). The `Exit code: N` frame is
-    // stripped for display (docs/tool-streaming.md); no output yet → the `⎿ Running…`/`Waiting…` row.
+    // over a multi-line `⎿` peek — the *head*, folded at TOOL_FOLD_ROWS display
+    // rows behind `… +N lines (ctrl+o to expand)`, like the `!` shell cell
+    // (the mock's finished state). The `Exit code: N` frame is stripped and a
+    // JSON line reshaped for display (`exec_display_lines`,
+    // docs/tool-streaming.md); no output yet → the `⎿ Running…`/`Waiting…` row.
     // The running *tail* (last lines + elapsed) is a separate live-only render
     // (`running_command_lines`), used by the preview.
     if is_command_tool(tool) {
-        let display = command_display_lines(tool);
+        let display = exec_display_lines(tool);
         let peek = match tool.status {
             ToolStatus::Waiting => vec![result_row(0, TOOL_WAITING.to_string())],
             _ if display.is_empty() => vec![result_row(
@@ -937,12 +1082,11 @@ fn tool_cell_body(
                 &display,
                 peek_width,
                 WrapMode::Output,
-                TOOL_PEEK_LINES,
                 BlankPolicy::FirstBlock,
                 |i, text, _| output_row(i, text),
             ),
         };
-        let mut lines = tool_header_lines(tool, width, Some(TOOL_HEADER_MAX_ROWS), pulse, paths);
+        let mut lines = tool_header_lines(tool, width, /*collapsed=*/ true, pulse, paths);
         lines.extend(peek);
         return lines;
     }
@@ -950,22 +1094,20 @@ fn tool_cell_body(
     // Any other backend tool (a `read`/`write`/`edit` cell whose output didn't
     // parse as the numbered/diff format — an image read's fact line, a
     // placeholder, an error body — or an unknown tool): coloured header
-    // (wrapped when long) + a single collapsed peek line — white output
-    // content, dim placeholder — the rest behind the `… +N lines` hint. The
-    // peeked line is the same [`result_peek_block`] every other cell shows
-    // with a one-line budget, so it word-wraps to the width, is clipped to
-    // [`TOOL_LINE_MAX_ROWS`] rows when pathological, and hides its remainder
-    // behind an honest row count (`docs/long-lines.md`).
-    let mut lines = tool_header_lines(tool, width, Some(TOOL_HEADER_MAX_ROWS), pulse, paths);
+    // (wrapped when long) + the same folded peek the exec cells show — white
+    // output content, dim placeholder — the rest behind the `… +N lines`
+    // hint, so it word-wraps to the width and hides its remainder behind an
+    // honest row count (`docs/long-lines.md`).
+    let mut lines = tool_header_lines(tool, width, /*collapsed=*/ true, pulse, paths);
+    let display = exec_display_lines(tool);
     match tool.status {
         ToolStatus::Waiting => lines.push(result_row(0, TOOL_WAITING.to_string())),
         ToolStatus::Running => lines.push(result_row(0, TOOL_RUNNING.to_string())),
-        _ if out_lines.is_empty() => lines.push(result_row(0, TOOL_NO_OUTPUT.to_string())),
+        _ if display.is_empty() => lines.push(result_row(0, TOOL_NO_OUTPUT.to_string())),
         _ => lines.extend(result_peek_block(
-            &out_lines,
+            &display,
             peek_width,
             WrapMode::Output,
-            1,
             BlankPolicy::Keep,
             |i, text, _| output_row(i, text),
         )),
@@ -1014,31 +1156,26 @@ fn is_blank_row(line: &str) -> bool {
     line.trim().is_empty()
 }
 
-/// The head peek of `out_lines`: its first `budget_lines` **source lines** —
-/// "the first 4 lines of output", so a long first line never pushes its
-/// siblings out of the peek — each wrapped to `peek_width` with `mode` and
-/// **clipped to [`TOOL_LINE_MAX_ROWS`] rows** ([`WrapMode::clip`], the last
-/// kept row marked with `…`), built with `row` (which also receives the
-/// **source** line, so a diff cell can colour a wrapped continuation by the
-/// source's `+`/`-` marker). [`WrapMode::Output`] for command/shell output
-/// (word boundaries, spaces preserved, like the Ctrl+O view),
-/// [`WrapMode::Verbatim`] for diff bodies (code — hard-break, never reflowed
-/// at spaces) — either way a long line's tail no longer disappears past the
-/// terminal edge, and no single line can fill the cell with wrapped noise
-/// (`docs/long-lines.md`).
+/// The head peek of `out_lines`, folded Claude Code's way: its first
+/// [`TOOL_FOLD_ROWS`] display **rows** — each line wrapped to `peek_width`
+/// with `mode` ([`WrapMode::Output`] for command/shell output: word
+/// boundaries, spaces preserved, like the Ctrl+O view; [`WrapMode::Verbatim`]
+/// for diff bodies — code, hard-break, never reflowed at spaces) — then the
+/// `… +N lines (ctrl+o to expand)` hint, built with `row` (which also
+/// receives the **source** line, so a diff cell can colour a wrapped
+/// continuation by the source's `+`/`-` marker). An output of exactly
+/// `TOOL_FOLD_ROWS + 1` rows is shown **whole**: a hint hiding one row would
+/// cost the very row it hides, so the block is at most [`TOOL_PEEK_ROWS`]
+/// rows either way, hint included (`docs/long-lines.md`).
 ///
-/// `blanks` picks the window those budgets are then spent inside
+/// `blanks` picks the window the fold is then spent inside
 /// ([`BlankPolicy`]): command output shows its **first block**, so a leading
 /// `\n` never costs the cell its first row and a blank line closes the peek
 /// rather than being painted as one; everything else keeps every line.
 ///
-/// [`TOOL_PEEK_ROWS`] is the block's ceiling, in **display rows** — the unit
-/// the cell is read in — so four wrapping lines cost the cell exactly what
-/// four short ones do (`docs/long-lines.md`): it binds the moment a line
-/// wraps, `budget_lines` binds when none does. The trailing
-/// `… +N lines` hint counts **display rows** not shown — the rows pressing
-/// Ctrl+O actually adds, counted with the same `mode` the expansion wraps
-/// with — instead of source lines, which is how 1.8 KB of hidden JSON used to
+/// The hint counts **display rows** not shown — the rows pressing Ctrl+O
+/// actually adds, counted with the same `mode` the expansion wraps with —
+/// instead of source lines, which is how 1.8 KB of hidden JSON used to
 /// report itself as `+1 lines`. That count stays exact under a window: the
 /// blanks skipped above the block and the one that closed it are rows the
 /// expansion adds, so they are counted like any other hidden row. Counting
@@ -1048,7 +1185,6 @@ fn result_peek_block(
     out_lines: &[String],
     peek_width: usize,
     mode: WrapMode,
-    budget_lines: usize,
     blanks: BlankPolicy,
     row: impl Fn(usize, String, &str) -> Line<'static>,
 ) -> Vec<Line<'static>> {
@@ -1059,22 +1195,9 @@ fn result_peek_block(
             .map(|line| mode.rows(line, wrap_width))
             .sum::<usize>()
     };
-    let window = blanks.window(out_lines);
-    let block = &out_lines[window.clone()];
-    // Everything outside the window is hidden whole: the blanks skipped above
-    // the block, and the blank that closed it with all that follows.
-    let mut hidden = rows_of(&out_lines[..window.start]) + rows_of(&out_lines[window.end..]);
     let mut lines: Vec<Line> = Vec::new();
-    for (i, line) in block.iter().enumerate() {
-        let room = TOOL_PEEK_ROWS.saturating_sub(lines.len());
-        if i >= budget_lines || room == 0 {
-            // Past the budget: every remaining line is hidden whole.
-            hidden += rows_of(&block[i..]);
-            break;
-        }
-        let (rows, cut) = mode.clip(line, wrap_width, TOOL_LINE_MAX_ROWS.min(room));
-        hidden += cut;
-        for text in rows {
+    let push_rows = |lines: &mut Vec<Line>, line: &str, take: usize| {
+        for text in mode.wrap(line, wrap_width).into_iter().take(take) {
             // The very first display row of the block gets the `⎿` corner
             // ([`gutter_row`]'s index 0); every later row — a wrapped
             // continuation or the next source line — indents under the content
@@ -1082,6 +1205,30 @@ fn result_peek_block(
             let at = lines.len();
             lines.push(row(at, text, line));
         }
+    };
+    // Nothing to fold: at most one row past the fold, and a hint would cost
+    // exactly that row — so every row shows, blank lines included.
+    if rows_of(out_lines) <= TOOL_FOLD_ROWS + 1 {
+        for line in out_lines {
+            push_rows(&mut lines, line, usize::MAX);
+        }
+        return lines;
+    }
+    let window = blanks.window(out_lines);
+    let block = &out_lines[window.clone()];
+    // Everything outside the window is hidden whole: the blanks skipped above
+    // the block, and the blank that closed it with all that follows.
+    let mut hidden = rows_of(&out_lines[..window.start]) + rows_of(&out_lines[window.end..]);
+    for (i, line) in block.iter().enumerate() {
+        let room = TOOL_FOLD_ROWS.saturating_sub(lines.len());
+        if room == 0 {
+            // Past the fold: every remaining line is hidden whole.
+            hidden += rows_of(&block[i..]);
+            break;
+        }
+        let rows = mode.rows(line, wrap_width);
+        hidden += rows.saturating_sub(room);
+        push_rows(&mut lines, line, room);
     }
     if hidden > 0 {
         lines.push(more_hint_line(hidden));
@@ -1133,7 +1280,7 @@ fn tool_full_body(tool: &ToolCall, width: u16, paths: &PathDisplay) -> Vec<Line<
         if tool.shell {
             return vec![row];
         }
-        let mut lines = tool_header_lines(tool, width, None, pulse, paths);
+        let mut lines = tool_header_lines(tool, width, /*collapsed=*/ false, pulse, paths);
         lines.push(row);
         return lines;
     }
@@ -1142,7 +1289,7 @@ fn tool_full_body(tool: &ToolCall, width: u16, paths: &PathDisplay) -> Vec<Line<
     // goes through the plain row pipeline below.
     if let Some(body) = file_cell_lines(tool, width, false) {
         // The Ctrl+O transcript view never truncates the header (`None`).
-        let mut lines = tool_header_lines(tool, width, None, pulse, paths);
+        let mut lines = tool_header_lines(tool, width, /*collapsed=*/ false, pulse, paths);
         lines.extend(body);
         if tool.truncated {
             lines.push(gutter_row(1, TOOL_TRUNCATED_MARKER.to_string(), None));
@@ -1172,21 +1319,22 @@ fn tool_full_body(tool: &ToolCall, width: u16, paths: &PathDisplay) -> Vec<Line<
                     .map(move |piece| (piece, color))
             })
             .collect(),
-        // Tabs expanded for display (they paint as zero cells otherwise —
-        // see `tool_output_lines`); the stored output stays byte-exact. A
-        // backend command tool's `Exit code: N` frame is stripped for display
-        // (a `!` shell command's output is raw — never framed, never stripped;
-        // docs/tool-streaming.md).
+        // The same display lines the inline peek folds (`exec_display_lines`:
+        // the `Exit code: N` frame stripped, JSON reshaped, tabs expanded,
+        // trailing blanks dropped — the stored output stays byte-exact), every
+        // row of them, so the peek's `+N lines` is exactly what shows here. An
+        // output that is blank lines only reads `(no output)` on both.
         _ => {
-            let body: std::borrow::Cow<'_, str> = if tool.shell {
-                std::borrow::Cow::Borrowed(tool.output.as_str())
+            let display = exec_display_lines(tool);
+            if display.is_empty() {
+                vec![(TOOL_NO_OUTPUT.to_string(), None)]
             } else {
-                command_display_output(&tool.output)
-            };
-            wrap_output(&expand_code_tabs(&body), body_width)
-                .into_iter()
-                .map(|line| (line, Some(TOOL_OUTPUT_COLOR)))
-                .collect()
+                display
+                    .iter()
+                    .flat_map(|line| wrap_output(line, body_width))
+                    .map(|line| (line, Some(TOOL_OUTPUT_COLOR)))
+                    .collect()
+            }
         }
     };
     // The output was cut at the in-memory cap — mark the end so the user knows
@@ -1206,7 +1354,7 @@ fn tool_full_body(tool: &ToolCall, width: u16, paths: &PathDisplay) -> Vec<Line<
         result.collect()
     } else {
         // The Ctrl+O transcript view shows the whole command (`None`).
-        let mut lines = tool_header_lines(tool, width, None, pulse, paths);
+        let mut lines = tool_header_lines(tool, width, /*collapsed=*/ false, pulse, paths);
         lines.extend(result);
         lines
     }

@@ -5,10 +5,10 @@ use super::*;
 use crate::ui::theme::{
     CODE_TAB_WIDTH, EXPAND_HINT, FILE_PEEK_LINES, TOOL_ARGS_COLOR, TOOL_DIFF_ADD_BG,
     TOOL_DIFF_ADD_COLOR, TOOL_DIFF_ADD_MARK_BG, TOOL_DIFF_DEL_BG, TOOL_DIFF_DEL_COLOR,
-    TOOL_DIFF_DEL_MARK_BG, TOOL_DIM_COLOR, TOOL_FAIL_COLOR, TOOL_HEADER_ELLIPSIS,
-    TOOL_HEADER_MAX_ROWS, TOOL_LINE_ELLIPSIS, TOOL_LINE_MAX_ROWS, TOOL_OK_COLOR, TOOL_OUTPUT_COLOR,
-    TOOL_PEEK_LINES, TOOL_PEEK_ROWS, TOOL_PULSE_BRIGHT, TOOL_PULSE_DIM, TOOL_PULSE_PERIOD,
-    TOOL_RUNNING_COLOR, TOOL_WAITING_COLOR,
+    TOOL_DIFF_DEL_MARK_BG, TOOL_DIM_COLOR, TOOL_FAIL_COLOR, TOOL_FOLD_ROWS, TOOL_HEADER_ELLIPSIS,
+    TOOL_HEADER_MAX_COLS, TOOL_HEADER_MAX_LINES, TOOL_JSON_PRETTY_MAX_BYTES, TOOL_LINE_ELLIPSIS,
+    TOOL_LINE_MAX_ROWS, TOOL_OK_COLOR, TOOL_OUTPUT_COLOR, TOOL_PULSE_BRIGHT, TOOL_PULSE_DIM,
+    TOOL_PULSE_PERIOD, TOOL_RUNNING_COLOR, TOOL_WAITING_COLOR,
 };
 use crate::ui::tool::{live_tool_lines, running_command_lines, tool_full_lines};
 use crate::ui::wrap::cols;
@@ -339,8 +339,8 @@ fn a_committed_cell_never_carries_a_pulse_frame() {
 
 #[test]
 fn tool_lines_collapses_a_command_output_to_a_multiline_peek_plus_hint() {
-    // A finished command-style backend tool (bash) shows up to TOOL_PEEK_LINES
-    // of its output — the head, Claude-Code style — then a
+    // A finished command-style backend tool (bash) shows the first
+    // TOOL_FOLD_ROWS rows of its output — the head, Claude-Code style — then a
     // `… +N lines (ctrl+o to expand)` hint (docs/tool-streaming.md), like the
     // `!` shell cell. (This is the mock's finished state.)
     let out = "l1\nl2\nl3\nl4\nl5\nl6";
@@ -351,8 +351,8 @@ fn tool_lines_collapses_a_command_output_to_a_multiline_peek_plus_hint() {
     );
     assert_eq!(
         lines.len(),
-        TOOL_PEEK_LINES + 2,
-        "header + {TOOL_PEEK_LINES} peek rows + hint: {:?}",
+        TOOL_FOLD_ROWS + 2,
+        "header + {TOOL_FOLD_ROWS} peek rows + hint: {:?}",
         lines.iter().map(plain).collect::<Vec<_>>()
     );
     assert!(
@@ -360,12 +360,12 @@ fn tool_lines_collapses_a_command_output_to_a_multiline_peek_plus_hint() {
         "peek opens at the first line"
     );
     assert!(
-        plain(&lines[TOOL_PEEK_LINES]).contains("l4"),
-        "peek shows up to the {TOOL_PEEK_LINES}th line"
+        plain(&lines[TOOL_FOLD_ROWS]).contains("l3"),
+        "peek shows up to the {TOOL_FOLD_ROWS}th line"
     );
-    let hint = plain(&lines[TOOL_PEEK_LINES + 1]);
+    let hint = plain(&lines[TOOL_FOLD_ROWS + 1]);
     assert!(
-        hint.contains("+2 lines"),
+        hint.contains("+3 lines"),
         "hint counts hidden lines: {hint:?}"
     );
     assert!(
@@ -403,10 +403,10 @@ fn a_finished_peek_shows_the_first_lines_fully_wrapped() {
 
 #[test]
 fn a_finished_peek_bounds_rows_and_hints_when_one_line_overflows_the_budget() {
-    // The block ceiling: FOUR pathological lines (a minified bundle each)
-    // spend TOOL_PEEK_ROWS rows between them — the cell is bounded in display
-    // rows, so it can never balloon past what four short lines would cost.
-    // The hint counts every display row hidden underneath, across all four
+    // The fold: FOUR pathological lines (a minified bundle each) spend
+    // TOOL_FOLD_ROWS rows between them — the cell is bounded in display rows,
+    // so it can never balloon past what four short lines would cost. The hint
+    // counts every display row hidden underneath, across all four
     // (docs/long-lines.md).
     let long = "x".repeat(600); // 35 content cols → 18 rows uncapped
     let out = vec![long; 4].join("\n");
@@ -420,8 +420,8 @@ fn a_finished_peek_bounds_rows_and_hints_when_one_line_overflows_the_budget() {
     .collect();
     assert_eq!(
         lines.len(),
-        1 + TOOL_PEEK_ROWS + 1,
-        "header + the {TOOL_PEEK_ROWS}-row ceiling + hint: {lines:?}"
+        1 + TOOL_FOLD_ROWS + 1,
+        "header + the {TOOL_FOLD_ROWS}-row fold + hint: {lines:?}"
     );
     let hint = lines.last().unwrap();
     assert!(
@@ -429,8 +429,8 @@ fn a_finished_peek_bounds_rows_and_hints_when_one_line_overflows_the_budget() {
         "the hint signals more: {hint:?}"
     );
     assert!(
-        hint.contains(&format!("+{} lines", 4 * 18 - TOOL_PEEK_ROWS)),
-        "every row hidden under the ceiling is counted: {hint:?}"
+        hint.contains(&format!("+{} lines", 4 * 18 - TOOL_FOLD_ROWS)),
+        "every row hidden under the fold is counted: {hint:?}"
     );
 }
 
@@ -451,8 +451,8 @@ fn a_finished_command_peek_skips_the_output_s_leading_blank_lines() {
     .collect();
     assert_eq!(
         lines.len(),
-        1 + TOOL_PEEK_LINES + 1,
-        "header + {TOOL_PEEK_LINES} content rows + hint — no blank row: {lines:?}"
+        1 + TOOL_FOLD_ROWS + 1,
+        "header + {TOOL_FOLD_ROWS} content rows + hint — no blank row: {lines:?}"
     );
     assert_eq!(
         gutter_content(&lines[1]),
@@ -461,8 +461,8 @@ fn a_finished_command_peek_skips_the_output_s_leading_blank_lines() {
     );
     let hint = lines.last().unwrap();
     assert!(
-        hint.contains("+2 lines"),
-        "the skipped blank is still counted as a hidden row, with l5: {hint:?}"
+        hint.contains("+3 lines"),
+        "the skipped blank is still counted as a hidden row, with l4 and l5: {hint:?}"
     );
 }
 
@@ -495,10 +495,11 @@ fn a_finished_command_peek_stops_at_the_first_blank_line() {
 }
 
 #[test]
-fn a_finished_command_peek_keeps_a_blank_only_output_as_it_is() {
-    // Nothing to prefer when there is no non-blank line anywhere: the block
-    // renders exactly as before rather than collapsing to an empty cell whose
-    // hint has no `⎿` corner to hang from.
+fn a_finished_command_peek_reads_a_blank_only_output_as_no_output() {
+    // Trailing blank lines are dropped from the display, so an output that is
+    // nothing but newlines has no row left to show: the cell says so with the
+    // `(no output)` placeholder rather than painting three rows of nothing
+    // (and the transcript agrees).
     let out = "\n\n\n";
     let lines: Vec<String> = tool_lines(
         &tool("Bash", "printf", ToolStatus::Ok, out),
@@ -508,15 +509,16 @@ fn a_finished_command_peek_keeps_a_blank_only_output_as_it_is() {
     .iter()
     .map(plain)
     .collect();
-    assert_eq!(
-        lines.len(),
-        1 + 3,
-        "header + the three blank rows: {lines:?}"
-    );
-    assert!(
-        !lines.iter().any(|l| l.contains("ctrl+o to expand")),
-        "nothing is hidden: {lines:?}"
-    );
+    assert_eq!(lines[1..], ["  ⎿  (no output)"], "{lines:?}");
+    let full: Vec<String> = tool_full_lines(
+        &tool("Bash", "printf", ToolStatus::Ok, out),
+        80,
+        &PathDisplay::VERBATIM,
+    )
+    .iter()
+    .map(plain)
+    .collect();
+    assert_eq!(full[1..], ["  ⎿  (no output)"], "{full:?}");
 }
 
 #[test]
@@ -524,17 +526,23 @@ fn a_shell_cell_peek_follows_the_same_first_block_rule() {
     // The `!` shell cell is the same exec cell as the backend `bash` one
     // (docs/shell-command.md) — headerless, same gutter, same budget — so its
     // peek skips the leading blanks and stops at the first interior one too.
-    let mut t = tool("printf '\\n\\nout\\n'", "", ToolStatus::Ok, "\n\nout\ntail");
+    let mut t = tool(
+        "printf '\\n\\nout\\n'",
+        "",
+        ToolStatus::Ok,
+        "\n\nout\ntail\nmore",
+    );
     t.shell = true;
     let lines: Vec<String> = tool_lines(&t, 80, &PathDisplay::VERBATIM)
         .iter()
         .map(plain)
         .collect();
-    assert_eq!(lines.len(), 3, "the block's two rows + hint: {lines:?}");
+    assert_eq!(lines.len(), 4, "the block's three rows + hint: {lines:?}");
     assert_eq!(gutter_content(&lines[0]), "out", "{lines:?}");
     assert_eq!(gutter_content(&lines[1]), "tail", "{lines:?}");
+    assert_eq!(gutter_content(&lines[2]), "more", "{lines:?}");
     assert!(
-        lines[2].contains("+2 lines"),
+        lines[3].contains("+2 lines"),
         "the two skipped blanks are counted: {lines:?}"
     );
 }
@@ -544,7 +552,7 @@ fn a_blank_line_inside_a_wrapped_first_block_still_closes_the_peek() {
     // The block rule is applied to **source** lines before wrapping, so a
     // wrapping line inside the block still shows whole and the blank after it
     // still ends the cell.
-    let out = format!("{}\n\nafter", "a".repeat(60)); // 35 content cols → 2 rows
+    let out = format!("{}\n\nafter\nmore\nstill", "a".repeat(60)); // 35 cols → 2 rows
     let lines: Vec<String> = tool_lines(
         &tool("Bash", "cat", ToolStatus::Ok, &out),
         40,
@@ -559,7 +567,10 @@ fn a_blank_line_inside_a_wrapped_first_block_still_closes_the_peek() {
         "header + the long line's two wrapped rows + hint: {lines:?}"
     );
     let hint = lines.last().unwrap();
-    assert!(hint.contains("+2 lines"), "the blank and `after`: {hint:?}");
+    assert!(
+        hint.contains("+4 lines"),
+        "the blank and the three lines after it: {hint:?}"
+    );
 }
 
 #[test]
@@ -632,21 +643,20 @@ fn a_diff_peek_continuation_row_keeps_the_source_line_colour() {
 }
 
 #[test]
-fn a_non_command_tool_with_raw_multiline_output_keeps_a_single_peek_line() {
-    // Only a command tool (bash) expands to a multi-line peek. A generic
-    // backend tool whose output isn't the numbered file-cell format (e.g. the
-    // dummy's canned `Read`, or an unknown tool) keeps the compact single
-    // peek line + hint — so its committed footprint is unchanged
-    // (docs/tool-streaming.md; guards the resize/reflow layout, smoke Phase 17).
+fn a_non_command_tool_with_raw_multiline_output_shares_the_folded_peek() {
+    // A generic backend tool whose output isn't the numbered file-cell format
+    // (e.g. the dummy's canned `Read`, or an unknown tool) shows the same
+    // folded peek the exec cells do — Claude Code's one tool-result surface:
+    // TOOL_FOLD_ROWS rows, then the hint (docs/tool-streaming.md).
     let lines = tool_lines(
-        &tool("Read", "f", ToolStatus::Ok, "one\ntwo\nthree"),
+        &tool("Read", "f", ToolStatus::Ok, "one\ntwo\nthree\nfour\nfive"),
         80,
         &PathDisplay::VERBATIM,
     );
     assert_eq!(
         lines.len(),
-        3,
-        "header + one peek line + hint: {:?}",
+        1 + TOOL_FOLD_ROWS + 1,
+        "header + the fold + hint: {:?}",
         lines.iter().map(plain).collect::<Vec<_>>()
     );
     assert!(
@@ -654,11 +664,11 @@ fn a_non_command_tool_with_raw_multiline_output_keeps_a_single_peek_line() {
         "peek shows the first line"
     );
     assert!(
-        !plain(&lines[1]).contains("two"),
+        !lines.iter().any(|l| plain(l).contains("four")),
         "the rest stays hidden inline"
     );
     assert!(
-        plain(&lines[2]).contains("+2 lines"),
+        plain(lines.last().unwrap()).contains("+2 lines"),
         "the hint counts the rest"
     );
 }
@@ -985,8 +995,8 @@ fn tool_full_lines_keeps_the_whole_header_untruncated() {
         .map(plain)
         .collect();
     assert!(
-        header.len() > TOOL_HEADER_MAX_ROWS,
-        "full view shows every header row: {header:?}"
+        cols(cmd) > TOOL_HEADER_MAX_COLS,
+        "the fixture is over the collapsed budget"
     );
     let joined: String = header
         .iter()
@@ -1305,9 +1315,10 @@ fn a_generic_cell_peek_line_wraps_instead_of_clipping() {
 
 #[test]
 fn a_generic_cell_still_hints_the_lines_behind_the_wrapped_peek() {
-    // Only the first source line peeks; the rest stay behind the accurate
-    // `… +N lines` hint, wrap or no wrap.
-    let output = "first line of the body that is long enough to wrap at this width\nsecond\nthird";
+    // The fold is counted in rows: a first line wrapping to three rows fills
+    // it by itself, and the lines after it stay behind the accurate
+    // `… +N lines` hint.
+    let output = "first line of the body that is long enough to wrap to three rows at this width\nsecond\nthird";
     let lines = tool_lines(
         &tool("Teleport", "x", ToolStatus::Ok, output),
         40,
@@ -2291,45 +2302,11 @@ fn a_narrow_terminal_drops_the_mcp_hint_before_the_label() {
 // --- very long output lines: bounded rows, honest counts (docs/long-lines.md) ---
 
 #[test]
-fn a_finished_peek_clips_one_pathological_line_to_the_per_line_budget() {
-    // The reported mess: a 2 KB `curl` body used to spend the WHOLE block
-    // ceiling (12 rows) on one source line. It now shows its head —
-    // TOOL_LINE_MAX_ROWS rows — marked with the `…` that says it continues.
-    let long = "x".repeat(600); // 35 content cols → 18 rows uncapped
-    let lines: Vec<String> = tool_lines(
-        &tool("Bash", "cat big", ToolStatus::Ok, &long),
-        40,
-        &PathDisplay::VERBATIM,
-    )
-    .iter()
-    .map(plain)
-    .collect();
-    assert_eq!(
-        lines.len(),
-        1 + TOOL_LINE_MAX_ROWS + 1,
-        "header + the {TOOL_LINE_MAX_ROWS}-row line budget + hint: {lines:?}"
-    );
-    let last_row = &lines[TOOL_LINE_MAX_ROWS];
-    assert!(
-        last_row.ends_with(TOOL_LINE_ELLIPSIS),
-        "the cut is visible on the last kept row: {last_row:?}"
-    );
-    let hint = lines.last().unwrap();
-    assert!(
-        hint.contains(&format!("+{} lines", 18 - TOOL_LINE_MAX_ROWS)),
-        "the hint counts the DISPLAY ROWS it hid, not `+1 lines`: {hint:?}"
-    );
-    assert!(hint.contains("ctrl+o to expand"), "{hint:?}");
-    for l in &lines {
-        assert!(cols(l) <= 40, "no row overflows the width: {l:?}");
-    }
-}
-
-#[test]
 fn a_finished_peek_hint_counts_rows_hidden_inside_a_long_line() {
     // The example verbatim: a short line, then a huge one. The old hint said
     // `+1 lines` while hiding 15 rows of JSON — the number the user reads is
-    // what expanding actually adds.
+    // what expanding actually adds: the blob's 18 rows less the two the fold
+    // had room for after the short line.
     let out = format!("/home/u/.local/bin/yt-dlp\n{}", "x".repeat(600));
     let lines: Vec<String> = tool_lines(
         &tool("Bash", "curl -s …", ToolStatus::Ok, &out),
@@ -2341,21 +2318,20 @@ fn a_finished_peek_hint_counts_rows_hidden_inside_a_long_line() {
     .collect();
     assert_eq!(
         lines.len(),
-        1 + 1 + TOOL_LINE_MAX_ROWS + 1,
-        "header + the short line + the clipped line + hint: {lines:?}"
+        1 + TOOL_FOLD_ROWS + 1,
+        "header + the short line + two rows of the blob + hint: {lines:?}"
     );
     assert!(
-        lines.last().unwrap().contains("+15 lines"),
-        "18 wrapped rows less the {TOOL_LINE_MAX_ROWS} shown: {lines:?}"
+        lines.last().unwrap().contains("+16 lines"),
+        "18 wrapped rows less the 2 shown: {lines:?}"
     );
 }
 
 #[test]
-fn a_clipped_line_still_leaves_room_for_the_line_after_it() {
-    // The per-line budget inside the block ceiling: clipping the blob at
-    // TOOL_LINE_MAX_ROWS is what buys the line after it a row, so the peek
-    // still shows that the output continues (before, one line ate the whole
-    // block). What the ceiling then hides is counted in the hint.
+fn the_fold_spends_its_rows_on_a_blob_and_counts_the_lines_after_it() {
+    // A blob first: the fold's three rows are all blob (Claude Code shows the
+    // first three rows of whatever the output is), and the hint counts the
+    // blob's remaining rows plus every line under it.
     let out = format!("{}\nbee\nsea", "x".repeat(600));
     let lines: Vec<String> = tool_lines(
         &tool("Bash", "cat log", ToolStatus::Ok, &out),
@@ -2365,25 +2341,21 @@ fn a_clipped_line_still_leaves_room_for_the_line_after_it() {
     .iter()
     .map(plain)
     .collect();
-    assert!(
-        lines.iter().any(|l| l.contains("bee")),
-        "the line after the blob still shows: {lines:?}"
-    );
     assert_eq!(
         lines.len(),
-        1 + TOOL_LINE_MAX_ROWS + 1 + 1,
-        "header + clipped line + bee + hint: {lines:?}"
+        1 + TOOL_FOLD_ROWS + 1,
+        "header + three blob rows + hint: {lines:?}"
     );
     assert!(
-        lines.last().unwrap().contains("+16 lines"),
-        "the blob's 15 hidden rows plus `sea`: {lines:?}"
+        lines.last().unwrap().contains("+17 lines"),
+        "the blob's 15 hidden rows plus `bee` and `sea`: {lines:?}"
     );
 }
 
 #[test]
 fn a_finished_peek_hint_counts_whole_hidden_lines_in_rows_too() {
-    // Past the source-line budget the hint counts the hidden lines' ROWS: two
-    // hidden lines, one of which wraps to three rows, reads `+4 lines`.
+    // Past the fold the hint counts the hidden lines' ROWS: three hidden
+    // lines, one of which wraps to three rows, reads `+5 lines`.
     let out = format!("a\nb\nc\nd\ne\n{}", "x".repeat(100)); // 100 cols → 3 rows
     let lines: Vec<String> = tool_lines(
         &tool("Bash", "cat log", ToolStatus::Ok, &out),
@@ -2394,8 +2366,8 @@ fn a_finished_peek_hint_counts_whole_hidden_lines_in_rows_too() {
     .map(plain)
     .collect();
     assert!(
-        lines.last().unwrap().contains("+4 lines"),
-        "`e` (1 row) + the 3-row line: {lines:?}"
+        lines.last().unwrap().contains("+5 lines"),
+        "`d`, `e` (1 row each) + the 3-row line: {lines:?}"
     );
 }
 
@@ -2411,11 +2383,11 @@ fn everyday_short_output_counts_the_same_as_before() {
     .iter()
     .map(plain)
     .collect();
-    assert!(lines.last().unwrap().contains("+2 lines"), "{lines:?}");
+    assert!(lines.last().unwrap().contains("+3 lines"), "{lines:?}");
 }
 
 #[test]
-fn a_shell_cell_clips_a_pathological_line_too() {
+fn a_shell_cell_folds_a_pathological_line_too() {
     // The headerless `!` exec cell shares the peek, so it is bounded the same
     // way (a `! curl` of a JSON API used to paint twelve rows).
     let mut t = tool("curl -s api", "", ToolStatus::Ok, &"x".repeat(600));
@@ -2426,16 +2398,16 @@ fn a_shell_cell_clips_a_pathological_line_too() {
         .collect();
     assert_eq!(
         lines.len(),
-        TOOL_LINE_MAX_ROWS + 1,
-        "headerless: the clipped line + hint: {lines:?}"
+        TOOL_FOLD_ROWS + 1,
+        "headerless: the fold + hint: {lines:?}"
     );
-    assert!(lines[TOOL_LINE_MAX_ROWS - 1].ends_with(TOOL_LINE_ELLIPSIS));
+    assert!(lines.last().unwrap().contains("+15 lines"), "{lines:?}");
 }
 
 #[test]
-fn a_generic_backend_cell_clips_its_single_peeked_line() {
+fn a_generic_backend_cell_folds_its_output_too() {
     // A non-command backend tool (an image read's fact line, an error body)
-    // peeks ONE source line — bounded by the same per-line budget.
+    // is bounded by the same fold.
     let long = "x".repeat(600);
     let lines: Vec<String> = tool_lines(
         &tool("WebFetch", "https://x", ToolStatus::Ok, &long),
@@ -2447,8 +2419,8 @@ fn a_generic_backend_cell_clips_its_single_peeked_line() {
     .collect();
     assert_eq!(
         lines.len(),
-        1 + TOOL_LINE_MAX_ROWS + 1,
-        "header + budget + hint: {lines:?}"
+        1 + TOOL_FOLD_ROWS + 1,
+        "header + the fold + hint: {lines:?}"
     );
     assert!(lines.last().unwrap().contains("+15 lines"), "{lines:?}");
 }
@@ -2590,7 +2562,7 @@ fn a_finished_peek_never_spends_more_rows_than_the_row_ceiling() {
     // a web page — a short `<title>` then minified `<script>` lines — spent
     // FOUR source lines' worth of per-line budget, ten wrapped rows of noise
     // inline. The cell is bounded in the unit the user reads it in: at most
-    // TOOL_PEEK_ROWS display rows, whatever shape the output has.
+    // TOOL_FOLD_ROWS display rows over the hint, whatever shape the output has.
     let out = format!(
         "<title>World Chess Championship - Wikipedia</title>\n{}\n{}\n{}",
         "<script>".to_string() + &"a".repeat(200),
@@ -2607,8 +2579,8 @@ fn a_finished_peek_never_spends_more_rows_than_the_row_ceiling() {
     .collect();
     assert_eq!(
         lines.len(),
-        1 + TOOL_PEEK_ROWS + 1,
-        "header + the {TOOL_PEEK_ROWS}-row ceiling + hint: {lines:?}"
+        1 + TOOL_FOLD_ROWS + 1,
+        "header + the {TOOL_FOLD_ROWS}-row fold + hint: {lines:?}"
     );
     assert!(
         lines.last().unwrap().contains("ctrl+o to expand"),
@@ -2870,12 +2842,12 @@ fn tool_header_spills_a_first_word_that_fits_the_continuation_row_whole() {
 }
 
 #[test]
-fn a_spilled_header_still_shows_a_full_budget_of_argument_rows() {
-    // The cap counts the rows the **arguments** take: when they spill (nothing
-    // fits beside a long name), row 0 carries none, so the budget applies to
-    // the rows below it. Otherwise a spilled header would show one row less of
-    // the call than an ordinary one — paying for the readable spill with the
-    // content it was meant to make readable.
+fn a_spilled_header_still_shows_the_whole_call_within_its_budget() {
+    // The cut is a budget on the text, not on rows: a spilled header (nothing
+    // fits beside a long name, so row 0 carries only the name and its `(`)
+    // still shows every argument row of a call within TOOL_HEADER_MAX_COLS —
+    // the readable spill never costs the content it was meant to make
+    // readable.
     let call = tool(
         "deepwiki - ask_question (MCP)",
         r#"{"repoName":"linuztx/flaredantic","question":"How does the tunnel client work?"}"#,
@@ -2889,10 +2861,9 @@ fn a_spilled_header_still_shows_a_full_budget_of_argument_rows() {
         .take_while(|row| !row.contains('⎿'))
         .collect();
     assert_eq!(header[0], "● Deepwiki - ask_question (MCP)(");
-    assert_eq!(
-        header.len(),
-        TOOL_HEADER_MAX_ROWS + 1,
-        "the name's own row is not one of the argument rows: {header:?}"
+    assert!(
+        header.len() >= 3,
+        "the name's own row over the wrapped argument rows: {header:?}"
     );
     let joined = header.join("");
     assert!(
@@ -3177,5 +3148,377 @@ fn the_transcript_reads_the_apps_policy() {
     assert!(
         !lines.iter().any(|l| l.contains("/home/linuztx")),
         "…and shows the absolute path nowhere: {lines:?}"
+    );
+}
+
+// --- the header wraps and cuts like Claude Code's `Bash(…)` (docs/tools.md) ---
+
+/// The command from the report, byte for byte.
+const WIKI_CURL: &str = "curl -s --max-time 15 \"https://en.wikipedia.org/w/api.php?action=query&prop=extracts&exintro&explaintext&format=json&titles=World%20Chess%20Championship%202026\" | head -c 2000";
+
+/// The `● name(args)` rows of a rendered cell — everything above the `⎿`.
+fn header_rows(lines: &[Line]) -> Vec<String> {
+    lines
+        .iter()
+        .take_while(|l| !plain(l).contains('⎿'))
+        .map(plain)
+        .collect()
+}
+
+/// A header's rows joined back into one string, the continuation indent
+/// dropped — the text the header showed, in order.
+fn header_text(lines: &[Line]) -> String {
+    header_rows(lines)
+        .iter()
+        .map(|row| row.trim_start())
+        .collect::<Vec<_>>()
+        .concat()
+}
+
+#[test]
+fn the_header_fills_every_row_and_cuts_at_160_columns_like_claude_code() {
+    // The report, at the 72 columns it was captured in. Claude Code shows
+    //
+    //   ● Bash(curl -s --max-time 15 "https://en.wikipedia.org/w/api.php?action=
+    //         query&prop=extracts&exintro&explaintext&format=json&titles=World%2
+    //         0Chess%20Championship%202026"…)
+    //
+    // — every row filled to the edge, the command cut after 160 characters.
+    // Ours left the first row at `curl -s --max-time 15` because the URL
+    // token, which fits no row, was moved down to the next one before being
+    // broken, and then cut the command at a row budget instead.
+    let lines = tool_lines(
+        &tool("Bash", WIKI_CURL, ToolStatus::Ok, "{}"),
+        72,
+        &PathDisplay::VERBATIM,
+    );
+    assert_eq!(
+        header_rows(&lines),
+        vec![
+            "● Bash(curl -s --max-time 15 \"https://en.wikipedia.org/w/api.php?action=",
+            "      query&prop=extracts&exintro&explaintext&format=json&titles=World%2",
+            "      0Chess%20Championship%202026\"…)",
+        ]
+    );
+}
+
+#[test]
+fn the_collapsed_header_cuts_a_long_command_at_160_columns_not_at_a_row_count() {
+    // The cut is a budget on the text (Claude Code's 160 characters), not on
+    // rows: the same command is cut at the same character in every width.
+    let cmd: String = (0..200u8).map(|i| char::from(b'a' + (i % 26))).collect();
+    let expected = format!(
+        "● Bash({}{TOOL_HEADER_ELLIPSIS})",
+        &cmd[..TOOL_HEADER_MAX_COLS]
+    );
+    for width in [40u16, 72, 120, 200] {
+        let lines = tool_lines(
+            &tool("Bash", &cmd, ToolStatus::Ok, "x"),
+            width,
+            &PathDisplay::VERBATIM,
+        );
+        assert_eq!(header_text(&lines), expected, "at {width} columns");
+        for l in &lines {
+            assert!(cols(&plain(l)) <= usize::from(width), "fits {width}: {l:?}");
+        }
+    }
+    // The Ctrl+O transcript shows the whole command.
+    let full = tool_full_lines(
+        &tool("Bash", &cmd, ToolStatus::Ok, "x"),
+        72,
+        &PathDisplay::VERBATIM,
+    );
+    assert_eq!(header_text(&full), format!("● Bash({cmd})"));
+}
+
+#[test]
+fn a_command_within_the_budget_is_never_cut() {
+    // Exactly 160 columns: shown whole, no marker.
+    let cmd = "x".repeat(TOOL_HEADER_MAX_COLS);
+    let lines = tool_lines(
+        &tool("Bash", &cmd, ToolStatus::Ok, "x"),
+        80,
+        &PathDisplay::VERBATIM,
+    );
+    assert_eq!(header_text(&lines), format!("● Bash({cmd})"));
+}
+
+#[test]
+fn the_collapsed_header_keeps_two_lines_of_a_multiline_command() {
+    // Claude Code keeps the first two lines of a multi-line command and
+    // marks the cut; the transcript shows every line.
+    let lines = tool_lines(
+        &tool("Bash", "cd foo\nls -la\npwd", ToolStatus::Ok, "x"),
+        80,
+        &PathDisplay::VERBATIM,
+    );
+    assert_eq!(header_rows(&lines), vec!["● Bash(cd foo", "      ls -la…)"]);
+    assert_eq!(header_rows(&lines).len(), TOOL_HEADER_MAX_LINES);
+    let full = tool_full_lines(
+        &tool("Bash", "cd foo\nls -la\npwd", ToolStatus::Ok, "x"),
+        80,
+        &PathDisplay::VERBATIM,
+    );
+    assert_eq!(
+        header_rows(&full),
+        vec!["● Bash(cd foo", "      ls -la", "      pwd)"]
+    );
+}
+
+#[test]
+fn the_header_collapses_a_heredoc_commit_message_like_claude_code() {
+    // `git commit -m "$(cat <<'EOF' … EOF)"` is how a commit message with a
+    // body is passed; Claude Code's header shows it as the quoted message
+    // itself — `git commit -m "Add the fold…)` — since the `cat` scaffolding
+    // says nothing about what the command does.
+    let cmd = "git commit -m \"$(cat <<'EOF'\nAdd the fold\n\nCo-Authored-By: X <x@y>\nEOF\n)\"";
+    let lines = tool_lines(
+        &tool("Bash", cmd, ToolStatus::Ok, "x"),
+        80,
+        &PathDisplay::VERBATIM,
+    );
+    assert_eq!(
+        header_rows(&lines),
+        vec!["● Bash(git commit -m \"Add the fold…)"]
+    );
+    // The transcript shows the collapsed quote whole, line by line.
+    let full = header_rows(&tool_full_lines(
+        &tool("Bash", cmd, ToolStatus::Ok, "x"),
+        80,
+        &PathDisplay::VERBATIM,
+    ));
+    assert_eq!(full[0], "● Bash(git commit -m \"Add the fold");
+    assert_eq!(full.last().unwrap(), "      Co-Authored-By: X <x@y>\")");
+    assert!(
+        !full.iter().any(|r| r.contains("cat <<")),
+        "the scaffolding is gone: {full:?}"
+    );
+}
+
+#[test]
+fn a_heredoc_that_is_not_the_commit_idiom_stays_verbatim() {
+    // A plain heredoc (no `"$(cat <<'EOF'` … `)"`) is a different command
+    // and is shown as written — cut to its first two lines like any other.
+    let lines = tool_lines(
+        &tool("Bash", "cat > f <<'EOF'\nhi\nEOF", ToolStatus::Ok, "x"),
+        80,
+        &PathDisplay::VERBATIM,
+    );
+    assert_eq!(
+        header_rows(&lines),
+        vec!["● Bash(cat > f <<'EOF'", "      hi…)"]
+    );
+}
+
+// --- the output folds like Claude Code's tool result (docs/long-lines.md) ---
+
+/// The report's JSON body — one compact line, as `curl` prints it.
+const WIKI_JSON: &str = r#"{"batchcomplete":"","query":{"pages":{"75936044":{"pageid":75936044,"ns":0,"title":"World Chess Championship 2026"}}}}"#;
+
+#[test]
+fn an_exec_cell_pretty_prints_a_json_line_like_claude_code() {
+    // The report's other half: Claude Code showed
+    //
+    //   ⎿  {
+    //        "batchcomplete": "",
+    //        "query": {
+    //      … +16 lines (ctrl+o to expand)
+    //
+    // where ours painted the compact line wrapped. A line that is a JSON
+    // document is reshaped, for display only, with two-space indentation;
+    // the peek is then the first rows of *that*. The record stays byte-exact.
+    let lines: Vec<String> = tool_lines(
+        &tool(
+            "Bash",
+            "curl …",
+            ToolStatus::Ok,
+            &format!("Exit code: 0\n{WIKI_JSON}"),
+        ),
+        72,
+        &PathDisplay::VERBATIM,
+    )
+    .iter()
+    .map(plain)
+    .collect();
+    assert_eq!(lines[1], "  ⎿  {");
+    assert_eq!(lines[2], "       \"batchcomplete\": \"\",");
+    assert_eq!(lines[3], "       \"query\": {");
+    // Twelve pretty rows: three shown, nine behind the hint.
+    assert_eq!(lines.len(), 1 + TOOL_FOLD_ROWS + 1, "{lines:?}");
+    assert!(
+        lines[4].contains("+9 lines (ctrl+o to expand)"),
+        "{lines:?}"
+    );
+    // The transcript shows the pretty document whole.
+    let full: Vec<String> = tool_full_lines(
+        &tool(
+            "Bash",
+            "curl …",
+            ToolStatus::Ok,
+            &format!("Exit code: 0\n{WIKI_JSON}"),
+        ),
+        72,
+        &PathDisplay::VERBATIM,
+    )
+    .iter()
+    .map(plain)
+    .collect();
+    assert_eq!(full.len(), 1 + 12, "{full:?}");
+    assert_eq!(full[6], "             \"pageid\": 75936044,");
+    assert_eq!(full[12], "     }");
+}
+
+#[test]
+fn a_shell_cell_pretty_prints_json_too() {
+    // The `!` exec cell is the same cell shape (docs/shell-command.md).
+    let mut t = tool("curl -s api", "", ToolStatus::Ok, WIKI_JSON);
+    t.shell = true;
+    let lines: Vec<String> = tool_lines(&t, 72, &PathDisplay::VERBATIM)
+        .iter()
+        .map(plain)
+        .collect();
+    assert_eq!(lines[0], "  ⎿  {");
+    assert_eq!(lines[1], "       \"batchcomplete\": \"\",");
+    assert!(lines.last().unwrap().contains("+9 lines"), "{lines:?}");
+}
+
+#[test]
+fn only_a_line_that_round_trips_as_json_is_reshaped() {
+    // Duplicate keys parse (last wins) but re-serialize differently — the
+    // guard leaves such a line alone rather than showing a document the
+    // command never printed. Prose and bare scalars are untouched too.
+    let out = "{\"a\":1,\"a\":2}\nnot json {\n42\n{\"ok\":true}";
+    let lines: Vec<String> = tool_full_lines(
+        &tool("Bash", "x", ToolStatus::Ok, out),
+        80,
+        &PathDisplay::VERBATIM,
+    )
+    .iter()
+    .map(plain)
+    .collect();
+    assert_eq!(
+        &lines[1..],
+        &[
+            "  ⎿  {\"a\":1,\"a\":2}",
+            "     not json {",
+            "     42",
+            "     {",
+            "       \"ok\": true",
+            "     }",
+        ]
+    );
+}
+
+#[test]
+fn output_past_the_prettify_cap_is_shown_as_it_came() {
+    // Claude Code's guard: past 10 000 characters no line is reshaped, even
+    // a JSON one — the bound on what a render may parse.
+    let out = format!("{{\"a\":1}}\n{}", "x".repeat(TOOL_JSON_PRETTY_MAX_BYTES));
+    let lines: Vec<String> = tool_lines(
+        &tool("Bash", "x", ToolStatus::Ok, &out),
+        80,
+        &PathDisplay::VERBATIM,
+    )
+    .iter()
+    .map(plain)
+    .collect();
+    assert_eq!(lines[1], "  ⎿  {\"a\":1}", "{lines:?}");
+}
+
+#[test]
+fn the_running_tail_never_reshapes_what_is_still_streaming() {
+    // A running command's output is partial and arrives line by line: the
+    // tail shows it as printed — reshaping happens when the cell settles.
+    let t = tool("Bash", "curl", ToolStatus::Running, "{\"a\":1,\"b\":2}\n");
+    let lines: Vec<String> = running_command_lines(
+        &t,
+        Duration::from_secs(1),
+        Duration::ZERO,
+        60,
+        &PathDisplay::VERBATIM,
+    )
+    .iter()
+    .map(plain)
+    .collect();
+    assert_eq!(lines[1..], ["  ⎿  {\"a\":1,\"b\":2}"], "{lines:?}");
+}
+
+#[test]
+fn a_four_row_output_shows_whole_instead_of_hiding_one_row() {
+    // Claude Code's fold: three rows above it — but an output of exactly four
+    // shows all four, since a hint hiding one row costs the row it hides.
+    let four: Vec<String> = tool_lines(
+        &tool("Bash", "seq 4", ToolStatus::Ok, "a\nb\nc\nd"),
+        80,
+        &PathDisplay::VERBATIM,
+    )
+    .iter()
+    .map(plain)
+    .collect();
+    assert_eq!(four.len(), 1 + 4, "{four:?}");
+    assert!(!four.iter().any(|l| l.contains("ctrl+o")), "{four:?}");
+    let five: Vec<String> = tool_lines(
+        &tool("Bash", "seq 5", ToolStatus::Ok, "a\nb\nc\nd\ne"),
+        80,
+        &PathDisplay::VERBATIM,
+    )
+    .iter()
+    .map(plain)
+    .collect();
+    assert_eq!(five.len(), 1 + TOOL_FOLD_ROWS + 1, "{five:?}");
+    assert!(five[3].contains('c'), "{five:?}");
+    assert!(five[4].contains("+2 lines (ctrl+o to expand)"), "{five:?}");
+}
+
+#[test]
+fn trailing_blank_lines_never_count_as_hidden_rows() {
+    // `echo; echo` tails, a formatter's closing newlines: nothing to see and
+    // nothing to hide — the cell and the transcript both end at the last row
+    // that has something on it.
+    let lines: Vec<String> = tool_lines(
+        &tool("Bash", "x", ToolStatus::Ok, "a\nb\n\n\n"),
+        80,
+        &PathDisplay::VERBATIM,
+    )
+    .iter()
+    .map(plain)
+    .collect();
+    assert_eq!(lines[1..], ["  ⎿  a", "     b"], "{lines:?}");
+    let full: Vec<String> = tool_full_lines(
+        &tool("Bash", "x", ToolStatus::Ok, "a\nb\n\n\n"),
+        80,
+        &PathDisplay::VERBATIM,
+    )
+    .iter()
+    .map(plain)
+    .collect();
+    assert_eq!(full[1..], ["  ⎿  a", "     b"], "{full:?}");
+}
+
+#[test]
+fn the_fold_shows_three_rows_of_one_long_line_unmarked() {
+    // A 600-char blob at 35 content columns is 18 rows: the first three show
+    // as they are — the hint right under them is what says it continues —
+    // and the count is the fifteen rows the expansion adds.
+    let long = "x".repeat(600);
+    let lines: Vec<String> = tool_lines(
+        &tool("Bash", "cat big", ToolStatus::Ok, &long),
+        40,
+        &PathDisplay::VERBATIM,
+    )
+    .iter()
+    .map(plain)
+    .collect();
+    assert_eq!(lines.len(), 1 + TOOL_FOLD_ROWS + 1, "{lines:?}");
+    for row in &lines[1..=TOOL_FOLD_ROWS] {
+        assert_eq!(
+            row.trim_start_matches([' ', '⎿']),
+            "x".repeat(35),
+            "{row:?}"
+        );
+    }
+    assert!(
+        lines[4].contains("+15 lines (ctrl+o to expand)"),
+        "{lines:?}"
     );
 }

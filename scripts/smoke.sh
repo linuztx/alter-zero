@@ -8386,10 +8386,11 @@ rm -rf "$SP_TMP" 2>/dev/null
 # --- Phase 92: a VERY LONG output line is bounded and counted honestly
 # (docs/long-lines.md). One 750-char line — a minified blob, a `curl` JSON body
 # — used to spend the whole peek ceiling on itself (twelve rows of wrapped
-# noise) under a hint claiming ONE line was hidden. It now shows
-# TOOL_LINE_MAX_ROWS rows closed by a `…`, and the hint counts the display ROWS
-# the expansion adds. At 80 columns the `  ⎿  ` gutter leaves 75, so 750 chars
-# is exactly 10 rows: 3 shown, 7 hidden. Ctrl+O still holds all ten. ---
+# noise) under a hint claiming ONE line was hidden. The cell folds at
+# TOOL_FOLD_ROWS rows now — Claude Code's three, shown as they are, the hint
+# right under them saying the rest follows — and the hint counts the display
+# ROWS the expansion adds. At 80 columns the `  ⎿  ` gutter leaves 75, so 750
+# chars is exactly 10 rows: 3 shown, 7 hidden. Ctrl+O still holds all ten. ---
 S92="${S}_longline"
 tmux new-session -d -s "$S92" -x 80 -y 24 "$APP"
 sleep 0.4
@@ -8408,11 +8409,13 @@ echo "==== Phase 92: captured pane (a 750-char single line, clipped and counted)
 printf '%s\n' "$ll_pane"
 ll_rows="$(printf '%s' "$ll_pane" | grep -c 'xxxxxxxx')"
 if [ "$ll_rows" -ne 3 ]; then
-	echo "FAIL: Phase 92 — the 750-char line painted $ll_rows rows inline, not the 3-row per-line budget" >&2
+	echo "FAIL: Phase 92 — the 750-char line painted $ll_rows rows inline, not the 3-row fold" >&2
 	status=1
 fi
-if ! printf '%s' "$ll_pane" | grep -qE 'x…$'; then
-	echo "FAIL: Phase 92 — the clipped row carries no … marker, so it reads as a line that simply ended" >&2
+# The fold shows the rows as they are: no `…` on the third row — the hint
+# under it is what says the line continues (Claude Code's look).
+if printf '%s' "$ll_pane" | grep -qE 'x…$'; then
+	echo "FAIL: Phase 92 — the folded row carries a … marker; the hint under it already says the rest follows" >&2
 	status=1
 fi
 if ! printf '%s' "$ll_pane" | grep -qF "… +7 lines (ctrl+o to expand)"; then
@@ -8440,10 +8443,10 @@ tmux kill-session -t "$S92" 2>/dev/null
 
 # The other half of the same rule, and the reported one (docs/long-lines.md
 # "Rows, not lines"): FOUR wrapping lines — a `curl | grep` of a web page —
-# where every single line is inside its own 3-row budget and the CELL was still
-# ten rows of noise, because the block was budgeted in source lines. The peek is
-# bounded in display ROWS now (TOOL_PEEK_ROWS = 4), so four 150-char lines (2
-# rows each at the 75-column gutter) show the first two and hide the rest. ---
+# where every single line was inside its own budget and the CELL was still ten
+# rows of noise, because the block was budgeted in source lines. The peek folds
+# in display ROWS now (TOOL_FOLD_ROWS = 3), so four 150-char lines (2 rows each
+# at the 75-column gutter — 8 rows) show the first three rows and hide five. ---
 S92B="${S}_peekrows"
 tmux new-session -d -s "$S92B" -x 80 -y 24 "$APP"
 sleep 0.4
@@ -8461,16 +8464,16 @@ done
 echo "==== Phase 92: captured pane (four wrapping lines, bounded in rows) ===="
 printf '%s\n' "$pr_pane"
 pr_rows="$(printf '%s' "$pr_pane" | grep -cE 'aaaaaaaa|bbbbbbbb|cccccccc|dddddddd')"
-if [ "$pr_rows" -ne 4 ]; then
-	echo "FAIL: Phase 92 — the four-line output painted $pr_rows rows inline, not the 4-row peek ceiling" >&2
+if [ "$pr_rows" -ne 3 ]; then
+	echo "FAIL: Phase 92 — the four-line output painted $pr_rows rows inline, not the 3-row fold" >&2
 	status=1
 fi
 if printf '%s' "$pr_pane" | grep -qF "cccccccc"; then
-	echo "FAIL: Phase 92 — the third line shows inline: the block ceiling is not bounding the cell" >&2
+	echo "FAIL: Phase 92 — the third line shows inline: the fold is not bounding the cell" >&2
 	status=1
 fi
-if ! printf '%s' "$pr_pane" | grep -qF "… +4 lines (ctrl+o to expand)"; then
-	echo "FAIL: Phase 92 — the hint does not count the 4 hidden display rows" >&2
+if ! printf '%s' "$pr_pane" | grep -qF "… +5 lines (ctrl+o to expand)"; then
+	echo "FAIL: Phase 92 — the hint does not count the 5 hidden display rows" >&2
 	status=1
 fi
 # Ctrl+O still holds every row — the cell is bounded, the output is not lost.
@@ -8489,7 +8492,7 @@ sleep 0.3
 tmux kill-session -t "$S92B" 2>/dev/null
 
 # The third part of the same rule (docs/long-lines.md "The peek is the output's
-# first block"): a BLANK line costs a full row of a four-row cell and says
+# first block"): a BLANK line costs a full row of a three-row fold and says
 # nothing. Leading blanks are skipped and the first blank after the content
 # closes the peek, so an output shaped `\n\nfirst\nsecond\n\nhidden` shows
 # exactly `first` + `second` — no empty gutter row above them, and no fragment

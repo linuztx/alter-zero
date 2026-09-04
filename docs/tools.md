@@ -384,15 +384,19 @@ OPENROUTER_API_KEY=sk-... cargo run --example tool_smoke -- \
 ## Rendering (codex's `diff_render`, in the `⎿` gutter)
 
 A `bash` cell renders like the `!` shell cell: the coloured `● Bash(cmd)` header
-over a **multi-line `⎿` output peek** — the head of the output, at most
-`TOOL_PEEK_ROWS` (4) wrapped rows of it and at most `TOOL_PEEK_LINES` source
-lines, each line bounded to `TOOL_LINE_MAX_ROWS` rows and closed by a `…` when
-it is cut, then `… +N lines (ctrl+o to expand)` counting the display rows the
-expansion adds (`docs/long-lines.md`). Its `Exit code: N` frame (kept in
+over a **multi-line `⎿` output peek** — the head of the output **folded**
+Claude Code's way: its first `TOOL_FOLD_ROWS` (3) wrapped rows, then
+`… +N lines (ctrl+o to expand)` counting the display rows the expansion adds
+(an output of exactly four rows shows whole — a hint hiding one row would cost
+the row it hides; `docs/long-lines.md`). Its `Exit code: N` frame (kept in
 `tool.output` for the model / context replay) is stripped for display, so the
-cell reads like the real command output. **While it runs the cell streams and
-tails its output** — the header, the last lines, and a `+N lines (Ns)` footer —
-see `docs/tool-streaming.md`.
+cell reads like the real command output, and **a line that is a JSON document
+is reshaped for display** with two-space indentation (`ui::exec_display_lines`,
+Claude Code's tool result does the same), so a `curl` of an API reads `{` /
+`"batchcomplete": "",` / `"query": {` instead of a wall of braces — the record
+stays byte-exact. **While it runs the cell streams and tails its output** — the
+header, the last lines, and a `+N lines (Ns)` footer — see
+`docs/tool-streaming.md`.
 
 **The whole cell reads like a normal reply — Claude-Code's noticeable look.**
 The entire `(...)` header body — the command text, its framing `(`/`)`, **and** a
@@ -411,8 +415,8 @@ syntax-highlights its body — already vivid — see below.)
 
 **Long headers wrap, never clip** (`ui::tool_header_lines`). A long command —
 `● Bash(curl -s "wttr.in/…" 2>/dev/null || echo "…")` — used to run off the
-terminal edge and lose everything past the last column. Now the `(args)` **word-
-wrap** across continuation rows, each indented to align **under the opening `(`**
+terminal edge and lose everything past the last column. Now the `(args)` **wrap**
+across continuation rows, each indented to align **under the opening `(`**
 (the width of `● Bash`, Claude-Code style — the wrapped rows sit directly beneath
 the paren, not one column past it), so the whole command reads clean:
 
@@ -421,6 +425,29 @@ the paren, not one column past it), so the whole command reads clean:
       || echo "wttr.in unavailable, trying alternative...")
   ⎿  Partly cloudy +19°C ↓8km/h 83%
 ```
+
+The wrap is **Claude Code's, row for row** — Ink's `wrap-ansi` in its `hard`
+mode: words move down whole, but a token that fits on **no** row — a long
+URL — is broken from where it stands, filling the row it is on, unless
+starting it on the next row would cost strictly fewer rows (a tie moves it
+down, so a token that gains nothing from the fill still opens a row of its
+own). The old wrap moved every over-wide token down first and left the row
+before it short, which is the reported difference at 72 columns:
+
+```
+Before:
+● Bash(curl -s --max-time 15
+      "https://en.wikipedia.org/w/api.php?action=query&prop=extracts&exi
+      ntro&explaintext&format=json&titles=World%20Chess%20Championship…)
+
+Claude Code, and now:
+● Bash(curl -s --max-time 15 "https://en.wikipedia.org/w/api.php?action=
+      query&prop=extracts&exintro&explaintext&format=json&titles=World%2
+      0Chess%20Championship%202026"…)
+```
+
+(`ui::wrap`'s `fills_from_here`, inside the `WrapMode::Output` scan — so the
+output rows under the header fill the same way, and the Ctrl+O view with them.)
 
 **The command's own spacing survives the header.** The summary a `bash` call
 records (`tools::summarize_call`) is the command **verbatim** (trimmed), and
@@ -449,25 +476,38 @@ row **whole** — `● Deepwiki - ask_question (MCP)(` over `repoName: "…"` �
 instead of being hard-broken across the two (`(repoName` / `: "…"`, the shape
 a forty-column terminal used to show; `docs/mcp.md`).
 
-**A very long header is capped inline** at `TOOL_HEADER_MAX_ROWS` (3) wrapped
-rows, the remainder replaced by `…)` (`TOOL_HEADER_ELLIPSIS`, fitted within the
-width) so a huge command can't flood the cell; the marker attaches to the
-last kept word — a kept row can end in the space its wrap broke at, and
-`word …)` would read as a cut after a *missing* word. The budget counts the
-rows the **arguments** take, so a spilled header's name-and-`(` row does not
-spend one of them — otherwise the spill would cost the cell the content it
-was made to keep readable:
+**A very long header is cut inline** the way Claude Code cuts it
+(`ui::tool::header_cut`, its `renderToolUseMessage` ported): the command's
+first `TOOL_HEADER_MAX_LINES` (2) lines and at most `TOOL_HEADER_MAX_COLS`
+(160) display columns, trimmed, then `…)` (`TOOL_HEADER_ELLIPSIS`). A budget on
+the **text** rather than on rows is what makes the header predictable — the
+same command shows the same characters in a 40-column terminal and a
+200-column one, and a multi-line script shows its first two statements — and
+the cut lands where the text ends, whatever row that falls on. The marker
+attaches to the last kept word (the cut text is trimmed, so `word …)` — a cut
+after a *missing* word — never shows):
 
 ```
 ● Bash(for i in {1..5}; do echo "=== Iteration $i ===" && echo "Current
       time: $(date)" && echo "System uptime: $(uptime)" && echo "Memory
-      usage: $(free -h | grep Mem)…)
+      usage: $(free -h | grep Mem)"…)
 ```
+
+**A commit's heredoc collapses into its message** (`ui::tool::collapse_heredoc`,
+Claude Code's rule, its regex ported): `git commit -m "$(cat <<'EOF'\n{body}\nEOF\n)"`
+is how a message with a body reaches the shell, and the `cat` scaffolding says
+nothing about the command, so the header shows `git commit -m "{body}"` — and
+with the two-line cut, `● Bash(git commit -m "Add the fold…)`. The opener must
+sit on the command's first line, the body runs to the first `EOF` line followed
+by the `)"` closer, and anything after the closer must stay on its line; any
+other shape is shown verbatim. Display only, on the inline cell and in Ctrl+O
+alike — the record, the permission prompt and the context replay keep the
+command byte-exact.
 
 The wrap + alignment is shared by the inline peek (`tool_lines`) and the Ctrl+O
 transcript (`tool_full_lines`), so a resize/reflow re-wraps to the new width
-identically — but only the inline peek (and the live preview) passes the row cap
-(`Some(TOOL_HEADER_MAX_ROWS)`); the Ctrl+O view passes `None` and shows the
+identically — but only the inline peek (and the live preview) cuts the command
+(`collapsed = true`); the Ctrl+O view passes `false` and shows the
 **whole** command untruncated.
 
 **A running backend tool previews its whole cell.** While the model's tool runs,

@@ -199,8 +199,8 @@ fn agent_done_clause(tool_uses: usize, tokens: u64, secs: u64) -> String {
 ///
 /// The activity row is the *tree row's* row: **dim and clipped**, whatever
 /// the agent is doing. A running call used to break that shape here alone —
-/// its white `Bash(…)` header char-wrapped over up to
-/// [`TOOL_HEADER_MAX_ROWS`] rows above a `Running…` line — which read as the
+/// its white `Bash(…)` header wrapped over several rows above a `Running…`
+/// line — which read as the
 /// main turn's own running cell and grew the strip under a live counter.
 fn single_live_agent_lines(
     app: &App,

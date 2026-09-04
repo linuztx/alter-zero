@@ -4,7 +4,7 @@ use super::*;
 use crate::ui::theme::{
     AI_BULLET, BULLET_WIDTH, ERROR_BULLET, INDENT, PROMPT, SHELL_MODE_COLOR, TOOL_ARGS_COLOR,
     TOOL_DIFF_ADD_BG, TOOL_DIFF_ADD_COLOR, TOOL_DIFF_DEL_COLOR, TOOL_HEADER_ELLIPSIS,
-    TOOL_HEADER_MAX_ROWS, TOOL_LINE_ELLIPSIS, USER_BG_COLOR, USER_BULLET,
+    TOOL_HEADER_MAX_COLS, USER_BG_COLOR, USER_BULLET,
 };
 use crate::ui::tool::{running_command_lines, tool_full_lines};
 use crate::ui::wrap::{WrapMode, cols, ellipsize, truncate_cols, wrap_output, wrap_verbatim};
@@ -440,11 +440,8 @@ fn tool_lines_wraps_a_long_header_aligned_under_the_open_paren() {
         .take_while(|l| !plain(l).contains('⎿'))
         .map(plain)
         .collect();
-    // The header spans more than one row but stays within the inline cap.
-    assert!(
-        (2..=TOOL_HEADER_MAX_ROWS).contains(&header.len()),
-        "long header wraps: {header:?}"
-    );
+    // The header spans more than one row.
+    assert!(header.len() >= 2, "long header wraps: {header:?}");
     // No row exceeds the width — nothing is clipped.
     for l in &lines {
         assert!(
@@ -492,13 +489,17 @@ fn tool_lines_wraps_a_long_header_aligned_under_the_open_paren() {
 
 #[test]
 fn tool_lines_truncates_a_very_long_header_with_an_ellipsis() {
-    // A very long command is capped inline at TOOL_HEADER_MAX_ROWS wrapped
-    // rows, the remainder replaced by `…)` (Claude-Code's truncated command);
-    // the whole thing is still shown in the Ctrl+O view.
+    // A very long command is cut inline at TOOL_HEADER_MAX_COLS columns, the
+    // remainder replaced by `…)` (Claude-Code's truncated command); the whole
+    // thing is still shown in the Ctrl+O view.
     let cmd = "for i in {1..5}; do echo \"=== Iteration $i ===\" \
                && echo \"Current time: $(date)\" \
                && echo \"System uptime: $(uptime)\" \
                && echo \"Memory usage: $(free -h | grep Mem)\"; done";
+    assert!(
+        cols(cmd) > TOOL_HEADER_MAX_COLS,
+        "the fixture is over budget"
+    );
     let lines = tool_lines(
         &tool("Bash", cmd, ToolStatus::Ok, "out"),
         50,
@@ -509,19 +510,19 @@ fn tool_lines_truncates_a_very_long_header_with_an_ellipsis() {
         .take_while(|l| !plain(l).contains('⎿'))
         .map(plain)
         .collect();
+    let shown: String = header
+        .iter()
+        .map(|row| row.trim_start())
+        .collect::<Vec<_>>()
+        .concat();
+    // Rows drop the space a break fell on, so compare with spaces removed.
     assert_eq!(
-        header.len(),
-        TOOL_HEADER_MAX_ROWS,
-        "header caps at the row limit: {header:?}"
-    );
-    assert!(
-        header
-            .last()
-            .unwrap()
-            .trim_end()
-            .ends_with(&format!("{TOOL_HEADER_ELLIPSIS})")),
-        "the last shown row ends with the ellipsis + closing paren: {:?}",
-        header.last().unwrap()
+        shown.replace(' ', ""),
+        format!(
+            "●Bash({}{TOOL_HEADER_ELLIPSIS})",
+            truncate_cols(cmd, TOOL_HEADER_MAX_COLS).replace(' ', "")
+        ),
+        "the first {TOOL_HEADER_MAX_COLS} columns, then the marker: {header:?}"
     );
     // The truncation `…` is the same bold white as the args, not dim grey.
     let ell_line = lines
@@ -853,66 +854,6 @@ fn wrap_mode_rows_agrees_with_the_free_wrappers() {
 }
 
 #[test]
-fn wrap_mode_clip_bounds_the_rows_marks_the_cut_and_counts_the_rest() {
-    // One pathological line: the head is kept, the last kept row ends in the
-    // `…` that says it continues, and the dropped rows are counted — the
-    // number the `+N lines` hint reports.
-    let long = "x".repeat(350); // 35 cols → 10 rows
-    let (rows, hidden) = WrapMode::Output.clip(&long, 35, 3);
-    assert_eq!(rows.len(), 3, "clipped to the budget: {rows:?}");
-    assert_eq!(hidden, 7, "the rows it dropped: {rows:?}");
-    assert!(
-        rows.last().unwrap().ends_with(TOOL_LINE_ELLIPSIS),
-        "the cut is visible: {rows:?}"
-    );
-    for r in &rows {
-        assert!(cols(r) <= 35, "no row overflows the width: {r:?}");
-    }
-}
-
-#[test]
-fn wrap_mode_clip_never_overflows_on_wide_glyphs() {
-    // The marker is fitted in display COLUMNS, so it replaces a whole CJK cell
-    // rather than pushing the row one column past the width (which would wrap
-    // the cell's own row and undo the budget).
-    let wide = "你好世界".repeat(20);
-    let (rows, hidden) = WrapMode::Output.clip(&wide, 11, 2);
-    assert!(hidden > 0, "the line is long enough to clip: {rows:?}");
-    assert!(rows.last().unwrap().ends_with(TOOL_LINE_ELLIPSIS));
-    for r in &rows {
-        assert!(cols(r) <= 11, "no row overflows the width: {r:?}");
-    }
-}
-
-#[test]
-fn wrap_mode_clip_leaves_a_fitting_line_untouched() {
-    // The everyday case: a line that fits its budget is byte-identical to the
-    // plain wrap — no marker, nothing hidden.
-    let text = "sudo: a terminal is required to read the password";
-    let (rows, hidden) = WrapMode::Output.clip(text, 25, 3);
-    assert_eq!(rows, wrap_output(text, 25));
-    assert_eq!(hidden, 0);
-    assert!(!rows.last().unwrap().ends_with(TOOL_LINE_ELLIPSIS));
-}
-
-#[test]
-fn wrap_mode_clip_marks_a_cut_that_lands_on_a_word_boundary() {
-    // `wrap_output` leaves the break space at the end of a row, so a cut row
-    // could read `foo …`. The marker replaces that trailing space instead of
-    // hanging off it.
-    let text = "alpha beta gamma delta epsilon zeta eta theta";
-    let (rows, hidden) = WrapMode::Output.clip(text, 12, 1);
-    assert!(hidden > 0);
-    let last = rows.last().unwrap();
-    assert!(last.ends_with(TOOL_LINE_ELLIPSIS), "marked: {last:?}");
-    assert!(
-        !last.trim_end_matches(TOOL_LINE_ELLIPSIS).ends_with(' '),
-        "no space before the marker: {last:?}"
-    );
-    assert!(cols(last) <= 12, "still fits: {last:?}");
-}
-
-#[test]
 fn wrap_output_never_emits_a_whitespace_only_row_at_an_exact_fit() {
     // A word that ends exactly at the width, followed by a space and another
     // full-width word, used to leave the boundary space as a row of its own —
@@ -959,8 +900,56 @@ fn wrap_mode_rows_agrees_with_wrap_at_an_exact_fit() {
             wrap_output(text, width).len(),
             "{text:?} @ {width}"
         );
-        let (rows, hidden) = WrapMode::Output.clip(text, width, 10);
-        assert_eq!(rows, wrap_output(text, width), "{text:?} @ {width}");
-        assert_eq!(hidden, 0);
+    }
+}
+
+// --- wrap_output fills a row before a token wider than any row (docs/tools.md) ---
+
+#[test]
+fn wrap_output_fills_the_row_before_a_token_wider_than_any_row() {
+    // Ink's wrap (wrap-ansi's hard mode): a token that fits on no row is
+    // broken from where it stands when moving it down would cost a row.
+    // `ab ` + 17 x's at 10 columns: 7 on this row + 10 = two rows, where
+    // moving the token down would take three.
+    assert_eq!(
+        wrap_output(&format!("ab {}", "x".repeat(17)), 10),
+        vec![format!("ab {}", "x".repeat(7)), "x".repeat(10)]
+    );
+}
+
+#[test]
+fn wrap_output_moves_an_over_wide_token_down_when_that_costs_nothing() {
+    // The tie: `ab ` + 20 x's is three rows either way, so the token starts
+    // a row of its own — cleaner, and what wrap-ansi does.
+    assert_eq!(
+        wrap_output(&format!("ab {}", "x".repeat(20)), 10),
+        vec!["ab ".to_string(), "x".repeat(10), "x".repeat(10)]
+    );
+}
+
+#[test]
+fn wrap_output_still_moves_a_word_that_fits_a_row_down_whole() {
+    // Unchanged for every word that *can* fit a row: it moves down whole.
+    assert_eq!(wrap_output("abcdef ghijkl", 10), vec!["abcdef ", "ghijkl"]);
+}
+
+#[test]
+fn wrap_mode_rows_agrees_with_wrap_when_a_token_fills_the_row() {
+    for (text, width) in [
+        (format!("ab {}", "x".repeat(17)), 10u16),
+        (format!("ab {}", "x".repeat(20)), 10),
+        (format!("curl -s \"{}\" | head", "y".repeat(140)), 66),
+        (format!("a b c {} d", "z".repeat(31)), 12),
+    ] {
+        assert_eq!(
+            WrapMode::Output.rows(&text, width),
+            wrap_output(&text, width).len(),
+            "{text:?} @ {width}"
+        );
+        assert_eq!(
+            wrap_output(&text, width).concat().replace(' ', ""),
+            text.replace(' ', ""),
+            "no character lost: {text:?} @ {width}"
+        );
     }
 }

@@ -839,7 +839,7 @@ fn bash_cell_output_aligns_under_the_two_space_corner() {
     assert_eq!(plain(&lines[1]), "  ⎿  l1");
     assert_eq!(
         plain(lines.last().unwrap()),
-        "     … +2 lines (ctrl+o to expand)"
+        "     … +3 lines (ctrl+o to expand)"
     );
 }
 
