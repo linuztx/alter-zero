@@ -29,7 +29,7 @@ network calls are boundary code (like `main.rs`/`term.rs`), verified by hand.
 | `llm/config.rs` | `providers.toml` → `Provider`/`ProvidersConfig`, `ModelConfig`, key/model resolution, the `AuthScheme` that splits a pasted key from a subscription sign-in (`docs/copilot.md`) | **pure** |
 | `llm/copilot.rs` | GitHub Copilot: the device flow's wire shapes and poll verdict, the OAuth→bearer exchange every request resolves through, and the request identity its API insists on (`docs/copilot.md`) | split |
 | `llm/keystore.rs` | `EnvFile` — the `.env` reader/writer the `/login` flow persists keys through | **pure** |
-| `llm/settings.rs` | `Settings` — the `config.json` reader/writer persisting the `/model` selection across runs | **pure** |
+| `llm/settings.rs` | `Settings` — the `config.json` reader/writer persisting the `/model` selection across runs, **per working directory** (`docs/per-directory-state.md`) | **pure** |
 | `llm/thinking.rs` | `ThinkingSplitter` — peels `<think>`/`<reasoning>` tags (and native `reasoning` deltas) out of the stream | **pure** |
 | `llm/reasoning.rs` | `ThinkingMode`/`ReasoningSupport` — the Ctrl+T thinking-mode cycle + its request body (`docs/reasoning.md`) | **pure** |
 | `llm/openai.rs` | `OpenAiClient` — endpoint/payload build (pure) + the blocking SSE stream (boundary). The request is a typed `ChatRequest` written from the messages by reference; `build_payload` is the JSON-tree view the tests read | split |
@@ -132,8 +132,10 @@ environment variable that replaces the base (Ollama's `OLLAMA_HOST`). Resolution
 two shipped providers (`a0_venice` — the Agent Zero/Venice proxy — and `openrouter`).
 
 The active backend is chosen at startup — from env, then the **persisted
-selection** (`~/.alter-zero/config.json`, written by `/model`), then the file's
-default — and can be switched live by `/model`:
+selection** (`~/.alter-zero/config.json`, written by `/model` — **this working
+directory's** entry, or the last selection made anywhere for a directory
+launched in for the first time, `docs/per-directory-state.md`), then the
+file's default — and can be switched live by `/model`:
 
 | env var | meaning | default |
 | --- | --- | --- |
@@ -167,8 +169,12 @@ so it can never kill the TUI) and created on first write:
 
 - **`.env`** — the API-key store the `/login` flow writes (`tui::config::env_file_path`,
   overridable with `ALTER_ZERO_ENV_FILE`). Git-ignored so keys are never committed.
-- **`config.json`** — the last `/model` selection (`{ "provider", "model" }`), so
-  the choice is the default next run (`llm::settings::Settings`).
+- **`config.json`** — the `/model` selections (`llm::settings::Settings`): one
+  entry per working directory under `projects`, over the last selection made
+  anywhere at the top level (`{ "provider", "model", … }` — the pre-directory
+  file's own shape). A directory you launch in for the first time takes the
+  last selection and pins it as its own, so a switch made here stays here
+  (`docs/per-directory-state.md`).
 
 ### Where a key comes from: `.env` persistence
 
@@ -187,12 +193,18 @@ preserved — which is what the `/login` flow writes back.
 ### Persisting the model: `config.json`
 
 `llm::settings::Settings` is the pure, tested `config.json` reader/writer
-(`{ "provider", "model" }`, all fields optional so an old or partial file still
-loads). At startup the saved provider/model seed the active selection (env vars
-still win); on a successful `/model` switch the boundary writes the new choice
-back (`tui::config::save_settings`). So a model picked once is the default on every
-later run — and if its key still resolves, the real backend activates
-automatically at startup.
+(`{ "provider", "model", … }` at the top level — the last selection made
+anywhere, all fields optional so an old or partial file still loads — over a
+`projects` map of one `ModelSelection` per working directory). At startup the
+**directory's** saved provider/model seed the active selection (env vars still
+win): its own entry, or — the first launch there — the last selection, pinned
+as the directory's own right then (`tui::config::adopt_selection`). On a
+successful `/model` switch the boundary writes the choice back as this
+directory's entry *and* the new last selection (`tui::config::save_selection`,
+a read-modify-write). So a model picked in a directory is the default on every
+later run **in that directory** — and if its key still resolves, the real
+backend activates automatically at startup. `docs/per-directory-state.md` has
+the whole rule and why the two files differ.
 
 ## The inline `/model` picker
 
@@ -302,7 +314,8 @@ the bottom rule — the shape of the user's mock):
   provider list scrolls the same way.
 - On select, the loop rebuilds the backend for the new provider/model, updates the
   footer (`App::set_session_info`), and **persists the choice to `config.json`**
-  (so it's the default next run), then collapses the picker. The picked entry's
+  (so it's the default next run — in this working directory,
+  `docs/per-directory-state.md`), then collapses the picker. The picked entry's
   **reasoning capability** rides the selection (`Action::SelectModel`'s
   `reasoning`), seeding the Ctrl+T thinking-mode cycle — and the persisted
   settings carry the thinking state beside the selection. See

@@ -52,7 +52,7 @@ pub use config::{AuthScheme, ModelConfig, ProvidersFile, Selection, WireApi};
 pub use keystore::EnvFile;
 pub use models::ModelEntry;
 pub use reasoning::{ReasoningEffort, ReasoningSupport, ThinkingMode};
-pub use settings::{Settings, ThinkingSettings};
+pub use settings::{ModelSelection, Settings, ThinkingSettings};
 
 /// One message in a chat-completion request.
 ///

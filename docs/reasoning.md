@@ -107,7 +107,9 @@ boundary's expiry timer arms — `docs/toast.md`).
 - **Startup, saved selection** — `config.json` persists a `thinking` blob
   (`llm::settings::ThinkingSettings`: the mode + efforts + `can_disable`, or
   the `supported: false` marker for a known non-reasoner) beside the saved
-  provider/model, so startup seeds `App::set_thinking` straight from the file.
+  provider/model — the working directory's own entry
+  (`docs/per-directory-state.md`) — so startup seeds `App::set_thinking`
+  straight from the file.
 - **Startup, support unknown** — a real backend whose saved settings carry no
   blob (an env-selected model, or the first run since this feature) spawns a
   one-shot background **probe**: `fetch_models` for the active provider on a

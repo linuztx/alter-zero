@@ -1,11 +1,14 @@
 //! The `/settings` menu's pure model: which knobs the session exposes, what
-//! values each cycles through, and the `settings.json` format they persist in.
+//! values each cycles through, and the `settings.json` format they persist in
+//! — **per working directory** ([`SettingsFile`], `docs/per-directory-state.md`).
 //!
 //! Everything here is data — no environment reads, no filesystem. The boundary
-//! (`tui::config`) reads the file and the `ALTER_ZERO_*` overrides and hands
-//! the resulting [`SessionSettings`] to `App`; the picker
-//! (`crate::app::SettingsPicker`) renders it and cycles it. See
-//! `docs/settings.md`.
+//! (`tui::config`) reads the file, picks the cwd's entry and applies the
+//! `ALTER_ZERO_*` overrides, and hands the resulting [`SessionSettings`] to
+//! `App`; the picker (`crate::app::SettingsPicker`) renders it and cycles it.
+//! See `docs/settings.md`.
+
+use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
@@ -232,8 +235,10 @@ pub struct SessionSettings {
     /// Offer tools to the model (default `true`).
     #[serde(skip_serializing_if = "is_true")]
     pub tools: bool,
-    /// Per-turn checkpoints (default `true`).
-    #[serde(skip_serializing_if = "is_true")]
+    /// Per-turn checkpoints (default `false` — a directory opts in: the
+    /// session-start snapshot is a whole-cwd `git add -A` before the first
+    /// frame, `docs/checkpoint.md`).
+    #[serde(skip_serializing_if = "is_false")]
     pub checkpoints: bool,
     /// Auto-compaction past the context threshold (default `true`).
     #[serde(skip_serializing_if = "is_true")]
@@ -241,10 +246,10 @@ pub struct SessionSettings {
     /// Load `AGENTS.md` into the context (default `true`).
     #[serde(skip_serializing_if = "is_true")]
     pub project_docs: bool,
-    /// Run the user's lifecycle hooks (default `true` — a session with no
-    /// `hooks.json` has nothing to run anyway, and the row reports itself
-    /// unavailable there).
-    #[serde(skip_serializing_if = "is_true")]
+    /// Run the user's lifecycle hooks (default `false` — a directory opts in
+    /// to running the commands in `hooks.json`; a session with no such file
+    /// reports the row unavailable either way).
+    #[serde(skip_serializing_if = "is_false")]
     pub hooks: bool,
     /// Offer the `skill` tool and the listing (default `true` — a session
     /// that found no skills has nothing to offer anyway, and the row reports
@@ -271,10 +276,10 @@ impl Default for SessionSettings {
             auto_resize_images: true,
             error_retry: crate::llm::retry::MAX_RETRIES,
             tools: true,
-            checkpoints: true,
+            checkpoints: false,
             auto_compact: true,
             project_docs: true,
-            hooks: true,
+            hooks: false,
             skills: true,
             temperature: None,
             max_tool_calls: 0,
@@ -461,6 +466,75 @@ impl SessionSettings {
     #[must_use]
     pub fn to_json(&self) -> String {
         serde_json::to_string_pretty(self).unwrap_or_else(|_| "{}".to_string())
+    }
+}
+
+/// The `settings.json` file: one [`SessionSettings`] entry per working
+/// directory over the **seed** a directory with no entry starts from
+/// (`docs/per-directory-state.md`).
+///
+/// ```json
+/// {
+///   "hide_thinking": true,
+///   "projects": {
+///     "/home/user/project": { "hide_thinking": true, "error_retry": 5 }
+///   }
+/// }
+/// ```
+///
+/// The top-level keys are the seed — and the whole of a file written before
+/// settings were per directory, so a saved `settings.json` keeps applying
+/// everywhere until a directory changes something of its own. Each entry is a
+/// **whole** blob (a diff from the defaults, like the seed), never a layer over
+/// the seed: the diff format cannot tell a `true` left at its default from one
+/// deliberately chosen, so layering would have no way to say "back to the
+/// default" in a directory whose seed says otherwise.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct SettingsFile {
+    /// The knobs a directory with no entry of its own starts from. Never
+    /// rewritten by the app (edit it by hand to change what a new directory
+    /// starts with); a fresh install's is the defaults.
+    #[serde(flatten)]
+    pub seed: SessionSettings,
+    /// One entry per working directory (its absolute path). Omitted when
+    /// empty, so a file with no entries is byte-for-byte the old shape.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub projects: BTreeMap<String, SessionSettings>,
+}
+
+impl SettingsFile {
+    /// Parse a `settings.json` body, best-effort: malformed or empty JSON
+    /// yields the defaults rather than an error, so a corrupt file never blocks
+    /// startup ([`SessionSettings::parse`]'s posture).
+    #[must_use]
+    pub fn parse(text: &str) -> Self {
+        serde_json::from_str(text).unwrap_or_default()
+    }
+
+    /// Serialize to pretty JSON for writing back.
+    #[must_use]
+    pub fn to_json(&self) -> String {
+        serde_json::to_string_pretty(self).unwrap_or_else(|_| "{}".to_string())
+    }
+
+    /// What a session in `project` starts with: the directory's own entry,
+    /// else the seed. Availability is a host fact the boundary injects after.
+    #[must_use]
+    pub fn settings_for(&self, project: &str) -> SessionSettings {
+        self.projects.get(project).copied().unwrap_or(self.seed)
+    }
+
+    /// Record one cycled knob for `project`: take its entry (else the seed),
+    /// move across only `key`'s value from the `live` blob
+    /// ([`SessionSettings::copy_value`] — so an `ALTER_ZERO_*` override merged
+    /// in at startup never sticks), and keep the result as the directory's own
+    /// entry. The entry stays even when it equals the defaults: dropping it
+    /// would let the seed back in, and a directory that cycled a knob back to
+    /// its default has chosen that default.
+    pub fn record_value(&mut self, project: &str, key: SettingKey, live: &SessionSettings) {
+        let mut entry = self.settings_for(project);
+        entry.copy_value(key, live);
+        self.projects.insert(project.to_string(), entry);
     }
 }
 

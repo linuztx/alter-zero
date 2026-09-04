@@ -239,13 +239,16 @@ impl<'t> Session<'t> {
             manager
         });
 
-        // The `/settings` knobs (docs/settings.md): the saved `settings.json`
-        // with each `ALTER_ZERO_*` override applied on top. Resolved BEFORE the
-        // backend, which is built around three of them (tools, retries,
-        // temperature).
+        // The `/settings` knobs (docs/settings.md), per working directory
+        // (docs/per-directory-state.md): this directory's saved entry — else
+        // the file's seed — with each `ALTER_ZERO_*` override applied on top.
+        // Resolved BEFORE the backend, which is built around three of them
+        // (tools, retries, temperature).
         let settings_path = config::settings_json_path();
-        let saved_settings = config::load_saved_settings(settings_path.as_deref());
-        let settings = config::apply_setting_overrides(saved_settings);
+        let settings = config::apply_setting_overrides(
+            config::load_settings_file(settings_path.as_deref())
+                .settings_for(&cwd.display().to_string()),
+        );
 
         // The user's lifecycle hooks (docs/hooks.md): `~/.alter-zero/hooks.json`
         // (or `ALTER_ZERO_HOOKS_FILE`), read once here and re-attached to every
@@ -294,7 +297,9 @@ impl<'t> Session<'t> {
             cwd: cwd.clone(),
             // The same tty-detach helper every other shell child gets.
             detach_helper: std::env::current_exe().ok(),
-            enabled: config::hooks_enabled() && settings.hooks,
+            // The **Hooks** row — off until a directory turns it on, with
+            // `ALTER_ZERO_HOOKS` already merged over it for this run.
+            enabled: settings.hooks,
             handles: hook_handles,
         });
 
@@ -451,7 +456,6 @@ impl<'t> Session<'t> {
             hist_store,
             checkpoints,
             settings_path,
-            saved_settings,
             inflight: None,
             reaping: Vec::new(),
             clipboard_lease: None,

@@ -365,7 +365,12 @@ written for Claude Code find their project root unchanged.
 
 The `/settings` menu carries a **Hooks** row. It is a plain on/off toggle,
 which is all a cycling menu with no free-text field can ever offer, and it
-reports `false (unavailable)` when no config file resolved.
+reports `false (unavailable)` when no config file resolved. It is **off by
+default** and **per working directory** (`docs/per-directory-state.md`): a
+hooks file written for one project should not fire in every project, so a
+directory opts in — one cycle records `"hooks": true` in its `settings.json`
+entry. `ALTER_ZERO_HOOKS` seeds the row for a run (`=1` on, a falsy value
+off — the `ALTER_ZERO_TOOLS` pattern) and is never saved.
 
 ## Module layout
 

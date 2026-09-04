@@ -1,6 +1,8 @@
 //! What the boundary reads out of the environment before anything runs: the
-//! provider table, the API-key store, the persisted `/model` selection, the
-//! per-project permission rules, and where each of those files lives.
+//! provider table, the API-key store, the persisted `/model` selection and
+//! `/settings` knobs (both per working directory,
+//! `docs/per-directory-state.md`), the per-project permission rules, and
+//! where each of those files lives.
 //!
 //! Everything here is a *lookup* — resolve a path, read a file, merge the
 //! process environment over it — with no state of its own, so the loop can
@@ -9,10 +11,11 @@
 //! value counts as unset (see [`resolve_env`]).
 //!
 //! The formats themselves are pure and live in the library (`llm::config`'s
-//! `ProvidersFile`/`EnvFile`/`Settings`, `permission::PermissionsFile`); this
-//! module owns only the filesystem and `std::env` side of them. Writes are
-//! best-effort by design: a read-only home must never kill the TUI, so
-//! [`save_settings`] / [`save_permissions`] swallow their errors.
+//! `ProvidersFile`/`EnvFile`/`Settings`, `settings::SettingsFile`,
+//! `permission::PermissionsFile`); this module owns only the filesystem and
+//! `std::env` side of them. Writes are best-effort by design: a read-only home
+//! must never kill the TUI, so [`save_selection`] / [`save_setting`] /
+//! [`save_permissions`] swallow their errors.
 //!
 //! See `docs/llm.md`, `docs/permissions.md`, `docs/checkpoint.md`.
 
@@ -23,12 +26,12 @@ use std::time::Duration;
 use alter_zero::app::{KeyKind, ProviderChoice, SigninKind, SubscriptionChoice};
 use alter_zero::checkpoint;
 use alter_zero::llm::{
-    self, AuthScheme, EnvFile, ModelConfig, ProvidersFile, ReasoningSupport, Selection, Settings,
-    ThinkingMode, ThinkingSettings, backend::DEFAULT_SYSTEM_PROMPT,
+    self, AuthScheme, EnvFile, ModelConfig, ModelSelection, ProvidersFile, ReasoningSupport,
+    Selection, Settings, ThinkingMode, ThinkingSettings, backend::DEFAULT_SYSTEM_PROMPT,
 };
 use alter_zero::permission::{PermissionRules, PermissionsFile};
 use alter_zero::scratchpad;
-use alter_zero::settings::SessionSettings;
+use alter_zero::settings::{SessionSettings, SettingKey, SettingsFile};
 use alter_zero::stream;
 
 use super::host::{self, local_date, os_context};
@@ -341,8 +344,9 @@ pub(crate) fn load_env_file(path: &Path) -> EnvFile {
         .unwrap_or_default()
 }
 
-/// The persisted-settings path (`{config_home}/config.json`), or `None` when
-/// there's no config home — persistence is then disabled. See `docs/llm.md`.
+/// The persisted `/model` selections' path (`{config_home}/config.json`), or
+/// `None` when there's no config home — persistence is then disabled. See
+/// `docs/llm.md`.
 pub(crate) fn settings_file_path() -> Option<PathBuf> {
     config_home().map(|dir| dir.join("config.json"))
 }
@@ -410,13 +414,6 @@ pub(crate) fn load_hooks(path: Option<&Path>) -> (alter_zero::hooks::HooksFile, 
             Some(format!("hooks.json: {err} — hooks are off this session")),
         ),
     }
-}
-
-/// Whether lifecycle hooks run at all this session — `ALTER_ZERO_HOOKS`, the
-/// `ALTER_ZERO_PERMISSIONS` pattern: any falsy spelling turns the feature off
-/// before a file is even read.
-pub(crate) fn hooks_enabled() -> bool {
-    env_flag("ALTER_ZERO_HOOKS")
 }
 
 /// Whether the project-level `.alter-zero` config layer is discovered at all
@@ -626,43 +623,71 @@ pub(crate) fn checkpoint_budget() -> checkpoint::SnapshotBudget {
     }
 }
 
-/// Load the persisted `/model` selection; an absent, unreadable, or corrupt
-/// file yields the default (all-unset) settings.
+/// Load the persisted `/model` selections (`config.json`); an absent,
+/// unreadable, or corrupt file yields the default (all-unset) settings.
 pub(crate) fn load_settings(path: Option<&Path>) -> Settings {
     path.and_then(|p| std::fs::read_to_string(p).ok())
         .map(|text| Settings::parse(&text))
         .unwrap_or_default()
 }
 
-/// Persist the chosen provider/model — plus the model's reasoning state, so
-/// the Ctrl+T cycle needs no refetch next run (`docs/reasoning.md`), and
-/// its image-input support, so the attachment gate needs no re-probe
-/// (`docs/tools.md`) — to `config.json`, creating the config home first.
-/// Best-effort — a write failure is swallowed (like the session recorder) so
-/// it can never kill the TUI; a `None` path (no config home) no-ops. See
-/// `docs/llm.md`.
-pub(crate) fn save_settings(
-    path: Option<&Path>,
-    provider: &str,
-    model: &str,
-    thinking: Option<ThinkingSettings>,
-    vision: Option<bool>,
-    context: Option<u64>,
-) {
+/// Write `config.json` whole, creating the config home first. Best-effort — a
+/// write failure is swallowed (like the session recorder) so it can never
+/// kill the TUI; a `None` path (no config home) no-ops. See `docs/llm.md`.
+fn write_settings(path: Option<&Path>, settings: &Settings) {
     let Some(path) = path else {
         return;
     };
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    let _ = std::fs::write(
-        path,
-        Settings::for_selection(provider, model)
-            .with_thinking(thinking)
-            .with_vision(vision)
-            .with_context(context)
-            .to_json(),
-    );
+    let _ = std::fs::write(path, settings.to_json());
+}
+
+/// The `/model` selection a session in `project` (the cwd, as `config.json`
+/// keys it) starts with — the directory's own entry, or, launched in for the
+/// first time, the last selection made anywhere, **pinned** as the
+/// directory's own right here (`Settings::adopt`, the file written only when
+/// that changed) so a later switch elsewhere never moves it. `None` when
+/// nothing was ever chosen. See `docs/per-directory-state.md`.
+pub(crate) fn adopt_selection(path: Option<&Path>, project: &str) -> Option<ModelSelection> {
+    let mut saved = load_settings(path);
+    if saved.adopt(project) {
+        write_settings(path, &saved);
+    }
+    saved.project(project).cloned()
+}
+
+/// Persist a `/model` choice made in `project` — the pair plus the model's
+/// reasoning state, so the Ctrl+T cycle needs no refetch next run
+/// (`docs/reasoning.md`), its image-input support, so the attachment gate
+/// needs no re-probe (`docs/tools.md`), and its context window
+/// (`docs/compact.md`) — as the directory's entry **and** the last selection
+/// made anywhere. A read-modify-write ([`save_permissions`]' pattern): the
+/// file is re-read first, so entries other directories wrote meanwhile
+/// survive. Best-effort like every write here.
+pub(crate) fn save_selection(path: Option<&Path>, project: &str, selection: &ModelSelection) {
+    let Some(path) = path else {
+        return;
+    };
+    let mut saved = load_settings(Some(path));
+    saved.record(project, selection);
+    write_settings(Some(path), &saved);
+}
+
+/// Persist what Ctrl+T or the capability probe learned about the model
+/// `project` already records (`Settings::record_capabilities` — the entry is
+/// touched only when it names that same pair, so an env-overridden selection
+/// never writes back: env always wins, never sticks). The same
+/// read-modify-write as [`save_selection`].
+pub(crate) fn save_capabilities(path: Option<&Path>, project: &str, selection: &ModelSelection) {
+    let Some(path) = path else {
+        return;
+    };
+    let mut saved = load_settings(Some(path));
+    if saved.record_capabilities(project, selection) {
+        write_settings(Some(path), &saved);
+    }
 }
 
 /// The [`ThinkingSettings`] blob recording a *definitively known* reasoning
@@ -715,9 +740,11 @@ fn env_flag_set(name: &str) -> Option<bool> {
 // ===== the `/settings` menu's persisted knobs (docs/settings.md) =====
 
 /// The `/settings` file path (`{config_home}/settings.json`) — its own file
-/// beside `config.json` (the `/model` selection) and `permissions.json` (the
-/// per-project rules), so one feature's write can never clobber another's.
-/// `None` when there's no config home; persistence is then disabled.
+/// beside `config.json` (the `/model` selections) and `permissions.json` (the
+/// per-project rules), so one feature's write can never clobber another's;
+/// like both of those it is keyed by working directory inside
+/// (`docs/per-directory-state.md`). `None` when there's no config home;
+/// persistence is then disabled.
 pub(crate) fn settings_json_path() -> Option<PathBuf> {
     config_home().map(|dir| dir.join("settings.json"))
 }
@@ -787,14 +814,15 @@ pub(crate) fn save_skills_file(
     let _ = std::fs::write(path, file.to_json());
 }
 
-/// The `/settings` knobs **as the file holds them** — no environment merged
-/// in. Kept beside the live values so a save can be a read-modify-write that
-/// never persists an override (`Session::saved_settings`, `docs/settings.md`).
-/// An absent, unreadable or corrupt file yields the defaults
-/// (`load_settings`'s posture — never block startup).
-pub(crate) fn load_saved_settings(path: Option<&Path>) -> SessionSettings {
+/// The `settings.json` file **as it holds them** — every directory's entry
+/// over the seed, no environment merged in (`settings::SettingsFile`,
+/// `docs/per-directory-state.md`). The caller picks the cwd's entry
+/// (`SettingsFile::settings_for`) and merges the overrides over that
+/// ([`apply_setting_overrides`]). An absent, unreadable or corrupt file yields
+/// the defaults (`load_settings`'s posture — never block startup).
+pub(crate) fn load_settings_file(path: Option<&Path>) -> SettingsFile {
     path.and_then(|p| std::fs::read_to_string(p).ok())
-        .map(|text| SessionSettings::parse(&text))
+        .map(|text| SettingsFile::parse(&text))
         .unwrap_or_default()
 }
 
@@ -810,6 +838,13 @@ pub(crate) fn apply_setting_overrides(mut settings: SessionSettings) -> SessionS
     }
     if let Some(on) = env_flag_set("ALTER_ZERO_TOOLS") {
         settings.tools = on;
+    }
+    // `ALTER_ZERO_HOOKS` seeds the **Hooks** row the way `ALTER_ZERO_TOOLS`
+    // seeds Tools — an override for this run, never saved (docs/hooks.md).
+    // It used to be ANDed over the row instead, which could only ever turn
+    // hooks *off*; with the row off by default it has to turn them on too.
+    if let Some(on) = env_flag_set("ALTER_ZERO_HOOKS") {
+        settings.hooks = on;
     }
     // Checkpoints keep their own (identical) pure predicate, so the one
     // grammar stays in the module that owns the feature.
@@ -833,17 +868,30 @@ pub(crate) fn apply_setting_overrides(mut settings: SessionSettings) -> SessionS
     settings
 }
 
-/// Persist the `/settings` knobs. Best-effort like [`save_settings`] — a
-/// read-only home must never kill the TUI — and a `None` path (no config home)
-/// no-ops. See `docs/settings.md`.
-pub(crate) fn save_session_settings(path: Option<&Path>, settings: &SessionSettings) {
+/// Persist one cycled `/settings` knob for `project` (the cwd, as the file
+/// keys it): a read-modify-write over the file itself — re-read, the
+/// directory's entry (else the seed) taking only `key`'s value from the
+/// `live` blob (`SettingsFile::record_value`), written back — so an
+/// `ALTER_ZERO_*` override merged in at startup never sticks and entries
+/// other directories wrote meanwhile survive. Best-effort like
+/// [`save_permissions`]: a write failure is swallowed (a read-only home must
+/// never kill the TUI) and a `None` path (no config home) no-ops. See
+/// `docs/settings.md`, `docs/per-directory-state.md`.
+pub(crate) fn save_setting(
+    path: Option<&Path>,
+    project: &str,
+    key: SettingKey,
+    live: &SessionSettings,
+) {
     let Some(path) = path else {
         return;
     };
+    let mut file = load_settings_file(Some(path));
+    file.record_value(project, key, live);
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    let _ = std::fs::write(path, settings.to_json());
+    let _ = std::fs::write(path, file.to_json());
 }
 
 /// The dummy's pre-stream pause, so the status indicator is visibly working

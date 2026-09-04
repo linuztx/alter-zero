@@ -41,20 +41,40 @@ fn the_labels_are_unique() {
 #[test]
 fn the_defaults_match_the_pre_feature_behaviour() {
     // /settings must change nothing until the user touches it: every default
-    // is what the app did before the menu existed.
+    // is what the app did before the menu existed — with the deliberate
+    // divergences pinned by their own tests below.
     let s = SessionSettings::default();
     assert!(!s.hide_thinking, "thinking showed by default");
     assert!(s.show_thinking());
     assert_eq!(s.error_retry, crate::llm::retry::MAX_RETRIES);
     assert!(s.tools, "tools were on by default");
-    assert!(s.checkpoints);
     assert!(s.auto_compact);
     assert!(s.project_docs);
     assert_eq!(s.temperature, None, "no temperature is sent by default");
-    // The one deliberate divergence: the app now ships UNCAPPED where the
-    // library's backstop was 20 rounds — see the dedicated test below and
-    // `docs/settings.md`.
+    // The app ships UNCAPPED where the library's backstop was 20 rounds —
+    // see the dedicated test below and `docs/settings.md`.
     assert_eq!(s.max_tool_calls, 0);
+}
+
+#[test]
+fn hooks_and_checkpoints_are_off_until_a_directory_turns_them_on() {
+    // Both run *code* on the user's behalf — a hooks.json handler, a whole-cwd
+    // `git add -A` before the first frame — so a directory opts in to each
+    // rather than out (docs/per-directory-state.md). Turning one on is then
+    // exactly what its entry records, and the defaults stay off the wire.
+    let s = SessionSettings::default();
+    assert!(!s.hooks, "hooks are off until turned on");
+    assert!(!s.checkpoints, "checkpoints too");
+    assert!(!s.hooks_active() && !s.checkpoints_active());
+    assert_eq!(s.to_json().trim(), "{}");
+    let mut on = s;
+    assert!(on.cycle(SettingKey::Hooks));
+    assert!(on.cycle(SettingKey::Checkpoints));
+    assert!(on.hooks_active() && on.checkpoints_active());
+    let json = on.to_json();
+    assert!(json.contains("\"hooks\": true"), "{json}");
+    assert!(json.contains("\"checkpoints\": true"), "{json}");
+    assert_eq!(SessionSettings::parse(&json), on);
 }
 
 #[test]
@@ -194,6 +214,7 @@ fn an_unavailable_checkpoint_row_shows_its_effective_value_not_the_stored_one() 
     // The stored preference stays `true` (it applies again in a project the
     // feature can serve), but this session's *effective* value is false.
     let s = SessionSettings {
+        checkpoints: true,
         availability: SettingAvailability {
             checkpoints: false,
             hooks: true,
@@ -214,6 +235,7 @@ fn an_unavailable_setting_says_so_and_refuses_to_cycle() {
     // No git / no config home / a cwd checkpoints refuse: the row is honest
     // about it rather than pretending the toggle does something.
     let mut s = SessionSettings {
+        checkpoints: true,
         availability: SettingAvailability {
             checkpoints: false,
             hooks: true,
@@ -241,9 +263,11 @@ fn an_unavailable_setting_says_so_and_refuses_to_cycle() {
 #[test]
 fn checkpoints_are_active_only_when_both_the_knob_and_the_host_agree() {
     let mut s = SessionSettings::default();
-    assert!(s.checkpoints_active());
+    assert!(!s.checkpoints_active(), "off until turned on");
     s.cycle(SettingKey::Checkpoints);
-    assert!(!s.checkpoints_active(), "the user turned them off");
+    assert!(s.checkpoints_active(), "the user turned them on");
+    s.availability.checkpoints = false;
+    assert!(!s.checkpoints_active(), "…but the host has the last word");
 }
 
 #[test]
@@ -303,18 +327,18 @@ fn copy_value_moves_exactly_one_setting_and_never_the_environment() {
     // key that was cycled.
     let saved = SessionSettings::default();
     // What the session is running: the user cycled the retry count, and the
-    // environment forced tools + checkpoints off for this run only.
+    // environment forced tools off and checkpoints on for this run only.
     let live = SessionSettings {
         error_retry: 10,
         tools: false,
-        checkpoints: false,
+        checkpoints: true,
         ..SessionSettings::default()
     };
     let mut file = saved;
     file.copy_value(SettingKey::ErrorRetry, &live);
     assert_eq!(file.error_retry, 10, "the cycled key is saved");
     assert!(file.tools, "the env override did not stick");
-    assert!(file.checkpoints, "…nor this one");
+    assert!(!file.checkpoints, "…nor this one");
     // Cycling that row too *does* persist it — an explicit choice outranks the
     // override for later runs.
     file.copy_value(SettingKey::Tools, &live);
@@ -376,4 +400,131 @@ fn skills_are_not_offered_with_tools_off() {
     s.tools = true;
     s.availability.skills = false;
     assert!(!s.skills_offered());
+}
+
+// ===== per-directory settings (docs/per-directory-state.md) =====
+
+#[test]
+fn a_pre_directory_file_seeds_every_directory_that_has_no_entry() {
+    // The old flat file is the new file's top level: what it says applies to
+    // every directory until that directory changes something of its own.
+    let file = SettingsFile::parse(r#"{"error_retry": 5, "hide_thinking": true}"#);
+    let a = file.settings_for("/a");
+    assert_eq!(a.error_retry, 5);
+    assert!(a.hide_thinking);
+    assert!(a.tools, "the rest take their defaults");
+    assert!(file.projects.is_empty());
+    assert_eq!(file.seed, a);
+}
+
+#[test]
+fn a_directory_entry_outranks_the_seed_and_is_a_whole_blob() {
+    // An entry is a diff from the DEFAULTS like the seed itself — never a layer
+    // over the seed, which the diff format could not express (a `true` left
+    // at its default is indistinguishable from one deliberately chosen).
+    let file = SettingsFile::parse(r#"{"error_retry": 5, "projects": {"/a": {"tools": false}}}"#);
+    let a = file.settings_for("/a");
+    assert!(!a.tools);
+    assert_eq!(
+        a.error_retry, 3,
+        "the entry says nothing about retries: the default"
+    );
+    let b = file.settings_for("/b");
+    assert!(b.tools);
+    assert_eq!(b.error_retry, 5, "no entry: the seed");
+}
+
+#[test]
+fn record_value_moves_one_key_onto_the_directory_entry_seeded_from_the_file() {
+    // The write path: take this directory's entry (else the seed), move across
+    // only the key the user cycled — never the environment's overrides — and
+    // keep it as the directory's own. The seed is never rewritten.
+    let mut file = SettingsFile::parse(r#"{"error_retry": 5}"#);
+    let live = SessionSettings {
+        error_retry: 5,
+        hide_thinking: true,
+        tools: false, // an ALTER_ZERO_TOOLS=0 override, this run only
+        ..SessionSettings::default()
+    };
+    file.record_value("/a", SettingKey::HideThinking, &live);
+    let a = file.settings_for("/a");
+    assert!(a.hide_thinking, "the cycled key is saved");
+    assert_eq!(
+        a.error_retry, 5,
+        "the seed's value came along into the entry"
+    );
+    assert!(a.tools, "the env override did not stick");
+    assert_eq!(file.seed.error_retry, 5);
+    assert!(!file.seed.hide_thinking, "the seed is never rewritten");
+    assert!(
+        !file.settings_for("/b").hide_thinking,
+        "another directory is untouched"
+    );
+    // A second cycle in the same directory builds on its own entry.
+    let live = SessionSettings {
+        error_retry: 10,
+        hide_thinking: true,
+        ..SessionSettings::default()
+    };
+    file.record_value("/a", SettingKey::ErrorRetry, &live);
+    let a = file.settings_for("/a");
+    assert_eq!(a.error_retry, 10);
+    assert!(a.hide_thinking);
+}
+
+#[test]
+fn an_entry_is_kept_even_when_it_returns_to_the_defaults() {
+    // Dropping it would let the seed back in: a directory that cycled Error
+    // retry from the file's 5 back to 3 has chosen 3.
+    let mut file = SettingsFile::parse(r#"{"error_retry": 5}"#);
+    file.record_value("/a", SettingKey::ErrorRetry, &SessionSettings::default());
+    assert_eq!(file.settings_for("/a").error_retry, 3);
+    let json = file.to_json();
+    assert!(json.contains("\"/a\""), "{json}");
+    assert_eq!(SettingsFile::parse(&json).settings_for("/a").error_retry, 3);
+}
+
+#[test]
+fn settings_file_round_trips_and_an_empty_one_is_the_old_shape() {
+    let mut file = SettingsFile::default();
+    assert_eq!(file.to_json().trim(), "{}");
+    file.record_value(
+        "/home/u/a",
+        SettingKey::Tools,
+        &SessionSettings {
+            tools: false,
+            ..SessionSettings::default()
+        },
+    );
+    file.record_value(
+        "/home/u/b",
+        SettingKey::Checkpoints,
+        &SessionSettings {
+            checkpoints: true,
+            ..SessionSettings::default()
+        },
+    );
+    let json = file.to_json();
+    assert!(json.contains("\"projects\""), "{json}");
+    let back = SettingsFile::parse(&json);
+    assert_eq!(back, file);
+    assert!(!back.settings_for("/home/u/a").tools);
+    assert!(back.settings_for("/home/u/b").checkpoints);
+    assert!(
+        back.settings_for("/home/u/c").tools,
+        "a third directory: the defaults"
+    );
+    // A corrupt or empty file must never block startup.
+    assert_eq!(SettingsFile::parse(""), SettingsFile::default());
+    assert_eq!(SettingsFile::parse("not json"), SettingsFile::default());
+    // The seed survives beside the entries, byte-for-byte in meaning.
+    let legacy = SettingsFile::parse(r#"{"auto_compact": false}"#);
+    let mut legacy_plus = legacy.clone();
+    legacy_plus.record_value("/x", SettingKey::Tools, &SessionSettings::default());
+    let back = SettingsFile::parse(&legacy_plus.to_json());
+    assert!(!back.seed.auto_compact);
+    assert!(
+        !back.settings_for("/y").auto_compact,
+        "still seeds the next directory"
+    );
 }

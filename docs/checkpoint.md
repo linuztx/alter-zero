@@ -338,10 +338,15 @@ Old builds skip the unknown record type — the forward-compatibility contract.
 
 ## Enabling / disabling
 
-On by default when a `git` binary is present **and the cwd is a project worth
-snapshotting** (both halves of the guard above). `ALTER_ZERO_CHECKPOINTS=0` (or
-`false`/`no`/`off`) disables it, as does the `/settings` **Checkpoints** knob; a
-missing git or no writable root disables it silently.
+**Off until a directory turns it on**: the `/settings` **Checkpoints** knob is
+per working directory (`docs/per-directory-state.md`) and defaults to `false`
+— the session-start snapshot is a whole-cwd `git add -A` before the first
+frame, which is not something to run in a tree you did not choose it for.
+Cycling the knob on in a directory records `"checkpoints": true` there;
+`ALTER_ZERO_CHECKPOINTS=1` turns it on for a run without saving anything (and
+`=0`, or `false`/`no`/`off`, off). Either way it runs only when a `git` binary
+is present **and the cwd is a project worth snapshotting** (both halves of the
+guard above); a missing git or no writable root disables it silently.
 
 Both guards are **unconditional** — an explicit `ALTER_ZERO_CHECKPOINTS=1`
 doesn't override either, because they are answers to "can this run without

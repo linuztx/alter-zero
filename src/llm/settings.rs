@@ -1,22 +1,42 @@
-//! Persisted UI settings — currently just the last provider/model chosen via
-//! `/model`, so the selection survives a restart. Written to
-//! `~/.alter-zero/config.json` by the boundary; the parse/serialize here is
-//! **pure and unit-tested** (the file read/write lives in `main.rs`, like the
-//! `.env` keystore). See `docs/llm.md`.
+//! The persisted `/model` selection — kept **per working directory**, so each
+//! project runs the model that was picked *in* it, with the last choice made
+//! anywhere seeding a directory launched in for the first time
+//! (`docs/per-directory-state.md`). Written to `~/.alter-zero/config.json` by
+//! the boundary (`tui::config`); the parse/serialize here is **pure and
+//! unit-tested**, like the `.env` keystore's. See `docs/llm.md`.
+
+use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
 use super::reasoning::{ReasoningEffort, ReasoningSupport, ThinkingMode};
 
-/// The persisted settings blob. Every field is optional so an old, partial, or
-/// future file still loads — a missing key just leaves that setting unset, and
-/// unknown keys are ignored.
+/// The persisted `config.json`.
+///
+/// The **top-level** fields are the *last* selection made anywhere — the seed
+/// a directory launched in for the first time takes ([`Settings::adopt`]) —
+/// and also exactly the pre-directory file, so a `config.json` written before
+/// selections were per directory still loads and applies everywhere until a
+/// directory chooses otherwise. [`projects`](Self::projects) holds each
+/// directory's own. Every field is optional so an old, partial, or future file
+/// still loads — a missing key just leaves that setting unset, and unknown
+/// keys are ignored.
+///
+/// ```json
+/// {
+///   "provider": "openrouter",
+///   "model": "openai/gpt-4o-mini",
+///   "projects": {
+///     "/home/user/project": { "provider": "a0_venice", "model": "llama-3.3-70b" }
+///   }
+/// }
+/// ```
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Settings {
-    /// The last provider id chosen via `/model` (e.g. `openrouter`).
+    /// The provider id of the last selection made anywhere (e.g. `openrouter`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider: Option<String>,
-    /// The last model id chosen via `/model`.
+    /// The model id of the last selection made anywhere.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
     /// The saved model's reasoning capability + chosen mode, when it supports
@@ -37,6 +57,77 @@ pub struct Settings {
     /// without a re-probe. Absent = unknown. See `docs/compact.md`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context: Option<u64>,
+    /// One entry per working directory (its absolute path): the selection
+    /// made *in* that directory, or the last one pinned there at its first
+    /// launch. Omitted when empty, so a file with no entries is byte-for-byte
+    /// the old shape. See `docs/per-directory-state.md`.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub projects: BTreeMap<String, ModelSelection>,
+}
+
+/// One saved `/model` selection: the provider/model pair plus what is known
+/// about the model — its reasoning state, image-input support and context
+/// window, each `None` until the picker's record or the startup probe says.
+/// The shape of a [`Settings::projects`] entry, and of the top-level "last"
+/// selection read back through [`Settings::last`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModelSelection {
+    /// The provider id (e.g. `openrouter`).
+    pub provider: String,
+    /// The model id.
+    pub model: String,
+    /// The model's reasoning capability + chosen mode (`docs/reasoning.md`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thinking: Option<ThinkingSettings>,
+    /// The model's image-input support (`docs/tools.md`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vision: Option<bool>,
+    /// The model's context window in tokens (`docs/compact.md`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context: Option<u64>,
+}
+
+impl ModelSelection {
+    /// A bare selection — the pair, nothing yet known about the model.
+    #[must_use]
+    pub fn new(provider: impl Into<String>, model: impl Into<String>) -> Self {
+        Self {
+            provider: provider.into(),
+            model: model.into(),
+            thinking: None,
+            vision: None,
+            context: None,
+        }
+    }
+
+    /// The same selection with the model's reasoning state attached (`None`
+    /// = unknown; [`ThinkingSettings::unsupported`] for a known non-reasoner).
+    #[must_use]
+    pub fn with_thinking(mut self, thinking: Option<ThinkingSettings>) -> Self {
+        self.thinking = thinking;
+        self
+    }
+
+    /// The same selection with the model's image-input support attached.
+    #[must_use]
+    pub fn with_vision(mut self, vision: Option<bool>) -> Self {
+        self.vision = vision;
+        self
+    }
+
+    /// The same selection with the model's context window attached.
+    #[must_use]
+    pub fn with_context(mut self, context: Option<u64>) -> Self {
+        self.context = context;
+        self
+    }
+
+    /// The `(provider, model)` pair — what makes two selections the *same*
+    /// model, whatever each knows about it.
+    #[must_use]
+    pub fn pair(&self) -> (&str, &str) {
+        (&self.provider, &self.model)
+    }
 }
 
 /// The persisted reasoning state, as plain labels so a hand-edited or
@@ -148,15 +239,14 @@ impl Settings {
         serde_json::to_string_pretty(self).unwrap_or_else(|_| "{}".to_string())
     }
 
-    /// The settings recording a `/model` selection.
+    /// The settings whose last selection is `provider`/`model`, with no
+    /// directory entries yet.
     #[must_use]
     pub fn for_selection(provider: impl Into<String>, model: impl Into<String>) -> Self {
         Self {
             provider: Some(provider.into()),
             model: Some(model.into()),
-            thinking: None,
-            vision: None,
-            context: None,
+            ..Self::default()
         }
     }
 
@@ -182,6 +272,97 @@ impl Settings {
     pub fn with_context(mut self, context: Option<u64>) -> Self {
         self.context = context;
         self
+    }
+
+    // ----- per-directory selections (docs/per-directory-state.md) -----
+
+    /// The last selection made anywhere — the top-level fields — when both
+    /// halves of the pair are there. A half-written file (a model with no
+    /// provider) is not a selection.
+    #[must_use]
+    pub fn last(&self) -> Option<ModelSelection> {
+        Some(ModelSelection {
+            provider: self.provider.clone()?,
+            model: self.model.clone()?,
+            thinking: self.thinking.clone(),
+            vision: self.vision,
+            context: self.context,
+        })
+    }
+
+    /// Make `selection` the last one made anywhere.
+    fn set_last(&mut self, selection: &ModelSelection) {
+        self.provider = Some(selection.provider.clone());
+        self.model = Some(selection.model.clone());
+        self.thinking = selection.thinking.clone();
+        self.vision = selection.vision;
+        self.context = selection.context;
+    }
+
+    /// The entry a working directory holds, if it has one of its own.
+    #[must_use]
+    pub fn project(&self, dir: &str) -> Option<&ModelSelection> {
+        self.projects.get(dir)
+    }
+
+    /// What a session in `dir` runs: the directory's own entry, else the last
+    /// selection made anywhere, else nothing (the dummy).
+    #[must_use]
+    pub fn selection_for(&self, dir: &str) -> Option<ModelSelection> {
+        self.project(dir).cloned().or_else(|| self.last())
+    }
+
+    /// Pin the last selection as `dir`'s own entry when it has none — what a
+    /// directory launched in for the first time does, so that a later `/model`
+    /// switch elsewhere never moves it. Returns whether anything changed (the
+    /// boundary writes the file only then); a directory that already has an
+    /// entry, or a file with no last selection, is left alone.
+    pub fn adopt(&mut self, dir: &str) -> bool {
+        if self.projects.contains_key(dir) {
+            return false;
+        }
+        match self.last() {
+            Some(last) => {
+                self.projects.insert(dir.to_string(), last);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Record a `/model` choice made in `dir`: it becomes the directory's
+    /// entry **and** the last selection made anywhere (the seed for the next
+    /// new directory). Every other directory's entry is untouched — the caller
+    /// re-reads the file first, so two sessions in two directories never
+    /// clobber each other.
+    pub fn record(&mut self, dir: &str, selection: &ModelSelection) {
+        self.projects.insert(dir.to_string(), selection.clone());
+        self.set_last(selection);
+    }
+
+    /// Attach what Ctrl+T or the startup probe learned about the model `dir`
+    /// already records — its thinking state, vision, window — **without**
+    /// changing which model that is: the entry is replaced only when it names
+    /// the same pair, and the last selection moves with it only when it is
+    /// that same pair too (so a new directory then seeds without a probe).
+    /// Returns whether the entry was updated; a directory recording a
+    /// different model, or none, refuses — an env-overridden selection never
+    /// writes back through here (env always wins, never sticks).
+    pub fn record_capabilities(&mut self, dir: &str, selection: &ModelSelection) -> bool {
+        let Some(entry) = self.projects.get_mut(dir) else {
+            return false;
+        };
+        if entry.pair() != selection.pair() {
+            return false;
+        }
+        *entry = selection.clone();
+        if self
+            .last()
+            .is_some_and(|last| last.pair() == selection.pair())
+        {
+            self.set_last(selection);
+        }
+        true
     }
 }
 
@@ -347,5 +528,137 @@ mod tests {
             "unset fields are skipped: {json}"
         );
         assert!(!json.contains("model"), "unset fields are skipped: {json}");
+    }
+
+    // ===== per-directory selections (docs/per-directory-state.md) =====
+
+    fn own(provider: &str, model: &str) -> ModelSelection {
+        ModelSelection::new(provider, model)
+    }
+
+    #[test]
+    fn a_directory_with_its_own_entry_outranks_the_last_selection() {
+        // The top-level fields are the LAST selection made anywhere; a
+        // directory's own entry, when it has one, is what that directory runs.
+        let mut s = Settings::for_selection("p", "last");
+        s.record("/a", &own("p", "own"));
+        assert_eq!(s.selection_for("/a"), Some(own("p", "own")));
+        assert_eq!(
+            s.selection_for("/b"),
+            Some(own("p", "own")),
+            "recording a choice makes it the last selection too"
+        );
+        assert!(s.project("/b").is_none(), "/b has no entry of its own");
+        assert_eq!(Settings::default().selection_for("/a"), None);
+    }
+
+    #[test]
+    fn adopt_pins_the_last_selection_for_a_new_directory_exactly_once() {
+        // A directory launched in for the first time takes the last selection
+        // AND keeps it as its own entry, so a later switch elsewhere never
+        // moves it. Adopting again is a no-op the boundary can skip writing.
+        let mut s = Settings::for_selection("p", "last").with_vision(Some(true));
+        assert!(s.adopt("/b"), "the first launch pins the last selection");
+        assert_eq!(
+            s.project("/b"),
+            Some(&own("p", "last").with_vision(Some(true)))
+        );
+        assert!(!s.adopt("/b"), "already pinned — nothing to write");
+        // A switch elsewhere afterwards leaves /b where it was.
+        s.record("/a", &own("p", "newer"));
+        assert_eq!(
+            s.selection_for("/b"),
+            Some(own("p", "last").with_vision(Some(true)))
+        );
+        assert_eq!(s.selection_for("/c"), Some(own("p", "newer")));
+    }
+
+    #[test]
+    fn adopt_has_nothing_to_pin_without_a_last_selection() {
+        let mut empty = Settings::default();
+        assert!(!empty.adopt("/a"));
+        assert!(empty.projects.is_empty());
+        // A half-written file (a model with no provider) is not a selection.
+        let mut half = Settings::parse(r#"{"model":"m"}"#);
+        assert!(!half.adopt("/a"));
+        assert_eq!(half.last(), None);
+    }
+
+    #[test]
+    fn record_replaces_the_directory_entry_and_moves_the_last_selection() {
+        let mut s = Settings::for_selection("p", "last");
+        s.record("/a", &own("p", "x"));
+        s.record("/z", &own("q", "other"));
+        s.record("/a", &own("p", "y").with_context(Some(8_000)));
+        assert_eq!(
+            s.project("/a"),
+            Some(&own("p", "y").with_context(Some(8_000)))
+        );
+        assert_eq!(
+            s.project("/z"),
+            Some(&own("q", "other")),
+            "other directories untouched"
+        );
+        assert_eq!(s.last(), Some(own("p", "y").with_context(Some(8_000))));
+    }
+
+    #[test]
+    fn record_capabilities_touches_only_the_pair_the_directory_records() {
+        // Ctrl+T and the startup probe attach what they learned to the model a
+        // directory already records — never to a different model, and never
+        // moving the last selection unless it IS that same pair.
+        let learned = own("p", "m").with_thinking(Some(ThinkingSettings::unsupported()));
+        let mut s = Settings::for_selection("p", "m");
+        s.record("/a", &own("p", "m"));
+        assert!(s.record_capabilities("/a", &learned));
+        assert_eq!(s.project("/a"), Some(&learned));
+        assert_eq!(
+            s.last(),
+            Some(learned.clone()),
+            "the same pair: the seed learns too"
+        );
+
+        // The last selection is a different model now — it must not move.
+        s.record("/b", &own("p", "other"));
+        let refreshed = own("p", "m").with_vision(Some(false));
+        assert!(s.record_capabilities("/a", &refreshed));
+        assert_eq!(s.project("/a"), Some(&refreshed));
+        assert_eq!(s.last(), Some(own("p", "other")));
+
+        // A directory recording a different pair, or none, refuses.
+        assert!(!s.record_capabilities("/b", &refreshed));
+        assert_eq!(s.project("/b"), Some(&own("p", "other")));
+        assert!(!s.record_capabilities("/nowhere", &refreshed));
+        assert!(s.project("/nowhere").is_none());
+    }
+
+    #[test]
+    fn a_pre_directory_file_loads_as_the_last_selection_alone() {
+        // The old flat file is exactly the new file's top level, so an
+        // existing config.json keeps applying everywhere until a directory
+        // chooses otherwise — and a file with no entries writes no `projects`.
+        let s = Settings::parse(r#"{"provider":"p","model":"m","vision":true}"#);
+        assert_eq!(s.last(), Some(own("p", "m").with_vision(Some(true))));
+        assert!(s.projects.is_empty());
+        assert!(!s.to_json().contains("projects"), "{}", s.to_json());
+    }
+
+    #[test]
+    fn directory_entries_round_trip_through_json() {
+        let mut s = Settings::for_selection("p", "last");
+        s.record(
+            "/home/u/a",
+            &own("p", "m")
+                .with_thinking(Some(ThinkingSettings::from_state(
+                    &trio_support(),
+                    ThinkingMode::Effort(ReasoningEffort::Low),
+                )))
+                .with_vision(Some(false))
+                .with_context(Some(32_000)),
+        );
+        let json = s.to_json();
+        assert!(json.contains("\"projects\""), "{json}");
+        assert!(json.contains("/home/u/a"), "{json}");
+        assert_eq!(Settings::parse(&json), s);
     }
 }

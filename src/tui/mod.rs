@@ -278,15 +278,14 @@ pub(crate) struct Session<'t> {
     hist_store: InputHistoryStore,
     /// Per-turn working-directory snapshots (`docs/checkpoint.md`).
     checkpoints: CheckpointStore,
-    /// Where the `/settings` knobs persist (`settings.json`); `None` disables
-    /// persistence, like `config.json`'s path (`docs/settings.md`). The live
-    /// values themselves live on `App` — one copy, read where they are used.
+    /// Where the `/settings` knobs persist (`settings.json`, this directory's
+    /// entry — `docs/per-directory-state.md`); `None` disables persistence,
+    /// like `config.json`'s path (`docs/settings.md`). The live values
+    /// themselves live on `App` — one copy, read where they are used; a save
+    /// is a read-modify-write over the file itself, moving across only the
+    /// key the user cycled, so an `ALTER_ZERO_*` override merged in at startup
+    /// never becomes the saved default.
     settings_path: Option<PathBuf>,
-    /// The blob `settings.json` holds, **before** the `ALTER_ZERO_*` overrides
-    /// were merged over it. A save is a read-modify-write onto this — only the
-    /// key the user actually cycled moves across — so an override set for one
-    /// run never becomes the saved default (`docs/settings.md`).
-    saved_settings: alter_zero::settings::SessionSettings,
 
     // ----- the in-flight turn -----
     /// The streaming reply's cancel token + thread handle; `None` when idle.

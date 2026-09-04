@@ -291,11 +291,17 @@ impl Session<'_> {
             // Shift+Tab's path owns this one; the menu never routes it here.
             SettingKey::PermissionMode => {}
         }
-        // Persist as a read-modify-write over the blob the file itself holds,
-        // moving across only the key the user cycled — so an `ALTER_ZERO_*`
-        // override merged in at startup never sticks (`docs/settings.md`).
-        self.saved_settings.copy_value(key, &settings);
-        config::save_session_settings(self.settings_path.as_deref(), &self.saved_settings);
+        // Persist this directory's entry as a read-modify-write over the file
+        // itself, moving across only the key the user cycled — so an
+        // `ALTER_ZERO_*` override merged in at startup never sticks, and two
+        // sessions in two directories never clobber each other
+        // (`docs/settings.md`, `docs/per-directory-state.md`).
+        config::save_setting(
+            self.settings_path.as_deref(),
+            &self.cwd.display().to_string(),
+            key,
+            &settings,
+        );
         let value = settings.value_text(key, self.app.permission_mode());
         self.toast(format!("{}: {value}", key.label()), ToastKind::Info);
         // After the toast, so the rebuilt frame already carries it (the

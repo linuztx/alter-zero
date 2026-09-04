@@ -98,6 +98,11 @@ cleanup() {
 	tmux kill-session -t "${S}_nothinking" 2>/dev/null
 	tmux kill-session -t "${S}_settings" 2>/dev/null
 	tmux kill-session -t "${S}_settings2" 2>/dev/null
+	tmux kill-session -t "${S}_perdir" 2>/dev/null
+	tmux kill-session -t "${S}_perdir2" 2>/dev/null
+	tmux kill-session -t "${S}_perdir3" 2>/dev/null
+	[ -n "${PD_CFG:-}" ] && rm -rf "$PD_CFG" 2>/dev/null
+	rm -rf /tmp/alter-zero-smoke-perdir-* 2>/dev/null
 	tmux kill-session -t "${S}_hooksmenu" 2>/dev/null
 	tmux kill-session -t "${S}_curhide" 2>/dev/null
 	tmux kill-session -t "${S}_midstream" 2>/dev/null
@@ -185,6 +190,10 @@ SMOKE_CFG="$(mktemp -d)"
 # clean` on the working directory, which — run here — would delete repo files a
 # snapshot didn't capture. Only Phases 46-47, which run in a throwaway temp cwd,
 # re-enable checkpoints (with ALTER_ZERO_CHECKPOINTS=1 in their own env).
+# Lifecycle hooks are off by default too (docs/per-directory-state.md — both
+# knobs are per directory and opt-in), so the phases that browse or run a real
+# hooks.json (75, 83) set ALTER_ZERO_HOOKS=1 the same way; 72-74 play the
+# dummy's scripted hook scenarios and need nothing.
 # Skills (docs/skills.md) are discovered from the project's `.claude/skills`
 # and the developer's own `~/.claude/skills`, so a machine that HAS skills would
 # inject their `<system-reminder>` listing at the top of every context and push
@@ -6712,7 +6721,7 @@ cat >"$HK_CFG/hooks.json" <<'HOOKS75'
   }
 }
 HOOKS75
-APP_HK="env ALTER_ZERO_PROJECT_CONFIG=0 ALTER_ZERO_CONFIG_DIR=$HK_CFG ALTER_ZERO_CHECKPOINTS=0 ALTER_ZERO_HISTORY_FILE=/dev/null ALTER_ZERO_STARTUP_DELAY_MS=$SMOKE_STARTUP_MS $BIN"
+APP_HK="env ALTER_ZERO_PROJECT_CONFIG=0 ALTER_ZERO_CONFIG_DIR=$HK_CFG ALTER_ZERO_CHECKPOINTS=0 ALTER_ZERO_HOOKS=1 ALTER_ZERO_HISTORY_FILE=/dev/null ALTER_ZERO_STARTUP_DELAY_MS=$SMOKE_STARTUP_MS $BIN"
 tmux new-session -d -s "$S75" -x 100 -y 35 "$APP_HK"
 sleep 0.6
 tmux send-keys -t "$S75" -l "/hooks"
@@ -7455,7 +7464,7 @@ TRHOOKS
 # absolute — the Phase 46 BIN_ABS rule; a relative $BIN would resolve inside
 # the temp project and never launch.
 TR_BIN="$(readlink -f "$BIN")"
-APP_TR="env ALTER_ZERO_PROJECT_CONFIG=1 ALTER_ZERO_CONFIG_DIR=$TR_CFG ALTER_ZERO_CHECKPOINTS=0 ALTER_ZERO_HISTORY_FILE=/dev/null ALTER_ZERO_STARTUP_DELAY_MS=$SMOKE_STARTUP_MS $TR_BIN"
+APP_TR="env ALTER_ZERO_PROJECT_CONFIG=1 ALTER_ZERO_CONFIG_DIR=$TR_CFG ALTER_ZERO_CHECKPOINTS=0 ALTER_ZERO_HOOKS=1 ALTER_ZERO_HISTORY_FILE=/dev/null ALTER_ZERO_STARTUP_DELAY_MS=$SMOKE_STARTUP_MS $TR_BIN"
 tmux new-session -d -s "$S83" -x 100 -y 36 -c "$TR_WORK" "$APP_TR"
 # The pending toast rides the first frames and self-clears — poll for it.
 tr_toast=""
@@ -7613,7 +7622,7 @@ cat >"$TR_HOME/.alter-zero/hooks.json" <<'TRHOME'
 {"hooks": {"Stop": [{"hooks": [{"type": "command", "command": "./fmt.sh"}]}]}}
 TRHOME
 tmux new-session -d -s "$S83" -x 100 -y 36 -c "$TR_HOME" \
-	"env HOME=$TR_HOME ALTER_ZERO_PROJECT_CONFIG=1 ALTER_ZERO_CHECKPOINTS=0 ALTER_ZERO_HISTORY_FILE=/dev/null ALTER_ZERO_STARTUP_DELAY_MS=$SMOKE_STARTUP_MS $TR_BIN"
+	"env HOME=$TR_HOME ALTER_ZERO_PROJECT_CONFIG=1 ALTER_ZERO_CHECKPOINTS=0 ALTER_ZERO_HOOKS=1 ALTER_ZERO_HISTORY_FILE=/dev/null ALTER_ZERO_STARTUP_DELAY_MS=$SMOKE_STARTUP_MS $TR_BIN"
 sleep 1.5
 tr_home_pane="$(tmux capture-pane -t "$S83" -p)"
 echo "==== Phase 83: launched in the home directory ===="
@@ -10770,6 +10779,224 @@ if ! printf '%s' "$clip_usage_err" | grep -qF "For more information, try '--help
 	echo "FAIL: Phase 108 — the grammar error does not close on the --help pointer" >&2
 	status=1
 fi
+
+# --- Phase 109: PER-DIRECTORY state (docs/per-directory-state.md). /model and
+# /settings remember the directory they were used in — one config home, three
+# working directories. (a) A pre-seeded LAST model selection (the shape a
+# pre-directory config.json has, so this doubles as its compat check) is what
+# a directory launched in for the first time runs, PINNED as its own entry
+# right then. (b) A knob cycled in that directory is the directory's alone —
+# settings.json keys the entry by the directory's path under `projects`, its
+# top level (the seed) untouched — and a second directory starts at the
+# defaults, hooks and checkpoints OFF among them, while adopting the same
+# last model. (c) A later change to the last selection moves a third, new
+# directory and never the pinned first one, whose knob also survived. ---
+S109="${S}_perdir"
+S109B="${S}_perdir2"
+S109C="${S}_perdir3"
+PD_CFG="$(mktemp -d)"
+PD_A="$(mktemp -d /tmp/alter-zero-smoke-perdir-a-XXXXXX)"
+PD_B="$(mktemp -d /tmp/alter-zero-smoke-perdir-b-XXXXXX)"
+PD_C="$(mktemp -d /tmp/alter-zero-smoke-perdir-c-XXXXXX)"
+# The paths as the app keys them — the kernel's cwd, symlinks resolved.
+PD_A_KEY="$(cd "$PD_A" && pwd -P)"
+PD_B_KEY="$(cd "$PD_B" && pwd -P)"
+cat >"$PD_CFG/providers.toml" <<'PROVIDERS'
+[providers.deadend]
+name = "Dead End"
+api_model_base = "http://127.0.0.1:9/v1"
+
+[providers.deadend.kwargs]
+api_base = "http://127.0.0.1:9/v1"
+PROVIDERS
+# A key resolves for the provider (Phase 65's trick), so a saved selection
+# activates a real backend whose model name the footer shows. No request is
+# ever made: no turn runs, and the capability probe fails fast on a dead port.
+cat >"$PD_CFG/config.json" <<'CONFIG'
+{ "provider": "deadend", "model": "pinned-model-a" }
+CONFIG
+# No ALTER_ZERO_CHECKPOINTS here, deliberately: the default is under test, and
+# the cwds are throwaway temp dirs a snapshot could not hurt.
+APP_PD="env ALTER_ZERO_PROJECT_CONFIG=0 ALTER_ZERO_CONFIG_DIR=$PD_CFG ALTER_ZERO_SESSIONS_DIR=$PD_CFG/sessions ALTER_ZERO_HISTORY_FILE=/dev/null ALTER_ZERO_SKILLS_DIR=$SMOKE_SKILLS ALTER_ZERO_AGENTS_DIR=$SMOKE_AGENTS ALTER_ZERO_PROVIDERS_FILE=$PD_CFG/providers.toml ALTER_ZERO_API_KEY=not-a-real-key ALTER_ZERO_STARTUP_DELAY_MS=$SMOKE_STARTUP_MS $BIN_ABS"
+# Poll a pane (visible screen) for a needle, up to ~5s; prints the last capture.
+pd_wait() {
+	local pane=""
+	for _ in $(seq 1 50); do
+		pane="$(tmux capture-pane -t "$1" -p)"
+		if printf '%s' "$pane" | grep -qF "$2"; then
+			break
+		fi
+		sleep 0.1
+	done
+	printf '%s' "$pane"
+}
+# The value column of one /settings row, reached by type-to-search from the
+# open menu; the query is cleared again afterwards.
+pd_setting() {
+	local sess="$1" query="$2" pane
+	tmux send-keys -t "$sess" -l "$query"
+	sleep 0.4
+	pane="$(tmux capture-pane -t "$sess" -p)"
+	for _ in $(seq 1 ${#query}); do tmux send-keys -t "$sess" BSpace; done
+	sleep 0.3
+	printf '%s' "$pane"
+}
+
+# (a) The first directory: the last selection, pinned.
+tmux new-session -d -s "$S109" -x 100 -y 30 -c "$PD_A" "$APP_PD"
+pd_a="$(pd_wait "$S109" "pinned-model-a")"
+echo "==== Phase 109: a directory launched in for the first time ===="
+printf '%s\n' "$pd_a"
+if ! printf '%s' "$pd_a" | grep -qF "pinned-model-a"; then
+	echo "FAIL: Phase 109 — the first launch in a directory did not take the last model selection" >&2
+	status=1
+fi
+if ! grep -qF "\"$PD_A_KEY\"" "$PD_CFG/config.json"; then
+	echo "==== Phase 109: config.json ===="
+	cat "$PD_CFG/config.json"
+	echo "FAIL: Phase 109 — the first launch did not pin the selection as the directory's own entry" >&2
+	status=1
+fi
+# (b) A knob cycled here is this directory's alone.
+tmux send-keys -t "$S109" -l "/settings"
+sleep 0.3
+tmux send-keys -t "$S109" Enter
+sleep 0.6
+tmux send-keys -t "$S109" -l "retry"
+sleep 0.4
+tmux send-keys -t "$S109" Enter
+sleep 0.5
+pd_cycled="$(tmux capture-pane -t "$S109" -p)"
+echo "==== Phase 109: Error retry cycled in the first directory ===="
+printf '%s\n' "$pd_cycled"
+if ! printf '%s' "$pd_cycled" | grep -qE "Error retry +5"; then
+	echo "FAIL: Phase 109 — Enter did not cycle Error retry from 3 to 5" >&2
+	status=1
+fi
+tmux send-keys -t "$S109" Escape
+sleep 0.3
+tmux send-keys -t "$S109" Escape
+sleep 0.4
+tmux send-keys -t "$S109" -l "/quit"
+tmux send-keys -t "$S109" Enter
+sleep 0.6
+tmux kill-session -t "$S109" 2>/dev/null
+if [ ! -f "$PD_CFG/settings.json" ]; then
+	echo "FAIL: Phase 109 — no settings.json was written to the config home" >&2
+	status=1
+else
+	echo "==== Phase 109: settings.json ===="
+	cat "$PD_CFG/settings.json"
+	if ! grep -qF "\"$PD_A_KEY\"" "$PD_CFG/settings.json"; then
+		echo "FAIL: Phase 109 — settings.json is not keyed by the directory the knob was cycled in" >&2
+		status=1
+	fi
+	if ! grep -q '"error_retry": *5' "$PD_CFG/settings.json"; then
+		echo "FAIL: Phase 109 — settings.json does not record the changed value" >&2
+		status=1
+	fi
+	# The seed — every key ABOVE the `projects` map — must stay untouched.
+	if ! awk '/"projects"/ { inside = 1 } /"error_retry"/ { if (!inside) top = 1 } END { exit top }' "$PD_CFG/settings.json"; then
+		echo "FAIL: Phase 109 — the cycled value was written to the file's top level instead of the directory's entry" >&2
+		status=1
+	fi
+fi
+
+# (c) A second directory: the same last model, adopted — and the defaults.
+tmux new-session -d -s "$S109B" -x 100 -y 30 -c "$PD_B" "$APP_PD"
+pd_b="$(pd_wait "$S109B" "pinned-model-a")"
+echo "==== Phase 109: a second directory, launched in for the first time ===="
+printf '%s\n' "$pd_b"
+if ! printf '%s' "$pd_b" | grep -qF "pinned-model-a"; then
+	echo "FAIL: Phase 109 — the second directory did not take the last model selection" >&2
+	status=1
+fi
+tmux send-keys -t "$S109B" -l "/settings"
+sleep 0.3
+tmux send-keys -t "$S109B" Enter
+sleep 0.6
+pd_b_retry="$(pd_setting "$S109B" "retry")"
+pd_b_ck="$(pd_setting "$S109B" "checkpoints")"
+pd_b_hooks="$(pd_setting "$S109B" "hooks")"
+echo "==== Phase 109: the second directory's Error retry / Checkpoints / Hooks rows ===="
+printf '%s\n' "$pd_b_retry" | grep -E "Error retry" || true
+printf '%s\n' "$pd_b_ck" | grep -E "Checkpoints" || true
+printf '%s\n' "$pd_b_hooks" | grep -E "Hooks" || true
+if ! printf '%s' "$pd_b_retry" | grep -qE "Error retry +3"; then
+	echo "FAIL: Phase 109 — the first directory's Error retry leaked into the second (expected the default 3)" >&2
+	status=1
+fi
+if ! printf '%s' "$pd_b_ck" | grep -qE "Checkpoints +false"; then
+	echo "FAIL: Phase 109 — Checkpoints should default to false" >&2
+	status=1
+fi
+if ! printf '%s' "$pd_b_hooks" | grep -qE "Hooks +false"; then
+	echo "FAIL: Phase 109 — Hooks should default to false" >&2
+	status=1
+fi
+tmux send-keys -t "$S109B" Escape
+sleep 0.4
+tmux send-keys -t "$S109B" -l "/quit"
+tmux send-keys -t "$S109B" Enter
+sleep 0.6
+tmux kill-session -t "$S109B" 2>/dev/null
+if ! grep -qF "\"$PD_B_KEY\"" "$PD_CFG/config.json"; then
+	echo "==== Phase 109: config.json ===="
+	cat "$PD_CFG/config.json"
+	echo "FAIL: Phase 109 — the second directory's launch did not pin its own entry" >&2
+	status=1
+fi
+
+# (d) The last selection moves on (as a /model switch elsewhere would move it):
+# a third, new directory takes the new one; the pinned first keeps its own,
+# and its cycled knob.
+cat >"$PD_CFG/config.json" <<CONFIG
+{
+  "provider": "deadend",
+  "model": "pinned-model-b",
+  "projects": {
+    "$PD_A_KEY": { "provider": "deadend", "model": "pinned-model-a" },
+    "$PD_B_KEY": { "provider": "deadend", "model": "pinned-model-a" }
+  }
+}
+CONFIG
+tmux new-session -d -s "$S109" -x 100 -y 30 -c "$PD_A" "$APP_PD"
+pd_a2="$(pd_wait "$S109" "pinned-model-a")"
+tmux send-keys -t "$S109" -l "/settings"
+sleep 0.3
+tmux send-keys -t "$S109" Enter
+sleep 0.6
+pd_a2_retry="$(pd_setting "$S109" "retry")"
+echo "==== Phase 109: the first directory relaunched after the last selection moved ===="
+printf '%s\n' "$pd_a2"
+printf '%s\n' "$pd_a2_retry" | grep -E "Error retry" || true
+if ! printf '%s' "$pd_a2" | grep -qF "pinned-model-a"; then
+	echo "FAIL: Phase 109 — a pinned directory followed the last selection instead of keeping its own model" >&2
+	status=1
+fi
+if ! printf '%s' "$pd_a2_retry" | grep -qE "Error retry +5"; then
+	echo "FAIL: Phase 109 — the directory's own Error retry did not survive the restart" >&2
+	status=1
+fi
+tmux send-keys -t "$S109" Escape
+sleep 0.4
+tmux send-keys -t "$S109" -l "/quit"
+tmux send-keys -t "$S109" Enter
+sleep 0.6
+tmux kill-session -t "$S109" 2>/dev/null
+tmux new-session -d -s "$S109C" -x 100 -y 30 -c "$PD_C" "$APP_PD"
+pd_c="$(pd_wait "$S109C" "pinned-model-b")"
+echo "==== Phase 109: a third directory takes the moved last selection ===="
+printf '%s\n' "$pd_c"
+if ! printf '%s' "$pd_c" | grep -qF "pinned-model-b"; then
+	echo "FAIL: Phase 109 — a new directory did not take the newest last selection" >&2
+	status=1
+fi
+tmux send-keys -t "$S109C" -l "/quit"
+tmux send-keys -t "$S109C" Enter
+sleep 0.6
+tmux kill-session -t "$S109C" 2>/dev/null
+rm -rf "$PD_CFG" "$PD_A" "$PD_B" "$PD_C"
 
 
 if [ "$status" -eq 0 ]; then

@@ -267,7 +267,10 @@ activates only when a provider, model, and key all resolve and `ALTER_ZERO_DUMMY
 isn't set, so the app always runs offline out of the box. Switch models live with
 the **`/model`** picker: an inline search-and-select list of the provider's
 `/v1/models` (it asks you to `/login` first if no key is configured), and your
-choice persists to `~/.alter-zero/config.json` so it's the default next run.
+choice persists to `~/.alter-zero/config.json` so it's the default next run —
+**in that directory**: every working directory remembers its own model, and one
+you launch in for the first time starts with the last model you picked anywhere
+(`docs/per-directory-state.md`).
 
 Anything the model would **change** asks first (`docs/permissions.md`): a
 `write`, an `edit`, or a `bash` command stops the turn and puts an inline
@@ -425,8 +428,11 @@ limit: a cap that trips mid-task abandons the work half-done, and **Esc** is
 already the stop button. Changes take effect at once — the ones
 that reshape a request rebind the *next* turn, so `/settings` is safe to open
 mid-turn — and persist to `~/.alter-zero/settings.json` as a diff from the
-defaults; an `ALTER_ZERO_*` override still wins for the run it was set in, but
-never gets saved on top of your choice.
+defaults, **per working directory** (a knob set in one project is that
+project's; a new directory starts from the defaults, `docs/per-directory-state.md`);
+an `ALTER_ZERO_*` override still wins for the run it was set in, but never gets
+saved on top of your choice. **Hooks** and **Checkpoints** are off until a
+directory turns them on.
 
 Providers live in `providers.toml` (repo root; an Agent-Zero/Venice proxy,
 OpenRouter, Anthropic, the two subscriptions and Ollama ship by default). To plug in a *non*-OpenAI-shaped
