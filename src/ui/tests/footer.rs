@@ -185,6 +185,79 @@ fn the_footer_omits_the_gauge_without_a_window() {
     assert!(!text.contains('%'), "{text}");
 }
 
+#[test]
+fn an_agent_session_view_gauges_that_agents_own_context() {
+    // The reported bug (docs/agent-context-gauge.md): inside a subagent's
+    // session view the footer read `23.7k/1M` — the LEAD's context — under a
+    // roster row saying the agent itself was at 64.9k. The gauge follows the
+    // screen: the viewed agent's own `input + output`, against its window.
+    let mut app = App::new();
+    app.set_session_info("kimi-k3", "~");
+    app.set_context_window(Some(1_000_000));
+    app.begin_stream();
+    app.apply_usage(&crate::stream::TokenUsage {
+        input: 23_000,
+        output: 700,
+        ..crate::stream::TokenUsage::default()
+    });
+    app.start_agent_group(
+        false,
+        &[spec("a1", "Look up linuztx GitHub profile", false)],
+    );
+    app.apply_agent_event(
+        "a1",
+        &crate::stream::StreamEvent::Usage(crate::stream::TokenUsage {
+            input: 64_000,
+            output: 900,
+            ..crate::stream::TokenUsage::default()
+        }),
+    );
+    let main = plain(&footer_line(&app, 120));
+    assert!(main.contains("23.7k/1M (2.4%)"), "{main}");
+    app.set_agent_context_window(Some(1_000_000));
+    app.open_agent_view("a1");
+    let view = plain(&footer_line(&app, 120));
+    assert!(view.contains("64.9k/1M (6.5%)"), "the agent's own: {view}");
+    assert!(!view.contains("23.7k"), "never the lead's: {view}");
+    // Back in the main view the lead's gauge is back.
+    app.close_agent_view();
+    let back = plain(&footer_line(&app, 120));
+    assert!(back.contains("23.7k/1M (2.4%)"), "{back}");
+}
+
+#[test]
+fn an_agent_pinned_to_another_model_names_it_in_its_views_footer() {
+    // A type whose definition pins `model:` runs on that model
+    // (`docs/subagents.md`), so its view's footer names it; an inheriting
+    // type keeps the session's name.
+    // The session's thinking mode goes with the session's model: the launch
+    // drops it beside the model it replaces, so the footer must not claim it.
+    use crate::llm::{ReasoningEffort, ReasoningSupport, ThinkingMode};
+    let mut app = App::new();
+    app.set_session_info("kimi-k3", "~");
+    app.set_thinking(Some((
+        ReasoningSupport {
+            efforts: vec![ReasoningEffort::Medium],
+            can_disable: true,
+            default_effort: None,
+        },
+        ThinkingMode::Effort(ReasoningEffort::Medium),
+    )));
+    app.begin_stream();
+    app.start_agent_group(false, &[spec("a1", "Review the diff", false)]);
+    app.set_agent_model(Some("deepseek-v3.2".to_string()));
+    app.open_agent_view("a1");
+    let view = plain(&footer_line(&app, 120));
+    assert!(view.starts_with("  deepseek-v3.2 · ~"), "{view}");
+    assert!(
+        !view.contains("medium"),
+        "no mode beside a pinned model: {view}"
+    );
+    app.set_agent_model(None);
+    let inherit = plain(&footer_line(&app, 120));
+    assert!(inherit.starts_with("  kimi-k3 medium · ~"), "{inherit}");
+}
+
 // --- message queue (docs/queue.md) ---
 
 #[test]

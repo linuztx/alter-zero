@@ -454,6 +454,21 @@ impl ModelSession {
         self.env_context_window.or(self.active_context)
     }
 
+    /// The window a **subagent's** gauge runs against
+    /// (`docs/agent-context-gauge.md`): a type that inherits the model shares
+    /// [`context_window`](Self::context_window), while one pinned to another
+    /// model has a window this session never learned — the listing is read
+    /// for the *selected* model only — so only the `ALTER_ZERO_CONTEXT_WINDOW`
+    /// override answers there, and `None` hides that view's gauge exactly as
+    /// an unknown window hides the main one.
+    pub(crate) fn agent_context_window(&self, inherits: bool) -> Option<u64> {
+        if inherits {
+            self.context_window()
+        } else {
+            self.env_context_window
+        }
+    }
+
     /// Whether the active model is known **not** to accept images — the Ctrl+V
     /// paste warning's gate (`docs/tools.md`).
     pub(crate) fn is_blind(&self) -> bool {
@@ -1268,6 +1283,14 @@ impl Session<'_> {
         let briefing = self.models.backend().agent_system_reminder(&agent_type);
         self.app.set_agent_system_prompt(prompt);
         self.app.set_agent_system_reminder(briefing);
+        // The view's footer, too, is the viewed type's: the model it runs on
+        // when its definition pins one, and the window its context gauge runs
+        // against — the session's for an inheriting type, unknown (no gauge)
+        // for a pinned one (`docs/agent-context-gauge.md`).
+        let pinned = self.models.backend().agent_model(&agent_type);
+        let window = self.models.agent_context_window(pinned.is_none());
+        self.app.set_agent_context_window(window);
+        self.app.set_agent_model(pinned);
     }
 
     /// Render the session's `<system-reminder>` into `App`, so the derived
@@ -1437,6 +1460,9 @@ impl Session<'_> {
             self.app.set_thinking(thinking);
             let window = self.models.context_window();
             self.app.set_context_window(window);
+            // An inheriting subagent's gauge shares that window
+            // (`docs/agent-context-gauge.md`).
+            self.sync_agent_view_context();
             self.frame.schedule_frame();
         }
     }

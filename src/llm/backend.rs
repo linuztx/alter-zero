@@ -925,6 +925,14 @@ impl ReplySource for LlmBackend {
         self.subagent_config().briefing_for(agent_type)
     }
 
+    /// The model a subagent of `agent_type` is launched on when its
+    /// definition pins one — read off the same definition
+    /// `spawn_subagent_run` switches the client for
+    /// (`docs/agent-context-gauge.md`).
+    fn agent_model(&self, agent_type: &str) -> Option<String> {
+        self.subagent_config().pinned_model(agent_type)
+    }
+
     /// Send a chat message into a subagent's session (`docs/agent-tool.md`):
     /// queued into its running loop, or a continuation run over its stored
     /// conversation when idle. `false` when agents aren't enabled here or the
@@ -1072,6 +1080,17 @@ impl SubagentConfig {
             .allows(crate::skills::SKILL_TOOL_NAME)
             .then(|| subagent_skill_reminder(self.skills.as_ref()))
             .flatten()
+    }
+
+    /// The model a subagent of `agent_type` runs on when its definition pins
+    /// one (`model: kimi-k3`), `None` to inherit the session's — the
+    /// definition's own `model.named()`, which is what `spawn_subagent_run`
+    /// switches the client to, so the agent view's footer
+    /// (`ReplySource::agent_model`) can never name a model the agent was not
+    /// launched on (`docs/agent-context-gauge.md`).
+    fn pinned_model(&self, agent_type: &str) -> Option<String> {
+        self.definition(agent_type)
+            .and_then(|def| def.model.named().map(str::to_string))
     }
 
     /// The system prompt a subagent of `agent_type` is sent
@@ -1959,6 +1978,36 @@ mod tests {
                 .unwrap()
                 .contains("subagent"),
             "the note never leaks into the main prompt"
+        );
+    }
+
+    #[test]
+    fn agent_model_is_the_definitions_pinned_model_or_none_when_it_inherits() {
+        // What the agent session view's footer names, and what decides whose
+        // context window its gauge runs against (docs/agent-context-gauge.md):
+        // a type pinned to another model runs on it — the same
+        // `def.model.named()` the launch switches the client to — while an
+        // inheriting type answers `None`, the session's own model.
+        let pinned = crate::subagents::parse_agent(
+            "---\ndescription: Reviews.\nmodel: kimi-k3\n---\n",
+            "reviewer",
+        )
+        .expect("a valid definition");
+        let backend = LlmBackend::configure(ModelConfig::fallback(), None, false)
+            .with_subagents(crate::subagents::SubagentRegistry::new(vec![pinned]));
+        assert_eq!(
+            ReplySource::agent_model(&backend, "reviewer").as_deref(),
+            Some("kimi-k3")
+        );
+        assert_eq!(
+            ReplySource::agent_model(&backend, crate::agents::GENERAL_PURPOSE),
+            None,
+            "the built-in inherits"
+        );
+        assert_eq!(
+            ReplySource::agent_model(&backend, "no-such-type"),
+            None,
+            "an unknown type launches nothing, and names no model"
         );
     }
 

@@ -154,18 +154,12 @@ impl App {
         if !crate::context::derives_conversation(&self.history) {
             return 0;
         }
-        let mut total = self.system_prompt.as_deref().map_or(0, count_tokens);
-        for message in crate::context::context_messages_full(
-            self.user_instructions.as_deref(),
-            self.system_reminder.as_deref(),
-            &self.history,
-        ) {
-            total += count_tokens(&message.text);
-            total += message.images.len() * IMAGE_INPUT_TOKENS;
-            for call in &message.tool_calls {
-                total += count_tokens(&call.name) + count_tokens(&call.arguments);
-            }
-        }
+        let total = self.system_prompt.as_deref().map_or(0, count_tokens)
+            + estimate_messages_tokens(&crate::context::context_messages_full(
+                self.user_instructions.as_deref(),
+                self.system_reminder.as_deref(),
+                &self.history,
+            ));
         u64::try_from(total).unwrap_or(u64::MAX)
     }
 
@@ -200,6 +194,29 @@ impl App {
         }
         crate::context::derives_conversation(&self.history)
     }
+}
+
+/// The tokenizer estimate of a derived context: every message's text, a flat
+/// `IMAGE_INPUT_TOKENS` per attachment, and each tool call's name and
+/// arguments. The one counting rule behind both context gauges — the main
+/// session's (`App::estimate_context_tokens`, which adds the system prompt
+/// and hands in the fragments-led derivation) and a subagent's
+/// ([`crate::agents::AgentRun`], over its own transcript) — so the two can
+/// never disagree about what a message costs (`docs/agent-context-gauge.md`).
+#[must_use]
+pub(crate) fn estimate_messages_tokens(messages: &[crate::context::ContextMessage]) -> usize {
+    messages
+        .iter()
+        .map(|message| {
+            count_tokens(&message.text)
+                + message.images.len() * IMAGE_INPUT_TOKENS
+                + message
+                    .tool_calls
+                    .iter()
+                    .map(|call| count_tokens(&call.name) + count_tokens(&call.arguments))
+                    .sum::<usize>()
+        })
+        .sum()
 }
 
 /// A `/compact` marker's payload: the model-written handoff summary the

@@ -838,7 +838,12 @@ registry's pending-input seam, or a continuation run over its stored message
 list when idle) while the composer keeps its full functionality — the `/`
 palette, `?` band, Ctrl+R, the `@` picker, **Ctrl+O showing the agent's own
 transcript** and **Ctrl+D its derived context** (`!` shell mode stays
-literal chat text) — and the agent's turns **end like the main session's**:
+literal chat text), **and the footer's model and gauge segments describing
+that agent** — its own context size (`AgentRun::context_used`, the last
+usage frame's `input + output`, the transcript estimate when a settle saw no
+frame) against the window of the model it runs on, the pinned model named
+when its definition pins one (`App::context_gauge`,
+`docs/agent-context-gauge.md`) — and the agent's turns **end like the main session's**:
 each settle records the dim `Done for 59s · 6.1k tokens (2.8k cached)`
 summary on the agent's own transcript (the turn's billed usage, a chat
 continuation resetting the receipt while the roster tally stays cumulative;
@@ -1498,7 +1503,9 @@ marker: the 20k-approx-token budget of recent user texts + the
 with the model's **context window** known — `/v1/models` `context_length`
 via `ModelEntry::context`, persisted in `config.json`, overridable via
 `ALTER_ZERO_CONTEXT_WINDOW` — the footer shows a `{used}/{window} ({pct}%)`
-gauge (usage-frame fed, tokenizer-estimated offline) and the loop **auto-runs** the
+gauge (usage-frame fed, tokenizer-estimated offline; **inside an agent
+session view it is the viewed agent's own** — `AgentRun::context_used` /
+`App::context_gauge`, `docs/agent-context-gauge.md`) and the loop **auto-runs** the
 same turn past codex's 90% threshold (`App::should_auto_compact`, one
 attempt per user turn, the cell tagged `· auto`)) in `docs/compact.md`; and
 the **`/settings` menu** (`docs/settings.md`: the knobs that were only ever

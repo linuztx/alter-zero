@@ -581,6 +581,68 @@ fn last_assistant_text_follows_the_viewed_agent() {
 }
 
 #[test]
+fn the_context_gauge_follows_the_viewed_agent() {
+    // The footer's gauge describes the conversation ON SCREEN
+    // (docs/agent-context-gauge.md): the main session's `input + output`
+    // while the main view is up, the viewed agent's own once its session view
+    // opens — each against its own window.
+    let mut app = App::new();
+    app.set_context_window(Some(1_000_000));
+    app.begin_stream();
+    app.apply_usage(&usage_of(23_000, 700));
+    app.start_agent_group(false, &agent_specs(false));
+    app.apply_agent_event(
+        "a1",
+        &crate::stream::StreamEvent::Usage(usage_of(64_000, 900)),
+    );
+    assert_eq!(app.context_gauge(), Some((23_700, 1_000_000)));
+    app.set_agent_context_window(Some(1_000_000));
+    app.open_agent_view("a1");
+    assert_eq!(
+        app.context_gauge(),
+        Some((64_900, 1_000_000)),
+        "the agent's own, not the lead's"
+    );
+    app.close_agent_view();
+    assert_eq!(app.context_gauge(), Some((23_700, 1_000_000)));
+}
+
+#[test]
+fn a_viewed_agent_with_no_known_window_has_no_gauge() {
+    // A type pinned to another model runs against a window this session may
+    // not know: no gauge — exactly as the main footer hides its own without a
+    // window — rather than the lead's denominator under the agent's count.
+    let mut app = App::new();
+    app.set_context_window(Some(1_000_000));
+    app.begin_stream();
+    app.start_agent_group(false, &agent_specs(false));
+    app.apply_agent_event(
+        "a1",
+        &crate::stream::StreamEvent::Usage(usage_of(64_000, 900)),
+    );
+    app.set_agent_context_window(None);
+    app.open_agent_view("a1");
+    assert_eq!(app.context_gauge(), None);
+}
+
+#[test]
+fn the_viewed_agents_pinned_model_shows_only_inside_its_view() {
+    let mut app = App::new();
+    app.begin_stream();
+    app.start_agent_group(false, &agent_specs(false));
+    app.set_agent_model(Some("kimi-k3".to_string()));
+    assert_eq!(app.viewed_agent_model(), None, "no view, no agent model");
+    app.open_agent_view("a1");
+    assert_eq!(app.viewed_agent_model(), Some("kimi-k3"));
+    app.set_agent_model(None);
+    assert_eq!(
+        app.viewed_agent_model(),
+        None,
+        "an inheriting type runs on the session's model"
+    );
+}
+
+#[test]
 fn an_agent_with_nothing_to_copy_reports_the_empty_case() {
     // A freshly launched agent has only its prompt (a *user* message) — the
     // empty path, not the lead's answer leaking through the view.
