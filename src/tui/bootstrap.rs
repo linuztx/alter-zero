@@ -90,6 +90,11 @@ impl<'t> Session<'t> {
         if let Some(mascot) = config::load_mascot(config::mascot_json_path().as_deref()) {
             app.set_mascot(mascot);
         }
+        // The status spinner style (docs/spinner.md): the saved `/spinner`
+        // choice, seeded the same way so the first turn's status line wears it.
+        if let Some(spinner) = config::load_spinner(config::spinner_json_path().as_deref()) {
+            app.set_spinner(spinner);
+        }
 
         let cwd = std::env::current_dir().unwrap_or_default();
         let home = std::env::var_os("HOME").map(std::path::PathBuf::from);

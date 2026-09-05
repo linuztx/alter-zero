@@ -1053,6 +1053,37 @@ pub(super) const MASCOT_SEARCH_ROW: u16 = 2;
 /// the eight-mascot catalog never actually windows today).
 pub(super) const MASCOT_MENU_MAX_ROWS: u16 = SETTINGS_MENU_MAX_ROWS;
 
+// --- the inline /spinner picker (docs/spinner.md). The /mascot picker's frame
+// — the MODEL_* accents, the same hint grammar — over the spinner-style
+// catalog, plus a name column that leaves room for each row's live spinner.
+// The styles' own frames and colours sit with the status indicator's consts
+// below (`SPINNER_*_FRAMES`). ---
+
+/// The key hint pinned under the preview — the picker's whole grammar.
+pub(super) const SPINNER_HINT: &str = "Type to search · Enter to choose · Esc to cancel";
+
+/// The list placeholder when the search matches no style.
+pub(super) const SPINNER_NO_MATCH: &str = "No matching spinners";
+
+/// The row (within the picker's framed area) the `❯` search line sits on —
+/// top rule (0), gap (1), search (2). Shared by `render_spinner_picker` and
+/// [`cursor_position`](super::layout::cursor_position) so the caret lands on
+/// the line drawn.
+pub(super) const SPINNER_SEARCH_ROW: u16 = 2;
+
+/// The cap on the picker's visible list rows (the settings window's size —
+/// the nine-style catalog never actually windows today).
+pub(super) const SPINNER_MENU_MAX_ROWS: u16 = SETTINGS_MENU_MAX_ROWS;
+
+/// Columns between the widest visible style name and the spinner column, so
+/// the live spinners line up down the list.
+pub(super) const SPINNER_MENU_GAP: usize = 3;
+
+/// The verbs the picker's sample status line wears — the turn verbs' first
+/// pair, so the preview reads like a first turn's line.
+pub(super) const SPINNER_PREVIEW_VERB: &str = "Working";
+pub(super) const SPINNER_PREVIEW_DONE_VERB: &str = "Done";
+
 // --- the read-only /hooks menu (docs/hooks-menu.md). It reuses the picker
 // family's accents — MODEL_SELECTED_COLOR for the selection, MODEL_ID_COLOR
 // for unselected labels, MODEL_META_COLOR for everything dim,
@@ -1352,6 +1383,90 @@ pub(super) const SHIMMER_BAND_HALF_WIDTH: f32 = 5.0;
 
 /// The crest's blend toward the highlight (codex blends `t * 0.9`).
 pub(super) const SHIMMER_MAX_BLEND: f32 = 0.9;
+
+// --- The spinner **styles** (docs/spinner.md). The comet above is the
+// default; `/spinner` swaps the frames the status line opens with. The
+// catalog's *identity* — names, order, descriptions — is `app::Spinner`; its
+// *look* is here, beside every other styling decision, and `spinner_spans`
+// maps one to the other. Two rules every style keeps, pinned by
+// `ui::tests::status`: every frame of a style is the same width (so the verb
+// after it never jitters) and every glyph is single-width
+// (docs/table-streaming.md "Wide glyphs"). A one-cell style is drawn as one
+// span — the glyph plus the separator space — in the comet head's white bold
+// unless its own colour rule below says otherwise. ---
+
+/// `sparkle` — a spark opening into a heavy star and closing again. Its
+/// colour walks the banner's [`HEADER_GRADIENT_START`] → [`HEADER_GRADIENT_END`]
+/// with the bloom (cyan at the spark, blue at the full star), so the theme's
+/// accent rides the status line.
+pub(super) const SPINNER_SPARKLE_FRAMES: &[&str] =
+    &["·", "✢", "✳", "✶", "✻", "✽", "✻", "✶", "✳", "✢"];
+
+/// How long each `sparkle` frame shows — a 1.2 s bloom-and-fade.
+pub(super) const SPINNER_SPARKLE_INTERVAL: Duration = Duration::from_millis(120);
+
+/// `dots` — the classic braille spinner (cli-spinners' `dots`), white bold.
+pub(super) const SPINNER_DOTS_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+
+/// How long each `dots` frame shows (the cli-spinners cadence).
+pub(super) const SPINNER_DOTS_INTERVAL: Duration = Duration::from_millis(80);
+
+/// `orbit` — a half-lit disc turning clockwise through its quarters, white bold.
+pub(super) const SPINNER_ORBIT_FRAMES: &[&str] = &["◐", "◓", "◑", "◒"];
+
+/// How long each `orbit` frame shows.
+pub(super) const SPINNER_ORBIT_INTERVAL: Duration = Duration::from_millis(120);
+
+/// `blocks` — the mascots' own three-quarter block glyphs (docs/mascot.md),
+/// the missing quadrant walking clockwise, coloured along the banner's
+/// gradient as it turns: cyan on the first frame, blue on the last.
+pub(super) const SPINNER_BLOCKS_FRAMES: &[&str] = &["▙", "▛", "▜", "▟"];
+
+/// How long each `blocks` frame shows.
+pub(super) const SPINNER_BLOCKS_INTERVAL: Duration = Duration::from_millis(150);
+
+/// `pulse` — one still `●` whose colour breathes [`SPINNER_PULSE_DIM`] →
+/// [`SPINNER_PULSE_BRIGHT`] → dim once per [`SPINNER_PULSE_PERIOD`]: the
+/// running tool bullet's breath (docs/tool-pulse.md), taken up to white at
+/// the crest so it reads as a status line's head rather than a resting cell.
+pub(super) const SPINNER_PULSE_FRAMES: &[&str] = &["●"];
+
+/// The bottom of the `pulse` breath — the tool bullet's own dim.
+pub(super) const SPINNER_PULSE_DIM: (u8, u8, u8) = TOOL_PULSE_DIM;
+
+/// The crest of the `pulse` breath — the shimmer's white.
+pub(super) const SPINNER_PULSE_BRIGHT: (u8, u8, u8) = SHIMMER_HIGHLIGHT;
+
+/// One `pulse` breath — the tool bullet's period, so a pulsing status line
+/// and a running tool cell breathe in step.
+pub(super) const SPINNER_PULSE_PERIOD: Duration = TOOL_PULSE_PERIOD;
+
+/// `bars` — a bar rising `▁` → `█` and falling back, brightening
+/// [`SPINNER_BARS_LOW`] → [`SPINNER_BARS_HIGH`] with its height, like a
+/// level meter.
+pub(super) const SPINNER_BARS_FRAMES: &[&str] = &[
+    "▁", "▂", "▃", "▄", "▅", "▆", "▇", "█", "▇", "▆", "▅", "▄", "▃", "▂",
+];
+
+/// How long each `bars` frame shows — a 0.84 s rise and fall.
+pub(super) const SPINNER_BARS_INTERVAL: Duration = Duration::from_millis(60);
+
+/// The lowest bar's grey — the tool pulse's bright, so even `▁` reads.
+pub(super) const SPINNER_BARS_LOW: (u8, u8, u8) = TOOL_PULSE_BRIGHT;
+
+/// The full bar's white.
+pub(super) const SPINNER_BARS_HIGH: (u8, u8, u8) = SHIMMER_HIGHLIGHT;
+
+/// `line` — the classic ASCII spinner, for a font with none of the glyphs
+/// above; white bold.
+pub(super) const SPINNER_LINE_FRAMES: &[&str] = &["|", "/", "-", "\\"];
+
+/// How long each `line` frame shows.
+pub(super) const SPINNER_LINE_INTERVAL: Duration = Duration::from_millis(100);
+
+/// `still` — a dot that never moves; the verb's shimmer is the line's only
+/// motion. White bold like every other head.
+pub(super) const SPINNER_STILL_FRAMES: &[&str] = &["•"];
 
 // --- Slash-command palette. A scrolling, single-line-per-command list pinned
 // **below the input box** (a third live-region band) whenever the input is a bare

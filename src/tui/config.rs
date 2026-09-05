@@ -785,6 +785,35 @@ pub(crate) fn save_mascot(path: Option<&Path>, mascot: alter_zero::app::Mascot) 
     let _ = std::fs::write(path, alter_zero::app::mascot_file_json(mascot));
 }
 
+/// The spinner-style file — `{config_home}/spinner.json`, its own file like
+/// `mascot.json` (one file per feature that owns it, `docs/spinner.md`).
+/// `None` (no config home) disables persistence: the `/spinner` switch still
+/// works, it just doesn't survive a restart.
+pub(crate) fn spinner_json_path() -> Option<PathBuf> {
+    config_home().map(|dir| dir.join("spinner.json"))
+}
+
+/// Read the saved spinner style. Best-effort like [`load_mascot`] — an
+/// absent, unreadable, or corrupt file reads as `None` and the session keeps
+/// the default comet rather than failing startup.
+pub(crate) fn load_spinner(path: Option<&Path>) -> Option<alter_zero::app::Spinner> {
+    path.and_then(|p| std::fs::read_to_string(p).ok())
+        .as_deref()
+        .and_then(alter_zero::app::parse_spinner_file)
+}
+
+/// Persist the chosen spinner style. Best-effort like [`save_mascot`] — a
+/// read-only home must never kill the TUI — and a `None` path no-ops.
+pub(crate) fn save_spinner(path: Option<&Path>, spinner: alter_zero::app::Spinner) {
+    let Some(path) = path else {
+        return;
+    };
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let _ = std::fs::write(path, alter_zero::app::spinner_file_json(spinner));
+}
+
 /// Read the skill on/off file. Best-effort like [`load_permissions`] — a
 /// corrupt file reads as "nothing disabled" rather than costing the session
 /// its skills.

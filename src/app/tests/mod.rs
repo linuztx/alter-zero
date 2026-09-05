@@ -34,6 +34,7 @@ mod resume;
 mod settings;
 mod skill_picker;
 mod skills_menu;
+mod spinner;
 mod tasks;
 mod tools;
 mod trust_menu;

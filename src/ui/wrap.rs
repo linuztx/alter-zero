@@ -447,6 +447,18 @@ pub(super) fn blend(fg: (u8, u8, u8), bg: (u8, u8, u8), alpha: f32) -> (u8, u8, 
     (mix(fg.0, bg.0), mix(fg.1, bg.1), mix(fg.2, bg.2))
 }
 
+/// Where a **breath** is at `elapsed`: a raised cosine easing 0 → 1 → 0 once
+/// per `period`, so a colour driven by it swells and fades rather than
+/// flicking on and off — the running tool bullet's pulse (`docs/tool-pulse.md`)
+/// and the `pulse` spinner style's (`docs/spinner.md`). Pure: the phase
+/// derives entirely from the boundary-supplied clock.
+pub(super) fn breath(elapsed: std::time::Duration, period: std::time::Duration) -> f32 {
+    let period = period.as_secs_f32();
+    // `phase` is 0…1 through one breath; the cosine turns it into 0 → 1 → 0.
+    let phase = (elapsed.as_secs_f32() % period) / period;
+    0.5 * (1.0 - (std::f32::consts::TAU * phase).cos())
+}
+
 /// Display columns a span list occupies.
 pub(super) fn spans_cols(spans: &[Span<'_>]) -> usize {
     spans.iter().map(|span| cols(&span.content)).sum()

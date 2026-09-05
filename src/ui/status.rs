@@ -3,8 +3,10 @@
 //! See `docs/status-indicator.md`.
 
 use super::theme::*;
-use super::wrap::{blend, clamp_spans};
+use super::wrap::{blend, breath, clamp_spans, lerp_rgb};
 use super::*;
+
+use crate::app::Spinner;
 
 /// One bold span per char of `text`, shimmered codex-style: a raised-cosine
 /// brightness band (half-width [`SHIMMER_BAND_HALF_WIDTH`], plus
@@ -67,19 +69,98 @@ pub(super) fn shimmer_spans_from(
         .collect()
 }
 
-/// The comet spinner opening the status line: the [`SPINNER_FRAMES`] frame
-/// for `elapsed` (one frame per [`SPINNER_INTERVAL`], looping), split into
-/// exactly [`SPINNER_SPAN_COUNT`] spans — one per cell, so each carries its
-/// own fade step: the white bold [`SPINNER_HEAD`], the mid-grey
-/// [`SPINNER_TAIL_MID`] behind it, and everything else (the faint `·` tail
-/// end, the walls, the empty track) dim; the right wall carries the trailing
-/// separator space. Pure, like [`shimmer_spans`]: the frame index derives
+/// A style's frames and how long each shows — the catalog's *look*, kept in
+/// `theme` beside every other styling decision (`docs/spinner.md`). The
+/// one-frame styles (`pulse`, `still`) never step; `pulse` moves by colour
+/// alone ([`glyph_color`]).
+fn spinner_frames(spinner: Spinner) -> (&'static [&'static str], Duration) {
+    match spinner {
+        Spinner::Comet => (SPINNER_FRAMES, SPINNER_INTERVAL),
+        Spinner::Sparkle => (SPINNER_SPARKLE_FRAMES, SPINNER_SPARKLE_INTERVAL),
+        Spinner::Dots => (SPINNER_DOTS_FRAMES, SPINNER_DOTS_INTERVAL),
+        Spinner::Orbit => (SPINNER_ORBIT_FRAMES, SPINNER_ORBIT_INTERVAL),
+        Spinner::Blocks => (SPINNER_BLOCKS_FRAMES, SPINNER_BLOCKS_INTERVAL),
+        Spinner::Pulse => (SPINNER_PULSE_FRAMES, SPINNER_PULSE_PERIOD),
+        Spinner::Bars => (SPINNER_BARS_FRAMES, SPINNER_BARS_INTERVAL),
+        Spinner::Line => (SPINNER_LINE_FRAMES, SPINNER_LINE_INTERVAL),
+        Spinner::Still => (SPINNER_STILL_FRAMES, SPINNER_INTERVAL),
+    }
+}
+
+/// The colour of a one-cell style's glyph — what makes the styles more than
+/// glyph sets, and where the theme's accent reaches the status line:
+///
+/// - `sparkle` and `blocks` walk the banner's cyan → blue gradient
+///   (`docs/header.md`) — the spark by its bloom level (`·` cyan, `✽` blue,
+///   back down the fade), the block by its turn;
+/// - `pulse` breathes the running tool bullet's raised cosine
+///   ([`breath`], `docs/tool-pulse.md`) from [`SPINNER_PULSE_DIM`] to white;
+/// - `bars` brightens with height, [`SPINNER_BARS_LOW`] at `▁` to white at `█`;
+/// - everything else wears the comet head's white.
+///
+/// `index` is the frame showing out of `len`; a rise-and-fall sequence's
+/// level is its distance from the closed end, so the fade mirrors the bloom.
+fn glyph_color(spinner: Spinner, index: usize, len: usize, elapsed: Duration) -> Color {
+    let level = |index: usize| -> f32 {
+        let peak = len / 2;
+        let level = if index <= peak { index } else { len - index };
+        level as f32 / peak.max(1) as f32
+    };
+    match spinner {
+        Spinner::Sparkle => lerp_rgb(HEADER_GRADIENT_START, HEADER_GRADIENT_END, level(index)),
+        Spinner::Blocks => lerp_rgb(
+            HEADER_GRADIENT_START,
+            HEADER_GRADIENT_END,
+            index as f32 / len.saturating_sub(1).max(1) as f32,
+        ),
+        Spinner::Pulse => {
+            let (r, g, b) = blend(
+                SPINNER_PULSE_BRIGHT,
+                SPINNER_PULSE_DIM,
+                breath(elapsed, SPINNER_PULSE_PERIOD),
+            );
+            Color::Rgb(r, g, b)
+        }
+        Spinner::Bars => {
+            let (r, g, b) = blend(SPINNER_BARS_HIGH, SPINNER_BARS_LOW, level(index));
+            Color::Rgb(r, g, b)
+        }
+        Spinner::Comet | Spinner::Dots | Spinner::Orbit | Spinner::Line | Spinner::Still => {
+            STATUS_COLOR
+        }
+    }
+}
+
+/// The spinner opening the status line, in the session's chosen `spinner`
+/// style (`docs/spinner.md`): the style's frame for `elapsed` (one frame per
+/// its interval, looping), as spans that end in the separator space before
+/// the verb. The comet is its own shape ([`comet_spans`], one span per cell);
+/// every other style is one glyph in one span, bold, coloured by
+/// [`glyph_color`]. Pure, like [`shimmer_spans`]: the frame index derives
 /// from the boundary-supplied `elapsed`, and the loop's animation re-arm
-/// keeps it advancing.
-fn spinner_spans(elapsed: Duration) -> Vec<Span<'static>> {
-    let frame_index =
-        (elapsed.as_millis() / SPINNER_INTERVAL.as_millis()) as usize % SPINNER_FRAMES.len();
-    let frame = SPINNER_FRAMES[frame_index];
+/// keeps it advancing — which is also what lets the `/spinner` picker draw
+/// each row's live spinner with it.
+pub(super) fn spinner_spans(spinner: Spinner, elapsed: Duration) -> Vec<Span<'static>> {
+    let (frames, interval) = spinner_frames(spinner);
+    let index = (elapsed.as_millis() / interval.as_millis().max(1)) as usize % frames.len().max(1);
+    let frame = frames[index];
+    if spinner == Spinner::Comet {
+        return comet_spans(frame);
+    }
+    vec![Span::styled(
+        format!("{frame} "),
+        Style::new()
+            .fg(glyph_color(spinner, index, frames.len(), elapsed))
+            .add_modifier(Modifier::BOLD),
+    )]
+}
+
+/// The comet's `frame` split into exactly [`SPINNER_SPAN_COUNT`] spans — one
+/// per cell, so each carries its own fade step: the white bold
+/// [`SPINNER_HEAD`], the mid-grey [`SPINNER_TAIL_MID`] behind it, and
+/// everything else (the faint `·` tail end, the walls, the empty track) dim;
+/// the right wall carries the trailing separator space.
+fn comet_spans(frame: &str) -> Vec<Span<'static>> {
     let dim = Style::new().fg(STATUS_DETAIL_COLOR);
     let spans: Vec<Span<'static>> = frame
         .chars()
@@ -152,6 +233,9 @@ pub fn format_token_count(tokens: usize) -> String {
 /// paint-clipping the retry warning, the thinking clause, and the esc hint
 /// with no cue. Pure — it formats the (already boundary-stamped)
 /// [`TurnStatus`], so it is unit-tested with explicit values.
+///
+/// This is [`styled_status_line`] in the default [`Spinner::Comet`] style;
+/// the strip itself passes the session's chosen style (`docs/spinner.md`).
 #[must_use]
 pub fn status_line(status: &TurnStatus, width: u16) -> Line<'static> {
     status_line_with_verb(status, None, width)
@@ -163,11 +247,29 @@ pub fn status_line(status: &TurnStatus, width: u16) -> Line<'static> {
 /// the turn's whimsical verb, Claude Code's
 /// `currentTodo.activeForm ?? randomVerb`. `None` keeps the turn's own verb;
 /// the caller derives the override per frame ([`crate::app::App::task_verb`])
-/// so completing the task snaps it back mid-turn.
+/// so completing the task snaps it back mid-turn. In the default comet style,
+/// like [`status_line`].
 #[must_use]
 pub fn status_line_with_verb(status: &TurnStatus, verb: Option<&str>, width: u16) -> Line<'static> {
+    styled_status_line(status, verb, Spinner::default(), width)
+}
+
+/// [`status_line_with_verb`] opening with the `spinner` **style** the session
+/// chose in `/spinner` (`docs/spinner.md`) — the one renderer behind the
+/// strip's status row (main turn and agent session view alike, passing
+/// [`crate::app::App::spinner`]) and behind the picker's live preview, so the
+/// two can never disagree. Every style ends its spans in the separator space,
+/// so the verb's shimmer starts at the same distance whatever the style's
+/// width. `None` keeps the turn's own verb.
+#[must_use]
+pub fn styled_status_line(
+    status: &TurnStatus,
+    verb: Option<&str>,
+    spinner: Spinner,
+    width: u16,
+) -> Line<'static> {
     let dim = Style::new().fg(STATUS_DETAIL_COLOR);
-    let mut spans = spinner_spans(status.elapsed);
+    let mut spans = spinner_spans(spinner, status.elapsed);
     spans.extend(shimmer_spans(
         &format!("{}{STATUS_ELLIPSIS}", verb.unwrap_or(status.verb)),
         status.elapsed,

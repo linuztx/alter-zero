@@ -2,11 +2,12 @@
 //! (`docs/status-indicator.md`).
 
 use super::*;
+use crate::app::Spinner;
 use crate::ui::message::compaction_full_lines;
 use crate::ui::theme::{
-    AI_COLOR, INDENT, SHIMMER_BASE, SPINNER_SPAN_COUNT, SPINNER_TAIL_COLOR, STATUS_COLOR,
-    STATUS_DETAIL_COLOR, STATUS_DONE_COLOR, STATUS_RETRY_COLOR, TOOL_DIFF_ADD_COLOR,
-    TOOL_DIFF_DEL_COLOR, TOOL_DIM_COLOR,
+    AI_COLOR, HEADER_GRADIENT_END, HEADER_GRADIENT_START, INDENT, SHIMMER_BASE, SPINNER_SPAN_COUNT,
+    SPINNER_TAIL_COLOR, STATUS_COLOR, STATUS_DETAIL_COLOR, STATUS_DONE_COLOR, STATUS_RETRY_COLOR,
+    TOOL_DIFF_ADD_COLOR, TOOL_DIFF_DEL_COLOR, TOOL_DIM_COLOR, TOOL_PULSE_DIM,
 };
 
 #[test]
@@ -674,4 +675,262 @@ fn the_turn_summary_wraps_to_the_width() {
         all, "Done for 1m 35s · 1.5M tokens (1.2M cached) · 2 shells still running",
         "nothing lost, nothing reordered"
     );
+}
+
+// ===== the spinner styles (docs/spinner.md) =====
+
+/// The frame `styled_status_line` opens with for `spinner` at `ms` — the text
+/// before the verb, trailing separator trimmed.
+fn styled_frame(spinner: Spinner, ms: u64) -> String {
+    let mut s = status(0, TokenArrow::Down, 0, None);
+    s.elapsed = Duration::from_millis(ms);
+    let text = plain(&styled_status_line(&s, None, spinner, 200));
+    text.chars()
+        .take_while(|&c| c != 'W')
+        .collect::<String>()
+        .trim_end()
+        .to_string()
+}
+
+/// The status line's first span (the spinner's glyph cell for a one-cell
+/// style; the comet's left wall) for `spinner` at `ms`.
+fn first_span(spinner: Spinner, ms: u64) -> Span<'static> {
+    let mut s = status(0, TokenArrow::Down, 0, None);
+    s.elapsed = Duration::from_millis(ms);
+    styled_status_line(&s, None, spinner, 200).spans[0].clone()
+}
+
+#[test]
+fn the_default_status_line_is_the_comet() {
+    // `status_line` / `status_line_with_verb` keep their pre-catalog look:
+    // the comet is the default style, byte-for-byte.
+    let mut s = status(42, TokenArrow::Down, 3, None);
+    for ms in [0u64, 80, 400, 715] {
+        s.elapsed = Duration::from_millis(ms);
+        assert_eq!(
+            status_line(&s, 200),
+            styled_status_line(&s, None, Spinner::Comet, 200),
+            "at {ms} ms"
+        );
+        assert_eq!(
+            status_line_with_verb(&s, Some("Testing"), 200),
+            styled_status_line(&s, Some("Testing"), Spinner::Comet, 200),
+            "with a verb override at {ms} ms"
+        );
+    }
+}
+
+#[test]
+fn every_style_animates_in_single_width_fixed_width_frames() {
+    // A wide glyph would shear the verb and the metrics after it
+    // (docs/table-streaming.md "Wide glyphs"), and a frame of a different
+    // width would jitter them — so every frame of every style is the same
+    // width as its first, every glyph one column.
+    for spinner in Spinner::ALL {
+        let first = styled_frame(spinner, 0);
+        assert!(!first.is_empty(), "{}: empty frame", spinner.name());
+        for ms in (0..2_400).step_by(10) {
+            let frame = styled_frame(spinner, ms);
+            assert_eq!(
+                crate::ui::wrap::cols(&frame),
+                frame.chars().count(),
+                "{} at {ms} ms: wide glyph in {frame:?}",
+                spinner.name()
+            );
+            assert_eq!(
+                crate::ui::wrap::cols(&frame),
+                crate::ui::wrap::cols(&first),
+                "{} at {ms} ms: {frame:?} is not the width of {first:?}",
+                spinner.name()
+            );
+        }
+    }
+}
+
+#[test]
+fn each_style_opens_the_line_with_its_own_first_frame() {
+    let expect = [
+        (Spinner::Comet, "(●•·   )"),
+        (Spinner::Sparkle, "·"),
+        (Spinner::Dots, "⠋"),
+        (Spinner::Orbit, "◐"),
+        (Spinner::Blocks, "▙"),
+        (Spinner::Pulse, "●"),
+        (Spinner::Bars, "▁"),
+        (Spinner::Line, "|"),
+        (Spinner::Still, "•"),
+    ];
+    for (spinner, frame) in expect {
+        assert_eq!(styled_frame(spinner, 0), frame, "{}", spinner.name());
+        let mut s = status(0, TokenArrow::Down, 0, None);
+        s.elapsed = Duration::ZERO;
+        let text = plain(&styled_status_line(&s, None, spinner, 200));
+        assert!(
+            text.starts_with(&format!("{frame} Working… (0s · esc to interrupt)")),
+            "{}: one separator space between the spinner and the verb: {text:?}",
+            spinner.name()
+        );
+    }
+}
+
+#[test]
+fn a_one_cell_style_puts_the_glyph_and_its_separator_in_one_span() {
+    // The comet spends eight spans (one per cell); a one-cell style spends
+    // one — the glyph with the trailing separator — so the verb's shimmer
+    // spans start at index 1, and the cell is the white bold head.
+    let span = first_span(Spinner::Dots, 0);
+    assert_eq!(span.content.as_ref(), "⠋ ");
+    assert_eq!(span.style.fg, Some(STATUS_COLOR), "the white head");
+    assert!(
+        span.style.add_modifier.contains(Modifier::BOLD),
+        "bold head"
+    );
+    let mut s = status(0, TokenArrow::Down, 0, None);
+    s.elapsed = Duration::ZERO;
+    let line = styled_status_line(&s, None, Spinner::Dots, 200);
+    assert_eq!(
+        line.spans[1].content.as_ref(),
+        "W",
+        "the verb follows at once"
+    );
+}
+
+#[test]
+fn the_sparkle_blooms_into_a_star_and_back_in_the_banner_gradient() {
+    // Ten frames at 120 ms: · ✢ ✳ ✶ ✻ ✽ ✻ ✶ ✳ ✢ — a spark opening into a
+    // heavy star and closing again, its colour walking the header's cyan →
+    // blue gradient with the bloom (docs/header.md), so the theme's accent
+    // rides the status line.
+    let frames: Vec<String> = (0..10)
+        .map(|i| styled_frame(Spinner::Sparkle, i * 120))
+        .collect();
+    assert_eq!(
+        frames,
+        ["·", "✢", "✳", "✶", "✻", "✽", "✻", "✶", "✳", "✢"],
+        "the bloom and its fade"
+    );
+    assert_eq!(
+        styled_frame(Spinner::Sparkle, 1200),
+        "·",
+        "loops after 1.2 s"
+    );
+    let spark = first_span(Spinner::Sparkle, 0);
+    let star = first_span(Spinner::Sparkle, 600);
+    let (r0, g0, b0) = HEADER_GRADIENT_START;
+    let (r1, g1, b1) = HEADER_GRADIENT_END;
+    assert_eq!(
+        spark.style.fg,
+        Some(Color::Rgb(r0, g0, b0)),
+        "the spark is cyan"
+    );
+    assert_eq!(
+        star.style.fg,
+        Some(Color::Rgb(r1, g1, b1)),
+        "the full star is blue"
+    );
+    assert!(spark.style.add_modifier.contains(Modifier::BOLD));
+}
+
+#[test]
+fn the_pulse_dot_breathes_dim_to_bright_without_moving() {
+    // One glyph, coloured by the running bullet's own raised-cosine breath
+    // (docs/tool-pulse.md) — dim at the bottom of the breath, white at the
+    // top, half a period later — so it swells rather than flicks.
+    assert_eq!(styled_frame(Spinner::Pulse, 0), "●");
+    assert_eq!(styled_frame(Spinner::Pulse, 500), "●");
+    let (dr, dg, db) = TOOL_PULSE_DIM;
+    assert_eq!(
+        first_span(Spinner::Pulse, 0).style.fg,
+        Some(Color::Rgb(dr, dg, db)),
+        "the breath starts dim"
+    );
+    let (r, g, b) = span_rgb(&first_span(Spinner::Pulse, 500));
+    assert!(
+        r > 0xF0 && r == g && g == b,
+        "half a breath later it is (near) white: ({r},{g},{b})"
+    );
+    let quarter = span_rgb(&first_span(Spinner::Pulse, 250)).0;
+    assert!(dr < quarter && quarter < r, "the swell is gradual");
+}
+
+#[test]
+fn the_bars_rise_and_fall_brightening_with_height() {
+    let frames: Vec<String> = (0..14)
+        .map(|i| styled_frame(Spinner::Bars, i * 60))
+        .collect();
+    assert_eq!(frames.concat(), "▁▂▃▄▅▆▇█▇▆▅▄▃▂", "a level meter bouncing");
+    let low = span_rgb(&first_span(Spinner::Bars, 0)).0;
+    let high = span_rgb(&first_span(Spinner::Bars, 7 * 60)).0;
+    assert!(low < high, "the full bar is the brightest: {low} vs {high}");
+    assert_eq!(high, 0xFF, "…and it is white");
+}
+
+#[test]
+fn the_blocks_turn_through_the_banner_gradient() {
+    // The mascots' own quadrant glyphs (docs/mascot.md) turning clockwise,
+    // the missing quadrant walking round, in the banner's gradient.
+    let frames: Vec<String> = (0..4)
+        .map(|i| styled_frame(Spinner::Blocks, i * 150))
+        .collect();
+    assert_eq!(frames, ["▙", "▛", "▜", "▟"]);
+    let (r0, g0, b0) = HEADER_GRADIENT_START;
+    let (r1, g1, b1) = HEADER_GRADIENT_END;
+    assert_eq!(
+        first_span(Spinner::Blocks, 0).style.fg,
+        Some(Color::Rgb(r0, g0, b0))
+    );
+    assert_eq!(
+        first_span(Spinner::Blocks, 450).style.fg,
+        Some(Color::Rgb(r1, g1, b1))
+    );
+}
+
+#[test]
+fn the_still_dot_never_moves() {
+    for ms in [0u64, 77, 1_234, 60_000] {
+        assert_eq!(styled_frame(Spinner::Still, ms), "•");
+    }
+    let span = first_span(Spinner::Still, 0);
+    assert_eq!(span.style.fg, Some(STATUS_COLOR), "white, like every head");
+}
+
+#[test]
+fn the_classic_styles_step_one_glyph_per_interval() {
+    let dots: Vec<String> = (0..10)
+        .map(|i| styled_frame(Spinner::Dots, i * 80))
+        .collect();
+    assert_eq!(dots.concat(), "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏");
+    let orbit: Vec<String> = (0..4)
+        .map(|i| styled_frame(Spinner::Orbit, i * 120))
+        .collect();
+    assert_eq!(orbit.concat(), "◐◓◑◒");
+    let line: Vec<String> = (0..4)
+        .map(|i| styled_frame(Spinner::Line, i * 100))
+        .collect();
+    assert_eq!(line.concat(), "|/-\\");
+    assert_eq!(
+        styled_frame(Spinner::Dots, 800),
+        "⠋",
+        "dots loop after 0.8 s"
+    );
+}
+
+#[test]
+fn render_live_wears_the_session_spinner_on_the_status_row() {
+    // The strip's status line is built for the session's chosen style — the
+    // one thing `/spinner` exists to change — through the same renderer the
+    // picker previews with.
+    let mut app = App::new();
+    app.set_spinner(Spinner::Dots);
+    app.begin_stream();
+    // 3.2 s: 40 dots frames on — back at the first (40 ≡ 0 mod 10).
+    app.set_status_times(Duration::from_millis(3_200), None);
+    let mut buf = buffer(60, 5); // status + gap + (two rules + one input)
+    render_live(buf.area, &mut buf, &app);
+    assert_eq!(
+        row(&buf, 0, 60).trim_end(),
+        "⠋ Working… (3s · esc to interrupt)",
+        "the status row opens with the dots spinner"
+    );
+    assert_eq!(buf[(0, 0)].fg, STATUS_COLOR, "the white head");
 }

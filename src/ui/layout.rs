@@ -1049,6 +1049,16 @@ pub fn cursor_position(area: Rect, app: &App) -> (u16, u16) {
         let row = anchored_view_row(rows, body, MASCOT_SEARCH_ROW);
         return (x, view_cursor_y(area, body, row));
     }
+    // The inline `/spinner` picker parks the cursor at the end of its `❯`
+    // search line, exactly like the `/mascot` picker (docs/spinner.md).
+    if let Some(picker) = &app.spinner_picker {
+        let rows = super::spinner_view::spinner_menu_rows(app, area.width);
+        let [_, body] = view_split(area, rows);
+        let x = cols(MODEL_INDENT) + cols(MODEL_PROMPT) + cols(&picker.query);
+        let x = area.x + (x.min(usize::from(area.width.saturating_sub(1))) as u16);
+        let row = anchored_view_row(rows, body, SPINNER_SEARCH_ROW);
+        return (x, view_cursor_y(area, body, row));
+    }
     // The inline `/skills` menu parks the cursor at the end of its `❯` search
     // line, exactly like the `/settings` menu (docs/skills.md).
     if let Some(menu) = &app.skills_menu {

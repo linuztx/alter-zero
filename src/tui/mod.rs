@@ -93,6 +93,7 @@ pub(crate) mod recorder;
 pub(crate) mod resume;
 pub(crate) mod settings;
 pub(crate) mod shell;
+pub(crate) mod spinner;
 pub(crate) mod startup;
 pub(crate) mod stream;
 pub(crate) mod trust;

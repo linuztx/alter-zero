@@ -250,7 +250,9 @@ impl App {
     ///
     /// Everything it animates lives in the **inline** live region: the
     /// spinner, the elapsed counter, the pulsing tool bullet, a background
-    /// shell's ticking runtime, the agent roster's counters and linger sweep.
+    /// shell's ticking runtime, the agent roster's counters and linger sweep
+    /// — and the `/spinner` picker's live page, whose every row and preview
+    /// turn at this cadence with no turn running (`docs/spinner.md`).
     /// Under an alternate-screen overlay none of that is on screen, and the
     /// overlay's own content changes only when an event lands — every event
     /// source schedules its own frame, so nothing goes stale. Re-arming there
@@ -262,7 +264,10 @@ impl App {
     #[must_use]
     pub fn wants_animation_frames(&self) -> bool {
         !self.view.is_overlay()
-            && (self.turn_active() || self.background_view.is_some() || !self.agents().is_empty())
+            && (self.turn_active()
+                || self.background_view.is_some()
+                || self.spinner_picker.is_some()
+                || !self.agents().is_empty())
     }
 
     /// Settle the tool-view scroll for a draw given the largest offset the current

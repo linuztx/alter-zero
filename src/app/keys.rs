@@ -53,6 +53,11 @@ impl App {
         if self.view == View::Conversation && self.mascot_picker.is_some() {
             return self.on_key_mascot_picker(key);
         }
+        // …and the inline `/spinner` picker, the `/mascot` picker's twin. See
+        // `docs/spinner.md`.
+        if self.view == View::Conversation && self.spinner_picker.is_some() {
+            return self.on_key_spinner_picker(key);
+        }
         // …and the inline `/skills` menu. See `docs/skills.md`.
         if self.view == View::Conversation && self.mcp_menu.is_some() {
             return self.on_key_mcp(key);

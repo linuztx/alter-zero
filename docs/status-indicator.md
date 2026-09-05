@@ -298,6 +298,18 @@ shimmer, derives the frame index purely from `TurnStatus::elapsed`; the same
 32 ms draw re-arm animates it. Fixed-width frames mean the verb after the
 spinner never shifts as the comet moves.
 
+**The comet is the default of nine styles.** `/spinner` (`docs/spinner.md`)
+picks another — `sparkle`, `dots`, `orbit`, `blocks`, `pulse`, `bars`, `line`,
+`still` — from a picker whose rows and preview animate live, and persists it
+in `spinner.json`. The strip builds its status row through
+`ui::styled_status_line(status, verb, spinner, width)` for `App::spinner()`
+(main turn and agent session view alike); `status_line` /
+`status_line_with_verb` are its comet case, byte-identical to the line
+before there was a catalog. Every style keeps the comet's two rules — fixed
+width across its frames, single-width glyphs — and the one-cell styles end
+their single span in the same separator space, so the verb's shimmer starts
+one column after the spinner whatever its width.
+
 ## The pre-stream pause (dummy backend)
 
 `DummyAi` waits `STARTUP_DELAY` (3s) before playing back its first event, so the

@@ -63,6 +63,7 @@ mod reasoning;
 mod resume_view;
 mod settings_view;
 mod skills_view;
+mod spinner_view;
 mod status;
 mod stream_render;
 mod table;
@@ -113,9 +114,10 @@ pub use self::reasoning::reasoning_lines;
 pub use self::resume_view::render_resume_picker;
 pub use self::settings_view::{render_settings, settings_height};
 pub use self::skills_view::{render_skills_menu, skills_menu_height};
+pub use self::spinner_view::{render_spinner_picker, spinner_picker_height};
 pub use self::status::{
     background_notice_lines, format_elapsed, format_token_count, status_line,
-    status_line_with_verb, summary_lines,
+    status_line_with_verb, styled_status_line, summary_lines,
 };
 pub use self::stream_render::StreamRender;
 pub use self::tasks::{checklist_lines, idle_task_lines, task_rows};

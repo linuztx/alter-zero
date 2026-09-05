@@ -52,19 +52,19 @@ the detached-exec hook, the CLI resolution, the viewport, the loop — over
 **`src/tui/`**, the binary-private tree that drives the codex-style **async
 (tokio) `select!`** loop (`event_loop`, `actions`, `turn`, `stream`, `agent`,
 `background`, `permission`, `view`, `commit`, `models`, `config`, `bootstrap`,
-`startup`, `recorder`, `resume`, `history_store`, `settings`, `shell`, `workers`, `host`, `mascot`, `mcp`, `trust`, `login`,
+`startup`, `recorder`, `resume`, `history_store`, `settings`, `shell`, `workers`, `host`, `mascot`, `spinner`, `mcp`, `trust`, `login`,
 with the **`Session`** struct itself in `mod.rs` — every handler is an `impl
 Session` block in its area module, reaching the private fields the way `app/`'s
 submodules reach `App`'s). The four big ones are **directories
 of per-area modules**, not single files — `src/app/` (`types`, `action`, `keys`,
 `composer`, `commands`, `file_picker`, `input_history`, `queue`, `tools`, `turn`,
-`compact`, `backtrack`, `views`, `resume`, `model_picker`, `login`, `settings`, `mascot`, `hooks_menu`, `mcp_menu`, `trust_menu`, `background`,
+`compact`, `backtrack`, `views`, `resume`, `model_picker`, `login`, `settings`, `mascot`, `spinner`, `hooks_menu`, `mcp_menu`, `trust_menu`, `background`,
 `agent`, `status`, `permission`, with the `App` struct itself in `mod.rs` so every submodule and
 the test tree keeps its private-field access), `src/ui/` (`theme`, `wrap`,
 `layout`, `assistant`, `inline`, `table`, `message`, `conversation`, `tool`,
 `file_cell`, `inline_diff`, `status`, `agent`, `menu`, `footer`, `header`, `hooks_view`, `live`, `transcript`,
 `context_view`, `resume_view`, `model_view`, `login_view`, `background_view`,
-`permission_view`, `settings_view`, `mascot_view`, `mcp_view`, `trust_view`, `view_flow`, `stream_render`), and **`src/stream/`** — the backend seam
+`permission_view`, `settings_view`, `mascot_view`, `spinner_view`, `mcp_view`, `trust_view`, `view_flow`, `stream_render`), and **`src/stream/`** — the backend seam
 kept apart from the offline demo that used to crowd it: `event` (the whole
 `StreamEvent` wire format), `source` (the `ReplySource` trait), `cancel`
 (`CancelToken`), `stall` (`StallAi`), and the self-contained **`dummy/`**
@@ -134,7 +134,19 @@ every purge rebuild) in `docs/header.md`, and the **`/mascot` picker** that
 switches it (the `/settings` family's frame over the six-mascot catalog
 with a **live banner preview** rendered by the header's own builder, the
 choice persisted in `mascot.json` and the switch's purge rebuild redrawing
-the banner at once) in `docs/mascot.md`; the **`/login` sign-in fork** (the
+the banner at once) in `docs/mascot.md`, and the **`/spinner` picker** that
+chooses the status line's **spinner style** (the `/mascot` picker's twin over
+a nine-style catalog — `comet` (the default), `sparkle`, `dots`, `orbit`,
+`blocks`, `pulse`, `bars`, `line`, `still` — whose page is **live**: every
+row wears its own spinner and the highlighted style previews as a whole
+sample status line through `ui::styled_status_line`, the strip's own
+renderer, animated off the injected frame clock with no turn running
+(`App::wants_animation_frames`) and its flow signed on the selection rather
+than its rows so a frame never churns a purge rebuild; the choice persisted
+in `spinner.json` and seeded at bootstrap, the styles' frames and colour
+rules in `ui/theme.rs` — `sparkle`/`blocks` wearing the banner gradient,
+`pulse` the tool bullet's breath — and the switch needing no rebuild, the
+status line being live-only) in `docs/spinner.md`; the **`/login` sign-in fork** (the
 flow's root now asks *how* you sign in — **Use a subscription** or **Use an
 API key** — because GitHub Copilot is not a key you paste. Below that root the
 two lists carry **no heading** (each used to repeat the row that opened it, in
@@ -2112,7 +2124,7 @@ live in the pure `file_search` module, and the `/resume` primitives
 Typing a bare `/token` opens a **slash-command palette** below the input box (a
 third live-region band): `App::command_menu` holds the highlight, the registry
 `app::COMMANDS` (`SlashCommand { name, description, effect }` — currently `/help`,
-`/clear`, `/copy`, `/init`, `/compact`, `/resume`, `/model`, `/login`, `/settings`, `/mascot`, `/hooks`, `/skills`, `/mcp`, `/trust`, and `/quit`) is filtered by `matching_commands`, and ↑/↓ scroll / Tab+Enter run
+`/clear`, `/copy`, `/init`, `/compact`, `/resume`, `/model`, `/login`, `/settings`, `/mascot`, `/spinner`, `/hooks`, `/skills`, `/mcp`, `/trust`, and `/quit`) is filtered by `matching_commands`, and ↑/↓ scroll / Tab+Enter run
 the highlighted command. Descriptions line up in a column, and the selection is
 shown **by colour** — the whole highlighted row lights up cyan (name *and*
 description the same colour) while the others are dimmed grey, no caret. A command

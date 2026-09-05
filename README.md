@@ -202,7 +202,10 @@ captured panes.
 
 All styling lives as constants in `src/ui/theme.rs` — bullets, prompt,
 colours, border, and the tool / status-line / palette / footer chrome — change
-them in one place to retheme.
+them in one place to retheme. Two looks are chosen in-app rather than in
+code, and persist across sessions: `/mascot` picks the startup banner's
+mascot (`docs/mascot.md`) and `/spinner` the status line's spinner animation
+— nine styles, previewed live in the picker (`docs/spinner.md`).
 
 ## Using a real model
 

@@ -47,6 +47,7 @@ mod resume;
 mod settings;
 mod skill_picker;
 mod skills_menu;
+mod spinner;
 mod status;
 mod tasks;
 mod tools;
@@ -90,6 +91,9 @@ pub use self::resume::{ResumeControl, ResumeFilter, ResumePicker, ResumeSort};
 pub use self::settings::{SettingRow, SettingsPicker};
 pub use self::skill_picker::SkillPicker;
 pub use self::skills_menu::{SkillMenuRow, SkillsMenu};
+pub use self::spinner::{
+    Spinner, SpinnerPicker, SpinnerRow, parse_spinner_file, spinner_file_json,
+};
 pub use self::status::{RetryInfo, ThinkingState, TokenArrow, TurnStatus, TurnSummary};
 pub use self::tasks::TaskCallRecord;
 pub use self::tools::{
@@ -432,6 +436,15 @@ pub struct App {
     /// default) — chosen in the `/mascot` picker, seeded at the boundary from
     /// `mascot.json` before the first frame. See `docs/mascot.md`.
     mascot: Mascot,
+    /// The open inline `/spinner` picker; `None` when closed. The ninth
+    /// composer-replacing picker, the [`mascot_picker`](Self::mascot_picker)'s
+    /// twin over the spinner-style catalog — a **live** page whose every row
+    /// and preview animate off the frame clock. See `docs/spinner.md`.
+    pub spinner_picker: Option<SpinnerPicker>,
+    /// The status line's spinner style ([`Spinner::Comet`] by default) —
+    /// chosen in the `/spinner` picker, seeded at the boundary from
+    /// `spinner.json` before the first frame. See `docs/spinner.md`.
+    spinner: Spinner,
     /// The session's togglable knobs — what `/settings` shows and what the
     /// boundary reads before it streams thinking, offers tools, snapshots the
     /// tree, or auto-compacts. Seeded at bootstrap from `settings.json` + the

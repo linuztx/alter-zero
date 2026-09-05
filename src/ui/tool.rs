@@ -39,10 +39,7 @@ fn tool_status_color(status: ToolStatus, pulse: Option<Duration>) -> Color {
 /// ([`App::set_pulse`](crate::app::App::set_pulse)), and the loop's 32 ms
 /// animation re-arm is what makes it move. See `docs/tool-pulse.md`.
 pub(super) fn tool_pulse_color(elapsed: Duration) -> Color {
-    let period = TOOL_PULSE_PERIOD.as_secs_f32();
-    // `phase` is 0…1 through one breath; the cosine turns it into 0 → 1 → 0.
-    let phase = (elapsed.as_secs_f32() % period) / period;
-    let t = 0.5 * (1.0 - (std::f32::consts::TAU * phase).cos());
+    let t = super::wrap::breath(elapsed, TOOL_PULSE_PERIOD);
     let (r, g, b) = blend(TOOL_PULSE_BRIGHT, TOOL_PULSE_DIM, t);
     Color::Rgb(r, g, b)
 }

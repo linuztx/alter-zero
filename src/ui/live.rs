@@ -283,16 +283,22 @@ pub(super) fn strip_lines(
         // — suppressed for a `!` shell turn (has_status false), whose elapsed
         // rides the preview above. An agent session view shows the *viewed
         // agent's* synthesized status instead of the main turn's
-        // (docs/agent-tool.md). A blank row stands in if the status somehow
-        // went while `has_status` said otherwise, so the count still matches
-        // `strip_rows`' STATUS_ROWS.
+        // (docs/agent-tool.md). Either opens with the session's chosen
+        // spinner style (`/spinner`, docs/spinner.md). A blank row stands
+        // in if the status somehow went while `has_status` said otherwise,
+        // so the count still matches `strip_rows`' STATUS_ROWS.
         let line = if let Some(run) = app.viewed_agent() {
-            Some(status_line(&agent_view_status(run), width))
+            Some(styled_status_line(
+                &agent_view_status(run),
+                None,
+                app.spinner(),
+                width,
+            ))
         } else {
             // While some task is in progress the spinner wears its
             // activeForm instead of the turn's verb (docs/task-tools.md).
             app.status()
-                .map(|status| status_line_with_verb(status, app.task_verb(), width))
+                .map(|status| styled_status_line(status, app.task_verb(), app.spinner(), width))
         };
         lines.push(line.unwrap_or_default());
         // The checklist's `⎿` rows hang directly off the status line —
@@ -529,6 +535,18 @@ pub fn render_live_with_preview(
         let [strip, body] = view_split(area, super::mascot_view::mascot_menu_rows(app, area.width));
         render_strip_above(strip, buf, app, stream_preview);
         render_mascot_picker(body, buf, app);
+        return;
+    }
+    // …and the inline `/spinner` picker, the `/mascot` picker's twin — the
+    // one picker whose subject is the strip it keeps above itself. See
+    // `docs/spinner.md`.
+    if app.spinner_picker.is_some() {
+        let [strip, body] = view_split(
+            area,
+            super::spinner_view::spinner_menu_rows(app, area.width),
+        );
+        render_strip_above(strip, buf, app, stream_preview);
+        render_spinner_picker(body, buf, app);
         return;
     }
     // …and the inline `/skills` menu, the `/settings` menu's twin. See

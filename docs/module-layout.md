@@ -53,6 +53,7 @@ widened for the split.
 | `model_picker.rs` | The inline `/model` picker. |
 | `login.rs` | The inline `/login` onboarding. |
 | `mascot.rs` | The banner-mascot catalog, the `/mascot` picker's state, the `mascot.json` format (`docs/mascot.md`). |
+| `spinner.rs` | The status spinner-style catalog, the `/spinner` picker's state, the `spinner.json` format (`docs/spinner.md`). |
 | `permission.rs` | The inline tool-permission prompt: the stashed draft, the option/amend key map (`docs/permissions.md`). |
 | `ask.rs` | The inline `AskUserQuestion` modal: the tab/row state, answers under construction, the Other/notes entries, the queue against the permission prompt (`docs/ask.md`). |
 | `background.rs` | Background shells and the ↓ manager band. |
@@ -82,6 +83,7 @@ widened for the split.
 | `footer.rs` | The footer row, the toast, the queued rows, and what displaces the footer. |
 | `header.rs` | The startup banner — the gradient mascot beside the metadata column (`docs/mascot.md`). |
 | `mascot_view.rs` | The inline `/mascot` picker with its live banner preview (`docs/mascot.md`). |
+| `spinner_view.rs` | The inline `/spinner` picker — live spinner rows over a sample status-line preview (`docs/spinner.md`). |
 | `live.rs` | `render_live` — the streaming strip, the box, the band. |
 | `transcript.rs` | The Ctrl+O overlay and `TranscriptCache`. |
 | `classifier_view.rs` | The Ctrl+D view's classifier page body (`docs/permissions.md`). |
@@ -125,6 +127,7 @@ opening the viewport, running the loop — and everything else lives here:
 | `resume.rs` | Finding recorded sessions on disk, and the `/resume` + backtrack arms. |
 | `history_store.rs` | `InputHistoryStore` (`docs/history-persistence.md`). |
 | `mascot.rs` | Applying a `/mascot` selection: the `mascot.json` write + banner repaint (`docs/mascot.md`). |
+| `spinner.rs` | Applying a `/spinner` selection: the `spinner.json` write + toast (`docs/spinner.md`). |
 | `shell.rs` | The `!` command runner and its drain/cap unit tests (`docs/shell-command.md`). |
 | `workers.rs` | The off-thread file-search / clipboard / model-list / device-sign-in jobs. |
 | `host.rs` | Clocks, dates, the OS string, the uid, ids — the raw impurities. |

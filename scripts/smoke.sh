@@ -118,6 +118,8 @@ cleanup() {
 	tmux kill-session -t "${S}_header" 2>/dev/null
 	tmux kill-session -t "${S}_mascot" 2>/dev/null
 	[ -n "${MASC_CFG:-}" ] && rm -rf "$MASC_CFG" 2>/dev/null
+	tmux kill-session -t "${S}_spinner" 2>/dev/null
+	[ -n "${SPIN_CFG:-}" ] && rm -rf "$SPIN_CFG" 2>/dev/null
 	tmux kill-session -t "${S}_links" 2>/dev/null
 	rm -f /tmp/alter-zero-smoke-links-* 2>/dev/null
 	tmux kill-session -t "${S}_ctrlofast" 2>/dev/null
@@ -11010,6 +11012,152 @@ tmux send-keys -t "$S109C" Enter
 sleep 0.6
 tmux kill-session -t "$S109C" 2>/dev/null
 rm -rf "$PD_CFG" "$PD_A" "$PD_B" "$PD_C"
+
+
+# --- Phase 110: the `/spinner` picker (docs/spinner.md). The `/mascot`
+# picker's frame over the status line's spinner styles, LIVE: every row wears
+# its own spinner and the highlighted style previews as a whole status line,
+# both ticking with NO turn running (the open picker re-arms the animation
+# chain); Enter persists to {config}/spinner.json and confirms with a toast;
+# the very next turn's status line opens with the new style; and a second
+# process against the same config home LAUNCHES with it. The startup delay is
+# long so the status line can be captured mid pre-stream pause (Phase 20's
+# trick). ---
+S110="${S}_spinner"
+SPIN_CFG="$(mktemp -d)"
+APP_SPINNER="env ALTER_ZERO_PROJECT_CONFIG=0 ALTER_ZERO_CONFIG_DIR=$SPIN_CFG ALTER_ZERO_CHECKPOINTS=0 ALTER_ZERO_SKILLS_DIR=$SMOKE_SKILLS ALTER_ZERO_HISTORY_FILE=/dev/null ALTER_ZERO_STARTUP_DELAY_MS=2000 $BIN"
+tmux new-session -d -s "$S110" -x 90 -y 30 "$APP_SPINNER"
+sleep 0.8
+tmux send-keys -t "$S110" -l "/spinner"
+sleep 0.4
+spin_palette="$(tmux capture-pane -t "$S110" -p)"
+echo "==== Phase 110: the palette filtered to /spinner ===="
+printf '%s\n' "$spin_palette"
+if ! printf '%s' "$spin_palette" | grep -qF "Choose the status spinner style"; then
+	echo "FAIL: Phase 110 — /spinner is missing from the slash-command palette" >&2
+	status=1
+fi
+tmux send-keys -t "$S110" Enter
+sleep 0.5
+spin_open="$(tmux capture-pane -t "$S110" -p)"
+echo "==== Phase 110: the picker open (comet highlighted, every row live) ===="
+printf '%s\n' "$spin_open"
+for expect in "→ comet" "sparkle" "dots" "orbit" "blocks" "pulse" "bars" "line" "still" "(1/9)" \
+	"Working…" "esc to interrupt" "A comet sweeping between two dim walls" \
+	"Type to search · Enter to choose · Esc to cancel"; do
+	if ! printf '%s' "$spin_open" | grep -qF "$expect"; then
+		echo "FAIL: Phase 110 — the open picker is missing '$expect'" >&2
+		status=1
+	fi
+done
+# The comet's frame — a `(` wall, the `●` head, a `)` wall — shows twice: on
+# its own row and in the preview line.
+if [ "$(printf '%s\n' "$spin_open" | grep -c '(.*●.*)')" -lt 2 ]; then
+	echo "FAIL: Phase 110 — expected the comet on its row and in the preview" >&2
+	status=1
+fi
+# The page is LIVE with no turn running: the preview line must have moved
+# between two captures 0.3 s apart (the comet steps a frame every 80 ms).
+spin_preview_a="$(printf '%s\n' "$spin_open" | grep -F "Working…")"
+sleep 0.3
+spin_preview_b="$(tmux capture-pane -t "$S110" -p | grep -F "Working…")"
+echo "==== Phase 110: the preview line 0.3 s apart ===="
+printf '%s\n%s\n' "$spin_preview_a" "$spin_preview_b"
+if [ "$spin_preview_a" = "$spin_preview_b" ]; then
+	echo "FAIL: Phase 110 — the preview did not animate with no turn running" >&2
+	status=1
+fi
+# ↓ to sparkle: the counter, the preview and the description follow the
+# selection — the preview line no longer opens with the comet's wall.
+tmux send-keys -t "$S110" Down
+sleep 0.4
+spin_sparkle="$(tmux capture-pane -t "$S110" -p)"
+echo "==== Phase 110: ↓ previews sparkle ===="
+printf '%s\n' "$spin_sparkle"
+if ! printf '%s' "$spin_sparkle" | grep -qF "(2/9)"; then
+	echo "FAIL: Phase 110 — the counter did not follow the selection" >&2
+	status=1
+fi
+if ! printf '%s' "$spin_sparkle" | grep -qF "A spark blooming into a star"; then
+	echo "FAIL: Phase 110 — the description did not follow the selection" >&2
+	status=1
+fi
+if printf '%s\n' "$spin_sparkle" | grep -F "Working…" | grep -q '(.*●.*) Working'; then
+	echo "FAIL: Phase 110 — the preview still wears the comet after ↓" >&2
+	status=1
+fi
+# Type-to-search matches descriptions too: `braille` narrows to dots; Enter
+# switches the style.
+tmux send-keys -t "$S110" -l "braille"
+sleep 0.3
+spin_filtered="$(tmux capture-pane -t "$S110" -p)"
+if ! printf '%s' "$spin_filtered" | grep -qF "(1/1)"; then
+	echo "FAIL: Phase 110 — 'braille' did not narrow the list to the dots style" >&2
+	status=1
+fi
+tmux send-keys -t "$S110" Enter
+sleep 0.6
+spin_after="$(tmux capture-pane -t "$S110" -p)"
+echo "==== Phase 110: after Enter — the toast ===="
+printf '%s\n' "$spin_after"
+if ! printf '%s' "$spin_after" | grep -qF "Spinner: dots"; then
+	echo "FAIL: Phase 110 — the switch was not confirmed with a toast" >&2
+	status=1
+fi
+if ! grep -qF '"spinner": "dots"' "$SPIN_CFG/spinner.json" 2>/dev/null; then
+	echo "FAIL: Phase 110 — spinner.json was not written (or holds the wrong style)" >&2
+	status=1
+fi
+# The very next turn's status line opens with the new style: capture mid
+# pre-stream pause (the 2 s startup delay is still running), where the line
+# shows a braille glyph before the verb and no comet wall.
+tmux send-keys -t "$S110" -l "$USER_MSG"
+sleep 0.2
+tmux send-keys -t "$S110" Enter
+sleep 0.9
+spin_status="$(tmux capture-pane -t "$S110" -p | grep -F "esc to interrupt")"
+echo "==== Phase 110: the status line mid-pause wears dots ===="
+printf '%s\n' "$spin_status"
+if ! printf '%s' "$spin_status" | grep -qE '⠋|⠙|⠹|⠸|⠼|⠴|⠦|⠧|⠇|⠏'; then
+	echo "FAIL: Phase 110 — the status line did not open with a braille glyph" >&2
+	status=1
+fi
+if printf '%s' "$spin_status" | grep -q '(.*●.*)'; then
+	echo "FAIL: Phase 110 — the status line still opens with the comet" >&2
+	status=1
+fi
+for _ in $(seq 1 150); do # let the turn settle before quitting
+	if tmux capture-pane -t "$S110" -p -S -60 | grep -qF "$SETTLED_REPLY"; then
+		break
+	fi
+	sleep 0.1
+done
+tmux send-keys -t "$S110" -l "/quit"
+sleep 0.2
+tmux send-keys -t "$S110" Enter
+sleep 0.6
+tmux kill-session -t "$S110" 2>/dev/null
+# The persistence half: a fresh process against the same config home opens
+# the picker seated on dots, wearing the ✓ (the bootstrap seed).
+tmux new-session -d -s "$S110" -x 90 -y 30 "$APP_SPINNER"
+sleep 0.8
+tmux send-keys -t "$S110" -l "/spinner"
+sleep 0.3
+tmux send-keys -t "$S110" Enter
+sleep 0.5
+spin_relaunch="$(tmux capture-pane -t "$S110" -p)"
+echo "==== Phase 110: a fresh launch keeps the saved style ===="
+printf '%s\n' "$spin_relaunch"
+if ! printf '%s' "$spin_relaunch" | grep -qF "(3/9)"; then
+	echo "FAIL: Phase 110 — the saved style did not seat the highlight on dots after a relaunch" >&2
+	status=1
+fi
+if ! printf '%s\n' "$spin_relaunch" | grep -F "→ dots" | grep -qF "✓"; then
+	echo "FAIL: Phase 110 — the saved style does not wear the ✓ after a relaunch" >&2
+	status=1
+fi
+tmux kill-session -t "$S110" 2>/dev/null
+rm -rf "$SPIN_CFG"
 
 
 if [ "$status" -eq 0 ]; then

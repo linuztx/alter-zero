@@ -122,8 +122,8 @@ pub struct ViewFlow {
 /// agent tree rides only a page that fits — never the flow); a picker's
 /// search line sits in the page top, and a keystroke re-signs the flow so
 /// the typed query re-flows with it. The ↓ background manager flows too — it
-/// is the one page that ticks between keystrokes, so it is the one page
-/// signed [`FlowSign::Frozen`] rather than on its rows.
+/// and the `/spinner` picker are the two pages that tick between keystrokes,
+/// so they are the two signed [`FlowSign::Frozen`] rather than on their rows.
 ///
 /// Each branch returns the page **with** what its flow is signed on, so a
 /// view cannot acquire a flow without stating which changes to it matter.
@@ -166,6 +166,24 @@ fn flow_page(app: &App, width: u16, term_height: u16) -> Option<FlowPage> {
             super::mascot_view::mascot_view_lines(app, width),
             term_height,
         ));
+    }
+    if let Some(picker) = &app.spinner_picker {
+        // The `/spinner` picker is the other page that ticks between
+        // keystrokes — every row's spinner and the preview line animate at
+        // the 32 ms cadence an open picker keeps running
+        // (`App::wants_animation_frames`) — so, like the manager's details
+        // page, it signs the **selection and the query** rather than its
+        // rows: a frame never churns a purge rebuild, while a keystroke that
+        // moves the highlight or edits the search re-flows the page
+        // (`docs/spinner.md`).
+        let mut hasher = DefaultHasher::new();
+        picker.selected.hash(&mut hasher);
+        picker.query.hash(&mut hasher);
+        return Some(FlowPage {
+            lines: super::spinner_view::spinner_view_lines(app, width),
+            sign: FlowSign::Frozen(hasher.finish()),
+            painted: term_height.max(1),
+        });
     }
     if app.skills_menu.is_some() {
         return Some(FlowPage::framed(

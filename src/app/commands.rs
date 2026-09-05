@@ -113,6 +113,10 @@ pub enum CommandEffect {
     /// Works **mid-turn** like `/settings` — it only replaces the composer.
     /// See `docs/mascot.md`.
     Mascot,
+    /// Open the inline `/spinner` picker: the status line's spinner styles,
+    /// previewed live. Works **mid-turn** like `/mascot` — it only replaces
+    /// the composer. See `docs/spinner.md`.
+    Spinner,
     /// Open the inline `/mcp` manager: every declared MCP server, its live
     /// status, tools, and the authenticate/reconnect/disable operations.
     /// Works **mid-turn** like `/hooks` — it only replaces the composer;
@@ -198,6 +202,11 @@ pub const COMMANDS: &[SlashCommand] = &[
         name: "mascot",
         description: "Choose the banner mascot",
         effect: CommandEffect::Mascot,
+    },
+    SlashCommand {
+        name: "spinner",
+        description: "Choose the status spinner style",
+        effect: CommandEffect::Spinner,
     },
     SlashCommand {
         name: "hooks",
@@ -437,6 +446,15 @@ impl App {
                 // fetch, so the pure open happens right here. docs/mascot.md.
                 self.open_mascot_picker();
                 Action::OpenMascotPicker
+            }
+            CommandEffect::Spinner => {
+                // /spinner works mid-turn like /mascot: it only replaces the
+                // composer, and the switch reaches the running turn's status
+                // line on the very next frame. The catalog is a const —
+                // nothing to fetch, so the pure open happens right here.
+                // docs/spinner.md.
+                self.open_spinner_picker();
+                Action::OpenSpinnerPicker
             }
             CommandEffect::Mcp => {
                 // /mcp works mid-turn too — it only replaces the composer,

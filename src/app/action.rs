@@ -219,6 +219,20 @@ pub enum Action {
     /// of scrollback redraws with the new mascot at once, and confirms with
     /// a toast. See `docs/mascot.md`.
     SelectMascot(Mascot),
+    /// `/spinner`: open the inline spinner-style picker. Like `/mascot` it
+    /// works mid-turn — it only replaces the composer, and the running turn's
+    /// status line is exactly what a switch changes, on the next frame. The
+    /// loop has nothing to fetch (the catalog is a const); it just repaints.
+    /// See `docs/spinner.md`.
+    OpenSpinnerPicker,
+    /// The spinner picker was dismissed (Esc on an empty query, or Ctrl+C):
+    /// [`App::spinner_picker`] is already cleared; the loop repaints the
+    /// collapsed region.
+    CloseSpinnerPicker,
+    /// Enter/Space in the spinner picker: [`App::spinner`] already moved. The
+    /// loop persists `spinner.json` and confirms with a toast — no rebuild,
+    /// the status line being live-region-only. See `docs/spinner.md`.
+    SelectSpinner(Spinner),
     /// `/mcp`: open the inline MCP manager. Like `/hooks` it works mid-turn —
     /// it only replaces the composer. The *loop* snapshots the live
     /// [`crate::llm::mcp::McpManager`] and hands it to

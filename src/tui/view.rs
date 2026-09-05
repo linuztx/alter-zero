@@ -601,6 +601,10 @@ fn live_region_height(app: &App, screen: ratatui::layout::Rect) -> u16 {
     if let Some(height) = ui::mascot_picker_height(app, screen.width, screen.height) {
         return height;
     }
+    // The inline `/spinner` picker, likewise (docs/spinner.md).
+    if let Some(height) = ui::spinner_picker_height(app, screen.width, screen.height) {
+        return height;
+    }
     // The inline `/skills` menu, likewise (docs/skills.md).
     if let Some(height) = ui::skills_menu_height(app, screen.width, screen.height) {
         return height;

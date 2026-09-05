@@ -38,6 +38,7 @@ mod reasoning;
 mod resume_view;
 mod settings_view;
 mod skills_view;
+mod spinner_view;
 mod status;
 mod stream_render;
 mod stream_stress;
