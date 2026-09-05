@@ -854,7 +854,11 @@ pub fn cursor_visible(app: &App) -> bool {
     // manager band are menus too — same rule (`docs/project-config.md`,
     // `docs/mcp.md`). The `/mcp` Auth page's `URL >` field *is* typed into,
     // so its caret stays, the amend-field exception again.
-    if app.hooks_menu.is_some() || app.trust_menu.is_some() || app.background_view.is_some() {
+    if app.hooks_menu.is_some()
+        || app.trust_menu.is_some()
+        || app.donate_picker.is_some()
+        || app.background_view.is_some()
+    {
         return false;
     }
     // The `/login` device page is a wait, not a field — the same menu rule: a
@@ -1088,6 +1092,12 @@ pub fn cursor_position(area: Rect, app: &App) -> (u16, u16) {
     // menu is its sibling and seats the same way.
     if app.hooks_menu.is_some() {
         let lines = super::hooks_view::hooks_view_lines(app, area.width);
+        return menu_marker_seat(&lines, area);
+    }
+    // The read-only `/donate` page seats on its highlighted `❯` the same way
+    // (docs/donate.md).
+    if app.donate_picker.is_some() {
+        let lines = super::donate_view::donate_view_lines(app, area.width);
         return menu_marker_seat(&lines, area);
     }
     if app.trust_menu.is_some() {

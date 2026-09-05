@@ -575,6 +575,14 @@ pub fn render_live_with_preview(
         render_hooks_menu(body, buf, app);
         return;
     }
+    // …and the read-only `/donate` page, its sibling — the same built-line
+    // body. See `docs/donate.md`.
+    if app.donate_picker.is_some() {
+        let [strip, body] = view_split(area, super::donate_view::donate_menu_rows(app, area.width));
+        render_strip_above(strip, buf, app, stream_preview);
+        render_donate_picker(body, buf, app);
+        return;
+    }
     // …and the `/trust` review menu, its sibling. See
     // `docs/project-config.md`.
     if app.trust_menu.is_some() {

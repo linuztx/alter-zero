@@ -454,6 +454,20 @@ tool calls are a `ToolStart`/`ToolEnd` pair, a thinking phase is
 `ThinkingStart`/`ThinkingEnd` with `ThinkingChunk`s between (whose text drives
 the thinking stream).
 
+## Support the project
+
+Alter Zero is free and open source. If it earns a place in your terminal, a
+crypto donation keeps the work going — **`/donate`** shows the addresses
+inside the app (each in a copyable box, `docs/donate.md`), and they are:
+
+| coin | network            | address                                      |
+| ---- | ------------------ | -------------------------------------------- |
+| BTC  | the native network | `36ysFtsQDUQtigqGUXoHYr7jYegeCRnqoB`         |
+| ETH  | the Base network   | `0xF67F3EA18b6156f4ACfEfEf8D96c4F998B354CD6` |
+
+Send each coin over the network named beside it only — a transfer on any
+other network cannot be recovered. Thank you.
+
 ## Known limitations (v1)
 
 - **Resizing** repaints the on-screen conversation re-wrapped to the new size.

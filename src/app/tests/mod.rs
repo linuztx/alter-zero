@@ -19,6 +19,7 @@ mod backtrack;
 mod commands;
 mod compact;
 mod composer;
+mod donate;
 mod file_picker;
 mod hooks_menu;
 mod input_history;

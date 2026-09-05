@@ -119,6 +119,7 @@ cleanup() {
 	tmux kill-session -t "${S}_mascot" 2>/dev/null
 	[ -n "${MASC_CFG:-}" ] && rm -rf "$MASC_CFG" 2>/dev/null
 	tmux kill-session -t "${S}_spinner" 2>/dev/null
+	tmux kill-session -t "${S}_donate" 2>/dev/null
 	[ -n "${SPIN_CFG:-}" ] && rm -rf "$SPIN_CFG" 2>/dev/null
 	tmux kill-session -t "${S}_links" 2>/dev/null
 	rm -f /tmp/alter-zero-smoke-links-* 2>/dev/null
@@ -11333,6 +11334,120 @@ if ! printf '%s\n' "$theme_relaunch" | grep -F "→ dracula" | grep -qF "✓"; t
 fi
 tmux kill-session -t "$S111" 2>/dev/null
 rm -rf "$THEME_CFG"
+
+
+# --- Phase 112: the `/donate` page (docs/donate.md). The `/hooks` browser's
+# sibling over the project's crypto donation addresses: a gradient
+# `♥ Support Alter Zero` title over a dim blurb, each address as a numbered
+# `❯ 1. BTC  Bitcoin · native network` row over its rounded box, an amber
+# wrong-network caution and a key hint; ↓ moves the `❯`; `c` copies the
+# highlighted address — the toast names the coin, and headless here arboard
+# has no clipboard server so the OSC 52 fallback lands the address VERBATIM
+# in tmux's paste buffer (Phase 28's trick) while the page stays open; Esc
+# brings the composer and its footer back. ---
+S112="${S}_donate"
+tmux new-session -d -s "$S112" -x 90 -y 34 "$APP"
+# tmux must capture OSC 52 from the app into its own buffer (Phase 28).
+tmux set-option -g set-clipboard on
+sleep 0.5
+tmux send-keys -t "$S112" -l "/donate"
+sleep 0.4
+donate_palette="$(tmux capture-pane -t "$S112" -p)"
+echo "==== Phase 112: the palette filtered to /donate ===="
+printf '%s\n' "$donate_palette"
+if ! printf '%s' "$donate_palette" | grep -qF "Support the project with a crypto donation"; then
+	echo "FAIL: Phase 112 — /donate is missing from the slash-command palette" >&2
+	status=1
+fi
+tmux send-keys -t "$S112" Enter
+sleep 0.5
+donate_open="$(tmux capture-pane -t "$S112" -p)"
+echo "==== Phase 112: the page open (BTC highlighted) ===="
+printf '%s\n' "$donate_open"
+for expect in "♥ Support Alter Zero" "Free and open source" \
+	"❯ 1. BTC  Bitcoin · native network" "36ysFtsQDUQtigqGUXoHYr7jYegeCRnqoB" \
+	"  2. ETH  Ethereum · Base network" "0xF67F3EA18b6156f4ACfEfEf8D96c4F998B354CD6" \
+	"cannot be recovered" "↑↓ navigate  enter/c copy address  esc close"; do
+	if ! printf '%s' "$donate_open" | grep -qF "$expect"; then
+		echo "FAIL: Phase 112 — the open page is missing '$expect'" >&2
+		status=1
+	fi
+done
+# Each address sits in its rounded box: the row over it opens with ╭ and
+# the row under it with ╰.
+for addr in "36ysFtsQDUQtigqGUXoHYr7jYegeCRnqoB" "0xF67F3EA18b6156f4ACfEfEf8D96c4F998B354CD6"; do
+	if ! printf '%s\n' "$donate_open" | grep -B1 -F "$addr" | head -1 | grep -qF "╭"; then
+		echo "FAIL: Phase 112 — no rounded top over $addr" >&2
+		status=1
+	fi
+	if ! printf '%s\n' "$donate_open" | grep -A1 -F "$addr" | tail -1 | grep -qF "╰"; then
+		echo "FAIL: Phase 112 — no rounded bottom under $addr" >&2
+		status=1
+	fi
+done
+# The page replaces the composer: its footer is off screen while it is up.
+if printf '%s' "$donate_open" | grep -qF "dummy_model_name ·"; then
+	echo "FAIL: Phase 112 — the footer is still on screen under the page" >&2
+	status=1
+fi
+# ↓ moves the ❯ to ETH.
+tmux send-keys -t "$S112" Down
+sleep 0.4
+donate_eth="$(tmux capture-pane -t "$S112" -p)"
+echo "==== Phase 112: ↓ highlights ETH ===="
+printf '%s\n' "$donate_eth"
+if ! printf '%s' "$donate_eth" | grep -qF "❯ 2. ETH"; then
+	echo "FAIL: Phase 112 — ↓ did not move the ❯ to ETH" >&2
+	status=1
+fi
+if printf '%s' "$donate_eth" | grep -qF "❯ 1. BTC"; then
+	echo "FAIL: Phase 112 — BTC still wears the ❯ after ↓" >&2
+	status=1
+fi
+# `c` copies the highlighted address: the toast names the coin, and the
+# OSC 52 fallback lands the address verbatim in tmux's buffer.
+while tmux delete-buffer 2>/dev/null; do :; done
+tmux send-keys -t "$S112" -l "c"
+donate_copied=""
+for _ in $(seq 1 30); do # up to ~3s
+	donate_copied="$(tmux capture-pane -t "$S112" -p)"
+	if printf '%s' "$donate_copied" | grep -qF "Copied the ETH address to clipboard"; then
+		break
+	fi
+	sleep 0.1
+done
+echo "==== Phase 112: after c — the toast ===="
+printf '%s\n' "$donate_copied"
+if ! printf '%s' "$donate_copied" | grep -qF "Copied the ETH address to clipboard"; then
+	echo "FAIL: Phase 112 — c did not confirm the copy with a toast naming the coin" >&2
+	status=1
+fi
+donate_clip="$(tmux show-buffer 2>/dev/null)"
+echo "==== Phase 112: tmux clipboard buffer (the OSC 52 fallback landed here) ===="
+printf '%s\n' "$donate_clip"
+if [ "$donate_clip" != "0xF67F3EA18b6156f4ACfEfEf8D96c4F998B354CD6" ]; then
+	echo "FAIL: Phase 112 — the clipboard does not hold the ETH address verbatim" >&2
+	status=1
+fi
+if ! printf '%s' "$donate_copied" | grep -qF "❯ 2. ETH"; then
+	echo "FAIL: Phase 112 — copying closed the page" >&2
+	status=1
+fi
+# Esc closes: the composer and its footer come back, the page is gone.
+tmux send-keys -t "$S112" Escape
+sleep 0.4
+donate_closed="$(tmux capture-pane -t "$S112" -p)"
+echo "==== Phase 112: after Esc ===="
+printf '%s\n' "$donate_closed"
+if ! printf '%s' "$donate_closed" | grep -qF "dummy_model_name ·"; then
+	echo "FAIL: Phase 112 — the composer and footer did not come back after Esc" >&2
+	status=1
+fi
+if printf '%s' "$donate_closed" | grep -qF "36ysFtsQDUQtigqGUXoHYr7jYegeCRnqoB"; then
+	echo "FAIL: Phase 112 — the page is still on screen after Esc" >&2
+	status=1
+fi
+tmux kill-session -t "$S112" 2>/dev/null
 
 
 if [ "$status" -eq 0 ]; then

@@ -43,6 +43,7 @@ mod background_view;
 mod classifier_view;
 mod context_view;
 mod conversation;
+mod donate_view;
 mod file_cell;
 mod footer;
 mod header;
@@ -88,6 +89,7 @@ pub use self::context_view::{ContextCache, context_lines, render_context_view};
 pub use self::conversation::{
     banner_tail, committed_history, conversation_lines, repaint_lines, repaint_tail,
 };
+pub use self::donate_view::{donate_picker_height, donate_view_lines, render_donate_picker};
 pub use self::footer::{
     backtrack_hint_line, display_cwd, footer_line, footer_rows, queued_lines, queued_rows,
     search_line, shell_mode_line, toast_line, toast_rows,

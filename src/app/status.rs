@@ -271,10 +271,11 @@ impl App {
     /// be advertising it (`docs/permissions.md`). Nothing is really *running*
     /// while a call waits on the user, either. The ↓ manager band and **every**
     /// composer-replacing picker (`/model`, `/login`, `/settings`, `/hooks`,
-    /// `/skills`, `/mascot`, `/spinner`, `/theme`) own every key the same way, so the
-    /// running cell they keep visible above themselves stays hintless while
-    /// one is open (`docs/background.md`, `docs/llm.md`, `docs/skills.md`,
-    /// `docs/mascot.md`, `docs/spinner.md`, `docs/theme.md`).
+    /// `/skills`, `/mascot`, `/spinner`, `/theme`, `/donate`) own every key
+    /// the same way, so the running cell they keep visible above themselves
+    /// stays hintless while one is open (`docs/background.md`, `docs/llm.md`,
+    /// `docs/skills.md`, `docs/mascot.md`, `docs/spinner.md`, `docs/theme.md`,
+    /// `docs/donate.md`).
     #[must_use]
     pub fn command_elapsed(&self) -> Option<Duration> {
         if self.permission.is_some()
@@ -287,6 +288,7 @@ impl App {
             || self.mascot_picker.is_some()
             || self.spinner_picker.is_some()
             || self.theme_picker.is_some()
+            || self.donate_picker.is_some()
         {
             return None;
         }

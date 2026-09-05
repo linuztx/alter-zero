@@ -32,6 +32,7 @@ mod backtrack;
 mod commands;
 mod compact;
 mod composer;
+mod donate;
 mod file_picker;
 mod hooks_menu;
 mod input_history;
@@ -72,6 +73,7 @@ pub use self::commands::{
 };
 pub use self::compact::{COMPACT_VERB, Compaction};
 pub use self::composer::{SHELL_EMPTY_NOTICE, shell_query};
+pub use self::donate::{DONATION_ADDRESSES, DonatePicker, DonationAddress};
 pub use self::file_picker::FileSearch;
 pub use self::hooks_menu::{HooksLevel, HooksMenu};
 pub use self::input_history::{HistorySearch, InputHistory, SearchState};
@@ -457,6 +459,11 @@ pub struct App {
     /// first frame, and mirrored into the ambient palette the renderers read
     /// (`ui::activate_theme`). See `docs/theme.md`.
     theme: Theme,
+    /// The open `/donate` page; `None` when closed. The eleventh
+    /// composer-replacing picker, the [`hooks_menu`](Self::hooks_menu)'s
+    /// sibling (no text entry) over the const donation-address catalog.
+    /// See `docs/donate.md`.
+    pub donate_picker: Option<DonatePicker>,
     /// The session's togglable knobs — what `/settings` shows and what the
     /// boundary reads before it streams thinking, offers tools, snapshots the
     /// tree, or auto-compacts. Seeded at bootstrap from `settings.json` + the

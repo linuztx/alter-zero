@@ -19,6 +19,7 @@ mod assistant;
 mod background_view;
 mod classifier_view;
 mod context_view;
+mod donate_view;
 mod footer;
 mod header;
 mod hooks_view;

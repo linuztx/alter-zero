@@ -12,7 +12,7 @@ use crate::app::Mascot;
 /// `total` columns, coalescing equal-colour runs into spans. The mascot's
 /// cyan → blue wash (docs/header.md) — `total` is the art block's width, so
 /// the wash is uniform down the block and a short row simply stops earlier.
-fn gradient_spans(text: &str, total: usize) -> Vec<Span<'static>> {
+pub(super) fn gradient_spans(text: &str, total: usize) -> Vec<Span<'static>> {
     let mut spans: Vec<Span<'static>> = Vec::new();
     let mut col = 0usize;
     let mut run: Option<(Color, String)> = None;
