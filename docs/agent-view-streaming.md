@@ -15,7 +15,8 @@ It is. And, from a second report:
 
 Two bugs, one shape: **the agent session view keeps its own copy of what the
 main view does, and the copy fell behind.** (`/copy` inside that view also
-copies the wrong conversation.)
+copies the wrong conversation — and the footer's context gauge went on
+describing the lead's conversation until `docs/agent-context-gauge.md`.)
 
 ## What was actually happening
 

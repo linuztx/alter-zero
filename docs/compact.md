@@ -153,6 +153,13 @@ the same threshold — **90% of the model's context window**
   across mutations by a tokenizer re-estimate: after a compaction (codex's
   `recompute_token_usage`), a `/clear` (→ 0), a backtrack, a `/resume`, and
   at the end of any turn that saw no usage frame (the dummy).
+- **A subagent's session view gauges that agent, not the lead**
+  (`docs/agent-context-gauge.md`): `App::context_gauge` — the footer's one
+  question — answers with the viewed agent's own `input + output`
+  (`AgentRun::context_used`, the same rule, estimated from its transcript when
+  a settle saw no frame) against the window of the model it runs on, while
+  `context_used`/`context_window` stay the trigger's inputs: auto-compact is a
+  fact about the lead's conversation whatever is on screen.
 - **An empty conversation reads a true zero.** The estimate returns 0 as soon
   as the derived context is empty — the *same* predicate `/compact` uses for
   `Nothing to compact`, so the footer and the command never disagree about

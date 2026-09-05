@@ -261,7 +261,16 @@ zero new plumbing. The TUI cell is a new `HistoryItem::AgentNotice` —
   calls it has made, the block its own auto-mode verdicts are reviewed
   against, read from its registry slot rather than from the lead's backend
   (`AgentRegistry::classifier_context`, `docs/permissions.md`); only `!` shell
-  mode stays off — a leading bang is literal chat text. Overlay returns and
+  mode stays off — a leading bang is literal chat text. **The footer's model
+  and gauge segments are the viewed agent's too** (`docs/agent-context-gauge.md`):
+  its own context size — `AgentRun::context_used`, the last usage frame's
+  `input + output` by the main gauge's rule, the tokenizer estimate over its
+  transcript when a settle saw no frame — against the window of the model it
+  runs on, and that model's name when its definition pins one
+  (`App::context_gauge` / `App::viewed_agent_model`, fed by
+  `ReplySource::agent_model` and `ModelSession::agent_context_window` through
+  `sync_agent_view_context`); the lead's pair, which alone drives auto-compact,
+  is back with the main view. Overlay returns and
   resizes repaint the agent view (`tui::view::Session::repaint_active_view`).
 
 ## Rendering (`ui`)

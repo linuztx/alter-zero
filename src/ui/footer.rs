@@ -288,21 +288,34 @@ pub fn footer_line(app: &App, width: u16) -> Line<'static> {
     // lie.
     let mode = app.permission_mode().map(|mode| mode.label());
     let reserved = mode.map_or(0, |label| cols(label) + FOOTER_MODE_GAP);
-    let mut segments = vec![Span::styled(session.model.clone(), dim)];
-    if let Some(thinking) = &app.thinking {
-        segments.push(Span::styled(format!(" {}", thinking.mode.label()), dim));
-    }
+    // The model segment names the conversation on screen: inside a subagent's
+    // session view, a type pinned to another model shows that model — and no
+    // thinking mode, which the launch dropped along with the session's model
+    // (`docs/subagents.md`) — while an inheriting type keeps the session's
+    // pair (`docs/agent-context-gauge.md`).
+    let mut segments = match app.viewed_agent_model() {
+        Some(pinned) => vec![Span::styled(pinned.to_string(), dim)],
+        None => {
+            let mut model = vec![Span::styled(session.model.clone(), dim)];
+            if let Some(thinking) = &app.thinking {
+                model.push(Span::styled(format!(" {}", thinking.mode.label()), dim));
+            }
+            model
+        }
+    };
     segments.extend([
         Span::styled(FOOTER_SEPARATOR.to_string(), dim),
         Span::styled(session.cwd.clone(), dim),
     ]);
     // The context gauge — `{used}/{window} ({pct}%)` (e.g. `1.3k/160k
-    // (0.8%)`) — whenever the active model's window is known, so the user
-    // sees both the raw context size and auto-compact approaching
-    // (docs/compact.md). Both counts are humanized by the status line's token
-    // formatter; the share keeps one decimal.
-    if let Some(window) = app.context_window() {
-        let used = app.context_used();
+    // (0.8%)`) — whenever the window of the conversation ON SCREEN is known,
+    // so the user sees both the raw context size and auto-compact approaching
+    // (docs/compact.md): the main session's pair, or — inside a subagent's
+    // session view — that agent's own context against its model's window
+    // (`App::context_gauge`, docs/agent-context-gauge.md; reading the lead's
+    // pair there was the reported bug). Both counts are humanized by the
+    // status line's token formatter; the share keeps one decimal.
+    if let Some((used, window)) = app.context_gauge() {
         #[allow(clippy::cast_precision_loss)] // display only — one decimal
         let pct = used as f64 * 100.0 / window as f64;
         segments.push(Span::styled(FOOTER_SEPARATOR.to_string(), dim));

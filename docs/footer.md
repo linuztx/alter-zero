@@ -93,6 +93,14 @@ footer-mode multiplexing: the Ctrl+R `reverse-i-search: {query}` line
   up front, so the `…` truncation always eats the left content and never the
   one segment with a safety meaning. A full row reads
   `deepseek-v3.2 medium · ~/Codes/tmp · 1.3k/160k (0.8%) · 1 shell     manual`.
+  **Inside a subagent's session view the model and gauge segments describe
+  that agent** (`docs/agent-context-gauge.md`): the gauge is the viewed
+  agent's own context — `AgentRun::context_used`, the last usage frame's
+  `input + output`, the transcript estimate when a settle saw no frame —
+  against the window of the model it runs on (`App::context_gauge`), and a
+  type whose definition pins another model names it in place of the session's,
+  mode-less (`App::viewed_agent_model`); the lead's pair is back with the main
+  view, and it alone drives auto-compact.
   That last segment is the one **focusable** one: ↓ from an idle composer
   lights it on the palette cyan (`footer_focus_bg()`/`footer_focus_fg()`) and
   Enter opens the ↓ manager band, Claude-Code-style. Only that span's style
@@ -149,6 +157,10 @@ reseat, resizes) already accounts for the row.
   `~`, under-home → `~/sub`, outside/unknown home → absolute; `live_height`
   grows one row with the footer; `render_live` paints the footer on the last
   row (and not while the palette is open); the cursor doesn't move when the
-  footer shows.
+  footer shows; inside an agent session view the gauge is the viewed agent's
+  own context and a pinned model is named without the session's thinking mode
+  (`docs/agent-context-gauge.md`).
 - `scripts/smoke.sh`: the startup frame shows `dummy_model_name · ~` under the
-  box; opening the palette (`/`) hides it; dismissing brings it back.
+  box; opening the palette (`/`) hides it; dismissing brings it back; Phase
+  111 opens a subagent's session view under a forced window and reads that
+  agent's gauge, not the lead's.

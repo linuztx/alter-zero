@@ -70,6 +70,7 @@ pub use self::commands::{
     CommandEffect, CommandMenu, HELP_BUSY_NOTICE, INIT_BUSY_NOTICE, INIT_PROMPT,
     RESUME_BUSY_NOTICE, SlashCommand, command_query, matching_commands,
 };
+pub(crate) use self::compact::estimate_messages_tokens;
 pub use self::compact::{COMPACT_VERB, Compaction};
 pub use self::composer::{SHELL_EMPTY_NOTICE, shell_query};
 pub use self::file_picker::FileSearch;
@@ -345,6 +346,20 @@ pub struct App {
     /// skills or the type's `tools:` withholds `Skill`. See
     /// `docs/subagents.md`.
     pub agent_system_reminder: Option<String>,
+    /// The context window of the model the **viewed** subagent runs on, when
+    /// known — the denominator of its session view's footer gauge
+    /// (`docs/agent-context-gauge.md`). Injected at the boundary beside
+    /// [`agent_system_prompt`](Self::agent_system_prompt)
+    /// ([`App::set_agent_context_window`]): the session's own window for a
+    /// type that inherits the model, `None` for one pinned to a model whose
+    /// window this session cannot know — which hides the gauge there exactly
+    /// as an unknown window hides the main one.
+    agent_context_window: Option<u64>,
+    /// The model the **viewed** subagent's type is pinned to (`model:` in its
+    /// definition, `docs/subagents.md`), `None` when it inherits the
+    /// session's — what its session view's footer names in place of the
+    /// session's model. Injected beside the window ([`App::set_agent_model`]).
+    agent_model: Option<String>,
     /// The project's AGENTS.md instructions, rendered as codex's
     /// user-instructions fragment and injected at the boundary
     /// ([`App::set_user_instructions`], from `project_doc::load_user_instructions`

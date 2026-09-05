@@ -626,6 +626,51 @@ impl App {
         self.agent(self.agent_view.as_deref()?)
     }
 
+    /// Inject the viewed subagent's **context window** (from the boundary's
+    /// model bookkeeping, beside every
+    /// [`set_agent_system_prompt`](App::set_agent_system_prompt)) — the
+    /// session's own for a type that inherits the model, `None` (or a
+    /// meaningless 0) for one pinned to a model whose window this session
+    /// cannot know, which hides the gauge in that view. See
+    /// `docs/agent-context-gauge.md`.
+    pub fn set_agent_context_window(&mut self, window: Option<u64>) {
+        self.agent_context_window = window.filter(|&w| w > 0);
+    }
+
+    /// Inject the model the viewed subagent's type is **pinned** to (from
+    /// `ReplySource::agent_model`, beside the window), `None` when it
+    /// inherits the session's. See `docs/agent-context-gauge.md`.
+    pub fn set_agent_model(&mut self, model: Option<String>) {
+        self.agent_model = model.filter(|model| !model.trim().is_empty());
+    }
+
+    /// The pinned model of the agent whose session view is open — what its
+    /// footer names in place of the session's model — or `None` when no view
+    /// is open or the viewed type inherits the session's model.
+    #[must_use]
+    pub fn viewed_agent_model(&self) -> Option<&str> {
+        self.viewed_agent()?;
+        self.agent_model.as_deref()
+    }
+
+    /// The footer's context gauge — `(used, window)` for the conversation
+    /// **on screen**, or `None` when its window is unknown (no gauge): inside
+    /// an agent session view the viewed subagent's own context
+    /// ([`AgentRun::context_used`]) against its model's window, otherwise the
+    /// main session's (`docs/agent-context-gauge.md`). The main pair alone —
+    /// [`context_used`](App::context_used) /
+    /// [`context_window`](App::context_window) — keeps driving auto-compact,
+    /// a fact about the lead's conversation whatever is on screen.
+    ///
+    /// [`AgentRun::context_used`]: crate::agents::AgentRun::context_used
+    #[must_use]
+    pub fn context_gauge(&self) -> Option<(u64, u64)> {
+        match self.viewed_agent() {
+            Some(run) => Some((run.context_used(), self.agent_context_window?)),
+            None => Some((self.context_used(), self.context_window()?)),
+        }
+    }
+
     /// Enter an agent's session view (the roster selection's Enter) — and the
     /// pick the next ↓ comes back to (`agent_selection_start`).
     pub fn open_agent_view(&mut self, id: &str) {

@@ -79,6 +79,18 @@ pub trait ReplySource {
         None
     }
 
+    /// The model a **subagent** of `agent_type` runs on when its definition
+    /// pins one (`model:` — `docs/subagents.md`), or `None` when it inherits
+    /// the session's. Surfaced beside the two above and for the same reason:
+    /// the agent session view's footer names the model the viewed agent
+    /// actually runs on, and gauges its context against *that* model's window
+    /// rather than the lead's (`docs/agent-context-gauge.md`). The default —
+    /// the dummy, a backend without definitions — inherits.
+    fn agent_model(&self, agent_type: &str) -> Option<String> {
+        let _ = agent_type;
+        None
+    }
+
     /// The **auto mode classifier's task context**, rendered — the bounded
     /// task context (the turn's user request + the actions taken so far) the
     /// classifier reads before every command and MCP call, surfaced so the
