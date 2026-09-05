@@ -133,10 +133,10 @@ them at the changed-range boundaries, and gives each piece its final style:
 
 | | background | text |
 |---|---|---|
-| `+` row, untouched | `TOOL_DIFF_ADD_BG` | syntax colour |
-| `+` row, **added characters** | `TOOL_DIFF_ADD_MARK_BG` | syntax colour + **bold** |
-| `-` row, untouched | `TOOL_DIFF_DEL_BG` | syntax colour, dimmed |
-| `-` row, **removed characters** | `TOOL_DIFF_DEL_MARK_BG` | syntax colour + **bold**, *not* dimmed |
+| `+` row, untouched | `tool_diff_add_bg()` | syntax colour |
+| `+` row, **added characters** | `tool_diff_add_mark_bg()` | syntax colour + **bold** |
+| `-` row, untouched | `tool_diff_del_bg()` | syntax colour, dimmed |
+| `-` row, **removed characters** | `tool_diff_del_mark_bg()` | syntax colour + **bold**, *not* dimmed |
 
 The removed row's changed text deliberately escapes the `DIM` the rest of the
 row carries: dimming the one run the eye is meant to find would defeat the
@@ -173,5 +173,5 @@ thing that makes the feature affordable at 32 ms.
 
 ## Tuning
 
-All in `ui/theme.rs`: `TOOL_DIFF_ADD_MARK_BG`, `TOOL_DIFF_DEL_MARK_BG`,
+All in `ui/theme.rs`: `tool_diff_add_mark_bg()`, `tool_diff_del_mark_bg()`,
 `INLINE_DIFF_MIN_COMMON_PCT`, `INLINE_DIFF_MAX_CELLS`.

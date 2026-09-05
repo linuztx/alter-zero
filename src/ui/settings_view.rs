@@ -25,13 +25,13 @@ pub(super) fn settings_row(
     let marker = if selected { MODEL_MARKER } else { "  " };
     let (marker_style, label_style) = if selected {
         (
-            Style::new().fg(MODEL_SELECTED_COLOR),
+            Style::new().fg(model_selected_color()),
             Style::new()
-                .fg(MODEL_SELECTED_COLOR)
+                .fg(model_selected_color())
                 .add_modifier(Modifier::BOLD),
         )
     } else {
-        (Style::default(), Style::new().fg(MODEL_ID_COLOR))
+        (Style::default(), Style::new().fg(model_id_color()))
     };
     // The label pads to the column even when this row's own label is shorter,
     // so every value starts at the same column.
@@ -39,9 +39,9 @@ pub(super) fn settings_row(
     let reserved = cols(marker) + cols(row.label) + pad;
     let value_room = (width as usize).saturating_sub(reserved).max(1);
     let value_style = Style::new().fg(if row.available && !is_off_value(&row.value) {
-        SETTINGS_VALUE_COLOR
+        settings_value_color()
     } else {
-        SETTINGS_VALUE_OFF_COLOR
+        settings_value_off_color()
     });
     Line::from(vec![
         Span::styled(marker.to_string(), marker_style),
@@ -71,7 +71,7 @@ fn settings_list_lines(rows: &[SettingRow], selected: usize, width: u16) -> Vec<
     if rows.is_empty() {
         return vec![model_placeholder_row(
             SETTINGS_NO_MATCH,
-            MODEL_META_COLOR,
+            model_meta_color(),
             width,
         )];
     }
@@ -98,7 +98,7 @@ fn settings_counter_line(rows: &[SettingRow], selected: usize) -> Line<'static> 
         Span::raw(MODEL_INDENT),
         Span::styled(
             format!("({}/{})", selected + 1, rows.len()),
-            Style::new().fg(MODEL_META_COLOR),
+            Style::new().fg(model_meta_color()),
         ),
     ])
 }
@@ -118,7 +118,7 @@ pub(super) fn settings_view_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     let selected = picker.selected;
     let search_line = Line::from(vec![
         Span::raw(MODEL_INDENT),
-        Span::styled(MODEL_PROMPT, Style::new().fg(MODEL_SELECTED_COLOR)),
+        Span::styled(MODEL_PROMPT, Style::new().fg(model_selected_color())),
         Span::raw(picker.query.clone()),
     ]);
     let highlighted = rows.get(selected.min(rows.len().saturating_sub(1)));
@@ -137,7 +137,11 @@ pub(super) fn settings_view_lines(app: &App, width: u16) -> Vec<Line<'static>> {
         Some(row) => {
             lines.push(settings_counter_line(&rows, selected));
             lines.push(Line::default());
-            lines.extend(model_wrapped_rows(row.description, MODEL_META_COLOR, width));
+            lines.extend(model_wrapped_rows(
+                row.description,
+                model_meta_color(),
+                width,
+            ));
             lines.push(Line::default());
         }
         // Nothing matched: there is no count and nothing to describe, so the
@@ -148,7 +152,7 @@ pub(super) fn settings_view_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     }
     lines.push(model_placeholder_row(
         SETTINGS_HINT,
-        MODEL_META_COLOR,
+        model_meta_color(),
         width,
     ));
     lines.push(Line::default());

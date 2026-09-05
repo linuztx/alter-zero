@@ -6,7 +6,20 @@
 //! (CLAUDE.md); the consts each feature owns are described in its own doc, e.g.
 //! `docs/status-indicator.md`, `docs/footer.md`, `docs/toast.md`,
 //! `docs/shortcuts.md`.
+//!
+//! The **colours** are accessor functions rather than consts: each names a
+//! *role* (`tool_ok_color()` — a finished tool's bullet; `menu_selected_color()`
+//! — what every picker selects with) and reads the active theme's
+//! [`Palette`](super::palette::Palette), so a `/theme` switch recolours every
+//! call site with no call site knowing (`docs/theme.md`). A colour word in a
+//! role's doc comment — "cyan", "green", "dim grey" — describes the role as
+//! the palettes paint it (the original One Dark chrome's words, kept because
+//! every other theme paints the same role with the same *kind* of colour);
+//! the exact value is the palette's. A new colour is a new role on the
+//! palette plus its accessor here, never a literal `Color::Rgb` at a call
+//! site.
 
+use super::palette::palette;
 use super::*;
 
 // --- Claude-Code-ish styling. Centralised so it's trivial to retheme. ---
@@ -21,11 +34,11 @@ pub(super) const USER_BULLET: &str = "❯ ";
 pub(super) const AI_BULLET: &str = "● ";
 
 /// Bullet prefixing a backend-error notice — same glyph as the assistant, but
-/// coloured red (see [`ERROR_COLOR`]) so a failure reads as a red bullet point.
+/// coloured red (see [`error_color`]) so a failure reads as a red bullet point.
 pub(super) const ERROR_BULLET: &str = "● ";
 
 /// Bullet prefixing a system notice (slash-command output) — same glyph, coloured
-/// cyan (see [`SYSTEM_COLOR`]) so it reads as meta rather than an AI reply.
+/// cyan (see [`system_color`]) so it reads as meta rather than an AI reply.
 pub(super) const SYSTEM_BULLET: &str = "● ";
 
 /// Indent for wrapped continuation lines (matches a bullet's width).
@@ -68,7 +81,9 @@ pub(super) const THEMATIC_BREAK: &str = "———";
 // rows) instead of truncating with `…` when the grid is narrow, matching codex.
 // See `AssistantRenderer`/`StreamRender`. ---
 /// Dim colour of a table's box-drawing borders (`│ ─ ┌┬┐ ├┼┤ └┴┘`).
-pub(super) const TABLE_BORDER_COLOR: Color = TOOL_DIM_COLOR;
+pub(super) fn table_border_color() -> Color {
+    tool_dim_color()
+}
 
 /// The floor a table column shrinks to before its cells word-wrap (codex uses 3):
 /// a narrow column keeps at least this many display columns, and cells wrap into
@@ -101,19 +116,27 @@ pub(super) const TABLE_RECORD_SEPARATOR_WIDTH: usize = 40;
 // emphasis is modifier-only (bold/italic/crossed-out), code and links carry a
 // colour. Parsing lives in `markdown::parse_inline`; `ui` owns the styling. ---
 /// Inline `` `code` `` — a distinct cyan so it reads as code within prose.
-pub(super) const INLINE_CODE_COLOR: Color = Color::Rgb(0x56, 0xB6, 0xC2);
+pub(super) fn inline_code_color() -> Color {
+    palette().accent
+}
 
 /// A link's URL, shown as ` (url)` after its text — blue and underlined.
-pub(super) const LINK_URL_COLOR: Color = Color::Rgb(0x61, 0xAF, 0xEF);
+pub(super) fn link_url_color() -> Color {
+    palette().link
+}
 
 // --- List and blockquote styling (docs/markdown.md). Bullets keep `-`, ordered
 // items keep `N.` in an accent colour; a blockquote's `>` and text render dim.
 // Continuation rows hang under the item's text. ---
 /// The accent colour of an ordered list's `N.`/`N)` marker.
-pub(super) const LIST_MARKER_COLOR: Color = Color::Rgb(0x61, 0xAF, 0xEF);
+pub(super) fn list_marker_color() -> Color {
+    palette().link
+}
 
 /// A blockquote's `>` marker and text — dim, so a quote reads as secondary.
-pub(super) const QUOTE_COLOR: Color = TOOL_DIM_COLOR;
+pub(super) fn quote_color() -> Color {
+    tool_dim_color()
+}
 
 // Code syntax-highlight colours now come from the `highlight` module's theme
 // (syntect + two_face, Catppuccin Mocha — codex parity), baked into each
@@ -121,20 +144,34 @@ pub(super) const QUOTE_COLOR: Color = TOOL_DIM_COLOR;
 // kinds to colours; it just renders the segments the grammar produced. See
 // `docs/markdown.md`.
 
-pub(super) const USER_COLOR: Color = Color::Rgb(0x6E, 0x6E, 0x6E);
+pub(super) fn user_color() -> Color {
+    palette().user_fg
+}
 
-pub(super) const USER_BG_COLOR: Color = Color::Rgb(0x2D, 0x2D, 0x2D);
+pub(super) fn user_bg_color() -> Color {
+    palette().user_bg
+}
 
-pub(super) const AI_COLOR: Color = Color::Rgb(0xFF, 0xFF, 0xFF);
+pub(super) fn ai_color() -> Color {
+    palette().text
+}
 
-pub(super) const ERROR_COLOR: Color = Color::Rgb(0xE0, 0x6C, 0x75);
+pub(super) fn error_color() -> Color {
+    palette().error
+}
 
 /// Cyan — a system notice's bullet (slash-command output).
-pub(super) const SYSTEM_COLOR: Color = Color::Rgb(0x56, 0xB6, 0xC2);
+pub(super) fn system_color() -> Color {
+    palette().accent
+}
 
-pub(super) const PROMPT_COLOR: Color = Color::Rgb(0xFF, 0xFF, 0xFF);
+pub(super) fn prompt_color() -> Color {
+    palette().text
+}
 
-pub(super) const BORDER_COLOR: Color = Color::Rgb(0xAA, 0xAA, 0xAA);
+pub(super) fn border_color() -> Color {
+    palette().border
+}
 
 // --- Tool-call styling. A tool renders as a coloured bullet header
 // `● name(args)` plus a collapsed `⎿` peek of its output; the bullet colour is
@@ -163,7 +200,7 @@ pub(super) const EXPAND_HINT: &str = " (ctrl+o to expand)";
 /// The collapsed MCP cell's vocabulary (`docs/mcp.md`): a running call's
 /// `● Calling {server}… (ctrl+o to expand)` header and the resolved
 /// bullet-less dim `Called {server} (ctrl+o to expand)` line (the settled
-/// thinking line's shape — `REASONING_LABEL_COLOR`). The full
+/// thinking line's shape — `reasoning_label_color()`). The full
 /// `{server} - {tool} (MCP)({args})` story lives in Ctrl+O.
 pub(super) const MCP_CALLING_PREFIX: &str = "Calling ";
 pub(super) const MCP_CALLING_SUFFIX: &str = "…";
@@ -252,7 +289,7 @@ pub(super) const TOOL_NO_OUTPUT: &str = "(no output)";
 // The thinking stream (docs/thinking-stream.md). It borrows the tool cell's
 // shape while it runs — a [`TOOL_BULLET`] `● Thinking…` header (its bullet
 // breathing like a running tool's, its label carrying the status line's
-// [`SHIMMER_BASE`] white sweep) over the chain-of-thought in the
+// [`shimmer_base`] white sweep) over the chain-of-thought in the
 // [`TOOL_RESULT_PREFIX`] `⎿` gutter — and then collapses into a **bullet-less**
 // `Thought for … · … tokens (ctrl+o to expand)` line: the [`summary_lines`]
 // shape *and* its dim, because a settled thought is turn meta, not a cell —
@@ -263,7 +300,9 @@ pub(super) const TOOL_NO_OUTPUT: &str = "(no output)";
 /// The chain-of-thought's own colour — dim, and italic
 /// ([`REASONING_TEXT_MODIFIER`]), so it reads as the model thinking aloud
 /// rather than as a tool's output in the same `⎿` gutter.
-pub(super) const REASONING_TEXT_COLOR: Color = TOOL_DIM_COLOR;
+pub(super) fn reasoning_text_color() -> Color {
+    tool_dim_color()
+}
 
 /// Italic: the one cue separating a thought's `⎿` body from a tool's.
 pub(super) const REASONING_TEXT_MODIFIER: Modifier = Modifier::ITALIC;
@@ -276,26 +315,30 @@ pub(super) const REASONING_RUNNING: &str = "Thinking…";
 /// [`SHIMMER_BAND_HALF_WIDTH`] wide inside a period of the text plus twice
 /// [`SHIMMER_PADDING`]).
 ///
-/// Deliberately *not* codex's grey [`SHIMMER_BASE`]: that makes the status
+/// Deliberately *not* codex's grey [`shimmer_base`]: that makes the status
 /// verb read as grey text with a white wave, which is right for a metric and
 /// wrong for a header — at rest it is indistinguishable from the dim body
 /// under it. This near-white floor reads as **bold white**, with the wave a
 /// brightening on top rather than the only thing making it visible — the one
 /// place in the feature that draws the eye, because it is the one place
 /// something is still happening.
-pub(super) const REASONING_SHIMMER_BASE: (u8, u8, u8) = (0xC8, 0xC8, 0xC8);
+pub(super) fn reasoning_shimmer_base() -> Color {
+    model_id_color()
+}
 
 /// The settled line's opener — `Thought for 1m 5s · 1.5k tokens`.
 pub(super) const REASONING_DONE: &str = "Thought for ";
 
-/// The settled line's colour: [`STATUS_DONE_COLOR`], the dim the committed
+/// The settled line's colour: [`status_done_color`], the dim the committed
 /// `Done for Ns` summary wears. The two are the same kind of line — turn meta,
 /// bullet-less, one row — and they bracket a turn, so they read as a pair.
 ///
 /// One tone across the whole line and both surfaces: a settled thought is a
 /// footnote about work already done, not a heading. What is *happening* — the
 /// live `● Thinking…` block — is what carries weight and motion.
-pub(super) const REASONING_LABEL_COLOR: Color = STATUS_DONE_COLOR;
+pub(super) fn reasoning_label_color() -> Color {
+    status_done_color()
+}
 
 /// How many **wrapped display rows** of the thought the live block tails. The
 /// window is small on purpose: it grows the live region upward (invariant 3),
@@ -376,14 +419,22 @@ pub(super) const BG_OUTPUT_LABEL: &str = "Output:";
 pub(super) const BG_STATUS_RUNNING: &str = "running";
 
 /// The manager's title/selection accent (the palette accent) and dim text.
-pub(super) const BG_SELECTED_COLOR: Color = MENU_SELECTED_COLOR;
+pub(super) fn bg_selected_color() -> Color {
+    menu_selected_color()
+}
 
-pub(super) const BG_DIM_COLOR: Color = TOOL_DIM_COLOR;
+pub(super) fn bg_dim_color() -> Color {
+    tool_dim_color()
+}
 
 /// The notice bullet colours: green success, red failure/stop.
-pub(super) const BG_NOTICE_OK_COLOR: Color = TOOL_OK_COLOR;
+pub(super) fn bg_notice_ok_color() -> Color {
+    tool_ok_color()
+}
 
-pub(super) const BG_NOTICE_FAIL_COLOR: Color = TOOL_FAIL_COLOR;
+pub(super) fn bg_notice_fail_color() -> Color {
+    tool_fail_color()
+}
 
 /// Placeholder body for a still-executing tool — the `⎿ Running…` row, shown
 /// under a backend tool's `● name(args)` header (req 2: a running cell shows the
@@ -399,35 +450,42 @@ pub(super) const TOOL_WAITING: &str = "Waiting…";
 /// The **resting** colour of a tool that is still executing: the same grey the
 /// permission prompt shows over the call it is asking about, so everything
 /// in flight reads muted and only the green/red *resolution* lands as colour.
-/// (It was a blue `#61AFEF`; the blue survives as [`CONTEXT_USER_COLOR`], which
+/// (It was a blue `#61AFEF`; the blue survives as [`context_user_color`], which
 /// is a role tag, not a running state.)
 ///
 /// In the **live region** the bullet does not sit at rest — it breathes
-/// between [`TOOL_PULSE_DIM`] and [`TOOL_PULSE_BRIGHT`] (see
+/// between [`tool_pulse_dim`] and [`tool_pulse_bright`] (see
 /// [`tool_pulse_color`](super::tool::tool_pulse_color)), Claude-Code's running
 /// dot. The breath's peak is this same grey, so the animation only ever dips
 /// *below* the resting colour — this value is both the still frame and the top
 /// of the cycle. A frozen render (a scrollback commit, the Ctrl+O transcript's
 /// pager) shows it.
-pub(super) const TOOL_RUNNING_COLOR: Color = TOOL_DIM_COLOR;
+pub(super) fn tool_running_color() -> Color {
+    tool_dim_color()
+}
 
 // A running bullet's pulse — the raised-cosine breath the live region animates
-// it with, one full dim→bright→dim cycle per `TOOL_PULSE_PERIOD`. Kept as RGB
-// triples (not `Color`) because they are blended; the same shape as the status
-// line's `SHIMMER_*` wave, and driven by the same boundary-injected frame clock
-// (`App::set_pulse`). See `docs/tool-pulse.md`.
+// it with, one full dim→bright→dim cycle per `TOOL_PULSE_PERIOD`. Its two ends
+// are blended through `wrap::blend_color` (which steps rather than mixes when
+// a theme names a terminal-palette colour, `docs/theme.md`); the same shape as
+// the status line's `SHIMMER_*` wave, and driven by the same boundary-injected
+// frame clock (`App::set_pulse`). See `docs/tool-pulse.md`.
 
 /// The dim end of the breath — where the cycle starts and ends. Well below the
 /// resting grey, so the dip carries the whole animation (the peak can't help:
 /// it *is* the resting grey) without the bullet ever vanishing.
-pub(super) const TOOL_PULSE_DIM: (u8, u8, u8) = (0x4A, 0x4A, 0x4A);
+pub(super) fn tool_pulse_dim() -> Color {
+    palette().pulse_dim
+}
 
-/// The bright end of the breath, reached at the half-cycle — [`TOOL_DIM_COLOR`]
+/// The bright end of the breath, reached at the half-cycle — [`tool_dim_color`]
 /// exactly, so the bullet **never goes brighter than the grey it rests on**.
 /// The pulse dips *down* from the permission prompt's grey and comes back; it
 /// does not flash toward white, which read as a blink rather than a breath and
 /// pulled the eye off the reply.
-pub(super) const TOOL_PULSE_BRIGHT: (u8, u8, u8) = (0x8A, 0x8A, 0x8A);
+pub(super) fn tool_pulse_bright() -> Color {
+    tool_dim_color()
+}
 
 /// One full dim→bright→dim breath. Slow enough to read as a pulse rather than a
 /// flicker, brisk enough to say "something is happening" — and comfortably
@@ -438,36 +496,50 @@ pub(super) const TOOL_PULSE_PERIOD: Duration = Duration::from_millis(1000);
 /// bullet and `⎿ Waiting…` row read muted; it is the running head's *resting*
 /// grey too, the difference being that a running bullet **moves**,
 /// since it hasn't begun). Shares the argument/peek dim grey.
-pub(super) const TOOL_WAITING_COLOR: Color = TOOL_DIM_COLOR;
+pub(super) fn tool_waiting_color() -> Color {
+    tool_dim_color()
+}
 
 /// Green — a tool that finished successfully. A vivid, saturated green (rather
 /// than the old muted `#98C379`) so the `●` success bullet clearly stands out,
 /// Claude-Code style. Shared by the `+`-line diff colour, the active-model tick
-/// and the context view's assistant tag ([`TOOL_DIFF_ADD_COLOR`] etc.).
-pub(super) const TOOL_OK_COLOR: Color = Color::Rgb(0x3F, 0xB9, 0x50);
+/// and the context view's assistant tag ([`tool_diff_add_color`] etc.).
+pub(super) fn tool_ok_color() -> Color {
+    palette().success
+}
 
 /// Red — a tool that failed (shares the backend-error red).
-pub(super) const TOOL_FAIL_COLOR: Color = ERROR_COLOR;
+pub(super) fn tool_fail_color() -> Color {
+    error_color()
+}
 
 /// White — the tool's name.
-pub(super) const TOOL_NAME_COLOR: Color = AI_COLOR;
+pub(super) fn tool_name_color() -> Color {
+    ai_color()
+}
 
 /// White (the normal assistant reply colour) + bold — the whole `(...)` header
 /// body: the command/args text **and** its framing `(`/`)` (and a truncation
 /// `…`) alike, so a `bash` command and its brackets read as prominently as a
 /// normal reply rather than the old dim grey. Claude-Code's noticeable tool
 /// header; shared by every tool via [`tool_header_lines`].
-pub(super) const TOOL_ARGS_COLOR: Color = AI_COLOR;
+pub(super) fn tool_args_color() -> Color {
+    ai_color()
+}
 
 /// White (the normal reply colour) — a finished tool's **output** under the `⎿`
 /// gutter (command/shell output), so it's as legible as a normal message rather
 /// than dim grey. The `⎿` corner, the `Running…`/`Waiting…`/`(no output)`
-/// placeholders and the `… +N lines` hint all stay [`TOOL_DIM_COLOR`].
-pub(super) const TOOL_OUTPUT_COLOR: Color = AI_COLOR;
+/// placeholders and the `… +N lines` hint all stay [`tool_dim_color`].
+pub(super) fn tool_output_color() -> Color {
+    ai_color()
+}
 
 /// Dim grey — a tool's `⎿` gutter corner, its `Running…`/`Waiting…`/`(no output)`
 /// placeholders and the `… +N lines` hint.
-pub(super) const TOOL_DIM_COLOR: Color = Color::Rgb(0x8A, 0x8A, 0x8A);
+pub(super) fn tool_dim_color() -> Color {
+    palette().dim
+}
 
 // ===== The task tools' live checklist (docs/task-tools.md) =====
 
@@ -480,11 +552,15 @@ pub(super) const TASK_COMPLETED_GLYPH: &str = "✔";
 /// The in-progress glyph's colour — the system cyan (Claude Code paints its
 /// filled square in the brand colour; cyan is this TUI's accent). The
 /// subject beside it renders bold in the normal reply colour.
-pub(super) const TASK_IN_PROGRESS_COLOR: Color = SYSTEM_COLOR;
+pub(super) fn task_in_progress_color() -> Color {
+    system_color()
+}
 
-/// The completed glyph's green ([`TOOL_OK_COLOR`]); the subject beside it is
+/// The completed glyph's green ([`tool_ok_color`]); the subject beside it is
 /// dim and struck through — Claude Code's done row.
-pub(super) const TASK_COMPLETED_COLOR: Color = TOOL_OK_COLOR;
+pub(super) fn task_completed_color() -> Color {
+    tool_ok_color()
+}
 
 /// The dim `› blocked by #1, #2` suffix's marker (Claude Code's
 /// `figures.pointerSmall`).
@@ -503,31 +579,43 @@ pub(super) const TASK_MAX_ROWS: usize = 10;
 
 /// Green — an added (`+`) line in an `edit`/`write` diff cell (codex's diff
 /// look, adapted to the `⎿` gutter; see `docs/tools.md`).
-pub(super) const TOOL_DIFF_ADD_COLOR: Color = TOOL_OK_COLOR;
+pub(super) fn tool_diff_add_color() -> Color {
+    tool_ok_color()
+}
 
 /// Red — a removed (`-`) line in an `edit`/`write` diff cell.
-pub(super) const TOOL_DIFF_DEL_COLOR: Color = TOOL_FAIL_COLOR;
+pub(super) fn tool_diff_del_color() -> Color {
+    tool_fail_color()
+}
 
 /// Dark-green background tint of an added row in a numbered `edit`/`write`
 /// cell (codex's dark-theme add tint): the syntax-coloured text reads over it
 /// and the row pads to the full width, like the user-message block.
-pub(super) const TOOL_DIFF_ADD_BG: Color = Color::Rgb(0x21, 0x3A, 0x2B);
+pub(super) fn tool_diff_add_bg() -> Color {
+    palette().diff_add_bg
+}
 
 /// Dark-red background tint of a removed row (codex's dark-theme delete
 /// tint); the removed text is additionally dimmed, codex-style.
-pub(super) const TOOL_DIFF_DEL_BG: Color = Color::Rgb(0x4A, 0x22, 0x1D);
+pub(super) fn tool_diff_del_bg() -> Color {
+    palette().diff_del_bg
+}
 
 /// Background tint of the **characters that changed** on an added row — the
 /// character-level refinement's own colour (`docs/inline-diff.md`). A clearly
-/// brighter green than the row's [`TOOL_DIFF_ADD_BG`], because the two are
+/// brighter green than the row's [`tool_diff_add_bg`], because the two are
 /// read together: the muted row tint says *this line changed*, the bright mark
 /// says *here*. Bright enough to find at a glance, dark enough that the row's
 /// syntax colours still read over it.
-pub(super) const TOOL_DIFF_ADD_MARK_BG: Color = Color::Rgb(0x2E, 0x6F, 0x3E);
+pub(super) fn tool_diff_add_mark_bg() -> Color {
+    palette().diff_add_mark_bg
+}
 
 /// Background tint of the characters that changed on a removed row — the
-/// [`TOOL_DIFF_ADD_MARK_BG`] twin over [`TOOL_DIFF_DEL_BG`].
-pub(super) const TOOL_DIFF_DEL_MARK_BG: Color = Color::Rgb(0x8B, 0x2F, 0x27);
+/// [`tool_diff_add_mark_bg`] twin over [`tool_diff_del_bg`].
+pub(super) fn tool_diff_del_mark_bg() -> Color {
+    palette().diff_del_mark_bg
+}
 
 /// How much of a `-`/`+` line pair must be **common** for the character-level
 /// refinement to run at all, as a percentage of the longer line's
@@ -677,18 +765,26 @@ pub(super) const CONTEXT_TOOL_CALL_PREFIX: &str = "→ ";
 
 /// Role-tag colours — the tool palette's hues (user blue, assistant green,
 /// system amber, tool-result purple) so the roles scan apart at a glance. The
-/// blue was the running tool's until that went grey ([`TOOL_RUNNING_COLOR`]);
+/// blue was the running tool's until that went grey ([`tool_running_color`]);
 /// a role tag is not a running state, so it keeps the hue as its own value.
-pub(super) const CONTEXT_USER_COLOR: Color = Color::Rgb(0x61, 0xAF, 0xEF);
+pub(super) fn context_user_color() -> Color {
+    palette().link
+}
 
-pub(super) const CONTEXT_ASSISTANT_COLOR: Color = TOOL_OK_COLOR;
+pub(super) fn context_assistant_color() -> Color {
+    tool_ok_color()
+}
 
-pub(super) const CONTEXT_SYSTEM_COLOR: Color = Color::Rgb(0xE5, 0xC0, 0x7B);
+pub(super) fn context_system_color() -> Color {
+    palette().warning
+}
 
 /// The `tool:` result-role tag and the `→ name(args)` tool-call lines under an
 /// assistant entry — a distinct purple so the native tool round-trip reads
 /// apart from plain assistant text.
-pub(super) const CONTEXT_TOOL_COLOR: Color = Color::Rgb(0xC6, 0x78, 0xDD);
+pub(super) fn context_tool_color() -> Color {
+    palette().purple
+}
 
 // --- /resume session picker (the other alternate-screen overlay) — codex's
 // resume picker, sized down (docs/resume.md): the same slash-tiled title
@@ -729,10 +825,14 @@ pub(super) const RESUME_MARKER: &str = "❯ ";
 /// The selected row's full-width background tint — codex blends white over
 /// the terminal background; a grey lift noticeably lighter than the
 /// user-message block plays that role here.
-pub(super) const RESUME_SELECTED_BG: Color = Color::Rgb(0x3A, 0x40, 0x46);
+pub(super) fn resume_selected_bg() -> Color {
+    palette().selection_bg
+}
 
 /// The Tab-focused toolbar control's active value — codex's magenta.
-pub(super) const RESUME_FOCUS_COLOR: Color = Color::Magenta;
+pub(super) fn resume_focus_color() -> Color {
+    palette().purple
+}
 
 /// The gap between the toolbar's Filter and Sort tab pairs (codex's).
 pub(super) const RESUME_TOOLBAR_GAP: &str = "   ";
@@ -756,19 +856,27 @@ pub(super) const MODEL_INDENT: &str = "  ";
 pub(super) const MODEL_PROMPT: &str = "❯ ";
 
 /// Cyan — the `❯` prompt and the selected row (the palette-selection accent).
-pub(super) const MODEL_SELECTED_COLOR: Color = MENU_SELECTED_COLOR;
+pub(super) fn model_selected_color() -> Color {
+    menu_selected_color()
+}
 
 /// The selected row's marker; unselected rows get spaces the same width.
 pub(super) const MODEL_MARKER: &str = "→ ";
 
 /// Light grey — an unselected model id (readable but quieter than the selection).
-pub(super) const MODEL_ID_COLOR: Color = Color::Rgb(0xC8, 0xC8, 0xC8);
+pub(super) fn model_id_color() -> Color {
+    palette().text_muted
+}
 
 /// Dim — the `[provider]` tag, the counter, and the `Model Name:` line.
-pub(super) const MODEL_META_COLOR: Color = TOOL_DIM_COLOR;
+pub(super) fn model_meta_color() -> Color {
+    tool_dim_color()
+}
 
 /// Green — the ✓ marking the currently-active model (shares the tool-ok green).
-pub(super) const MODEL_ACTIVE_COLOR: Color = TOOL_OK_COLOR;
+pub(super) fn model_active_color() -> Color {
+    tool_ok_color()
+}
 
 /// The mark appended to the active model's row.
 pub(super) const MODEL_ACTIVE_MARK: &str = " ✓";
@@ -819,7 +927,9 @@ pub(super) const MODEL_ERROR_MAX_ROWS: u16 = 3;
 /// Copilot`, `Enter your Agent Zero API key`. The palette accent the whole
 /// picker family already selects with, so a title reads as *this* flow's own
 /// heading rather than a fourth colour to learn.
-pub(super) const LOGIN_TITLE_COLOR: Color = MODEL_SELECTED_COLOR;
+pub(super) fn login_title_color() -> Color {
+    model_selected_color()
+}
 
 /// The separator between a `/login` row's name and its configured status.
 pub(super) const LOGIN_STATUS_SEP: &str = " · ";
@@ -832,9 +942,9 @@ pub(super) const LOGIN_STATUS_SEP: &str = " · ";
 ///
 /// Split into a **mark** and a **label** because they are coloured
 /// differently. The `✔` keeps the green the `/model` picker's ✓ wears
-/// ([`MODEL_ACTIVE_COLOR`]) — it is the thing worth finding down a list of
+/// ([`model_active_color`]) — it is the thing worth finding down a list of
 /// names — while its word, the `◯`, and the separator before them stay dim
-/// ([`MODEL_META_COLOR`]): a status is a fact about a row rather than an
+/// ([`model_meta_color`]): a status is a fact about a row rather than an
 /// alert, and colouring the whole tail made a list of facts read as a column
 /// of them.
 pub(super) const LOGIN_CONFIGURED_MARK: &str = "✔";
@@ -889,14 +999,18 @@ pub(super) const DEVICE_BOX_VERTICAL: &str = "│";
 pub(super) const DEVICE_BOX_PAD: &str = "  ";
 
 /// The code itself — bright and bold, the one thing on the page to transcribe.
-pub(super) const DEVICE_CODE_COLOR: Color = Color::Rgb(0xFF, 0xFF, 0xFF);
+pub(super) fn device_code_color() -> Color {
+    ai_color()
+}
 
 /// The verification URL — **dim**, like the sentence under it. The one thing
 /// on this page the eye should land on is the code in its box; an accented URL
 /// competed with it, and the URL is an instruction rather than a choice. It is
 /// still a clickable hyperlink; the underline is what says so, which is why
 /// linking it does not repaint it (`docs/links.md`).
-pub(super) const DEVICE_URI_COLOR: Color = MODEL_META_COLOR;
+pub(super) fn device_uri_color() -> Color {
+    model_meta_color()
+}
 
 /// The status line's two states, and the countdown clause appended to the wait.
 pub(super) const DEVICE_STARTING: &str = "Requesting a code…";
@@ -977,11 +1091,15 @@ pub(super) const SETTINGS_VALUE_GAP: usize = 3;
 
 /// Light grey — a value that is *on* (`true`, a retry count, a temperature):
 /// readable, and the same weight an unselected model id carries.
-pub(super) const SETTINGS_VALUE_COLOR: Color = MODEL_ID_COLOR;
+pub(super) fn settings_value_color() -> Color {
+    model_id_color()
+}
 
 /// Dim — a value that is *off* (`false`, `default`) or unavailable, so a
 /// glance down the column shows what is actually doing something.
-pub(super) const SETTINGS_VALUE_OFF_COLOR: Color = MODEL_META_COLOR;
+pub(super) fn settings_value_off_color() -> Color {
+    model_meta_color()
+}
 
 /// The values rendered in the dim "off" colour.
 pub(super) const SETTINGS_OFF_VALUES: &[&str] = &["false", "default", "0", "disabled"];
@@ -1084,17 +1202,65 @@ pub(super) const SPINNER_MENU_GAP: usize = 3;
 pub(super) const SPINNER_PREVIEW_VERB: &str = "Working";
 pub(super) const SPINNER_PREVIEW_DONE_VERB: &str = "Done";
 
+// --- The inline `/theme` picker (docs/theme.md). The `/spinner` picker's
+// frame — its search line, its `→` marker, its counter, description and hint
+// — over one row per colour theme, each wearing a swatch of its own accents,
+// and a preview built from REAL cells (a user bubble, an `Edit` diff cell, an
+// assistant reply with a code block) rendered under the highlighted theme
+// through the conversation's own builders. The palettes themselves live in
+// `ui::palette`; only the picker's words and geometry are here. ---
+
+/// The key hint pinned under the description — the picker's whole grammar.
+pub(super) const THEME_HINT: &str = "Type to search · Enter to choose · Esc to cancel";
+
+/// The list placeholder when the search matches no theme.
+pub(super) const THEME_NO_MATCH: &str = "No matching themes";
+
+/// The row (within the picker's framed area) the `❯` search line sits on —
+/// top rule (0), gap (1), search (2). Shared by `render_theme_picker` and
+/// [`cursor_position`](super::layout::cursor_position) so the caret lands on
+/// the line drawn.
+pub(super) const THEME_SEARCH_ROW: u16 = 2;
+
+/// The cap on the picker's visible list rows (the settings window's size —
+/// the eleven-theme catalog windows by one row).
+pub(super) const THEME_MENU_MAX_ROWS: u16 = SETTINGS_MENU_MAX_ROWS;
+
+/// Columns between the widest visible theme name and the swatch column, so
+/// the swatches line up down the list.
+pub(super) const THEME_MENU_GAP: usize = 3;
+
+/// One swatch cell — a row wears five, in its own theme's accent, link,
+/// success, warning and error colours, so the palettes compare at a glance
+/// the way the `/spinner` rows' live spinners do.
+pub(super) const THEME_SWATCH: &str = "●";
+
+/// The preview's sample conversation: the user asks for a change, an `Edit`
+/// call makes it (a real numbered diff cell — the code theme, the diff tints,
+/// the inline-diff marks and the success bullet in one cell), and the reply
+/// names the file in inline code over a fenced code line. Rendered by the
+/// conversation's own builders under the highlighted theme, so the preview
+/// and the conversation can never disagree.
+pub(super) const THEME_PREVIEW_USER: &str = "Rename the greeting in greet.py";
+pub(super) const THEME_PREVIEW_TOOL: &str = "Edit";
+pub(super) const THEME_PREVIEW_PATH: &str = "greet.py";
+pub(super) const THEME_PREVIEW_OLD: &str = "def greet(name):\n    print(\"Hello, world\")\n";
+pub(super) const THEME_PREVIEW_NEW: &str = "def greet(name):\n    print(f\"Hello, {name}\")\n";
+pub(super) const THEME_PREVIEW_REPLY: &str = "Done — `greet.py` greets by name now:\n```python\ngreet(\"Alter Zero\")  # Hello, Alter Zero\n```";
+
 // --- the read-only /hooks menu (docs/hooks-menu.md). It reuses the picker
-// family's accents — MODEL_SELECTED_COLOR for the selection, MODEL_ID_COLOR
-// for unselected labels, MODEL_META_COLOR for everything dim,
-// HOOKS_TITLE_COLOR for the titles, BORDER_COLOR for the frame and the
+// family's accents — model_selected_color() for the selection, model_id_color()
+// for unselected labels, model_meta_color() for everything dim,
+// hooks_title_color() for the titles, border_color() for the frame and the
 // detail page's command box. ---
 
 /// Every level's title colour — the **cyan** its `/mcp` twin wears
-/// ([`MCP_TITLE_COLOR`]). The headline is the row that answers "where am I?"
+/// ([`mcp_title_color`]). The headline is the row that answers "where am I?"
 /// in a menu you walk several levels deep, so both menus land the eye the
 /// same way.
-pub(super) const HOOKS_TITLE_COLOR: Color = MODEL_SELECTED_COLOR;
+pub(super) fn hooks_title_color() -> Color {
+    model_selected_color()
+}
 
 /// The events-level title.
 pub(super) const HOOKS_TITLE: &str = "Hooks";
@@ -1206,13 +1372,15 @@ pub(super) const MCP_NONE_FOUND: &str = "No MCP servers configured. Add one at:"
 pub(super) const MCP_FIELD_COL: usize = 18;
 
 /// Every page's headline — **cyan**, shared with its `/hooks` twin
-/// ([`HOOKS_TITLE_COLOR`]). This is a *walk* four pages deep, and the
+/// ([`hooks_title_color`]). This is a *walk* four pages deep, and the
 /// headline is the only row that answers "where am I?", so it is the row the
 /// eye must land on first (`docs/mcp.md`).
-pub(super) const MCP_TITLE_COLOR: Color = MODEL_SELECTED_COLOR;
+pub(super) fn mcp_title_color() -> Color {
+    model_selected_color()
+}
 
 /// The separator between a server row's name, status and tool count. It is
-/// **chrome, not status**, so it stays [`MODEL_META_COLOR`] dim at every
+/// **chrome, not status**, so it stays [`model_meta_color`] dim at every
 /// state — only the glyph carries the status colour. Painting it with the
 /// glyph made a connected row's first `·` green while its second stayed dim.
 pub(super) const MCP_ROW_SEPARATOR: &str = " · ";
@@ -1222,20 +1390,28 @@ pub(super) const MCP_ROW_SEPARATOR: &str = " · ";
 /// the values they introduce are quiet by default — an address, a path, a
 /// protocol revision, a count. The label is the column the eye runs down;
 /// the value is what it stops on once it has found the row.
-pub(super) const MCP_DETAIL_LABEL_COLOR: Color = AI_COLOR;
-pub(super) const MCP_DETAIL_VALUE_COLOR: Color = MODEL_META_COLOR;
+pub(super) fn mcp_detail_label_color() -> Color {
+    ai_color()
+}
+pub(super) fn mcp_detail_value_color() -> Color {
+    model_meta_color()
+}
 
 /// The exception: a value that is itself the answer to "is this server
 /// working, and what can it do?" — the `Status:`/`Auth:` words and the
 /// capability list — keeps the light the addresses around it give up.
-pub(super) const MCP_DETAIL_STATE_COLOR: Color = AI_COLOR;
+pub(super) fn mcp_detail_state_color() -> Color {
+    ai_color()
+}
 
 /// The tool's own description — **half white**: a step down from the label
 /// announcing it, a clear step up from the schema prose below it. It is the
 /// one paragraph on the page written *for* a reader rather than derived from
 /// a schema, so it must not read as boilerplate; full white made it shout
 /// over the labels that organise the page.
-pub(super) const MCP_DESCRIPTION_COLOR: Color = MODEL_ID_COLOR;
+pub(super) fn mcp_description_color() -> Color {
+    model_id_color()
+}
 
 /// The tool page's compact field spacing: one space after the label, not the
 /// server page's [`MCP_FIELD_COL`] pad. Its two labels (`Tool name:`,
@@ -1269,7 +1445,9 @@ pub(super) const HOOKS_MODIFY_NOTE: &str =
 // never display it; the inline view never shows any. See docs/timestamps.md. ---
 
 /// Dim grey — the user message's right-aligned timestamp in the Ctrl+O transcript.
-pub(super) const TIMESTAMP_COLOR: Color = TOOL_DIM_COLOR;
+pub(super) fn timestamp_color() -> Color {
+    tool_dim_color()
+}
 
 // --- Live status indicator (codex / Claude-Code style). While a turn is in
 // flight a status line sits in the strip above the box (with a blank gap row
@@ -1286,7 +1464,9 @@ pub(super) const TIMESTAMP_COLOR: Color = TOOL_DIM_COLOR;
 // `HistoryItem::Summary`). See docs/status-indicator.md. ---
 
 /// White — the comet's head (matches the codex/Claude-Code white status text).
-pub(super) const STATUS_COLOR: Color = AI_COLOR;
+pub(super) fn status_color() -> Color {
+    ai_color()
+}
 
 /// The comet-spinner animation frames (a Larson-scanner sweep, ten frames):
 /// the bright head (`●`) drags a two-cell fading tail (`•` then `·`) out to
@@ -1315,11 +1495,13 @@ pub(super) const SPINNER_INTERVAL: Duration = Duration::from_millis(80);
 pub(super) const SPINNER_HEAD: char = '●';
 
 /// The tail cell right behind the head; the `·` end (and everything else in
-/// the frame — walls, empty track) fades to [`STATUS_DETAIL_COLOR`].
+/// the frame — walls, empty track) fades to [`status_detail_color`].
 pub(super) const SPINNER_TAIL_MID: char = '•';
 
 /// Mid grey — the `•` tail cell, between the white head and the dim tail end.
-pub(super) const SPINNER_TAIL_COLOR: Color = Color::Rgb(0xC8, 0xC8, 0xC8);
+pub(super) fn spinner_tail_color() -> Color {
+    model_id_color()
+}
 
 /// How many spans [`spinner_spans`] emits (one per frame cell: the left wall,
 /// six track cells, the right wall) — the verb's per-char spans start at this
@@ -1327,12 +1509,16 @@ pub(super) const SPINNER_TAIL_COLOR: Color = Color::Rgb(0xC8, 0xC8, 0xC8);
 pub(super) const SPINNER_SPAN_COUNT: usize = 8;
 
 /// Dim grey — the parenthesised metrics (`elapsed · tokens · thinking`).
-pub(super) const STATUS_DETAIL_COLOR: Color = TOOL_DIM_COLOR;
+pub(super) fn status_detail_color() -> Color {
+    tool_dim_color()
+}
 
 /// Amber — the `retrying {n}/{max}` clause. A warning hue (One-Dark yellow),
 /// distinct from the dim metrics and the error red: the request hasn't failed,
 /// it's recovering. See `docs/llm.md`.
-pub(super) const STATUS_RETRY_COLOR: Color = Color::Rgb(0xE5, 0xC0, 0x7B);
+pub(super) fn status_retry_color() -> Color {
+    palette().warning
+}
 
 /// Trailing ellipsis after the working verb (`Working…`).
 pub(super) const STATUS_ELLIPSIS: &str = "…";
@@ -1349,7 +1535,9 @@ pub(super) const STATUS_ARROW_UP: &str = "↑";
 pub(super) const STATUS_INTERRUPT_HINT: &str = "esc to interrupt";
 
 /// Dim grey — the committed `"{done verb} for {n}"` turn summary.
-pub(super) const STATUS_DONE_COLOR: Color = TOOL_DIM_COLOR;
+pub(super) fn status_done_color() -> Color {
+    tool_dim_color()
+}
 
 /// The status line's row in the streaming strip.
 pub(super) const STATUS_ROWS: u16 = 1;
@@ -1366,10 +1554,14 @@ pub(super) const STATUS_GAP_ROWS: u16 = 1;
 
 /// The white-grey base of the shimmering verb text (codex's truecolor fallback
 /// foreground) — dim enough that the bright band reads clearly.
-pub(super) const SHIMMER_BASE: (u8, u8, u8) = (0x88, 0x88, 0x88);
+pub(super) fn shimmer_base() -> Color {
+    palette().shimmer_base
+}
 
 /// The bright white the band's crest blends toward.
-pub(super) const SHIMMER_HIGHLIGHT: (u8, u8, u8) = (0xFF, 0xFF, 0xFF);
+pub(super) fn shimmer_highlight() -> Color {
+    ai_color()
+}
 
 /// One full sweep of the band across the text (codex's `sweep_seconds`).
 pub(super) const SHIMMER_SWEEP: Duration = Duration::from_secs(2);
@@ -1424,7 +1616,7 @@ pub(super) const SPINNER_WAVE_TRAVEL: f32 = 3.0;
 pub(super) const SPINNER_WAVE_LENGTH: f32 = 16.0;
 
 /// `sparkle` — a spark opening into a heavy star and closing again. Its
-/// colour walks the banner's [`HEADER_GRADIENT_START`] → [`HEADER_GRADIENT_END`]
+/// colour walks the banner's [`header_gradient_start`] → [`header_gradient_end`]
 /// with the bloom (cyan at the spark, blue at the full star), so the theme's
 /// accent rides the status line.
 pub(super) const SPINNER_SPARKLE_FRAMES: &[&str] =
@@ -1447,24 +1639,28 @@ pub(super) const SPINNER_BLOCKS_FRAMES: &[&str] = &["▙", "▛", "▜", "▟"];
 /// How long each `blocks` frame shows.
 pub(super) const SPINNER_BLOCKS_INTERVAL: Duration = Duration::from_millis(150);
 
-/// `pulse` — one still `●` whose colour breathes [`SPINNER_PULSE_DIM`] →
-/// [`SPINNER_PULSE_BRIGHT`] → dim once per [`SPINNER_PULSE_PERIOD`]: the
+/// `pulse` — one still `●` whose colour breathes [`spinner_pulse_dim`] →
+/// [`spinner_pulse_bright`] → dim once per [`SPINNER_PULSE_PERIOD`]: the
 /// running tool bullet's breath (docs/tool-pulse.md), taken up to white at
 /// the crest so it reads as a status line's head rather than a resting cell.
 pub(super) const SPINNER_PULSE_FRAMES: &[&str] = &["●"];
 
 /// The bottom of the `pulse` breath — the tool bullet's own dim.
-pub(super) const SPINNER_PULSE_DIM: (u8, u8, u8) = TOOL_PULSE_DIM;
+pub(super) fn spinner_pulse_dim() -> Color {
+    tool_pulse_dim()
+}
 
 /// The crest of the `pulse` breath — the shimmer's white.
-pub(super) const SPINNER_PULSE_BRIGHT: (u8, u8, u8) = SHIMMER_HIGHLIGHT;
+pub(super) fn spinner_pulse_bright() -> Color {
+    shimmer_highlight()
+}
 
 /// One `pulse` breath — the tool bullet's period, so a pulsing status line
 /// and a running tool cell breathe in step.
 pub(super) const SPINNER_PULSE_PERIOD: Duration = TOOL_PULSE_PERIOD;
 
 /// `bars` — a bar rising `▁` → `█` and falling back, brightening
-/// [`SPINNER_BARS_LOW`] → [`SPINNER_BARS_HIGH`] with its height, like a
+/// [`spinner_bars_low`] → [`spinner_bars_high`] with its height, like a
 /// level meter.
 pub(super) const SPINNER_BARS_FRAMES: &[&str] = &[
     "▁", "▂", "▃", "▄", "▅", "▆", "▇", "█", "▇", "▆", "▅", "▄", "▃", "▂",
@@ -1474,10 +1670,14 @@ pub(super) const SPINNER_BARS_FRAMES: &[&str] = &[
 pub(super) const SPINNER_BARS_INTERVAL: Duration = Duration::from_millis(60);
 
 /// The lowest bar's grey — the tool pulse's bright, so even `▁` reads.
-pub(super) const SPINNER_BARS_LOW: (u8, u8, u8) = TOOL_PULSE_BRIGHT;
+pub(super) fn spinner_bars_low() -> Color {
+    tool_pulse_bright()
+}
 
 /// The full bar's white.
-pub(super) const SPINNER_BARS_HIGH: (u8, u8, u8) = SHIMMER_HIGHLIGHT;
+pub(super) fn spinner_bars_high() -> Color {
+    shimmer_highlight()
+}
 
 /// `line` — the classic ASCII spinner, for a font with none of the glyphs
 /// above; white bold.
@@ -1513,10 +1713,14 @@ pub(super) const MENU_DESC_COL: usize = 25;
 
 /// Cyan — the **selected** row: its `/name` *and* description share this colour
 /// (for consistency); the name is additionally bold.
-pub(super) const MENU_SELECTED_COLOR: Color = Color::Rgb(0x56, 0xB6, 0xC2);
+pub(super) fn menu_selected_color() -> Color {
+    palette().accent
+}
 
 /// Dim grey — an unselected row (name and description alike).
-pub(super) const MENU_DIM_COLOR: Color = TOOL_DIM_COLOR;
+pub(super) fn menu_dim_color() -> Color {
+    tool_dim_color()
+}
 
 /// The palette's single placeholder row when the `/token` matches no command.
 pub(super) const MENU_NO_MATCH: &str = "No matching commands";
@@ -1621,10 +1825,14 @@ pub(super) const SHORTCUTS: &[(&str, &str)] = &[
 pub(super) const SHORTCUTS_COL: usize = 30;
 
 /// Cyan — an entry's key (the palette-selection accent).
-pub(super) const SHORTCUTS_KEY_COLOR: Color = MENU_SELECTED_COLOR;
+pub(super) fn shortcuts_key_color() -> Color {
+    menu_selected_color()
+}
 
 /// Dim grey — an entry's label (codex dims the whole overlay).
-pub(super) const SHORTCUTS_TEXT_COLOR: Color = TOOL_DIM_COLOR;
+pub(super) fn shortcuts_text_color() -> Color {
+    tool_dim_color()
+}
 
 // --- Esc-Esc backtrack (docs/backtrack.md). A primed first Esc takes the
 // footer slot with a hint naming the second (codex's `esc_backtrack_hint`
@@ -1665,7 +1873,9 @@ pub(super) const FOOTER_SEPARATOR: &str = " · ";
 
 /// The footer's text colour — every segment dim, codex's no-theme-colours
 /// status-line style.
-pub(super) const FOOTER_COLOR: Color = TOOL_DIM_COLOR;
+pub(super) fn footer_color() -> Color {
+    tool_dim_color()
+}
 
 /// The least gap kept between the footer's left chain and the permission
 /// mode pinned at the row's right edge — the mode's reservation is its own
@@ -1677,11 +1887,15 @@ pub(super) const FOOTER_MODE_GAP: usize = 2;
 /// segment on the palette-selection cyan and waits for the Enter that opens the
 /// ↓ manager band (Claude-Code-style — see `docs/background.md`). Only that one
 /// segment changes; the model / cwd / context-gauge segments stay dim.
-pub(super) const FOOTER_FOCUS_BG: Color = MENU_SELECTED_COLOR;
+pub(super) fn footer_focus_bg() -> Color {
+    menu_selected_color()
+}
 
 /// The focused indicator's ink on that cyan fill — near-black, so the lit
 /// segment reads as a chip rather than a smudge.
-pub(super) const FOOTER_FOCUS_FG: Color = Color::Rgb(0x1E, 0x1E, 0x1E);
+pub(super) fn footer_focus_fg() -> Color {
+    palette().on_accent
+}
 
 // --- The transient toast: a one-line, self-clearing status message pinned just
 // above the box (`Copied last message to clipboard`, `/resume is disabled …`).
@@ -1694,11 +1908,15 @@ pub(super) const FOOTER_FOCUS_FG: Color = Color::Rgb(0x1E, 0x1E, 0x1E);
 pub(super) const TOAST_INDENT: &str = "  ";
 
 /// An info toast's colour (a confirmation / soft rejection) — dim, like the footer.
-pub(super) const TOAST_COLOR: Color = TOOL_DIM_COLOR;
+pub(super) fn toast_color() -> Color {
+    tool_dim_color()
+}
 
 /// An error toast's colour (a failure — a `/copy` error, a bad model switch) —
 /// the error red.
-pub(super) const TOAST_ERROR_COLOR: Color = ERROR_COLOR;
+pub(super) fn toast_error_color() -> Color {
+    error_color()
+}
 
 // --- The Ctrl+R reverse history search line (codex's reverse-i-search footer,
 // `chat_composer/history_search.rs::history_search_footer_line`). It takes the
@@ -1710,7 +1928,9 @@ pub(super) const SEARCH_PROMPT: &str = "reverse-i-search: ";
 
 /// Cyan — the query text and the accept/cancel hint keys (codex's `.cyan()`;
 /// the palette-selection accent).
-pub(super) const SEARCH_QUERY_COLOR: Color = MENU_SELECTED_COLOR;
+pub(super) fn search_query_color() -> Color {
+    menu_selected_color()
+}
 
 /// The notice appended to the line when the query matches nothing — red, like
 /// codex's `"  no match"`.
@@ -1730,7 +1950,9 @@ pub(super) const SHELL_MODE_LABEL: &str = "Shell mode";
 
 /// The hint's colour — red, like codex's `light_red()` (reuses our error red).
 /// Also colours the `! ` bullet/prompt everywhere shell mode shows.
-pub(super) const SHELL_MODE_COLOR: Color = ERROR_COLOR;
+pub(super) fn shell_mode_color() -> Color {
+    error_color()
+}
 
 /// The bullet opening a committed shell command's header (`! pwd` on the dark
 /// user-style line) — and the composer prompt while shell mode is on (the
@@ -1765,17 +1987,25 @@ pub(super) const HEADER_ART_GAP: usize = 2;
 /// two columns in. The mascot art is drawn flush-left.
 pub(super) const HEADER_INDENT: &str = "  ";
 
-/// The logo gradient's left endpoint — the inline-code cyan ([`INLINE_CODE_COLOR`]).
-pub(super) const HEADER_GRADIENT_START: (u8, u8, u8) = (0x56, 0xB6, 0xC2);
+/// The logo gradient's left endpoint — the inline-code cyan ([`inline_code_color`]).
+pub(super) fn header_gradient_start() -> Color {
+    menu_selected_color()
+}
 
-/// The logo gradient's right endpoint — the link blue ([`LINK_URL_COLOR`]).
-pub(super) const HEADER_GRADIENT_END: (u8, u8, u8) = (0x61, 0xAF, 0xEF);
+/// The logo gradient's right endpoint — the link blue ([`link_url_color`]).
+pub(super) fn header_gradient_end() -> Color {
+    link_url_color()
+}
 
 /// The version badge + hint-token colour — the cyan accent, so they pop.
-pub(super) const HEADER_ACCENT_COLOR: Color = INLINE_CODE_COLOR;
+pub(super) fn header_accent_color() -> Color {
+    inline_code_color()
+}
 
 /// The tagline / cwd / separator colour — dim, like the footer.
-pub(super) const HEADER_META_COLOR: Color = FOOTER_COLOR;
+pub(super) fn header_meta_color() -> Color {
+    footer_color()
+}
 
 // --- Live-region geometry. The bottom region's height is dynamic: it grows with
 // the wrapped input (see `live_height`). `render_live` and `cursor_position` both
@@ -1833,12 +2063,14 @@ pub(super) const AGENT_PROMPT_LABEL: &str = "Prompt:";
 
 pub(super) const AGENT_RESPONSE_LABEL: &str = "Response:";
 
-pub(super) const AGENT_SECTION_COLOR: Color = TOOL_OK_COLOR;
+pub(super) fn agent_section_color() -> Color {
+    tool_ok_color()
+}
 
 /// The rule cell painted **after** the agent session view's composer label —
 /// `── {description} ─` instead of `── {description} ` — so the label sits
 /// embedded in the top rule rather than dangling off its right end
-/// (`docs/agent-tool.md`). One border glyph, [`BORDER_COLOR`]-styled at the
+/// (`docs/agent-tool.md`). One border glyph, [`border_color`]-styled at the
 /// render site.
 pub(super) const AGENT_VIEW_RULE_TAIL: &str = "─";
 
@@ -1894,7 +2126,9 @@ pub(super) const PERMISSION_RULE: &str = "─";
 /// frame stays the stronger line.
 pub(super) const PERMISSION_BODY_RULE: &str = "╌";
 
-pub(super) const PERMISSION_BODY_RULE_COLOR: Color = TOOL_DIM_COLOR;
+pub(super) fn permission_body_rule_color() -> Color {
+    tool_dim_color()
+}
 
 /// One-space inset on every text row (the body's numbers land here too).
 pub(super) const PERMISSION_INDENT: &str = " ";
@@ -1904,25 +2138,35 @@ pub(super) const PERMISSION_COMMAND_INDENT: &str = "   ";
 
 /// The action title (`Create file` / `Edit file` / `Bash command`) — the
 /// palette accent, bold.
-pub(super) const PERMISSION_TITLE_COLOR: Color = MENU_SELECTED_COLOR;
+pub(super) fn permission_title_color() -> Color {
+    menu_selected_color()
+}
 
 /// ` · from the {type} agent`, appended to the title when a subagent asked.
 pub(super) const PERMISSION_AGENT_SEPARATOR: &str = " · from the ";
 
 pub(super) const PERMISSION_AGENT_SUFFIX: &str = " agent";
 
-pub(super) const PERMISSION_AGENT_COLOR: Color = TOOL_DIM_COLOR;
+pub(super) fn permission_agent_color() -> Color {
+    tool_dim_color()
+}
 
 /// The file path under the title, and the command on a `bash` prompt.
-pub(super) const PERMISSION_TARGET_COLOR: Color = TOOL_OUTPUT_COLOR;
+pub(super) fn permission_target_color() -> Color {
+    tool_output_color()
+}
 
 /// The model's own description of a `bash` call, under the command.
-pub(super) const PERMISSION_DETAIL_COLOR: Color = TOOL_DIM_COLOR;
+pub(super) fn permission_detail_color() -> Color {
+    tool_dim_color()
+}
 
 /// The standing notice above a `bash` prompt's question.
 pub(super) const PERMISSION_NOTICE: &str = "This command requires approval";
 
-pub(super) const PERMISSION_NOTICE_COLOR: Color = TOOL_DIM_COLOR;
+pub(super) fn permission_notice_color() -> Color {
+    tool_dim_color()
+}
 
 /// The `❯ ` on the highlighted option row (the unselected rows indent by its
 /// width so the list stays aligned).
@@ -1930,14 +2174,20 @@ pub(super) const PERMISSION_MARKER: &str = "❯ ";
 
 /// The highlighted option row lights up whole — marker, number, and label —
 /// like the slash-command palette's selection.
-pub(super) const PERMISSION_SELECTED_COLOR: Color = MENU_SELECTED_COLOR;
+pub(super) fn permission_selected_color() -> Color {
+    menu_selected_color()
+}
 
 /// The hint row under the options, `{key}{label}` pairs joined by ` · `.
 pub(super) const PERMISSION_HINT_SEPARATOR: &str = " · ";
 
-pub(super) const PERMISSION_HINT_KEY_COLOR: Color = MENU_SELECTED_COLOR;
+pub(super) fn permission_hint_key_color() -> Color {
+    menu_selected_color()
+}
 
-pub(super) const PERMISSION_HINT_TEXT_COLOR: Color = TOOL_DIM_COLOR;
+pub(super) fn permission_hint_text_color() -> Color {
+    tool_dim_color()
+}
 
 /// Tab's amend field: the hints that replace the option row's set.
 pub(super) const PERMISSION_AMEND_HINTS: &[(&str, &str)] = &[
@@ -2006,12 +2256,18 @@ pub(super) const ASK_CHIP_GAP: &str = "  ";
 
 /// The **current** chip lights on the selection background — the cyan block
 /// that says which section the keys act on (the user-requested highlight).
-pub(super) const ASK_CHIP_CURRENT_BG: Color = MENU_SELECTED_COLOR;
+pub(super) fn ask_chip_current_bg() -> Color {
+    menu_selected_color()
+}
 
-pub(super) const ASK_CHIP_CURRENT_FG: Color = FOOTER_FOCUS_FG;
+pub(super) fn ask_chip_current_fg() -> Color {
+    footer_focus_fg()
+}
 
 /// The idle chips, dim so the current one carries the eye.
-pub(super) const ASK_CHIP_COLOR: Color = TOOL_DIM_COLOR;
+pub(super) fn ask_chip_color() -> Color {
+    tool_dim_color()
+}
 
 /// A multi-select option's checkbox, checked and not.
 pub(super) const ASK_CHECKED: &str = "[✔] ";
@@ -2022,10 +2278,14 @@ pub(super) const ASK_UNCHECKED: &str = "[ ] ";
 /// (`1. Black ✔`).
 pub(super) const ASK_PICKED_MARK: &str = " ✔";
 
-pub(super) const ASK_PICKED_COLOR: Color = TOOL_OK_COLOR;
+pub(super) fn ask_picked_color() -> Color {
+    tool_ok_color()
+}
 
 /// An option's description, dim under its label.
-pub(super) const ASK_DESC_COLOR: Color = TOOL_DIM_COLOR;
+pub(super) fn ask_desc_color() -> Color {
+    tool_dim_color()
+}
 
 /// The auto-added free-text row's label.
 pub(super) const ASK_OTHER_LABEL: &str = "Type something.";
@@ -2044,7 +2304,9 @@ pub(super) const ASK_NOTES_PLACEHOLDER: &str = "press n to add notes";
 
 /// The preview panel's box-drawing corners and edges, dim like the body
 /// rules so the content carries the eye.
-pub(super) const ASK_PREVIEW_COLOR: Color = TOOL_DIM_COLOR;
+pub(super) fn ask_preview_color() -> Color {
+    tool_dim_color()
+}
 
 /// The widest the option column may grow in the side-by-side layout, as a
 /// share of the region width — the preview box keeps the rest.
@@ -2070,11 +2332,15 @@ pub(super) const ASK_WARNING: &str = "⚠ You have not answered all questions";
 
 /// The warning's colour — the retry/system amber, the one "caution" tone the
 /// theme already speaks.
-pub(super) const ASK_WARNING_COLOR: Color = STATUS_RETRY_COLOR;
+pub(super) fn ask_warning_color() -> Color {
+    status_retry_color()
+}
 
 /// The review page's `→ {answer}` text — green, so the recorded answer is
 /// the row that carries the eye.
-pub(super) const ASK_ANSWER_COLOR: Color = TOOL_OK_COLOR;
+pub(super) fn ask_answer_color() -> Color {
+    tool_ok_color()
+}
 
 /// The most wrapped rows one review answer shows before capping with a dim
 /// `…` row — an expanded multi-kilobyte paste must not flood the page (the

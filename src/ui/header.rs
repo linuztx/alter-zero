@@ -2,13 +2,13 @@
 //! See `docs/header.md` and `docs/mascot.md`.
 
 use super::theme::*;
-use super::wrap::{clamp_spans, cols, lerp_rgb};
+use super::wrap::{clamp_spans, cols, lerp_color};
 use super::*;
 
 use crate::app::Mascot;
 
-/// Colour `text` with a left-to-right [`HEADER_GRADIENT_START`] →
-/// [`HEADER_GRADIENT_END`] gradient keyed by absolute display column across
+/// Colour `text` with a left-to-right [`header_gradient_start`] →
+/// [`header_gradient_end`] gradient keyed by absolute display column across
 /// `total` columns, coalescing equal-colour runs into spans. The mascot's
 /// cyan → blue wash (docs/header.md) — `total` is the art block's width, so
 /// the wash is uniform down the block and a short row simply stops earlier.
@@ -22,7 +22,7 @@ fn gradient_spans(text: &str, total: usize) -> Vec<Span<'static>> {
         } else {
             col as f32 / (total - 1) as f32
         };
-        let color = lerp_rgb(HEADER_GRADIENT_START, HEADER_GRADIENT_END, t);
+        let color = lerp_color(header_gradient_start(), header_gradient_end(), t);
         match &mut run {
             Some((c, s)) if *c == color => s.push_str(g),
             _ => {
@@ -44,8 +44,8 @@ fn gradient_spans(text: &str, total: usize) -> Vec<Span<'static>> {
 /// dim `(v…)` version, the dim cwd (only with session info), and the cyan
 /// command hint.
 fn meta_rows(app: &App) -> Vec<Vec<Span<'static>>> {
-    let accent = Style::new().fg(HEADER_ACCENT_COLOR);
-    let dim = Style::new().fg(HEADER_META_COLOR);
+    let accent = Style::new().fg(header_accent_color());
+    let dim = Style::new().fg(header_meta_color());
     let mut rows: Vec<Vec<Span<'static>>> = vec![vec![
         Span::styled(HEADER_NAME, Style::new().add_modifier(Modifier::BOLD)),
         Span::styled(format!(" (v{})", env!("CARGO_PKG_VERSION")), dim),
@@ -77,7 +77,7 @@ pub fn startup_notice_lines(text: &str, width: u16) -> Vec<Line<'static>> {
     vec![clamp_spans(
         vec![
             Span::raw(HEADER_INDENT),
-            Span::styled(text.to_string(), Style::new().fg(HEADER_META_COLOR)),
+            Span::styled(text.to_string(), Style::new().fg(header_meta_color())),
         ],
         width as usize,
     )]
@@ -114,7 +114,7 @@ pub(super) fn header_lines_for(app: &App, mascot: Mascot, width: u16) -> Vec<Lin
     // Too narrow to seat the art beside the title: the one-line badge — the
     // gradient name + an accent version — over the same metadata rows.
     if w < art_w + HEADER_ART_GAP + title_w {
-        let accent = Style::new().fg(HEADER_ACCENT_COLOR);
+        let accent = Style::new().fg(header_accent_color());
         let mut badge = vec![Span::raw(HEADER_INDENT)];
         badge.extend(gradient_spans(HEADER_NAME, cols(HEADER_NAME)));
         badge.push(Span::styled(

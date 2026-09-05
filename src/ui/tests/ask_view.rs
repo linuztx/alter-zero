@@ -4,7 +4,7 @@
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use super::super::theme::ASK_CHIP_CURRENT_BG;
+use super::super::theme::ask_chip_current_bg;
 use super::*;
 use crate::ask::{AskOption, AskQuestion, AskRequest};
 
@@ -121,7 +121,7 @@ fn the_current_chip_lights_on_the_selection_background() {
         .expect("the current chip");
     assert_eq!(
         current.style.bg,
-        Some(ASK_CHIP_CURRENT_BG),
+        Some(ask_chip_current_bg()),
         "the current section is highlighted cyan"
     );
     let other = chip_line
@@ -238,7 +238,7 @@ fn a_partial_review_warns_and_lists_only_the_answered_questions() {
         .expect("the warning span");
     assert_eq!(
         warning.style.fg,
-        Some(super::super::theme::ASK_WARNING_COLOR)
+        Some(super::super::theme::ask_warning_color())
     );
     // …lists only the ANSWERED question — the open one shows nothing here
     // (no placeholder row, and its question text stays off the page)…
@@ -255,7 +255,10 @@ fn a_partial_review_warns_and_lists_only_the_answered_questions() {
         .flat_map(|l| l.spans.iter())
         .find(|s| s.content.contains("Latte"))
         .expect("the answer span");
-    assert_eq!(answer.style.fg, Some(super::super::theme::ASK_ANSWER_COLOR));
+    assert_eq!(
+        answer.style.fg,
+        Some(super::super::theme::ask_answer_color())
+    );
     assert!(text.contains("Ready to submit your answers?"));
     assert!(text.contains("❯ 1. Submit answers"), "got:\n{text}");
     assert!(text.contains("2. Cancel"));

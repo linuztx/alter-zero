@@ -20,7 +20,7 @@ use super::*;
 fn rule(width: u16) -> Line<'static> {
     Line::from(Span::styled(
         PERMISSION_RULE.repeat(width as usize),
-        Style::new().fg(BORDER_COLOR),
+        Style::new().fg(border_color()),
     ))
 }
 
@@ -28,7 +28,7 @@ fn rule(width: u16) -> Line<'static> {
 fn body_rule(width: u16) -> Line<'static> {
     Line::from(Span::styled(
         PERMISSION_BODY_RULE.repeat(width as usize),
-        Style::new().fg(PERMISSION_BODY_RULE_COLOR),
+        Style::new().fg(permission_body_rule_color()),
     ))
 }
 
@@ -51,7 +51,7 @@ fn title_row(request: &PermissionRequest, width: u16) -> Line<'static> {
         Span::styled(
             title(request.kind).to_string(),
             Style::new()
-                .fg(PERMISSION_TITLE_COLOR)
+                .fg(permission_title_color())
                 .add_modifier(Modifier::BOLD),
         ),
     ];
@@ -62,7 +62,7 @@ fn title_row(request: &PermissionRequest, width: u16) -> Line<'static> {
             .max(1);
         spans.push(Span::styled(
             truncate_cols(&text, room),
-            Style::new().fg(PERMISSION_AGENT_COLOR),
+            Style::new().fg(permission_agent_color()),
         ));
     }
     Line::from(spans)
@@ -86,7 +86,7 @@ fn option_rows(index: usize, label: &str, selected: bool, width: u16) -> Vec<Lin
         .saturating_sub(cols(PERMISSION_INDENT) + cols(PERMISSION_MARKER) + cols(&number))
         .max(1);
     let style = if selected {
-        Style::new().fg(PERMISSION_SELECTED_COLOR)
+        Style::new().fg(permission_selected_color())
     } else {
         Style::default()
     };
@@ -146,16 +146,16 @@ fn hint_row(pairs: &[(&str, &str)]) -> Line<'static> {
         if i > 0 {
             spans.push(Span::styled(
                 PERMISSION_HINT_SEPARATOR,
-                Style::new().fg(PERMISSION_HINT_TEXT_COLOR),
+                Style::new().fg(permission_hint_text_color()),
             ));
         }
         spans.push(Span::styled(
             (*key).to_string(),
-            Style::new().fg(PERMISSION_HINT_KEY_COLOR),
+            Style::new().fg(permission_hint_key_color()),
         ));
         spans.push(Span::styled(
             (*label).to_string(),
-            Style::new().fg(PERMISSION_HINT_TEXT_COLOR),
+            Style::new().fg(permission_hint_text_color()),
         ));
     }
     Line::from(spans)
@@ -185,7 +185,7 @@ fn amend_rows(input: &TextArea, width: u16) -> Vec<Line<'static>> {
             };
             Line::from(vec![
                 Span::raw(PERMISSION_INDENT),
-                Span::styled(prefix, Style::new().fg(PERMISSION_SELECTED_COLOR)),
+                Span::styled(prefix, Style::new().fg(permission_selected_color())),
                 Span::raw(text),
             ])
         })
@@ -203,7 +203,7 @@ fn command_rows(
     let room = width.saturating_sub(cols(indent) as u16).max(1);
     let mut source: Vec<(String, Color)> = wrap_output(&request.target, room)
         .into_iter()
-        .map(|row| (row, PERMISSION_TARGET_COLOR))
+        .map(|row| (row, permission_target_color()))
         .collect();
     source.extend(detail_rows(request, room));
     let hidden = source.len().saturating_sub(budget.max(1));
@@ -232,7 +232,7 @@ fn detail_rows(request: &PermissionRequest, room: u16) -> Vec<(String, Color)> {
         .map(|detail| {
             wrap_output(detail, room)
                 .into_iter()
-                .map(|row| (row, PERMISSION_DETAIL_COLOR))
+                .map(|row| (row, permission_detail_color()))
                 .collect()
         })
         .unwrap_or_default()
@@ -262,10 +262,15 @@ fn mcp_rows(request: &PermissionRequest, width: u16, budget: usize) -> (Vec<Line
     } else {
         format!("{label}({args})")
     };
-    let dim = Style::new().fg(PERMISSION_DETAIL_COLOR);
+    let dim = Style::new().fg(permission_detail_color());
     let mut rows: Vec<Vec<Span<'static>>> = wrap_output(&call, room)
         .into_iter()
-        .map(|row| vec![Span::styled(row, Style::new().fg(PERMISSION_TARGET_COLOR))])
+        .map(|row| {
+            vec![Span::styled(
+                row,
+                Style::new().fg(permission_target_color()),
+            )]
+        })
         .collect();
     let suffix = crate::mcp::MCP_DISPLAY_SUFFIX;
     let fits = rows.last().is_some_and(|last| {
@@ -360,7 +365,7 @@ fn queue_chunks<'a>(
 fn waiting_summary_row(hidden: usize) -> Line<'static> {
     Line::from(Span::styled(
         format!("… +{hidden} more waiting"),
-        Style::new().fg(TOOL_WAITING_COLOR),
+        Style::new().fg(tool_waiting_color()),
     ))
 }
 
@@ -426,7 +431,7 @@ fn context_lines(app: &App, width: u16, budget: usize) -> Vec<Line<'static>> {
 fn more_row(hidden: usize, width: u16) -> Line<'static> {
     text_row(
         &format!("… +{hidden} line{}", if hidden == 1 { "" } else { "s" }),
-        TOOL_DIM_COLOR,
+        tool_dim_color(),
         width,
     )
 }
@@ -476,7 +481,11 @@ pub fn permission_lines(app: &App, width: u16, term_height: u16) -> Vec<Line<'st
     let mut below = Vec::new();
     if request.kind == PermissionKind::Bash {
         below.push(Line::default());
-        below.push(text_row(PERMISSION_NOTICE, PERMISSION_NOTICE_COLOR, width));
+        below.push(text_row(
+            PERMISSION_NOTICE,
+            permission_notice_color(),
+            width,
+        ));
         below.push(Line::default());
     }
     if request.kind == PermissionKind::Mcp {
@@ -510,7 +519,7 @@ pub fn permission_lines(app: &App, width: u16, term_height: u16) -> Vec<Line<'st
         // verbatim: it is what the rule engine and the model see.
         frame.push(text_row(
             &app.path_display().display(&request.target),
-            PERMISSION_TARGET_COLOR,
+            permission_target_color(),
             width,
         ));
     } else {

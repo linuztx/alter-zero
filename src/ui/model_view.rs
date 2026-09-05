@@ -97,19 +97,22 @@ fn model_row(entry: &ModelEntry, selected: bool, active: bool, width: u16) -> Li
 
     let (marker_style, id_style) = if selected {
         (
-            Style::new().fg(MODEL_SELECTED_COLOR),
+            Style::new().fg(model_selected_color()),
             Style::new()
-                .fg(MODEL_SELECTED_COLOR)
+                .fg(model_selected_color())
                 .add_modifier(Modifier::BOLD),
         )
     } else {
-        (Style::default(), Style::new().fg(MODEL_ID_COLOR))
+        (Style::default(), Style::new().fg(model_id_color()))
     };
     Line::from(vec![
         Span::styled(marker.to_string(), marker_style),
         Span::styled(id, id_style),
-        Span::styled(tag, Style::new().fg(MODEL_META_COLOR)),
-        Span::styled(active_mark.to_string(), Style::new().fg(MODEL_ACTIVE_COLOR)),
+        Span::styled(tag, Style::new().fg(model_meta_color())),
+        Span::styled(
+            active_mark.to_string(),
+            Style::new().fg(model_active_color()),
+        ),
     ])
 }
 
@@ -120,7 +123,7 @@ fn model_list_lines(picker: &ModelPicker, width: u16) -> Vec<Line<'static>> {
     match &picker.status {
         ModelLoad::Loading => vec![model_placeholder_row(
             MODEL_LOADING,
-            MODEL_META_COLOR,
+            model_meta_color(),
             width,
         )],
         // Every provider failed: red rows (`{provider}: {reason}`), or a
@@ -129,7 +132,7 @@ fn model_list_lines(picker: &ModelPicker, width: u16) -> Vec<Line<'static>> {
         // user gets and a silent clip hid the cause at narrow widths.
         ModelLoad::Error(msg) => {
             if picker.errors.is_empty() {
-                model_wrapped_rows(&format!("Error: {msg}"), ERROR_COLOR, width)
+                model_wrapped_rows(&format!("Error: {msg}"), error_color(), width)
             } else {
                 picker
                     .errors
@@ -137,7 +140,7 @@ fn model_list_lines(picker: &ModelPicker, width: u16) -> Vec<Line<'static>> {
                     .flat_map(|e| {
                         model_wrapped_rows(
                             &format!("{}: {}", e.provider, e.message),
-                            ERROR_COLOR,
+                            error_color(),
                             width,
                         )
                     })
@@ -146,7 +149,9 @@ fn model_list_lines(picker: &ModelPicker, width: u16) -> Vec<Line<'static>> {
         }
         // No key configured yet — an inviting cyan hint, not a red error.
         // Wrapped: the actionable "run /login" tail must survive any width.
-        ModelLoad::NeedsLogin => model_wrapped_rows(MODEL_LOGIN_HINT, MODEL_SELECTED_COLOR, width),
+        ModelLoad::NeedsLogin => {
+            model_wrapped_rows(MODEL_LOGIN_HINT, model_selected_color(), width)
+        }
         ModelLoad::Ready => {
             let matches = picker.matches();
             if matches.is_empty() {
@@ -155,7 +160,7 @@ fn model_list_lines(picker: &ModelPicker, width: u16) -> Vec<Line<'static>> {
                 } else {
                     MODEL_NO_MATCH
                 };
-                return vec![model_placeholder_row(text, MODEL_META_COLOR, width)];
+                return vec![model_placeholder_row(text, model_meta_color(), width)];
             }
             let max = MODEL_MENU_MAX_ROWS as usize;
             let selected = picker.selected.min(matches.len() - 1);
@@ -188,7 +193,7 @@ fn model_counter_line(picker: &ModelPicker, width: u16) -> Line<'static> {
         Span::raw(MODEL_INDENT),
         Span::styled(
             format!("({}/{})", selected + 1, matches.len()),
-            Style::new().fg(MODEL_META_COLOR),
+            Style::new().fg(model_meta_color()),
         ),
     ];
     // Beside the counter, the multi-provider load status: dim while more
@@ -208,16 +213,16 @@ fn model_counter_line(picker: &ModelPicker, width: u16) -> Line<'static> {
 /// failed. `None` once every provider succeeded. See `docs/llm.md`.
 fn model_load_status_suffix(picker: &ModelPicker) -> Option<(String, Color)> {
     if picker.pending > 0 {
-        Some((MODEL_LOADING_MORE.to_string(), MODEL_META_COLOR))
+        Some((MODEL_LOADING_MORE.to_string(), model_meta_color()))
     } else if picker.errors.len() == 1 {
         Some((
             format!("{} unavailable", picker.errors[0].provider),
-            ERROR_COLOR,
+            error_color(),
         ))
     } else if !picker.errors.is_empty() {
         Some((
             format!("{} providers unavailable", picker.errors.len()),
-            ERROR_COLOR,
+            error_color(),
         ))
     } else {
         None
@@ -239,7 +244,7 @@ fn model_error_lines(picker: &ModelPicker, width: u16) -> Vec<Line<'static>> {
         .flat_map(|e| {
             model_wrapped_rows(
                 &format!("{}: {}", e.provider, e.message),
-                ERROR_COLOR,
+                error_color(),
                 width,
             )
         })
@@ -255,7 +260,10 @@ fn model_error_lines(picker: &ModelPicker, width: u16) -> Vec<Line<'static>> {
             let room = (width as usize).saturating_sub(1).max(1);
             let mut cut = super::wrap::truncate_cols(text.trim_end(), room);
             cut.push('…');
-            rows.push(Line::from(Span::styled(cut, Style::new().fg(ERROR_COLOR))));
+            rows.push(Line::from(Span::styled(
+                cut,
+                Style::new().fg(error_color()),
+            )));
         }
     }
     rows
@@ -272,10 +280,10 @@ fn model_name_line(picker: &ModelPicker, width: u16) -> Line<'static> {
         .max(1);
     Line::from(vec![
         Span::raw(MODEL_INDENT),
-        Span::styled(MODEL_NAME_LABEL, Style::new().fg(MODEL_META_COLOR)),
+        Span::styled(MODEL_NAME_LABEL, Style::new().fg(model_meta_color())),
         Span::styled(
             ellipsize(&entry.display_name, room),
-            Style::new().fg(MODEL_META_COLOR),
+            Style::new().fg(model_meta_color()),
         ),
     ])
 }
@@ -285,7 +293,7 @@ fn model_name_line(picker: &ModelPicker, width: u16) -> Line<'static> {
 pub(super) fn model_rule(width: u16) -> Line<'static> {
     Line::from(Span::styled(
         "─".repeat(width as usize),
-        Style::new().fg(BORDER_COLOR),
+        Style::new().fg(border_color()),
     ))
 }
 
@@ -300,7 +308,7 @@ pub(super) fn model_rule(width: u16) -> Line<'static> {
 pub(super) fn model_view_lines(picker: &ModelPicker, width: u16) -> Vec<Line<'static>> {
     let search_line = Line::from(vec![
         Span::raw(MODEL_INDENT),
-        Span::styled(MODEL_PROMPT, Style::new().fg(MODEL_SELECTED_COLOR)),
+        Span::styled(MODEL_PROMPT, Style::new().fg(model_selected_color())),
         Span::raw(picker.query.clone()),
     ]);
     let mut lines = vec![

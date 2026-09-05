@@ -200,12 +200,20 @@ captured panes.
 
 ## Theming
 
-All styling lives as constants in `src/ui/theme.rs` — bullets, prompt,
-colours, border, and the tool / status-line / palette / footer chrome — change
-them in one place to retheme. Two looks are chosen in-app rather than in
-code, and persist across sessions: `/mascot` picks the startup banner's
-mascot (`docs/mascot.md`) and `/spinner` the status line's spinner animation
-— nine styles, previewed live in the picker (`docs/spinner.md`).
+Every colour comes from a **theme** — a palette for the chrome (the accent,
+the success/error/warning hues, the dim, the user bubble, the diff tints)
+paired with the matching syntax theme for code blocks, one design system per
+entry. **`/theme`** picks among eleven: the four Catppuccin flavours (Mocha is
+the default), the TUI's original One Dark look, Dracula, Nord, Gruvbox,
+Solarized, Monokai, and `ansi` — the terminal's own sixteen colours, so the
+TUI follows whatever theme the terminal wears. The picker previews each on
+real cells (a diff, a code block, a bubble) and the choice persists
+(`docs/theme.md`). The roles those colours fill, and every glyph and
+geometry constant, live in `src/ui/theme.rs`; the per-theme tables in
+`src/ui/palette.rs` — a new theme is one table. Two more looks are chosen
+in-app the same way: `/mascot` picks the startup banner's mascot
+(`docs/mascot.md`) and `/spinner` the status line's spinner animation —
+nine styles, previewed live in the picker (`docs/spinner.md`).
 
 ## Using a real model
 

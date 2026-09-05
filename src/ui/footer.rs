@@ -94,12 +94,16 @@ fn with_queued_lines<T>(app: &App, width: u16, f: impl FnOnce(&[Line<'static>]) 
     })
 }
 
-/// The fingerprint the memo turns on: the width, **which** conversation's rows
-/// these are, and the exact texts of that conversation's two pending sets —
-/// precisely what [`build_queued_lines`] reads and nothing else.
+/// The fingerprint the memo turns on: the width, the active theme, **which**
+/// conversation's rows these are, and the exact texts of that conversation's
+/// two pending sets — precisely what [`build_queued_lines`] reads and nothing
+/// else.
 fn queued_signature(app: &App, width: u16) -> u64 {
     let mut hasher = DefaultHasher::new();
     width.hash(&mut hasher);
+    // The rows' colours come from the active theme, so a `/theme` switch
+    // must rebuild them too (`docs/theme.md`).
+    super::palette::active_theme().hash(&mut hasher);
     if let Some(agent) = app.viewed_agent() {
         // The branch itself is part of the key: the same texts render as a
         // different page depending on whose session is on screen.
@@ -254,10 +258,10 @@ pub fn backtrack_hint_line() -> Line<'static> {
         Span::styled(
             BACKTRACK_HINT_KEY,
             Style::new()
-                .fg(SEARCH_QUERY_COLOR)
+                .fg(search_query_color())
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::styled(BACKTRACK_HINT_LABEL, Style::new().fg(FOOTER_COLOR)),
+        Span::styled(BACKTRACK_HINT_LABEL, Style::new().fg(footer_color())),
     ])
 }
 
@@ -273,7 +277,7 @@ pub fn footer_line(app: &App, width: u16) -> Line<'static> {
     let Some(session) = &app.session else {
         return Line::default();
     };
-    let dim = Style::new().fg(FOOTER_COLOR);
+    let dim = Style::new().fg(footer_color());
     // The permission mode is pinned flush at the row's RIGHT edge — its own
     // zone, like the transcript separator's right-aligned percentage, not
     // another ` · ` segment — so however long the model/cwd/gauge chain
@@ -320,7 +324,7 @@ pub fn footer_line(app: &App, width: u16) -> Line<'static> {
     if shells > 0 {
         let plural = if shells == 1 { "" } else { "s" };
         let style = if app.background_focused() {
-            Style::new().fg(FOOTER_FOCUS_FG).bg(FOOTER_FOCUS_BG)
+            Style::new().fg(footer_focus_fg()).bg(footer_focus_bg())
         } else {
             dim
         };
@@ -374,8 +378,8 @@ pub fn toast_rows(app: &App) -> u16 {
 }
 
 /// The transient toast's single line: the `TOAST_INDENT` then the message,
-/// dim for an info toast (`TOAST_COLOR`) or red for a failure
-/// (`TOAST_ERROR_COLOR`), cut with a trailing `…` when it overflows `width`
+/// dim for an info toast (`toast_color()`) or red for a failure
+/// (`toast_error_color()`), cut with a trailing `…` when it overflows `width`
 /// (like the footer). Empty when no toast is live. See `docs/toast.md`.
 #[must_use]
 pub fn toast_line(app: &App, width: u16) -> Line<'static> {
@@ -383,8 +387,8 @@ pub fn toast_line(app: &App, width: u16) -> Line<'static> {
         return Line::default();
     };
     let color = match toast.kind {
-        ToastKind::Info => TOAST_COLOR,
-        ToastKind::Error => TOAST_ERROR_COLOR,
+        ToastKind::Info => toast_color(),
+        ToastKind::Error => toast_error_color(),
     };
     let style = Style::new().fg(color);
     let budget = (width as usize).saturating_sub(cols(TOAST_INDENT));
@@ -399,14 +403,14 @@ pub fn toast_line(app: &App, width: u16) -> Line<'static> {
 }
 
 /// The `!` shell-mode footer line: the `FOOTER_INDENT` then `Shell mode` in
-/// red (`SHELL_MODE_COLOR`) — codex's `shell_mode_footer_line`. Shown in the
+/// red (`shell_mode_color()`) — codex's `shell_mode_footer_line`. Shown in the
 /// footer slot whenever the composer holds a `!command` (see
 /// `docs/shell-command.md`).
 #[must_use]
 pub fn shell_mode_line() -> Line<'static> {
     Line::from(vec![
         Span::raw(FOOTER_INDENT),
-        Span::styled(SHELL_MODE_LABEL, Style::new().fg(SHELL_MODE_COLOR)),
+        Span::styled(SHELL_MODE_LABEL, Style::new().fg(shell_mode_color())),
     ])
 }
 
@@ -417,14 +421,14 @@ pub fn shell_mode_line() -> Line<'static> {
 /// hardware cursor sits at the end of the query ([`cursor_position`]).
 #[must_use]
 pub fn search_line(search: &HistorySearch) -> Line<'static> {
-    let dim = Style::new().fg(FOOTER_COLOR);
+    let dim = Style::new().fg(footer_color());
     let key = Style::new()
-        .fg(SEARCH_QUERY_COLOR)
+        .fg(search_query_color())
         .add_modifier(Modifier::BOLD);
     let mut spans = vec![
         Span::raw(FOOTER_INDENT),
         Span::styled(SEARCH_PROMPT, dim),
-        Span::styled(search.query.clone(), Style::new().fg(SEARCH_QUERY_COLOR)),
+        Span::styled(search.query.clone(), Style::new().fg(search_query_color())),
     ];
     match search.state {
         SearchState::Idle => {}
@@ -437,7 +441,10 @@ pub fn search_line(search: &HistorySearch) -> Line<'static> {
             spans.push(Span::styled(" cancel", dim));
         }
         SearchState::NoMatch => {
-            spans.push(Span::styled(SEARCH_NO_MATCH, Style::new().fg(ERROR_COLOR)));
+            spans.push(Span::styled(
+                SEARCH_NO_MATCH,
+                Style::new().fg(error_color()),
+            ));
         }
     }
     Line::from(spans)

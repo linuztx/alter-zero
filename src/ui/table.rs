@@ -176,7 +176,7 @@ fn table_border_row(col_w: &[usize], left: char, mid: char, right: char) -> Vec<
         s.extend(std::iter::repeat_n('─', w + 2));
     }
     s.push(right);
-    vec![Span::styled(s, Style::new().fg(TABLE_BORDER_COLOR))]
+    vec![Span::styled(s, Style::new().fg(table_border_color()))]
 }
 
 /// Render one table row (its per-column styled `cells`) into box-drawing content
@@ -197,7 +197,7 @@ pub(super) fn table_row_lines(
     col_w: &[usize],
     aligns: &[markdown::Alignment],
 ) -> Vec<Vec<Span<'static>>> {
-    let border = Style::new().fg(TABLE_BORDER_COLOR);
+    let border = Style::new().fg(table_border_color());
     let wrapped: Vec<Vec<Vec<Span<'static>>>> = cells
         .iter()
         .enumerate()
@@ -354,7 +354,7 @@ pub(super) fn table_record_separator(width: usize) -> Vec<Span<'static>> {
     let w = width.clamp(1, TABLE_RECORD_SEPARATOR_WIDTH);
     vec![Span::styled(
         "─".repeat(w),
-        Style::new().fg(TABLE_BORDER_COLOR),
+        Style::new().fg(table_border_color()),
     )]
 }
 

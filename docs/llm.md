@@ -337,7 +337,7 @@ the bottom rule — the shape of the user's mock):
 ### Styling
 
 All picker styling is centralized in `ui/theme.rs`'s `MODEL_*` consts: the cyan `❯`
-prompt and selection accent (reusing `MENU_SELECTED_COLOR`), the dim provider tag /
+prompt and selection accent (reusing `menu_selected_color()`), the dim provider tag /
 counter / model-name, the `→` marker, the `✓` active mark, the cyan
 `MODEL_LOGIN_HINT`, and `MODEL_MENU_MAX_ROWS`. Retheme there.
 
@@ -421,7 +421,7 @@ in place; unlike it, it is a **two-step** flow.
   shape now — rule, gap, `❯` filter — and the root never had one: there the
   two rows *are* the question. The method step is also the one list with no
   `(n/total)` counter.
-- **The remaining titles are cyan** (`LOGIN_TITLE_COLOR`, the palette accent
+- **The remaining titles are cyan** (`login_title_color()`, the palette accent
   the whole picker family selects with) — the sign-in page's `Sign in to
   {provider}` and the key step's `Enter your {provider} API key` — so the
   flow's headings read as one rather than as a colour of their own.

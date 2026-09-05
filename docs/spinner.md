@@ -12,11 +12,11 @@ picker, the `/mascot` picker's twin — chooses among nine, previews them
 | name      | look                                                     | cadence |
 | --------- | -------------------------------------------------------- | ------- |
 | `comet`   | `(●•·   )` — a Larson-scanner sweep between dim walls (the default) | 80 ms |
-| `gravity` | `⣤⣀⣀⣀⣀⣀⣀⣀` — a ball hopping along a braille track, bouncing off both walls, cyan → blue | 2.4 s trip, 0.6 s hop |
+| `gravity` | `⣤⣀⣀⣀⣀⣀⣀⣀` — a ball hopping along a braille track, bouncing off both walls, accent → link | 2.4 s trip, 0.6 s hop |
 | `wave`    | eight braille cells — a wave rolling down the track and reflecting off the walls, in the banner's wash | 3.4 s there and back |
-| `sparkle` | `· ✢ ✳ ✶ ✻ ✽ ✻ ✶ ✳ ✢` — a spark blooming into a star, cyan → blue | 120 ms |
+| `sparkle` | `· ✢ ✳ ✶ ✻ ✽ ✻ ✶ ✳ ✢` — a spark blooming into a star, accent → link | 120 ms |
 | `dots`    | `⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏` — the classic braille spinner            | 80 ms  |
-| `blocks`  | `▙ ▛ ▜ ▟` — the mascots' quadrant glyphs turning, cyan → blue | 150 ms |
+| `blocks`  | `▙ ▛ ▜ ▟` — the mascots' quadrant glyphs turning, accent → link | 150 ms |
 | `pulse`   | `●` — one dot breathing dim → white, the running tool bullet's breath | 1 s breath |
 | `bars`    | `▁ ▂ ▃ ▄ ▅ ▆ ▇ █ ▇ …` — a level meter, brightening with height | 60 ms |
 | `line`    | `\| / - \` — the classic ASCII spinner, for any font        | 100 ms |
@@ -41,7 +41,7 @@ track** (`ui::status::Track`): eight cells — the comet's footprint, so the
 three wide styles share one width — of 2 × 4 dots each, sixteen dot columns
 by four dot rows inside a single text row. That is the resolution that lets
 a ball visibly *hop* and a wave visibly *roll* where a glyph table can only
-step. A cell is one glyph and so one colour: dim (`STATUS_DETAIL_COLOR`)
+step. A cell is one glyph and so one colour: dim (`status_detail_color()`)
 until something coloured lands on it. The pair is a port of the two braille
 animations in a bouncing-indicator lab script — its canvas, its `tri`
 ping-pong and its `arc` hop — retuned for a fixed eight-cell track and the
@@ -86,13 +86,14 @@ dense already, and a synthesized bold blurs them), and every other style is
 **one glyph in one span**, bold, coloured by `glyph_color`:
 
 - `sparkle`, `blocks`, `gravity` and `wave` walk the **banner's gradient**
-  (`HEADER_GRADIENT_START` → `HEADER_GRADIENT_END`, `docs/header.md`) — the
-  spark by its bloom level (cyan at `·`, blue at `✽`, back down the fade), the
+  (`header_gradient_start()` → `header_gradient_end()`, the theme's accent →
+  link, `docs/header.md`, `docs/theme.md`) — the spark by its bloom level
+  (the accent at `·`, the link at `✽`, back down the fade), the
   block by its turn, the ball by its position, the wave by each cell's place
   on the track — so the theme's accent rides the status line;
 - `pulse` breathes the running tool bullet's raised cosine
   (`ui::wrap::breath`, the helper `tool_pulse_color` now shares,
-  `docs/tool-pulse.md`) from the bullet's own dim (`TOOL_PULSE_DIM`) up to
+  `docs/tool-pulse.md`) from the bullet's own dim (`tool_pulse_dim()`) up to
   white — brighter at the crest than the bullet, because a status line's head
   has to read where a resting cell only has to be noticed — and it shares the
   bullet's period, so a pulsing status line and a running tool cell breathe

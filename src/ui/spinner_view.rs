@@ -52,13 +52,13 @@ fn spinner_row(
     let marker = if selected { MODEL_MARKER } else { "  " };
     let (marker_style, name_style) = if selected {
         (
-            Style::new().fg(MODEL_SELECTED_COLOR),
+            Style::new().fg(model_selected_color()),
             Style::new()
-                .fg(MODEL_SELECTED_COLOR)
+                .fg(model_selected_color())
                 .add_modifier(Modifier::BOLD),
         )
     } else {
-        (Style::default(), Style::new().fg(MODEL_ID_COLOR))
+        (Style::default(), Style::new().fg(model_id_color()))
     };
     let name = row.spinner.name();
     let mut spans = vec![
@@ -72,7 +72,7 @@ fn spinner_row(
     if row.active {
         spans.push(Span::styled(
             MODEL_ACTIVE_MARK.trim_start().to_string(),
-            Style::new().fg(MODEL_ACTIVE_COLOR),
+            Style::new().fg(model_active_color()),
         ));
     }
     Line::from(spans)
@@ -90,7 +90,7 @@ fn spinner_list_lines(
     if rows.is_empty() {
         return vec![model_placeholder_row(
             SPINNER_NO_MATCH,
-            MODEL_META_COLOR,
+            model_meta_color(),
             width,
         )];
     }
@@ -119,7 +119,7 @@ fn spinner_counter_line(rows: &[SpinnerRow], selected: usize) -> Line<'static> {
         Span::raw(MODEL_INDENT),
         Span::styled(
             format!("({}/{})", selected + 1, rows.len()),
-            Style::new().fg(MODEL_META_COLOR),
+            Style::new().fg(model_meta_color()),
         ),
     ])
 }
@@ -155,7 +155,7 @@ pub(super) fn spinner_view_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     let elapsed = app.spinner_preview_elapsed();
     let search_line = Line::from(vec![
         Span::raw(MODEL_INDENT),
-        Span::styled(MODEL_PROMPT, Style::new().fg(MODEL_SELECTED_COLOR)),
+        Span::styled(MODEL_PROMPT, Style::new().fg(model_selected_color())),
         Span::raw(picker.query.clone()),
     ]);
     let highlighted = rows
@@ -179,7 +179,7 @@ pub(super) fn spinner_view_lines(app: &App, width: u16) -> Vec<Line<'static>> {
             lines.push(Line::default());
             lines.push(model_placeholder_row(
                 spinner.description(),
-                MODEL_META_COLOR,
+                model_meta_color(),
                 width,
             ));
             lines.push(Line::default());
@@ -187,7 +187,11 @@ pub(super) fn spinner_view_lines(app: &App, width: u16) -> Vec<Line<'static>> {
         // Nothing matched: one gap carries the placeholder to the hint.
         None => lines.push(Line::default()),
     }
-    lines.push(model_placeholder_row(SPINNER_HINT, MODEL_META_COLOR, width));
+    lines.push(model_placeholder_row(
+        SPINNER_HINT,
+        model_meta_color(),
+        width,
+    ));
     lines.push(Line::default());
     lines.push(model_rule(width));
     lines

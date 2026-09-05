@@ -632,7 +632,7 @@ top-down, while this is a *walk* four pages deep, so the headline is the one
 row that answers "where am I?" — and it has to be the row the eye lands on
 first. Three rules, all of them `MCP_*` consts in `ui/theme.rs`:
 
-- **Every page's headline is cyan** (`MCP_TITLE_COLOR`, the picker family's
+- **Every page's headline is cyan** (`mcp_title_color()`, the picker family's
   selection accent) and bold — `Manage MCP servers`, `Deepwiki MCP Server`,
   `Tools for deepwiki`, `ask_question`, `Authenticating with deepwiki…`.
 - **A headline capitalises the name** — `deepwiki` → `Deepwiki MCP Server`
@@ -648,7 +648,7 @@ first. Three rules, all of them `MCP_*` consts in `ui/theme.rs`:
   stays verbatim, because those are strings the user — or the replay — has
   to match against a file or a tool call.
 - **Every field label on both detail pages is bright, and values are quiet
-  by default** (`MCP_DETAIL_LABEL_COLOR` / `MCP_DETAIL_VALUE_COLOR`). The
+  by default** (`mcp_detail_label_color()` / `mcp_detail_value_color()`). The
   labels are the column the eye runs *down*; the value is what it stops on
   once it has found its row, so a page of white values had nothing to scan
   by. Addresses, paths, protocol revisions, counts, a tool's wire name, a
@@ -656,11 +656,11 @@ first. Three rules, all of them `MCP_*` consts in `ui/theme.rs`:
 
 Two exceptions, one per page, and both are the same rule: *the value that is
 itself the answer keeps the light*. The page **headline** is cyan, shared
-with the `/hooks` browser (`HOOKS_TITLE_COLOR` = `MCP_TITLE_COLOR`): both
+with the `/hooks` browser (`hooks_title_color()` = `mcp_title_color()`): both
 menus are walks several levels deep, and the headline is the row that
 answers "where am I?".
 
-- On the **server page** (`MCP_DETAIL_STATE_COLOR`) that is `Status:`,
+- On the **server page** (`mcp_detail_state_color()`) that is `Status:`,
   `Auth:` and `Capabilities:` — "is this working, and what can it do?" —
   while `Protocol:`, `URL:`/`Command:`, `Config location:` and `Tools:` go
   quiet. The two *state* rows are drawn two-tone: **the glyph keeps its
@@ -670,7 +670,7 @@ answers "where am I?".
   drops the tool count `status_line()` appends for the list — the `Tools:`
   row three lines down already says it, and a page that says it twice has a
   duplicate on it.
-- On the **tool page** it is the description (`MCP_DESCRIPTION_COLOR`), and
+- On the **tool page** it is the description (`mcp_description_color()`), and
   it gets a tone of its own: **half white**, a step down from the label
   announcing it and a clear step up from the schema prose below. It is the
   one paragraph on the page written *for* a reader rather than derived from

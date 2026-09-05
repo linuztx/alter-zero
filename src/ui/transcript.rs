@@ -161,7 +161,7 @@ pub fn agent_transcript_lines(app: &App, width: u16) -> Option<Vec<Line<'static>
     if lines.len() == chrome_rows {
         lines.push(Line::from(Span::styled(
             TOOL_VIEW_EMPTY.to_string(),
-            Style::new().fg(TOOL_DIM_COLOR),
+            Style::new().fg(tool_dim_color()),
         )));
     }
     Some(lines)
@@ -251,6 +251,10 @@ pub(super) struct FrozenKey {
     generation: u64,
     pub(super) width: u16,
     pub(super) cwd: Option<String>,
+    /// The theme the rows were painted in — a `/theme` switch re-renders
+    /// every frozen item, since their colours are baked into the rows
+    /// (`docs/theme.md`).
+    theme: crate::app::Theme,
 }
 
 /// One rendered history item's shape inside the frozen prefix.
@@ -269,6 +273,8 @@ struct RenderedItem {
 #[derive(PartialEq, Eq)]
 struct TranscriptSig {
     generation: u64,
+    /// The active theme — the rows' colours depend on it (`docs/theme.md`).
+    theme: crate::app::Theme,
     pub(super) width: u16,
     history_len: usize,
     /// Display length of the session cwd shown in the banner chrome (`None`
@@ -311,6 +317,7 @@ impl TranscriptSig {
         let queue = app.tool_queue();
         Self {
             generation: app.history_generation(),
+            theme: super::palette::active_theme(),
             width,
             history_len: app.history.len(),
             cwd_len: app.session.as_ref().map(|s| s.cwd.len()),
@@ -352,6 +359,7 @@ impl TranscriptCache {
         let width_only_miss = self.key.as_ref().is_some_and(|k| {
             k.generation == app.history_generation()
                 && k.cwd.as_deref() == app.session.as_ref().map(|s| s.cwd.as_str())
+                && k.theme == super::palette::active_theme()
                 && k.width != width
         });
         if width_only_miss {
@@ -374,12 +382,14 @@ impl TranscriptCache {
             k.generation == app.history_generation()
                 && k.width == width
                 && k.cwd.as_deref() == app.session.as_ref().map(|s| s.cwd.as_str())
+                && k.theme == super::palette::active_theme()
         });
         if !key_matches {
             self.key = Some(FrozenKey {
                 generation: app.history_generation(),
                 width,
                 cwd: app.session.as_ref().map(|s| s.cwd.clone()),
+                theme: super::palette::active_theme(),
             });
             // The header banner tops the transcript exactly as it tops the
             // inline conversation (docs/header.md) — the overlay mirrors the
@@ -496,7 +506,7 @@ impl TranscriptCache {
         if self.lines.len() == self.chrome_rows {
             self.lines.push(Line::from(Span::styled(
                 TOOL_VIEW_EMPTY.to_string(),
-                Style::new().fg(TOOL_DIM_COLOR),
+                Style::new().fg(tool_dim_color()),
             )));
         }
     }
@@ -603,7 +613,7 @@ pub(super) fn overlay_header(title: &str, width: u16) -> Line<'static> {
     for col in cols(&text)..width as usize {
         text.push(if col.is_multiple_of(2) { '/' } else { ' ' });
     }
-    Line::from(Span::styled(text, Style::new().fg(TOOL_DIM_COLOR)))
+    Line::from(Span::styled(text, Style::new().fg(tool_dim_color())))
 }
 
 /// The pager's bottom rule: a dim `─` separator carrying the scroll position
@@ -633,7 +643,7 @@ pub(super) fn rule_with_label(width: u16, label: &str) -> Line<'static> {
     }
     Line::from(Span::styled(
         rule.into_iter().collect::<String>(),
-        Style::new().fg(TOOL_DIM_COLOR),
+        Style::new().fg(tool_dim_color()),
     ))
 }
 
@@ -671,7 +681,7 @@ pub fn render_tool_view(area: Rect, buf: &mut Buffer, app: &App, lines: &[Line<'
 
     Paragraph::new(tool_view_separator(area.width, scroll, max)).render(sep_area, buf);
 
-    let dim = Style::new().fg(TOOL_DIM_COLOR);
+    let dim = Style::new().fg(tool_dim_color());
     // While a backtrack preview highlights a message, the close-hint row
     // shows the preview's keys instead (codex's highlighted-pager footer —
     // docs/backtrack.md); the scroll keys above keep working either way.

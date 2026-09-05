@@ -232,7 +232,7 @@ this costs nothing):
 
 | Call | Output | What that buys |
 |------|--------|----------------|
-| `Read` | `tools::format_read` | the `{n:>W} {text}` gutter `ui::file_cell_lines` parses — a numbered, syntax-highlighted (Catppuccin Mocha) cell under a `Read N lines` head, instead of a plain text peek |
+| `Read` | `tools::format_read` | the `{n:>W} {text}` gutter `ui::file_cell_lines` parses — a numbered, syntax-highlighted (in the active theme's code theme, `docs/theme.md`) cell under a `Read N lines` head, instead of a plain text peek |
 | `Write` | `tools::write_report` — `Wrote {N} lines to {path}` + the numbered contents | the numbered new-file body (the executor's own `describe_change` core, shared with the gated permission demos) |
 | `Edit` | `tools::update_report` — `Updated {path} (+A -D)` + the numbered diff hunks | only the touched hunk, `+` rows on the green tint and `-` rows on the red one |
 | `Bash` | `Exit code: N` + the body | the frame `ui::command_display_output` reads: dropped on success, rewritten to a red `Error: Exit code N` head on failure, so a red cell says *why* |

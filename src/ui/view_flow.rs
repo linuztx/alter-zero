@@ -167,6 +167,15 @@ fn flow_page(app: &App, width: u16, term_height: u16) -> Option<FlowPage> {
             term_height,
         ));
     }
+    if app.theme_picker.is_some() {
+        // The `/theme` picker's page is still — its preview is built from
+        // finished cells, nothing on it ticks — so it signs its rows like
+        // the `/mascot` picker (`docs/theme.md`).
+        return Some(FlowPage::framed(
+            super::theme_view::theme_view_lines(app, width),
+            term_height,
+        ));
+    }
     if let Some(picker) = &app.spinner_picker {
         // The `/spinner` picker is the other page that ticks between
         // keystrokes — every row's spinner and the preview line animate at

@@ -33,6 +33,7 @@ mod mcp_view;
 mod menu;
 mod message;
 mod model_view;
+mod palette;
 mod permission_view;
 mod reasoning;
 mod resume_view;
@@ -44,11 +45,20 @@ mod stream_render;
 mod stream_stress;
 mod table;
 mod tasks;
+mod theme_view;
 mod tool;
 mod transcript;
 mod trust_view;
 mod view_flow;
 mod wrap;
+
+/// The `(r, g, b)` of an RGB colour — the blends' test arithmetic.
+pub(super) fn rgb_of(color: Color) -> (u8, u8, u8) {
+    match color {
+        Color::Rgb(r, g, b) => (r, g, b),
+        other => panic!("expected an RGB colour, got {other:?}"),
+    }
+}
 
 /// Concatenate a line's span contents into its plain text.
 pub(super) fn plain(line: &Line) -> String {

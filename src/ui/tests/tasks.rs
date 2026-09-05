@@ -5,7 +5,7 @@
 use super::*;
 use crate::tasks::TaskStore;
 use crate::ui::tasks::task_lines;
-use crate::ui::theme::{TASK_COMPLETED_COLOR, TASK_MAX_ROWS, TOOL_DIM_COLOR};
+use crate::ui::theme::{TASK_MAX_ROWS, task_completed_color, tool_dim_color};
 
 fn store_of(subjects: &[&str]) -> TaskStore {
     let mut store = TaskStore::new();
@@ -55,8 +55,8 @@ fn checklist_rows_wear_the_gutter_and_the_status_glyphs() {
     assert!(bold.style.add_modifier.contains(Modifier::BOLD));
     let struck = &lines[2].spans[2];
     assert!(struck.style.add_modifier.contains(Modifier::CROSSED_OUT));
-    assert_eq!(struck.style.fg, Some(TOOL_DIM_COLOR));
-    assert_eq!(lines[2].spans[1].style.fg, Some(TASK_COMPLETED_COLOR));
+    assert_eq!(struck.style.fg, Some(tool_dim_color()));
+    assert_eq!(lines[2].spans[1].style.fg, Some(task_completed_color()));
 }
 
 #[test]
@@ -80,7 +80,7 @@ fn a_blocked_task_names_its_open_blockers_dim() {
     // The blocked subject and suffix are dim (stuck work reads recessed).
     let lines = checklist_lines(&store, 60);
     let blocked_subject = &lines[2].spans[2];
-    assert_eq!(blocked_subject.style.fg, Some(TOOL_DIM_COLOR));
+    assert_eq!(blocked_subject.style.fg, Some(tool_dim_color()));
 }
 
 #[test]
@@ -131,7 +131,7 @@ fn past_the_cap_the_list_prioritises_and_folds_the_rest() {
     );
     // The summary row is dim.
     let last = lines.last().unwrap();
-    assert_eq!(last.spans[1].style.fg, Some(TOOL_DIM_COLOR));
+    assert_eq!(last.spans[1].style.fg, Some(tool_dim_color()));
 }
 
 #[test]

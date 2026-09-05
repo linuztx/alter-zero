@@ -30,20 +30,24 @@
 //! `ui::AssistantRenderer::in_code` — since a grammar parses the whole line at
 //! once; only completed lines commit.)
 //!
-//! Styling lives with the theme (Catppuccin Mocha, codex's dark default), not as
-//! a `ui`-owned palette — the tokenizer is no longer colour-agnostic, because a
-//! real grammar's scopes carry far more distinction (tag vs attribute vs value)
-//! than a fixed six-colour enum could. `Seg` therefore carries a resolved
-//! [`Style`]; `ui` maps nothing.
+//! Styling lives with a **syntect theme**, not a `ui`-owned palette — the
+//! tokenizer is no longer colour-agnostic, because a real grammar's scopes
+//! carry far more distinction (tag vs attribute vs value) than a fixed
+//! six-colour enum could. `Seg` therefore carries a resolved [`Style`]; `ui`
+//! maps nothing. *Which* theme is a [`CodeTheme`] the caller names — one per
+//! entry of the `/theme` catalog (`docs/theme.md`), each the syntect theme
+//! that matches that entry's chrome palette, so the code in a reply and the
+//! chrome around it come from one design system. The default is Catppuccin
+//! Mocha, codex's dark default and this crate's since the syntect port.
 
 use ratatui::style::{Color, Modifier, Style};
-use std::sync::LazyLock;
+use std::sync::{LazyLock, OnceLock};
 use syntect::highlighting::{
     Color as SynColor, FontStyle, HighlightIterator, HighlightState, Highlighter as SynHighlighter,
-    Style as SynStyle, Theme,
+    Style as SynStyle,
 };
 use syntect::parsing::{ParseState, ScopeStack, SyntaxReference, SyntaxSet};
-use two_face::theme::EmbeddedThemeName;
+use two_face::theme::{EmbeddedLazyThemeSet, EmbeddedThemeName};
 
 /// One styled run of a code line (the grammar's scope resolved to a colour +
 /// modifiers by the active theme).
@@ -62,16 +66,103 @@ pub struct Seg {
 /// per-line [`ParseState::parse_line`] here).
 static SYNTAX_SET: LazyLock<SyntaxSet> = LazyLock::new(two_face::syntax::extra_newlines);
 
-/// The active colour theme — Catppuccin Mocha, codex's adaptive dark default.
-static THEME: LazyLock<Theme> = LazyLock::new(|| {
-    two_face::theme::extra()
-        .get(EmbeddedThemeName::CatppuccinMocha)
-        .clone()
-});
+/// The syntax theme a code block or file cell is coloured with — one per
+/// entry of the `/theme` catalog (`docs/theme.md`): each is the two-face
+/// bundle's theme of the same family as the chrome palette it rides with,
+/// so a reply's code and the chrome around it agree. [`CodeTheme::ALL`]
+/// lists them in that catalog's order.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum CodeTheme {
+    /// Catppuccin Mocha — the default (codex's dark default too).
+    #[default]
+    CatppuccinMocha,
+    /// Catppuccin Macchiato.
+    CatppuccinMacchiato,
+    /// Catppuccin Frappé.
+    CatppuccinFrappe,
+    /// Catppuccin Latte — the light flavour.
+    CatppuccinLatte,
+    /// Atom's One Dark (bat's `TwoDark`).
+    OneDark,
+    /// Dracula.
+    Dracula,
+    /// Nord.
+    Nord,
+    /// Gruvbox (dark).
+    GruvboxDark,
+    /// Solarized (dark).
+    SolarizedDark,
+    /// Monokai (bat's `Monokai Extended`).
+    Monokai,
+    /// The terminal's own ANSI palette (bat's `ansi`): every scope resolves
+    /// to a palette *index*, which `convert_syntect_color` decodes into
+    /// ratatui's named colours — so the code follows the terminal's theme.
+    Ansi,
+}
 
-/// The theme-bound highlighter that resolves a scope stack to a style.
-static HIGHLIGHTER: LazyLock<SynHighlighter<'static>> =
-    LazyLock::new(|| SynHighlighter::new(&THEME));
+impl CodeTheme {
+    /// Every theme, in the `/theme` catalog's order.
+    pub const ALL: [Self; 11] = [
+        Self::CatppuccinMocha,
+        Self::CatppuccinMacchiato,
+        Self::CatppuccinFrappe,
+        Self::CatppuccinLatte,
+        Self::OneDark,
+        Self::Dracula,
+        Self::Nord,
+        Self::GruvboxDark,
+        Self::SolarizedDark,
+        Self::Monokai,
+        Self::Ansi,
+    ];
+
+    /// The two-face bundle entry this theme is.
+    const fn embedded(self) -> EmbeddedThemeName {
+        match self {
+            Self::CatppuccinMocha => EmbeddedThemeName::CatppuccinMocha,
+            Self::CatppuccinMacchiato => EmbeddedThemeName::CatppuccinMacchiato,
+            Self::CatppuccinFrappe => EmbeddedThemeName::CatppuccinFrappe,
+            Self::CatppuccinLatte => EmbeddedThemeName::CatppuccinLatte,
+            Self::OneDark => EmbeddedThemeName::TwoDark,
+            Self::Dracula => EmbeddedThemeName::Dracula,
+            Self::Nord => EmbeddedThemeName::Nord,
+            Self::GruvboxDark => EmbeddedThemeName::GruvboxDark,
+            Self::SolarizedDark => EmbeddedThemeName::SolarizedDark,
+            Self::Monokai => EmbeddedThemeName::MonokaiExtended,
+            Self::Ansi => EmbeddedThemeName::Ansi,
+        }
+    }
+
+    /// The bundle's own name for the theme (`Catppuccin Mocha`, `TwoDark`,
+    /// `ansi`, …) — what a `bat --theme` would call it.
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        self.embedded().as_name()
+    }
+
+    /// The theme's slot in the per-theme caches below.
+    const fn slot(self) -> usize {
+        self as usize
+    }
+}
+
+/// The embedded theme bundle (~64 KB of serialized themes, parsed one theme
+/// at a time on first use). Held whole rather than re-read per theme: a
+/// `/theme` browse touches several, and the set is smaller than one parsed
+/// grammar.
+static THEME_SET: LazyLock<EmbeddedLazyThemeSet> = LazyLock::new(two_face::theme::extra);
+
+/// One theme-bound highlighter per [`CodeTheme`], built on first use: it
+/// borrows its theme out of [`THEME_SET`] for the process's life, which is
+/// what lets a [`Highlighter`]'s carried state hold a `'static` reference
+/// to it.
+static HIGHLIGHTERS: [OnceLock<SynHighlighter<'static>>; CodeTheme::ALL.len()] =
+    [const { OnceLock::new() }; CodeTheme::ALL.len()];
+
+/// The highlighter that resolves a scope stack to a style under `code`.
+fn highlighter(code: CodeTheme) -> &'static SynHighlighter<'static> {
+    HIGHLIGHTERS[code.slot()].get_or_init(|| SynHighlighter::new(THEME_SET.get(code.embedded())))
+}
 
 // Syntect/bat encode ANSI palette semantics in the colour's alpha channel:
 // `a=0` => the RGB payload is an ANSI palette index, `a=1` => terminal default.
@@ -94,21 +185,23 @@ const OPAQUE_ALPHA: u8 = 0xFF;
 /// tokenization is capped at a few KB and the rest renders plain.
 const MAX_LINE_BYTES: usize = 4096;
 
-/// The plain-code colour: the theme's default foreground, used for unhighlighted
-/// text (an unknown/`text` language, or an indented code block with no info
-/// string) so it matches the un-scoped tokens of a *highlighted* block.
+/// The plain-code colour under `code`: the theme's default foreground, used
+/// for unhighlighted text (an unknown/`text` language, or an indented code
+/// block with no info string) so it matches the un-scoped tokens of a
+/// *highlighted* block. A theme that names no foreground (or names the
+/// terminal's default, as the ANSI theme does) yields an unstyled span.
 #[must_use]
-pub fn plain_style() -> Style {
-    static PLAIN: LazyLock<Style> = LazyLock::new(|| {
-        let fg = THEME
+pub fn plain_style(code: CodeTheme) -> Style {
+    static PLAIN: [OnceLock<Style>; CodeTheme::ALL.len()] =
+        [const { OnceLock::new() }; CodeTheme::ALL.len()];
+    *PLAIN[code.slot()].get_or_init(|| {
+        let fg = THEME_SET
+            .get(code.embedded())
             .settings
             .foreground
-            .and_then(convert_syntect_color)
-            // Catppuccin Mocha's default foreground, if the theme omits one.
-            .unwrap_or(Color::Rgb(0xCD, 0xD6, 0xF4));
-        Style::default().fg(fg)
-    });
-    *PLAIN
+            .and_then(convert_syntect_color);
+        fg.map_or_else(Style::default, |fg| Style::default().fg(fg))
+    })
 }
 
 // -- Syntax lookup (ported from codex's `find_syntax`) ------------------------
@@ -210,6 +303,10 @@ fn convert_style(syn: SynStyle) -> Style {
 struct State {
     parse: ParseState,
     highlight: HighlightState,
+    /// The theme-bound highlighter `highlight` was opened against — the
+    /// state caches resolved styles, so it must keep resolving through the
+    /// same theme however the ambient one changes mid-block.
+    highlighter: &'static SynHighlighter<'static>,
 }
 
 /// An **incremental** syntax highlighter for one fenced code block: feed source
@@ -221,34 +318,44 @@ struct State {
 pub struct Highlighter {
     /// `None` ⇒ plain passthrough (unknown/`text` language, or indented code).
     state: Option<State>,
+    /// The theme the block is coloured with — fixed at the open, so a block
+    /// that straddles a `/theme` switch stays one colour scheme until the
+    /// purge rebuild re-renders it whole.
+    code: CodeTheme,
 }
 
 impl Highlighter {
-    /// A highlighter for `lang` (the fence info string). An unrecognised or
-    /// plain-text language yields one [`plain_style`] segment per line.
+    /// A highlighter for `lang` (the fence info string) under the `code`
+    /// theme. An unrecognised or plain-text language yields one
+    /// [`plain_style`] segment per line.
     #[must_use]
-    pub fn new(lang: Option<&str>) -> Self {
-        let state = lang.and_then(find_syntax).map(|syntax| State {
-            parse: ParseState::new(syntax),
-            highlight: HighlightState::new(&HIGHLIGHTER, ScopeStack::new()),
+    pub fn new(lang: Option<&str>, code: CodeTheme) -> Self {
+        let state = lang.and_then(find_syntax).map(|syntax| {
+            let highlighter = highlighter(code);
+            State {
+                parse: ParseState::new(syntax),
+                highlight: HighlightState::new(highlighter, ScopeStack::new()),
+                highlighter,
+            }
         });
-        Self { state }
+        Self { state, code }
     }
 
     /// Highlight the next source `line` (without a trailing newline), advancing
     /// the carried parse/highlight state.
     #[must_use]
     pub fn line(&mut self, line: &str) -> Vec<Seg> {
+        let plain = plain_style(self.code);
         let Some(state) = self.state.as_mut() else {
             return vec![Seg {
                 text: line.to_string(),
-                style: plain_style(),
+                style: plain,
             }];
         };
         if line.len() > MAX_LINE_BYTES {
             return vec![Seg {
                 text: line.to_string(),
-                style: plain_style(),
+                style: plain,
             }];
         }
         // Grammars are line-based: many contexts anchor on `\n`, so syntect
@@ -261,11 +368,11 @@ impl Highlighter {
             Err(_) => {
                 return vec![Seg {
                     text: line.to_string(),
-                    style: plain_style(),
+                    style: plain,
                 }];
             }
         };
-        let iter = HighlightIterator::new(&mut state.highlight, &ops, &with_nl, &HIGHLIGHTER);
+        let iter = HighlightIterator::new(&mut state.highlight, &ops, &with_nl, state.highlighter);
         let mut out: Vec<Seg> = Vec::new();
         for (syn_style, text) in iter {
             let text = text.trim_end_matches(['\n', '\r']);
@@ -277,7 +384,7 @@ impl Highlighter {
         if out.is_empty() {
             out.push(Seg {
                 text: String::new(),
-                style: plain_style(),
+                style: plain,
             });
         }
         out
@@ -300,12 +407,12 @@ fn push(out: &mut Vec<Seg>, text: &str, style: Style) {
 }
 
 /// Highlight each of `lines` (a fenced code block's source) into styled
-/// segments, threading the multi-line state left-to-right. Every line
-/// concatenates back to the original text. Thin batch wrapper over the
-/// incremental [`Highlighter`].
+/// segments under the `code` theme, threading the multi-line state
+/// left-to-right. Every line concatenates back to the original text. Thin
+/// batch wrapper over the incremental [`Highlighter`].
 #[must_use]
-pub fn highlight(lines: &[&str], lang: Option<&str>) -> Vec<Vec<Seg>> {
-    let mut h = Highlighter::new(lang);
+pub fn highlight(lines: &[&str], lang: Option<&str>, code: CodeTheme) -> Vec<Vec<Seg>> {
+    let mut h = Highlighter::new(lang, code);
     lines.iter().map(|line| h.line(line)).collect()
 }
 
@@ -320,7 +427,9 @@ mod tests {
 
     /// The style covering the first segment whose text contains `needle`.
     fn style_of(line: &str, lang: &str, needle: &str) -> Style {
-        let segs = highlight(&[line], Some(lang)).pop().unwrap();
+        let segs = highlight(&[line], Some(lang), CodeTheme::default())
+            .pop()
+            .unwrap();
         for s in &segs {
             if s.text.contains(needle) {
                 return s.style;
@@ -339,11 +448,14 @@ mod tests {
         let line: String = "{\"k\":123,\"deep\":[1,2,3]},".repeat(2500);
         assert!(line.len() > MAX_LINE_BYTES);
         let start = std::time::Instant::now();
-        let segs = highlight(&[&line], Some("json")).pop().unwrap();
+        let segs = highlight(&[&line], Some("json"), CodeTheme::default())
+            .pop()
+            .unwrap();
         let elapsed = start.elapsed();
         assert_eq!(joined(&segs), line, "the text survives verbatim");
         assert!(
-            segs.iter().all(|s| s.style == plain_style()),
+            segs.iter()
+                .all(|s| s.style == plain_style(CodeTheme::default())),
             "an over-long line renders plain, never partially highlighted"
         );
         assert!(
@@ -360,7 +472,9 @@ mod tests {
             "x = random.randint(1, 100)",
             "return f\"got {n}\"",
         ] {
-            let segs = highlight(&[line], Some("python")).pop().unwrap();
+            let segs = highlight(&[line], Some("python"), CodeTheme::default())
+                .pop()
+                .unwrap();
             assert_eq!(joined(&segs), line, "round-trips");
         }
     }
@@ -417,7 +531,7 @@ mod tests {
             "  #message { color: blue; }",
             "</style>",
         ];
-        let out = highlight(&lines, Some("html"));
+        let out = highlight(&lines, Some("html"), CodeTheme::default());
         // The `html` tag name in <!DOCTYPE html> is coloured…
         assert!(
             out[0]
@@ -441,7 +555,7 @@ mod tests {
         // syntect's ParseState carries an open triple-quoted string, so interior
         // lines colour as string — same guarantee the old hand-rolled Carry gave.
         let lines = ["doc = \"\"\"", "multi", "line\"\"\"", "code = 1"];
-        let out = highlight(&lines, Some("python"));
+        let out = highlight(&lines, Some("python"), CodeTheme::default());
         let str_fg = style_of("x = \"hi\"", "python", "\"hi\"").fg;
         assert!(
             out[1].iter().all(|s| s.style.fg == str_fg),
@@ -466,8 +580,8 @@ mod tests {
             (None, &["def f():", "    return 1"][..]),
             (Some("text"), &["plain", "output"][..]),
         ] {
-            let batch = highlight(lines, lang);
-            let mut h = Highlighter::new(lang);
+            let batch = highlight(lines, lang, CodeTheme::default());
+            let mut h = Highlighter::new(lang, CodeTheme::default());
             let incremental: Vec<Vec<Seg>> = lines.iter().map(|l| h.line(l)).collect();
             assert_eq!(incremental, batch, "lang={lang:?}");
         }
@@ -478,12 +592,14 @@ mod tests {
         // A `text` / unknown / no-language block renders as one plain segment per
         // line, in the plain (theme-default) colour.
         for lang in [Some("text"), Some("definitely-not-a-language"), None] {
-            let segs = highlight(&["def f():"], lang).pop().unwrap();
+            let segs = highlight(&["def f():"], lang, CodeTheme::default())
+                .pop()
+                .unwrap();
             assert_eq!(
                 segs,
                 vec![Seg {
                     text: "def f():".into(),
-                    style: plain_style()
+                    style: plain_style(CodeTheme::default())
                 }],
                 "lang={lang:?}"
             );
@@ -497,7 +613,7 @@ mod tests {
         let full = "x = \"\"\"\nhello\nworld\n\"\"\"\ny = f(1)";
         let rows_of = |t: &str| -> Vec<Vec<Seg>> {
             let lines: Vec<&str> = t.split('\n').collect();
-            highlight(&lines, Some("python"))
+            highlight(&lines, Some("python"), CodeTheme::default())
         };
         let mut committed: Vec<Vec<Seg>> = Vec::new();
         for end in 1..=full.len() {
@@ -513,5 +629,94 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn the_code_themes_follow_the_catalog_and_every_one_resolves() {
+        // One syntect theme per `/theme` entry, all reachable in the two-face
+        // bundle (a name the bundle lacks would panic at first use — on the
+        // user's first code block, not at build time), and all distinct.
+        let mut seen = std::collections::HashSet::new();
+        for code in CodeTheme::ALL {
+            assert!(seen.insert(code.name()), "{code:?}: duplicate bundle theme");
+            let segs = highlight(&["def f():"], Some("python"), code)
+                .pop()
+                .unwrap();
+            assert_eq!(joined(&segs), "def f():", "{code:?} round-trips");
+            assert!(
+                segs.iter().any(|s| s.style.fg.is_some()),
+                "{code:?}: the keyword line is coloured"
+            );
+        }
+        assert_eq!(CodeTheme::default(), CodeTheme::CatppuccinMocha);
+        assert_eq!(CodeTheme::default().name(), "Catppuccin Mocha");
+    }
+
+    #[test]
+    fn two_themes_colour_the_same_keyword_differently() {
+        // The point of naming a theme: the same `def` resolves to Mocha's
+        // mauve under one theme and Dracula's pink under the other.
+        let under = |code: CodeTheme| {
+            highlight(&["def f():"], Some("python"), code)
+                .pop()
+                .unwrap()
+                .into_iter()
+                .find(|s| s.text.contains("def"))
+                .expect("the keyword segment")
+                .style
+                .fg
+        };
+        let mocha = under(CodeTheme::CatppuccinMocha);
+        let dracula = under(CodeTheme::Dracula);
+        assert!(mocha.is_some() && dracula.is_some());
+        assert_ne!(mocha, dracula, "the two themes disagree on the keyword");
+        assert_ne!(
+            plain_style(CodeTheme::CatppuccinMocha),
+            plain_style(CodeTheme::CatppuccinLatte),
+            "the light flavour's plain text is dark, the dark's is light"
+        );
+    }
+
+    #[test]
+    fn the_ansi_theme_uses_the_terminal_palette_never_rgb() {
+        // bat's `ansi` theme encodes palette indices in the colour's alpha
+        // channel; decoded, every segment is a named/indexed terminal colour
+        // — so the code follows whatever palette the terminal is configured
+        // with — and the plain text is the terminal's default foreground.
+        for line in ["def f():", "x = \"hi\"  # note", "return 100"] {
+            for seg in highlight(&[line], Some("python"), CodeTheme::Ansi)
+                .pop()
+                .unwrap()
+            {
+                assert!(
+                    !matches!(seg.style.fg, Some(Color::Rgb(..))),
+                    "{line:?}: an ANSI segment wears a palette colour, got {:?}",
+                    seg.style.fg
+                );
+            }
+        }
+        assert_eq!(
+            plain_style(CodeTheme::Ansi).fg,
+            None,
+            "the ANSI theme's plain text is the terminal default"
+        );
+    }
+
+    #[test]
+    fn a_highlighter_keeps_the_theme_it_opened_with() {
+        // The carried state resolves styles through the theme fixed at the
+        // open — a block half-rendered when the theme switches stays one
+        // scheme until the purge rebuild re-renders it whole.
+        let mut mocha = Highlighter::new(Some("python"), CodeTheme::CatppuccinMocha);
+        let first = mocha.line("def f():");
+        let again = mocha.line("def g():");
+        assert_eq!(
+            first[0].style, again[0].style,
+            "the same theme line after line"
+        );
+        assert_eq!(
+            first,
+            highlight(&["def f():"], Some("python"), CodeTheme::CatppuccinMocha).remove(0)
+        );
     }
 }

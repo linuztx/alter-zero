@@ -3,8 +3,8 @@
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use super::super::theme::{
-    PERMISSION_AGENT_COLOR, PERMISSION_DETAIL_COLOR, PERMISSION_OPTION_MAX_ROWS,
-    PERMISSION_SELECTED_COLOR, PERMISSION_TITLE_COLOR,
+    PERMISSION_OPTION_MAX_ROWS, permission_agent_color, permission_detail_color,
+    permission_selected_color, permission_title_color,
 };
 use super::*;
 use crate::permission::{PermissionKind, PermissionRequest};
@@ -93,13 +93,13 @@ fn the_title_is_coloured_and_a_subagent_request_says_who_asked() {
         .iter()
         .find(|s| s.content.contains("Create file"))
         .expect("the title span");
-    assert_eq!(title.style.fg, Some(PERMISSION_TITLE_COLOR));
+    assert_eq!(title.style.fg, Some(permission_title_color()));
     let attribution = lines[2]
         .spans
         .iter()
         .find(|s| s.content.contains("general-purpose"))
         .expect("the attribution span");
-    assert_eq!(attribution.style.fg, Some(PERMISSION_AGENT_COLOR));
+    assert_eq!(attribution.style.fg, Some(permission_agent_color()));
 }
 
 #[test]
@@ -133,7 +133,7 @@ fn the_selected_row_carries_the_marker_and_the_accent_colour() {
             .spans
             .iter()
             .filter(|s| !s.content.trim().is_empty())
-            .all(|s| s.style.fg == Some(PERMISSION_SELECTED_COLOR)),
+            .all(|s| s.style.fg == Some(permission_selected_color())),
         "the whole selected row lights up — marker and label alike: {:?}",
         lines[idx]
     );
@@ -433,7 +433,7 @@ fn every_wrapped_row_of_the_selected_option_lights_up() {
             line.spans
                 .iter()
                 .filter(|s| !s.content.trim().is_empty())
-                .all(|s| s.style.fg == Some(PERMISSION_SELECTED_COLOR)),
+                .all(|s| s.style.fg == Some(permission_selected_color())),
             "every wrapped row wears the selection colour: {line:?}"
         );
     }
@@ -891,12 +891,12 @@ fn the_mcp_marker_and_description_are_dim() {
         .expect("the call row");
     let last = call.spans.last().expect("the ` (MCP)` marker");
     assert_eq!(last.content.as_ref(), " (MCP)");
-    assert_eq!(last.style.fg, Some(PERMISSION_DETAIL_COLOR));
+    assert_eq!(last.style.fg, Some(permission_detail_color()));
     let detail = lines
         .iter()
         .find(|line| plain(line).contains("Get a list of documentation"))
         .expect("the description row");
-    assert_eq!(detail.spans[1].style.fg, Some(PERMISSION_DETAIL_COLOR));
+    assert_eq!(detail.spans[1].style.fg, Some(permission_detail_color()));
 }
 
 #[test]
@@ -1238,7 +1238,7 @@ fn an_edit_prompt_marks_the_characters_that_changed() {
     // The preview is where "what exactly am I approving?" is load-bearing, so
     // it gets the character-level refinement too (`docs/inline-diff.md`) — it shares
     // `numbered_body_lines` with the cell. Here the timeout 30 -> 90.
-    use super::super::theme::{TOOL_DIFF_ADD_MARK_BG, TOOL_DIFF_DEL_MARK_BG};
+    use super::super::theme::{tool_diff_add_mark_bg, tool_diff_del_mark_bg};
     let body = "11      log.info(\"start\")\n12 -    timeout_seconds = 30\n12 +    timeout_seconds = 90\n13      run()";
     let app = app_with(request(PermissionKind::Edit, "script.py", body));
     let lines = permission_lines(&app, 60, 40);
@@ -1251,12 +1251,12 @@ fn an_edit_prompt_marks_the_characters_that_changed() {
             .collect()
     };
     assert_eq!(
-        marked(TOOL_DIFF_DEL_MARK_BG),
+        marked(tool_diff_del_mark_bg()),
         "3",
         "only the digit that changed"
     );
     assert_eq!(
-        marked(TOOL_DIFF_ADD_MARK_BG),
+        marked(tool_diff_add_mark_bg()),
         "9",
         "only the digit that changed"
     );

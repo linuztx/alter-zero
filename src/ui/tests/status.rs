@@ -5,9 +5,10 @@ use super::*;
 use crate::app::Spinner;
 use crate::ui::message::compaction_full_lines;
 use crate::ui::theme::{
-    AI_COLOR, HEADER_GRADIENT_END, HEADER_GRADIENT_START, INDENT, SHIMMER_BASE, SPINNER_SPAN_COUNT,
-    SPINNER_TAIL_COLOR, STATUS_COLOR, STATUS_DETAIL_COLOR, STATUS_DONE_COLOR, STATUS_RETRY_COLOR,
-    TOOL_DIFF_ADD_COLOR, TOOL_DIFF_DEL_COLOR, TOOL_DIM_COLOR, TOOL_PULSE_DIM,
+    INDENT, SPINNER_SPAN_COUNT, ai_color, header_gradient_end, header_gradient_start, shimmer_base,
+    shimmer_highlight, spinner_bars_high, spinner_pulse_bright, spinner_tail_color, status_color,
+    status_detail_color, status_done_color, status_retry_color, tool_diff_add_color,
+    tool_diff_del_color, tool_dim_color, tool_pulse_dim,
 };
 
 #[test]
@@ -24,13 +25,13 @@ fn edit_cell_colours_the_summary_counts() {
         .iter()
         .find(|s| s.content.as_ref() == "+6")
         .unwrap();
-    assert_eq!(plus.style.fg, Some(TOOL_DIFF_ADD_COLOR));
+    assert_eq!(plus.style.fg, Some(tool_diff_add_color()));
     let minus = summary
         .spans
         .iter()
         .find(|s| s.content.as_ref() == "-2")
         .unwrap();
-    assert_eq!(minus.style.fg, Some(TOOL_DIFF_DEL_COLOR));
+    assert_eq!(minus.style.fg, Some(tool_diff_del_color()));
 }
 
 #[test]
@@ -281,11 +282,12 @@ fn the_retry_clause_stands_out_in_its_own_colour() {
         .expect("a span carrying the retry clause");
     assert_eq!(
         retry.style.fg,
-        Some(STATUS_RETRY_COLOR),
+        Some(status_retry_color()),
         "the retry clause uses the warning colour, not the dim metric grey"
     );
     assert_ne!(
-        STATUS_RETRY_COLOR, STATUS_DETAIL_COLOR,
+        status_retry_color(),
+        status_detail_color(),
         "the retry colour is distinct from the dim metrics"
     );
 }
@@ -363,18 +365,26 @@ fn status_line_has_a_white_comet_fading_tail_shimmering_verb_and_dim_metrics() {
         .iter()
         .find(|s| s.content.as_ref() == "●")
         .expect("the comet's head span");
-    assert_eq!(head.style.fg, Some(STATUS_COLOR), "white head");
+    assert_eq!(head.style.fg, Some(status_color()), "white head");
     assert!(
         head.style.add_modifier.contains(Modifier::BOLD),
         "the head is bold"
     );
-    assert_eq!(STATUS_COLOR, AI_COLOR, "the status white is the text white");
+    assert_eq!(
+        status_color(),
+        ai_color(),
+        "the status white is the text white"
+    );
     let mid = line
         .spans
         .iter()
         .find(|s| s.content.as_ref() == "•")
         .expect("the tail's mid span");
-    assert_eq!(mid.style.fg, Some(SPINNER_TAIL_COLOR), "mid-grey tail cell");
+    assert_eq!(
+        mid.style.fg,
+        Some(spinner_tail_color()),
+        "mid-grey tail cell"
+    );
     let faint = line
         .spans
         .iter()
@@ -382,7 +392,7 @@ fn status_line_has_a_white_comet_fading_tail_shimmering_verb_and_dim_metrics() {
         .expect("the tail's faint span");
     assert_eq!(
         faint.style.fg,
-        Some(STATUS_DETAIL_COLOR),
+        Some(status_detail_color()),
         "the tail's end fades to the dim detail grey"
     );
     // The fade is monotonic: head brighter than mid, mid than the end.
@@ -397,7 +407,7 @@ fn status_line_has_a_white_comet_fading_tail_shimmering_verb_and_dim_metrics() {
     assert_eq!(line.spans[0].content.as_ref(), "(", "the left wall span");
     assert_eq!(
         line.spans[0].style.fg,
-        Some(STATUS_DETAIL_COLOR),
+        Some(status_detail_color()),
         "dim left wall"
     );
     assert_eq!(
@@ -407,11 +417,11 @@ fn status_line_has_a_white_comet_fading_tail_shimmering_verb_and_dim_metrics() {
     );
     assert_eq!(
         line.spans[SPINNER_SPAN_COUNT - 1].style.fg,
-        Some(STATUS_DETAIL_COLOR),
+        Some(status_detail_color()),
         "dim right wall"
     );
     // The verb renders one bold span per char (the shimmer), every char a
-    // greyscale white between the base and the bright highlight.
+    // blend between the base and the bright highlight, channel by channel.
     let verb = "Working…";
     let verb_spans = &line.spans[VERB_START..VERB_START + verb.chars().count()];
     assert_eq!(
@@ -422,10 +432,16 @@ fn status_line_has_a_white_comet_fading_tail_shimmering_verb_and_dim_metrics() {
         verb,
         "per-char verb spans"
     );
+    let base = rgb_of(shimmer_base());
+    let highlight = rgb_of(shimmer_highlight());
     for span in verb_spans {
         let (r, g, b) = span_rgb(span);
-        assert!(r == g && g == b, "greyscale white, got ({r},{g},{b})");
-        assert!(r >= SHIMMER_BASE.0, "never dimmer than the base");
+        assert!(
+            (base.0..=highlight.0).contains(&r)
+                && (base.1..=highlight.1).contains(&g)
+                && (base.2..=highlight.2).contains(&b),
+            "between the base and the highlight, got ({r},{g},{b})"
+        );
         assert!(
             span.style.add_modifier.contains(Modifier::BOLD),
             "verb chars are bold"
@@ -433,7 +449,7 @@ fn status_line_has_a_white_comet_fading_tail_shimmering_verb_and_dim_metrics() {
     }
     assert_eq!(
         line.spans.last().unwrap().style.fg,
-        Some(STATUS_DETAIL_COLOR),
+        Some(status_detail_color()),
         "dim metrics"
     );
 }
@@ -453,7 +469,11 @@ fn status_verb_wave_peaks_where_the_band_is_and_moves_with_time() {
         first.0 > last.0,
         "the band's crest is brighter than off-band chars: {first:?} vs {last:?}"
     );
-    assert_eq!(last.0, SHIMMER_BASE.0, "off-band chars sit at the base");
+    assert_eq!(
+        last.0,
+        rgb_of(shimmer_base()).0,
+        "off-band chars sit at the base"
+    );
 
     // Half a sweep later the band has moved on: char 0 is no longer the peak.
     let mut moved_on = status(0, TokenArrow::Down, 0, None);
@@ -479,7 +499,7 @@ fn summary_lines_is_a_single_dim_bulletless_line() {
     assert_eq!(lines.len(), 1, "one line");
     assert_eq!(plain(&lines[0]), "Done for 20s");
     assert!(!plain(&lines[0]).contains('●'), "no bullet");
-    assert_eq!(lines[0].spans[0].style.fg, Some(STATUS_DONE_COLOR), "dim");
+    assert_eq!(lines[0].spans[0].style.fg, Some(status_done_color()), "dim");
 }
 
 #[test]
@@ -560,7 +580,7 @@ fn the_transcript_expands_the_compaction_summary_dim_below_the_marker() {
     assert_eq!(plain(&lines[1]), format!("{INDENT}kept the gist"));
     assert_eq!(
         lines[1].spans[1].style.fg,
-        Some(TOOL_DIM_COLOR),
+        Some(tool_dim_color()),
         "the summary body is dim"
     );
 }
@@ -659,7 +679,7 @@ fn the_turn_summary_wraps_to_the_width() {
         assert!(
             line.spans
                 .iter()
-                .all(|s| s.style.fg == Some(STATUS_DONE_COLOR)),
+                .all(|s| s.style.fg == Some(status_done_color())),
             "every row keeps the summary's dim dress: {line:?}"
         );
     }
@@ -781,7 +801,7 @@ fn a_one_cell_style_puts_the_glyph_and_its_separator_in_one_span() {
     // spans start at index 1, and the cell is the white bold head.
     let span = first_span(Spinner::Dots, 0);
     assert_eq!(span.content.as_ref(), "⠋ ");
-    assert_eq!(span.style.fg, Some(STATUS_COLOR), "the white head");
+    assert_eq!(span.style.fg, Some(status_color()), "the white head");
     assert!(
         span.style.add_modifier.contains(Modifier::BOLD),
         "bold head"
@@ -817,8 +837,8 @@ fn the_sparkle_blooms_into_a_star_and_back_in_the_banner_gradient() {
     );
     let spark = first_span(Spinner::Sparkle, 0);
     let star = first_span(Spinner::Sparkle, 600);
-    let (r0, g0, b0) = HEADER_GRADIENT_START;
-    let (r1, g1, b1) = HEADER_GRADIENT_END;
+    let (r0, g0, b0) = rgb_of(header_gradient_start());
+    let (r1, g1, b1) = rgb_of(header_gradient_end());
     assert_eq!(
         spark.style.fg,
         Some(Color::Rgb(r0, g0, b0)),
@@ -839,17 +859,18 @@ fn the_pulse_dot_breathes_dim_to_bright_without_moving() {
     // top, half a period later — so it swells rather than flicks.
     assert_eq!(styled_frame(Spinner::Pulse, 0), "●");
     assert_eq!(styled_frame(Spinner::Pulse, 500), "●");
-    let (dr, dg, db) = TOOL_PULSE_DIM;
+    let (dr, dg, db) = rgb_of(tool_pulse_dim());
     assert_eq!(
         first_span(Spinner::Pulse, 0).style.fg,
         Some(Color::Rgb(dr, dg, db)),
         "the breath starts dim"
     );
-    let (r, g, b) = span_rgb(&first_span(Spinner::Pulse, 500));
-    assert!(
-        r > 0xF0 && r == g && g == b,
-        "half a breath later it is (near) white: ({r},{g},{b})"
+    assert_eq!(
+        first_span(Spinner::Pulse, 500).style.fg,
+        Some(spinner_pulse_bright()),
+        "half a breath later it is at the crest — the text colour"
     );
+    let r = rgb_of(spinner_pulse_bright()).0;
     let quarter = span_rgb(&first_span(Spinner::Pulse, 250)).0;
     assert!(dr < quarter && quarter < r, "the swell is gradual");
 }
@@ -863,7 +884,11 @@ fn the_bars_rise_and_fall_brightening_with_height() {
     let low = span_rgb(&first_span(Spinner::Bars, 0)).0;
     let high = span_rgb(&first_span(Spinner::Bars, 7 * 60)).0;
     assert!(low < high, "the full bar is the brightest: {low} vs {high}");
-    assert_eq!(high, 0xFF, "…and it is white");
+    assert_eq!(
+        first_span(Spinner::Bars, 7 * 60).style.fg,
+        Some(spinner_bars_high()),
+        "…and it is the text colour"
+    );
 }
 
 #[test]
@@ -874,8 +899,8 @@ fn the_blocks_turn_through_the_banner_gradient() {
         .map(|i| styled_frame(Spinner::Blocks, i * 150))
         .collect();
     assert_eq!(frames, ["▙", "▛", "▜", "▟"]);
-    let (r0, g0, b0) = HEADER_GRADIENT_START;
-    let (r1, g1, b1) = HEADER_GRADIENT_END;
+    let (r0, g0, b0) = rgb_of(header_gradient_start());
+    let (r1, g1, b1) = rgb_of(header_gradient_end());
     assert_eq!(
         first_span(Spinner::Blocks, 0).style.fg,
         Some(Color::Rgb(r0, g0, b0))
@@ -969,8 +994,8 @@ fn the_gravity_ball_hops_along_the_floor_and_touches_down_at_each_wall() {
 
 #[test]
 fn the_gravity_ball_wears_the_gradient_over_a_dim_floor() {
-    let (r0, g0, b0) = HEADER_GRADIENT_START;
-    let (r1, g1, b1) = HEADER_GRADIENT_END;
+    let (r0, g0, b0) = rgb_of(header_gradient_start());
+    let (r1, g1, b1) = rgb_of(header_gradient_end());
     let at_left = track_spans(Spinner::Gravity, 0);
     assert_eq!(
         at_left[0].style.fg,
@@ -980,7 +1005,7 @@ fn the_gravity_ball_wears_the_gradient_over_a_dim_floor() {
     for span in &at_left[1..] {
         assert_eq!(
             span.style.fg,
-            Some(STATUS_DETAIL_COLOR),
+            Some(status_detail_color()),
             "the bare floor is dim: {:?}",
             span.content
         );
@@ -1030,8 +1055,8 @@ fn the_wave_rolls_down_the_track_and_reflects_off_the_walls() {
 
 #[test]
 fn the_wave_wears_the_gradient_across_the_track() {
-    let (r0, g0, b0) = HEADER_GRADIENT_START;
-    let (r1, g1, b1) = HEADER_GRADIENT_END;
+    let (r0, g0, b0) = rgb_of(header_gradient_start());
+    let (r1, g1, b1) = rgb_of(header_gradient_end());
     let spans = track_spans(Spinner::Wave, 0);
     assert_eq!(
         spans[0].style.fg,
@@ -1067,5 +1092,5 @@ fn render_live_wears_the_session_spinner_on_the_status_row() {
         "⠋ Working… (3s · esc to interrupt)",
         "the status row opens with the dots spinner"
     );
-    assert_eq!(buf[(0, 0)].fg, STATUS_COLOR, "the white head");
+    assert_eq!(buf[(0, 0)].fg, status_color(), "the white head");
 }

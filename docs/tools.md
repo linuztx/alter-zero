@@ -400,10 +400,10 @@ header, the last lines, and a `+N lines (Ns)` footer — see
 
 **The whole cell reads like a normal reply — Claude-Code's noticeable look.**
 The entire `(...)` header body — the command text, its framing `(`/`)`, **and** a
-truncation `…` — is **bold + the white assistant colour** (`TOOL_ARGS_COLOR`),
-and the **output** under the `⎿` gutter is the same white (`TOOL_OUTPUT_COLOR`),
+truncation `…` — is **bold + the white assistant colour** (`tool_args_color()`),
+and the **output** under the `⎿` gutter is the same white (`tool_output_color()`),
 so a `bash` command and its output are as legible as a normal message rather than
-the old muted grey. Only the structural bits stay dim ([`TOOL_DIM_COLOR`]): the
+the old muted grey. Only the structural bits stay dim ([`tool_dim_color()`]): the
 `⎿` corner glyph, the `Running…`/`Waiting…`/`(no output)` placeholders and the
 `… +N lines` / `+N lines (Ns)` hints. The `●` bullet keeps its lifecycle colour
 (breathing grey while it runs — `docs/tool-pulse.md` — vivid green ok · red
@@ -553,7 +553,7 @@ sits **one column further in** (`ui::file_body_indent`), matching Claude Code:
        16 +   <span>Bruce Rivero</span>
 ```
 
-- The **white** summary head (`TOOL_OUTPUT_COLOR`, so it's as noticeable as the
+- The **white** summary head (`tool_output_color()`, so it's as noticeable as the
   output — not dim) sits on the `⎿` corner row: `Read {N} lines`,
   `Wrote {N} lines to {path}`, or `Updated {path} (+A -D)` with the `(+A -D)`
   counts coloured green/red (codex's header counts — `file_summary_spans`). A

@@ -7,9 +7,9 @@ use crate::mcp::{
 };
 use crate::ui::mcp_view_lines;
 use crate::ui::theme::{
-    HOOKS_DETAIL_HINT, MCP_DESCRIPTION_COLOR, MCP_DETAIL_LABEL_COLOR, MCP_DETAIL_STATE_COLOR,
-    MCP_DETAIL_VALUE_COLOR, MCP_FIELD_COL, MCP_PARAM_BULLET, MCP_PARAM_INDENT, MCP_TITLE_COLOR,
-    MCP_TOOL_FIELD_GAP, MODEL_META_COLOR, TOOL_FAIL_COLOR, TOOL_OK_COLOR,
+    HOOKS_DETAIL_HINT, MCP_FIELD_COL, MCP_PARAM_BULLET, MCP_PARAM_INDENT, MCP_TOOL_FIELD_GAP,
+    mcp_description_color, mcp_detail_label_color, mcp_detail_state_color, mcp_detail_value_color,
+    mcp_title_color, model_meta_color, tool_fail_color, tool_ok_color,
 };
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
@@ -227,7 +227,7 @@ fn every_page_headline_is_cyan_and_the_server_one_is_capitalised() {
             .find(|line| {
                 line.spans
                     .iter()
-                    .any(|span| span.style.fg == Some(MCP_TITLE_COLOR))
+                    .any(|span| span.style.fg == Some(mcp_title_color()))
             })
             .expect("a cyan headline");
         plain(&line).trim().to_string()
@@ -248,7 +248,7 @@ fn every_page_headline_is_cyan_and_the_server_one_is_capitalised() {
         .into_iter()
         .find(|line| plain(line).trim() == "deepwiki")
         .expect("the server subtitle");
-    assert_eq!(under.spans[1].style.fg, Some(MCP_DETAIL_VALUE_COLOR));
+    assert_eq!(under.spans[1].style.fg, Some(mcp_detail_value_color()));
 }
 
 #[test]
@@ -272,13 +272,13 @@ fn the_server_detail_lights_its_labels_and_only_the_state_values() {
         plain(&status),
         format!("  {:<MCP_FIELD_COL$}✔ connected", "Status:")
     );
-    assert_eq!(status.spans[1].style.fg, Some(MCP_DETAIL_LABEL_COLOR));
+    assert_eq!(status.spans[1].style.fg, Some(mcp_detail_label_color()));
     // The glyph keeps its state colour — it is the one thing on the row that
     // still has to shout when a server is failing — over white words.
     assert_eq!(status.spans[2].content.as_ref(), "✔ ");
-    assert_eq!(status.spans[2].style.fg, Some(TOOL_OK_COLOR));
+    assert_eq!(status.spans[2].style.fg, Some(tool_ok_color()));
     assert_eq!(status.spans[3].content.as_ref(), "connected");
-    assert_eq!(status.spans[3].style.fg, Some(MCP_DETAIL_STATE_COLOR));
+    assert_eq!(status.spans[3].style.fg, Some(mcp_detail_state_color()));
     // A server that needs no login is one you are cleared to use, so it
     // reports the settled row rather than a `◯ not needed` shrug.
     let auth = find("Auth:");
@@ -286,28 +286,28 @@ fn the_server_detail_lights_its_labels_and_only_the_state_values() {
         plain(&auth),
         format!("  {:<MCP_FIELD_COL$}✔ authenticated", "Auth:")
     );
-    assert_eq!(auth.spans[1].style.fg, Some(MCP_DETAIL_LABEL_COLOR));
-    assert_eq!(auth.spans[2].style.fg, Some(TOOL_OK_COLOR));
-    assert_eq!(auth.spans[3].style.fg, Some(MCP_DETAIL_STATE_COLOR));
+    assert_eq!(auth.spans[1].style.fg, Some(mcp_detail_label_color()));
+    assert_eq!(auth.spans[2].style.fg, Some(tool_ok_color()));
+    assert_eq!(auth.spans[3].style.fg, Some(mcp_detail_state_color()));
     // The addresses, the revision and the count are what the labels lead to,
     // not what the page is about: bright label, quiet value.
     for row in ["Protocol:", "URL:", "Config location:", "Tools:"] {
         let line = find(row);
         assert_eq!(
             line.spans[1].style.fg,
-            Some(MCP_DETAIL_LABEL_COLOR),
+            Some(mcp_detail_label_color()),
             "{row}"
         );
         assert_eq!(
             line.spans[2].style.fg,
-            Some(MCP_DETAIL_VALUE_COLOR),
+            Some(mcp_detail_value_color()),
             "{row}"
         );
     }
     // What the server can actually do stays lit with the state rows.
     let caps = find("Capabilities:");
-    assert_eq!(caps.spans[1].style.fg, Some(MCP_DETAIL_LABEL_COLOR));
-    assert_eq!(caps.spans[2].style.fg, Some(MCP_DETAIL_STATE_COLOR));
+    assert_eq!(caps.spans[1].style.fg, Some(mcp_detail_label_color()));
+    assert_eq!(caps.spans[2].style.fg, Some(mcp_detail_state_color()));
 }
 
 #[test]
@@ -331,14 +331,14 @@ fn a_failing_server_keeps_its_red_glyph_beside_the_white_words() {
             .clone()
     };
     let status = find("Status:");
-    assert_eq!(status.spans[2].style.fg, Some(TOOL_FAIL_COLOR));
-    assert_eq!(status.spans[3].style.fg, Some(MCP_DETAIL_STATE_COLOR));
+    assert_eq!(status.spans[2].style.fg, Some(tool_fail_color()));
+    assert_eq!(status.spans[3].style.fg, Some(mcp_detail_state_color()));
     let auth = find("Auth:");
     assert_eq!(
         plain(&auth),
         format!("  {:<MCP_FIELD_COL$}✘ expired", "Auth:")
     );
-    assert_eq!(auth.spans[2].style.fg, Some(TOOL_FAIL_COLOR));
+    assert_eq!(auth.spans[2].style.fg, Some(tool_fail_color()));
 }
 
 #[test]
@@ -359,31 +359,31 @@ fn the_tool_detail_reads_label_bright_and_value_dim() {
         plain(&name),
         format!("  Tool name:{MCP_TOOL_FIELD_GAP}ask_question")
     );
-    assert_eq!(name.spans[1].style.fg, Some(MCP_DETAIL_LABEL_COLOR));
-    assert_eq!(name.spans[2].style.fg, Some(MCP_DETAIL_VALUE_COLOR));
+    assert_eq!(name.spans[1].style.fg, Some(mcp_detail_label_color()));
+    assert_eq!(name.spans[2].style.fg, Some(mcp_detail_value_color()));
     let full = find("Full name:");
     assert_eq!(
         plain(&full),
         format!("  Full name:{MCP_TOOL_FIELD_GAP}mcp__deepwiki__ask_question")
     );
-    assert_eq!(full.spans[1].style.fg, Some(MCP_DETAIL_LABEL_COLOR));
-    assert_eq!(full.spans[2].style.fg, Some(MCP_DETAIL_VALUE_COLOR));
+    assert_eq!(full.spans[1].style.fg, Some(mcp_detail_label_color()));
+    assert_eq!(full.spans[2].style.fg, Some(mcp_detail_value_color()));
     // The description's label is bright like every other; the prose under it
     // is **half white** — a third tone, so it can't be mistaken for either
     // the labels organising the page or the schema boilerplate below it.
     assert_eq!(
         find("Description:").spans[1].style.fg,
-        Some(MCP_DETAIL_LABEL_COLOR)
+        Some(mcp_detail_label_color())
     );
     assert_eq!(
         find("Ask any question").spans[1].style.fg,
-        Some(MCP_DESCRIPTION_COLOR)
+        Some(mcp_description_color())
     );
-    assert_ne!(MCP_DESCRIPTION_COLOR, MCP_DETAIL_LABEL_COLOR);
-    assert_ne!(MCP_DESCRIPTION_COLOR, MCP_DETAIL_VALUE_COLOR);
+    assert_ne!(mcp_description_color(), mcp_detail_label_color());
+    assert_ne!(mcp_description_color(), mcp_detail_value_color());
     assert_eq!(
         find("Parameters:").spans[1].style.fg,
-        Some(MCP_DETAIL_LABEL_COLOR)
+        Some(mcp_detail_label_color())
     );
 }
 
@@ -400,16 +400,16 @@ fn a_parameter_lights_its_name_and_dims_what_it_introduces() {
         .expect("the repoName row");
     let head = &lines[at];
     assert_eq!(head.spans[1].content.as_ref(), MCP_PARAM_BULLET);
-    assert_eq!(head.spans[1].style.fg, Some(MCP_DETAIL_LABEL_COLOR));
+    assert_eq!(head.spans[1].style.fg, Some(mcp_detail_label_color()));
     assert_eq!(head.spans[2].content.as_ref(), "repoName");
-    assert_eq!(head.spans[2].style.fg, Some(MCP_DETAIL_LABEL_COLOR));
+    assert_eq!(head.spans[2].style.fg, Some(mcp_detail_label_color()));
     assert!(plain(head).contains("(required): unknown"), "{head:?}");
-    assert_eq!(head.spans[3].style.fg, Some(MCP_DETAIL_VALUE_COLOR));
+    assert_eq!(head.spans[3].style.fg, Some(mcp_detail_value_color()));
     let tail = &lines[at + 1];
     assert_eq!(plain(tail).trim(), "owner/repo");
     assert_eq!(tail.spans[1].content.as_ref(), MCP_PARAM_INDENT);
     for span in tail.spans.iter().skip(1) {
-        assert_eq!(span.style.fg, Some(MCP_DETAIL_VALUE_COLOR), "{span:?}");
+        assert_eq!(span.style.fg, Some(mcp_detail_value_color()), "{span:?}");
     }
 }
 
@@ -558,7 +558,7 @@ fn a_row_paints_only_its_glyph_in_the_status_colour() {
         if span.content.contains('·') {
             assert_eq!(
                 span.style.fg,
-                Some(MODEL_META_COLOR),
+                Some(model_meta_color()),
                 "a separator span is dim: {:?}",
                 span.content
             );
@@ -571,7 +571,7 @@ fn a_row_paints_only_its_glyph_in_the_status_colour() {
         .expect("the ✔ glyph span");
     assert_eq!(
         glyph.style.fg,
-        Some(TOOL_OK_COLOR),
+        Some(tool_ok_color()),
         "the glyph keeps the connected green"
     );
     assert_eq!(

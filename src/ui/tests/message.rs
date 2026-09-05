@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::ui::theme::{
-    AI_COLOR, ERROR_COLOR, LIST_MARKER_COLOR, SYSTEM_COLOR, THEMATIC_BREAK, USER_BG_COLOR,
+    THEMATIC_BREAK, ai_color, error_color, list_marker_color, system_color, user_bg_color,
 };
 use crate::ui::wrap::cols;
 
@@ -14,7 +14,7 @@ fn ordered_list_number_is_colored() {
         .iter()
         .find(|s| s.content.contains("1."))
         .expect("the ordered marker span");
-    assert_eq!(num.style.fg, Some(LIST_MARKER_COLOR));
+    assert_eq!(num.style.fg, Some(list_marker_color()));
 }
 
 // --- message_lines ---
@@ -44,7 +44,7 @@ fn message_lines_indents_wrapped_continuation_lines() {
 #[test]
 fn message_lines_colours_the_bullet() {
     let lines = message_lines(Role::Assistant, "hi", 80);
-    assert_eq!(lines[0].spans[0].style.fg, Some(AI_COLOR));
+    assert_eq!(lines[0].spans[0].style.fg, Some(ai_color()));
 }
 
 #[test]
@@ -54,10 +54,14 @@ fn message_lines_renders_errors_with_a_red_bullet() {
     assert!(plain(&lines[0]).contains("stream failed"));
     assert_eq!(
         lines[0].spans[0].style.fg,
-        Some(ERROR_COLOR),
+        Some(error_color()),
         "the error bullet is red, not white"
     );
-    assert_ne!(ERROR_COLOR, AI_COLOR, "error colour differs from assistant");
+    assert_ne!(
+        error_color(),
+        ai_color(),
+        "error colour differs from assistant"
+    );
 }
 
 #[test]
@@ -66,7 +70,7 @@ fn message_lines_applies_background_to_user_lines() {
     for line in &lines {
         assert_eq!(
             line.style.bg,
-            Some(USER_BG_COLOR),
+            Some(user_bg_color()),
             "every user line has the background"
         );
     }
@@ -386,8 +390,8 @@ fn repaint_tail_after_a_width_change_carries_no_stale_rows() {
 #[test]
 fn message_lines_renders_a_system_notice_with_a_cyan_bullet() {
     let lines = message_lines(Role::System, "a notice", 80);
-    assert_eq!(lines[0].spans[0].style.fg, Some(SYSTEM_COLOR));
-    assert_ne!(SYSTEM_COLOR, AI_COLOR, "distinct from an AI reply");
+    assert_eq!(lines[0].spans[0].style.fg, Some(system_color()));
+    assert_ne!(system_color(), ai_color(), "distinct from an AI reply");
 }
 
 #[test]
@@ -397,7 +401,7 @@ fn compaction_lines_render_the_cyan_marker_cell() {
     let lines = compaction_lines(&bare_compaction("s"), 80);
     assert_eq!(lines.len(), 1);
     assert_eq!(plain(&lines[0]), format!("● {COMPACTED_NOTICE}"));
-    assert_eq!(lines[0].spans[0].style.fg, Some(SYSTEM_COLOR));
+    assert_eq!(lines[0].spans[0].style.fg, Some(system_color()));
 }
 
 #[test]

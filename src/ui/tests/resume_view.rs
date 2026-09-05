@@ -1,7 +1,7 @@
 //! The `/resume` picker (`docs/resume.md`).
 
 use super::*;
-use crate::ui::theme::{MENU_DIM_COLOR, MENU_SELECTED_COLOR, RESUME_AGE_WIDTH, RESUME_SELECTED_BG};
+use crate::ui::theme::{RESUME_AGE_WIDTH, menu_dim_color, menu_selected_color, resume_selected_bg};
 
 // --- restore_cursor_row (where the shell prompt resumes on exit) ---
 
@@ -54,9 +54,9 @@ fn resume_rows_show_marker_age_and_preview_with_the_selection_lit() {
     assert_eq!(first.find("first message"), Some(2 + RESUME_AGE_WIDTH));
     // The whole selected row lights up; the others dim — the palette's
     // selection-by-colour convention.
-    assert_eq!(buf[(0, 5)].fg, MENU_SELECTED_COLOR);
-    assert_eq!(buf[(4, 5)].fg, MENU_SELECTED_COLOR, "age too");
-    assert_eq!(buf[(4, 4)].fg, MENU_DIM_COLOR, "unselected rows dim");
+    assert_eq!(buf[(0, 5)].fg, menu_selected_color());
+    assert_eq!(buf[(4, 5)].fg, menu_selected_color(), "age too");
+    assert_eq!(buf[(4, 4)].fg, menu_dim_color(), "unselected rows dim");
 }
 
 #[test]
@@ -158,11 +158,11 @@ fn resume_selected_row_gets_a_full_width_background_tint() {
     render_resume_picker(buf.area, &mut buf, &app);
     // The tint spans the whole selected row — marker cell through the
     // padding past the text (codex's full-width background blend)…
-    assert_eq!(buf[(0, 5)].bg, RESUME_SELECTED_BG);
-    assert_eq!(buf[(20, 5)].bg, RESUME_SELECTED_BG);
-    assert_eq!(buf[(39, 5)].bg, RESUME_SELECTED_BG);
+    assert_eq!(buf[(0, 5)].bg, resume_selected_bg());
+    assert_eq!(buf[(20, 5)].bg, resume_selected_bg());
+    assert_eq!(buf[(39, 5)].bg, resume_selected_bg());
     // …and the unselected row keeps the plain background.
-    assert_ne!(buf[(0, 4)].bg, RESUME_SELECTED_BG);
+    assert_ne!(buf[(0, 4)].bg, resume_selected_bg());
 }
 
 #[test]

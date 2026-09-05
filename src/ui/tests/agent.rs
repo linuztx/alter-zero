@@ -4,8 +4,8 @@ use super::*;
 use crate::ui::agent::{AgentCellView, agent_cell_lines, agent_group_full_lines};
 use crate::ui::live::preview_lines;
 use crate::ui::theme::{
-    TOOL_DIM_COLOR, TOOL_FAIL_COLOR, TOOL_OK_COLOR, TOOL_OUTPUT_COLOR, TOOL_PULSE_BRIGHT,
-    TOOL_PULSE_DIM, TOOL_PULSE_PERIOD,
+    TOOL_PULSE_PERIOD, tool_dim_color, tool_fail_color, tool_ok_color, tool_output_color,
+    tool_pulse_bright, tool_pulse_dim,
 };
 use crate::ui::wrap::cols;
 
@@ -28,11 +28,11 @@ fn agent_group_lines_render_the_finished_tree() {
     assert_eq!(texts[3], "   └ Fetch Manila · 2 tool uses · 16.1k tokens");
     assert_eq!(texts[4], "     ⎿  Done");
     // All clean → green bullet; one interrupted → red.
-    assert_eq!(lines[0].spans[0].style.fg, Some(TOOL_OK_COLOR));
+    assert_eq!(lines[0].spans[0].style.fg, Some(tool_ok_color()));
     let mut stopped = group.clone();
     stopped.agents[1].status = AgentStatus::Interrupted;
     let lines = agent_group_lines(&stopped, 80);
-    assert_eq!(lines[0].spans[0].style.fg, Some(TOOL_FAIL_COLOR));
+    assert_eq!(lines[0].spans[0].style.fg, Some(tool_fail_color()));
     assert_eq!(plain(&lines[4]), "     ⎿  Interrupted");
 }
 
@@ -89,7 +89,7 @@ fn a_lone_live_agent_renders_the_tool_cell_shape() {
         lines[1]
             .spans
             .iter()
-            .all(|s| s.style.fg == Some(TOOL_DIM_COLOR)),
+            .all(|s| s.style.fg == Some(tool_dim_color())),
         "the whole row is dim: {:?}",
         lines[1]
     );
@@ -142,7 +142,7 @@ fn a_lone_live_agents_tool_row_clips_instead_of_wrapping() {
         lines[1]
             .spans
             .iter()
-            .all(|s| s.style.fg == Some(TOOL_DIM_COLOR)),
+            .all(|s| s.style.fg == Some(tool_dim_color())),
         "the whole row is dim: {:?}",
         lines[1]
     );
@@ -282,23 +282,9 @@ fn a_live_agent_groups_bullet_breathes_like_a_running_tool() {
         ],
     );
     let bullet = |app: &App| live_agent_group_lines(app, 90)[0].spans[0].style.fg;
-    assert_eq!(
-        bullet(&app),
-        Some(Color::Rgb(
-            TOOL_PULSE_DIM.0,
-            TOOL_PULSE_DIM.1,
-            TOOL_PULSE_DIM.2
-        ))
-    );
+    assert_eq!(bullet(&app), Some(tool_pulse_dim()));
     app.set_pulse(TOOL_PULSE_PERIOD / 2);
-    assert_eq!(
-        bullet(&app),
-        Some(Color::Rgb(
-            TOOL_PULSE_BRIGHT.0,
-            TOOL_PULSE_BRIGHT.1,
-            TOOL_PULSE_BRIGHT.2
-        ))
-    );
+    assert_eq!(bullet(&app), Some(tool_pulse_bright()));
 }
 
 #[test]
@@ -484,8 +470,8 @@ fn the_roster_highlight_follows_the_viewed_session_and_the_marker_the_selection(
          with the selection: {texts:?}"
     );
     // The viewed row is the bright one; main is dim.
-    assert_eq!(lines[1].spans[1].style.fg, Some(TOOL_DIM_COLOR));
-    assert_eq!(lines[2].spans[1].style.fg, Some(TOOL_OUTPUT_COLOR));
+    assert_eq!(lines[1].spans[1].style.fg, Some(tool_dim_color()));
+    assert_eq!(lines[2].spans[1].style.fg, Some(tool_output_color()));
     // An active ↓ selection still shows its ❯ (and cyan) on the selected row
     // — inside the view the first ↓ lands straight on the viewed agent (the
     // remembered pick), and a second ↓ has nowhere further to go.
@@ -511,7 +497,7 @@ fn a_finished_roster_rows_bullet_is_green_for_its_linger() {
     assert!(plain(&lines[2]).starts_with("  ◯ general-purpose"));
     assert_eq!(
         lines[2].spans[1].style.fg,
-        Some(TOOL_OK_COLOR),
+        Some(tool_ok_color()),
         "a done agent's bullet turns green"
     );
     // Selecting the row keeps the verdict colour on the bullet.
@@ -520,7 +506,7 @@ fn a_finished_roster_rows_bullet_is_green_for_its_linger() {
     app.on_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
     let lines = agent_list_lines(&app, 100);
     assert!(plain(&lines[2]).starts_with("❯ ◯ general-purpose"));
-    assert_eq!(lines[2].spans[1].style.fg, Some(TOOL_OK_COLOR));
+    assert_eq!(lines[2].spans[1].style.fg, Some(tool_ok_color()));
     // An x-stopped sibling wears the fail red instead.
     let mut app = App::new();
     app.begin_stream();
@@ -532,7 +518,7 @@ fn a_finished_roster_rows_bullet_is_green_for_its_linger() {
     let lines = agent_list_lines(&app, 100);
     assert_eq!(
         lines[2].spans[1].style.fg,
-        Some(TOOL_FAIL_COLOR),
+        Some(tool_fail_color()),
         "a stopped agent's bullet turns red"
     );
 }

@@ -24,22 +24,22 @@ fn skills_row(row: &SkillMenuRow, selected: bool, name_width: usize, width: u16)
     let marker = if selected { MODEL_MARKER } else { "  " };
     let (marker_style, name_style) = if selected {
         (
-            Style::new().fg(MODEL_SELECTED_COLOR),
+            Style::new().fg(model_selected_color()),
             Style::new()
-                .fg(MODEL_SELECTED_COLOR)
+                .fg(model_selected_color())
                 .add_modifier(Modifier::BOLD),
         )
     } else {
-        (Style::default(), Style::new().fg(MODEL_ID_COLOR))
+        (Style::default(), Style::new().fg(model_id_color()))
     };
     let name = ellipsize(&row.name, name_width.max(1));
     let pad = name_width.saturating_sub(cols(&name)) + SETTINGS_VALUE_GAP;
     let reserved = cols(marker) + cols(&name) + pad;
     let value_room = (width as usize).saturating_sub(reserved).max(1);
     let (value, value_color) = if row.enabled {
-        (SKILLS_ON_VALUE, SETTINGS_VALUE_COLOR)
+        (SKILLS_ON_VALUE, settings_value_color())
     } else {
-        (SKILLS_OFF_VALUE, SETTINGS_VALUE_OFF_COLOR)
+        (SKILLS_OFF_VALUE, settings_value_off_color())
     };
     Line::from(vec![
         Span::styled(marker.to_string(), marker_style),
@@ -79,18 +79,18 @@ fn skills_empty_lines(app: &App, width: u16) -> Vec<Line<'static>> {
         Some((true, roots)) if !roots.is_empty() => {
             let mut lines = vec![model_placeholder_row(
                 SKILLS_NONE_FOUND,
-                MODEL_META_COLOR,
+                model_meta_color(),
                 width,
             )];
             lines.extend(roots.iter().flat_map(|root| {
-                model_wrapped_rows(&format!("{root}/<name>/SKILL.md"), MODEL_ID_COLOR, width)
+                model_wrapped_rows(&format!("{root}/<name>/SKILL.md"), model_id_color(), width)
             }));
             lines
         }
         // Skills exist, the search just matched none of them.
         _ => vec![model_placeholder_row(
             SKILLS_NO_MATCH,
-            MODEL_META_COLOR,
+            model_meta_color(),
             width,
         )],
     }
@@ -131,7 +131,7 @@ fn skills_counter_line(rows: &[SkillMenuRow], selected: usize) -> Line<'static> 
         Span::raw(MODEL_INDENT),
         Span::styled(
             format!("({}/{})", selected + 1, rows.len()),
-            Style::new().fg(MODEL_META_COLOR),
+            Style::new().fg(model_meta_color()),
         ),
     ])
 }
@@ -152,7 +152,7 @@ pub(super) fn skills_view_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     let selected = menu.selected;
     let search_line = Line::from(vec![
         Span::raw(MODEL_INDENT),
-        Span::styled(MODEL_PROMPT, Style::new().fg(MODEL_SELECTED_COLOR)),
+        Span::styled(MODEL_PROMPT, Style::new().fg(model_selected_color())),
         Span::raw(menu.query.clone()),
     ]);
     let highlighted = rows.get(selected.min(rows.len().saturating_sub(1)));
@@ -163,7 +163,7 @@ pub(super) fn skills_view_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     if !menu.session_enabled {
         lines.extend(model_wrapped_rows(
             SKILLS_SESSION_OFF,
-            TOAST_ERROR_COLOR,
+            toast_error_color(),
             width,
         ));
     }
@@ -179,7 +179,7 @@ pub(super) fn skills_view_lines(app: &App, width: u16) -> Vec<Line<'static>> {
             lines.push(Line::default());
             lines.extend(model_wrapped_rows(
                 &row.description,
-                MODEL_META_COLOR,
+                model_meta_color(),
                 width,
             ));
             lines.push(Line::default());
@@ -188,7 +188,11 @@ pub(super) fn skills_view_lines(app: &App, width: u16) -> Vec<Line<'static>> {
         // `/settings` menu's collapse — the two menus stay twins).
         None => lines.push(Line::default()),
     }
-    lines.push(model_placeholder_row(SKILLS_HINT, MODEL_META_COLOR, width));
+    lines.push(model_placeholder_row(
+        SKILLS_HINT,
+        model_meta_color(),
+        width,
+    ));
     lines.push(Line::default());
     lines.push(model_rule(width));
     lines

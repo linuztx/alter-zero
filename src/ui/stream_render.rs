@@ -84,7 +84,7 @@ impl StreamRender {
     pub fn new() -> Self {
         Self {
             width: 0,
-            renderer: AssistantRenderer::new(0, AI_BULLET, AI_COLOR),
+            renderer: AssistantRenderer::new(0, AI_BULLET, ai_color()),
             frozen: Vec::new(),
             consumed: 0,
             committed: 0,
@@ -106,7 +106,7 @@ impl StreamRender {
     fn advance(&mut self, text: &str, width: u16) {
         if width != self.width {
             self.width = width;
-            self.renderer = AssistantRenderer::new(width, AI_BULLET, AI_COLOR);
+            self.renderer = AssistantRenderer::new(width, AI_BULLET, ai_color());
             self.frozen.clear();
             self.consumed = 0;
             self.committed = 0;

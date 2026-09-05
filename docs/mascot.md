@@ -22,8 +22,9 @@ The art lives on the pure `app::Mascot` enum (`name()`, `description()`,
 `art()`, `art_width()`, `Mascot::ALL`); every row is single-width (a wide
 emoji/CJK glyph would shear the rows after it — `docs/table-streaming.md`
 *Wide glyphs* — and the catalog tests pin it). The mascot wears the banner's
-own cyan → blue gradient (`HEADER_GRADIENT_START` → `HEADER_GRADIENT_END`),
-keyed by display column across the art block's width.
+own accent → link gradient (`header_gradient_start()` →
+`header_gradient_end()` — the theme's, `docs/theme.md`), keyed by display
+column across the art block's width.
 
 ## The `/mascot` picker
 

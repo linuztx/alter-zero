@@ -62,14 +62,16 @@ colour**:
 `AssistantRenderer::content_rows` reconstructs the `# ` marker run (normalised to
 one space, like codex) in front of the heading text before word-wrapping. This
 deliberately **reverses** the earlier behaviour (drop the `#`s, bold in
-`AI_COLOR`) so we match codex exactly — a user who reads codex output sees the
+`ai_color()`) so we match codex exactly — a user who reads codex output sees the
 raw markers, so we show them too. It is still a pure per-line transform, so
 prefix-stability and the batch/stream agreement are unchanged.
 
 Code sits under the assistant bullet (aligned with the wrapped-prose indent, no
-gutter) and is **syntax-highlighted** by real TextMate grammars (Catppuccin
-Mocha theme — codex parity; tags/attributes/selectors coloured, embedded CSS/JS
-in HTML highlighted by their own grammars). Both the opening and
+gutter) and is **syntax-highlighted** by real TextMate grammars (the active
+theme's own syntect theme — Catppuccin Mocha by default, codex parity, and
+the matching theme under every other `/theme` entry, `docs/theme.md`;
+tags/attributes/selectors coloured, embedded CSS/JS in HTML highlighted by
+their own grammars). Both the opening and
 closing ` ``` ` fences are hidden, and the info-string language is used only to
 pick the grammar — it is **not** shown as a label.
 

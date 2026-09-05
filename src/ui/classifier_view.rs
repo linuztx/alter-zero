@@ -32,7 +32,7 @@ const fn mode_note(mode: Option<PermissionMode>) -> &'static str {
 /// whose offline auto-mode demo answers from a pure heuristic instead).
 #[must_use]
 pub fn classifier_lines(app: &App, width: u16) -> Vec<Line<'static>> {
-    let dim = Style::new().fg(TOOL_DIM_COLOR);
+    let dim = Style::new().fg(tool_dim_color());
     let mut lines: Vec<Line<'static>> = Vec::new();
     for row in wrap_verbatim(mode_note(app.permission_mode()), width) {
         lines.push(Line::from(Span::styled(row, dim)));

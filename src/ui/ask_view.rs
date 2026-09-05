@@ -22,7 +22,7 @@ use super::*;
 fn rule(width: u16) -> Line<'static> {
     Line::from(Span::styled(
         PERMISSION_RULE.repeat(width as usize),
-        Style::new().fg(BORDER_COLOR),
+        Style::new().fg(border_color()),
     ))
 }
 
@@ -48,16 +48,16 @@ fn hint_row(pairs: &[(&str, &str)]) -> Line<'static> {
         if i > 0 {
             spans.push(Span::styled(
                 PERMISSION_HINT_SEPARATOR,
-                Style::new().fg(PERMISSION_HINT_TEXT_COLOR),
+                Style::new().fg(permission_hint_text_color()),
             ));
         }
         spans.push(Span::styled(
             (*key).to_string(),
-            Style::new().fg(PERMISSION_HINT_KEY_COLOR),
+            Style::new().fg(permission_hint_key_color()),
         ));
         spans.push(Span::styled(
             (*label).to_string(),
-            Style::new().fg(PERMISSION_HINT_TEXT_COLOR),
+            Style::new().fg(permission_hint_text_color()),
         ));
     }
     Line::from(spans)
@@ -68,8 +68,10 @@ fn hint_row(pairs: &[(&str, &str)]) -> Line<'static> {
 /// highlight), answered questions checked `☒`, unanswered `☐`, the Submit tab
 /// `✔`. A lone question shows just its own chip, no arrows.
 fn chip_strip(prompt: &AskPrompt, width: u16) -> Line<'static> {
-    let dim = Style::new().fg(ASK_CHIP_COLOR);
-    let current = Style::new().fg(ASK_CHIP_CURRENT_FG).bg(ASK_CHIP_CURRENT_BG);
+    let dim = Style::new().fg(ask_chip_color());
+    let current = Style::new()
+        .fg(ask_chip_current_fg())
+        .bg(ask_chip_current_bg());
     let mut spans = vec![Span::raw(ASK_INDENT)];
     if prompt.has_submit_tab() {
         spans.push(Span::styled(ASK_ARROW_LEFT, dim));
@@ -138,7 +140,7 @@ fn row_prefix(selected: bool, number: Option<usize>) -> Vec<Span<'static>> {
         None => "   ".to_string(),
     };
     let style = if selected {
-        Style::new().fg(PERMISSION_SELECTED_COLOR)
+        Style::new().fg(permission_selected_color())
     } else {
         Style::default()
     };
@@ -163,14 +165,14 @@ fn option_label_spans(
     selected: bool,
 ) -> Vec<Span<'static>> {
     let style = if selected {
-        Style::new().fg(PERMISSION_SELECTED_COLOR)
+        Style::new().fg(permission_selected_color())
     } else {
         Style::default()
     };
     let mut spans = Vec::new();
     if question.multi_select {
         let (mark, mark_style) = if picked {
-            (ASK_CHECKED, Style::new().fg(ASK_PICKED_COLOR))
+            (ASK_CHECKED, Style::new().fg(ask_picked_color()))
         } else {
             (ASK_UNCHECKED, style)
         };
@@ -180,7 +182,7 @@ fn option_label_spans(
     if !question.multi_select && picked {
         spans.push(Span::styled(
             ASK_PICKED_MARK.to_string(),
-            Style::new().fg(ASK_PICKED_COLOR),
+            Style::new().fg(ask_picked_color()),
         ));
     }
     spans
@@ -327,7 +329,7 @@ fn build_list_page(
                     for text in wrap_output(description, desc_room as u16) {
                         lines.push(Line::from(vec![
                             Span::raw(desc_indent.clone()),
-                            Span::styled(text, Style::new().fg(ASK_DESC_COLOR)),
+                            Span::styled(text, Style::new().fg(ask_desc_color())),
                         ]));
                     }
                 }
@@ -343,7 +345,7 @@ fn build_list_page(
                 spans.push(Span::styled(
                     ASK_CONFIRM_LABEL.to_string(),
                     if selected {
-                        Style::new().fg(PERMISSION_SELECTED_COLOR)
+                        Style::new().fg(permission_selected_color())
                     } else {
                         Style::default()
                     },
@@ -355,7 +357,7 @@ fn build_list_page(
                 spans.push(Span::styled(
                     ASK_CHAT_LABEL.to_string(),
                     if selected {
-                        Style::new().fg(PERMISSION_SELECTED_COLOR)
+                        Style::new().fg(permission_selected_color())
                     } else {
                         Style::default()
                     },
@@ -392,7 +394,7 @@ fn other_rows(
 ) -> Vec<Line<'static>> {
     let number = ask_row_number(question, AskRow::Other);
     let style = if selected {
-        Style::new().fg(PERMISSION_SELECTED_COLOR)
+        Style::new().fg(permission_selected_color())
     } else {
         Style::default()
     };
@@ -420,7 +422,7 @@ fn other_rows(
     let mut spans = row_prefix(selected, number);
     if question.multi_select {
         let (mark, mark_style) = if state.other_chosen {
-            (ASK_CHECKED, Style::new().fg(ASK_PICKED_COLOR))
+            (ASK_CHECKED, Style::new().fg(ask_picked_color()))
         } else {
             (ASK_UNCHECKED, style)
         };
@@ -434,7 +436,7 @@ fn other_rows(
         if !question.multi_select && state.other_chosen {
             spans.push(Span::styled(
                 ASK_PICKED_MARK.to_string(),
-                Style::new().fg(ASK_PICKED_COLOR),
+                Style::new().fg(ask_picked_color()),
             ));
         }
     }
@@ -552,7 +554,7 @@ fn build_preview_page(
                 spans.push(Span::styled(
                     ASK_CONFIRM_LABEL.to_string(),
                     if selected {
-                        Style::new().fg(PERMISSION_SELECTED_COLOR)
+                        Style::new().fg(permission_selected_color())
                     } else {
                         Style::default()
                     },
@@ -593,7 +595,12 @@ fn build_preview_page(
     let notes_room = (width as usize)
         .saturating_sub(panel_x + cols(ASK_NOTES_LABEL))
         .max(1);
-    let label = || Span::styled(ASK_NOTES_LABEL.to_string(), Style::new().fg(ASK_DESC_COLOR));
+    let label = || {
+        Span::styled(
+            ASK_NOTES_LABEL.to_string(),
+            Style::new().fg(ask_desc_color()),
+        )
+    };
     if prompt.input_mode == AskInput::Notes {
         let field = super::layout::text_field_width(u16::try_from(notes_room).unwrap_or(u16::MAX));
         let (crow, ccol) = app.input.cursor_row_col(field);
@@ -614,7 +621,7 @@ fn build_preview_page(
             label(),
             Span::styled(
                 ASK_NOTES_PLACEHOLDER.to_string(),
-                Style::new().fg(ASK_DESC_COLOR),
+                Style::new().fg(ask_desc_color()),
             ),
         ]));
     } else {
@@ -635,7 +642,7 @@ fn build_preview_page(
         spans.push(Span::styled(
             ASK_CHAT_LABEL.to_string(),
             if selected {
-                Style::new().fg(PERMISSION_SELECTED_COLOR)
+                Style::new().fg(permission_selected_color())
             } else {
                 Style::default()
             },
@@ -668,7 +675,7 @@ fn clip_spans(spans: &mut Vec<Span<'static>>, max: usize) {
 /// each row is a span run — dim `│ ` edges around the content — ready to be
 /// appended after a left-column row.
 fn panel_lines(preview: &str, width: usize) -> Vec<Vec<Span<'static>>> {
-    let dim = Style::new().fg(ASK_PREVIEW_COLOR);
+    let dim = Style::new().fg(ask_preview_color());
     if width < 6 {
         return Vec::new();
     }
@@ -685,7 +692,7 @@ fn panel_lines(preview: &str, width: usize) -> Vec<Vec<Span<'static>>> {
             Span::styled("│ ".to_string(), dim),
             Span::styled(
                 format!("{text}{}", " ".repeat(pad)),
-                Style::new().fg(TOOL_OUTPUT_COLOR),
+                Style::new().fg(tool_output_color()),
             ),
             Span::styled(" │".to_string(), dim),
         ]);
@@ -714,7 +721,7 @@ fn build_review_page(
     // Submit answers sends only what is answered (and with nothing answered
     // it walks back to the first open question instead).
     if !prompt.answers.iter().all(AskAnswerState::answered) {
-        lines.extend(text_rows(ASK_WARNING, ASK_WARNING_COLOR, width));
+        lines.extend(text_rows(ASK_WARNING, ask_warning_color(), width));
         lines.push(Line::default());
     }
     let bullet_indent = cols(ASK_INDENT) + cols(ASK_REVIEW_BULLET);
@@ -732,7 +739,10 @@ fn build_review_page(
             .enumerate()
         {
             let lead = if i == 0 {
-                Span::styled(ASK_REVIEW_BULLET.to_string(), Style::new().fg(SYSTEM_COLOR))
+                Span::styled(
+                    ASK_REVIEW_BULLET.to_string(),
+                    Style::new().fg(system_color()),
+                )
             } else {
                 Span::raw(" ".repeat(cols(ASK_REVIEW_BULLET)))
             };
@@ -766,7 +776,7 @@ fn build_review_page(
             let lead = if i == 0 {
                 Span::styled(
                     ASK_ANSWER_ARROW.to_string(),
-                    Style::new().fg(ASK_DESC_COLOR),
+                    Style::new().fg(ask_desc_color()),
                 )
             } else {
                 Span::raw(" ".repeat(cols(ASK_ANSWER_ARROW)))
@@ -776,13 +786,13 @@ fn build_review_page(
                 lead,
                 // Green, so the recorded answer is the row that carries the
                 // eye (the user-requested emphasis).
-                Span::styled(row, Style::new().fg(ASK_ANSWER_COLOR)),
+                Span::styled(row, Style::new().fg(ask_answer_color())),
             ]));
         }
         if capped {
             lines.push(Line::from(vec![
                 Span::raw(" ".repeat(bullet_indent + cols(ASK_ANSWER_ARROW))),
-                Span::styled("…".to_string(), Style::new().fg(ASK_DESC_COLOR)),
+                Span::styled("…".to_string(), Style::new().fg(ask_desc_color())),
             ]));
         }
     }
@@ -800,7 +810,7 @@ fn build_review_page(
         spans.push(Span::styled(
             (*label).to_string(),
             if selected {
-                Style::new().fg(PERMISSION_SELECTED_COLOR)
+                Style::new().fg(permission_selected_color())
             } else {
                 Style::default()
             },

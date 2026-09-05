@@ -16,8 +16,9 @@ as the conversation grows — exactly like Claude Code's welcome banner.
 
 - **Mascot** — the selected mascot's art (crest by default, switched with
   `/mascot`), drawn flush-left and coloured with a left-to-right
-  **cyan → blue gradient** (`#56B6C2` → `#61AFEF`, the app's own accent
-  palette — the inline-code cyan and the link blue) keyed by display column
+  **accent → link gradient** (the theme's own two accents — Catppuccin
+  Mocha's sky `#89DCEB` → blue `#89B4FA` by default, One Dark's `#56B6C2` →
+  `#61AFEF` under `/theme onedark`; `docs/theme.md`) keyed by display column
   across the art block's width. Borderless, so the art breathes and no box
   rule is drawn (see *Why borderless* below).
 - **Title** — `Alter Zero` **bold**, then `(v{CARGO_PKG_VERSION})` dim.
@@ -126,7 +127,7 @@ kept clear of the strings other phases key on (`for commands`,
   spacer over a purge rebuild's repaint tail (see *Surviving every rebuild*).
 - `HEADER_NAME` / `HEADER_HINT` / `HEADER_ART_GAP` — the title word, the hint
   tokens, and the art→metadata gap.
-- `HEADER_GRADIENT_START` / `HEADER_GRADIENT_END` — the mascot gradient's
+- `header_gradient_start()` / `header_gradient_end()` — the mascot gradient's
   endpoints; `gradient_spans` lerps per display column and coalesces
   equal-colour runs into spans.
 - The art itself lives on `app::Mascot` (`docs/mascot.md`).
@@ -138,7 +139,7 @@ kept clear of the strings other phases key on (`for commands`,
   trailing pad on meta-less rows); the metadata block seats lower beside a
   taller mascot (every mascot's session-less banner puts its two rows at
   1–2, art alone above); it follows `App::mascot`; the title is bold-name + dim-version,
-  the cwd dim, the hint cyan; the art carries the cyan → blue gradient; a
+  the cwd dim, the hint in the accent; the art carries the accent → link gradient; a
   very narrow width falls back to the text badge and never exceeds the
   width; a session-less `App` still renders art + version (no cwd row); the
   banner contains none of the smoke-reserved strings at any width for any

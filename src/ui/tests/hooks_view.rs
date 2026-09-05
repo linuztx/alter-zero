@@ -4,7 +4,7 @@ use super::*;
 use crate::hooks::{HooksFile, HooksOverview};
 use crate::ui::theme::{
     HOOKS_DETAIL_HINT, HOOKS_DISABLED_NOTE, HOOKS_EMPTY, HOOKS_HINT, HOOKS_MARKER,
-    HOOKS_MENU_MAX_ROWS, HOOKS_TITLE_COLOR, MODEL_META_COLOR, MODEL_SELECTED_COLOR,
+    HOOKS_MENU_MAX_ROWS, hooks_title_color, model_meta_color, model_selected_color,
 };
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
@@ -481,7 +481,7 @@ fn the_selection_and_chrome_wear_the_picker_familys_colours() {
     let title = &lines[2];
     assert_eq!(
         title.spans[1].style.fg,
-        Some(HOOKS_TITLE_COLOR),
+        Some(hooks_title_color()),
         "the title is cyan, like /mcp's"
     );
     let selected = lines
@@ -492,13 +492,13 @@ fn the_selection_and_chrome_wear_the_picker_familys_colours() {
         selected
             .spans
             .iter()
-            .any(|s| s.style.fg == Some(MODEL_SELECTED_COLOR)),
+            .any(|s| s.style.fg == Some(model_selected_color())),
         "the selected row lights up in the palette accent"
     );
     let count = &lines[3];
     assert_eq!(
         count.spans[1].style.fg,
-        Some(MODEL_META_COLOR),
+        Some(model_meta_color()),
         "the count line is dim"
     );
 }

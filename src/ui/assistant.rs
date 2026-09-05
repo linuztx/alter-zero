@@ -279,7 +279,10 @@ impl AssistantRenderer {
                 // one first; then it opens the block silently (primes highlighting
                 // for the info-string language, emits no row — no gutter, no label).
                 let out = self.flush_table();
-                self.highlighter = Some(highlight::Highlighter::new(lang.as_deref()));
+                self.highlighter = Some(highlight::Highlighter::new(
+                    lang.as_deref(),
+                    super::palette::palette().code,
+                ));
                 out
             }
             markdown::LineKind::CodeEnd => {
@@ -302,7 +305,7 @@ impl AssistantRenderer {
             Some(h) => h.line(&expanded),
             None => vec![highlight::Seg {
                 text: expanded.into_owned(),
-                style: highlight::plain_style(),
+                style: highlight::plain_style(super::palette::palette().code),
             }],
         };
         let styled: Vec<(String, Style)> = segs.into_iter().map(|s| (s.text, s.style)).collect();
@@ -357,7 +360,7 @@ impl AssistantRenderer {
         let (marker_text, marker_style) = match item.marker {
             markdown::ListMarker::Bullet => ("- ".to_string(), Style::default()),
             markdown::ListMarker::Ordered(n, delim) => {
-                (format!("{n}{delim} "), Style::new().fg(LIST_MARKER_COLOR))
+                (format!("{n}{delim} "), Style::new().fg(list_marker_color()))
             }
         };
         let hang = item.indent + cols(&marker_text);
@@ -392,7 +395,7 @@ impl AssistantRenderer {
         let text_w = (self.content_width as usize)
             .saturating_sub(cols(marker))
             .max(1) as u16;
-        let base = Style::new().fg(QUOTE_COLOR);
+        let base = Style::new().fg(quote_color());
         let text_rows = wrap_inline(&inline_spans(&markdown::parse_inline(inner), base), text_w);
         text_rows
             .into_iter()

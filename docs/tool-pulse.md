@@ -40,7 +40,7 @@ directly than a colour ever did.
 
 ```
 t = ½·(1 − cos(2π · phase))        phase = (elapsed mod PERIOD) / PERIOD
-colour = blend(TOOL_PULSE_BRIGHT, TOOL_PULSE_DIM, t)
+colour = blend(tool_pulse_bright(), tool_pulse_dim(), t)
 ```
 
 A raised cosine, so the bullet **swells and fades** instead of flicking on and
@@ -48,18 +48,22 @@ off — `t` is 0 at the top of the cycle, 1 at the half, 0 again at the end, and
 moves slowest at the extremes. The constants live in `ui/theme.rs` with every
 other styling decision:
 
-| const | value | meaning |
+| accessor | palette role (the `onedark` value) | meaning |
 | --- | --- | --- |
-| `TOOL_PULSE_DIM` | `#4A4A4A` | the bottom of the breath (where a cycle starts) |
-| `TOOL_PULSE_BRIGHT` | `#8A8A8A` | the top, reached at the half-cycle |
+| `tool_pulse_dim()` | `pulse_dim` (`#4A4A4A`) | the bottom of the breath (where a cycle starts) |
+| `tool_pulse_bright()` | `dim` (`#8A8A8A`) | the top, reached at the half-cycle |
 | `TOOL_PULSE_PERIOD` | `1000 ms` | one full dim → bright → dim breath |
-| `TOOL_RUNNING_COLOR` | `TOOL_DIM_COLOR` (`#8A8A8A`) | the **resting** colour — what a frozen render shows |
+| `tool_running_color()` | `dim` (`#8A8A8A`) | the **resting** colour — what a frozen render shows |
+
+The two colour ends come from the active theme's palette (`docs/theme.md`);
+the values above are the original One Dark look's. Under the `ansi` theme
+both ends are the same bright-black, so the bullet holds still.
 
 The period is comfortably coarser than the loop's 32 ms animation frame, so the
 sweep is smooth rather than steppy, and slow enough to read as a pulse rather
 than a flicker.
 
-**The breath only goes down.** Its peak is `TOOL_DIM_COLOR` — the same grey the
+**The breath only goes down.** Its peak is `tool_dim_color()` — the same grey the
 bullet rests on and the same grey the permission prompt uses — so the bullet
 dips below that and returns, and never brightens past it. An earlier version
 swung up to a near-white `#E8E8E8`; that read as a blink rather than a breath,
@@ -122,14 +126,15 @@ the grey, still distinct from the green/red around it.
 
 ## What stayed blue
 
-`CONTEXT_USER_COLOR`, the Ctrl+D context view's `user:` role tag, used to alias
-`TOOL_RUNNING_COLOR`. It is a *role* tag, not a running state, so it keeps the
-`#61AFEF` as its own value and the two constants simply parted ways.
+`context_user_color()`, the Ctrl+D context view's `user:` role tag, used to
+alias the running colour. It is a *role* tag, not a running state, so it keeps
+the link blue (the palette's `link` role — `#61AFEF` in the One Dark theme) as
+its own value and the two simply parted ways.
 
 ## Tests
 
 - `ui/tests/tool.rs` — the running bullet is the permission prompt's grey; it
-  reaches `TOOL_PULSE_DIM` at the top of the cycle and `TOOL_PULSE_BRIGHT` at the
+  reaches `tool_pulse_dim()` at the top of the cycle and `tool_pulse_bright()` at the
   half, is genuinely in between at the quarter, and loops; the peak is the
   resting grey, so the breath never brightens past it; `Waiting`/`Ok`/`Failed`
   never animate whatever the clock says; and `tool_lines` — the renderer that

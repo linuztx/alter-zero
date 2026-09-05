@@ -230,7 +230,7 @@ The body (`ui::context_lines`) is the raw context window:
 system prompt:                        (amber tag — the backend's prompt)
   # System prompt · You are Alter Zero an autonomous agent harness … …
   ## Environment · Date … OS … CWD …                       (docs/environment.md)
-user:                                 (blue tag — CONTEXT_USER_COLOR, the one
+user:                                 (blue tag — context_user_color(), the one
                                        blue the running bullet left behind)
   [Image #1: /home/me/.alter-zero/image-cache/773c1c6cb321/1.png] what's in this picture?
   image: /home/me/.alter-zero/image-cache/773c1c6cb321/1.png    (dim attachment row)

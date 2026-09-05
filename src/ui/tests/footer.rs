@@ -6,8 +6,8 @@ use crate::ui::footer::queued_builds;
 use crate::ui::layout::live_layout;
 use crate::ui::layout::strip_rows;
 use crate::ui::theme::{
-    ERROR_COLOR, FOOTER_COLOR, FOOTER_FOCUS_BG, FOOTER_FOCUS_FG, FOOTER_INDENT, SEARCH_PROMPT,
-    SEARCH_QUERY_COLOR, SHELL_MODE_COLOR, TOAST_COLOR, TOAST_ERROR_COLOR,
+    FOOTER_INDENT, SEARCH_PROMPT, error_color, footer_color, footer_focus_bg, footer_focus_fg,
+    search_query_color, shell_mode_color, toast_color, toast_error_color,
 };
 use crate::ui::wrap::cols;
 
@@ -88,7 +88,7 @@ fn the_footer_pins_the_permission_mode_at_the_right_edge() {
     // Dim like every other segment (codex's no-theme-colours status line).
     let mode_span = line.spans.last().expect("the mode span");
     assert_eq!(mode_span.content, "manual");
-    assert_eq!(mode_span.style.fg, Some(FOOTER_COLOR));
+    assert_eq!(mode_span.style.fg, Some(footer_color()));
     // Every mode of the Shift+Tab cycle renders its label there — auto and
     // master included (docs/permissions.md).
     for (mode, label) in [
@@ -505,7 +505,12 @@ fn footer_line_shows_model_and_cwd_dim_behind_the_indent() {
     // no-theme-colours status line), the indent unstyled.
     assert_eq!(line.spans[0].style.fg, None);
     for span in &line.spans[1..] {
-        assert_eq!(span.style.fg, Some(FOOTER_COLOR), "dim: {:?}", span.content);
+        assert_eq!(
+            span.style.fg,
+            Some(footer_color()),
+            "dim: {:?}",
+            span.content
+        );
     }
 }
 
@@ -536,7 +541,12 @@ fn footer_line_shows_the_thinking_mode_beside_the_model() {
     let line = footer_line(&app, 60);
     assert_eq!(plain(&line), "  dummy_model_name medium · ~/alter-zero");
     for span in &line.spans[1..] {
-        assert_eq!(span.style.fg, Some(FOOTER_COLOR), "dim: {:?}", span.content);
+        assert_eq!(
+            span.style.fg,
+            Some(footer_color()),
+            "dim: {:?}",
+            span.content
+        );
     }
     // Off is a mode too — the user must see thinking is disabled.
     app.thinking.as_mut().unwrap().mode = ThinkingMode::Off;
@@ -599,11 +609,11 @@ fn toast_rows_is_zero_without_a_toast_and_one_with_it() {
 fn toast_line_colors_info_dim_and_error_red() {
     let mut app = App::new();
     app.show_toast("ok", ToastKind::Info);
-    assert_eq!(toast_line(&app, 40).spans[1].style.fg, Some(TOAST_COLOR));
+    assert_eq!(toast_line(&app, 40).spans[1].style.fg, Some(toast_color()));
     app.show_toast("bad", ToastKind::Error);
     assert_eq!(
         toast_line(&app, 40).spans[1].style.fg,
-        Some(TOAST_ERROR_COLOR)
+        Some(toast_error_color())
     );
 }
 
@@ -675,13 +685,13 @@ fn the_search_line_shows_accept_hints_on_a_match() {
     // (codex's history_search_footer_line styling).
     let query = &line.spans[2];
     assert_eq!(query.content.as_ref(), "git");
-    assert_eq!(query.style.fg, Some(SEARCH_QUERY_COLOR));
+    assert_eq!(query.style.fg, Some(search_query_color()));
     let enter = line
         .spans
         .iter()
         .find(|s| s.content.as_ref() == "enter")
         .expect("enter key span");
-    assert_eq!(enter.style.fg, Some(SEARCH_QUERY_COLOR));
+    assert_eq!(enter.style.fg, Some(search_query_color()));
     assert!(enter.style.add_modifier.contains(Modifier::BOLD));
 }
 
@@ -695,7 +705,7 @@ fn the_search_line_shows_no_match_in_red() {
     );
     assert_eq!(plain(&line), "  reverse-i-search: zzz  no match");
     let no_match = line.spans.last().unwrap();
-    assert_eq!(no_match.style.fg, Some(ERROR_COLOR));
+    assert_eq!(no_match.style.fg, Some(error_color()));
 }
 
 #[test]
@@ -751,7 +761,7 @@ fn the_shell_mode_line_is_red() {
     assert_eq!(plain(&line), "  Shell mode");
     let label = line.spans.last().unwrap();
     assert_eq!(label.content.as_ref(), "Shell mode");
-    assert_eq!(label.style.fg, Some(SHELL_MODE_COLOR));
+    assert_eq!(label.style.fg, Some(shell_mode_color()));
 }
 
 #[test]
@@ -764,7 +774,7 @@ fn shell_mode_swaps_the_composer_prompt_for_a_red_bang() {
     assert_eq!(row(&buf, 1, 60).trim_end(), "! pwd");
     assert_eq!(
         buf[(0, 1)].fg,
-        SHELL_MODE_COLOR,
+        shell_mode_color(),
         "the bang prompt is red, the shell accent"
     );
 }
@@ -799,9 +809,9 @@ fn backtrack_hint_line_names_the_second_esc() {
     );
     // Spans: indent, the bold-cyan key, the dim label (the search-hint
     // styling).
-    assert_eq!(line.spans[1].style.fg, Some(SEARCH_QUERY_COLOR));
+    assert_eq!(line.spans[1].style.fg, Some(search_query_color()));
     assert!(line.spans[1].style.add_modifier.contains(Modifier::BOLD));
-    assert_eq!(line.spans[2].style.fg, Some(FOOTER_COLOR));
+    assert_eq!(line.spans[2].style.fg, Some(footer_color()));
 }
 
 #[test]
@@ -838,7 +848,7 @@ fn the_focused_footer_shell_count_lights_up_on_cyan() {
     };
     let idle = shell_span(&footer_line(&app, 80));
     assert_eq!(idle.style.bg, None, "unfocused it stays dim like the rest");
-    assert_eq!(idle.style.fg, Some(FOOTER_COLOR));
+    assert_eq!(idle.style.fg, Some(footer_color()));
     // ↓ focuses the indicator: only that segment lights up — the model,
     // cwd and gauge segments keep their text and their dim styling.
     use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -850,8 +860,8 @@ fn the_focused_footer_shell_count_lights_up_on_cyan() {
         "the other footer segments stay put"
     );
     let lit = shell_span(&focused);
-    assert_eq!(lit.style.bg, Some(FOOTER_FOCUS_BG));
-    assert_eq!(lit.style.fg, Some(FOOTER_FOCUS_FG));
+    assert_eq!(lit.style.bg, Some(footer_focus_bg()));
+    assert_eq!(lit.style.fg, Some(footer_focus_fg()));
     assert!(
         focused
             .spans
@@ -910,4 +920,28 @@ fn shelling(command: &str) -> App {
     app.shell_mode = true;
     app.input = TextArea::from_text(command);
     app
+}
+
+#[test]
+fn the_queued_memo_rebuilds_when_the_theme_changes() {
+    // The pending rows are styled user bubbles, so the memo's fingerprint
+    // carries the active theme: a `/theme` switch repaints them rather than
+    // serving rows in the old palette (`docs/theme.md`).
+    use crate::app::Theme;
+    use crate::ui::palette::{palette_of, with_theme};
+    let mut app = App::new();
+    app.queued.push_back(batch(&["also check the tests"]));
+    // The bubble's ground rides the content spans (the indent stays bare).
+    let ground = |app: &App| queued_lines(app, 40)[0].spans[1].style.bg;
+    assert_eq!(ground(&app), Some(palette_of(Theme::Mocha).user_bg));
+    assert_eq!(
+        with_theme(Theme::Latte, || ground(&app)),
+        Some(palette_of(Theme::Latte).user_bg),
+        "the bubble repainted on Latte's pale ground"
+    );
+    assert_eq!(
+        ground(&app),
+        Some(palette_of(Theme::Mocha).user_bg),
+        "…and back"
+    );
 }

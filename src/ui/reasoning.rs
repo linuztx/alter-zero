@@ -35,7 +35,7 @@ fn body_row(index: usize, text: String) -> Line<'static> {
         index,
         text,
         Style::new()
-            .fg(REASONING_TEXT_COLOR)
+            .fg(reasoning_text_color())
             .add_modifier(REASONING_TEXT_MODIFIER),
     )
 }
@@ -82,7 +82,7 @@ fn thought_label(reasoning: &Reasoning) -> String {
 /// thought is a footnote about work already done — the weight belongs to the
 /// live block, which is where something is still happening.
 fn settled_span(text: String) -> Span<'static> {
-    Span::styled(text, Style::new().fg(REASONING_LABEL_COLOR))
+    Span::styled(text, Style::new().fg(reasoning_label_color()))
 }
 
 /// See [`thought_label`] — `" · 1.5k tokens"`, or empty when unknown.
@@ -139,9 +139,9 @@ pub(super) fn reasoning_full_lines(reasoning: &Reasoning, width: u16) -> Vec<Lin
 pub(super) fn reasoning_live_full_lines(text: &str, width: u16) -> Vec<Line<'static>> {
     let label = vec![Span::styled(
         REASONING_RUNNING.to_string(),
-        Style::new().fg(REASONING_TEXT_COLOR),
+        Style::new().fg(reasoning_text_color()),
     )];
-    let mut lines = vec![thinking_header(TOOL_RUNNING_COLOR, label)];
+    let mut lines = vec![thinking_header(tool_running_color(), label)];
     lines.extend(gutter_body(text, width));
     lines
 }
@@ -169,7 +169,7 @@ fn gutter_body(text: &str, width: u16) -> Vec<Line<'static>> {
 /// slot: a `● Thinking…` header — the bullet breathing at the frame `pulse`
 /// and the label carrying the status line's **shimmer** sweep
 /// ([`shimmer_spans_from`], the same wave the `Working…` verb below it wears,
-/// but floored at the near-white [`REASONING_SHIMMER_BASE`] so it reads as
+/// but floored at the near-white [`reasoning_shimmer_base`] so it reads as
 /// bold white between crests rather than codex's grey) — over the **tail** of
 /// the thought so far in the `⎿` gutter: the last [`REASONING_PEEK_LINES`]
 /// wrapped rows, dim and italic.
@@ -186,7 +186,7 @@ fn gutter_body(text: &str, width: u16) -> Vec<Line<'static>> {
 pub(super) fn live_reasoning_lines(text: &str, pulse: Duration, width: u16) -> Vec<Line<'static>> {
     let mut lines = vec![thinking_header(
         tool_pulse_color(pulse),
-        shimmer_spans_from(REASONING_RUNNING, pulse, REASONING_SHIMMER_BASE),
+        shimmer_spans_from(REASONING_RUNNING, pulse, reasoning_shimmer_base()),
     )];
     let inner = body_width(width);
     let mut window: VecDeque<String> = VecDeque::new();

@@ -50,6 +50,7 @@ mod skills_menu;
 mod spinner;
 mod status;
 mod tasks;
+mod theme;
 mod tools;
 mod trust_menu;
 mod turn;
@@ -96,6 +97,7 @@ pub use self::spinner::{
 };
 pub use self::status::{RetryInfo, ThinkingState, TokenArrow, TurnStatus, TurnSummary};
 pub use self::tasks::TaskCallRecord;
+pub use self::theme::{Theme, ThemePicker, ThemeRow, parse_theme_file, theme_file_json};
 pub use self::tools::{
     ERROR_TOOL_OUTPUT, INTERRUPT_TOOL_OUTPUT, PathDisplay, ToolCall, ToolStatus,
 };
@@ -445,6 +447,16 @@ pub struct App {
     /// chosen in the `/spinner` picker, seeded at the boundary from
     /// `spinner.json` before the first frame. See `docs/spinner.md`.
     spinner: Spinner,
+    /// The open inline `/theme` picker; `None` when closed. The tenth
+    /// composer-replacing picker, the [`spinner_picker`](Self::spinner_picker)'s
+    /// twin over the colour-theme catalog, previewing the highlighted theme
+    /// on real cells. See `docs/theme.md`.
+    pub theme_picker: Option<ThemePicker>,
+    /// The colour theme ([`Theme::Mocha`] by default) — chosen in the
+    /// `/theme` picker, seeded at the boundary from `theme.json` before the
+    /// first frame, and mirrored into the ambient palette the renderers read
+    /// (`ui::activate_theme`). See `docs/theme.md`.
+    theme: Theme,
     /// The session's togglable knobs — what `/settings` shows and what the
     /// boundary reads before it streams thinking, offers tools, snapshots the
     /// tree, or auto-compacts. Seeded at bootstrap from `settings.json` + the

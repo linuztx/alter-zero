@@ -3,21 +3,17 @@
 
 use super::*;
 use crate::ui::theme::{
-    CODE_TAB_WIDTH, EXPAND_HINT, FILE_PEEK_LINES, TOOL_ARGS_COLOR, TOOL_DIFF_ADD_BG,
-    TOOL_DIFF_ADD_COLOR, TOOL_DIFF_ADD_MARK_BG, TOOL_DIFF_DEL_BG, TOOL_DIFF_DEL_COLOR,
-    TOOL_DIFF_DEL_MARK_BG, TOOL_DIM_COLOR, TOOL_FAIL_COLOR, TOOL_FOLD_ROWS, TOOL_HEADER_ELLIPSIS,
+    CODE_TAB_WIDTH, EXPAND_HINT, FILE_PEEK_LINES, TOOL_FOLD_ROWS, TOOL_HEADER_ELLIPSIS,
     TOOL_HEADER_MAX_COLS, TOOL_HEADER_MAX_LINES, TOOL_JSON_PRETTY_MAX_BYTES, TOOL_LINE_ELLIPSIS,
-    TOOL_LINE_MAX_ROWS, TOOL_OK_COLOR, TOOL_OUTPUT_COLOR, TOOL_PULSE_BRIGHT, TOOL_PULSE_DIM,
-    TOOL_PULSE_PERIOD, TOOL_RUNNING_COLOR, TOOL_WAITING_COLOR,
+    TOOL_LINE_MAX_ROWS, TOOL_PULSE_PERIOD, tool_args_color, tool_diff_add_bg, tool_diff_add_color,
+    tool_diff_add_mark_bg, tool_diff_del_bg, tool_diff_del_color, tool_diff_del_mark_bg,
+    tool_dim_color, tool_fail_color, tool_ok_color, tool_output_color, tool_pulse_bright,
+    tool_pulse_dim, tool_running_color, tool_waiting_color,
 };
 use crate::ui::tool::{live_tool_lines, running_command_lines, tool_full_lines};
 use crate::ui::wrap::cols;
 
 /// A theme RGB triple as the `Color` a rendered span carries.
-fn rgb((r, g, b): (u8, u8, u8)) -> Color {
-    Color::Rgb(r, g, b)
-}
-
 /// The content of a `⎿` gutter row — the corner (or a continuation row's
 /// matching indent) stripped, so a test can name the text a row carries.
 fn gutter_content(row: &str) -> &str {
@@ -63,7 +59,7 @@ fn an_answered_ask_cell_promotes_the_headline_to_the_header() {
     let bullet = &lines[0].spans[0];
     assert_eq!(
         bullet.style.fg,
-        Some(TOOL_OK_COLOR),
+        Some(tool_ok_color()),
         "a submission is green"
     );
     assert!(
@@ -91,7 +87,7 @@ fn a_declined_ask_cell_is_red_and_lists_the_questions() {
     let cell = tool("AskUserQuestion", "ignored", ToolStatus::Failed, output);
     let lines = tool_lines(&cell, 100, &PathDisplay::VERBATIM);
     assert_eq!(plain(&lines[0]), "● User declined to answer questions");
-    assert_eq!(lines[0].spans[0].style.fg, Some(TOOL_FAIL_COLOR));
+    assert_eq!(lines[0].spans[0].style.fg, Some(tool_fail_color()));
     assert!(plain(&lines[1]).contains("(Arrow function / One-liner)"));
 }
 
@@ -141,7 +137,7 @@ fn a_classifier_allowed_bash_cell_appends_the_note_row() {
     let note = lines.last().unwrap();
     assert_eq!(
         note.spans.last().unwrap().style.fg,
-        Some(TOOL_DIM_COLOR),
+        Some(tool_dim_color()),
         "the note is meta, so it renders dim"
     );
 }
@@ -236,9 +232,9 @@ fn an_unnoted_cell_is_byte_identical_to_before_the_feature() {
 #[test]
 fn tool_lines_colours_the_bullet_by_status() {
     for (status, color) in [
-        (ToolStatus::Running, TOOL_RUNNING_COLOR),
-        (ToolStatus::Ok, TOOL_OK_COLOR),
-        (ToolStatus::Failed, TOOL_FAIL_COLOR),
+        (ToolStatus::Running, tool_running_color()),
+        (ToolStatus::Ok, tool_ok_color()),
+        (ToolStatus::Failed, tool_fail_color()),
     ] {
         let lines = tool_lines(&tool("X", "y", status, "out"), 80, &PathDisplay::VERBATIM);
         assert_eq!(
@@ -259,7 +255,7 @@ fn a_running_bullet_is_the_permission_prompts_grey_never_blue() {
         80,
         &PathDisplay::VERBATIM,
     );
-    assert_eq!(lines[0].spans[0].style.fg, Some(TOOL_DIM_COLOR));
+    assert_eq!(lines[0].spans[0].style.fg, Some(tool_dim_color()));
 }
 
 #[test]
@@ -276,18 +272,15 @@ fn a_running_bullet_breathes_across_the_pulse_period() {
             .fg
     };
     let half = TOOL_PULSE_PERIOD / 2;
-    assert_eq!(bullet(Duration::ZERO), Some(rgb(TOOL_PULSE_DIM)));
-    assert_eq!(bullet(half), Some(rgb(TOOL_PULSE_BRIGHT)));
+    assert_eq!(bullet(Duration::ZERO), Some(tool_pulse_dim()));
+    assert_eq!(bullet(half), Some(tool_pulse_bright()));
     // A full period later it is back where it started — the cycle loops.
-    assert_eq!(bullet(TOOL_PULSE_PERIOD), Some(rgb(TOOL_PULSE_DIM)));
-    assert_eq!(
-        bullet(TOOL_PULSE_PERIOD + half),
-        Some(rgb(TOOL_PULSE_BRIGHT))
-    );
+    assert_eq!(bullet(TOOL_PULSE_PERIOD), Some(tool_pulse_dim()));
+    assert_eq!(bullet(TOOL_PULSE_PERIOD + half), Some(tool_pulse_bright()));
     // Between the extremes it is genuinely in between, not snapped to one end.
     let mid = bullet(TOOL_PULSE_PERIOD / 4);
-    assert_ne!(mid, Some(rgb(TOOL_PULSE_DIM)));
-    assert_ne!(mid, Some(rgb(TOOL_PULSE_BRIGHT)));
+    assert_ne!(mid, Some(tool_pulse_dim()));
+    assert_ne!(mid, Some(tool_pulse_bright()));
 }
 
 #[test]
@@ -296,9 +289,9 @@ fn only_a_running_bullet_pulses() {
     // waiting grey and a resolved call keeps its green/red, whatever the frame
     // clock says — otherwise the animation would say nothing.
     for (status, color) in [
-        (ToolStatus::Waiting, TOOL_WAITING_COLOR),
-        (ToolStatus::Ok, TOOL_OK_COLOR),
-        (ToolStatus::Failed, TOOL_FAIL_COLOR),
+        (ToolStatus::Waiting, tool_waiting_color()),
+        (ToolStatus::Ok, tool_ok_color()),
+        (ToolStatus::Failed, tool_fail_color()),
     ] {
         let call = tool("X", "y", status, "out");
         for at in [Duration::ZERO, TOOL_PULSE_PERIOD / 2] {
@@ -323,16 +316,16 @@ fn a_committed_cell_never_carries_a_pulse_frame() {
         tool_lines(&call, 80, &PathDisplay::VERBATIM)[0].spans[0]
             .style
             .fg,
-        Some(TOOL_RUNNING_COLOR)
+        Some(tool_running_color())
     );
     // The peak of the breath *is* the resting grey — the pulse only dips below
     // it — so what a commit must never freeze is the **dip**. That is also the
     // value an un-injected clock would render (phase 0), which is exactly the
     // accident this renderer split exists to prevent.
-    assert_ne!(TOOL_RUNNING_COLOR, rgb(TOOL_PULSE_DIM));
+    assert_ne!(tool_running_color(), tool_pulse_dim());
     assert_eq!(
-        TOOL_RUNNING_COLOR,
-        rgb(TOOL_PULSE_BRIGHT),
+        tool_running_color(),
+        tool_pulse_bright(),
         "the breath tops out at the resting grey, never brighter"
     );
 }
@@ -635,7 +628,7 @@ fn a_diff_peek_continuation_row_keeps_the_source_line_colour() {
     for r in &rows {
         assert_eq!(
             r.spans[1].style.fg,
-            Some(TOOL_DIFF_ADD_COLOR),
+            Some(tool_diff_add_color()),
             "every wrapped row keeps the + colour: {:?}",
             plain(r)
         );
@@ -924,7 +917,7 @@ fn tool_lines_colours_a_waiting_bullet_dim_and_still() {
     let bullet = lines[0].spans.first().expect("a bullet span");
     assert_eq!(
         bullet.style.fg,
-        Some(TOOL_WAITING_COLOR),
+        Some(tool_waiting_color()),
         "the waiting bullet is the dim grey"
     );
 }
@@ -946,7 +939,7 @@ fn tool_header_body_is_bold_white_parens_included() {
         .expect("an args span");
     assert_eq!(
         arg.style.fg,
-        Some(TOOL_ARGS_COLOR),
+        Some(tool_args_color()),
         "args use the normal reply colour"
     );
     assert!(
@@ -961,7 +954,7 @@ fn tool_header_body_is_bold_white_parens_included() {
         .expect("a span carrying the open paren");
     assert_eq!(
         open.style.fg,
-        Some(TOOL_ARGS_COLOR),
+        Some(tool_args_color()),
         "the opening paren is bold white too, not a dim delimiter"
     );
     let close = lines[0]
@@ -971,7 +964,7 @@ fn tool_header_body_is_bold_white_parens_included() {
         .expect("a span carrying the close paren");
     assert_eq!(
         close.style.fg,
-        Some(TOOL_ARGS_COLOR),
+        Some(tool_args_color()),
         "the closing paren is bold white too"
     );
 }
@@ -1034,11 +1027,11 @@ fn edit_tool_inline_peek_colours_the_diff_rows() {
     // The content span (after the gutter) carries the diff colour.
     assert_eq!(
         del.spans.last().unwrap().style.fg,
-        Some(TOOL_DIFF_DEL_COLOR)
+        Some(tool_diff_del_color())
     );
     assert_eq!(
         add.spans.last().unwrap().style.fg,
-        Some(TOOL_DIFF_ADD_COLOR)
+        Some(tool_diff_add_color())
     );
 }
 
@@ -1054,11 +1047,11 @@ fn a_non_diff_tool_peek_is_not_diff_coloured() {
     let fg = lines[1].spans.last().unwrap().style.fg;
     assert_eq!(
         fg,
-        Some(TOOL_OUTPUT_COLOR),
+        Some(tool_output_color()),
         "bash output is the plain white output colour"
     );
-    assert_ne!(fg, Some(TOOL_DIFF_ADD_COLOR), "never diff-coloured");
-    assert_ne!(fg, Some(TOOL_DIFF_DEL_COLOR), "never diff-coloured");
+    assert_ne!(fg, Some(tool_diff_add_color()), "never diff-coloured");
+    assert_ne!(fg, Some(tool_diff_del_color()), "never diff-coloured");
 }
 
 #[test]
@@ -1081,7 +1074,7 @@ fn tool_output_content_is_white_the_corner_stays_dim() {
         .expect("the content span");
     assert_eq!(
         content.style.fg,
-        Some(TOOL_OUTPUT_COLOR),
+        Some(tool_output_color()),
         "output content is the white output colour"
     );
     let corner = out
@@ -1091,7 +1084,7 @@ fn tool_output_content_is_white_the_corner_stays_dim() {
         .expect("the ⎿ corner span");
     assert_eq!(
         corner.style.fg,
-        Some(TOOL_DIM_COLOR),
+        Some(tool_dim_color()),
         "the ⎿ corner stays a dim delimiter"
     );
 }
@@ -1116,7 +1109,7 @@ fn tool_running_and_waiting_placeholders_stay_dim() {
         let content = row.spans.last().unwrap();
         assert_eq!(
             content.style.fg,
-            Some(TOOL_DIM_COLOR),
+            Some(tool_dim_color()),
             "the {status:?} placeholder stays dim"
         );
     }
@@ -1133,7 +1126,7 @@ fn write_tool_full_view_colours_the_diff() {
     let add = lines.iter().find(|l| plain(l).contains("+added")).unwrap();
     assert_eq!(
         add.spans.last().unwrap().style.fg,
-        Some(TOOL_DIFF_ADD_COLOR)
+        Some(tool_diff_add_color())
     );
 }
 
@@ -1155,7 +1148,7 @@ fn write_cell_shows_numbered_syntax_highlighted_rows() {
     assert_eq!(plain(row1), "      1 def main():");
     let num = &row1.spans[1];
     assert_eq!(num.content.as_ref(), "1 ");
-    assert_eq!(num.style.fg, Some(TOOL_DIM_COLOR), "line number is dim");
+    assert_eq!(num.style.fg, Some(tool_dim_color()), "line number is dim");
     let kw = row1
         .spans
         .iter()
@@ -1191,7 +1184,7 @@ fn write_cell_parses_the_live_wrote_head() {
     assert_eq!(plain(row1), "      1 def main():");
     assert_eq!(
         row1.spans[1].style.fg,
-        Some(TOOL_DIM_COLOR),
+        Some(tool_dim_color()),
         "line number is dim"
     );
     assert!(
@@ -1251,13 +1244,13 @@ fn an_updated_head_keeps_its_count_colours_when_it_wraps() {
         .flat_map(|l| l.spans.iter())
         .find(|s| s.content.as_ref() == "+3")
         .expect("the added count span survives the wrap");
-    assert_eq!(add.style.fg, Some(TOOL_DIFF_ADD_COLOR));
+    assert_eq!(add.style.fg, Some(tool_diff_add_color()));
     let del = lines
         .iter()
         .flat_map(|l| l.spans.iter())
         .find(|s| s.content.as_ref() == "-1")
         .expect("the removed count span survives the wrap");
-    assert_eq!(del.style.fg, Some(TOOL_DIFF_DEL_COLOR));
+    assert_eq!(del.style.fg, Some(tool_diff_del_color()));
 }
 
 #[test]
@@ -1379,7 +1372,7 @@ fn read_cell_shows_numbered_syntax_highlighted_rows() {
     assert_eq!(plain(row), "      1 def main():");
     let num = &row.spans[1];
     assert_eq!(num.content.as_ref(), "1 ");
-    assert_eq!(num.style.fg, Some(TOOL_DIM_COLOR), "line number is dim");
+    assert_eq!(num.style.fg, Some(tool_dim_color()), "line number is dim");
     let kw = row
         .spans
         .iter()
@@ -1467,13 +1460,13 @@ fn edit_cell_shows_numbered_hunks_with_diff_tints() {
         .iter()
         .find(|s| s.content.as_ref() == "-")
         .unwrap();
-    assert_eq!(del_sign.style.fg, Some(TOOL_DIFF_DEL_COLOR));
+    assert_eq!(del_sign.style.fg, Some(tool_diff_del_color()));
     let add_sign = add
         .spans
         .iter()
         .find(|s| s.content.as_ref() == "+")
         .unwrap();
-    assert_eq!(add_sign.style.fg, Some(TOOL_DIFF_ADD_COLOR));
+    assert_eq!(add_sign.style.fg, Some(tool_diff_add_color()));
     // …every span past the `⎿` indent is tinted end to end — the row's own
     // tint, or the brighter mark tint where the line actually changed
     // (`docs/inline-diff.md`; here the `1` -> `2`).
@@ -1481,25 +1474,25 @@ fn edit_cell_shows_numbered_hunks_with_diff_tints() {
         del.spans
             .iter()
             .skip(1)
-            .all(|s| s.style.bg == Some(TOOL_DIFF_DEL_BG)
-                || s.style.bg == Some(TOOL_DIFF_DEL_MARK_BG)),
+            .all(|s| s.style.bg == Some(tool_diff_del_bg())
+                || s.style.bg == Some(tool_diff_del_mark_bg())),
         "removed row is tinted red"
     );
     assert!(
         add.spans
             .iter()
             .skip(1)
-            .all(|s| s.style.bg == Some(TOOL_DIFF_ADD_BG)
-                || s.style.bg == Some(TOOL_DIFF_ADD_MARK_BG)),
+            .all(|s| s.style.bg == Some(tool_diff_add_bg())
+                || s.style.bg == Some(tool_diff_add_mark_bg())),
         "added row is tinted green"
     );
     assert_eq!(
-        on_bg(del, TOOL_DIFF_DEL_MARK_BG),
+        on_bg(del, tool_diff_del_mark_bg()),
         "1",
         "only the `1` changed"
     );
     assert_eq!(
-        on_bg(add, TOOL_DIFF_ADD_MARK_BG),
+        on_bg(add, tool_diff_add_mark_bg()),
         "2",
         "only the `2` changed"
     );
@@ -1555,7 +1548,7 @@ fn file_cell_summary_head_is_white_not_dim() {
         .expect("the Created summary span");
     assert_eq!(
         w_head.style.fg,
-        Some(TOOL_OUTPUT_COLOR),
+        Some(tool_output_color()),
         "a write summary head is white"
     );
 
@@ -1571,7 +1564,7 @@ fn file_cell_summary_head_is_white_not_dim() {
         .expect("the Read summary span");
     assert_eq!(
         r_head.style.fg,
-        Some(TOOL_OUTPUT_COLOR),
+        Some(tool_output_color()),
         "a read summary head is white"
     );
 
@@ -1592,14 +1585,14 @@ fn file_cell_summary_head_is_white_not_dim() {
         .expect("the Updated summary span");
     assert_eq!(
         e_head.style.fg,
-        Some(TOOL_OUTPUT_COLOR),
+        Some(tool_output_color()),
         "an edit summary path is white"
     );
     // The counts still stand out green/red.
     let plus = edit[1].spans.iter().find(|s| s.content == "+1").unwrap();
     assert_eq!(
         plus.style.fg,
-        Some(TOOL_DIFF_ADD_COLOR),
+        Some(tool_diff_add_color()),
         "counts stay green"
     );
 }
@@ -1667,7 +1660,7 @@ fn tool_full_lines_colours_the_header_by_status() {
         80,
         &PathDisplay::VERBATIM,
     );
-    assert_eq!(lines[0].spans[0].style.fg, Some(TOOL_OK_COLOR));
+    assert_eq!(lines[0].spans[0].style.fg, Some(tool_ok_color()));
 }
 
 #[test]
@@ -1832,7 +1825,7 @@ fn tool_full_lines_expand_tabs_for_display() {
 
 // --- MCP cells (docs/mcp.md) ---
 
-use crate::ui::theme::{MCP_CALLED_PREFIX, MCP_CALLING_PREFIX, REASONING_LABEL_COLOR};
+use crate::ui::theme::{MCP_CALLED_PREFIX, MCP_CALLING_PREFIX, reasoning_label_color};
 use crate::ui::tool::{mcp_batch_lines, tool_commit_lines};
 
 /// An MCP cell fixture: the display name + raw-JSON args the loop records.
@@ -1887,7 +1880,7 @@ fn a_resolved_mcp_cell_is_the_bullet_less_called_line() {
         plain(&lines[0]),
         format!("{MCP_CALLED_PREFIX}Deepwiki{EXPAND_HINT}")
     );
-    assert_eq!(lines[0].spans[0].style.fg, Some(REASONING_LABEL_COLOR));
+    assert_eq!(lines[0].spans[0].style.fg, Some(reasoning_label_color()));
     assert!(
         !plain(&lines[0]).contains("long json"),
         "the result stays out of inline scrollback"
@@ -1959,7 +1952,7 @@ fn a_failed_mcp_cell_keeps_the_loud_generic_form() {
     );
     assert!(head.contains("question: \"What is this?\""), "got {head:?}");
     assert!(!head.contains("{\"repoName\""), "raw JSON never renders");
-    assert_eq!(lines[0].spans[0].style.fg, Some(TOOL_FAIL_COLOR));
+    assert_eq!(lines[0].spans[0].style.fg, Some(tool_fail_color()));
     assert!(lines.iter().any(|l| plain(l).contains("server exploded")));
 }
 
@@ -2545,7 +2538,7 @@ fn a_clipped_diff_row_keeps_its_tint_across_the_marker() {
     let marker = cut_row.spans.last().unwrap();
     assert_eq!(
         marker.style.bg,
-        Some(TOOL_DIFF_ADD_BG),
+        Some(tool_diff_add_bg()),
         "the marker carries the added-row tint: {marker:?}"
     );
     assert_eq!(
@@ -2622,12 +2615,12 @@ fn an_edited_line_lifts_only_the_changed_characters_onto_the_bright_tint() {
     let del = diff_row(&lines, "Rivera");
     let add = diff_row(&lines, "Rivero");
 
-    assert_eq!(on_bg(del, TOOL_DIFF_DEL_MARK_BG), "a");
-    assert_eq!(on_bg(add, TOOL_DIFF_ADD_MARK_BG), "o");
+    assert_eq!(on_bg(del, tool_diff_del_mark_bg()), "a");
+    assert_eq!(on_bg(add, tool_diff_add_mark_bg()), "o");
     // Everything the edit did not touch keeps the plain row tint — the two
     // tints together are what say "this line changed, and *here*".
-    assert!(on_bg(del, TOOL_DIFF_DEL_BG).contains("Bruce River"));
-    assert!(on_bg(add, TOOL_DIFF_ADD_BG).contains("Bruce River"));
+    assert!(on_bg(del, tool_diff_del_bg()).contains("Bruce River"));
+    assert!(on_bg(add, tool_diff_add_bg()).contains("Bruce River"));
 }
 
 #[test]
@@ -2642,8 +2635,8 @@ fn the_changed_run_is_bold_and_the_removed_one_escapes_the_row_dim() {
     );
 
     for (needle, mark_bg) in [
-        ("Rivera", TOOL_DIFF_DEL_MARK_BG),
-        ("Rivero", TOOL_DIFF_ADD_MARK_BG),
+        ("Rivera", tool_diff_del_mark_bg()),
+        ("Rivero", tool_diff_add_mark_bg()),
     ] {
         let row = diff_row(&lines, needle);
         let marked: Vec<_> = row
@@ -2673,7 +2666,7 @@ fn the_changed_run_is_bold_and_the_removed_one_escapes_the_row_dim() {
         .iter()
         .find(|s| s.content.contains("Bruce"))
         .expect("the unchanged half renders as its own span");
-    assert_eq!(unchanged.style.bg, Some(TOOL_DIFF_DEL_BG));
+    assert_eq!(unchanged.style.bg, Some(tool_diff_del_bg()));
     assert!(
         unchanged.style.add_modifier.contains(Modifier::DIM),
         "the removed row's unchanged text keeps codex's dim"
@@ -2692,19 +2685,19 @@ fn a_wholly_replaced_line_keeps_the_flat_row_tint() {
     );
     let del = diff_row(&lines, "import os");
     let add = diff_row(&lines, "def main");
-    assert_eq!(on_bg(del, TOOL_DIFF_DEL_MARK_BG), "");
-    assert_eq!(on_bg(add, TOOL_DIFF_ADD_MARK_BG), "");
+    assert_eq!(on_bg(del, tool_diff_del_mark_bg()), "");
+    assert_eq!(on_bg(add, tool_diff_add_mark_bg()), "");
     assert!(
         del.spans
             .iter()
             .skip(1)
-            .all(|s| s.style.bg == Some(TOOL_DIFF_DEL_BG))
+            .all(|s| s.style.bg == Some(tool_diff_del_bg()))
     );
     assert!(
         add.spans
             .iter()
             .skip(1)
-            .all(|s| s.style.bg == Some(TOOL_DIFF_ADD_BG))
+            .all(|s| s.style.bg == Some(tool_diff_add_bg()))
     );
 }
 
@@ -2721,8 +2714,8 @@ fn context_and_write_rows_never_carry_a_mark_tint() {
         lines
             .iter()
             .flat_map(|l| l.spans.iter())
-            .all(|s| s.style.bg != Some(TOOL_DIFF_ADD_MARK_BG)
-                && s.style.bg != Some(TOOL_DIFF_DEL_MARK_BG))
+            .all(|s| s.style.bg != Some(tool_diff_add_mark_bg())
+                && s.style.bg != Some(tool_diff_del_mark_bg()))
     );
 }
 
@@ -2748,14 +2741,14 @@ fn the_mark_tint_survives_a_wrap_onto_the_continuation_row() {
         .filter(|l| {
             l.spans
                 .iter()
-                .any(|s| s.style.bg == Some(TOOL_DIFF_ADD_MARK_BG))
+                .any(|s| s.style.bg == Some(tool_diff_add_mark_bg()))
         })
         .collect();
     assert!(rows.len() >= 2, "the changed run wraps onto a second row");
     let tinted: String = rows
         .iter()
         .flat_map(|l| l.spans.iter())
-        .filter(|s| s.style.bg == Some(TOOL_DIFF_ADD_MARK_BG))
+        .filter(|s| s.style.bg == Some(tool_diff_add_mark_bg()))
         .map(|s| s.content.as_ref())
         .collect();
     assert_eq!(tinted, "n".repeat(50));
@@ -2774,7 +2767,7 @@ fn the_trailing_pad_keeps_the_row_tint_not_the_mark_tint() {
     let add = diff_row(&lines, "Rivero");
     let last = add.spans.last().unwrap();
     assert!(last.content.ends_with(' '), "the row pads to full width");
-    assert_eq!(last.style.bg, Some(TOOL_DIFF_ADD_BG));
+    assert_eq!(last.style.bg, Some(tool_diff_add_bg()));
 }
 
 // --- the header keeps the command's own spacing (docs/tools.md) ---
@@ -3006,14 +2999,14 @@ fn the_edit_head_keeps_its_counts_coloured_beside_a_shortened_header() {
     assert!(
         head.spans
             .iter()
-            .any(|s| s.content.as_ref() == "+1" && s.style.fg == Some(TOOL_DIFF_ADD_COLOR)),
+            .any(|s| s.content.as_ref() == "+1" && s.style.fg == Some(tool_diff_add_color())),
         "the added count stays green: {:?}",
         head.spans
     );
     assert!(
         head.spans
             .iter()
-            .any(|s| s.content.as_ref() == "-1" && s.style.fg == Some(TOOL_DIFF_DEL_COLOR)),
+            .any(|s| s.content.as_ref() == "-1" && s.style.fg == Some(tool_diff_del_color())),
         "the removed count stays red: {:?}",
         head.spans
     );

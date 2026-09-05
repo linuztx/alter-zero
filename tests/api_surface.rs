@@ -85,6 +85,9 @@ use alter_zero::app::{
     StreamError,
     SubscriptionChoice,
     TaskCallRecord,
+    Theme,
+    ThemePicker,
+    ThemeRow,
     ThinkingState,
     Toast,
     ToastKind,
@@ -123,9 +126,11 @@ use alter_zero::app::{
     matching_commands,
     parse_mascot_file,
     parse_spinner_file,
+    parse_theme_file,
     server_actions,
     shell_query,
     spinner_file_json,
+    theme_file_json,
 };
 
 // --- `stream` — the backend seam and the offline dummy ---
@@ -265,6 +270,8 @@ use alter_zero::ui::{
     ViewFlow,
     COMPACTED_NOTICE,
     LIVE_MIN_HEIGHT,
+    activate_theme,
+    active_theme,
     agent_group_lines,
     agent_hint_line,
     agent_list_lines,
@@ -334,6 +341,7 @@ use alter_zero::ui::{
     render_settings,
     render_skills_menu,
     render_spinner_picker,
+    render_theme_picker,
     render_tool_view,
     repaint_lines,
     repaint_tail,
@@ -346,6 +354,7 @@ use alter_zero::ui::{
     skill_menu_rows,
     skills_menu_height,
     spinner_picker_height,
+    theme_picker_height,
     checklist_lines,
     idle_task_lines,
     image_block_lines,
@@ -374,6 +383,7 @@ use alter_zero::ui::{
     view_body_skip,
     view_flow,
     view_flow_signature,
+    with_theme,
     wrap_text,
 };
 

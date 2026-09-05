@@ -26,7 +26,7 @@ fn hooks_line(text: &str, style: Style, width: u16) -> Line<'static> {
 
 /// A dim inset line.
 fn dim_line(text: &str, width: u16) -> Line<'static> {
-    hooks_line(text, Style::new().fg(MODEL_META_COLOR), width)
+    hooks_line(text, Style::new().fg(model_meta_color()), width)
 }
 
 /// A level's title — `Hooks`, `PreToolUse - Matchers`, `Hook details` — in
@@ -35,7 +35,7 @@ fn title_line(text: &str, width: u16) -> Line<'static> {
     hooks_line(
         text,
         Style::new()
-            .fg(HOOKS_TITLE_COLOR)
+            .fg(hooks_title_color())
             .add_modifier(Modifier::BOLD),
         width,
     )
@@ -55,7 +55,7 @@ fn wrapped(text: &str, style: Style, width: u16) -> Vec<Line<'static>> {
 /// `text` word-wrapped to inset dim rows — the read-only banner, an event
 /// description's lines, the detail page's closing note.
 fn dim_wrapped(text: &str, width: u16) -> Vec<Line<'static>> {
-    wrapped(text, Style::new().fg(MODEL_META_COLOR), width)
+    wrapped(text, Style::new().fg(model_meta_color()), width)
 }
 
 /// One list level's row: the label spans (styled by the caller) and the dim
@@ -101,18 +101,18 @@ fn list_lines(rows: &[MenuRow], selected: usize, width: u16) -> Vec<Line<'static
         .map(|(i, row)| {
             let index = offset + i;
             let (marker, marker_style) = if index == selected {
-                (HOOKS_MARKER, Style::new().fg(MODEL_SELECTED_COLOR))
+                (HOOKS_MARKER, Style::new().fg(model_selected_color()))
             } else if i == 0 && offset > 0 {
-                (HOOKS_UP_MARKER, Style::new().fg(MODEL_META_COLOR))
+                (HOOKS_UP_MARKER, Style::new().fg(model_meta_color()))
             } else if i == visible.len() - 1 && offset + HOOKS_MENU_MAX_ROWS < rows.len() {
-                (HOOKS_DOWN_MARKER, Style::new().fg(MODEL_META_COLOR))
+                (HOOKS_DOWN_MARKER, Style::new().fg(model_meta_color()))
             } else {
                 ("  ", Style::default())
             };
             let number_style = if index == selected {
-                Style::new().fg(MODEL_SELECTED_COLOR)
+                Style::new().fg(model_selected_color())
             } else {
-                Style::new().fg(MODEL_META_COLOR)
+                Style::new().fg(model_meta_color())
             };
             let mut spans = vec![
                 Span::raw(MODEL_INDENT),
@@ -145,7 +145,7 @@ fn list_lines(rows: &[MenuRow], selected: usize, width: u16) -> Vec<Line<'static
                 .max(1);
             spans.push(Span::styled(
                 ellipsize(&row.desc, desc_room),
-                Style::new().fg(MODEL_META_COLOR),
+                Style::new().fg(model_meta_color()),
             ));
             Line::from(spans)
         })
@@ -158,11 +158,11 @@ fn label_span(text: String, selected: bool) -> Span<'static> {
         Span::styled(
             text,
             Style::new()
-                .fg(MODEL_SELECTED_COLOR)
+                .fg(model_selected_color())
                 .add_modifier(Modifier::BOLD),
         )
     } else {
-        Span::styled(text, Style::new().fg(MODEL_ID_COLOR))
+        Span::styled(text, Style::new().fg(model_id_color()))
     }
 }
 
@@ -194,7 +194,7 @@ fn events_lines(menu: &HooksMenu, selected: usize, width: u16) -> Vec<Line<'stat
         // silently.
         lines.extend(wrapped(
             HOOKS_DISABLED_NOTE,
-            Style::new().fg(ERROR_COLOR),
+            Style::new().fg(error_color()),
             width,
         ));
         lines.push(Line::default());
@@ -216,7 +216,7 @@ fn events_lines(menu: &HooksMenu, selected: usize, width: u16) -> Vec<Line<'stat
                 label_cols += cols(&count);
                 // The count keeps the accent at rest (the reference colours
                 // it "suggestion"); selected, the whole label is the accent.
-                label.push(Span::styled(count, Style::new().fg(MODEL_SELECTED_COLOR)));
+                label.push(Span::styled(count, Style::new().fg(model_selected_color())));
             }
             MenuRow {
                 label,
@@ -351,7 +351,7 @@ fn field_line(label: &str, value: &str, value_style: Style, width: u16) -> Line<
         Span::raw(MODEL_INDENT),
         Span::styled(
             format!("{label:<HOOKS_FIELD_COL$}"),
-            Style::new().fg(MODEL_META_COLOR),
+            Style::new().fg(model_meta_color()),
         ),
         Span::styled(ellipsize(value, room), value_style),
     ])
@@ -372,8 +372,8 @@ fn detail_lines(
         return vec![model_rule(width), Line::default(), model_rule(width)];
     };
     let hook = hook.clone();
-    let value = Style::new().fg(AI_COLOR);
-    let dim = Style::new().fg(MODEL_META_COLOR);
+    let value = Style::new().fg(ai_color());
+    let dim = Style::new().fg(model_meta_color());
     let mut lines = vec![
         model_rule(width),
         Line::default(),
@@ -404,7 +404,7 @@ fn detail_lines(
         .saturating_sub(2 * cols(MODEL_INDENT))
         .max(4);
     let inner = box_width - 4;
-    let border = Style::new().fg(BORDER_COLOR);
+    let border = Style::new().fg(border_color());
     let horizontal = "─".repeat(box_width - 2);
     lines.push(Line::from(vec![
         Span::raw(MODEL_INDENT),

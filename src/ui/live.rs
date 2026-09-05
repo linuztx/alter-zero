@@ -549,6 +549,14 @@ pub fn render_live_with_preview(
         render_spinner_picker(body, buf, app);
         return;
     }
+    // …and the inline `/theme` picker, the `/spinner` picker's twin. See
+    // `docs/theme.md`.
+    if app.theme_picker.is_some() {
+        let [strip, body] = view_split(area, super::theme_view::theme_menu_rows(app, area.width));
+        render_strip_above(strip, buf, app, stream_preview);
+        render_theme_picker(body, buf, app);
+        return;
+    }
     // …and the inline `/skills` menu, the `/settings` menu's twin. See
     // `docs/skills.md`.
     if app.skills_menu.is_some() {
@@ -657,7 +665,7 @@ pub fn render_live_with_preview(
     );
     let mut block = Block::new()
         .borders(Borders::TOP | Borders::BOTTOM)
-        .border_style(Style::new().fg(BORDER_COLOR));
+        .border_style(Style::new().fg(border_color()));
     // A description is the model's own sentence, so the label is clipped to
     // half the rule before it is right-aligned into it: ratatui cuts an
     // over-wide right-aligned title off its LEFT end, which ate the whole
@@ -671,10 +679,10 @@ pub fn render_live_with_preview(
         // as embedded in the frame rather than dangling off its right end.
         block = block.title_top(
             Line::from(vec![
-                Span::styled(label, Style::new().fg(TOOL_DIM_COLOR)),
+                Span::styled(label, Style::new().fg(tool_dim_color())),
                 Span::styled(
                     AGENT_VIEW_RULE_TAIL.to_string(),
-                    Style::new().fg(BORDER_COLOR),
+                    Style::new().fg(border_color()),
                 ),
             ])
             .right_aligned(),
@@ -701,9 +709,9 @@ pub fn render_live_with_preview(
             let (prefix, style) = if i != 0 {
                 (INDENT, Style::default())
             } else if app.shell_mode {
-                (SHELL_BULLET, Style::new().fg(SHELL_MODE_COLOR))
+                (SHELL_BULLET, Style::new().fg(shell_mode_color()))
             } else {
-                (PROMPT, Style::new().fg(PROMPT_COLOR))
+                (PROMPT, Style::new().fg(prompt_color()))
             };
             let mut spans = vec![Span::styled(prefix, style)];
             spans.extend(highlight_row_spans(line, range, &highlights));

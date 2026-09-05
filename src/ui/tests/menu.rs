@@ -3,8 +3,8 @@
 
 use super::*;
 use crate::ui::theme::{
-    FILE_MENU_MAX_ROWS, MENU_DESC_COL, MENU_MAX_ROWS, MENU_SELECTED_COLOR, SHORTCUTS,
-    SHORTCUTS_COL, SHORTCUTS_KEY_COLOR, SHORTCUTS_TEXT_COLOR, SKILL_MENU_MAX_ROWS,
+    FILE_MENU_MAX_ROWS, MENU_DESC_COL, MENU_MAX_ROWS, SHORTCUTS, SHORTCUTS_COL,
+    SKILL_MENU_MAX_ROWS, menu_selected_color, shortcuts_key_color, shortcuts_text_color,
 };
 use crate::ui::wrap::cols;
 
@@ -126,7 +126,7 @@ fn the_palette_scrolls_down_to_the_last_command() {
         bottom
             .spans
             .iter()
-            .any(|s| s.style.fg == Some(MENU_SELECTED_COLOR)),
+            .any(|s| s.style.fg == Some(menu_selected_color())),
         "the selection rode the window down"
     );
 }
@@ -277,7 +277,7 @@ fn wrapped_continuation_rows_share_the_selection_colour() {
             line.spans
                 .iter()
                 .filter(|s| !s.content.trim().is_empty())
-                .all(|s| s.style.fg == Some(MENU_SELECTED_COLOR)),
+                .all(|s| s.style.fg == Some(menu_selected_color())),
             "selected rows are cyan throughout: {line:?}"
         );
     }
@@ -558,8 +558,8 @@ fn the_shortcuts_columns_keep_a_readable_gutter_in_every_state() {
 fn shortcuts_lines_style_keys_cyan_and_labels_dim() {
     for line in shortcuts_lines(false, false) {
         // spans = [key, label, pad, key, label] — keys cyan, labels dim.
-        assert_eq!(line.spans[0].style.fg, Some(SHORTCUTS_KEY_COLOR));
-        assert_eq!(line.spans[1].style.fg, Some(SHORTCUTS_TEXT_COLOR));
+        assert_eq!(line.spans[0].style.fg, Some(shortcuts_key_color()));
+        assert_eq!(line.spans[1].style.fg, Some(shortcuts_text_color()));
     }
 }
 
@@ -787,13 +787,13 @@ fn file_menu_lines_lists_names_with_the_selection_highlighted() {
         lines[1]
             .spans
             .iter()
-            .any(|s| s.style.fg == Some(MENU_SELECTED_COLOR))
+            .any(|s| s.style.fg == Some(menu_selected_color()))
     );
     assert!(
         lines[0]
             .spans
             .iter()
-            .all(|s| s.style.fg != Some(MENU_SELECTED_COLOR))
+            .all(|s| s.style.fg != Some(menu_selected_color()))
     );
 }
 
@@ -937,13 +937,13 @@ fn skill_menu_lines_column_name_and_description() {
         lines[1]
             .spans
             .iter()
-            .any(|s| s.style.fg == Some(MENU_SELECTED_COLOR))
+            .any(|s| s.style.fg == Some(menu_selected_color()))
     );
     assert!(
         lines[0]
             .spans
             .iter()
-            .all(|s| s.style.fg != Some(MENU_SELECTED_COLOR))
+            .all(|s| s.style.fg != Some(menu_selected_color()))
     );
 }
 

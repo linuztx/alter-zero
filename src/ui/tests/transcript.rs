@@ -3,7 +3,7 @@
 
 use super::*;
 use crate::ui::theme::{
-    QUEUED_INDENT, TIMESTAMP_COLOR, TOOL_VIEW_FOOTER_ROWS, TOOL_VIEW_TITLE, TOOL_VIEW_TITLE_ROWS,
+    QUEUED_INDENT, TOOL_VIEW_FOOTER_ROWS, TOOL_VIEW_TITLE, TOOL_VIEW_TITLE_ROWS, timestamp_color,
 };
 use crate::ui::transcript::scroll_into_view;
 use crate::ui::wrap::cols;
@@ -498,7 +498,7 @@ fn transcript_styles_the_user_stamp_dim() {
         .iter()
         .find(|s| s.content.contains(STAMP))
         .expect("the stamp span");
-    assert_eq!(stamp_span.style.fg, Some(TIMESTAMP_COLOR));
+    assert_eq!(stamp_span.style.fg, Some(timestamp_color()));
 }
 
 #[test]
@@ -972,4 +972,34 @@ fn an_agent_transcript_shows_its_tab_follow_ups_too() {
         text.contains("❯ and then Elixir"),
         "the agent's queued follow-up turn is missing from its transcript:\n{text}"
     );
+}
+
+#[test]
+fn the_cache_re_renders_its_frozen_prefix_when_the_theme_changes() {
+    // A committed item's rows carry their colours, so the frozen prefix is
+    // pinned on the active theme too: a `/theme` switch re-renders every
+    // item in the new palette rather than serving the old rows
+    // (`docs/theme.md`).
+    use crate::app::Theme;
+    use crate::ui::palette::{palette_of, with_theme};
+    let app = transcript_fixture();
+    let mut cache = TranscriptCache::new();
+    let bullet = |lines: &[Line<'static>]| {
+        lines
+            .iter()
+            .find(|l| plain(l).contains("Read("))
+            .expect("the tool header")
+            .spans[0]
+            .style
+            .fg
+    };
+    let mocha = bullet(cache.lines(&app, 80));
+    assert_eq!(mocha, Some(palette_of(Theme::Mocha).success));
+    let dracula = with_theme(Theme::Dracula, || bullet(cache.lines(&app, 80)));
+    assert_eq!(
+        dracula,
+        Some(palette_of(Theme::Dracula).success),
+        "the frozen prefix re-rendered in the new theme"
+    );
+    assert_eq!(bullet(cache.lines(&app, 80)), mocha, "…and back");
 }

@@ -78,7 +78,7 @@ footer-mode multiplexing: the Ctrl+R `reverse-i-search: {query}` line
   [`render_live`]/`cursor_position` pass it, so reserve and paint can't drift.
 - `footer_line(app, width) -> Line` — `FOOTER_INDENT` (two spaces, codex's
   `FOOTER_INDENT_COLS`) + `{model} · {cwd}`, every span dim
-  (`FOOTER_COLOR`/`FOOTER_SEPARATOR`); the content is truncated with a
+  (`footer_color()`/`FOOTER_SEPARATOR`); the content is truncated with a
   trailing `…` when it overflows the width (codex's
   `truncate_line_with_ellipsis_if_overflow`). Two later segments append to the
   same dim ` · ` chain when they apply — the **context gauge**
@@ -94,7 +94,7 @@ footer-mode multiplexing: the Ctrl+R `reverse-i-search: {query}` line
   one segment with a safety meaning. A full row reads
   `deepseek-v3.2 medium · ~/Codes/tmp · 1.3k/160k (0.8%) · 1 shell     manual`.
   That last segment is the one **focusable** one: ↓ from an idle composer
-  lights it on the palette cyan (`FOOTER_FOCUS_BG`/`FOOTER_FOCUS_FG`) and
+  lights it on the palette cyan (`footer_focus_bg()`/`footer_focus_fg()`) and
   Enter opens the ↓ manager band, Claude-Code-style. Only that span's style
   changes — the row keeps every other segment, dim as ever — and the
   truncation path carries the style through, so a narrow width cuts the lit

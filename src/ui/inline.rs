@@ -32,7 +32,7 @@ pub(super) fn inline_spans(nodes: &[markdown::Inline], base: Style) -> Vec<(Stri
                     base.add_modifier(Modifier::CROSSED_OUT),
                 ));
             }
-            markdown::Inline::Code(c) => out.push((c.clone(), base.fg(INLINE_CODE_COLOR))),
+            markdown::Inline::Code(c) => out.push((c.clone(), base.fg(inline_code_color()))),
             markdown::Inline::Link { text, url } => {
                 // The text keeps its own dress and gains the target; the
                 // ` (url)` suffix splits so exactly the URL carries it (the
@@ -42,7 +42,7 @@ pub(super) fn inline_spans(nodes: &[markdown::Inline], base: Style) -> Vec<(Stri
                         .into_iter()
                         .map(|(t, s)| (t, links::linked(s, url))),
                 );
-                let url_style = base.fg(LINK_URL_COLOR).add_modifier(Modifier::UNDERLINED);
+                let url_style = base.fg(link_url_color()).add_modifier(Modifier::UNDERLINED);
                 out.push((" (".to_string(), url_style));
                 out.push((url.clone(), links::linked(url_style, url)));
                 out.push((")".to_string(), url_style));
@@ -55,7 +55,7 @@ pub(super) fn inline_spans(nodes: &[markdown::Inline], base: Style) -> Vec<(Stri
 
 /// Append a plain-text node's segments under `base`, autolinking bare URLs
 /// (`docs/links.md`): each detected URL takes the markdown-target dress —
-/// [`LINK_URL_COLOR`] + underline, a URL is a URL — plus the carrier that
+/// [`link_url_color`] + underline, a URL is a URL — plus the carrier that
 /// keeps every wrapped fragment opening the whole target; the prose around it
 /// is untouched.
 fn autolink_text(text: &str, base: Style, out: &mut Vec<(String, Style)>) {
@@ -65,7 +65,7 @@ fn autolink_text(text: &str, base: Style, out: &mut Vec<(String, Style)>) {
             out.push((text[at..range.start].to_string(), base));
         }
         let url = &text[range.clone()];
-        let style = base.fg(LINK_URL_COLOR).add_modifier(Modifier::UNDERLINED);
+        let style = base.fg(link_url_color()).add_modifier(Modifier::UNDERLINED);
         out.push((url.to_string(), links::linked(style, url)));
         at = range.end;
     }

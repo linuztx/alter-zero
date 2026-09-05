@@ -70,7 +70,7 @@ survives the trip.
    assistant prose runs through (plain lines, list items, blockquotes, *and*
    table cells), so marking there covers every surface that can wrap a URL:
    - `Inline::Text` autolinks: the URL slice takes the markdown-URL dress
-     (`LINK_URL_COLOR` + underline — a URL is a URL) plus the carrier.
+     (`link_url_color()` + underline — a URL is a URL) plus the carrier.
    - `Inline::Link { text, url }` marks the text spans (their visible style
      untouched) and the `url` inside the ` (url)` suffix with the target.
    - `Inline::Code` stays link-free (verbatim by intent), as do fenced code

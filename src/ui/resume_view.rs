@@ -38,9 +38,11 @@ fn resume_row(
         // with wide CJK/emoji in the preview.
         let pad = (width as usize).saturating_sub(cols(&text));
         text.push_str(&" ".repeat(pad));
-        Style::new().fg(MENU_SELECTED_COLOR).bg(RESUME_SELECTED_BG)
+        Style::new()
+            .fg(menu_selected_color())
+            .bg(resume_selected_bg())
     } else {
-        Style::new().fg(MENU_DIM_COLOR)
+        Style::new().fg(menu_dim_color())
     };
     Line::from(Span::styled(text, style))
 }
@@ -68,12 +70,12 @@ fn resume_toolbar_value(label: &'static str, active: bool, focused: bool) -> Spa
     if active {
         let text = format!("[{label}]");
         if focused {
-            Span::styled(text, Style::new().fg(RESUME_FOCUS_COLOR))
+            Span::styled(text, Style::new().fg(resume_focus_color()))
         } else {
             Span::from(text)
         }
     } else {
-        Span::styled(format!(" {label} "), Style::new().fg(MENU_DIM_COLOR))
+        Span::styled(format!(" {label} "), Style::new().fg(menu_dim_color()))
     }
 }
 
@@ -81,7 +83,7 @@ fn resume_toolbar_value(label: &'static str, active: bool, focused: bool) -> Spa
 /// `Sort:` labels with their tab pairs (`[Cwd] All`, `[Updated] Created`),
 /// or — `compact` — each label with just its active value (`Filter:[Cwd]`).
 fn resume_toolbar_spans(picker: &ResumePicker, compact: bool) -> Vec<Span<'static>> {
-    let dim = Style::new().fg(MENU_DIM_COLOR);
+    let dim = Style::new().fg(menu_dim_color());
     let filter_focused = picker.focus == ResumeControl::Filter;
     let sort_focused = picker.focus == ResumeControl::Sort;
     if compact {
@@ -155,15 +157,15 @@ pub fn render_resume_picker(area: Rect, buf: &mut Buffer, app: &App) {
     let mut search_spans = if query.is_empty() {
         vec![Span::styled(
             format!("{RESUME_INDENT}{RESUME_SEARCH_PLACEHOLDER}"),
-            Style::new().fg(MENU_DIM_COLOR),
+            Style::new().fg(menu_dim_color()),
         )]
     } else {
         vec![
             Span::styled(
                 format!("{RESUME_INDENT}{RESUME_SEARCH_PROMPT}"),
-                Style::new().fg(MENU_DIM_COLOR),
+                Style::new().fg(menu_dim_color()),
             ),
-            Span::styled(query.to_string(), Style::new().fg(SEARCH_QUERY_COLOR)),
+            Span::styled(query.to_string(), Style::new().fg(search_query_color())),
         ]
     };
     // The Filter/Sort toolbar rides the search row's right edge (codex's):
@@ -199,7 +201,7 @@ pub fn render_resume_picker(area: Rect, buf: &mut Buffer, app: &App) {
         };
         vec![Line::from(Span::styled(
             format!("{RESUME_INDENT}{placeholder}"),
-            Style::new().fg(MENU_DIM_COLOR),
+            Style::new().fg(menu_dim_color()),
         ))]
     } else {
         let height = (body_area.height as usize).max(1);
@@ -223,7 +225,7 @@ pub fn render_resume_picker(area: Rect, buf: &mut Buffer, app: &App) {
     Paragraph::new(rule_with_label(area.width, &label)).render(sep_area, buf);
     Paragraph::new(Line::from(Span::styled(
         RESUME_HINTS.to_string(),
-        Style::new().fg(TOOL_DIM_COLOR),
+        Style::new().fg(tool_dim_color()),
     )))
     .render(hint_area, buf);
 }

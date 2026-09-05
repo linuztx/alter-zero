@@ -24,7 +24,7 @@ fn mcp_line(text: &str, style: Style, width: u16) -> Line<'static> {
 }
 
 fn dim_line(text: &str, width: u16) -> Line<'static> {
-    mcp_line(text, Style::new().fg(MODEL_META_COLOR), width)
+    mcp_line(text, Style::new().fg(model_meta_color()), width)
 }
 
 /// The page's headline — cyan, the row that says which of the four pages
@@ -33,7 +33,7 @@ fn title_line(text: &str, width: u16) -> Line<'static> {
     mcp_line(
         text,
         Style::new()
-            .fg(MCP_TITLE_COLOR)
+            .fg(mcp_title_color())
             .add_modifier(Modifier::BOLD),
         width,
     )
@@ -50,7 +50,7 @@ fn wrapped(text: &str, style: Style, width: u16) -> Vec<Line<'static>> {
 
 /// `text` word-wrapped to inset dim rows.
 fn dim_wrapped(text: &str, width: u16) -> Vec<Line<'static>> {
-    wrapped(text, Style::new().fg(MODEL_META_COLOR), width)
+    wrapped(text, Style::new().fg(model_meta_color()), width)
 }
 
 /// `text` word-wrapped to rows carrying a two-space inset past
@@ -84,12 +84,12 @@ fn count_noun(n: usize, noun: &str) -> String {
 /// A status's glyph colour — the reference's success/warning/error/inactive.
 fn status_color(status: &McpServerStatus) -> Color {
     match status {
-        McpServerStatus::Connected => TOOL_OK_COLOR,
+        McpServerStatus::Connected => tool_ok_color(),
         // The ask review page's amber — the needs-attention colour, which an
         // untrusted project server also is (`/trust` is the way in).
-        McpServerStatus::NeedsAuth | McpServerStatus::Untrusted => ASK_WARNING_COLOR,
-        McpServerStatus::Failed(_) => TOOL_FAIL_COLOR,
-        McpServerStatus::Pending | McpServerStatus::Disabled => MODEL_META_COLOR,
+        McpServerStatus::NeedsAuth | McpServerStatus::Untrusted => ask_warning_color(),
+        McpServerStatus::Failed(_) => tool_fail_color(),
+        McpServerStatus::Pending | McpServerStatus::Disabled => model_meta_color(),
     }
 }
 
@@ -99,17 +99,17 @@ fn server_row(server: &McpServerSnapshot, selected: bool, width: u16) -> Line<'s
     let marker = if selected {
         Span::styled(
             HOOKS_MARKER.to_string(),
-            Style::new().fg(MODEL_SELECTED_COLOR),
+            Style::new().fg(model_selected_color()),
         )
     } else {
         Span::raw(" ".repeat(cols(HOOKS_MARKER)))
     };
     let name_style = if selected {
         Style::new()
-            .fg(MODEL_SELECTED_COLOR)
+            .fg(model_selected_color())
             .add_modifier(Modifier::BOLD)
     } else {
-        Style::new().fg(MODEL_ID_COLOR)
+        Style::new().fg(model_id_color())
     };
     let room = (width as usize)
         .saturating_sub(cols(MODEL_INDENT) + cols(HOOKS_MARKER))
@@ -134,7 +134,7 @@ fn server_row(server: &McpServerSnapshot, selected: bool, width: u16) -> Line<'s
     if avail >= cols(MCP_ROW_SEPARATOR) + cols(glyph) {
         spans.push(Span::styled(
             MCP_ROW_SEPARATOR.to_string(),
-            Style::new().fg(MODEL_META_COLOR),
+            Style::new().fg(model_meta_color()),
         ));
         spans.push(Span::styled(
             glyph.to_string(),
@@ -143,7 +143,7 @@ fn server_row(server: &McpServerSnapshot, selected: bool, width: u16) -> Line<'s
         let words_room = avail - cols(MCP_ROW_SEPARATOR) - cols(glyph);
         spans.push(Span::styled(
             ellipsize(&words, words_room),
-            Style::new().fg(MODEL_META_COLOR),
+            Style::new().fg(model_meta_color()),
         ));
     }
     Line::from(spans)
@@ -166,7 +166,7 @@ fn list_lines(menu: &McpMenu, width: u16) -> Vec<Line<'static>> {
         // exactly the actionable tail (`~/.alter-zero/mcp.json`).
         lines.extend(inset_wrapped(
             "{project}/.mcp.json · ~/.alter-zero/mcp.json",
-            Style::new().fg(AI_COLOR),
+            Style::new().fg(ai_color()),
             width,
         ));
     } else {
@@ -191,7 +191,7 @@ fn list_lines(menu: &McpMenu, width: u16) -> Vec<Line<'static>> {
                 }
                 lines.push(mcp_line(
                     &format!("  {heading}"),
-                    Style::new().fg(MODEL_META_COLOR),
+                    Style::new().fg(model_meta_color()),
                     width,
                 ));
                 last_heading = Some(heading);
@@ -216,8 +216,8 @@ fn list_lines(menu: &McpMenu, width: u16) -> Vec<Line<'static>> {
 
 /// One `{label:<18}{value}` field row of the server detail page — the label
 /// always bright, the value styled by what it *is*
-/// ([`MCP_DETAIL_VALUE_COLOR`] for an address or a count,
-/// [`MCP_DETAIL_STATE_COLOR`] for a value that is itself the answer). The
+/// ([`mcp_detail_value_color`] for an address or a count,
+/// [`mcp_detail_state_color`] for a value that is itself the answer). The
 /// value stays one row (`…`-cut when it can't fit) — bounded values only;
 /// the fields a user opens the page to *read whole* go through
 /// [`field_lines`].
@@ -229,7 +229,7 @@ fn field_line(label: &str, value: &str, value_style: Style, width: u16) -> Line<
         Span::raw(MODEL_INDENT),
         Span::styled(
             format!("{label:<MCP_FIELD_COL$}"),
-            Style::new().fg(MCP_DETAIL_LABEL_COLOR),
+            Style::new().fg(mcp_detail_label_color()),
         ),
         Span::styled(ellipsize(value, room), value_style),
     ])
@@ -250,7 +250,7 @@ fn field_lines(label: &str, value: &str, value_style: Style, width: u16) -> Vec<
         Span::raw(MODEL_INDENT),
         Span::styled(
             format!("{label:<MCP_FIELD_COL$}"),
-            Style::new().fg(MCP_DETAIL_LABEL_COLOR),
+            Style::new().fg(mcp_detail_label_color()),
         ),
         Span::styled(first, value_style),
     ])];
@@ -283,12 +283,12 @@ fn state_field_line(
         Span::raw(MODEL_INDENT),
         Span::styled(
             format!("{label:<MCP_FIELD_COL$}"),
-            Style::new().fg(MCP_DETAIL_LABEL_COLOR),
+            Style::new().fg(mcp_detail_label_color()),
         ),
         Span::styled(format!("{glyph} "), Style::new().fg(glyph_color)),
         Span::styled(
             ellipsize(words, room),
-            Style::new().fg(MCP_DETAIL_STATE_COLOR),
+            Style::new().fg(mcp_detail_state_color()),
         ),
     ])
 }
@@ -311,15 +311,15 @@ fn tool_field_lines(label: &str, value: &str, width: u16) -> Vec<Line<'static>> 
         Span::raw(MODEL_INDENT),
         Span::styled(
             format!("{label}{MCP_TOOL_FIELD_GAP}"),
-            Style::new().fg(MCP_DETAIL_LABEL_COLOR),
+            Style::new().fg(mcp_detail_label_color()),
         ),
-        Span::styled(first, Style::new().fg(MCP_DETAIL_VALUE_COLOR)),
+        Span::styled(first, Style::new().fg(mcp_detail_value_color())),
     ])];
     lines.extend(rows.map(|row| {
         Line::from(vec![
             Span::raw(MODEL_INDENT),
             Span::raw(" ".repeat(lead)),
-            Span::styled(row, Style::new().fg(MCP_DETAIL_VALUE_COLOR)),
+            Span::styled(row, Style::new().fg(mcp_detail_value_color())),
         ])
     }));
     lines
@@ -334,15 +334,15 @@ fn action_rows(labels: &[&'static str], selected: usize, width: u16) -> Vec<Line
             let marker = if i == selected {
                 Span::styled(
                     HOOKS_MARKER.to_string(),
-                    Style::new().fg(MODEL_SELECTED_COLOR),
+                    Style::new().fg(model_selected_color()),
                 )
             } else {
                 Span::raw(" ".repeat(cols(HOOKS_MARKER)))
             };
             let style = if i == selected {
-                Style::new().fg(MODEL_SELECTED_COLOR)
+                Style::new().fg(model_selected_color())
             } else {
-                Style::new().fg(MODEL_ID_COLOR)
+                Style::new().fg(model_id_color())
             };
             let room = (width as usize)
                 .saturating_sub(cols(MODEL_INDENT) + cols(HOOKS_MARKER) + 3)
@@ -361,9 +361,9 @@ fn action_rows(labels: &[&'static str], selected: usize, width: u16) -> Vec<Line
 fn server_lines(menu: &McpMenu, server: &McpServerSnapshot, width: u16) -> Vec<Line<'static>> {
     // An address, a revision, a count: what the label leads to, not what the
     // page is about.
-    let value = Style::new().fg(MCP_DETAIL_VALUE_COLOR);
+    let value = Style::new().fg(mcp_detail_value_color());
     // A value that *is* the answer — what this server can do.
-    let state = Style::new().fg(MCP_DETAIL_STATE_COLOR);
+    let state = Style::new().fg(mcp_detail_state_color());
     let mut lines = vec![
         model_rule(width),
         Line::default(),
@@ -390,9 +390,9 @@ fn server_lines(menu: &McpMenu, server: &McpServerSnapshot, width: u16) -> Vec<L
         // Red only for a state the user should act on; everything else is a
         // settled green ✔ (`docs/mcp.md`).
         let glyph_color = if auth.is_problem() {
-            TOOL_FAIL_COLOR
+            tool_fail_color()
         } else {
-            TOOL_OK_COLOR
+            tool_ok_color()
         };
         lines.push(state_field_line(
             "Auth:",
@@ -491,15 +491,15 @@ fn tools_lines(menu: &McpMenu, server: &McpServerSnapshot, width: u16) -> Vec<Li
         let marker = if i == selected {
             Span::styled(
                 HOOKS_MARKER.to_string(),
-                Style::new().fg(MODEL_SELECTED_COLOR),
+                Style::new().fg(model_selected_color()),
             )
         } else {
             Span::raw(" ".repeat(cols(HOOKS_MARKER)))
         };
         let style = if i == selected {
-            Style::new().fg(MODEL_SELECTED_COLOR)
+            Style::new().fg(model_selected_color())
         } else {
-            Style::new().fg(MODEL_ID_COLOR)
+            Style::new().fg(model_id_color())
         };
         let room = (width as usize)
             .saturating_sub(cols(MODEL_INDENT) + cols(HOOKS_MARKER) + 4)
@@ -537,8 +537,8 @@ fn tool_lines_page(
     let Some(tool) = server.tools.get(tool_index) else {
         return vec![model_rule(width), Line::default(), model_rule(width)];
     };
-    let label = Style::new().fg(MCP_DETAIL_LABEL_COLOR);
-    let dim = Style::new().fg(MCP_DETAIL_VALUE_COLOR);
+    let label = Style::new().fg(mcp_detail_label_color());
+    let dim = Style::new().fg(mcp_detail_value_color());
     let mut lines = vec![
         model_rule(width),
         Line::default(),
@@ -559,7 +559,7 @@ fn tool_lines_page(
         // as brightly as the label announcing it.
         lines.extend(wrapped(
             tool.description.trim(),
-            Style::new().fg(MCP_DESCRIPTION_COLOR),
+            Style::new().fg(mcp_description_color()),
             width,
         ));
     }
@@ -636,7 +636,11 @@ fn auth_lines(menu: &McpMenu, server: &McpServerSnapshot, width: u16) -> Vec<Lin
             lines.extend(dim_wrapped(MCP_AUTH_COPY_NOTE, width));
             let room = (width as usize).saturating_sub(cols(MODEL_INDENT)).max(1) as u16;
             for row in wrap_output(url, room) {
-                lines.push(mcp_line(&row, Style::new().fg(MODEL_SELECTED_COLOR), width));
+                lines.push(mcp_line(
+                    &row,
+                    Style::new().fg(model_selected_color()),
+                    width,
+                ));
             }
         }
         None => lines.push(dim_line(MCP_AUTH_WAITING, width)),
@@ -660,8 +664,8 @@ fn auth_lines(menu: &McpMenu, server: &McpServerSnapshot, width: u16) -> Vec<Lin
     };
     lines.push(Line::from(vec![
         Span::raw(MODEL_INDENT),
-        Span::styled(MCP_AUTH_PROMPT, Style::new().fg(MODEL_META_COLOR)),
-        Span::styled(shown, Style::new().fg(AI_COLOR)),
+        Span::styled(MCP_AUTH_PROMPT, Style::new().fg(model_meta_color())),
+        Span::styled(shown, Style::new().fg(ai_color())),
     ]));
     if menu.auth.submitted {
         lines.push(dim_line(MCP_AUTH_SUBMITTED, width));

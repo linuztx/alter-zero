@@ -250,7 +250,7 @@ transcript pager, styling in `RESUME_*` consts:
 The search line's left side is the dim `Type to search` placeholder (or
 `Search: {query}`); its right edge carries codex's **Filter/Sort toolbar**
 (`resume_toolbar_spans`): dim `Filter:`/`Sort:` labels, the active value
-bracketed (`[Cwd]` — `RESUME_FOCUS_COLOR` magenta when its control holds the
+bracketed (`[Cwd]` — `resume_focus_color()` magenta when its control holds the
 Tab focus, plain otherwise), inactive values dim. When the full tab pairs
 don't fit beside the search text the toolbar compacts to the active values
 (`Filter:[Cwd]   Sort:[Updated]`, codex's compact form), and on the
@@ -260,7 +260,7 @@ Rows are codex's dense density: `❯ ` marker (spaces when unselected), the
 **active sort key's** age padded to `RESUME_AGE_WIDTH` (12 — codex shows only
 that timestamp per row), the preview ellipsis-truncated to the width
 (`cols()` math). The selected row lights up in the palette's selected colour
-**on a full-width `RESUME_SELECTED_BG` tint** (padded to the edge in columns
+**on a full-width `resume_selected_bg()` tint** (padded to the edge in columns
 — the user-message block pattern, codex's background blend); the rest dim.
 The row window scrolls to keep the selection visible (derived from `selected`
 and the list height; no stored scroll offset).

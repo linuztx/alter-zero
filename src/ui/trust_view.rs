@@ -45,7 +45,7 @@ fn item_lines(text: &str, style: Style, width: u16) -> Vec<Line<'static>> {
 }
 
 fn dim_line(text: &str, width: u16) -> Line<'static> {
-    line(text, Style::new().fg(MODEL_META_COLOR), width)
+    line(text, Style::new().fg(model_meta_color()), width)
 }
 
 /// `text` word-wrapped to inset dim rows (the info banner, an error).
@@ -62,11 +62,11 @@ fn wrapped(text: &str, style: Style, width: u16) -> Vec<Line<'static>> {
 /// `… +N more` fold.
 fn file_lines(file: &TrustFileReview, width: u16) -> Vec<Line<'static>> {
     let (badge, badge_color) = if file.error.is_some() {
-        (TRUST_BADGE_ERROR, ERROR_COLOR)
+        (TRUST_BADGE_ERROR, error_color())
     } else if file.pending {
-        (TRUST_BADGE_PENDING, ASK_WARNING_COLOR)
+        (TRUST_BADGE_PENDING, ask_warning_color())
     } else {
-        (TRUST_BADGE_TRUSTED, TOOL_OK_COLOR)
+        (TRUST_BADGE_TRUSTED, tool_ok_color())
     };
     let head = format!("{} — {}", file.label, file.path);
     let room = (width as usize)
@@ -77,17 +77,19 @@ fn file_lines(file: &TrustFileReview, width: u16) -> Vec<Line<'static>> {
         Span::styled(
             // `…`-cut so the badge keeps its seat and the cut path says so.
             ellipsize(&head, room),
-            Style::new().fg(MODEL_ID_COLOR).add_modifier(Modifier::BOLD),
+            Style::new()
+                .fg(model_id_color())
+                .add_modifier(Modifier::BOLD),
         ),
         Span::raw("  "),
         Span::styled(badge.to_string(), Style::new().fg(badge_color)),
     ])];
     if let Some(error) = &file.error {
-        lines.extend(wrapped(error, Style::new().fg(ERROR_COLOR), width));
+        lines.extend(wrapped(error, Style::new().fg(error_color()), width));
         return lines;
     }
     let shown = file.items.iter().take(TRUST_MENU_MAX_ITEMS);
-    let item_style = Style::new().fg(MODEL_META_COLOR);
+    let item_style = Style::new().fg(model_meta_color());
     for item in shown {
         lines.extend(item_lines(item, item_style, width));
     }
@@ -119,31 +121,31 @@ pub fn trust_view_lines(app: &App, width: u16) -> Vec<Line<'static>> {
         Line::default(),
         line(
             &format!("{TRUST_TITLE} — {}", review.root),
-            Style::new().fg(AI_COLOR).add_modifier(Modifier::BOLD),
+            Style::new().fg(ai_color()).add_modifier(Modifier::BOLD),
             width,
         ),
     ];
     let (status, status_color) = if review.trusted {
-        (TRUST_STATUS_TRUSTED, TOOL_OK_COLOR)
+        (TRUST_STATUS_TRUSTED, tool_ok_color())
     } else {
-        (TRUST_STATUS_UNTRUSTED, ASK_WARNING_COLOR)
+        (TRUST_STATUS_UNTRUSTED, ask_warning_color())
     };
     lines.push(Line::from(vec![
         Span::raw(MODEL_INDENT),
-        Span::styled("Status: ".to_string(), Style::new().fg(MODEL_META_COLOR)),
+        Span::styled("Status: ".to_string(), Style::new().fg(model_meta_color())),
         Span::styled(status.to_string(), Style::new().fg(status_color)),
     ]));
     lines.push(Line::default());
     lines.extend(wrapped(
         TRUST_INFO,
-        Style::new().fg(MODEL_META_COLOR),
+        Style::new().fg(model_meta_color()),
         width,
     ));
     lines.push(Line::default());
     if review.files.is_empty() {
         // The paths wrap: clipped, the three rows differed only in the tail
         // being cut off, leaving three identical-looking truncated roots.
-        let dim = Style::new().fg(MODEL_META_COLOR);
+        let dim = Style::new().fg(model_meta_color());
         lines.push(dim_line(TRUST_EMPTY, width));
         lines.extend(item_lines(
             &format!("{}/.alter-zero/hooks.json", review.root),
@@ -177,14 +179,14 @@ pub fn trust_view_lines(app: &App, width: u16) -> Vec<Line<'static>> {
                 (
                     HOOKS_MARKER,
                     Style::new()
-                        .fg(MODEL_SELECTED_COLOR)
+                        .fg(model_selected_color())
                         .add_modifier(Modifier::BOLD),
                 )
             } else {
-                ("  ", Style::new().fg(MODEL_ID_COLOR))
+                ("  ", Style::new().fg(model_id_color()))
             };
             let marker_style = if i == selected {
-                Style::new().fg(MODEL_SELECTED_COLOR)
+                Style::new().fg(model_selected_color())
             } else {
                 Style::default()
             };

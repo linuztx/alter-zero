@@ -218,7 +218,7 @@ single `U+FFFD`.
 
 Like the Ctrl+R search line, the shell-mode hint takes the **footer slot**:
 `footer_rows` returns 1 whenever `app.shell_mode` is on (even with no session
-info), and `render_live` paints `  Shell mode` (red `SHELL_MODE_COLOR`,
+info), and `render_live` paints `  Shell mode` (red `shell_mode_color()`,
 `FOOTER_INDENT`) there instead of the `{model} · {cwd}` line. The cursor stays
 in the input box (unlike search, which owns the footer cursor). A band can't be
 open in shell mode (the palette is suppressed, the shortcuts band needs a

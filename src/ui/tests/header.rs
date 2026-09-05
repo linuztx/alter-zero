@@ -153,7 +153,7 @@ fn header_title_is_bold_name_over_dim_version() {
         .expect("the version span");
     assert_eq!(
         version.style.fg,
-        Some(crate::ui::theme::HEADER_META_COLOR),
+        Some(crate::ui::theme::header_meta_color()),
         "the version is dim"
     );
 }
@@ -166,13 +166,13 @@ fn header_cwd_is_dim_and_hint_is_cyan() {
         .iter()
         .find(|s| s.content.contains("~/alter-zero"))
         .expect("the cwd span");
-    assert_eq!(cwd.style.fg, Some(crate::ui::theme::HEADER_META_COLOR));
+    assert_eq!(cwd.style.fg, Some(crate::ui::theme::header_meta_color()));
     let hint = lines[2]
         .spans
         .iter()
         .find(|s| s.content.contains("/login"))
         .expect("a hint token span");
-    assert_eq!(hint.style.fg, Some(crate::ui::theme::HEADER_ACCENT_COLOR));
+    assert_eq!(hint.style.fg, Some(crate::ui::theme::header_accent_color()));
 }
 
 #[test]
@@ -182,17 +182,17 @@ fn header_mascot_carries_the_banner_gradient() {
     let first = lines[0].spans.first().expect("an art span");
     assert_eq!(
         first.style.fg,
-        Some(Color::Rgb(0x56, 0xB6, 0xC2)),
-        "the art starts cyan"
+        Some(crate::ui::theme::header_gradient_start()),
+        "the art starts at the accent (Mocha's sky)"
     );
     // Some art cell reaches the block's far edge (t=1) → the exact blue
     // endpoint.
     let has_blue = lines.iter().any(|l| {
         l.spans
             .iter()
-            .any(|s| s.style.fg == Some(Color::Rgb(0x61, 0xAF, 0xEF)))
+            .any(|s| s.style.fg == Some(crate::ui::theme::header_gradient_end()))
     });
-    assert!(has_blue, "the art ends blue");
+    assert!(has_blue, "the art ends at the link blue");
 }
 
 #[test]

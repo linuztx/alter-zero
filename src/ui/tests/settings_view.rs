@@ -6,8 +6,8 @@ use super::*;
 use crate::permission::PermissionMode;
 use crate::settings::{SettingAvailability, SettingKey};
 use crate::ui::theme::{
-    GAP_ROWS, MODEL_SELECTED_COLOR, SETTINGS_HINT, SETTINGS_MENU_MAX_ROWS, SETTINGS_SEARCH_ROW,
-    SETTINGS_VALUE_COLOR, SETTINGS_VALUE_OFF_COLOR, STATUS_GAP_ROWS, STATUS_ROWS,
+    GAP_ROWS, SETTINGS_HINT, SETTINGS_MENU_MAX_ROWS, SETTINGS_SEARCH_ROW, STATUS_GAP_ROWS,
+    STATUS_ROWS, model_selected_color, settings_value_color, settings_value_off_color,
 };
 
 /// The fixed rows framing the menu: top rule, gap, search, gap (4 above
@@ -123,7 +123,7 @@ fn every_row_shows_its_label_and_value_and_the_first_is_marked() {
     assert!(second.starts_with("  Show images"), "{second:?}");
     assert!(second.contains("true"), "{second:?}");
     // The selected row's marker takes the picker family's cyan accent.
-    assert_eq!(buf[(0, 4)].fg, MODEL_SELECTED_COLOR);
+    assert_eq!(buf[(0, 4)].fg, model_selected_color());
 }
 
 #[test]
@@ -159,10 +159,14 @@ fn an_off_value_is_dimmed_and_an_on_value_is_not() {
     let buf = render(&app, 78);
     let line = row(&buf, 4, 78);
     let at = u16::try_from(line.find("false").unwrap()).unwrap();
-    assert_eq!(buf[(at, 4)].fg, SETTINGS_VALUE_OFF_COLOR, "false is dim");
+    assert_eq!(buf[(at, 4)].fg, settings_value_off_color(), "false is dim");
     let line = row(&buf, 5, 78);
     let at = u16::try_from(line.find("true").unwrap()).unwrap();
-    assert_eq!(buf[(at, 5)].fg, SETTINGS_VALUE_COLOR, "a live value is not");
+    assert_eq!(
+        buf[(at, 5)].fg,
+        settings_value_color(),
+        "a live value is not"
+    );
 }
 
 #[test]
@@ -193,7 +197,7 @@ fn the_search_query_shows_after_the_prompt() {
     let buf = render(&app, 78);
     let search = row(&buf, SETTINGS_SEARCH_ROW, 78);
     assert!(search.contains("❯ temp"), "{search:?}");
-    assert_eq!(buf[(2, SETTINGS_SEARCH_ROW)].fg, MODEL_SELECTED_COLOR);
+    assert_eq!(buf[(2, SETTINGS_SEARCH_ROW)].fg, model_selected_color());
     // …and the list narrowed to the one match.
     assert!(
         row(&buf, 4, 78).contains("Temperature"),

@@ -109,6 +109,10 @@ pub enum CommandEffect {
     /// replaces the composer, and a toggle binds the *next* turn's request.
     /// See `docs/skills.md`.
     Skills,
+    /// Open the inline `/theme` picker: the colour themes, previewed on real
+    /// cells. Works **mid-turn** like `/settings` — it only replaces the
+    /// composer. See `docs/theme.md`.
+    Theme,
     /// Open the inline `/mascot` picker: the banner mascots, previewed live.
     /// Works **mid-turn** like `/settings` — it only replaces the composer.
     /// See `docs/mascot.md`.
@@ -197,6 +201,11 @@ pub const COMMANDS: &[SlashCommand] = &[
         name: "settings",
         description: "Open settings menu",
         effect: CommandEffect::Settings,
+    },
+    SlashCommand {
+        name: "theme",
+        description: "Choose the colour theme",
+        effect: CommandEffect::Theme,
     },
     SlashCommand {
         name: "mascot",
@@ -438,6 +447,15 @@ impl App {
                 // over it, so the rows can never disagree with what the model
                 // is offered. docs/skills.md.
                 Action::OpenSkillsMenu
+            }
+            CommandEffect::Theme => {
+                // /theme works mid-turn like /mascot: it only replaces the
+                // composer, and a switch purge-rebuilds the screen in the new
+                // palette without touching the running turn. The catalog is
+                // a const — nothing to fetch, so the pure open happens right
+                // here. docs/theme.md.
+                self.open_theme_picker();
+                Action::OpenThemePicker
             }
             CommandEffect::Mascot => {
                 // /mascot works mid-turn like /settings: it only replaces the

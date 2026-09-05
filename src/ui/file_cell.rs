@@ -16,7 +16,7 @@ use super::*;
 /// (Claude-Code's exec-cell output style). The shared basis for the dim
 /// [`result_row`] and the diff-coloured rows.
 pub(super) fn gutter_row(index: usize, text: String, color: Option<Color>) -> Line<'static> {
-    let dim = Style::new().fg(TOOL_DIM_COLOR);
+    let dim = Style::new().fg(tool_dim_color());
     gutter_row_styled(index, text, color.map_or(dim, |c| Style::new().fg(c)))
 }
 
@@ -31,7 +31,7 @@ pub(super) fn gutter_row_styled(index: usize, text: String, style: Style) -> Lin
         " ".repeat(cols(TOOL_RESULT_PREFIX))
     };
     Line::from(vec![
-        Span::styled(prefix, Style::new().fg(TOOL_DIM_COLOR)),
+        Span::styled(prefix, Style::new().fg(tool_dim_color())),
         Span::styled(text, style),
     ])
 }
@@ -46,8 +46,8 @@ pub(super) fn is_diff_tool(tool: &ToolCall) -> bool {
 /// red, everything else (context, the summary header) dim (`None`).
 pub(super) fn diff_line_color(line: &str) -> Option<Color> {
     match line.chars().next() {
-        Some('+') => Some(TOOL_DIFF_ADD_COLOR),
-        Some('-') => Some(TOOL_DIFF_DEL_COLOR),
+        Some('+') => Some(tool_diff_add_color()),
+        Some('-') => Some(tool_diff_del_color()),
         _ => None,
     }
 }
@@ -182,11 +182,11 @@ fn file_cell_lang(args: &str) -> Option<&str> {
 }
 
 /// The summary head of a file cell (`Wrote …`/`Updated …`/`Read N lines`) in
-/// the white output colour ([`TOOL_OUTPUT_COLOR`]) so it's as noticeable as the
+/// the white output colour ([`tool_output_color`]) so it's as noticeable as the
 /// output, with its `(+A -D)` counts coloured green/red (codex's header counts);
 /// all-white when there are no counts.
 fn file_summary_spans(head: &str) -> Vec<Span<'static>> {
-    let text = Style::new().fg(TOOL_OUTPUT_COLOR);
+    let text = Style::new().fg(tool_output_color());
     if let Some(open) = head.rfind("(+") {
         let counts = head[open..]
             .strip_prefix("(+")
@@ -200,9 +200,9 @@ fn file_summary_spans(head: &str) -> Vec<Span<'static>> {
         {
             return vec![
                 Span::styled(format!("{}(", &head[..open]), text),
-                Span::styled(format!("+{a}"), Style::new().fg(TOOL_DIFF_ADD_COLOR)),
+                Span::styled(format!("+{a}"), Style::new().fg(tool_diff_add_color())),
                 Span::styled(" ".to_string(), text),
-                Span::styled(format!("-{d}"), Style::new().fg(TOOL_DIFF_DEL_COLOR)),
+                Span::styled(format!("-{d}"), Style::new().fg(tool_diff_del_color())),
                 Span::styled(")".to_string(), text),
             ];
         }
@@ -219,7 +219,7 @@ fn file_summary_spans(head: &str) -> Vec<Span<'static>> {
 /// count colouring survives the wrap (the spans ride through as styled
 /// segments).
 fn summary_head_lines(head: &str, width: u16) -> Vec<Line<'static>> {
-    let dim = Style::new().fg(TOOL_DIM_COLOR);
+    let dim = Style::new().fg(tool_dim_color());
     let head_room = (width as usize)
         .saturating_sub(cols(TOOL_RESULT_PREFIX))
         .max(1);
@@ -290,7 +290,7 @@ fn clip_segments(
             break;
         }
     }
-    let mark = Style::new().fg(TOOL_DIM_COLOR);
+    let mark = Style::new().fg(tool_dim_color());
     kept.push((
         TOOL_LINE_ELLIPSIS.to_string(),
         bg.map_or(mark, |b| mark.bg(b)),
@@ -414,16 +414,24 @@ fn numbered_row_lines(
     width: u16,
     max_rows: Option<usize>,
 ) -> Vec<Line<'static>> {
-    let dim = Style::new().fg(TOOL_DIM_COLOR);
+    let dim = Style::new().fg(tool_dim_color());
     let indent = " ".repeat(indent_cols);
     let (bg, mark_bg, dim_content) = match sign {
-        Some('+') => (Some(TOOL_DIFF_ADD_BG), Some(TOOL_DIFF_ADD_MARK_BG), false),
-        Some('-') => (Some(TOOL_DIFF_DEL_BG), Some(TOOL_DIFF_DEL_MARK_BG), true),
+        Some('+') => (
+            Some(tool_diff_add_bg()),
+            Some(tool_diff_add_mark_bg()),
+            false,
+        ),
+        Some('-') => (
+            Some(tool_diff_del_bg()),
+            Some(tool_diff_del_mark_bg()),
+            true,
+        ),
         _ => (None, None, false),
     };
     let sign_style = match sign {
-        Some('+') => Style::new().fg(TOOL_DIFF_ADD_COLOR),
-        Some('-') => Style::new().fg(TOOL_DIFF_DEL_COLOR),
+        Some('+') => Style::new().fg(tool_diff_add_color()),
+        Some('-') => Style::new().fg(tool_diff_del_color()),
         _ => dim,
     };
     let with_bg = |style: Style| bg.map_or(style, |b| style.bg(b));
@@ -514,7 +522,7 @@ pub(super) fn numbered_body_lines(
     width: u16,
     budget: usize,
 ) -> (Vec<Line<'static>>, usize) {
-    let dim = Style::new().fg(TOOL_DIM_COLOR);
+    let dim = Style::new().fg(tool_dim_color());
     let indent = " ".repeat(indent_cols);
     let note_width = (width as usize).saturating_sub(indent_cols).max(1);
     let source: Vec<&str> = body.lines().collect();
@@ -525,7 +533,7 @@ pub(super) fn numbered_body_lines(
         .map(|raw| parse_file_row(raw, signed))
         .collect();
     let changed = refine_rows(&refine_input(&parsed));
-    let mut hl = highlight::Highlighter::new(lang);
+    let mut hl = highlight::Highlighter::new(lang, super::palette::palette().code);
     let mut out = Vec::new();
     let mut used = 0usize;
     for (i, raw) in source.iter().enumerate() {
@@ -536,7 +544,7 @@ pub(super) fn numbered_body_lines(
             }
             Some(FileRow::Gap(raw) | FileRow::Note(raw)) => {
                 // Hunks re-synchronize at the gap; the lexer state resets too.
-                hl = highlight::Highlighter::new(lang);
+                hl = highlight::Highlighter::new(lang, super::palette::palette().code);
                 vec![Line::from(vec![
                     Span::raw(indent.clone()),
                     Span::styled(truncate_cols(raw, note_width), dim),
@@ -572,7 +580,7 @@ pub(super) fn file_cell_lines(
 ) -> Option<Vec<Line<'static>>> {
     let (head, rows) = parse_file_cell(tool)?;
     let lang = file_cell_lang(&tool.args);
-    let dim = Style::new().fg(TOOL_DIM_COLOR);
+    let dim = Style::new().fg(tool_dim_color());
     let indent = " ".repeat(file_body_indent());
     let note_width = (width as usize).saturating_sub(indent.len()).max(1);
     let mut out = summary_head_lines(&head, width);
@@ -584,12 +592,12 @@ pub(super) fn file_cell_lines(
     let changed = refine_rows(&refine_input_rows(&rows));
     let mut used = 0usize;
     let mut hidden = 0usize;
-    let mut hl = highlight::Highlighter::new(lang);
+    let mut hl = highlight::Highlighter::new(lang, super::palette::palette().code);
     for (i, row) in rows.iter().enumerate() {
         let display = match row {
             FileRow::Gap(raw) => {
                 // Hunks re-synchronize at the gap; the lexer state resets too.
-                hl = highlight::Highlighter::new(lang);
+                hl = highlight::Highlighter::new(lang, super::palette::palette().code);
                 vec![Line::from(vec![
                     Span::raw(indent.clone()),
                     Span::styled(truncate_cols(raw, note_width), dim),

@@ -7,8 +7,8 @@ use crate::app::Reasoning;
 use crate::ui::live::preview_lines;
 use crate::ui::reasoning::{live_reasoning_lines, reasoning_full_lines, reasoning_live_full_lines};
 use crate::ui::theme::{
-    REASONING_LABEL_COLOR, REASONING_PEEK_LINES, REASONING_SHIMMER_BASE, SHIMMER_BASE,
-    SHIMMER_SWEEP, TOOL_PULSE_PERIOD,
+    REASONING_PEEK_LINES, SHIMMER_SWEEP, TOOL_PULSE_PERIOD, reasoning_label_color,
+    reasoning_shimmer_base, shimmer_base, shimmer_highlight,
 };
 use crate::ui::wrap::cols;
 
@@ -66,7 +66,7 @@ fn the_settled_line_is_dim_throughout() {
         span.content,
         "Thought for 3s · 12 tokens (ctrl+o to expand)"
     );
-    assert_eq!(span.style.fg, Some(REASONING_LABEL_COLOR));
+    assert_eq!(span.style.fg, Some(reasoning_label_color()));
     assert!(!span.style.add_modifier.contains(Modifier::BOLD));
 }
 
@@ -98,7 +98,7 @@ fn the_transcript_label_is_the_same_dim_line_with_no_background() {
         panic!("one label span, got {:?}", lines[0].spans);
     };
     assert_eq!(span.content, "Thought for 3s · 12 tokens");
-    assert_eq!(span.style.fg, Some(REASONING_LABEL_COLOR));
+    assert_eq!(span.style.fg, Some(reasoning_label_color()));
     assert!(!span.style.add_modifier.contains(Modifier::BOLD));
     assert_eq!(span.style.bg, None, "no band, no padding to the width");
 }
@@ -199,7 +199,6 @@ fn the_live_label_rests_at_bold_white_not_codexs_grey() {
     // Between crests — most of the sweep — the header must still read as a
     // header. Codex's grey base is right for the status metric below it and
     // wrong here: at rest it would be indistinguishable from the dim body.
-    let rgb = |(r, g, b)| Color::Rgb(r, g, b);
     let resting: Vec<Color> = (0..40)
         .map(|i| {
             live_reasoning_lines("x", SHIMMER_SWEEP * i / 40, 60)[0].spans[1]
@@ -209,11 +208,11 @@ fn the_live_label_rests_at_bold_white_not_codexs_grey() {
         .map(|fg| fg.expect("the label is coloured"))
         .collect();
     assert!(
-        resting.contains(&rgb(REASONING_SHIMMER_BASE)),
+        resting.contains(&reasoning_shimmer_base()),
         "the wave rests at the near-white floor: {resting:?}"
     );
     assert!(
-        !resting.contains(&rgb(SHIMMER_BASE)),
+        !resting.contains(&shimmer_base()),
         "and never at codex's grey: {resting:?}"
     );
     let brightest = resting
@@ -223,17 +222,22 @@ fn the_live_label_rests_at_bold_white_not_codexs_grey() {
                 panic!("expected an RGB colour, got {fg:?}")
             };
             assert!(
-                *r >= REASONING_SHIMMER_BASE.0,
+                *r >= rgb_of(reasoning_shimmer_base()).0,
                 "never dimmer than the floor"
             );
             *r
         })
         .max()
         .expect("sampled the sweep");
+    // The crest blends SHIMMER_MAX_BLEND (0.9) of the way from the floor to
+    // the text colour — whatever the theme's text colour is.
+    let floor = rgb_of(reasoning_shimmer_base()).0;
+    let crest = rgb_of(shimmer_highlight()).0;
+    let reach = floor + ((crest - floor) as f32 * 0.85) as u8;
     assert!(
-        brightest >= 0xF0,
+        brightest >= reach,
         "and the crest does reach the text — a wave nobody sees is not a wave \
-         (brightest sampled: {brightest:#04x})"
+         (brightest sampled: {brightest:#04x}, expected at least {reach:#04x})"
     );
 }
 
@@ -261,7 +265,7 @@ fn the_live_bullet_breathes_but_the_committed_one_never_does() {
         reasoning_lines(&thought("x", 1, 1), 60)[0].spans[0]
             .style
             .fg,
-        Some(REASONING_LABEL_COLOR),
+        Some(reasoning_label_color()),
         "the committed line is a fixed colour — no frame of the pulse or the \
          shimmer can be frozen into scrollback"
     );

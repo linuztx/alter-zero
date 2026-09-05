@@ -5,8 +5,8 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use super::*;
 use crate::skills::SkillMetadata;
 use crate::ui::theme::{
-    GAP_ROWS, MODEL_SELECTED_COLOR, SETTINGS_VALUE_COLOR, SETTINGS_VALUE_OFF_COLOR, SKILLS_HINT,
-    SKILLS_NO_MATCH, SKILLS_NONE_FOUND, SKILLS_SESSION_OFF, STATUS_GAP_ROWS, STATUS_ROWS,
+    GAP_ROWS, SKILLS_HINT, SKILLS_NO_MATCH, SKILLS_NONE_FOUND, SKILLS_SESSION_OFF, STATUS_GAP_ROWS,
+    STATUS_ROWS, model_selected_color, settings_value_color, settings_value_off_color,
 };
 
 fn meta(name: &str, description: &str) -> SkillMetadata {
@@ -87,14 +87,17 @@ fn an_on_value_and_an_off_value_are_coloured_apart() {
     // top rule (0), gap (1), search (2), gap (3) — the session-off note
     // takes a row only when it applies.
     let buf = render(&skills_app(), 78);
-    assert_eq!(colour_at(&buf, 4, 78, "enabled"), SETTINGS_VALUE_COLOR);
-    assert_eq!(colour_at(&buf, 5, 78, "disabled"), SETTINGS_VALUE_OFF_COLOR);
+    assert_eq!(colour_at(&buf, 4, 78, "enabled"), settings_value_color());
+    assert_eq!(
+        colour_at(&buf, 5, 78, "disabled"),
+        settings_value_off_color()
+    );
 }
 
 #[test]
 fn the_selected_row_lights_up_like_every_sibling_picker() {
     let buf = render(&skills_app(), 78);
-    assert_eq!(colour_at(&buf, 4, 78, "→"), MODEL_SELECTED_COLOR);
+    assert_eq!(colour_at(&buf, 4, 78, "→"), model_selected_color());
 }
 
 #[test]

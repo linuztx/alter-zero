@@ -140,5 +140,5 @@ box, showing/clearing it grows/shrinks the region from the top exactly as the
 streaming strip and the queue already do (`ui::repin` re-anchors, no box jump).
 
 Styling is centralized in `ui/theme.rs`: `TOAST_INDENT` (the two-space inset shared
-with the footer/queue), `TOAST_COLOR` (dim, `TOOL_DIM_COLOR`) for info, and
-`TOAST_ERROR_COLOR` (`ERROR_COLOR`) for failures.
+with the footer/queue), `toast_color()` (dim, `tool_dim_color()`) for info, and
+`toast_error_color()` (`error_color()`) for failures.

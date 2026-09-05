@@ -9,7 +9,7 @@ use super::*;
 /// A dim, `BG_INDENT`-inset single line for the ↓ manager band, truncated to
 /// the width.
 fn bg_dim_line(text: &str, width: u16) -> Line<'static> {
-    bg_line(text, Style::new().fg(BG_DIM_COLOR), width)
+    bg_line(text, Style::new().fg(bg_dim_color()), width)
 }
 
 /// A `BG_INDENT`-inset single line in `style`, truncated to the width.
@@ -28,9 +28,9 @@ fn bg_line(text: &str, style: Style, width: u16) -> Line<'static> {
 fn bg_list_row(shell: &BackgroundShell, selected: bool, width: u16) -> Line<'static> {
     let marker = if selected { BG_MARKER } else { "  " };
     let style = if selected {
-        Style::new().fg(BG_SELECTED_COLOR)
+        Style::new().fg(bg_selected_color())
     } else {
-        Style::new().fg(BG_DIM_COLOR)
+        Style::new().fg(bg_dim_color())
     };
     let room = (width as usize)
         .saturating_sub(cols(BG_INDENT) + cols(BG_MARKER) + cols(BG_ROW_SUFFIX))
@@ -51,7 +51,7 @@ fn bg_list_lines(app: &App, selected: usize, width: u16) -> Vec<Line<'static>> {
     let mut lines = vec![
         model_rule(width),
         Line::default(),
-        bg_line(BG_TITLE, Style::new().fg(AI_COLOR), width),
+        bg_line(BG_TITLE, Style::new().fg(ai_color()), width),
     ];
     if shells.is_empty() {
         lines.push(Line::default());
@@ -93,8 +93,8 @@ fn bg_list_lines(app: &App, selected: usize, width: u16) -> Vec<Line<'static>> {
 /// runs), a `Showing N lines` caption, and the key hints. See
 /// `docs/background.md`.
 fn bg_details_lines(shell: &BackgroundShell, width: u16) -> Vec<Line<'static>> {
-    let dim = Style::new().fg(BG_DIM_COLOR);
-    let value = Style::new().fg(AI_COLOR);
+    let dim = Style::new().fg(bg_dim_color());
+    let value = Style::new().fg(ai_color());
     let field = |label: &str, text: &str| {
         let room = (width as usize)
             .saturating_sub(cols(BG_INDENT) + cols(label))
@@ -108,7 +108,7 @@ fn bg_details_lines(shell: &BackgroundShell, width: u16) -> Vec<Line<'static>> {
     let mut lines = vec![
         model_rule(width),
         Line::default(),
-        bg_line(BG_DETAILS_TITLE, Style::new().fg(AI_COLOR), width),
+        bg_line(BG_DETAILS_TITLE, Style::new().fg(ai_color()), width),
         Line::default(),
         field(BG_FIELD_STATUS, BG_STATUS_RUNNING),
         field(BG_FIELD_RUNTIME, &format_elapsed(shell.runtime.as_secs())),
@@ -170,7 +170,7 @@ fn bg_details_lines(shell: &BackgroundShell, width: u16) -> Vec<Line<'static>> {
         lines.push(Line::from(vec![
             Span::raw(BG_INDENT),
             Span::styled("│ ".to_string(), dim),
-            Span::styled(clipped, Style::new().fg(TOOL_OUTPUT_COLOR)),
+            Span::styled(clipped, Style::new().fg(tool_output_color())),
             Span::raw(pad),
             Span::styled(" │".to_string(), dim),
         ]));

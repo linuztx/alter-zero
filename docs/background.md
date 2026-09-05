@@ -178,7 +178,7 @@ swapped on every interrupt/`/clear`, and these events must survive that.
 The footer's running count (`{model} · {cwd} · {n} shell(s)`) is also the
 **entry point**, Claude-Code-style: ↓ does not jump straight into the manager,
 it **steps onto the indicator** — that one segment lights up on the palette
-cyan (`ui`'s `FOOTER_FOCUS_BG`/`FOOTER_FOCUS_FG`) and waits, while every other
+cyan (`ui`'s `footer_focus_bg()`/`footer_focus_fg()`) and waits, while every other
 footer segment keeps its text *and* its dim styling:
 
 ```

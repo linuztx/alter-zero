@@ -95,6 +95,14 @@ impl<'t> Session<'t> {
         if let Some(spinner) = config::load_spinner(config::spinner_json_path().as_deref()) {
             app.set_spinner(spinner);
         }
+        // The colour theme (docs/theme.md): the saved `/theme` choice, seeded
+        // — and made the palette every renderer reads — before the banner is
+        // built, so the first frame already wears it. An absent or corrupt
+        // file keeps the default.
+        if let Some(theme) = config::load_theme(config::theme_json_path().as_deref()) {
+            app.set_theme(theme);
+        }
+        alter_zero::ui::activate_theme(app.theme());
 
         let cwd = std::env::current_dir().unwrap_or_default();
         let home = std::env::var_os("HOME").map(std::path::PathBuf::from);

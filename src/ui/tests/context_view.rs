@@ -408,3 +408,38 @@ fn context_fixture() -> App {
     app.end_turn(2);
     app
 }
+
+#[test]
+fn the_context_cache_rebuilds_when_the_theme_changes() {
+    // The role tags are coloured, so the cached window is pinned on the
+    // active theme: a `/theme` switch rebuilds it in the new palette
+    // (`docs/theme.md`).
+    use crate::app::Theme;
+    use crate::ui::palette::{palette_of, with_theme};
+    let mut app = App::new();
+    app.record_user_message("hello");
+    let mut cache = ContextCache::new();
+    let wears = |lines: &[Line<'static>], color: Color| {
+        lines
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .any(|s| s.style.fg == Some(color))
+    };
+    let mocha = palette_of(Theme::Mocha).link;
+    let dracula = palette_of(Theme::Dracula).link;
+    assert!(
+        wears(cache.lines(&app, 60), mocha),
+        "the user tag in Mocha's link blue"
+    );
+    assert_eq!(cache.builds, 1);
+    let switched = with_theme(Theme::Dracula, || {
+        let lines = cache.lines(&app, 60).to_vec();
+        (wears(&lines, dracula), wears(&lines, mocha))
+    });
+    assert_eq!(
+        switched,
+        (true, false),
+        "rebuilt in Dracula's palette, nothing left of Mocha's"
+    );
+    assert_eq!(cache.builds, 2, "the switch cost one rebuild");
+}

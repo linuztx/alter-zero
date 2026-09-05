@@ -80,7 +80,7 @@ pub fn idle_task_lines(store: &TaskStore, width: u16) -> Vec<Line<'static>> {
 /// Never pluralized ("1 tasks"), matching the reference.
 fn task_count_line(store: &TaskStore) -> Line<'static> {
     let counts = store.counts();
-    let dim = Style::new().fg(TOOL_DIM_COLOR);
+    let dim = Style::new().fg(tool_dim_color());
     let bold = dim.add_modifier(Modifier::BOLD);
     let mut spans = vec![
         Span::styled(TASK_IDLE_INDENT.to_string(), dim),
@@ -164,7 +164,7 @@ fn hidden_summary_row(hidden: &[&Task], index: usize, prefix: &'static str) -> L
     let mut line = gutter_prefix(index, prefix);
     line.push(Span::styled(
         format!("… +{}", parts.join(", ")),
-        Style::new().fg(TOOL_DIM_COLOR),
+        Style::new().fg(tool_dim_color()),
     ));
     Line::from(line)
 }
@@ -179,7 +179,7 @@ fn gutter_prefix(index: usize, prefix: &'static str) -> Vec<Span<'static>> {
     } else {
         " ".repeat(cols(prefix))
     };
-    vec![Span::styled(lead, Style::new().fg(TOOL_DIM_COLOR))]
+    vec![Span::styled(lead, Style::new().fg(tool_dim_color()))]
 }
 
 /// One task's row: gutter, status glyph, subject, and — for a task whose
@@ -201,20 +201,20 @@ fn task_row(
     let (glyph, glyph_style, subject_style) = match task.status {
         TaskStatus::Pending if !blockers.is_empty() => (
             TASK_PENDING_GLYPH,
-            Style::new().fg(TOOL_DIM_COLOR),
-            Style::new().fg(TOOL_DIM_COLOR),
+            Style::new().fg(tool_dim_color()),
+            Style::new().fg(tool_dim_color()),
         ),
         TaskStatus::Pending => (TASK_PENDING_GLYPH, Style::new(), Style::new()),
         TaskStatus::InProgress => (
             TASK_IN_PROGRESS_GLYPH,
-            Style::new().fg(TASK_IN_PROGRESS_COLOR),
+            Style::new().fg(task_in_progress_color()),
             Style::new().add_modifier(Modifier::BOLD),
         ),
         TaskStatus::Completed => (
             TASK_COMPLETED_GLYPH,
-            Style::new().fg(TASK_COMPLETED_COLOR),
+            Style::new().fg(task_completed_color()),
             Style::new()
-                .fg(TOOL_DIM_COLOR)
+                .fg(tool_dim_color())
                 .add_modifier(Modifier::CROSSED_OUT),
         ),
     };
@@ -231,7 +231,7 @@ fn task_row(
     spans.push(Span::styled(format!("{glyph} "), glyph_style));
     spans.push(Span::styled(subject, subject_style));
     if !suffix.is_empty() {
-        spans.push(Span::styled(suffix, Style::new().fg(TOOL_DIM_COLOR)));
+        spans.push(Span::styled(suffix, Style::new().fg(tool_dim_color())));
     }
     Line::from(spans)
 }

@@ -3,9 +3,9 @@
 use super::*;
 use crate::ui::live::preview_tool_lines;
 use crate::ui::theme::{
-    FOOTER_FOCUS_BG, FOOTER_FOCUS_FG, INPUT_CHROME_ROWS, MODEL_SEARCH_ROW, STATUS_GAP_ROWS,
-    STATUS_ROWS, TOOL_BACKGROUND_HINT, TOOL_BACKGROUND_HINT_DELAY, TOOL_FOLD_ROWS,
-    TOOL_PULSE_BRIGHT, TOOL_PULSE_DIM, TOOL_PULSE_PERIOD,
+    INPUT_CHROME_ROWS, MODEL_SEARCH_ROW, STATUS_GAP_ROWS, STATUS_ROWS, TOOL_BACKGROUND_HINT,
+    TOOL_BACKGROUND_HINT_DELAY, TOOL_FOLD_ROWS, TOOL_PULSE_PERIOD, footer_focus_bg,
+    footer_focus_fg, tool_pulse_bright, tool_pulse_dim,
 };
 use crate::ui::wrap::cols;
 
@@ -230,7 +230,7 @@ fn render_live_previews_a_running_tool_with_a_pulsing_bullet() {
     let dim = buf[(0, 0)].fg;
     assert_eq!(
         dim,
-        Color::Rgb(TOOL_PULSE_DIM.0, TOOL_PULSE_DIM.1, TOOL_PULSE_DIM.2),
+        tool_pulse_dim(),
         "an un-injected clock renders the bottom of the breath"
     );
     // Half a period on, the same cell is at the bright end — the boundary's
@@ -239,11 +239,7 @@ fn render_live_previews_a_running_tool_with_a_pulsing_bullet() {
     render_live(buf.area, &mut buf, &app);
     assert_eq!(
         buf[(0, 0)].fg,
-        Color::Rgb(
-            TOOL_PULSE_BRIGHT.0,
-            TOOL_PULSE_BRIGHT.1,
-            TOOL_PULSE_BRIGHT.2
-        ),
+        tool_pulse_bright(),
         "the injected frame clock moves the bullet"
     );
     assert_ne!(dim, buf[(0, 0)].fg, "…so it visibly changes between frames");
@@ -771,12 +767,16 @@ fn render_live_paints_the_focused_count_on_the_footer_row() {
     let byte = last.find("1 shell").expect("the count");
     let start = u16::try_from(cols(&last[..byte])).unwrap();
     for x in start..start + u16::try_from(cols("1 shell")).unwrap() {
-        assert_eq!(buf[(x, h - 1)].bg, FOOTER_FOCUS_BG, "tinted at column {x}");
-        assert_eq!(buf[(x, h - 1)].fg, FOOTER_FOCUS_FG, "ink at column {x}");
+        assert_eq!(
+            buf[(x, h - 1)].bg,
+            footer_focus_bg(),
+            "tinted at column {x}"
+        );
+        assert_eq!(buf[(x, h - 1)].fg, footer_focus_fg(), "ink at column {x}");
     }
     assert_ne!(
         buf[(start - 1, h - 1)].bg,
-        FOOTER_FOCUS_BG,
+        footer_focus_bg(),
         "the separator before the count stays clean"
     );
 }

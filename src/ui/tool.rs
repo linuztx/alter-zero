@@ -6,7 +6,7 @@ use super::assistant::expand_code_tabs;
 use super::file_cell::{diff_line_color, file_cell_lines, gutter_row, is_diff_tool};
 use super::theme::*;
 use super::wrap::{
-    WrapMode, blend, cols, truncate_cols, wrap_output, wrap_output_hanging, wrap_verbatim,
+    WrapMode, blend_color, cols, truncate_cols, wrap_output, wrap_output_hanging, wrap_verbatim,
 };
 use super::*;
 
@@ -21,16 +21,16 @@ use super::*;
 /// `docs/tool-pulse.md`.
 fn tool_status_color(status: ToolStatus, pulse: Option<Duration>) -> Color {
     match status {
-        ToolStatus::Waiting => TOOL_WAITING_COLOR,
-        ToolStatus::Running => pulse.map_or(TOOL_RUNNING_COLOR, tool_pulse_color),
-        ToolStatus::Ok | ToolStatus::Backgrounded => TOOL_OK_COLOR,
-        ToolStatus::Failed => TOOL_FAIL_COLOR,
+        ToolStatus::Waiting => tool_waiting_color(),
+        ToolStatus::Running => pulse.map_or(tool_running_color(), tool_pulse_color),
+        ToolStatus::Ok | ToolStatus::Backgrounded => tool_ok_color(),
+        ToolStatus::Failed => tool_fail_color(),
     }
 }
 
 /// A running bullet's colour for the frame at `elapsed` — the breath
 /// Claude-Code's running dot has: a raised cosine easing
-/// [`TOOL_PULSE_DIM`] → [`TOOL_PULSE_BRIGHT`] → [`TOOL_PULSE_DIM`] once per
+/// [`tool_pulse_dim`] → [`tool_pulse_bright`] → [`tool_pulse_dim`] once per
 /// [`TOOL_PULSE_PERIOD`], so it swells and fades rather than flicking on and
 /// off.
 ///
@@ -40,14 +40,13 @@ fn tool_status_color(status: ToolStatus, pulse: Option<Duration>) -> Color {
 /// animation re-arm is what makes it move. See `docs/tool-pulse.md`.
 pub(super) fn tool_pulse_color(elapsed: Duration) -> Color {
     let t = super::wrap::breath(elapsed, TOOL_PULSE_PERIOD);
-    let (r, g, b) = blend(TOOL_PULSE_BRIGHT, TOOL_PULSE_DIM, t);
-    Color::Rgb(r, g, b)
+    blend_color(tool_pulse_bright(), tool_pulse_dim(), t)
 }
 
 /// The coloured bullet header row(s) for a backend tool call: `● {name}({args})`,
 /// the bullet recoloured by lifecycle (grey running/green/red) and the args made bold +
-/// the normal reply white ([`TOOL_ARGS_COLOR`]) so a `bash` command reads
-/// clearly, the framing `(`/`)` left a dim [`TOOL_DIM_COLOR`] delimiter. Shared
+/// the normal reply white ([`tool_args_color`]) so a `bash` command reads
+/// clearly, the framing `(`/`)` left a dim [`tool_dim_color`] delimiter. Shared
 /// by the inline collapsed view ([`tool_lines`]) and the full-screen transcript
 /// ([`tool_full_lines`]).
 ///
@@ -82,7 +81,7 @@ pub(super) fn tool_header_lines(
         .fg(tool_status_color(tool.status, pulse))
         .add_modifier(Modifier::BOLD);
     let name_style = Style::new()
-        .fg(TOOL_NAME_COLOR)
+        .fg(tool_name_color())
         .add_modifier(Modifier::BOLD);
     let bullet = || Span::styled(TOOL_BULLET.to_string(), bullet_style);
     // An MCP header wears its server capitalized (`Deepwiki - ask_question
@@ -119,7 +118,7 @@ pub(super) fn tool_header_lines(
         return vec![Line::from(vec![bullet(), name()])];
     }
     let args_style = Style::new()
-        .fg(TOOL_ARGS_COLOR)
+        .fg(tool_args_color())
         .add_modifier(Modifier::BOLD);
     // Continuation rows indent to align under the opening `(`, which sits right
     // after `● {name}` — parens and args alike bold white (a uniform, noticeable
@@ -275,10 +274,10 @@ pub(super) fn result_row(index: usize, text: String) -> Line<'static> {
 }
 
 /// A `⎿` row for a finished tool's **output** — a dim corner over white content
-/// ([`TOOL_OUTPUT_COLOR`]), so command/shell output reads like a normal reply.
+/// ([`tool_output_color`]), so command/shell output reads like a normal reply.
 /// The placeholders keep the dim [`result_row`].
 fn output_row(index: usize, text: String) -> Line<'static> {
-    gutter_row(index, text, Some(TOOL_OUTPUT_COLOR))
+    gutter_row(index, text, Some(tool_output_color()))
 }
 
 /// Is this a model **command tool** (`bash`) — rendered like the `!` shell cell
@@ -307,7 +306,7 @@ pub(super) fn shown_args(name: &str, args: &str, paths: &PathDisplay) -> String 
 
 /// The dim `… +N lines (ctrl+o to expand)` hint under a capped peek.
 pub(super) fn more_hint_line(hidden: usize) -> Line<'static> {
-    let dim = Style::new().fg(TOOL_DIM_COLOR);
+    let dim = Style::new().fg(tool_dim_color());
     Line::from(vec![
         Span::styled(TOOL_MORE_PREFIX.to_string(), dim),
         Span::styled(format!("+{hidden} lines{EXPAND_HINT}"), dim),
@@ -659,7 +658,7 @@ fn ask_cell_lines(
         Span::styled(
             truncate_cols(headline, head_room).to_string(),
             Style::new()
-                .fg(TOOL_NAME_COLOR)
+                .fg(tool_name_color())
                 .add_modifier(Modifier::BOLD),
         ),
     ])];
@@ -702,7 +701,7 @@ fn ask_cell_lines(
 ///   batch collapses to [`mcp_batch_lines`]).
 /// - **Resolved ok**: the bullet-less dim
 ///   `Called {server} (ctrl+o to expand)` line — the settled thinking line's
-///   exact shape ([`REASONING_LABEL_COLOR`]), because what is left is a fact
+///   exact shape ([`reasoning_label_color`]), because what is left is a fact
 ///   about the turn; the result text never reaches inline scrollback.
 /// - **Failed / everything else**: `None` — the loud generic red cell (a
 ///   failure must not whisper).
@@ -742,7 +741,7 @@ pub(super) fn mcp_called_line(servers: &[&str]) -> Line<'static> {
             "{MCP_CALLED_PREFIX}{}{EXPAND_HINT}",
             crate::mcp::batch_label(servers)
         ),
-        Style::new().fg(REASONING_LABEL_COLOR),
+        Style::new().fg(reasoning_label_color()),
     ))
 }
 
@@ -903,14 +902,14 @@ fn mcp_calling_header(
         Span::styled(
             truncate_cols(label, label_room).to_string(),
             Style::new()
-                .fg(TOOL_NAME_COLOR)
+                .fg(tool_name_color())
                 .add_modifier(Modifier::BOLD),
         ),
     ];
     if cols(TOOL_BULLET) + cols(label) + cols(EXPAND_HINT) <= width as usize {
         spans.push(Span::styled(
             EXPAND_HINT.to_string(),
-            Style::new().fg(TOOL_DIM_COLOR),
+            Style::new().fg(tool_dim_color()),
         ));
     }
     Line::from(spans)
@@ -1329,7 +1328,7 @@ fn tool_full_body(tool: &ToolCall, width: u16, paths: &PathDisplay) -> Vec<Line<
                 display
                     .iter()
                     .flat_map(|line| wrap_output(line, body_width))
-                    .map(|line| (line, Some(TOOL_OUTPUT_COLOR)))
+                    .map(|line| (line, Some(tool_output_color())))
                     .collect()
             }
         }

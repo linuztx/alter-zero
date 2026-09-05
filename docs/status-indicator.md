@@ -103,7 +103,7 @@ real backend's own latency plays the same role.
   So a turn opens `↑` (the counted input during the pre-stream pause), flips `↓`
   on the first chunk, and back to `↑` after each tool; the count keeps growing
   either way.
-- **retrying {a}/{max}** — shown in **amber** (`STATUS_RETRY_COLOR`, the only
+- **retrying {a}/{max}** — shown in **amber** (`status_retry_color()`, the only
   non-dim clause) *only while a failed request is being retried*: the
   connection/send failed (or a transient `429`/`5xx` came back) before any
   content streamed, so the real backend is reconnecting (`llm::retry`, see
@@ -259,8 +259,9 @@ The verb (`Working…`) renders one **bold span per char**, colours from
 - a raised-cosine brightness band (`t = ½(1 + cos(π·dist/5))`, half-width 5
   chars) sweeps the text once per **2 s**, with 10 chars of off-text padding on
   each side so it slides on and off the ends;
-- each char blends from the white-grey base `(0x88,0x88,0x88)` toward bright
-  white `(0xFF,0xFF,0xFF)` by `t · 0.9` — white text, noticeably brighter at the
+- each char blends from the theme's `shimmer_base` (One Dark's white-grey
+  `#888888`) toward its `text` colour (`#FFFFFF` there) by `t · 0.9` —
+  `docs/theme.md`; white text, noticeably brighter at the
   crest;
 - codex reads a process-start clock inside the renderer; our port stays **pure**
   by deriving the phase from the boundary-supplied `TurnStatus::elapsed`

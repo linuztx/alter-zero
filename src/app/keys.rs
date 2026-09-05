@@ -58,6 +58,11 @@ impl App {
         if self.view == View::Conversation && self.spinner_picker.is_some() {
             return self.on_key_spinner_picker(key);
         }
+        // …and the inline `/theme` picker, the `/spinner` picker's twin. See
+        // `docs/theme.md`.
+        if self.view == View::Conversation && self.theme_picker.is_some() {
+            return self.on_key_theme_picker(key);
+        }
         // …and the inline `/skills` menu. See `docs/skills.md`.
         if self.view == View::Conversation && self.mcp_menu.is_some() {
             return self.on_key_mcp(key);

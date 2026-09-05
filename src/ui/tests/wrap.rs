@@ -2,9 +2,9 @@
 
 use super::*;
 use crate::ui::theme::{
-    AI_BULLET, BULLET_WIDTH, ERROR_BULLET, INDENT, PROMPT, SHELL_MODE_COLOR, TOOL_ARGS_COLOR,
-    TOOL_DIFF_ADD_BG, TOOL_DIFF_ADD_COLOR, TOOL_DIFF_DEL_COLOR, TOOL_HEADER_ELLIPSIS,
-    TOOL_HEADER_MAX_COLS, USER_BG_COLOR, USER_BULLET,
+    AI_BULLET, BULLET_WIDTH, ERROR_BULLET, INDENT, PROMPT, TOOL_HEADER_ELLIPSIS,
+    TOOL_HEADER_MAX_COLS, USER_BULLET, shell_mode_color, tool_args_color, tool_diff_add_bg,
+    tool_diff_add_color, tool_diff_del_color, user_bg_color,
 };
 use crate::ui::tool::{running_command_lines, tool_full_lines};
 use crate::ui::wrap::{WrapMode, cols, ellipsize, truncate_cols, wrap_output, wrap_verbatim};
@@ -536,7 +536,7 @@ fn tool_lines_truncates_a_very_long_header_with_an_ellipsis() {
         .unwrap();
     assert_eq!(
         ell.style.fg,
-        Some(TOOL_ARGS_COLOR),
+        Some(tool_args_color()),
         "the truncation … matches the args colour, not grey"
     );
     // Still no clipping past the width.
@@ -581,14 +581,14 @@ fn edit_full_view_colours_wrapped_continuation_rows_by_their_source_line() {
     for row in add_rows {
         assert_eq!(
             content_fg(row),
-            Some(TOOL_DIFF_ADD_COLOR),
+            Some(tool_diff_add_color()),
             "every wrapped +row is green"
         );
     }
     for row in del_rows {
         assert_eq!(
             content_fg(row),
-            Some(TOOL_DIFF_DEL_COLOR),
+            Some(tool_diff_del_color()),
             "every wrapped -row is red"
         );
     }
@@ -615,7 +615,7 @@ fn file_cell_wraps_long_rows_under_the_content_column() {
             r.spans
                 .iter()
                 .skip(1)
-                .all(|s| s.style.bg == Some(TOOL_DIFF_ADD_BG)),
+                .all(|s| s.style.bg == Some(tool_diff_add_bg())),
             "every wrapped row keeps the add tint"
         );
         assert!(cols(&plain(r)) <= width as usize);
@@ -737,8 +737,8 @@ fn a_shell_header_message_renders_like_a_user_line_with_a_bang() {
     assert_eq!(plain(&lines[0]).trim_end(), "! pwd");
     // The bang is the shell accent; the row carries the dark user block,
     // padded to the full content width (the mock's "dark line wrap").
-    assert_eq!(lines[0].spans[0].style.fg, Some(SHELL_MODE_COLOR));
-    assert_eq!(lines[0].style.bg, Some(USER_BG_COLOR));
+    assert_eq!(lines[0].spans[0].style.fg, Some(shell_mode_color()));
+    assert_eq!(lines[0].style.bg, Some(user_bg_color()));
     assert_eq!(cols(&plain(&lines[0])), 40, "padded to the full width");
 }
 

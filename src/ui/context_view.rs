@@ -7,13 +7,13 @@ use super::transcript::{overlay_header, tool_view_separator};
 use super::wrap::{cols, wrap_verbatim};
 use super::*;
 
-/// The role-tag colour of one context entry (see the `CONTEXT_*` consts).
-const fn context_role_color(role: crate::context::ContextRole) -> Color {
+/// The role-tag colour of one context entry (the `context_*_color` roles).
+fn context_role_color(role: crate::context::ContextRole) -> Color {
     match role {
-        crate::context::ContextRole::User => CONTEXT_USER_COLOR,
-        crate::context::ContextRole::Assistant => CONTEXT_ASSISTANT_COLOR,
-        crate::context::ContextRole::System => CONTEXT_SYSTEM_COLOR,
-        crate::context::ContextRole::Tool => CONTEXT_TOOL_COLOR,
+        crate::context::ContextRole::User => context_user_color(),
+        crate::context::ContextRole::Assistant => context_assistant_color(),
+        crate::context::ContextRole::System => context_system_color(),
+        crate::context::ContextRole::Tool => context_tool_color(),
     }
 }
 
@@ -52,7 +52,7 @@ fn context_entry_lines(
         for row in wrap_verbatim(&rendered, text_width) {
             lines.push(Line::from(Span::styled(
                 format!("{CONTEXT_INDENT}{row}"),
-                Style::new().fg(CONTEXT_TOOL_COLOR),
+                Style::new().fg(context_tool_color()),
             )));
         }
     }
@@ -62,7 +62,7 @@ fn context_entry_lines(
         for row in wrap_verbatim(&label, text_width) {
             lines.push(Line::from(Span::styled(
                 format!("{CONTEXT_INDENT}{row}"),
-                Style::new().fg(TOOL_DIM_COLOR),
+                Style::new().fg(tool_dim_color()),
             )));
         }
     }
@@ -108,7 +108,7 @@ pub fn context_lines(app: &App, width: u16) -> Vec<Line<'static>> {
         context_entry_lines(
             &mut lines,
             CONTEXT_SYSTEM_PROMPT_TAG,
-            CONTEXT_SYSTEM_COLOR,
+            context_system_color(),
             prompt,
             &[],
             &[],
@@ -129,7 +129,7 @@ pub fn context_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     if lines.is_empty() {
         return vec![Line::from(Span::styled(
             CONTEXT_VIEW_EMPTY,
-            Style::new().fg(TOOL_DIM_COLOR),
+            Style::new().fg(tool_dim_color()),
         ))];
     }
     lines
@@ -171,6 +171,9 @@ pub struct ContextCache {
 #[derive(PartialEq, Eq)]
 struct ContextSig {
     generation: u64,
+    /// The active theme — the role tags' colours depend on it
+    /// (`docs/theme.md`).
+    theme: crate::app::Theme,
     history_len: usize,
     width: u16,
     agent: Option<(String, usize)>,
@@ -185,6 +188,7 @@ impl ContextSig {
     fn of(app: &App, width: u16) -> Self {
         Self {
             generation: app.history_generation(),
+            theme: super::palette::active_theme(),
             history_len: app.history.len(),
             width,
             agent: app
@@ -302,7 +306,7 @@ pub fn render_context_view(area: Rect, buf: &mut Buffer, app: &App, lines: &[Lin
 
     Paragraph::new(tool_view_separator(area.width, scroll, max)).render(sep_area, buf);
 
-    let dim = Style::new().fg(TOOL_DIM_COLOR);
+    let dim = Style::new().fg(tool_dim_color());
     // The quit row carries the page-flip hint: Tab is the other page's only
     // discovery affordance, so it names the page it would show.
     let tab_hint = if classifier {

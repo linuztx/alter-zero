@@ -15,7 +15,7 @@ fn login_prompt_line(text: Line<'static>) -> Line<'static> {
     let Line { mut spans, .. } = text;
     let mut out = vec![
         Span::raw(MODEL_INDENT),
-        Span::styled(MODEL_PROMPT, Style::new().fg(MODEL_SELECTED_COLOR)),
+        Span::styled(MODEL_PROMPT, Style::new().fg(model_selected_color())),
     ];
     out.append(&mut spans);
     Line::from(out)
@@ -25,7 +25,7 @@ fn login_prompt_line(text: Line<'static>) -> Line<'static> {
 /// `Enter your Agent Zero API key`. Cyan on every page, so the flow's headings
 /// read as one.
 fn login_title(text: &str, width: u16) -> Line<'static> {
-    model_placeholder_row(text, LOGIN_TITLE_COLOR, width)
+    model_placeholder_row(text, login_title_color(), width)
 }
 
 /// One list row shared by the three `/login` lists:
@@ -68,13 +68,13 @@ fn login_row(name: &str, status: Option<bool>, selected: bool, width: u16) -> Li
             (
                 LOGIN_CONFIGURED_MARK,
                 LOGIN_CONFIGURED_LABEL,
-                MODEL_ACTIVE_COLOR,
+                model_active_color(),
             )
         } else {
             (
                 LOGIN_UNCONFIGURED_MARK,
                 LOGIN_UNCONFIGURED_LABEL,
-                MODEL_META_COLOR,
+                model_meta_color(),
             )
         }
     });
@@ -88,20 +88,20 @@ fn login_row(name: &str, status: Option<bool>, selected: bool, width: u16) -> Li
 
     let (marker_style, name_style) = if selected {
         (
-            Style::new().fg(MODEL_SELECTED_COLOR),
+            Style::new().fg(model_selected_color()),
             Style::new()
-                .fg(MODEL_SELECTED_COLOR)
+                .fg(model_selected_color())
                 .add_modifier(Modifier::BOLD),
         )
     } else {
-        (Style::default(), Style::new().fg(MODEL_ID_COLOR))
+        (Style::default(), Style::new().fg(model_id_color()))
     };
     let mut spans = vec![
         Span::styled(marker.to_string(), marker_style),
         Span::styled(name, name_style),
     ];
     if let Some((mark, label, mark_color)) = tag {
-        let dim = Style::new().fg(MODEL_META_COLOR);
+        let dim = Style::new().fg(model_meta_color());
         spans.push(Span::styled(LOGIN_STATUS_SEP, dim));
         spans.push(Span::styled(mark, Style::new().fg(mark_color)));
         spans.push(Span::styled(label, dim));
@@ -140,7 +140,11 @@ fn login_list_lines(onboarding: &KeyOnboarding, width: u16) -> Vec<Line<'static>
             KeyStep::Subscription => LOGIN_NO_SUBSCRIPTION_MATCH,
             _ => LOGIN_NO_MATCH,
         };
-        return vec![model_placeholder_row(placeholder, MODEL_META_COLOR, width)];
+        return vec![model_placeholder_row(
+            placeholder,
+            model_meta_color(),
+            width,
+        )];
     }
     let max = LOGIN_MENU_MAX_ROWS as usize;
     let selected = onboarding.selected.min(rows.len() - 1);
@@ -174,7 +178,7 @@ fn login_counter_line(onboarding: &KeyOnboarding) -> Line<'static> {
         Span::raw(MODEL_INDENT),
         Span::styled(
             format!("({}/{})", selected + 1, len),
-            Style::new().fg(MODEL_META_COLOR),
+            Style::new().fg(model_meta_color()),
         ),
     ])
 }
@@ -207,22 +211,26 @@ fn login_key_field(onboarding: &KeyOnboarding, width: u16) -> Line<'static> {
         .max(1);
     let kind = onboarding.chosen_provider().map(|choice| &choice.key_kind);
     let body = match (kind, onboarding.key_input.is_empty()) {
-        (Some(KeyKind::Host { default }), true) => {
-            Span::styled(ellipsize(default, room), Style::new().fg(MODEL_META_COLOR))
-        }
+        (Some(KeyKind::Host { default }), true) => Span::styled(
+            ellipsize(default, room),
+            Style::new().fg(model_meta_color()),
+        ),
         (Some(KeyKind::Host { .. }), false) => Span::styled(
             truncate_cols(&onboarding.key_input, room),
-            Style::new().fg(MODEL_ID_COLOR),
+            Style::new().fg(model_id_color()),
         ),
         (_, true) => Span::styled(
             ellipsize(LOGIN_KEY_PLACEHOLDER, room),
-            Style::new().fg(MODEL_META_COLOR),
+            Style::new().fg(model_meta_color()),
         ),
         (_, false) => {
             let dots: String = (0..onboarding.key_input.chars().count())
                 .map(|_| LOGIN_MASK_CHAR)
                 .collect();
-            Span::styled(truncate_cols(&dots, room), Style::new().fg(MODEL_ID_COLOR))
+            Span::styled(
+                truncate_cols(&dots, room),
+                Style::new().fg(model_id_color()),
+            )
         }
     };
     login_prompt_line(Line::from(vec![body]))
@@ -243,7 +251,7 @@ fn device_code_box(code: &str) -> Vec<Line<'static>> {
     let indent = format!("{MODEL_INDENT}{DEVICE_BOX_INDENT}");
     let inner = cols(DEVICE_BOX_PAD) * 2 + cols(code);
     let bar = DEVICE_BOX_HORIZONTAL.repeat(inner);
-    let border = Style::new().fg(BORDER_COLOR);
+    let border = Style::new().fg(border_color());
     vec![
         Line::from(vec![
             Span::raw(indent.clone()),
@@ -259,7 +267,7 @@ fn device_code_box(code: &str) -> Vec<Line<'static>> {
             Span::styled(
                 code.to_string(),
                 Style::new()
-                    .fg(DEVICE_CODE_COLOR)
+                    .fg(device_code_color())
                     .add_modifier(Modifier::BOLD),
             ),
             Span::raw(DEVICE_BOX_PAD),
@@ -284,14 +292,14 @@ fn device_status_lines(device: &DeviceLogin, width: u16) -> Vec<Line<'static>> {
         // A failure body is the other place a URL turns up here — a provider's
         // own error text, or advice naming a page to visit — so it is linked
         // like the instruction above it rather than left as dead text.
-        DeviceStatus::Failed(reason) => model_linked_rows(reason, ERROR_COLOR, width),
+        DeviceStatus::Failed(reason) => model_linked_rows(reason, error_color(), width),
         DeviceStatus::Starting => model_wrapped_rows(
             if browser {
                 DEVICE_LINK_STARTING
             } else {
                 DEVICE_STARTING
             },
-            MODEL_META_COLOR,
+            model_meta_color(),
             width,
         ),
         DeviceStatus::Waiting => {
@@ -313,7 +321,7 @@ fn device_status_lines(device: &DeviceLogin, width: u16) -> Vec<Line<'static>> {
             } else {
                 DEVICE_WAITING
             };
-            model_wrapped_rows(&format!("{waiting}{tail}"), MODEL_META_COLOR, width)
+            model_wrapped_rows(&format!("{waiting}{tail}"), model_meta_color(), width)
         }
     }
 }
@@ -352,9 +360,9 @@ fn device_page_lines(device: &DeviceLogin, width: u16) -> Vec<Line<'static>> {
                 format!("{DEVICE_VISIT_PREFIX}{}", device.verification_uri)
             },
             if browser {
-                DEVICE_CODE_COLOR
+                device_code_color()
             } else {
-                DEVICE_URI_COLOR
+                device_uri_color()
             },
             width,
         );
@@ -364,7 +372,7 @@ fn device_page_lines(device: &DeviceLogin, width: u16) -> Vec<Line<'static>> {
             } else {
                 DEVICE_ENTER_LINE
             },
-            MODEL_META_COLOR,
+            model_meta_color(),
             width,
         ));
         blocks.push(instruction);
@@ -379,7 +387,7 @@ fn device_page_lines(device: &DeviceLogin, width: u16) -> Vec<Line<'static>> {
         } else {
             DEVICE_HINT
         },
-        MODEL_META_COLOR,
+        model_meta_color(),
         width,
     )]);
 
@@ -435,7 +443,7 @@ fn provider_about_lines(choice: &ProviderChoice, width: u16) -> Vec<Line<'static
     if text.is_empty() {
         return Vec::new();
     }
-    model_linked_rows(&text, MODEL_META_COLOR, width)
+    model_linked_rows(&text, model_meta_color(), width)
 }
 
 /// The row of `lines` carrying the `❯` prompt — a list step's filter, or the
@@ -484,7 +492,7 @@ fn list_page_lines(onboarding: &KeyOnboarding, width: u16) -> Vec<Line<'static>>
     if onboarding.step == KeyStep::Provider {
         lines.extend(model_wrapped_rows(
             &format!("{LOGIN_PROVIDER_HINT_PREFIX}{}", onboarding.env_path),
-            MODEL_META_COLOR,
+            model_meta_color(),
             width,
         ));
     }
@@ -498,7 +506,7 @@ fn list_page_lines(onboarding: &KeyOnboarding, width: u16) -> Vec<Line<'static>>
     // `{key} {thing}` pair from the next. A hint is short and fixed, so an
     // `…`-cut at a narrow width costs nothing the path row above it doesn't
     // already say.
-    lines.push(model_placeholder_row(hint, MODEL_META_COLOR, width));
+    lines.push(model_placeholder_row(hint, model_meta_color(), width));
     lines.push(Line::default());
     lines.push(model_rule(width));
     lines
@@ -544,7 +552,7 @@ pub(super) fn key_onboarding_lines(onboarding: &KeyOnboarding, width: u16) -> Ve
                     vec![login_title(&title, width)],
                     chosen.map_or_else(Vec::new, |c| provider_about_lines(c, width)),
                     vec![login_key_field(onboarding, width)],
-                    vec![model_placeholder_row(hint, MODEL_META_COLOR, width)],
+                    vec![model_placeholder_row(hint, model_meta_color(), width)],
                 ],
                 width,
             )

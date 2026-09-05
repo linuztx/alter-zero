@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::ui::theme::{
-    ERROR_COLOR, MODEL_ERROR_MAX_ROWS, MODEL_MENU_MAX_ROWS, MODEL_SEARCH_ROW, MODEL_SELECTED_COLOR,
+    MODEL_ERROR_MAX_ROWS, MODEL_MENU_MAX_ROWS, MODEL_SEARCH_ROW, error_color, model_selected_color,
 };
 
 #[test]
@@ -26,7 +26,7 @@ fn model_picker_shows_the_search_prompt_and_query() {
     let search = row(&buf, MODEL_SEARCH_ROW, 60);
     assert!(search.contains("❯ haiku"), "{search:?}");
     // The `❯` prompt is cyan.
-    assert_eq!(buf[(2, MODEL_SEARCH_ROW)].fg, MODEL_SELECTED_COLOR);
+    assert_eq!(buf[(2, MODEL_SEARCH_ROW)].fg, model_selected_color());
 }
 
 #[test]
@@ -133,7 +133,7 @@ fn model_picker_shows_an_error_placeholder_in_red() {
     render_model_picker(buf.area, &mut buf, &picker);
     let list = row(&buf, 4, 60);
     assert!(list.contains("Error: 401 bad key"), "{list:?}");
-    assert_eq!(buf[(2, 4)].fg, ERROR_COLOR);
+    assert_eq!(buf[(2, 4)].fg, error_color());
 }
 
 #[test]

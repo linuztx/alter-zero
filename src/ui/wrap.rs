@@ -365,10 +365,20 @@ pub(super) fn segments_cols(segments: &[(String, Style)]) -> usize {
 }
 
 /// Linear interpolation between two RGB colours at `t` in `[0, 1]`.
-pub(super) fn lerp_rgb(a: (u8, u8, u8), b: (u8, u8, u8), t: f32) -> Color {
+pub(super) fn lerp_color(a: Color, b: Color, t: f32) -> Color {
     let t = t.clamp(0.0, 1.0);
-    let mix = |x: u8, y: u8| (f32::from(x) + (f32::from(y) - f32::from(x)) * t).round() as u8;
-    Color::Rgb(mix(a.0, b.0), mix(a.1, b.1), mix(a.2, b.2))
+    match (a, b) {
+        (Color::Rgb(r0, g0, b0), Color::Rgb(r1, g1, b1)) => {
+            let mix =
+                |x: u8, y: u8| (f32::from(x) + (f32::from(y) - f32::from(x)) * t).round() as u8;
+            Color::Rgb(mix(r0, r1), mix(g0, g1), mix(b0, b1))
+        }
+        // A named or indexed end has no components to mix (the terminal
+        // owns its value — the ANSI theme, `docs/theme.md`): the gradient
+        // steps from one end to the other at the midpoint instead.
+        _ if t < 0.5 => a,
+        _ => b,
+    }
 }
 
 /// Clamp a run of spans to `width` display columns, appending a dim `…` when
@@ -397,7 +407,7 @@ pub(super) fn clamp_spans(spans: Vec<Span<'static>>, width: usize) -> Line<'stat
     }
     out.push(Span::styled(
         STATUS_ELLIPSIS.to_string(),
-        Style::new().fg(HEADER_META_COLOR),
+        Style::new().fg(header_meta_color()),
     ));
     Line::from(out)
 }
@@ -441,10 +451,19 @@ pub(super) fn truncate_cols(s: &str, max: usize) -> String {
 }
 
 /// Linearly blend `fg` toward `bg` by `1 - alpha` (codex's `blend`): `alpha` 1
-/// is pure `fg`, 0 pure `bg`.
-pub(super) fn blend(fg: (u8, u8, u8), bg: (u8, u8, u8), alpha: f32) -> (u8, u8, u8) {
-    let mix = |f: u8, b: u8| (f32::from(f) * alpha + f32::from(b) * (1.0 - alpha)) as u8;
-    (mix(fg.0, bg.0), mix(fg.1, bg.1), mix(fg.2, bg.2))
+/// is pure `fg`, 0 pure `bg`. Over [`Color`]s so a palette that names no
+/// RGB still resolves — see the match arms.
+pub(super) fn blend_color(fg: Color, bg: Color, alpha: f32) -> Color {
+    match (fg, bg) {
+        (Color::Rgb(fr, fg_, fb), Color::Rgb(br, bg_, bb)) => {
+            let mix = |f: u8, b: u8| (f32::from(f) * alpha + f32::from(b) * (1.0 - alpha)) as u8;
+            Color::Rgb(mix(fr, br), mix(fg_, bg_), mix(fb, bb))
+        }
+        // No components to mix (a terminal-palette colour, `docs/theme.md`):
+        // whichever end the blend is nearer.
+        _ if alpha >= 0.5 => fg,
+        _ => bg,
+    }
 }
 
 /// Where a **breath** is at `elapsed`: a raised cosine easing 0 → 1 → 0 once

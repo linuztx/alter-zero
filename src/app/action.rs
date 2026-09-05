@@ -233,6 +233,20 @@ pub enum Action {
     /// loop persists `spinner.json` and confirms with a toast — no rebuild,
     /// the status line being live-region-only. See `docs/spinner.md`.
     SelectSpinner(Spinner),
+    /// `/theme`: open the inline colour-theme picker. Like `/spinner` it
+    /// works mid-turn — it only replaces the composer. The loop has nothing
+    /// to fetch (the catalog is a const); it just repaints. See
+    /// `docs/theme.md`.
+    OpenThemePicker,
+    /// The theme picker was dismissed (Esc on an empty query, or Ctrl+C):
+    /// [`App::theme_picker`] is already cleared; the loop repaints the
+    /// collapsed region.
+    CloseThemePicker,
+    /// Enter/Space in the theme picker: [`App::theme`] already moved. The
+    /// loop activates the palette, persists `theme.json`, purge-rebuilds so
+    /// every committed row wears the new colours at once, and confirms with
+    /// a toast. See `docs/theme.md`.
+    SelectTheme(Theme),
     /// `/mcp`: open the inline MCP manager. Like `/hooks` it works mid-turn —
     /// it only replaces the composer. The *loop* snapshots the live
     /// [`crate::llm::mcp::McpManager`] and hands it to

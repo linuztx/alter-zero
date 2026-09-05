@@ -3,7 +3,7 @@
 //! See `docs/status-indicator.md`.
 
 use super::theme::*;
-use super::wrap::{blend, breath, clamp_spans, hop, lerp_rgb, ping_pong};
+use super::wrap::{blend_color, breath, clamp_spans, hop, lerp_color, ping_pong};
 use super::*;
 
 use crate::app::Spinner;
@@ -11,8 +11,8 @@ use crate::app::Spinner;
 /// One bold span per char of `text`, shimmered codex-style: a raised-cosine
 /// brightness band (half-width [`SHIMMER_BAND_HALF_WIDTH`], plus
 /// [`SHIMMER_PADDING`] chars of off-text run-in/out) sweeps the text once per
-/// [`SHIMMER_SWEEP`], each char blending from the white-grey [`SHIMMER_BASE`]
-/// toward the bright [`SHIMMER_HIGHLIGHT`] by its distance from the band's
+/// [`SHIMMER_SWEEP`], each char blending from the white-grey [`shimmer_base`]
+/// toward the bright [`shimmer_highlight`] by its distance from the band's
 /// crest. A faithful port of openai/codex `tui/src/shimmer.rs::shimmer_spans`,
 /// made pure: the phase comes from the boundary-supplied `elapsed` (sub-second
 /// resolution), not a process-wide clock — so it's deterministic in tests.
@@ -21,7 +21,7 @@ use crate::app::Spinner;
 /// of the wave, so committing these rows to scrollback would freeze the sweep
 /// mid-stride forever.
 pub(super) fn shimmer_spans(text: &str, elapsed: Duration) -> Vec<Span<'static>> {
-    shimmer_spans_from(text, elapsed, SHIMMER_BASE)
+    shimmer_spans_from(text, elapsed, shimmer_base())
 }
 
 /// [`shimmer_spans`] with the wave's **resting** colour chosen by the caller —
@@ -29,16 +29,12 @@ pub(super) fn shimmer_spans(text: &str, elapsed: Duration) -> Vec<Span<'static>>
 /// is [`SHIMMER_BAND_HALF_WIDTH`] wide inside a period of the text plus
 /// `2 × `[`SHIMMER_PADDING`]).
 ///
-/// The status verb keeps codex's grey [`SHIMMER_BASE`], so it reads as *grey
+/// The status verb keeps codex's grey [`shimmer_base`], so it reads as *grey
 /// text with a white wave*. The thinking stream's `Thinking…`
 /// (`docs/thinking-stream.md`) passes the near-white
-/// [`REASONING_SHIMMER_BASE`] instead, so it reads as *bold white with a
+/// [`reasoning_shimmer_base`] instead, so it reads as *bold white with a
 /// brighter wave* — a header, not a metric. Same motion, different floor.
-pub(super) fn shimmer_spans_from(
-    text: &str,
-    elapsed: Duration,
-    base: (u8, u8, u8),
-) -> Vec<Span<'static>> {
+pub(super) fn shimmer_spans_from(text: &str, elapsed: Duration, base: Color) -> Vec<Span<'static>> {
     let chars: Vec<char> = text.chars().collect();
     if chars.is_empty() {
         return Vec::new();
@@ -58,12 +54,10 @@ pub(super) fn shimmer_spans_from(
             } else {
                 0.0
             };
-            let (r, g, b) = blend(SHIMMER_HIGHLIGHT, base, t * SHIMMER_MAX_BLEND);
+            let color = blend_color(shimmer_highlight(), base, t * SHIMMER_MAX_BLEND);
             Span::styled(
                 ch.to_string(),
-                Style::new()
-                    .fg(Color::Rgb(r, g, b))
-                    .add_modifier(Modifier::BOLD),
+                Style::new().fg(color).add_modifier(Modifier::BOLD),
             )
         })
         .collect()
@@ -98,7 +92,7 @@ const BRAILLE_DOTS: [[u8; 4]; 2] = [[0x01, 0x02, 0x04, 0x40], [0x08, 0x10, 0x20,
 /// canvas the `gravity` ball and the `wave` draw on (`docs/spinner.md`), a
 /// port of the braille canvas in the bouncing-indicator lab this pair of
 /// styles comes from. Each cell carries one colour (a cell is one glyph):
-/// the dim [`STATUS_DETAIL_COLOR`] until something coloured lands on it.
+/// the dim [`status_detail_color`] until something coloured lands on it.
 struct Track {
     cells: [u8; SPINNER_TRACK_CELLS],
     colors: [Color; SPINNER_TRACK_CELLS],
@@ -113,7 +107,7 @@ impl Track {
     fn new() -> Self {
         Self {
             cells: [0; SPINNER_TRACK_CELLS],
-            colors: [STATUS_DETAIL_COLOR; SPINNER_TRACK_CELLS],
+            colors: [status_detail_color(); SPINNER_TRACK_CELLS],
         }
     }
 
@@ -187,9 +181,9 @@ fn draw_gravity(track: &mut Track, elapsed: Duration) {
     // the apex — the ball stays whole all the way up.
     let lift = (hop(elapsed, SPINNER_GRAVITY_HOP) * 2.0).round() as usize;
     let bottom = Track::ROWS - 1 - lift.min(Track::ROWS - 2);
-    let color = lerp_rgb(
-        HEADER_GRADIENT_START,
-        HEADER_GRADIENT_END,
+    let color = lerp_color(
+        header_gradient_start(),
+        header_gradient_end(),
         col as f32 / reach,
     );
     for dx in 0..2 {
@@ -218,9 +212,9 @@ fn draw_wave(track: &mut Track, elapsed: Duration) {
         let row = ((1.0 - y) / 2.0 * (Track::ROWS - 1) as f32)
             .round()
             .clamp(0.0, (Track::ROWS - 1) as f32) as usize;
-        let color = lerp_rgb(
-            HEADER_GRADIENT_START,
-            HEADER_GRADIENT_END,
+        let color = lerp_color(
+            header_gradient_start(),
+            header_gradient_end(),
             (col / 2) as f32 / last_cell,
         );
         track.set(col, row, Some(color));
@@ -234,8 +228,8 @@ fn draw_wave(track: &mut Track, elapsed: Duration) {
 ///   (`docs/header.md`) — the spark by its bloom level (`·` cyan, `✽` blue,
 ///   back down the fade), the block by its turn;
 /// - `pulse` breathes the running tool bullet's raised cosine
-///   ([`breath`], `docs/tool-pulse.md`) from [`SPINNER_PULSE_DIM`] to white;
-/// - `bars` brightens with height, [`SPINNER_BARS_LOW`] at `▁` to white at `█`;
+///   ([`breath`], `docs/tool-pulse.md`) from [`spinner_pulse_dim`] to white;
+/// - `bars` brightens with height, [`spinner_bars_low`] at `▁` to white at `█`;
 /// - everything else wears the comet head's white.
 ///
 /// `index` is the frame showing out of `len`; a rise-and-fall sequence's
@@ -247,27 +241,23 @@ fn glyph_color(spinner: Spinner, index: usize, len: usize, elapsed: Duration) ->
         level as f32 / peak.max(1) as f32
     };
     match spinner {
-        Spinner::Sparkle => lerp_rgb(HEADER_GRADIENT_START, HEADER_GRADIENT_END, level(index)),
-        Spinner::Blocks => lerp_rgb(
-            HEADER_GRADIENT_START,
-            HEADER_GRADIENT_END,
+        Spinner::Sparkle => {
+            lerp_color(header_gradient_start(), header_gradient_end(), level(index))
+        }
+        Spinner::Blocks => lerp_color(
+            header_gradient_start(),
+            header_gradient_end(),
             index as f32 / len.saturating_sub(1).max(1) as f32,
         ),
-        Spinner::Pulse => {
-            let (r, g, b) = blend(
-                SPINNER_PULSE_BRIGHT,
-                SPINNER_PULSE_DIM,
-                breath(elapsed, SPINNER_PULSE_PERIOD),
-            );
-            Color::Rgb(r, g, b)
-        }
-        Spinner::Bars => {
-            let (r, g, b) = blend(SPINNER_BARS_HIGH, SPINNER_BARS_LOW, level(index));
-            Color::Rgb(r, g, b)
-        }
-        Spinner::Comet | Spinner::Dots | Spinner::Line => STATUS_COLOR,
+        Spinner::Pulse => blend_color(
+            spinner_pulse_bright(),
+            spinner_pulse_dim(),
+            breath(elapsed, SPINNER_PULSE_PERIOD),
+        ),
+        Spinner::Bars => blend_color(spinner_bars_high(), spinner_bars_low(), level(index)),
+        Spinner::Comet | Spinner::Dots | Spinner::Line => status_color(),
         // Never asked: the tracks colour per cell (`draw_gravity`, `draw_wave`).
-        Spinner::Gravity | Spinner::Wave => STATUS_COLOR,
+        Spinner::Gravity | Spinner::Wave => status_color(),
     }
 }
 
@@ -304,14 +294,14 @@ pub(super) fn spinner_spans(spinner: Spinner, elapsed: Duration) -> Vec<Span<'st
 /// everything else (the faint `·` tail end, the walls, the empty track) dim;
 /// the right wall carries the trailing separator space.
 fn comet_spans(frame: &str) -> Vec<Span<'static>> {
-    let dim = Style::new().fg(STATUS_DETAIL_COLOR);
+    let dim = Style::new().fg(status_detail_color());
     let spans: Vec<Span<'static>> = frame
         .chars()
         .enumerate()
         .map(|(i, c)| {
             let style = match c {
-                SPINNER_HEAD => Style::new().fg(STATUS_COLOR).add_modifier(Modifier::BOLD),
-                SPINNER_TAIL_MID => Style::new().fg(SPINNER_TAIL_COLOR),
+                SPINNER_HEAD => Style::new().fg(status_color()).add_modifier(Modifier::BOLD),
+                SPINNER_TAIL_MID => Style::new().fg(spinner_tail_color()),
                 _ => dim,
             };
             let text = if i == SPINNER_SPAN_COUNT - 1 {
@@ -411,7 +401,7 @@ pub fn styled_status_line(
     spinner: Spinner,
     width: u16,
 ) -> Line<'static> {
-    let dim = Style::new().fg(STATUS_DETAIL_COLOR);
+    let dim = Style::new().fg(status_detail_color());
     let mut spans = spinner_spans(spinner, status.elapsed);
     spans.extend(shimmer_spans(
         &format!("{}{STATUS_ELLIPSIS}", verb.unwrap_or(status.verb)),
@@ -437,7 +427,7 @@ pub fn styled_status_line(
     if let Some(retry) = status.retry {
         spans.push(Span::styled(
             format!(" · retrying {}/{}", retry.attempt, retry.max),
-            Style::new().fg(STATUS_RETRY_COLOR),
+            Style::new().fg(status_retry_color()),
         ));
     }
     if let Some(thinking) = status.thinking {
@@ -482,7 +472,7 @@ pub fn summary_lines(summary: &TurnSummary, width: u16) -> Vec<Line<'static>> {
     }
     wrap_text(&text, width)
         .into_iter()
-        .map(|row| Line::from(Span::styled(row, Style::new().fg(STATUS_DONE_COLOR))))
+        .map(|row| Line::from(Span::styled(row, Style::new().fg(status_done_color()))))
         .collect()
 }
 
@@ -497,9 +487,9 @@ pub fn background_notice_lines(
     width: u16,
 ) -> Vec<Line<'static>> {
     let color = if notice.ok() {
-        BG_NOTICE_OK_COLOR
+        bg_notice_ok_color()
     } else {
-        BG_NOTICE_FAIL_COLOR
+        bg_notice_fail_color()
     };
     let bullet_style = Style::new().fg(color).add_modifier(Modifier::BOLD);
     let content_width = width.saturating_sub(BULLET_WIDTH).max(1);

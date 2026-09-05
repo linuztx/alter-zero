@@ -19,7 +19,7 @@ const LOGIN_SEARCH_ROW: u16 = 2;
 const LOGIN_KEY_INPUT_ROW: u16 = 4;
 use crate::ui::login_view::{login_host_prompt, login_key_prompt};
 use crate::ui::theme::{
-    DEVICE_CURSOR_ROW, ERROR_COLOR, LOGIN_TITLE_COLOR, MODEL_META_COLOR, MODEL_SELECTED_COLOR,
+    DEVICE_CURSOR_ROW, error_color, login_title_color, model_meta_color, model_selected_color,
 };
 
 /// The row the code box's top border lands on, found by content — the page's
@@ -42,7 +42,7 @@ fn model_rows_show_marker_provider_tag_and_active_check() {
     assert!(first.starts_with("→ anthropic/claude-3-haiku"), "{first:?}");
     assert!(first.contains("[openrouter]"), "provider tag: {first:?}");
     // The selected marker is cyan.
-    assert_eq!(buf[(0, 4)].fg, MODEL_SELECTED_COLOR);
+    assert_eq!(buf[(0, 4)].fg, model_selected_color());
     // The active model (row 1, y=5) carries the ✓.
     let second = row(&buf, 5, 60);
     assert!(second.contains('✓'), "active model has a check: {second:?}");
@@ -105,7 +105,7 @@ fn all_failed_picker_shows_one_red_row_per_provider() {
     assert!(r0.contains("OpenRouter"), "{r0:?}");
     assert!(r0.contains("HTTP 500"), "{r0:?}");
     assert!(r1.contains("Agent Zero API"), "{r1:?}");
-    assert_eq!(buf[(2, 4)].fg, ERROR_COLOR, "error rows are red");
+    assert_eq!(buf[(2, 4)].fg, error_color(), "error rows are red");
 }
 
 #[test]
@@ -165,7 +165,7 @@ fn render_login_key_step_masks_the_entered_key() {
     render_key_onboarding(buf.area, &mut buf, onboarding);
     // The cyan title (row 2, after the top rule + gap) names the provider.
     assert!(row(&buf, 2, 60).contains("Enter your OpenRouter API key"));
-    assert_eq!(buf[(2, 2)].fg, LOGIN_TITLE_COLOR, "titles are cyan");
+    assert_eq!(buf[(2, 2)].fg, login_title_color(), "titles are cyan");
     // The field is masked: dots, never the plaintext key.
     let field = row(&buf, LOGIN_KEY_INPUT_ROW, 60);
     assert!(field.contains('•'), "masked: {field:?}");
@@ -307,7 +307,7 @@ fn model_picker_shows_a_login_hint_when_no_provider_is_configured() {
     // The list area (row 4) points at /login, in cyan (not a red error).
     let list = row(&buf, 4, 60);
     assert!(list.contains("run /login"), "{list:?}");
-    assert_eq!(buf[(2, 4)].fg, MODEL_SELECTED_COLOR);
+    assert_eq!(buf[(2, 4)].fg, model_selected_color());
     // No counter or model-name line when there's nothing selectable.
     assert!(row(&buf, 7, 60).trim().is_empty(), "no counter");
     assert!(row(&buf, 9, 60).trim().is_empty(), "no model name");
@@ -505,7 +505,7 @@ fn the_device_page_shows_the_url_and_the_code_in_a_box() {
         row(&buf, 2, 72).contains("Sign in to GitHub Copilot"),
         "title"
     );
-    assert_eq!(buf[(2, 2)].fg, LOGIN_TITLE_COLOR, "titles are cyan");
+    assert_eq!(buf[(2, 2)].fg, login_title_color(), "titles are cyan");
     assert!(
         row(&buf, 4, 72).contains("Visit https://github.com/login/device"),
         "{:?}",
@@ -588,7 +588,7 @@ fn a_failed_sign_in_replaces_the_wait_with_the_reason_in_red() {
     let reason_row = (0..16)
         .find(|y| row(&buf, *y, 72).contains("The code expired"))
         .unwrap();
-    assert_eq!(buf[(2, reason_row)].fg, ERROR_COLOR, "failures are red");
+    assert_eq!(buf[(2, reason_row)].fg, error_color(), "failures are red");
 }
 
 #[test]
@@ -729,7 +729,7 @@ fn the_device_pages_url_is_clickable_too_and_keeps_its_dim_dress() {
         .flat_map(|l| l.spans.iter())
         .find(|s| s.content.contains("github.com"))
         .expect("the URL span");
-    assert_eq!(url_span.style.fg, Some(MODEL_META_COLOR), "still dim");
+    assert_eq!(url_span.style.fg, Some(model_meta_color()), "still dim");
     assert!(
         url_span.style.add_modifier.contains(Modifier::UNDERLINED),
         "underlined, as a link is"
@@ -825,13 +825,13 @@ fn the_verification_url_is_dim_so_the_code_is_the_bright_thing() {
     let visit_row = (0..16)
         .find(|y| row(&buf, *y, 72).contains("Visit https://"))
         .expect("the visit row");
-    assert_eq!(buf[(2, visit_row)].fg, MODEL_META_COLOR, "the URL is dim");
+    assert_eq!(buf[(2, visit_row)].fg, model_meta_color(), "the URL is dim");
     // …and the code inside the box stays bright.
     let code_row = code_box_row(&buf, 72) + 1;
     let code_col = row(&buf, code_row, 72).find('C').expect("the code") as u16;
     assert_ne!(
         buf[(code_col, code_row)].fg,
-        MODEL_META_COLOR,
+        model_meta_color(),
         "the code itself is not dim"
     );
 }
@@ -916,7 +916,7 @@ fn a_provider_row_says_whether_its_key_is_configured() {
     // statuses rather than as a column of alerts.
     use crate::ui::theme::{
         LOGIN_CONFIGURED_LABEL, LOGIN_CONFIGURED_MARK, LOGIN_UNCONFIGURED_LABEL,
-        LOGIN_UNCONFIGURED_MARK, MODEL_ACTIVE_COLOR, MODEL_META_COLOR,
+        LOGIN_UNCONFIGURED_MARK, model_active_color, model_meta_color,
     };
     let app = login_app_provider();
     let onboarding = app.key_onboarding.as_ref().unwrap();
@@ -927,12 +927,12 @@ fn a_provider_row_says_whether_its_key_is_configured() {
     );
     assert_eq!(
         span_fg(&keyed, LOGIN_CONFIGURED_MARK),
-        Some(MODEL_ACTIVE_COLOR),
+        Some(model_active_color()),
         "the ✔ is green"
     );
     assert_eq!(
         span_fg(&keyed, LOGIN_CONFIGURED_LABEL),
-        Some(MODEL_META_COLOR),
+        Some(model_meta_color()),
         "the word beside it is not"
     );
 
@@ -945,11 +945,11 @@ fn a_provider_row_says_whether_its_key_is_configured() {
     // green marks are the only thing standing out down the list.
     assert_eq!(
         span_fg(&bare, LOGIN_UNCONFIGURED_MARK),
-        Some(MODEL_META_COLOR)
+        Some(model_meta_color())
     );
     assert_eq!(
         span_fg(&bare, LOGIN_UNCONFIGURED_LABEL),
-        Some(MODEL_META_COLOR)
+        Some(model_meta_color())
     );
 }
 

@@ -101,9 +101,9 @@ fn menu_row_lines(cmd: &SlashCommand, selected: bool, width: u16) -> Vec<Line<'s
     let name = format!("/{}", cmd.name);
     // Name and description share one colour per entry, for consistency.
     let color = if selected {
-        MENU_SELECTED_COLOR
+        menu_selected_color()
     } else {
-        MENU_DIM_COLOR
+        menu_dim_color()
     };
     let name_style = if selected {
         Style::new().fg(color).add_modifier(Modifier::BOLD)
@@ -159,7 +159,7 @@ pub fn command_menu_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     if matches.is_empty() {
         return vec![Line::from(Span::styled(
             MENU_NO_MATCH.to_string(),
-            Style::new().fg(MENU_DIM_COLOR),
+            Style::new().fg(menu_dim_color()),
         ))];
     }
     let max = MENU_MAX_ROWS as usize;
@@ -244,9 +244,9 @@ fn file_menu_highlight(
 /// A width too narrow for the columns degrades to marker + name alone.
 fn file_menu_row(m: &FileMatch, selected: bool, name_col: usize, width: u16) -> Line<'static> {
     let color = if selected {
-        MENU_SELECTED_COLOR
+        menu_selected_color()
     } else {
-        MENU_DIM_COLOR
+        menu_dim_color()
     };
     let base = Style::new().fg(color);
     let matched = base.add_modifier(Modifier::BOLD);
@@ -304,7 +304,7 @@ pub fn file_menu_lines(app: &App, width: u16) -> Vec<Line<'static>> {
         };
         return vec![Line::from(Span::styled(
             text.to_string(),
-            Style::new().fg(MENU_DIM_COLOR),
+            Style::new().fg(menu_dim_color()),
         ))];
     }
     let max = FILE_MENU_MAX_ROWS as usize;
@@ -360,9 +360,9 @@ fn skill_menu_row(
     width: u16,
 ) -> Line<'static> {
     let color = if selected {
-        MENU_SELECTED_COLOR
+        menu_selected_color()
     } else {
-        MENU_DIM_COLOR
+        menu_dim_color()
     };
     let base = Style::new().fg(color);
     let matched = base.add_modifier(Modifier::BOLD);
@@ -405,7 +405,7 @@ pub fn skill_menu_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     if matches.is_empty() {
         return vec![Line::from(Span::styled(
             SKILL_MENU_NO_MATCH.to_string(),
-            Style::new().fg(MENU_DIM_COLOR),
+            Style::new().fg(menu_dim_color()),
         ))];
     }
     let selected = app
@@ -470,8 +470,8 @@ pub fn shortcuts_lines(turn_active: bool, can_backtrack: bool) -> Vec<Line<'stat
             (key, label)
         };
         [
-            Span::styled(key, Style::new().fg(SHORTCUTS_KEY_COLOR)),
-            Span::styled(label, Style::new().fg(SHORTCUTS_TEXT_COLOR)),
+            Span::styled(key, Style::new().fg(shortcuts_key_color())),
+            Span::styled(label, Style::new().fg(shortcuts_text_color())),
         ]
     };
     SHORTCUTS

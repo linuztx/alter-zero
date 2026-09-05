@@ -96,6 +96,7 @@ pub(crate) mod shell;
 pub(crate) mod spinner;
 pub(crate) mod startup;
 pub(crate) mod stream;
+pub(crate) mod theme;
 pub(crate) mod trust;
 pub(crate) mod turn;
 pub(crate) mod view;

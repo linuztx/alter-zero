@@ -7,8 +7,8 @@ use crate::ui::table::{
     table_should_use_records,
 };
 use crate::ui::theme::{
-    INLINE_CODE_COLOR, TABLE_MIN_COL, TABLE_RECORD_SEPARATOR_WIDTH, TOOL_DIM_COLOR,
-    TOOL_FAIL_COLOR, TOOL_OK_COLOR,
+    TABLE_MIN_COL, TABLE_RECORD_SEPARATOR_WIDTH, inline_code_color, tool_dim_color,
+    tool_fail_color, tool_ok_color,
 };
 use crate::ui::tool::tool_full_lines;
 use crate::ui::wrap::cols;
@@ -199,7 +199,7 @@ fn table_content_rows_renders_inline_markdown_in_cells() {
     assert!(
         spans
             .iter()
-            .any(|(t, _, fg)| t == "a.db" && *fg == Some(INLINE_CODE_COLOR)),
+            .any(|(t, _, fg)| t == "a.db" && *fg == Some(inline_code_color())),
         "inline code cell is cyan: {spans:?}"
     );
     assert!(
@@ -870,7 +870,7 @@ fn edit_cell_renders_the_hunk_gap_dim() {
         .iter()
         .find(|l| plain(l).trim_end().ends_with('⋮'))
         .expect("the ⋮ gap row is rendered");
-    assert_eq!(gap.spans.last().unwrap().style.fg, Some(TOOL_DIM_COLOR));
+    assert_eq!(gap.spans.last().unwrap().style.fg, Some(tool_dim_color()));
 }
 
 #[test]
@@ -947,7 +947,7 @@ fn a_rejected_cell_shows_the_amended_instructions_and_never_the_model_text() {
         tool_lines(&tool, 80, &PathDisplay::VERBATIM)[0].spans[0]
             .style
             .fg,
-        Some(TOOL_FAIL_COLOR),
+        Some(tool_fail_color()),
         "a refused call keeps the red bullet"
     );
 }
@@ -992,7 +992,7 @@ fn a_backgrounded_tool_cell_shows_the_fixed_row_not_its_output() {
         tool_lines(&tool, 60, &PathDisplay::VERBATIM)[0].spans[0]
             .style
             .fg,
-        Some(TOOL_OK_COLOR),
+        Some(tool_ok_color()),
         "a backgrounded launch gets the green bullet"
     );
 }

@@ -17,11 +17,11 @@ use super::*;
 #[must_use]
 pub fn message_lines(role: Role, text: &str, width: u16) -> Vec<Line<'static>> {
     let (bullet, color) = match role {
-        Role::User => (USER_BULLET, USER_COLOR),
-        Role::Assistant => (AI_BULLET, AI_COLOR),
-        Role::Error => (ERROR_BULLET, ERROR_COLOR),
-        Role::System => (SYSTEM_BULLET, SYSTEM_COLOR),
-        Role::Shell => (SHELL_BULLET, SHELL_MODE_COLOR),
+        Role::User => (USER_BULLET, user_color()),
+        Role::Assistant => (AI_BULLET, ai_color()),
+        Role::Error => (ERROR_BULLET, error_color()),
+        Role::System => (SYSTEM_BULLET, system_color()),
+        Role::Shell => (SHELL_BULLET, shell_mode_color()),
     };
     // Only the assistant's replies are markdown; user/shell/notice text stays
     // literal (a user pasting ``` must not be code-blocked, and the dark-bg
@@ -36,7 +36,7 @@ pub fn message_lines(role: Role, text: &str, width: u16) -> Vec<Line<'static>> {
     // (`! pwd`) shares it — the mock's "dark line, like a user message".
     let dark = matches!(role, Role::User | Role::Shell);
     let bg = if dark {
-        Style::new().bg(USER_BG_COLOR)
+        Style::new().bg(user_bg_color())
     } else {
         Style::default()
     };
@@ -85,8 +85,8 @@ pub fn message_lines(role: Role, text: &str, width: u16) -> Vec<Line<'static>> {
 #[must_use]
 pub fn compaction_lines(compaction: &crate::app::Compaction, width: u16) -> Vec<Line<'static>> {
     let _ = width; // one unwrapped line, like summary_lines
-    let bullet_style = Style::new().fg(SYSTEM_COLOR).add_modifier(Modifier::BOLD);
-    let dim = Style::new().fg(TOOL_DIM_COLOR);
+    let bullet_style = Style::new().fg(system_color()).add_modifier(Modifier::BOLD);
+    let dim = Style::new().fg(tool_dim_color());
     let mut spans = vec![
         Span::styled(SYSTEM_BULLET.to_string(), bullet_style),
         Span::raw(COMPACTED_NOTICE.to_string()),
@@ -126,7 +126,7 @@ pub(super) fn compaction_full_lines(
         return lines;
     }
     let body_width = width.saturating_sub(BULLET_WIDTH).max(1);
-    let dim = Style::new().fg(TOOL_DIM_COLOR);
+    let dim = Style::new().fg(tool_dim_color());
     for row in wrap_text(&compaction.summary, body_width) {
         lines.push(Line::from(vec![
             Span::raw(INDENT.to_string()),
@@ -142,7 +142,7 @@ pub(super) fn compaction_full_lines(
 /// skips the item entirely (Claude Code hides these from its normal view
 /// too), so this renders nowhere else.
 pub(super) fn hook_note_lines(note: &crate::app::HookNote, width: u16) -> Vec<Line<'static>> {
-    let dim = Style::new().fg(TOOL_DIM_COLOR);
+    let dim = Style::new().fg(tool_dim_color());
     let mut lines = vec![Line::from(Span::styled(
         format!("{SYSTEM_BULLET}{}", note.label),
         dim,
@@ -171,7 +171,7 @@ pub(super) fn user_stamp_lines(timestamp: &str, width: u16) -> Vec<Line<'static>
         Line::default(),
         Line::from(vec![
             Span::raw(" ".repeat(pad)),
-            Span::styled(timestamp.to_string(), Style::new().fg(TIMESTAMP_COLOR)),
+            Span::styled(timestamp.to_string(), Style::new().fg(timestamp_color())),
         ]),
     ]
 }

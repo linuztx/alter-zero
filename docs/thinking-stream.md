@@ -86,12 +86,12 @@ spending the small window on them would show a third as much thought. Walking
 the source lines newest-first wraps only what the window shows, so a long think
 costs O(window) per animation frame, not O(reasoning).
 
-**The shimmer's floor is raised here.** Codex's `SHIMMER_BASE` is grey
+**The shimmer's floor is raised here.** Codex's `shimmer_base()` is grey
 `#888888`, so the status verb reads as *grey text with a white wave* — right
 for a metric, wrong for a header: between crests (roughly a third of each
 sweep) it would be indistinguishable from the dim body under it. So
 `shimmer_spans_from` takes the resting colour, and `Thinking…` passes the
-near-white `REASONING_SHIMMER_BASE` (`#C8C8C8`). At rest it is bold near-white;
+near-white `reasoning_shimmer_base()` (`#C8C8C8`). At rest it is bold near-white;
 the wave brightens it to `#FFFFFF` rather than being the only thing making it
 visible. The status line keeps codex's grey, byte-identical. This is the one
 place in the feature that draws the eye — deliberately, because it is the one
@@ -122,7 +122,7 @@ pub struct Reasoning {
 ```
 
 `ui::reasoning_lines` renders it as one unwrapped, **bullet-less**, dim line —
-`summary_lines`' shape *and* its colour (`STATUS_DONE_COLOR`), so the pair that
+`summary_lines`' shape *and* its colour (`status_done_color()`), so the pair that
 brackets a turn reads as a pair:
 
 ```

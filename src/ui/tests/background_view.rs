@@ -1,7 +1,7 @@
 //! The ↓ background-shell manager band (`docs/background.md`).
 
 use super::*;
-use crate::ui::theme::{TOOL_FAIL_COLOR, TOOL_OK_COLOR};
+use crate::ui::theme::{tool_fail_color, tool_ok_color};
 
 #[test]
 fn background_notice_lines_render_the_headline_with_outcome_colours() {
@@ -10,11 +10,15 @@ fn background_notice_lines_render_the_headline_with_outcome_colours() {
         plain(&ok[0]),
         "● Background command \"Ping x.com 200 times\" completed (exit code 0)"
     );
-    assert_eq!(ok[0].spans[0].style.fg, Some(TOOL_OK_COLOR), "green bullet");
+    assert_eq!(
+        ok[0].spans[0].style.fg,
+        Some(tool_ok_color()),
+        "green bullet"
+    );
     let failed = background_notice_lines(&bg_notice(Some(2), false), 80);
     assert_eq!(
         failed[0].spans[0].style.fg,
-        Some(TOOL_FAIL_COLOR),
+        Some(tool_fail_color()),
         "red bullet on failure"
     );
     let stopped = background_notice_lines(&bg_notice(None, true), 80);

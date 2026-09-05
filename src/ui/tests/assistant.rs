@@ -4,8 +4,8 @@
 use super::*;
 use crate::ui::assistant::assistant_lines;
 use crate::ui::theme::{
-    AI_BULLET, AI_COLOR, BULLET_WIDTH, CODE_TAB_WIDTH, INLINE_CODE_COLOR, MENU_DIM_COLOR,
-    MENU_SELECTED_COLOR, THEMATIC_BREAK,
+    AI_BULLET, BULLET_WIDTH, CODE_TAB_WIDTH, THEMATIC_BREAK, ai_color, inline_code_color,
+    menu_dim_color, menu_selected_color,
 };
 
 #[test]
@@ -34,7 +34,7 @@ fn assistant_inline_emphasis_styles_spans() {
     assert!(
         spans
             .iter()
-            .any(|(t, _, fg)| t == "c" && *fg == Some(INLINE_CODE_COLOR))
+            .any(|(t, _, fg)| t == "c" && *fg == Some(inline_code_color()))
     );
     // No raw markers leak through.
     let joined: String = spans.iter().map(|(t, _, _)| t.as_str()).collect();
@@ -141,7 +141,7 @@ fn a_nested_item_after_a_blank_stays_a_list_not_indented_code() {
             .iter()
             .flat_map(|l| l.spans.iter())
             .any(|s| s.content.as_ref() == "1. "
-                && s.style.fg == Some(crate::ui::theme::LIST_MARKER_COLOR)),
+                && s.style.fg == Some(crate::ui::theme::list_marker_color())),
         "the nested ordered marker keeps its list styling"
     );
 }
@@ -227,7 +227,7 @@ fn assistant_code_rows_have_no_gutter_and_use_the_code_colour() {
     assert!(
         code.spans
             .iter()
-            .any(|s| s.style.fg == highlight::plain_style().fg),
+            .any(|s| s.style.fg == highlight::plain_style(highlight::CodeTheme::default()).fg),
         "unhighlighted code text uses the plain (theme-default) code colour"
     );
 }
@@ -445,11 +445,11 @@ fn assistant_lines_trims_a_trailing_paragraph_break() {
     // A reply ending with a blank line (a model often emits "…\n\n" before a
     // tool call) must render no trailing blank rows: the caller adds exactly
     // one spacer, so trailing blanks would stack (the 3-newline bug).
-    let with: Vec<String> = assistant_lines("Building it.\n\n", 80, AI_BULLET, AI_COLOR)
+    let with: Vec<String> = assistant_lines("Building it.\n\n", 80, AI_BULLET, ai_color())
         .iter()
         .map(plain)
         .collect();
-    let without: Vec<String> = assistant_lines("Building it.", 80, AI_BULLET, AI_COLOR)
+    let without: Vec<String> = assistant_lines("Building it.", 80, AI_BULLET, ai_color())
         .iter()
         .map(plain)
         .collect();
@@ -460,7 +460,7 @@ fn assistant_lines_trims_a_trailing_paragraph_break() {
 fn assistant_lines_keeps_interior_blank_lines() {
     // Only *trailing* blanks are trimmed — a paragraph break in the middle
     // stays (it separates two paragraphs).
-    let rows = assistant_lines("One.\n\nTwo.", 80, AI_BULLET, AI_COLOR);
+    let rows = assistant_lines("One.\n\nTwo.", 80, AI_BULLET, ai_color());
     assert_eq!(rows.len(), 3, "the interior blank is preserved");
     assert!(plain(&rows[0]).contains("One."));
     assert!(plain(&rows[1]).trim().is_empty(), "middle row is blank");
@@ -477,7 +477,7 @@ fn selecting_highlights_the_whole_row_in_one_consistent_colour() {
     let desc_fg = |l: &Line| l.spans[2].style.fg;
     assert_eq!(
         name_fg(&lines[1]),
-        Some(MENU_SELECTED_COLOR),
+        Some(menu_selected_color()),
         "selected name"
     );
     assert_eq!(
@@ -487,7 +487,7 @@ fn selecting_highlights_the_whole_row_in_one_consistent_colour() {
     );
     assert_eq!(
         name_fg(&lines[0]),
-        Some(MENU_DIM_COLOR),
+        Some(menu_dim_color()),
         "other name dimmed"
     );
     assert_eq!(

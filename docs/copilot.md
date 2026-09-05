@@ -20,7 +20,7 @@ next launch all keep working with no second mechanism to teach them.
 ## The pages
 
 Five steps, one `KeyOnboarding` (`src/app/login.rs`), all sharing the `/model`
-picker's frame. **Every title is cyan** (`LOGIN_TITLE_COLOR` = the palette
+picker's frame. **Every title is cyan** (`login_title_color()` = the palette
 accent the whole picker family selects with), so the flow's headings read as
 one rather than as a fourth colour to learn.
 

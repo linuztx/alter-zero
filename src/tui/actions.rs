@@ -226,6 +226,15 @@ impl Session<'_> {
                 // region collapses back to the composer on the next draw.
             }
             Action::SelectSpinner(spinner) => self.select_spinner(spinner),
+            Action::OpenThemePicker => {
+                // The pure open already happened (the catalog is a const);
+                // after_key schedules the frame (docs/theme.md).
+            }
+            Action::CloseThemePicker => {
+                // Esc/Ctrl+C dismissed the picker: nothing to reap; the
+                // region collapses back to the composer on the next draw.
+            }
+            Action::SelectTheme(theme) => self.select_theme(theme)?,
             Action::OpenHooksMenu => self.open_hooks_menu(),
             Action::OpenSkillsMenu => self.open_skills_menu(),
             Action::CloseSkillsMenu => {
@@ -499,6 +508,8 @@ impl Session<'_> {
             View::Conversation if self.app.mascot_picker.is_some() => {}
             // …nor a spinner style (docs/spinner.md).
             View::Conversation if self.app.spinner_picker.is_some() => {}
+            // …nor a theme name (docs/theme.md).
+            View::Conversation if self.app.theme_picker.is_some() => {}
             // The `/mcp` manager: the auth page's `URL >` field takes pastes
             // (the redirect URL is always pasted — that is the field's whole
             // point); every other page swallows them (docs/mcp.md).

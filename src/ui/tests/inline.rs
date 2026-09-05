@@ -6,7 +6,7 @@ use super::*;
 use crate::links::style_link;
 use crate::markdown::parse_inline;
 use crate::ui::inline::{inline_spans, wrap_inline};
-use crate::ui::theme::LINK_URL_COLOR;
+use crate::ui::theme::link_url_color;
 
 /// The `(text, target)` pairs of the segments that carry a link.
 fn linked_segments(segments: &[(String, Style)]) -> Vec<(String, String)> {
@@ -37,7 +37,7 @@ fn a_bare_url_is_marked_with_its_full_target() {
         .find(|(t, _)| t == "https://github.com/linuztx")
         .map(|(_, s)| *s)
         .expect("the URL segment");
-    assert_eq!(url_style.fg, Some(LINK_URL_COLOR));
+    assert_eq!(url_style.fg, Some(link_url_color()));
     assert!(url_style.add_modifier.contains(Modifier::UNDERLINED));
     let joined: String = segs.iter().map(|(t, _)| t.as_str()).collect();
     assert_eq!(

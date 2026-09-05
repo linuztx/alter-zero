@@ -52,19 +52,19 @@ the detached-exec hook, the CLI resolution, the viewport, the loop — over
 **`src/tui/`**, the binary-private tree that drives the codex-style **async
 (tokio) `select!`** loop (`event_loop`, `actions`, `turn`, `stream`, `agent`,
 `background`, `permission`, `view`, `commit`, `models`, `config`, `bootstrap`,
-`startup`, `recorder`, `resume`, `history_store`, `settings`, `shell`, `workers`, `host`, `mascot`, `spinner`, `mcp`, `trust`, `login`,
+`startup`, `recorder`, `resume`, `history_store`, `settings`, `shell`, `workers`, `host`, `mascot`, `spinner`, `theme`, `mcp`, `trust`, `login`,
 with the **`Session`** struct itself in `mod.rs` — every handler is an `impl
 Session` block in its area module, reaching the private fields the way `app/`'s
 submodules reach `App`'s). The four big ones are **directories
 of per-area modules**, not single files — `src/app/` (`types`, `action`, `keys`,
 `composer`, `commands`, `file_picker`, `input_history`, `queue`, `tools`, `turn`,
-`compact`, `backtrack`, `views`, `resume`, `model_picker`, `login`, `settings`, `mascot`, `spinner`, `hooks_menu`, `mcp_menu`, `trust_menu`, `background`,
+`compact`, `backtrack`, `views`, `resume`, `model_picker`, `login`, `settings`, `mascot`, `spinner`, `theme`, `hooks_menu`, `mcp_menu`, `trust_menu`, `background`,
 `agent`, `status`, `permission`, with the `App` struct itself in `mod.rs` so every submodule and
 the test tree keeps its private-field access), `src/ui/` (`theme`, `wrap`,
 `layout`, `assistant`, `inline`, `table`, `message`, `conversation`, `tool`,
 `file_cell`, `inline_diff`, `status`, `agent`, `menu`, `footer`, `header`, `hooks_view`, `live`, `transcript`,
 `context_view`, `resume_view`, `model_view`, `login_view`, `background_view`,
-`permission_view`, `settings_view`, `mascot_view`, `spinner_view`, `mcp_view`, `trust_view`, `view_flow`, `stream_render`), and **`src/stream/`** — the backend seam
+`permission_view`, `settings_view`, `mascot_view`, `spinner_view`, `palette`, `theme_view`, `mcp_view`, `trust_view`, `view_flow`, `stream_render`), and **`src/stream/`** — the backend seam
 kept apart from the offline demo that used to crowd it: `event` (the whole
 `StreamEvent` wire format), `source` (the `ReplySource` trait), `cancel`
 (`CancelToken`), `stall` (`StallAi`), and the self-contained **`dummy/`**
@@ -149,7 +149,36 @@ rules in `ui/theme.rs` — `sparkle`/`blocks` wearing the banner gradient,
 `pulse` the tool bullet's breath, the two tracks drawn procedurally on a
 braille canvas from whole-millisecond ping-pong/hop curves rather than
 tabled — and the switch needing no rebuild, the status line being
-live-only) in `docs/spinner.md`; the **`/login` sign-in fork** (the
+live-only) in `docs/spinner.md`, and the **`/theme` picker** that switches
+the whole **colour theme** (`docs/theme.md`: every colour the chrome paints
+— the accent the pickers select with, the success/error/warning hues, the
+dim, the user bubble, the diff tints, the banner gradient — plus the
+syntect theme the code blocks and file cells are coloured with, one design
+system per entry: the four Catppuccin flavours with **Mocha the default**
+(the code had worn it since the syntect port; the chrome now matches),
+`onedark` — the TUI's original chrome value for value, over Atom's One Dark
+code — Dracula, Nord, Gruvbox, Solarized, Monokai, and `ansi`, the
+terminal's own sixteen colours with bat's `ansi` code theme, so the TUI
+follows the terminal's theme. The `/spinner` picker's frame over that
+catalog, every row wearing a five-`●` swatch of its own palette, the
+highlighted theme previewed on **real cells** — a user bubble, an `Edit`
+diff cell, a reply with a code line, built by `message_lines`/`tool_lines`
+with the theme scoped active around them (`ui::with_theme`) so the preview
+and the conversation can never disagree — a still page signed on its rows.
+The mechanism: `ui/theme.rs`'s colour `const`s became **accessor functions
+of the same name** (`tool_ok_color()` where the `TOOL_OK_COLOR` const was) reading the
+**active theme's** `Palette` (`ui/palette.rs`, twenty-one roles per theme),
+the active theme a **thread-local** the boundary sets — at bootstrap before
+the banner is built, and on a switch (`tui::theme::Session::select_theme`:
+save `theme.json`, `ui::activate_theme`, toast, purge rebuild, which is
+what recolours every committed row) — a thread-local rather than a global
+so every test thread has its own, and rather than a parameter because four
+hundred call sites in builders that take no `&App` read it; the three
+row caches (`TranscriptCache`, `ContextCache`, the queued-rows memo) key on
+it; `highlight::Highlighter::new(lang, code)` takes its `CodeTheme`
+explicitly and keeps it for the block; `wrap::lerp_color`/`blend_color`
+mix RGB ends and *step* between named ones, which is what lets the ANSI
+theme exist) in `docs/theme.md`; the **`/login` sign-in fork** (the
 flow's root now asks *how* you sign in — **Use a subscription** or **Use an
 API key** — because GitHub Copilot is not a key you paste. Below that root the
 two lists carry **no heading** (each used to repeat the row that opened it, in
@@ -337,7 +366,7 @@ chain-of-thought streams live in the strip wearing the **tool cell's shape**:
 a `● Thinking…` header — the same `TOOL_BULLET` a running tool wears, because
 it means the same thing, breathing at the frame pulse beside a label carrying
 the status line's **shimmer** (`ui::status::shimmer_spans_from`, the same wave
-`Working…` wears but floored at the near-white `REASONING_SHIMMER_BASE`, since
+`Working…` wears but floored at the near-white `reasoning_shimmer_base()`, since
 codex's grey base is right for a metric and unreadable for a header) — over the
 thought in the `⎿` gutter, dim and **italic** (the one cue separating it from a
 tool's output there), tail-following its last `REASONING_PEEK_LINES` wrapped
@@ -345,7 +374,7 @@ rows; at the phase's end the cell shape goes away entirely and it **collapses**
 into one committed **bullet-less** two-tone
 `Thought for 1m 5s · 1.5k tokens (ctrl+o to expand)` line — the `summary_lines`
 shape, because nothing is happening any more and what is left is a fact about
-the turn — **dim throughout** (`REASONING_LABEL_COLOR` = `STATUS_DONE_COLOR`,
+the turn — **dim throughout** (`reasoning_label_color()` = `status_done_color()`,
 `Done for Ns`'s exact dress, so the pair bracketing a turn reads as a pair);
 the text itself never reaches immutable scrollback (which is *why* it can
 collapse) but expands in Ctrl+O under that same dim line, minus the hint since
@@ -2127,7 +2156,7 @@ live in the pure `file_search` module, and the `/resume` primitives
 Typing a bare `/token` opens a **slash-command palette** below the input box (a
 third live-region band): `App::command_menu` holds the highlight, the registry
 `app::COMMANDS` (`SlashCommand { name, description, effect }` — currently `/help`,
-`/clear`, `/copy`, `/init`, `/compact`, `/resume`, `/model`, `/login`, `/settings`, `/mascot`, `/spinner`, `/hooks`, `/skills`, `/mcp`, `/trust`, and `/quit`) is filtered by `matching_commands`, and ↑/↓ scroll / Tab+Enter run
+`/clear`, `/copy`, `/init`, `/compact`, `/resume`, `/model`, `/login`, `/settings`, `/theme`, `/mascot`, `/spinner`, `/hooks`, `/skills`, `/mcp`, `/trust`, and `/quit`) is filtered by `matching_commands`, and ↑/↓ scroll / Tab+Enter run
 the highlighted command. Descriptions line up in a column, and the selection is
 shown **by colour** — the whole highlighted row lights up cyan (name *and*
 description the same colour) while the others are dimmed grey, no caret. A command
@@ -2249,25 +2278,33 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
 
 ## Conventions
 
-- **All styling is centralized** as `const`s in `ui/theme.rs` — bullets,
+- **All styling is centralized** in `ui/theme.rs` — the glyphs and geometry
+  as `const`s, and every **colour** as an accessor function of the same name
+  (`tool_ok_color()`, `menu_selected_color()`, …) that reads the **active
+  theme's** palette (`ui/palette.rs`, one `Palette` table of twenty-one
+  roles per `/theme` entry; `docs/theme.md`). A new colour is a new role on
+  `Palette` filled in every table plus its accessor; a new theme is one
+  table; and a colour is never written as a literal `Color::Rgb` outside
+  `palette.rs`, since a literal is a colour that ignores the theme. The
+  accessors name — bullets,
   prompt, colours (including the red error bullet and the cyan system bullet),
   border, the tool-call styling (`TOOL_*` — dim-waiting/grey-running/green/red status
-  colours (`TOOL_WAITING_COLOR` for a batch's not-yet-run `⎿ Waiting…` calls,
+  colours (`tool_waiting_color()` for a batch's not-yet-run `⎿ Waiting…` calls,
   `docs/parallel-tools.md`), the
   `⎿` peek prefix, the `(ctrl+o to expand)` hint), tool-view chrome
   (`TOOL_VIEW_*`), the thinking stream (`REASONING_*` — it *borrows* the tool
   cell's `TOOL_BULLET`/`TOOL_RESULT_PREFIX` while it runs rather than owning a
-  glyph, so its own consts are the dim italic `REASONING_TEXT_COLOR`/
+  glyph, so its own consts are the dim italic `reasoning_text_color()`/
   `REASONING_TEXT_MODIFIER` the chain-of-thought renders in, the
   `REASONING_RUNNING`/`REASONING_DONE` labels, the near-white
-  `REASONING_SHIMMER_BASE` the live label's sweep rests at (codex's grey
-  `SHIMMER_BASE` would read as dim), the `REASONING_LABEL_COLOR` the settled
-  line takes from `STATUS_DONE_COLOR` on **both** surfaces, and the
-  `REASONING_PEEK_LINES` live tail window — see `docs/thinking-stream.md`), the transcript timestamp (`TIMESTAMP_COLOR` — the dim
+  `reasoning_shimmer_base()` the live label's sweep rests at (codex's grey
+  `shimmer_base()` would read as dim), the `reasoning_label_color()` the settled
+  line takes from `status_done_color()` on **both** surfaces, and the
+  `REASONING_PEEK_LINES` live tail window — see `docs/thinking-stream.md`), the transcript timestamp (`timestamp_color()` — the dim
   `hh:mm AM/PM` stamp right-aligned on its own line under the *user* message,
   the only stamp shown, only in the Ctrl+O view), the status
   indicator (`STATUS_*` — the comet spinner's white head + mid-grey
-  `SPINNER_TAIL_COLOR` fading tail + dim walls and the
+  `spinner_tail_color()` fading tail + dim walls and the
   `SPINNER_FRAMES`/`SPINNER_INTERVAL` animation, dim metrics, the `↓`/`↑` arrows
   and `…` ellipsis, the `STATUS_INTERRUPT_HINT` (`esc to interrupt`, the detail's
   closing clause), the dim committed-summary colour, and `STATUS_ROWS`/`STATUS_GAP_ROWS`;
@@ -2278,8 +2315,8 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   slash-command palette (`MENU_*` — the `MENU_DESC_COL`
   description column, the cyan/dimmed colours that light up the whole selected row
   — name and description alike — and the `MENU_MAX_ROWS` cap), the `@` file
-  picker (`FILE_MENU_*` — it reuses the palette's `MENU_SELECTED_COLOR`/
-  `MENU_DIM_COLOR`, additionally bolding the query-matched characters; the
+  picker (`FILE_MENU_*` — it reuses the palette's `menu_selected_color()`/
+  `menu_dim_color()`, additionally bolding the query-matched characters; the
   columned row geometry is `FILE_MENU_MARKER`/`FILE_MENU_INDENT` (the selected
   `→ ` and the matching inset), `FILE_MENU_GAP` (name column = widest visible
   name + gap), `FILE_MENU_TYPE_WIDTH` with the `FILE_MENU_FILE_LABEL`/
@@ -2299,7 +2336,7 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   reuses the `/model` picker's frame, indent, `❯` prompt, `→` marker and cyan
   selection, adding only the value column's geometry (`SETTINGS_VALUE_GAP`,
   sized off the widest visible label) and its two-tone colouring
-  (`SETTINGS_VALUE_COLOR` for a live value, `SETTINGS_VALUE_OFF_COLOR` for the
+  (`settings_value_color()` for a live value, `settings_value_off_color()` for the
   `SETTINGS_OFF_VALUES` — `false`/`default`/`0`/`disabled` — and anything
   unavailable), the `SETTINGS_HINT` key line, `SETTINGS_NO_MATCH`,
   `SETTINGS_MENU_MAX_ROWS`, and the `SETTINGS_SEARCH_ROW` cursor seat the
@@ -2311,16 +2348,16 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   user-/shell-message style, with a blank row dividing each entry from the next),
   the
   session footer (`FOOTER_*` — the two-space `FOOTER_INDENT`, the ` · `
-  `FOOTER_SEPARATOR`, the dim `FOOTER_COLOR`, plus the cyan
-  `FOOTER_FOCUS_BG`/`FOOTER_FOCUS_FG` that light the ↓-focused shell-count
+  `FOOTER_SEPARATOR`, the dim `footer_color()`, plus the cyan
+  `footer_focus_bg()`/`footer_focus_fg()` that light the ↓-focused shell-count
   segment (`docs/background.md`); `footer_rows`/`footer_line`,
   ellipsis-truncated at narrow widths, with `display_cwd` formatting the
   `~`-relative path), the transient toast row above the box (`TOAST_*` — the
-  two-space `TOAST_INDENT`, the dim `TOAST_COLOR` (info) / red `TOAST_ERROR_COLOR`
+  two-space `TOAST_INDENT`, the dim `toast_color()` (info) / red `toast_error_color()`
   (failure); `toast_rows`/`toast_line`, ellipsis-truncated like the footer — see
   `docs/toast.md`), the Ctrl+R search line that takes the footer's slot while
   a search is open (`SEARCH_*` — the dim `SEARCH_PROMPT`, the cyan
-  `SEARCH_QUERY_COLOR` shared by the bold accept/cancel hint keys, the red
+  `search_query_color()` shared by the bold accept/cancel hint keys, the red
   `SEARCH_NO_MATCH` notice, and `SEARCH_HIGHLIGHT` — the reversed+bold styling
   of the query occurrences in the previewed match; `search_line`, the
   query-end cursor in `cursor_position`, `highlight_row_spans`), the Esc-Esc

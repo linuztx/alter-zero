@@ -58,6 +58,7 @@ mod mcp_view;
 mod menu;
 mod message;
 mod model_view;
+mod palette;
 mod permission_view;
 mod reasoning;
 mod resume_view;
@@ -69,6 +70,7 @@ mod stream_render;
 mod table;
 mod tasks;
 mod theme;
+mod theme_view;
 mod tool;
 mod transcript;
 mod trust_view;
@@ -109,6 +111,7 @@ pub use self::menu::{
 };
 pub use self::message::{compaction_lines, message_lines};
 pub use self::model_view::render_model_picker;
+pub use self::palette::{activate_theme, active_theme, with_theme};
 pub use self::permission_view::{permission_lines, permission_remember_label, render_permission};
 pub use self::reasoning::reasoning_lines;
 pub use self::resume_view::render_resume_picker;
@@ -122,6 +125,7 @@ pub use self::status::{
 pub use self::stream_render::StreamRender;
 pub use self::tasks::{checklist_lines, idle_task_lines, task_rows};
 pub use self::theme::{COMPACTED_NOTICE, LIVE_MIN_HEIGHT};
+pub use self::theme_view::{render_theme_picker, theme_picker_height};
 pub use self::tool::{held_run_len, tool_commit_lines, tool_lines};
 pub use self::transcript::{
     TranscriptCache, agent_transcript_lines, backtrack_scroll, backtrack_scroll_for,

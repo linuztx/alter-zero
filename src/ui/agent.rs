@@ -79,7 +79,7 @@ pub(super) fn agent_view_rule_label(description: &str, width: u16) -> Option<Str
 /// so the tree and the lone cell can never drift apart.
 fn agent_activity_row(prefix: &str, activity: &str, color: Color, width: u16) -> Line<'static> {
     Line::from(vec![
-        Span::styled(prefix.to_string(), Style::new().fg(TOOL_DIM_COLOR)),
+        Span::styled(prefix.to_string(), Style::new().fg(tool_dim_color())),
         Span::styled(
             clip_cols(
                 activity,
@@ -95,9 +95,9 @@ fn agent_activity_row(prefix: &str, activity: &str, color: Color, width: u16) ->
 fn agent_status_color(status: crate::agents::AgentStatus) -> Color {
     match status {
         crate::agents::AgentStatus::Failed | crate::agents::AgentStatus::Interrupted => {
-            TOOL_FAIL_COLOR
+            tool_fail_color()
         }
-        _ => TOOL_DIM_COLOR,
+        _ => tool_dim_color(),
     }
 }
 
@@ -119,7 +119,7 @@ fn agent_tree_rows(
     } else {
         AGENT_TREE_MID
     };
-    let dim = Style::new().fg(TOOL_DIM_COLOR);
+    let dim = Style::new().fg(tool_dim_color());
     let mut description = description.to_string();
     let counters_cols = cols(counters);
     if cols(&description) + counters_cols > budget {
@@ -129,7 +129,7 @@ fn agent_tree_rows(
     let mut lines = vec![Line::from(vec![
         Span::styled(AGENT_TREE_INDENT.to_string(), dim),
         Span::styled(connector.to_string(), dim),
-        Span::styled(description, Style::new().fg(TOOL_OUTPUT_COLOR)),
+        Span::styled(description, Style::new().fg(tool_output_color())),
         Span::styled(counters.to_string(), dim),
     ])];
     if let Some((status, color)) = status {
@@ -156,8 +156,8 @@ fn agent_group_header(color: Color, text: String, hint: &str) -> Line<'static> {
             TOOL_BULLET.to_string(),
             Style::new().fg(color).add_modifier(Modifier::BOLD),
         ),
-        Span::styled(text, Style::new().fg(TOOL_NAME_COLOR)),
-        Span::styled(hint.to_string(), Style::new().fg(TOOL_DIM_COLOR)),
+        Span::styled(text, Style::new().fg(tool_name_color())),
+        Span::styled(hint.to_string(), Style::new().fg(tool_dim_color())),
     ])
 }
 
@@ -172,10 +172,13 @@ fn agent_cell_header(color: Color, description: &str) -> Line<'static> {
         Span::styled(
             "Agent".to_string(),
             Style::new()
-                .fg(TOOL_NAME_COLOR)
+                .fg(tool_name_color())
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::styled(format!("({description})"), Style::new().fg(TOOL_ARGS_COLOR)),
+        Span::styled(
+            format!("({description})"),
+            Style::new().fg(tool_args_color()),
+        ),
     ])
 }
 
@@ -243,23 +246,23 @@ fn single_live_agent_lines(
 #[must_use]
 pub fn agent_group_lines(group: &crate::app::AgentGroup, width: u16) -> Vec<Line<'static>> {
     let color = if group.ok() {
-        TOOL_OK_COLOR
+        tool_ok_color()
     } else {
-        TOOL_FAIL_COLOR
+        tool_fail_color()
     };
     if let [entry] = group.agents.as_slice() {
-        let dim = Style::new().fg(TOOL_DIM_COLOR);
+        let dim = Style::new().fg(tool_dim_color());
         let mut lines = vec![agent_cell_header(color, &entry.description)];
         let (settle, settle_color) = if group.background {
-            (AGENT_BACKGROUNDED.to_string(), TOOL_DIM_COLOR)
+            (AGENT_BACKGROUNDED.to_string(), tool_dim_color())
         } else {
             match entry.status {
                 crate::agents::AgentStatus::Done => (
                     agent_done_clause(entry.tool_uses, entry.tokens, entry.secs),
-                    TOOL_DIM_COLOR,
+                    tool_dim_color(),
                 ),
-                status if status.is_final() => (status.label().to_string(), TOOL_FAIL_COLOR),
-                status => (status.label().to_string(), TOOL_DIM_COLOR),
+                status if status.is_final() => (status.label().to_string(), tool_fail_color()),
+                status => (status.label().to_string(), tool_dim_color()),
             }
         };
         lines.push(Line::from(vec![
@@ -376,9 +379,9 @@ pub fn live_agent_group_lines(app: &App, width: u16) -> Vec<Line<'static>> {
 #[must_use]
 pub fn agent_notice_lines(notice: &crate::app::AgentNotice, width: u16) -> Vec<Line<'static>> {
     let color = if notice.ok() {
-        BG_NOTICE_OK_COLOR
+        bg_notice_ok_color()
     } else {
-        BG_NOTICE_FAIL_COLOR
+        bg_notice_fail_color()
     };
     let bullet_style = Style::new().fg(color).add_modifier(Modifier::BOLD);
     let content_width = width.saturating_sub(BULLET_WIDTH).max(1);
@@ -485,16 +488,16 @@ pub(super) fn agent_cell_lines(
     paths: &PathDisplay,
 ) -> Vec<Line<'static>> {
     let bullet_color = match cell.status {
-        crate::agents::AgentStatus::Done => TOOL_OK_COLOR,
+        crate::agents::AgentStatus::Done => tool_ok_color(),
         crate::agents::AgentStatus::Failed | crate::agents::AgentStatus::Interrupted => {
-            TOOL_FAIL_COLOR
+            tool_fail_color()
         }
-        _ => TOOL_RUNNING_COLOR,
+        _ => tool_running_color(),
     };
-    let dim = Style::new().fg(TOOL_DIM_COLOR);
-    let white = Style::new().fg(TOOL_OUTPUT_COLOR);
+    let dim = Style::new().fg(tool_dim_color());
+    let white = Style::new().fg(tool_output_color());
     let section = Style::new()
-        .fg(AGENT_SECTION_COLOR)
+        .fg(agent_section_color())
         .add_modifier(Modifier::BOLD);
     let mut lines = vec![Line::from(vec![
         Span::styled(
@@ -504,12 +507,12 @@ pub(super) fn agent_cell_lines(
         Span::styled(
             "Agent".to_string(),
             Style::new()
-                .fg(TOOL_NAME_COLOR)
+                .fg(tool_name_color())
                 .add_modifier(Modifier::BOLD),
         ),
         Span::styled(
             format!("({})", cell.description),
-            Style::new().fg(TOOL_ARGS_COLOR),
+            Style::new().fg(tool_args_color()),
         ),
     ])];
     // ⎿  Prompt: over the indented prompt body.
@@ -578,13 +581,13 @@ pub(super) fn agent_cell_lines(
     let footer: Option<(String, Color)> = match cell.status {
         crate::agents::AgentStatus::Done => Some((
             agent_done_clause(cell.tool_uses, cell.tokens, cell.secs),
-            TOOL_DIM_COLOR,
+            tool_dim_color(),
         )),
         crate::agents::AgentStatus::Interrupted => {
-            Some(("Interrupted".to_string(), TOOL_FAIL_COLOR))
+            Some(("Interrupted".to_string(), tool_fail_color()))
         }
-        crate::agents::AgentStatus::Failed => Some(("Failed".to_string(), TOOL_FAIL_COLOR)),
-        _ if cell.background => Some((TOOL_BACKGROUNDED.to_string(), TOOL_DIM_COLOR)),
+        crate::agents::AgentStatus::Failed => Some(("Failed".to_string(), tool_fail_color())),
+        _ if cell.background => Some((TOOL_BACKGROUNDED.to_string(), tool_dim_color())),
         _ => None,
     };
     if let Some((text, color)) = footer {
@@ -644,7 +647,7 @@ pub fn agent_list_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     if agents.is_empty() {
         return Vec::new();
     }
-    let dim = Style::new().fg(TOOL_DIM_COLOR);
+    let dim = Style::new().fg(tool_dim_color());
     let selection = app.agent_selection();
     let mut lines = vec![Line::default()];
     // The main row: the filled bullet only while the MAIN session is the one
@@ -662,9 +665,9 @@ pub fn agent_list_lines(app: &App, width: u16) -> Vec<Line<'static>> {
         AGENT_ROW_BULLET
     };
     let mut main_style = if main_selected {
-        Style::new().fg(MENU_SELECTED_COLOR)
+        Style::new().fg(menu_selected_color())
     } else if main_viewed {
-        Style::new().fg(TOOL_OUTPUT_COLOR)
+        Style::new().fg(tool_output_color())
     } else {
         dim
     };
@@ -672,7 +675,7 @@ pub fn agent_list_lines(app: &App, width: u16) -> Vec<Line<'static>> {
         main_style = main_style.add_modifier(Modifier::BOLD);
     }
     lines.push(Line::from(vec![
-        Span::styled(marker.to_string(), Style::new().fg(MENU_SELECTED_COLOR)),
+        Span::styled(marker.to_string(), Style::new().fg(menu_selected_color())),
         Span::styled(bullet.to_string(), main_style),
         Span::styled(AGENT_MAIN_LABEL.to_string(), main_style),
     ]));
@@ -693,18 +696,18 @@ pub fn agent_list_lines(app: &App, width: u16) -> Vec<Line<'static>> {
             AGENT_ROW_BULLET
         };
         let bullet_style = match run.status {
-            s if s.is_final() && s.ok() => Style::new().fg(TOOL_OK_COLOR),
-            s if s.is_final() => Style::new().fg(TOOL_FAIL_COLOR),
-            _ if selected => Style::new().fg(MENU_SELECTED_COLOR),
+            s if s.is_final() && s.ok() => Style::new().fg(tool_ok_color()),
+            s if s.is_final() => Style::new().fg(tool_fail_color()),
+            _ if selected => Style::new().fg(menu_selected_color()),
             _ if viewed => Style::new()
-                .fg(TOOL_OUTPUT_COLOR)
+                .fg(tool_output_color())
                 .add_modifier(Modifier::BOLD),
             _ => dim,
         };
         let mut text_style = if selected {
-            Style::new().fg(MENU_SELECTED_COLOR)
+            Style::new().fg(menu_selected_color())
         } else if viewed {
-            Style::new().fg(TOOL_OUTPUT_COLOR)
+            Style::new().fg(tool_output_color())
         } else {
             dim
         };
@@ -731,7 +734,7 @@ pub fn agent_list_lines(app: &App, width: u16) -> Vec<Line<'static>> {
             name.push('…');
         }
         lines.push(Line::from(vec![
-            Span::styled(marker.to_string(), Style::new().fg(MENU_SELECTED_COLOR)),
+            Span::styled(marker.to_string(), Style::new().fg(menu_selected_color())),
             Span::styled(bullet.to_string(), bullet_style),
             Span::styled(name, text_style),
             Span::styled(suffix, dim),
@@ -766,16 +769,16 @@ pub fn agent_hint_line(app: &App) -> Line<'static> {
         if i > 0 {
             spans.push(Span::styled(
                 FOOTER_SEPARATOR.to_string(),
-                Style::new().fg(FOOTER_COLOR),
+                Style::new().fg(footer_color()),
             ));
         }
         spans.push(Span::styled(
             (*key).to_string(),
-            Style::new().fg(SHORTCUTS_KEY_COLOR),
+            Style::new().fg(shortcuts_key_color()),
         ));
         spans.push(Span::styled(
             (*label).to_string(),
-            Style::new().fg(FOOTER_COLOR),
+            Style::new().fg(footer_color()),
         ));
     }
     Line::from(spans)
