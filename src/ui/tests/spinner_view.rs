@@ -84,13 +84,23 @@ fn every_row_carries_its_own_live_glyph() {
     // shared frame clock, so the styles compare at a glance.
     let texts = texts(&open_app(), 80);
     assert!(row_for(&texts, "comet").contains("(●•·   )"), "{texts:?}");
+    // The two braille tracks at the open: the ball on the floor at the left
+    // wall, and the wave's eight two-dot cells.
+    assert!(row_for(&texts, "gravity").contains("⣤⣀⣀⣀⣀⣀⣀⣀"), "{texts:?}");
+    let is_braille = |c: char| ('\u{2800}'..='\u{28FF}').contains(&c);
+    assert_eq!(
+        row_for(&texts, "wave")
+            .chars()
+            .filter(|&c| is_braille(c))
+            .count(),
+        8,
+        "the wave is eight braille cells: {texts:?}"
+    );
     assert!(row_for(&texts, "dots").contains('⠋'), "{texts:?}");
-    assert!(row_for(&texts, "orbit").contains('◐'), "{texts:?}");
     assert!(row_for(&texts, "blocks").contains('▙'), "{texts:?}");
     assert!(row_for(&texts, "pulse").contains('●'), "{texts:?}");
     assert!(row_for(&texts, "bars").contains('▁'), "{texts:?}");
     assert!(row_for(&texts, "line").contains('|'), "{texts:?}");
-    assert!(row_for(&texts, "still").contains('•'), "{texts:?}");
 }
 
 #[test]
@@ -120,7 +130,7 @@ fn the_rows_and_the_preview_tick_with_the_frame_clock() {
 #[test]
 fn the_preview_follows_the_selection() {
     let mut app = open_app();
-    app.spinner_picker.as_mut().expect("open").selected = 2; // dots
+    app.spinner_picker.as_mut().expect("open").selected = 4; // dots
     let texts = texts(&app, 80);
     let preview = preview(&texts);
     assert!(
@@ -181,7 +191,7 @@ fn the_active_style_wears_the_check_and_the_open_seats_on_it() {
         "only the active row is marked: {texts:?}"
     );
     assert!(
-        texts.iter().any(|t| t.contains("(5/9)")),
+        texts.iter().any(|t| t.contains("(6/9)")),
         "the highlight seats on the active style: {texts:?}"
     );
 }

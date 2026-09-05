@@ -26,7 +26,7 @@ fn the_catalog_holds_the_nine_styles_comet_first() {
     assert_eq!(
         names,
         [
-            "comet", "sparkle", "dots", "orbit", "blocks", "pulse", "bars", "line", "still"
+            "comet", "gravity", "wave", "sparkle", "dots", "blocks", "pulse", "bars", "line"
         ]
     );
     assert_eq!(
@@ -208,7 +208,7 @@ fn up_and_down_wrap_at_the_ends() {
     app.on_key(key(KeyCode::Up));
     assert_eq!(
         app.highlighted_spinner(),
-        Some(Spinner::Still),
+        Some(Spinner::Line),
         "↑ from the first row wraps to the last"
     );
     app.on_key(key(KeyCode::Down));
@@ -220,7 +220,7 @@ fn up_and_down_wrap_at_the_ends() {
     app.on_key(key(KeyCode::End));
     assert_eq!(
         app.highlighted_spinner(),
-        Some(Spinner::Still),
+        Some(Spinner::Line),
         "End clamps at the bottom"
     );
     app.on_key(key(KeyCode::PageUp));
@@ -262,12 +262,12 @@ fn the_search_matches_descriptions_too() {
 #[test]
 fn enter_selects_the_highlighted_style_and_closes() {
     let mut app = spinner_app();
-    app.on_key(key(KeyCode::Down)); // comet (the open seat) → sparkle
+    app.on_key(key(KeyCode::Down)); // comet (the open seat) → gravity
     let action = app.on_key(key(KeyCode::Enter));
-    assert_eq!(action, Action::SelectSpinner(Spinner::Sparkle));
+    assert_eq!(action, Action::SelectSpinner(Spinner::Gravity));
     assert_eq!(
         app.spinner(),
-        Spinner::Sparkle,
+        Spinner::Gravity,
         "the pure state already moved"
     );
     assert!(app.spinner_picker.is_none(), "the picker closed");
@@ -278,7 +278,7 @@ fn space_selects_like_enter() {
     let mut app = spinner_app();
     app.on_key(key(KeyCode::End));
     let action = app.on_key(key(KeyCode::Char(' ')));
-    assert_eq!(action, Action::SelectSpinner(Spinner::Still));
+    assert_eq!(action, Action::SelectSpinner(Spinner::Line));
     assert!(app.spinner_picker.is_none());
 }
 
@@ -334,7 +334,7 @@ fn typing_reseats_the_highlight_on_the_first_match() {
 #[test]
 fn the_active_row_is_marked() {
     let mut app = App::new();
-    app.set_spinner(Spinner::Orbit);
+    app.set_spinner(Spinner::Wave);
     app.open_spinner_picker();
     let active: Vec<&'static str> = app
         .spinner_rows()
@@ -342,7 +342,7 @@ fn the_active_row_is_marked() {
         .filter(|r| r.active)
         .map(|r| r.spinner.name())
         .collect();
-    assert_eq!(active, ["orbit"], "exactly the session's style is marked");
+    assert_eq!(active, ["wave"], "exactly the session's style is marked");
 }
 
 #[test]
@@ -358,7 +358,7 @@ fn the_picker_works_mid_turn_without_touching_the_turn() {
     app.on_key(key(KeyCode::Down));
     assert_eq!(
         app.on_key(key(KeyCode::Enter)),
-        Action::SelectSpinner(Spinner::Sparkle)
+        Action::SelectSpinner(Spinner::Gravity)
     );
     assert!(app.is_streaming(), "the turn is untouched");
     assert!(app.turn_active());

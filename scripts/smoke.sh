@@ -11042,7 +11042,7 @@ sleep 0.5
 spin_open="$(tmux capture-pane -t "$S110" -p)"
 echo "==== Phase 110: the picker open (comet highlighted, every row live) ===="
 printf '%s\n' "$spin_open"
-for expect in "→ comet" "sparkle" "dots" "orbit" "blocks" "pulse" "bars" "line" "still" "(1/9)" \
+for expect in "→ comet" "gravity" "wave" "sparkle" "dots" "blocks" "pulse" "bars" "line" "(1/9)" \
 	"Working…" "esc to interrupt" "A comet sweeping between two dim walls" \
 	"Type to search · Enter to choose · Esc to cancel"; do
 	if ! printf '%s' "$spin_open" | grep -qF "$expect"; then
@@ -11056,6 +11056,30 @@ if [ "$(printf '%s\n' "$spin_open" | grep -c '(.*●.*)')" -lt 2 ]; then
 	echo "FAIL: Phase 110 — expected the comet on its row and in the preview" >&2
 	status=1
 fi
+# The two braille tracks (docs/spinner.md). Their rows are LIVE — the ball
+# has moved on from its opening frame by the time the pane is captured — so
+# the checks are structural: eight braille cells each (U+2800–U+28FF, the
+# bytes E2 A0..A3 80..BF — counted bytewise under LC_ALL=C, since a
+# multibyte range in a bracket expression is not portable across locales),
+# and the gravity track's bare floor `⣀` under at least six of them (the
+# 2×2-dot ball covers at most two cells).
+braille_cells() {
+	printf '%s' "$1" | LC_ALL=C grep -oE $'\xe2[\xa0-\xa3][\x80-\xbf]' | wc -l
+}
+spin_gravity_row="$(printf '%s\n' "$spin_open" | grep -E "^ *gravity ")"
+spin_wave_row="$(printf '%s\n' "$spin_open" | grep -E "^ *wave ")"
+if [ "$(braille_cells "$spin_gravity_row")" -ne 8 ]; then
+	echo "FAIL: Phase 110 — the gravity row is not an eight-cell braille track: '$spin_gravity_row'" >&2
+	status=1
+fi
+if [ "$(printf '%s' "$spin_gravity_row" | grep -oF "⣀" | wc -l)" -lt 6 ]; then
+	echo "FAIL: Phase 110 — the gravity track's floor is missing under the ball: '$spin_gravity_row'" >&2
+	status=1
+fi
+if [ "$(braille_cells "$spin_wave_row")" -ne 8 ]; then
+	echo "FAIL: Phase 110 — the wave row is not an eight-cell braille track: '$spin_wave_row'" >&2
+	status=1
+fi
 # The page is LIVE with no turn running: the preview line must have moved
 # between two captures 0.3 s apart (the comet steps a frame every 80 ms).
 spin_preview_a="$(printf '%s\n' "$spin_open" | grep -F "Working…")"
@@ -11067,23 +11091,29 @@ if [ "$spin_preview_a" = "$spin_preview_b" ]; then
 	echo "FAIL: Phase 110 — the preview did not animate with no turn running" >&2
 	status=1
 fi
-# ↓ to sparkle: the counter, the preview and the description follow the
-# selection — the preview line no longer opens with the comet's wall.
+# ↓ to gravity: the counter, the preview and the description follow the
+# selection — the preview line now opens with the braille track, not the
+# comet's wall.
 tmux send-keys -t "$S110" Down
 sleep 0.4
-spin_sparkle="$(tmux capture-pane -t "$S110" -p)"
-echo "==== Phase 110: ↓ previews sparkle ===="
-printf '%s\n' "$spin_sparkle"
-if ! printf '%s' "$spin_sparkle" | grep -qF "(2/9)"; then
+spin_gravity="$(tmux capture-pane -t "$S110" -p)"
+echo "==== Phase 110: ↓ previews gravity ===="
+printf '%s\n' "$spin_gravity"
+if ! printf '%s' "$spin_gravity" | grep -qF "(2/9)"; then
 	echo "FAIL: Phase 110 — the counter did not follow the selection" >&2
 	status=1
 fi
-if ! printf '%s' "$spin_sparkle" | grep -qF "A spark blooming into a star"; then
+if ! printf '%s' "$spin_gravity" | grep -qF "A ball hopping along the track"; then
 	echo "FAIL: Phase 110 — the description did not follow the selection" >&2
 	status=1
 fi
-if printf '%s\n' "$spin_sparkle" | grep -F "Working…" | grep -q '(.*●.*) Working'; then
+if printf '%s\n' "$spin_gravity" | grep -F "Working…" | grep -q '(.*●.*) Working'; then
 	echo "FAIL: Phase 110 — the preview still wears the comet after ↓" >&2
+	status=1
+fi
+spin_gravity_preview="$(printf '%s\n' "$spin_gravity" | grep -F "Working…")"
+if [ "$(braille_cells "${spin_gravity_preview%% Working*}")" -ne 8 ]; then
+	echo "FAIL: Phase 110 — the preview does not open with the eight-cell braille track: '$spin_gravity_preview'" >&2
 	status=1
 fi
 # Type-to-search matches descriptions too: `braille` narrows to dots; Enter
@@ -11148,7 +11178,7 @@ sleep 0.5
 spin_relaunch="$(tmux capture-pane -t "$S110" -p)"
 echo "==== Phase 110: a fresh launch keeps the saved style ===="
 printf '%s\n' "$spin_relaunch"
-if ! printf '%s' "$spin_relaunch" | grep -qF "(3/9)"; then
+if ! printf '%s' "$spin_relaunch" | grep -qF "(5/9)"; then
 	echo "FAIL: Phase 110 — the saved style did not seat the highlight on dots after a relaunch" >&2
 	status=1
 fi

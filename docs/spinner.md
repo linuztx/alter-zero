@@ -11,40 +11,85 @@ picker, the `/mascot` picker's twin — chooses among nine, previews them
 
 | name      | look                                                     | cadence |
 | --------- | -------------------------------------------------------- | ------- |
-| `comet`   | `(●•·   )` — a Larson-scanner sweep between dim walls (the default) | 80 ms  |
+| `comet`   | `(●•·   )` — a Larson-scanner sweep between dim walls (the default) | 80 ms |
+| `gravity` | `⣤⣀⣀⣀⣀⣀⣀⣀` — a ball hopping along a braille track, bouncing off both walls, cyan → blue | 2.4 s trip, 0.6 s hop |
+| `wave`    | eight braille cells — a wave rolling down the track and reflecting off the walls, in the banner's wash | 3.4 s there and back |
 | `sparkle` | `· ✢ ✳ ✶ ✻ ✽ ✻ ✶ ✳ ✢` — a spark blooming into a star, cyan → blue | 120 ms |
 | `dots`    | `⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏` — the classic braille spinner            | 80 ms  |
-| `orbit`   | `◐ ◓ ◑ ◒` — a half-lit disc turning through its quarters  | 120 ms |
 | `blocks`  | `▙ ▛ ▜ ▟` — the mascots' quadrant glyphs turning, cyan → blue | 150 ms |
 | `pulse`   | `●` — one dot breathing dim → white, the running tool bullet's breath | 1 s breath |
 | `bars`    | `▁ ▂ ▃ ▄ ▅ ▆ ▇ █ ▇ …` — a level meter, brightening with height | 60 ms |
 | `line`    | `\| / - \` — the classic ASCII spinner, for any font        | 100 ms |
-| `still`   | `•` — no motion at all; only the verb shimmers            | —      |
 
 The catalog's **identity** — names, order, descriptions, the `from_name`
 round-trip `spinner.json` reads back through — is the pure `app::Spinner`
 enum (`Default` = `Comet`). Its **look** — every style's frames, cadence and
 colour rule — is styling, so it lives in `ui/theme.rs` beside every other
-styling decision (`SPINNER_*_FRAMES` / `_INTERVAL`, the pulse and bars
-colour endpoints), and `ui::status::spinner_spans(spinner, elapsed)` maps
-one to the other. Two rules every style keeps, pinned by `ui/tests/status.rs`:
-every frame of a style is the **same width** (so the verb after it never
-jitters — the comet's own rule, `docs/status-indicator.md`) and every glyph
-is **single-width** (a wide glyph would shear the verb and the metrics after
-it — `docs/table-streaming.md` *Wide glyphs*).
+styling decision (`SPINNER_*_FRAMES` / `_INTERVAL`, the track geometry, the
+pulse and bars colour endpoints), and `ui::status::spinner_spans(spinner,
+elapsed)` maps one to the other. Two rules every style keeps, pinned by
+`ui/tests/status.rs`: every frame of a style is the **same width** (so the
+verb after it never jitters — the comet's own rule,
+`docs/status-indicator.md`) and every glyph is **single-width** (a wide glyph
+would shear the verb and the metrics after it — `docs/table-streaming.md`
+*Wide glyphs*).
+
+### The two braille tracks
+
+`gravity` and `wave` have no frame table. Each draws itself on a **braille
+track** (`ui::status::Track`): eight cells — the comet's footprint, so the
+three wide styles share one width — of 2 × 4 dots each, sixteen dot columns
+by four dot rows inside a single text row. That is the resolution that lets
+a ball visibly *hop* and a wave visibly *roll* where a glyph table can only
+step. A cell is one glyph and so one colour: dim (`STATUS_DETAIL_COLOR`)
+until something coloured lands on it. The pair is a port of the two braille
+animations in a bouncing-indicator lab script — its canvas, its `tri`
+ping-pong and its `arc` hop — retuned for a fixed eight-cell track and the
+crate's palette.
+
+- **`gravity`** lays a floor along the bottom dot row and hops a 2 × 2 dot
+  ball along it. Horizontally the ball **ping-pongs** at constant speed with
+  a hard reversal at each wall (`ui::wrap::ping_pong`, one round trip per
+  `SPINNER_GRAVITY_SWEEP`); vertically it follows a parabola
+  (`ui::wrap::hop`, 0 at take-off and landing, 1 at the apex, one hop per
+  `SPINNER_GRAVITY_HOP`). The two periods are 2.4 s and 0.6 s — **four hops a
+  round trip** — so the ball touches down exactly as it meets each wall, where
+  the script's 2.6 s / 0.66 s let the bounces drift against the walls. At
+  rest the ball's bottom row shares the floor's, so it reads as landing rather
+  than hovering; at the apex it sits whole in the top two dot rows. The ball
+  wears the banner gradient by where it is on the track — cyan at the left
+  wall, blue at the right — and the cell it sits in takes its colour.
+- **`wave`** puts one dot per dot column on a sine whose wavelength is the
+  whole track (`SPINNER_WAVE_LENGTH`, so a crest and a trough are always in
+  view), quantised to the four dot rows. Its *phase* ping-pongs:
+  `SPINNER_WAVE_TRAVEL` (3) wavelengths out and the same back per
+  `SPINNER_WAVE_SWEEP`, so the wave rolls right, reflects off the wall and
+  rolls back. Because the travel is a whole number of wavelengths, the frame
+  at the reversal *is* the frame it set out from — no seam. Each cell wears
+  the banner gradient by its place on the track: the mascot's own wash,
+  rolling.
+
+Both curves are computed in **whole milliseconds** (`ping_pong` folds the
+elapsed onto the way *toward* the far wall; `hop` multiplies integers before
+it divides), so the way back retraces the way out bit for bit: the frame at
+`T − d` equals the frame at `T + d`, which is what makes the reflection
+seamless rather than approximately so. `ping_pong` is the comet's Larson
+sweep as a continuous value.
 
 ### Colour
 
 Every style ends its spans in the separator space before the verb, so the
 verb's shimmer starts at the same distance whatever the style's width; the
 comet keeps its eight per-cell spans (white bold head, mid-grey `•`, dim
-rest), and every other style is **one glyph in one span**, bold, coloured by
-`glyph_color`:
+rest), the two tracks emit one span per cell (not bold — braille dots are
+dense already, and a synthesized bold blurs them), and every other style is
+**one glyph in one span**, bold, coloured by `glyph_color`:
 
-- `sparkle` and `blocks` walk the **banner's gradient**
+- `sparkle`, `blocks`, `gravity` and `wave` walk the **banner's gradient**
   (`HEADER_GRADIENT_START` → `HEADER_GRADIENT_END`, `docs/header.md`) — the
   spark by its bloom level (cyan at `·`, blue at `✽`, back down the fade), the
-  block by its turn — so the theme's accent rides the status line;
+  block by its turn, the ball by its position, the wave by each cell's place
+  on the track — so the theme's accent rides the status line;
 - `pulse` breathes the running tool bullet's raised cosine
   (`ui::wrap::breath`, the helper `tool_pulse_color` now shares,
   `docs/tool-pulse.md`) from the bullet's own dim (`TOOL_PULSE_DIM`) up to
@@ -54,7 +99,7 @@ rest), and every other style is **one glyph in one span**, bold, coloured by
   in step;
 - `bars` brightens with height, the tool pulse's bright grey at `▁` to white
   at `█`;
-- `dots`, `orbit`, `line` and `still` wear the comet head's white.
+- `dots` and `line` wear the comet head's white.
 
 ## The `/spinner` picker
 
@@ -62,14 +107,14 @@ rest), and every other style is **one glyph in one span**, bold, coloured by
 ────────────────────────────────────────────────────────────────
   ❯
   → comet    (●•·   ) ✓
+    gravity  ⣀⣘⣃⣀⣀⣀⣀⣀
+    wave     ⠔⠉⠉⠑⠤⣀⣀⡠
     sparkle  ✶
     dots     ⠹
-    orbit    ◑
     blocks   ▛
     pulse    ●
     bars     ▅
     line     /
-    still    •
   (1/9)
 
   (●•·   ) Working… (4s · esc to interrupt)
@@ -108,9 +153,9 @@ the page is **live**.
   boundary already injects every draw (`App::set_pulse`, `docs/tool-pulse.md`).
   The chain stops by itself on the first draw after the picker closes.
 - **The page never moves while it animates.** Styles differ in width (the
-  comet is eight cells, the rest one) but every style is exactly one row, so
-  neither the selection nor the clock changes the page height — the
-  `/settings` always-emit rule, pinned by
+  comet and the two tracks are eight cells, the rest one) but every style is
+  exactly one row, so neither the selection nor the clock changes the page
+  height — the `/settings` always-emit rule, pinned by
   `the_page_height_is_stable_across_selections_and_ticks`.
 
 A search that matches **nothing** collapses to its essentials — the
@@ -185,6 +230,15 @@ startup failure), so the first turn's status line already wears it.
   styling, which this crate keeps in one file so a retheme touches one
   place. The enum knows nothing about glyphs, and `spinner_spans` is the
   only mapping.
+- **Why are the two tracks drawn and not tabled?** Their motion runs on two
+  independent periods (the ball's trip and its hop; the wave's sweep and its
+  wavelength), so a table of their frames would run to hundreds of entries
+  and still quantise the motion to the table's step. Drawing from `elapsed`
+  costs a few dozen dot writes per frame and keeps the same purity every
+  other spinner has: the phase comes from the boundary clock, nothing else.
+- **Why four hops a round trip?** So the ball lands exactly as it reaches
+  each wall. The script's 2.6 s / 0.66 s let the bounce drift against the
+  walls, which reads as random; a whole ratio reads as a rhythm.
 - **Why one span per one-cell style?** The comet's per-cell spans exist so
   each cell can carry its own fade step. A one-glyph style has nothing to
   fade across, and the `/spinner` rows and `VERB_START` arithmetic in the
@@ -210,8 +264,9 @@ startup failure), so the first turn's status line already wears it.
 - `ui::spinner_view` — `spinner_view_lines` (the page builder; its length is
   the reserved height, `docs/view-flow.md`), `spinner_picker_height`,
   `render_spinner_picker`.
-- `ui::wrap::breath` — the shared raised-cosine breath (`pulse`, and the
-  tool bullet's `tool_pulse_color`).
+- `ui::status::Track` (private) — the eight-cell braille canvas the two
+  tracks draw on; `ui::wrap::{breath, ping_pong, hop}` — the shared motion
+  curves (`pulse` and the tool bullet's `tool_pulse_color`; the tracks).
 - `tui::spinner::Session::select_spinner`, `tui::config::{spinner_json_path,
   load_spinner, save_spinner}`.
 
@@ -227,17 +282,23 @@ startup failure), so the first turn's status line already wears it.
 - `ui/tests/status.rs` — every style's frames single- and fixed-width, the
   default line byte-identical to the comet, each style's first frame and its
   one separator space, the one-span rule, the sparkle's bloom and gradient,
-  the pulse's breath, the bars' brightening, the blocks' gradient, the still
-  dot, the classic steps, and `render_live` wearing the session's style.
+  the pulse's breath, the bars' brightening, the blocks' gradient, the
+  classic steps; the gravity ball's exact frames at the walls, a quarter hop
+  in and at the apex, its floor under every cell of every frame, its
+  gradient over a dim floor; the wave's two dots per cell, its motion, its
+  seamless reversal and time-symmetric crawl, its gradient wash; and
+  `render_live` wearing the session's style.
 - `ui/tests/spinner_view.rs` — the framed page (rules, search, rows, counter,
-  preview, description, hint), every row's live glyph, the rows and preview
-  ticking with the clock, the preview following the selection, the stable
-  height across selections *and* ticks, the active ✓ and its seat, the
-  no-match collapse, no stacked blanks, width safety, the height contract,
-  flow eligibility, and the tick-stable / keystroke-sensitive flow signature.
+  preview, description, hint), every row's live glyph (the tracks included),
+  the rows and preview ticking with the clock, the preview following the
+  selection, the stable height across selections *and* ticks, the active ✓
+  and its seat, the no-match collapse, no stacked blanks, width safety, the
+  height contract, flow eligibility, and the tick-stable / keystroke-sensitive
+  flow signature.
 - `scripts/smoke.sh` Phase 110 — the picker end to end in a real terminal:
-  open from the palette, the live rows and preview, the preview turning
-  between two captures with no turn running, ↓ moving the preview, a filtered
+  open from the palette, the live rows (the ball on its floor, the wave's
+  braille cells) and preview, the preview turning between two captures with
+  no turn running, ↓ moving the preview onto the gravity track, a filtered
   Enter switching the style with a toast and a `spinner.json` write, the very
   next turn's status line opening with the new style mid pre-stream pause, and
   a **second process against the same config home launching with it**.

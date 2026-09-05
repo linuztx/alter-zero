@@ -1393,7 +1393,35 @@ pub(super) const SHIMMER_MAX_BLEND: f32 = 0.9;
 // after it never jitters) and every glyph is single-width
 // (docs/table-streaming.md "Wide glyphs"). A one-cell style is drawn as one
 // span — the glyph plus the separator space — in the comet head's white bold
-// unless its own colour rule below says otherwise. ---
+// unless its own colour rule below says otherwise. The two **track** styles
+// (`gravity`, `wave`) have no frame table at all: they draw themselves on a
+// braille track from the geometry consts below. ---
+
+/// The braille **track** the `gravity` and `wave` styles draw on: this many
+/// cells of 2 × 4 dots each — sixteen dot columns by four dot rows inside one
+/// text row, the resolution that lets a ball visibly hop and a wave visibly
+/// roll where a glyph table could only step. Eight, the comet's footprint,
+/// so the three wide styles share one width.
+pub(super) const SPINNER_TRACK_CELLS: usize = 8;
+
+/// `gravity` — one round trip of the ball along the track (left wall → right
+/// wall → left) at constant speed, reversing hard at each wall.
+pub(super) const SPINNER_GRAVITY_SWEEP: Duration = Duration::from_millis(2400);
+
+/// One hop of the `gravity` ball, floor to floor — four per round trip, so it
+/// touches down exactly as it meets each wall.
+pub(super) const SPINNER_GRAVITY_HOP: Duration = Duration::from_millis(600);
+
+/// `wave` — one crawl of the wave down the track and back.
+pub(super) const SPINNER_WAVE_SWEEP: Duration = Duration::from_millis(3400);
+
+/// How many wavelengths the `wave` travels each way per sweep — a whole
+/// number, so the frame at the reversal is the frame it set out from.
+pub(super) const SPINNER_WAVE_TRAVEL: f32 = 3.0;
+
+/// The `wave`'s wavelength in dot columns — the whole track, so one crest and
+/// one trough are always in view.
+pub(super) const SPINNER_WAVE_LENGTH: f32 = 16.0;
 
 /// `sparkle` — a spark opening into a heavy star and closing again. Its
 /// colour walks the banner's [`HEADER_GRADIENT_START`] → [`HEADER_GRADIENT_END`]
@@ -1410,12 +1438,6 @@ pub(super) const SPINNER_DOTS_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "�
 
 /// How long each `dots` frame shows (the cli-spinners cadence).
 pub(super) const SPINNER_DOTS_INTERVAL: Duration = Duration::from_millis(80);
-
-/// `orbit` — a half-lit disc turning clockwise through its quarters, white bold.
-pub(super) const SPINNER_ORBIT_FRAMES: &[&str] = &["◐", "◓", "◑", "◒"];
-
-/// How long each `orbit` frame shows.
-pub(super) const SPINNER_ORBIT_INTERVAL: Duration = Duration::from_millis(120);
 
 /// `blocks` — the mascots' own three-quarter block glyphs (docs/mascot.md),
 /// the missing quadrant walking clockwise, coloured along the banner's
@@ -1463,10 +1485,6 @@ pub(super) const SPINNER_LINE_FRAMES: &[&str] = &["|", "/", "-", "\\"];
 
 /// How long each `line` frame shows.
 pub(super) const SPINNER_LINE_INTERVAL: Duration = Duration::from_millis(100);
-
-/// `still` — a dot that never moves; the verb's shimmer is the line's only
-/// motion. White bold like every other head.
-pub(super) const SPINNER_STILL_FRAMES: &[&str] = &["•"];
 
 // --- Slash-command palette. A scrolling, single-line-per-command list pinned
 // **below the input box** (a third live-region band) whenever the input is a bare

@@ -136,8 +136,9 @@ with a **live banner preview** rendered by the header's own builder, the
 choice persisted in `mascot.json` and the switch's purge rebuild redrawing
 the banner at once) in `docs/mascot.md`, and the **`/spinner` picker** that
 chooses the status line's **spinner style** (the `/mascot` picker's twin over
-a nine-style catalog — `comet` (the default), `sparkle`, `dots`, `orbit`,
-`blocks`, `pulse`, `bars`, `line`, `still` — whose page is **live**: every
+a nine-style catalog — `comet` (the default), the braille-track `gravity`
+ball and `wave`, `sparkle`, `dots`, `blocks`, `pulse`, `bars`, `line` —
+whose page is **live**: every
 row wears its own spinner and the highlighted style previews as a whole
 sample status line through `ui::styled_status_line`, the strip's own
 renderer, animated off the injected frame clock with no turn running
@@ -145,8 +146,10 @@ renderer, animated off the injected frame clock with no turn running
 than its rows so a frame never churns a purge rebuild; the choice persisted
 in `spinner.json` and seeded at bootstrap, the styles' frames and colour
 rules in `ui/theme.rs` — `sparkle`/`blocks` wearing the banner gradient,
-`pulse` the tool bullet's breath — and the switch needing no rebuild, the
-status line being live-only) in `docs/spinner.md`; the **`/login` sign-in fork** (the
+`pulse` the tool bullet's breath, the two tracks drawn procedurally on a
+braille canvas from whole-millisecond ping-pong/hop curves rather than
+tabled — and the switch needing no rebuild, the status line being
+live-only) in `docs/spinner.md`; the **`/login` sign-in fork** (the
 flow's root now asks *how* you sign in — **Use a subscription** or **Use an
 API key** — because GitHub Copilot is not a key you paste. Below that root the
 two lists carry **no heading** (each used to repeat the row that opened it, in

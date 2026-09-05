@@ -751,14 +751,15 @@ fn every_style_animates_in_single_width_fixed_width_frames() {
 fn each_style_opens_the_line_with_its_own_first_frame() {
     let expect = [
         (Spinner::Comet, "(●•·   )"),
+        // The ball on the floor against the left wall — its two dot-columns
+        // fill the first cell's lower half, the floor runs under the rest.
+        (Spinner::Gravity, "⣤⣀⣀⣀⣀⣀⣀⣀"),
         (Spinner::Sparkle, "·"),
         (Spinner::Dots, "⠋"),
-        (Spinner::Orbit, "◐"),
         (Spinner::Blocks, "▙"),
         (Spinner::Pulse, "●"),
         (Spinner::Bars, "▁"),
         (Spinner::Line, "|"),
-        (Spinner::Still, "•"),
     ];
     for (spinner, frame) in expect {
         assert_eq!(styled_frame(spinner, 0), frame, "{}", spinner.name());
@@ -886,24 +887,11 @@ fn the_blocks_turn_through_the_banner_gradient() {
 }
 
 #[test]
-fn the_still_dot_never_moves() {
-    for ms in [0u64, 77, 1_234, 60_000] {
-        assert_eq!(styled_frame(Spinner::Still, ms), "•");
-    }
-    let span = first_span(Spinner::Still, 0);
-    assert_eq!(span.style.fg, Some(STATUS_COLOR), "white, like every head");
-}
-
-#[test]
 fn the_classic_styles_step_one_glyph_per_interval() {
     let dots: Vec<String> = (0..10)
         .map(|i| styled_frame(Spinner::Dots, i * 80))
         .collect();
     assert_eq!(dots.concat(), "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏");
-    let orbit: Vec<String> = (0..4)
-        .map(|i| styled_frame(Spinner::Orbit, i * 120))
-        .collect();
-    assert_eq!(orbit.concat(), "◐◓◑◒");
     let line: Vec<String> = (0..4)
         .map(|i| styled_frame(Spinner::Line, i * 100))
         .collect();
@@ -912,6 +900,153 @@ fn the_classic_styles_step_one_glyph_per_interval() {
         styled_frame(Spinner::Dots, 800),
         "⠋",
         "dots loop after 0.8 s"
+    );
+}
+
+/// The dot count of a braille frame's `i`th cell.
+fn braille_dots(frame: &str, i: usize) -> u32 {
+    let c = frame.chars().nth(i).expect("a cell");
+    assert!(
+        ('\u{2800}'..='\u{28FF}').contains(&c),
+        "{c:?} is not a braille cell"
+    );
+    (c as u32 - 0x2800).count_ones()
+}
+
+/// The spans of a track style's frame at `ms` — the status line's first
+/// eight spans, one per cell.
+fn track_spans(spinner: Spinner, ms: u64) -> Vec<Span<'static>> {
+    let mut s = status(0, TokenArrow::Down, 0, None);
+    s.elapsed = Duration::from_millis(ms);
+    styled_status_line(&s, None, spinner, 200).spans[..8].to_vec()
+}
+
+#[test]
+fn the_gravity_ball_hops_along_the_floor_and_touches_down_at_each_wall() {
+    // An eight-cell braille track: a floor along the bottom dot row, a 2×2
+    // dot ball ping-ponging along it at constant speed (one round trip per
+    // SPINNER_GRAVITY_SWEEP) while it hops on a parabola (one hop per
+    // SPINNER_GRAVITY_HOP) — four hops a round trip, so it lands exactly as
+    // it meets each wall.
+    assert_eq!(
+        styled_frame(Spinner::Gravity, 0),
+        "⣤⣀⣀⣀⣀⣀⣀⣀",
+        "t=0: on the floor against the left wall"
+    );
+    assert_eq!(
+        styled_frame(Spinner::Gravity, 1_200),
+        "⣀⣀⣀⣀⣀⣀⣀⣤",
+        "half a sweep: on the floor against the right wall"
+    );
+    assert_eq!(
+        styled_frame(Spinner::Gravity, 2_400),
+        "⣤⣀⣀⣀⣀⣀⣀⣀",
+        "a full sweep later it is back where it started"
+    );
+    assert_eq!(
+        styled_frame(Spinner::Gravity, 150),
+        "⣘⣃⣀⣀⣀⣀⣀⣀",
+        "a quarter hop in: the ball is up in the top two dot rows, one dot column in"
+    );
+    assert_eq!(
+        styled_frame(Spinner::Gravity, 300),
+        "⣀⣘⣃⣀⣀⣀⣀⣀",
+        "the apex: the whole ball in the top two dot rows, straddling two cells, the floor intact under it"
+    );
+    // Every frame keeps the floor under every cell.
+    for ms in (0..2_400).step_by(30) {
+        let frame = styled_frame(Spinner::Gravity, ms);
+        for (i, c) in frame.chars().enumerate() {
+            let bits = c as u32 - 0x2800;
+            assert_eq!(
+                bits & 0xC0,
+                0xC0,
+                "at {ms} ms cell {i} lost its floor: {frame}"
+            );
+        }
+    }
+}
+
+#[test]
+fn the_gravity_ball_wears_the_gradient_over_a_dim_floor() {
+    let (r0, g0, b0) = HEADER_GRADIENT_START;
+    let (r1, g1, b1) = HEADER_GRADIENT_END;
+    let at_left = track_spans(Spinner::Gravity, 0);
+    assert_eq!(
+        at_left[0].style.fg,
+        Some(Color::Rgb(r0, g0, b0)),
+        "the ball at the left wall is cyan"
+    );
+    for span in &at_left[1..] {
+        assert_eq!(
+            span.style.fg,
+            Some(STATUS_DETAIL_COLOR),
+            "the bare floor is dim: {:?}",
+            span.content
+        );
+    }
+    let at_right = track_spans(Spinner::Gravity, 1_200);
+    assert_eq!(
+        at_right[7].style.fg,
+        Some(Color::Rgb(r1, g1, b1)),
+        "the ball at the right wall is blue"
+    );
+    assert_eq!(
+        at_right[7].content.as_ref(),
+        "⣤ ",
+        "the last cell carries the separator space"
+    );
+}
+
+#[test]
+fn the_wave_rolls_down_the_track_and_reflects_off_the_walls() {
+    // One dot per dot column follows a sine across the eight cells (so every
+    // cell holds exactly two dots), one wavelength spanning the track; the
+    // phase ping-pongs, so the crawl reverses at each end of the sweep — and
+    // because it travels a whole number of wavelengths each way, the frame
+    // at the reversal is the frame it started from, with no seam.
+    let start = styled_frame(Spinner::Wave, 0);
+    for i in 0..8 {
+        assert_eq!(braille_dots(&start, i), 2, "cell {i} of {start}");
+    }
+    let later = styled_frame(Spinner::Wave, 200);
+    assert_ne!(start, later, "the wave moves");
+    assert_eq!(
+        styled_frame(Spinner::Wave, 1_700),
+        start,
+        "at the turn (3 wavelengths on) the wave is back in phase"
+    );
+    assert_eq!(
+        styled_frame(Spinner::Wave, 1_700 - 200),
+        styled_frame(Spinner::Wave, 1_700 + 200),
+        "the crawl back retraces the crawl out"
+    );
+    assert_eq!(
+        styled_frame(Spinner::Wave, 3_400),
+        start,
+        "a full sweep later it is back where it started"
+    );
+}
+
+#[test]
+fn the_wave_wears_the_gradient_across_the_track() {
+    let (r0, g0, b0) = HEADER_GRADIENT_START;
+    let (r1, g1, b1) = HEADER_GRADIENT_END;
+    let spans = track_spans(Spinner::Wave, 0);
+    assert_eq!(
+        spans[0].style.fg,
+        Some(Color::Rgb(r0, g0, b0)),
+        "cyan at the left"
+    );
+    assert_eq!(
+        spans[7].style.fg,
+        Some(Color::Rgb(r1, g1, b1)),
+        "blue at the right"
+    );
+    let reds: Vec<u8> = spans.iter().map(|s| span_rgb(s).0).collect();
+    assert!(
+        reds.windows(2).all(|w| w[0] <= w[1]),
+        "the wash runs monotonically across the track: {reds:?}"
     );
 }
 

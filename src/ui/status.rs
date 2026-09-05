@@ -3,7 +3,7 @@
 //! See `docs/status-indicator.md`.
 
 use super::theme::*;
-use super::wrap::{blend, breath, clamp_spans, lerp_rgb};
+use super::wrap::{blend, breath, clamp_spans, hop, lerp_rgb, ping_pong};
 use super::*;
 
 use crate::app::Spinner;
@@ -69,21 +69,161 @@ pub(super) fn shimmer_spans_from(
         .collect()
 }
 
-/// A style's frames and how long each shows — the catalog's *look*, kept in
-/// `theme` beside every other styling decision (`docs/spinner.md`). The
-/// one-frame styles (`pulse`, `still`) never step; `pulse` moves by colour
-/// alone ([`glyph_color`]).
-fn spinner_frames(spinner: Spinner) -> (&'static [&'static str], Duration) {
-    match spinner {
+/// A style's frame table and how long each frame shows — the catalog's
+/// *look*, kept in `theme` beside every other styling decision
+/// (`docs/spinner.md`). `None` for the two **track** styles, which draw
+/// themselves ([`track_spans`]): their motion runs on two independent
+/// periods, so a table of their frames would run to hundreds of entries. The
+/// one-frame `pulse` never steps; it moves by colour alone ([`glyph_color`]).
+fn spinner_frames(spinner: Spinner) -> Option<(&'static [&'static str], Duration)> {
+    Some(match spinner {
         Spinner::Comet => (SPINNER_FRAMES, SPINNER_INTERVAL),
         Spinner::Sparkle => (SPINNER_SPARKLE_FRAMES, SPINNER_SPARKLE_INTERVAL),
         Spinner::Dots => (SPINNER_DOTS_FRAMES, SPINNER_DOTS_INTERVAL),
-        Spinner::Orbit => (SPINNER_ORBIT_FRAMES, SPINNER_ORBIT_INTERVAL),
         Spinner::Blocks => (SPINNER_BLOCKS_FRAMES, SPINNER_BLOCKS_INTERVAL),
         Spinner::Pulse => (SPINNER_PULSE_FRAMES, SPINNER_PULSE_PERIOD),
         Spinner::Bars => (SPINNER_BARS_FRAMES, SPINNER_BARS_INTERVAL),
         Spinner::Line => (SPINNER_LINE_FRAMES, SPINNER_LINE_INTERVAL),
-        Spinner::Still => (SPINNER_STILL_FRAMES, SPINNER_INTERVAL),
+        Spinner::Gravity | Spinner::Wave => return None,
+    })
+}
+
+/// The dot bits of a braille cell (`U+2800 + bits`) by dot column (0 left,
+/// 1 right) and dot row (0 top … 3 bottom). Unicode numbers dots 1–3 down
+/// the left and 4–6 down the right, then 7 and 8 along the bottom — which is
+/// why the bottom row's bits (`0x40`, `0x80`) break the doubling pattern.
+const BRAILLE_DOTS: [[u8; 4]; 2] = [[0x01, 0x02, 0x04, 0x40], [0x08, 0x10, 0x20, 0x80]];
+
+/// A braille **track**: [`SPINNER_TRACK_CELLS`] cells of 2 × 4 dots — the
+/// canvas the `gravity` ball and the `wave` draw on (`docs/spinner.md`), a
+/// port of the braille canvas in the bouncing-indicator lab this pair of
+/// styles comes from. Each cell carries one colour (a cell is one glyph):
+/// the dim [`STATUS_DETAIL_COLOR`] until something coloured lands on it.
+struct Track {
+    cells: [u8; SPINNER_TRACK_CELLS],
+    colors: [Color; SPINNER_TRACK_CELLS],
+}
+
+impl Track {
+    /// Dot columns across the track — two per cell.
+    const COLS: usize = SPINNER_TRACK_CELLS * 2;
+    /// Dot rows down a cell.
+    const ROWS: usize = 4;
+
+    fn new() -> Self {
+        Self {
+            cells: [0; SPINNER_TRACK_CELLS],
+            colors: [STATUS_DETAIL_COLOR; SPINNER_TRACK_CELLS],
+        }
+    }
+
+    /// Light the dot at (`col`, `row`) and tint its cell `color` — or leave
+    /// the cell's colour alone for `None` (the floor). A dot off the track
+    /// is dropped, so a shape may run over an edge without a check at every
+    /// call.
+    fn set(&mut self, col: usize, row: usize, color: Option<Color>) {
+        if col >= Self::COLS || row >= Self::ROWS {
+            return;
+        }
+        self.cells[col / 2] |= BRAILLE_DOTS[col % 2][row];
+        if let Some(color) = color {
+            self.colors[col / 2] = color;
+        }
+    }
+
+    /// The track as one span per cell, the last carrying the separator space
+    /// before the verb — the comet's shape, so a track style sits in the
+    /// status line exactly as the comet does. Not bold: braille dots are
+    /// dense already, and a synthesized bold blurs them.
+    fn spans(self) -> Vec<Span<'static>> {
+        self.cells
+            .iter()
+            .zip(self.colors)
+            .enumerate()
+            .map(|(i, (&bits, color))| {
+                // Every value 0x2800..=0x28FF is an assigned braille pattern,
+                // so the fallback never fires.
+                let glyph = char::from_u32(0x2800 + u32::from(bits)).unwrap_or(' ');
+                let text = if i == SPINNER_TRACK_CELLS - 1 {
+                    format!("{glyph} ")
+                } else {
+                    glyph.to_string()
+                };
+                Span::styled(text, Style::new().fg(color))
+            })
+            .collect()
+    }
+}
+
+/// The two track styles' frames at `elapsed`, drawn on a fresh [`Track`]
+/// ([`spinner_frames`] answered `None` for exactly these two).
+fn track_spans(spinner: Spinner, elapsed: Duration) -> Vec<Span<'static>> {
+    let mut track = Track::new();
+    match spinner {
+        Spinner::Gravity => draw_gravity(&mut track, elapsed),
+        Spinner::Wave => draw_wave(&mut track, elapsed),
+        other => unreachable!("{other:?} has a frame table"),
+    }
+    track.spans()
+}
+
+/// The `gravity` ball: a floor along the bottom dot row, and a 2 × 2 dot
+/// ball ping-ponging along it at constant speed (one round trip per
+/// [`SPINNER_GRAVITY_SWEEP`], a hard reversal at each wall) while it hops on
+/// a parabola (one hop per [`SPINNER_GRAVITY_HOP`] — four a round trip, so it
+/// touches down exactly as it meets each wall). At rest its bottom row
+/// shares the floor's, so it reads as landing rather than hovering. The ball
+/// wears the banner gradient by where it is on the track — cyan at the left
+/// wall, blue at the right — and the cell it sits in takes its colour; the
+/// bare floor stays dim.
+fn draw_gravity(track: &mut Track, elapsed: Duration) {
+    for col in 0..Track::COLS {
+        track.set(col, Track::ROWS - 1, None);
+    }
+    // The ball's left dot column, so its right one stays on the track.
+    let reach = (Track::COLS - 2) as f32;
+    let col = (ping_pong(elapsed, SPINNER_GRAVITY_SWEEP) * reach) as usize;
+    // Its bottom dot row: the floor at both ends of the hop, two rows up at
+    // the apex — the ball stays whole all the way up.
+    let lift = (hop(elapsed, SPINNER_GRAVITY_HOP) * 2.0).round() as usize;
+    let bottom = Track::ROWS - 1 - lift.min(Track::ROWS - 2);
+    let color = lerp_rgb(
+        HEADER_GRADIENT_START,
+        HEADER_GRADIENT_END,
+        col as f32 / reach,
+    );
+    for dx in 0..2 {
+        for dy in 0..2 {
+            track.set(col + dx, bottom - dy, Some(color));
+        }
+    }
+}
+
+/// The `wave`: one dot per dot column on a sine whose wavelength is the
+/// whole track ([`SPINNER_WAVE_LENGTH`] dot columns — a crest and a trough
+/// always in view), quantised to the four dot rows. The phase ping-pongs,
+/// [`SPINNER_WAVE_TRAVEL`] wavelengths out and the same back per
+/// [`SPINNER_WAVE_SWEEP`], so the wave rolls down the track, reflects off
+/// the wall and rolls back — and the whole-number travel makes the reversal
+/// frame the starting frame, with no seam. Each cell wears the banner
+/// gradient by its place on the track: the mascot's own wash, rolling.
+fn draw_wave(track: &mut Track, elapsed: Duration) {
+    // Reduced to one turn so the reversal lands on a phase of exactly zero.
+    let phase = (ping_pong(elapsed, SPINNER_WAVE_SWEEP) * SPINNER_WAVE_TRAVEL).fract()
+        * std::f32::consts::TAU;
+    let last_cell = (SPINNER_TRACK_CELLS - 1) as f32;
+    for col in 0..Track::COLS {
+        let y = (std::f32::consts::TAU * col as f32 / SPINNER_WAVE_LENGTH - phase).sin();
+        // y = 1 is the crest (dot row 0), y = −1 the trough (dot row 3).
+        let row = ((1.0 - y) / 2.0 * (Track::ROWS - 1) as f32)
+            .round()
+            .clamp(0.0, (Track::ROWS - 1) as f32) as usize;
+        let color = lerp_rgb(
+            HEADER_GRADIENT_START,
+            HEADER_GRADIENT_END,
+            (col / 2) as f32 / last_cell,
+        );
+        track.set(col, row, Some(color));
     }
 }
 
@@ -125,23 +265,26 @@ fn glyph_color(spinner: Spinner, index: usize, len: usize, elapsed: Duration) ->
             let (r, g, b) = blend(SPINNER_BARS_HIGH, SPINNER_BARS_LOW, level(index));
             Color::Rgb(r, g, b)
         }
-        Spinner::Comet | Spinner::Dots | Spinner::Orbit | Spinner::Line | Spinner::Still => {
-            STATUS_COLOR
-        }
+        Spinner::Comet | Spinner::Dots | Spinner::Line => STATUS_COLOR,
+        // Never asked: the tracks colour per cell (`draw_gravity`, `draw_wave`).
+        Spinner::Gravity | Spinner::Wave => STATUS_COLOR,
     }
 }
 
 /// The spinner opening the status line, in the session's chosen `spinner`
 /// style (`docs/spinner.md`): the style's frame for `elapsed` (one frame per
 /// its interval, looping), as spans that end in the separator space before
-/// the verb. The comet is its own shape ([`comet_spans`], one span per cell);
-/// every other style is one glyph in one span, bold, coloured by
+/// the verb. The comet is its own shape ([`comet_spans`], one span per cell),
+/// the two track styles draw themselves ([`track_spans`], one span per cell
+/// too), and every other style is one glyph in one span, bold, coloured by
 /// [`glyph_color`]. Pure, like [`shimmer_spans`]: the frame index derives
 /// from the boundary-supplied `elapsed`, and the loop's animation re-arm
 /// keeps it advancing — which is also what lets the `/spinner` picker draw
 /// each row's live spinner with it.
 pub(super) fn spinner_spans(spinner: Spinner, elapsed: Duration) -> Vec<Span<'static>> {
-    let (frames, interval) = spinner_frames(spinner);
+    let Some((frames, interval)) = spinner_frames(spinner) else {
+        return track_spans(spinner, elapsed);
+    };
     let index = (elapsed.as_millis() / interval.as_millis().max(1)) as usize % frames.len().max(1);
     let frame = frames[index];
     if spinner == Spinner::Comet {

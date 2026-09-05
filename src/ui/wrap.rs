@@ -459,6 +459,33 @@ pub(super) fn breath(elapsed: std::time::Duration, period: std::time::Duration) 
     0.5 * (1.0 - (std::f32::consts::TAU * phase).cos())
 }
 
+/// Where a **ping-pong** is at `elapsed`: 0 → 1 → 0 over one `period` at
+/// constant speed, reversing hard at the ends — how the `gravity` ball and
+/// the `wave`'s phase travel the status line's braille track
+/// (`docs/spinner.md`). Computed in whole milliseconds so the way back
+/// retraces the way out bit for bit: the frame at `T − d` equals the frame
+/// at `T + d`, which is what makes the wave's reflection seamless.
+pub(super) fn ping_pong(elapsed: std::time::Duration, period: std::time::Duration) -> f32 {
+    let period_ms = period.as_millis().max(1);
+    let ms = elapsed.as_millis() % period_ms;
+    let toward = if ms * 2 <= period_ms {
+        ms
+    } else {
+        period_ms - ms
+    };
+    (toward * 2) as f32 / period_ms as f32
+}
+
+/// Where a **hop** is at `elapsed`: one parabolic arc per `period`, 0 at
+/// take-off and landing, 1 at the apex — gravity with no damping, the
+/// `gravity` ball's bounce (`docs/spinner.md`). Whole-millisecond
+/// arithmetic like [`ping_pong`], so the fall mirrors the rise exactly.
+pub(super) fn hop(elapsed: std::time::Duration, period: std::time::Duration) -> f32 {
+    let period_ms = period.as_millis().max(1);
+    let ms = elapsed.as_millis() % period_ms;
+    (4 * ms * (period_ms - ms)) as f32 / (period_ms * period_ms) as f32
+}
+
 /// Display columns a span list occupies.
 pub(super) fn spans_cols(spans: &[Span<'_>]) -> usize {
     spans.iter().map(|span| cols(&span.content)).sum()

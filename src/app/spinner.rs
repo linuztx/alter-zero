@@ -32,12 +32,16 @@ pub enum Spinner {
     /// default, and the status line's look before there was a catalog.
     #[default]
     Comet,
+    /// A ball hopping along a braille track and bouncing off both walls —
+    /// the comet's footprint with four dot rows of real vertical motion.
+    Gravity,
+    /// A wave rolling down the same braille track and reflecting off the
+    /// walls.
+    Wave,
     /// A spark blooming into a star and back, in the banner's gradient.
     Sparkle,
     /// The classic braille dots.
     Dots,
-    /// A half-lit disc turning through its quarters.
-    Orbit,
     /// The mascots' own quadrant block glyphs, turning in the banner's
     /// gradient.
     Blocks,
@@ -47,22 +51,20 @@ pub enum Spinner {
     Bars,
     /// The classic ASCII line, for a font with none of the glyphs above.
     Line,
-    /// A still dot: no motion at all, only the verb's shimmer.
-    Still,
 }
 
 impl Spinner {
     /// Every style, in the order the `/spinner` picker lists them.
     pub const ALL: [Self; 9] = [
         Self::Comet,
+        Self::Gravity,
+        Self::Wave,
         Self::Sparkle,
         Self::Dots,
-        Self::Orbit,
         Self::Blocks,
         Self::Pulse,
         Self::Bars,
         Self::Line,
-        Self::Still,
     ];
 
     /// The lowercase name the picker lists and `spinner.json` records.
@@ -70,14 +72,14 @@ impl Spinner {
     pub const fn name(self) -> &'static str {
         match self {
             Self::Comet => "comet",
+            Self::Gravity => "gravity",
+            Self::Wave => "wave",
             Self::Sparkle => "sparkle",
             Self::Dots => "dots",
-            Self::Orbit => "orbit",
             Self::Blocks => "blocks",
             Self::Pulse => "pulse",
             Self::Bars => "bars",
             Self::Line => "line",
-            Self::Still => "still",
         }
     }
 
@@ -86,14 +88,14 @@ impl Spinner {
     pub const fn description(self) -> &'static str {
         match self {
             Self::Comet => "A comet sweeping between two dim walls",
+            Self::Gravity => "A ball hopping along the track, bouncing off both walls",
+            Self::Wave => "A wave rolling down the track, reflecting off the walls",
             Self::Sparkle => "A spark blooming into a star in the banner's cyan",
             Self::Dots => "The classic braille dots, circling",
-            Self::Orbit => "A half-lit disc turning through its quarters",
             Self::Blocks => "The mascot's own block glyphs, turning in its gradient",
             Self::Pulse => "One dot breathing dim to bright, like a running tool",
             Self::Bars => "A bar rising and falling like a level meter",
             Self::Line => "The classic spinning line, in any font",
-            Self::Still => "A still dot, only the verb shimmers",
         }
     }
 

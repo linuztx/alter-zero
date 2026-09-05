@@ -299,9 +299,9 @@ shimmer, derives the frame index purely from `TurnStatus::elapsed`; the same
 spinner never shifts as the comet moves.
 
 **The comet is the default of nine styles.** `/spinner` (`docs/spinner.md`)
-picks another — `sparkle`, `dots`, `orbit`, `blocks`, `pulse`, `bars`, `line`,
-`still` — from a picker whose rows and preview animate live, and persists it
-in `spinner.json`. The strip builds its status row through
+picks another — the braille-track `gravity` ball and `wave`, then `sparkle`,
+`dots`, `blocks`, `pulse`, `bars`, `line` — from a picker whose rows and
+preview animate live, and persists it in `spinner.json`. The strip builds its status row through
 `ui::styled_status_line(status, verb, spinner, width)` for `App::spinner()`
 (main turn and agent session view alike); `status_line` /
 `status_line_with_verb` are its comet case, byte-identical to the line
