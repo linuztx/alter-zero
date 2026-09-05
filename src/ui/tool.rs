@@ -120,6 +120,21 @@ pub(super) fn tool_header_lines(
     let args_style = Style::new()
         .fg(tool_args_color())
         .add_modifier(Modifier::BOLD);
+    // A file tool's path is also a **link to the file** (`docs/links.md`
+    // *The file tool header*): the shown text carries the file's absolute
+    // `file://` target in the link carrier, so clicking any fragment of it —
+    // however the rows below wrap or cut it — opens the whole file. Only the
+    // path: the `(`/`)` framing it and the corner rows beneath stay plain,
+    // and a path the policy cannot place (a relative argument under the
+    // verbatim policy) paints exactly as before.
+    let file_link = if crate::llm::tools::is_file_tool(&tool.name) {
+        paths.file_url(&tool.args)
+    } else {
+        None
+    };
+    let path_style = file_link
+        .as_deref()
+        .map_or(args_style, |url| crate::links::linked(args_style, url));
     // Continuation rows indent to align under the opening `(`, which sits right
     // after `● {name}` — parens and args alike bold white (a uniform, noticeable
     // header body) — so the wrapped rows land exactly beneath it.
@@ -170,6 +185,7 @@ pub(super) fn tool_header_lines(
         .into_iter()
         .map(|row| row.trim_end().to_string())
         .collect();
+    let last_row = rows.len().saturating_sub(1);
     rows.into_iter()
         .enumerate()
         .map(|(i, row)| {
@@ -182,8 +198,27 @@ pub(super) fn tool_header_lines(
             } else {
                 vec![Span::raw(" ".repeat(indent_cols))]
             };
-            if !row.is_empty() {
+            if row.is_empty() {
+                return Line::from(spans);
+            }
+            if file_link.is_none() {
                 spans.push(Span::styled(row, args_style));
+                return Line::from(spans);
+            }
+            // A linked path: its fragments carry the target, while the
+            // closing `)` — the last row's final character, appended above —
+            // is framing and rides its own plain span.
+            let close = i == last_row && row.ends_with(TOOL_HEADER_CLOSE);
+            let body = if close {
+                row[..row.len() - TOOL_HEADER_CLOSE.len()].to_string()
+            } else {
+                row
+            };
+            if !body.is_empty() {
+                spans.push(Span::styled(body, path_style));
+            }
+            if close {
+                spans.push(Span::styled(TOOL_HEADER_CLOSE.to_string(), args_style));
             }
             Line::from(spans)
         })

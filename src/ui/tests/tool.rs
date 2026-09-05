@@ -3515,3 +3515,276 @@ fn the_fold_shows_three_rows_of_one_long_line_unmarked() {
         "{lines:?}"
     );
 }
+
+// --- the header's path is a `file://` link (docs/links.md) ---
+
+/// The `(text, target)` pairs of a line's link-carrying spans.
+fn linked_spans(line: &Line) -> Vec<(String, String)> {
+    line.spans
+        .iter()
+        .filter_map(|s| {
+            crate::links::style_link(&s.style).map(|u| (s.content.to_string(), u.to_string()))
+        })
+        .collect()
+}
+
+/// The `● name(args)` rows of a rendered cell — everything above the `⎿`.
+fn header_only<'a>(lines: &'a [Line<'a>]) -> Vec<&'a Line<'a>> {
+    lines
+        .iter()
+        .take_while(|l| !plain(l).contains('⎿'))
+        .collect()
+}
+
+#[test]
+fn a_file_tool_header_links_its_path_to_the_file() {
+    // `● Write(cat_poem.txt)`: the shown path carries the file's absolute
+    // `file://` target — the whole file, not the shortened text — while the
+    // bullet, the name, the parens and every corner row carry none.
+    let paths = session_paths();
+    let output = "Wrote 2 lines to cat_poem.txt\n1 The Cat in the Box\n2 ";
+    let cell = tool(
+        "Write",
+        "/home/linuztx/Codes/tests/cat_poem.txt",
+        ToolStatus::Ok,
+        output,
+    );
+    let lines = tool_lines(&cell, 80, &paths);
+    assert_eq!(
+        plain(&lines[0]),
+        "● Write(cat_poem.txt)",
+        "the visible row is what it was"
+    );
+    assert_eq!(
+        linked_spans(&lines[0]),
+        vec![(
+            "cat_poem.txt".to_string(),
+            "file:///home/linuztx/Codes/tests/cat_poem.txt".to_string()
+        )]
+    );
+    let close = lines[0].spans.last().expect("the closing paren");
+    assert_eq!(close.content.as_ref(), ")");
+    assert_eq!(
+        close.style.fg,
+        Some(tool_args_color()),
+        "the `)` keeps the args dress, unlinked"
+    );
+    assert_eq!(plain(&lines[1]), "  ⎿  Wrote 2 lines to cat_poem.txt");
+    for line in &lines[1..] {
+        assert!(
+            linked_spans(line).is_empty(),
+            "the corner rows are not links: {:?}",
+            plain(line)
+        );
+    }
+}
+
+#[test]
+fn read_and_edit_headers_link_alike_whatever_form_the_row_shows() {
+    let paths = session_paths();
+    // `~/hello.py` and an absolute path outside home both link the file.
+    let read = tool("Read", "/home/linuztx/hello.py", ToolStatus::Ok, "1 x");
+    let lines = tool_lines(&read, 80, &paths);
+    assert_eq!(plain(&lines[0]), "● Read(~/hello.py)");
+    assert_eq!(
+        linked_spans(&lines[0]),
+        vec![(
+            "~/hello.py".to_string(),
+            "file:///home/linuztx/hello.py".to_string()
+        )]
+    );
+    let edit = tool(
+        "Edit",
+        "/tmp/notes.txt",
+        ToolStatus::Ok,
+        "Updated ../../../../tmp/notes.txt (+1 -1)\n1 -a\n1 +b",
+    );
+    let lines = tool_lines(&edit, 80, &paths);
+    assert_eq!(plain(&lines[0]), "● Edit(/tmp/notes.txt)");
+    assert_eq!(
+        linked_spans(&lines[0]),
+        vec![(
+            "/tmp/notes.txt".to_string(),
+            "file:///tmp/notes.txt".to_string()
+        )]
+    );
+    assert!(
+        linked_spans(&lines[1]).is_empty(),
+        "the `Updated …` head is not a link"
+    );
+    // An image read links the same way — the header is the header.
+    let image = tool(
+        "Read",
+        "/tmp/alter-zero-1000/18d27aab55500771-4c329/scratchpad/cute_cat.jpg",
+        ToolStatus::Ok,
+        "Read image (PNG, 784x562, 1.1 MB)",
+    );
+    let lines = tool_lines(&image, 100, &paths);
+    assert_eq!(
+        linked_spans(&lines[0]),
+        vec![(
+            "/tmp/alter-zero-1000/18d27aab55500771-4c329/scratchpad/cute_cat.jpg".to_string(),
+            "file:///tmp/alter-zero-1000/18d27aab55500771-4c329/scratchpad/cute_cat.jpg"
+                .to_string()
+        )]
+    );
+    assert_eq!(plain(&lines[1]), "  ⎿  Read image (PNG, 784x562, 1.1 MB)");
+    assert!(linked_spans(&lines[1]).is_empty());
+}
+
+#[test]
+fn a_wrapped_or_cut_header_path_links_every_fragment_to_the_whole_file() {
+    // The point of the carrier (docs/links.md): a path hard-broken across
+    // rows — or cut to the header's column budget — opens the whole file
+    // from any fragment, where a terminal's own detection sees row text.
+    let paths = session_paths();
+    let file = "/home/linuztx/Codes/tests/some/deeply/nested/directory/tree/file.txt";
+    let cell = tool(
+        "Write",
+        file,
+        ToolStatus::Ok,
+        "Wrote 1 line to some/deeply/nested/directory/tree/file.txt\n1 x",
+    );
+    let lines = tool_lines(&cell, 30, &paths);
+    let header = header_only(&lines);
+    let rows: Vec<String> = header.iter().map(|l| plain(l)).collect();
+    assert!(header.len() >= 2, "the path wraps at 30 columns: {rows:?}");
+    let linked: Vec<(String, String)> = header.iter().flat_map(|l| linked_spans(l)).collect();
+    assert!(
+        linked.len() >= 2,
+        "every fragment is its own linked span: {linked:?}"
+    );
+    let shown: String = linked.iter().map(|(t, _)| t.as_str()).collect();
+    assert_eq!(
+        shown, "some/deeply/nested/directory/tree/file.txt",
+        "the fragments are the shown path and nothing else: {rows:?}"
+    );
+    for (_, url) in &linked {
+        assert_eq!(
+            url,
+            "file:///home/linuztx/Codes/tests/some/deeply/nested/directory/tree/file.txt"
+        );
+    }
+    // A path past the header's column budget is cut with `…` in the
+    // collapsed cell; the fragment still carries the whole file.
+    let long = format!("/tmp/{}/file.txt", "d".repeat(TOOL_HEADER_MAX_COLS));
+    let cell = tool("Read", &long, ToolStatus::Ok, "1 x");
+    let lines = tool_lines(&cell, 400, &paths);
+    let row = plain(&lines[0]);
+    assert!(
+        row.ends_with(&format!("{TOOL_HEADER_ELLIPSIS})")),
+        "cut: {row}"
+    );
+    let linked = linked_spans(&lines[0]);
+    assert_eq!(linked.len(), 1, "{linked:?}");
+    assert_eq!(linked[0].1, format!("file://{long}"));
+}
+
+#[test]
+fn only_a_file_tools_header_is_a_link() {
+    // A `Bash` command embeds paths the shell resolves, an `Agent`'s summary
+    // is prose — neither is a file to open.
+    let paths = session_paths();
+    let cell = tool(
+        "Bash",
+        "python3 /home/linuztx/Codes/tests/hello.py",
+        ToolStatus::Ok,
+        "Exit code: 0\nhi",
+    );
+    for line in tool_lines(&cell, 80, &paths) {
+        assert!(linked_spans(&line).is_empty(), "{:?}", plain(&line));
+    }
+    let cell = tool(
+        "Agent",
+        "/home/linuztx/Codes/tests/x",
+        ToolStatus::Ok,
+        "done",
+    );
+    assert!(linked_spans(&tool_lines(&cell, 80, &paths)[0]).is_empty());
+    // The `(`/`)` framing a linked path is not part of it.
+    let cell = tool(
+        "Write",
+        "/home/linuztx/Codes/tests/hello.py",
+        ToolStatus::Ok,
+        "Wrote 1 line to hello.py\n1 x",
+    );
+    let header = &tool_lines(&cell, 80, &paths)[0];
+    for span in header
+        .spans
+        .iter()
+        .filter(|s| s.content.as_ref() != "hello.py")
+    {
+        assert_eq!(
+            crate::links::style_link(&span.style),
+            None,
+            "not a link: {:?}",
+            span.content
+        );
+    }
+}
+
+#[test]
+fn the_verbatim_policy_links_an_absolute_path_and_leaves_a_relative_one() {
+    // With no cwd to resolve against, an absolute argument is still a place
+    // — the schema asks for absolute paths — while a relative one is not.
+    let cell = tool(
+        "Write",
+        "/home/linuztx/hello.py",
+        ToolStatus::Ok,
+        "Wrote 1 line to hello.py\n1 x",
+    );
+    let lines = tool_lines(&cell, 80, &PathDisplay::VERBATIM);
+    assert_eq!(plain(&lines[0]), "● Write(/home/linuztx/hello.py)");
+    assert_eq!(
+        linked_spans(&lines[0]),
+        vec![(
+            "/home/linuztx/hello.py".to_string(),
+            "file:///home/linuztx/hello.py".to_string()
+        )]
+    );
+    let cell = tool(
+        "Write",
+        "hello.py",
+        ToolStatus::Ok,
+        "Wrote 1 line to hello.py\n1 x",
+    );
+    let lines = tool_lines(&cell, 80, &PathDisplay::VERBATIM);
+    assert_eq!(plain(&lines[0]), "● Write(hello.py)");
+    assert!(
+        linked_spans(&lines[0]).is_empty(),
+        "nowhere to resolve `hello.py` to"
+    );
+}
+
+#[test]
+fn the_live_cell_and_the_transcript_link_the_header_alike() {
+    // The strip's running cell (a `Write` waiting on the permission gate) and
+    // the Ctrl+O expansion share the header builder, so the link rides both.
+    let paths = session_paths();
+    let cell = tool("Write", "/home/linuztx/hello.py", ToolStatus::Running, "");
+    let live = live_tool_lines(&cell, 80, Duration::ZERO, &paths);
+    assert_eq!(plain(&live[0]), "● Write(~/hello.py)");
+    assert_eq!(
+        linked_spans(&live[0]),
+        vec![(
+            "~/hello.py".to_string(),
+            "file:///home/linuztx/hello.py".to_string()
+        )]
+    );
+    let done = tool(
+        "Write",
+        "/home/linuztx/hello.py",
+        ToolStatus::Ok,
+        "Wrote 1 line to ../../hello.py\n1 x",
+    );
+    let full = tool_full_lines(&done, 80, &paths);
+    assert_eq!(plain(&full[0]), "● Write(~/hello.py)");
+    assert_eq!(
+        linked_spans(&full[0]),
+        vec![(
+            "~/hello.py".to_string(),
+            "file:///home/linuztx/hello.py".to_string()
+        )]
+    );
+    assert!(linked_spans(&full[1]).is_empty());
+}

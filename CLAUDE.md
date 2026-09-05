@@ -420,8 +420,13 @@ transcript stays still to keep its cache's signature clock-free) in
 reply shows — a bare URL in prose/lists/table cells, a `[text](url)` target —
 is painted inside an OSC 8 hyperlink carrying the whole URL, so a wrapped
 URL's every fragment opens the full target instead of the truncated row text
-the terminal's own detection saw: the pure `links` module detects/interns and
-stamps the id into `Style::underline_color`, `ui::inline` marks, and
+the terminal's own detection saw — and a `● Read/Write/Edit({path})` header's
+path is a link to the **file**, `links::file_url`'s absolute `file://` URI
+behind whatever short form the row shows, stamped before the wrap so any
+fragment opens the whole file, while the `(`/`)` and the `⎿ Wrote … to
+{path}` corner row beneath stay plain: the pure `links` module detects/interns
+and stamps the id into `Style::underline_color`, `ui::inline` marks prose,
+`ui::tool`'s header stamps the file target, and
 `term::draw_cells` — the choke point all four cell-write paths share — strips
 the carrier and brackets marked runs, `ALTER_ZERO_HYPERLINKS` gating emission)
 in `docs/links.md`; the `@` file-path picker (async walk+rank file search below

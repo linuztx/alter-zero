@@ -675,6 +675,15 @@ file*, the corner row where it is from here:
   paths the shell will resolve, an `Agent`'s summary is prose, an MCP call's
   is JSON, and the `!` shell cell has no header — those echo the record
   verbatim.
+- **And the shown path is a link to the file.** The header's path rides an
+  OSC 8 hyperlink whose target is the file's absolute `file://` URI
+  (`PathDisplay::file_url` → `links::file_url`: a relative argument resolved
+  against the cwd first, `.`/`..` collapsed, percent-encoded) whatever short
+  form the row paints, so a click on `hello.py`, `~/hello.py` or
+  `/tmp/notes.txt` opens that file — stamped before the wrap, so a long path
+  broken across rows opens whole from any fragment. Only the path: the
+  `(`/`)` and the corner head beneath (`Wrote 1 line to hello.py`) carry
+  none. `docs/links.md` *The file tool header*, `smoke.sh` Phase 113.
 - **Injected, never read.** The policy is the process cwd plus `$HOME`,
   handed to `App::set_path_display` once at bootstrap like the clock, so the
   pure renderers never touch the environment; `PathDisplay::VERBATIM` — the

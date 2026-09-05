@@ -468,3 +468,41 @@ fn the_app_holds_the_verbatim_policy_until_the_boundary_injects_one() {
         "~/hello.py"
     );
 }
+
+#[test]
+fn the_header_link_is_the_files_absolute_url() {
+    // The `● Write(hello.py)` header's `file://` target names the whole
+    // file, whatever short form the row shows (docs/links.md).
+    let paths = paths();
+    assert_eq!(
+        paths
+            .file_url("/home/linuztx/Codes/tests/hello.py")
+            .as_deref(),
+        Some("file:///home/linuztx/Codes/tests/hello.py")
+    );
+    assert_eq!(
+        paths.file_url("hello.py").as_deref(),
+        Some("file:///home/linuztx/Codes/tests/hello.py"),
+        "a relative argument resolves against the cwd"
+    );
+    assert_eq!(
+        paths.file_url("/home/linuztx/hello.py").as_deref(),
+        Some("file:///home/linuztx/hello.py"),
+        "the `~` form still links the absolute file"
+    );
+    assert_eq!(paths.file_url(""), None);
+}
+
+#[test]
+fn the_verbatim_policy_links_only_what_it_can_place() {
+    // No cwd: an absolute path is its own place, a relative one has none.
+    assert_eq!(
+        PathDisplay::VERBATIM.file_url("/tmp/x.py").as_deref(),
+        Some("file:///tmp/x.py")
+    );
+    assert_eq!(PathDisplay::VERBATIM.file_url("rel/x.py"), None);
+    assert_eq!(
+        PathDisplay::new("relative", None).file_url("rel/x.py"),
+        None
+    );
+}

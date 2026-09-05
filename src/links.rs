@@ -20,6 +20,7 @@
 
 use std::collections::HashMap;
 use std::ops::Range;
+use std::path::{Component, Path};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use ratatui::style::{Color, Style};
@@ -314,6 +315,76 @@ pub fn osc8_open(id: u32, url: &str) -> String {
     out
 }
 
+// --- `file://` targets ---
+
+/// The `file://` URI of `path` — the target a `● Read/Write/Edit({path})`
+/// header's path carries (`docs/links.md` *The file tool header*), so a
+/// click opens the file however the row showed it. A relative `path`
+/// resolves against `cwd` first (the session's — `app::PathDisplay`); `None`
+/// when it cannot be placed: a relative path with no absolute `cwd`, or an
+/// empty one. The path is normalized lexically the way `header_path` reads
+/// it (`.` dropped, `..` collapsed and saturating at the root, symlinks never
+/// consulted) and percent-encoded by `Path.as_uri()`'s rule: `/` and the
+/// unreserved `A-Za-z0-9-._~` pass, every other byte — a space, `#`, `?`,
+/// `%`, each UTF-8 byte of a non-ASCII name — is `%XX`, so the terminal
+/// decodes the exact name back and nothing in it can read as a fragment or
+/// a query. [`osc8_open`] passes `%` through, so the two encodings compose.
+#[must_use]
+pub fn file_url(path: &str, cwd: Option<&Path>) -> Option<String> {
+    if path.is_empty() {
+        return None;
+    }
+    let given = Path::new(path);
+    let resolved = if given.is_absolute() {
+        given.to_path_buf()
+    } else {
+        cwd.filter(|cwd| cwd.is_absolute())?.join(given)
+    };
+    let mut prefix = String::new();
+    let mut parts: Vec<String> = Vec::new();
+    for component in resolved.components() {
+        match component {
+            Component::Prefix(p) => prefix = p.as_os_str().to_string_lossy().into_owned(),
+            Component::RootDir | Component::CurDir => {}
+            Component::ParentDir => {
+                parts.pop();
+            }
+            Component::Normal(seg) => parts.push(seg.to_string_lossy().into_owned()),
+        }
+    }
+    let mut url = String::from("file://");
+    if !prefix.is_empty() {
+        // A Windows drive rides as `file:///C:/…`, its own spelling kept.
+        url.push('/');
+        url.push_str(&prefix);
+    }
+    if parts.is_empty() {
+        url.push('/');
+    }
+    for part in &parts {
+        url.push('/');
+        push_percent_encoded(&mut url, part);
+    }
+    Some(url)
+}
+
+/// Append `segment` to `out` percent-encoded for a `file://` path: the
+/// unreserved bytes (`A-Za-z0-9-._~`) as they are, every other byte as
+/// uppercase `%XX` — per byte of the UTF-8, the form every decoder reads.
+fn push_percent_encoded(out: &mut String, segment: &str) {
+    for &b in segment.as_bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                out.push(b as char);
+            }
+            _ => {
+                out.push('%');
+                out.push_str(&format!("{b:02X}"));
+            }
+        }
+    }
+}
+
 // --- The env gate ---
 
 /// Environment gate: a falsy value turns OSC 8 emission off for a terminal
@@ -566,5 +637,99 @@ mod tests {
         assert!(hyperlinks_disabled(Some("false")));
         assert!(hyperlinks_disabled(Some("No")));
         assert!(hyperlinks_disabled(Some(" OFF ")));
+    }
+
+    // --- `file://` targets for the file tool headers (docs/links.md) ---
+
+    #[test]
+    fn an_absolute_path_becomes_a_file_url() {
+        assert_eq!(
+            file_url("/tmp/notes.txt", None).as_deref(),
+            Some("file:///tmp/notes.txt")
+        );
+        // The cwd is irrelevant to an absolute path.
+        assert_eq!(
+            file_url("/tmp/notes.txt", Some(Path::new("/home/u/proj"))).as_deref(),
+            Some("file:///tmp/notes.txt")
+        );
+    }
+
+    #[test]
+    fn a_relative_path_resolves_against_the_cwd_and_needs_one() {
+        let cwd = Path::new("/home/linuztx/Codes/tests");
+        assert_eq!(
+            file_url("hello.py", Some(cwd)).as_deref(),
+            Some("file:///home/linuztx/Codes/tests/hello.py")
+        );
+        assert_eq!(
+            file_url("./src/../hello.py", Some(cwd)).as_deref(),
+            Some("file:///home/linuztx/Codes/tests/hello.py")
+        );
+        assert_eq!(
+            file_url("../sib/f.txt", Some(cwd)).as_deref(),
+            Some("file:///home/linuztx/Codes/sib/f.txt")
+        );
+        assert_eq!(
+            file_url("hello.py", None),
+            None,
+            "nothing to resolve against"
+        );
+        assert_eq!(
+            file_url("hello.py", Some(Path::new("relative"))),
+            None,
+            "a relative cwd is no anchor either"
+        );
+        assert_eq!(file_url("", Some(cwd)), None, "no path, no link");
+    }
+
+    #[test]
+    fn a_file_url_is_normalized_lexically() {
+        assert_eq!(
+            file_url("/tmp/./a/../x.py", None).as_deref(),
+            Some("file:///tmp/x.py")
+        );
+        assert_eq!(
+            file_url("/tmp/dir/", None).as_deref(),
+            Some("file:///tmp/dir")
+        );
+        assert_eq!(file_url("/", None).as_deref(), Some("file:///"));
+        assert_eq!(
+            file_url("/../..", None).as_deref(),
+            Some("file:///"),
+            "a climb saturates at the root"
+        );
+    }
+
+    #[test]
+    fn a_file_url_percent_encodes_all_but_the_unreserved_bytes() {
+        // `Path.as_uri()`'s rule: `/` and `A-Za-z0-9-._~` pass, every other
+        // byte — space, `#`, `?`, `%`, each UTF-8 byte of a non-ASCII char —
+        // is `%XX`, so the terminal decodes back to the exact file name and a
+        // `#` or `?` in it can never read as a fragment or a query.
+        assert_eq!(
+            file_url("/tmp/my file#1?.txt", None).as_deref(),
+            Some("file:///tmp/my%20file%231%3F.txt")
+        );
+        assert_eq!(
+            file_url("/tmp/100%.txt", None).as_deref(),
+            Some("file:///tmp/100%25.txt")
+        );
+        assert_eq!(
+            file_url("/tmp/café.txt", None).as_deref(),
+            Some("file:///tmp/caf%C3%A9.txt")
+        );
+        assert_eq!(
+            file_url("/home/u/a-b_c.d~e", None).as_deref(),
+            Some("file:///home/u/a-b_c.d~e")
+        );
+    }
+
+    #[test]
+    fn a_file_url_rides_the_osc8_frame_without_double_encoding() {
+        let url = file_url("/tmp/my file.txt", None).expect("an absolute path links");
+        assert_eq!(
+            osc8_open(3, &url),
+            "\x1b]8;id=az3;file:///tmp/my%20file.txt\x1b\\"
+        );
     }
 }

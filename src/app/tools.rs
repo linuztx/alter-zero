@@ -408,6 +408,18 @@ impl PathDisplay {
             None => path.to_string(),
         }
     }
+
+    /// The `file://` target the header's shown path **links** to
+    /// ([`links::file_url`](crate::links::file_url), `docs/links.md`): the
+    /// file's absolute URI whatever short form [`display`](Self::display)
+    /// painted, a relative argument resolved against the session's cwd.
+    /// `None` when there is nothing to resolve a relative path against — the
+    /// verbatim policy, whose absolute paths still link — or for an empty
+    /// one; the header then paints the path plain.
+    #[must_use]
+    pub fn file_url(&self, path: &str) -> Option<String> {
+        crate::links::file_url(path, self.cwd.as_deref())
+    }
 }
 
 impl App {

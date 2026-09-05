@@ -102,6 +102,28 @@ survives the trip.
    a real underline colour. Hyperlinks are per printed cell in every
    terminal, so a diff repainting half a URL re-links exactly those cells and
    the rest keep theirs.
+5. **`src/ui/tool.rs` — the file tool header.** A `● Read/Write/Edit({path})`
+   header's path is a link to the **file**: `tool_header_lines` stamps the
+   path's spans with `links::file_url` — the file's *absolute* `file://` URI
+   (a relative argument resolved against the session's cwd through
+   `app::PathDisplay::file_url`, `.`/`..` collapsed, every byte outside `/`
+   and `A-Za-z0-9-._~` percent-encoded, `Path.as_uri()`'s rule, so a space
+   or a `#` in a name can never read as a delimiter) — whatever short form
+   the row paints (`cat_poem.txt`, `~/hello.py`, `/tmp/x.py`; `docs/tools.md`
+   *Path display*). The target is stamped **before** the header wraps, so a
+   long path hard-broken across continuation rows, or cut to the collapsed
+   header's column budget, opens the whole file from any fragment. **Only the
+   path**: the `(`/`)` framing it, the bullet and the name stay plain, and the
+   `⎿ Wrote 21 lines to cat_poem.txt` / `⎿ Updated cat_poem.txt (+4 -4)` /
+   `⎿ Read image (PNG, …)` corner rows beneath are never linked — the header
+   says *which* file, and is the one row a click should open. The visible
+   text and style are byte-identical (the link wears the args' own bold
+   white; a supporting terminal hover-underlines it), a `Bash`/`Agent`/MCP
+   header carries nothing, and a path the policy cannot place — a relative
+   argument with no cwd, the verbatim policy's one gap — paints as before,
+   unlinked. Every surface sharing the header builder links alike: the
+   inline cell, the live strip's running cell (a `Write` waiting on the
+   permission gate), the Ctrl+O transcript and a subagent session view.
 
 `ALTER_ZERO_HYPERLINKS` gates it (default **on**; a falsy value — `0`,
 `false`, `no` — turns emission off for a terminal that misbehaves, the
@@ -145,7 +167,13 @@ the real binary in a pane narrow enough to split the dummy reply's
 `https://github.com/linuztx`, captures the raw byte stream with
 `tmux pipe-pane`, and asserts the full URL rides an OSC 8 open while the
 visible pane shows the split text — and that `ALTER_ZERO_HYPERLINKS=0` emits
-none.
+none. The file tool header has the same two halves: `links::file_url`'s
+resolution and encoding are unit-tested in `links.rs`, the header's stamp —
+the path linked, the parens and corner rows not, every wrapped or cut
+fragment carrying the whole file, `Bash`/`Agent` headers plain, the live
+cell and the transcript alike — in `ui/tests/tool.rs`, and **Phase 113**
+reads the `file://` open for the dummy's `● Read(about.py)` off the raw
+stream while the pane shows the unchanged header text.
 
 ## Limitations
 
@@ -155,4 +183,13 @@ none.
   a scheme guesses).
 - Tool/shell output is not linked yet — its wrap (`wrap_output`) breaks at
   word boundaries, so a URL there only splits when wider than the terminal;
-  the same carrier would extend there if it earns its keep.
+  the same carrier would extend there if it earns its keep. The file tool
+  **header** is the one tool surface that links (to the file, not a URL in
+  the text); the `⎿` corner rows under it are deliberately plain.
+- The `file://` target names the file as the session sees it: a relative
+  argument resolves against the process cwd lexically, symlinks are never
+  consulted, and a session `/resume`d from another directory links where the
+  header now reads (the same rule the shown path follows). What the click
+  *does* with a `file://` URI is the terminal's choice — kitty, Ghostty,
+  WezTerm and iTerm2 hand it to the system opener, VS Code's terminal opens
+  it in the editor.
