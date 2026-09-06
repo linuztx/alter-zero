@@ -80,6 +80,7 @@ pub(crate) mod background;
 pub(crate) mod bootstrap;
 pub(crate) mod commit;
 pub(crate) mod config;
+pub(crate) mod donate;
 pub(crate) mod event_loop;
 pub(crate) mod history_store;
 pub(crate) mod host;

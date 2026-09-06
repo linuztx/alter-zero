@@ -55,6 +55,7 @@ widened for the split.
 | `mascot.rs` | The banner-mascot catalog, the `/mascot` picker's state, the `mascot.json` format (`docs/mascot.md`). |
 | `spinner.rs` | The status spinner-style catalog, the `/spinner` picker's state, the `spinner.json` format (`docs/spinner.md`). |
 | `theme.rs` | The colour-theme catalog, the `/theme` picker's state, the `theme.json` format (`docs/theme.md`). |
+| `donate.rs` | The donation-address catalog and the read-only `/donate` page's state (`docs/donate.md`). |
 | `permission.rs` | The inline tool-permission prompt: the stashed draft, the option/amend key map (`docs/permissions.md`). |
 | `ask.rs` | The inline `AskUserQuestion` modal: the tab/row state, answers under construction, the Other/notes entries, the queue against the permission prompt (`docs/ask.md`). |
 | `background.rs` | Background shells and the ↓ manager band. |
@@ -87,6 +88,7 @@ widened for the split.
 | `spinner_view.rs` | The inline `/spinner` picker — live spinner rows over a sample status-line preview (`docs/spinner.md`). |
 | `palette.rs` | The per-theme colour tables and the ambient active theme every renderer reads (`docs/theme.md`). |
 | `theme_view.rs` | The inline `/theme` picker — swatch rows over a real-cell preview in the highlighted theme (`docs/theme.md`). |
+| `donate_view.rs` | The read-only `/donate` page — a gradient title over each address's labelled rounded box (`docs/donate.md`). |
 | `live.rs` | `render_live` — the streaming strip, the box, the band. |
 | `transcript.rs` | The Ctrl+O overlay and `TranscriptCache`. |
 | `classifier_view.rs` | The Ctrl+D view's classifier page body (`docs/permissions.md`). |
@@ -132,6 +134,7 @@ opening the viewport, running the loop — and everything else lives here:
 | `mascot.rs` | Applying a `/mascot` selection: the `mascot.json` write + banner repaint (`docs/mascot.md`). |
 | `spinner.rs` | Applying a `/spinner` selection: the `spinner.json` write + toast (`docs/spinner.md`). |
 | `theme.rs` | Applying a `/theme` selection: the `theme.json` write, the palette switch, the recolouring rebuild (`docs/theme.md`). |
+| `donate.rs` | Applying a `/donate` copy: the clipboard write + the toast (`docs/donate.md`). |
 | `shell.rs` | The `!` command runner and its drain/cap unit tests (`docs/shell-command.md`). |
 | `workers.rs` | The off-thread file-search / clipboard / model-list / device-sign-in jobs. |
 | `host.rs` | Clocks, dates, the OS string, the uid, ids — the raw impurities. |

@@ -247,6 +247,19 @@ pub enum Action {
     /// every committed row wears the new colours at once, and confirms with
     /// a toast. See `docs/theme.md`.
     SelectTheme(Theme),
+    /// `/donate`: open the read-only donation-address page. Like `/hooks` it
+    /// works mid-turn — it only replaces the composer. The loop has nothing
+    /// to fetch (the catalog is a const); it just repaints. See
+    /// `docs/donate.md`.
+    OpenDonatePicker,
+    /// The donation page was dismissed (Esc, or Ctrl+C):
+    /// [`App::donate_picker`] is already cleared; the loop repaints the
+    /// collapsed region.
+    CloseDonatePicker,
+    /// Enter, `c`, or a digit on the donation page: copy this address to the
+    /// system clipboard. The loop does the I/O and raises the toast, like
+    /// [`Action::CopyDeviceCode`]; the page stays open. See `docs/donate.md`.
+    CopyDonationAddress(DonationAddress),
     /// `/mcp`: open the inline MCP manager. Like `/hooks` it works mid-turn —
     /// it only replaces the composer. The *loop* snapshots the live
     /// [`crate::llm::mcp::McpManager`] and hands it to

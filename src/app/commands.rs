@@ -131,6 +131,10 @@ pub enum CommandEffect {
     /// the composer; an approval rebinds the *next* turn's hooks and
     /// connects servers on worker threads. See `docs/project-config.md`.
     Trust,
+    /// Open the read-only `/donate` page: the project's crypto donation
+    /// addresses, each one copyable. Works **mid-turn** like `/hooks` — it
+    /// only replaces the composer. See `docs/donate.md`.
+    Donate,
     /// Exit the app (`/quit` — codex's `/quit`/`/exit`, "exit Codex").
     Quit,
 }
@@ -236,6 +240,11 @@ pub const COMMANDS: &[SlashCommand] = &[
         name: "trust",
         description: "Review and approve this project's config",
         effect: CommandEffect::Trust,
+    },
+    SlashCommand {
+        name: "donate",
+        description: "Support the project with a crypto donation",
+        effect: CommandEffect::Donate,
     },
     SlashCommand {
         name: "quit",
@@ -480,6 +489,14 @@ impl App {
                 // snapshots the live manager and opens the menu over it
                 // (docs/mcp.md).
                 Action::OpenMcpMenu
+            }
+            CommandEffect::Donate => {
+                // /donate works mid-turn like /hooks: a read-only page that
+                // only replaces the composer. The catalog is a const —
+                // nothing to fetch, so the pure open happens right here.
+                // docs/donate.md.
+                self.open_donate_picker();
+                Action::OpenDonatePicker
             }
             CommandEffect::Quit => Action::Quit,
         }

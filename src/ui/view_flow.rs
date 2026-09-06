@@ -206,6 +206,14 @@ fn flow_page(app: &App, width: u16, term_height: u16) -> Option<FlowPage> {
             term_height,
         ));
     }
+    if app.donate_picker.is_some() {
+        // The `/donate` page is still — nothing on it ticks — so it signs
+        // its rows like the `/hooks` menu (`docs/donate.md`).
+        return Some(FlowPage::framed(
+            super::donate_view::donate_view_lines(app, width),
+            term_height,
+        ));
+    }
     if app.trust_menu.is_some() {
         return Some(FlowPage::framed(
             super::trust_view::trust_view_lines(app, width),

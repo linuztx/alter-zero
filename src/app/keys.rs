@@ -63,6 +63,11 @@ impl App {
         if self.view == View::Conversation && self.theme_picker.is_some() {
             return self.on_key_theme_picker(key);
         }
+        // …and the read-only `/donate` page, the `/hooks` menu's sibling.
+        // See `docs/donate.md`.
+        if self.view == View::Conversation && self.donate_picker.is_some() {
+            return self.on_key_donate_picker(key);
+        }
         // …and the inline `/skills` menu. See `docs/skills.md`.
         if self.view == View::Conversation && self.mcp_menu.is_some() {
             return self.on_key_mcp(key);

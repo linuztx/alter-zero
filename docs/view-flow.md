@@ -81,7 +81,7 @@ pathological page can't turn one navigation into an unbounded write.
 ## Scope — which views flow
 
 - **Flow + bottom anchor**: every content-driven framed view — the browsing
-  menus (`/mcp`, `/hooks`, `/trust`) *and* the windowed pickers (`/model`,
+  menus (`/mcp`, `/hooks`, `/trust`, `/donate`) *and* the windowed pickers (`/model`,
   `/login`, `/settings`, `/skills`), all of them line builders now
   (`*_view_lines` / `key_onboarding_lines`, their heights the built line
   count). Their content is **static per state**: it changes only on a user

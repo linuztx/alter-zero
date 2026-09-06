@@ -1248,6 +1248,59 @@ pub(super) const THEME_PREVIEW_OLD: &str = "def greet(name):\n    print(\"Hello,
 pub(super) const THEME_PREVIEW_NEW: &str = "def greet(name):\n    print(f\"Hello, {name}\")\n";
 pub(super) const THEME_PREVIEW_REPLY: &str = "Done — `greet.py` greets by name now:\n```python\ngreet(\"Alter Zero\")  # Hello, Alter Zero\n```";
 
+// --- the read-only /donate page (docs/donate.md). The /hooks menu's frame —
+// the family's indent, its `❯` marker, the dim meta ink — over the const
+// donation-address catalog, each address inside the /login device page's
+// rounded box (the `DEVICE_BOX_*` glyphs). Only its own words and the three
+// colours below live here; the title borrows the banner's gradient. ---
+
+/// The heart leading the title — the sponsor glyph, in a span of its own so
+/// it keeps a colour of its own beside the gradient-washed name.
+pub(super) const DONATE_HEART: &str = "♥ ";
+
+/// The title's verb; the app's name ([`HEADER_NAME`]) follows it, so the
+/// page reads `Support Alter Zero` from the one place the name lives.
+pub(super) const DONATE_TITLE_PREFIX: &str = "Support ";
+
+/// The dim rows under the title: what the project is, what a donation does.
+/// Wrapped, never cut (`docs/view-flow.md`).
+pub(super) const DONATE_BLURB: &str = "Free and open source, developed in the open. \
+If it earns a place in your terminal, a donation keeps the work going — thank you.";
+
+/// The amber caution over the hint — the one irreversible mistake the page
+/// can lead to. Worded off the rows rather than naming any coin, so a
+/// catalog entry added later is covered without touching it.
+pub(super) const DONATE_CAUTION: &str = "Send each coin over the network named beside it only — \
+a transfer on any other network cannot be recovered.";
+
+/// The dim key hint — the page's whole grammar.
+pub(super) const DONATE_HINT: &str = "↑↓ navigate  enter/c copy address  esc close";
+
+/// Columns between a row's ticker and its `{coin} · {network}` clause.
+pub(super) const DONATE_LABEL_GAP: &str = "  ";
+
+/// The separator inside that clause.
+pub(super) const DONATE_NETWORK_SEP: &str = " · ";
+
+/// The heart's colour — the palette's red, the one place that hue means
+/// affection rather than failure.
+pub(super) fn donate_heart_color() -> Color {
+    error_color()
+}
+
+/// An address — bright and bold like the device page's one-time code
+/// ([`device_code_color`]): the one thing on the page to transcribe.
+pub(super) fn donate_address_color() -> Color {
+    device_code_color()
+}
+
+/// The caution's amber — the ask review's warning hue
+/// ([`ask_warning_color`]), on a page where everything else is dim or
+/// bright, so the eye lands on the one line that can go wrong first.
+pub(super) fn donate_caution_color() -> Color {
+    ask_warning_color()
+}
+
 // --- the read-only /hooks menu (docs/hooks-menu.md). It reuses the picker
 // family's accents — model_selected_color() for the selection, model_id_color()
 // for unselected labels, model_meta_color() for everything dim,

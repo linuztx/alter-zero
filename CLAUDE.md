@@ -52,19 +52,19 @@ the detached-exec hook, the CLI resolution, the viewport, the loop — over
 **`src/tui/`**, the binary-private tree that drives the codex-style **async
 (tokio) `select!`** loop (`event_loop`, `actions`, `turn`, `stream`, `agent`,
 `background`, `permission`, `view`, `commit`, `models`, `config`, `bootstrap`,
-`startup`, `recorder`, `resume`, `history_store`, `settings`, `shell`, `workers`, `host`, `mascot`, `spinner`, `theme`, `mcp`, `trust`, `login`,
+`startup`, `recorder`, `resume`, `history_store`, `settings`, `shell`, `workers`, `host`, `mascot`, `spinner`, `theme`, `donate`, `mcp`, `trust`, `login`,
 with the **`Session`** struct itself in `mod.rs` — every handler is an `impl
 Session` block in its area module, reaching the private fields the way `app/`'s
 submodules reach `App`'s). The four big ones are **directories
 of per-area modules**, not single files — `src/app/` (`types`, `action`, `keys`,
 `composer`, `commands`, `file_picker`, `input_history`, `queue`, `tools`, `turn`,
-`compact`, `backtrack`, `views`, `resume`, `model_picker`, `login`, `settings`, `mascot`, `spinner`, `theme`, `hooks_menu`, `mcp_menu`, `trust_menu`, `background`,
+`compact`, `backtrack`, `views`, `resume`, `model_picker`, `login`, `settings`, `mascot`, `spinner`, `theme`, `donate`, `hooks_menu`, `mcp_menu`, `trust_menu`, `background`,
 `agent`, `status`, `permission`, with the `App` struct itself in `mod.rs` so every submodule and
 the test tree keeps its private-field access), `src/ui/` (`theme`, `wrap`,
 `layout`, `assistant`, `inline`, `table`, `message`, `conversation`, `tool`,
 `file_cell`, `inline_diff`, `status`, `agent`, `menu`, `footer`, `header`, `hooks_view`, `live`, `transcript`,
 `context_view`, `resume_view`, `model_view`, `login_view`, `background_view`,
-`permission_view`, `settings_view`, `mascot_view`, `spinner_view`, `palette`, `theme_view`, `mcp_view`, `trust_view`, `view_flow`, `stream_render`), and **`src/stream/`** — the backend seam
+`permission_view`, `settings_view`, `mascot_view`, `spinner_view`, `palette`, `theme_view`, `donate_view`, `mcp_view`, `trust_view`, `view_flow`, `stream_render`), and **`src/stream/`** — the backend seam
 kept apart from the offline demo that used to crowd it: `event` (the whole
 `StreamEvent` wire format), `source` (the `ReplySource` trait), `cancel`
 (`CancelToken`), `stall` (`StallAi`), and the self-contained **`dummy/`**
@@ -178,7 +178,19 @@ row caches (`TranscriptCache`, `ContextCache`, the queued-rows memo) key on
 it; `highlight::Highlighter::new(lang, code)` takes its `CodeTheme`
 explicitly and keeps it for the block; `wrap::lerp_color`/`blend_color`
 mix RGB ends and *step* between named ones, which is what lets the ANSI
-theme exist) in `docs/theme.md`; the **`/login` sign-in fork** (the
+theme exist) in `docs/theme.md`; the **`/donate` page** (`docs/donate.md`: the
+project's crypto donation addresses, one command away — the `/hooks`
+browser's sibling, a read-only composer-replacing page with no text entry
+and the hidden cursor seated on its `❯`: a red heart over the
+banner-gradient `Support Alter Zero` title, a dim two-row blurb, each
+address as a numbered `❯ 1. BTC  Bitcoin · native network` row over its
+rounded box (the `/login` device page's), the highlighted row and box lit
+in the accent, an amber wrong-network caution, and Enter/`c`/a digit
+copying the highlighted address through `/copy`'s clipboard path with a
+`Copied the BTC address to clipboard` toast while the page stays open; the
+catalog is the const `app::DONATION_ADDRESSES`, never a file, and the
+page is still, so it flows signed on its rows) in `docs/donate.md`; the
+**`/login` sign-in fork** (the
 flow's root now asks *how* you sign in — **Use a subscription** or **Use an
 API key** — because GitHub Copilot is not a key you paste. Below that root the
 two lists carry **no heading** (each used to repeat the row that opened it, in
@@ -2163,7 +2175,7 @@ live in the pure `file_search` module, and the `/resume` primitives
 Typing a bare `/token` opens a **slash-command palette** below the input box (a
 third live-region band): `App::command_menu` holds the highlight, the registry
 `app::COMMANDS` (`SlashCommand { name, description, effect }` — currently `/help`,
-`/clear`, `/copy`, `/init`, `/compact`, `/resume`, `/model`, `/login`, `/settings`, `/theme`, `/mascot`, `/spinner`, `/hooks`, `/skills`, `/mcp`, `/trust`, and `/quit`) is filtered by `matching_commands`, and ↑/↓ scroll / Tab+Enter run
+`/clear`, `/copy`, `/init`, `/compact`, `/resume`, `/model`, `/login`, `/settings`, `/theme`, `/mascot`, `/spinner`, `/hooks`, `/skills`, `/mcp`, `/trust`, `/donate`, and `/quit`) is filtered by `matching_commands`, and ↑/↓ scroll / Tab+Enter run
 the highlighted command. Descriptions line up in a column, and the selection is
 shown **by colour** — the whole highlighted row lights up cyan (name *and*
 description the same colour) while the others are dimmed grey, no caret. A command
