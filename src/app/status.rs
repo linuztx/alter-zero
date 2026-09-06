@@ -99,6 +99,12 @@ pub struct TurnSummary {
     /// cache — the `({n} cached)` suffix beside `tokens` when non-zero, the
     /// visible proof caching is working. See `docs/prompt-caching.md`.
     pub cached: usize,
+    /// How many input tokens this turn **wrote** to the provider's prompt
+    /// cache (explicit caching bills a write at a premium; an implicit one
+    /// reports it or not) — the `({n} written)` half of the receipt's
+    /// parenthetical when non-zero, so the turn that *primed* the cache
+    /// shows it did. See `docs/prompt-caching.md`.
+    pub cache_write: usize,
 }
 
 /// The active model's reasoning state: what the `/v1/models` record said it
@@ -189,6 +195,7 @@ impl App {
         self.snap_round_reasoning(usage.reasoning);
         self.turn_usage_tokens += usize::try_from(usage.total()).unwrap_or(usize::MAX);
         self.turn_usage_cached += usize::try_from(usage.cached).unwrap_or(usize::MAX);
+        self.turn_usage_cache_write += usize::try_from(usage.cache_write).unwrap_or(usize::MAX);
         if let Some(status) = self.status.as_mut() {
             status.tokens = self.turn_usage_tokens;
         }

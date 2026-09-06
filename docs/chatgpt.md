@@ -12,11 +12,12 @@ two are the whole of the new work.
 
 > **A caveat worth stating.** This API is undocumented and unversioned, and
 > the OAuth client id it uses is Codex's own — there is no third-party
-> registration path. It has already changed shape twice in public
-> (`OpenAI-Beta: responses=experimental` is gone; the `session_id` header was
-> renamed). Treat drift as expected. Whether a ChatGPT subscription may be
-> used from a non-OpenAI client is a question about OpenAI's terms, not about
-> this code.
+> registration path. It has already changed shape in public more than once
+> (`OpenAI-Beta: responses=experimental` came and went), and one of its
+> per-request headers turned out to be load-bearing for something the docs
+> never mention — see *Cache affinity* below. Treat drift as expected.
+> Whether a ChatGPT subscription may be used from a non-OpenAI client is a
+> question about OpenAI's terms, not about this code.
 
 ## What a provider file says
 
@@ -223,6 +224,23 @@ Four shape differences, each a place a naive port breaks:
   `role: "tool"`.
 - **The system prompt is `instructions`**, top-level. `build_input` hoists
   every system message into it, joined by blank lines.
+
+### Cache affinity: two headers, not the body key
+
+The backend's prompt cache does **not** key on the body's `prompt_cache_key`.
+Measured live on an identical 6.7k-token prefix (`gpt-5.4-mini`, two turns,
+a 12 s pause before the second to rule out a slow cache write): the request
+as this crate used to send it read **0** tokens from cache on turn 2, the
+same request carrying the Codex CLI's `session_id` and `conversation_id`
+headers read **6400** of them, and `OpenAI-Beta: responses=experimental` on
+its own changed nothing. So the session's cache key rides both header names
+(`chatgpt::session_headers`, pure; attached by
+`openai::chatgpt_request_headers`, gated on the `OpenAiChatGpt` auth scheme
+the way Copilot's per-request headers are gated on its own), beside the body
+key it also carries. Without them every agentic round re-billed the whole
+conversation at full price on a subscription that never showed a bill —
+which is why it went unnoticed until the receipt was checked against the
+wire (`docs/prompt-caching.md`).
 - **Content parts are `input_text` / `input_image`.** An image's URL is the
   value of `input_image`, not the nested `image_url: {url}` object Chat
   Completions uses.
@@ -272,7 +290,10 @@ Usage is renamed but not reshaped: `input_tokens`/`output_tokens` rather than
 `prompt_tokens`/`completion_tokens`, with `input_tokens_details.cached_tokens`
 and `output_tokens_details.reasoning_tokens` nested the same way — so the
 footer gauge, the `Done for Ns · N tokens (N cached)` receipt and the
-`Thought for …` cell's snap all work unchanged.
+`Thought for …` cell's snap all work unchanged. That `cached_tokens` is real
+(the backend's own count) is what caught the missing session headers above:
+a receipt that never said `cached` on a repeated prefix was the wire saying
+no.
 
 ### What this does not do
 

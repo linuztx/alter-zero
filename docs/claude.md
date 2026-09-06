@@ -242,9 +242,14 @@ Three things it gets right that are easy to get wrong:
   `cache_read_input_tokens` plus `cache_creation_input_tokens`. Reading the
   single field makes a well-cached session report a few dozen tokens against a
   1M window.
-- **`message_delta`'s output count is cumulative**, so it replaces rather than
-  adds — and a frame that omits the input side must not zero what
-  `message_start` reported.
+- **`message_delta`'s counters are cumulative** — and it repeats the input
+  side too (verified live:
+  `{"input_tokens":10,"cache_creation_input_tokens":7998,"cache_read_input_tokens":0,"output_tokens":5}`),
+  so the merge is **monotonic per counter**: a later frame can only report
+  more, and one that omits a counter leaves what an earlier frame said. That
+  is what keeps a delta naming the remainder *without* the cache keys (the
+  older documented shape) from zeroing the cached share and shrinking the
+  whole-prompt `input` to the remainder on the receipt and the gauge.
 - **A refusal is an HTTP 200.** `stop_reason: "refusal"` with nothing streamed
   fails the turn with a reason; after text has streamed the partial *is* the
   answer and the turn ends normally.

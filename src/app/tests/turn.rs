@@ -1055,17 +1055,22 @@ fn the_turn_summary_carries_the_real_usage() {
         input: 8080,
         output: 123,
         cached: 8063,
-        cache_write: 0,
+        cache_write: 17,
         ..TokenUsage::default()
     });
     let summary = app.end_turn(12).expect("a turn was active");
     assert_eq!(summary.tokens, 8203);
     assert_eq!(summary.cached, 8063);
+    assert_eq!(
+        summary.cache_write, 17,
+        "the written share rides the receipt too"
+    );
 
     app.begin_stream();
     let summary = app.end_turn(1).expect("second turn");
     assert_eq!(summary.tokens, 0, "a usage-less turn reports none");
     assert_eq!(summary.cached, 0);
+    assert_eq!(summary.cache_write, 0);
 }
 
 #[test]

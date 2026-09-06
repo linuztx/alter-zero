@@ -455,12 +455,24 @@ pub fn summary_lines(summary: &TurnSummary, width: u16) -> Vec<Line<'static>> {
     let mut text = format!("{} for {}", summary.verb, format_elapsed(summary.secs));
     if summary.tokens > 0 {
         // The turn's real billed tokens, with the cache-served share beside
-        // them — the visible proof prompt caching worked. Absent (the dummy,
-        // a `!` shell) the summary keeps its bare shape. See
-        // docs/prompt-caching.md.
+        // them — the visible proof prompt caching worked — and the share
+        // this turn *wrote* to the cache, so the turn that primed it shows
+        // it did (an explicit-caching provider bills that write at a
+        // premium). A zero half is omitted; absent usage (the dummy, a `!`
+        // shell) keeps the bare shape. See docs/prompt-caching.md.
         text.push_str(&format!(" · {} tokens", format_token_count(summary.tokens)));
+        let mut cache: Vec<String> = Vec::new();
         if summary.cached > 0 {
-            text.push_str(&format!(" ({} cached)", format_token_count(summary.cached)));
+            cache.push(format!("{} cached", format_token_count(summary.cached)));
+        }
+        if summary.cache_write > 0 {
+            cache.push(format!(
+                "{} written",
+                format_token_count(summary.cache_write)
+            ));
+        }
+        if !cache.is_empty() {
+            text.push_str(&format!(" ({})", cache.join(" · ")));
         }
     }
     if summary.shells > 0 {

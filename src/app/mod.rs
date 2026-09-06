@@ -509,6 +509,8 @@ pub struct App {
     turn_usage_tokens: usize,
     /// The cached-read share of [`turn_usage_tokens`](Self::turn_usage_tokens).
     turn_usage_cached: usize,
+    /// The cache-write share of [`turn_usage_tokens`](Self::turn_usage_tokens).
+    turn_usage_cache_write: usize,
     /// Wall-clock used to stamp recorded items, injected at the I/O boundary
     /// ([`App::set_clock`]). `None` in unit tests (→ empty stamp, keeping the
     /// pure logic deterministic); `main.rs` sets a real local-time clock. The

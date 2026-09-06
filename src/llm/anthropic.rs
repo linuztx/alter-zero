@@ -697,30 +697,38 @@ impl MessageAccumulator {
 
     /// Merge one frame's `usage` object in.
     ///
-    /// The counts arrive in two places and mean different things: the input
-    /// side lands whole on `message_start`, while `message_delta` carries the
-    /// **cumulative** output count. Anthropic also reports `input_tokens` as
-    /// the *uncached remainder* — the prompt's real size is that plus both
-    /// cache figures — so the sum is what the crate's OpenAI-shaped
-    /// [`TokenUsage::input`] means.
+    /// The counts arrive in two places: the input side lands whole on
+    /// `message_start`, and `message_delta` repeats the counters
+    /// **cumulatively** (verified live: the delta carries all four, and the
+    /// docs' server-tool example grows `input_tokens` on it). Anthropic
+    /// reports `input_tokens` as the *uncached remainder* — the prompt's real
+    /// size is that plus both cache figures — so the sum is what the crate's
+    /// OpenAI-shaped [`TokenUsage::input`] means.
+    ///
+    /// Every counter is **monotonic**: a later frame can only report more,
+    /// and a frame that omits one leaves what an earlier frame said. That is
+    /// what keeps a delta naming the remainder *without* the cache keys — the
+    /// older documented shape, or a shim's abbreviation — from reading as
+    /// "the cached share is now zero" and shrinking the whole-prompt `input`
+    /// to a few dozen tokens on the receipt and the gauge.
     fn merge_usage(&mut self, usage: Option<&Value>) {
         let Some(usage) = usage else { return };
-        let count = |key: &str| usage.get(key).and_then(Value::as_u64).unwrap_or(0);
-        let cached = count("cache_read_input_tokens");
-        let cache_write = count("cache_creation_input_tokens");
-        let input = count("input_tokens") + cached + cache_write;
-        let output = count("output_tokens");
+        let count = |key: &str| usage.get(key).and_then(Value::as_u64);
         let merged = self.usage.get_or_insert_with(TokenUsage::default);
-        // A frame that omits a side must not zero what an earlier one
-        // reported: `message_delta` sends the running output count and often
-        // nothing about the input at all.
-        if input > 0 {
-            merged.input = input;
-            merged.cached = cached;
-            merged.cache_write = cache_write;
+        if let Some(cached) = count("cache_read_input_tokens") {
+            merged.cached = merged.cached.max(cached);
         }
-        if output > 0 {
-            merged.output = output;
+        if let Some(cache_write) = count("cache_creation_input_tokens") {
+            merged.cache_write = merged.cache_write.max(cache_write);
+        }
+        if let Some(remainder) = count("input_tokens") {
+            let input = remainder
+                .saturating_add(merged.cached)
+                .saturating_add(merged.cache_write);
+            merged.input = merged.input.max(input);
+        }
+        if let Some(output) = count("output_tokens") {
+            merged.output = merged.output.max(output);
         }
     }
 
@@ -1304,6 +1312,41 @@ mod tests {
         // The output count is cumulative — the later frame wins.
         assert_eq!(usage.output, 42);
         assert_eq!(reason.as_deref(), Some("end_turn"));
+    }
+
+    #[test]
+    fn a_delta_that_repeats_the_input_side_without_the_cache_keys_keeps_them() {
+        // The real wire repeats all four counters on `message_delta`
+        // (verified live: `{"input_tokens":10,"cache_creation_input_tokens":7998,
+        // "cache_read_input_tokens":0,"output_tokens":5}`), cumulative. A
+        // frame that names the uncached remainder *without* the cache keys —
+        // the documented older shape, a shim's abbreviation — must not read
+        // as "the cache figures are now zero": the whole-prompt `input` and
+        // the cached share are what the receipt and the gauge show.
+        let (_, acc, _) = fold(&[
+            r#"{"type":"message_start","message":{"usage":{"input_tokens":25,"cache_creation_input_tokens":100,"cache_read_input_tokens":900,"output_tokens":1}}}"#,
+            r#"{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":25,"output_tokens":42}}"#,
+        ]);
+        let usage = acc.finish().2.expect("usage");
+        assert_eq!(usage.input, 1025, "the whole prompt, not the remainder");
+        assert_eq!(usage.cached, 900);
+        assert_eq!(usage.cache_write, 100);
+        assert_eq!(usage.output, 42);
+    }
+
+    #[test]
+    fn a_delta_that_grows_the_input_side_wins_over_the_start() {
+        // Cumulative means a later frame can only report *more*: a server
+        // tool round grows the prompt mid-message (the docs' own example
+        // goes 2679 → 10682 on the delta), and the delta's larger figures
+        // are the ones the round billed.
+        let (_, acc, _) = fold(&[
+            r#"{"type":"message_start","message":{"usage":{"input_tokens":2679,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":3}}}"#,
+            r#"{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":10682,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":510}}"#,
+        ]);
+        let usage = acc.finish().2.expect("usage");
+        assert_eq!(usage.input, 10_682);
+        assert_eq!(usage.output, 510);
     }
 
     #[test]

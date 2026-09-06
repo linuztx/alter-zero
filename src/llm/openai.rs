@@ -351,6 +351,28 @@ impl OpenAiClient {
         req
     }
 
+    /// The per-request headers the ChatGPT backend needs beside the
+    /// credential's own — a no-op for every other provider.
+    ///
+    /// The backend keys its prompt cache on Codex's `session_id` /
+    /// `conversation_id` headers, not on the body's `prompt_cache_key`
+    /// (verified live: 0 cached tokens on an identical 6.7k-token prefix
+    /// without them, 6.4k with them — `docs/chatgpt.md`). The per-session
+    /// cache key rides both, so an agentic session's rounds land on the
+    /// warm cache exactly as they do on every other provider.
+    fn chatgpt_request_headers(
+        &self,
+        mut req: reqwest::blocking::RequestBuilder,
+    ) -> reqwest::blocking::RequestBuilder {
+        if self.cfg.auth != super::AuthScheme::OpenAiChatGpt {
+            return req;
+        }
+        for (name, value) in super::chatgpt::session_headers(self.cfg.cache_key.as_deref()) {
+            req = req.header(name, value);
+        }
+        req
+    }
+
     /// Stream a completion, invoking `on_delta` for every non-empty split delta.
     /// Polls `cancel` between SSE frames and stops promptly when it trips.
     ///
@@ -398,6 +420,7 @@ impl OpenAiClient {
             req = req.header(k, v);
         }
         req = self.copilot_request_headers(req, &messages);
+        req = self.chatgpt_request_headers(req);
         // The body streams out of a serializer thread as the transport
         // uploads it — never held whole (`docs/memory.md`).
         let (body, len) = self.request_stream(messages)?;
@@ -1595,6 +1618,50 @@ mod tests {
         let p = OpenAiClient::new(cfg).build_payload(&[ChatMessage::user("hi")]);
         assert!(p.get("prompt_cache_key").is_none(), "{p}");
         assert!(p.get("session_id").is_none(), "{p}");
+    }
+
+    // --- the ChatGPT backend's per-request headers (docs/chatgpt.md) ---
+
+    /// The headers a request built for `cfg` carries, by name.
+    fn built_header(cfg: ModelConfig, name: &str) -> Option<String> {
+        let client = OpenAiClient::new(cfg);
+        let req = client
+            .chatgpt_request_headers(reqwest::blocking::Client::new().post("https://example.test/"))
+            .build()
+            .expect("a request builds");
+        req.headers()
+            .get(name)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string)
+    }
+
+    #[test]
+    fn a_chatgpt_request_carries_the_session_headers_its_backend_caches_on() {
+        // The body's `prompt_cache_key` is not what chatgpt.com keys its
+        // prompt cache on (verified live: 0 cached tokens on an identical
+        // 6.7k prefix without these, 6.4k with them). The session key rides
+        // Codex's two header names.
+        let mut cfg = ModelConfig::fallback();
+        cfg.auth = crate::llm::AuthScheme::OpenAiChatGpt;
+        cfg.cache_key = Some("alter-zero-42".to_string());
+        assert_eq!(
+            built_header(cfg.clone(), "session_id").as_deref(),
+            Some("alter-zero-42")
+        );
+        assert_eq!(
+            built_header(cfg, "conversation_id").as_deref(),
+            Some("alter-zero-42")
+        );
+    }
+
+    #[test]
+    fn an_ordinary_provider_gets_no_session_headers() {
+        // A pasted-key provider keys on the body's `prompt_cache_key`; a
+        // header it never asked for is a header a strict shim can refuse.
+        let mut cfg = ModelConfig::fallback();
+        cfg.cache_key = Some("alter-zero-42".to_string());
+        assert_eq!(built_header(cfg.clone(), "session_id"), None);
+        assert_eq!(built_header(cfg, "conversation_id"), None);
     }
 
     #[test]

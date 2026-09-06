@@ -114,6 +114,7 @@ impl App {
         // The usage accumulators are per-turn (docs/prompt-caching.md).
         self.turn_usage_tokens = 0;
         self.turn_usage_cached = 0;
+        self.turn_usage_cache_write = 0;
         // No phase of a previous turn survives into this one — an abandoned
         // buffer would otherwise preview under the new turn's status
         // (docs/thinking-stream.md).
@@ -162,6 +163,7 @@ impl App {
         // accumulators reset with every turn machinery start all the same.
         self.turn_usage_tokens = 0;
         self.turn_usage_cached = 0;
+        self.turn_usage_cache_write = 0;
         self.drop_reasoning();
         self.status = Some(TurnStatus {
             verb: SHELL_VERB,
@@ -272,6 +274,7 @@ impl App {
             // the backend reported none. See docs/prompt-caching.md.
             tokens: self.turn_usage_tokens,
             cached: self.turn_usage_cached,
+            cache_write: self.turn_usage_cache_write,
         })
     }
 

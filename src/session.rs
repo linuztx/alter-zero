@@ -405,6 +405,8 @@ struct SummaryRecord {
     tokens: usize,
     #[serde(default)]
     cached: usize,
+    #[serde(default)]
+    cache_write: usize,
 }
 
 /// One serialized JSONL line for `item`, stamped `stamp`. Serializing these
@@ -498,6 +500,7 @@ pub fn item_line(item: &HistoryItem, stamp: &str) -> String {
             timestamp: summary.timestamp.clone(),
             tokens: summary.tokens,
             cached: summary.cached,
+            cache_write: summary.cache_write,
         }),
         HistoryItem::Background(notice) => ItemRecord::Background(BackgroundRecord {
             description: notice.description.clone(),
@@ -681,6 +684,7 @@ pub fn parse_session(text: &str) -> Option<(SessionMeta, Vec<HistoryItem>)> {
                 shells: 0,
                 tokens: summary.tokens,
                 cached: summary.cached,
+                cache_write: summary.cache_write,
             })),
             ItemRecord::Background(notice) => {
                 items.push(HistoryItem::Background(crate::app::BackgroundNotice {
@@ -1481,6 +1485,7 @@ mod tests {
             shells: 0,
             tokens: 0,
             cached: 0,
+            cache_write: 0,
         });
         let (_, parsed) = parse_session(&file_of(std::slice::from_ref(&summary))).expect("parses");
         assert_eq!(parsed, vec![summary]);
@@ -1795,6 +1800,7 @@ mod tests {
             shells: 3,
             tokens: 0,
             cached: 0,
+            cache_write: 0,
         });
         let line = item_line(&summary, "t");
         assert!(!line.contains("shells"), "not recorded: {line}");
@@ -1817,6 +1823,7 @@ mod tests {
             shells: 0,
             tokens: 8_203,
             cached: 8_063,
+            cache_write: 1_204,
         });
         let (_, parsed) = parse_session(&file_of(std::slice::from_ref(&summary))).expect("parses");
         assert_eq!(parsed, vec![summary]);

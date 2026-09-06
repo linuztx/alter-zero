@@ -117,6 +117,9 @@ pub struct AgentRun {
     /// The cache-served share of `turn_usage_tokens` — the `({c} cached)`
     /// suffix ([`TurnSummary::cached`]).
     turn_usage_cached: u64,
+    /// The cache-write share of `turn_usage_tokens` — the `({c} written)`
+    /// half ([`TurnSummary::cache_write`]).
+    turn_usage_cache_write: u64,
     /// Its **context size** in tokens — the footer gauge's numerator while
     /// its session view is on screen (`docs/agent-context-gauge.md`), by the
     /// main session's exact rule ([`crate::app::App::context_used`]): the
@@ -238,6 +241,7 @@ impl AgentRun {
             usage_tokens: 0,
             turn_usage_tokens: 0,
             turn_usage_cached: 0,
+            turn_usage_cache_write: 0,
             context_used: 0,
             runtime: Duration::ZERO,
             history: vec![HistoryItem::Message(Message {
@@ -516,6 +520,7 @@ impl AgentRun {
                 self.tokens = self.usage_tokens;
                 self.turn_usage_tokens += usage.total();
                 self.turn_usage_cached += usage.cached;
+                self.turn_usage_cache_write += usage.cache_write;
                 // The round's `input` is the whole re-sent context and its
                 // `output` joins the next round's — their sum is this agent's
                 // context size, the main session's `apply_usage` rule
@@ -552,6 +557,7 @@ impl AgentRun {
                     shells: 0,
                     tokens: usize::try_from(self.turn_usage_tokens).unwrap_or(usize::MAX),
                     cached: usize::try_from(self.turn_usage_cached).unwrap_or(usize::MAX),
+                    cache_write: usize::try_from(self.turn_usage_cache_write).unwrap_or(usize::MAX),
                 }));
                 return true;
             }
@@ -784,6 +790,7 @@ impl AgentRun {
         self.error = None;
         self.turn_usage_tokens = 0;
         self.turn_usage_cached = 0;
+        self.turn_usage_cache_write = 0;
         self.round_reasoning.clear();
     }
 
@@ -1587,6 +1594,7 @@ mod tests {
             input: 6000,
             output: 100,
             cached: 2800,
+            cache_write: 700,
             ..TokenUsage::default()
         }));
         assert!(run.apply(&StreamEvent::StreamDone));
@@ -1597,6 +1605,7 @@ mod tests {
         assert_eq!(summary.secs, 59);
         assert_eq!(summary.tokens, 6100);
         assert_eq!(summary.cached, 2800);
+        assert_eq!(summary.cache_write, 700);
         assert_eq!(summary.shells, 0, "shells are the main session's business");
         // The summary sits AFTER the flushed final reply.
         assert!(matches!(

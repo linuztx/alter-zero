@@ -2575,9 +2575,15 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   and `App::apply_usage` snaps the tally to the provider's own accounting
   (the `Done for Ns` summary appending `· {n} tokens ({c} cached)`), and every
   request is shaped for **prompt caching** — `llm::cache`'s `cache_control`
-  breakpoints on the models that need them, a per-session `prompt_cache_key`
-  (+ OpenRouter `session_id`) for affinity, `stream_options.include_usage` in
-  the payload — see `docs/prompt-caching.md`.
+  breakpoints on the models that need them (OpenRouter's `~vendor/…-latest`
+  aliases included), a per-session `prompt_cache_key` (+ OpenRouter
+  `session_id`) for affinity — the ChatGPT backend keying on Codex's
+  `session_id`/`conversation_id` **headers** instead, the body key alone
+  earning it no cache reads at all (`chatgpt::session_headers`) —
+  `stream_options.include_usage` in the payload, and the receipt naming both
+  cache halves, `(8k cached · 1.2k written)`; every wire's cached numbers are
+  the provider's own, never estimated, and `tests/live_caching.rs` proves each
+  provider on the wire — see `docs/prompt-caching.md`.
   **The real `LlmBackend` also drives an agentic tool loop** (`docs/tools.md`):
   it offers the model `bash`/`read`/`write`/`edit` as Chat Completions function
   tools, and `llm::agent::run_agent` streams a round, runs the tools the model

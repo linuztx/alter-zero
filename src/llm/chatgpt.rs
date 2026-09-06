@@ -797,6 +797,27 @@ fn set_owner_only(path: &Path) {
 /// the rotation write-back cannot ask the provider file.
 pub const REFRESH_ENV_VAR: &str = "OPENAI_CHATGPT_REFRESH_TOKEN";
 
+/// The per-request headers the ChatGPT backend keys its **prompt cache** on:
+/// the session's cache-affinity key under Codex's two names, `session_id`
+/// and `conversation_id`. Verified live — the body's `prompt_cache_key`
+/// alone earned no cache reads on an identical 6.7k-token prefix, the same
+/// request with these read 6.4k of it back, and `OpenAI-Beta` on its own
+/// changed nothing (`docs/chatgpt.md`, `docs/prompt-caching.md`). Pure: no
+/// key means no headers, since an empty session id is a *different*
+/// (invalid) routing hint rather than none.
+#[must_use]
+pub fn session_headers(cache_key: Option<&str>) -> Vec<(String, String)> {
+    cache_key
+        .filter(|key| !key.is_empty())
+        .map(|key| {
+            vec![
+                ("session_id".to_string(), key.to_string()),
+                ("conversation_id".to_string(), key.to_string()),
+            ]
+        })
+        .unwrap_or_default()
+}
+
 /// The `User-Agent` the backend expects to see — Codex's shape, since the
 /// client id is Codex's, carrying the same [`CLIENT_VERSION`] the `/models`
 /// query does (a request whose two version claims disagreed would be a
@@ -989,6 +1010,33 @@ mod tests {
     }
 
     // --- the cache freshness rule ---
+
+    // --- the per-request session headers ---
+
+    #[test]
+    fn the_session_headers_carry_the_cache_key_under_both_names() {
+        // Verified live against the ChatGPT backend: the body's
+        // `prompt_cache_key` alone earns *no* cache reads on an identical
+        // 6.7k-token prefix, while the same request with Codex's
+        // `session_id` + `conversation_id` headers reads 6.4k of it back —
+        // and `OpenAI-Beta` on its own changes nothing. Both names carry the
+        // one per-session key, the reference client's shape.
+        assert_eq!(
+            session_headers(Some("alter-zero-42")),
+            vec![
+                ("session_id".to_string(), "alter-zero-42".to_string()),
+                ("conversation_id".to_string(), "alter-zero-42".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn no_cache_key_means_no_session_headers() {
+        // An empty session id is a *different* (invalid) routing hint than
+        // none, the account-id rule again.
+        assert!(session_headers(None).is_empty());
+        assert!(session_headers(Some("")).is_empty());
+    }
 
     #[test]
     fn a_token_is_cached_until_shortly_before_its_own_expiry() {

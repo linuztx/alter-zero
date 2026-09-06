@@ -64,6 +64,7 @@ fn transcript_shows_no_stamp_on_assistant_tool_or_summary_items() {
             shells: 0,
             tokens: 0,
             cached: 0,
+            cache_write: 0,
         }),
     ];
     let all: String = transcript_lines(&app, 60)
@@ -154,6 +155,7 @@ fn summary_humanizes_a_long_turn() {
         shells: 0,
         tokens: 0,
         cached: 0,
+        cache_write: 0,
     };
     assert_eq!(plain(&summary_lines(&summary, 80)[0]), "Done for 1h 1m");
 }
@@ -203,16 +205,32 @@ fn summary_lines_append_the_real_token_usage() {
         shells: 0,
         tokens: 8_203,
         cached: 8_063,
+        cache_write: 0,
     };
     assert_eq!(
         plain(&summary_lines(&summary, 80)[0]),
         "Done for 12s · 8.2k tokens (8.1k cached)"
     );
+    // The turn that *primed* the cache says so too: an explicit-caching
+    // provider bills that write at a premium, and a receipt reading just
+    // `8.2k tokens` made the first turn look like caching did nothing.
+    summary.cache_write = 1_204;
+    assert_eq!(
+        plain(&summary_lines(&summary, 80)[0]),
+        "Done for 12s · 8.2k tokens (8.1k cached · 1.2k written)",
+        "both halves when both apply"
+    );
     summary.cached = 0;
     assert_eq!(
         plain(&summary_lines(&summary, 80)[0]),
+        "Done for 12s · 8.2k tokens (1.2k written)",
+        "a zero half is omitted"
+    );
+    summary.cache_write = 0;
+    assert_eq!(
+        plain(&summary_lines(&summary, 80)[0]),
         "Done for 12s · 8.2k tokens",
-        "no parenthetical when nothing was cached"
+        "no parenthetical when nothing was cached or written"
     );
     summary.tokens = 0;
     assert_eq!(
@@ -494,6 +512,7 @@ fn summary_lines_is_a_single_dim_bulletless_line() {
         shells: 0,
         tokens: 0,
         cached: 0,
+        cache_write: 0,
     };
     let lines = summary_lines(&summary, 80);
     assert_eq!(lines.len(), 1, "one line");
@@ -513,6 +532,7 @@ fn conversation_lines_renders_a_committed_turn_summary() {
             shells: 0,
             tokens: 0,
             cached: 0,
+            cache_write: 0,
         }),
     ];
     let texts: Vec<String> = conversation_lines(&history, 80, &PathDisplay::VERBATIM)
@@ -599,6 +619,7 @@ fn summary_lines_append_the_still_running_shell_count() {
         shells: 3,
         tokens: 0,
         cached: 0,
+        cache_write: 0,
     };
     assert_eq!(
         plain(&summary_lines(&summary, 80)[0]),
@@ -667,6 +688,7 @@ fn the_turn_summary_wraps_to_the_width() {
         shells: 2,
         tokens: 1_500_000,
         cached: 1_200_000,
+        cache_write: 0,
     };
     let lines = summary_lines(&summary, 30);
     assert!(lines.len() > 1, "the summary wrapped: {lines:?}");

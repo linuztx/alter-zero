@@ -29,14 +29,19 @@ pub const MAX_BREAKPOINTS: usize = 4;
 /// prompts to cache?
 ///
 /// True for the OpenRouter-style namespaced ids of the providers OpenRouter
-/// documents as explicit-caching: `anthropic/…` and `qwen/…`. Everything else
-/// — OpenAI/DeepSeek/Gemini-2.5 ids (implicit caching) and Venice's bare
-/// `claude-*` ids (Venice adds the markers itself, and doubling them could
-/// blow the 4-breakpoint limit) — is left untouched.
+/// documents as explicit-caching: `anthropic/…` and `qwen/…` — and their
+/// `~vendor/model-latest` **alias** ids, which resolve to the same routing
+/// (`~anthropic/claude-haiku-latest` answers as `anthropic/claude-haiku-4.5`
+/// on Amazon Bedrock, verified live; without the markers that routing
+/// caches nothing, so an alias the sniff missed paid full price on every
+/// agentic round). Everything else — OpenAI/DeepSeek/Gemini-2.5 ids (implicit
+/// caching) and Venice's bare `claude-*` ids (Venice adds the markers itself,
+/// and doubling them could blow the 4-breakpoint limit) — is left untouched.
 #[must_use]
 pub fn needs_cache_breakpoints(model: &str) -> bool {
     let model = model.to_ascii_lowercase();
-    model.starts_with("anthropic/") || model.starts_with("qwen/")
+    let vendor_id = model.strip_prefix('~').unwrap_or(&model);
+    vendor_id.starts_with("anthropic/") || vendor_id.starts_with("qwen/")
 }
 
 /// Mark `messages` — the round's copy of the conversation, as the provider
@@ -137,6 +142,25 @@ mod tests {
             needs_cache_breakpoints("Anthropic/Claude-Opus-4.8"),
             "id casing is normalized"
         );
+    }
+
+    #[test]
+    fn openrouters_latest_alias_ids_are_the_same_explicit_caching_models() {
+        // OpenRouter's `~vendor/model-latest` aliases resolve to the vendor's
+        // newest model on the same routing (`~anthropic/claude-haiku-latest`
+        // answered as `anthropic/claude-haiku-4.5` on Amazon Bedrock,
+        // verified live). Anthropic's routing caches nothing without the
+        // markers, so an alias the sniff missed paid full price every round.
+        assert!(needs_cache_breakpoints("~anthropic/claude-haiku-latest"));
+        assert!(needs_cache_breakpoints("~anthropic/claude-sonnet-latest"));
+        assert!(needs_cache_breakpoints("~Anthropic/Claude-Opus-Latest"));
+        // The `~` alone is not a vendor: an implicit-caching vendor's alias
+        // stays untouched, exactly like its plain id.
+        assert!(!needs_cache_breakpoints("~openai/gpt-mini-latest"));
+        assert!(!needs_cache_breakpoints(
+            "~deepseek/deepseek-v4-flash-latest"
+        ));
+        assert!(!needs_cache_breakpoints("~"));
     }
 
     #[test]
