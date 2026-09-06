@@ -1,6 +1,8 @@
 //! The mascot catalog, the `/mascot` picker, and its persistence format
 //! (`docs/mascot.md`).
 
+use std::collections::BTreeMap;
+
 use super::*;
 
 use unicode_width::UnicodeWidthStr;
@@ -90,20 +92,126 @@ fn from_name_round_trips_case_insensitively() {
     assert_eq!(Mascot::from_name(""), None);
 }
 
-// ===== the persistence format (docs/mascot.md) =====
+// ===== the persistence format — per working directory (docs/mascot.md,
+// docs/per-directory-state.md) =====
 
 #[test]
-fn the_mascot_file_round_trips() {
-    let json = mascot_file_json(Mascot::Skiter);
-    assert_eq!(parse_mascot_file(&json), Some(Mascot::Skiter));
+fn a_pre_directory_mascot_file_is_the_last_choice_and_seeds_every_directory() {
+    // The old one-value file is the new file's top level: the last choice
+    // made anywhere, which every directory without an entry starts from.
+    let file = MascotFile::parse("{\n  \"mascot\": \"skiter\"\n}\n");
+    assert_eq!(file.last, Some(Mascot::Skiter));
+    assert!(file.projects.is_empty());
+    assert_eq!(file.choice_for("/a"), Some(Mascot::Skiter));
+    assert_eq!(file.project("/a"), None, "no entry of its own yet");
 }
 
 #[test]
-fn a_missing_or_corrupt_mascot_file_reads_as_none() {
-    assert_eq!(parse_mascot_file(""), None);
-    assert_eq!(parse_mascot_file("not json"), None);
-    assert_eq!(parse_mascot_file("{}"), None);
-    assert_eq!(parse_mascot_file(r#"{"mascot": "unknown"}"#), None);
+fn a_directory_entry_outranks_the_last_choice() {
+    let file =
+        MascotFile::parse(r#"{"mascot": "skiter", "projects": {"/a": {"mascot": "bloom"}}}"#);
+    assert_eq!(file.choice_for("/a"), Some(Mascot::Bloom));
+    assert_eq!(file.project("/a"), Some(Mascot::Bloom));
+    assert_eq!(file.choice_for("/b"), Some(Mascot::Skiter));
+    assert_eq!(file.project("/b"), None);
+}
+
+#[test]
+fn adopt_pins_the_last_choice_for_a_new_directory_exactly_once() {
+    // A directory launched in for the first time takes the last choice and
+    // keeps it as its own, so a later choice elsewhere never moves it.
+    let mut file = MascotFile::parse(r#"{"mascot": "gem"}"#);
+    assert!(file.adopt("/a"), "pinned: the file changed");
+    assert_eq!(file.project("/a"), Some(Mascot::Gem));
+    assert!(!file.adopt("/a"), "already pinned: nothing to write");
+    file.record("/b", Mascot::Twin);
+    assert_eq!(file.last, Some(Mascot::Twin));
+    assert_eq!(file.choice_for("/a"), Some(Mascot::Gem), "the pin held");
+    assert_eq!(
+        file.choice_for("/c"),
+        Some(Mascot::Twin),
+        "a new directory takes the new last"
+    );
+    // Nothing to pin without a last choice: the default stays implicit.
+    let mut empty = MascotFile::default();
+    assert!(!empty.adopt("/a"));
+    assert!(empty.projects.is_empty());
+    assert_eq!(empty.choice_for("/a"), None);
+}
+
+#[test]
+fn record_sets_the_directory_entry_and_the_last_choice() {
+    let mut file = MascotFile::default();
+    file.record("/a", Mascot::Sprout);
+    assert_eq!(file.project("/a"), Some(Mascot::Sprout));
+    assert_eq!(file.last, Some(Mascot::Sprout));
+    file.record("/b", Mascot::Gem);
+    assert_eq!(
+        file.project("/a"),
+        Some(Mascot::Sprout),
+        "another directory's entry is untouched"
+    );
+    assert_eq!(file.last, Some(Mascot::Gem));
+    file.record("/a", Mascot::Crest);
+    assert_eq!(
+        file.project("/a"),
+        Some(Mascot::Crest),
+        "a directory can choose again"
+    );
+}
+
+#[test]
+fn the_mascot_file_round_trips_and_one_with_no_entries_is_the_old_shape() {
+    let mut file = MascotFile::default();
+    file.record("/home/u/a", Mascot::Bloom);
+    file.record("/home/u/b", Mascot::Gem);
+    let json = file.to_json();
+    assert_eq!(
+        json,
+        "{\n  \"mascot\": \"gem\",\n  \"projects\": {\n    \"/home/u/a\": {\n      \"mascot\": \"bloom\"\n    },\n    \"/home/u/b\": {\n      \"mascot\": \"gem\"\n    }\n  }\n}\n"
+    );
+    assert_eq!(MascotFile::parse(&json), file);
+    // A file with no entries is byte-for-byte the one-value file it used to be.
+    let old = MascotFile {
+        last: Some(Mascot::Sprout),
+        projects: BTreeMap::new(),
+    };
+    assert_eq!(old.to_json(), "{\n  \"mascot\": \"sprout\"\n}\n");
+    assert_eq!(MascotFile::default().to_json(), "{}\n");
+}
+
+#[test]
+fn a_missing_or_corrupt_mascot_file_reads_as_nothing_chosen() {
+    // A corrupt preference file must never block startup: it reads as no
+    // choice, and the session keeps the default.
+    for text in [
+        "",
+        "not json",
+        "{}",
+        "[]",
+        r#"{"mascot": "unknown"}"#,
+        r#"{"mascot": 3}"#,
+        r#"{"projects": []}"#,
+    ] {
+        let file = MascotFile::parse(text);
+        assert_eq!(file.last, None, "{text:?}");
+        assert!(file.projects.is_empty(), "{text:?}");
+    }
+    // An unknown name at either level costs only that value, never the file.
+    let file = MascotFile::parse(
+        r#"{"mascot": "unknown", "projects": {"/a": {"mascot": "bloom"}, "/b": {"mascot": "nope"}, "/c": {}}}"#,
+    );
+    assert_eq!(file.last, None);
+    assert_eq!(file.project("/a"), Some(Mascot::Bloom));
+    assert_eq!(file.project("/b"), None);
+    assert_eq!(file.project("/c"), None);
+    // Names read case-insensitively, as `from_name` does.
+    assert_eq!(
+        MascotFile::parse(r#"{"mascot": "Sprout"}"#).last,
+        Some(Mascot::Sprout)
+    );
+    // The spinner file's key is not this file's.
+    assert_eq!(MascotFile::parse(r#"{"spinner": "comet"}"#).last, None);
 }
 
 // ===== the /mascot command =====

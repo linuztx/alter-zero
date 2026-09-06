@@ -28,7 +28,7 @@ use ratatui::crossterm::event::EventStream;
 use ratatui::text::Line;
 
 use alter_zero::agents::AgentRegistry;
-use alter_zero::app::{App, CHECKPOINT_RESTORED_NOTICE, ToastKind};
+use alter_zero::app::{App, CHECKPOINT_RESTORED_NOTICE, Mascot, Spinner, ToastKind};
 use alter_zero::background::{BackgroundRegistry, BgEvent};
 use alter_zero::checkpoint::{self, CheckpointRefusal, CheckpointStore};
 use alter_zero::frame;
@@ -84,15 +84,27 @@ impl<'t> Session<'t> {
         // appended per loop iteration (`take_unpersisted_inputs`).
         let hist_store = InputHistoryStore::new();
         app.seed_input_history(hist_store.load());
-        // The banner mascot (docs/mascot.md): the saved `/mascot` choice,
-        // seeded before the first frame commits the header so the banner
-        // draws it from launch. An absent or corrupt file keeps the default.
-        if let Some(mascot) = config::load_mascot(config::mascot_json_path().as_deref()) {
+        // The working directory keys every per-directory file below
+        // (docs/per-directory-state.md) — the two looks here, the `/model`
+        // selection and `/settings` knobs further down, the permission rules.
+        let cwd = std::env::current_dir().unwrap_or_default();
+        let project = cwd.display().to_string();
+        // The banner mascot (docs/mascot.md): this directory's saved `/mascot`
+        // choice — or, launched in for the first time, the last choice made
+        // anywhere, pinned as this directory's own right here — seeded before
+        // the first frame commits the header so the banner draws it from
+        // launch. An absent or corrupt file keeps the default.
+        if let Some(mascot) =
+            config::adopt_look::<Mascot>(config::mascot_json_path().as_deref(), &project)
+        {
             app.set_mascot(mascot);
         }
-        // The status spinner style (docs/spinner.md): the saved `/spinner`
-        // choice, seeded the same way so the first turn's status line wears it.
-        if let Some(spinner) = config::load_spinner(config::spinner_json_path().as_deref()) {
+        // The status spinner style (docs/spinner.md): the directory's saved
+        // `/spinner` choice, seeded the same way so the first turn's status
+        // line wears it.
+        if let Some(spinner) =
+            config::adopt_look::<Spinner>(config::spinner_json_path().as_deref(), &project)
+        {
             app.set_spinner(spinner);
         }
         // The colour theme (docs/theme.md): the saved `/theme` choice, seeded
@@ -104,7 +116,6 @@ impl<'t> Session<'t> {
         }
         alter_zero::ui::activate_theme(app.theme());
 
-        let cwd = std::env::current_dir().unwrap_or_default();
         let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
         // How a `Read`/`Write`/`Edit` cell names its file (`docs/tools.md`
         // *Path display*): relative under this cwd, `~`-relative under home,

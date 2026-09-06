@@ -52,8 +52,9 @@ widened for the split.
 | `resume.rs` | The `/resume` picker. |
 | `model_picker.rs` | The inline `/model` picker. |
 | `login.rs` | The inline `/login` onboarding. |
-| `mascot.rs` | The banner-mascot catalog, the `/mascot` picker's state, the `mascot.json` format (`docs/mascot.md`). |
-| `spinner.rs` | The status spinner-style catalog, the `/spinner` picker's state, the `spinner.json` format (`docs/spinner.md`). |
+| `look.rs` | The per-directory persistence the two looks share: the `Look` trait and `LookFile<T>` — the `mascot.json`/`spinner.json` format, `config.json`'s last-and-pinned rule (`docs/per-directory-state.md`). |
+| `mascot.rs` | The banner-mascot catalog (with its `Look` impl, the `mascot` key), the `/mascot` picker's state (`docs/mascot.md`). |
+| `spinner.rs` | The status spinner-style catalog (with its `Look` impl, the `spinner` key), the `/spinner` picker's state (`docs/spinner.md`). |
 | `theme.rs` | The colour-theme catalog, the `/theme` picker's state, the `theme.json` format (`docs/theme.md`). |
 | `donate.rs` | The donation-address catalog and the read-only `/donate` page's state (`docs/donate.md`). |
 | `permission.rs` | The inline tool-permission prompt: the stashed draft, the option/amend key map (`docs/permissions.md`). |
@@ -131,8 +132,8 @@ opening the viewport, running the loop — and everything else lives here:
 | `recorder.rs` | `SessionRecorder`: mirroring history to a rollout file (`docs/resume.md`). |
 | `resume.rs` | Finding recorded sessions on disk, and the `/resume` + backtrack arms. |
 | `history_store.rs` | `InputHistoryStore` (`docs/history-persistence.md`). |
-| `mascot.rs` | Applying a `/mascot` selection: the `mascot.json` write + banner repaint (`docs/mascot.md`). |
-| `spinner.rs` | Applying a `/spinner` selection: the `spinner.json` write + toast (`docs/spinner.md`). |
+| `mascot.rs` | Applying a `/mascot` selection: the per-directory `mascot.json` write + banner repaint (`docs/mascot.md`). |
+| `spinner.rs` | Applying a `/spinner` selection: the per-directory `spinner.json` write + toast (`docs/spinner.md`). |
 | `theme.rs` | Applying a `/theme` selection: the `theme.json` write, the palette switch, the recolouring rebuild (`docs/theme.md`). |
 | `donate.rs` | Applying a `/donate` copy: the clipboard write + the toast (`docs/donate.md`). |
 | `shell.rs` | The `!` command runner and its drain/cap unit tests (`docs/shell-command.md`). |

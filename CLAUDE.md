@@ -58,7 +58,7 @@ Session` block in its area module, reaching the private fields the way `app/`'s
 submodules reach `App`'s). The four big ones are **directories
 of per-area modules**, not single files — `src/app/` (`types`, `action`, `keys`,
 `composer`, `commands`, `file_picker`, `input_history`, `queue`, `tools`, `turn`,
-`compact`, `backtrack`, `views`, `resume`, `model_picker`, `login`, `settings`, `mascot`, `spinner`, `theme`, `donate`, `hooks_menu`, `mcp_menu`, `trust_menu`, `background`,
+`compact`, `backtrack`, `views`, `resume`, `model_picker`, `login`, `settings`, `look`, `mascot`, `spinner`, `theme`, `donate`, `hooks_menu`, `mcp_menu`, `trust_menu`, `background`,
 `agent`, `status`, `permission`, with the `App` struct itself in `mod.rs` so every submodule and
 the test tree keeps its private-field access), `src/ui/` (`theme`, `wrap`,
 `layout`, `assistant`, `inline`, `table`, `message`, `conversation`, `tool`,
@@ -133,7 +133,7 @@ cyan `/login /model /resume` hint — chrome outside `history`, re-emitted atop
 every purge rebuild) in `docs/header.md`, and the **`/mascot` picker** that
 switches it (the `/settings` family's frame over the six-mascot catalog
 with a **live banner preview** rendered by the header's own builder, the
-choice persisted in `mascot.json` and the switch's purge rebuild redrawing
+choice persisted **per working directory** in `mascot.json` (`docs/per-directory-state.md`) and the switch's purge rebuild redrawing
 the banner at once) in `docs/mascot.md`, and the **`/spinner` picker** that
 chooses the status line's **spinner style** (the `/mascot` picker's twin over
 a nine-style catalog — `comet` (the default), the braille-track `gravity`
@@ -144,7 +144,7 @@ sample status line through `ui::styled_status_line`, the strip's own
 renderer, animated off the injected frame clock with no turn running
 (`App::wants_animation_frames`) and its flow signed on the selection rather
 than its rows so a frame never churns a purge rebuild; the choice persisted
-in `spinner.json` and seeded at bootstrap, the styles' frames and colour
+**per working directory** in `spinner.json` (`docs/per-directory-state.md`) and seeded at bootstrap, the styles' frames and colour
 rules in `ui/theme.rs` — `sparkle`/`blocks` wearing the banner gradient,
 `pulse` the tool bullet's breath, the two tracks drawn procedurally on a
 braille canvas from whole-millisecond ping-pong/hop curves rather than
@@ -1612,7 +1612,7 @@ directory opts in. The `/model` selection is per directory the same way
 selection, which a directory launched in for the first time adopts and pins
 as its own at startup — `ModelSession::resolve` via `config::adopt_selection`
 — so a switch elsewhere never moves it; `switch_to` records the directory's
-entry *and* the last selection, `persist` only the directory's own pair).
+entry *and* the last selection, `persist` only the directory's own pair) — and so are the **`/mascot` and `/spinner` looks** (`mascot.json`/`spinner.json` each gaining `config.json`'s `projects` map over the last choice, a directory pinning that last at its first launch and a choice made in it becoming its entry *and* the last, through one pure `app::LookFile<T>` shared by the two twin catalogs via the `app::Look` trait — `tui::config::adopt_look` at bootstrap, `save_look` from the pickers' Enter, `docs/per-directory-state.md`, `smoke.sh` Phase 114).
 
 ### The runtime model and its invariants
 

@@ -38,6 +38,7 @@ mod hooks_menu;
 mod input_history;
 mod keys;
 mod login;
+mod look;
 mod mascot;
 mod mcp_menu;
 mod model_picker;
@@ -82,7 +83,8 @@ pub use self::login::{
     DeviceLogin, DeviceStatus, KeyKind, KeyOnboarding, KeyStep, LoginMethod, ProviderChoice,
     SigninKind, SubscriptionChoice,
 };
-pub use self::mascot::{Mascot, MascotPicker, MascotRow, mascot_file_json, parse_mascot_file};
+pub use self::look::{Look, LookFile, MascotFile, SpinnerFile};
+pub use self::mascot::{Mascot, MascotPicker, MascotRow};
 pub use self::mcp_menu::{McpAuthView, McpMenu, McpPage, McpServerAction, server_actions};
 pub use self::model_picker::{ModelFetchError, ModelLoad, ModelPicker};
 pub use self::permission::PermissionPrompt;
@@ -95,9 +97,7 @@ pub use self::resume::{ResumeControl, ResumeFilter, ResumePicker, ResumeSort};
 pub use self::settings::{SettingRow, SettingsPicker};
 pub use self::skill_picker::SkillPicker;
 pub use self::skills_menu::{SkillMenuRow, SkillsMenu};
-pub use self::spinner::{
-    Spinner, SpinnerPicker, SpinnerRow, parse_spinner_file, spinner_file_json,
-};
+pub use self::spinner::{Spinner, SpinnerPicker, SpinnerRow};
 pub use self::status::{RetryInfo, ThinkingState, TokenArrow, TurnStatus, TurnSummary};
 pub use self::tasks::TaskCallRecord;
 pub use self::theme::{Theme, ThemePicker, ThemeRow, parse_theme_file, theme_file_json};

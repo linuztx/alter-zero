@@ -1,4 +1,4 @@
-# Per-directory state — `/model` and `/settings` remember the directory
+# Per-directory state — `/model`, `/settings`, `/mascot` and `/spinner` remember the directory
 
 The model you pick and the knobs you set are facts about a **project**, not
 about you: the repo that needs a frontier model beside the scratch directory
@@ -7,16 +7,22 @@ the clone you have never audited. Until now both files were one blob for the
 whole user — a `/model` switch in one terminal changed what every other
 directory started with, and turning checkpoints off for a huge tree turned
 them off everywhere. `config.json` and `settings.json` are keyed by working
-directory now, the way `permissions.json` and `skills.json` already were.
+directory now, the way `permissions.json` and `skills.json` already were —
+and so are `mascot.json` and `spinner.json`, the two **looks**
+(`docs/mascot.md`, `docs/spinner.md`): the banner a project wears is as much
+its own as the model it runs, and a `/mascot` picked in one terminal used to
+redraw every other project's banner at its next launch.
 
 ## The rule
 
-Both files keep a **`projects` map keyed by the cwd's absolute path**, read
-and written as a **read-modify-write** (re-read the file, replace this
+Every file here keeps a **`projects` map keyed by the cwd's absolute path**,
+read and written as a **read-modify-write** (re-read the file, replace this
 directory's entry, write it back), so two sessions in two directories never
 clobber each other. The top level of each file keeps its old shape, so a file
-written before this change still loads — and the two files answer "what does
-a directory I have never launched in start with?" differently, on purpose:
+written before this change still loads — and the two original files answer
+"what does a directory I have never launched in start with?" differently, on
+purpose (the two look files take `config.json`'s side of the table, entry for
+entry — *`mascot.json` and `spinner.json`* below):
 
 | | `config.json` (`/model`) | `settings.json` (`/settings`) |
 |---|---|---|
@@ -119,6 +125,51 @@ a `saved_settings` copy of its own, since the file's entry for this directory
 *is* that copy, and re-reading it also keeps what a second session in the
 same directory saved meanwhile.
 
+## `mascot.json` and `spinner.json`
+
+```json
+{
+  "mascot": "sprout",
+  "projects": {
+    "/home/user/work/api": { "mascot": "bloom" }
+  }
+}
+```
+
+The same shape under the `spinner` key for `spinner.json`. Each is
+`config.json`'s model exactly — a look is a preference nobody hand-edits a
+seed for, so a new directory should start from *what you last chose*, and it
+must then be independent of what you choose next: the top level is the
+**last** choice made anywhere (and exactly the one-value file the app wrote
+before looks were per directory, so an old file still loads and seeds every
+directory), a directory launched in for the first time **pins** the last as
+its own entry at that launch, and a choice made in a directory is the entry
+*and* the last. An entry is the same shape as the top level, which is what
+lets one parser read both.
+
+The pure format is one generic, `app::LookFile<T>` over the `app::Look`
+trait (`KEY` — the JSON key, `name`, `from_name` — implemented by `Mascot`
+and `Spinner`), because the two catalogs are twins by design;
+`app::MascotFile` and `app::SpinnerFile` are its instances. Its operations
+mirror `config.json`'s, each unit-tested:
+
+- `choice_for(dir)` — the directory's entry, else the last choice.
+- `project(dir)` — the entry alone.
+- `adopt(dir)` — pin the last as `dir`'s entry when it has none; `true`
+  when that changed the file (the boundary writes only then).
+- `record(dir, look)` — a choice made in `dir`: its entry **and** the last.
+- `parse` / `to_json` — lenient in (a corrupt file reads as nothing chosen,
+  an unknown name costs only that one value), pretty out with the choice key
+  first, so a file with no entries is byte-for-byte the old one-value file.
+
+At the boundary (`tui::config`): `adopt_look::<T>(path, cwd)` at bootstrap
+(load → `adopt` → write if changed → `choice_for`), before the first frame
+commits the banner; `save_look(path, cwd, look)` from the two pickers'
+Enter (`tui::mascot::Session::select_mascot`,
+`tui::spinner::Session::select_spinner`) — both read-modify-writes, both
+best-effort, a `None` path (no config home) disabling persistence and nothing
+else.
+
 ### Hooks and checkpoints are off until a directory turns them on
 
 Both defaults flipped from `true` to `false` with this change. Each runs
@@ -149,7 +200,8 @@ Two consequences at the boundary:
 ## What is *not* per directory
 
 - **`.env`** — a key is the user's, not a project's; `/login` is unchanged.
-- **`mascot.json`** — the banner is the user's.
+- **`theme.json`** — the colours are the user's: a theme is matched to the
+  terminal the user sits at, not to a project (`docs/theme.md`).
 - **`permissions.json`**, **`skills.json`** — already per project; unchanged.
 - The **project-level `.alter-zero/`** layer (`docs/project-config.md`) is
   a different axis: files *inside* the project, behind `/trust`. Both files
@@ -160,9 +212,15 @@ Two consequences at the boundary:
 
 The pure formats are unit-tested (`src/llm/settings.rs`, `src/settings/tests.rs`:
 the compat of a flat file, the pin, the read-modify-write, the whole-blob
-rule, the new defaults). `scripts/smoke.sh` Phase 109 drives the boundary
-end to end against one config home from two directories: a knob cycled in
-the first stays there, the second starts at the defaults (hooks and
-checkpoints off), and a pre-seeded last model is pinned per directory. The
-live `/model` write is exercised against a real provider in the tmux run
-described in the commit.
+rule, the new defaults; `src/app/tests/mascot.rs` and `spinner.rs` for the
+two looks: the old one-value file as the last, the pin-once, the
+entry-and-last record, the byte-identical no-entry shape, the lenient
+parse). `scripts/smoke.sh` Phase 109 drives the boundary end to end against
+one config home from two directories: a knob cycled in the first stays
+there, the second starts at the defaults (hooks and checkpoints off), and a
+pre-seeded last model is pinned per directory; Phase 114 drives the two
+looks the same way — a mascot and a spinner chosen in the first directory
+are its own and the last, the second directory's first launch pins that
+last and its own choices never move the first's, and a third directory
+takes the new last. The live `/model` write is exercised against a real
+provider in the tmux run described in the commit.

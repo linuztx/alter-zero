@@ -1,8 +1,8 @@
 //! What the boundary reads out of the environment before anything runs: the
-//! provider table, the API-key store, the persisted `/model` selection and
-//! `/settings` knobs (both per working directory,
-//! `docs/per-directory-state.md`), the per-project permission rules, and
-//! where each of those files lives.
+//! provider table, the API-key store, the persisted `/model` selection,
+//! `/settings` knobs and `/mascot`/`/spinner` looks (each per working
+//! directory, `docs/per-directory-state.md`), the per-project permission
+//! rules, and where each of those files lives.
 //!
 //! Everything here is a *lookup* — resolve a path, read a file, merge the
 //! process environment over it — with no state of its own, so the loop can
@@ -23,7 +23,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use alter_zero::app::{KeyKind, ProviderChoice, SigninKind, SubscriptionChoice};
+use alter_zero::app::{KeyKind, Look, LookFile, ProviderChoice, SigninKind, SubscriptionChoice};
 use alter_zero::checkpoint;
 use alter_zero::llm::{
     self, AuthScheme, EnvFile, ModelConfig, ModelSelection, ProvidersFile, ReasoningSupport,
@@ -757,61 +757,71 @@ pub(crate) fn skills_json_path() -> Option<PathBuf> {
 }
 
 /// The banner-mascot file — `{config_home}/mascot.json`, its own file beside
-/// the rest (one file per feature that owns it, `docs/mascot.md`). `None`
-/// (no config home) disables persistence: the `/mascot` switch still works,
-/// it just doesn't survive a restart.
+/// the rest (one file per feature that owns it, `docs/mascot.md`), keyed by
+/// working directory inside (`docs/per-directory-state.md`). `None` (no
+/// config home) disables persistence: the `/mascot` switch still works, it
+/// just doesn't survive a restart.
 pub(crate) fn mascot_json_path() -> Option<PathBuf> {
     config_home().map(|dir| dir.join("mascot.json"))
 }
 
-/// Read the saved mascot. Best-effort like [`load_permissions`] — an absent,
-/// unreadable, or corrupt file reads as `None` and the session keeps the
-/// default mascot rather than failing startup.
-pub(crate) fn load_mascot(path: Option<&Path>) -> Option<alter_zero::app::Mascot> {
-    path.and_then(|p| std::fs::read_to_string(p).ok())
-        .as_deref()
-        .and_then(alter_zero::app::parse_mascot_file)
-}
-
-/// Persist the chosen mascot. Best-effort like [`save_settings`] — a
-/// read-only home must never kill the TUI — and a `None` path no-ops.
-pub(crate) fn save_mascot(path: Option<&Path>, mascot: alter_zero::app::Mascot) {
-    let Some(path) = path else {
-        return;
-    };
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    let _ = std::fs::write(path, alter_zero::app::mascot_file_json(mascot));
-}
-
 /// The spinner-style file — `{config_home}/spinner.json`, its own file like
-/// `mascot.json` (one file per feature that owns it, `docs/spinner.md`).
-/// `None` (no config home) disables persistence: the `/spinner` switch still
-/// works, it just doesn't survive a restart.
+/// `mascot.json` (one file per feature that owns it, `docs/spinner.md`) and
+/// keyed by working directory the same way. `None` (no config home) disables
+/// persistence: the `/spinner` switch still works, it just doesn't survive a
+/// restart.
 pub(crate) fn spinner_json_path() -> Option<PathBuf> {
     config_home().map(|dir| dir.join("spinner.json"))
 }
 
-/// Read the saved spinner style. Best-effort like [`load_mascot`] — an
-/// absent, unreadable, or corrupt file reads as `None` and the session keeps
-/// the default comet rather than failing startup.
-pub(crate) fn load_spinner(path: Option<&Path>) -> Option<alter_zero::app::Spinner> {
+/// Read one look's file whole — every directory's entry over the last choice
+/// (`app::LookFile`). Best-effort like [`load_permissions`]: an absent,
+/// unreadable or corrupt file reads as nothing chosen, and the session keeps
+/// the catalog's default rather than failing startup.
+fn load_look_file<T: Look>(path: Option<&Path>) -> LookFile<T> {
     path.and_then(|p| std::fs::read_to_string(p).ok())
-        .as_deref()
-        .and_then(alter_zero::app::parse_spinner_file)
+        .map(|text| LookFile::parse(&text))
+        .unwrap_or_default()
 }
 
-/// Persist the chosen spinner style. Best-effort like [`save_mascot`] — a
-/// read-only home must never kill the TUI — and a `None` path no-ops.
-pub(crate) fn save_spinner(path: Option<&Path>, spinner: alter_zero::app::Spinner) {
-    let Some(path) = path else {
-        return;
-    };
+/// Write a look's file whole, creating the config home first. Best-effort
+/// like [`save_settings`] — a read-only home must never kill the TUI.
+fn write_look_file<T: Look>(path: &Path, file: &LookFile<T>) {
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    let _ = std::fs::write(path, alter_zero::app::spinner_file_json(spinner));
+    let _ = std::fs::write(path, file.to_json());
+}
+
+/// The look (a mascot, a spinner style) a session in `project` (the cwd, as
+/// the file keys it) starts with — the directory's own entry, or, launched
+/// in for the first time, the last choice made anywhere, **pinned** as the
+/// directory's own right here (`LookFile::adopt`, the file written only when
+/// that changed) so a later choice elsewhere never moves it — the
+/// [`adopt_selection`] rule. `None` when nothing was ever chosen: the
+/// catalog's default. See `docs/per-directory-state.md`.
+pub(crate) fn adopt_look<T: Look>(path: Option<&Path>, project: &str) -> Option<T> {
+    let mut file = load_look_file::<T>(path);
+    if file.adopt(project)
+        && let Some(path) = path
+    {
+        write_look_file(path, &file);
+    }
+    file.choice_for(project)
+}
+
+/// Persist a look chosen in `project` as the directory's entry **and** the
+/// last choice made anywhere. A read-modify-write ([`save_selection`]'s
+/// pattern): the file is re-read first, so entries other directories wrote
+/// meanwhile survive. Best-effort like every write here, and a `None` path
+/// (no config home) no-ops.
+pub(crate) fn save_look<T: Look>(path: Option<&Path>, project: &str, look: T) {
+    let Some(path) = path else {
+        return;
+    };
+    let mut file = load_look_file::<T>(Some(path));
+    file.record(project, look);
+    write_look_file(path, &file);
 }
 
 /// The colour-theme file — `{config_home}/theme.json`, its own file like

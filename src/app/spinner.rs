@@ -9,8 +9,10 @@
 //! the boundary already injects ([`App::set_pulse`]). The `ui` side renders
 //! them through the status line's own renderer, so what the picker shows and
 //! what a turn shows can never disagree. The choice persists to
-//! `{config_home}/spinner.json` at the boundary (`tui::config`); the pure
-//! format lives here ([`spinner_file_json`] / [`parse_spinner_file`]).
+//! `{config_home}/spinner.json` at the boundary (`tui::config`) — **per
+//! working directory**, `config.json`'s rule (`docs/per-directory-state.md`);
+//! the pure format is the [`SpinnerFile`] instance of the [`LookFile`] the
+//! two looks share.
 //!
 //! The catalog here is **identity only** — a name, a description, an order.
 //! What each style *looks* like (its frames, cadence and colours) is styling,
@@ -100,7 +102,7 @@ impl Spinner {
     }
 
     /// The style with this name (case-insensitive), if the catalog holds one
-    /// — how `spinner.json` reads back.
+    /// — how `spinner.json` reads back ([`Look::from_name`]).
     #[must_use]
     pub fn from_name(name: &str) -> Option<Self> {
         Self::ALL
@@ -109,21 +111,18 @@ impl Spinner {
     }
 }
 
-/// The `spinner.json` blob recording the style — `{"spinner": "comet"}`.
-/// Names are static lowercase ASCII, so the literal formatting needs no
-/// escaping (the `mascot.json` shape, `docs/mascot.md`).
-#[must_use]
-pub fn spinner_file_json(spinner: Spinner) -> String {
-    format!("{{\n  \"spinner\": \"{}\"\n}}\n", spinner.name())
-}
+/// The `spinner.json` side of the catalog: the key the file records a choice
+/// under, over the name mapping above (`docs/per-directory-state.md`).
+impl Look for Spinner {
+    const KEY: &'static str = "spinner";
 
-/// Read a `spinner.json` blob back. `None` for anything that doesn't parse
-/// to a known style — the boundary then keeps the default (a corrupt
-/// preference file must never block startup).
-#[must_use]
-pub fn parse_spinner_file(text: &str) -> Option<Spinner> {
-    let value: serde_json::Value = serde_json::from_str(text).ok()?;
-    Spinner::from_name(value.get("spinner")?.as_str()?)
+    fn name(self) -> &'static str {
+        Self::name(self)
+    }
+
+    fn from_name(name: &str) -> Option<Self> {
+        Self::from_name(name)
+    }
 }
 
 /// One row of the `/spinner` picker: the style and whether it is the

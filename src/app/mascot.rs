@@ -7,8 +7,10 @@
 //! previewing the highlighted mascot's *actual banner* (the `ui` side renders
 //! it through the same builder the startup header uses, so the preview can
 //! never disagree with what Enter produces). The choice persists to
-//! `{config_home}/mascot.json` at the boundary (`tui::config`); the pure
-//! format lives here ([`mascot_file_json`] / [`parse_mascot_file`]).
+//! `{config_home}/mascot.json` at the boundary (`tui::config`) — **per
+//! working directory**, `config.json`'s rule (`docs/per-directory-state.md`);
+//! the pure format is the [`MascotFile`] instance of the [`LookFile`] the two
+//! looks share.
 
 use super::views::TOOL_VIEW_PAGE;
 use super::*;
@@ -97,7 +99,7 @@ impl Mascot {
     }
 
     /// The mascot with this name (case-insensitive), if the catalog holds one
-    /// — how `mascot.json` reads back.
+    /// — how `mascot.json` reads back ([`Look::from_name`]).
     #[must_use]
     pub fn from_name(name: &str) -> Option<Self> {
         Self::ALL
@@ -106,21 +108,18 @@ impl Mascot {
     }
 }
 
-/// The `mascot.json` blob recording `mascot` — `{"mascot": "crest"}`. Names
-/// are static lowercase ASCII, so the literal formatting needs no escaping.
-#[must_use]
-pub fn mascot_file_json(mascot: Mascot) -> String {
-    format!("{{\n  \"mascot\": \"{}\"\n}}\n", mascot.name())
-}
+/// The `mascot.json` side of the catalog: the key the file records a choice
+/// under, over the name mapping above (`docs/per-directory-state.md`).
+impl Look for Mascot {
+    const KEY: &'static str = "mascot";
 
-/// Read a `mascot.json` blob back. `None` for anything that doesn't parse to
-/// a known mascot — the boundary then keeps the default (the
-/// `load_settings` posture: a corrupt preference file must never block
-/// startup).
-#[must_use]
-pub fn parse_mascot_file(text: &str) -> Option<Mascot> {
-    let value: serde_json::Value = serde_json::from_str(text).ok()?;
-    Mascot::from_name(value.get("mascot")?.as_str()?)
+    fn name(self) -> &'static str {
+        Self::name(self)
+    }
+
+    fn from_name(name: &str) -> Option<Self> {
+        Self::from_name(name)
+    }
 }
 
 /// One row of the `/mascot` picker: the mascot and whether it is the

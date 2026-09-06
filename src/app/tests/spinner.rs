@@ -1,6 +1,8 @@
 //! The spinner-style catalog, the `/spinner` picker, and its persistence
 //! format (`docs/spinner.md`).
 
+use std::collections::BTreeMap;
+
 use super::*;
 
 /// An app with the `/spinner` picker open.
@@ -68,30 +70,63 @@ fn from_name_round_trips_case_insensitively() {
     assert_eq!(Spinner::from_name(""), None);
 }
 
-// ===== the persistence format (docs/spinner.md) =====
+// ===== the persistence format — per working directory (docs/spinner.md,
+// docs/per-directory-state.md) =====
 
 #[test]
-fn the_spinner_file_round_trips() {
+fn the_spinner_file_round_trips_under_its_own_key() {
     for spinner in Spinner::ALL {
-        let json = spinner_file_json(spinner);
-        assert_eq!(parse_spinner_file(&json), Some(spinner), "{json}");
+        let file = SpinnerFile {
+            last: Some(spinner),
+            projects: BTreeMap::new(),
+        };
+        let json = file.to_json();
+        assert_eq!(SpinnerFile::parse(&json), file, "{json}");
     }
+    // A file with no entries is byte-for-byte the one-value file it used to be.
+    let old = SpinnerFile {
+        last: Some(Spinner::Sparkle),
+        projects: BTreeMap::new(),
+    };
+    assert_eq!(old.to_json(), "{\n  \"spinner\": \"sparkle\"\n}\n");
+    let mut file = SpinnerFile::default();
+    file.record("/a", Spinner::Dots);
     assert_eq!(
-        spinner_file_json(Spinner::Sparkle),
-        "{\n  \"spinner\": \"sparkle\"\n}\n"
+        file.to_json(),
+        "{\n  \"spinner\": \"dots\",\n  \"projects\": {\n    \"/a\": {\n      \"spinner\": \"dots\"\n    }\n  }\n}\n"
     );
 }
 
 #[test]
-fn a_missing_or_corrupt_spinner_file_reads_as_none() {
-    assert_eq!(parse_spinner_file(""), None);
-    assert_eq!(parse_spinner_file("not json"), None);
-    assert_eq!(parse_spinner_file("{}"), None);
-    assert_eq!(parse_spinner_file(r#"{"spinner": "unknown"}"#), None);
+fn a_spinner_choice_is_the_directorys_own_and_the_last_made_anywhere() {
+    // The mascot file's rules over the spinner key (docs/per-directory-state.md):
+    // a new directory starts from the last choice and pins it; a choice
+    // elsewhere never moves a pinned directory.
+    let mut file = SpinnerFile::parse(r#"{"spinner": "wave"}"#);
+    assert_eq!(file.choice_for("/a"), Some(Spinner::Wave));
+    assert!(file.adopt("/a"));
+    file.record("/b", Spinner::Line);
+    assert_eq!(file.choice_for("/a"), Some(Spinner::Wave), "pinned");
+    assert_eq!(file.choice_for("/b"), Some(Spinner::Line));
+    assert_eq!(file.last, Some(Spinner::Line));
+    assert_eq!(file.choice_for("/c"), Some(Spinner::Line));
+}
+
+#[test]
+fn a_missing_or_corrupt_spinner_file_reads_as_nothing_chosen() {
+    for text in ["", "not json", "{}", r#"{"spinner": "unknown"}"#] {
+        assert_eq!(SpinnerFile::parse(text), SpinnerFile::default(), "{text:?}");
+    }
     assert_eq!(
-        parse_spinner_file(r#"{"mascot": "comet"}"#),
+        SpinnerFile::parse(r#"{"mascot": "comet"}"#).last,
         None,
         "the mascot file's key is not this file's"
+    );
+    assert_eq!(
+        SpinnerFile::parse(r#"{"spinner": "comet", "projects": {"/a": {"mascot": "dots"}}}"#)
+            .project("/a"),
+        None,
+        "nor under an entry"
     );
 }
 

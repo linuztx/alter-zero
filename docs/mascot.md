@@ -3,7 +3,9 @@
 The startup banner draws a small block-character **mascot** beside the session
 metadata (see `docs/header.md` for the banner itself). The mascot is chosen
 with the **`/mascot`** command — the eighth composer-replacing inline picker —
-and the choice persists across sessions.
+and the choice persists across sessions, **per working directory**
+(`docs/per-directory-state.md`): the repo that wears the gem beside the
+scratch directory that wears the hatchling.
 
 ## The catalog
 
@@ -91,9 +93,11 @@ bottom-anchors and flows its top into scrollback like its whole family
 `Action::SelectMascot(mascot)` — the pure side already moved `App::mascot`
 and closed the picker; the boundary (`tui::mascot::Session::select_mascot`):
 
-1. **persists** `{config_home}/mascot.json` (`{"mascot": "crest"}` — the pure
-   format is `app::mascot_file_json`/`parse_mascot_file`; best-effort I/O in
-   `tui::config::save_mascot`, the `save_settings` posture),
+1. **persists** `{config_home}/mascot.json` — as **this working
+   directory's** own choice *and* the last made anywhere, a read-modify-write
+   over the file (`tui::config::save_look`, best-effort like every write
+   there): the pure format is `app::MascotFile`, the `mascot.json` instance
+   of the `app::LookFile` the two looks share (*Per directory* below),
 2. raises the confirming `Mascot: {name}` toast, and
 3. **purge-rebuilds** (`repaint_active_view`): the banner is chrome at the
    *top of scrollback*, outside `history` (`docs/header.md`), so the rebuild
@@ -103,9 +107,40 @@ and closed the picker; the boundary (`tui::mascot::Session::select_mascot`):
    the standard rebuild path (invariant 3).
 
 At startup `tui::bootstrap` seeds `App::mascot` from `mascot.json` before the
-first frame commits the header (an absent or corrupt file keeps the default —
-never a startup failure). The Ctrl+O transcript tops itself with
-`header_lines` too, so it shows the switched mascot for free.
+first frame commits the header — the directory's own entry, or, launched in
+for the first time, the last choice made anywhere, **pinned** as the
+directory's own right then (`tui::config::adopt_look`); an absent or corrupt
+file keeps the default, never a startup failure. The Ctrl+O transcript tops
+itself with `header_lines` too, so it shows the switched mascot for free.
+
+## Per directory
+
+A mascot is a fact about a *project* as much as a `/model` choice is, so
+`mascot.json` follows `config.json`'s rule (`docs/per-directory-state.md`):
+
+```json
+{
+  "mascot": "sprout",
+  "projects": {
+    "/home/user/work/api": { "mascot": "bloom" }
+  }
+}
+```
+
+The top level is the **last** choice made anywhere — and exactly the
+one-value file written before mascots were per directory, so an old file
+still loads and seeds every directory. A directory launched in for the first
+time takes the last and **pins** it as its own entry right then
+(`LookFile::adopt`, written only when that changed), so a `/mascot` switch
+in one terminal never moves the banner in another; a switch made in a
+directory is that directory's entry *and* the new last (`LookFile::record`).
+"A directory" is the process cwd exactly as every other per-directory file
+keys it (`Session::cwd`, not the git root). The format is written once —
+the generic `app::LookFile<T>` over the `app::Look` trait (`KEY`, `name`,
+`from_name`), which `Mascot` and `Spinner` both implement — because the two
+catalogs are twins by design; `MascotFile` is its `mascot` instance. The
+`/theme` colours stay the user's: a theme is matched to the terminal, not to
+a project.
 
 ## API
 
@@ -115,17 +150,23 @@ never a startup failure). The Ctrl+O transcript tops itself with
   row; `App::mascot()`, `set_mascot`, `open_mascot_picker`,
   `close_mascot_picker`, `mascot_rows`, `highlighted_mascot`,
   `on_key_mascot_picker`.
-- `app::mascot_file_json` / `parse_mascot_file` — the `mascot.json` format.
+- `app::MascotFile` — the `mascot.json` format: `app::LookFile` over
+  `app::Mascot` (`Look::KEY = "mascot"`) — `parse`/`to_json`, `project`,
+  `choice_for`, `adopt`, `record`, over the `last` + `projects` fields.
 - `ui::mascot_view` — `mascot_view_lines` (the page builder; its length is
   the reserved height, `docs/view-flow.md`), `mascot_picker_height`,
   `render_mascot_picker`; `ui::header::header_lines_for` renders the preview.
 - `tui::mascot::Session::select_mascot`, `tui::config::{mascot_json_path,
-  load_mascot, save_mascot}`.
+  adopt_look, save_look}`.
 
 ## Tests
 
 - `app/tests/mascot.rs` — the catalog (six mascots, crest first,
-  single-width art, `from_name` round-trip), the persistence format, the
+  single-width art, `from_name` round-trip), the per-directory persistence
+  format (the old one-value file as the last choice seeding every directory,
+  an entry outranking it, `adopt`'s pin-once, `record`'s entry-and-last, the
+  round trip whose no-entry shape is byte-for-byte the old file, the lenient
+  parse that drops one unknown name and never the file), the
   `/mascot` command opening the picker, and the whole key grammar (filter,
   the wrapping ↑/↓ against the clamping jump keys, Enter/Space select,
   Esc/Ctrl+C, owns-every-key).
@@ -138,3 +179,8 @@ never a startup failure). The Ctrl+O transcript tops itself with
   open from the palette, preview follows ↓, filtered Enter switches the
   banner, the toast confirms, and a **second process against the same config
   home launches with the switched mascot** (persistence).
+- `scripts/smoke.sh` Phase 114 — the per-directory rule end to end, for
+  `/mascot` and `/spinner` together: two directories against one config
+  home, a choice in the first recorded as its own and the last, the second's
+  first launch pinning that last, a choice there never moving the first's
+  banner, and a third directory taking the new last.

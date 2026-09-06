@@ -5,7 +5,8 @@ the shimmering verb (`(●•·   ) Working… (3s · ↓ 1.2k tokens · esc to
 interrupt)`, `docs/status-indicator.md`). It used to be one animation, the
 comet. The **`/spinner`** command — the ninth composer-replacing inline
 picker, the `/mascot` picker's twin — chooses among nine, previews them
-**live**, and persists the choice across sessions.
+**live**, and persists the choice across sessions — **per working
+directory**, the `/mascot` picker's rule (`docs/per-directory-state.md`).
 
 ## The catalog
 
@@ -199,9 +200,13 @@ and the standard purge rebuild re-flows the page. Pinned by
 `Action::SelectSpinner(spinner)` — the pure side already moved `App::spinner`
 and closed the picker; the boundary (`tui::spinner::Session::select_spinner`):
 
-1. **persists** `{config_home}/spinner.json` (`{"spinner": "comet"}` — the
-   pure format is `app::spinner_file_json`/`parse_spinner_file`; best-effort
-   I/O in `tui::config::save_spinner`, the `save_mascot` posture), and
+1. **persists** `{config_home}/spinner.json` — as **this working
+   directory's** own choice *and* the last made anywhere, a read-modify-write
+   over the file (`tui::config::save_look`, best-effort like every write
+   there): the pure format is `app::SpinnerFile`, the `spinner.json` instance
+   of the `app::LookFile` the two looks share — `config.json`'s
+   per-directory rule, the same file shape `docs/mascot.md` *Per directory*
+   shows under the `spinner` key — and
 2. raises the confirming `Spinner: {name}` toast.
 
 Unlike a `/mascot` switch this needs **no purge rebuild**: the status line is
@@ -213,8 +218,11 @@ subagent session view's synthesized status alike), so a running turn wears
 the new style from its next frame, and the next turn from its first.
 
 At startup `tui::bootstrap` seeds `App::spinner` from `spinner.json` before
-the first frame (an absent or corrupt file keeps the default comet — never a
-startup failure), so the first turn's status line already wears it.
+the first frame — the directory's own entry, or, launched in for the first
+time, the last choice made anywhere, **pinned** as the directory's own right
+then (`tui::config::adopt_look`); an absent or corrupt file keeps the default
+comet, never a startup failure — so the first turn's status line already
+wears it.
 
 ## Design notes
 
@@ -259,7 +267,9 @@ startup failure), so the first turn's status line already wears it.
   `App::spinner()`, `set_spinner`, `open_spinner_picker`,
   `close_spinner_picker`, `spinner_rows`, `highlighted_spinner`,
   `spinner_preview_elapsed`, `on_key_spinner_picker`.
-- `app::spinner_file_json` / `parse_spinner_file` — the `spinner.json` format.
+- `app::SpinnerFile` — the `spinner.json` format: `app::LookFile` over
+  `app::Spinner` (`Look::KEY = "spinner"`), the `MascotFile` API under the
+  other key (`docs/mascot.md`).
 - `ui::styled_status_line(status, verb, spinner, width)` — the status line in
   a given style; `status_line` / `status_line_with_verb` are its comet case.
 - `ui::spinner_view` — `spinner_view_lines` (the page builder; its length is
@@ -269,12 +279,14 @@ startup failure), so the first turn's status line already wears it.
   tracks draw on; `ui::wrap::{breath, ping_pong, hop}` — the shared motion
   curves (`pulse` and the tool bullet's `tool_pulse_color`; the tracks).
 - `tui::spinner::Session::select_spinner`, `tui::config::{spinner_json_path,
-  load_spinner, save_spinner}`.
+  adopt_look, save_look}`.
 
 ## Tests
 
 - `app/tests/spinner.rs` — the catalog (nine styles, comet first and default,
-  distinct bare-word names, `from_name` round-trip), the persistence format,
+  distinct bare-word names, `from_name` round-trip), the per-directory
+  persistence format (the round trip under the `spinner` key, the
+  last-and-pinned rule, the lenient parse that refuses the mascot key),
   the `/spinner` command opening the picker (listed beside `/mascot`), the
   animation-frame request while open, the preview clock counting from the
   open, the Ctrl+B hint blanked, and the whole key grammar (filter, the
@@ -303,3 +315,7 @@ startup failure), so the first turn's status line already wears it.
   Enter switching the style with a toast and a `spinner.json` write, the very
   next turn's status line opening with the new style mid pre-stream pause, and
   a **second process against the same config home launching with it**.
+- `scripts/smoke.sh` Phase 114 — the per-directory rule end to end, beside
+  `/mascot` (`docs/mascot.md` *Tests*): a style chosen in one directory is
+  its own and the last, a new directory pins that last, a choice there never
+  moves the first's, and a third directory takes the new last.

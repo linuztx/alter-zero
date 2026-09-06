@@ -213,7 +213,9 @@ geometry constant, live in `src/ui/theme.rs`; the per-theme tables in
 `src/ui/palette.rs` — a new theme is one table. Two more looks are chosen
 in-app the same way: `/mascot` picks the startup banner's mascot
 (`docs/mascot.md`) and `/spinner` the status line's spinner animation —
-nine styles, previewed live in the picker (`docs/spinner.md`).
+nine styles, previewed live in the picker (`docs/spinner.md`). Both remember
+the **working directory** they were chosen in, like `/model` and `/settings`
+(`docs/per-directory-state.md`), so each project can wear its own.
 
 ## Using a real model
 
