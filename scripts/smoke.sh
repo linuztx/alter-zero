@@ -11426,8 +11426,9 @@ rm -rf "$THEME_CFG"
 # --- Phase 112: the `/donate` page (docs/donate.md). The `/hooks` browser's
 # sibling over the project's crypto donation addresses: a gradient
 # `♥ Support Alter Zero` title over a dim blurb, each address as a numbered
-# `❯ 1. BTC  Bitcoin · native network` row over its rounded box, an amber
-# wrong-network caution and a key hint; ↓ moves the `❯`; `c` copies the
+# `❯ 1. BTC  Bitcoin` row (the ticker and the coin — no network clause)
+# over its rounded box, an amber wrong-network caution and a key hint; ↓
+# moves the `❯`, on to the third (SOL) row and back; `c` copies the
 # highlighted address — the toast names the coin, and headless here arboard
 # has no clipboard server so the OSC 52 fallback lands the address VERBATIM
 # in tmux's paste buffer (Phase 28's trick) while the page stays open; Esc
@@ -11452,17 +11453,37 @@ donate_open="$(tmux capture-pane -t "$S112" -p)"
 echo "==== Phase 112: the page open (BTC highlighted) ===="
 printf '%s\n' "$donate_open"
 for expect in "♥ Support Alter Zero" "Free and open source" \
-	"❯ 1. BTC  Bitcoin · native network" "36ysFtsQDUQtigqGUXoHYr7jYegeCRnqoB" \
-	"  2. ETH  Ethereum · Base network" "0xF67F3EA18b6156f4ACfEfEf8D96c4F998B354CD6" \
-	"cannot be recovered" "↑↓ navigate  enter/c copy address  esc close"; do
+	"❯ 1. BTC  Bitcoin" "bc1q68v53mjj2uxg9qs5ke55qh4gv7un8esttwmvm9" \
+	"  2. ETH  Ethereum" "0xaf7B6ac9BeeFDcfCd118701a00be960a592600CB" \
+	"  3. SOL  Solana" "9hWaV4rTqNfF1c6mGDSnksMY1fqKuDU9iKymfbeSqXrA" \
+	"↑↓ navigate  enter/c copy address  esc close"; do
 	if ! printf '%s' "$donate_open" | grep -qF "$expect"; then
 		echo "FAIL: Phase 112 — the open page is missing '$expect'" >&2
 		status=1
 	fi
 done
+# The caution is prose wrapped to the pane's width, so a phrase of it can
+# straddle a row break (at these 90 columns it breaks after `cannot be`):
+# read it whole off the rows joined back into one line, and read the whole
+# sentence — the one line on the page that must say exactly what it says.
+donate_open_prose="$(printf '%s\n' "$donate_open" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' | paste -sd' ')"
+if ! printf '%s' "$donate_open_prose" | grep -qF \
+	"Send each coin over its own network only — a transfer on any other network cannot be recovered."; then
+	echo "FAIL: Phase 112 — the open page is missing the wrong-network caution, whole" >&2
+	status=1
+fi
+# A row is the ticker and the coin's name and nothing more: no network
+# clause after the coin (read as the whole trimmed row, not a substring).
+for label in "❯ 1. BTC  Bitcoin" "2. ETH  Ethereum" "3. SOL  Solana"; do
+	if ! printf '%s\n' "$donate_open" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' | grep -qxF "$label"; then
+		echo "FAIL: Phase 112 — the row '$label' carries something after the coin" >&2
+		status=1
+	fi
+done
 # Each address sits in its rounded box: the row over it opens with ╭ and
 # the row under it with ╰.
-for addr in "36ysFtsQDUQtigqGUXoHYr7jYegeCRnqoB" "0xF67F3EA18b6156f4ACfEfEf8D96c4F998B354CD6"; do
+for addr in "bc1q68v53mjj2uxg9qs5ke55qh4gv7un8esttwmvm9" "0xaf7B6ac9BeeFDcfCd118701a00be960a592600CB" \
+	"9hWaV4rTqNfF1c6mGDSnksMY1fqKuDU9iKymfbeSqXrA"; do
 	if ! printf '%s\n' "$donate_open" | grep -B1 -F "$addr" | head -1 | grep -qF "╭"; then
 		echo "FAIL: Phase 112 — no rounded top over $addr" >&2
 		status=1
@@ -11512,12 +11533,28 @@ fi
 donate_clip="$(tmux show-buffer 2>/dev/null)"
 echo "==== Phase 112: tmux clipboard buffer (the OSC 52 fallback landed here) ===="
 printf '%s\n' "$donate_clip"
-if [ "$donate_clip" != "0xF67F3EA18b6156f4ACfEfEf8D96c4F998B354CD6" ]; then
+if [ "$donate_clip" != "0xaf7B6ac9BeeFDcfCd118701a00be960a592600CB" ]; then
 	echo "FAIL: Phase 112 — the clipboard does not hold the ETH address verbatim" >&2
 	status=1
 fi
 if ! printf '%s' "$donate_copied" | grep -qF "❯ 2. ETH"; then
 	echo "FAIL: Phase 112 — copying closed the page" >&2
+	status=1
+fi
+# ↓ once more reaches the third row, SOL; a fourth ↓ wraps back to BTC.
+tmux send-keys -t "$S112" Down
+sleep 0.4
+donate_sol="$(tmux capture-pane -t "$S112" -p)"
+echo "==== Phase 112: ↓ highlights SOL ===="
+printf '%s\n' "$donate_sol"
+if ! printf '%s' "$donate_sol" | grep -qF "❯ 3. SOL  Solana"; then
+	echo "FAIL: Phase 112 — ↓ did not move the ❯ to SOL" >&2
+	status=1
+fi
+tmux send-keys -t "$S112" Down
+sleep 0.4
+if ! tmux capture-pane -t "$S112" -p | grep -qF "❯ 1. BTC"; then
+	echo "FAIL: Phase 112 — ↓ past the last row did not wrap to BTC" >&2
 	status=1
 fi
 # Esc closes: the composer and its footer come back, the page is gone.
@@ -11530,7 +11567,7 @@ if ! printf '%s' "$donate_closed" | grep -qF "dummy_model_name ·"; then
 	echo "FAIL: Phase 112 — the composer and footer did not come back after Esc" >&2
 	status=1
 fi
-if printf '%s' "$donate_closed" | grep -qF "36ysFtsQDUQtigqGUXoHYr7jYegeCRnqoB"; then
+if printf '%s' "$donate_closed" | grep -qF "bc1q68v53mjj2uxg9qs5ke55qh4gv7un8esttwmvm9"; then
 	echo "FAIL: Phase 112 — the page is still on screen after Esc" >&2
 	status=1
 fi

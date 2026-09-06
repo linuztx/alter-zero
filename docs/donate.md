@@ -10,14 +10,19 @@ open, the composer back on Esc.
 
 ## The addresses
 
-| ticker | coin     | network            | address                                      |
-| ------ | -------- | ------------------ | -------------------------------------------- |
-| `BTC`  | Bitcoin  | the native network | `36ysFtsQDUQtigqGUXoHYr7jYegeCRnqoB`         |
-| `ETH`  | Ethereum | the Base network   | `0xF67F3EA18b6156f4ACfEfEf8D96c4F998B354CD6` |
+| ticker | coin     | address                                        |
+| ------ | -------- | ---------------------------------------------- |
+| `BTC`  | Bitcoin  | `bc1q68v53mjj2uxg9qs5ke55qh4gv7un8esttwmvm9`   |
+| `ETH`  | Ethereum | `0xaf7B6ac9BeeFDcfCd118701a00be960a592600CB`   |
+| `SOL`  | Solana   | `9hWaV4rTqNfF1c6mGDSnksMY1fqKuDU9iKymfbeSqXrA` |
+
+No network is named beside an address, on the page or here: each address is
+on its coin's own network — Bitcoin, Ethereum, Solana — and the page's
+caution says so once for all of them rather than once per row.
 
 The catalog is the pure `app::DONATION_ADDRESSES` — one `DonationAddress`
-per row (`ticker`, `coin`, `network`, `address`, all `&'static str`), in the
-order the page lists them. It is a const rather than a file: the addresses
+per row (`ticker`, `coin`, `address`, all `&'static str`), in the order the
+page lists them. It is a const rather than a file: the addresses
 are the project's, not the user's, and a page that read them from disk would
 be a page anyone with write access to the config home could redirect. The
 catalog tests pin every address to ASCII with no whitespace and every ticker
@@ -27,27 +32,34 @@ rather than the donation.
 ## The page
 
 ```
-────────────────────────────────────────────────────────────────
+────────────────────────────────────────────────────────────────────────
+
   ♥ Support Alter Zero
 
-  Free and open source, developed in the open. If it earns a place
-  in your terminal, a donation keeps the work going — thank you.
+  Free and open source, developed in the open. If it earns a place in
+  your terminal, a donation keeps the work going — thank you.
 
-  ❯ 1. BTC  Bitcoin · native network
-     ╭──────────────────────────────────────╮
-     │  36ysFtsQDUQtigqGUXoHYr7jYegeCRnqoB  │
-     ╰──────────────────────────────────────╯
-
-    2. ETH  Ethereum · Base network
+  ❯ 1. BTC  Bitcoin
      ╭──────────────────────────────────────────────╮
-     │  0xF67F3EA18b6156f4ACfEfEf8D96c4F998B354CD6  │
+     │  bc1q68v53mjj2uxg9qs5ke55qh4gv7un8esttwmvm9  │
      ╰──────────────────────────────────────────────╯
 
-  Send BTC over the Bitcoin network and ETH over Base only — a
-  transfer on any other network cannot be recovered.
+    2. ETH  Ethereum
+     ╭──────────────────────────────────────────────╮
+     │  0xaf7B6ac9BeeFDcfCd118701a00be960a592600CB  │
+     ╰──────────────────────────────────────────────╯
+
+    3. SOL  Solana
+     ╭────────────────────────────────────────────────╮
+     │  9hWaV4rTqNfF1c6mGDSnksMY1fqKuDU9iKymfbeSqXrA  │
+     ╰────────────────────────────────────────────────╯
+
+  Send each coin over its own network only — a transfer on any other
+  network cannot be recovered.
 
   ↑↓ navigate  enter/c copy address  esc close
-────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────
 ```
 
 The frame is the picker family's — the same rules, the same two-column
@@ -67,9 +79,10 @@ form pasted into it:
   word.
 - **Each address is a numbered row over a rounded box.** The row is the
   `/hooks` menu's shape — the `❯` marker on the highlighted one, an absolute
-  `{n}.` number, the **ticker** bold, then the coin and its network dim
-  (`Bitcoin · native network`) — and the address sits beneath it inside the
-  `/login` device page's rounded box, bright and bold like the one-time
+  `{n}.` number, the **ticker** bold, then the coin's name dim (`Bitcoin`)
+  and nothing after it — no network clause rides the row, and a test reads
+  each row whole to keep it that way — and the address sits beneath it inside
+  the `/login` device page's rounded box, bright and bold like the one-time
   code, because it is the one thing on the page to transcribe. The box is
   sized to the address; on a terminal too narrow to seat it the address
   **wraps inside** the box (`wrap_output`, nothing cut) rather than
@@ -79,13 +92,14 @@ form pasted into it:
   the other rows keep the muted ink and the dim frame border. It is the
   palette's rule — the whole selected row lights up, no second caret — and
   it is what makes the box under the `❯` read as *the* address rather than
-  one of two.
-- **The caution is amber.** `Send BTC over the Bitcoin network and ETH over
-  Base only …` wears the palette's warning colour, the ask review's
+  one of three.
+- **The caution is amber.** `Send each coin over its own network only …`
+  wears the palette's warning colour, the ask review's
   unanswered-question hue, on a page where everything else is dim or
   bright: a wrong-network transfer is the one irreversible mistake the page
   can lead to, so it is the one line the eye is pulled to before the
-  address is used.
+  address is used. It is worded off the rows — no coin and no network
+  named — so a catalog entry added later is covered without touching it.
 - **One blank row between blocks, never two.** The page is built as blocks
   joined by exactly one gap (the `/login` page rule), and a test walks every
   width asserting no two blank rows ever stack.
@@ -113,7 +127,7 @@ Anything else is swallowed: a printable key never reaches the composer draft
 underneath, and neither does a paste (nothing anyone pastes is a donation
 address — the `/settings` swallow rule). Copying **keeps the page open**: the
 confirming toast lands above the frame with the address still in view, and a
-user who wants both addresses copies the second without reopening. The page
+user who wants more than one address copies the next without reopening. The page
 works **mid-turn** like every picker — it only replaces the composer, and the
 streaming strip keeps its rows above it — and, like every picker, it blanks
 the running cell's `(ctrl+b to run in background)` hint while open
@@ -153,19 +167,22 @@ Never a scrollback bullet (`docs/toast.md`).
 
 ## Tests
 
-- `app/tests/donate.rs` — the catalog (two addresses, BTC first, the exact
-  strings, ASCII and whitespace-free, distinct uppercase tickers), the
+- `app/tests/donate.rs` — the catalog (three addresses — BTC, ETH, SOL — the
+  exact strings, ASCII and whitespace-free, distinct uppercase tickers), the
   `/donate` command opening the page (idle and mid-turn) and abandoning the
   bands that share the composer, and the whole key grammar (wrapping ↑/↓,
   Home/End, Enter/`c`/digit copy, Esc/Ctrl+C close, owns-every-key, the
   Ctrl+B hint clock suppressed).
 - `ui/tests/donate_view.rs` — the framed page (rules, the gradient title
-  naming `APP_NAME`, the blurb, both rows and boxes, the caution, the
-  hint), the selection lighting its row and box, the address wrapping
+  naming `APP_NAME`, the blurb, every row and box, the caution, the hint),
+  each row read whole as the ticker and the coin with nothing after it, the
+  selection lighting its row and box, the address wrapping
   inside its box at a narrow width, width safety, the height contract,
   flow eligibility, the hidden cursor seated on the `❯`, and the
   no-stacked-blanks rule.
 - `scripts/smoke.sh` Phase 112 — the page end to end in a real terminal:
-  open from the palette, both addresses in their boxes, ↓ moves the `❯`,
-  `c` copies the highlighted address (the toast, and the OSC 52 fallback
-  landing in tmux's paste buffer verbatim), Esc brings the composer back.
+  open from the palette, all three addresses in their boxes and every row
+  read whole (no network after the coin), ↓ moves the `❯` to ETH, `c`
+  copies the highlighted address (the toast, and the OSC 52 fallback
+  landing in tmux's paste buffer verbatim), ↓ reaches SOL and wraps back
+  to BTC, Esc brings the composer back.

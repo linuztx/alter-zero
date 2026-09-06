@@ -52,8 +52,10 @@ fn the_page_is_framed_with_title_blurb_rows_boxes_caution_and_hint() {
     for expect in [
         "♥ Support Alter Zero",
         "Free and open source",
-        "❯ 1. BTC  Bitcoin · native network",
-        "  2. ETH  Ethereum · Base network",
+        "❯ 1. BTC  Bitcoin",
+        "  2. ETH  Ethereum",
+        "  3. SOL  Solana",
+        "Send each coin over its own network only",
         "cannot be recovered",
         "↑↓ navigate  enter/c copy address  esc close",
     ] {
@@ -66,6 +68,24 @@ fn the_page_is_framed_with_title_blurb_rows_boxes_caution_and_hint() {
         assert!(
             texts.iter().any(|t| t.contains(entry.address)),
             "{} address verbatim: {texts:?}",
+            entry.ticker
+        );
+    }
+}
+
+#[test]
+fn each_row_names_the_ticker_and_the_coin_and_nothing_after() {
+    // The label is `{n}. {TICKER}  {coin}` and stops there: no network
+    // clause rides the row, so the address is the only thing that says
+    // where a coin goes. Checked as the whole trimmed row rather than a
+    // substring, so a clause appended after the coin fails here.
+    let texts = texts(&open_app(), 80);
+    for (i, entry) in DONATION_ADDRESSES.iter().enumerate() {
+        let marker = if i == 0 { "❯ " } else { "" };
+        let expect = format!("{marker}{}. {}  {}", i + 1, entry.ticker, entry.coin);
+        assert!(
+            texts.iter().any(|t| t.trim() == expect),
+            "{}: the row reads {expect:?} and nothing more: {texts:?}",
             entry.ticker
         );
     }
@@ -158,9 +178,9 @@ fn each_address_sits_in_a_rounded_box() {
 #[test]
 fn the_selection_lights_its_row_and_box() {
     // The palette's rule: the whole selected row lights up in the accent
-    // and so does the frame of the box under it, while the other address
-    // keeps the muted label and the dim border. Read straight off the
-    // spans, for both highlights.
+    // and so does the frame of the box under it, while the other addresses
+    // keep the muted label and the dim border. Read straight off the
+    // spans, for every highlight.
     for selected in 0..DONATION_ADDRESSES.len() {
         let app = open_at(selected);
         let lines = donate_view_lines(&app, 80);

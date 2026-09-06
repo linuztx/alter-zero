@@ -1268,19 +1268,16 @@ pub(super) const DONATE_BLURB: &str = "Free and open source, developed in the op
 If it earns a place in your terminal, a donation keeps the work going — thank you.";
 
 /// The amber caution over the hint — the one irreversible mistake the page
-/// can lead to. Worded off the rows rather than naming any coin, so a
-/// catalog entry added later is covered without touching it.
-pub(super) const DONATE_CAUTION: &str = "Send each coin over the network named beside it only — \
+/// can lead to. Worded off the rows rather than naming any coin or network,
+/// so a catalog entry added later is covered without touching it.
+pub(super) const DONATE_CAUTION: &str = "Send each coin over its own network only — \
 a transfer on any other network cannot be recovered.";
 
 /// The dim key hint — the page's whole grammar.
 pub(super) const DONATE_HINT: &str = "↑↓ navigate  enter/c copy address  esc close";
 
-/// Columns between a row's ticker and its `{coin} · {network}` clause.
+/// Columns between a row's ticker and its coin name.
 pub(super) const DONATE_LABEL_GAP: &str = "  ";
-
-/// The separator inside that clause.
-pub(super) const DONATE_NETWORK_SEP: &str = " · ";
 
 /// The heart's colour — the palette's red, the one place that hue means
 /// affection rather than failure.

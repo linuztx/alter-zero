@@ -22,17 +22,18 @@ fn selected(app: &App) -> usize {
 // ===== the catalog =====
 
 #[test]
-fn the_catalog_lists_btc_then_eth_with_the_project_addresses() {
+fn the_catalog_lists_btc_eth_then_sol_with_the_project_addresses() {
     let tickers: Vec<&str> = DONATION_ADDRESSES.iter().map(|a| a.ticker).collect();
-    assert_eq!(tickers, ["BTC", "ETH"]);
+    assert_eq!(tickers, ["BTC", "ETH", "SOL"]);
     let btc = DONATION_ADDRESSES[0];
     assert_eq!(btc.coin, "Bitcoin");
-    assert_eq!(btc.network, "native network");
-    assert_eq!(btc.address, "36ysFtsQDUQtigqGUXoHYr7jYegeCRnqoB");
+    assert_eq!(btc.address, "bc1q68v53mjj2uxg9qs5ke55qh4gv7un8esttwmvm9");
     let eth = DONATION_ADDRESSES[1];
     assert_eq!(eth.coin, "Ethereum");
-    assert_eq!(eth.network, "Base network");
-    assert_eq!(eth.address, "0xF67F3EA18b6156f4ACfEfEf8D96c4F998B354CD6");
+    assert_eq!(eth.address, "0xaf7B6ac9BeeFDcfCd118701a00be960a592600CB");
+    let sol = DONATION_ADDRESSES[2];
+    assert_eq!(sol.coin, "Solana");
+    assert_eq!(sol.address, "9hWaV4rTqNfF1c6mGDSnksMY1fqKuDU9iKymfbeSqXrA");
 }
 
 #[test]
@@ -69,11 +70,6 @@ fn every_address_is_ascii_whitespace_free_and_single_width() {
         assert!(
             !entry.coin.is_empty(),
             "{}: missing coin name",
-            entry.ticker
-        );
-        assert!(
-            !entry.network.is_empty(),
-            "{}: missing network",
             entry.ticker
         );
     }
@@ -141,17 +137,17 @@ fn opening_abandons_the_bands_that_share_the_composer() {
 #[test]
 fn up_and_down_wrap_at_the_ends() {
     let mut app = donate_app();
+    let last = DONATION_ADDRESSES.len() - 1;
     assert_eq!(selected(&app), 0);
     assert_eq!(app.on_key(key(KeyCode::Down)), Action::None);
     assert_eq!(selected(&app), 1);
     app.on_key(key(KeyCode::Down));
+    assert_eq!(selected(&app), 2, "↓ reaches the third row");
+    assert_eq!(selected(&app), last, "…which is the last one");
+    app.on_key(key(KeyCode::Down));
     assert_eq!(selected(&app), 0, "↓ past the last wraps to the first");
     app.on_key(key(KeyCode::Up));
-    assert_eq!(
-        selected(&app),
-        DONATION_ADDRESSES.len() - 1,
-        "↑ from the first wraps to the last"
-    );
+    assert_eq!(selected(&app), last, "↑ from the first wraps to the last");
 }
 
 #[test]
@@ -198,9 +194,16 @@ fn a_digit_jumps_to_that_address_and_copies_it() {
         Action::CopyDonationAddress(DONATION_ADDRESSES[0])
     );
     assert_eq!(selected(&app), 0);
+    assert_eq!(
+        app.on_key(key(KeyCode::Char('3'))),
+        Action::CopyDonationAddress(DONATION_ADDRESSES[2]),
+        "3 reaches the SOL row"
+    );
+    assert_eq!(selected(&app), 2);
     // A digit past the rows names nothing and is ignored.
+    assert_eq!(app.on_key(key(KeyCode::Char('4'))), Action::None);
     assert_eq!(app.on_key(key(KeyCode::Char('9'))), Action::None);
-    assert_eq!(selected(&app), 0);
+    assert_eq!(selected(&app), 2);
 }
 
 #[test]

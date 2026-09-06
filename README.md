@@ -209,12 +209,13 @@ Everything Alter Zero remembers is in `~/.alter-zero/`: your sign-ins, the model
 
 Alter Zero is free and open source. If it earns a place in your terminal, a donation keeps the work going. `/donate` shows these addresses inside the app, each in a copyable box.
 
-| Coin | Network | Address |
-| --- | --- | --- |
-| BTC | Bitcoin (native network) | `36ysFtsQDUQtigqGUXoHYr7jYegeCRnqoB` |
-| ETH | Base network | `0xF67F3EA18b6156f4ACfEfEf8D96c4F998B354CD6` |
+| Coin | Address |
+| --- | --- |
+| BTC (Bitcoin) | `bc1q68v53mjj2uxg9qs5ke55qh4gv7un8esttwmvm9` |
+| ETH (Ethereum) | `0xaf7B6ac9BeeFDcfCd118701a00be960a592600CB` |
+| SOL (Solana) | `9hWaV4rTqNfF1c6mGDSnksMY1fqKuDU9iKymfbeSqXrA` |
 
-Send each coin over the network named beside it only; a transfer on any other network cannot be recovered. Thank you.
+Send each coin over its own network only; a transfer on any other network cannot be recovered. Thank you.
 
 ## License
 

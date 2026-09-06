@@ -183,9 +183,10 @@ project's crypto donation addresses, one command away — the `/hooks`
 browser's sibling, a read-only composer-replacing page with no text entry
 and the hidden cursor seated on its `❯`: a red heart over the
 banner-gradient `Support Alter Zero` title, a dim two-row blurb, each
-address as a numbered `❯ 1. BTC  Bitcoin · native network` row over its
-rounded box (the `/login` device page's), the highlighted row and box lit
-in the accent, an amber wrong-network caution, and Enter/`c`/a digit
+address as a numbered `❯ 1. BTC  Bitcoin` row (the ticker and the coin,
+never a network) over its rounded box (the `/login` device page's), the
+highlighted row and box lit in the accent, an amber wrong-network caution
+saying once that each coin goes over its own network, and Enter/`c`/a digit
 copying the highlighted address through `/copy`'s clipboard path with a
 `Copied the BTC address to clipboard` toast while the page stays open; the
 catalog is the const `app::DONATION_ADDRESSES`, never a file, and the

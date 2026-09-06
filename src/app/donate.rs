@@ -13,9 +13,10 @@
 use super::*;
 
 /// One donation address: the coin's ticker (`BTC`), its name (`Bitcoin`),
-/// the network the address lives on (`native network`, `Base network`), and
-/// the address itself — copied verbatim, so it is bare ASCII with no
-/// whitespace (the catalog tests pin that).
+/// and the address itself — copied verbatim, so it is bare ASCII with no
+/// whitespace (the catalog tests pin that). No network rides the entry:
+/// every address is on its coin's own network, which the page's caution
+/// says once for all of them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct DonationAddress {
     /// The ticker the row leads with and the copy toast names — one bare
@@ -23,9 +24,6 @@ pub struct DonationAddress {
     pub ticker: &'static str,
     /// The coin's full name, dim beside the ticker.
     pub coin: &'static str,
-    /// The network the address is on. What the page's caution line is
-    /// about: a transfer over another network cannot be recovered.
-    pub network: &'static str,
     /// The address, exactly as it is to be pasted into a wallet.
     pub address: &'static str,
 }
@@ -35,14 +33,17 @@ pub const DONATION_ADDRESSES: &[DonationAddress] = &[
     DonationAddress {
         ticker: "BTC",
         coin: "Bitcoin",
-        network: "native network",
-        address: "36ysFtsQDUQtigqGUXoHYr7jYegeCRnqoB",
+        address: "bc1q68v53mjj2uxg9qs5ke55qh4gv7un8esttwmvm9",
     },
     DonationAddress {
         ticker: "ETH",
         coin: "Ethereum",
-        network: "Base network",
-        address: "0xF67F3EA18b6156f4ACfEfEf8D96c4F998B354CD6",
+        address: "0xaf7B6ac9BeeFDcfCd118701a00be960a592600CB",
+    },
+    DonationAddress {
+        ticker: "SOL",
+        coin: "Solana",
+        address: "9hWaV4rTqNfF1c6mGDSnksMY1fqKuDU9iKymfbeSqXrA",
     },
 ];
 

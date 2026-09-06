@@ -38,11 +38,12 @@ fn title_line(width: u16) -> Line<'static> {
     clamp_spans(spans, width as usize)
 }
 
-/// One address's label row: `{marker}{n}. {TICKER}  {coin} · {network}` —
-/// the `❯` marker, number and ticker in the accent on the highlighted row
-/// (the palette's whole-row rule), the muted ink and a blank marker on the
-/// others; the ticker bold either way, the `coin · network` clause dim and
-/// `…`-cut to the room left (it is the one part of the row that can give).
+/// One address's label row: `{marker}{n}. {TICKER}  {coin}` — the `❯`
+/// marker, number and ticker in the accent on the highlighted row (the
+/// palette's whole-row rule), the muted ink and a blank marker on the
+/// others; the ticker bold either way, the coin name dim and `…`-cut to the
+/// room left (it is the one part of the row that can give). Nothing follows
+/// the coin: the row says what the address is for, never a network.
 fn label_line(index: usize, entry: &DonationAddress, selected: bool, width: u16) -> Line<'static> {
     let accent = Style::new().fg(model_selected_color());
     let dim = Style::new().fg(model_meta_color());
@@ -64,7 +65,6 @@ fn label_line(index: usize, entry: &DonationAddress, selected: bool, width: u16)
         )
     };
     let number = format!("{}. ", index + 1);
-    let detail = format!("{}{DONATE_NETWORK_SEP}{}", entry.coin, entry.network);
     let used = cols(MODEL_INDENT)
         + cols(marker)
         + cols(&number)
@@ -78,7 +78,7 @@ fn label_line(index: usize, entry: &DonationAddress, selected: bool, width: u16)
             Span::styled(number, number_style),
             Span::styled(entry.ticker.to_string(), ticker_style),
             Span::raw(DONATE_LABEL_GAP),
-            Span::styled(ellipsize(&detail, room), dim),
+            Span::styled(ellipsize(entry.coin, room), dim),
         ],
         width as usize,
     )
