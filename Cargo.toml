@@ -2,6 +2,10 @@
 name = "alter-zero"
 version = "0.1.0"
 edition = "2024"
+authors = ["linuztx <linuztx@gmail.com>"]
+description = "An autonomous AI coding agent that lives in your terminal."
+license = "Apache-2.0"
+repository = "https://github.com/linuztx/alter-zero"
 
 # The one binary target (`src/main.rs`): `cargo build --release` yields
 # `./target/release/alter-zero`.
