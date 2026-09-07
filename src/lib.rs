@@ -83,6 +83,10 @@
 //!   `taskget` / `tasklist` / `taskupdate` store, every result string, and
 //!   the shared registry the executor and the loop hold together (see
 //!   `docs/task-tools.md`).
+//! - [`telemetry`]   — the anonymous daily usage ping's pure half: the
+//!   `telemetry.json` format and its install id, the five-field payload,
+//!   the once-a-day decision and the environment predicate — plus the one
+//!   boundary send the worker thread calls (see `docs/telemetry.md`).
 //! - [`subagents`]   — the `agents/*.md` subagent definitions behind the
 //!   `agent` tool's `subagent_type`: the frontmatter parse, the tool
 //!   allowlist, the model/system-prompt overrides, the budgeted listing and
@@ -143,6 +147,7 @@ pub mod stream;
 pub mod subagents;
 pub mod subprocess;
 pub mod tasks;
+pub mod telemetry;
 pub mod term;
 pub mod textarea;
 pub mod tokenizer;

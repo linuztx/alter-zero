@@ -15,6 +15,7 @@ cargo doc --no-deps --lib                   # intra-doc links must resolve
 cargo build && bash scripts/smoke.sh        # drive the real binary in tmux
 cargo run --release --example mem_probe     # /model parse RSS (docs/memory.md)
 DISPLAY=:99 cargo test --test clipboard_linux -- --ignored   # the X11 paste read, under Xvfb
+(cd telemetry && node --test)               # the telemetry collector's pure half (docs/telemetry.md)
 ```
 
 The standard pre-commit gate used throughout this project is: `cargo fmt --check`
@@ -47,12 +48,12 @@ build (`unsafe_code = "forbid"`, plus `warnings` and `clippy::all` denied).
 ## Architecture
 
 A **library** (`src/lib.rs` → `app`, `stream`, `ui`, `term`, `frame`, `paste`,
-`session`, `subprocess`, `history`, `textarea`, `file_search`, `clipboard`, `context`, `background`, `scratchpad`, `agents`, `subagents`, `frontmatter`, `ask`, `tasks`, `skills`, `steer`, `mcp`, `trust`, `checkpoint`, `project_doc`, `permission`, `settings`, `cli`, `links`, `images`) holds the logic; **`src/main.rs`** is a 77-line shell —
+`session`, `subprocess`, `history`, `textarea`, `file_search`, `clipboard`, `context`, `background`, `scratchpad`, `agents`, `subagents`, `frontmatter`, `ask`, `tasks`, `skills`, `steer`, `mcp`, `trust`, `checkpoint`, `project_doc`, `permission`, `settings`, `telemetry`, `cli`, `links`, `images`) holds the logic; **`src/main.rs`** is a 77-line shell —
 the detached-exec hook, the CLI resolution, the viewport, the loop — over
 **`src/tui/`**, the binary-private tree that drives the codex-style **async
 (tokio) `select!`** loop (`event_loop`, `actions`, `turn`, `stream`, `agent`,
 `background`, `permission`, `view`, `commit`, `models`, `config`, `bootstrap`,
-`startup`, `recorder`, `resume`, `history_store`, `settings`, `shell`, `workers`, `host`, `mascot`, `spinner`, `theme`, `donate`, `mcp`, `trust`, `login`,
+`startup`, `recorder`, `resume`, `history_store`, `settings`, `telemetry`, `shell`, `workers`, `host`, `mascot`, `spinner`, `theme`, `donate`, `mcp`, `trust`, `login`,
 with the **`Session`** struct itself in `mod.rs` — every handler is an `impl
 Session` block in its area module, reaching the private fields the way `app/`'s
 submodules reach `App`'s). The four big ones are **directories
@@ -1560,7 +1561,7 @@ the **`/settings` menu** (`docs/settings.md`: the knobs that were only ever
 a hard-coded `agent::MAX_TOOL_ITERATIONS`, and an always-on auto-compaction —
 made *visible and changeable mid-session*
 in the `/model` picker's inline frame, the third composer-replacing picker:
-fourteen rows (**Hide thinking**, **Show images**, **Image width**,
+fifteen rows (**Hide thinking**, **Show images**, **Image width**,
 **Auto-resize images** — the three from `docs/images.md` — **Error retry**,
 **Tools**, **Permission
 mode**, **Checkpoints**, **Auto compact**, **Project docs**, **Hooks**,
@@ -1569,7 +1570,28 @@ mode**, **Checkpoints**, **Auto compact**, **Project docs**, **Hooks**,
 trips mid-task abandons the work half-done and Esc is already the stop
 button; it counts the **calls**, not the rounds, because a round can be a
 whole parallel batch, and a round the budget can only partly afford is
-clamped rather than refused whole)
+clamped rather than refused whole; and **Telemetry** — the anonymous daily
+usage ping, `docs/telemetry.md`: one `POST` a day per install carrying five
+fields (a payload version, a random 128-bit install id, the app version, the
+OS and the architecture — never a prompt, a path, a model name or a key), the
+**country** noted by the collector at the edge from the connection and never
+the address, sent *after* the first frame on a detached worker whose only
+report is the delivered day, which the **loop** records (the worker never
+writes the file) in `telemetry.json` — its own per-**user** file beside the
+install id, the one row not in `settings.json`, since an opt-out that applied
+to one directory would be a surprise — disclosed once under the banner through
+the wrapped `ui::startup_paragraph_lines` and stated in full in the root
+**`TELEMETRY.md`** — the user-facing half (what leaves a machine, the three
+off switches, what the server keeps, how to verify it), which the README
+deliberately does not duplicate and which moves whenever `docs/telemetry.md`
+does — off with the row,
+`ALTER_ZERO_TELEMETRY=0` or `DO_NOT_TRACK=1` (which outranks it), and off
+outright without a config home (nowhere to keep an id, and a fresh one per
+launch would count one person as many); the collector is the Cloudflare
+Worker + D1 in `telemetry/`, tested with `node --test`, validating every field
+and serving a users-per-day / per-country dashboard at `/`; `smoke.sh` runs
+every phase with `ALTER_ZERO_TELEMETRY=0` and Phase 115 drives the whole loop
+against a local stub)
 of `{label}  {value}` in an aligned column over a `(n/total)` counter, the
 highlighted row's description, and a `Type to search · Enter/Space to change ·
 Esc to cancel` hint; every value **cycles** — there is no free-text field, so
@@ -1592,7 +1614,9 @@ rebuild, carrying the active thinking mode forward; the retry budget and the
 tool-round ceiling ride `LlmBackend::with_max_retries`/`with_max_tool_calls`
 into every round, a subagent's included), **Checkpoints** flips `CheckpointStore::set_enabled`
 (which can only ever turn a *capable* store on or off), **Project docs**
-reloads or drops `App::user_instructions` at once, and **Hide thinking** /
+reloads or drops `App::user_instructions` at once, **Telemetry** writes its
+own `telemetry.json` and sends today's ping if none has gone yet
+(`Session::apply_telemetry_setting`, skipping the `settings.json` write), and **Hide thinking** /
 **Auto compact** need nothing — they are read where they are used
 (`tui::stream`'s `ThinkingStart` arm and `App::should_auto_compact`), so
 there is no second copy to drift. It persists to its own

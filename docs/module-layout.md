@@ -115,7 +115,7 @@ opening the viewport, running the loop — and everything else lives here:
 | Module | Holds |
 |--------|-------|
 | `mod.rs` | The `Session` struct and `StatusClocks` — the loop's state. |
-| `event_loop.rs` | `run`: the `select!` over the ten sources — one handler call per branch. |
+| `event_loop.rs` | `run`: the `select!` over the eleven sources — one handler call per branch. |
 | `actions.rs` | The `Action` dispatch — one arm per key-press outcome — plus `Flow`, `/clear`, `/copy`, the resize and paste routing. |
 | `turn.rs` | Turn lifecycle: `start_turn`, `run_shell`, the background follow-up, `/compact`, `dispatch_after_turn`, `abandon_inflight`. |
 | `stream.rs` | `on_stream_event`: folding one reply event into `App` + scrollback. |
@@ -126,7 +126,7 @@ opening the viewport, running the loop — and everything else lives here:
 | `commit.rs` | Scrollback commits — the one place invariant 4 is enforced — and the toast. |
 | `models.rs` | `ModelSession`: the backend and every knob that selects it, plus the `/model`, Ctrl+T and probe arms (`docs/llm.md`). |
 | `login.rs` | The `/login` flow's boundary half: opening it, running a subscription's sign-in — a device code or a browser PKCE flow, per provider — and persisting what it mints (`docs/copilot.md`, `docs/chatgpt.md`). |
-| `config.rs` | Reading the environment: providers, keys, the per-directory `/model` selections and `/settings` knobs (`docs/per-directory-state.md`), permission rules, paths. |
+| `config.rs` | Reading the environment: providers, keys, the per-directory `/model` selections and `/settings` knobs (`docs/per-directory-state.md`), permission rules, the per-user `telemetry.json` (`docs/telemetry.md`), paths. |
 | `bootstrap.rs` | `Session::bootstrap` / `shutdown` / `after_iteration` — assembly, teardown, loop-bottom work. |
 | `startup.rs` | The `--continue`/`--resume`/`[PROMPT]` argument resolution and the styled `--help` / usage-error printing (`docs/cli.md`). |
 | `recorder.rs` | `SessionRecorder`: mirroring history to a rollout file (`docs/resume.md`). |
@@ -136,8 +136,9 @@ opening the viewport, running the loop — and everything else lives here:
 | `spinner.rs` | Applying a `/spinner` selection: the per-directory `spinner.json` write + toast (`docs/spinner.md`). |
 | `theme.rs` | Applying a `/theme` selection: the `theme.json` write, the palette switch, the recolouring rebuild (`docs/theme.md`). |
 | `donate.rs` | Applying a `/donate` copy: the clipboard write + the toast (`docs/donate.md`). |
+| `telemetry.rs` | The once-a-day anonymous usage ping: the install id's mint, the one-time notice under the banner, the detached send, the delivered day's record (`docs/telemetry.md`). |
 | `shell.rs` | The `!` command runner and its drain/cap unit tests (`docs/shell-command.md`). |
-| `workers.rs` | The off-thread file-search / clipboard / model-list / device-sign-in jobs. |
+| `workers.rs` | The off-thread file-search / clipboard / model-list / device-sign-in / telemetry-ping jobs. |
 | `host.rs` | Clocks, dates, the OS string, the uid, ids — the raw impurities. |
 
 ### `src/stream/` — the backend seam

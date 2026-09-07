@@ -189,6 +189,9 @@ impl Session<'_> {
             skills: !self.skill_registry.is_empty(),
             // Whether this terminal can draw a picture (`docs/images.md`).
             images: self.term.image_capability().0,
+            // Nowhere to keep an install id without a config home
+            // (`docs/telemetry.md`).
+            telemetry: config::telemetry_json_path().is_some(),
         });
     }
 
@@ -290,18 +293,25 @@ impl Session<'_> {
             SettingKey::HideThinking | SettingKey::AutoCompact => {}
             // Shift+Tab's path owns this one; the menu never routes it here.
             SettingKey::PermissionMode => {}
+            // The one per-user row: its file is telemetry.json, and turning
+            // it on sends today's ping if none has gone (docs/telemetry.md).
+            SettingKey::Telemetry => self.apply_telemetry_setting(),
         }
         // Persist this directory's entry as a read-modify-write over the file
         // itself, moving across only the key the user cycled — so an
         // `ALTER_ZERO_*` override merged in at startup never sticks, and two
         // sessions in two directories never clobber each other
-        // (`docs/settings.md`, `docs/per-directory-state.md`).
-        config::save_setting(
-            self.settings_path.as_deref(),
-            &self.cwd.display().to_string(),
-            key,
-            &settings,
-        );
+        // (`docs/settings.md`, `docs/per-directory-state.md`). The Telemetry
+        // row was written above, to its own file: a user's choice, not a
+        // directory's.
+        if key != SettingKey::Telemetry {
+            config::save_setting(
+                self.settings_path.as_deref(),
+                &self.cwd.display().to_string(),
+                key,
+                &settings,
+            );
+        }
         let value = settings.value_text(key, self.app.permission_mode());
         self.toast(format!("{}: {value}", key.label()), ToastKind::Info);
         // After the toast, so the rebuilt frame already carries it (the

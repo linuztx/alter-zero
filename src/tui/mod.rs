@@ -29,7 +29,7 @@
 //! | Module | Holds |
 //! |--------|-------|
 //! | `mod.rs` | The [`Session`] struct and [`StatusClocks`] — the shared state. |
-//! | [`event_loop`] | [`event_loop::run`]: the `select!` over the nine sources, the loop-bottom work, the teardown. |
+//! | [`event_loop`] | [`event_loop::run`]: the `select!` over the eleven sources, the loop-bottom work, the teardown. |
 //! | [`actions`] | The [`alter_zero::app::Action`] dispatch — one method per key-press outcome. |
 //! | [`turn`] | Starting and ending turns: user, queued, `!` shell, background follow-up, `/compact`. |
 //! | [`stream`] | Folding one streamed reply event into `App` + scrollback. |
@@ -45,6 +45,7 @@
 //! | [`recorder`] | Mirroring history to a rollout file (`docs/resume.md`). |
 //! | [`resume`] | Finding recorded sessions on disk. |
 //! | [`settings`] | Applying a `/settings` knob the menu cycled (`docs/settings.md`). |
+//! | [`telemetry`] | The once-a-day anonymous usage ping: the install id, the notice, the send, the recorded day (`docs/telemetry.md`). |
 //! | [`history_store`] | The cross-session input history (`docs/history-persistence.md`). |
 //! | [`shell`] | The `!` command runner (`docs/shell-command.md`). |
 //! | [`workers`] | The off-thread file-search / clipboard / model-list jobs. |
@@ -97,6 +98,7 @@ pub(crate) mod shell;
 pub(crate) mod spinner;
 pub(crate) mod startup;
 pub(crate) mod stream;
+pub(crate) mod telemetry;
 pub(crate) mod theme;
 pub(crate) mod trust;
 pub(crate) mod turn;
@@ -210,6 +212,12 @@ pub(crate) struct Session<'t> {
     /// MCP server state changes (`docs/mcp.md`) — never swapped either;
     /// connections outlive turns like background shells.
     mcp_rx: tokio::sync::mpsc::UnboundedReceiver<alter_zero::llm::mcp::McpEvent>,
+    /// The telemetry ping worker's report (`docs/telemetry.md`): the UTC day
+    /// it delivered, which the **loop** then records in `telemetry.json` —
+    /// the worker never writes the file, so it can't race the `/settings`
+    /// toggle's write. Silent on failure.
+    telemetry_tx: tokio::sync::mpsc::UnboundedSender<String>,
+    telemetry_rx: tokio::sync::mpsc::UnboundedReceiver<String>,
     /// The `@` file-search worker's handle, kept so the thread's lifetime is
     /// tied to the session's. Never joined.
     _file_worker: JoinHandle<()>,

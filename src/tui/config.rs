@@ -832,6 +832,74 @@ pub(crate) fn theme_json_path() -> Option<PathBuf> {
     config_home().map(|dir| dir.join("theme.json"))
 }
 
+/// The telemetry file — `{config_home}/telemetry.json`, its own file like
+/// `theme.json` (one file per feature that owns it, `docs/telemetry.md`):
+/// the install id, the on/off switch, the last delivered day and whether
+/// the one-time notice has been shown. `None` (no config home) disables the
+/// feature outright — nowhere to keep an id means no ping, since a fresh
+/// random id per launch would count one person as many.
+pub(crate) fn telemetry_json_path() -> Option<PathBuf> {
+    config_home().map(|dir| dir.join(alter_zero::telemetry::TELEMETRY_FILE_NAME))
+}
+
+/// Read `telemetry.json`. Best-effort like [`load_theme`] — an absent,
+/// unreadable or corrupt file reads as the defaults (on, no id yet), so a
+/// bad file costs at most a fresh install id and a repeated notice.
+pub(crate) fn load_telemetry_file(path: Option<&Path>) -> alter_zero::telemetry::TelemetryFile {
+    path.and_then(|p| std::fs::read_to_string(p).ok())
+        .map(|text| alter_zero::telemetry::TelemetryFile::parse(&text))
+        .unwrap_or_default()
+}
+
+/// Change `telemetry.json` through `edit`, as a **read-modify-write** over
+/// the file itself — re-read, edited, written back only when the edit
+/// changed something — and return the file as it now stands. Every writer
+/// goes through here (the id mint, the notice mark, the delivered day, the
+/// `/settings` toggle), and all of them run on the loop thread, so two
+/// writers can never interleave and one field's write can never clobber
+/// another's. Best-effort like [`save_theme`]: a failed write is swallowed
+/// (a read-only home must never kill the TUI) and a `None` path (no config
+/// home) edits nothing — the feature is off there anyway
+/// (`docs/telemetry.md`).
+pub(crate) fn update_telemetry_file(
+    path: Option<&Path>,
+    edit: impl FnOnce(&mut alter_zero::telemetry::TelemetryFile),
+) -> alter_zero::telemetry::TelemetryFile {
+    let before = load_telemetry_file(path);
+    let mut file = before.clone();
+    edit(&mut file);
+    if let Some(path) = path
+        && file != before
+    {
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let _ = std::fs::write(path, file.to_json());
+    }
+    file
+}
+
+/// Where the daily ping goes: `ALTER_ZERO_TELEMETRY_URL` when set and
+/// non-empty (a fork's own collector, the smoke suite's local stub), else
+/// the built-in collector (`telemetry::DEFAULT_ENDPOINT`).
+pub(crate) fn telemetry_endpoint() -> String {
+    std::env::var(alter_zero::telemetry::ENDPOINT_ENV)
+        .ok()
+        .map(|url| url.trim().to_string())
+        .filter(|url| !url.is_empty())
+        .unwrap_or_else(|| alter_zero::telemetry::DEFAULT_ENDPOINT.to_string())
+}
+
+/// What the environment says about telemetry for this run —
+/// `ALTER_ZERO_TELEMETRY` in the app's on/off grammar, outranked by a set
+/// `DO_NOT_TRACK` — or `None` to defer to `telemetry.json`
+/// (`telemetry::enabled_by_env`, `docs/telemetry.md`).
+fn telemetry_env_override() -> Option<bool> {
+    let telemetry = std::env::var(alter_zero::telemetry::TELEMETRY_ENV).ok();
+    let dnt = std::env::var(alter_zero::telemetry::DNT_ENV).ok();
+    alter_zero::telemetry::enabled_by_env(telemetry.as_deref(), dnt.as_deref())
+}
+
 /// Read the saved theme. Best-effort like [`load_spinner`] — an absent,
 /// unreadable, or corrupt file reads as `None` and the session keeps the
 /// default theme rather than failing startup.
@@ -932,6 +1000,13 @@ pub(crate) fn apply_setting_overrides(mut settings: SessionSettings) -> SessionS
     }
     if let Some(t) = temperature() {
         settings.temperature = Some(t);
+    }
+    // The Telemetry row: `ALTER_ZERO_TELEMETRY` (and the cross-tool
+    // `DO_NOT_TRACK`, which outranks it) seed it for the run over the value
+    // `telemetry.json` supplied — an override, never saved
+    // (`docs/telemetry.md`).
+    if let Some(on) = telemetry_env_override() {
+        settings.telemetry = on;
     }
     settings
 }

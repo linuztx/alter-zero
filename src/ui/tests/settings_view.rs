@@ -229,6 +229,7 @@ fn an_unavailable_row_is_labelled_and_dimmed() {
         hooks: true,
         skills: true,
         images: true,
+        telemetry: true,
     });
     let buf = render(&app, 78);
     let all = SettingKey::ALL.len();

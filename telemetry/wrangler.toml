@@ -1,0 +1,33 @@
+# The Alter Zero telemetry collector (docs/telemetry.md): a Cloudflare Worker
+# over a D1 database. Deploy with `npx wrangler deploy` from this directory.
+#
+# The worker's name decides the URL `wrangler deploy` prints —
+# https://alter-zero-telemetry.<your-subdomain>.workers.dev — and the app's
+# `telemetry::DEFAULT_ENDPOINT` must name that URL (plus `/v1/ping`) for pings
+# to arrive. Rename the worker or give it a custom domain and change the
+# constant to match.
+name = "alter-zero-telemetry"
+main = "src/worker.js"
+compatibility_date = "2025-09-01"
+
+# The pings table (schema.sql). `npx wrangler d1 create alter-zero-telemetry`
+# prints the database_id to paste below; `npm run db:init` creates the table.
+[[d1_databases]]
+binding = "DB"
+database_name = "alter-zero-telemetry"
+database_id = "REPLACE-WITH-THE-ID-THAT-wrangler-d1-create-PRINTS"
+
+# Retention: once a day, drop rows older than RETENTION_DAYS so the table is a
+# rolling window rather than a permanent record of every install's every day.
+[triggers]
+crons = ["17 3 * * *"]
+
+[vars]
+RETENTION_DAYS = "400"
+
+# DASHBOARD_TOKEN is a *secret*, not a var: `npx wrangler secret put
+# DASHBOARD_TOKEN`. When set, `/` and `/v1/stats` require it; unset, they are
+# public. `/v1/ping` is always open.
+#
+# Workers Logs / Logpush are deliberately left off: the collector's promise is
+# that no address is ever written anywhere, and a request log would be one.

@@ -75,6 +75,9 @@ pub enum SettingKey {
     Temperature,
     /// How many rounds of tool calls one turn may run (`0` = no limit).
     MaxToolCalls,
+    /// Send the anonymous daily usage ping (`docs/telemetry.md`). The one
+    /// row that persists **per user** (`telemetry.json`), not per directory.
+    Telemetry,
 }
 
 impl SettingKey {
@@ -94,6 +97,7 @@ impl SettingKey {
         Self::Skills,
         Self::Temperature,
         Self::MaxToolCalls,
+        Self::Telemetry,
     ];
 
     /// The name shown in the menu's left column.
@@ -114,6 +118,7 @@ impl SettingKey {
             Self::Skills => "Skills",
             Self::Temperature => "Temperature",
             Self::MaxToolCalls => "Max tool calls",
+            Self::Telemetry => "Telemetry",
         }
     }
 
@@ -155,6 +160,9 @@ impl SettingKey {
             Self::MaxToolCalls => {
                 "How many rounds of tool calls one turn may run before it gives up — 0 is no limit"
             }
+            Self::Telemetry => {
+                "Send one anonymous ping a day (app version, OS, country) so Alter Zero's users can be counted — never your prompts, files or keys"
+            }
         }
     }
 }
@@ -183,6 +191,11 @@ pub struct SettingAvailability {
     /// `false (unavailable)`; **Auto-resize images** stays available either
     /// way, since it is about the request, not the screen.
     pub images: bool,
+    /// Whether there is a config home to keep an install id in
+    /// (`docs/telemetry.md`). Without one a fresh random id per launch would
+    /// count one person as many, so the row reports `false (unavailable)`
+    /// rather than offering a toggle that would miscount.
+    pub telemetry: bool,
 }
 
 impl Default for SettingAvailability {
@@ -193,6 +206,7 @@ impl Default for SettingAvailability {
             hooks: true,
             skills: true,
             images: true,
+            telemetry: true,
         }
     }
 }
@@ -262,6 +276,14 @@ pub struct SessionSettings {
     /// Tool rounds allowed per turn; `0` (the default) is no limit.
     #[serde(skip_serializing_if = "is_zero")]
     pub max_tool_calls: usize,
+    /// Send the anonymous daily ping (default `true` — opt-out,
+    /// `docs/telemetry.md`). **Never in `settings.json`**: an opt-out that
+    /// applied only to the directory you happened to be in would be a
+    /// surprise, so the value lives in `telemetry.json` beside the install
+    /// id and the boundary seeds it from there (the `PermissionMode` pattern:
+    /// a second door onto state another file owns).
+    #[serde(skip, default = "on")]
+    pub telemetry: bool,
     /// What this host can actually run — never persisted, never cycled.
     #[serde(skip)]
     pub availability: SettingAvailability,
@@ -283,6 +305,7 @@ impl Default for SessionSettings {
             skills: true,
             temperature: None,
             max_tool_calls: 0,
+            telemetry: true,
             availability: SettingAvailability::default(),
         }
     }
@@ -327,6 +350,14 @@ impl SessionSettings {
         self.skills && self.availability.skills
     }
 
+    /// Whether the daily ping is actually sent: the knob **and** a config
+    /// home to keep the install id in ([`hooks_active`](Self::hooks_active)'s
+    /// twin, `docs/telemetry.md`).
+    #[must_use]
+    pub const fn telemetry_active(&self) -> bool {
+        self.telemetry && self.availability.telemetry
+    }
+
     /// Whether the `skill` tool actually reaches the wire:
     /// [`skills_active`](Self::skills_active) **and** tools at all.
     ///
@@ -355,6 +386,8 @@ impl SessionSettings {
             // row does not (`docs/images.md`).
             SettingKey::ShowImages | SettingKey::ImageWidth => self.availability.images,
             SettingKey::PermissionMode => mode.is_some(),
+            // Nowhere to keep an install id = nothing to turn on.
+            SettingKey::Telemetry => self.availability.telemetry,
             _ => true,
         }
     }
@@ -384,6 +417,7 @@ impl SessionSettings {
             SettingKey::Skills => bool_text(self.skills_active()),
             SettingKey::Temperature => temperature_text(self.temperature),
             SettingKey::MaxToolCalls => self.max_tool_calls.to_string(),
+            SettingKey::Telemetry => bool_text(self.telemetry_active()),
         };
         if self.is_available(key, mode) {
             text
@@ -421,6 +455,7 @@ impl SessionSettings {
             SettingKey::MaxToolCalls => {
                 self.max_tool_calls = next_in(TOOL_CALL_CHOICES, &self.max_tool_calls);
             }
+            SettingKey::Telemetry => self.telemetry = !self.telemetry,
         }
         true
     }
@@ -451,6 +486,9 @@ impl SessionSettings {
             SettingKey::MaxToolCalls => self.max_tool_calls = live.max_tool_calls,
             // Not ours — the posture persists per project in permissions.json.
             SettingKey::PermissionMode => {}
+            // Not ours either — the switch persists per user in telemetry.json
+            // (`docs/telemetry.md`).
+            SettingKey::Telemetry => {}
         }
     }
 
@@ -563,6 +601,13 @@ fn is_default_image_width(v: &u16) -> bool {
 #[allow(clippy::trivially_copy_pass_by_ref)]
 fn is_zero(v: &usize) -> bool {
     *v == 0
+}
+
+/// The deserialized value of a field the file never carries — `telemetry`
+/// is `#[serde(skip)]`, so a plain `Default` would read it as `false` and a
+/// parsed blob would silently turn the ping off.
+const fn on() -> bool {
+    true
 }
 
 /// `true`/`false`, the value column's boolean spelling.

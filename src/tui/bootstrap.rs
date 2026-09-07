@@ -259,6 +259,10 @@ impl<'t> Session<'t> {
         // and every enabled server's connect kicked off on worker threads —
         // never blocking the first frame. The event channel is a select!
         // source like the background shells'.
+        // The telemetry ping's report channel (docs/telemetry.md) — its own
+        // `select!` source, because the worker outlives nothing but must
+        // never write the file itself.
+        let (telemetry_tx, telemetry_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
         let (mcp_tx, mcp_rx) = tokio::sync::mpsc::unbounded_channel();
         let mcp_manager = config::mcp_enabled().then(|| {
             let manager = alter_zero::llm::mcp::McpManager::new(
@@ -275,10 +279,15 @@ impl<'t> Session<'t> {
         // Resolved BEFORE the backend, which is built around three of them
         // (tools, retries, temperature).
         let settings_path = config::settings_json_path();
-        let settings = config::apply_setting_overrides(
-            config::load_settings_file(settings_path.as_deref())
-                .settings_for(&cwd.display().to_string()),
-        );
+        let mut settings = config::load_settings_file(settings_path.as_deref())
+            .settings_for(&cwd.display().to_string());
+        // The Telemetry row's standing value is `telemetry.json`'s, not this
+        // directory's entry — a user preference, not a project's
+        // (`docs/telemetry.md`); the environment then overrides it for the
+        // run like every other knob.
+        settings.telemetry =
+            config::load_telemetry_file(config::telemetry_json_path().as_deref()).enabled;
+        let settings = config::apply_setting_overrides(settings);
 
         // The user's lifecycle hooks (docs/hooks.md): `~/.alter-zero/hooks.json`
         // (or `ALTER_ZERO_HOOKS_FILE`), read once here and re-attached to every
@@ -460,6 +469,8 @@ impl<'t> Session<'t> {
             bg_rx,
             agent_rx,
             mcp_rx,
+            telemetry_tx,
+            telemetry_rx,
             _file_worker: file_worker,
             registry,
             agent_registry,
@@ -505,6 +516,12 @@ impl<'t> Session<'t> {
         session.report_trust_state(trust_error);
         let picker = session.apply_startup(startup);
         session.paint_first_frame(picker)?;
+        // The day's anonymous usage ping (docs/telemetry.md), AFTER the first
+        // frame is queued so it can never delay it: the install id is minted
+        // if this is the first launch, the one-time notice is committed under
+        // the banner (before a [PROMPT]'s bubble below), and the send goes to
+        // a detached thread. Nothing here can fail the boot.
+        session.start_telemetry();
         // The [PROMPT] shortcut (docs/cli.md): the message given on the
         // command line becomes the first turn — after the loaded transcript
         // (if any) and the banner are queued, so its bubble lands under

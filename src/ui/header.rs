@@ -2,7 +2,7 @@
 //! See `docs/header.md` and `docs/mascot.md`.
 
 use super::theme::*;
-use super::wrap::{clamp_spans, cols, lerp_color};
+use super::wrap::{clamp_spans, cols, lerp_color, wrap_text};
 use super::*;
 
 use crate::app::Mascot;
@@ -81,6 +81,27 @@ pub fn startup_notice_lines(text: &str, width: u16) -> Vec<Line<'static>> {
         ],
         width as usize,
     )]
+}
+
+/// A wrapped startup paragraph as scrollback chrome — the one-time telemetry
+/// disclosure (`docs/telemetry.md`), committed under the banner by the
+/// boundary. [`startup_notice_lines`]' sibling with the opposite rule at a
+/// narrow width: that one clamps, because a status row is glanced at; this
+/// one **wraps**, because a sentence the user is meant to finish must not
+/// lose its ending. Every row wears the banner's indent and dim meta colour,
+/// so the block reads as part of the banner; like the notice it never enters
+/// `history`, and a purge rebuild does not re-emit it.
+#[must_use]
+pub fn startup_paragraph_lines(text: &str, width: u16) -> Vec<Line<'static>> {
+    let indent = u16::try_from(cols(HEADER_INDENT)).unwrap_or(u16::MAX);
+    // A width the indent alone would eat still wraps at one column rather
+    // than disabling the wrap (`wrap_text(…, 0)` would).
+    let inner = width.saturating_sub(indent).max(1);
+    let dim = Style::new().fg(header_meta_color());
+    wrap_text(text, inner)
+        .into_iter()
+        .map(|row| Line::from(vec![Span::raw(HEADER_INDENT), Span::styled(row, dim)]))
+        .collect()
 }
 
 /// The startup header banner as scrollback rows (docs/header.md): the

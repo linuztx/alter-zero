@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::app::Mascot;
+use crate::ui::theme::header_meta_color;
 use crate::ui::wrap::cols;
 
 #[test]
@@ -321,4 +322,36 @@ fn header_text(app: &App, width: u16) -> String {
         .map(plain)
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+#[test]
+fn startup_paragraph_wraps_under_the_banner_indent() {
+    // The telemetry disclosure (docs/telemetry.md) is a sentence the user is
+    // meant to finish, so it wraps where the status notice clamps: every row
+    // wears the banner's indent and dim meta colour, no row is wider than the
+    // terminal, and no word is lost at any width.
+    let text = "Alter Zero sends one anonymous ping a day so its users can be counted, never your prompts.";
+    let wide = startup_paragraph_lines(text, 120);
+    assert_eq!(wide.len(), 1);
+    assert_eq!(plain(&wide[0]), format!("  {text}"));
+    let narrow = startup_paragraph_lines(text, 40);
+    assert!(narrow.len() > 1, "wrapped, never clamped: {narrow:?}");
+    for line in &narrow {
+        let row = plain(line);
+        assert!(row.starts_with("  "), "{row:?}");
+        assert!(cols(&row) <= 40, "{row:?}");
+        for span in line.spans.iter().filter(|s| !s.content.trim().is_empty()) {
+            assert_eq!(span.style.fg, Some(header_meta_color()), "{row:?}");
+        }
+    }
+    let joined = narrow
+        .iter()
+        .map(|l| plain(l).trim().to_string())
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert_eq!(joined, text, "every word survives");
+    // Even a width too narrow for the indent yields rows, never a panic or
+    // an empty result (the render pipeline's extreme-size rule).
+    assert!(!startup_paragraph_lines(text, 1).is_empty());
+    assert!(!startup_paragraph_lines(text, 0).is_empty());
 }

@@ -169,6 +169,7 @@ fn cycling_an_unavailable_setting_explains_itself_instead() {
         hooks: true,
         skills: true,
         images: true,
+        telemetry: true,
     });
     type_query(&mut app, "checkpoint");
     let row = app.highlighted_setting().unwrap();

@@ -1224,3 +1224,11 @@ and its own pure corners — the `visible_cells` wide-glyph emitter, the
   unguarded (each new session's file is unique per pid, but there is no
   codex-style state-db arbitration).
 - No markdown rendering or scrollback nav keys (YAGNI).
+- **Telemetry** (`docs/telemetry.md`) counts *installs whose ping reached the
+  collector*: a launch with no network is uncounted until a later launch that
+  day gets through, a config home shared by two machines counts once, and a
+  deleted `telemetry.json` counts as a new install. The country is the edge's
+  lookup on the connection — a VPN's exit, not the desk — and a self-hosted
+  collector without such a lookup records `ZZ`. The default endpoint is a
+  constant that must match the deployed worker's URL, so a renamed worker or
+  a fork pings nothing until `telemetry::DEFAULT_ENDPOINT` is changed.

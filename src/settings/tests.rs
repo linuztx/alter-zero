@@ -220,6 +220,7 @@ fn an_unavailable_checkpoint_row_shows_its_effective_value_not_the_stored_one() 
             hooks: true,
             skills: true,
             images: true,
+            telemetry: true,
         },
         ..SessionSettings::default()
     };
@@ -241,6 +242,7 @@ fn an_unavailable_setting_says_so_and_refuses_to_cycle() {
             hooks: true,
             skills: true,
             images: true,
+            telemetry: true,
         },
         ..SessionSettings::default()
     };
@@ -272,8 +274,14 @@ fn checkpoints_are_active_only_when_both_the_knob_and_the_host_agree() {
 
 #[test]
 fn json_round_trips_every_changed_value() {
+    // Every knob settings.json owns. Telemetry is the one that lives
+    // elsewhere (telemetry.json, docs/telemetry.md) — its own test pins that
+    // it never reaches this file.
     let mut s = SessionSettings::default();
-    for key in SettingKey::ALL {
+    for key in SettingKey::ALL
+        .iter()
+        .filter(|k| **k != SettingKey::Telemetry)
+    {
         s.cycle(*key);
     }
     let restored = SessionSettings::parse(&s.to_json());
@@ -359,6 +367,7 @@ fn availability_is_never_persisted() {
             hooks: true,
             skills: true,
             images: true,
+            telemetry: true,
         },
         ..SessionSettings::default()
     };
@@ -383,6 +392,7 @@ fn skills_are_not_offered_with_tools_off() {
             hooks: true,
             skills: true,
             images: true,
+            telemetry: true,
         },
         ..SessionSettings::default()
     };
@@ -527,4 +537,54 @@ fn settings_file_round_trips_and_an_empty_one_is_the_old_shape() {
         !back.settings_for("/y").auto_compact,
         "still seeds the next directory"
     );
+}
+
+// ===== the Telemetry row (docs/telemetry.md) =====
+
+#[test]
+fn the_telemetry_row_is_last_cycles_and_needs_a_config_home() {
+    // Opt-out: on until turned off, and the last row so nothing above it
+    // moves. Without a config home there is nowhere to keep an install id, so
+    // the row reads unavailable like every knob the host can't serve.
+    let mut s = SessionSettings::default();
+    assert!(s.telemetry, "on by default");
+    assert!(s.telemetry_active());
+    assert_eq!(SettingKey::ALL.last(), Some(&SettingKey::Telemetry));
+    assert_eq!(s.value_text(SettingKey::Telemetry, MANUAL), "true");
+    assert!(s.cycle(SettingKey::Telemetry));
+    assert!(!s.telemetry && !s.telemetry_active());
+    assert_eq!(s.value_text(SettingKey::Telemetry, MANUAL), "false");
+    assert!(s.cycle(SettingKey::Telemetry));
+    assert!(s.telemetry, "a boolean: back on");
+    s.availability.telemetry = false;
+    assert!(!s.is_available(SettingKey::Telemetry, MANUAL));
+    assert!(!s.telemetry_active(), "a stored yes the host can't honour");
+    assert_eq!(
+        s.value_text(SettingKey::Telemetry, MANUAL),
+        format!("false{UNAVAILABLE_SUFFIX}"),
+        "the effective value, not the stored one"
+    );
+    assert!(!s.cycle(SettingKey::Telemetry), "unavailable rows refuse");
+    assert!(s.telemetry, "…and leave the value alone");
+}
+
+#[test]
+fn telemetry_never_reaches_settings_json() {
+    // It is a user preference, not a project's (docs/per-directory-state.md):
+    // it lives in telemetry.json beside the install id. So the blob never
+    // serializes it, a settings.json that names it is ignored, and
+    // `copy_value` never moves it — the PermissionMode pattern.
+    let off = SessionSettings {
+        telemetry: false,
+        ..SessionSettings::default()
+    };
+    assert_eq!(off.to_json().trim(), "{}", "not written");
+    assert!(
+        SessionSettings::parse(r#"{"telemetry": false}"#).telemetry,
+        "not read"
+    );
+    let mut file = SessionSettings::default();
+    file.copy_value(SettingKey::Telemetry, &off);
+    assert!(file.telemetry, "not this file's to record");
+    assert_eq!(file, SessionSettings::default());
 }

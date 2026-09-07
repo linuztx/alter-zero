@@ -203,6 +203,12 @@ Two consequences at the boundary:
 - **`theme.json`** — the colours are the user's: a theme is matched to the
   terminal the user sits at, not to a project (`docs/theme.md`).
 - **`permissions.json`**, **`skills.json`** — already per project; unchanged.
+- **`telemetry.json`** — the anonymous daily ping's switch and install id
+  (`docs/telemetry.md`). An opt-out that applied only to the directory you
+  happened to be in would be a surprise, so the `/settings` **Telemetry** row
+  is the one knob that persists per *user*: `SessionSettings::telemetry` is
+  `#[serde(skip)]`, `copy_value` never moves it, and the boundary seeds it
+  from — and writes it back to — `telemetry.json` alone.
 - The **project-level `.alter-zero/`** layer (`docs/project-config.md`) is
   a different axis: files *inside* the project, behind `/trust`. Both files
   here live in the user's config home, keyed by directory, and need no trust

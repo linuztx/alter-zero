@@ -17,6 +17,9 @@
 //!   `docs/chatgpt.md`), the one worker that runs for **minutes** rather than
 //!   milliseconds: it waits on the provider until the user approves, or
 //!   `cancel` trips.
+//! - [`spawn_telemetry_ping`] — the once-a-day anonymous usage ping
+//!   (`docs/telemetry.md`), fire-and-forget: it reports only success, so the
+//!   loop can record the day, and a dead collector costs the user nothing.
 //!
 //! **Invariant 1:** a worker only ever *sends*. None of them reads stdin, so
 //! the `EventStream` stays the single stdin reader.
@@ -217,6 +220,26 @@ fn spawn_device_login(cancel: CancelToken, tx: tokio::sync::mpsc::UnboundedSende
         // walked away from it.
         if !cancel.is_cancelled() {
             let _ = tx.send(DeviceEvent::Done(result));
+        }
+    });
+}
+
+/// Deliver the day's telemetry ping on a detached thread (`docs/telemetry.md`),
+/// sending `day` back on success so the loop — never this thread — records
+/// it in `telemetry.json`. A failure sends nothing: there is nothing the user
+/// could act on, and the next launch that day simply tries again. The send
+/// itself is `telemetry::send_ping`, over the shared cached HTTP client; the
+/// receiver closing first (a quick quit) just drops the result. It only
+/// *sends* — never a stdin reader (invariant 1).
+pub(crate) fn spawn_telemetry_ping(
+    endpoint: String,
+    ping: alter_zero::telemetry::Ping,
+    day: String,
+    tx: tokio::sync::mpsc::UnboundedSender<String>,
+) {
+    std::thread::spawn(move || {
+        if alter_zero::telemetry::send_ping(&endpoint, &ping).is_ok() {
+            let _ = tx.send(day);
         }
     });
 }

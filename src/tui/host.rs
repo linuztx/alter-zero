@@ -14,7 +14,9 @@
 //! - the agent's environment context: [`local_date`] and [`os_context`]
 //!   (`docs/environment.md`),
 //! - process identity: [`process_uid`] (the background tasks root,
-//!   `docs/background.md`) and [`session_id`].
+//!   `docs/background.md`) and [`session_id`],
+//! - telemetry (`docs/telemetry.md`): [`utc_day`] (the once-a-day key) and
+//!   [`random_bytes`] (the install id's entropy).
 
 use alter_zero::llm;
 
@@ -72,6 +74,33 @@ pub(crate) fn session_id() -> String {
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |elapsed| elapsed.as_nanos());
     format!("{nanos:x}-{:x}", std::process::id())
+}
+
+/// Today's UTC date, `YYYY-MM-DD` — the key the daily telemetry ping is
+/// throttled on (`telemetry::should_ping`). UTC rather than local so the
+/// client's day and the collector's agree except around midnight, where a
+/// second ping is harmless (the collector dedups on the day too).
+pub(crate) fn utc_day() -> String {
+    chrono::Utc::now().format("%Y-%m-%d").to_string()
+}
+
+/// `N` bytes from the OS entropy source — the telemetry install id's
+/// material (`TelemetryFile::install_id_or_mint`). Falls back to the clock
+/// and pid when the source fails, which should never happen on a real
+/// system, so that a failure still yields an id unlikely to collide rather
+/// than a shared all-zero one.
+pub(crate) fn random_bytes<const N: usize>() -> [u8; N] {
+    let mut bytes = [0u8; N];
+    if getrandom::fill(&mut bytes).is_err() {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |elapsed| elapsed.as_nanos());
+        let seed = nanos ^ u128::from(std::process::id()).rotate_left(64);
+        for (slot, byte) in bytes.iter_mut().zip(seed.to_le_bytes().iter().cycle()) {
+            *slot = *byte;
+        }
+    }
+    bytes
 }
 
 /// Seconds since the Unix epoch — the `ts` stamped into each history line.

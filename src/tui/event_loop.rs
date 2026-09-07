@@ -1,16 +1,17 @@
 //! The async event loop: a `select!` over every source that can wake the app.
 //!
-//! Nine sources fan onto one thread — terminal input, the streamed reply,
+//! Eleven sources fan onto one thread — terminal input, the streamed reply,
 //! coalesced draw ticks, `@` file-search results, finished Ctrl+V clipboard
-//! reads, `/model` list fetches, the startup capability probe, background-shell
-//! events and subagent events. `select!` polls its branches in randomized order,
-//! so input and draws can't starve each other — the round-robin fairness codex
-//! builds explicitly.
+//! reads, the `/login` sign-in worker, `/model` list fetches, the startup
+//! capability probe, background-shell events, subagent events, MCP server
+//! events and the telemetry ping's report. `select!` polls its branches in
+//! randomized order, so input and draws can't starve each other — the
+//! round-robin fairness codex builds explicitly.
 //!
-//! Every branch is one call on the [`Session`] that owns both ends of all nine
+//! Every branch is one call on the [`Session`] that owns both ends of all the
 //! channels, then [`Session::after_iteration`] for the loop-bottom bookkeeping.
 //! That works — receiver and handler on the same struct — because `select!`
-//! scopes its futures: the nine it builds borrow nine *distinct fields*, and all
+//! scopes its futures: each one it builds borrows a *distinct field*, and all
 //! of them are dropped before the winning branch's body runs, so that body is
 //! free to take `&mut session`. A handler that needs to drain a second channel
 //! reads it the same way (`try_recv` returns an owned value, so no borrow
@@ -107,6 +108,10 @@ pub(crate) async fn run(term: &mut InlineViewport, startup: Startup) -> io::Resu
             // 10. An MCP server's state changed (a connect resolved, an auth
             //     flow progressed) — docs/mcp.md.
             Some(event) = session.mcp_rx.recv() => session.on_mcp_event(event),
+
+            // 11. The day's telemetry ping was delivered: record the day so
+            //     the next launch today sends nothing (docs/telemetry.md).
+            Some(day) = session.telemetry_rx.recv() => session.on_telemetry_result(&day),
         }
         session.after_iteration();
     }

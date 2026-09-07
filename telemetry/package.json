@@ -1,0 +1,19 @@
+{
+  "name": "alter-zero-telemetry",
+  "version": "1.0.0",
+  "private": true,
+  "description": "The Alter Zero usage-telemetry collector: a Cloudflare Worker over D1 (docs/telemetry.md).",
+  "type": "module",
+  "scripts": {
+    "test": "node --test",
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "db:create": "wrangler d1 create alter-zero-telemetry",
+    "db:init": "wrangler d1 execute alter-zero-telemetry --remote --file=schema.sql",
+    "db:init:local": "wrangler d1 execute alter-zero-telemetry --local --file=schema.sql",
+    "secret:token": "wrangler secret put DASHBOARD_TOKEN"
+  },
+  "devDependencies": {
+    "wrangler": "^4"
+  }
+}
