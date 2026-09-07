@@ -1571,9 +1571,13 @@ trips mid-task abandons the work half-done and Esc is already the stop
 button; it counts the **calls**, not the rounds, because a round can be a
 whole parallel batch, and a round the budget can only partly afford is
 clamped rather than refused whole; and **Telemetry** — the anonymous daily
-usage ping, `docs/telemetry.md`: one `POST` a day per install carrying five
+usage ping, `docs/telemetry.md`: one `POST` a day per install carrying seven
 fields (a payload version, a random 128-bit install id, the app version, the
-OS and the architecture — never a prompt, a path, a model name or a key), the
+OS, the architecture, on Linux the distribution's os-release `ID`, and that
+platform's own version — `VERSION_ID` on Linux, macOS's `ProductVersion` read
+straight out of `SystemVersion.plist` rather than through `sw_vers`, absent
+for a rolling release and on Windows; never a display name, never a build id,
+and never a prompt, a path, a model name or a key), the
 **country** noted by the collector at the edge from the connection and never
 the address, sent *after* the first frame — and again at any **turn start** that
 opens a new UTC day, so a session left open across midnight still counts,
@@ -1597,7 +1601,9 @@ among the overrides, since a row that cycles back on is not an opt-out — and o
 outright without a config home (nowhere to keep an id, and a fresh one per
 launch would count one person as many); the collector is the Cloudflare
 Worker + D1 in `telemetry/`, tested with `node --test`, validating every field
-and serving a users-per-day / per-country dashboard at `/`; `smoke.sh` runs
+(and still accepting payload `v1`, so bumping the shape never stops counting
+an install that has not updated) and serving a users-per-day / per-country /
+per-platform (`ubuntu 24.04`, `macos 15.3.1`) dashboard at `/`; `smoke.sh` runs
 every phase with `ALTER_ZERO_TELEMETRY=0` and Phase 115 drives the whole loop
 against a local stub)
 of `{label}  {value}` in an aligned column over a `(n/total)` counter, the

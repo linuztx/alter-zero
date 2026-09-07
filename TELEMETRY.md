@@ -14,10 +14,10 @@ third-party analytics service.
 
 ## What is sent
 
-One `POST` of about ninety bytes, at most once per UTC day:
+One `POST` of about a hundred and twenty bytes, at most once per UTC day:
 
 ```json
-{"v":1,"id":"6f1c2a4d9e0b7c3a5f8e1d2c4b6a7980","version":"0.1.0","os":"linux","arch":"x86_64"}
+{"v":2,"id":"6f1c2a4d9e0b7c3a5f8e1d2c4b6a7980","version":"0.1.0","os":"linux","arch":"x86_64","distro":"ubuntu","os_version":"24.04"}
 ```
 
 | field | what it is |
@@ -26,6 +26,48 @@ One `POST` of about ninety bytes, at most once per UTC day:
 | `id` | the **install id**: 16 random bytes as hex, generated once and kept in `telemetry.json`. It is drawn from the OS random source, not derived from your machine — no MAC address, no hostname, no user name — so it cannot be turned back into you. Delete the file and the next launch generates a new one |
 | `version` | the app version, so we know which releases are still in use |
 | `os`, `arch` | `linux`/`macos`/`windows` and `x86_64`/`aarch64`, so we know what to build for |
+| `distro` | **Linux only**: the distribution's `ID` from `/etc/os-release` — `ubuntu`, `arch`, `fedora`, `nixos` — so we know which distributions to test and package for. On macOS and Windows the field is not sent at all |
+| `os_version` | the version of that platform: on Linux the distribution's own `VERSION_ID` (`24.04`), on macOS the system's `ProductVersion` (`15.3.1`). Not sent when the platform names none — a rolling release like Arch — and not sent on Windows |
+
+### About `distro` and `os_version`
+
+Together they say `ubuntu 24.04` or `macos 15.3.1`, which is the whole point
+of them: a build that works on one distribution's glibc may not work on
+another's, and knowing which versions people are actually on is the
+difference between guessing and knowing what to build against.
+
+They come from **two lines of two files**, and nothing else on either:
+
+| your system | where it is read | what is taken |
+|---|---|---|
+| Linux | `/etc/os-release` (then `/usr/lib/os-release`) | the `ID=` and `VERSION_ID=` lines |
+| macOS | `/System/Library/CoreServices/SystemVersion.plist` | the `ProductVersion` key |
+| Windows | nothing is read | neither field is sent |
+
+Everything else in those files is left where it is. Not `PRETTY_NAME`, not
+`BUILD_ID`, not `VARIANT`, not `HOME_URL`; on macOS not `ProductBuildVersion`
+(`24D70`) and not the serial number, hardware model, or anything else about
+the machine — the plist holds none of that, and this reads one key out of it.
+So `ubuntu` and `24.04`, never `Ubuntu 22.04.3 LTS (Jammy Jellyfish)`.
+
+Nothing is run to find this out: both are file reads, so no `sw_vers`, no
+`lsb_release`, no subprocess of any kind.
+
+Some systems name less than that, and the ping says so rather than
+inventing a value:
+
+- **A rolling release** — Arch, Void, Debian sid — has no `VERSION_ID`, so no
+  `os_version` is sent. `arch` on its own is more honest than `arch` with a
+  number attached to it.
+- **No `ID`, or no os-release file at all** (a minimal container) reads
+  `linux`, which is what the [os-release
+  spec](https://www.freedesktop.org/software/systemd/man/os-release.html)
+  says to default to.
+- **Windows** sends neither: reading its version needs a registry crate or a
+  subprocess, and neither is worth adding for this.
+
+And if either value does not fit the shape the collector accepts, that field
+is dropped and the rest of the ping is sent without it.
 
 Two headers ride along: `Content-Type: application/json` and
 `User-Agent: alter-zero/{version}`. The reply is ignored.
@@ -40,8 +82,8 @@ history never leave the machine.
 
 There is one function to read if you want to check that rather than take my
 word for it — `Ping::to_json` in `src/telemetry.rs` is the entire request
-body, and the test `the_payload_carries_exactly_the_five_fields` fails the
-build if a sixth field is ever added.
+body, and the test `the_payload_carries_exactly_the_seven_fields` fails the
+build if an eighth field is ever added.
 
 ## The country, and your IP address
 
@@ -186,7 +228,8 @@ automated.
 
 Forks and self-hosters are the reason `ALTER_ZERO_TELEMETRY_URL` exists.
 [`telemetry/`](telemetry/) is a complete Cloudflare Worker over a D1 database
-with a dashboard of users per day, per country, per version and per OS;
+with a dashboard of users per day, per country, per app version, per OS and
+per platform (`ubuntu 24.04`, `macos 15.3.1`);
 [`telemetry/README.md`](telemetry/README.md) deploys it in about five
 commands. Point your build at it with that variable, or change
 `telemetry::DEFAULT_ENDPOINT` in `src/telemetry.rs`.

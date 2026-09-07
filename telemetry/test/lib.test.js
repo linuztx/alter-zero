@@ -9,6 +9,7 @@ import {
   MAX_WINDOW_DAYS,
   PAYLOAD_VERSION,
   UNKNOWN_COUNTRY,
+  ACCEPTED_PAYLOAD_VERSIONS,
   authorized,
   byteLength,
   countryLabel,
@@ -23,14 +24,16 @@ import {
 } from '../src/lib.js';
 
 const GOOD = {
-  v: 1,
+  v: 2,
   id: '6f1c2a4d9e0b7c3a5f8e1d2c4b6a7980',
   version: '0.1.0',
   os: 'linux',
   arch: 'x86_64',
+  distro: 'ubuntu',
+  os_version: '24.04',
 };
 
-test('a well-formed ping validates to exactly its four stored fields', () => {
+test('a well-formed ping validates to exactly its six stored fields', () => {
   const result = validatePing(GOOD);
   assert.equal(result.ok, true);
   assert.deepEqual(result.ping, {
@@ -38,9 +41,51 @@ test('a well-formed ping validates to exactly its four stored fields', () => {
     version: '0.1.0',
     os: 'linux',
     arch: 'x86_64',
+    distro: 'ubuntu',
+    os_version: '24.04',
   });
-  assert.equal(PAYLOAD_VERSION, 1);
+  assert.equal(PAYLOAD_VERSION, 2);
   assert.equal(MAX_BODY_BYTES, 1024);
+});
+
+test('a v1 client is still counted, and simply reports no distribution', () => {
+  // Bumping the payload version must not stop counting everyone who has not
+  // updated: a collector that only spoke the newest shape would answer every
+  // older install a 400 and read as "our users all left".
+  assert.deepEqual(ACCEPTED_PAYLOAD_VERSIONS, [1, 2]);
+  const v1 = validatePing({ v: 1, id: GOOD.id, version: '0.1.0', os: 'linux', arch: 'x86_64' });
+  assert.equal(v1.ok, true);
+  assert.equal(v1.ping.distro, '', 'nothing to file it under, not a guess');
+  assert.equal(v1.ping.os_version, '');
+});
+
+test('the platform version is a version number, or nothing at all', () => {
+  for (const v of ['24.04', '39', '15.3.1', '12', '3.20.3', '24.11pre']) {
+    assert.equal(validatePing({ ...GOOD, os_version: v }).ping?.os_version, v, v);
+  }
+  // A rolling release names none, and neither does a platform this client
+  // cannot ask: absent is a blank column, not a 400.
+  const { os_version: _none, ...rolling } = GOOD;
+  assert.equal(validatePing({ ...rolling, distro: 'arch' }).ping.os_version, '');
+  assert.equal(validatePing({ ...GOOD, os_version: null }).ping.os_version, '');
+  for (const bad of ['', '24 04', '.24', '9'.repeat(17), '<b>', 24.04, {}]) {
+    assert.equal(validatePing({ ...GOOD, os_version: bad }).ok, false, JSON.stringify(bad));
+  }
+});
+
+test('the distribution is one os-release ID, or nothing at all', () => {
+  for (const distro of ['ubuntu', 'arch', 'nixos', 'opensuse-leap', 'sles_sap', 'centos.stream', 'debian11']) {
+    assert.equal(validatePing({ ...GOOD, distro }).ping?.distro, distro, distro);
+  }
+  // macOS and Windows send no such key; absent is a blank column, not a 400.
+  const { distro: _dropped, ...noDistro } = GOOD;
+  assert.equal(validatePing(noDistro).ping.distro, '');
+  assert.equal(validatePing({ ...GOOD, distro: null }).ping.distro, '', 'null reads as absent');
+  // Anything that is not one is refused rather than stored: this column is
+  // grouped on, and one machine's junk would be a row of its own forever.
+  for (const bad of ['Ubuntu', 'ubuntu 22.04', '', 'x'.repeat(33), '<script>', 42, {}]) {
+    assert.equal(validatePing({ ...GOOD, distro: bad }).ok, false, JSON.stringify(bad));
+  }
 });
 
 test('extra fields are dropped, never stored', () => {
@@ -48,7 +93,14 @@ test('extra fields are dropped, never stored', () => {
   // keep, so the table can never grow a column by accident.
   const result = validatePing({ ...GOOD, hostname: 'laptop', ip: '1.2.3.4' });
   assert.equal(result.ok, true);
-  assert.deepEqual(Object.keys(result.ping).sort(), ['arch', 'id', 'os', 'version']);
+  assert.deepEqual(Object.keys(result.ping).sort(), [
+    'arch',
+    'distro',
+    'id',
+    'os',
+    'os_version',
+    'version',
+  ]);
 });
 
 test('every malformed ping is refused with a reason', () => {
@@ -56,8 +108,8 @@ test('every malformed ping is refused with a reason', () => {
     [null, 'not an object'],
     ['string', 'a string'],
     [[], 'an array'],
-    [{ ...GOOD, v: 2 }, 'a future version'],
-    [{ ...GOOD, v: '1' }, 'a stringly version'],
+    [{ ...GOOD, v: 3 }, 'a future version'],
+    [{ ...GOOD, v: '2' }, 'a stringly version'],
     [{ ...GOOD, id: GOOD.id.toUpperCase() }, 'an uppercase id'],
     [{ ...GOOD, id: GOOD.id.slice(1) }, 'a short id'],
     [{ ...GOOD, id: `${GOOD.id}0` }, 'a long id'],
@@ -277,11 +329,21 @@ test('the dashboard renders a chart, the panels, and every window link', () => {
       ],
       versions: [{ version: '0.1.0', users: 7 }],
       oses: [{ os: 'linux', users: 7 }],
+      // As the query returns them — `os_version` is the column's name.
+      platforms: [
+        { platform: 'ubuntu', os_version: '24.04', users: 4 },
+        { platform: 'arch', os_version: '', users: 2 },
+        { platform: 'macos', os_version: '15.3.1', users: 1 },
+      ],
       totals: { users_7d: 7, users_30d: 7, installs: 9 },
       generatedAt: '2026-09-06T12:00:00.000Z',
     }),
     { token: 's3cret' },
   );
+  assert.ok(html.includes('Platforms'), 'the platform panel is on the page');
+  assert.ok(html.includes('ubuntu') && html.includes('24.04'), 'a distribution and its version');
+  assert.ok(html.includes('macos') && html.includes('15.3.1'), 'and a Mac beside it');
+  assert.ok(html.includes('arch'), 'a rolling release shows with no version rather than not at all');
   assert.ok(html.includes('Philippines'), 'a country is named, not just coded');
   assert.ok(html.includes('Unknown'), 'and ZZ says so');
   assert.ok(html.includes('href="/?days=90&amp;token=s3cret"'), 'the window links keep the token');

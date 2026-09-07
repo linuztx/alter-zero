@@ -11,6 +11,8 @@
     "db:create": "wrangler d1 create alter-zero-telemetry",
     "db:init": "wrangler d1 execute alter-zero-telemetry --remote --file=schema.sql",
     "db:init:local": "wrangler d1 execute alter-zero-telemetry --local --file=schema.sql",
+    "db:migrate": "wrangler d1 execute alter-zero-telemetry --remote --file=migrations/0001_platform.sql",
+    "db:migrate:local": "wrangler d1 execute alter-zero-telemetry --local --file=migrations/0001_platform.sql",
     "secret:token": "wrangler secret put DASHBOARD_TOKEN"
   },
   "devDependencies": {

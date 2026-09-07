@@ -4,8 +4,15 @@
 // Nothing here touches a request, a database or a clock it wasn't handed, so
 // `node --test` covers all of it with no network and no install.
 
-/** The payload shape this collector understands (`telemetry::PAYLOAD_VERSION`). */
-export const PAYLOAD_VERSION = 1;
+/** The payload shape the current client sends (`telemetry::PAYLOAD_VERSION`). */
+export const PAYLOAD_VERSION = 2;
+/**
+ * Every shape this collector still counts. `2` is `1` plus the optional
+ * `distro`; `1` stays on the list because refusing it would answer every
+ * install that has not updated a `400` — which reads, in the numbers, as
+ * everyone leaving at once.
+ */
+export const ACCEPTED_PAYLOAD_VERSIONS = [1, 2];
 /** A ping is a few dozen bytes; anything past this is not one. */
 export const MAX_BODY_BYTES = 1024;
 /** The dashboard's default window, and the widest it will compute. */
@@ -21,21 +28,30 @@ export const UNKNOWN_COUNTRY = 'ZZ';
 const ID_RE = /^[0-9a-f]{32}$/;
 const VERSION_RE = /^[0-9A-Za-z.+-]{1,32}$/;
 const TOKEN_RE = /^[a-z0-9_]{1,16}$/;
+// The os-release spec's own charset for `ID`, which allows `.` and `-` that
+// `os`/`arch` never need: `opensuse-leap`, `centos.stream`.
+const DISTRO_RE = /^[a-z0-9._-]{1,32}$/;
+// A version number as its own file writes it: `24.04`, `39`, `15.3.1`.
+const OS_VERSION_RE = /^[a-z0-9][a-z0-9._-]{0,15}$/;
 const COUNTRY_RE = /^[A-Z]{2}$/;
 
 /**
  * Validate a decoded request body. `{ ok: true, ping }` carries exactly the
- * four stored fields — extra keys are dropped, so the table can never grow a
+ * six stored fields — extra keys are dropped, so the table can never grow a
  * column by accident — else `{ ok: false, error }` with a one-line reason.
+ *
+ * `distro` and `os_version` are the optional two: a v1 client has never heard
+ * of either, macOS and Windows have no distribution, and a rolling release
+ * has no version. Absent is a blank column rather than a refusal.
  */
 export function validatePing(body) {
   if (body === null || typeof body !== 'object' || Array.isArray(body)) {
     return refuse('body must be a JSON object');
   }
-  if (body.v !== PAYLOAD_VERSION) {
-    return refuse(`v must be ${PAYLOAD_VERSION}`);
+  if (!ACCEPTED_PAYLOAD_VERSIONS.includes(body.v)) {
+    return refuse(`v must be one of ${ACCEPTED_PAYLOAD_VERSIONS.join(', ')}`);
   }
-  const { id, version, os, arch } = body;
+  const { id, version, os, arch, distro, os_version: osVersion } = body;
   if (typeof id !== 'string' || !ID_RE.test(id)) {
     return refuse('id must be 32 lowercase hex characters');
   }
@@ -48,7 +64,28 @@ export function validatePing(body) {
   if (typeof arch !== 'string' || !TOKEN_RE.test(arch)) {
     return refuse('arch must be 1-16 characters of [a-z0-9_]');
   }
-  return { ok: true, ping: { id, version, os, arch } };
+  // Absent and `null` both mean "did not say"; anything else present is
+  // checked, because these columns are grouped on and one machine's junk
+  // would be a row of its own for as long as the window holds it.
+  const hasDistro = distro !== undefined && distro !== null;
+  if (hasDistro && (typeof distro !== 'string' || !DISTRO_RE.test(distro))) {
+    return refuse('distro must be 1-32 characters of [a-z0-9._-]');
+  }
+  const hasVersion = osVersion !== undefined && osVersion !== null;
+  if (hasVersion && (typeof osVersion !== 'string' || !OS_VERSION_RE.test(osVersion))) {
+    return refuse('os_version must be 1-16 characters of [a-z0-9._-] opening on a letter or digit');
+  }
+  return {
+    ok: true,
+    ping: {
+      id,
+      version,
+      os,
+      arch,
+      distro: hasDistro ? distro : '',
+      os_version: hasVersion ? osVersion : '',
+    },
+  };
 }
 
 function refuse(error) {
@@ -101,6 +138,7 @@ export function shapeStats({
   countries,
   versions,
   oses,
+  platforms,
   totals,
   generatedAt,
 }) {
@@ -128,6 +166,11 @@ export function shapeStats({
     countries: countries.map((row) => ({ country: row.country, users: Number(row.users) })),
     versions: versions.map((row) => ({ version: row.version, users: Number(row.users) })),
     os: oses.map((row) => ({ os: row.os, users: Number(row.users) })),
+    platforms: (platforms ?? []).map((row) => ({
+      platform: row.platform,
+      version: row.os_version ?? '',
+      users: Number(row.users),
+    })),
   };
 }
 
@@ -318,8 +361,11 @@ h2{font-size:.76rem;margin:0 0 .9rem;color:var(--dim);font-weight:650;letter-spa
 .bars li i{position:absolute;left:0;right:0;bottom:0;height:var(--n,0%);background:var(--new)}
 .axis{display:flex;justify-content:space-between;color:var(--dim);font-size:.74rem;font-variant-numeric:tabular-nums}
 .blank{display:flex;align-items:center;justify-content:center;height:190px;color:var(--dim);font-size:.9rem;border:1px dashed var(--rule);border-radius:.6rem}
-.panels{display:grid;grid-template-columns:repeat(auto-fit,minmax(17rem,1fr));gap:1.1rem;margin-bottom:1.1rem;align-items:start}
-.panels .card{margin:0}
+/* Multi-column rather than a grid: four panels of four different lengths in a
+   grid leave a hole wherever a short one shares a row with a long one, and the
+   column flow packs them whatever their row counts turn out to be. */
+.panels{columns:19rem;column-gap:1.1rem}
+.panels .card{break-inside:avoid;margin:0 0 1.1rem}
 table{border-collapse:collapse;width:100%;font-size:.9rem}
 th,td{text-align:left;padding:.4rem .5rem .4rem 0;border-bottom:1px solid var(--rule);font-weight:450;font-variant-numeric:tabular-nums;vertical-align:middle}
 tbody tr:last-child th,tbody tr:last-child td{border-bottom:0}
@@ -366,8 +412,8 @@ function chartBars(daily, peak) {
     .join('');
 }
 
-/** A `Countries`/`Versions`/`Operating systems` panel: name, count, share. */
-function panel(title, heading, rows, key, decorate) {
+/** A `Countries`/`Versions`/`Platforms` panel: name, count, share. */
+function panel(title, heading, rows, decorate) {
   const peak = rows.reduce((max, row) => Math.max(max, int(row.users)), 0);
   const shown = rows.slice(0, PANEL_ROWS);
   const rest = rows.slice(PANEL_ROWS);
@@ -377,7 +423,7 @@ function panel(title, heading, rows, key, decorate) {
       : shown
           .map((row) => {
             const users = int(row.users);
-            return `<tr><th scope="row"><span class="name">${decorate(row[key])}</span></th><td class="n">${num(users)}</td><td class="share"><span class="meter"><span style="width:${pct(users, peak)}%"></span></span></td></tr>`;
+            return `<tr><th scope="row"><span class="name">${decorate(row)}</span></th><td class="n">${num(users)}</td><td class="share"><span class="meter"><span style="width:${pct(users, peak)}%"></span></span></td></tr>`;
           })
           .join('\n');
   const more =
@@ -400,8 +446,8 @@ ${body}${more}
  * code omitted when it *is* the name, so a region `Intl` cannot name reads
  * `QQ` once rather than twice.
  */
-function countryCell(raw) {
-  const { code, flag, name } = countryLabel(raw);
+function countryCell(row) {
+  const { code, flag, name } = countryLabel(row.country);
   const suffix = name === code ? '' : `<span class="code">${escapeHtml(code)}</span>`;
   return `<span class="flag" aria-hidden="true">${flag}</span><span class="txt">${escapeHtml(name)}</span>${suffix}`;
 }
@@ -410,6 +456,17 @@ function countryCell(raw) {
 function plainCell(raw) {
   const text = String(raw ?? '').trim();
   return `<span class="txt">${text === '' ? '<span class="empty">(blank)</span>' : escapeHtml(text)}</span>`;
+}
+
+/**
+ * A platform cell: `ubuntu 24.04`, `macos 15.3.1`, or just `arch` where the
+ * platform is a rolling release that names no version. The version wears the
+ * country code's dim styling — it qualifies the name rather than being it.
+ */
+function platformCell(row) {
+  const version = String(row.version ?? '').trim();
+  const suffix = version === '' ? '' : `<span class="code">${escapeHtml(version)}</span>`;
+  return `${plainCell(row.platform)}${suffix}`;
 }
 
 /**
@@ -494,9 +551,10 @@ ${chart}
 </section>
 
 <div class="panels">
-${panel('Countries', 'Country', stats.countries ?? [], 'country', countryCell)}
-${panel('Versions', 'Version', stats.versions ?? [], 'version', plainCell)}
-${panel('Operating systems', 'OS', stats.os ?? [], 'os', plainCell)}
+${panel('Countries', 'Country', stats.countries ?? [], countryCell)}
+${panel('Versions', 'Version', stats.versions ?? [], (row) => plainCell(row.version))}
+${panel('Operating systems', 'OS', stats.os ?? [], (row) => plainCell(row.os))}
+${panel('Platforms', 'Platform', stats.platforms ?? [], platformCell)}
 </div>
 
 <details>

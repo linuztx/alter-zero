@@ -11946,19 +11946,25 @@ case "$tm_line" in
 *) tm_fail "the ping did not hit /v1/ping with the alter-zero/$TM_VERSION user-agent: '$tm_line'" ;;
 esac
 tm_body="${tm_line#/v1/ping alter-zero/$TM_VERSION }"
-# The body is the five fields and nothing else — the shape docs/telemetry.md
-# promises — with the id the file holds and the crate's own version.
+# The body is the seven fields and nothing else — the shape docs/telemetry.md
+# promises — with the id the file holds and the crate's own version. The suite
+# runs on Linux, so `distro` must be there; `os_version` is checked only if
+# present, because a rolling-release host (Arch, Void) legitimately names none.
 if ! python3 - "$tm_body" "$tm_id" "$TM_VERSION" <<'PY'; then
 import json, re, sys
 body, install_id, version = json.loads(sys.argv[1]), sys.argv[2], sys.argv[3]
-assert sorted(body) == ["arch", "id", "os", "v", "version"], body
-assert body["v"] == 1, body
+required = {"arch", "distro", "id", "os", "v", "version"}
+assert required <= set(body) <= required | {"os_version"}, body
+assert body["v"] == 2, body
 assert body["id"] == install_id, body
 assert body["version"] == version, body
 assert re.fullmatch(r"[a-z0-9_]{1,16}", body["os"]), body
 assert re.fullmatch(r"[a-z0-9_]{1,16}", body["arch"]), body
+assert re.fullmatch(r"[a-z0-9._-]{1,32}", body["distro"]), body
+if "os_version" in body:
+    assert re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,15}", body["os_version"]), body
 PY
-	tm_fail "the ping body is not the promised five-field shape: '$tm_body'"
+	tm_fail "the ping body is not the promised seven-field shape: '$tm_body'"
 fi
 tm_quit
 

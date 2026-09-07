@@ -9,6 +9,8 @@ CREATE TABLE IF NOT EXISTS pings (
   version TEXT NOT NULL,  -- the app version the ping named
   os      TEXT NOT NULL,  -- std::env::consts::OS
   arch    TEXT NOT NULL,  -- std::env::consts::ARCH
+  distro  TEXT NOT NULL DEFAULT '',  -- the Linux distribution's os-release ID; '' off Linux, and from any client older than payload v2
+  os_version TEXT NOT NULL DEFAULT '',  -- the platform's own version: the distribution's VERSION_ID, or macOS's ProductVersion; '' when it names none
   PRIMARY KEY (day, id)
 );
 

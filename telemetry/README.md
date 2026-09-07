@@ -15,6 +15,7 @@ runner.
 telemetry/
 ├── wrangler.toml     the worker's name, the D1 binding, the retention cron
 ├── schema.sql        the `pings` table
+├── migrations/       one file per column added since
 ├── src/lib.js        validation, country normalisation, stats shaping, the page
 ├── src/worker.js     the routes over D1
 ├── test/lib.test.js  the pure half, under `node --test`
@@ -32,6 +33,7 @@ npx wrangler login
 npx wrangler d1 create alter-zero-telemetry
 #   → paste the printed database_id into wrangler.toml
 npm run db:init                   # creates the `pings` table in the remote database
+#   already deployed before payload v2? `npm run db:migrate` adds its two columns
 npm run secret:token              # optional: a token the dashboard will require
 npm run deploy
 #   → prints https://alter-zero-telemetry.<your-subdomain>.workers.dev
@@ -56,7 +58,8 @@ ALTER_ZERO_TELEMETRY_URL=https://alter-zero-telemetry.<subdomain>.workers.dev/v1
   from yesterday, distinct users over 7 and 30 days, installs seen, a bar per
   day of the window with each day's new installs marked at its foot, and
   panels for countries (flag and name, not just the code), versions and
-  operating systems — with every day's exact numbers folded into a `details`
+  operating systems, and platforms (`ubuntu 24.04`, `macos 15.3.1`, `arch`) —
+  with every day's exact numbers folded into a `details`
   at the bottom. The **7d / 30d / 90d / 365d** switcher in the header is the
   `?days=` window (1–365), and its links carry your `?token=` along.
   Plain HTML and inline CSS: no script, no external asset, nothing fetched
@@ -75,8 +78,15 @@ curl -s -H "Authorization: Bearer $TOKEN" https://alter-zero-telemetry.<subdomai
 
 ## What arrives, what is kept
 
-The app sends `{"v":1,"id":"…32 hex…","version":"0.1.0","os":"linux","arch":"x86_64"}`
-at most once per UTC day per install. The worker validates every field
+The app sends
+`{"v":2,"id":"…32 hex…","version":"0.1.0","os":"linux","arch":"x86_64","distro":"ubuntu","os_version":"24.04"}`
+at most once per UTC day per install. `distro` is the Linux distribution's
+os-release `ID` — absent entirely on macOS and Windows — and `os_version` is
+that platform's own version: `VERSION_ID` on Linux, `ProductVersion` on
+macOS, absent for a rolling release and on Windows. Both are read from a
+file; nothing is run to find them. A client still on payload `v1` has never
+heard of either and is counted exactly as before. The worker validates every
+field
 (anything else is a `400`, and a body over 1 KiB a `413`), keys the row on
 **its own** UTC date and the id —
 `INSERT OR IGNORE`, so a second ping on one day is a no-op — and adds the

@@ -20,8 +20,10 @@ use serde::{Deserialize, Serialize};
 use crate::APP_NAME;
 
 /// The payload shape's version, sent as `v`, so a future shape can be told
-/// from this one by the collector.
-pub const PAYLOAD_VERSION: u32 = 1;
+/// from this one by the collector. `2` is `1` plus the optional [`Ping::distro`];
+/// the collector still accepts `1`, because bumping this must not stop
+/// counting everyone who has not updated yet.
+pub const PAYLOAD_VERSION: u32 = 2;
 
 /// Where the ping goes unless [`ENDPOINT_ENV`] says otherwise: the collector
 /// in `telemetry/`, deployed as the Cloudflare Worker `alter-zero-telemetry`
@@ -50,6 +52,26 @@ pub const ENDPOINT_ENV: &str = "ALTER_ZERO_TELEMETRY_URL";
 /// telemetry off for the run, outranking even an explicit
 /// `ALTER_ZERO_TELEMETRY=1`.
 pub const DNT_ENV: &str = "DO_NOT_TRACK";
+
+/// Where the Linux distribution's `ID` is read from, in systemd's own search
+/// order. The boundary does the reading; this is here so the parser and the
+/// paths it parses stay together.
+pub const OS_RELEASE_PATHS: [&str; 2] = ["/etc/os-release", "/usr/lib/os-release"];
+
+/// What a Linux system with no distribution `ID` reports — the os-release
+/// spec's own default, and the honest answer for a minimal container.
+pub const DEFAULT_DISTRO: &str = "linux";
+
+/// The longest distribution id the wire carries; the collector refuses more.
+pub const DISTRO_MAX_LEN: usize = 32;
+
+/// Where macOS keeps its own version. Read directly rather than through
+/// `sw_vers`: a subprocess at startup costs more than a file read, and this
+/// file is the one `sw_vers` itself reports from.
+pub const MACOS_VERSION_PLIST: &str = "/System/Library/CoreServices/SystemVersion.plist";
+
+/// The longest platform version the wire carries.
+pub const OS_VERSION_MAX_LEN: usize = 16;
 
 /// What `telemetry.json` holds: the switch, the install id, the last day a
 /// ping was delivered, and whether the one-time notice has been shown.
@@ -143,11 +165,123 @@ fn hex_id(bytes: &[u8; INSTALL_ID_BYTES]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// The wire body — **all** of it. Five fields: the shape version, the install
-/// id, the app version, the OS and the CPU architecture. No prompt, path,
-/// model, key, hostname or user name is in reach of this struct, and
-/// `the_payload_carries_exactly_the_five_fields` pins the key set so adding
-/// one is a deliberate act (`docs/telemetry.md` *What is sent*).
+/// The shape a distribution id must have to ride the wire: the os-release
+/// spec's own charset for `ID` (lowercase letters, digits, `.`, `_`, `-`),
+/// capped at [`DISTRO_MAX_LEN`]. The collector validates the same thing, so
+/// the two can never disagree about what a distribution looks like.
+#[must_use]
+pub fn is_valid_distro(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= DISTRO_MAX_LEN
+        && id.bytes().all(|b| {
+            b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'.' | b'_' | b'-')
+        })
+}
+
+/// The shape a platform version must have to ride the wire: the version
+/// number as its file writes it (`24.04`, `39`, `15.3.1`), lowercased, opening
+/// on a letter or digit and capped at [`OS_VERSION_MAX_LEN`].
+#[must_use]
+pub fn is_valid_os_version(version: &str) -> bool {
+    let mut bytes = version.bytes();
+    bytes
+        .next()
+        .is_some_and(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
+        && version.len() <= OS_VERSION_MAX_LEN
+        && bytes.all(|b| {
+            b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'.' | b'_' | b'-')
+        })
+}
+
+/// The distribution `ID` in an `os-release` file's contents — the pure half
+/// of the read the boundary does over [`OS_RELEASE_PATHS`].
+///
+/// It takes the machine-readable `ID` and nothing else: not `PRETTY_NAME`,
+/// which is free text, and not the version, which
+/// [`os_version_from_os_release`] reads separately.
+///
+/// `Some(DEFAULT_DISTRO)` when the file names no `ID` (the spec's own
+/// default), and `None` when it names one this wire cannot carry — a bad
+/// field would cost the whole ping a `400`, and a refused ping counts nobody.
+#[must_use]
+pub fn distro_from_os_release(contents: &str) -> Option<String> {
+    let Some(id) = os_release_value(contents, "ID") else {
+        return Some(DEFAULT_DISTRO.to_string());
+    };
+    is_valid_distro(&id).then_some(id)
+}
+
+/// The distribution's own `VERSION_ID` — `24.04`, `39`, `12`.
+///
+/// `None` for a rolling release, which names none: `arch` with a made-up
+/// number would say less than `arch` does. Deliberately **not** `VERSION`,
+/// which is the free-text `24.04.1 LTS (Noble Numbat)`.
+#[must_use]
+pub fn os_version_from_os_release(contents: &str) -> Option<String> {
+    let version = os_release_value(contents, "VERSION_ID")?;
+    is_valid_os_version(&version).then_some(version)
+}
+
+/// macOS's own `ProductVersion` from [`MACOS_VERSION_PLIST`]'s contents —
+/// `15.3.1`. Read as text rather than parsed as a plist: one key out of a
+/// nine-line file does not need a parser, let alone a dependency.
+///
+/// The `<key>` is matched **with its tags**, so neither
+/// `ProductBuildVersion` (`24D70`, and it comes first in the file) nor
+/// `ProductUserVisibleVersion` (which contains this key's whole name) can be
+/// picked up in its place.
+#[must_use]
+pub fn macos_version_from_plist(contents: &str) -> Option<String> {
+    let after = contents.split_once("<key>ProductVersion</key>")?.1;
+    let value = after.split_once("<string>")?.1.split_once("</string>")?.0;
+    let value = value.trim().to_ascii_lowercase();
+    is_valid_os_version(&value).then_some(value)
+}
+
+/// One `KEY=value` from an os-release file: unquoted, trimmed, lowercased,
+/// and `None` when the key is absent or its value empty.
+///
+/// The key is matched with `split_once('=')` rather than a prefix, because
+/// `ID_LIKE=debian` is Ubuntu's ancestry and not its identity.
+fn os_release_value(contents: &str, key: &str) -> Option<String> {
+    for line in contents.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let Some((found, value)) = line.split_once('=') else {
+            continue;
+        };
+        if found.trim() != key {
+            continue;
+        }
+        let value = unquote(value.trim()).trim().to_ascii_lowercase();
+        return (!value.is_empty()).then_some(value);
+    }
+    None
+}
+
+/// Strip one matching pair of shell quotes. `ID`'s charset excludes every
+/// character an escape would protect, so there is nothing else to unescape.
+fn unquote(value: &str) -> &str {
+    for quote in ['"', '\''] {
+        if let Some(inner) = value
+            .strip_prefix(quote)
+            .and_then(|rest| rest.strip_suffix(quote))
+        {
+            return inner;
+        }
+    }
+    value
+}
+
+/// The wire body — **all** of it. Seven fields: the shape version, the
+/// install id, the app version, the OS, the CPU architecture, on Linux the
+/// distribution's `ID`, and the version of whichever of those two names the
+/// platform. No prompt, path, model, key, hostname or user name is in reach
+/// of this struct, and `the_payload_carries_exactly_the_seven_fields` pins
+/// the key set so adding one is a deliberate act (`docs/telemetry.md` *What
+/// is sent*).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Ping {
     /// [`PAYLOAD_VERSION`].
@@ -160,18 +294,46 @@ pub struct Ping {
     pub os: String,
     /// `std::env::consts::ARCH`.
     pub arch: String,
+    /// The Linux distribution's os-release `ID` — `ubuntu`, `arch`, `nixos`
+    /// — and **never** its version or pretty name
+    /// ([`distro_from_os_release`]). Omitted from the body entirely off
+    /// Linux, where there is no such thing and a placeholder would only be a
+    /// bucket the dashboard has to explain away.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub distro: Option<String>,
+    /// The version of the platform this install runs on: on Linux the
+    /// distribution's own `VERSION_ID` (`24.04`), on macOS the system's
+    /// `ProductVersion` (`15.3.1`). Omitted when the platform names none —
+    /// a rolling release, or a system this build cannot ask.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub os_version: Option<String>,
 }
 
 impl Ping {
-    /// A ping for this install, in the current payload shape.
+    /// A ping for this install, in the current payload shape. A `distro` or
+    /// `os_version` that does not fit the wire shape is dropped rather than
+    /// carried: one bad field is a `400`, and a refused ping counts nobody.
     #[must_use]
-    pub fn new(id: &str, version: &str, os: &str, arch: &str) -> Self {
+    pub fn new(
+        id: &str,
+        version: &str,
+        os: &str,
+        arch: &str,
+        distro: Option<&str>,
+        os_version: Option<&str>,
+    ) -> Self {
         Self {
             v: PAYLOAD_VERSION,
             id: id.to_string(),
             version: version.to_string(),
             os: os.to_string(),
             arch: arch.to_string(),
+            distro: distro
+                .filter(|d| is_valid_distro(d))
+                .map(std::string::ToString::to_string),
+            os_version: os_version
+                .filter(|v| is_valid_os_version(v))
+                .map(std::string::ToString::to_string),
         }
     }
 
@@ -356,7 +518,167 @@ mod tests {
     }
 
     #[test]
-    fn the_payload_carries_exactly_the_five_fields() {
+    fn the_distro_is_the_os_release_id_and_nothing_else() {
+        // The machine-readable `ID`, never the pretty name and never the
+        // version: "which distributions do we build for" is the question, and
+        // `ubuntu 22.04.3 LTS (Jammy Jellyfish)` answers a narrower one about
+        // one machine (`docs/telemetry.md` *The Linux distribution*).
+        let ubuntu = "NAME=\"Ubuntu\"\nVERSION=\"22.04.3 LTS (Jammy Jellyfish)\"\nID=ubuntu\nID_LIKE=debian\n";
+        assert_eq!(distro_from_os_release(ubuntu).as_deref(), Some("ubuntu"));
+
+        for (release, want) in [
+            ("NAME=\"Arch Linux\"\nID=arch\n", "arch"),
+            (
+                "ID=\"opensuse-leap\"\nVERSION_ID=\"15.5\"\n",
+                "opensuse-leap",
+            ),
+            ("ID='fedora'\nVERSION_ID=39\n", "fedora"),
+            ("NAME=NixOS\nID=nixos\n", "nixos"),
+            // Whitespace, comments, CRLF, and a key that merely starts with ID.
+            (
+                "# a comment\r\nID_LIKE=rhel\r\n  ID = centos \r\n",
+                "centos",
+            ),
+            ("ID=ALPINE\n", "alpine"),
+        ] {
+            assert_eq!(
+                distro_from_os_release(release).as_deref(),
+                Some(want),
+                "{release:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_os_release_without_a_usable_id_reports_plain_linux() {
+        // systemd's own default when `ID` is unset — and the honest answer
+        // for a minimal container that has no os-release at all.
+        for release in ["", "NAME=\"Something\"\n", "ID=\n", "ID=\"\"\n"] {
+            assert_eq!(
+                distro_from_os_release(release).as_deref(),
+                Some(DEFAULT_DISTRO),
+                "{release:?}"
+            );
+        }
+        assert_eq!(DEFAULT_DISTRO, "linux");
+    }
+
+    #[test]
+    fn the_platform_version_is_the_distributions_own_version_id() {
+        let ubuntu = "NAME=\"Ubuntu\"\nVERSION=\"24.04.1 LTS (Noble Numbat)\"\nID=ubuntu\nVERSION_ID=\"24.04\"\n";
+        assert_eq!(os_version_from_os_release(ubuntu).as_deref(), Some("24.04"));
+
+        for (release, want) in [
+            ("ID=fedora\nVERSION_ID=39\n", "39"),
+            ("ID=debian\nVERSION_ID=\"12\"\n", "12"),
+            ("ID=nixos\nVERSION_ID=\"24.11\"\n", "24.11"),
+            ("ID=rhel\nVERSION_ID=\"9.4\"\n", "9.4"),
+            ("ID=alpine\nVERSION_ID=3.20.3\n", "3.20.3"),
+        ] {
+            assert_eq!(
+                os_version_from_os_release(release).as_deref(),
+                Some(want),
+                "{release:?}"
+            );
+        }
+
+        // A rolling release has no version, and saying so is the honest
+        // answer — `arch` with a made-up number would be worse than `arch`.
+        for rolling in [
+            "ID=arch\n",
+            "NAME=\"Arch Linux\"\nID=arch\nBUILD_ID=rolling\n",
+        ] {
+            assert_eq!(os_version_from_os_release(rolling), None, "{rolling:?}");
+        }
+        // And the same rule the distro has: unusable rather than refused.
+        assert_eq!(os_version_from_os_release("VERSION_ID=\"a b\"\n"), None);
+        assert_eq!(os_version_from_os_release("VERSION_ID=\"\"\n"), None);
+    }
+
+    #[test]
+    fn the_macos_version_is_the_product_version_from_the_system_plist() {
+        // The real file's shape, keys and all — including the two other keys
+        // whose names *contain* the one we want.
+        let plist = r#"<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0">
+<dict>
+	<key>ProductBuildVersion</key>
+	<string>24D70</string>
+	<key>ProductCopyright</key>
+	<string>1983-2025 Apple Inc.</string>
+	<key>ProductName</key>
+	<string>macOS</string>
+	<key>ProductUserVisibleVersion</key>
+	<string>15.3.1</string>
+	<key>ProductVersion</key>
+	<string>15.3.1</string>
+	<key>iOSSupportVersion</key>
+	<string>18.3</string>
+</dict>
+</plist>
+"#;
+        assert_eq!(macos_version_from_plist(plist).as_deref(), Some("15.3.1"));
+        // `ProductBuildVersion` sits *before* it and `ProductUserVisibleVersion`
+        // contains its name: neither may be picked up instead.
+        assert_ne!(macos_version_from_plist(plist).as_deref(), Some("24D70"));
+
+        assert_eq!(
+            macos_version_from_plist("<key>ProductVersion</key><string>14.7</string>").as_deref(),
+            Some("14.7")
+        );
+        // Nothing usable in it, and nothing that looks like it.
+        for junk in [
+            "",
+            "<plist><dict></dict></plist>",
+            "<key>ProductBuildVersion</key><string>24D70</string>",
+            "<key>ProductVersion</key><string></string>",
+            "<key>ProductVersion</key><string>not a version</string>",
+            "<key>ProductVersion</key>",
+        ] {
+            assert_eq!(macos_version_from_plist(junk), None, "{junk:?}");
+        }
+    }
+
+    #[test]
+    fn a_version_the_collector_would_refuse_is_dropped_rather_than_sent() {
+        assert!(is_valid_os_version("24.04"));
+        assert!(is_valid_os_version("39"));
+        assert!(is_valid_os_version("15.3.1"));
+        assert!(is_valid_os_version("3.20.3"));
+        assert!(is_valid_os_version("24.11pre"));
+        assert!(!is_valid_os_version(""));
+        assert!(!is_valid_os_version("24 04"));
+        assert!(
+            !is_valid_os_version(".24"),
+            "a version starts with a digit or letter"
+        );
+        assert!(!is_valid_os_version(&"9".repeat(17)));
+    }
+
+    #[test]
+    fn a_distro_the_collector_would_refuse_is_dropped_rather_than_sent() {
+        // A ping carrying one bad field is a 400, and a 400 counts nobody —
+        // so an id that does not fit the wire shape costs the field, never
+        // the ping.
+        for release in [
+            "ID=a-very-long-distribution-identifier-well-past-the-cap\n",
+            "ID=\"deb ian\"\n",
+            "ID=\"<script>\"\n",
+        ] {
+            assert_eq!(distro_from_os_release(release), None, "{release:?}");
+        }
+        assert!(is_valid_distro("ubuntu"));
+        assert!(is_valid_distro("opensuse-leap"));
+        assert!(is_valid_distro("sles_sap"));
+        assert!(is_valid_distro("centos.stream"));
+        assert!(!is_valid_distro(""));
+        assert!(!is_valid_distro("Ubuntu"));
+        assert!(!is_valid_distro("deb ian"));
+        assert!(!is_valid_distro(&"x".repeat(33)));
+    }
+
+    #[test]
+    fn the_payload_carries_exactly_the_seven_fields() {
         // The whole wire body, pinned field by field — adding one here is a
         // deliberate act the doc must describe (`docs/telemetry.md`).
         let ping = Ping::new(
@@ -364,21 +686,69 @@ mod tests {
             "0.1.0",
             "linux",
             "x86_64",
+            Some("ubuntu"),
+            Some("24.04"),
         );
         let value: serde_json::Value = serde_json::from_str(&ping.to_json()).unwrap();
         let object = value.as_object().expect("an object");
         let mut keys: Vec<&str> = object.keys().map(String::as_str).collect();
         keys.sort_unstable();
-        assert_eq!(keys, vec!["arch", "id", "os", "v", "version"]);
+        assert_eq!(
+            keys,
+            vec!["arch", "distro", "id", "os", "os_version", "v", "version"]
+        );
         assert_eq!(object["v"], PAYLOAD_VERSION);
         assert_eq!(object["id"], "6f1c2a4d9e0b7c3a5f8e1d2c4b6a7980");
         assert_eq!(object["version"], "0.1.0");
         assert_eq!(object["os"], "linux");
         assert_eq!(object["arch"], "x86_64");
+        assert_eq!(object["distro"], "ubuntu");
+        assert_eq!(object["os_version"], "24.04");
         assert!(
             ping.to_json().len() < 200,
             "a few dozen bytes, not a document"
         );
+    }
+
+    #[test]
+    fn a_machine_with_no_distribution_sends_no_distro_key_at_all() {
+        // macOS and Windows have no distribution, and a placeholder in the
+        // column would be a bucket the dashboard has to explain away — but a
+        // Mac still names its own version.
+        let mac = Ping::new(
+            "6f1c2a4d9e0b7c3a5f8e1d2c4b6a7980",
+            "0.1.0",
+            "macos",
+            "aarch64",
+            None,
+            Some("15.3.1"),
+        );
+        let value: serde_json::Value = serde_json::from_str(&mac.to_json()).unwrap();
+        let object = value.as_object().expect("an object");
+        let mut keys: Vec<&str> = object.keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        assert_eq!(keys, vec!["arch", "id", "os", "os_version", "v", "version"]);
+        assert_eq!(object["os_version"], "15.3.1");
+
+        // A rolling distribution, or a platform that names neither: back to
+        // the v1 shape exactly.
+        let bare = Ping::new(
+            "6f1c2a4d9e0b7c3a5f8e1d2c4b6a7980",
+            "0.1.0",
+            "windows",
+            "x86_64",
+            None,
+            None,
+        );
+        let value: serde_json::Value = serde_json::from_str(&bare.to_json()).unwrap();
+        let mut keys: Vec<&str> = value
+            .as_object()
+            .expect("an object")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        keys.sort_unstable();
+        assert_eq!(keys, vec!["arch", "id", "os", "v", "version"]);
     }
 
     #[test]

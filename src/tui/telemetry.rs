@@ -130,11 +130,14 @@ impl Session<'_> {
         }) else {
             return;
         };
+        let (distro, os_version) = platform();
         let ping = Ping::new(
             id,
             env!("CARGO_PKG_VERSION"),
             std::env::consts::OS,
             std::env::consts::ARCH,
+            distro.as_deref(),
+            os_version.as_deref(),
         );
         // Marked before the spawn, not after the answer: this is "we tried
         // today", the bound on a collector that never answers.
@@ -158,4 +161,40 @@ impl Session<'_> {
             .insert_before(ui::startup_paragraph_lines(&telemetry::notice(), width));
         self.term.insert_before(vec![Line::default()]);
     }
+}
+
+/// The platform this install runs on, read at the boundary — the file reads
+/// the pure parsers in [`telemetry`] cannot do:
+///
+/// - **Linux**: the distribution's `ID` and its `VERSION_ID`, from the first
+///   of [`telemetry::OS_RELEASE_PATHS`] that opens (systemd's own search
+///   order). One read serves both, since they are two keys of one file.
+///   Neither file readable is [`telemetry::DEFAULT_DISTRO`] with no version —
+///   the spec's own default, and the honest answer for a minimal container.
+/// - **macOS**: the system's `ProductVersion`, and no distribution: macOS has
+///   no such thing, and a placeholder would only be a bucket the dashboard
+///   has to explain away.
+/// - **Anything else**: neither. Reading Windows' version needs a registry
+///   crate or a subprocess, and neither is worth a startup cost here yet.
+fn platform() -> (Option<String>, Option<String>) {
+    // Runtime `cfg!` rather than `#[cfg]` blocks, so every branch is compiled
+    // — and type-checked — on every platform.
+    if cfg!(target_os = "linux") {
+        for path in telemetry::OS_RELEASE_PATHS {
+            if let Ok(contents) = std::fs::read_to_string(path) {
+                return (
+                    telemetry::distro_from_os_release(&contents),
+                    telemetry::os_version_from_os_release(&contents),
+                );
+            }
+        }
+        return (Some(telemetry::DEFAULT_DISTRO.to_string()), None);
+    }
+    if cfg!(target_os = "macos") {
+        let version = std::fs::read_to_string(telemetry::MACOS_VERSION_PLIST)
+            .ok()
+            .and_then(|contents| telemetry::macos_version_from_plist(&contents));
+        return (None, version);
+    }
+    (None, None)
 }

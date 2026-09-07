@@ -30,15 +30,68 @@ One `POST` to the collector, body `application/json`, at most once per UTC
 day per install:
 
 ```json
-{"v":1,"id":"6f1c2a4d9e0b7c3a5f8e1d2c4b6a7980","version":"0.1.0","os":"linux","arch":"x86_64"}
+{"v":2,"id":"6f1c2a4d9e0b7c3a5f8e1d2c4b6a7980","version":"0.1.0","os":"linux","arch":"x86_64","distro":"ubuntu","os_version":"24.04"}
 ```
 
 | field | what it is | why |
 |---|---|---|
-| `v` | the payload version, `1` | so a future shape can be told from this one |
+| `v` | the payload version, `2` | so a future shape can be told from this one; the collector still accepts `1` |
 | `id` | the **install id** — 16 random bytes as 32 hex characters, minted once and kept in `telemetry.json` | "how many people" needs to tell two launches by one person from two people; a random id does that without identifying anyone. It is not derived from anything about the machine — no MAC, no hostname, no user name — so it cannot be reversed into one, and deleting the file mints a new one |
 | `version` | `CARGO_PKG_VERSION` | which versions are still out there |
 | `os`, `arch` | `std::env::consts::OS` / `ARCH` | which platforms to build for |
+| `distro` | the Linux distribution's os-release `ID` — **Linux only**, and absent from the body entirely elsewhere | which distributions to test and package for (below) |
+| `os_version` | the version of whatever `distro`/`os` names: the distribution's `VERSION_ID`, or macOS's `ProductVersion`. Absent when the platform names none | which versions to build against — glibc, SDK floor (below) |
+
+### The platform
+
+`os: "linux"` answers "should we ship a Linux build" and nothing after it.
+`distro` and `os_version` answer the next question — Debian-family or Arch,
+which glibc, which macOS SDK floor — and between them they read **two lines
+of two files**:
+
+| platform | file | keys |
+|---|---|---|
+| Linux | `/etc/os-release`, then `/usr/lib/os-release` (systemd's search order) | `ID`, `VERSION_ID` |
+| macOS | `/System/Library/CoreServices/SystemVersion.plist` | `ProductVersion` |
+| Windows | — | neither |
+
+Five decisions are worth stating, because each of them is where these fields
+could have gone wrong:
+
+- **The machine-readable keys, never the display ones.** `ubuntu` + `24.04`,
+  not `Ubuntu 22.04.3 LTS (Jammy Jellyfish)`: `PRETTY_NAME` and `VERSION` are
+  free text that would make the column ungroupable, and macOS's
+  `ProductBuildVersion` (`24D70`) is a build id, not a version anyone reads.
+  `telemetry::os_release_value` matches its key with `split_once('=')` rather
+  than a prefix, because `ID_LIKE=debian` is Ubuntu's ancestry and not its
+  identity; `macos_version_from_plist` matches `<key>ProductVersion</key>`
+  *with its tags*, so neither `ProductBuildVersion` (which comes first in the
+  file) nor `ProductUserVisibleVersion` (which contains the whole key name)
+  can be picked up in its place.
+- **Files, not subprocesses.** macOS's version is read straight out of the
+  plist `sw_vers` itself reports from — one `read_to_string` and a `find`,
+  rather than spawning a process before the first frame. Nothing is run, and
+  no dependency is added: one key out of a nine-line file does not need a
+  plist parser.
+- **One read serves both on Linux.** `ID` and `VERSION_ID` are two keys of
+  one file, so `tui::telemetry::platform` opens it once.
+- **Absent beats invented.** A rolling release names no `VERSION_ID`, so it
+  sends none — `arch` says more than `arch` with a made-up number would.
+  macOS and Windows have no distribution, and `distro: "macos"` would be a
+  bucket on the dashboard that is not a distribution. Both fields are
+  `Option<String>` with `skip_serializing_if`, so a platform that names
+  neither sends a body byte-identical to v1's plus the version bump.
+- **A value that will not fit is dropped, never sent.** One malformed field
+  is a `400`, and a refused ping counts nobody — so a value outside the
+  wire's charset costs the field and not the install.
+
+A Linux system whose os-release names no `ID`, or that has no such file,
+reports `linux`: the [spec's own default][os-release], and the honest answer
+for a minimal container. **Windows reports neither** — its version lives in
+the registry, which means a crate or a subprocess, and neither has earned a
+place at startup yet.
+
+[os-release]: https://www.freedesktop.org/software/systemd/man/os-release.html
 
 Two headers ride along: `User-Agent: alter-zero/{version}` and
 `Content-Type: application/json`. The response body is ignored; any `2xx`
@@ -60,7 +113,7 @@ provider names, no keys, no hostname, no user name, no locale, no terminal,
 no session id, no timings. The rollout and the input history never leave the
 machine. A reader who wants to check this against the code has one function
 to read: `telemetry::Ping::to_json` is the whole wire body, and
-`the_payload_carries_exactly_the_five_fields` pins it.
+`the_payload_carries_exactly_the_seven_fields` pins it.
 
 ## When it is sent
 
@@ -211,8 +264,8 @@ runner.
 
 | route | who | does |
 |---|---|---|
-| `POST /v1/ping` | the app | validates the payload (`v == 1`, `id` 32 hex, `version` ≤ 32 chars of `[0-9A-Za-z.+-]`, `os`/`arch` ≤ 16 of `[a-z0-9_]`, body ≤ 1 KiB **of UTF-8**, not of `String.length` — 1024 CJK characters are 3 KiB), then `INSERT OR IGNORE` one row keyed on **the server's** UTC date and the id — the client's clock is never trusted for the day — with the edge's country. Answers `204`; a bad body `400`; a big one `413`; anything but `POST` `405` — every refusal a `{"error": …}`, since one endpoint owes a caller one shape |
-| `GET /v1/stats?days=30` | you | JSON: today's users, 7- and 30-day distinct users, total installs seen, per-day users and new installs, users per country, per version, per OS over the window (`days` clamped to 1–365). Its refusals are JSON too — this is the route a script reads |
+| `POST /v1/ping` | the app | validates the payload (`v` ∈ {1, 2}, `id` 32 hex, `version` ≤ 32 chars of `[0-9A-Za-z.+-]`, `os`/`arch` ≤ 16 of `[a-z0-9_]`, an optional `distro` ≤ 32 of `[a-z0-9._-]` and an optional `os_version` ≤ 16 of the same opening on a letter or digit, body ≤ 1 KiB **of UTF-8**, not of `String.length` — 1024 CJK characters are 3 KiB), then `INSERT OR IGNORE` one row keyed on **the server's** UTC date and the id — the client's clock is never trusted for the day — with the edge's country. Answers `204`; a bad body `400`; a big one `413`; anything but `POST` `405` — every refusal a `{"error": …}`, since one endpoint owes a caller one shape |
+| `GET /v1/stats?days=30` | you | JSON: today's users, 7- and 30-day distinct users, total installs seen, per-day users and new installs, users per country, per app version, per OS, per platform (`ubuntu` + `24.04`) over the window (`days` clamped to 1–365). Its refusals are JSON too — this is the route a script reads |
 | `GET /` | you | the same numbers as a page (below) |
 | `GET /healthz` | uptime checks | `ok` |
 
@@ -239,9 +292,15 @@ it draws, top to bottom:
 - **Activity** — one bar per day across the window, the day's new installs
   marked at the foot of its bar, gridlines at the peak, half of it and zero,
   and the exact numbers in each bar's tooltip;
-- **Countries**, **Versions**, **Operating systems** — each a table of name,
-  count and a share bar, the first `PANEL_ROWS` rows with the rest counted in
-  one line pointing at `/v1/stats`;
+- **Countries**, **Versions**, **Operating systems**, **Platforms** — each a
+  table of name, count and a share bar, the first `PANEL_ROWS` rows with the
+  rest counted in one line pointing at `/v1/stats`. They flow in CSS columns
+  rather than a grid: four panels of four different lengths in a grid leave a
+  hole wherever a short one shares a row with a long one. **Platforms** is
+  `distro` where the row named one and `os` where it did not, with
+  `os_version` beside it — `ubuntu 24.04`, `macos 15.3.1`, `arch`, `linux` —
+  because "what do people actually run" is one question and deserves one
+  panel, while **Operating systems** keeps the coarse three-way split;
 - a collapsed `<details>` holding every day of the window as numbers, newest
   first — the old page's whole table, out of the way of the chart;
 - the definitions, and a link to the same numbers as JSON.
@@ -275,9 +334,18 @@ CREATE TABLE IF NOT EXISTS pings (
   version TEXT NOT NULL,
   os      TEXT NOT NULL,
   arch    TEXT NOT NULL,
+  distro  TEXT NOT NULL DEFAULT '',  -- the os-release ID; '' off Linux, and from any client older than payload v2
+  os_version TEXT NOT NULL DEFAULT '',  -- VERSION_ID, or macOS's ProductVersion; '' when the platform names none
   PRIMARY KEY (day, id)
 );
 ```
+
+The platforms panel groups on `CASE WHEN distro != '' THEN distro ELSE os END`
+and `os_version`, so a blank distro is not a bucket of its own: a macOS row
+files under `macos`, and a Linux row from a client older than payload v2
+files under plain `linux`. An existing deployment gains both columns with
+`migrations/0001_platform.sql` (`npm run db:migrate`); a database created from
+the current `schema.sql` already has them.
 
 One row per install per day, whatever the client does. A daily cron
 (`scheduled`) deletes rows older than `RETENTION_DAYS` (400 by default) so
@@ -293,6 +361,7 @@ cd telemetry
 npx wrangler login
 npx wrangler d1 create alter-zero-telemetry          # paste the database_id into wrangler.toml
 npx wrangler d1 execute alter-zero-telemetry --remote --file=schema.sql
+npx wrangler d1 execute alter-zero-telemetry --remote --file=migrations/0001_platform.sql  # only if the table predates payload v2
 npx wrangler secret put DASHBOARD_TOKEN              # optional: gate the dashboard
 npx wrangler deploy                                  # prints https://alter-zero-telemetry.<subdomain>.workers.dev
 ```

@@ -11,7 +11,15 @@ import assert from 'node:assert/strict';
 import worker from '../src/worker.js';
 
 const ID = '6f1c2a4d9e0b7c3a5f8e1d2c4b6a7980';
-const PING = { v: 1, id: ID, version: '0.1.0', os: 'linux', arch: 'x86_64' };
+const PING = {
+  v: 2,
+  id: ID,
+  version: '0.1.0',
+  os: 'linux',
+  arch: 'x86_64',
+  distro: 'ubuntu',
+  os_version: '24.04',
+};
 
 /** A D1 stand-in that records every statement and its bound arguments. */
 function fakeDb(rows = {}) {
@@ -62,6 +70,7 @@ const statsRows = () => [
   [{ country: 'PH', users: 3 }],
   [{ version: '0.1.0', users: 3 }],
   [{ os: 'linux', users: 3 }],
+  [{ platform: 'ubuntu', os_version: '24.04', users: 2 }],
   [{ n: 3 }],
   [{ n: 9 }],
   [{ n: 12 }],
@@ -78,13 +87,24 @@ test('a good ping is stored once, keyed on the day and id, with the edge country
   // The binding ORDER is the thing worth pinning: a swap here would file
   // every install under the wrong column and no test of the pure half
   // would notice.
-  const [day, id, country, version, os, arch] = args;
+  const [day, id, country, version, os, arch, distro, osVersion] = args;
   assert.match(day, /^\d{4}-\d{2}-\d{2}$/, 'the server dates the row, not the client');
   assert.equal(id, ID);
   assert.equal(country, 'PH', "the edge's country reached the row");
   assert.equal(version, '0.1.0');
   assert.equal(os, 'linux');
   assert.equal(arch, 'x86_64');
+  assert.equal(distro, 'ubuntu');
+  assert.equal(osVersion, '24.04');
+});
+
+test('a client with no distribution files a blank one, never a placeholder', async () => {
+  const db = fakeDb();
+  const { distro: _none, os_version: _also, ...v1 } = { ...PING, v: 1 };
+  const response = await worker.fetch(pingRequest(v1), { DB: db });
+  assert.equal(response.status, 204, 'and is still counted');
+  assert.equal(db.calls[0].args[6], '');
+  assert.equal(db.calls[0].args[7], '');
 });
 
 test('an edge with no country files the row under ZZ, never blank', async () => {
@@ -95,7 +115,7 @@ test('an edge with no country files the row under ZZ, never blank', async () => 
 });
 
 test('a malformed ping is a 400 and writes nothing', async () => {
-  for (const body of [{ ...PING, id: 'nope' }, { ...PING, v: 2 }, 'not json', {}]) {
+  for (const body of [{ ...PING, id: 'nope' }, { ...PING, v: 3 }, { ...PING, distro: 'Ubuntu' }, 'not json', {}]) {
     const db = fakeDb();
     const response = await worker.fetch(pingRequest(body), { DB: db });
     assert.equal(response.status, 400, JSON.stringify(body));
@@ -141,6 +161,19 @@ test('stats answer JSON over the window the query asked for', async () => {
   assert.equal(stats.daily.length, 7, 'every day of the window, zero-filled');
   assert.deepEqual(stats.totals, { users_7d: 3, users_30d: 9, installs: 12 });
   assert.deepEqual(stats.countries, [{ country: 'PH', users: 3 }]);
+  assert.deepEqual(stats.platforms, [{ platform: 'ubuntu', version: '24.04', users: 2 }]);
+});
+
+test('the platform query names the distribution where there is one, else the OS', async () => {
+  // `ubuntu 24.04` and `macos 15.3.1` answer the same question, so they
+  // belong in one panel; a Linux row whose client never named a distribution
+  // still counts, as plain `linux`.
+  const db = fakeDb({ batch: statsRows() });
+  await worker.fetch(new Request('https://c.example/v1/stats'), { DB: db });
+  const query = db.calls.find((c) => /AS platform/.test(c.sql));
+  assert.ok(query, 'the batch asks for platforms');
+  assert.match(query.sql, /CASE WHEN distro != '' THEN distro ELSE os END/);
+  assert.match(query.sql, /GROUP BY platform, os_version/);
 });
 
 test('the dashboard answers HTML from the same numbers', async () => {

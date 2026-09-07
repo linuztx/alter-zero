@@ -108,15 +108,15 @@ async function handlePing(request, env) {
   if (!verdict.ok) {
     return refuse(400, verdict.error);
   }
-  const { id, version, os, arch } = verdict.ping;
+  const { id, version, os, arch, distro, os_version: osVersion } = verdict.ping;
   // The edge's country, never the address: `request.cf` is Cloudflare's own
   // lookup on the peer; the header is the same fact for a request that
   // arrived through a custom-domain proxy.
   const country = normalizeCountry(request.cf?.country ?? request.headers.get('cf-ipcountry'));
   await env.DB.prepare(
-    'INSERT OR IGNORE INTO pings (day, id, country, version, os, arch) VALUES (?1, ?2, ?3, ?4, ?5, ?6)',
+    'INSERT OR IGNORE INTO pings (day, id, country, version, os, arch, distro, os_version) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)',
   )
-    .bind(utcDay(), id, country, version, os, arch)
+    .bind(utcDay(), id, country, version, os, arch, distro, osVersion)
     .run();
   return new Response(null, { status: 204, headers: NO_STORE });
 }
@@ -141,7 +141,8 @@ async function handleStats(env, url, headers, render) {
   const days = windowDays(url.searchParams.get('days'));
   const today = utcDay();
   const since = daysBefore(today, days - 1);
-  const [daily, newInstalls, countries, versions, oses, users7, users30, installs] = await env.DB.batch([
+  const [daily, newInstalls, countries, versions, oses, platforms, users7, users30, installs] =
+    await env.DB.batch([
     env.DB.prepare('SELECT day, COUNT(DISTINCT id) AS users FROM pings WHERE day >= ?1 GROUP BY day ORDER BY day').bind(since),
     env.DB.prepare(
       'SELECT first_day AS day, COUNT(*) AS installs FROM (SELECT id, MIN(day) AS first_day FROM pings GROUP BY id) WHERE first_day >= ?1 GROUP BY first_day ORDER BY first_day',
@@ -149,6 +150,13 @@ async function handleStats(env, url, headers, render) {
     env.DB.prepare('SELECT country, COUNT(DISTINCT id) AS users FROM pings WHERE day >= ?1 GROUP BY country ORDER BY users DESC, country').bind(since),
     env.DB.prepare('SELECT version, COUNT(DISTINCT id) AS users FROM pings WHERE day >= ?1 GROUP BY version ORDER BY users DESC, version').bind(since),
     env.DB.prepare('SELECT os, COUNT(DISTINCT id) AS users FROM pings WHERE day >= ?1 GROUP BY os ORDER BY users DESC, os').bind(since),
+    // What people actually run: the distribution where the row named one,
+    // else the OS — `ubuntu 24.04` and `macos 15.3.1` answer the same
+    // question, so they belong in one panel rather than two. A Linux row from
+    // a client that named no distribution still counts, as plain `linux`.
+    env.DB.prepare(
+      "SELECT CASE WHEN distro != '' THEN distro ELSE os END AS platform, os_version, COUNT(DISTINCT id) AS users FROM pings WHERE day >= ?1 GROUP BY platform, os_version ORDER BY users DESC, platform, os_version",
+    ).bind(since),
     env.DB.prepare('SELECT COUNT(DISTINCT id) AS n FROM pings WHERE day >= ?1').bind(daysBefore(today, 6)),
     env.DB.prepare('SELECT COUNT(DISTINCT id) AS n FROM pings WHERE day >= ?1').bind(daysBefore(today, 29)),
     env.DB.prepare('SELECT COUNT(DISTINCT id) AS n FROM pings'),
@@ -161,6 +169,7 @@ async function handleStats(env, url, headers, render) {
     countries: countries.results,
     versions: versions.results,
     oses: oses.results,
+    platforms: platforms.results,
     totals: {
       users_7d: users7.results[0]?.n ?? 0,
       users_30d: users30.results[0]?.n ?? 0,
