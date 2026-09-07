@@ -10,6 +10,9 @@ import {
   PAYLOAD_VERSION,
   UNKNOWN_COUNTRY,
   authorized,
+  byteLength,
+  countryLabel,
+  dashboardHref,
   daysBefore,
   normalizeCountry,
   renderDashboard,
@@ -201,4 +204,167 @@ test('the dashboard token gates when set and opens when not', () => {
   assert.equal(authorized('s3cret', null, 's3cret'), true, 'the ?token= form');
   assert.equal(authorized('s3cret', null, 'wrong'), false);
   assert.equal(authorized('s3cret', 'Basic s3cret', null), false, 'only bearer');
+});
+
+// --- The redesigned dashboard, and the bugs the old one carried ---
+
+test('a body is measured in UTF-8 bytes, not UTF-16 code units', () => {
+  // The cap is stated in bytes (`MAX_BODY_BYTES`), and `String.length` is not
+  // bytes: 1024 three-byte characters are 3 KiB of body that a `.length`
+  // check waves through as "1024".
+  assert.equal(byteLength('abc'), 3);
+  assert.equal(byteLength(''), 0);
+  assert.equal(byteLength('é'), 2);
+  assert.equal(byteLength('日'), 3);
+  assert.equal(byteLength('😀'), 4);
+  const cjk = '日'.repeat(1024);
+  assert.equal(cjk.length, 1024, 'a .length check would call this 1 KiB');
+  assert.ok(byteLength(cjk) > MAX_BODY_BYTES, 'and it is really 3 KiB');
+});
+
+test('a country code becomes a flag and a name, and ZZ reads as unknown', () => {
+  const ph = countryLabel('PH');
+  assert.equal(ph.code, 'PH');
+  assert.equal(ph.name, 'Philippines');
+  assert.equal(ph.flag, '\u{1F1F5}\u{1F1ED}', 'the regional-indicator pair');
+
+  const zz = countryLabel(UNKNOWN_COUNTRY);
+  assert.equal(zz.name, 'Unknown', 'ZZ is not a country, and its flag is not one either');
+  assert.notEqual(zz.flag, '\u{1F1FF}\u{1F1FF}');
+
+  // A code `Intl` cannot name reads as itself rather than as nothing — and
+  // gets no flag: the regional-indicator pair for a region that does not
+  // exist renders as a tofu box, which says less than a globe does.
+  assert.equal(countryLabel('QQ').name, 'QQ');
+  assert.equal(countryLabel('QQ').flag, countryLabel(UNKNOWN_COUNTRY).flag);
+  assert.notEqual(countryLabel('DE').flag, countryLabel(UNKNOWN_COUNTRY).flag);
+  // Junk can only get in by hand, and the page shows it rather than hiding it.
+  assert.equal(countryLabel('USA').code, 'USA');
+  assert.equal(countryLabel('USA').name, 'Unknown');
+
+  // A hand-edited or future row must never throw or inject.
+  for (const junk of ['QQ', 'ph', 'USA', '', '<b>', null, 42]) {
+    const label = countryLabel(junk);
+    assert.equal(typeof label.name, 'string', String(junk));
+    assert.equal(typeof label.flag, 'string', String(junk));
+    assert.ok(label.name.length > 0, String(junk));
+  }
+});
+
+test('dashboard links carry the ?token= the reader arrived with, and nothing else', () => {
+  // Following the old page's "add ?days=90" advice dropped the token and
+  // answered 401 — the one navigation the dashboard suggests must work.
+  assert.equal(dashboardHref({ days: 90 }), '/?days=90');
+  assert.equal(dashboardHref({ days: 90, token: 's3cret' }), '/?days=90&token=s3cret');
+  assert.equal(dashboardHref({ days: 7, token: '', path: '/v1/stats' }), '/v1/stats?days=7');
+  assert.equal(dashboardHref({ days: 30, token: 'a b&c=d' }), '/?days=30&token=a%20b%26c%3Dd');
+  assert.equal(dashboardHref({ days: 30, token: null }), '/?days=30');
+});
+
+test('the dashboard renders a chart, the panels, and every window link', () => {
+  const html = renderDashboard(
+    shapeStats({
+      today: '2026-09-06',
+      days: 3,
+      daily: [
+        { day: '2026-09-06', users: 7 },
+        { day: '2026-09-05', users: 0 },
+      ],
+      newInstalls: [{ day: '2026-09-06', installs: 2 }],
+      countries: [
+        { country: 'PH', users: 7 },
+        { country: 'ZZ', users: 1 },
+      ],
+      versions: [{ version: '0.1.0', users: 7 }],
+      oses: [{ os: 'linux', users: 7 }],
+      totals: { users_7d: 7, users_30d: 7, installs: 9 },
+      generatedAt: '2026-09-06T12:00:00.000Z',
+    }),
+    { token: 's3cret' },
+  );
+  assert.ok(html.includes('Philippines'), 'a country is named, not just coded');
+  assert.ok(html.includes('Unknown'), 'and ZZ says so');
+  assert.ok(html.includes('href="/?days=90&amp;token=s3cret"'), 'the window links keep the token');
+  assert.ok(html.includes('href="/v1/stats?days=3&amp;token=s3cret"'), 'so does the JSON link');
+  assert.ok(html.includes('rel="icon"'), 'no /favicon.ico round trip');
+  assert.ok(!/<script[\s>]/i.test(html), 'still no script');
+  assert.ok(!html.includes('http://') && !html.includes('https://'), 'still no external assets');
+});
+
+test('the dashboard draws nothing above the baseline for a day with no users', () => {
+  const zeroes = renderDashboard(
+    shapeStats({
+      today: '2026-09-06',
+      days: 2,
+      daily: [],
+      newInstalls: [],
+      countries: [],
+      versions: [],
+      oses: [],
+      totals: { users_7d: 0, users_30d: 0, installs: 0 },
+      generatedAt: 'now',
+    }),
+  );
+  // The old page gave every empty day a 1px bar, so "nobody" and "one
+  // person" looked the same.
+  assert.ok(!/--h: *[1-9]/.test(zeroes), 'no column has a height');
+  assert.ok(/nothing|no pings|empty/i.test(zeroes), 'and the page says so');
+});
+
+test('the renderer coerces every number it prints, whatever it is handed', () => {
+  // shapeStats already numbers these, but the renderer is the last line of
+  // defence for a hand-made document or a future caller.
+  const html = renderDashboard({
+    generated_at: '<b>now</b>',
+    window: { days: '3" onmouseover="steal()', since: '2026-09-04', until: '2026-09-06' },
+    today: { day: '2026-09-06', users: '<b>7</b>' },
+    totals: { users_7d: 'x', users_30d: 5, installs: 9 },
+    daily: [{ day: '2026-09-06', users: '<i>4</i>', new_installs: 'nope' }],
+    countries: [{ country: '<script>alert(1)</script>', users: '<b>1</b>' }],
+    versions: [],
+    os: [],
+  });
+  // Every one of these arrived inside a value; none may reach the page as
+  // markup. (The page's own chrome uses <b> for a KPI, so the check is on the
+  // injected fragments rather than on the tag.)
+  for (const injected of ['<b>7</b>', '<i>4</i>', '<b>now</b>', '<script>', 'onmouseover']) {
+    assert.ok(!html.includes(injected), injected);
+  }
+  assert.ok(!/<script[\s>]/i.test(html));
+  assert.ok(html.includes('&lt;script&gt;'), 'a string value is shown as text instead');
+  assert.ok(html.includes('&lt;b&gt;now&lt;/b&gt;'), 'and so is the timestamp');
+  assert.ok(/<b>0<\/b>/.test(html), 'a number that is not one reads as zero, not as markup');
+});
+
+test('a long panel folds its tail into one line rather than running off the page', () => {
+  const codes = ['PH','US','DE','IN','BR','GB','JP','FR','CA','AU','NL','SE','IT','ES','PL','KR','SG','MX','ZA','ZZ'];
+  const html = renderDashboard(
+    shapeStats({
+      today: '2026-09-06',
+      days: 7,
+      daily: [],
+      newInstalls: [],
+      countries: codes.map((country, i) => ({ country, users: 20 - i })),
+      versions: [],
+      oses: [],
+      totals: { users_7d: 1, users_30d: 1, installs: 1 },
+      generatedAt: '2026-09-06T00:00:00.000Z',
+    }),
+  );
+  assert.equal((html.match(/<tr><th scope="row"><span class="name">/g) ?? []).length, 12);
+  assert.ok(html.includes('+ 8 more'), 'and says how many it is not showing');
+  assert.ok(html.includes('/v1/stats'), 'pointing at where all of them are');
+  // Every panel table has three columns; an empty or folded row must span all
+  // of them or the rule under it stops short.
+  assert.ok(!html.includes('colspan="2"'));
+});
+
+test('a stats document missing half its fields renders a page, not a 500', () => {
+  // `/` has one job when the table misbehaves: still answer. Every field the
+  // renderer reads is optional to it.
+  for (const stats of [{}, { daily: null, countries: null }, { window: null, totals: null, today: null }]) {
+    const html = renderDashboard(stats);
+    assert.ok(html.startsWith('<!doctype html>'), JSON.stringify(stats));
+    assert.ok(html.includes('Alter Zero'), JSON.stringify(stats));
+  }
 });

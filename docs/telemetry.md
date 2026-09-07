@@ -211,15 +211,59 @@ runner.
 
 | route | who | does |
 |---|---|---|
-| `POST /v1/ping` | the app | validates the payload (`v == 1`, `id` 32 hex, `version` ≤ 32 chars of `[0-9A-Za-z.+-]`, `os`/`arch` ≤ 16 of `[a-z0-9_]`, body ≤ 1 KiB), then `INSERT OR IGNORE` one row keyed on **the server's** UTC date and the id — the client's clock is never trusted for the day — with the edge's country. Answers `204`; a bad body `400`; a big one `413`; anything but `POST` `405` |
-| `GET /v1/stats?days=30` | you | JSON: today's users, 7- and 30-day distinct users, total installs seen, per-day users and new installs, users per country, per version, per OS over the window (`days` clamped to 1–365) |
-| `GET /` | you | the same numbers as a page: bars per day, a country table, a version table — plain HTML, no scripts, no external assets |
+| `POST /v1/ping` | the app | validates the payload (`v == 1`, `id` 32 hex, `version` ≤ 32 chars of `[0-9A-Za-z.+-]`, `os`/`arch` ≤ 16 of `[a-z0-9_]`, body ≤ 1 KiB **of UTF-8**, not of `String.length` — 1024 CJK characters are 3 KiB), then `INSERT OR IGNORE` one row keyed on **the server's** UTC date and the id — the client's clock is never trusted for the day — with the edge's country. Answers `204`; a bad body `400`; a big one `413`; anything but `POST` `405` — every refusal a `{"error": …}`, since one endpoint owes a caller one shape |
+| `GET /v1/stats?days=30` | you | JSON: today's users, 7- and 30-day distinct users, total installs seen, per-day users and new installs, users per country, per version, per OS over the window (`days` clamped to 1–365). Its refusals are JSON too — this is the route a script reads |
+| `GET /` | you | the same numbers as a page (below) |
 | `GET /healthz` | uptime checks | `ok` |
 
 "Users" is always `COUNT(DISTINCT id)`; a "new install" is an id whose
 earliest day is the day in question. Set the `DASHBOARD_TOKEN` secret and
 `/` and `/v1/stats` require it (`Authorization: Bearer …` or `?token=`);
-unset, they are public. `/v1/ping` is always open — it has to be.
+unset, they are public. `/v1/ping` is always open — it has to be. Every
+response — the ping's `204` included — carries `cache-control: no-store` and
+`x-robots-tag: noindex`: this is a private counter with a maintainer's page
+on it, and that rule is stated once rather than on the two routes that
+happen to print numbers.
+
+### The dashboard
+
+`GET /` is the stats document as a page, and it is still **plain HTML and
+inline CSS — no script, no external asset, no web font**, because a page
+that fetches something is a page that tells someone else it was opened. What
+it draws, top to bottom:
+
+- a header with the window switcher — **7d / 30d / 90d / 365d**, plus the
+  current window when it is none of those;
+- four cards: users today (with the change from the day before), users over
+  7 and 30 days, and installs seen;
+- **Activity** — one bar per day across the window, the day's new installs
+  marked at the foot of its bar, gridlines at the peak, half of it and zero,
+  and the exact numbers in each bar's tooltip;
+- **Countries**, **Versions**, **Operating systems** — each a table of name,
+  count and a share bar, the first `PANEL_ROWS` rows with the rest counted in
+  one line pointing at `/v1/stats`;
+- a collapsed `<details>` holding every day of the window as numbers, newest
+  first — the old page's whole table, out of the way of the chart;
+- the definitions, and a link to the same numbers as JSON.
+
+Four things it is deliberate about:
+
+- **Its own links carry the `?token=` the reader arrived with.** The old page
+  suggested `?days=90` in prose, and following that advice behind
+  `DASHBOARD_TOKEN` answered `401` — the one navigation a dashboard offers has
+  to work. A reader who authenticated with the `Authorization` header gives
+  the page no token to spread, and it never invents one.
+- **A day with nobody draws nothing.** The old bar had `min-width: 1px`, so
+  "no one" and "one person" were the same picture.
+- **A country is a flag and a name**, not a code — `🇵🇭 Philippines PH` — with
+  the flag derived from the code's own letters (regional-indicator symbols;
+  no image, no table) and the name from `Intl.DisplayNames`. A code `Intl`
+  cannot name gets the globe rather than a tofu box, and a value that is not
+  a country code at all is *shown*, escaped, rather than hidden: the only way
+  one reaches the table is by hand, and that is worth seeing.
+- **Every printed value is coerced or escaped at the renderer**, not only at
+  the query: a number that is not one reads as `0` and a string is escaped,
+  so a hand-edited row can never become markup.
 
 ### The table
 
@@ -281,13 +325,17 @@ this file.
 - **Header** (`src/ui/tests/header.rs`): the wrapped notice.
 - **Collector** (`telemetry/test/lib.test.js`): payload validation edge by
   edge, the country normalisation, the day arithmetic, the stats shaping,
-  and that the dashboard escapes what it prints.
+  the country label (flag, name, an unnameable code, junk), the byte length a
+  body is capped by, the token-carrying links, and that the dashboard escapes
+  and coerces what it prints — including that an empty window draws no bar.
 - **Collector routes** (`telemetry/test/worker.test.js`): the fetch handler
   over a fake D1 — the `INSERT OR IGNORE` binding *in order*, the edge's
   country reaching the row (and `ZZ` when it has none), a malformed body as a
   400 that writes nothing, the size and method refusals, the stats and
-  dashboard shapes, the token gating both read routes but never the ping, and
-  the retention cron's cutoff. The pure half can be entirely right while the
+  dashboard shapes, the token gating both read routes but never the ping (and
+  reaching the page's own links without ever printing a token the reader did
+  not send), each route refusing in its own content type, every response
+  being `no-store`/`noindex`, and the retention cron's cutoff. The pure half can be entirely right while the
   handler files every install under the wrong column.
 - **Boundary** (`scripts/smoke.sh` Phase 115): a local Python stub stands in
   for the collector; a fresh config home's first launch shows the notice,

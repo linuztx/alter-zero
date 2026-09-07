@@ -17,6 +17,7 @@ import {
   DEFAULT_RETENTION_DAYS,
   MAX_BODY_BYTES,
   authorized,
+  byteLength,
   daysBefore,
   normalizeCountry,
   renderDashboard,
@@ -29,8 +30,23 @@ import {
 const TEXT = { 'content-type': 'text/plain; charset=utf-8' };
 const JSON_TYPE = { 'content-type': 'application/json; charset=utf-8' };
 const HTML = { 'content-type': 'text/html; charset=utf-8' };
-// The dashboard is for the maintainer; nothing here should be indexed.
+// This worker is a private counter with a maintainer's dashboard on it:
+// nothing it serves should be indexed or held in a cache, so every response
+// carries these rather than only the two that happen to print numbers.
 const NO_STORE = { 'cache-control': 'no-store', 'x-robots-tag': 'noindex' };
+
+/** A plain-text response — the shape every non-JSON reply here takes. */
+function plain(status, message, extra) {
+  return new Response(`${message}\n`, { status, headers: { ...TEXT, ...NO_STORE, ...extra } });
+}
+
+/** A JSON `{ error }` — what the ping route and `/v1/stats` refuse with. */
+function refuse(status, error, extra) {
+  return new Response(JSON.stringify({ error }), {
+    status,
+    headers: { ...JSON_TYPE, ...NO_STORE, ...extra },
+  });
+}
 
 export default {
   async fetch(request, env) {
@@ -39,13 +55,24 @@ export default {
       case '/v1/ping':
         return handlePing(request, env);
       case '/v1/stats':
-        return guarded(request, env, url, () => handleStats(env, url, JSON_TYPE, (s) => JSON.stringify(s, null, 2)));
+        // A refusal on this route answers JSON too: it is read by scripts, and
+        // the one response a caller is likeliest to meet should not be the one
+        // shape it cannot parse.
+        return guarded(request, env, url, JSON_TYPE, () =>
+          handleStats(env, url, JSON_TYPE, (s) => JSON.stringify(s, null, 2)),
+        );
       case '/':
-        return guarded(request, env, url, () => handleStats(env, url, HTML, renderDashboard));
+        return guarded(request, env, url, TEXT, () =>
+          handleStats(env, url, HTML, (s) =>
+            // The `?token=` the reader arrived with, so the page's own links
+            // keep working — never a token it was not given.
+            renderDashboard(s, { token: url.searchParams.get('token') }),
+          ),
+        );
       case '/healthz':
-        return new Response('ok\n', { headers: TEXT });
+        return plain(200, 'ok');
       default:
-        return new Response('not found\n', { status: 404, headers: TEXT });
+        return plain(404, 'not found');
     }
   },
 
@@ -56,26 +83,30 @@ export default {
 
 /** `POST /v1/ping`: validate, then record one row for (today, id). */
 async function handlePing(request, env) {
+  // The route answers JSON throughout: the app ignores the body, but a person
+  // holding curl should not get three shapes from one endpoint.
   if (request.method !== 'POST') {
-    return new Response('method not allowed\n', { status: 405, headers: { ...TEXT, allow: 'POST' } });
+    return refuse(405, 'method not allowed', { allow: 'POST' });
   }
   const declared = Number.parseInt(request.headers.get('content-length') ?? '0', 10);
   if (declared > MAX_BODY_BYTES) {
-    return new Response('payload too large\n', { status: 413, headers: TEXT });
+    return refuse(413, `body must be at most ${MAX_BODY_BYTES} bytes`);
   }
   const text = await request.text();
-  if (text.length > MAX_BODY_BYTES) {
-    return new Response('payload too large\n', { status: 413, headers: TEXT });
+  // In bytes, like the cap: `String.length` is UTF-16 code units, which lets
+  // 1024 three-byte characters through a "1 KiB" check as 3 KiB of body.
+  if (byteLength(text) > MAX_BODY_BYTES) {
+    return refuse(413, `body must be at most ${MAX_BODY_BYTES} bytes`);
   }
   let body;
   try {
     body = JSON.parse(text);
   } catch {
-    return reject('body is not JSON');
+    return refuse(400, 'body is not JSON');
   }
   const verdict = validatePing(body);
   if (!verdict.ok) {
-    return reject(verdict.error);
+    return refuse(400, verdict.error);
   }
   const { id, version, os, arch } = verdict.ping;
   // The edge's country, never the address: `request.cf` is Cloudflare's own
@@ -87,23 +118,20 @@ async function handlePing(request, env) {
   )
     .bind(utcDay(), id, country, version, os, arch)
     .run();
-  return new Response(null, { status: 204 });
+  return new Response(null, { status: 204, headers: NO_STORE });
 }
 
-function reject(error) {
-  return new Response(JSON.stringify({ error }), { status: 400, headers: JSON_TYPE });
-}
-
-/** The dashboard token, when configured, gates a route. */
-async function guarded(request, env, url, handler) {
+/**
+ * The dashboard token, when configured, gates a route. `type` is the route's
+ * own content type, so a refusal speaks whatever the route speaks.
+ */
+async function guarded(request, env, url, type, handler) {
+  const deny = type === JSON_TYPE ? refuse : plain;
   if (request.method !== 'GET' && request.method !== 'HEAD') {
-    return new Response('method not allowed\n', { status: 405, headers: { ...TEXT, allow: 'GET, HEAD' } });
+    return deny(405, 'method not allowed', { allow: 'GET, HEAD' });
   }
   if (!authorized(env.DASHBOARD_TOKEN, request.headers.get('authorization'), url.searchParams.get('token'))) {
-    return new Response('unauthorized\n', {
-      status: 401,
-      headers: { ...TEXT, ...NO_STORE, 'www-authenticate': 'Bearer realm="alter-zero-telemetry"' },
-    });
+    return deny(401, 'unauthorized', { 'www-authenticate': 'Bearer realm="alter-zero-telemetry"' });
   }
   return handler();
 }

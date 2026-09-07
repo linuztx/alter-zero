@@ -188,3 +188,76 @@ test('the retention cron deletes only rows past the window', async () => {
   assert.match(cutoff, /^\d{4}-\d{2}-\d{2}$/);
   assert.ok(cutoff < new Date().toISOString().slice(0, 10), 'the cutoff is in the past');
 });
+
+test('a body over the cap in bytes is refused even when its .length is not', async () => {
+  // 1024 three-byte characters: a UTF-16 `.length` of 1024 (under the cap)
+  // but 3 KiB on the wire. The declared content-length catches it here; the
+  // read check must agree rather than wave it through.
+  const db = fakeDb();
+  const request = pingRequest(JSON.stringify({ ...PING, pad: '日'.repeat(1024) }));
+  const response = await worker.fetch(request, { DB: db });
+  assert.equal(response.status, 413);
+  assert.equal(db.calls.length, 0);
+});
+
+test('a refused stats request answers JSON, like the route it guards', async () => {
+  // `/v1/stats` is read by scripts; answering its 401 in text/plain made the
+  // one response a caller cannot parse the only one it is likely to get.
+  const env = { DB: fakeDb({ batch: statsRows() }), DASHBOARD_TOKEN: 's3cret' };
+  const denied = await worker.fetch(new Request('https://c.example/v1/stats'), env);
+  assert.equal(denied.status, 401);
+  assert.match(denied.headers.get('content-type'), /application\/json/);
+  assert.match((await denied.json()).error, /\S/);
+
+  // The page keeps its plain-text refusal — a browser is reading that one.
+  const page = await worker.fetch(new Request('https://c.example/'), env);
+  assert.equal(page.status, 401);
+  assert.match(page.headers.get('content-type'), /text\/plain/);
+});
+
+test('the dashboard hands its window links the token the reader used', async () => {
+  const env = { DB: fakeDb({ batch: statsRows() }), DASHBOARD_TOKEN: 's3cret' };
+  const html = await (await worker.fetch(new Request('https://c.example/?token=s3cret'), env)).text();
+  assert.ok(html.includes('token=s3cret'), 'the window links keep working');
+
+  // A reader who authenticated with the header gave the page no token to
+  // spread, and the page must not invent one.
+  const viaHeader = await worker.fetch(
+    new Request('https://c.example/', { headers: { authorization: 'Bearer s3cret' } }),
+    env,
+  );
+  assert.ok(!(await viaHeader.text()).includes('s3cret'), 'the secret is not printed into the page');
+});
+
+test('the ping route refuses in JSON whatever the reason', async () => {
+  // One endpoint answered a bad body in JSON, a big one in text and a wrong
+  // method in text. A caller holding curl should get one shape.
+  const cases = [
+    [new Request('https://c.example/v1/ping'), 405],
+    [pingRequest({ ...PING, pad: 'x'.repeat(2000) }), 413],
+    [pingRequest('not json'), 400],
+  ];
+  for (const [request, status] of cases) {
+    const response = await worker.fetch(request, { DB: fakeDb() });
+    assert.equal(response.status, status);
+    assert.match(response.headers.get('content-type'), /application\/json/, String(status));
+    assert.match((await response.json()).error, /\S/, String(status));
+  }
+});
+
+test('nothing this worker serves is cacheable or indexable', async () => {
+  const env = () => ({ DB: fakeDb({ batch: statsRows() }), DASHBOARD_TOKEN: 's3cret' });
+  const responses = [
+    await worker.fetch(pingRequest(PING), env()),
+    await worker.fetch(pingRequest('not json'), env()),
+    await worker.fetch(new Request('https://c.example/healthz'), env()),
+    await worker.fetch(new Request('https://c.example/nope'), env()),
+    await worker.fetch(new Request('https://c.example/'), env()),
+    await worker.fetch(new Request('https://c.example/?token=s3cret'), env()),
+    await worker.fetch(new Request('https://c.example/v1/stats?token=s3cret'), env()),
+  ];
+  for (const response of responses) {
+    assert.equal(response.headers.get('cache-control'), 'no-store', String(response.status));
+    assert.equal(response.headers.get('x-robots-tag'), 'noindex', String(response.status));
+  }
+});

@@ -17,7 +17,8 @@ telemetry/
 ├── schema.sql        the `pings` table
 ├── src/lib.js        validation, country normalisation, stats shaping, the page
 ├── src/worker.js     the routes over D1
-└── test/lib.test.js  `node --test`
+├── test/lib.test.js  the pure half, under `node --test`
+└── test/worker.test.js  the routes, over a fake D1
 ```
 
 ## Deploy
@@ -51,14 +52,22 @@ ALTER_ZERO_TELEMETRY_URL=https://alter-zero-telemetry.<subdomain>.workers.dev/v1
 
 ## Read the numbers
 
-- **`https://…workers.dev/`** — the dashboard: users today, distinct users
-  over 7 and 30 days, installs seen, a bar per day, and tables per country,
-  version and OS. `?days=90` widens the window (1–365).
+- **`https://…workers.dev/`** — the dashboard: users today and the change
+  from yesterday, distinct users over 7 and 30 days, installs seen, a bar per
+  day of the window with each day's new installs marked at its foot, and
+  panels for countries (flag and name, not just the code), versions and
+  operating systems — with every day's exact numbers folded into a `details`
+  at the bottom. The **7d / 30d / 90d / 365d** switcher in the header is the
+  `?days=` window (1–365), and its links carry your `?token=` along.
+  Plain HTML and inline CSS: no script, no external asset, nothing fetched
+  when you open it. It follows your system's light or dark theme.
 - **`https://…workers.dev/v1/stats?days=30`** — the same as JSON, for a
-  script or a spreadsheet.
+  script or a spreadsheet. Its refusals are JSON too.
 
 With `DASHBOARD_TOKEN` set, both take `Authorization: Bearer <token>` or
 `?token=<token>`; without it they are public. The ping route is always open.
+Reach the page with `?token=` and its own links keep it; reach it with the
+header and the token is never printed into the page at all.
 
 ```bash
 curl -s -H "Authorization: Bearer $TOKEN" https://alter-zero-telemetry.<subdomain>.workers.dev/v1/stats?days=7 | jq .today
@@ -68,7 +77,8 @@ curl -s -H "Authorization: Bearer $TOKEN" https://alter-zero-telemetry.<subdomai
 
 The app sends `{"v":1,"id":"…32 hex…","version":"0.1.0","os":"linux","arch":"x86_64"}`
 at most once per UTC day per install. The worker validates every field
-(anything else is a `400`), keys the row on **its own** UTC date and the id —
+(anything else is a `400`, and a body over 1 KiB a `413`), keys the row on
+**its own** UTC date and the id —
 `INSERT OR IGNORE`, so a second ping on one day is a no-op — and adds the
 country Cloudflare's edge saw (`request.cf.country`; `ZZ` when it had none).
 The client's address is not stored, not logged and not derived into anything
@@ -80,7 +90,7 @@ A cron (`17 3 * * *` UTC) deletes rows older than `RETENTION_DAYS` (400).
 ## Develop
 
 ```bash
-npm test                          # the pure half, no network
+npm test                          # both halves, no network and no wrangler
 npm run db:init:local && npm run dev   # a local worker + local D1 on http://localhost:8787
 ALTER_ZERO_TELEMETRY_URL=http://localhost:8787/v1/ping alter-zero   # point a local build at it
 ```
