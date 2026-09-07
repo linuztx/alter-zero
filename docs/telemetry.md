@@ -84,9 +84,31 @@ written from two threads. The collector dedups on `(day, id)` too, so even a
 client that pinged twice (a clock jump, two machines sharing one config home)
 counts once.
 
+It is also checked at **every turn start**, not only at launch: this app idles
+in a terminal all day, so a session left open across midnight would otherwise
+count once for a week of use — an undercount of exactly the heaviest users.
+The check is cheap on the common path (`Session::telemetry_day_check`): the
+day this session already attempted is held in memory, so a turn that is not
+the first of a new day costs a date read and a string compare and touches no
+file.
+
+That memory is also the **bound on a failing collector**. Because the day is
+recorded on delivery, a collector that never answers leaves the file unchanged
+— and a turn-start check with no other guard would then re-send on every turn.
+So an attempt is remembered whether or not it succeeds: at most one per UTC
+day *per session*, with the file's `last_ping_day` still retrying at the next
+launch.
+
 Turning the setting **on** mid-session sends today's ping right away if it has
 not gone yet; turning it **off** sends nothing more (a result already in
-flight still records its day, which is harmless).
+flight still records its day, which the read-modify-write keeps from
+resurrecting the `true` the user just cleared).
+
+**No ping is ever sent before the disclosure.** Every path that can send — the
+launch, a turn's rollover, the `/settings` row — goes through the one
+`Session::telemetry_tick`, which commits the notice first when it has never
+been shown. Leaving that to each call site is exactly how the `/settings` path
+came to send a ping with `notice_shown: false` still in the file.
 
 ## Turning it off
 
@@ -97,6 +119,20 @@ Three doors, any one of which is enough:
 | **`/settings` → Telemetry** | persistent, for this user | cycles to `false`; written to `telemetry.json` as `"enabled": false` |
 | **`ALTER_ZERO_TELEMETRY=0`** | this run | the app's own on/off grammar (`0`/`false`/`no`/`off`); `=1` turns it on for a run whose file says off |
 | **`DO_NOT_TRACK=1`** | this run | the cross-tool convention (consoledonottrack.com); when it is set it outranks `ALTER_ZERO_TELEMETRY` — a blanket statement beats an app default |
+
+An environment that forbids telemetry is **hard**, unlike every other
+`ALTER_ZERO_*` override: it does not merely seed the row, it makes the row
+*unavailable* (`config::telemetry_forbidden_by_env` feeds
+`SettingAvailability::telemetry`), so it reads `false (unavailable)` and
+cycling it raises the refusal toast instead of opting back in. An opt-out a
+keystroke could undo is not an opt-out — and the keystroke used to work: the
+row cycled to `true`, wrote `enabled: true`, and sent a ping under
+`DO_NOT_TRACK=1`.
+
+The asymmetry is deliberate and one-directional. An environment that forces
+telemetry **on** (`ALTER_ZERO_TELEMETRY=1`) leaves the row cyclable, because
+turning it *off* must always be possible; only "no" is enforced against the
+UI.
 
 And a fourth that is not a door but a fact: **no config home, no telemetry**.
 Without `~/.alter-zero` (or `ALTER_ZERO_CONFIG_DIR`) there is nowhere to keep
@@ -109,9 +145,9 @@ The Telemetry row is the one `/settings` knob that is **not per directory**
 you happened to be in would be a surprise, so its value lives in
 `telemetry.json` beside the install id, never in `settings.json` —
 `SessionSettings::telemetry` is `#[serde(skip)]` and `copy_value` never moves
-it, the `PermissionMode` pattern. The environment seeds the row for a run
-exactly as every other override does (`config::apply_setting_overrides`),
-wins for that run, and is never written back.
+it, the `PermissionMode` pattern. The environment's *value* seeds the row for
+a run like any other override (`config::apply_setting_overrides`) and is never
+written back; its *veto* additionally withdraws the row, as above.
 
 ### The one-time notice
 
@@ -246,9 +282,24 @@ this file.
 - **Collector** (`telemetry/test/lib.test.js`): payload validation edge by
   edge, the country normalisation, the day arithmetic, the stats shaping,
   and that the dashboard escapes what it prints.
+- **Collector routes** (`telemetry/test/worker.test.js`): the fetch handler
+  over a fake D1 — the `INSERT OR IGNORE` binding *in order*, the edge's
+  country reaching the row (and `ZZ` when it has none), a malformed body as a
+  400 that writes nothing, the size and method refusals, the stats and
+  dashboard shapes, the token gating both read routes but never the ping, and
+  the retention cron's cutoff. The pure half can be entirely right while the
+  handler files every install under the wrong column.
 - **Boundary** (`scripts/smoke.sh` Phase 115): a local Python stub stands in
   for the collector; a fresh config home's first launch shows the notice,
   posts exactly the five-field body once, and records the day; the relaunch
   shows no notice and posts nothing; `/settings` turns it off with a toast and
-  the file says so. Every other phase runs with `ALTER_ZERO_TELEMETRY=0`, so
-  the suite never pings anything real.
+  the file says so; under `DO_NOT_TRACK=1` the row is unavailable, Space
+  refuses, and no file or ping appears; and against a collector that answers
+  `500`, one attempt is made at boot and **still one** after a turn — the
+  rollover check must not retry per turn. Every other phase runs with
+  `ALTER_ZERO_TELEMETRY=0`, so the suite never pings anything real.
+
+One thing the suite deliberately does not test is the rollover's *positive*
+case — a session crossing midnight and pinging again — which needs control of
+the clock. What is covered is that it cannot fire twice in a day and cannot
+storm a failing collector; `should_ping` itself is unit-tested.

@@ -61,10 +61,15 @@ At startup, after the first frame is drawn, on a background thread. The app
 never waits for it — a slow or unreachable collector costs you nothing, and a
 failed ping is silent, since there is nothing you could act on.
 
+It is also checked when you start a turn, so a session you leave open across
+midnight is counted on the new day rather than only on the day you launched
+it. Either way it is one ping per day: launch the app fifty times, or leave it
+open and send a hundred messages, and the day still produces exactly one.
+
 The day is recorded only once the collector has actually accepted the ping, so
 launching while offline does not burn the day; the next launch that gets
-through counts. Launch the app fifty times in one day and exactly one ping is
-sent.
+through counts. A collector that keeps failing is tried once per day, not once
+per message.
 
 ## Turning it off
 
@@ -75,6 +80,11 @@ Any one of these is enough:
 | **`/settings` → Telemetry** | permanent, for your user, in every directory |
 | **`ALTER_ZERO_TELEMETRY=0`** | that run (`0`/`false`/`no`/`off` all work; `=1` turns it on for a run) |
 | **`DO_NOT_TRACK=1`** | that run — the [cross-tool convention](https://consoledonottrack.com), and it outranks the variable above |
+
+When either variable turns telemetry off, the `/settings` row goes with it:
+it reads `false (unavailable)` and will not cycle, so nothing running in the
+app can quietly opt you back in. Turning it *off* from the row always works,
+whatever the environment says.
 
 ```bash
 ALTER_ZERO_TELEMETRY=0 alter-zero        # this run
@@ -98,7 +108,9 @@ in would be worse than useless.
 
 ## The first-run notice
 
-The first launch that would send a ping says so, once, under the banner:
+No ping is ever sent before this notice has appeared — not at launch, not
+when you switch the row on. The first launch that would send one says so,
+once, under the banner:
 
 ```
   Alter Zero sends one anonymous ping a day so its users can be counted: the

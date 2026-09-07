@@ -189,9 +189,12 @@ impl Session<'_> {
             skills: !self.skill_registry.is_empty(),
             // Whether this terminal can draw a picture (`docs/images.md`).
             images: self.term.image_capability().0,
-            // Nowhere to keep an install id without a config home
-            // (`docs/telemetry.md`).
-            telemetry: config::telemetry_json_path().is_some(),
+            // Nowhere to keep an install id without a config home — and
+            // nothing to turn on when the environment forbade it, which is
+            // what stops `DO_NOT_TRACK=1` being cycled around from inside
+            // the app (`docs/telemetry.md`).
+            telemetry: config::telemetry_json_path().is_some()
+                && !config::telemetry_forbidden_by_env(),
         });
     }
 

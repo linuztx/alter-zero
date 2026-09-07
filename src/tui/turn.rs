@@ -128,6 +128,13 @@ impl Session<'_> {
         // Re-renders the listing this turn's context is about to carry.
         self.rescan_skills();
         self.rescan_agents();
+        // The daily ping's day rollover (`docs/telemetry.md`): a session left
+        // open across midnight counts on the new day too — this app idles in
+        // a terminal all day, so pinging only at bootstrap undercounts
+        // exactly its heaviest users. Here rather than on every event because
+        // a *turn* is what "used it today" means, and on the common path it
+        // is a date read and a string compare that touch no file.
+        self.telemetry_day_check();
         // The whole conversation — the just-recorded user message included —
         // rides the request so a real model keeps its context across turns (the
         // AGENTS.md instructions in front); the image paths also travel the

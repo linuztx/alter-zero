@@ -1575,7 +1575,10 @@ usage ping, `docs/telemetry.md`: one `POST` a day per install carrying five
 fields (a payload version, a random 128-bit install id, the app version, the
 OS and the architecture — never a prompt, a path, a model name or a key), the
 **country** noted by the collector at the edge from the connection and never
-the address, sent *after* the first frame on a detached worker whose only
+the address, sent *after* the first frame — and again at any **turn start** that
+opens a new UTC day, so a session left open across midnight still counts,
+bounded to one attempt per day per session so a refusing collector is never
+retried per turn — on a detached worker whose only
 report is the delivered day, which the **loop** records (the worker never
 writes the file) in `telemetry.json` — its own per-**user** file beside the
 install id, the one row not in `settings.json`, since an opt-out that applied
@@ -1584,8 +1587,13 @@ the wrapped `ui::startup_paragraph_lines` and stated in full in the root
 **`TELEMETRY.md`** — the user-facing half (what leaves a machine, the three
 off switches, what the server keeps, how to verify it), which the README
 deliberately does not duplicate and which moves whenever `docs/telemetry.md`
-does — off with the row,
-`ALTER_ZERO_TELEMETRY=0` or `DO_NOT_TRACK=1` (which outranks it), and off
+does — every path to a ping routed through the one
+`Session::telemetry_tick` so the notice is committed **before** any send (the
+`/settings` path having shipped a ping with `notice_shown: false` when the two
+call sites each had to remember), off with the row,
+`ALTER_ZERO_TELEMETRY=0` or `DO_NOT_TRACK=1` (which outranks it) — a
+forbidding environment **withdrawing the row** rather than seeding it, alone
+among the overrides, since a row that cycles back on is not an opt-out — and off
 outright without a config home (nowhere to keep an id, and a fresh one per
 launch would count one person as many); the collector is the Cloudflare
 Worker + D1 in `telemetry/`, tested with `node --test`, validating every field

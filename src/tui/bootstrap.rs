@@ -471,6 +471,7 @@ impl<'t> Session<'t> {
             mcp_rx,
             telemetry_tx,
             telemetry_rx,
+            telemetry_attempted: None,
             _file_worker: file_worker,
             registry,
             agent_registry,

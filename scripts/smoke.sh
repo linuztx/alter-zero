@@ -2230,7 +2230,8 @@ done
 echo "==== Phase 42: cell resolved backgrounded + footer count ===="
 printf '%s\n' "$bg_cell_pane"
 # ↓ from the empty composer FOCUSES the footer's shell count first — it lights
-# up on the palette cyan (SGR `48;2;86;182;194`, captured with -e) while the
+# up on the default theme's accent — Catppuccin Mocha's sky, `#89DCEB`,
+# SGR `48;2;137;220;235`, captured with -e (docs/theme.md; `ui/palette.rs`) — while the
 # model/cwd segments stay put and no band opens. Enter is what opens it.
 tmux send-keys -t "$S42" Down
 sleep 0.3
@@ -3516,7 +3517,7 @@ if printf '%s' "$bg_focus_pane" | grep -qF "1 active shell"; then
 	echo "FAIL: Phase 42 — ↓ opened the manager band outright (it must light the footer indicator and wait for Enter)" >&2
 	status=1
 fi
-if ! printf '%s' "$bg_focus_ansi" | grep -q '48;2;86;182;194'; then
+if ! printf '%s' "$bg_focus_ansi" | grep -q '48;2;137;220;235'; then
 	echo "FAIL: Phase 42 — the focused shell indicator is not painted on the cyan background" >&2
 	status=1
 fi
@@ -4748,9 +4749,12 @@ echo "==== Phase 57: sampled bullet colours (one frame per line) ===="
 printf '%s' "$pulse_samples"
 # Per bullet slot, how many distinct **grey** shades did it take? A breathing
 # bullet sweeps through many; a `⎿ Waiting…` sibling sits on exactly one (the
-# flat resting grey 138;138;138), and a resolved one leaves grey entirely for
-# green/red. Pure white (the assistant bullets) is excluded — the pulse peaks at
-# the resting grey and only dips below it, so it never comes near white.
+# flat resting grey — the default theme's `tool_waiting_color()`, Catppuccin
+# Mocha's `dim` #7F849C = 127;132;156, docs/theme.md; `ui/palette.rs`), and a
+# resolved one leaves grey entirely for green/red. A "grey" here is the resting
+# grey or darker on EVERY channel: the pulse only ever dips from it toward the
+# palette's `pulse_dim` (#585B70 = 88;91;112), while the text colour, the green
+# and the red all exceed it on some channel — so none of them can count.
 # Note the batch runs its calls IN TURN, so over a two-second sample several
 # slots take their own turn breathing; that is the feature, not a fault.
 # The "held flat" count only looks at the OPENING frames: the batch runs its
@@ -4761,7 +4765,7 @@ pulse_stats="$(printf '%s' "$pulse_samples" | awk -F, '
 		frames++
 		for (i = 1; i <= NF; i++) {
 			split($i, c, ";")
-			if (c[1] == c[2] && c[2] == c[3] && c[1] + 0 < 250) {
+			if (c[1] + 0 <= 127 && c[2] + 0 <= 132 && c[3] + 0 <= 156) {
 				if (!((i "," $i) in seen)) { seen[i "," $i] = 1; greys[i]++ }
 				if (frames <= 8) {
 					if (!((i "," $i) in early)) { early[i "," $i] = 1; egreys[i]++ }
@@ -4775,7 +4779,7 @@ pulse_stats="$(printf '%s' "$pulse_samples" | awk -F, '
 		breathing = 0; resting = 0
 		for (i = 1; i <= n; i++) {
 			if (greys[i] >= 3) breathing++
-			if (egreys[i] == 1 && eflat[i] == "138;138;138") resting++
+			if (egreys[i] == 1 && eflat[i] == "127;132;156") resting++
 		}
 		print breathing, resting
 	}')"
@@ -4818,8 +4822,9 @@ if [ -z "$pulse_done" ]; then
 	echo "FAIL: Phase 57 — the batch never finished" >&2
 	status=1
 fi
-# Green (#3FB950 = 63;185;80) still lands when a call resolves.
-if ! printf '%s' "$pulse_done" | grep -q "63;185;80"; then
+# Green — the default theme's `tool_ok_color()`, Mocha's #A6E3A1 = 166;227;161 —
+# still lands when a call resolves.
+if ! printf '%s' "$pulse_done" | grep -q "166;227;161"; then
 	echo "FAIL: Phase 57 — a resolved cell lost its green bullet" >&2
 	status=1
 fi
@@ -7977,10 +7982,14 @@ sleep 0.4
 tmux send-keys -t "$S87" -l "$USER_MSG"
 sleep 0.2
 tmux send-keys -t "$S87" Enter
-# Poll the raw stream for the hyperlink open — it lands when the reply's URL
-# commits — then give the rest of the turn a beat to settle.
+# Poll the raw stream for the REPLY's hyperlink open — the one carrying the
+# github URL, which lands when the reply's URL commits — then give the rest of
+# the turn a beat to settle. Any OSC 8 open won't do: the demo's
+# `Read/Edit(about.py)` headers are file:// links now (docs/links.md), and
+# those land with the tool cells, well before the reply streams — a wait that
+# broke on the first open captured the pane mid-tool-loop.
 for _ in $(seq 1 120); do
-	if grep -aqF "]8;id=az" "$LINKS_RAW"; then
+	if grep -aqE ']8;id=az[0-9]+;https://github\.com/linuztx' "$LINKS_RAW"; then
 		break
 	fi
 	sleep 0.1
@@ -12016,10 +12025,31 @@ if [ -e "$TM_CFG/dnt/telemetry.json" ]; then
 fi
 tm_open_row
 tm_dnt_row="$(tmux capture-pane -t "$S115" -p)"
-if ! printf '%s' "$tm_dnt_row" | grep -qE "Telemetry +false"; then
-	echo "==== Phase 115: the row under DO_NOT_TRACK=1 ===="
-	printf '%s\n' "$tm_dnt_row"
-	tm_fail "the Telemetry row did not read false under DO_NOT_TRACK=1"
+echo "==== Phase 115: the row under DO_NOT_TRACK=1 ===="
+printf '%s\n' "$tm_dnt_row"
+# UNAVAILABLE, not merely false: an opt-out a keystroke could undo is not an
+# opt-out. The row used to be seeded false but stay cyclable, so Space wrote
+# `enabled: true` and sent a ping under DO_NOT_TRACK=1 — with the disclosure
+# never shown, since only the launch path committed it (docs/telemetry.md).
+if ! printf '%s' "$tm_dnt_row" | grep -qE "Telemetry +false \\(unavailable\\)"; then
+	tm_fail "the Telemetry row is not unavailable under DO_NOT_TRACK=1"
+fi
+tmux send-keys -t "$S115" Space
+sleep 1.2
+tm_dnt_after="$(tmux capture-pane -t "$S115" -p)"
+echo "==== Phase 115: after Space under DO_NOT_TRACK=1 ===="
+printf '%s\n' "$tm_dnt_after"
+if ! printf '%s' "$tm_dnt_after" | grep -qF "Can't change Telemetry"; then
+	tm_fail "Space on the forbidden row did not refuse with a toast"
+fi
+if printf '%s' "$tm_dnt_after" | grep -qE "Telemetry +true"; then
+	tm_fail "DO_NOT_TRACK=1 was cycled around from inside the app"
+fi
+if [ -e "$TM_CFG/dnt/telemetry.json" ]; then
+	tm_fail "the refused cycle still wrote telemetry.json"
+fi
+if [ "$(tm_pings)" != "1" ]; then
+	tm_fail "a ping left the machine under DO_NOT_TRACK=1 ($(tm_pings) in the log)"
 fi
 tmux send-keys -t "$S115" Escape
 sleep 0.3
@@ -12040,6 +12070,72 @@ tm_quit
 if [ "$(tm_pings)" != "1" ]; then
 	tm_fail "the off launches pinged ($(tm_pings) pings in the log)"
 fi
+# (e) The day-rollover check runs at every turn start, so a collector that
+# never succeeds must not be retried once per turn. The attempt is remembered
+# in memory for the session — the file's last_ping_day is written only on a
+# 2xx — so a refusing collector costs exactly one attempt per UTC day, and the
+# next LAUNCH is what retries it (docs/telemetry.md).
+TM_PORT5="$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')"
+TM_LOG5="$TM_CFG/refused.log"
+python3 - "$TM_PORT5" "$TM_LOG5" <<'PY' &
+import sys
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
+port, log = int(sys.argv[1]), sys.argv[2]
+
+
+class Stub(BaseHTTPRequestHandler):
+    def do_POST(self):
+        self.rfile.read(int(self.headers.get("content-length") or 0))
+        with open(log, "a") as f:
+            f.write("attempt\n")
+        self.send_response(500)
+        self.end_headers()
+
+    def log_message(self, *_args):
+        pass
+
+
+HTTPServer(("127.0.0.1", port), Stub).serve_forever()
+PY
+TM_SERVER5=$!
+for _ in $(seq 1 30); do
+	if python3 -c "import socket, sys; s = socket.socket(); s.settimeout(0.2); sys.exit(0 if s.connect_ex(('127.0.0.1', $TM_PORT5)) == 0 else 1)" 2>/dev/null; then
+		break
+	fi
+	sleep 0.1
+done
+tmux new-session -d -s "$S115" -x 100 -y 30 "$TM_BASE ALTER_ZERO_TELEMETRY_URL=http://127.0.0.1:$TM_PORT5/v1/ping ALTER_ZERO_CONFIG_DIR=$TM_CFG/refused $BIN"
+sleep 1.5
+tm_refused_boot="$(wc -l <"$TM_LOG5" 2>/dev/null | tr -d ' ')"
+# One real turn, so the turn-start day check actually runs.
+tmux send-keys -t "$S115" -l "$USER_MSG"
+sleep 0.2
+tmux send-keys -t "$S115" Enter
+for _ in $(seq 1 80); do
+	if tmux capture-pane -t "$S115" -p -S -60 | grep -qF "$SETTLED_REPLY"; then
+		break
+	fi
+	sleep 0.15
+done
+sleep 1.0
+tm_refused_after="$(wc -l <"$TM_LOG5" 2>/dev/null | tr -d ' ')"
+echo "==== Phase 115: refusing collector — attempts at boot: ${tm_refused_boot:-0}, after a turn: ${tm_refused_after:-0} ===="
+if [ "${tm_refused_boot:-0}" != "1" ]; then
+	tm_fail "expected exactly one attempt at boot against a refusing collector, got ${tm_refused_boot:-0}"
+fi
+if [ "${tm_refused_after:-0}" != "1" ]; then
+	tm_fail "the turn-start day check retried a failing collector (${tm_refused_after:-0} attempts; it must be one per day per session)"
+fi
+# The KEY is always written (every field, always — docs/telemetry.md); what
+# must not appear is a date in it, which is what "delivered" means.
+if grep -qE '"last_ping_day": *"[0-9]' "$TM_CFG/refused/telemetry.json" 2>/dev/null; then
+	tm_fail "a refused ping recorded last_ping_day — the day is only recorded on a 2xx"
+fi
+tm_quit
+kill "$TM_SERVER5" 2>/dev/null
+wait "$TM_SERVER5" 2>/dev/null
+
 kill "$TM_SERVER" 2>/dev/null
 wait "$TM_SERVER" 2>/dev/null
 rm -rf "$TM_CFG"

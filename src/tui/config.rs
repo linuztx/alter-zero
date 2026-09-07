@@ -890,6 +890,21 @@ pub(crate) fn telemetry_endpoint() -> String {
         .unwrap_or_else(|| alter_zero::telemetry::DEFAULT_ENDPOINT.to_string())
 }
 
+/// Whether the environment **forbids** telemetry this run — a falsy
+/// `ALTER_ZERO_TELEMETRY`, or a set `DO_NOT_TRACK`.
+///
+/// This is what makes the opt-out *hard* rather than a mere seed
+/// (`docs/telemetry.md`): the `/settings` row reports itself unavailable, so
+/// it cannot be cycled back on, and `telemetry_active()` stays false however
+/// the row is set. Every other `ALTER_ZERO_*` override only seeds its row —
+/// but the others are preferences, and this one is a statement that nothing
+/// should be sent. The asymmetry is deliberate and one-directional: an
+/// environment that forces telemetry *on* leaves the row cyclable, because
+/// turning it **off** must always be possible.
+pub(crate) fn telemetry_forbidden_by_env() -> bool {
+    telemetry_env_override() == Some(false)
+}
+
 /// What the environment says about telemetry for this run —
 /// `ALTER_ZERO_TELEMETRY` in the app's on/off grammar, outranked by a set
 /// `DO_NOT_TRACK` — or `None` to defer to `telemetry.json`

@@ -218,6 +218,13 @@ pub(crate) struct Session<'t> {
     /// toggle's write. Silent on failure.
     telemetry_tx: tokio::sync::mpsc::UnboundedSender<String>,
     telemetry_rx: tokio::sync::mpsc::UnboundedReceiver<String>,
+    /// The UTC day this **session** last spawned a ping for, successful or
+    /// not (`docs/telemetry.md`). Two jobs: the turn-start rollover check
+    /// compares against it and returns without touching the file on the
+    /// common path, and it bounds a failing collector to one attempt per day
+    /// per session rather than one per turn — the file's `last_ping_day`,
+    /// written only on a `2xx`, is still what retries the next launch.
+    telemetry_attempted: Option<String>,
     /// The `@` file-search worker's handle, kept so the thread's lifetime is
     /// tied to the session's. Never joined.
     _file_worker: JoinHandle<()>,

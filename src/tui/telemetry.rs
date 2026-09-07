@@ -3,22 +3,33 @@
 //! record — everything `telemetry` (the pure half) leaves to the side that
 //! can read a clock, draw entropy, touch the file and spawn a thread.
 //!
-//! Three rules hold the whole thing to its promise:
+//! Four rules hold the whole thing to its promise:
 //!
+//! - **Nothing happens unless telemetry is active.** No config home, an
+//!   environment that forbids it (`ALTER_ZERO_TELEMETRY=0`,
+//!   `DO_NOT_TRACK=1`), or the user's own saved `false` all resolve to
+//!   `telemetry_active() == false` before [`Session::telemetry_tick`] mints
+//!   an id, shows a notice or spawns anything. A forbidding environment
+//!   additionally makes the `/settings` row *unavailable*
+//!   (`config::telemetry_forbidden_by_env`), so it cannot be cycled back on
+//!   from inside the app — an opt-out that a keystroke could undo would not
+//!   be one.
+//! - **No ping before the disclosure.** Every path that can send goes
+//!   through [`Session::telemetry_tick`], which commits the notice first
+//!   when it has never been shown. Having the two call sites each remember
+//!   to do that is how the `/settings` path came to send a ping with
+//!   `notice_shown: false` still in the file.
 //! - **After the first frame, never before it.** `Session::bootstrap` calls
 //!   [`Session::start_telemetry`] once `paint_first_frame` has queued the
 //!   banner, and the send runs on a detached worker
-//!   (`workers::spawn_telemetry_ping`), so a slow or dead collector costs the
-//!   user nothing.
+//!   (`workers::spawn_telemetry_ping`), so a slow or dead collector costs
+//!   the user nothing.
 //! - **The loop writes the file; the worker only reports.** The worker sends
 //!   back the day it delivered and [`Session::on_telemetry_result`] records
 //!   it, so `telemetry.json` has one writer thread and the `/settings`
-//!   toggle can never race it. Every write is `config::update_telemetry_file`'s
-//!   read-modify-write.
-//! - **Off means nothing happens.** No config home, the environment saying
-//!   off (`ALTER_ZERO_TELEMETRY=0`, `DO_NOT_TRACK=1`) or the file saying off
-//!   all resolve to `telemetry_active() == false` before this module mints an
-//!   id, shows a notice or spawns anything.
+//!   toggle can never race it. Every write is
+//!   `config::update_telemetry_file`'s read-modify-write, so a day recorded
+//!   while the user was turning telemetry off cannot resurrect their `true`.
 
 use ratatui::text::Line;
 
@@ -30,46 +41,43 @@ use super::{Session, config, host};
 
 impl Session<'_> {
     /// Start the day's telemetry, once per launch, after the first frame is
-    /// queued: mint the install id if this is the first launch, commit the
-    /// one-time disclosure under the banner, and — when no ping has been
-    /// delivered today — hand the send to a worker. Off (by environment,
-    /// file or a missing config home) does none of it.
+    /// queued.
     pub(crate) fn start_telemetry(&mut self) {
+        self.telemetry_tick();
+    }
+
+    /// A turn start's day rollover: a session kept open across midnight
+    /// counts on the new day too. This app idles in a terminal all day, so a
+    /// launch-only ping would undercount exactly its heaviest users.
+    ///
+    /// Cheap on the common path — the day this session already attempted is
+    /// held in memory, so a turn that is not the first of a new day costs a
+    /// date read and a string compare and touches no file. That memory is
+    /// also the bound on a *failing* collector: one attempt per UTC day per
+    /// session rather than one per turn, with the file's `last_ping_day`
+    /// (written only on a `2xx`) still retrying at the next launch.
+    pub(crate) fn telemetry_day_check(&mut self) {
         if !self.app.settings().telemetry_active() {
             return;
         }
-        let Some(path) = config::telemetry_json_path() else {
+        if self.telemetry_attempted.as_deref() == Some(host::utc_day().as_str()) {
             return;
-        };
-        let file = config::update_telemetry_file(Some(&path), |file| {
-            file.install_id_or_mint(host::random_bytes());
-        });
-        // Said once, before the first ping ever goes — and only on a launch
-        // that will actually send, since a run the environment turned off
-        // has nothing to disclose.
-        if !file.notice_shown {
-            self.commit_telemetry_notice();
-            config::update_telemetry_file(Some(&path), |file| file.notice_shown = true);
         }
-        self.send_ping_if_due(&file);
+        self.telemetry_tick();
     }
 
     /// The `/settings` **Telemetry** row moved: record the choice in
     /// `telemetry.json` (its own file — a user's preference, not a
     /// directory's, `docs/per-directory-state.md`) and, if it was just turned
-    /// on, send today's ping when none has gone. Turning it off sends nothing
-    /// more; a result already in flight still records its day, harmlessly.
+    /// on, take today's step. Turning it off sends nothing more; a result
+    /// already in flight still records its day, which the read-modify-write
+    /// keeps from resurrecting the `true` the user just cleared.
     pub(crate) fn apply_telemetry_setting(&mut self) {
         let enabled = self.app.settings().telemetry;
-        let path = config::telemetry_json_path();
-        config::update_telemetry_file(path.as_deref(), |file| file.enabled = enabled);
-        if !self.app.settings().telemetry_active() {
-            return;
-        }
-        let file = config::update_telemetry_file(path.as_deref(), |file| {
-            file.install_id_or_mint(host::random_bytes());
+        config::update_telemetry_file(config::telemetry_json_path().as_deref(), |file| {
+            file.enabled = enabled;
         });
-        self.send_ping_if_due(&file);
+        self.telemetry_tick();
     }
 
     /// The worker delivered today's ping: record the day, so the next launch
@@ -80,16 +88,46 @@ impl Session<'_> {
         });
     }
 
-    /// Spawn the send when `telemetry::should_ping` says today's has not been
-    /// delivered. The payload is the five fields and nothing else
-    /// (`telemetry::Ping`): the id the file holds, the crate version, the OS
-    /// and the architecture.
-    fn send_ping_if_due(&self, file: &TelemetryFile) {
-        let today = host::utc_day();
-        if !telemetry::should_ping(file, &today) || !file.has_valid_install_id() {
+    /// The one path to a ping: mint the id if this install has none, show the
+    /// disclosure if it has never been shown, then send when today's has not
+    /// gone yet. Every caller — the launch, a turn's day rollover, the
+    /// `/settings` row — goes through here, which is what makes "no ping
+    /// before the notice" a property of the code rather than a habit.
+    ///
+    /// Silent and side-effect-free when telemetry is not active, so the
+    /// callers need no guard of their own.
+    fn telemetry_tick(&mut self) {
+        if !self.app.settings().telemetry_active() {
             return;
         }
-        let Some(id) = file.install_id.as_deref() else {
+        let Some(path) = config::telemetry_json_path() else {
+            return;
+        };
+        let file = config::update_telemetry_file(Some(&path), |file| {
+            file.install_id_or_mint(host::random_bytes());
+        });
+        // Said once, and always before the first ping leaves the machine.
+        if !file.notice_shown {
+            self.commit_telemetry_notice();
+            config::update_telemetry_file(Some(&path), |file| file.notice_shown = true);
+        }
+        self.send_ping_if_due(&file);
+    }
+
+    /// Spawn the send when `telemetry::should_ping` says today's has not been
+    /// delivered, and remember that this session tried. The payload is the
+    /// five fields and nothing else (`telemetry::Ping`): the id the file
+    /// holds, the crate version, the OS and the architecture.
+    fn send_ping_if_due(&mut self, file: &TelemetryFile) {
+        let today = host::utc_day();
+        if !telemetry::should_ping(file, &today) {
+            return;
+        }
+        let Some(id) = file.install_id.as_deref().filter(|id| {
+            // A file whose id will not validate is one the collector would
+            // refuse anyway, and a refused ping counts nobody.
+            telemetry::is_valid_install_id(id)
+        }) else {
             return;
         };
         let ping = Ping::new(
@@ -98,6 +136,9 @@ impl Session<'_> {
             std::env::consts::OS,
             std::env::consts::ARCH,
         );
+        // Marked before the spawn, not after the answer: this is "we tried
+        // today", the bound on a collector that never answers.
+        self.telemetry_attempted = Some(today.clone());
         spawn_telemetry_ping(
             config::telemetry_endpoint(),
             ping,
