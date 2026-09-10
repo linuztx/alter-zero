@@ -1181,11 +1181,16 @@ in two places that have to agree:
 - **The tmux server.** A pane inherits the *server's* environment, and a server
   keeps whatever the shell that first started it had, so unsetting a variable
   reaches a pane only when this script is what started the server. The suite
-  runs its own on a private socket (`tmux -L`, injected by a one-line shell
-  function, killed with the suite), which also keeps its global
+  runs its own on a private socket — a one-line shell function routing every
+  `tmux` call through `-S {mktemp -d}/tmux.sock`, the whole directory taken
+  down with the suite (by path rather than `-L {name}`, since `kill-server`
+  leaves the socket file behind and a named one would litter tmux's shared
+  directory once per run). That also keeps the suite's global
   `set-clipboard on` and its `delete-buffer` sweep off the developer's own
-  sessions. `DISPLAY` needs the unset as well as the private socket: tmux's
-  `update-environment` re-imports it from the client into every new session.
+  sessions, and `INT`/`TERM` funnel into an ordinary exit so a Ctrl+C on a
+  25-minute run still reaches the cleanup. `DISPLAY` needs the unset as well
+  as the private socket: tmux's `update-environment` re-imports it from the
+  client into every new session.
 
 The same rule holds for *time*: a fixture asserts on a state that stays put
 until it is read. Where the state is genuinely transient — the running command's

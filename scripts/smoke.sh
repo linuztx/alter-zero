@@ -82,10 +82,15 @@ S="alterzero_smoke_$$"
 #     On a shared server that is the developer's own session it is changing.
 #
 # One function is the whole mechanism: every `tmux …` call below routes to the
-# private socket unchanged, and `kill-server` in cleanup takes the whole thing
-# down with the suite.
-SMOKE_TMUX_SOCKET="alterzero-smoke-$$"
-tmux() { command tmux -L "$SMOKE_TMUX_SOCKET" "$@"; }
+# private socket unchanged, and cleanup takes the whole thing down with the
+# suite. The socket is named by PATH (`-S`) in a directory of the suite's own
+# rather than by name (`-L`) under tmux's shared `/tmp/tmux-$UID`: `kill-server`
+# leaves the file behind, so a named socket would litter one stale entry per
+# run in a directory the suite does not own, and there is no reliable moment to
+# ask a dying server where its file was.
+SMOKE_TMUX_DIR="$(mktemp -d)"
+SMOKE_TMUX_SOCKET="$SMOKE_TMUX_DIR/tmux.sock"
+tmux() { command tmux -S "$SMOKE_TMUX_SOCKET" "$@"; }
 USER_MSG="hello there"
 # The dummy reply is deterministic per prompt (dummy_response: char-count % 3).
 # "hello there" is 11 chars → responses[2], which opens with this phrase.
@@ -234,11 +239,20 @@ cleanup() {
 	[ -n "${CLIP_DIR:-}" ] && rm -rf "$CLIP_DIR" 2>/dev/null
 	# …and the private server itself, which every session above lived on: this
 	# alone would do, but the named kills keep working when a phase ends early
-	# and cost nothing here.
+	# and cost nothing here. Its socket file survives `kill-server`, so the
+	# directory holding it goes too — the suite's own, and nothing else's.
 	tmux kill-server 2>/dev/null
+	[ -n "${SMOKE_TMUX_DIR:-}" ] && rm -rf "$SMOKE_TMUX_DIR" 2>/dev/null
 	return 0
 }
 trap cleanup EXIT
+# A Ctrl+C on a suite this long is ordinary, and an untrapped signal kills bash
+# WITHOUT running the EXIT trap — which would strand the private server, its
+# panes and its temp dirs on a socket the developer has no reason to know
+# about. Funnel both signals into an ordinary exit so cleanup runs exactly
+# once, with the conventional status.
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 if [ ! -x "$BIN" ]; then
 	echo "FAIL: binary not found at $BIN (run: cargo build)" >&2
