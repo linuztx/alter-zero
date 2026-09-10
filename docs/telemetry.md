@@ -280,49 +280,93 @@ happen to print numbers.
 
 ### The dashboard
 
-`GET /` is the stats document as a page, and it is still **plain HTML and
-inline CSS — no script, no external asset, no web font**, because a page
-that fetches something is a page that tells someone else it was opened. What
-it draws, top to bottom:
+`GET /` is the stats document as **server-rendered HTML with inline CSS and
+vanilla JavaScript**. The browser receives the numbers, chart geometry, map,
+and interactions in one document. There are no runtime packages, external
+assets, web fonts, or map tiles to load; inspecting data or changing the
+theme contacts no other service. Refresh and window navigation request the
+same collector again.
 
-- a header with the window switcher — **7d / 30d / 90d / 365d**, plus the
-  current window when it is none of those;
-- four cards: users today (with the change from the day before), users over
-  7 and 30 days, and installs seen;
-- **Activity** — one bar per day across the window, the day's new installs
-  marked at the foot of its bar, gridlines at the peak, half of it and zero,
-  and the exact numbers in each bar's tooltip;
-- **Countries**, **Versions**, **Operating systems**, **Platforms** — each a
-  table of name, count and a share bar, the first `PANEL_ROWS` rows with the
-  rest counted in one line pointing at `/v1/stats`. They flow in CSS columns
-  rather than a grid: four panels of four different lengths in a grid leave a
-  hole wherever a short one shares a row with a long one. **Platforms** is
-  `distro` where the row named one and `os` where it did not, with
-  `os_version` beside it — `ubuntu 24.04`, `macos 15.3.1`, `arch`, `linux` —
-  because "what do people actually run" is one question and deserves one
-  panel, while **Operating systems** keeps the coarse three-way split;
-- a collapsed `<details>` holding every day of the window as numbers, newest
-  first — the old page's whole table, out of the way of the chart;
-- the definitions, and a link to the same numbers as JSON.
+The responsive layout carries Alter Zero's terminal styling into a sidebar
+and overview, with sections for activity, geography, environments, and
+daily data:
 
-Four things it is deliberate about:
+- The **7d / 30d / 90d / 365d** switcher also includes the current window
+  when it is none of those. Four summary cards show users today, their change
+  from yesterday, distinct users over 7 and 30 days, and installs seen within
+  retained history.
+- **Activity** switches between bars and a line, and between daily users and
+  new installs. Hover or focus a day for its exact numbers; **Left / Right /
+  Home / End** move through the chart with the keyboard. A zero day stays on
+  the baseline, and an empty window has an explicit no-data state.
+- **Around the world** uses bundled Natural Earth outlines and fixed country
+  anchors in an SVG. The map works offline once the document is loaded.
+  Markers represent country totals, never device positions or more precise
+  locations. Select a marker or country row to inspect its count; markers
+  support **Enter / Space**, and zoom controls let the reader inspect the
+  map. Unknown or unmapped countries stay in the textual list and are never
+  assigned invented positions. Source and transformation details live in
+  `telemetry/src/world-map-data.md`.
+- **Countries**, **Versions**, and **Platforms** show counts and bars
+  relative to each panel's largest row. Additional rows expand in place.
+  **Platforms** is `distro` where the row named one and `os` where it did
+  not, qualified by `os_version`: `ubuntu 24.04`, `macos 15.3.1`, `arch`,
+  `linux`. **Operating systems** shows a ring and counts for the coarse OS
+  split. An install can appear in multiple country or system groups, so
+  those grouped counts do not imply a global distinct-user total.
+- **Daily data** is a native `<details>` table with every day of the window,
+  newest first. The footer defines the counts and links to the same numbers
+  as JSON.
 
-- **Its own links carry the `?token=` the reader arrived with.** The old page
-  suggested `?days=90` in prose, and following that advice behind
-  `DASHBOARD_TOKEN` answered `401` — the one navigation a dashboard offers has
-  to work. A reader who authenticated with the `Authorization` header gives
-  the page no token to spread, and it never invents one.
-- **A day with nobody draws nothing.** The old bar had `min-width: 1px`, so
-  "no one" and "one person" were the same picture.
-- **A country is a flag and a name**, not a code — `🇵🇭 Philippines PH` — with
-  the flag derived from the code's own letters (regional-indicator symbols;
-  no image, no table) and the name from `Intl.DisplayNames`. A code `Intl`
-  cannot name gets the globe rather than a tofu box, and a value that is not
-  a country code at all is *shown*, escaped, rather than hidden: the only way
-  one reaches the table is by hand, and that is worth seeing.
-- **Every printed value is coerced or escaped at the renderer**, not only at
-  the query: a number that is not one reads as `0` and a string is escaped,
-  so a hand-edited row can never become markup.
+The theme picker offers **System**, the four Catppuccin flavours
+**Mocha / Macchiato / Frappé / Latte**, **Nord**, and **Dracula**, matching
+families in the terminal's `/theme` picker. System uses Mocha for a dark
+browser preference and Latte for a light one. An explicit choice is saved
+only in that browser's local storage under `alter-zero-telemetry-theme`;
+it neither changes the terminal's theme nor goes to the collector. Unknown
+saved values or unavailable storage fall back to System. Theme colours
+apply to every surface, chart, and map, and reduced-motion preferences turn
+off animated transitions and smooth scrolling.
+
+The page is also useful without JavaScript: server-rendered charts, the
+map, counts, native expandable tables, and ordinary window/JSON links
+remain available. Theme, chart-mode, refresh, and zoom controls are hidden.
+The enhancements add theme persistence, keyboard chart inspection, map
+selection, and section navigation without replacing that underlying page.
+
+The renderer preserves four data and privacy rules:
+
+- **Its own window and JSON links carry only the query token it was given.**
+  A reader who authenticated through `Authorization` gives the page no token
+  to print, and it never invents one from `DASHBOARD_TOKEN`. A no-referrer
+  policy also prevents the dashboard URL from becoming a referrer.
+- **Counts describe installs and retained history.** A user is an anonymous
+  install ID; a new install is an ID first seen that day within the rows
+  still retained. No zero count receives an artificial visible bar.
+- **Country rows retain their readable identity.** Flags come from the
+  code's regional-indicator letters and names from `Intl.DisplayNames`.
+  Unknown codes receive the globe; a malformed stored country value remains
+  visible as escaped text. The map does not discard those rows from the
+  rest of the dashboard.
+- **Telemetry values never become executable source.** Every printed string
+  is escaped and every count is coerced at the renderer. The two inline
+  scripts are static application code; they read escaped `data-*`
+  attributes and update readouts as text. A hand-edited database row cannot
+  inject markup or an executable script.
+
+The page lives in `telemetry/src/dashboard.js`, its layout and theme roles
+in `dashboard-style.js`, and its two static scripts in `dashboard-client.js`.
+`world-map.js` renders the bundled outlines and anchors in
+`world-map-data.js`; `lib.js` retains the shared helpers and re-exports the
+dashboard renderer. Node's built-in tests cover the collector, renderer,
+script behaviour, and map without a network or client framework.
+
+For design work, `cd telemetry && npm run preview` starts a dependency-free
+Node server at `http://127.0.0.1:8788`. Its dashboard is labeled **Sample
+data** and uses generated numbers, not actual telemetry; `/?empty=1`
+previews the empty state. It has no D1 connection and does not collect pings.
+The existing `npm run db:init:local` / `npm run dev` Wrangler flow remains
+the way to exercise the actual Worker and local D1.
 
 ### The table
 
