@@ -11447,14 +11447,17 @@ rm -rf "$THEME_CFG"
 # sibling over the project's crypto donation addresses: a gradient
 # `♥ Support Alter Zero` title over a dim blurb, each address as a numbered
 # `❯ 1. BTC  Bitcoin` row (the ticker and the coin — no network clause)
-# over its rounded box, an amber wrong-network caution and a key hint; ↓
+# over its rounded box, with the networks it is reachable on captioned
+# UNDER that box (`Network: Solana`, and the seven EVM chains on the one
+# ETH address — the label agreeing with the count), an amber
+# wrong-network caution pointing at those captions and a key hint; ↓
 # moves the `❯`, on to the third (SOL) row and back; `c` copies the
 # highlighted address — the toast names the coin, and headless here arboard
 # has no clipboard server so the OSC 52 fallback lands the address VERBATIM
 # in tmux's paste buffer (Phase 28's trick) while the page stays open; Esc
 # brings the composer and its footer back. ---
 S112="${S}_donate"
-tmux new-session -d -s "$S112" -x 90 -y 34 "$APP"
+tmux new-session -d -s "$S112" -x 90 -y 40 "$APP"
 # tmux must capture OSC 52 from the app into its own buffer (Phase 28).
 tmux set-option -g set-clipboard on
 sleep 0.5
@@ -11473,9 +11476,10 @@ donate_open="$(tmux capture-pane -t "$S112" -p)"
 echo "==== Phase 112: the page open (BTC highlighted) ===="
 printf '%s\n' "$donate_open"
 for expect in "♥ Support Alter Zero" "Free and open source" \
-	"❯ 1. BTC  Bitcoin" "bc1q68v53mjj2uxg9qs5ke55qh4gv7un8esttwmvm9" \
-	"  2. ETH  Ethereum" "0xaf7B6ac9BeeFDcfCd118701a00be960a592600CB" \
-	"  3. SOL  Solana" "9hWaV4rTqNfF1c6mGDSnksMY1fqKuDU9iKymfbeSqXrA" \
+	"❯ 1. BTC  Bitcoin" "bc1qhwamfrwuhz64pk00l75ykfff2ang22ns64chf7" "Network: Bitcoin (Native SegWit)" \
+	"  2. ETH  Ethereum" "0xEAf6fbabB9DBE7a23BfE22A7A6c4aCe02063524b" \
+	"Networks: Ethereum, Linea, Base, Arbitrum, BNB Chain, OP, Polygon" \
+	"  3. SOL  Solana" "Gwhv5c6uAa6aAz1MjwzV9QJpbm7CJWy2kuCeZ75mFc94" "Network: Solana" \
 	"↑↓ navigate  enter/c copy address  esc close"; do
 	if ! printf '%s' "$donate_open" | grep -qF "$expect"; then
 		echo "FAIL: Phase 112 — the open page is missing '$expect'" >&2
@@ -11488,7 +11492,7 @@ done
 # sentence — the one line on the page that must say exactly what it says.
 donate_open_prose="$(printf '%s\n' "$donate_open" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' | paste -sd' ')"
 if ! printf '%s' "$donate_open_prose" | grep -qF \
-	"Send each coin over its own network only — a transfer on any other network cannot be recovered."; then
+	"Send each coin only over a network listed under its address — a transfer on any other network cannot be recovered."; then
 	echo "FAIL: Phase 112 — the open page is missing the wrong-network caution, whole" >&2
 	status=1
 fi
@@ -11502,8 +11506,8 @@ for label in "❯ 1. BTC  Bitcoin" "2. ETH  Ethereum" "3. SOL  Solana"; do
 done
 # Each address sits in its rounded box: the row over it opens with ╭ and
 # the row under it with ╰.
-for addr in "bc1q68v53mjj2uxg9qs5ke55qh4gv7un8esttwmvm9" "0xaf7B6ac9BeeFDcfCd118701a00be960a592600CB" \
-	"9hWaV4rTqNfF1c6mGDSnksMY1fqKuDU9iKymfbeSqXrA"; do
+for addr in "bc1qhwamfrwuhz64pk00l75ykfff2ang22ns64chf7" "0xEAf6fbabB9DBE7a23BfE22A7A6c4aCe02063524b" \
+	"Gwhv5c6uAa6aAz1MjwzV9QJpbm7CJWy2kuCeZ75mFc94"; do
 	if ! printf '%s\n' "$donate_open" | grep -B1 -F "$addr" | head -1 | grep -qF "╭"; then
 		echo "FAIL: Phase 112 — no rounded top over $addr" >&2
 		status=1
@@ -11513,6 +11517,26 @@ for addr in "bc1q68v53mjj2uxg9qs5ke55qh4gv7un8esttwmvm9" "0xaf7B6ac9BeeFDcfCd118
 		status=1
 	fi
 done
+# The networks caption sits DIRECTLY under its box — the row two below the
+# address (the box's bottom wall is the one between them) — so a reader who
+# has found an address has found where it may be sent without hunting.
+donate_caption_under() { # $1 address, $2 caption
+	printf '%s\n' "$donate_open" | grep -A2 -F "$1" | tail -1 |
+		sed 's/^[[:space:]]*//; s/[[:space:]]*$//' | grep -qxF "$2"
+}
+if ! donate_caption_under "bc1qhwamfrwuhz64pk00l75ykfff2ang22ns64chf7" "Network: Bitcoin (Native SegWit)"; then
+	echo "FAIL: Phase 112 — the BTC networks caption is not under its box" >&2
+	status=1
+fi
+if ! donate_caption_under "0xEAf6fbabB9DBE7a23BfE22A7A6c4aCe02063524b" \
+	"Networks: Ethereum, Linea, Base, Arbitrum, BNB Chain, OP, Polygon"; then
+	echo "FAIL: Phase 112 — the ETH networks caption is not under its box" >&2
+	status=1
+fi
+if ! donate_caption_under "Gwhv5c6uAa6aAz1MjwzV9QJpbm7CJWy2kuCeZ75mFc94" "Network: Solana"; then
+	echo "FAIL: Phase 112 — the SOL networks caption is not under its box" >&2
+	status=1
+fi
 # The page replaces the composer: its footer is off screen while it is up.
 if printf '%s' "$donate_open" | grep -qF "dummy_model_name ·"; then
 	echo "FAIL: Phase 112 — the footer is still on screen under the page" >&2
@@ -11553,7 +11577,7 @@ fi
 donate_clip="$(tmux show-buffer 2>/dev/null)"
 echo "==== Phase 112: tmux clipboard buffer (the OSC 52 fallback landed here) ===="
 printf '%s\n' "$donate_clip"
-if [ "$donate_clip" != "0xaf7B6ac9BeeFDcfCd118701a00be960a592600CB" ]; then
+if [ "$donate_clip" != "0xEAf6fbabB9DBE7a23BfE22A7A6c4aCe02063524b" ]; then
 	echo "FAIL: Phase 112 — the clipboard does not hold the ETH address verbatim" >&2
 	status=1
 fi
@@ -11587,7 +11611,7 @@ if ! printf '%s' "$donate_closed" | grep -qF "dummy_model_name ·"; then
 	echo "FAIL: Phase 112 — the composer and footer did not come back after Esc" >&2
 	status=1
 fi
-if printf '%s' "$donate_closed" | grep -qF "bc1q68v53mjj2uxg9qs5ke55qh4gv7un8esttwmvm9"; then
+if printf '%s' "$donate_closed" | grep -qF "bc1qhwamfrwuhz64pk00l75ykfff2ang22ns64chf7"; then
 	echo "FAIL: Phase 112 — the page is still on screen after Esc" >&2
 	status=1
 fi

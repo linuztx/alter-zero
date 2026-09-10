@@ -207,15 +207,24 @@ Everything Alter Zero remembers is in `~/.alter-zero/`: your sign-ins, the model
 
 ## Support the project
 
-Alter Zero is free and open source. If it earns a place in your terminal, a donation keeps the work going. `/donate` shows these addresses inside the app, each in a copyable box.
+Alter Zero is free and open source. If it earns a place in your terminal, a donation keeps the work going. `/donate` shows these addresses inside the app, each in a copyable box with its networks listed under it.
 
-| Coin | Address |
-| --- | --- |
-| BTC (Bitcoin) | `bc1q68v53mjj2uxg9qs5ke55qh4gv7un8esttwmvm9` |
-| ETH (Ethereum) | `0xaf7B6ac9BeeFDcfCd118701a00be960a592600CB` |
-| SOL (Solana) | `9hWaV4rTqNfF1c6mGDSnksMY1fqKuDU9iKymfbeSqXrA` |
+| Coin | Address | Networks |
+| --- | --- | --- |
+| BTC (Bitcoin) | `bc1qhwamfrwuhz64pk00l75ykfff2ang22ns64chf7` | Bitcoin (Native SegWit) |
+| ETH (Ethereum) | `0xEAf6fbabB9DBE7a23BfE22A7A6c4aCe02063524b` | Ethereum, Linea, Base, Arbitrum, BNB Chain, OP, Polygon |
+| SOL (Solana) | `Gwhv5c6uAa6aAz1MjwzV9QJpbm7CJWy2kuCeZ75mFc94` | Solana |
 
-Send each coin over its own network only; a transfer on any other network cannot be recovered. Thank you.
+> [!WARNING]
+> **Send each coin only over a network listed beside its address.** A transfer on any other network cannot be recovered — there is no support desk to reverse it.
+>
+> - **BTC** goes over **Bitcoin** only. The address is Native SegWit (bech32, `bc1…`).
+> - **ETH** and EVM tokens go over **Ethereum, Linea, Base, Arbitrum, BNB Chain, OP or Polygon** — the same address on each. No other chain.
+> - **SOL** and SPL tokens go over **Solana** only.
+>
+> Check the network your wallet has selected before you send, not after.
+
+Thank you.
 
 ## License
 

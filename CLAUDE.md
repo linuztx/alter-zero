@@ -185,10 +185,18 @@ browser's sibling, a read-only composer-replacing page with no text entry
 and the hidden cursor seated on its `❯`: a red heart over the
 banner-gradient `Support Alter Zero` title, a dim two-row blurb, each
 address as a numbered `❯ 1. BTC  Bitcoin` row (the ticker and the coin,
-never a network) over its rounded box (the `/login` device page's), the
-highlighted row and box lit in the accent, an amber wrong-network caution
-saying once that each coin goes over its own network, and Enter/`c`/a digit
-copying the highlighted address through `/copy`'s clipboard path with a
+never a network — the row stays one glance wide) over its rounded box (the
+`/login` device page's), the
+highlighted row and box lit in the accent, and **under** each box the dim
+`Networks: …` caption naming where that address is reachable — a list, not
+a name, because the one EVM address answers on Ethereum, Linea, Base,
+Arbitrum, BNB Chain, OP and Polygon alike, and a page naming only the first
+would leave the other six to a guess whose wrong answer is unrecoverable
+(the label agrees with the count — `Network: Solana` — and the caption
+wraps at the box's own inset rather than cutting a chain name); an amber
+caution then points at those captions, saying once that a coin goes only
+over a network listed under its address, and Enter/`c`/a digit
+copies the highlighted address through `/copy`'s clipboard path with a
 `Copied the BTC address to clipboard` toast while the page stays open; the
 catalog is the const `app::DONATION_ADDRESSES`, never a file, and the
 page is still, so it flows signed on its rows) in `docs/donate.md`; the
