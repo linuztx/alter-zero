@@ -1066,9 +1066,16 @@ one chrome (`ui::render_context_view` paints either) with the classifier
 page pulled live from the backend per draw via
 `ReplySource::classifier_context` (which is why `LlmBackend` holds the log
 behind an `Arc<Mutex<…>>` rather than a per-spawn local — it outlives the
-turn), over a mode note saying whether it is actually being consulted, each
-page keeping its own scroll, and Tab reaching it over an open permission
-prompt since the modal's key routing only runs in the conversation view)
+turn), over a mode note saying whether it is actually being consulted, under
+the classifier's own system prompt **abridged to its structure**
+(`ui::classifier_view::abridge_prompt` — every heading whole, each section's
+opening paragraph cut at `CLASSIFIER_PROMPT_PEEK_COLS`, the rest counted into
+a dim `… +N lines` row; injected from `ReplySource::classifier_system_prompt`,
+`None` for the dummy) and closed by the `## Action to review` header over a
+placeholder for the action itself, so the page reads as the request's real
+shape, each page keeping its own scroll, and Tab reaching it over an open
+permission prompt since the modal's key routing only runs in the conversation
+view)
 above the one `## Action to review`: the asked-about cell just keeps its `⎿ Waiting…`
 row while the verdict streams (silently — no UI events), an **allow** runs
 the call with a dim `⎿ Allowed by auto mode classifier` row appended to the

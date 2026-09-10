@@ -328,6 +328,14 @@ pub struct App {
     /// system-prompt pattern. `None` when the backend keeps no log (the
     /// dummy) or nothing has been recorded yet. See `docs/permissions.md`.
     pub(crate) classifier_context: Option<String>,
+    /// The auto mode classifier's **system prompt** — the fixed rubric every
+    /// verdict is judged by (`prompts/classifier.md`), injected at the
+    /// boundary beside [`system_prompt`](Self::system_prompt) (from
+    /// `ReplySource::classifier_system_prompt`) so the Ctrl+D classifier
+    /// page can show it, abridged to its structure, above the task context.
+    /// `None` for a backend with no classifier (the dummy). See
+    /// `docs/permissions.md`.
+    pub(crate) classifier_system_prompt: Option<String>,
     /// The active backend's system prompt, injected at the boundary
     /// ([`App::set_system_prompt`], from `ReplySource::system_prompt`) so the
     /// Ctrl+D view can show the *whole* context window. `None` for the dummy.
@@ -939,6 +947,22 @@ impl App {
     #[must_use]
     pub fn classifier_context(&self) -> Option<&str> {
         self.classifier_context.as_deref()
+    }
+
+    /// Inject the auto mode classifier's system prompt (from
+    /// `ReplySource::classifier_system_prompt`, beside every
+    /// [`set_system_prompt`](Self::set_system_prompt)) so the Ctrl+D
+    /// classifier page can show the rubric above the block.
+    /// See `docs/permissions.md`.
+    pub fn set_classifier_system_prompt(&mut self, prompt: Option<String>) {
+        self.classifier_system_prompt = prompt;
+    }
+
+    /// The injected classifier system prompt, if any
+    /// ([`set_classifier_system_prompt`](Self::set_classifier_system_prompt)).
+    #[must_use]
+    pub fn classifier_system_prompt(&self) -> Option<&str> {
+        self.classifier_system_prompt.as_deref()
     }
 
     /// Inject the prompt a launched subagent is sent (from

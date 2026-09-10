@@ -1253,6 +1253,11 @@ impl Session<'_> {
         // actually sent (docs/agent-tool.md).
         let prompt = self.models.backend().system_prompt();
         self.app.set_system_prompt(prompt);
+        // The classifier's rubric rides beside it for the Ctrl+D classifier
+        // page (docs/permissions.md). None for the dummy, which has no
+        // classifier.
+        let classifier_prompt = self.models.backend().classifier_system_prompt();
+        self.app.set_classifier_system_prompt(classifier_prompt);
         self.sync_agent_view_context();
         // The footer gauge + auto-compact window (docs/compact.md).
         let window = self.models.context_window();

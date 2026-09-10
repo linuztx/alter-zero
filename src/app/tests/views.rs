@@ -412,6 +412,23 @@ fn the_boundary_injects_the_rendered_classifier_context() {
     assert_eq!(app.classifier_context(), Some("## Task context"));
 }
 
+#[test]
+fn the_boundary_injects_the_classifier_system_prompt() {
+    // The rubric every verdict is judged by is the backend's (the dummy has
+    // none), so it reaches the App the way the main system prompt does —
+    // pushed in at the boundary, read by the page.
+    let mut app = App::new();
+    assert_eq!(app.classifier_system_prompt(), None);
+    app.set_classifier_system_prompt(Some("You are the reviewer.".to_string()));
+    assert_eq!(
+        app.classifier_system_prompt(),
+        Some("You are the reviewer.")
+    );
+    // Switching back to a backend without a classifier clears the old rubric.
+    app.set_classifier_system_prompt(None);
+    assert_eq!(app.classifier_system_prompt(), None);
+}
+
 // --- The animation-frame chain under an alternate-screen overlay
 // (docs/overlay-repaint.md) ---
 

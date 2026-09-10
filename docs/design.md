@@ -772,6 +772,13 @@ file-search worker ► tokio mpsc ───┘                           draw ti
   picker-row data (`docs/resume.md`).
 - `CommandMenu { selected }` — the open palette's highlight (`App::command_menu`,
   `None` when closed); the matches are derived from the input on demand.
+- The Ctrl+D classifier page shows the backend's classifier system prompt
+  above its live task context. `ReplySource::classifier_system_prompt` is
+  synced into `App` at startup and model switches; the dummy returns `None`.
+  The view keeps headings and up to 240 display columns of each opening
+  paragraph, with `… +N lines` for omitted detail. Task context remains
+  verbatim under `user:`, followed by the shared action-review header and a
+  placeholder for the next command or MCP call (`docs/permissions.md`).
 - `Message { role, text, timestamp }` — one finished message (the `timestamp` is
   displayed only for **user** messages, in the Ctrl+O transcript).
 - `ToolStatus { Running, Ok, Failed }` — a tool's lifecycle (pulsing grey while

@@ -753,6 +753,27 @@ pub(super) const CLASSIFIER_VIEW_NOTE_INACTIVE: &str =
 pub(super) const CLASSIFIER_VIEW_NOTE_OFF: &str =
     "Tool permissions are disabled — no classifier runs.";
 
+/// The display-column budget for each section's opening paragraph in the
+/// page's **abridged system prompt** (`ui::classifier_view::abridge_prompt`)
+/// — three rows of an 80-column terminal, enough to read what a section is
+/// about. The overflowing line is cut and closed with `…`; the section's
+/// remaining lines fold into the counted row under it. Shown whole, the
+/// 3.6 KB rubric would push the live block the page exists for sixty rows
+/// down (`docs/permissions.md`).
+pub(super) const CLASSIFIER_PROMPT_PEEK_COLS: usize = 240;
+
+/// The lead of the dim `… +N lines` row that counts a section's folded
+/// lines — the tool cell's [`TOOL_MORE_PREFIX`] idiom at the page's own
+/// indent and without its `(ctrl+o to expand)`, there being nothing to
+/// expand it into.
+pub(super) const CLASSIFIER_PROMPT_MORE_PREFIX: &str = "… ";
+
+/// The dim placeholder under the `## Action to review` header that closes
+/// the page's `user:` message: the request's real shape ends on the one
+/// action being judged, which is only known when a verdict is asked.
+pub(super) const CLASSIFIER_ACTION_PLACEHOLDER: &str =
+    "(the command or MCP call being judged — filled in when a verdict is asked)";
+
 /// The inset of an entry's raw text (and attachment rows) under its tag.
 pub(super) const CONTEXT_INDENT: &str = "  ";
 

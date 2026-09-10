@@ -42,6 +42,12 @@ use crate::stream::CancelToken;
 /// markdown seam every prompt uses, `docs/environment.md`).
 pub const CLASSIFIER_SYSTEM_PROMPT: &str = include_str!("../../prompts/classifier.md");
 
+/// The header the one action being judged sits under in the classifier's
+/// user message ([`classifier_prompt`]) — shared with the Ctrl+D classifier
+/// page, which draws the request's shape and closes on this header over a
+/// placeholder for the action (`docs/permissions.md`).
+pub const ACTION_TO_REVIEW_HEADER: &str = "## Action to review";
+
 /// The classifier's one user message: the working directory, the agent's
 /// stated description (a claim, the prompt says — omitted when it gave
 /// none), and the command itself, fenced so a multi-line command stays one
@@ -320,7 +326,7 @@ pub fn classifier_prompt(request: &PermissionRequest, cwd: &str, context: &str) 
     if context.is_empty() {
         return action;
     }
-    format!("{context}\n\n## Action to review\n{action}")
+    format!("{context}\n\n{ACTION_TO_REVIEW_HEADER}\n{action}")
 }
 
 /// Parse the classifier's reply against the output contract:
@@ -395,6 +401,16 @@ impl SafetyClassifier {
         }
     }
 
+    /// The system prompt every verdict is judged by, exactly as
+    /// [`classify`](Self::classify) sends it — surfaced through
+    /// `ReplySource::classifier_system_prompt` for the Ctrl+D classifier
+    /// page, which shows it abridged above the task context
+    /// (`docs/permissions.md`).
+    #[must_use]
+    pub fn system_prompt(&self) -> &'static str {
+        CLASSIFIER_SYSTEM_PROMPT.trim()
+    }
+
     /// Classify one request — a `bash` command or an MCP tool call: one
     /// silent streaming completion (no events reach the UI — the asked-about
     /// cell keeps its `⎿ Waiting…` row), the reply parsed against the output
@@ -414,7 +430,7 @@ impl SafetyClassifier {
         cancel: &CancelToken,
     ) -> Result<ClassifierVerdict, String> {
         let messages = vec![
-            super::ChatMessage::system(CLASSIFIER_SYSTEM_PROMPT.trim()),
+            super::ChatMessage::system(self.system_prompt()),
             super::ChatMessage::user(classifier_prompt(request, &self.cwd, context)),
         ];
         let outcome = self
@@ -757,6 +773,10 @@ mod tests {
         let prompt = classifier_prompt(&request, "/p", &context.render());
         let task_at = prompt.find("## Task context").expect("task block");
         let review_at = prompt.find("## Action to review").expect("review header");
+        // The header is one constant, shared with the Ctrl+D classifier page
+        // that draws the request's shape — so the two can never drift.
+        assert_eq!(ACTION_TO_REVIEW_HEADER, "## Action to review");
+        assert_eq!(prompt.find(ACTION_TO_REVIEW_HEADER), Some(review_at));
         assert!(task_at < review_at, "context precedes the action: {prompt}");
         assert!(
             prompt.contains("```\nls -la\n```"),

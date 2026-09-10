@@ -904,6 +904,13 @@ impl ReplySource for LlmBackend {
         self.turn_context.lock().ok().map(|log| log.render())
     }
 
+    /// The classifier's system prompt — what its `classify` sends, trimmed
+    /// the way it sends it — for the Ctrl+D classifier page
+    /// (`docs/permissions.md`).
+    fn classifier_system_prompt(&self) -> Option<String> {
+        Some(self.classifier.system_prompt().to_string())
+    }
+
     fn system_prompt(&self) -> Option<String> {
         self.system_prompt.clone()
     }
@@ -1939,6 +1946,18 @@ mod tests {
         assert_eq!(
             ReplySource::system_prompt(&backend).as_deref(),
             Some("be nice")
+        );
+    }
+
+    #[test]
+    fn backend_surfaces_the_classifier_prompt_for_the_debug_view() {
+        // The Ctrl+D classifier page shows the rubric every verdict is judged
+        // by — exactly the system message `SafetyClassifier::classify` sends,
+        // trimmed the way it sends it.
+        let backend = LlmBackend::configure(ModelConfig::fallback(), None, false);
+        assert_eq!(
+            ReplySource::classifier_system_prompt(&backend).as_deref(),
+            Some(crate::llm::classifier::CLASSIFIER_SYSTEM_PROMPT.trim())
         );
     }
 

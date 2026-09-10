@@ -104,6 +104,19 @@ pub trait ReplySource {
         None
     }
 
+    /// The **auto mode classifier's system prompt** — the fixed rubric every
+    /// verdict is judged by, exactly as the classifier is sent it — surfaced
+    /// beside [`classifier_context`](ReplySource::classifier_context) so the
+    /// Ctrl+D classifier page can show what the reviewer is *told* above
+    /// what it is *shown*, abridged to its structure (`docs/permissions.md`).
+    /// A constant per backend, so the boundary reads it when it reads
+    /// [`system_prompt`](ReplySource::system_prompt) rather than per draw.
+    /// `None` when the backend has no classifier — the dummy, whose offline
+    /// auto-mode demo answers from a pure heuristic.
+    fn classifier_system_prompt(&self) -> Option<String> {
+        None
+    }
+
     /// Send a chat message into a running/settled subagent's session
     /// (`docs/agent-tool.md`, `docs/queue.md`). The backend's registry — the
     /// only thing that knows whether the loop is still running — decides

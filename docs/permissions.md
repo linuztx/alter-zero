@@ -513,15 +513,40 @@ of the Ctrl+D view** — Tab flips between them:
 / C L A S S I F I E R / / / / / / / / / / / / / / / / / / / / / / / / / / /
 Auto mode — the classifier reads this before each command or MCP call.
 
-## Task context
-User requests (oldest first; the last is the current task):
-> set up the project
-> now clean up the build output
+system prompt:
+  You are the safety classifier for an autonomous AI coding agent in auto
+  mode: it runs shell commands and MCP tool calls without asking the user,
+  and you decide — one action at a time — whether the action runs or is blocked.
+  … +6 lines
 
-Recent actions (oldest first):
-- Read(/home/user/proj/Makefile)
-- Bash(make)
-- Bash(sudo rm -rf /var/log) — denied, not run
+  ## Shell commands
+  Allow ordinary, project-scoped development work: reading, searching and
+  listing files; `git` work in the working directory; building, testing, lin…
+  … +8 lines
+
+  ## MCP tool calls
+  For a tool exposed by an MCP server — named `server - tool`, with the
+  server's description and the call's arguments:
+  … +8 lines
+
+  ## Output Format
+  If the action should be blocked:
+  <block>yes</block><reason>one short sentence</reason>
+  … +4 lines
+
+user:
+  ## Task context
+  User requests (oldest first; the last is the current task):
+  > set up the project
+  > now clean up the build output
+
+  Recent actions (oldest first):
+  - Read(/home/user/proj/Makefile)
+  - Bash(make)
+  - Bash(sudo rm -rf /var/log) — denied, not run
+
+  ## Action to review
+  (the command or MCP call being judged — filled in when a verdict is asked)
 ~
 ──────────────────────────────────────────────────────────── 100% ─
  ↑/↓ to scroll   pgup/pgdn to page   home/end to jump
@@ -533,7 +558,38 @@ actually sending* — one the model's own context window, the other its
 reviewer's — so they share the chrome (`ui::render_context_view` paints
 either; only the title, the scroll offset and the direction of the Tab hint
 differ) and differ only in the body `ui::classifier_lines` /
-`ui::context_lines` build. Four details earn their keep:
+`ui::context_lines` build. The page follows these rules:
+
+- **The rubric, abridged.** The block is only half of what the reviewer
+  sees — the other half is the system prompt it judges by
+  (`prompts/classifier.md`), and a reader who cannot see it can tell *that*
+  a command was blocked but not against what. So the page draws the request
+  the way its sibling does: the amber `system prompt:` tag over the prompt,
+  then the block under a `user:` tag, closed by the `## Action to review`
+  header over a dim placeholder for the one part of the message that is only
+  known when a verdict is asked (the header is one constant,
+  `classifier::ACTION_TO_REVIEW_HEADER`, shared with `classifier_prompt`, so
+  the page and the request cannot drift). The prompt is **abridged to its
+  structure** rather than shown whole — 3.6 KB of rubric is sixty rows,
+  which would push the live block the page exists for off the screen:
+  `ui::classifier_view::abridge_prompt` keeps every heading whole (the
+  sections *are* the structure), each section's opening paragraph up to
+  `CLASSIFIER_PROMPT_PEEK_COLS` (240 — three rows of an 80-column terminal;
+  whole lines while they fit, the overflowing line cut and closed with `…`),
+  and folds the rest of the section into a dim, counted `… +N lines` row —
+  the tool cell's idiom minus its `(ctrl+o to expand)`, since there is
+  nothing to expand it into — so nothing vanishes silently
+  (`the_real_prompt_abridges_to_its_four_sections` pins that every content
+  line of the real prompt is either shown or counted). It reaches the page
+  the way the main prompt does: `ReplySource::classifier_system_prompt`
+  (`LlmBackend` answering with exactly what `SafetyClassifier::classify`
+  sends; the dummy's default `None`, since it has no classifier) synced into
+  `App::classifier_system_prompt` at startup and on a `/model` switch
+  (`sync_backend_info` — a constant per backend needs no per-draw pull). A
+  subagent's page shows the same prompt over its own block, since every
+  classifier sends the same one. Role tags, fold markers, and placeholders
+  wrap along with the body; very narrow screens drop the indent so it cannot
+  consume the available text width.
 
 - **Whose window it is.** Inside an agent session view the page shows **that
   agent's** context, not the lead's — its own launch prompt as the request,
@@ -588,12 +644,14 @@ That live read is why `LlmBackend` holds the `ClassifierContext` behind an
 halves are windows over the conversation), `spawn` pushes each user message
 onto it, the tool closures append, and the boundary reads it out. The dummy
 backend keeps no log — its offline auto-mode demo answers from the pure
-`permission::auto_verdict` heuristic — so the page shows its dim
-`No classifier context yet` placeholder there, under the same mode note.
+`permission::auto_verdict` heuristic, and injects no prompt either — so the
+page shows its dim `No classifier context yet` placeholder there, under the
+same mode note and with no `system prompt:` section above it: the page never
+invents a rubric a backend does not send.
 
-A **subagent** keeps its own context (seeded from its launch prompt), and
-that one is not surfaced: the page shows the lead's. Its own verdicts read
-its own log, exactly as the lead's read the lead's.
+A **subagent** keeps its own context (seeded from its launch prompt), which
+the page shows while viewing that agent. Its own verdicts read its own log,
+under the same classifier system prompt as the lead.
 
 ## The scratchpad exemption
 
@@ -862,6 +920,19 @@ explains itself with a toast instead of pretending to toggle anything.
   parse (noise/case/whitespace tolerated; no verdict → error, never allow).
   `llm/agent.rs` — a noted approval emits `ToolStart → ToolNote → ToolEnd`
   and still runs the call.
+- `ui/tests/classifier_view.rs` — the Ctrl+D classifier page: the mode note
+  per mode, the block verbatim under its `user:` tag, the system prompt
+  abridged above it (`abridge_prompt` keeps headings and cut opening
+  paragraphs and counts the rest — the real prompt abridging to its four
+  sections with every content line either shown or counted), the
+  `## Action to review` slot closing the message, no prompt section when
+  none is injected, and every row fitting a narrow width.
+- `tests/live_classifier.rs` — opt-in Venice verification of the displayed
+  prompt against the runtime prompt, followed by synthetic allow/block
+  verdicts for harmless output, recursive home deletion, and secret upload.
+  These are classification requests only; no command is executed. With
+  `A0_VENICE_API_KEY` in the environment, run
+  `cargo test --test live_classifier -- --ignored --nocapture`.
 - `app/tests` — opening stashes and closing restores the draft, the key map
   (↑/↓/1/2/3/Tab/Esc/ctrl+e — a bare `a` now does nothing; Shift+Tab takes the
   remember option on a file prompt, toggles the mode on a bash prompt and
