@@ -1394,15 +1394,14 @@ rather than `rm -rf` — but **never into an `ALTER_ZERO_SKILLS_DIR` override**,
 the one place the two seeds differ: that variable says *only these*, and a
 built-in skill is a convenience the session works without where a built-in
 agent *type* must resolve (`general-purpose` is the `agent` schema's default).
-It is **two files** because the loader's own substitution runs over the body:
-a body that documents `$ARGUMENTS` or `${…SKILL_DIR}` has them rewritten out
-from under it — the first live run read the caller's own arguments where the
-file said `$ARGUMENTS`, and got the same path twice for the sentence naming
-both skill-dir spellings — so detail that must survive verbatim lives in the
+It is **two files** because the loader's own expansion runs over the body:
+a body that documents `${…SKILL_DIR}` has it rewritten out from under it —
+the first live run got the same path twice for the sentence naming both
+skill-dir spellings — so detail that must survive verbatim lives in the
 `reference.md` beside it, which the model **reads** (the multi-file pattern the
 skill teaches, demonstrated rather than described), with
 `no_built_in_body_carries_a_placeholder_the_loader_would_eat` rendering every
-built-in with arguments and requiring the body back byte-for-byte. The walk
+built-in and requiring the body back byte-for-byte. The walk
 re-runs at **every turn start**
 (`Session::rescan_skills`, beside the `AGENTS.md` refresh): a startup-only
 discovery froze the session at what it booted with — a skill you added, or one
@@ -1432,9 +1431,15 @@ A call resolves through the **`ToolOutcome::context` two-text split the ask
 tool already had** rather than a parallel mechanism: `output` is the whole
 visible surface — `● Skill(dataviz)` over one green `⎿ Successfully loaded
 skill` — while `context` is the rendered body (its `Base directory` header,
-`$ARGUMENTS`/`$1`…`$9` substitution — non-placeholder args appended as an
-`Arguments:` line so none is silently dropped — `${…SKILL_DIR}` expansion,
-100 KiB cap), so the green `ToolAnswered` path, `ToolCall::context_output`,
+`${…SKILL_DIR}` expansion, 100 KiB cap — and **nothing else**: the schema is
+`{"skill": "<name>"}` alone, the reference's optional `args` string and the
+`$ARGUMENTS`/`$1`…`$9` substitution pass it fed deliberately retired, since
+that pass rewrote the body's own prose (it is what forced `skill-creator`
+into two files), nothing but the model's own guess ever supplied it — a `$name`
+mention is plain text carrying no parameter — and a schema parameter is one
+the model weighs and fills on every call; a resumed rollout's older
+`{"skill": …, "args": …}` still loads, serde ignoring the unknown field),
+so the green `ToolAnswered` path, `ToolCall::context_output`,
 the context replay, the rollout round-trip and Ctrl+D all come for free;
 Ctrl+O keeps the one line too (the transcript is what *happened*, Ctrl+D what
 was *sent* — the rule every other two-text call follows), and the replay

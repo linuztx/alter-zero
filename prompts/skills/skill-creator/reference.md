@@ -4,25 +4,17 @@ The exact tokens the skill loader rewrites, and the limits it enforces. This
 is a **read** file, not a loaded body: what is written here reaches you
 verbatim, which is why it is here rather than in `SKILL.md`.
 
-## Argument substitution
+## Arguments
 
-A `skill` call may carry an `args` string. Before the body is handed to the
-model, the loader rewrites, in the body text:
+There are none. A `skill` call carries exactly one field — `skill`, the name —
+and the loader performs **no** argument substitution: `$ARGUMENTS`, `$1` … `$9`
+and every other `$`-token are ordinary body text that reaches the model as
+written.
 
-| Token | Becomes |
-|---|---|
-| `$ARGUMENTS` | the whole `args` string |
-| `$1` … `$9` | `args` split on whitespace, one token each; an absent slot becomes empty |
-
-If the body contains **none** of those tokens and `args` was non-empty, the
-loader appends one final line instead:
-
-```
-Arguments: <the args string>
-```
-
-so an argument is never silently dropped. A body that uses `$1` but not `$2`
-gets no appended line — one placeholder counts as substituted.
+Give a skill everything it needs in its own body, or have the body say which
+file to read for the rest. If a skill needs a value that varies per run, ask
+for it in the body ("ask the user which branch to review") rather than
+expecting a parameter.
 
 ## The skill's own directory
 
@@ -43,14 +35,16 @@ command line the model will run.
 
 ## The trap this file exists for
 
-The substitutions above run over the **whole body**, including its prose, its
-code fences and its examples. A skill body therefore cannot document these
-tokens: writing `$ARGUMENTS` in a body produces the caller's arguments, and
-writing the skill-dir token produces a path. The instructions come out looking
-correct and saying something else.
+The skill-dir expansion above runs over the **whole body**, including its
+prose, its code fences and its examples. A skill body therefore cannot document
+those two tokens: writing one produces a path, so the instructions come out
+looking correct and saying something else.
 
-When a body must show one of these tokens literally, put that part in a file
-beside `SKILL.md` — like this one — and have the body say to read it.
+When a body must show one of them literally, put that part in a file beside
+`SKILL.md` — like this one — and have the body say to read it. (`$ARGUMENTS`
+used to be caught by the same trap. It no longer is: with the `args` parameter
+retired there is no substitution pass, so that token is safe in a body — the
+skill-dir tokens are the only ones left that are not.)
 
 ## Limits
 

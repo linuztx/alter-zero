@@ -892,7 +892,7 @@ pub(in crate::stream) fn skills_turn(cue: &Cue) -> Vec<StreamEvent> {
     // recorded call keeps both and Ctrl+D shows what was really sent.
     events.push(StreamEvent::ToolAnswered {
         display: crate::skills::SKILL_LOADED_DISPLAY.to_string(),
-        result: crate::skills::render_skill_body(std::path::Path::new(SKILL_DIR), SKILL_BODY, ""),
+        result: crate::skills::render_skill_body(std::path::Path::new(SKILL_DIR), SKILL_BODY),
         truncated: false,
     });
     events.extend(say(&second));

@@ -198,7 +198,6 @@ use alter_zero::skills::{
     render_skill_body,
     shell_flavored_query,
     skill_listing,
-    substitute_arguments,
     unreported_errors,
     validate_skill_name,
 };
