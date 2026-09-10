@@ -126,9 +126,12 @@ unit-tested must be unit-tested.
   clicking any *fragment* of a wrapped URL opens the full target. (A URL wider
   than its row hard-breaks visually — a narrow terminal, a table column — and
   the terminal's own per-row detection used to open just the first fragment:
-  `https://github.com/linuz` off a `…/linuztx` link.) The visible text, wrap
-  and styling are unchanged; a terminal without OSC 8 consumes the escape and
-  behaves exactly as before. The URL rides from the renderer (where it is
+  `https://github.com/linuz` off a `…/linuztx` link.) The visible text and
+  wrap are unchanged, and the dress is scoped to the link itself: a
+  `[text](url)` suffix's decoration `(`/`)` keep the surrounding prose's
+  colour rather than the target's blue + underline, so the run the eye reads
+  as the link is the run a click opens. A terminal without OSC 8 consumes the
+  escape and behaves exactly as before. The URL rides from the renderer (where it is
   still whole) to the paint boundary in `Style::underline_color` as an
   interned 24-bit id, stripped at emission — `docs/links.md`. A
   `● Read/Write/Edit({path})` header's path links the same way to the

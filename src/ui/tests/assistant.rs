@@ -499,3 +499,53 @@ fn selecting_highlights_the_whole_row_in_one_consistent_colour() {
         assert!(!plain(line).contains('❯'), "no caret: {:?}", plain(line));
     }
 }
+
+#[test]
+fn a_code_labelled_link_marks_only_the_two_names() {
+    // The reported render: `` "[`AGENTS.md`](AGENTS.md)" `` shows
+    // `"AGENTS.md (AGENTS.md)"` — the label keeps its inline-code colour, the
+    // shown target the link dress, and the quotes and parens around them stay
+    // plain prose. Both names carry the verbatim target; nothing else does,
+    // at every width, the hard-breaking one included.
+    let source = "\"[`AGENTS.md`](AGENTS.md)\"";
+    for width in [8, 26, 80] {
+        let lines = message_lines(Role::Assistant, source, width);
+        let spans: Vec<_> = lines.iter().flat_map(|line| &line.spans).collect();
+        let mut linked = String::new();
+        let mut parens = String::new();
+        for span in &spans {
+            if let Some(target) = crate::links::style_link(&span.style) {
+                assert_eq!(target.as_ref(), "AGENTS.md", "at width {width}");
+                linked.push_str(&span.content);
+            }
+            if span.content.contains(['(', ')']) {
+                parens.extend(span.content.chars().filter(|c| matches!(c, '(' | ')')));
+                assert_eq!(span.style, Style::default(), "prose at {width}: {span:?}");
+            }
+        }
+        assert_eq!(linked, "AGENTS.mdAGENTS.md", "both names link at {width}");
+        assert_eq!(parens, "()", "exactly one pair of parens at {width}");
+        // The label keeps its own inline-code dress — a hard break splits it
+        // into fragments, so read the colour off the run, not one span.
+        let labelled: String = spans
+            .iter()
+            .filter(|s| s.style.fg == Some(inline_code_color()))
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert_eq!(
+            labelled, "AGENTS.md",
+            "the code label at {width}: {spans:?}"
+        );
+    }
+    // Wide enough not to hard-break, the row reads exactly as before the
+    // parens lost the link dress — this fix moves no character.
+    let joined: String = message_lines(Role::Assistant, source, 80)
+        .iter()
+        .flat_map(|line| &line.spans)
+        .map(|s| s.content.as_ref())
+        .collect();
+    assert!(
+        joined.ends_with("\"AGENTS.md (AGENTS.md)\""),
+        "visible text unchanged: {joined:?}"
+    );
+}

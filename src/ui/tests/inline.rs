@@ -145,3 +145,43 @@ fn wrap_keeps_the_target_on_every_fragment_of_a_hard_broken_url() {
     let rejoined: String = fragments.iter().map(|(t, _)| t.as_str()).collect();
     assert_eq!(rejoined, url, "the fragments are exactly the URL's text");
 }
+
+#[test]
+fn a_markdown_targets_decoration_parens_stay_prose() {
+    // The reported bug (`docs/links.md` *The decoration parens*): the ` (`
+    // and `)` framing the shown target wore the link's own colour and
+    // underline, so the eye read the brackets as part of the link — while a
+    // click, which only the *marked* run carries, opened the URL without
+    // them. They are decoration the renderer adds, not link text: prose
+    // dress, no carrier. A bare URL in prose parens — `(https://x.com/y)` —
+    // already read that way, so this is also what makes the two agree.
+    let base = Style::new().fg(crate::ui::theme::ai_color());
+    let segs = inline_spans(&parse_inline("see [docs](https://x.com/d) ok"), base);
+    let joined: String = segs.iter().map(|(t, _)| t.as_str()).collect();
+    assert_eq!(joined, "see docs (https://x.com/d) ok", "text unchanged");
+    for (text, style) in &segs {
+        if text.contains(['(', ')']) {
+            assert_eq!(*style, base, "the parens keep the prose dress: {text:?}");
+            assert_eq!(style_link(style), None, "and carry no target: {text:?}");
+        }
+    }
+    // The target between them still wears the link dress and the carrier.
+    let (_, url_style) = segs
+        .iter()
+        .find(|(t, _)| t == "https://x.com/d")
+        .expect("the shown URL segment");
+    assert_eq!(url_style.fg, Some(link_url_color()));
+    assert!(url_style.add_modifier.contains(Modifier::UNDERLINED));
+    assert_eq!(style_link(url_style).as_deref(), Some("https://x.com/d"));
+    // And the wrap can't smuggle the dress back in at any width: a row's
+    // spans are re-coalesced per style, so a paren that kept the link
+    // colour would come back as its own underlined span.
+    for width in [5, 12, 80] {
+        for span in wrap_inline(&segs, width).iter().flatten() {
+            if span.content.contains(['(', ')']) {
+                assert_eq!(span.style, base, "wrapped at {width}: {span:?}");
+                assert_eq!(style_link(&span.style), None, "wrapped at {width}");
+            }
+        }
+    }
+}
