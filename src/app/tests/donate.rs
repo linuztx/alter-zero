@@ -27,13 +27,71 @@ fn the_catalog_lists_btc_eth_then_sol_with_the_project_addresses() {
     assert_eq!(tickers, ["BTC", "ETH", "SOL"]);
     let btc = DONATION_ADDRESSES[0];
     assert_eq!(btc.coin, "Bitcoin");
-    assert_eq!(btc.address, "bc1q68v53mjj2uxg9qs5ke55qh4gv7un8esttwmvm9");
+    assert_eq!(btc.address, "bc1qhwamfrwuhz64pk00l75ykfff2ang22ns64chf7");
     let eth = DONATION_ADDRESSES[1];
     assert_eq!(eth.coin, "Ethereum");
-    assert_eq!(eth.address, "0xaf7B6ac9BeeFDcfCd118701a00be960a592600CB");
+    assert_eq!(eth.address, "0xEAf6fbabB9DBE7a23BfE22A7A6c4aCe02063524b");
     let sol = DONATION_ADDRESSES[2];
     assert_eq!(sol.coin, "Solana");
-    assert_eq!(sol.address, "9hWaV4rTqNfF1c6mGDSnksMY1fqKuDU9iKymfbeSqXrA");
+    assert_eq!(sol.address, "Gwhv5c6uAa6aAz1MjwzV9QJpbm7CJWy2kuCeZ75mFc94");
+}
+
+#[test]
+fn every_entry_names_the_networks_its_address_is_reachable_on() {
+    // The one question the page must answer beside the address itself:
+    // *where* may this be sent? A wrong-network transfer is unrecoverable,
+    // so an entry with no network named would be an entry the caution
+    // cannot cover.
+    let btc = DONATION_ADDRESSES[0];
+    assert_eq!(btc.networks, ["Bitcoin (Native SegWit)"]);
+    let eth = DONATION_ADDRESSES[1];
+    assert_eq!(
+        eth.networks,
+        [
+            "Ethereum",
+            "Linea",
+            "Base",
+            "Arbitrum",
+            "BNB Chain",
+            "OP",
+            "Polygon",
+        ],
+        "the one EVM address is reachable on every chain the wallet exposes"
+    );
+    let sol = DONATION_ADDRESSES[2];
+    assert_eq!(sol.networks, ["Solana"]);
+}
+
+#[test]
+fn every_network_name_is_a_bare_printable_label() {
+    // The names are read off the page and typed into a wallet's network
+    // picker: an empty one, a stray newline or a leading/trailing space
+    // would render as a gap the reader has to guess at.
+    for entry in DONATION_ADDRESSES {
+        assert!(
+            !entry.networks.is_empty(),
+            "{}: an address with no network named",
+            entry.ticker
+        );
+        for network in entry.networks {
+            assert!(
+                !network.trim().is_empty(),
+                "{}: empty network name",
+                entry.ticker
+            );
+            assert_eq!(
+                *network,
+                network.trim(),
+                "{}: {network:?} carries padding",
+                entry.ticker
+            );
+            assert!(
+                !network.contains('\n'),
+                "{}: {network:?} spans rows",
+                entry.ticker
+            );
+        }
+    }
 }
 
 #[test]

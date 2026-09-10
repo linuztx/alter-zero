@@ -4,9 +4,10 @@
 //! `❯` marker on the highlighted row, the dim hint — over the const
 //! donation-address catalog. [`donate_view_lines`] builds the whole framed
 //! body line by line, so the height is content-driven and falls out as
-//! `lines.len()`: the blurb and the caution wrap to the width, and on a
-//! terminal too narrow to seat an address whole it wraps **inside** its box
-//! rather than overflowing the frame. What sits in the frame is built from
+//! `lines.len()`: the blurb, each address's networks caption and the
+//! caution all wrap to the width, and on a terminal too narrow to seat an
+//! address whole it wraps **inside** its box rather than overflowing the
+//! frame. What sits in the frame is built from
 //! parts the chrome already has — the banner's gradient on the title
 //! ([`gradient_spans`]), the `/login` device page's rounded box around each
 //! address — so the page reads as this app's rather than a form pasted into
@@ -43,7 +44,9 @@ fn title_line(width: u16) -> Line<'static> {
 /// palette's whole-row rule), the muted ink and a blank marker on the
 /// others; the ticker bold either way, the coin name dim and `…`-cut to the
 /// room left (it is the one part of the row that can give). Nothing follows
-/// the coin: the row says what the address is for, never a network.
+/// the coin — the row says what the address is *for*, and where it may be
+/// sent is the caption under its box ([`network_rows`]), which keeps this
+/// row one glance wide however many chains an address answers on.
 fn label_line(index: usize, entry: &DonationAddress, selected: bool, width: u16) -> Line<'static> {
     let accent = Style::new().fg(model_selected_color());
     let dim = Style::new().fg(model_meta_color());
@@ -147,6 +150,46 @@ fn address_box(entry: &DonationAddress, selected: bool, width: u16) -> Vec<Line<
     lines
 }
 
+/// The networks caption under an address's box: `Networks: Ethereum, Linea,
+/// …` — the answer to the question the caution asks. It sits with the
+/// address rather than on the label row above the box for two reasons: the
+/// label stays scannable (`2. ETH  Ethereum` is one glance), and a caption
+/// *under* the box reads as a note about the thing above it, which is what
+/// it is. Indented to the box's own left wall for that reason, and wrapped
+/// there — seven chain names do not fit a narrow pane, and a network the
+/// reader cannot see is a network they cannot know is safe.
+///
+/// Dim on every row, selected or not, like the coin name it continues: the
+/// accent belongs to the selection alone, and lighting the caption too
+/// would leave the box's border competing with it for the eye.
+///
+/// An entry with no networks would render a dangling `Network:` here; it
+/// cannot happen, and the guard is the catalog test rather than a branch —
+/// `DONATION_ADDRESSES` is the one caller and every entry in it is pinned
+/// non-empty, so an empty one fails the build instead of the page.
+fn network_rows(entry: &DonationAddress, width: u16) -> Vec<Line<'static>> {
+    let indent = format!("{MODEL_INDENT}{DEVICE_BOX_INDENT}");
+    let label = if entry.networks.len() == 1 {
+        DONATE_NETWORK_LABEL
+    } else {
+        DONATE_NETWORKS_LABEL
+    };
+    let text = format!("{label}{}", entry.networks.join(DONATE_NETWORK_SEPARATOR));
+    let room = (width as usize).saturating_sub(cols(&indent)).max(1) as u16;
+    super::wrap::wrap_text(&text, room)
+        .into_iter()
+        .map(|row| {
+            clamp_spans(
+                vec![
+                    Span::raw(indent.clone()),
+                    Span::styled(row, Style::new().fg(model_meta_color())),
+                ],
+                width as usize,
+            )
+        })
+        .collect()
+}
+
 /// The whole framed page as lines: a top rule, the gradient title, the dim
 /// blurb, one labelled box per address, the amber caution, the key hint,
 /// and a bottom rule — built as **blocks** joined by exactly one blank row
@@ -167,6 +210,7 @@ pub fn donate_view_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     for (i, entry) in DONATION_ADDRESSES.iter().enumerate() {
         let mut block = vec![label_line(i, entry, i == selected, width)];
         block.extend(address_box(entry, i == selected, width));
+        block.extend(network_rows(entry, width));
         blocks.push(block);
     }
     blocks.push(model_wrapped_rows(

@@ -4,7 +4,8 @@ use super::*;
 use crate::app::DONATION_ADDRESSES;
 use crate::ui::donate_view::{donate_menu_rows, donate_view_lines};
 use crate::ui::theme::{
-    border_color, donate_address_color, donate_caution_color, error_color, model_selected_color,
+    border_color, donate_address_color, donate_caution_color, error_color, model_meta_color,
+    model_selected_color,
 };
 
 /// An app with session info and the page open (the ordinary shape).
@@ -53,9 +54,12 @@ fn the_page_is_framed_with_title_blurb_rows_boxes_caution_and_hint() {
         "♥ Support Alter Zero",
         "Free and open source",
         "❯ 1. BTC  Bitcoin",
+        "Network: Bitcoin (Native SegWit)",
         "  2. ETH  Ethereum",
+        "Networks: Ethereum, Linea, Base, Arbitrum, BNB Chain, OP, Polygon",
         "  3. SOL  Solana",
-        "Send each coin over its own network only",
+        "Network: Solana",
+        "Send each coin only over a network listed under its address",
         "cannot be recovered",
         "↑↓ navigate  enter/c copy address  esc close",
     ] {
@@ -75,10 +79,11 @@ fn the_page_is_framed_with_title_blurb_rows_boxes_caution_and_hint() {
 
 #[test]
 fn each_row_names_the_ticker_and_the_coin_and_nothing_after() {
-    // The label is `{n}. {TICKER}  {coin}` and stops there: no network
-    // clause rides the row, so the address is the only thing that says
-    // where a coin goes. Checked as the whole trimmed row rather than a
-    // substring, so a clause appended after the coin fails here.
+    // The label is `{n}. {TICKER}  {coin}` and stops there: the networks
+    // ride the caption under the box, not the row, so the row stays one
+    // glance wide however many chains an address answers on. Checked as
+    // the whole trimmed row rather than a substring, so a clause appended
+    // after the coin fails here.
     let texts = texts(&open_app(), 80);
     for (i, entry) in DONATION_ADDRESSES.iter().enumerate() {
         let marker = if i == 0 { "❯ " } else { "" };
@@ -89,6 +94,95 @@ fn each_row_names_the_ticker_and_the_coin_and_nothing_after() {
             entry.ticker
         );
     }
+}
+
+#[test]
+fn a_networks_caption_sits_under_each_box_naming_where_the_address_is_reachable() {
+    // The label row says *what* the address is for; the caption under the
+    // box says *where* it may be sent. It is the answer to the caution's
+    // question, so it sits with the address rather than in a footnote —
+    // and its label agrees with the count: one network is a `Network:`.
+    let texts = texts(&open_app(), 100);
+    for entry in DONATION_ADDRESSES {
+        let row = address_row(&texts, entry.address);
+        let label = if entry.networks.len() == 1 {
+            "Network: "
+        } else {
+            "Networks: "
+        };
+        let expect = format!("{label}{}", entry.networks.join(", "));
+        assert_eq!(
+            texts[row + 2].trim(),
+            expect,
+            "{}: the caption sits directly under the box: {texts:?}",
+            entry.ticker
+        );
+    }
+}
+
+#[test]
+fn the_networks_caption_aligns_with_its_box_and_stays_dim() {
+    // It reads as a caption of the box above it, so it is inset to the
+    // box's own left wall and wears the meta ink the coin name does —
+    // never the accent, which belongs to the selection alone.
+    for selected in 0..DONATION_ADDRESSES.len() {
+        let app = open_at(selected);
+        let lines = donate_view_lines(&app, 100);
+        let texts: Vec<String> = lines.iter().map(plain).collect();
+        for entry in DONATION_ADDRESSES {
+            let row = address_row(&texts, entry.address);
+            let box_indent = texts[row - 1].len() - texts[row - 1].trim_start().len();
+            let caption = &texts[row + 2];
+            assert_eq!(
+                caption.len() - caption.trim_start().len(),
+                box_indent,
+                "{}: the caption aligns with the box's wall",
+                entry.ticker
+            );
+            for span in lines[row + 2]
+                .spans
+                .iter()
+                .filter(|s| !s.content.trim().is_empty())
+            {
+                assert_eq!(
+                    span.style.fg,
+                    Some(model_meta_color()),
+                    "{}: the caption is dim, selection {selected}",
+                    entry.ticker
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn a_narrow_terminal_wraps_the_networks_caption_rather_than_cutting_it() {
+    // Seven chain names do not fit a 40-column pane: the caption wraps and
+    // every network still reads back, because a name the reader cannot see
+    // is a network they cannot know is safe. (The address wraps inside its
+    // box at this width too, so the caption is found by its own label.)
+    let width = 40u16;
+    let texts = texts(&open_app(), width);
+    let eth = DONATION_ADDRESSES[1];
+    let head = texts
+        .iter()
+        .position(|t| t.trim().starts_with("Networks:"))
+        .unwrap_or_else(|| panic!("the ETH caption is on the page: {texts:?}"));
+    let rows: Vec<&str> = texts
+        .iter()
+        .skip(head)
+        .take_while(|t| !t.trim().is_empty())
+        .map(|t| t.trim())
+        .collect();
+    assert_eq!(
+        rows.join(" "),
+        format!("Networks: {}", eth.networks.join(", ")),
+        "the wrapped rows read back as the whole caption: {texts:?}"
+    );
+    assert!(
+        rows.len() > 1,
+        "the caption actually wrapped at {width} columns: {texts:?}"
+    );
 }
 
 #[test]

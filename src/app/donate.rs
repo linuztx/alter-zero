@@ -13,10 +13,17 @@
 use super::*;
 
 /// One donation address: the coin's ticker (`BTC`), its name (`Bitcoin`),
-/// and the address itself — copied verbatim, so it is bare ASCII with no
-/// whitespace (the catalog tests pin that). No network rides the entry:
-/// every address is on its coin's own network, which the page's caution
-/// says once for all of them.
+/// the address itself — copied verbatim, so it is bare ASCII with no
+/// whitespace (the catalog tests pin that) — and the **networks** it is
+/// reachable on.
+///
+/// The networks are a list rather than a single name because one address
+/// need not mean one chain: the EVM address is the same twenty bytes on
+/// Ethereum, Linea, Base, Arbitrum, BNB Chain, OP and Polygon, and a page
+/// that named only the first would leave a user guessing whether the other
+/// six are safe — a guess whose wrong answer is unrecoverable. So the
+/// entry states where its address may be sent and the page's caution says,
+/// once, that nothing else may be.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct DonationAddress {
     /// The ticker the row leads with and the copy toast names — one bare
@@ -26,6 +33,11 @@ pub struct DonationAddress {
     pub coin: &'static str,
     /// The address, exactly as it is to be pasted into a wallet.
     pub address: &'static str,
+    /// The networks this address is reachable on, in the order the page
+    /// lists them — each a bare label as a wallet's own network picker
+    /// spells it. Never empty (the catalog tests pin that): an address
+    /// with no network named is one the caution cannot cover.
+    pub networks: &'static [&'static str],
 }
 
 /// The project's donation addresses, in the order the page lists them.
@@ -33,17 +45,28 @@ pub const DONATION_ADDRESSES: &[DonationAddress] = &[
     DonationAddress {
         ticker: "BTC",
         coin: "Bitcoin",
-        address: "bc1q68v53mjj2uxg9qs5ke55qh4gv7un8esttwmvm9",
+        address: "bc1qhwamfrwuhz64pk00l75ykfff2ang22ns64chf7",
+        networks: &["Bitcoin (Native SegWit)"],
     },
     DonationAddress {
         ticker: "ETH",
         coin: "Ethereum",
-        address: "0xaf7B6ac9BeeFDcfCd118701a00be960a592600CB",
+        address: "0xEAf6fbabB9DBE7a23BfE22A7A6c4aCe02063524b",
+        networks: &[
+            "Ethereum",
+            "Linea",
+            "Base",
+            "Arbitrum",
+            "BNB Chain",
+            "OP",
+            "Polygon",
+        ],
     },
     DonationAddress {
         ticker: "SOL",
         coin: "Solana",
-        address: "9hWaV4rTqNfF1c6mGDSnksMY1fqKuDU9iKymfbeSqXrA",
+        address: "Gwhv5c6uAa6aAz1MjwzV9QJpbm7CJWy2kuCeZ75mFc94",
+        networks: &["Solana"],
     },
 ];
 
