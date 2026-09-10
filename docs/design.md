@@ -1162,9 +1162,18 @@ and its own pure corners — the `visible_cells` wide-glyph emitter, the
 
 ### The smoke suite defines its own environment
 
-`scripts/smoke.sh` asserts on rendered bytes, so what it *inherits* is part of
-its fixture. It therefore **states the environment rather than borrowing it**,
-in two places that have to agree:
+`scripts/smoke.sh` is a runner over one file per phase (`scripts/smoke/phases/
+NNN-slug.sh`, each a self-contained scenario sourcing `scripts/smoke/lib.sh`),
+executed on a pool of parallel workers with a log per phase — the layout, the
+vocabulary and the phase contract are `docs/smoke.md`. What makes running them
+at once *correct* is that the fixture is **per phase**: `smoke_begin` gives each
+its own tmux server, config home, skills/agents roots and temp tree, torn down
+together at exit, so no phase can see or leave behind another's state.
+
+The suite asserts on rendered bytes, so what it *inherits* is part of its
+fixture. It therefore **states the environment rather than borrowing it**, in
+two places that have to agree (both now applied by every phase for itself, so
+a phase run on its own is as hermetic as one run by the suite):
 
 - **The variables.** The script unsets every `*_API_KEY`, every `ALTER_ZERO_*`
   knob, `OLLAMA_HOST`, `NO_COLOR`, and `DISPLAY`/`WAYLAND_DISPLAY`/`XAUTHORITY`
@@ -1180,17 +1189,17 @@ in two places that have to agree:
   past.
 - **The tmux server.** A pane inherits the *server's* environment, and a server
   keeps whatever the shell that first started it had, so unsetting a variable
-  reaches a pane only when this script is what started the server. The suite
+  reaches a pane only when the phase is what started the server. Each phase
   runs its own on a private socket — a one-line shell function routing every
-  `tmux` call through `-S {mktemp -d}/tmux.sock`, the whole directory taken
-  down with the suite (by path rather than `-L {name}`, since `kill-server`
-  leaves the socket file behind and a named one would litter tmux's shared
-  directory once per run). That also keeps the suite's global
-  `set-clipboard on` and its `delete-buffer` sweep off the developer's own
-  sessions, and `INT`/`TERM` funnel into an ordinary exit so a Ctrl+C on a
-  25-minute run still reaches the cleanup. `DISPLAY` needs the unset as well
-  as the private socket: tmux's `update-environment` re-imports it from the
-  client into every new session.
+  `tmux` call through `-S $SMOKE_TMP/tmux.sock`, the whole tree taken down
+  with the phase (by path rather than `-L {name}`, since `kill-server` leaves
+  the socket file behind and a named one would litter tmux's shared directory
+  once per run). That also keeps a phase's `set-clipboard on` and its
+  `delete-buffer` sweep off the developer's own sessions and off every other
+  phase's, and `INT`/`TERM` funnel into an ordinary exit so a Ctrl+C still
+  reaches the cleanup. `DISPLAY` needs the unset as well as the private
+  socket: tmux's `update-environment` re-imports it from the client into
+  every new session.
 
 The same rule holds for *time*: a fixture asserts on a state that stays put
 until it is read. Where the state is genuinely transient — the running command's
