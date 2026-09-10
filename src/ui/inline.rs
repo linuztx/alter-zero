@@ -14,7 +14,9 @@ use super::*;
 /// URLs — a `[text](url)` target and every bare `http(s)://…` in plain text —
 /// additionally carry the link **carrier** ([`links::linked`]), so each
 /// wrapped fragment of a URL still opens the whole target at the paint
-/// boundary (`docs/links.md`); `code` stays verbatim, never linked.
+/// boundary (`docs/links.md`); `code` stays verbatim, never linked, and the
+/// suffix's own `(`/`)` stay prose — only the target between them is dressed
+/// and marked as a link.
 pub(super) fn inline_spans(nodes: &[markdown::Inline], base: Style) -> Vec<(String, Style)> {
     let mut out = Vec::new();
     for node in nodes {
@@ -35,17 +37,20 @@ pub(super) fn inline_spans(nodes: &[markdown::Inline], base: Style) -> Vec<(Stri
             markdown::Inline::Code(c) => out.push((c.clone(), base.fg(inline_code_color()))),
             markdown::Inline::Link { text, url } => {
                 // The text keeps its own dress and gains the target; the
-                // ` (url)` suffix splits so exactly the URL carries it (the
-                // decoration parens stay prose).
+                // ` (url)` suffix splits so exactly the URL carries it. The
+                // parens are decoration this renderer adds, not link text —
+                // they take neither the link dress nor the carrier, so what
+                // the eye reads as the link is exactly what a click opens
+                // (`docs/links.md` *The decoration parens*).
                 out.extend(
                     inline_spans(text, base)
                         .into_iter()
                         .map(|(t, s)| (t, links::linked(s, url))),
                 );
                 let url_style = base.fg(link_url_color()).add_modifier(Modifier::UNDERLINED);
-                out.push((" (".to_string(), url_style));
+                out.push((" (".to_string(), base));
                 out.push((url.clone(), links::linked(url_style, url)));
-                out.push((")".to_string(), url_style));
+                out.push((")".to_string(), base));
             }
             markdown::Inline::Image { alt } => out.push((alt.clone(), base)),
         }

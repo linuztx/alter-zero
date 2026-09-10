@@ -426,7 +426,10 @@ the terminal's own detection saw — and a `● Read/Write/Edit({path})` header'
 path is a link to the **file**, `links::file_url`'s absolute `file://` URI
 behind whatever short form the row shows, stamped before the wrap so any
 fragment opens the whole file, while the `(`/`)` and the `⎿ Wrote … to
-{path}` corner row beneath stay plain: the pure `links` module detects/interns
+{path}` corner row beneath stay plain — the rule a `[text](url)` suffix's own
+` (`/`)` follow too, keeping the prose dress rather than the target's blue +
+underline, so the styled run and the clickable run are one run: the pure
+`links` module detects/interns
 and stamps the id into `Style::underline_color`, `ui::inline` marks prose,
 `ui::tool`'s header stamps the file target, and
 `term::draw_cells` — the choke point all four cell-write paths share — strips

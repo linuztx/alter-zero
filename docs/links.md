@@ -35,6 +35,27 @@ Markdown links get the same treatment for free: `[text](url)` renders
 `text (url)` exactly as before, but both the text and the shown URL now carry
 the real target.
 
+### The decoration parens
+
+The ` (` and `)` around that shown target are **decoration this renderer
+adds** — they are in neither the source line nor the URL — so they wear the
+surrounding prose's dress and carry no target. They used to take the link's
+own blue + underline, which read as one continuous link out to the closing
+paren while a click, which only the *marked* run carries, opened the URL
+without them: the reported bug. Giving them back to the prose is also what
+makes the shapes agree — a bare URL that prose happens to wrap in parens
+(`(see https://x.com/y)`) always read that way, since `find_urls` hands the
+`)` back under its unbalanced-closer rule, and a `● Read({path})` header's
+parens have always stayed plain.
+
+So `` [`AGENTS.md`](AGENTS.md) `` shows `AGENTS.md (AGENTS.md)`: the label in
+the inline-code colour, the shown target in link blue + underline, the parens
+(and any quotes around the whole thing) in the reply's own prose colour, and
+exactly those two names carrying the verbatim `AGENTS.md` target. A relative
+target rides the OSC 8 escape as authored — only the file tool header
+resolves a path to an absolute `file://` URI (`links::file_url`), since
+only it is handed the session's cwd policy.
+
 ## Where the pieces live
 
 The full URL is only known **before** wrapping splits it, and the escape can
@@ -133,10 +154,13 @@ paint as a colour — it just writes no OSC.
 
 ## Invariants held
 
-- **Zero visual change.** The wrap, the row text, and the styling are
-  byte-identical to before on every terminal; the only new bytes are OSC
-  sequences terminals render as nothing. (The one deliberate dress change:
-  bare URLs take the link blue + underline that ` (url)` targets always had.)
+- **The escape is invisible; the dress is scoped.** The wrap and the row
+  text are byte-identical to before on every terminal — the only new bytes
+  are OSC sequences terminals render as nothing, and no character moves.
+  Two deliberate dress changes, both in the same direction: bare URLs took
+  the link blue + underline a ` (url)` target always had, and a markdown
+  target's decoration parens gave that dress back — so the run the eye reads
+  as the link and the run a click opens are the same run everywhere.
 - **Prefix-stability untouched** (invariant 2): marking happens inside a
   line's own render — `find_urls` never looks across lines — so a completed
   line's rows still never change. The strip's preview of a *partial* URL
@@ -162,7 +186,11 @@ The pure core (detection, interner, carrier round-trip, framing/encoding,
 run grouping, the env predicate) is unit-tested in `links.rs`; the marking
 and the *wrapped-fragments-still-carry-the-whole-URL* regression are
 unit-tested in `ui` (an `assistant_lines` render at a width that hard-breaks
-the URL). `term.rs` is the I/O boundary, so `smoke.sh` **Phase 87** drives
+the URL). The decoration parens have both halves too — the segments'
+own dress in `ui/tests/inline.rs`, and the whole `` "[`AGENTS.md`](AGENTS.md)" ``
+render through `message_lines` in `ui/tests/assistant.rs`, each over several
+widths, since the wrap re-coalesces a row's spans by style and a paren that
+kept the link dress would come back as its own underlined span. `term.rs` is the I/O boundary, so `smoke.sh` **Phase 87** drives
 the real binary in a pane narrow enough to split the dummy reply's
 `https://github.com/linuztx`, captures the raw byte stream with
 `tmux pipe-pane`, and asserts the full URL rides an OSC 8 open while the
