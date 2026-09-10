@@ -4,3 +4,9 @@
 # repo); this guards a local ./.env (ALTER_ZERO_ENV_FILE / no-HOME fallback) too —
 # never commit secrets (docs/llm.md).
 .env
+# Local Worker secrets and development state never belong in source control.
+/telemetry/.dev.vars
+/telemetry/.dev.vars.*
+!/telemetry/.dev.vars.example
+/telemetry/.wrangler/
+/telemetry/node_modules/

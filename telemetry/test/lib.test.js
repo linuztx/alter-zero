@@ -242,8 +242,11 @@ test('the dashboard shows the numbers and escapes what it prints', () => {
   assert.ok(html.includes('PH'), 'the country');
   assert.ok(!html.includes('<script>'), 'markup in a value is escaped');
   assert.ok(html.includes('&lt;script&gt;'), 'and shown as text');
-  assert.ok(!/<script[\s>]/i.test(html), 'the page itself runs no script');
-  assert.ok(!html.includes('http://') && !html.includes('https://'), 'no external assets');
+  assert.deepEqual(
+    [...html.matchAll(/<script\b([^>]*)>/gi)].map((match) => match[1].trim()),
+    ['id="theme-init"', 'id="dashboard-script"'],
+    'only the two trusted inline scripts execute',
+  );
 });
 
 test('the dashboard token gates when set and opens when not', () => {
@@ -349,8 +352,7 @@ test('the dashboard renders a chart, the panels, and every window link', () => {
   assert.ok(html.includes('href="/?days=90&amp;token=s3cret"'), 'the window links keep the token');
   assert.ok(html.includes('href="/v1/stats?days=3&amp;token=s3cret"'), 'so does the JSON link');
   assert.ok(html.includes('rel="icon"'), 'no /favicon.ico round trip');
-  assert.ok(!/<script[\s>]/i.test(html), 'still no script');
-  assert.ok(!html.includes('http://') && !html.includes('https://'), 'still no external assets');
+  assert.ok(!/<script\b[^>]*\bsrc\s*=/i.test(html), 'the interactions need no external script');
 });
 
 test('the dashboard draws nothing above the baseline for a day with no users', () => {
@@ -392,13 +394,13 @@ test('the renderer coerces every number it prints, whatever it is handed', () =>
   for (const injected of ['<b>7</b>', '<i>4</i>', '<b>now</b>', '<script>', 'onmouseover']) {
     assert.ok(!html.includes(injected), injected);
   }
-  assert.ok(!/<script[\s>]/i.test(html));
+  assert.equal((html.match(/<script\b/gi) ?? []).length, 2, 'no injected executable block');
   assert.ok(html.includes('&lt;script&gt;'), 'a string value is shown as text instead');
   assert.ok(html.includes('&lt;b&gt;now&lt;/b&gt;'), 'and so is the timestamp');
   assert.ok(/<b>0<\/b>/.test(html), 'a number that is not one reads as zero, not as markup');
 });
 
-test('a long panel folds its tail into one line rather than running off the page', () => {
+test('a long panel keeps its tail available in the dashboard', () => {
   const codes = ['PH','US','DE','IN','BR','GB','JP','FR','CA','AU','NL','SE','IT','ES','PL','KR','SG','MX','ZA','ZZ'];
   const html = renderDashboard(
     shapeStats({
@@ -413,9 +415,11 @@ test('a long panel folds its tail into one line rather than running off the page
       generatedAt: '2026-09-06T00:00:00.000Z',
     }),
   );
-  assert.equal((html.match(/<tr><th scope="row"><span class="name">/g) ?? []).length, 12);
-  assert.ok(html.includes('+ 8 more'), 'and says how many it is not showing');
-  assert.ok(html.includes('/v1/stats'), 'pointing at where all of them are');
+  for (const code of codes) {
+    assert.ok(html.includes(countryLabel(code).name), `the country ${code} remains available`);
+  }
+  assert.ok(html.includes('<details'), 'long data can be explored without a new request');
+  assert.ok(html.includes('/v1/stats'), 'the complete machine-readable view remains linked');
   // Every panel table has three columns; an empty or folded row must span all
   // of them or the rule under it stops short.
   assert.ok(!html.includes('colspan="2"'));

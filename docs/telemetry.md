@@ -106,6 +106,11 @@ to the collector and not the client — asking the client to geolocate itself
 would either need a database it does not have or an IP it should not be
 sending.
 
+The collector also uses the address transiently for the
+[ping rate limit](#ping-abuse-prevention). Only a daily keyed digest reaches
+that counter; no raw address, digest, or network-to-install mapping is added
+to the telemetry database, a log, or the response.
+
 ### What is deliberately not sent
 
 No prompts, no replies, no file paths, no working directory, no model or
@@ -264,7 +269,7 @@ runner.
 
 | route | who | does |
 |---|---|---|
-| `POST /v1/ping` | the app | validates the payload (`v` ∈ {1, 2}, `id` 32 hex, `version` ≤ 32 chars of `[0-9A-Za-z.+-]`, `os`/`arch` ≤ 16 of `[a-z0-9_]`, an optional `distro` ≤ 32 of `[a-z0-9._-]` and an optional `os_version` ≤ 16 of the same opening on a letter or digit, body ≤ 1 KiB **of UTF-8**, not of `String.length` — 1024 CJK characters are 3 KiB), then `INSERT OR IGNORE` one row keyed on **the server's** UTC date and the id — the client's clock is never trusted for the day — with the edge's country. Answers `204`; a bad body `400`; a big one `413`; anything but `POST` `405` — every refusal a `{"error": …}`, since one endpoint owes a caller one shape |
+| `POST /v1/ping` | the app | checks the network rate limit before reading the body or using D1; validates the payload (`v` ∈ {1, 2}, `id` 32 hex, `version` ≤ 32 chars of `[0-9A-Za-z.+-]`, `os`/`arch` ≤ 16 of `[a-z0-9_]`, an optional `distro` ≤ 32 of `[a-z0-9._-]` and an optional `os_version` ≤ 16 of the same opening on a letter or digit, body ≤ 1 KiB of UTF-8, enforced while streaming); then `INSERT OR IGNORE` one row keyed on **the server's** UTC date and the id with the edge's country. Answers `204`; a bad or unreadable body `400`; a big one `413`; anything but `POST` `405`; rate limiting `429`; unavailable protection `503`. Every refusal is a JSON `{"error": …}` |
 | `GET /v1/stats?days=30` | you | JSON: today's users, 7- and 30-day distinct users, total installs seen, per-day users and new installs, users per country, per app version, per OS, per platform (`ubuntu` + `24.04`) over the window (`days` clamped to 1–365). Its refusals are JSON too — this is the route a script reads |
 | `GET /` | you | the same numbers as a page (below) |
 | `GET /healthz` | uptime checks | `ok` |
@@ -272,7 +277,9 @@ runner.
 "Users" is always `COUNT(DISTINCT id)`; a "new install" is an id whose
 earliest day is the day in question. Set the `DASHBOARD_TOKEN` secret and
 `/` and `/v1/stats` require it (`Authorization: Bearer …` or `?token=`);
-unset, they are public. `/v1/ping` is always open — it has to be. Every
+unset, they are public. The ping limiter does not cover these read routes;
+configure the token to protect access to their database queries.
+`/v1/ping` requires no dashboard token but does enforce its rate limit. Every
 response — the ping's `204` included — carries `cache-control: no-store` and
 `x-robots-tag: noindex`: this is a private counter with a maintainer's page
 on it, and that rule is stated once rather than on the two routes that
@@ -280,49 +287,93 @@ happen to print numbers.
 
 ### The dashboard
 
-`GET /` is the stats document as a page, and it is still **plain HTML and
-inline CSS — no script, no external asset, no web font**, because a page
-that fetches something is a page that tells someone else it was opened. What
-it draws, top to bottom:
+`GET /` is the stats document as **server-rendered HTML with inline CSS and
+vanilla JavaScript**. The browser receives the numbers, chart geometry, map,
+and interactions in one document. There are no runtime packages, external
+assets, web fonts, or map tiles to load; inspecting data or changing the
+theme contacts no other service. Refresh and window navigation request the
+same collector again.
 
-- a header with the window switcher — **7d / 30d / 90d / 365d**, plus the
-  current window when it is none of those;
-- four cards: users today (with the change from the day before), users over
-  7 and 30 days, and installs seen;
-- **Activity** — one bar per day across the window, the day's new installs
-  marked at the foot of its bar, gridlines at the peak, half of it and zero,
-  and the exact numbers in each bar's tooltip;
-- **Countries**, **Versions**, **Operating systems**, **Platforms** — each a
-  table of name, count and a share bar, the first `PANEL_ROWS` rows with the
-  rest counted in one line pointing at `/v1/stats`. They flow in CSS columns
-  rather than a grid: four panels of four different lengths in a grid leave a
-  hole wherever a short one shares a row with a long one. **Platforms** is
-  `distro` where the row named one and `os` where it did not, with
-  `os_version` beside it — `ubuntu 24.04`, `macos 15.3.1`, `arch`, `linux` —
-  because "what do people actually run" is one question and deserves one
-  panel, while **Operating systems** keeps the coarse three-way split;
-- a collapsed `<details>` holding every day of the window as numbers, newest
-  first — the old page's whole table, out of the way of the chart;
-- the definitions, and a link to the same numbers as JSON.
+The responsive layout carries Alter Zero's terminal styling into a sidebar
+and overview, with sections for activity, geography, environments, and
+daily data:
 
-Four things it is deliberate about:
+- The **7d / 30d / 90d / 365d** switcher also includes the current window
+  when it is none of those. Four summary cards show users today, their change
+  from yesterday, distinct users over 7 and 30 days, and installs seen within
+  retained history.
+- **Activity** switches between bars and a line, and between daily users and
+  new installs. Hover or focus a day for its exact numbers; **Left / Right /
+  Home / End** move through the chart with the keyboard. A zero day stays on
+  the baseline, and an empty window has an explicit no-data state.
+- **Around the world** uses bundled Natural Earth outlines and fixed country
+  anchors in an SVG. The map works offline once the document is loaded.
+  Markers represent country totals, never device positions or more precise
+  locations. Select a marker or country row to inspect its count; markers
+  support **Enter / Space**, and zoom controls let the reader inspect the
+  map. Unknown or unmapped countries stay in the textual list and are never
+  assigned invented positions. Source and transformation details live in
+  `telemetry/src/world-map-data.md`.
+- **Countries**, **Versions**, and **Platforms** show counts and bars
+  relative to each panel's largest row. Additional rows expand in place.
+  **Platforms** is `distro` where the row named one and `os` where it did
+  not, qualified by `os_version`: `ubuntu 24.04`, `macos 15.3.1`, `arch`,
+  `linux`. **Operating systems** shows a ring and counts for the coarse OS
+  split. An install can appear in multiple country or system groups, so
+  those grouped counts do not imply a global distinct-user total.
+- **Daily data** is a native `<details>` table with every day of the window,
+  newest first. The footer defines the counts and links to the same numbers
+  as JSON.
 
-- **Its own links carry the `?token=` the reader arrived with.** The old page
-  suggested `?days=90` in prose, and following that advice behind
-  `DASHBOARD_TOKEN` answered `401` — the one navigation a dashboard offers has
-  to work. A reader who authenticated with the `Authorization` header gives
-  the page no token to spread, and it never invents one.
-- **A day with nobody draws nothing.** The old bar had `min-width: 1px`, so
-  "no one" and "one person" were the same picture.
-- **A country is a flag and a name**, not a code — `🇵🇭 Philippines PH` — with
-  the flag derived from the code's own letters (regional-indicator symbols;
-  no image, no table) and the name from `Intl.DisplayNames`. A code `Intl`
-  cannot name gets the globe rather than a tofu box, and a value that is not
-  a country code at all is *shown*, escaped, rather than hidden: the only way
-  one reaches the table is by hand, and that is worth seeing.
-- **Every printed value is coerced or escaped at the renderer**, not only at
-  the query: a number that is not one reads as `0` and a string is escaped,
-  so a hand-edited row can never become markup.
+The theme picker offers **System**, the four Catppuccin flavours
+**Mocha / Macchiato / Frappé / Latte**, **Nord**, and **Dracula**, matching
+families in the terminal's `/theme` picker. System uses Mocha for a dark
+browser preference and Latte for a light one. An explicit choice is saved
+only in that browser's local storage under `alter-zero-telemetry-theme`;
+it neither changes the terminal's theme nor goes to the collector. Unknown
+saved values or unavailable storage fall back to System. Theme colours
+apply to every surface, chart, and map, and reduced-motion preferences turn
+off animated transitions and smooth scrolling.
+
+The page is also useful without JavaScript: server-rendered charts, the
+map, counts, native expandable tables, and ordinary window/JSON links
+remain available. Theme, chart-mode, refresh, and zoom controls are hidden.
+The enhancements add theme persistence, keyboard chart inspection, map
+selection, and section navigation without replacing that underlying page.
+
+The renderer preserves four data and privacy rules:
+
+- **Its own window and JSON links carry only the query token it was given.**
+  A reader who authenticated through `Authorization` gives the page no token
+  to print, and it never invents one from `DASHBOARD_TOKEN`. A no-referrer
+  policy also prevents the dashboard URL from becoming a referrer.
+- **Counts describe installs and retained history.** A user is an anonymous
+  install ID; a new install is an ID first seen that day within the rows
+  still retained. No zero count receives an artificial visible bar.
+- **Country rows retain their readable identity.** Flags come from the
+  code's regional-indicator letters and names from `Intl.DisplayNames`.
+  Unknown codes receive the globe; a malformed stored country value remains
+  visible as escaped text. The map does not discard those rows from the
+  rest of the dashboard.
+- **Telemetry values never become executable source.** Every printed string
+  is escaped and every count is coerced at the renderer. The two inline
+  scripts are static application code; they read escaped `data-*`
+  attributes and update readouts as text. A hand-edited database row cannot
+  inject markup or an executable script.
+
+The page lives in `telemetry/src/dashboard.js`, its layout and theme roles
+in `dashboard-style.js`, and its two static scripts in `dashboard-client.js`.
+`world-map.js` renders the bundled outlines and anchors in
+`world-map-data.js`; `lib.js` retains the shared helpers and re-exports the
+dashboard renderer. Node's built-in tests cover the collector, renderer,
+script behaviour, and map without a network or client framework.
+
+For design work, `cd telemetry && npm run preview` starts a dependency-free
+Node server at `http://127.0.0.1:8788`. Its dashboard is labeled **Sample
+data** and uses generated numbers, not actual telemetry; `/?empty=1`
+previews the empty state. It has no D1 connection and does not collect pings.
+The existing `npm run db:init:local` / `npm run dev` Wrangler flow remains
+the way to exercise the actual Worker and local D1.
 
 ### The table
 
@@ -354,17 +405,81 @@ install's every day; "new installs" is derived from the rows that remain, so
 past the retention horizon an old install can read as new again — an
 accepted imprecision for a counter, not a ledger.
 
+### Ping abuse prevention
+
+The native `PING_RATE_LIMITER` binding permits **60 POST attempts per
+minute** per IPv4 address or IPv6 `/64` prefix. The threshold leaves room
+for installs behind shared networks; the client itself still sends at most
+once a day. Malformed POST attempts count too, because the check precedes
+body reading and database work. Neither changing the install ID nor
+rotating the host part of an IPv6 address grants a fresh budget.
+
+This is an approximate limit at each Cloudflare location. Enforcement is
+eventually consistent, and distributed requests or different network
+prefixes can receive separate budgets. The native API is not a strict
+global quota. Configure `[[ratelimits]]` with a namespace unique to this
+application in your account; another Worker using that namespace can share
+the same counters. It requires Wrangler **4.36.0 or later**. See
+[Cloudflare's rate-limiting API](https://developers.cloudflare.com/workers/runtime-apis/bindings/rate-limit/).
+
+`RATE_LIMIT_SECRET` is a separate Worker secret: exactly 64 hexadecimal
+characters representing 32 cryptographically random bytes. HMAC-SHA-256
+combines that secret with the operation's scope, the server's UTC day, and
+the normalized address or prefix. Only the digest is passed to the binding.
+There is no address-to-digest map, no key-to-install association, and no
+rate-limit data in D1, logs, or responses. The key changes at UTC midnight;
+that also starts a fresh budget. This is pseudonymous abuse-prevention
+state, not an additional telemetry field or a promise about Cloudflare's
+internal counter retention. Workers observability and Logpush are
+explicitly disabled in `wrangler.toml`.
+
+The source address must come from `CF-Connecting-IP` at direct Cloudflare
+ingress. No fallback accepts `X-Forwarded-For` or a payload-supplied address.
+If the primary address is in `240.0.0.0/4`, Cloudflare's Pseudo IPv4 range,
+the worker instead requires a valid `CF-Connecting-IPv6` original address;
+otherwise that alternate header is ignored. Keep any same-zone forwarding
+Workers trusted, because they can alter the apparent client address.
+Cross-zone Worker subrequests can share a fixed source address and budget.
+See [Cloudflare's HTTP headers](https://developers.cloudflare.com/fundamentals/reference/http-headers/)
+and [Pseudo IPv4](https://developers.cloudflare.com/network/pseudo-ipv4/).
+Grouping IPv6 by `/64` limits evasion through changing interface identifiers;
+temporary addresses can change those identifiers within a prefix, as
+described in [RFC 8981](https://www.rfc-editor.org/rfc/rfc8981.html).
+
+A rejected attempt returns JSON `429` and `Retry-After: 60`. An absent or
+invalid secret, missing or failed binding, or unavailable trusted source
+address returns JSON `503` with the same retry header. Both stop before
+reading the body or writing a row: configuration mistakes must not silently
+disable protection. Allowed requests still have a 1,024-byte body cap,
+checked while streaming even without a trustworthy `Content-Length`;
+oversized streams are cancelled and refused with `413`, and unreadable
+bodies return `400`. The client's existing silent failure behavior and
+once-per-day attempt guard remain unchanged.
+
 ### Deploying it
 
 ```bash
 cd telemetry
+npm install                                         # Wrangler >= 4.36.0
 npx wrangler login
 npx wrangler d1 create alter-zero-telemetry          # paste the database_id into wrangler.toml
 npx wrangler d1 execute alter-zero-telemetry --remote --file=schema.sql
 npx wrangler d1 execute alter-zero-telemetry --remote --file=migrations/0001_platform.sql  # only if the table predates payload v2
+npm run secret:rate-limit                            # required: generate and upload RATE_LIMIT_SECRET
 npx wrangler secret put DASHBOARD_TOKEN              # optional: gate the dashboard
 npx wrangler deploy                                  # prints https://alter-zero-telemetry.<subdomain>.workers.dev
 ```
+
+`npm run secret:rate-limit` generates the random 32-byte secret and pipes
+its hex value directly to Wrangler. Provision it before upgrading an
+existing deployment; the rate limit requires no new D1 table or migration.
+Do not reuse `DASHBOARD_TOKEN` or put either secret in source control.
+For local `wrangler dev`, create `RATE_LIMIT_SECRET` in the ignored
+`telemetry/.dev.vars` using the setup in
+[`telemetry/README.md`](../telemetry/README.md#develop), preserving any
+existing dashboard token. The `.dev.vars.example` placeholder must be
+replaced with generated random bytes. The sample `npm run preview`
+dashboard needs no secret and collects no pings.
 
 The client's `telemetry::DEFAULT_ENDPOINT` is
 `https://alter-zero-telemetry.linuztx.workers.dev/v1/ping` — the URL
@@ -406,6 +521,11 @@ this file.
   not send), each route refusing in its own content type, every response
   being `no-store`/`noindex`, and the retention cron's cutoff. The pure half can be entirely right while the
   handler files every install under the wrong column.
+- **Ping protection**: tests cover address normalization and IPv6 prefix
+  grouping, opaque daily keys, refusal before body reads and D1 writes,
+  missing configuration and limiter failure, and bounded streamed bodies.
+  Native counter distribution and Cloudflare header rewriting require the
+  deployed edge; a local test double cannot prove those properties.
 - **Boundary** (`scripts/smoke.sh` Phase 115): a local Python stub stands in
   for the collector; a fresh config home's first launch shows the notice,
   posts exactly the five-field body once, and records the day; the relaunch

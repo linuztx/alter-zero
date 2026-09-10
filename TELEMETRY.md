@@ -97,6 +97,20 @@ Doing it this way is deliberate: the alternative is asking your machine to
 work out where it is, which means either shipping a geolocation database or
 sending an address that should not be sent.
 
+To slow spam, the collector also uses the connection's address in memory to
+apply a limit of **60 ping attempts per minute** from one IPv4 address or
+IPv6 network prefix (`/64`). People behind the same network share that
+budget. Cloudflare's enforcement is approximate and applies separately at
+each edge location.
+
+The rate limiter receives only a keyed cryptographic digest that changes
+each UTC day. The collector does not keep the address or a mapping back to
+it, save that digest in the telemetry database, associate it with install
+IDs, or send it to the app. This is separate abuse-prevention state, not
+another field in your daily ping or a new location record. Excess requests
+are refused before they can add a row; the app remains silent on a refused
+ping, just as it does when the collector is unavailable.
+
 ## When it is sent
 
 At startup, after the first frame is drawn, on a background thread. The app
@@ -197,9 +211,10 @@ CREATE TABLE pings (
 );
 ```
 
-That is the whole schema — there is no other table and no request log. A daily
-job deletes rows older than 400 days, so the database is a rolling window
-rather than a permanent history.
+There is no rate-limit table or request log. Cloudflare's rate limiter keeps
+separate counters keyed by the daily digest described above. A daily job
+deletes telemetry rows older than 400 days, so the database is a rolling
+window rather than a permanent history.
 
 ## Check it for yourself
 
