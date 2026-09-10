@@ -1,21 +1,24 @@
-//! AGENTS.md discovery — codex's project doc in the context window (see
-//! `docs/project-doc.md`).
+//! AGENTS.md discovery — codex's project doc, in the context window's
+//! `<system-reminder>` (see `docs/project-doc.md`).
 //!
 //! `/init` generates an `AGENTS.md` contributor guide; this module reads it
 //! (and any nested ones) back so every turn's context carries the project's
-//! own instructions, exactly as codex does (`codex-rs/core/src/agents_md.rs`):
-//! find the project root by walking up from the cwd to the nearest `.git`
-//! marker, collect every `AGENTS.md` from the root *down to* the cwd, cap the
-//! total at 32 KiB, and render the result as a **user-role** instructions
-//! fragment (`# AGENTS.md instructions … <INSTRUCTIONS>…</INSTRUCTIONS>`)
-//! that [`context::context_messages_with`] injects at the front of the
-//! derived conversation.
+//! own instructions. The discovery is codex's
+//! (`codex-rs/core/src/agents_md.rs`): find the project root by walking up
+//! from the cwd to the nearest `.git` marker, collect every `AGENTS.md` from
+//! the root *down to* the cwd, cap the total at 32 KiB. The rendering is the
+//! reference tool's: each file under its own `Contents of {path} (project
+//! instructions, checked into the codebase):` heading, behind a paragraph
+//! saying the instructions override the defaults — the **instructions
+//! section** of the one `<system-reminder>` the derived context leads with
+//! ([`crate::reminder`], [`context::context_messages_full`]), where the
+//! skills and agent-type listings follow it.
 //!
-//! The chain/budget/fragment logic is pure; [`find_project_root`] and
+//! The chain/budget/section logic is pure; [`find_project_root`] and
 //! [`load_user_instructions`] are the small fs boundary (stat + read),
 //! tempfile-tested in-module like the `checkpoint` store's I/O.
 //!
-//! [`context::context_messages_with`]: crate::context::context_messages_with
+//! [`context::context_messages_full`]: crate::context::context_messages_full
 
 use std::path::{Path, PathBuf};
 
@@ -78,38 +81,46 @@ pub fn doc_chain(root: Option<&Path>, cwd: &Path) -> Vec<PathBuf> {
     dirs
 }
 
-/// Concatenate discovered docs under codex's byte budget: each doc is
-/// truncated to the remaining budget (on a `char` boundary — codex truncates
-/// raw bytes and lossy-decodes; our input is already `String`), blank docs
-/// are skipped and cost nothing, and collection stops once the budget is
-/// spent. Docs join with a blank line. `None` when nothing survives.
+/// One discovered project doc: the file it was read from and what it said,
+/// once [`budget_docs`] has cut it to the budget.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectDoc {
+    /// The file's path as the chain named it — what its heading shows
+    /// ([`doc_heading`]), so the model knows which directory an instruction
+    /// governs.
+    pub path: PathBuf,
+    /// The file's text: lossily decoded, budget-truncated.
+    pub text: String,
+}
+
+/// Keep discovered docs under codex's byte budget: each doc is truncated to
+/// the remaining budget (on a `char` boundary — codex truncates raw bytes and
+/// lossy-decodes; our input is already `String`), blank docs are skipped and
+/// cost nothing, and collection stops once the budget is spent. Empty when
+/// nothing survives.
 #[must_use]
-pub fn combine_docs(docs: &[String], max_bytes: usize) -> Option<String> {
+pub fn budget_docs(docs: Vec<ProjectDoc>, max_bytes: usize) -> Vec<ProjectDoc> {
     let mut remaining = max_bytes;
-    let mut kept: Vec<&str> = Vec::new();
-    for doc in docs {
+    let mut kept = Vec::new();
+    for ProjectDoc { path, mut text } in docs {
         if remaining == 0 {
             break;
         }
-        let clipped = truncate_to_bytes(doc, remaining);
-        if clipped.trim().is_empty() {
+        text.truncate(fitted_len(&text, remaining));
+        if text.trim().is_empty() {
             continue;
         }
-        kept.push(clipped);
-        remaining -= clipped.len();
+        remaining -= text.len();
+        kept.push(ProjectDoc { path, text });
     }
-    if kept.is_empty() {
-        None
-    } else {
-        Some(kept.join("\n\n"))
-    }
+    kept
 }
 
-/// The widest prefix of `text` within `max_bytes`, split on a `char`
-/// boundary (the whole text when it already fits).
-fn truncate_to_bytes(text: &str, max_bytes: usize) -> &str {
+/// The length of the widest prefix of `text` within `max_bytes` that ends on
+/// a `char` boundary (the whole text when it already fits).
+fn fitted_len(text: &str, max_bytes: usize) -> usize {
     if text.len() <= max_bytes {
-        return text;
+        return text.len();
     }
     let mut end = 0;
     for (idx, ch) in text.char_indices() {
@@ -119,28 +130,68 @@ fn truncate_to_bytes(text: &str, max_bytes: usize) -> &str {
         }
         end = next;
     }
-    &text[..end]
+    end
 }
 
-/// Render the combined docs as codex's user-instructions fragment
-/// (`core/src/context/user_instructions.rs` — start marker, body, end
-/// marker):
+/// The paragraph the instructions section opens with — the reference tool's
+/// own wording, which a model trained on it already reads as binding.
+pub const INSTRUCTIONS_PREAMBLE: &str = "Codebase and user instructions are shown below. Be sure \
+                                         to adhere to these instructions. IMPORTANT: These \
+                                         instructions OVERRIDE any default behavior and you MUST \
+                                         follow them exactly as written.";
+
+/// The caption a checked-in guide's heading carries.
+pub const DOC_CHECKED_IN_NOTE: &str = "project instructions, checked into the codebase";
+
+/// The caption the git-ignorable override's heading carries
+/// ([`PROJECT_DOC_OVERRIDE_FILENAME`]) — a private file is not "checked into
+/// the codebase", and where an instruction came from is part of what it
+/// means.
+pub const DOC_OVERRIDE_NOTE: &str = "user's private project instructions, not checked in";
+
+/// The heading a doc's contents sit under: `Contents of {path} ({note}):`,
+/// the note saying whether the file is the checked-in guide or the private
+/// override.
+#[must_use]
+pub fn doc_heading(path: &Path) -> String {
+    let is_override =
+        path.file_name().and_then(|name| name.to_str()) == Some(PROJECT_DOC_OVERRIDE_FILENAME);
+    let note = if is_override {
+        DOC_OVERRIDE_NOTE
+    } else {
+        DOC_CHECKED_IN_NOTE
+    };
+    format!("Contents of {} ({note}):", path.display())
+}
+
+/// Render the budgeted docs as the `<system-reminder>`'s instructions
+/// section ([`crate::reminder`]): the [`INSTRUCTIONS_PREAMBLE`], then each
+/// doc's [`doc_heading`] over its text, blank-line separated:
 ///
 /// ```text
-/// # AGENTS.md instructions for {directory}
+/// Codebase and user instructions are shown below. Be sure to adhere to …
 ///
-/// <INSTRUCTIONS>
+/// Contents of /repo/AGENTS.md (project instructions, checked into the codebase):
+///
 /// {text}
-/// </INSTRUCTIONS>
+///
+/// Contents of /repo/app/AGENTS.md (project instructions, checked into the codebase):
+///
+/// {text}
 /// ```
 ///
-/// `directory: None` drops the ` for …` clause.
+/// Empty with no docs — the section is then simply absent from the reminder.
 #[must_use]
-pub fn instructions_message(text: &str, directory: Option<&str>) -> String {
-    let directory = directory
-        .map(|dir| format!(" for {dir}"))
-        .unwrap_or_default();
-    format!("# AGENTS.md instructions{directory}\n\n<INSTRUCTIONS>\n{text}\n</INSTRUCTIONS>")
+pub fn instructions_section(docs: &[ProjectDoc]) -> String {
+    if docs.is_empty() {
+        return String::new();
+    }
+    let mut parts = vec![INSTRUCTIONS_PREAMBLE.to_string()];
+    parts.extend(
+        docs.iter()
+            .map(|doc| format!("{}\n\n{}", doc_heading(&doc.path), doc.text.trim())),
+    );
+    parts.join("\n\n")
 }
 
 /// The nearest ancestor-or-self of `cwd` containing a `.git` marker — a
@@ -159,9 +210,9 @@ pub fn find_project_root(cwd: &Path) -> Option<PathBuf> {
 }
 
 /// Load the project's AGENTS.md instructions for `cwd`, rendered as the
-/// context fragment [`instructions_message`] — or `None` when no doc exists.
-/// The budget comes from `ALTER_ZERO_PROJECT_DOC_MAX_BYTES` via
-/// [`doc_budget`] (`0` disables loading entirely).
+/// reminder's [`instructions_section`] — or `None` when no doc exists. The
+/// budget comes from `ALTER_ZERO_PROJECT_DOC_MAX_BYTES` via [`doc_budget`]
+/// (`0` disables loading entirely).
 #[must_use]
 pub fn load_user_instructions(cwd: &Path) -> Option<String> {
     load_user_instructions_with(
@@ -176,23 +227,21 @@ pub fn load_user_instructions(cwd: &Path) -> Option<String> {
 
 /// [`load_user_instructions`] under an explicit budget. Boundary: composes
 /// [`find_project_root`], [`doc_chain`], one `read_first_doc` per chain
-/// directory, [`combine_docs`]. A missing or unreadable file is simply
-/// skipped (codex ignores NotFound); a zero budget skips even the discovery.
+/// directory, [`budget_docs`], [`instructions_section`]. A missing or
+/// unreadable file is simply skipped (codex ignores NotFound); a zero budget
+/// skips even the discovery.
 #[must_use]
 pub fn load_user_instructions_with(cwd: &Path, max_bytes: usize) -> Option<String> {
     if max_bytes == 0 {
         return None;
     }
     let root = find_project_root(cwd);
-    let docs: Vec<String> = doc_chain(root.as_deref(), cwd)
+    let docs: Vec<ProjectDoc> = doc_chain(root.as_deref(), cwd)
         .iter()
         .filter_map(|dir| read_first_doc(dir, max_bytes))
         .collect();
-    let combined = combine_docs(&docs, max_bytes)?;
-    Some(instructions_message(
-        &combined,
-        Some(&cwd.display().to_string()),
-    ))
+    let docs = budget_docs(docs, max_bytes);
+    (!docs.is_empty()).then(|| instructions_section(&docs))
 }
 
 /// The first readable [`PROJECT_DOC_FILENAMES`] candidate in `dir`, read
@@ -200,10 +249,14 @@ pub fn load_user_instructions_with(cwd: &Path, max_bytes: usize) -> Option<Strin
 /// `from_utf8_lossy`s them, so one stray invalid byte can never silently
 /// drop the whole guide (the `read_to_string` trap). A doc cut at the cap
 /// may end in a replacement char; codex truncates raw bytes the same way.
-fn read_first_doc(dir: &Path, cap: usize) -> Option<String> {
+fn read_first_doc(dir: &Path, cap: usize) -> Option<ProjectDoc> {
     PROJECT_DOC_FILENAMES.iter().find_map(|name| {
-        let bytes = read_capped(&dir.join(name), cap)?;
-        Some(String::from_utf8_lossy(&bytes).into_owned())
+        let path = dir.join(name);
+        let bytes = read_capped(&path, cap)?;
+        Some(ProjectDoc {
+            path,
+            text: String::from_utf8_lossy(&bytes).into_owned(),
+        })
     })
 }
 
@@ -277,64 +330,132 @@ mod tests {
         assert_eq!(chain, vec![PathBuf::from("/repo/a")]);
     }
 
-    // --- combine_docs ---
+    /// A discovered doc at `path` saying `text`.
+    fn doc(path: &str, text: &str) -> ProjectDoc {
+        ProjectDoc {
+            path: PathBuf::from(path),
+            text: text.to_string(),
+        }
+    }
+
+    // --- budget_docs ---
 
     #[test]
-    fn combine_docs_joins_in_order_with_a_blank_line() {
-        let docs = vec!["root guide".to_string(), "inner guide".to_string()];
+    fn budget_docs_keeps_every_doc_in_order_under_the_budget() {
+        let docs = vec![
+            doc("/repo/AGENTS.md", "root guide"),
+            doc("/repo/app/AGENTS.md", "inner guide"),
+        ];
+        assert_eq!(budget_docs(docs.clone(), 1024), docs);
+    }
+
+    #[test]
+    fn budget_docs_skips_blank_docs_for_free() {
+        let docs = vec![
+            doc("/repo/AGENTS.md", "  \n\t"),
+            doc("/repo/app/AGENTS.md", "real"),
+        ];
         assert_eq!(
-            combine_docs(&docs, 1024).as_deref(),
-            Some("root guide\n\ninner guide")
+            budget_docs(docs, 1024),
+            vec![doc("/repo/app/AGENTS.md", "real")]
         );
     }
 
     #[test]
-    fn combine_docs_skips_blank_docs_for_free() {
-        let docs = vec!["  \n\t".to_string(), "real".to_string()];
-        assert_eq!(combine_docs(&docs, 1024).as_deref(), Some("real"));
-    }
-
-    #[test]
-    fn combine_docs_is_none_when_nothing_survives() {
-        assert_eq!(combine_docs(&[], 1024), None);
-        assert_eq!(combine_docs(&["   ".to_string()], 1024), None);
+    fn budget_docs_is_empty_when_nothing_survives() {
+        assert!(budget_docs(vec![], 1024).is_empty());
+        assert!(budget_docs(vec![doc("/repo/AGENTS.md", "   ")], 1024).is_empty());
         // A zero budget disables the whole feature, codex-style.
-        assert_eq!(combine_docs(&["doc".to_string()], 0), None);
+        assert!(budget_docs(vec![doc("/repo/AGENTS.md", "doc")], 0).is_empty());
     }
 
     #[test]
-    fn combine_docs_truncates_the_overflowing_doc_and_stops() {
+    fn budget_docs_truncates_the_overflowing_doc_and_stops() {
         let docs = vec![
-            "12345678".to_string(),
-            "abcdefgh".to_string(),
-            "never".to_string(),
+            doc("/a/AGENTS.md", "12345678"),
+            doc("/a/b/AGENTS.md", "abcdefgh"),
+            doc("/a/b/c/AGENTS.md", "never"),
         ];
         // 8 bytes of doc one + 4 of doc two; doc three finds no budget left.
-        assert_eq!(combine_docs(&docs, 12).as_deref(), Some("12345678\n\nabcd"));
-    }
-
-    #[test]
-    fn combine_docs_truncates_on_a_char_boundary() {
-        // 'é' is two bytes: a 3-byte budget keeps "aé", never splits it.
-        let docs = vec!["aéé".to_string()];
-        assert_eq!(combine_docs(&docs, 3).as_deref(), Some("aé"));
-    }
-
-    // --- instructions_message ---
-
-    #[test]
-    fn instructions_message_renders_codexs_fragment() {
         assert_eq!(
-            instructions_message("Use TDD.", Some("/repo")),
-            "# AGENTS.md instructions for /repo\n\n<INSTRUCTIONS>\nUse TDD.\n</INSTRUCTIONS>"
+            budget_docs(docs, 12),
+            vec![
+                doc("/a/AGENTS.md", "12345678"),
+                doc("/a/b/AGENTS.md", "abcd"),
+            ]
         );
     }
 
     #[test]
-    fn instructions_message_drops_the_for_clause_without_a_directory() {
+    fn budget_docs_truncates_on_a_char_boundary() {
+        // 'é' is two bytes: a 3-byte budget keeps "aé", never splits it.
         assert_eq!(
-            instructions_message("Use TDD.", None),
-            "# AGENTS.md instructions\n\n<INSTRUCTIONS>\nUse TDD.\n</INSTRUCTIONS>"
+            budget_docs(vec![doc("/a/AGENTS.md", "aéé")], 3),
+            vec![doc("/a/AGENTS.md", "aé")]
+        );
+    }
+
+    // --- the instructions section (docs/project-doc.md) ---
+
+    #[test]
+    fn doc_heading_names_the_file_and_whether_it_is_checked_in() {
+        // The reference's own captions: a checked-in guide says so, and the
+        // git-ignorable override says the opposite — a `Contents of` line
+        // claiming a private file is in the codebase would be a lie about
+        // where the instruction came from.
+        assert_eq!(
+            doc_heading(Path::new("/repo/AGENTS.md")),
+            "Contents of /repo/AGENTS.md (project instructions, checked into the codebase):"
+        );
+        assert_eq!(
+            doc_heading(Path::new("/repo/AGENTS.override.md")),
+            "Contents of /repo/AGENTS.override.md (user's private project instructions, not checked in):"
+        );
+    }
+
+    #[test]
+    fn instructions_section_lists_each_doc_under_its_own_heading() {
+        // The retired codex fragment folded every doc into one
+        // `<INSTRUCTIONS>` body under the cwd's name; the section names each
+        // file, so the model knows which directory an instruction governs.
+        let docs = vec![
+            doc("/repo/AGENTS.md", "Root guide.\n"),
+            doc("/repo/app/AGENTS.md", "App guide."),
+        ];
+        assert_eq!(
+            instructions_section(&docs),
+            format!(
+                "{INSTRUCTIONS_PREAMBLE}\n\n\
+                 Contents of /repo/AGENTS.md (project instructions, checked into the codebase):\n\n\
+                 Root guide.\n\n\
+                 Contents of /repo/app/AGENTS.md (project instructions, checked into the codebase):\n\n\
+                 App guide."
+            )
+        );
+    }
+
+    #[test]
+    fn the_section_carries_no_instructions_markers() {
+        // The `<INSTRUCTIONS>` markers and the `# AGENTS.md instructions`
+        // heading are gone with the fragment they framed.
+        let rendered = instructions_section(&[doc("/repo/AGENTS.md", "Use TDD.")]);
+        assert!(!rendered.contains("<INSTRUCTIONS>"), "{rendered}");
+        assert!(!rendered.contains("</INSTRUCTIONS>"), "{rendered}");
+        assert!(!rendered.contains("# AGENTS.md instructions"), "{rendered}");
+    }
+
+    #[test]
+    fn instructions_section_is_empty_without_docs() {
+        assert_eq!(instructions_section(&[]), "");
+    }
+
+    #[test]
+    fn the_preamble_is_the_references_wording() {
+        assert_eq!(
+            INSTRUCTIONS_PREAMBLE,
+            "Codebase and user instructions are shown below. Be sure to adhere to these \
+             instructions. IMPORTANT: These instructions OVERRIDE any default behavior and \
+             you MUST follow them exactly as written."
         );
     }
 
@@ -370,21 +491,26 @@ mod tests {
     }
 
     #[test]
-    fn load_user_instructions_collects_root_to_cwd_and_renders_the_fragment() {
+    fn load_user_instructions_collects_root_to_cwd_and_renders_the_section() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path().join("repo");
         let deep = root.join("crates/app");
         std::fs::create_dir_all(&deep).unwrap();
         std::fs::create_dir(root.join(".git")).unwrap();
-        std::fs::write(root.join("AGENTS.md"), "Root guide.").unwrap();
+        std::fs::write(root.join("AGENTS.md"), "Root guide.\n").unwrap();
         // The middle dir (crates/) has no doc — skipped, not an error.
-        std::fs::write(deep.join("AGENTS.md"), "App guide.").unwrap();
+        std::fs::write(deep.join("AGENTS.md"), "App guide.\n").unwrap();
         let rendered = load_user_instructions(&deep).unwrap();
         assert_eq!(
             rendered,
             format!(
-                "# AGENTS.md instructions for {}\n\n<INSTRUCTIONS>\nRoot guide.\n\nApp guide.\n</INSTRUCTIONS>",
-                deep.display()
+                "{INSTRUCTIONS_PREAMBLE}\n\n\
+                 Contents of {} (project instructions, checked into the codebase):\n\n\
+                 Root guide.\n\n\
+                 Contents of {} (project instructions, checked into the codebase):\n\n\
+                 App guide.",
+                root.join("AGENTS.md").display(),
+                deep.join("AGENTS.md").display()
             )
         );
     }
@@ -428,6 +554,14 @@ mod tests {
             "the override replaces its directory's AGENTS.md: {rendered}"
         );
         assert!(rendered.contains("App guide."), "{rendered}");
+        // …and its heading says what it is: a private file, not checked in.
+        assert!(
+            rendered.contains(&format!(
+                "Contents of {} (user's private project instructions, not checked in):",
+                root.join("AGENTS.override.md").display()
+            )),
+            "{rendered}"
+        );
     }
 
     #[test]
@@ -476,11 +610,11 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("AGENTS.md"), vec![b'x'; 100 * 1024]).unwrap();
         let rendered = load_user_instructions_with(&dir, 64).expect("loads");
+        let heading = doc_heading(&dir.join("AGENTS.md"));
         let body = rendered
-            .split_once("<INSTRUCTIONS>\n")
-            .and_then(|(_, rest)| rest.split_once("\n</INSTRUCTIONS>"))
-            .map(|(body, _)| body)
-            .expect("the fragment wraps a body");
+            .split_once(&format!("{heading}\n\n"))
+            .map(|(_, body)| body)
+            .expect("the section heads the body");
         assert_eq!(body.len(), 64, "the body is the budget, not the file");
     }
 

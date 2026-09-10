@@ -4233,21 +4233,24 @@ fi
 
 # --- Phase 52: /init + the AGENTS.md instructions in the context
 # (docs/init.md, docs/project-doc.md). In a temp project with a planted
-# AGENTS.md: Ctrl+D shows codex's `# AGENTS.md instructions … <INSTRUCTIONS>`
-# fragment BEFORE any turn (the startup seed — dummy backend, so this proves
-# the App-side injection is backend-independent), /init submits the bundled
-# AGENTS.md-authoring prompt as a normal user turn (codex's one-line
-# dispatch), and a mid-turn /init is rejected with the busy toast (codex's
-# available_during_task=false). Launched with a LONG pre-stream pause so the
-# mid-turn press deterministically lands while the first turn is still
-# active (the Phase 20 pattern). ---
+# AGENTS.md: Ctrl+D shows the guide under its `Contents of {path} (project
+# instructions, checked into the codebase):` heading inside the one
+# `<system-reminder>` the context leads with, BEFORE any turn (the startup
+# seed — dummy backend, so this proves the App-side injection is
+# backend-independent), /init submits the bundled AGENTS.md-authoring prompt
+# as a normal user turn (codex's one-line dispatch), and a mid-turn /init is
+# rejected with the busy toast (codex's available_during_task=false).
+# Launched with a LONG pre-stream pause so the mid-turn press
+# deterministically lands while the first turn is still active (the Phase 20
+# pattern). The pane is 160 wide so the heading — the temp path plus its
+# caption — sits on one row and can be grepped whole. ---
 S52="${S}_init"
 WORK52="$(mktemp -d /tmp/alter-zero-smoke-init-XXXXXX)"
 mkdir -p "$WORK52/.git"
 printf '# Contributor guide\n\nSmoke sentinel: Umbral-Kite-77.\n' >"$WORK52/AGENTS.md"
 # The app runs in the temp cwd (-c), so the binary must be an absolute path.
 BIN_ABS52="$(readlink -f "$BIN")"
-tmux new-session -d -s "$S52" -x 100 -y 30 -c "$WORK52" \
+tmux new-session -d -s "$S52" -x 160 -y 30 -c "$WORK52" \
 	"env $CFG_ENV_NOHIST ALTER_ZERO_STARTUP_DELAY_MS=2000 $BIN_ABS52"
 sleep 0.5
 tmux send-keys -t "$S52" C-d
@@ -4288,8 +4291,20 @@ echo "==== captured pane (mid-turn /init busy toast) ===="
 printf '%s\n' "$init_busy"
 tmux kill-session -t "$S52" 2>/dev/null
 echo "==== Phase 52: /init + the AGENTS.md instructions in the Ctrl+D context ===="
-if ! printf '%s' "$init_ctx" | grep -qF "# AGENTS.md instructions"; then
-	echo "FAIL: Phase 52 — Ctrl+D lacks the AGENTS.md instructions fragment" >&2
+if ! printf '%s' "$init_ctx" | grep -qF "<system-reminder>"; then
+	echo "FAIL: Phase 52 — Ctrl+D lacks the <system-reminder> the context leads with" >&2
+	status=1
+fi
+if ! printf '%s' "$init_ctx" | grep -qF "Use the following contexts and instructions:"; then
+	echo "FAIL: Phase 52 — the <system-reminder> lacks its preamble line" >&2
+	status=1
+fi
+if ! printf '%s' "$init_ctx" | grep -qF "Contents of $WORK52/AGENTS.md (project instructions, checked into the codebase):"; then
+	echo "FAIL: Phase 52 — Ctrl+D lacks the planted AGENTS.md's 'Contents of' heading" >&2
+	status=1
+fi
+if printf '%s' "$init_ctx" | grep -qF "<INSTRUCTIONS>"; then
+	echo "FAIL: Phase 52 — the retired codex <INSTRUCTIONS> fragment is back" >&2
 	status=1
 fi
 if ! printf '%s' "$init_ctx" | grep -qF "Umbral-Kite-77"; then

@@ -48,7 +48,7 @@ build (`unsafe_code = "forbid"`, plus `warnings` and `clippy::all` denied).
 ## Architecture
 
 A **library** (`src/lib.rs` → `app`, `stream`, `ui`, `term`, `frame`, `paste`,
-`session`, `subprocess`, `history`, `textarea`, `file_search`, `clipboard`, `context`, `background`, `scratchpad`, `agents`, `subagents`, `frontmatter`, `ask`, `tasks`, `skills`, `steer`, `mcp`, `trust`, `checkpoint`, `project_doc`, `permission`, `settings`, `telemetry`, `cli`, `links`, `images`) holds the logic; **`src/main.rs`** is a 77-line shell —
+`session`, `subprocess`, `history`, `textarea`, `file_search`, `clipboard`, `context`, `background`, `scratchpad`, `agents`, `subagents`, `frontmatter`, `ask`, `tasks`, `skills`, `steer`, `mcp`, `trust`, `checkpoint`, `project_doc`, `reminder`, `permission`, `settings`, `telemetry`, `cli`, `links`, `images`) holds the logic; **`src/main.rs`** is a 77-line shell —
 the detached-exec hook, the CLI resolution, the viewport, the loop — over
 **`src/tui/`**, the binary-private tree that drives the codex-style **async
 (tokio) `select!`** loop (`event_loop`, `actions`, `turn`, `stream`, `agent`,
@@ -1437,15 +1437,18 @@ re-broken reports again. Only each skill's one-line description rides the contex
 budgeted `<system-reminder>` listing (the reference's 1%-of-window character
 budget, descriptions trimmed to an even share and degrading to names-only
 rather than **dropping** a skill, since one you can't see is one you can't
-invoke) that `context::context_messages_full` injects as the derived
-context's second leading fragment, right behind `user_instructions` and in
-front of everything else, a fixed position because both are re-rendered per
-turn and a fragment that moved would invalidate the prompt cache behind it —
-**one** reminder with a section each for the skills and the subagent types
-(`subagents::reminder_message` wraps both, `skills::listing_message` being
-its skills-only case; `App::system_reminder` holds the rendered text,
-`docs/subagents.md`), since they are one kind of thing (what this session can
-reach that the tool schemas don't name) and a second fragment would be a
+invoke) that `context::context_messages_full` composes into the derived
+context's one leading `<system-reminder>`, right behind the AGENTS.md
+instructions section and in front of everything else, a fixed position
+because every section is re-rendered per turn and one that moved would
+invalidate the prompt cache behind it —
+**one** reminder with a section each for the instructions, the skills and the
+subagent types (`reminder::reminder_message` wraps the sections,
+`subagents::listing_sections` joining the two listing sections into
+`App::listings` beside `App::user_instructions`, `skills::listing_message`
+being the skills section wrapped alone for a subagent; `docs/subagents.md`),
+since they are one kind of thing (what this session tells the model about
+itself that the tool schemas don't name) and a second fragment would be a
 second place the cached prefix can shift.
 A call resolves through the **`ToolOutcome::context` two-text split the ask
 tool already had** rather than a parallel mechanism: `output` is the whole
@@ -2301,12 +2304,19 @@ not the prompt. **The generated guide feeds back into the model's context**
 project's `AGENTS.md` files (the pure `project_doc` module — nearest-`.git`
 root→cwd discovery, the first of `AGENTS.override.md`/`AGENTS.md` per dir
 read bytes-lossily, codex's 32 KiB cap via `ALTER_ZERO_PROJECT_DOC_MAX_BYTES`
-with `0` disabling, the `# AGENTS.md instructions … <INSTRUCTIONS>` fragment;
+with `0` disabling, each file rendered under its own `Contents of {path}
+(project instructions, checked into the codebase):` heading — the override
+captioned `not checked in` — behind the reference's override paragraph as the
+`<system-reminder>`'s **instructions section** (`project_doc::instructions_section`;
+codex's `# AGENTS.md instructions … <INSTRUCTIONS>` fragment is retired);
 the read is
 `tui::turn`'s `Session::start_turn` + a startup seed) into
 `App::user_instructions`, and
-`context::context_messages_with` injects it as the derived context's leading
-user entry — in front of the post-`/compact` shape too, never entering
+`context::context_messages_full` wraps it with the listing sections
+(`App::listings`) into the one block the derived context leads with
+(`reminder::reminder_message`: the tags and the `Use the following contexts
+and instructions:` preamble over the non-blank sections, empty when none says
+anything) — in front of the post-`/compact` shape too, never entering
 `history` — so the Ctrl+D view shows it and `App::estimate_context_tokens`
 counts it.
 **`/compact`→`Compact`** —

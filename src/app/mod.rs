@@ -349,12 +349,14 @@ pub struct App {
     pub agent_system_prompt: Option<String>,
     /// The `<system-reminder>` a launched **subagent** opens on, ahead of its
     /// task — the session's skills roster ([`App::set_agent_system_reminder`],
-    /// from `ReplySource::agent_system_reminder`). The agent session view's
-    /// Ctrl+D leads its derived context with it, exactly as the main view
-    /// leads with [`system_reminder`](Self::system_reminder), because that is
-    /// the order the agent read them in. `None` when the session has no
-    /// skills or the type's `tools:` withholds `Skill`. See
-    /// `docs/subagents.md`.
+    /// from `ReplySource::agent_system_reminder`), wrapped whole as the
+    /// launch sent it. The agent session view's Ctrl+D leads its derived
+    /// context with it verbatim (`context::context_messages_behind`), exactly
+    /// as the main view leads with the block composed from
+    /// [`user_instructions`](Self::user_instructions) and
+    /// [`listings`](Self::listings), because that is the order the agent read
+    /// them in. `None` when the session has no skills or the type's `tools:`
+    /// withholds `Skill`. See `docs/subagents.md`.
     pub agent_system_reminder: Option<String>,
     /// The context window of the model the **viewed** subagent runs on, when
     /// known — the denominator of its session view's footer gauge
@@ -370,26 +372,28 @@ pub struct App {
     /// session's — what its session view's footer names in place of the
     /// session's model. Injected beside the window ([`App::set_agent_model`]).
     agent_model: Option<String>,
-    /// The project's AGENTS.md instructions, rendered as codex's
-    /// user-instructions fragment and injected at the boundary
-    /// ([`App::set_user_instructions`], from `project_doc::load_user_instructions`
-    /// — loaded at startup and refreshed at every turn start, so a `/init`-
-    /// generated guide rides the very next turn). The context derivation
-    /// prepends it as the window's first user entry
-    /// (`context::context_messages_with`), the Ctrl+D view shows it there,
+    /// The project's AGENTS.md instructions, rendered as the
+    /// `<system-reminder>`'s **instructions section** — one `Contents of
+    /// {path}` block per discovered file under the reference's override
+    /// paragraph (`project_doc::instructions_section`) — and injected at the
+    /// boundary ([`App::set_user_instructions`], from
+    /// `project_doc::load_user_instructions` — loaded at startup and
+    /// refreshed at every turn start, so a `/init`-generated guide rides the
+    /// very next turn). The context derivation opens the one reminder with
+    /// it (`context::context_messages_full`), the Ctrl+D view shows it there,
     /// and the offline token estimate counts it. See `docs/project-doc.md`.
     pub user_instructions: Option<String>,
-    /// The `<system-reminder>` naming what this session can reach that the
-    /// tool schemas don't: the discovered skills (`docs/skills.md`) and the
-    /// subagent types the `agent` tool can launch (`docs/subagents.md`).
-    /// Rendered at the boundary ([`App::set_system_reminder`], from
-    /// `subagents::reminder_message`) and injected as the derived context's
-    /// **second** leading user entry, right behind
-    /// [`user_instructions`](Self::user_instructions)
+    /// The `<system-reminder>`'s **listing sections** — what this session can
+    /// reach that the tool schemas don't name: the discovered skills
+    /// (`docs/skills.md`) and the subagent types the `agent` tool can launch
+    /// (`docs/subagents.md`). Rendered at the boundary
+    /// ([`App::set_listings`], from `subagents::listing_sections`) and
+    /// wrapped by the derivation into the same block as
+    /// [`user_instructions`](Self::user_instructions), right behind it
     /// (`context::context_messages_full`) — so the Ctrl+D view shows it and
     /// the offline token estimate counts it. `None` when neither section has
     /// anything to say.
-    pub system_reminder: Option<String>,
+    pub listings: Option<String>,
     /// The Esc-Esc backtrack gesture (edit a previous message): primed by Esc
     /// from an idle empty composer when a previous user message exists,
     /// previewing in the transcript overlay, confirmed with Enter. Reset by
@@ -990,14 +994,14 @@ impl App {
         self.user_instructions = instructions;
     }
 
-    /// Inject the session's `<system-reminder>` (from
-    /// `subagents::reminder_message` — the skills listing and the agent-type
+    /// Inject the `<system-reminder>`'s listing sections (from
+    /// `subagents::listing_sections` — the skills listing and the agent-type
     /// listing, rendered at the boundary at startup, at every turn's rescan,
     /// and whenever a setting changes what is offered) so the context
-    /// derivation, the Ctrl+D view, and the token estimate all carry it. See
-    /// `docs/skills.md`, `docs/subagents.md`.
-    pub fn set_system_reminder(&mut self, reminder: Option<String>) {
-        self.system_reminder = reminder;
+    /// derivation, the Ctrl+D view, and the token estimate all carry them.
+    /// See `docs/skills.md`, `docs/subagents.md`.
+    pub fn set_listings(&mut self, listings: Option<String>) {
+        self.listings = listings;
     }
 
     /// Record a finished user message in the history.

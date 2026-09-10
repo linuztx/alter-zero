@@ -158,7 +158,7 @@ impl App {
         let total = self.system_prompt.as_deref().map_or(0, count_tokens)
             + estimate_messages_tokens(&crate::context::context_messages_full(
                 self.user_instructions.as_deref(),
-                self.system_reminder.as_deref(),
+                self.listings.as_deref(),
                 &self.history,
             ));
         u64::try_from(total).unwrap_or(u64::MAX)

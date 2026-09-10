@@ -255,7 +255,7 @@ zero new plumbing. The TUI cell is a new `HistoryItem::AgentNotice` —
   the agent's transcript, the `system prompt:` block shows the prompt a
   subagent is *actually sent* — the main prompt + the subagent note,
   `ReplySource::agent_system_prompt()` injected at the boundary as
-  `App::agent_system_prompt` — and no AGENTS.md fragment, since subagent
+  `App::agent_system_prompt` — and no AGENTS.md section, since subagent
   conversations start without one; `docs/context.md`), **and Tab from there
   its own classifier context** — the launch prompt it was given plus the
   calls it has made, the block its own auto-mode verdicts are reviewed

@@ -142,7 +142,7 @@ impl Session<'_> {
         // docs/context.md.
         let context = context::context_messages_full(
             self.app.user_instructions.as_deref(),
-            self.app.system_reminder.as_deref(),
+            self.app.listings.as_deref(),
             &self.app.history,
         );
         self.spawn_reply(prompt, paths, context);
@@ -229,7 +229,7 @@ impl Session<'_> {
         self.rescan_agents();
         let context = context::context_messages_full(
             self.app.user_instructions.as_deref(),
-            self.app.system_reminder.as_deref(),
+            self.app.listings.as_deref(),
             &self.app.history,
         );
         self.spawn_reply(prompt, Vec::new(), context);

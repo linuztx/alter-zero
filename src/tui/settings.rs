@@ -114,7 +114,7 @@ impl Session<'_> {
             alter_zero::llm::skill::load_skills(&self.cwd, config::config_home().as_deref());
         self.skill_registry.replace(skills);
         self.sync_setting_availability();
-        self.sync_system_reminder();
+        self.sync_listings();
         self.models.refresh_skills();
         // A `SKILL.md` that stopped parsing says so — once. Silence here is
         // what makes "the model ignores my skill" and "I typo'd the
@@ -140,7 +140,7 @@ impl Session<'_> {
         let (agents, errors) =
             alter_zero::llm::subagent::load_agents(&self.cwd, config::config_home().as_deref());
         self.subagents.replace(agents);
-        self.sync_system_reminder();
+        self.sync_listings();
         let fresh = alter_zero::subagents::unreported_errors(&self.reported_agent_errors, &errors);
         self.reported_agent_errors = errors.iter().map(|error| error.path.clone()).collect();
         self.report_agent_errors(&fresh);
@@ -165,7 +165,7 @@ impl Session<'_> {
             disabled.insert(name.to_string());
         }
         self.skill_registry.set_disabled(disabled.clone());
-        self.sync_system_reminder();
+        self.sync_listings();
         // The tool set is decided at attach time, so the rebuild is what
         // withdraws (or restores) the spec when the last skill goes off/on.
         self.models.refresh_skills();
@@ -243,7 +243,7 @@ impl Session<'_> {
             // a tool it was told it had (`docs/skills.md`).
             SettingKey::Tools => {
                 self.models.set_tools(settings.tools);
-                self.sync_system_reminder();
+                self.sync_listings();
             }
             // The retry budget rides every round of every turn — the main
             // one's and a subagent's.
@@ -274,7 +274,7 @@ impl Session<'_> {
             // stops (or starts) knowing about skills (`docs/skills.md`).
             SettingKey::Skills => {
                 self.models.set_skills(settings.skills_active());
-                self.sync_system_reminder();
+                self.sync_listings();
             }
             // The picture geometry: republish the policy, drop the encoded
             // pictures, and rebuild so the committed ones change with it.

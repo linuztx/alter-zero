@@ -37,23 +37,66 @@ fn context_lines_show_the_raw_window_with_role_tags() {
 
 #[test]
 fn context_lines_show_the_user_instructions_first() {
-    // The AGENTS.md instructions fragment (docs/project-doc.md) is the
-    // first user entry of the window — right after the system prompt, in
-    // front of the conversation, exactly what the request carries.
+    // The AGENTS.md section (docs/project-doc.md) opens the window's first
+    // user entry inside the one `<system-reminder>` — right after the system
+    // prompt, in front of the conversation, exactly what the request carries.
     let mut app = context_fixture();
-    app.set_user_instructions(Some("# AGENTS.md instructions\n\nguide".to_string()));
-    let texts: Vec<String> = context_lines(&app, 80)
+    app.set_user_instructions(Some(
+        "Contents of /r/AGENTS.md (project instructions, checked into the codebase):\n\nguide"
+            .to_string(),
+    ));
+    let texts: Vec<String> = context_lines(&app, 100)
         .iter()
         .map(|l| plain(l).trim_end().to_string())
         .collect();
     assert_eq!(texts[0], "system prompt:", "{texts:?}");
     let first_user = texts.iter().position(|t| t == "user:").unwrap();
+    assert_eq!(texts[first_user + 1], "  <system-reminder>", "{texts:?}");
     assert_eq!(
-        texts[first_user + 1],
-        "  # AGENTS.md instructions",
+        texts[first_user + 2],
+        "  Use the following contexts and instructions:",
         "{texts:?}"
     );
-    assert_eq!(texts[first_user + 3], "  guide", "{texts:?}");
+    assert_eq!(texts[first_user + 3], "", "{texts:?}");
+    assert_eq!(
+        texts[first_user + 4],
+        "  Contents of /r/AGENTS.md (project instructions, checked into the codebase):",
+        "{texts:?}"
+    );
+    assert_eq!(texts[first_user + 6], "  guide", "{texts:?}");
+    assert_eq!(texts[first_user + 7], "  </system-reminder>", "{texts:?}");
+    assert!(
+        !texts.iter().any(|t| t.contains("<INSTRUCTIONS>")),
+        "the codex markers are gone: {texts:?}"
+    );
+}
+
+#[test]
+fn context_lines_show_the_listings_behind_the_instructions_in_one_block() {
+    // The skills/agent-type sections (`App::listings`) share the block with
+    // the instructions rather than opening a second one.
+    let mut app = context_fixture();
+    app.set_user_instructions(Some("guide".to_string()));
+    app.set_listings(Some(
+        "Available agent types for the Agent tool:\n\n- explore: Searches. (Tools: Read)"
+            .to_string(),
+    ));
+    let texts: Vec<String> = context_lines(&app, 100)
+        .iter()
+        .map(|l| plain(l).trim_end().to_string())
+        .collect();
+    assert_eq!(
+        texts.iter().filter(|t| *t == "  <system-reminder>").count(),
+        1,
+        "one block: {texts:?}"
+    );
+    let guide = texts.iter().position(|t| t == "  guide").unwrap();
+    assert_eq!(
+        texts[guide + 2],
+        "  Available agent types for the Agent tool:",
+        "{texts:?}"
+    );
+    assert_eq!(texts[guide + 5], "  </system-reminder>", "{texts:?}");
 }
 
 #[test]
@@ -190,10 +233,13 @@ fn an_agent_session_view_shows_the_subagents_own_system_prompt() {
     // appended (`prompts/subagent.md`, via `LlmBackend::subagent_config` —
     // docs/agent-tool.md); the agent session view's Ctrl+D must show that
     // prompt, or the note can never be verified. The body derives from the
-    // agent's own transcript, and the AGENTS.md fragment stays main-only
+    // agent's own transcript, and the AGENTS.md section stays main-only
     // (subagents get none).
     let mut app = context_fixture();
-    app.set_user_instructions(Some("# AGENTS.md instructions\n\nguide".to_string()));
+    app.set_user_instructions(Some(
+        "Contents of /r/AGENTS.md (project instructions, checked into the codebase):\n\nguide"
+            .to_string(),
+    ));
     app.set_agent_system_prompt(Some(
         "be nice\n\nYou are running as a subagent.".to_string(),
     ));
@@ -359,13 +405,16 @@ fn context_cache_release_frees_the_window_and_the_next_open_rebuilds() {
 
 #[test]
 fn context_cache_rebuilds_when_the_leading_fragments_change() {
-    // The AGENTS.md fragment reloads at turn starts and the `/settings`
+    // The AGENTS.md section reloads at turn starts and the `/settings`
     // Project-docs knob drops it with no history append — the signature must
     // catch the direct edit.
     let mut app = context_fixture();
     let mut cache = ContextCache::new();
     let _ = cache.lines(&app, 60);
-    app.set_user_instructions(Some("# AGENTS.md instructions\n\nguide".to_string()));
+    app.set_user_instructions(Some(
+        "Contents of /r/AGENTS.md (project instructions, checked into the codebase):\n\nguide"
+            .to_string(),
+    ));
     let cached: Vec<String> = cache.lines(&app, 60).iter().map(plain).collect();
     assert_eq!(cache.builds, 2, "an instructions change rebuilds");
     assert!(cached.iter().any(|t| t.contains("AGENTS.md")), "{cached:?}");

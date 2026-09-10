@@ -27,14 +27,18 @@ The design decision everything else follows from: there is **no second store**
 of the conversation. The pure [`context`](../src/context.rs) module derives
 the context window from `App::history` on demand —
 `context_messages(&app.history) -> Vec<ContextMessage>`, or
-`context_messages_with(instructions, &app.history)` when the project's
-AGENTS.md instructions lead it (`docs/project-doc.md`; the two emptiness
-checks deliberately derive *without* them, so a standing guide alone is
-still "nothing to compact"), or `context_messages_full(instructions,
-system_reminder, &app.history)` when the session's `<system-reminder>` rides
-behind them — the skills it can load (`docs/skills.md`) and the subagent
-types it can launch (`docs/subagents.md`), one fragment with a section each
-— because `history`
+`context_messages_full(instructions, listings, &app.history)` when the
+session's `<system-reminder>` leads it — one block (`reminder::reminder_message`,
+`docs/project-doc.md`) composed *at derivation* from the two sections `App`
+holds: the project's AGENTS.md instructions (`App::user_instructions`,
+`project_doc::instructions_section`), then the skills it can load and the
+subagent types it can launch (`App::listings`, `subagents::listing_sections`,
+`docs/skills.md`, `docs/subagents.md`); `context_messages_with(instructions,
+&app.history)` is the instructions-only case the tools-free `/compact` turn
+sends, and `context_messages_behind(fragment, &app.history)` takes an
+already-wrapped block verbatim — a viewed subagent's briefing. The two
+emptiness checks deliberately derive *without* the block, so a standing guide
+alone is still "nothing to compact". Derived, because `history`
 is already the single source of truth the TUI keeps correct everywhere it
 matters:
 
@@ -43,11 +47,15 @@ matters:
 - an Esc interrupt's *undo* pops the submission back out of it;
 - a `/resume` load replaces it with the parsed rollout file.
 
-Both leading fragments sit **in front of** history rather than in it, in a
-fixed order (instructions, then the system reminder): they are re-rendered per
-turn, so a fragment that moved position would invalidate the prompt cache
-behind it, and keeping them out of `history` means a backtrack cannot rewind
-past them and the recorder cannot store them twice.
+The reminder sits **in front of** history rather than in it, its sections in
+a fixed order (the instructions, then the skills, then the agent types): every
+section is re-rendered per turn, so one that moved position would invalidate
+the prompt cache behind it, and keeping the block out of `history` means a
+backtrack cannot rewind past it and the recorder cannot store it twice. It is
+composed where the context derives rather than stored assembled because its
+two inputs change at different moments — the instructions at every turn start
+and on the **Project docs** toggle, the listings on every rescan and `/model`
+switch — and a block assembled at either site would be stale at the other.
 
 A stored context would have to mirror every one of those transitions and
 would drift on the first missed one. A derived context *cannot* drift: the
@@ -275,10 +283,10 @@ tool-view-performance.md`): `draw_context_view` asks it for the line count
 then the lines, and the cache rebuilds **only when its signature changes** —
 history generation + length, the width, the viewed agent (id + its own
 transcript length), and the leading fragments' lengths (system/agent prompt,
-`AGENTS.md` instructions, the system reminder — they only otherwise change
-beside a turn-start history append, and the lengths catch the direct edits: a
-`/settings` toggle dropping the instructions, a `/model` switch swapping the
-prompt). A scroll key or a status tick is a cache hit (O(viewport) to window
+the `AGENTS.md` instructions section, the listing sections, a viewed agent's
+briefing — they only otherwise change beside a turn-start history append, and
+the lengths catch the direct edits: a `/settings` toggle dropping the
+instructions, a `/model` switch swapping the prompt). A scroll key or a status tick is a cache hit (O(viewport) to window
 the rows); a streamed chunk doesn't invalidate it at all (the window shows
 finished items only). No incremental prefix is needed — unlike the
 transcript, the window only changes at item boundaries, never per chunk.
@@ -289,10 +297,12 @@ agent's own transcript through the same mapping, and the `system prompt:`
 block shows the prompt a subagent is **actually sent** — the main prompt with
 the subagent note appended (`prompts/subagent.md`), surfaced as
 `ReplySource::agent_system_prompt()` and injected beside the main one
-(`App::set_agent_system_prompt`) — with no AGENTS.md fragment, because
+(`App::set_agent_system_prompt`) — with no AGENTS.md section, because
 subagent conversations start fresh without one (`llm::backend`'s
-`run_agent_calls`). So the note's presence is verifiable right where the
-user looks for it.
+`run_agent_calls`), and with the agent's own briefing — the skills section
+wrapped alone, exactly as the launch sent it — taken verbatim in front of
+its transcript (`context_messages_behind`, `docs/subagents.md`). So the
+note's presence is verifiable right where the user looks for it.
 
 ## Also fixed while wiring: the default system prompt was dead
 

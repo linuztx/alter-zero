@@ -118,11 +118,17 @@ corrects itself in the same round.
 ## The listing
 
 The `<system-reminder>` the derived context leads with (`docs/context.md`)
-gains a second section, so the model reads the roster of types beside the
-roster of skills:
+gains a third section, so the model reads the roster of types behind the
+project's AGENTS.md instructions and the roster of skills:
 
 ```
 <system-reminder>
+Use the following contexts and instructions:
+
+Contents of /work/my-app/AGENTS.md (project instructions, checked into the codebase):
+
+…
+
 The following skills are available for use with the Skill tool:
 
 - terminal-mascot: Design small mascots …
@@ -134,12 +140,16 @@ Available agent types for the Agent tool:
 </system-reminder>
 ```
 
-One reminder, two sections, either of which may be absent — the wrapper is
-`subagents::reminder_message`, the sections are `skills::skill_listing` and
-`subagents::agent_listing`, and both are budgeted the same way (the model's
-context window × 1%, descriptions trimmed to an even share before any entry
-is dropped). `(Tools: …)` is the allowlist as the file wrote it, or `*` when
-it was omitted — a type's reach is the other half of choosing it.
+One reminder, three sections, any of which may be absent — the wrapper is
+`reminder::reminder_message`, the listing sections are `skills::skill_section`
+and `subagents::agent_section` over `skills::skill_listing` and
+`subagents::agent_listing` (joined by `subagents::listing_sections` into
+`App::listings`, the boundary's one render, and wrapped behind the
+instructions by `context::context_messages_full`), and both listings are
+budgeted the same way (the model's context window × 1%, descriptions trimmed
+to an even share before any entry is dropped). `(Tools: …)` is the allowlist
+as the file wrote it, or `*` when it was omitted — a type's reach is the
+other half of choosing it.
 
 The agent section rides exactly when the `agent` tool does (a real backend
 with tools on): a reminder naming a tool the request never carries is the
@@ -147,8 +157,10 @@ listing/tool mismatch `skills_offered` exists to prevent. The offline dummy
 scripts its agent demo rather than being offered a spec, so it sends no agent
 section and every offline context is byte-identical to before.
 
-A **subagent** gets the skills half only (`subagent_skill_reminder`): it has
-no `agent` tool, so naming types to it would be a roster it cannot use. That
+A **subagent** gets the skills section only (`subagent_skill_reminder`, over
+`skills::listing_message`): it has no `agent` tool, so naming types to it
+would be a roster it cannot use, and no AGENTS.md section, since its
+instructions ride its system prompt. That
 briefing **leads its context**, ahead of the launch prompt, exactly as the
 lead's reminder leads its own: it is standing information about the session,
 not an answer to the task, and a roster read after the instruction it should

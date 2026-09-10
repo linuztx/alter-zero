@@ -15,19 +15,32 @@ fn the_init_prompt_is_codexs_agents_md_generator() {
 }
 
 #[test]
-fn set_user_instructions_stores_the_agents_md_fragment() {
-    // The boundary injects the rendered AGENTS.md instructions (the
-    // set_system_prompt pattern); everyone deriving context reads them.
-    // See docs/project-doc.md.
+fn set_user_instructions_stores_the_agents_md_section() {
+    // The boundary injects the rendered AGENTS.md section (the
+    // set_system_prompt pattern); everyone deriving context reads it and the
+    // derivation wraps it into the `<system-reminder>`. See docs/project-doc.md.
     let mut app = App::new();
     assert_eq!(app.user_instructions, None);
-    app.set_user_instructions(Some("<INSTRUCTIONS>\nguide\n</INSTRUCTIONS>".to_string()));
-    assert_eq!(
-        app.user_instructions.as_deref(),
-        Some("<INSTRUCTIONS>\nguide\n</INSTRUCTIONS>")
-    );
+    let section =
+        "Contents of /repo/AGENTS.md (project instructions, checked into the codebase):\n\nguide";
+    app.set_user_instructions(Some(section.to_string()));
+    assert_eq!(app.user_instructions.as_deref(), Some(section));
     app.set_user_instructions(None);
     assert_eq!(app.user_instructions, None);
+}
+
+#[test]
+fn set_listings_stores_the_reminders_listing_sections() {
+    // The skills and agent-type sections, rendered at the boundary
+    // (`subagents::listing_sections`) and wrapped by the derivation behind
+    // the instructions. See docs/skills.md, docs/subagents.md.
+    let mut app = App::new();
+    assert_eq!(app.listings, None);
+    let sections = "The following skills are available for use with the Skill tool:\n\n- x: X";
+    app.set_listings(Some(sections.to_string()));
+    assert_eq!(app.listings.as_deref(), Some(sections));
+    app.set_listings(None);
+    assert_eq!(app.listings, None);
 }
 
 #[test]

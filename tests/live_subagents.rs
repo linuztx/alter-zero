@@ -297,10 +297,10 @@ fn live_the_reminder_tells_the_model_which_types_exist() {
     ]);
     let (found, _) = alter_zero::llm::subagent::discover_agents(&[dir.path().to_path_buf()]);
     let registry = SubagentRegistry::new(found);
-    let reminder = alter_zero::subagents::reminder_message(
-        "",
-        &registry.listing(alter_zero::skills::listing_budget(None)),
-    );
+    let reminder =
+        alter_zero::reminder::reminder_message(&[&alter_zero::subagents::agent_section(
+            &registry.listing(alter_zero::skills::listing_budget(None)),
+        )]);
     println!("{reminder}");
     assert!(reminder.contains("(Tools: Read)"), "{reminder}");
 

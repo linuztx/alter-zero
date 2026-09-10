@@ -198,6 +198,7 @@ use alter_zero::skills::{
     render_skill_body,
     shell_flavored_query,
     skill_listing,
+    skill_section,
     unreported_errors,
     validate_skill_name,
 };
@@ -220,13 +221,47 @@ use alter_zero::subagents::{
     SubagentRegistry,
     agent_budget,
     agent_listing,
+    agent_section,
+    listing_sections,
     parse_agent,
-    reminder_message,
     system_prompt_for,
     unknown_agent_message,
     unreported_errors as unreported_agent_errors,
     validate_agent_name,
     withheld_tool_message,
+};
+
+// --- `reminder` — the `<system-reminder>` the context leads with (docs/context.md) ---
+#[rustfmt::skip]
+#[allow(unused_imports)]
+use alter_zero::reminder::{
+    REMINDER_CLOSE,
+    REMINDER_OPEN,
+    REMINDER_PREAMBLE,
+    join_sections,
+    reminder_message,
+};
+
+// --- `project_doc` — the AGENTS.md instructions section (docs/project-doc.md) ---
+#[rustfmt::skip]
+#[allow(unused_imports)]
+use alter_zero::project_doc::{
+    DOC_CHECKED_IN_NOTE,
+    DOC_OVERRIDE_NOTE,
+    INSTRUCTIONS_PREAMBLE,
+    PROJECT_DOC_FILENAME,
+    PROJECT_DOC_FILENAMES,
+    PROJECT_DOC_MAX_BYTES,
+    PROJECT_DOC_OVERRIDE_FILENAME,
+    ProjectDoc,
+    budget_docs,
+    doc_budget,
+    doc_chain,
+    doc_heading,
+    find_project_root,
+    instructions_section,
+    load_user_instructions,
+    load_user_instructions_with,
 };
 
 // --- `frontmatter` — the `---` block parse both authored formats share ---

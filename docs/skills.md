@@ -198,15 +198,24 @@ a file that is fixed and broken again reports again.
 
 ## The listing
 
-Every turn, the derived context leads with the project doc (AGENTS.md) and
-then the session's `<system-reminder>`, whose first section is the skill
-listing (its second is the subagent types the `Agent` tool can launch —
-`docs/subagents.md`; either section may be absent, and the wrapper is
-`subagents::reminder_message`, of which `skills::listing_message` is the
-skills-only case a launched subagent gets):
+Every turn, the derived context leads with one `<system-reminder>` whose
+sections are the project doc (AGENTS.md, `docs/project-doc.md`), then the
+skill listing, then the subagent types the `Agent` tool can launch
+(`docs/subagents.md`; any section may be absent — the wrapper is
+`reminder::reminder_message`, the skills section is `skills::skill_section`,
+and `skills::listing_message` is that section wrapped alone, which is what a
+launched subagent gets):
 
 ```
 <system-reminder>
+Use the following contexts and instructions:
+
+Codebase and user instructions are shown below. Be sure to adhere to these instructions. IMPORTANT: …
+
+Contents of /work/my-app/AGENTS.md (project instructions, checked into the codebase):
+
+…
+
 The following skills are available for use with the Skill tool:
 
 - commit: Create a git commit with staged changes
@@ -219,15 +228,17 @@ Available agent types for the Agent tool:
 </system-reminder>
 ```
 
-It is a **leading fragment**, not history: `App::system_reminder` is rendered
-at the boundary and `context::context_messages_full` injects it in front of the
-conversation — so Ctrl+D shows it, `App::estimate_context_tokens` counts it,
-and it survives a `/compact` at the front exactly like the project doc. It
-never enters `history`, so it cannot be backtracked past or recorded twice.
+It is a **leading fragment**, not history: the two listing sections are
+rendered at the boundary into `App::listings` (`subagents::listing_sections`)
+and `context::context_messages_full` wraps them, behind the instructions
+section, into the one block in front of the conversation — so Ctrl+D shows
+it, `App::estimate_context_tokens` counts it, and it survives a `/compact` at
+the front exactly like the project doc. It never enters `history`, so it
+cannot be backtracked past or recorded twice.
 
-Its position is *after* `user_instructions` and before everything else, which
-is a prompt-cache decision: both are re-rendered per turn, and a fragment that
-moves invalidates every token behind it.
+Its position is *after* the AGENTS.md section and before everything else,
+which is a prompt-cache decision: every section is re-rendered per turn, and
+one that moves invalidates every token behind it.
 
 The listing is budgeted like the reference's `formatCommandsWithinBudget`:
 each entry's description is capped at [`MAX_LISTING_DESC_CHARS`] (250), and if

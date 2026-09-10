@@ -412,51 +412,76 @@ pub fn derives_conversation(history: &[HistoryItem]) -> bool {
     })
 }
 
-/// [`context_messages_with`] plus the session's **`<system-reminder>`** —
-/// the discovered skills (`docs/skills.md`) and the subagent types the
-/// `agent` tool can launch (`docs/subagents.md`), injected right after the
-/// project's instructions and in front of the conversation.
+/// [`context_messages`] behind the session's **`<system-reminder>`**
+/// ([`crate::reminder`]) — one block, composed here from its two inputs in
+/// their fixed order: the project's AGENTS.md instructions section
+/// (`project_doc::instructions_section`, `docs/project-doc.md`), then the
+/// listing sections naming the skills the `Skill` tool can load and the
+/// types the `Agent` tool can launch (`subagents::listing_sections`,
+/// `docs/skills.md`, `docs/subagents.md`).
 ///
-/// Its position is a prompt-cache decision: both leading fragments are
-/// re-rendered per turn, and one that moved would invalidate every token
-/// behind it. `None` or a blank changes nothing, which is what a session with
-/// neither sends.
+/// Composed at derivation rather than stored assembled because the two
+/// inputs change at different moments — the instructions are re-read at every
+/// turn start and dropped by a `/settings` toggle, the listings re-rendered on
+/// every rescan and `/model` switch — so a block assembled at either site
+/// would be stale at the other; built here, the request, Ctrl+D and the token
+/// estimate can never disagree about it. The order is a prompt-cache
+/// decision: every section is re-rendered per turn, and one that moved would
+/// invalidate every token behind it. `None` or a blank on either side leaves
+/// that section out; both absent is no block at all, which is what a session
+/// with neither sends.
 #[must_use]
 pub fn context_messages_full(
     user_instructions: Option<&str>,
-    system_reminder: Option<&str>,
+    listings: Option<&str>,
     history: &[HistoryItem],
 ) -> Vec<ContextMessage> {
-    let mut out = leading_fragments(user_instructions, system_reminder);
+    let reminder = crate::reminder::reminder_message(&[
+        user_instructions.unwrap_or_default(),
+        listings.unwrap_or_default(),
+    ]);
+    context_messages_led_by((!reminder.is_empty()).then_some(reminder), history)
+}
+
+/// [`context_messages`] behind an already-rendered leading fragment: the
+/// **user** entry the window opens with, verbatim, in front of the normal
+/// derivation *and* the post-`/compact` shape alike (codex keeps its initial
+/// context through compaction the same way). It rides `push_text`, so a first
+/// user message merges after it under the module's alternation convention.
+/// `None` or a blank changes nothing.
+///
+/// The main window's fragment is composed by [`context_messages_full`]; a
+/// viewed subagent's is its briefing exactly as the launch wrapped it
+/// (`skills::listing_message`, `App::agent_system_reminder`), which is why
+/// this seam takes the block whole rather than its sections — wrapping it
+/// again would show a block the agent never read (`docs/subagents.md`).
+#[must_use]
+pub fn context_messages_behind(
+    leading: Option<&str>,
+    history: &[HistoryItem],
+) -> Vec<ContextMessage> {
+    context_messages_led_by(leading.map(str::to_string), history)
+}
+
+/// The shared tail of the two leading-fragment derivations: the fragment (if
+/// it says anything) as the first user entry, then `history` behind it.
+fn context_messages_led_by(
+    leading: Option<String>,
+    history: &[HistoryItem],
+) -> Vec<ContextMessage> {
+    let mut out: Vec<ContextMessage> = Vec::new();
+    if let Some(fragment) = leading.filter(|fragment| !fragment.trim().is_empty()) {
+        push_text(&mut out, ContextRole::User, fragment, vec![]);
+    }
     derive_history_into(&mut out, history);
     out
 }
 
-/// The leading user entries a turn's context opens with, in their fixed
-/// order: the project doc, then the system reminder.
-fn leading_fragments(
-    user_instructions: Option<&str>,
-    system_reminder: Option<&str>,
-) -> Vec<ContextMessage> {
-    let mut out: Vec<ContextMessage> = Vec::new();
-    for fragment in [user_instructions, system_reminder]
-        .into_iter()
-        .flatten()
-        .filter(|fragment| !fragment.trim().is_empty())
-    {
-        push_text(&mut out, ContextRole::User, fragment.to_string(), vec![]);
-    }
-    out
-}
-
-/// [`context_messages`] with the project's AGENTS.md instructions in front —
-/// codex's user-instructions fragment (`project_doc::instructions_message`,
-/// rendered at the boundary) leads the derived context as its first **user**
-/// entry, in front of the normal derivation *and* the post-`/compact` shape
-/// alike (codex keeps its initial context through compaction the same way).
-/// It rides `push_text`, so a first user message merges after it under the
-/// module's alternation convention. `None` or a blank changes nothing. See
-/// `docs/project-doc.md`.
+/// [`context_messages_full`] with the project's AGENTS.md instructions alone
+/// — the reminder's instructions section and no listings. What the
+/// tools-free `/compact` turn sends: a summarizer never offered the `skill`
+/// or `agent` tool must not read a roster naming them (`docs/compact.md`).
+/// See `docs/project-doc.md`.
 #[must_use]
 pub fn context_messages_with(
     user_instructions: Option<&str>,
@@ -1765,19 +1790,60 @@ mod tests {
 
     #[test]
     fn user_instructions_lead_the_derived_context() {
-        // The rendered AGENTS.md fragment is the context's first user entry;
-        // a first user message merges after it under the module's alternation
-        // convention (push_text), the markers keeping the boundary clear.
+        // The rendered AGENTS.md section rides the context's first user entry
+        // inside the one `<system-reminder>` (`crate::reminder`); a first user
+        // message merges after it under the module's alternation convention
+        // (push_text), the tags keeping the boundary clear.
         let history = vec![message(Role::User, "hello"), message(Role::Assistant, "hi")];
-        let ctx =
-            context_messages_with(Some("<INSTRUCTIONS>\nUse TDD.\n</INSTRUCTIONS>"), &history);
+        let section = "Contents of /repo/AGENTS.md (project instructions, checked into the codebase):\n\nUse TDD.";
+        let ctx = context_messages_with(Some(section), &history);
         assert_eq!(ctx.len(), 2, "{ctx:?}");
         assert_eq!(ctx[0].role, ContextRole::User);
         assert_eq!(
             ctx[0].text,
-            "<INSTRUCTIONS>\nUse TDD.\n</INSTRUCTIONS>\n\nhello"
+            "<system-reminder>\n\
+             Use the following contexts and instructions:\n\n\
+             Contents of /repo/AGENTS.md (project instructions, checked into the codebase):\n\n\
+             Use TDD.\n\
+             </system-reminder>\n\n\
+             hello"
         );
         assert_eq!(ctx[1].text, "hi");
+    }
+
+    #[test]
+    fn a_session_with_neither_fragment_sends_no_reminder_at_all() {
+        // No AGENTS.md, no skills, no agent types: nothing to remind the model
+        // of, so the context is exactly the derived conversation — no empty
+        // block, no bare preamble.
+        let history = vec![message(Role::User, "hello"), message(Role::Assistant, "hi")];
+        let ctx = context_messages_full(None, None, &history);
+        assert_eq!(ctx, context_messages(&history));
+        assert!(
+            !ctx.iter().any(|m| m.text.contains("<system-reminder>")),
+            "{ctx:?}"
+        );
+    }
+
+    #[test]
+    fn an_already_rendered_reminder_leads_verbatim() {
+        // A subagent's briefing is wrapped where its launch is built
+        // (`skills::listing_message`), so the agent view's window takes it
+        // as-is — wrapping it again would show a block the agent never read.
+        let history = vec![message(Role::User, "task?")];
+        let briefing = "<system-reminder>\nskills: dataviz\n</system-reminder>";
+        let ctx = context_messages_behind(Some(briefing), &history);
+        assert_eq!(ctx.len(), 1, "{ctx:?}");
+        assert_eq!(ctx[0].text, format!("{briefing}\n\ntask?"));
+        assert_eq!(
+            context_messages_behind(None, &history),
+            context_messages(&history)
+        );
+        assert_eq!(
+            context_messages_behind(Some("  "), &history),
+            context_messages(&history),
+            "a blank fragment changes nothing"
+        );
     }
 
     /// A [`tool`] carrying the model's verbatim arguments — what every live
@@ -1871,26 +1937,39 @@ mod tests {
     }
 
     #[test]
-    fn the_skill_listing_follows_the_instructions_and_leads_the_conversation() {
-        // Both leading fragments are re-rendered per turn, so their order is
-        // fixed: a fragment that moved would invalidate the prompt cache
-        // behind it (docs/skills.md).
+    fn the_listings_follow_the_instructions_inside_the_one_reminder() {
+        // One block, sections in a fixed order — the project instructions,
+        // then the skills and agent-type listings: every section is
+        // re-rendered per turn, so one that moved would invalidate the prompt
+        // cache behind it (docs/context.md).
         let history = vec![message(Role::User, "hello")];
         let ctx = context_messages_full(
             Some("guide"),
-            Some("<system-reminder>x</system-reminder>"),
+            Some("The following skills are available for use with the Skill tool:\n\n- x: X"),
             &history,
         );
-        assert_eq!(ctx.len(), 1, "all three merge as one user entry: {ctx:?}");
+        assert_eq!(
+            ctx.len(),
+            1,
+            "the block and the message merge as one user entry: {ctx:?}"
+        );
         assert_eq!(
             ctx[0].text,
-            "guide\n\n<system-reminder>x</system-reminder>\n\nhello"
+            "<system-reminder>\n\
+             Use the following contexts and instructions:\n\n\
+             guide\n\n\
+             The following skills are available for use with the Skill tool:\n\n\
+             - x: X\n\
+             </system-reminder>\n\n\
+             hello"
         );
     }
 
     #[test]
-    fn a_session_with_no_skills_sends_exactly_what_it_did_before() {
-        // The zero-skill path is byte-identical to the pre-feature context.
+    fn a_session_with_no_listings_sends_the_instructions_alone() {
+        // The listings are optional sections: without them the reminder is
+        // the instructions section by itself, and a blank listing is no
+        // listing.
         let history = vec![message(Role::User, "hello"), message(Role::Assistant, "hi")];
         assert_eq!(
             context_messages_full(Some("guide"), None, &history),
@@ -1904,22 +1983,34 @@ mod tests {
     }
 
     #[test]
-    fn the_skill_listing_survives_compaction_at_the_front() {
-        // Like the project doc: the leading fragments lead the post-`/compact`
-        // shape too, so a compacted session still knows its skills.
+    fn the_listings_survive_compaction_at_the_front() {
+        // Like the project doc: the reminder leads the post-`/compact` shape
+        // too, so a compacted session still knows its skills and agent types.
         let history = vec![
             message(Role::User, "old"),
             compaction("we did things"),
             message(Role::User, "new"),
         ];
         let ctx = context_messages_full(None, Some("SKILLS"), &history);
-        assert!(ctx[0].text.starts_with("SKILLS"), "{ctx:?}");
+        assert!(ctx[0].text.starts_with("<system-reminder>\n"), "{ctx:?}");
+        assert!(
+            ctx[0]
+                .text
+                .contains("\n\nSKILLS\n</system-reminder>\n\nold"),
+            "{ctx:?}"
+        );
     }
 
     #[test]
     fn user_instructions_alone_are_a_context_of_one() {
         let ctx = context_messages_with(Some("guide"), &[]);
-        assert_eq!(ctx, vec![ContextMessage::new(ContextRole::User, "guide")]);
+        assert_eq!(
+            ctx,
+            vec![ContextMessage::new(
+                ContextRole::User,
+                crate::reminder::reminder_message(&["guide"])
+            )]
+        );
     }
 
     #[test]
@@ -1951,7 +2042,14 @@ mod tests {
         let ctx = context_messages_with(Some("guide"), &history);
         assert_eq!(ctx.len(), 1, "{ctx:?}");
         assert!(
-            ctx[0].text.starts_with("guide\n\nold question"),
+            ctx[0].text.starts_with("<system-reminder>\n"),
+            "{:?}",
+            ctx[0].text
+        );
+        assert!(
+            ctx[0]
+                .text
+                .contains("guide\n</system-reminder>\n\nold question"),
             "{:?}",
             ctx[0].text
         );

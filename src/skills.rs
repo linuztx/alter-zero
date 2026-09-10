@@ -6,8 +6,10 @@
 //!
 //! - the frontmatter **parse** ([`parse_skill`]) and name **validation**
 //!   ([`validate_skill_name`]);
-//! - the **listing** the model chooses from ([`skill_listing`],
-//!   [`listing_message`]) and its character budget ([`listing_budget`]);
+//! - the **listing** the model chooses from ([`skill_listing`]), its
+//!   character budget ([`listing_budget`]), the `<system-reminder>` section
+//!   it heads ([`skill_section`]) and the subagent briefing that section
+//!   is on its own ([`listing_message`]);
 //! - the **body render** ([`render_skill_body`]) — the base-directory header,
 //!   `${…SKILL_DIR}` expansion, byte cap;
 //! - the [`SkillRegistry`] handle the boundary and the loop share.
@@ -271,23 +273,35 @@ pub fn skill_listing(skills: &[SkillMetadata], budget: usize) -> String {
 pub const SKILL_LISTING_HEADER: &str =
     "The following skills are available for use with the Skill tool:";
 
-/// The listing wrapped in the reference's `<system-reminder>` — the leading
-/// context fragment `crate::context::context_messages_with` injects. Empty in,
-/// empty out: with no skills there is nothing to say, and saying it anyway
-/// would spend a turn's tokens telling the model about a tool it isn't
-/// offered.
+/// The skills section of the `<system-reminder>` ([`crate::reminder`]): the
+/// header over the listing. Empty in, empty out: with no skills there is
+/// nothing to say, and saying it anyway would spend a turn's tokens telling
+/// the model about a tool it isn't offered.
 ///
-/// The reminder is the roster alone: the `$`-mention guidance lives in the
+/// The section is the roster alone: the `$`-mention guidance lives in the
 /// Skill tool's own description (`docs/skill-mentions.md`), which rides every
 /// request the tool does — repeating it here would say it twice per turn.
-/// Static across turns, so the fragment stays prompt-cache-stable unless the
+/// Static across turns, so the reminder stays prompt-cache-stable unless the
 /// listing itself changes.
 #[must_use]
-pub fn listing_message(listing: &str) -> String {
-    if listing.trim().is_empty() {
+pub fn skill_section(listing: &str) -> String {
+    let listing = listing.trim();
+    if listing.is_empty() {
         return String::new();
     }
-    crate::subagents::reminder_message(listing, "")
+    format!("{SKILL_LISTING_HEADER}\n\n{listing}")
+}
+
+/// The skills section alone, wrapped as a whole `<system-reminder>` — the
+/// **briefing** a launched subagent opens on (`docs/subagents.md`): a
+/// subagent starts on a fresh context the lead's reminder never reaches, and
+/// it has no `agent` tool, so it gets this section and nothing else. The
+/// lead's own reminder is composed by `crate::context::context_messages_full`
+/// from the same [`skill_section`] behind the project's instructions and
+/// beside the agent types. Empty in, empty out.
+#[must_use]
+pub fn listing_message(listing: &str) -> String {
+    crate::reminder::reminder_message(&[&skill_section(listing)])
 }
 
 /// The text a `skill` call returns to the model: the body with its
@@ -841,9 +855,25 @@ mod tests {
     }
 
     #[test]
+    fn skill_section_heads_the_listing_and_is_empty_without_one() {
+        assert_eq!(
+            skill_section("- commit: Create a git commit"),
+            "The following skills are available for use with the Skill tool:\n\n\
+             - commit: Create a git commit"
+        );
+        assert_eq!(skill_section(""), "");
+        assert_eq!(skill_section("  \n"), "");
+    }
+
+    #[test]
     fn the_listing_message_wears_the_references_system_reminder() {
+        // The subagent's briefing: the skills section alone, wrapped exactly
+        // as the lead's reminder wraps its sections (`crate::reminder`).
         let msg = listing_message("- commit: Create a git commit");
-        assert!(msg.starts_with("<system-reminder>\n"), "got {msg}");
+        assert!(
+            msg.starts_with("<system-reminder>\nUse the following contexts and instructions:\n\n"),
+            "got {msg}"
+        );
         assert!(msg.ends_with("\n</system-reminder>"), "got {msg}");
         assert!(msg.contains("available for use with the Skill tool"));
         assert!(msg.contains("- commit: Create a git commit"));

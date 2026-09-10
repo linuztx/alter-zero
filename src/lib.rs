@@ -60,8 +60,13 @@
 //!   (titles, options, command scopes, session rules) and the gate the backend
 //!   thread blocks on while the user decides (see `docs/permissions.md`).
 //! - [`project_doc`] — AGENTS.md discovery: codex's project doc collected
-//!   root→cwd under a 32 KiB cap and rendered as the user-instructions
-//!   context fragment (see `docs/project-doc.md`).
+//!   root→cwd under a 32 KiB cap and rendered, one `Contents of {path}`
+//!   block per file, as the `<system-reminder>`'s instructions section (see
+//!   `docs/project-doc.md`).
+//! - [`reminder`]    — the `<system-reminder>` the derived context leads
+//!   with: the wrapper and its preamble over the sections the project doc,
+//!   the skills and the subagent types each render (pure; see
+//!   `docs/context.md`).
 //! - [`scratchpad`]  — the session's own temp layout: the agent's scratchpad
 //!   (the directory its system prompt sends every temporary file to) and the
 //!   background shells' `tasks` dir beside it (pure; see
@@ -138,6 +143,7 @@ pub mod mcp;
 pub mod paste;
 pub mod permission;
 pub mod project_doc;
+pub mod reminder;
 pub mod scratchpad;
 pub mod session;
 pub mod settings;

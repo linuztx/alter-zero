@@ -8,7 +8,8 @@
 //!
 //! Everything here is pure — the parse ([`parse_agent`]), the tool allowlist
 //! ([`AgentTools::allows`]), the budgeted listing the model chooses from
-//! ([`agent_listing`], [`reminder_message`]), the system-prompt composition
+//! ([`agent_listing`]) and the `<system-reminder>` sections it rides in
+//! ([`agent_section`], [`listing_sections`]), the system-prompt composition
 //! ([`system_prompt_for`]) and the shared [`SubagentRegistry`] handle. The
 //! filesystem walk and the seeding of the built-in defaults live in
 //! [`crate::llm::subagent`].
@@ -371,35 +372,35 @@ pub fn agent_budget(total: usize, skill_listing: &str) -> usize {
     total.saturating_sub(skill_listing.chars().count())
 }
 
-/// The `<system-reminder>` the derived context leads with: the skills the
-/// `Skill` tool can load, then the types the `Agent` tool can launch — one
-/// reminder, either section optional, empty when both are.
-///
-/// One fragment rather than two because they are one kind of thing (what this
-/// session can reach that the tool schemas don't already name) and because
-/// both are re-rendered per turn: a second fragment would be a second place
-/// the prompt-cache prefix can shift (`docs/subagents.md`).
+/// The agent-types section of the `<system-reminder>` ([`crate::reminder`]):
+/// the header over the listing, empty when there is no listing — the offline
+/// dummy, or a session whose `agent` tool is withheld, names no types.
 #[must_use]
-pub fn reminder_message(skill_listing: &str, agent_listing: &str) -> String {
-    let skills = skill_listing.trim();
-    let agents = agent_listing.trim();
-    let mut sections: Vec<String> = Vec::new();
-    if !skills.is_empty() {
-        sections.push(format!(
-            "{}\n\n{skills}",
-            crate::skills::SKILL_LISTING_HEADER
-        ));
-    }
-    if !agents.is_empty() {
-        sections.push(format!("{AGENT_LISTING_HEADER}\n\n{agents}"));
-    }
-    if sections.is_empty() {
+pub fn agent_section(listing: &str) -> String {
+    let listing = listing.trim();
+    if listing.is_empty() {
         return String::new();
     }
-    format!(
-        "<system-reminder>\n{}\n</system-reminder>",
-        sections.join("\n\n")
-    )
+    format!("{AGENT_LISTING_HEADER}\n\n{listing}")
+}
+
+/// The **listing sections** of the session's `<system-reminder>`: the skills
+/// the `Skill` tool can load, then the types the `Agent` tool can launch —
+/// either optional, empty when both are. Rendered at the boundary into
+/// `App::listings`, and wrapped by `crate::context::context_messages_full`
+/// behind the project's instructions section into the one block the context
+/// leads with.
+///
+/// One block rather than one per roster because they are one kind of thing
+/// (what this session can reach that the tool schemas don't already name)
+/// and because both are re-rendered per turn: a second fragment would be a
+/// second place the prompt-cache prefix can shift (`docs/subagents.md`).
+#[must_use]
+pub fn listing_sections(skill_listing: &str, agent_listing: &str) -> String {
+    crate::reminder::join_sections(&[
+        &crate::skills::skill_section(skill_listing),
+        &agent_section(agent_listing),
+    ])
 }
 
 /// The system prompt a launched subagent of this type carries.
@@ -781,39 +782,55 @@ mod tests {
     }
 
     #[test]
-    fn the_reminder_carries_both_sections_in_one_block() {
-        let rendered = reminder_message("- dataviz: Charts.", &agent_listing(&defs(), 8_000));
+    fn agent_section_heads_the_listing_and_is_empty_without_one() {
+        assert_eq!(
+            agent_section("- explore: Searches. (Tools: Bash, Read)"),
+            "Available agent types for the Agent tool:\n\n\
+             - explore: Searches. (Tools: Bash, Read)"
+        );
+        assert_eq!(agent_section(""), "");
+        assert_eq!(agent_section(" \n"), "");
+    }
+
+    #[test]
+    fn listing_sections_carries_both_sections_in_order() {
+        // Skills first, then the types — the order the reminder reads them
+        // in, behind the project instructions (`crate::reminder`); no
+        // wrapper here, since the wrapping is the reminder's own job.
+        let rendered = listing_sections("- dataviz: Charts.", &agent_listing(&defs(), 8_000));
         assert_eq!(
             rendered,
-            "<system-reminder>\n\
-             The following skills are available for use with the Skill tool:\n\n\
+            "The following skills are available for use with the Skill tool:\n\n\
              - dataviz: Charts.\n\n\
              Available agent types for the Agent tool:\n\n\
              - general-purpose: Does anything. (Tools: *)\n\
-             - explore: Searches. (Tools: Bash, Read)\n\
-             </system-reminder>"
+             - explore: Searches. (Tools: Bash, Read)"
         );
+        assert!(!rendered.contains("<system-reminder>"), "{rendered}");
     }
 
     #[test]
     fn either_section_may_be_absent_and_both_absent_is_empty() {
-        let agents_only = reminder_message("", "- explore: Searches. (Tools: Bash, Read)");
+        let agents_only = listing_sections("", "- explore: Searches. (Tools: Bash, Read)");
         assert!(!agents_only.contains("Skill tool"), "{agents_only}");
-        assert!(agents_only.contains(AGENT_LISTING_HEADER));
-        let skills_only = reminder_message("- dataviz: Charts.", "");
+        assert!(
+            agents_only.starts_with(AGENT_LISTING_HEADER),
+            "{agents_only}"
+        );
+        let skills_only = listing_sections("- dataviz: Charts.", "");
         assert!(!skills_only.contains(AGENT_LISTING_HEADER), "{skills_only}");
-        assert_eq!(reminder_message("", ""), "");
-        assert_eq!(reminder_message("   ", "\n"), "");
+        assert_eq!(listing_sections("", ""), "");
+        assert_eq!(listing_sections("   ", "\n"), "");
     }
 
     #[test]
     fn the_skills_only_reminder_is_still_the_one_subagents_get() {
-        // `skills::listing_message` and a skills-only `reminder_message` are
-        // the same bytes — a subagent has no `agent` tool, so it gets the
-        // skills half alone and must not drift from the lead's wording.
+        // `skills::listing_message` and a skills-only reminder are the same
+        // bytes — a subagent has no `agent` tool, so it gets the skills
+        // section alone and must not drift from the lead's wording.
         assert_eq!(
             crate::skills::listing_message("- dataviz: Charts."),
-            reminder_message("- dataviz: Charts.", "")
+            crate::reminder::reminder_message(&[&listing_sections("- dataviz: Charts.", "")])
         );
     }
 

@@ -81,25 +81,30 @@ pub fn context_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     // transcript derived through the same mapping, under the prompt a
     // subagent is actually sent — its type's definition, else the main
     // prompt, plus the subagent note (`App::agent_system_prompt`, from
-    // `ReplySource::agent_system_prompt`) — with no AGENTS.md fragment
+    // `ReplySource::agent_system_prompt`) — with no AGENTS.md section
     // (subagents get none). See `docs/agent-tool.md`.
-    // A viewed subagent's window has no AGENTS.md fragment (subagents get
+    // A viewed subagent's window has no AGENTS.md section (subagents get
     // none — its instructions ride the system prompt shown above), but it
-    // does lead with a reminder of its own: the skills roster its fresh
-    // context was briefed with, ahead of the task, which is the order the
-    // agent read them in (`docs/subagents.md`). No agent types in it —
-    // subagents cannot launch agents.
-    let (history, instructions, reminder, system_prompt) = match app.viewed_agent() {
+    // does lead with a `<system-reminder>` of its own: the skills roster its
+    // fresh context was briefed with, ahead of the task, which is the order
+    // the agent read them in (`docs/subagents.md`) — taken whole, as the
+    // launch wrapped it, where the main window composes its block from the
+    // two sections `App` holds (`context::context_messages_full`). No agent
+    // types in it — subagents cannot launch agents.
+    let (messages, system_prompt) = match app.viewed_agent() {
         Some(run) => (
-            run.history.as_slice(),
-            None,
-            app.agent_system_reminder.as_deref(),
+            crate::context::context_messages_behind(
+                app.agent_system_reminder.as_deref(),
+                &run.history,
+            ),
             app.agent_system_prompt.as_ref(),
         ),
         None => (
-            app.history.as_slice(),
-            app.user_instructions.as_deref(),
-            app.system_reminder.as_deref(),
+            crate::context::context_messages_full(
+                app.user_instructions.as_deref(),
+                app.listings.as_deref(),
+                &app.history,
+            ),
             app.system_prompt.as_ref(),
         ),
     };
@@ -115,7 +120,7 @@ pub fn context_lines(app: &App, width: u16) -> Vec<Line<'static>> {
             width,
         );
     }
-    for message in crate::context::context_messages_full(instructions, reminder, history) {
+    for message in messages {
         context_entry_lines(
             &mut lines,
             &format!("{}:", message.role.wire_name()),
@@ -180,7 +185,7 @@ struct ContextSig {
     prompt_len: Option<usize>,
     agent_prompt_len: Option<usize>,
     instructions_len: Option<usize>,
-    reminder_len: Option<usize>,
+    listings_len: Option<usize>,
     agent_reminder_len: Option<usize>,
 }
 
@@ -198,7 +203,7 @@ impl ContextSig {
             prompt_len: app.system_prompt.as_ref().map(String::len),
             agent_prompt_len: app.agent_system_prompt.as_ref().map(String::len),
             instructions_len: app.user_instructions.as_ref().map(String::len),
-            reminder_len: app.system_reminder.as_ref().map(String::len),
+            listings_len: app.listings.as_ref().map(String::len),
             agent_reminder_len: app.agent_system_reminder.as_ref().map(String::len),
         }
     }

@@ -1265,7 +1265,7 @@ impl Session<'_> {
         // The skill listing is budgeted off that same window (1% of it, in
         // characters), so it is re-rendered here rather than once at startup:
         // a `/model` switch to a roomier model widens the listing with it.
-        self.sync_system_reminder();
+        self.sync_listings();
     }
 
     /// Push the **viewed** subagent type's system prompt *and its briefing*
@@ -1298,8 +1298,11 @@ impl Session<'_> {
         self.app.set_agent_model(pinned);
     }
 
-    /// Render the session's `<system-reminder>` into `App`, so the derived
-    /// context leads with it (`docs/skills.md`, `docs/subagents.md`).
+    /// Render the session's `<system-reminder>` **listing sections** into
+    /// `App` (`subagents::listing_sections` → `App::listings`), so the one
+    /// block the derived context leads with carries them behind the
+    /// project's AGENTS.md instructions (`docs/skills.md`,
+    /// `docs/subagents.md`; the wrapping is `context::context_messages_full`'s).
     ///
     /// Two sections, gated separately because they are two different tools:
     ///
@@ -1320,7 +1323,7 @@ impl Session<'_> {
     /// that changes what is offered — the per-turn rescan, a `/skills`
     /// toggle, the `/settings` Skills/Tools rows, a `/model` switch — already
     /// funnels through here, which is what keeps the two in step.
-    pub(crate) fn sync_system_reminder(&mut self) {
+    pub(crate) fn sync_listings(&mut self) {
         // The budget is 1% of the model's context window in characters, so
         // this is re-rendered here rather than once at startup: a `/model`
         // switch to a roomier model widens both listings with it. **One**
@@ -1343,9 +1346,9 @@ impl Session<'_> {
         } else {
             String::new()
         };
-        let reminder = alter_zero::subagents::reminder_message(&skills, &agents);
+        let listings = alter_zero::subagents::listing_sections(&skills, &agents);
         self.app
-            .set_system_reminder((!reminder.is_empty()).then_some(reminder));
+            .set_listings((!listings.is_empty()).then_some(listings));
         self.app.set_skills(if skills_offered {
             self.skill_registry.enabled()
         } else {
