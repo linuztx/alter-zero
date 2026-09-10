@@ -88,6 +88,141 @@ fn a_hard_wrapped_url_carries_its_whole_target_on_every_row() {
 }
 
 #[test]
+fn a_wrapped_token_url_links_every_fragment_in_every_assistant_format() {
+    // A synthetic token, never a real credential. The code/heading paths used
+    // to bypass OSC 8, leaving only the terminal's first-row URL detection.
+    let url = format!(
+        "https://telemetry.example.test/?token={}",
+        "0123456789abcdef".repeat(4)
+    );
+    for text in [
+        format!("Dashboard:\n{url}"),
+        format!("Dashboard:\n`{url}`"),
+        format!("Dashboard:\n```text\n{url}\n```"),
+        format!("Dashboard:\n```rust\nlet dashboard = \"{url}\";\n```"),
+        format!("Dashboard:\n\n    {url}"),
+        format!("## Dashboard {url}"),
+        format!("- `{url}`"),
+        format!("> `{url}`"),
+        format!("| Dashboard |\n| --- |\n| `{url}` |"),
+    ] {
+        for width in [26, 80, 100] {
+            let lines = message_lines(Role::Assistant, &text, width);
+            let mut linked_rows = 0;
+            let mut rejoined = String::new();
+            let mut carrier = None;
+            for line in &lines {
+                let mut linked = false;
+                for span in &line.spans {
+                    if let Some(target) = crate::links::style_link(&span.style) {
+                        assert_eq!(target.as_ref(), url, "full target: {text:?}");
+                        if let Some(id) = carrier {
+                            assert_eq!(span.style.underline_color, Some(id), "one hover group");
+                        }
+                        carrier = span.style.underline_color;
+                        rejoined.push_str(&span.content);
+                        linked = true;
+                    }
+                }
+                linked_rows += usize::from(linked);
+            }
+            assert_eq!(
+                rejoined, url,
+                "every URL character links (w={width}): {text:?}"
+            );
+            assert!(
+                linked_rows >= 2,
+                "exercise a wrapped URL (w={width}): {text:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn quoted_code_urls_exclude_surrounding_syntax_and_keep_literal_punctuation() {
+    let first = "https://one.example.test/?token=0123456789abcdef!";
+    let second = "https://two.example.test/path?";
+    for code in [
+        format!("requests.get('{first}').json()"),
+        format!("['{first}','{second}']"),
+        format!("requests.get(\"{first}\").json()"),
+        format!("[\"{first}\",\"{second}\"]"),
+    ] {
+        for text in [format!("`{code}`"), format!("```python\n{code}\n```")] {
+            let rows = message_lines(Role::Assistant, &text, 26);
+            let mut actual = Vec::<(String, String)>::new();
+            for span in rows.iter().flat_map(|row| &row.spans) {
+                if let Some(target) = crate::links::style_link(&span.style) {
+                    if let Some((visible, previous)) = actual.last_mut()
+                        && previous == target.as_ref()
+                    {
+                        visible.push_str(&span.content);
+                    } else {
+                        actual.push((span.content.to_string(), target.to_string()));
+                    }
+                }
+            }
+            let expected: Vec<_> = [first, second]
+                .into_iter()
+                .filter(|url| code.contains(url))
+                .map(|url| (url.to_string(), url.to_string()))
+                .collect();
+            assert_eq!(actual, expected, "exact code URL targets: {text:?}");
+        }
+    }
+}
+
+#[test]
+fn a_fenced_code_block_links_every_wrapped_url_line_separately() {
+    let urls = (1..=12)
+        .map(|n| {
+            format!(
+                "https://example.test/dashboard/{n}?token={:0>32}",
+                n.to_string()
+            )
+        })
+        .collect::<Vec<_>>();
+    let text = format!("```text\n{}\n```", urls.join("\n"));
+    let rows = message_lines(Role::Assistant, &text, 26);
+    for url in &urls {
+        let fragments: Vec<_> = rows
+            .iter()
+            .flat_map(|row| &row.spans)
+            .filter_map(|span| {
+                crate::links::style_link(&span.style)
+                    .filter(|target| target.as_ref() == url)
+                    .map(|_| span.content.as_ref())
+            })
+            .collect();
+        assert_eq!(fragments.concat(), *url, "every character of {url} links");
+        assert!(fragments.len() > 1, "the link wraps: {url}");
+    }
+    let linked: String = rows
+        .iter()
+        .flat_map(|row| &row.spans)
+        .filter(|span| crate::links::style_link(&span.style).is_some())
+        .map(|span| span.content.as_ref())
+        .collect();
+    assert_eq!(linked, urls.concat(), "no syntax leaks into targets");
+}
+
+#[test]
+fn heading_combining_marks_survive_the_painted_buffer() {
+    use ratatui::widgets::{Paragraph, Widget};
+
+    for text in [
+        "## \u{0301}Hello",
+        "## \u{0301}Hello https://example.test/x",
+    ] {
+        let lines = message_lines(Role::Assistant, text, 26);
+        let mut buffer = Buffer::empty(Rect::new(0, 0, 26, lines.len() as u16));
+        Paragraph::new(lines).render(buffer.area, &mut buffer);
+        assert_eq!(buffer[(4, 0)].symbol(), " \u{0301}", "{text:?}");
+        assert!(buffer[(4, 0)].modifier.contains(Modifier::BOLD));
+    }
+}
+
+#[test]
 fn assistant_renders_bullet_and_ordered_lists() {
     // Bullets keep the `-`, ordered items keep `N.`, and nesting indent
     // survives (the earlier wrap_text-collapses-whitespace bug).

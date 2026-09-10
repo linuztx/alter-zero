@@ -14,7 +14,8 @@ use super::*;
 /// URLs — a `[text](url)` target and every bare `http(s)://…` in plain text —
 /// additionally carry the link **carrier** ([`links::linked`]), so each
 /// wrapped fragment of a URL still opens the whole target at the paint
-/// boundary (`docs/links.md`); `code` stays verbatim, never linked.
+/// boundary (`docs/links.md`). Code URLs carry targets too, without changing
+/// their literal text or code styling.
 pub(super) fn inline_spans(nodes: &[markdown::Inline], base: Style) -> Vec<(String, Style)> {
     let mut out = Vec::new();
     for node in nodes {
@@ -32,7 +33,12 @@ pub(super) fn inline_spans(nodes: &[markdown::Inline], base: Style) -> Vec<(Stri
                     base.add_modifier(Modifier::CROSSED_OUT),
                 ));
             }
-            markdown::Inline::Code(c) => out.push((c.clone(), base.fg(inline_code_color()))),
+            markdown::Inline::Code(c) => {
+                out.extend(linkify_code_segments(vec![(
+                    c.clone(),
+                    base.fg(inline_code_color()),
+                )]));
+            }
             markdown::Inline::Link { text, url } => {
                 // The text keeps its own dress and gains the target; the
                 // ` (url)` suffix splits so exactly the URL carries it (the
@@ -72,6 +78,71 @@ fn autolink_text(text: &str, base: Style, out: &mut Vec<(String, Style)>) {
     if at < text.len() {
         out.push((text[at..].to_string(), base));
     }
+}
+
+/// Mark literal code URLs, respecting quote boundaries and preserving trailing
+/// punctuation when the literal itself establishes the URL's extent.
+pub(super) fn linkify_code_segments(segments: Vec<(String, Style)>) -> Vec<(String, Style)> {
+    linkify_with(segments, links::find_code_urls)
+}
+
+/// Attach bare URL targets to **unwrapped**, already-styled text without
+/// changing its bytes or dress (code and headings). Detection sees the whole
+/// line, not individual syntax-highlighted segments: a highlighter can split a
+/// URL at `://`, punctuation, or query parameters. Every intersecting piece
+/// carries the full target before either wrapper breaks it into display rows.
+/// Segments must belong to one source line; separate lines are never joined.
+pub(super) fn linkify_segments(segments: Vec<(String, Style)>) -> Vec<(String, Style)> {
+    linkify_with(segments, links::find_urls)
+}
+
+/// Intersect source URL ranges with styled runs, independent of the detector's
+/// prose/code boundary rules.
+fn linkify_with(
+    segments: Vec<(String, Style)>,
+    detect: fn(&str) -> Vec<std::ops::Range<usize>>,
+) -> Vec<(String, Style)> {
+    let text: String = segments.iter().map(|(text, _)| text.as_str()).collect();
+    let ranges = detect(&text);
+    if ranges.is_empty() {
+        return segments;
+    }
+    let mut ranges = ranges.into_iter().peekable();
+    let mut out = Vec::with_capacity(segments.len());
+    let mut offset = 0;
+    for (content, style) in segments {
+        if content.is_empty() {
+            out.push((content, style));
+            continue;
+        }
+        let end = offset + content.len();
+        let mut at = offset;
+        while let Some(range) = ranges.peek() {
+            if range.start >= end {
+                break;
+            }
+            let start = range.start.max(at);
+            if at < start {
+                out.push((text[at..start].to_string(), style));
+            }
+            let stop = range.end.min(end);
+            out.push((
+                text[start..stop].to_string(),
+                links::linked(style, &text[range.clone()]),
+            ));
+            at = stop;
+            if range.end <= end {
+                ranges.next();
+            } else {
+                break;
+            }
+        }
+        if at < end {
+            out.push((text[at..end].to_string(), style));
+        }
+        offset = end;
+    }
+    out
 }
 
 /// Word-wrap styled inline `segments` to `width` columns, preserving each run's
