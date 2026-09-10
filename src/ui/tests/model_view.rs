@@ -146,6 +146,28 @@ fn model_picker_shows_no_match_when_the_query_filters_everything() {
 }
 
 #[test]
+fn model_picker_waits_for_every_provider_before_showing_no_match() {
+    // A partial multi-provider list cannot prove a query has no match — the
+    // provider still fetching may hold the very model being searched for. The
+    // placeholder stays `Loading models…` until the count settles at zero.
+    let mut picker = model_picker(three_models(), 0, "x");
+    picker.query = "chatgpt".into();
+    picker.pending = 1;
+    let mut buf = buffer(60, 20);
+    render_model_picker(buf.area, &mut buf, &picker);
+    let loading = row(&buf, 4, 60);
+    assert!(loading.contains("Loading models…"), "{loading:?}");
+    assert!(!loading.contains("No matching models"), "{loading:?}");
+
+    // Every provider has answered: the query genuinely matches nothing now.
+    picker.pending = 0;
+    let mut buf = buffer(60, 20);
+    render_model_picker(buf.area, &mut buf, &picker);
+    let settled = row(&buf, 4, 60);
+    assert!(settled.contains("No matching models"), "{settled:?}");
+}
+
+#[test]
 fn cursor_sits_at_the_end_of_the_model_search_query() {
     let mut app = App::new();
     app.open_model_picker("x");

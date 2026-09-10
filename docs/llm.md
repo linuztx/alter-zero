@@ -273,6 +273,13 @@ the bottom rule — the shape of the user's mock):
   provider; exact `(provider, id)` dupes dropped) as the rest arrive. The
   highlight rides the same model across each merge, or re-seats on the active
   model once its provider lands (unless the user has already moved/filtered).
+  A **search that matches nothing in the partial list keeps saying
+  `Loading models…`** until every provider has answered: a list that is still
+  arriving cannot prove a query has no match, and `No matching models` shown
+  over one still-fetching provider is a claim the next merge contradicts
+  seconds later (typing `chatgpt` before the ChatGPT provider landed read as
+  "that model does not exist"). Only at `pending == 0` can the placeholder
+  truthfully settle to `No matching models`.
 - **Partial results are surfaced, not fatal.** While providers are still fetching
   the counter carries a dim `· loading more…`; a provider whose fetch fails is
   recorded (`ModelPicker::errors`) and noted beside the counter as a red

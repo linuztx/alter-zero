@@ -155,7 +155,14 @@ fn model_list_lines(picker: &ModelPicker, width: u16) -> Vec<Line<'static>> {
         ModelLoad::Ready => {
             let matches = picker.matches();
             if matches.is_empty() {
-                let text = if picker.models.is_empty() {
+                // A partial multi-provider list cannot prove the query has no
+                // match — a provider still fetching may hold the very model
+                // being searched for. Keep the loading placeholder until every
+                // list has landed rather than flashing `No matching models`
+                // and then filling in the match seconds later.
+                let text = if picker.pending > 0 {
+                    MODEL_LOADING
+                } else if picker.models.is_empty() {
                     MODEL_NONE
                 } else {
                     MODEL_NO_MATCH
