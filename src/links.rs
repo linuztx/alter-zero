@@ -38,14 +38,7 @@ pub fn find_urls(text: &str) -> Vec<Range<usize>> {
     let mut out = Vec::new();
     let mut from = 0;
     while let Some((start, body)) = next_scheme(text, from) {
-        let mut end = body;
-        for (i, c) in text[body..].char_indices() {
-            if !is_url_char(c) {
-                break;
-            }
-            end = body + i + c.len_utf8();
-        }
-        let end = trim_tail(text, start, end);
+        let end = trim_tail(text, start, url_end(text, body, None));
         // A bare scheme with nothing after it is prose, not a link.
         if end > body {
             out.push(start..end);
@@ -55,6 +48,53 @@ pub fn find_urls(text: &str) -> Vec<Range<usize>> {
         }
     }
     out
+}
+
+/// Code's counterpart of [`find_urls`]. A URL at the start of a literal
+/// (including a URL-only code span) or introduced by a quote keeps its exact
+/// punctuation. A matching quote terminates it before surrounding code such
+/// as `').json()` or an adjacent string. Other unquoted URLs embedded in
+/// code/prose still use the conservative prose-tail rule.
+///
+/// This is lexical detection, not string-literal evaluation: escaped strings
+/// and interpolations are not decoded into invented link targets.
+pub(crate) fn find_code_urls(text: &str) -> Vec<Range<usize>> {
+    let mut out = Vec::new();
+    let mut from = 0;
+    while let Some((start, body)) = next_scheme(text, from) {
+        let quote = text[..start]
+            .chars()
+            .next_back()
+            .filter(|c| matches!(c, '\'' | '"' | '`'));
+        let end = url_end(text, body, quote);
+        // Decide from the prefix only: later code appended after a space
+        // must not retroactively trim a URL already committed to scrollback.
+        let starts_literal = text[..start].trim().is_empty();
+        let end = if quote.is_some() || starts_literal {
+            end
+        } else {
+            trim_tail(text, start, end)
+        };
+        if end > body {
+            out.push(start..end);
+            from = end;
+        } else {
+            from = body;
+        }
+    }
+    out
+}
+
+/// End of a URL's printable body, optionally bounded by its opening code quote.
+fn url_end(text: &str, body: usize, quote: Option<char>) -> usize {
+    let mut end = body;
+    for (i, c) in text[body..].char_indices() {
+        if !is_url_char(c) || Some(c) == quote {
+            break;
+        }
+        end = body + i + c.len_utf8();
+    }
+    end
 }
 
 /// Whether a URL could still be **forming** at the end of `text` — a
@@ -411,6 +451,31 @@ mod tests {
 
     fn urls(text: &str) -> Vec<&str> {
         find_urls(text).into_iter().map(|r| &text[r]).collect()
+    }
+
+    #[test]
+    fn code_url_boundaries_are_literal_without_changing_prose_detection() {
+        let cases = [
+            ("'https://e.test/x!').json()", vec!["https://e.test/x!"]),
+            (
+                "['https://one.test/a','https://two.test/b']",
+                vec!["https://one.test/a", "https://two.test/b"],
+            ),
+            ("\"https://e.test/x?\"", vec!["https://e.test/x?"]),
+            ("`https://e.test/x;`", vec!["https://e.test/x;"]),
+            ("  https://e.test/x!  ", vec!["https://e.test/x!"]),
+            ("https://e.test/x'", vec!["https://e.test/x'"]),
+            ("// see https://e.test/x. next", vec!["https://e.test/x"]),
+            ("'https://e.test/x\x1b]8;;bad'", vec!["https://e.test/x"]),
+            ("'https://e.test/x\nnext'", vec!["https://e.test/x"]),
+            ("'https://'", vec![]),
+            ("'nothhttps://e.test/x'", vec![]),
+        ];
+        for (text, expected) in cases {
+            let found: Vec<_> = find_code_urls(text).into_iter().map(|r| &text[r]).collect();
+            assert_eq!(found, expected, "{text:?}");
+        }
+        assert_eq!(urls("https://e.test/x!"), vec!["https://e.test/x"]);
     }
 
     #[test]

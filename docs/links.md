@@ -94,10 +94,29 @@ survives the trip.
      (`link_url_color()` + underline — a URL is a URL) plus the carrier.
    - `Inline::Link { text, url }` marks the text spans (their visible style
      untouched) and the `url` inside the ` (url)` suffix with the target.
-   - `Inline::Code` stays link-free (verbatim by intent), as do fenced code
-     blocks, headings, and the non-markdown roles (user/system/shell text)
-     and tool output — the terminal's own detection still covers their
-     unwrapped URLs exactly as before.
+   - `Inline::Code` also marks bare URLs, but preserves its literal text and
+     code colour — no blue/underline override. Previously, putting a long
+     token URL inside backticks silently bypassed OSC 8: only the first
+     wrapped row auto-detected, and clicking lost the rest of the token.
+   - `linkify_segments` and `linkify_code_segments` attach targets to
+     already-styled, **unwrapped** text without changing its bytes or visible
+     styling. They scan the whole source line, then intersect URL byte ranges
+     with its style spans, so syntax highlighting that splits a scheme, path,
+     or query still gives every piece the same full target. Code detection
+     (`links::find_code_urls`) respects an opening quote, so `').json()` and
+     adjacent quoted strings are never swallowed into the target. A quoted
+     URL or one starting a code literal keeps trailing punctuation exactly
+     (`?token=abc!` includes `!`); the decision depends only on text before
+     the URL, so later streamed code cannot change an already-committed
+     target. Prose/heading detection retains its punctuation trimming.
+     Escapes and interpolations in source strings are not evaluated.
+     `AssistantRenderer` marks code before `code_content_rows` and headings
+     before `wrap_inline`. Code spacing, syntax colours, and heading modifiers
+     stay intact; adjacent equal-style heading spans are merged so combining
+     marks stay attached to their preceding glyph. Separate source lines are
+     never joined into a guessed URL.
+   - Non-markdown roles (user/system/shell text) and tool output still rely
+     on the terminal's detection of unwrapped URLs.
 3. **`src/ui/model_view.rs` — the picker family's marking.** Assistant prose
    is not the only place a URL is shown: the `/login` sign-in pages print one
    the user is meant to *act* on. `model_linked_rows` is
@@ -185,12 +204,21 @@ paint as a colour — it just writes no OSC.
 The pure core (detection, interner, carrier round-trip, framing/encoding,
 run grouping, the env predicate) is unit-tested in `links.rs`; the marking
 and the *wrapped-fragments-still-carry-the-whole-URL* regression are
-unit-tested in `ui` (an `assistant_lines` render at a width that hard-breaks
-the URL). The decoration parens have both halves too — the segments'
-own dress in `ui/tests/inline.rs`, and the whole `` "[`AGENTS.md`](AGENTS.md)" ``
-render through `message_lines` in `ui/tests/assistant.rs`, each over several
-widths, since the wrap re-coalesces a row's spans by style and a paren that
-kept the link dress would come back as its own underlined span. `term.rs` is the I/O boundary, so `smoke.sh` **Phase 87** drives
+unit-tested in `ui`. A synthetic token URL is rendered at several narrow
+widths in plain prose, inline code, fenced/highlighted and indented code,
+headings, lists, quotes, and tables. Tests also split URLs across every
+possible syntax-style boundary, preserve Unicode and spacing, and compare
+every streamed prefix including carriers against batch rendering so no
+partial target commits. Quote-delimited code URLs, punctuation-ending
+literals, carrier-only diff repaints, and combining marks in painted
+headings have explicit regressions. The decoration parens have both halves
+too — the segments' own dress in `ui/tests/inline.rs`, and the whole
+`` "[`AGENTS.md`](AGENTS.md)" `` render through `message_lines` in
+`ui/tests/assistant.rs`, each over several widths, since the wrap
+re-coalesces a row's spans by style and a paren that kept the link dress
+would come back as its own underlined span.
+
+`term.rs` is the I/O boundary, so `smoke.sh` **Phase 87** drives
 the real binary in a pane narrow enough to split the dummy reply's
 `https://github.com/linuztx`, captures the raw byte stream with
 `tmux pipe-pane`, and asserts the full URL rides an OSC 8 open while the
@@ -205,8 +233,12 @@ stream while the pane shows the unchanged header text.
 
 ## Limitations
 
-- URLs inside `` `code` `` spans and fenced code blocks are not linked
-  (verbatim by intent); short ones still auto-detect in the terminal.
+- OSC 8 support must be enabled in the terminal and any multiplexer between
+  it and the app. If the sequences are disabled or discarded, the terminal's
+  ordinary per-row auto-detection cannot recover a wrapped URL. The default
+  app gate is on; check that `ALTER_ZERO_HYPERLINKS` is not falsy.
+- A real newline inside a source URL is not a visual wrap: separate source
+  lines stay separate rather than guessing whether to concatenate them.
 - Scheme-less `www.…` text is not linked (OSC 8 needs a real URI; fabricating
   a scheme guesses).
 - Tool/shell output is not linked yet — its wrap (`wrap_output`) breaks at

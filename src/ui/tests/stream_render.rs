@@ -3,6 +3,110 @@
 use super::*;
 
 #[test]
+fn wrapped_code_and_heading_links_never_commit_partial_targets() {
+    let url = format!(
+        "https://example.test/?token={}",
+        "0123456789abcdef".repeat(4)
+    );
+    for full in [
+        format!("Dashboard:\n`{url}`\nDone."),
+        format!("```rust\nlet url = \"{url}\";\n```\nDone."),
+        format!("```python\nrequests.get('{url}').json()\n```\nDone."),
+        format!("    {url}\nDone."),
+        format!("## Dashboard {url}\nDone."),
+    ] {
+        for width in [8, 26, 80] {
+            let mut render = StreamRender::new();
+            let mut committed = Vec::new();
+            let expected = message_lines(Role::Assistant, &full, width);
+            for end in 1..=full.len() {
+                let prefix = &full[..end];
+                committed.extend(render.commit(prefix, width));
+                assert_eq!(
+                    committed,
+                    expected[..committed.len()],
+                    "committed targets cannot change (w={width}): {prefix:?}"
+                );
+                let mut visible = committed.clone();
+                visible.extend(render.preview(prefix, width, usize::MAX));
+                assert_eq!(
+                    visible,
+                    message_lines(Role::Assistant, prefix, width),
+                    "live preview matches batch including link carriers: {prefix:?}"
+                );
+            }
+            committed.extend(render.finish(&full, width));
+            assert_eq!(committed, expected);
+            let linked: String = committed
+                .iter()
+                .flat_map(|row| &row.spans)
+                .filter_map(|span| {
+                    crate::links::style_link(&span.style).map(|target| {
+                        assert_eq!(target.as_ref(), url);
+                        span.content.as_ref()
+                    })
+                })
+                .collect();
+            assert_eq!(linked, url, "all URL characters retain the final target");
+        }
+    }
+}
+
+#[test]
+fn an_indented_code_url_target_stays_stable_when_more_code_follows() {
+    let full = format!("    https://example.test/?token={}! next", "a".repeat(40));
+    let width = 26;
+    let expected = message_lines(Role::Assistant, &full, width);
+    let mut render = StreamRender::new();
+    let mut committed = Vec::new();
+    for end in 1..=full.len() {
+        committed.extend(render.commit(&full[..end], width));
+        assert_eq!(
+            committed,
+            expected[..committed.len()],
+            "at {:?}",
+            &full[..end]
+        );
+    }
+    committed.extend(render.finish(&full, width));
+    assert_eq!(committed, expected);
+}
+
+#[test]
+fn a_growing_url_repaints_unchanged_prefix_cells_with_the_new_target() {
+    use ratatui::widgets::{Paragraph, Widget};
+
+    // The prefix row's text no longer changes after it wraps. Its hyperlink
+    // still must change as more of the target arrives, even on a diff paint.
+    let short = format!("https://example.test/?token={}", "a".repeat(40));
+    let full = format!("{short}{}", "b".repeat(40));
+    let width = 26;
+    let paint = |url: &str| {
+        let mut buffer = Buffer::empty(Rect::new(0, 0, width, 8));
+        let lines = message_lines(Role::Assistant, &format!("`{url}`"), width);
+        Paragraph::new(lines).render(buffer.area, &mut buffer);
+        buffer
+    };
+    let previous = paint(&short);
+    let next = paint(&full);
+    let updates = previous.diff(&next);
+    for x in 2..width {
+        let old_cell = &previous[(x, 0)];
+        let new_cell = &next[(x, 0)];
+        assert_eq!(old_cell.symbol(), new_cell.symbol(), "unchanged URL prefix");
+        assert_ne!(old_cell.underline_color, new_cell.underline_color);
+        assert!(
+            updates
+                .iter()
+                .any(|&(col, row, cell)| col == x && row == 0 && cell == new_cell),
+            "carrier-only changes must reach the terminal on the first row"
+        );
+        let id = crate::links::carrier_id(new_cell.underline_color).expect("link carrier");
+        assert_eq!(crate::links::link_url(id).as_deref(), Some(full.as_str()));
+    }
+}
+
+#[test]
 fn table_commits_whole_and_previews_while_forming() {
     // The core behavior (docs/table-streaming.md): nothing of an open table
     // reaches scrollback (its widths need every row), while the strip

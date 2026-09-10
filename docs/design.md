@@ -121,18 +121,21 @@ unit-tested must be unit-tested.
   `edit`/`write` cell renders its output as a **diff** — green `+` / red `-` rows
   in the `⎿` gutter.
 - **Clickable links (OSC 8).** Every URL an assistant reply shows — a bare
-  `https://…` in prose, a list item, a table cell, or a `[text](url)` target —
-  is painted wrapped in an OSC 8 hyperlink carrying the **whole** URL, so
+  `https://…` in prose, a list item, a table cell, inline/fenced/indented code,
+  a heading, or a `[text](url)` target — is painted wrapped in an OSC 8
+  hyperlink carrying the **whole** URL, so
   clicking any *fragment* of a wrapped URL opens the full target. (A URL wider
   than its row hard-breaks visually — a narrow terminal, a table column — and
   the terminal's own per-row detection used to open just the first fragment:
   `https://github.com/linuz` off a `…/linuztx` link.) The visible text and
-  wrap are unchanged, and the dress is scoped to the link itself: a
-  `[text](url)` suffix's decoration `(`/`)` keep the surrounding prose's
-  colour rather than the target's blue + underline, so the run the eye reads
-  as the link is the run a click opens. A terminal without OSC 8 consumes the
-  escape and behaves exactly as before. The URL rides from the renderer (where it is
-  still whole) to the paint boundary in `Style::underline_color` as an
+  wrap are unchanged; code and headings gain only the invisible target,
+  detected across syntax-style boundaries before wrapping, and the dress is
+  scoped to the link itself: a `[text](url)` suffix's decoration `(`/`)` keep
+  the surrounding prose's colour rather than the target's blue + underline, so
+  the run the eye reads as the link is the run a click opens. A terminal
+  without OSC 8 consumes the escape and behaves exactly as before. The URL
+  rides from the renderer (where it is still whole) to the paint boundary in
+  `Style::underline_color` as an
   interned 24-bit id, stripped at emission — `docs/links.md`. A
   `● Read/Write/Edit({path})` header's path links the same way to the
   **file** — `links::file_url`, the absolute `file://` URI behind whatever
