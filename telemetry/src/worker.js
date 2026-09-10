@@ -10,14 +10,14 @@
 //   scheduled            delete rows older than RETENTION_DAYS
 //
 // `/` and `/v1/stats` require DASHBOARD_TOKEN when that secret is set; the
-// ping route is always open. Every decision that can be made without a
+// ping route needs no token, but has an anonymous per-network rate limit.
+// Every decision that can be made without a
 // request or a database lives in lib.js, where `node --test` reaches it.
 
 import {
   DEFAULT_RETENTION_DAYS,
   MAX_BODY_BYTES,
   authorized,
-  byteLength,
   daysBefore,
   normalizeCountry,
   renderDashboard,
@@ -26,6 +26,8 @@ import {
   validatePing,
   windowDays,
 } from './lib.js';
+import { limitPing, RATE_LIMIT_RETRY_SECONDS } from './rate-limit.js';
+import { readBoundedText } from './request-body.js';
 
 const TEXT = { 'content-type': 'text/plain; charset=utf-8' };
 const JSON_TYPE = { 'content-type': 'application/json; charset=utf-8' };
@@ -81,26 +83,31 @@ export default {
   },
 };
 
-/** `POST /v1/ping`: validate, then record one row for (today, id). */
+/** `POST /v1/ping`: rate limit, validate, then record one row for (today, id). */
 async function handlePing(request, env) {
   // The route answers JSON throughout: the app ignores the body, but a person
   // holding curl should not get three shapes from one endpoint.
   if (request.method !== 'POST') {
     return refuse(405, 'method not allowed', { allow: 'POST' });
   }
+  const allowed = await limitPing(request, env);
+  if (allowed !== 'allowed') {
+    return refuse(allowed === 'limited' ? 429 : 503,
+      allowed === 'limited' ? 'too many ping requests' : 'telemetry temporarily unavailable',
+      { 'retry-after': String(RATE_LIMIT_RETRY_SECONDS) });
+  }
   const declared = Number.parseInt(request.headers.get('content-length') ?? '0', 10);
   if (declared > MAX_BODY_BYTES) {
     return refuse(413, `body must be at most ${MAX_BODY_BYTES} bytes`);
   }
-  const text = await request.text();
-  // In bytes, like the cap: `String.length` is UTF-16 code units, which lets
-  // 1024 three-byte characters through a "1 KiB" check as 3 KiB of body.
-  if (byteLength(text) > MAX_BODY_BYTES) {
+  const read = await readBoundedText(request, MAX_BODY_BYTES);
+  if (!read.ok && read.reason === 'too-large') {
     return refuse(413, `body must be at most ${MAX_BODY_BYTES} bytes`);
   }
+  if (!read.ok) return refuse(400, 'body could not be read');
   let body;
   try {
-    body = JSON.parse(text);
+    body = JSON.parse(read.text);
   } catch {
     return refuse(400, 'body is not JSON');
   }

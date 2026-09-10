@@ -1,0 +1,4 @@
+# Required for `wrangler dev`; generate 32 random bytes as 64 hex characters.
+# See README.md. The sample dashboard (`npm run preview`) needs no secrets.
+RATE_LIMIT_SECRET=
+# DASHBOARD_TOKEN=optional-local-dashboard-token

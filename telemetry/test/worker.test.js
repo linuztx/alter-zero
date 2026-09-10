@@ -10,6 +10,13 @@ import assert from 'node:assert/strict';
 
 import worker from '../src/worker.js';
 
+// Existing route tests use an available limiter; denial/failure cases live in
+// ping-protection.test.js and invoke the same Worker with explicit bindings.
+const rateLimitEnv = {
+  RATE_LIMIT_SECRET: '11'.repeat(32),
+  PING_RATE_LIMITER: { async limit() { return { success: true }; } },
+};
+
 const ID = '6f1c2a4d9e0b7c3a5f8e1d2c4b6a7980';
 const PING = {
   v: 2,
@@ -56,7 +63,7 @@ function fakeDb(rows = {}) {
 function pingRequest(body, country = 'PH') {
   const request = new Request('https://c.example/v1/ping', {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: { 'content-type': 'application/json', 'cf-connecting-ip': '203.0.113.10' },
     body: typeof body === 'string' ? body : JSON.stringify(body),
   });
   // `request.cf` is Cloudflare's own property; Request has no setter for it.
@@ -78,7 +85,7 @@ const statsRows = () => [
 
 test('a good ping is stored once, keyed on the day and id, with the edge country', async () => {
   const db = fakeDb();
-  const response = await worker.fetch(pingRequest(PING), { DB: db });
+  const response = await worker.fetch(pingRequest(PING), { ...rateLimitEnv, DB: db });
   assert.equal(response.status, 204);
   assert.equal(db.calls.length, 1);
   const { sql, args } = db.calls[0];
@@ -101,7 +108,7 @@ test('a good ping is stored once, keyed on the day and id, with the edge country
 test('a client with no distribution files a blank one, never a placeholder', async () => {
   const db = fakeDb();
   const { distro: _none, os_version: _also, ...v1 } = { ...PING, v: 1 };
-  const response = await worker.fetch(pingRequest(v1), { DB: db });
+  const response = await worker.fetch(pingRequest(v1), { ...rateLimitEnv, DB: db });
   assert.equal(response.status, 204, 'and is still counted');
   assert.equal(db.calls[0].args[6], '');
   assert.equal(db.calls[0].args[7], '');
@@ -109,7 +116,7 @@ test('a client with no distribution files a blank one, never a placeholder', asy
 
 test('an edge with no country files the row under ZZ, never blank', async () => {
   const db = fakeDb();
-  const response = await worker.fetch(pingRequest(PING, null), { DB: db });
+  const response = await worker.fetch(pingRequest(PING, null), { ...rateLimitEnv, DB: db });
   assert.equal(response.status, 204);
   assert.equal(db.calls[0].args[2], 'ZZ');
 });
@@ -117,7 +124,7 @@ test('an edge with no country files the row under ZZ, never blank', async () => 
 test('a malformed ping is a 400 and writes nothing', async () => {
   for (const body of [{ ...PING, id: 'nope' }, { ...PING, v: 3 }, { ...PING, distro: 'Ubuntu' }, 'not json', {}]) {
     const db = fakeDb();
-    const response = await worker.fetch(pingRequest(body), { DB: db });
+    const response = await worker.fetch(pingRequest(body), { ...rateLimitEnv, DB: db });
     assert.equal(response.status, 400, JSON.stringify(body));
     assert.equal(db.calls.length, 0, 'nothing reached the database');
     assert.match((await response.json()).error, /\S/);
@@ -127,14 +134,14 @@ test('a malformed ping is a 400 and writes nothing', async () => {
 test('an oversized body is refused before it is parsed', async () => {
   const db = fakeDb();
   const request = pingRequest({ ...PING, pad: 'x'.repeat(2000) });
-  const response = await worker.fetch(request, { DB: db });
+  const response = await worker.fetch(request, { ...rateLimitEnv, DB: db });
   assert.equal(response.status, 413);
   assert.equal(db.calls.length, 0);
 });
 
 test('the ping route takes POST only', async () => {
   const db = fakeDb();
-  const response = await worker.fetch(new Request('https://c.example/v1/ping'), { DB: db });
+  const response = await worker.fetch(new Request('https://c.example/v1/ping'), { ...rateLimitEnv, DB: db });
   assert.equal(response.status, 405);
   assert.equal(response.headers.get('allow'), 'POST');
   assert.equal(db.calls.length, 0);
@@ -142,8 +149,8 @@ test('the ping route takes POST only', async () => {
 
 test('an unknown path is a 404 and healthz answers ok', async () => {
   const db = fakeDb();
-  assert.equal((await worker.fetch(new Request('https://c.example/nope'), { DB: db })).status, 404);
-  const health = await worker.fetch(new Request('https://c.example/healthz'), { DB: db });
+  assert.equal((await worker.fetch(new Request('https://c.example/nope'), { ...rateLimitEnv, DB: db })).status, 404);
+  const health = await worker.fetch(new Request('https://c.example/healthz'), { ...rateLimitEnv, DB: db });
   assert.equal(health.status, 200);
   assert.equal((await health.text()).trim(), 'ok');
 });
@@ -152,7 +159,7 @@ test('stats answer JSON over the window the query asked for', async () => {
   const db = fakeDb({ batch: statsRows() });
   const response = await worker.fetch(
     new Request('https://c.example/v1/stats?days=7'),
-    { DB: db },
+    { ...rateLimitEnv, DB: db },
   );
   assert.equal(response.status, 200);
   assert.match(response.headers.get('content-type'), /application\/json/);
@@ -169,7 +176,7 @@ test('the platform query names the distribution where there is one, else the OS'
   // belong in one panel; a Linux row whose client never named a distribution
   // still counts, as plain `linux`.
   const db = fakeDb({ batch: statsRows() });
-  await worker.fetch(new Request('https://c.example/v1/stats'), { DB: db });
+  await worker.fetch(new Request('https://c.example/v1/stats'), { ...rateLimitEnv, DB: db });
   const query = db.calls.find((c) => /AS platform/.test(c.sql));
   assert.ok(query, 'the batch asks for platforms');
   assert.match(query.sql, /CASE WHEN distro != '' THEN distro ELSE os END/);
@@ -178,7 +185,7 @@ test('the platform query names the distribution where there is one, else the OS'
 
 test('the dashboard answers HTML from the same numbers', async () => {
   const db = fakeDb({ batch: statsRows() });
-  const response = await worker.fetch(new Request('https://c.example/'), { DB: db });
+  const response = await worker.fetch(new Request('https://c.example/'), { ...rateLimitEnv, DB: db });
   assert.equal(response.status, 200);
   assert.match(response.headers.get('content-type'), /text\/html/);
   const html = await response.text();
@@ -190,7 +197,7 @@ test('the dashboard answers HTML from the same numbers', async () => {
 });
 
 test('DASHBOARD_TOKEN gates the dashboard and stats but never the ping', async () => {
-  const env = () => ({ DB: fakeDb({ batch: statsRows() }), DASHBOARD_TOKEN: 's3cret' });
+  const env = () => ({ ...rateLimitEnv, DB: fakeDb({ batch: statsRows() }), DASHBOARD_TOKEN: 's3cret' });
   const bare = await worker.fetch(new Request('https://c.example/'), env());
   assert.equal(bare.status, 401);
   assert.match(bare.headers.get('www-authenticate'), /Bearer/);
@@ -207,14 +214,14 @@ test('DASHBOARD_TOKEN gates the dashboard and stats but never the ping', async (
   const wrong = await worker.fetch(new Request('https://c.example/?token=nope'), env());
   assert.equal(wrong.status, 401);
 
-  // The app cannot carry a token, so the ping must stay open.
+  // The app carries no dashboard token; the ping uses its separate rate limiter.
   const ping = await worker.fetch(pingRequest(PING), env());
   assert.equal(ping.status, 204);
 });
 
 test('the retention cron deletes only rows past the window', async () => {
   const db = fakeDb();
-  await worker.scheduled(null, { DB: db, RETENTION_DAYS: '30' }, { waitUntil: (p) => p });
+  await worker.scheduled(null, { ...rateLimitEnv, DB: db, RETENTION_DAYS: '30' }, { waitUntil: (p) => p });
   assert.equal(db.calls.length, 1);
   assert.match(db.calls[0].sql, /DELETE FROM pings WHERE day < \?1/);
   const cutoff = db.calls[0].args[0];
@@ -228,7 +235,7 @@ test('a body over the cap in bytes is refused even when its .length is not', asy
   // read check must agree rather than wave it through.
   const db = fakeDb();
   const request = pingRequest(JSON.stringify({ ...PING, pad: '日'.repeat(1024) }));
-  const response = await worker.fetch(request, { DB: db });
+  const response = await worker.fetch(request, { ...rateLimitEnv, DB: db });
   assert.equal(response.status, 413);
   assert.equal(db.calls.length, 0);
 });
@@ -236,7 +243,7 @@ test('a body over the cap in bytes is refused even when its .length is not', asy
 test('a refused stats request answers JSON, like the route it guards', async () => {
   // `/v1/stats` is read by scripts; answering its 401 in text/plain made the
   // one response a caller cannot parse the only one it is likely to get.
-  const env = { DB: fakeDb({ batch: statsRows() }), DASHBOARD_TOKEN: 's3cret' };
+  const env = { ...rateLimitEnv, DB: fakeDb({ batch: statsRows() }), DASHBOARD_TOKEN: 's3cret' };
   const denied = await worker.fetch(new Request('https://c.example/v1/stats'), env);
   assert.equal(denied.status, 401);
   assert.match(denied.headers.get('content-type'), /application\/json/);
@@ -249,7 +256,7 @@ test('a refused stats request answers JSON, like the route it guards', async () 
 });
 
 test('the dashboard hands its window links the token the reader used', async () => {
-  const env = { DB: fakeDb({ batch: statsRows() }), DASHBOARD_TOKEN: 's3cret' };
+  const env = { ...rateLimitEnv, DB: fakeDb({ batch: statsRows() }), DASHBOARD_TOKEN: 's3cret' };
   const html = await (await worker.fetch(new Request('https://c.example/?token=s3cret'), env)).text();
   assert.ok(html.includes('token=s3cret'), 'the window links keep working');
 
@@ -271,7 +278,7 @@ test('the ping route refuses in JSON whatever the reason', async () => {
     [pingRequest('not json'), 400],
   ];
   for (const [request, status] of cases) {
-    const response = await worker.fetch(request, { DB: fakeDb() });
+    const response = await worker.fetch(request, { ...rateLimitEnv, DB: fakeDb() });
     assert.equal(response.status, status);
     assert.match(response.headers.get('content-type'), /application\/json/, String(status));
     assert.match((await response.json()).error, /\S/, String(status));
@@ -279,7 +286,7 @@ test('the ping route refuses in JSON whatever the reason', async () => {
 });
 
 test('nothing this worker serves is cacheable or indexable', async () => {
-  const env = () => ({ DB: fakeDb({ batch: statsRows() }), DASHBOARD_TOKEN: 's3cret' });
+  const env = () => ({ ...rateLimitEnv, DB: fakeDb({ batch: statsRows() }), DASHBOARD_TOKEN: 's3cret' });
   const responses = [
     await worker.fetch(pingRequest(PING), env()),
     await worker.fetch(pingRequest('not json'), env()),

@@ -106,6 +106,11 @@ to the collector and not the client — asking the client to geolocate itself
 would either need a database it does not have or an IP it should not be
 sending.
 
+The collector also uses the address transiently for the
+[ping rate limit](#ping-abuse-prevention). Only a daily keyed digest reaches
+that counter; no raw address, digest, or network-to-install mapping is added
+to the telemetry database, a log, or the response.
+
 ### What is deliberately not sent
 
 No prompts, no replies, no file paths, no working directory, no model or
@@ -264,7 +269,7 @@ runner.
 
 | route | who | does |
 |---|---|---|
-| `POST /v1/ping` | the app | validates the payload (`v` ∈ {1, 2}, `id` 32 hex, `version` ≤ 32 chars of `[0-9A-Za-z.+-]`, `os`/`arch` ≤ 16 of `[a-z0-9_]`, an optional `distro` ≤ 32 of `[a-z0-9._-]` and an optional `os_version` ≤ 16 of the same opening on a letter or digit, body ≤ 1 KiB **of UTF-8**, not of `String.length` — 1024 CJK characters are 3 KiB), then `INSERT OR IGNORE` one row keyed on **the server's** UTC date and the id — the client's clock is never trusted for the day — with the edge's country. Answers `204`; a bad body `400`; a big one `413`; anything but `POST` `405` — every refusal a `{"error": …}`, since one endpoint owes a caller one shape |
+| `POST /v1/ping` | the app | checks the network rate limit before reading the body or using D1; validates the payload (`v` ∈ {1, 2}, `id` 32 hex, `version` ≤ 32 chars of `[0-9A-Za-z.+-]`, `os`/`arch` ≤ 16 of `[a-z0-9_]`, an optional `distro` ≤ 32 of `[a-z0-9._-]` and an optional `os_version` ≤ 16 of the same opening on a letter or digit, body ≤ 1 KiB of UTF-8, enforced while streaming); then `INSERT OR IGNORE` one row keyed on **the server's** UTC date and the id with the edge's country. Answers `204`; a bad or unreadable body `400`; a big one `413`; anything but `POST` `405`; rate limiting `429`; unavailable protection `503`. Every refusal is a JSON `{"error": …}` |
 | `GET /v1/stats?days=30` | you | JSON: today's users, 7- and 30-day distinct users, total installs seen, per-day users and new installs, users per country, per app version, per OS, per platform (`ubuntu` + `24.04`) over the window (`days` clamped to 1–365). Its refusals are JSON too — this is the route a script reads |
 | `GET /` | you | the same numbers as a page (below) |
 | `GET /healthz` | uptime checks | `ok` |
@@ -272,7 +277,9 @@ runner.
 "Users" is always `COUNT(DISTINCT id)`; a "new install" is an id whose
 earliest day is the day in question. Set the `DASHBOARD_TOKEN` secret and
 `/` and `/v1/stats` require it (`Authorization: Bearer …` or `?token=`);
-unset, they are public. `/v1/ping` is always open — it has to be. Every
+unset, they are public. The ping limiter does not cover these read routes;
+configure the token to protect access to their database queries.
+`/v1/ping` requires no dashboard token but does enforce its rate limit. Every
 response — the ping's `204` included — carries `cache-control: no-store` and
 `x-robots-tag: noindex`: this is a private counter with a maintainer's page
 on it, and that rule is stated once rather than on the two routes that
@@ -398,17 +405,81 @@ install's every day; "new installs" is derived from the rows that remain, so
 past the retention horizon an old install can read as new again — an
 accepted imprecision for a counter, not a ledger.
 
+### Ping abuse prevention
+
+The native `PING_RATE_LIMITER` binding permits **60 POST attempts per
+minute** per IPv4 address or IPv6 `/64` prefix. The threshold leaves room
+for installs behind shared networks; the client itself still sends at most
+once a day. Malformed POST attempts count too, because the check precedes
+body reading and database work. Neither changing the install ID nor
+rotating the host part of an IPv6 address grants a fresh budget.
+
+This is an approximate limit at each Cloudflare location. Enforcement is
+eventually consistent, and distributed requests or different network
+prefixes can receive separate budgets. The native API is not a strict
+global quota. Configure `[[ratelimits]]` with a namespace unique to this
+application in your account; another Worker using that namespace can share
+the same counters. It requires Wrangler **4.36.0 or later**. See
+[Cloudflare's rate-limiting API](https://developers.cloudflare.com/workers/runtime-apis/bindings/rate-limit/).
+
+`RATE_LIMIT_SECRET` is a separate Worker secret: exactly 64 hexadecimal
+characters representing 32 cryptographically random bytes. HMAC-SHA-256
+combines that secret with the operation's scope, the server's UTC day, and
+the normalized address or prefix. Only the digest is passed to the binding.
+There is no address-to-digest map, no key-to-install association, and no
+rate-limit data in D1, logs, or responses. The key changes at UTC midnight;
+that also starts a fresh budget. This is pseudonymous abuse-prevention
+state, not an additional telemetry field or a promise about Cloudflare's
+internal counter retention. Workers observability and Logpush are
+explicitly disabled in `wrangler.toml`.
+
+The source address must come from `CF-Connecting-IP` at direct Cloudflare
+ingress. No fallback accepts `X-Forwarded-For` or a payload-supplied address.
+If the primary address is in `240.0.0.0/4`, Cloudflare's Pseudo IPv4 range,
+the worker instead requires a valid `CF-Connecting-IPv6` original address;
+otherwise that alternate header is ignored. Keep any same-zone forwarding
+Workers trusted, because they can alter the apparent client address.
+Cross-zone Worker subrequests can share a fixed source address and budget.
+See [Cloudflare's HTTP headers](https://developers.cloudflare.com/fundamentals/reference/http-headers/)
+and [Pseudo IPv4](https://developers.cloudflare.com/network/pseudo-ipv4/).
+Grouping IPv6 by `/64` limits evasion through changing interface identifiers;
+temporary addresses can change those identifiers within a prefix, as
+described in [RFC 8981](https://www.rfc-editor.org/rfc/rfc8981.html).
+
+A rejected attempt returns JSON `429` and `Retry-After: 60`. An absent or
+invalid secret, missing or failed binding, or unavailable trusted source
+address returns JSON `503` with the same retry header. Both stop before
+reading the body or writing a row: configuration mistakes must not silently
+disable protection. Allowed requests still have a 1,024-byte body cap,
+checked while streaming even without a trustworthy `Content-Length`;
+oversized streams are cancelled and refused with `413`, and unreadable
+bodies return `400`. The client's existing silent failure behavior and
+once-per-day attempt guard remain unchanged.
+
 ### Deploying it
 
 ```bash
 cd telemetry
+npm install                                         # Wrangler >= 4.36.0
 npx wrangler login
 npx wrangler d1 create alter-zero-telemetry          # paste the database_id into wrangler.toml
 npx wrangler d1 execute alter-zero-telemetry --remote --file=schema.sql
 npx wrangler d1 execute alter-zero-telemetry --remote --file=migrations/0001_platform.sql  # only if the table predates payload v2
+npm run secret:rate-limit                            # required: generate and upload RATE_LIMIT_SECRET
 npx wrangler secret put DASHBOARD_TOKEN              # optional: gate the dashboard
 npx wrangler deploy                                  # prints https://alter-zero-telemetry.<subdomain>.workers.dev
 ```
+
+`npm run secret:rate-limit` generates the random 32-byte secret and pipes
+its hex value directly to Wrangler. Provision it before upgrading an
+existing deployment; the rate limit requires no new D1 table or migration.
+Do not reuse `DASHBOARD_TOKEN` or put either secret in source control.
+For local `wrangler dev`, create `RATE_LIMIT_SECRET` in the ignored
+`telemetry/.dev.vars` using the setup in
+[`telemetry/README.md`](../telemetry/README.md#develop), preserving any
+existing dashboard token. The `.dev.vars.example` placeholder must be
+replaced with generated random bytes. The sample `npm run preview`
+dashboard needs no secret and collects no pings.
 
 The client's `telemetry::DEFAULT_ENDPOINT` is
 `https://alter-zero-telemetry.linuztx.workers.dev/v1/ping` — the URL
@@ -450,6 +521,11 @@ this file.
   not send), each route refusing in its own content type, every response
   being `no-store`/`noindex`, and the retention cron's cutoff. The pure half can be entirely right while the
   handler files every install under the wrong column.
+- **Ping protection**: tests cover address normalization and IPv6 prefix
+  grouping, opaque daily keys, refusal before body reads and D1 writes,
+  missing configuration and limiter failure, and bounded streamed bodies.
+  Native counter distribution and Cloudflare header rewriting require the
+  deployed edge; a local test double cannot prove those properties.
 - **Boundary** (`scripts/smoke.sh` Phase 115): a local Python stub stands in
   for the collector; a fresh config home's first launch shows the notice,
   posts exactly the five-field body once, and records the day; the relaunch

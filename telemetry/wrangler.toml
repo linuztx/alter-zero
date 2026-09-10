@@ -9,6 +9,18 @@
 name = "alter-zero-telemetry"
 main = "src/worker.js"
 compatibility_date = "2025-09-01"
+logpush = false
+
+# POST attempts per IPv4 address or IPv6 /64, within each Cloudflare location.
+# Use an account-unique namespace; the Worker passes a daily keyed digest.
+# Adjust the limit for your shared-office/VPN traffic. Period must be 10 or 60.
+[[ratelimits]]
+name = "PING_RATE_LIMITER"
+namespace_id = "1001"
+simple = { limit = 60, period = 60 }
+
+[observability]
+enabled = false
 
 # The pings table (schema.sql). `npx wrangler d1 create alter-zero-telemetry`
 # prints the database_id to paste below; `npm run db:init` creates the table.
@@ -27,7 +39,11 @@ RETENTION_DAYS = "400"
 
 # DASHBOARD_TOKEN is a *secret*, not a var: `npx wrangler secret put
 # DASHBOARD_TOKEN`. When set, `/` and `/v1/stats` require it; unset, they are
-# public. `/v1/ping` is always open.
+# public. `/v1/ping` needs no dashboard token, but is rate limited.
+# RATE_LIMIT_SECRET is a separate required secret: exactly 64 random hex
+# characters (32 bytes). `npm run secret:rate-limit` generates and sets it.
+# Missing/invalid rate-limit configuration returns 503 rather than accepting
+# unprotected pings. Set the secret before deploying this version.
 #
-# Workers Logs / Logpush are deliberately left off: the collector's promise is
+# Workers Logs / Logpush are explicitly disabled above: the collector's promise is
 # that no address is ever written anywhere, and a request log would be one.
