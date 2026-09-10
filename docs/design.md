@@ -1160,6 +1160,42 @@ rather than unit tests; all the geometry it consumes is pure and tested in `ui`,
 and its own pure corners — the `visible_cells` wide-glyph emitter, the
 `keyboard_enhancement_disabled` predicate — are unit-tested in place.
 
+### The smoke suite defines its own environment
+
+`scripts/smoke.sh` asserts on rendered bytes, so what it *inherits* is part of
+its fixture. It therefore **states the environment rather than borrowing it**,
+in two places that have to agree:
+
+- **The variables.** The script unsets every `*_API_KEY`, every `ALTER_ZERO_*`
+  knob, `OLLAMA_HOST`, `NO_COLOR`, and `DISPLAY`/`WAYLAND_DISPLAY`/`XAUTHORITY`
+  before its first launch, then spells out per launch the ones it wants. Each
+  is load-bearing: a resolvable key reaches a live provider instead of the
+  dummy; `NO_COLOR` makes crossterm emit no SGR at all, so every colour
+  assertion (the `/theme` banner accent, the focused shell indicator, the
+  pulsing tool bullet, the `--help` heading) fails while saying nothing about
+  the app; and a reachable display makes `clipboard::copy_to_clipboard` succeed
+  natively, so the OSC 52 fallback the `/copy` and `/donate` phases read back
+  out of tmux's paste buffer would never fire — and the suite would put a demo
+  reply and a donation address on the developer's real clipboard on its way
+  past.
+- **The tmux server.** A pane inherits the *server's* environment, and a server
+  keeps whatever the shell that first started it had, so unsetting a variable
+  reaches a pane only when this script is what started the server. The suite
+  runs its own on a private socket (`tmux -L`, injected by a one-line shell
+  function, killed with the suite), which also keeps its global
+  `set-clipboard on` and its `delete-buffer` sweep off the developer's own
+  sessions. `DISPLAY` needs the unset as well as the private socket: tmux's
+  `update-environment` re-imports it from the client into every new session.
+
+The same rule holds for *time*: a fixture asserts on a state that stays put
+until it is read. Where the state is genuinely transient — the running command's
+`+N lines (Ns)` tail footer exists for ~95ms, between the output overflowing the
+peek window and the call resolving — the phase records the pane's raw byte
+stream with `pipe-pane` and greps the recording, rather than sampling
+`capture-pane` on a cadence that is wider than the window and misses it perhaps
+one run in ten (Phase 39; Phases 15, 34, 87, 94, 107b and 113 read the raw
+stream for their own reasons).
+
 ## Known limitations (v1 — iterate later)
 
 - The box is content-anchored, so when it grows past the screen bottom the chat

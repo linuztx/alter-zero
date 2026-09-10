@@ -19,11 +19,40 @@ for _key_var in $(env | sed -n 's/^\([A-Za-z0-9_]*API_KEY\)=.*/\1/p'); do
 	unset "$_key_var"
 done
 unset _key_var
+# Every `ALTER_ZERO_*` knob goes the same way, for the same reason: the suite
+# spells out the ones it wants in each launch string, so anything else in the
+# caller's environment is a setting the assertions were never written against
+# — `ALTER_ZERO_TOOLS=0` withdraws the tool cells half the phases read,
+# `ALTER_ZERO_SHOW_THINKING=0` withdraws the thinking block, `ALTER_ZERO_MODEL`
+# and `ALTER_ZERO_PROVIDER` reach for a real backend. A developer who exports
+# one for their own runs must not have to remember to unset it here.
+for _az_var in $(env | sed -n 's/^\(ALTER_ZERO_[A-Za-z0-9_]*\)=.*/\1/p'); do
+	unset "$_az_var"
+done
+unset _az_var
 # The Ollama provider is configured by being *pointed at* rather than keyed
-# (docs/ollama.md): a developer's own `OLLAMA_HOST` (or an exported
-# `ALTER_ZERO_PROVIDER=ollama`) would make the /model phases fetch from a
-# server the suite doesn't run instead of reading `run /login to add one`.
-unset OLLAMA_HOST ALTER_ZERO_PROVIDER
+# (docs/ollama.md): a developer's own `OLLAMA_HOST` would make the /model
+# phases fetch from a server the suite doesn't run instead of reading
+# `run /login to add one`.
+unset OLLAMA_HOST
+# Colour is the medium a dozen assertions read: the /theme banner accent, the
+# focused shell indicator's cyan background, the pulsing tool bullet, the
+# `--help` heading. `NO_COLOR` (https://no-color.org) disables ANSI colour
+# wholesale — crossterm memoizes it and then emits *no* SGR, and `cli::help`
+# falls to `HelpStyle::Plain` — so a caller who exports it turns nine passing
+# assertions into failures that say nothing about the app. Honouring it is the
+# right production behaviour (`cli::colour_enabled`, covered by this phase's
+# own piped `--help` check); inheriting it into the fixtures is not.
+unset NO_COLOR
+# The clipboard fixtures (Phases 27, 28 and 112) are written headless ON
+# PURPOSE: `clipboard::copy_to_clipboard` tries arboard first and only falls
+# back to the OSC 52 escape tmux stores in its paste buffer, so those phases
+# can only read back what they copied when arboard has no display to talk to.
+# On a desktop the native path wins instead — the assertions fail AND the
+# suite silently overwrites the developer's own clipboard with a demo reply
+# and a donation address. Withhold the display from the app the suite drives;
+# the native path is covered by the `attach_image`/`clipboard` unit tests.
+unset DISPLAY WAYLAND_DISPLAY XAUTHORITY
 # Telemetry (docs/telemetry.md) is opt-out and pings a real collector once a
 # day per config home. Every phase here launches against a fresh config home,
 # so without this each would be that "install"'s first launch — a disclosure
@@ -35,6 +64,28 @@ export ALTER_ZERO_TELEMETRY=0
 
 BIN="${1:-target/debug/alter-zero}"
 S="alterzero_smoke_$$"
+# Drive a tmux server of the suite's OWN, on a private socket, instead of
+# whichever one the developer already has running. Two reasons, both of them
+# bugs that only show up off a CI box:
+#
+#   * A pane inherits the SERVER's environment, not the client's, and a server
+#     keeps whatever the shell that first started it had. So the sanitizing
+#     above reaches a pane only when this script is what started the server —
+#     against a pre-existing one, `NO_COLOR`, a stale `ALTER_ZERO_*` and the
+#     caller's provider keys all survive into every launch, which is exactly
+#     how nine colour assertions and two clipboard assertions failed on a
+#     desktop while passing headless. (`DISPLAY` needs the unset above as
+#     well: tmux's own `update-environment` re-imports it from the client into
+#     every new session, so a fresh server alone would not withhold it.)
+#   * The suite mutates global tmux state — `set-option -g set-clipboard on`,
+#     and a `delete-buffer` loop that empties every paste buffer there is.
+#     On a shared server that is the developer's own session it is changing.
+#
+# One function is the whole mechanism: every `tmux …` call below routes to the
+# private socket unchanged, and `kill-server` in cleanup takes the whole thing
+# down with the suite.
+SMOKE_TMUX_SOCKET="alterzero-smoke-$$"
+tmux() { command tmux -L "$SMOKE_TMUX_SOCKET" "$@"; }
 USER_MSG="hello there"
 # The dummy reply is deterministic per prompt (dummy_response: char-count % 3).
 # "hello there" is 11 chars → responses[2], which opens with this phrase.
@@ -181,6 +232,11 @@ cleanup() {
 	[ -n "${MCP88_DIR:-}" ] && rm -rf "$MCP88_DIR" 2>/dev/null
 	tmux kill-session -t "${S}_cliprompt" 2>/dev/null
 	[ -n "${CLIP_DIR:-}" ] && rm -rf "$CLIP_DIR" 2>/dev/null
+	# …and the private server itself, which every session above lived on: this
+	# alone would do, but the named kills keep working when a phase ends early
+	# and cost nothing here.
+	tmux kill-server 2>/dev/null
+	return 0
 }
 trap cleanup EXIT
 
@@ -351,6 +407,11 @@ returned_banner_count=$(printf '%s\n' "$returned_full" | grep -cF "Alter Zero")
 S_BATCH="${S}_batch"
 tmux new-session -d -s "$S_BATCH" -x 90 -y 40 "$APP"
 sleep 0.4
+# Record the pane's RAW byte stream for Phase 39 below, which reads it instead
+# of sampling the screen — see there for why. Start it before the turn so no
+# frame is missed.
+RAW39="$(mktemp)"
+tmux pipe-pane -t "$S_BATCH" -o "cat >> $RAW39"
 tmux send-keys -t "$S_BATCH" -l "run three pings in parallel"
 sleep 0.2
 tmux send-keys -t "$S_BATCH" Enter
@@ -369,19 +430,33 @@ printf '%s\n' "$batch_waiting"
 # --- Phase 39: the running Bash(ping) cell TAILS its live output — the last
 # lines under the `⎿` gutter and a `+N lines (Ns)` footer (docs/tool-streaming.md),
 # Claude-Code's running-command look. The output streams in *after* the Waiting…
-# capture above, so keep polling the same batch session until the tail footer
-# shows (one of the pings has > TOOL_PEEK_LINES lines, so a tail always appears). ---
+# capture above.
+#
+# Read the RECORDING, not the screen. The footer only exists while the output
+# has overflowed the peek window and the call has not yet resolved, and the
+# dummy's scripted pings make that window tiny: the output lines pace at
+# CHUNK_DELAY (45ms) and the batch's longest is six lines, so the footer is on
+# screen for ~95ms on the first call and ~48ms on the second — measured. A
+# `capture-pane` poll samples at its own cadence (~115ms with the subprocess),
+# so it misses the window outright perhaps one run in ten: the reported
+# Phase 39 failure, which reproduces on any machine and is a fixture race, not
+# a regression. `pipe-pane` has no cadence — it records every byte tmux wrote
+# — so the footer's arrival is caught whatever it costs the app to paint it,
+# and the assertion below still reads the real `+N lines (Ns)` row. ---
 batch_tail=""
 for _ in $(seq 1 200); do # up to ~20s — the tail streams as each ping runs
-	cap="$(tmux capture-pane -t "$S_BATCH" -p -S -60)"
-	if printf '%s' "$cap" | grep -qE '\+[0-9]+ lines \([0-9]+s\)'; then
-		batch_tail="$cap"
+	if grep -qaE '\+[0-9]+ lines \([0-9]+s\)' "$RAW39"; then
+		batch_tail="$(grep -aoE '\+[0-9]+ lines \([0-9]+s\)' "$RAW39" | head -4)"
 		break
 	fi
 	sleep 0.1
 done
-echo "==== Phase 39: captured pane (a running Bash(ping) cell tailing its live output) ===="
+tmux pipe-pane -t "$S_BATCH" # stop recording
+echo "==== Phase 39: the running cell's tail footer, off the pane's raw byte stream ===="
 printf '%s\n' "$batch_tail"
+echo "==== Phase 39: the pane at the end of the batch ===="
+tmux capture-pane -t "$S_BATCH" -p -S -60
+rm -f "$RAW39"
 tmux kill-session -t "$S_BATCH" 2>/dev/null
 
 # --- Phase 40: the Ctrl+O tool-output overlay shows a running bash tool's output
@@ -1459,9 +1534,11 @@ tmux kill-session -t "$S23" 2>/dev/null
 # --- Phase 27: Ctrl+V image paste (docs/image-paste.md). The happy path needs a
 # real clipboard server (covered by the attach_image unit tests, which call it
 # with a path directly — codex tests it the same way). Here — headless, with no
-# clipboard — Ctrl+V must fail GRACEFULLY: a red "Failed to paste image" notice
-# commits to scrollback, and the composer stays responsive afterwards (no hang,
-# no crash). This exercises the key binding + the boundary error path. ---
+# clipboard, which the suite's `unset DISPLAY WAYLAND_DISPLAY XAUTHORITY` makes
+# true on a desktop too — Ctrl+V must fail GRACEFULLY: a red "Failed to paste
+# image" notice commits to scrollback, and the composer stays responsive
+# afterwards (no hang, no crash). This exercises the key binding + the boundary
+# error path. ---
 S24="${S}_imagepaste"
 tmux new-session -d -s "$S24" -x 80 -y 24 "$APP"
 sleep 0.4
@@ -1485,9 +1562,13 @@ printf '%s\n' "$imgalive"
 tmux kill-session -t "$S24" 2>/dev/null
 
 # --- Phase 28: /copy copies the last assistant response to the clipboard
-# (docs/copy.md). Headless here, so arboard has no clipboard server and the
-# OSC 52 fallback fires — which tmux (set-clipboard on) captures into its paste
-# buffer, so `show-buffer` reads it back. First an empty conversation: /copy
+# (docs/copy.md). Headless here — the display variables are unset for the whole
+# suite, so this holds on a developer's desktop as well as on CI — so arboard
+# has no clipboard server and the OSC 52 fallback fires, which tmux
+# (set-clipboard on, on the suite's own server) captures into its paste buffer,
+# so `show-buffer` reads it back. With a display reaching the app the native
+# path wins instead: nothing lands in tmux's buffer and the copy goes to the
+# user's real clipboard. First an empty conversation: /copy
 # reports "No agent response to copy". Then after a reply finishes, /copy writes
 # the reply's tail to the clipboard and confirms "Copied last message to
 # clipboard". ---
@@ -10731,6 +10812,23 @@ clip_help_text="$(tmux capture-pane -t "$S108" -p)"
 echo "==== Phase 108: --help on the pane's tty ===="
 printf '%s\n' "$clip_help_text" | head -24
 tmux kill-session -t "$S108" 2>/dev/null
+# The same tty, with NO_COLOR set: the suite unsets that variable for its own
+# fixtures (colour is what nine assertions read), which leaves the behaviour it
+# is honouring untested — so pin it here, where it is ours rather than
+# crossterm's. `cli::colour_enabled` must fall to `HelpStyle::Plain`: the words
+# stay, every escape goes.
+tmux new-session -d -s "$S108" -x 100 -y 40 "env NO_COLOR=1 $BIN --help; echo CLI_APP_EXITED; sleep 60"
+for _ in $(seq 1 40); do
+	if tmux capture-pane -t "$S108" -p | grep -qF "CLI_APP_EXITED"; then
+		break
+	fi
+	sleep 0.1
+done
+clip_help_nocolor_raw="$(tmux capture-pane -t "$S108" -p -e)"
+clip_help_nocolor="$(tmux capture-pane -t "$S108" -p)"
+echo "==== Phase 108: --help on a tty under NO_COLOR=1 ===="
+printf '%s\n' "$clip_help_nocolor" | head -6
+tmux kill-session -t "$S108" 2>/dev/null
 # …and through a pipe: the same words, no escape anywhere.
 clip_help_piped="$("$BIN" --help 2>&1)"
 clip_help_piped_exit=$?
@@ -10791,6 +10889,22 @@ if ! printf '%s' "$clip_help_raw" | grep -qF "36mAlter Zero"; then
 fi
 if ! printf '%s' "$clip_help_raw" | grep -qF "36mUsage:"; then
 	echo "FAIL: Phase 108 — --help on a tty does not wear the heading escape on 'Usage:'" >&2
+	status=1
+fi
+# …and the same page under NO_COLOR=1 keeps every word and drops every escape
+# (`cli::colour_enabled`) — the production behaviour the suite's own `unset
+# NO_COLOR` relies on being real.
+if [ "$(printf '%s\n' "$clip_help_nocolor" | head -1)" != "Alter Zero" ]; then
+	echo "FAIL: Phase 108 — --help under NO_COLOR=1 does not open on 'Alter Zero'" >&2
+	status=1
+fi
+if ! printf '%s' "$clip_help_nocolor" | grep -qF "Usage:"; then
+	echo "FAIL: Phase 108 — --help under NO_COLOR=1 lost its 'Usage:' section" >&2
+	status=1
+fi
+if printf '%s' "$clip_help_nocolor_raw" | grep -qE "3[0-9]m|1m"; then
+	echo "FAIL: Phase 108 — --help under NO_COLOR=1 still wears an SGR escape" >&2
+	printf '%s\n' "$clip_help_nocolor_raw" | head -4 | cat -v >&2
 	status=1
 fi
 if ! printf '%s' "$clip_help_text" | grep -qF "[PROMPT]"; then
@@ -11452,9 +11566,10 @@ rm -rf "$THEME_CFG"
 # ETH address — the label agreeing with the count), an amber
 # wrong-network caution pointing at those captions and a key hint; ↓
 # moves the `❯`, on to the third (SOL) row and back; `c` copies the
-# highlighted address — the toast names the coin, and headless here arboard
-# has no clipboard server so the OSC 52 fallback lands the address VERBATIM
-# in tmux's paste buffer (Phase 28's trick) while the page stays open; Esc
+# highlighted address — the toast names the coin, and headless here (the
+# suite's own unset of the display variables) arboard has no clipboard server
+# so the OSC 52 fallback lands the address VERBATIM in tmux's paste buffer
+# (Phase 28's trick) while the page stays open; Esc
 # brings the composer and its footer back. ---
 S112="${S}_donate"
 tmux new-session -d -s "$S112" -x 90 -y 40 "$APP"
