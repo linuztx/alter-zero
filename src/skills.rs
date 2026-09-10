@@ -9,7 +9,7 @@
 //! - the **listing** the model chooses from ([`skill_listing`],
 //!   [`listing_message`]) and its character budget ([`listing_budget`]);
 //! - the **body render** ([`render_skill_body`]) — the base-directory header,
-//!   `$ARGUMENTS` substitution, `${…SKILL_DIR}` expansion, byte cap;
+//!   `${…SKILL_DIR}` expansion, byte cap;
 //! - the [`SkillRegistry`] handle the boundary and the loop share.
 //!
 //! The filesystem walk and the tool executor live in [`crate::llm::skill`].
@@ -290,41 +290,20 @@ pub fn listing_message(listing: &str) -> String {
     crate::subagents::reminder_message(listing, "")
 }
 
-/// Substitute a skill invocation's `args` into its body: `$ARGUMENTS` for the
-/// whole string and `$1`…`$9` for its whitespace-separated words (the
-/// reference's `substituteArguments`).
+/// The text a `skill` call returns to the model: the body with its
+/// `${…SKILL_DIR}` placeholders expanded, under the base-directory header
+/// that makes the skill's relative references resolvable — capped at
+/// [`SKILL_BODY_MAX_BYTES`].
 ///
-/// A body with no placeholder and non-empty args gets them appended, so an
-/// argument the model bothered to pass is never silently dropped.
+/// Nothing else is rewritten. The reference's `args` parameter — and with it
+/// the `$ARGUMENTS`/`$1`…`$9` substitution pass and the appended `Arguments:`
+/// trailer — is deliberately gone (`docs/skills.md`): a body reaches the
+/// model as its author wrote it, so a skill can document `$ARGUMENTS` in its
+/// own prose without having the word rewritten out from under it.
 #[must_use]
-pub fn substitute_arguments(body: &str, args: &str) -> String {
-    let args = args.trim();
-    let positional: Vec<&str> = args.split_whitespace().collect();
-    let mut out = body.to_string();
-    let mut substituted = out.contains("$ARGUMENTS");
-    out = out.replace("$ARGUMENTS", args);
-    for slot in 1..=9usize {
-        let placeholder = format!("${slot}");
-        if out.contains(&placeholder) {
-            substituted = true;
-            out = out.replace(&placeholder, positional.get(slot - 1).unwrap_or(&""));
-        }
-    }
-    if !substituted && !args.is_empty() {
-        out.push_str("\n\nArguments: ");
-        out.push_str(args);
-    }
-    out
-}
-
-/// The text a `skill` call returns to the model: the body with its arguments
-/// substituted and its `${…SKILL_DIR}` placeholders expanded, under the
-/// base-directory header that makes the skill's relative references
-/// resolvable — capped at [`SKILL_BODY_MAX_BYTES`].
-#[must_use]
-pub fn render_skill_body(dir: &Path, body: &str, args: &str) -> String {
+pub fn render_skill_body(dir: &Path, body: &str) -> String {
     let dir = dir.display().to_string();
-    let text = substitute_arguments(body, args)
+    let text = body
         .replace("${CLAUDE_SKILL_DIR}", &dir)
         .replace("${ALTER_ZERO_SKILL_DIR}", &dir);
     let rendered = format!("Base directory for this skill: {dir}\n\n{text}");
@@ -925,7 +904,7 @@ mod tests {
     #[test]
     fn the_body_leads_with_its_base_directory() {
         // So relative references inside the skill resolve.
-        let rendered = render_skill_body(Path::new("/skills/pdf"), "Read ./forms.md", "");
+        let rendered = render_skill_body(Path::new("/skills/pdf"), "Read ./forms.md");
         assert_eq!(
             rendered,
             "Base directory for this skill: /skills/pdf\n\nRead ./forms.md"
@@ -937,7 +916,6 @@ mod tests {
         let rendered = render_skill_body(
             Path::new("/skills/pdf"),
             "run ${CLAUDE_SKILL_DIR}/go.py and ${ALTER_ZERO_SKILL_DIR}/x",
-            "",
         );
         assert!(
             rendered.contains("run /skills/pdf/go.py and /skills/pdf/x"),
@@ -946,35 +924,32 @@ mod tests {
     }
 
     #[test]
-    fn arguments_substitute_for_the_placeholder() {
+    fn a_body_keeps_its_dollar_placeholders_verbatim() {
+        // The `skill` call carries no arguments any more (docs/skills.md), so
+        // there is nothing to substitute and the render rewrites none of the
+        // body's own text: a body that *documents* `$ARGUMENTS` or `$1` now
+        // says what it says. Only the skill-dir tokens still expand.
+        let body = "Write `$ARGUMENTS` for the whole string and `$1` for the first word.";
+        let rendered = render_skill_body(Path::new("/skills/writer"), body);
         assert_eq!(
-            substitute_arguments("Review PR $ARGUMENTS now", "123"),
-            "Review PR 123 now"
+            rendered,
+            format!("Base directory for this skill: /skills/writer\n\n{body}")
         );
     }
 
     #[test]
-    fn positional_arguments_split_on_whitespace() {
-        assert_eq!(
-            substitute_arguments("$1 then $2 then $3", "alpha beta"),
-            "alpha then beta then "
-        );
-    }
-
-    #[test]
-    fn arguments_with_no_placeholder_are_appended_never_dropped() {
-        assert_eq!(
-            substitute_arguments("Do the thing.", "quarterly revenue"),
-            "Do the thing.\n\nArguments: quarterly revenue"
-        );
-        // …and nothing is appended when there are none.
-        assert_eq!(substitute_arguments("Do the thing.", "  "), "Do the thing.");
+    fn nothing_is_appended_to_a_body() {
+        // The retired `Arguments: …` trailer went with the parameter that fed
+        // it: a body reaches the model as written, full stop.
+        let rendered = render_skill_body(Path::new("/s"), "Do the thing.");
+        assert!(!rendered.contains("Arguments:"), "{rendered}");
+        assert!(rendered.ends_with("Do the thing."), "{rendered}");
     }
 
     #[test]
     fn a_huge_body_is_truncated_with_a_marker_rather_than_refused() {
         let body = "x".repeat(SKILL_BODY_MAX_BYTES + 1_000);
-        let rendered = render_skill_body(Path::new("/s"), &body, "");
+        let rendered = render_skill_body(Path::new("/s"), &body);
         assert!(
             rendered.len() <= SKILL_BODY_MAX_BYTES + 200,
             "{}",
@@ -986,7 +961,7 @@ mod tests {
     #[test]
     fn truncation_never_splits_a_character() {
         let body = "é".repeat(SKILL_BODY_MAX_BYTES);
-        let rendered = render_skill_body(Path::new("/s"), &body, "");
+        let rendered = render_skill_body(Path::new("/s"), &body);
         assert!(rendered.ends_with(SKILL_TRUNCATION_MARKER));
     }
 

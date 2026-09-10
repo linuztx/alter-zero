@@ -116,19 +116,23 @@ Read `reference.md` in this skill's directory before editing the schema.
 Every loaded body is prefixed with a `Base directory for this skill:` line
 naming that folder, so a relative reference always resolves.
 
-## 5. Arguments and expansions
+## 5. The skill's own directory
 
-A `skill` call can carry `args`, and the loader substitutes them into the body
-before the model reads it — as it does a placeholder for the skill's own
-directory. The exact tokens are in **`reference.md`, in this skill's
-directory** (the `Base directory` line above): read it before writing a body
-that uses them.
+A `skill` call carries one thing — the skill name. There are no arguments, and
+the loader substitutes nothing into your prose, so write the body as you mean
+it to be read.
+
+The one exception is a placeholder for the skill's own folder, which the loader
+expands before the model reads the body. The exact tokens are in
+**`reference.md`, in this skill's directory** (the `Base directory` line
+above): read it before writing a body that uses them.
 
 They are not written here, because they cannot be: the loader expands this
 file's own examples on the way in — it did, in the load you are reading.
 
-Most skills need no arguments at all. Add them only when the skill genuinely
-takes a parameter.
+Most skills need no placeholder at all. The `Base directory` line already
+makes every relative reference resolve; reach for the token only when you need
+the path *inside* a command line the model will run.
 
 ## 6. Verify it
 

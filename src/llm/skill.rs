@@ -268,12 +268,14 @@ fn override_dir() -> Option<PathBuf> {
         .filter(|dir| !dir.as_os_str().is_empty())
 }
 
-/// One `skill` call's arguments.
+/// One `skill` call's arguments — the skill name, and nothing else.
+///
+/// Unknown fields are ignored rather than refused (serde's default), which is
+/// what lets a `/resume` replay a call recorded back when the schema still
+/// carried an `args` string: the field is dropped, the skill still loads.
 #[derive(Debug, serde::Deserialize)]
 struct SkillArgs {
     skill: String,
-    #[serde(default)]
-    args: Option<String>,
 }
 
 /// Run one `skill` call: load the named skill's body for the model, and
@@ -313,11 +315,7 @@ pub fn run_skill_tool(registry: &SkillRegistry, call: &ToolCallRequest) -> ToolO
             return ToolOutcome::error(format!("Skill {} could not be loaded: {err}", skill.name));
         }
     };
-    ToolOutcome::ok(SKILL_LOADED_DISPLAY).with_context(render_skill_body(
-        &skill.dir,
-        &body,
-        args.args.as_deref().unwrap_or_default(),
-    ))
+    ToolOutcome::ok(SKILL_LOADED_DISPLAY).with_context(render_skill_body(&skill.dir, &body))
 }
 
 /// The recoverable error an unknown skill name resolves with.
@@ -517,7 +515,10 @@ mod tests {
     }
 
     #[test]
-    fn arguments_reach_the_body() {
+    fn a_body_documenting_dollar_arguments_reaches_the_model_intact() {
+        // The executor renders the body with no substitution pass at all
+        // (docs/skills.md), so a skill whose instructions *talk about*
+        // `$ARGUMENTS` hands the model those words rather than a blank.
         let tmp = tempfile::tempdir().expect("tempdir");
         write_skill(
             tmp.path(),
@@ -527,14 +528,35 @@ mod tests {
         let (skills, _) = discover_skills(&[tmp.path().to_path_buf()]);
         let outcome = run_skill_tool(
             &SkillRegistry::new(skills),
-            &call(r#"{"skill":"review-pr","args":"123"}"#),
+            &call(r#"{"skill":"review-pr"}"#),
         );
         assert!(
             outcome
                 .context
                 .expect("body")
-                .contains("Review PR 123 carefully."),
-            "arguments substitute"
+                .contains("Review PR $ARGUMENTS carefully."),
+            "the body is handed over verbatim"
+        );
+    }
+
+    #[test]
+    fn a_stray_args_field_is_ignored_rather_than_refused() {
+        // The parameter is gone from the schema, but a resumed rollout can
+        // still replay a call recorded when it existed. Ignoring the field
+        // keeps that load working; refusing it would break `/resume`.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        write_skill(tmp.path(), "dataviz", &skill_md("Charts.", "# Charts"));
+        let (skills, _) = discover_skills(&[tmp.path().to_path_buf()]);
+        let outcome = run_skill_tool(
+            &SkillRegistry::new(skills),
+            &call(r#"{"skill":"dataviz","args":"revenue"}"#),
+        );
+        assert!(outcome.ok, "{}", outcome.output);
+        let body = outcome.context.expect("body");
+        assert!(body.contains("# Charts"), "{body}");
+        assert!(
+            !body.contains("revenue"),
+            "the stray args never reach it: {body}"
         );
     }
 
@@ -668,15 +690,15 @@ mod tests {
 
     #[test]
     fn no_built_in_body_carries_a_placeholder_the_loader_would_eat() {
-        // A skill body is rendered through `substitute_arguments` and the
-        // `${…SKILL_DIR}` expansion before the model ever sees it, so a body
-        // that *documents* those tokens has them rewritten out from under it:
-        // a live run of `skill-creator` read "- `create commit-style` — the
-        // whole argument string" where the file says `$ARGUMENTS`, and the
-        // sentence naming both `${…SKILL_DIR}` spellings came out as the same
-        // path twice. Detail that has to survive verbatim belongs in a
-        // sibling file the model *reads* — which is also the multi-file
-        // pattern this skill teaches.
+        // A skill body is rendered through the `${…SKILL_DIR}` expansion
+        // before the model ever sees it, so a body that *documents* those
+        // tokens has them rewritten out from under it: a live run of
+        // `skill-creator` read the sentence naming both spellings as the same
+        // path twice, explaining nothing. Detail that has to survive verbatim
+        // belongs in a sibling file the model *reads* — which is also the
+        // multi-file pattern this skill teaches. (`$ARGUMENTS` used to be the
+        // other half of this trap; the `args` parameter that fed it is gone,
+        // so that token is ordinary prose now.)
         for (path, contents) in BUILTIN_SKILL_FILES {
             if !path.ends_with(SKILL_FILE_NAME) {
                 continue;
@@ -685,14 +707,13 @@ mod tests {
             let body = parse_skill(contents, dir)
                 .expect("the built-in parses")
                 .body;
-            let rendered = render_skill_body(Path::new("/seeded"), &body, "an argument");
-            // The body has to survive the render **verbatim**: a rewrite
-            // anywhere inside it breaks this prefix. (The `Arguments:` line
-            // the loader appends when a body has no placeholders is the one
-            // thing allowed past its end — that is the feature working.)
-            assert!(
-                rendered.starts_with(&format!("Base directory for this skill: /seeded\n\n{body}")),
-                "{path}: the loader rewrote the body's own text:\n{rendered}"
+            let rendered = render_skill_body(Path::new("/seeded"), &body);
+            // The body has to survive the render **verbatim** — a rewrite
+            // anywhere inside it breaks this equality.
+            assert_eq!(
+                rendered,
+                format!("Base directory for this skill: /seeded\n\n{body}"),
+                "{path}: the loader rewrote the body's own text"
             );
         }
     }

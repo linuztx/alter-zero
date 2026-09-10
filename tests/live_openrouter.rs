@@ -3300,8 +3300,19 @@ fn skill_backend_and_context(
     registry: &alter_zero::skills::SkillRegistry,
     prompt: &str,
 ) -> (LlmBackend, Vec<ContextMessage>) {
-    let key =
-        std::env::var("OPENROUTER_API_KEY").expect("set OPENROUTER_API_KEY to run the live tests");
+    // Either credential runs this section: the skills contract is about the
+    // tool spec and the executor, not about one provider's wire, so a machine
+    // holding only `A0_VENICE_API_KEY` should not have to skip it.
+    let Ok(key) = std::env::var("OPENROUTER_API_KEY") else {
+        assert!(
+            std::env::var("A0_VENICE_API_KEY").is_ok(),
+            "set OPENROUTER_API_KEY (or A0_VENICE_API_KEY) to run the skills live tests"
+        );
+        return (
+            venice_skill_backend(registry),
+            skill_context(registry, prompt),
+        );
+    };
     let model =
         std::env::var("ALTER_ZERO_LIVE_MODEL").unwrap_or_else(|_| "openai/gpt-4o-mini".to_string());
     let cfg = ModelConfig {
@@ -3327,15 +3338,24 @@ fn skill_backend_and_context(
         /* tools */ true,
     )
     .with_skills(registry.clone());
+    (backend, skill_context(registry, prompt))
+}
+
+/// The context a skills live test opens on: the budgeted `<system-reminder>`
+/// listing the model picks a name out of, then the prompt — assembled the way
+/// `tui::models` assembles them.
+fn skill_context(
+    registry: &alter_zero::skills::SkillRegistry,
+    prompt: &str,
+) -> Vec<ContextMessage> {
     let listing = alter_zero::skills::listing_message(
         &registry.listing(alter_zero::skills::listing_budget(None)),
     );
     assert!(!listing.is_empty(), "the reminder names the skill");
-    let context = vec![
+    vec![
         ContextMessage::new(ContextRole::User, &listing),
         ContextMessage::new(ContextRole::User, prompt),
-    ];
-    (backend, context)
+    ]
 }
 
 /// [`events_from`] with an explicit context rather than the bare prompt.
@@ -3505,21 +3525,44 @@ fn live_an_embedded_mention_still_loads_the_skill() {
 
 #[test]
 #[ignore = "hits the network; needs OPENROUTER_API_KEY"]
-fn live_skill_arguments_are_substituted_before_the_model_sees_them() {
-    // `$ARGUMENTS` is expanded by the *executor*, not the model
-    // (docs/skills.md) — so the check that matters is on the tool result the
-    // model was handed, which is deterministic. The reply is the second half:
-    // the substituted body reached it and was legible.
+fn live_a_skill_body_reaches_the_model_verbatim() {
+    // The `args` parameter — and the `$ARGUMENTS`/`$1`…`$9` substitution pass
+    // it fed — is retired (docs/skills.md), so the executor rewrites nothing
+    // but the skill-dir tokens: a body that *contains* `$ARGUMENTS` hands the
+    // model those very characters instead of a blank. The check that matters
+    // is on the tool result the model was handed, which is deterministic; the
+    // reply is the second half, proving the body arrived legible.
     let dir = tempfile::tempdir().expect("temp dir");
     let registry = skill_registry_at(
         dir.path(),
         "greet",
         "Greet a person by name. Use when asked to greet someone.",
-        "# Greeting\n\nReply with exactly `HELLO-$ARGUMENTS` and nothing else.",
+        "# Greeting\n\nReply with exactly `HELLO-9` and nothing else.\n\n\
+         Note: the tokens $ARGUMENTS and $1 are ordinary prose here.",
     );
-    let prompt = "Use the greet skill with the argument Bob.";
+    let prompt = "Use the greet skill to greet Bob.";
     let (backend, context) = skill_backend_and_context(&registry, prompt);
     let events = events_with_context(&backend, prompt, context);
+
+    // The model cannot even offer arguments: the schema has no such field.
+    let call_args = events
+        .iter()
+        .find_map(|e| match e {
+            StreamEvent::ToolStart {
+                name, arguments, ..
+            } if name.eq_ignore_ascii_case(alter_zero::skills::SKILL_TOOL_NAME) => {
+                Some(arguments.clone().unwrap_or_default())
+            }
+            _ => None,
+        })
+        .expect("the model called the skill tool");
+    println!("call arguments: {call_args}");
+    let parsed: serde_json::Value = serde_json::from_str(&call_args).expect("an object");
+    assert_eq!(parsed["skill"], "greet");
+    assert!(
+        parsed.get("args").is_none(),
+        "the retired parameter is not on the wire: {call_args}"
+    );
 
     let result = events
         .iter()
@@ -3529,18 +3572,18 @@ fn live_skill_arguments_are_substituted_before_the_model_sees_them() {
         })
         .expect("the call resolves through ToolAnswered");
     assert!(
-        result.contains("HELLO-Bob"),
-        "the executor substituted $ARGUMENTS before the model saw the body: {result:?}"
+        result.contains("$ARGUMENTS") && result.contains("$1"),
+        "the placeholders survived the render verbatim: {result:?}"
     );
     assert!(
-        !result.contains("$ARGUMENTS"),
-        "…and left no placeholder behind: {result:?}"
+        !result.contains("Arguments:"),
+        "…and no trailer was appended: {result:?}"
     );
     let reply = reply_text(&events);
     println!("model replied: {reply:?}");
     assert!(
-        reply.contains("HELLO-Bob"),
-        "the model read the substituted body, got: {reply:?}"
+        reply.contains("HELLO-9"),
+        "the model read the loaded body, got: {reply:?}"
     );
 }
 
@@ -4333,13 +4376,13 @@ fn live_the_built_in_skill_creator_writes_a_skill_this_crate_can_load() {
 #[test]
 #[ignore = "hits the network; needs A0_VENICE_API_KEY"]
 fn live_the_skill_creator_sends_the_model_to_its_reference_file() {
-    // The other half of the built-in (docs/skills.md): the loader's own
-    // substitution tokens cannot be written in a *body* — it would expand
-    // them — so they live in `reference.md` beside it and the body says to
-    // read it. That indirection is only worth anything if a real model
-    // follows it, and the proof is the skill it writes: a body carrying a
-    // live `$ARGUMENTS` or `$1` placeholder is one written from the
-    // reference, and one that greets a hard-coded topic is not.
+    // The other half of the built-in (docs/skills.md): the loader's skill-dir
+    // tokens cannot be written in a *body* — it would expand them — so they
+    // live in `reference.md` beside it and the body says to read it. That
+    // indirection is only worth anything if a real model follows it, and the
+    // proof is the skill it writes: a body carrying a live `${…SKILL_DIR}`
+    // placeholder is one written from the reference, since the `SKILL.md`
+    // that sent it there cannot spell the token out.
     let work = std::env::temp_dir().join(format!(
         "alter-zero-live-skill-reference-{}",
         std::process::id()
@@ -4352,9 +4395,11 @@ fn live_the_skill_creator_sends_the_model_to_its_reference_file() {
     let registry = alter_zero::skills::SkillRegistry::new(seeded);
 
     let prompt = format!(
-        "Write a new skill `haiku` under {} that writes a haiku about whatever \
-         topic the caller passes to it as an argument — the body must pick that \
-         topic up from the call's arguments. Then reply with just: done",
+        "Write a new skill `haiku` under {} whose body tells the reader to run \
+         the `render.py` script that sits in that skill's own folder — the body \
+         must name that script by an absolute path built from the placeholder \
+         for the skill's own directory, not by a hard-coded path. Then reply \
+         with just: done",
         root.display()
     );
     let listing = alter_zero::skills::listing_message(
@@ -4371,8 +4416,8 @@ fn live_the_skill_creator_sends_the_model_to_its_reference_file() {
     let _ = std::fs::remove_dir_all(&work);
     println!("wrote:\n{written}");
     assert!(
-        written.contains("$ARGUMENTS") || written.contains("$1"),
-        "the body uses a real substitution token, so the reference was read: {written}"
+        written.contains("${ALTER_ZERO_SKILL_DIR}") || written.contains("${CLAUDE_SKILL_DIR}"),
+        "the body uses a real skill-dir token, so the reference was read: {written}"
     );
     let read_the_reference = history
         .iter()

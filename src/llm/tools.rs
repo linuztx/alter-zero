@@ -345,7 +345,10 @@ pub fn ask_spec() -> Value {
 /// to load, and both references omit it too. The description follows Claude
 /// Code's `SkillTool` prompt, with the reference's slash-command paragraph
 /// swapped for this TUI's `$<name>` mention syntax (`docs/skill-mentions.md`
-/// — here a leading `/` is the built-in command palette, never a skill).
+/// — here a leading `/` is the built-in command palette, never a skill), and
+/// the reference's optional `args` string dropped: the body is handed over
+/// verbatim, so there is nothing for arguments to substitute into
+/// (`docs/skills.md`).
 #[must_use]
 pub fn skill_spec() -> Value {
     function_spec(
@@ -373,10 +376,6 @@ pub fn skill_spec() -> Value {
                     "type": "string",
                     "description": "The skill name. E.g., \"commit\", \
                         \"review-pr\", or \"pdf\"."
-                },
-                "args": {
-                    "type": "string",
-                    "description": "Optional arguments for the skill."
                 }
             },
             "required": ["skill"],
@@ -1725,22 +1724,37 @@ mod tests {
     }
 
     #[test]
-    fn the_skill_spec_takes_a_name_and_optional_args() {
-        // The reference's schema exactly (docs/skills.md): `skill` required,
-        // `args` optional — an over-strict `required` would make every call
-        // that omits args a validation error on a strict provider.
+    fn the_skill_spec_takes_only_a_skill_name() {
+        // `skill` is the whole schema (docs/skills.md). The reference's
+        // optional `args` string is gone: nothing downstream could consume
+        // it without rewriting the body's own text, and a parameter the
+        // loader ignores is one the model spends tokens filling in.
         let spec = skill_spec();
         assert_eq!(spec["function"]["name"], crate::skills::SKILL_TOOL_NAME);
         let params = &spec["function"]["parameters"];
         assert_eq!(params["required"], serde_json::json!(["skill"]));
         assert!(params["properties"]["skill"]["type"] == "string");
-        assert!(params["properties"]["args"]["type"] == "string");
+        assert!(
+            params["properties"]["args"].is_null(),
+            "the schema offers no args parameter: {params}"
+        );
+        assert_eq!(
+            params["properties"].as_object().map(serde_json::Map::len),
+            Some(1),
+            "`skill` is the only parameter: {params}"
+        );
     }
 
     #[test]
     fn a_skill_call_renders_as_the_references_header() {
-        // `● Skill(dataviz)` — the name alone, args left out of the one line.
+        // `● Skill(dataviz)` — the skill name is the whole header.
         assert_eq!(display_name(crate::skills::SKILL_TOOL_NAME), "Skill");
+        assert_eq!(
+            summarize_call(crate::skills::SKILL_TOOL_NAME, r#"{"skill":"dataviz"}"#),
+            "dataviz"
+        );
+        // A call replayed from a rollout recorded before `args` was retired
+        // still summarises to the name alone.
         assert_eq!(
             summarize_call(
                 crate::skills::SKILL_TOOL_NAME,

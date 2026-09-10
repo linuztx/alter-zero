@@ -138,20 +138,22 @@ hermetic run (`smoke.sh`) keeps the empty root it made.
 #### Why it is two files
 
 The skill is a directory holding `SKILL.md` **and** `reference.md`, and the
-split is forced by the loader itself. A body is rendered through
-`substitute_arguments` and the `${…SKILL_DIR}` expansion before the model sees
-it — so a body that *documents* those tokens has them rewritten out from under
-it. The first live run of an earlier draft is the evidence: where the file
-said `$ARGUMENTS` the model read `` `create commit-style` `` (the caller's own
-arguments), and the sentence naming both `${…SKILL_DIR}` spellings arrived as
-the same absolute path twice, explaining nothing.
+split is forced by the loader itself. A body is rendered through the
+`${…SKILL_DIR}` expansion before the model sees it — so a body that
+*documents* those tokens has them rewritten out from under it. The first live
+run of an earlier draft is the evidence: the sentence naming both
+`${…SKILL_DIR}` spellings arrived as the same absolute path twice, explaining
+nothing. (`$ARGUMENTS` was caught by the very same trap in that run, reaching
+the model as `` `create commit-style` ``; retiring the `args` parameter is
+what makes that token safe in a body today, and the skill-dir pair the only
+one left that is not.)
 
 Detail that has to survive verbatim therefore lives in a sibling file the
 model **reads** — which is also the multi-file pattern the skill teaches, so
 the built-in demonstrates it rather than only describing it.
 `no_built_in_body_carries_a_placeholder_the_loader_would_eat` keeps a body
-from re-acquiring one: it renders every built-in with arguments and requires
-the body back byte-for-byte.
+from re-acquiring one: it renders every built-in and requires the body back
+byte-for-byte.
 
 ### The walk re-runs every turn
 
@@ -242,13 +244,12 @@ displayed as `Skill`) **only when at least one skill loaded** — an empty
 listing means the tool has nothing to do, and both references omit it too.
 
 ```json
-{"skill": "dataviz", "args": "quarterly revenue"}
+{"skill": "dataviz"}
 ```
 
-`args` is optional. It is substituted into the body for `$ARGUMENTS`, and for
-`$1`…`$9` split on whitespace — the reference's `substituteArguments`. A body
-with no placeholder and non-empty args gets them appended as a final
-`Arguments: {args}` line, so an argument is never silently dropped.
+`skill` is the whole schema. The reference's optional `args` string is
+**deliberately absent** — see [Why there are no arguments](#why-there-are-no-arguments)
+below.
 
 The body the model receives is prefixed with its own directory so relative
 references resolve:
@@ -261,7 +262,39 @@ Base directory for this skill: /home/u/.claude/skills/dataviz
 ```
 
 `${ALTER_ZERO_SKILL_DIR}` / `${CLAUDE_SKILL_DIR}` in the body expand to that
-same directory (the second spelling for ecosystem compatibility).
+same directory (the second spelling for ecosystem compatibility). That
+expansion is the **only** rewrite the loader performs; everything else in a
+body reaches the model exactly as its author wrote it.
+
+### Why there are no arguments
+
+The reference's schema carries an optional `args` string, substituted into the
+body for `$ARGUMENTS` and for `$1`…`$9` split on whitespace, with a trailing
+`Arguments: {args}` line appended when the body named no placeholder. All of
+it is gone. Three things were wrong with it:
+
+- **It rewrote the body's own prose.** The substitution pass ran over the
+  whole text — prose, code fences, examples alike — so a skill could not
+  *document* the tokens it was written to use. That is not a hypothetical: the
+  built-in `skill-creator` had to be split into two files over it, because a
+  live run read `` `create commit-style` `` where its `SKILL.md` said
+  `$ARGUMENTS`. A body that means `$ARGUMENTS` literally now says so.
+- **Nothing supplied it.** A skill is loaded from the model's own tool call or
+  from a `$name` mention (`docs/skill-mentions.md`), and a mention is plain
+  text carrying no parameter. The field existed for the model to fill in
+  freehand — an invented value, substituted into instructions the user wrote,
+  with no user in the loop to see it happen.
+- **It cost a decision on every call.** A parameter in the schema is one the
+  model weighs and fills; the tokens are spent whether or not the skill has
+  any use for them.
+
+What a skill needs to vary per run belongs in its body — *ask the user which
+branch to review* — where the instruction is visible, rather than in a
+parameter the model quietly guesses at.
+
+A call recorded before the change still replays cleanly: the executor's
+`SkillArgs` ignores unknown fields (serde's default), so an old rollout's
+`{"skill": "x", "args": "y"}` loads `x` and drops the rest.
 
 ### Why the result is a two-text split
 
@@ -288,12 +321,12 @@ red `User rejected …` display, never the stop-and-wait text the model read —
 and it is the reference's behaviour as well. It also keeps a 100 KiB skill body
 out of the transcript render cache, which is rebuilt per commit.
 
-The replayed call carries `{"skill": "<name>"}` rather than the reference's
-verbatim arguments: history stores the one-line summary, and for this tool the
-summary *is* the name. That is exact for the required parameter (a provider
-that validates the schema rejects `skill({})`, which is what an unmapped tool
-would have replayed) and lossy only for the optional `args`, whose effect is
-already baked into the body sitting right below in the same context.
+The replayed call carries `{"skill": "<name>"}`: history stores the one-line
+summary, and for this tool the summary *is* the name. Since `skill` is now the
+whole schema, that replay is **exact** — nothing is lost — where it used to be
+lossy for the optional `args` (a provider that validates the schema rejects
+the `skill({})` an unmapped tool would have replayed, which is why the
+reconstruction exists at all).
 
 The body is capped at [`SKILL_BODY_MAX_BYTES`] (100 KiB — the reference's
 `maxResultSizeChars`), truncated with a marker rather than refused.
@@ -323,8 +356,10 @@ The user-invocation shorthand is the `$` mention, and it needs no code of its
 own. A submitted message carrying `$haiku-writer about tmux` is an ordinary
 user turn; the **Skill tool's own description** tells the model a `$<name>`
 mention is a request to run that skill, and the listing tells it which names
-exist — so it answers with a `skill` call carrying the rest of the line as
-`args`. (The guidance lives on the tool because it rides every request the
+exist — so it answers with a `skill` call naming it. The rest of the line
+needs no parameter to carry it: it is already in the user's message, right
+there in the same context as the body the call loads. (The guidance lives on
+the tool because it rides every request the
 tool does — the retired `prompts/tools.md` note and the listing's old closing
 sentence each said it a second time, per turn.) Verified end to end against a
 live model:
@@ -483,7 +518,7 @@ here unchanged (`hooks::claude_code_alias`, `docs/hooks.md`).
 
 | Where | What |
 |---|---|
-| `src/skills.rs` | **pure**: `SkillMetadata`, frontmatter parse, name validation, listing + budget, `$ARGUMENTS` substitution, body render, the `SkillRegistry` handle |
+| `src/skills.rs` | **pure**: `SkillMetadata`, frontmatter parse, name validation, listing + budget, body render, the `SkillRegistry` handle |
 | `prompts/skills/skill-creator/` | the built-in skill itself — `SKILL.md` + `reference.md`, embedded and seeded |
 | `src/llm/skill.rs` | **boundary**: root resolution, the `read_dir` walk, the built-in seed (`seed_builtin_skills`), the tool executor (`run_skill_tool`) |
 | `src/llm/tools.rs` | `skill_spec()`, `display_name`, `summarize_call` |
