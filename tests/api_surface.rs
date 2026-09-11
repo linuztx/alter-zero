@@ -404,6 +404,7 @@ use alter_zero::ui::{
     shortcuts_rows,
     startup_notice_lines,
     startup_paragraph_lines,
+    telemetry_notice_lines,
     status_line,
     status_line_with_verb,
     stream_preview_max_rows,

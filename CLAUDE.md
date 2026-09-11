@@ -1621,7 +1621,7 @@ report is the delivered day, which the **loop** records (the worker never
 writes the file) in `telemetry.json` — its own per-**user** file beside the
 install id, the one row not in `settings.json`, since an opt-out that applied
 to one directory would be a surprise — disclosed once under the banner through
-the wrapped `ui::startup_paragraph_lines` and stated in full in the root
+the themed, wrapped `ui::telemetry_notice_lines` card and stated in full in the root
 **`TELEMETRY.md`** — the user-facing half (what leaves a machine, the three
 off switches, what the server keeps, how to verify it), which the README
 deliberately does not duplicate and which moves whenever `docs/telemetry.md`

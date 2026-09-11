@@ -2091,6 +2091,17 @@ pub(super) fn header_meta_color() -> Color {
     footer_color()
 }
 
+/// Keep the first-run disclosure readable on wide terminals, with room for
+/// a rounded frame; very narrow panes use the same content without the box.
+pub(super) const TELEMETRY_CARD_MAX_WIDTH: usize = 76;
+pub(super) const TELEMETRY_CARD_MIN_WIDTH: usize = 24;
+pub(super) const TELEMETRY_CARD_TITLE: &str = "Telemetry";
+
+/// Disclosure prose needs more contrast than the banner's cwd metadata.
+pub(super) fn telemetry_text_color() -> Color {
+    palette().text_muted
+}
+
 // --- Live-region geometry. The bottom region's height is dynamic: it grows with
 // the wrapped input (see `live_height`). `render_live` and `cursor_position` both
 // derive their layout from `input_box` so the drawn text and cursor never drift;

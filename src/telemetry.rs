@@ -387,16 +387,18 @@ pub fn enabled_by_env(telemetry: Option<&str>, dnt: Option<&str>) -> Option<bool
 }
 
 /// The one-time disclosure committed under the banner on the first launch
-/// that will ping (`ui::startup_paragraph_lines` wraps it): what is sent,
-/// what never is, and both ways to turn it off. Built rather than a `const`
-/// so the app's name comes from [`APP_NAME`] like every other place the app
+/// that will ping (`ui::telemetry_notice_lines` frames and wraps it): what is
+/// sent, what never is, and both ways to turn it off. Inline markdown marks
+/// the labels and commands; newlines separate the details from the opt-out.
+/// Built rather than a `const` so the app's name comes from [`APP_NAME`] like every other place the app
 /// speaks its own name.
 #[must_use]
 pub fn notice() -> String {
     format!(
-        "{APP_NAME} sends one anonymous ping a day so its users can be counted: the app version \
-         and OS, and the country the connection came from — never your prompts, files, keys or \
-         IP address. Turn it off in /settings → Telemetry, or with {TELEMETRY_ENV}=0."
+        "{APP_NAME} sends one anonymous ping a day to count active users.\n\
+         **Shares** App version, OS and connection country.\n\
+         **Never** Your prompts, files, keys or IP address.\n\n\
+         **Opt out** `/settings → Telemetry` or `{TELEMETRY_ENV}=0`"
     )
 }
 
@@ -790,7 +792,7 @@ mod tests {
         for needle in [
             "one anonymous ping a day",
             "country",
-            "never your prompts",
+            "**Never** Your prompts, files, keys",
             "IP address",
             "/settings",
             "Telemetry",
@@ -798,7 +800,6 @@ mod tests {
         ] {
             assert!(text.contains(needle), "{needle:?} in {text}");
         }
-        assert!(!text.contains('\n'), "one paragraph; the renderer wraps it");
     }
 
     #[test]

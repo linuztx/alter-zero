@@ -1,6 +1,7 @@
 //! The startup banner: the gradient mascot beside the name, cwd, and hint.
 //! See `docs/header.md` and `docs/mascot.md`.
 
+use super::inline::{inline_spans, wrap_inline};
 use super::theme::*;
 use super::wrap::{clamp_spans, cols, lerp_color, wrap_text};
 use super::*;
@@ -83,10 +84,9 @@ pub fn startup_notice_lines(text: &str, width: u16) -> Vec<Line<'static>> {
     )]
 }
 
-/// A wrapped startup paragraph as scrollback chrome — the one-time telemetry
-/// disclosure (`docs/telemetry.md`), committed under the banner by the
-/// boundary. [`startup_notice_lines`]' sibling with the opposite rule at a
-/// narrow width: that one clamps, because a status row is glanced at; this
+/// A wrapped startup paragraph as scrollback chrome, committed under the
+/// banner by the boundary. [`startup_notice_lines`]' sibling with the opposite
+/// rule at a narrow width: that one clamps, because a status row is glanced at; this
 /// one **wraps**, because a sentence the user is meant to finish must not
 /// lose its ending. Every row wears the banner's indent and dim meta colour,
 /// so the block reads as part of the banner; like the notice it never enters
@@ -102,6 +102,93 @@ pub fn startup_paragraph_lines(text: &str, width: u16) -> Vec<Line<'static>> {
         .into_iter()
         .map(|row| Line::from(vec![Span::raw(HEADER_INDENT), Span::styled(row, dim)]))
         .collect()
+}
+
+/// The one-time telemetry disclosure as a compact, themed card under the
+/// banner. Labels are bold and opt-out commands use the banner's accent.
+/// Prose and commands wrap without truncation; tiny panes drop the frame
+/// instead of spending their remaining columns on decoration. Like other
+/// startup notices, this is scrollback chrome and never enters history.
+#[must_use]
+pub fn telemetry_notice_lines(width: u16) -> Vec<Line<'static>> {
+    if width == 0 {
+        return Vec::new();
+    }
+    let indent = if usize::from(width) > cols(HEADER_INDENT) {
+        HEADER_INDENT
+    } else {
+        ""
+    };
+    let card_width = usize::from(width)
+        .saturating_sub(2 * cols(indent))
+        .min(TELEMETRY_CARD_MAX_WIDTH);
+    let framed = card_width >= TELEMETRY_CARD_MIN_WIDTH;
+    let inner = if framed {
+        card_width - 2 - 2 * cols(DEVICE_BOX_PAD)
+    } else {
+        usize::from(width) - cols(indent)
+    };
+    let border = Style::new().fg(border_color());
+    let title = Style::new()
+        .fg(header_accent_color())
+        .add_modifier(Modifier::BOLD);
+    let text = Style::new().fg(telemetry_text_color());
+    let mut lines = Vec::new();
+    if framed {
+        let title_text = format!(" {TELEMETRY_CARD_TITLE} ");
+        lines.push(Line::from(vec![
+            Span::raw(indent),
+            Span::styled(
+                format!("{DEVICE_BOX_TOP_LEFT}{DEVICE_BOX_HORIZONTAL}"),
+                border,
+            ),
+            Span::styled(title_text.clone(), title),
+            Span::styled(
+                format!(
+                    "{}{DEVICE_BOX_TOP_RIGHT}",
+                    DEVICE_BOX_HORIZONTAL.repeat(card_width - 3 - cols(&title_text))
+                ),
+                border,
+            ),
+        ]));
+    } else {
+        for row in wrap_inline(&[(TELEMETRY_CARD_TITLE.to_string(), title)], inner as u16) {
+            let mut spans = vec![Span::raw(indent)];
+            spans.extend(row);
+            lines.push(Line::from(spans));
+        }
+    }
+    for paragraph in crate::telemetry::notice().split('\n') {
+        let segments = inline_spans(&markdown::parse_inline(paragraph), text);
+        for row in wrap_inline(&segments, inner as u16) {
+            let used: usize = row.iter().map(|span| cols(&span.content)).sum();
+            let mut spans = vec![Span::raw(indent)];
+            if framed {
+                spans.push(Span::styled(DEVICE_BOX_VERTICAL, border));
+                spans.push(Span::raw(DEVICE_BOX_PAD));
+            }
+            spans.extend(row);
+            if framed {
+                spans.push(Span::raw(" ".repeat(inner.saturating_sub(used))));
+                spans.push(Span::raw(DEVICE_BOX_PAD));
+                spans.push(Span::styled(DEVICE_BOX_VERTICAL, border));
+            }
+            lines.push(Line::from(spans));
+        }
+    }
+    if framed {
+        lines.push(Line::from(vec![
+            Span::raw(indent),
+            Span::styled(
+                format!(
+                    "{DEVICE_BOX_BOTTOM_LEFT}{}{DEVICE_BOX_BOTTOM_RIGHT}",
+                    DEVICE_BOX_HORIZONTAL.repeat(card_width - 2)
+                ),
+                border,
+            ),
+        ]));
+    }
+    lines
 }
 
 /// The startup header banner as scrollback rows (docs/header.md): the

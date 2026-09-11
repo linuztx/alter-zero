@@ -169,10 +169,13 @@ when you switch the row on. The first launch that would send one says so,
 once, under the banner:
 
 ```
-  Alter Zero sends one anonymous ping a day so its users can be counted: the
-  app version and OS, and the country the connection came from — never your
-  prompts, files, keys or IP address. Turn it off in /settings → Telemetry,
-  or with ALTER_ZERO_TELEMETRY=0.
+  ╭─ Telemetry ──────────────────────────────────────────────────────────────╮
+  │  Alter Zero sends one anonymous ping a day to count active users.        │
+  │  Shares App version, OS and connection country.                          │
+  │  Never Your prompts, files, keys or IP address.                          │
+  │                                                                          │
+  │  Opt out /settings → Telemetry or ALTER_ZERO_TELEMETRY=0                 │
+  ╰──────────────────────────────────────────────────────────────────────────╯
 ```
 
 A run that will not ping — the variable or your saved choice says off — shows

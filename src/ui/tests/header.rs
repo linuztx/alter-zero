@@ -326,8 +326,8 @@ fn header_text(app: &App, width: u16) -> String {
 
 #[test]
 fn startup_paragraph_wraps_under_the_banner_indent() {
-    // The telemetry disclosure (docs/telemetry.md) is a sentence the user is
-    // meant to finish, so it wraps where the status notice clamps: every row
+    // Startup prose is meant to be read in full, so it wraps where the
+    // status notice clamps: every row
     // wears the banner's indent and dim meta colour, no row is wider than the
     // terminal, and no word is lost at any width.
     let text = "Alter Zero sends one anonymous ping a day so its users can be counted, never your prompts.";
@@ -354,4 +354,68 @@ fn startup_paragraph_wraps_under_the_banner_indent() {
     // an empty result (the render pipeline's extreme-size rule).
     assert!(!startup_paragraph_lines(text, 1).is_empty());
     assert!(!startup_paragraph_lines(text, 0).is_empty());
+}
+
+#[test]
+fn telemetry_card_keeps_every_disclosure_and_opt_out_character_at_all_widths() {
+    let compact = |text: &str| {
+        text.chars()
+            .filter(|c| !c.is_whitespace() && !"╭╮╰╯─│*`".contains(*c))
+            .collect::<String>()
+    };
+    let expected = compact(&format!("Telemetry{}", crate::telemetry::notice()));
+    assert!(telemetry_notice_lines(0).is_empty());
+    for width in 1..=160 {
+        let lines = telemetry_notice_lines(width);
+        let rendered: String = lines.iter().map(plain).collect();
+        assert_eq!(
+            compact(&rendered),
+            expected,
+            "lost content at width {width}"
+        );
+        for line in &lines {
+            assert!(
+                line.width() <= usize::from(width),
+                "overflow at {width}: {line:?}"
+            );
+        }
+    }
+    let wide = telemetry_notice_lines(120);
+    assert!(
+        wide.iter().all(|line| line.width() <= 78),
+        "bounded reading width"
+    );
+    assert_eq!(wide.len(), 7, "the card stays compact on a normal terminal");
+}
+
+#[test]
+fn telemetry_card_uses_the_active_theme_for_title_border_and_commands() {
+    use crate::ui::theme::{border_color, header_accent_color, telemetry_text_color};
+
+    for theme in crate::app::Theme::ALL {
+        with_theme(theme, || {
+            let lines = telemetry_notice_lines(80);
+            let span_for = |needle: &str| {
+                lines
+                    .iter()
+                    .flat_map(|line| &line.spans)
+                    .find(|span| span.content.contains(needle))
+                    .unwrap_or_else(|| panic!("missing {needle}"))
+            };
+            let title = span_for("Telemetry");
+            assert_eq!(title.style.fg, Some(header_accent_color()));
+            assert!(title.style.add_modifier.contains(Modifier::BOLD));
+            assert_eq!(span_for("╭").style.fg, Some(border_color()));
+            assert_eq!(span_for("Shares").style.fg, Some(telemetry_text_color()));
+            assert!(
+                span_for("Never")
+                    .style
+                    .add_modifier
+                    .contains(Modifier::BOLD)
+            );
+            for command in ["/settings", "ALTER_ZERO_TELEMETRY=0"] {
+                assert_eq!(span_for(command).style.fg, Some(header_accent_color()));
+            }
+        });
+    }
 }

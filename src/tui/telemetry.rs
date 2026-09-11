@@ -151,14 +151,13 @@ impl Session<'_> {
     }
 
     /// Commit the one-time disclosure as scrollback chrome under the banner:
-    /// wrapped to the terminal (`ui::startup_paragraph_lines`) over a blank
+    /// framed and wrapped to the terminal (`ui::telemetry_notice_lines`) over a blank
     /// spacer, through the same queue the banner rides, so the next draw
     /// flushes both in one frame. Chrome, never `history`; a purge rebuild
     /// does not re-emit it.
     fn commit_telemetry_notice(&mut self) {
         let width = self.term.screen().width;
-        self.term
-            .insert_before(ui::startup_paragraph_lines(&telemetry::notice(), width));
+        self.term.insert_before(ui::telemetry_notice_lines(width));
         self.term.insert_before(vec![Line::default()]);
     }
 }

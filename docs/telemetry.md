@@ -213,15 +213,22 @@ The first launch that would ping says so, once, in scrollback under the
 banner:
 
 ```
-  Alter Zero sends one anonymous ping a day so its users can be counted: the
-  app version and OS, and the country the connection came from — never your
-  prompts, files, keys or IP address. Turn it off in /settings → Telemetry,
-  or with ALTER_ZERO_TELEMETRY=0.
+  ╭─ Telemetry ──────────────────────────────────────────────────────────────╮
+  │  Alter Zero sends one anonymous ping a day to count active users.        │
+  │  Shares App version, OS and connection country.                          │
+  │  Never Your prompts, files, keys or IP address.                          │
+  │                                                                          │
+  │  Opt out /settings → Telemetry or ALTER_ZERO_TELEMETRY=0                 │
+  ╰──────────────────────────────────────────────────────────────────────────╯
 ```
 
-`ui::startup_paragraph_lines` — the banner's indent and dim colour, **wrapped**
-where the checkpoint notice's `startup_notice_lines` clamps (that one is a
-status row; this is a sentence the user is meant to finish). `notice_shown`
+`ui::telemetry_notice_lines` renders a rounded card with the banner's indent,
+an accent title, readable body text, bold labels, and accent opt-out commands.
+The card is capped at 76 columns; prose and commands **wrap** inside it,
+and panes too narrow for the frame show the same content without the box.
+The copy lives in `telemetry::notice`, with inline markdown for emphasis.
+Unlike the checkpoint notice's `startup_notice_lines`, nothing is clamped
+away. `notice_shown`
 in `telemetry.json` keeps it to once, and it is skipped entirely when nothing
 will be sent (the variable or the file says off), since there is nothing to
 disclose. Chrome like the banner, it never enters `history`, and like the
