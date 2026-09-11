@@ -81,6 +81,22 @@ and `SMOKE_BIN` are the environment spellings of the knobs.
   standing permission rule, a `/model` choice or a `/settings` value one
   phase persists is invisible to every other (the old suite had to `rm -f`
   the shared `permissions.json` between the permission phases by hand);
+- **its own sessions root** (`ALTER_ZERO_SESSIONS_DIR=$SMOKE_TMP/sessions`),
+  spelled out even though the app now keeps rollouts under the config home:
+  for a long time they fell back to `$HOME/.alter-zero/sessions` whatever the
+  config dir was, and every run left a few hundred dummy-backend sessions in
+  the developer's own `/resume` picker. `scripts/smoke.sh --sweep-leaked`
+  lists what older runs left there (the offline backends' model names give
+  them away); `--yes` deletes them;
+- **`$HOME` moved into the tree** as well, so there is no path by which the
+  binary under test — or tmux, or git, whatever a phase's own env string
+  says — reaches the developer's home: `~/.alter-zero`, `~/.claude/skills`,
+  `~/.tmux.conf` and `~/.gitconfig` all resolve to an empty directory that
+  dies with the phase (the checkpoint store supplies its own git identity).
+  A phase that tests HOME-relative behaviour sets its own;
+- **a tmux server that reads no configuration file** (`-f /dev/null`): a
+  developer's `default-terminal` or status-line settings would change what
+  the app paints;
 - **`$TMPDIR` pointed into the tree**, so a bare `mktemp -d` — and the app's
   own scratchpad — land inside it;
 - the sanitized environment (`smoke_sanitize_env`: every `*_API_KEY`, every

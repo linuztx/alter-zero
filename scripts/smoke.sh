@@ -21,6 +21,7 @@
 #   scripts/smoke.sh 50-60 permission     # a range, a name substring
 #   scripts/smoke.sh --skip 115           # everything but
 #   scripts/smoke.sh --failed             # re-run what failed last time
+#   scripts/smoke.sh --sweep-leaked       # list (then --yes: delete) rollouts old runs leaked into ~/.alter-zero
 #   scripts/smoke.sh --list               # the phases, their tags, last timings
 #   scripts/smoke.sh -v                   # print every phase's log, not just failures
 #   scripts/smoke.sh target/release/alter-zero   # another binary (default: target/debug)
@@ -42,6 +43,8 @@ usage: scripts/smoke.sh [BIN] [options] [SELECTOR…]
   -o, --only SPEC     select phases (same grammar as SELECTOR; comma-separated)
   -s, --skip SPEC     deselect phases
       --failed        run only the phases that failed in the previous run
+      --sweep-leaked  list the rollouts older runs of this suite left in your own
+                      sessions dir (they show up in /resume); --yes deletes them
   -l, --list          list the phases and exit
   -v, --verbose       print every phase's whole log as it finishes
   -k, --keep          keep each phase's temp tree (SMOKE_KEEP=1)
@@ -62,6 +65,8 @@ VERBOSE=0
 KEEP="${SMOKE_KEEP:-}"
 TIMEOUT="${SMOKE_TIMEOUT:-600}"
 FAILED_ONLY=0
+SWEEP=0
+YES=0
 BIN_ARG=""
 while [ $# -gt 0 ]; do
 	case "$1" in
@@ -87,6 +92,14 @@ while [ $# -gt 0 ]; do
 		;;
 	--failed)
 		FAILED_ONLY=1
+		shift
+		;;
+	--sweep-leaked)
+		SWEEP=1
+		shift
+		;;
+	--yes)
+		YES=1
 		shift
 		;;
 	-l | --list)
@@ -133,6 +146,41 @@ while [ $# -gt 0 ]; do
 		;;
 	esac
 done
+
+# --- --sweep-leaked: the rollouts the old suite left in the real sessions dir ---
+# Before the suite pointed ALTER_ZERO_SESSIONS_DIR into its temp tree (and
+# before the app kept sessions under the config home), every phase's turns were
+# recorded into the developer's own `~/.alter-zero/sessions` — a few hundred
+# dummy-backend conversations per run, listed by /resume in this checkout. They
+# are recognisable by the offline backends' model names in their `session_meta`
+# line (`stream::dummy` and `stream::stall`), which no real provider ever uses.
+# The listing is the default; deleting takes --yes.
+if [ "$SWEEP" -eq 1 ]; then
+	sweep_root="${ALTER_ZERO_SESSIONS_DIR:-${ALTER_ZERO_CONFIG_DIR:-$HOME/.alter-zero}/sessions}"
+	if [ ! -d "$sweep_root" ]; then
+		echo "smoke: no sessions dir at $sweep_root — nothing to sweep"
+		exit 0
+	fi
+	leaked=()
+	while IFS= read -r f; do
+		if head -c 800 "$f" | grep -qE '"model":"(dummy_model_name|stall_model)"'; then
+			leaked+=("$f")
+		fi
+	done < <(find "$sweep_root" -type f -name 'rollout-*.jsonl' | sort)
+	if [ "${#leaked[@]}" -eq 0 ]; then
+		echo "smoke: no leaked smoke rollouts under $sweep_root"
+		exit 0
+	fi
+	printf '%s\n' "${leaked[@]}"
+	if [ "$YES" -eq 1 ]; then
+		rm -f -- "${leaked[@]}"
+		find "$sweep_root" -mindepth 1 -type d -empty -delete 2>/dev/null
+		echo "smoke: deleted ${#leaked[@]} leaked smoke rollout(s) from $sweep_root"
+	else
+		echo "smoke: ${#leaked[@]} leaked smoke rollout(s) under $sweep_root — re-run with --yes to delete them"
+	fi
+	exit 0
+fi
 
 SMOKE_OUT="${SMOKE_OUT:-$SMOKE_ROOT/target/smoke}"
 SMOKE_LOGS="$SMOKE_OUT/logs"

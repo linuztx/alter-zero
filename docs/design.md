@@ -499,8 +499,9 @@ unit-tested must be unit-tested.
   is uploaded.
 - **`/resume` picks up a saved session** (codex's `/resume` — see
   `docs/resume.md`). Every conversation records to a rollout JSONL file
-  (`~/.alter-zero/sessions/YYYY/MM/DD/rollout-…-{id}.jsonl`, overridable via
-  `ALTER_ZERO_SESSIONS_DIR`): a `session_meta` line, then one line per
+  (`{config_home}/sessions/YYYY/MM/DD/rollout-…-{id}.jsonl` —
+  `~/.alter-zero/sessions` by default, moving with `ALTER_ZERO_CONFIG_DIR` —
+  overridable via `ALTER_ZERO_SESSIONS_DIR`): a `session_meta` line, then one line per
   finished `HistoryItem` — completed items only, never streaming deltas
   (codex's persistence policy). The file is created lazily on the first
   recorded item (empty sessions never touch disk), a backtrack rewind

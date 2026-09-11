@@ -20,7 +20,7 @@ S71="${S}_ckscope"
 CK71="$(mktemp -d "$SMOKE_TMP/ck71.XXXXXX")"
 WORK71="$(mktemp -d "$SMOKE_TMP/work71.XXXXXX")"
 printf 'print("hi")\n' >"$WORK71/app.py"
-CKAPP71="env $CFG_ENV ALTER_ZERO_CHECKPOINTS=1 ALTER_ZERO_CHECKPOINTS_DIR=$CK71 ALTER_ZERO_SESSIONS_DIR=$CK_SESS ALTER_ZERO_STARTUP_DELAY_MS=$SMOKE_STARTUP_MS $BIN_ABS"
+CKAPP71="env HOME=$SMOKE_REAL_HOME $CFG_ENV ALTER_ZERO_CHECKPOINTS=1 ALTER_ZERO_CHECKPOINTS_DIR=$CK71 ALTER_ZERO_SESSIONS_DIR=$CK_SESS ALTER_ZERO_STARTUP_DELAY_MS=$SMOKE_STARTUP_MS $BIN_ABS"
 
 # Launch in $2, wait for the footer, and report the toast row + store entries.
 ck71_launch() {
@@ -89,7 +89,7 @@ expect_has "$ck71_pane" -F "Snapshotting 1 file (" "the cold session-start snaps
 WORK71B="$(mktemp -d "$SMOKE_TMP/work71b.XXXXXX")"
 printf 'print("hi")\n' >"$WORK71B/app.py"
 CK71B="$WORK71B/.ck"
-CKAPP71B="env $CFG_ENV ALTER_ZERO_CHECKPOINTS=1 ALTER_ZERO_CHECKPOINTS_DIR=$CK71B ALTER_ZERO_SESSIONS_DIR=$CK_SESS ALTER_ZERO_STARTUP_DELAY_MS=$SMOKE_STARTUP_MS $BIN_ABS"
+CKAPP71B="env HOME=$SMOKE_REAL_HOME $CFG_ENV ALTER_ZERO_CHECKPOINTS=1 ALTER_ZERO_CHECKPOINTS_DIR=$CK71B ALTER_ZERO_SESSIONS_DIR=$CK_SESS ALTER_ZERO_STARTUP_DELAY_MS=$SMOKE_STARTUP_MS $BIN_ABS"
 CK71="$CK71B" ck71_launch "store inside the project" "$WORK71B" "$CKAPP71B"
 expect_has "$ck71_pane" -F "Snapshotting 1 file (" "the cold first launch never announced its snapshot"
 CK71="$CK71B" ck71_launch "store inside the project (2)" "$WORK71B" "$CKAPP71B"

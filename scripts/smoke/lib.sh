@@ -155,12 +155,33 @@ smoke_begin() {
 	# Agent definitions are discovered the same way; the two built-ins are seeded
 	# into the temp dir at startup, so it is not empty — it is *known*.
 	SMOKE_AGENTS="$SMOKE_TMP/agents"
-	mkdir -p "$SMOKE_CFG" "$SMOKE_SKILLS" "$SMOKE_AGENTS"
+	# Every conversation records a rollout (docs/resume.md). The app keeps them
+	# under the config home now, but the suite says so explicitly: for a long
+	# time they fell back to `$HOME/.alter-zero/sessions` whatever the config
+	# dir was, and each run left ~100 dummy-backend sessions in the developer's
+	# own `/resume` picker (`scripts/smoke.sh --sweep-leaked` clears those).
+	SMOKE_SESSIONS="$SMOKE_TMP/sessions"
+	# And HOME itself moves into the tree, so there is NO path by which the
+	# binary under test — or tmux, or git, whatever a phase's own env string
+	# says — can read or write the developer's home: `~/.alter-zero`,
+	# `~/.claude/skills`, `~/.tmux.conf`, `~/.gitconfig` all resolve to an
+	# empty directory that dies with the phase. (The checkpoint store supplies
+	# its own git identity, so it needs nothing from there.) A phase that
+	# tests HOME-relative behaviour sets its own.
+	SMOKE_HOME="$SMOKE_TMP/home"
+	# The developer's real home stays reachable by name for the one kind of
+	# phase that needs a *conventional* one — the checkpoint scope rules read
+	# `/tmp` as "an ancestor of your home directory" when HOME sits under it,
+	# and a phase asserting the "shared scratch directory" refusal wants the
+	# home a real user has (Phase 71). Nothing under it is ever written to.
+	SMOKE_REAL_HOME="${HOME:-/nonexistent}"
+	mkdir -p "$SMOKE_CFG" "$SMOKE_SKILLS" "$SMOKE_AGENTS" "$SMOKE_SESSIONS" "$SMOKE_HOME"
+	export HOME="$SMOKE_HOME"
 	# Filesystem checkpoints are OFF for every launch in the repo's cwd: a
 	# checkpoint restore does `git reset --hard` + `git clean` on the working
 	# directory. Only phases that run in a throwaway cwd re-enable them.
 	# Lifecycle hooks and the project config layer are off for hermeticity too.
-	CFG_ENV="ALTER_ZERO_CONFIG_DIR=$SMOKE_CFG ALTER_ZERO_CHECKPOINTS=0 ALTER_ZERO_SKILLS_DIR=$SMOKE_SKILLS ALTER_ZERO_AGENTS_DIR=$SMOKE_AGENTS ALTER_ZERO_PROJECT_CONFIG=0 ALTER_ZERO_TELEMETRY=0"
+	CFG_ENV="ALTER_ZERO_CONFIG_DIR=$SMOKE_CFG ALTER_ZERO_SESSIONS_DIR=$SMOKE_SESSIONS ALTER_ZERO_CHECKPOINTS=0 ALTER_ZERO_SKILLS_DIR=$SMOKE_SKILLS ALTER_ZERO_AGENTS_DIR=$SMOKE_AGENTS ALTER_ZERO_PROJECT_CONFIG=0 ALTER_ZERO_TELEMETRY=0"
 	# Persistence seeds the input history from a file on startup; /dev/null
 	# gives every launch an EMPTY history so the ↑/↓ and Ctrl+R assertions are
 	# unaffected by earlier submissions.
@@ -226,8 +247,11 @@ smoke_finish() {
 	exit 1
 }
 
-# Every `tmux …` call in a phase routes to the phase's private socket.
-tmux() { command tmux -S "$SMOKE_TMUX_SOCKET" "$@"; }
+# Every `tmux …` call in a phase routes to the phase's private socket, and the
+# server it starts reads NO configuration file: a developer's `default-terminal`
+# or status-line settings would change what the app paints, and the suite
+# states its environment rather than borrowing it (docs/design.md).
+tmux() { command tmux -S "$SMOKE_TMUX_SOCKET" -f /dev/null "$@"; }
 
 # ---------------------------------------------------------------------------
 # Fail accounting and log structure.
