@@ -26,7 +26,9 @@ while [ $i -lt 400 ]; do
 	sleep 0.05
 done
 EOS
-launch "$S42" 80 24
+# In a short `~/work` cwd: this phase asserts the footer TAIL (`· 1 shell`),
+# which the cwd pushes rightward off an 80-column row in a deep checkout.
+launch -c "$(work_dir)" "$S42" 80 24 "$APP_ABS"
 submit "$S42" "!sh $BG_SCRIPT"
 # The hint is DELAYED (TOOL_BACKGROUND_HINT_DELAY, 3s): early in the run the
 # command is clearly executing (its `⎿ Running…` row shows) but the Ctrl+B hint

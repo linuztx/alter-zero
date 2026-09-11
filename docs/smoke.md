@@ -126,6 +126,7 @@ was not a safe transformation until each carried its own.
 | `expect_has CONTENT [grep opts] PATTERN MESSAGE` / `expect_lacks` / `expect_eq` / `expect_ne` / `expect_file_has` | one assertion each: on a miss, `fail MESSAGE` |
 | `fail MESSAGE` | record a failed check — `FAIL: Phase N — MESSAGE` on stderr — and keep going: a phase is a scenario, and the later checks usually say more about what broke |
 | `note TITLE` / `dump TITLE CONTENT` | a `==== Phase N: TITLE ====` section marker (over a captured pane) in the log |
+| `work_dir [NAME]` | a short working directory under the phase's isolated HOME, so the footer renders the cwd as `~/{NAME}`. A phase asserting the footer's **tail** (the `· N shells` count, the context gauge) must launch in one, with `$APP_ABS`/`$BIN_ABS` |
 | `smoke_on_exit CMD…` | run at teardown — a stub server to kill |
 | `count_bare_prompts` / `count_rules` / `count_footers` / `count_msg_lines` | the "exactly one input box on screen" counters the resize phases share |
 
@@ -176,6 +177,19 @@ wait_for 3 "$S116" -F "dummy_model_name ·" || fail "Esc did not close the page"
 - A phase that needs the app in a temp cwd passes `-c "$dir"` to `launch`
   and uses `$BIN_ABS`/`$APP_ABS`; one that re-enables checkpoints must do so
   only in such a cwd (docs/checkpoint.md — a restore runs `git clean`).
+- **A phase that reads the footer's tail launches in `work_dir`.** The footer
+  lays the cwd out ahead of the `· N shells` count and the context gauge and
+  truncates the row from the right, and since each phase's HOME is its own
+  temp tree the repo cwd no longer abbreviates to `~/…`: it renders absolute,
+  so those assertions would pass or fail on how deep the developer happened to
+  clone. A 43-character checkout path already cut `· 1 shell` to `· 1 sh…` at
+  80 columns, failing Phase 42 and silently timing out Phase 43's wait for the
+  same text. `~/work` is six columns wherever the repo lives.
+- **Wait for a turn to start before waiting for it to end.** A settle loop that
+  breaks on the *absence* of the status line samples before the first frame
+  paints on a loaded machine, breaks at once and races the turn. Phases 58 to
+  63 each open with `wait_for 20 … "esc to interrupt"` for that reason; Phase
+  62 failed exactly that way in a full parallel run while passing alone.
 - A phase whose assertion is a **measurement** — a latency, a byte count over
   a window — tags itself `# smoke: tags=serial` so the runner holds it until
   the parallel pool has drained and runs it alone.

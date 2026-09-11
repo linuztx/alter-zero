@@ -12,8 +12,9 @@ smoke_begin
 S43="${S}_bgkill"
 # A long pre-stream pause (the dummy's startup delay) is the window the kill
 # lands in; the turn's own tool batch then settles the pending notice.
-tmux new-session -d -s "$S43" -x 80 -y 24 \
-	"env $CFG_ENV_NOHIST ALTER_ZERO_STARTUP_DELAY_MS=2500 $BIN"
+# A short `~/work` cwd, so the footer's `· 1 shell` tail fits (see work_dir).
+tmux new-session -d -s "$S43" -x 80 -y 24 -c "$(work_dir)" \
+	"env $CFG_ENV_NOHIST ALTER_ZERO_STARTUP_DELAY_MS=2500 $BIN_ABS"
 sleep 0.4
 submit "$S43" '!sleep 300'
 # Wait for the Ctrl+B hint (it appears a few seconds into the run — the delay);

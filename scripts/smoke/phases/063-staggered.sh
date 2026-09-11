@@ -25,6 +25,12 @@ launch "$S63" 80 44
 # conversation's floating prompt shrinks over blank rows and shows nothing).
 for stagperm_msg in "hello there" "tell me more about it" "and a little more"; do
 	submit "$S63" "$stagperm_msg"
+	# Wait for the turn to START before waiting for it to end: the settle loop
+	# below breaks on the ABSENCE of the status line, so on a loaded machine —
+	# eight workers on four cores — it can sample before the first frame paints,
+	# break at once and race the turn it was meant to wait out. Phase 62 failed
+	# exactly that way in a full parallel run while passing alone.
+	wait_for 20 "$S63" -F "esc to interrupt"
 	sleep 0.6
 	for _ in $(seq 1 300); do
 		cap="$(tmux capture-pane -t "$S63" -p)"

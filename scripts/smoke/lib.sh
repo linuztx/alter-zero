@@ -304,6 +304,26 @@ launch() {
 	fi
 	return 0
 }
+# work_dir [NAME] — create and echo a short working directory for the app to run
+# in, under the phase's isolated HOME so the footer renders it as `~/{NAME}`.
+#
+# A phase whose assertions read the footer's TAIL — the `· N shells` count, the
+# context gauge — must launch in one (and so with `$APP_ABS`/`$BIN_ABS`, since
+# `$BIN` may be relative to the repo). The footer lays the cwd out ahead of
+# those segments and truncates the row from the right, and the phase's HOME is
+# its own temp tree, so the repo cwd can no longer abbreviate to `~/…`: it
+# renders absolute and the tail's fate depends on how deep the developer
+# happened to clone. A 43-character checkout path already cuts `· 1 shell` to
+# `· 1 sh…` at 80 columns — Phase 42 failed and Phase 43's wait for the same
+# text timed out silently, both passing on a short path and neither having
+# anything to do with what they test. `~/work` is six columns wherever the
+# repo lives.
+work_dir() {
+	local dir="$SMOKE_HOME/${1:-work}"
+	mkdir -p "$dir"
+	printf '%s' "$dir"
+}
+
 # keys SESSION KEY… — send tmux key names (Enter, Escape, C-o, M-Up, BSpace…).
 keys() { tmux send-keys -t "$@"; }
 # type_text SESSION TEXT — type literal text (no key-name interpretation).

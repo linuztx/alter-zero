@@ -15,7 +15,8 @@ smoke_begin
 # agent settles the gauge is the tokenizer estimate over ITS transcript, a
 # non-zero count that differs from the main footer's.
 S111="${S}_agentgauge"
-tmux new-session -d -s "$S111" -x 100 -y 34 "env ALTER_ZERO_CONTEXT_WINDOW=100000 $APP"
+# A short `~/work` cwd, so the footer's gauge tail fits (see work_dir).
+tmux new-session -d -s "$S111" -x 100 -y 34 -c "$(work_dir)" "env ALTER_ZERO_CONTEXT_WINDOW=100000 $APP_ABS"
 sleep 0.7
 tmux send-keys -t "$S111" -l "launch a subagent that streams a table"
 sleep 0.3

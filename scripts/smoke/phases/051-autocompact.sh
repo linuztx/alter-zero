@@ -13,7 +13,8 @@ smoke_begin
 # appears when the summarization turn took ≥1s) and the transcript is
 # untouched.
 S51="${S}_autocompact"
-tmux new-session -d -s "$S51" -x 100 -y 24 "env ALTER_ZERO_CONTEXT_WINDOW=100 $APP"
+# A short `~/work` cwd, so the footer's gauge tail fits (see work_dir).
+tmux new-session -d -s "$S51" -x 100 -y 24 -c "$(work_dir)" "env ALTER_ZERO_CONTEXT_WINDOW=100 $APP_ABS"
 sleep 0.4
 gauge_idle="$(tmux capture-pane -t "$S51" -p)"
 echo "==== captured pane (idle footer gauge under a forced 100-token window) ===="
