@@ -17,6 +17,7 @@ scripts/smoke.sh 55 permission              # only some phases (an id, a range, 
 scripts/smoke.sh --list                     # the phases, their tags and last durations
 bash scripts/smoke/phases/055-permission.sh # one phase on its own, output live (docs/smoke.md)
 cargo run --release --example mem_probe     # /model parse RSS (docs/memory.md)
+cargo build --release --timings && scripts/build_timings.py   # where a release build's time goes (docs/build-time.md)
 DISPLAY=:99 cargo test --test clipboard_linux -- --ignored   # the X11 paste read, under Xvfb
 (cd telemetry && node --test)               # the telemetry collector's pure half (docs/telemetry.md)
 ```
@@ -47,6 +48,17 @@ grapheme-aware cursor/wrapping, and **`tokio`** (current-thread runtime) +
 crossterm through `ratatui::crossterm`, never as `crossterm::…`. `rust-toolchain.toml`
 pins the toolchain; a `[lints]` table in `Cargo.toml` bakes the gate into every
 build (`unsafe_code = "forbid"`, plus `warnings` and `clippy::all` denied).
+Dependency features are cut to what the code reaches — `syntect`/`two-face`
+load only two-face's prebuilt onig dumps (`parsing` + `regex-onig` /
+`syntect-onig`, never the `plist`/`yaml` file loaders `default-onig` carried),
+`ratatui` runs without `all-widgets`/`macros` (the calendar widget was the
+whole `time` family), `toml` is parse-only — and `[profile.release]` turns on
+**incremental** compilation, which is what makes a release rebuild after an
+edit ~9–10 s instead of 53 s; `docs/build-time.md` holds the measurements,
+what each knob bought, why `lto = "off"` was measured and refused (a faster
+cold build for a 7–19% slower render path), and what a release build still
+pays for and why (`moxcms` under `image`, the sixel quantiser under
+`ratatui-image`, the Wayland and TLS stacks).
 
 ## Architecture
 

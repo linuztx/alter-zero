@@ -14,7 +14,14 @@ name = "alter-zero"
 path = "src/main.rs"
 
 [dependencies]
-ratatui = "0.30.1"
+# Default features off: `all-widgets` is only the calendar widget, which
+# drags the whole `time` family into every build, and `macros` is
+# `ratatui-macros`, which nothing here uses (docs/build-time.md). What stays
+# is what the code reaches — `crossterm` (the backend and the re-export
+# below), `underline-color` (the `Style::underline_color` channel `links` and
+# `images` ride as their carrier), `layout-cache` (a default that costs
+# nothing).
+ratatui = { version = "0.30.1", default-features = false, features = ["crossterm", "underline-color", "layout-cache"] }
 unicode-width = "0.2"
 # Grapheme-cluster segmentation for the codex-style textarea: the cursor moves and
 # deletes by grapheme (so emoji-ZWJ sequences / combining marks count as one), and
@@ -84,7 +91,10 @@ serde_json = { version = "1", features = ["preserve_order", "raw_value"] }
 # serializes request bodies; default features off to stay lean.
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 # Parse `providers.toml` (docs/llm.md) into the `llm::config` provider table.
-toml = "0.8"
+# `parse` only: the file is read, never written, so the default `display`
+# half — a TOML serializer in `toml` and `toml_edit` — stayed out of the
+# build once it was noticed (docs/build-time.md).
+toml = { version = "0.8", default-features = false, features = ["parse"] }
 # The MCP OAuth flow's PKCE S256 challenge (docs/mcp.md) — used ONLY at the
 # I/O boundary (src/llm/mcp/oauth.rs). Both crates are already compiled into
 # every build transitively (rustls/ring pull them), so declaring them direct
@@ -134,8 +144,17 @@ fancy-regex = "0.17"
 # so onig wins here. Used from the pure `highlight` module (process-global
 # grammar/theme singletons); the per-line `ParseState`/`HighlightState` are threaded
 # incrementally so streaming stays prefix-stable (CLAUDE.md invariant 2).
-two-face = { version = "0.5", default-features = false, features = ["syntect-default-onig"] }
-syntect = { version = "5", default-features = false, features = ["default-onig"] }
+#
+# Features are the minimum that loads two-face's prebuilt dumps: syntect's
+# `parsing` (which implies `dump-load`, the deserializer those dumps go
+# through) + `regex-onig`, and two-face's `syntect-onig`, which selects its
+# onig-compiled dump over the fancy-regex one. syntect's `default-onig` also
+# carried `plist-load`/`yaml-load`/`html` — the loaders for grammars and
+# themes kept as *files* on disk, plus its own bundled dumps — which this
+# crate never uses and which cost `plist`, a second `quick-xml`, `yaml-rust`
+# and a share of `time` on every build (docs/build-time.md).
+two-face = { version = "0.5", default-features = false, features = ["syntect-onig"] }
+syntect = { version = "5", default-features = false, features = ["parsing", "regex-onig"] }
 
 # Terminal graphics for the inline image cells (docs/images.md): a pasted
 # screenshot and the `read` tool's image reads render as real pixels where the
@@ -193,3 +212,22 @@ opt-level = 1
 
 [profile.dev.package."*"]
 opt-level = 3
+
+# `cargo build --release` — and every `cargo run --release --example …` probe
+# `docs/memory.md` runs — used to recompile this ~90k-line crate from scratch
+# for any edit: 53 s per one-line change measured, 44 s of it the library
+# alone on one core (`docs/build-time.md`). Incremental compilation brings the
+# rebuild after an edit to ~9–10 s (a bare touch, ~5 s) — unchanged codegen
+# units are reused and the front end's query cache covers the rest — for a
+# first build ~10% slower, a larger `target/`, and nothing measurable at
+# runtime (`perf_probe`'s whole-render column stays within ±3% of the plain
+# build). It applies to this crate only — cargo never compiles registry
+# dependencies incrementally — so the dependency units are byte-for-byte what
+# they were. A build that wants the plain layout (a packaged release, CI)
+# opts out on the command line:
+# `cargo build --release --config profile.release.incremental=false`.
+# `lto = "off"` was measured too and rejected: 21% off a cold build, but
+# 7–19% slower on the render path, since every crate loses its thin-local
+# LTO and the cross-unit inlining that comes with it.
+[profile.release]
+incremental = true
