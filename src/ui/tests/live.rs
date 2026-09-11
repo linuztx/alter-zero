@@ -79,8 +79,9 @@ fn the_pre_stream_pause_shows_up_tokens_and_no_preview_bullet() {
         "the status with ↑ tokens is the strip's first row: {:?}",
         row(&buf, 0, 60)
     );
-    // No row is an assistant preview line (`● ` at the start) — the only
-    // `●` on screen is the comet spinner's head inside `(●•·   )`.
+    // No row is an assistant preview line (`● ` at the start). The spinner
+    // cannot be mistaken for one: the default gravity track is braille, and
+    // even the comet's `●` head sits inside `(●•·   )`, never at column 0.
     for y in 0..h {
         assert!(
             !row(&buf, y, 60).starts_with("● "),

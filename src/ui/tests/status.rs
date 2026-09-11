@@ -80,7 +80,15 @@ fn transcript_shows_no_stamp_on_assistant_tool_or_summary_items() {
 
 #[test]
 fn status_line_just_submitted_shows_only_the_verb_and_seconds() {
-    let line = status_line(&status(0, TokenArrow::Down, 0, None), 200);
+    // Which clauses show is style-independent, and the comet's frame is the
+    // readable one to spell out — so this names the style rather than
+    // riding the default (`the_default_status_line_is_the_gravity_track`).
+    let line = styled_status_line(
+        &status(0, TokenArrow::Down, 0, None),
+        None,
+        Spinner::Comet,
+        200,
+    );
     let text = plain(&line);
     assert_eq!(
         text, "(●•·   ) Working… (0s · esc to interrupt)",
@@ -333,7 +341,7 @@ fn status_spinner_comet_sweeps_between_the_walls_and_its_tail_whips() {
     let frame_at = |ms: u64| {
         let mut s = status(0, TokenArrow::Down, 0, None);
         s.elapsed = Duration::from_millis(ms);
-        let text = plain(&status_line(&s, 200));
+        let text = plain(&styled_status_line(&s, None, Spinner::Comet, 200));
         text.chars().take_while(|&c| c != 'W').collect::<String>()
     };
     assert_eq!(
@@ -375,7 +383,12 @@ fn status_spinner_comet_sweeps_between_the_walls_and_its_tail_whips() {
 
 #[test]
 fn status_line_has_a_white_comet_fading_tail_shimmering_verb_and_dim_metrics() {
-    let line = status_line(&status(0, TokenArrow::Down, 0, None), 200);
+    let line = styled_status_line(
+        &status(0, TokenArrow::Down, 0, None),
+        None,
+        Spinner::Comet,
+        200,
+    );
     // The spinner: a white bold comet head dragging a tail that fades
     // through mid grey to the dim detail grey, between dim walls.
     let head = line
@@ -743,23 +756,32 @@ fn first_span(spinner: Spinner, ms: u64) -> Span<'static> {
 }
 
 #[test]
-fn the_default_status_line_is_the_comet() {
-    // `status_line` / `status_line_with_verb` keep their pre-catalog look:
-    // the comet is the default style, byte-for-byte.
+fn the_default_status_line_is_the_gravity_track() {
+    // `status_line` / `status_line_with_verb` are the catalog's *default*
+    // style, whatever it is (docs/spinner.md) — byte-for-byte, at every
+    // phase of the animation.
     let mut s = status(42, TokenArrow::Down, 3, None);
     for ms in [0u64, 80, 400, 715] {
         s.elapsed = Duration::from_millis(ms);
         assert_eq!(
             status_line(&s, 200),
-            styled_status_line(&s, None, Spinner::Comet, 200),
+            styled_status_line(&s, None, Spinner::Gravity, 200),
             "at {ms} ms"
         );
         assert_eq!(
             status_line_with_verb(&s, Some("Testing"), 200),
-            styled_status_line(&s, Some("Testing"), Spinner::Comet, 200),
+            styled_status_line(&s, Some("Testing"), Spinner::Gravity, 200),
             "with a verb override at {ms} ms"
         );
     }
+    // …and that is what a session with no chosen style actually opens with:
+    // the ball on its floor against the left wall.
+    s.elapsed = Duration::ZERO;
+    assert!(
+        plain(&status_line(&s, 200)).starts_with("⣤⣀⣀⣀⣀⣀⣀⣀ Working…"),
+        "the default line wears the gravity track: {:?}",
+        plain(&status_line(&s, 200))
+    );
 }
 
 #[test]

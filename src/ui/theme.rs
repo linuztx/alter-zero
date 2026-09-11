@@ -1536,10 +1536,13 @@ pub(super) fn timestamp_color() -> Color {
 // --- Live status indicator (codex / Claude-Code style). While a turn is in
 // flight a status line sits in the strip above the box (with a blank gap row
 // between it and the box's top rule):
-// `(●•·   ) {verb}… ({elapsed} · {↓|↑} {n} tokens · Thinking for {m})`. The
-// line opens with a **comet spinner** (a Larson-scanner sweep: a white head
-// dragging a fading grey tail back and forth between dim walls, one frame per
-// `SPINNER_INTERVAL` — see [`spinner_spans`]); the working verb is picked
+// `⣤⣀⣀⣀⣀⣀⣀⣀ {verb}… ({elapsed} · {↓|↑} {n} tokens · Thinking for {m})`. The
+// line opens with the session's **spinner style** — by default `gravity`, a
+// ball hopping along a braille track (see [`spinner_spans`] and
+// docs/spinner.md); before there was a catalog it was always the **comet**
+// (a Larson-scanner sweep: a white head dragging a fading grey tail back and
+// forth between dim walls, one frame per `SPINNER_INTERVAL`), which is still
+// what the `SPINNER_*` consts just below describe. The working verb is picked
 // per-turn (in `App`) and its white text carries a codex-style **shimmer**: a
 // bright-white band sweeps across the white-grey text (see [`shimmer_spans`],
 // ported from openai/codex `tui/src/shimmer.rs`). The elapsed / thinking / done
@@ -1660,8 +1663,9 @@ pub(super) const SHIMMER_BAND_HALF_WIDTH: f32 = 5.0;
 /// The crest's blend toward the highlight (codex blends `t * 0.9`).
 pub(super) const SHIMMER_MAX_BLEND: f32 = 0.9;
 
-// --- The spinner **styles** (docs/spinner.md). The comet above is the
-// default; `/spinner` swaps the frames the status line opens with. The
+// --- The spinner **styles** (docs/spinner.md). The comet above is one of
+// them; `/spinner` swaps the frames the status line opens with, and the
+// default is `gravity`, a track style drawn from the geometry below. The
 // catalog's *identity* — names, order, descriptions — is `app::Spinner`; its
 // *look* is here, beside every other styling decision, and `spinner_spans`
 // maps one to the other. Two rules every style keeps, pinned by

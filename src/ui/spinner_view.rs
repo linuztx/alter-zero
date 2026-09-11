@@ -223,7 +223,7 @@ pub fn spinner_picker_height(app: &App, width: u16, term_height: u16) -> Option<
 
 /// Render the **inline** `/spinner` picker into the live region, in place of
 /// the composer: a top rule, the `❯` search line, the style rows with their
-/// live spinners (`→ comet    (●•·   ) ✓`), a `(n/total)` counter, the live
+/// live spinners (`→ gravity  ⣤⣀⣀⣀⣀⣀⣀⣀ ✓`), a `(n/total)` counter, the live
 /// status-line preview, the highlighted style's description, the key hint,
 /// and a bottom rule — bottom-anchored, so a squeezed area keeps the
 /// preview, the hint and the closing rule on screen while the skipped top

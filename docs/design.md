@@ -41,8 +41,9 @@ unit-tested must be unit-tested.
   spacer becomes the single blank line between the reply and the box (no double
   blank). A blank spacer is also committed after every user message.
 - **Status indicator.** While a turn is in flight, the strip's status line opens
-  with a **comet spinner** (a Larson-scanner sweep: a white head dragging a
-  fading grey tail back and forth between dim walls, one frame per 80 ms —
+  with the session's **spinner** — by default `gravity`, a ball hopping along
+  a braille track and bouncing off both walls; `/spinner` picks among nine
+  styles, the comet's Larson-scanner sweep among them (`docs/spinner.md`,
   `ui::spinner_spans`),
   then a per-turn whimsical **verb** (`Working`, `Cooking`, …, picked
   deterministically by a turn counter) whose white text carries a codex-style
@@ -65,7 +66,7 @@ unit-tested must be unit-tested.
   command isn't clipped, `docs/tools.md`), and the first chunk flips the arrow
   `↓`. While a
   turn is active the draw branch re-arms an animation frame every 32 ms (codex's
-  cadence), so the comet sweeps, the shimmer waves, and the timer moves even
+  cadence), so the spinner runs, the shimmer waves, and the timer moves even
   with no events. On
   finish the line is replaced by a dim, committed **`{done verb} for Ns`** summary
   that flows into scrollback (a `HistoryItem::Summary`, so it survives a resize
@@ -997,9 +998,11 @@ file-search worker ► tokio mpsc ───┘                           draw ti
   own line below it** in a dim colour — no stamp on assistant/tool/summary items,
   and **never** any in the inline `conversation_lines`); the
   **status indicator** — `status_line` formats each phase (`(0s)` with the token
-  clause dropped at 0; `↓`/`↑` arrows; `Thinking for Ns` only when set; a
-  comet spinner — a white bold head with a fading grey tail between dim walls —
-  that steps a frame per interval, reverses at the right wall (the tail
+  clause dropped at 0; `↓`/`↑` arrows; `Thinking for Ns` only when set; the
+  session's spinner, `styled_status_line`'s `Spinner` argument — the default
+  `gravity` ball hopping along its braille track, or the comet's white bold
+  head with a fading grey tail between dim walls, which steps a frame per
+  interval, reverses at the right wall (the tail
   whipping around behind it), and loops; dim metrics; and a
   per-char bold greyscale-white shimmering verb whose
   crest outshines off-band chars and moves as `elapsed` advances), `summary_lines`

@@ -472,7 +472,7 @@ pub struct App {
     /// twin over the spinner-style catalog — a **live** page whose every row
     /// and preview animate off the frame clock. See `docs/spinner.md`.
     pub spinner_picker: Option<SpinnerPicker>,
-    /// The status line's spinner style ([`Spinner::Comet`] by default) —
+    /// The status line's spinner style ([`Spinner::Gravity`] by default) —
     /// chosen in the `/spinner` picker, seeded at the boundary from
     /// `spinner.json` before the first frame. See `docs/spinner.md`.
     spinner: Spinner,

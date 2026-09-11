@@ -56,24 +56,24 @@ fn the_page_is_framed_with_search_rows_counter_preview_and_hint() {
         row_for(&texts, spinner.name());
     }
     assert!(
-        texts.iter().any(|t| t.contains("(1/9)")),
-        "the counter — the open seats on comet, the default: {texts:?}"
+        texts.iter().any(|t| t.contains("(2/9)")),
+        "the counter — the open seats on gravity, the default: {texts:?}"
     );
     assert!(
         texts.iter().any(|t| t.contains("Enter to choose")),
         "the key hint: {texts:?}"
     );
-    // The live preview: the highlighted (default comet) style as a whole
+    // The live preview: the highlighted (default gravity) style as a whole
     // status line, built by the status line's own renderer.
     let preview = preview(&texts);
     assert!(
-        preview.contains("(●•·   ) Working… (0s · esc to interrupt)"),
-        "the sample status line wears the comet: {preview:?}"
+        preview.contains("⣤⣀⣀⣀⣀⣀⣀⣀ Working… (0s · esc to interrupt)"),
+        "the sample status line wears the gravity track: {preview:?}"
     );
     assert!(
         texts
             .iter()
-            .any(|t| t.contains(Spinner::Comet.description())),
+            .any(|t| t.contains(Spinner::Gravity.description())),
         "the highlighted style's description: {texts:?}"
     );
 }
@@ -121,9 +121,21 @@ fn the_rows_and_the_preview_tick_with_the_frame_clock() {
         preview.contains("Working… (3s ·"),
         "the preview's seconds count from the open: {preview:?}"
     );
+    // The preview wears the highlighted (default gravity) style on the same
+    // frame its own row does — read off that row rather than spelled out, so
+    // the pairing is what is pinned and not the track's 3.12 s frame.
+    let track: String = row_for(&texts, "gravity")
+        .chars()
+        .filter(|&c| ('\u{2800}'..='\u{28FF}').contains(&c))
+        .collect();
+    assert_eq!(
+        track.chars().count(),
+        8,
+        "the gravity row's track: {texts:?}"
+    );
     assert!(
-        preview.contains("( ●•·  )"),
-        "the preview's comet is on the same frame as its row: {preview:?}"
+        preview.contains(&track),
+        "the preview's ball is on the same frame as its row ({track:?}): {preview:?}"
     );
 }
 
@@ -146,8 +158,8 @@ fn the_preview_follows_the_selection() {
     assert!(
         !texts
             .iter()
-            .any(|t| t.contains(Spinner::Comet.description())),
-        "comet's description left with the selection: {texts:?}"
+            .any(|t| t.contains(Spinner::Gravity.description())),
+        "the default's description left with the selection: {texts:?}"
     );
 }
 

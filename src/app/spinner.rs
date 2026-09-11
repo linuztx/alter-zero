@@ -30,12 +30,14 @@ const SPINNER_PAGE: usize = TOOL_VIEW_PAGE;
 /// catalog is fixed; [`Spinner::ALL`] lists it in picker order.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub enum Spinner {
-    /// The comet — a Larson-scanner sweep between two dim walls. The
-    /// default, and the status line's look before there was a catalog.
-    #[default]
+    /// The comet — a Larson-scanner sweep between two dim walls. The status
+    /// line's look before there was a catalog, and the list still opens with
+    /// it; the default moved to [`Gravity`](Self::Gravity).
     Comet,
     /// A ball hopping along a braille track and bouncing off both walls —
-    /// the comet's footprint with four dot rows of real vertical motion.
+    /// the comet's footprint with four dot rows of real vertical motion. The
+    /// default: what a session with no `spinner.json` entry opens with.
+    #[default]
     Gravity,
     /// A wave rolling down the same braille track and reflecting off the
     /// walls.

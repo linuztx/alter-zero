@@ -1,19 +1,23 @@
 # The status spinner styles and the `/spinner` picker
 
 The live status line opens with a **spinner** — the animated glyph(s) before
-the shimmering verb (`(●•·   ) Working… (3s · ↓ 1.2k tokens · esc to
+the shimmering verb (`⣤⣀⣀⣀⣀⣀⣀⣀ Working… (3s · ↓ 1.2k tokens · esc to
 interrupt)`, `docs/status-indicator.md`). It used to be one animation, the
 comet. The **`/spinner`** command — the ninth composer-replacing inline
 picker, the `/mascot` picker's twin — chooses among nine, previews them
 **live**, and persists the choice across sessions — **per working
 directory**, the `/mascot` picker's rule (`docs/per-directory-state.md`).
+The **default is `gravity`**, the ball hopping along its braille track. The
+comet is still the catalog's first row, and `(●•·   )` still means the comet
+wherever these docs sketch one — it is simply no longer what a session with
+no saved choice opens with.
 
 ## The catalog
 
 | name      | look                                                     | cadence |
 | --------- | -------------------------------------------------------- | ------- |
-| `comet`   | `(●•·   )` — a Larson-scanner sweep between dim walls (the default) | 80 ms |
-| `gravity` | `⣤⣀⣀⣀⣀⣀⣀⣀` — a ball hopping along a braille track, bouncing off both walls, accent → link | 2.4 s trip, 0.6 s hop |
+| `comet`   | `(●•·   )` — a Larson-scanner sweep between dim walls     | 80 ms |
+| `gravity` | `⣤⣀⣀⣀⣀⣀⣀⣀` — a ball hopping along a braille track, bouncing off both walls, accent → link (**the default**) | 2.4 s trip, 0.6 s hop |
 | `wave`    | eight braille cells — a wave rolling down the track and reflecting off the walls, in the banner's wash | 3.4 s there and back |
 | `sparkle` | `· ✢ ✳ ✶ ✻ ✽ ✻ ✶ ✳ ✢` — a spark blooming into a star, accent → link | 120 ms |
 | `dots`    | `⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏` — the classic braille spinner            | 80 ms  |
@@ -24,7 +28,10 @@ directory**, the `/mascot` picker's rule (`docs/per-directory-state.md`).
 
 The catalog's **identity** — names, order, descriptions, the `from_name`
 round-trip `spinner.json` reads back through — is the pure `app::Spinner`
-enum (`Default` = `Comet`). Its **look** — every style's frames, cadence and
+enum (`Default` = `Gravity`). The list's *order* and the default are
+separate things — the picker seats its highlight on the **active** style
+whatever its row, so the catalog can keep opening with the comet while a
+session opens with the ball. Its **look** — every style's frames, cadence and
 colour rule — is styling, so it lives in `ui/theme.rs` beside every other
 styling decision (`SPINNER_*_FRAMES` / `_INTERVAL`, the track geometry, the
 pulse and bars colour endpoints), and `ui::status::spinner_spans(spinner,
@@ -108,8 +115,8 @@ dense already, and a synthesized bold blurs them), and every other style is
 ```
 ────────────────────────────────────────────────────────────────
   ❯
-  → comet    (●•·   ) ✓
-    gravity  ⣀⣘⣃⣀⣀⣀⣀⣀
+    comet    (●•·   )
+  → gravity  ⣀⣘⣃⣀⣀⣀⣀⣀ ✓
     wave     ⠔⠉⠉⠑⠤⣀⣀⡠
     sparkle  ✶
     dots     ⠹
@@ -117,11 +124,11 @@ dense already, and a synthesized bold blurs them), and every other style is
     pulse    ●
     bars     ▅
     line     /
-  (1/9)
+  (2/9)
 
-  (●•·   ) Working… (4s · esc to interrupt)
+  ⣀⣘⣃⣀⣀⣀⣀⣀ Working… (4s · esc to interrupt)
 
-  A comet sweeping between two dim walls
+  A ball hopping along the track, bouncing off both walls
   Type to search · Enter to choose · Esc to cancel
 ────────────────────────────────────────────────────────────────
 ```
@@ -146,7 +153,7 @@ the page is **live**.
   (`SpinnerPicker::opened_at`, `App::spinner_preview_elapsed`), so the line
   reads `0s` when the page appears and counts up while the user browses —
   a turn that just began, not a clock that has been running since launch —
-  and the comet's sweep and the verb's shimmer take their phase from that
+  and the spinner's motion and the verb's shimmer take their phase from that
   same value exactly as a real turn's do.
 - **It animates with no turn running.** `App::wants_animation_frames` is
   true while the picker is open, so the draw tick re-arms the 32 ms clock
@@ -221,7 +228,7 @@ At startup `tui::bootstrap` seeds `App::spinner` from `spinner.json` before
 the first frame — the directory's own entry, or, launched in for the first
 time, the last choice made anywhere, **pinned** as the directory's own right
 then (`tui::config::adopt_look`); an absent or corrupt file keeps the default
-comet, never a startup failure — so the first turn's status line already
+gravity, never a startup failure — so the first turn's status line already
 wears it.
 
 ## Design notes
@@ -261,7 +268,7 @@ wears it.
 ## API
 
 - `app::Spinner` — the catalog (`ALL`, `name`, `description`, `from_name`),
-  `Default` = `Comet`.
+  `Default` = `Gravity`.
 - `app::SpinnerPicker` / `SpinnerRow` — the open picker's state (with
   `opened_at`, the preview clock's origin) and one derived row;
   `App::spinner()`, `set_spinner`, `open_spinner_picker`,
@@ -271,7 +278,8 @@ wears it.
   `app::Spinner` (`Look::KEY = "spinner"`), the `MascotFile` API under the
   other key (`docs/mascot.md`).
 - `ui::styled_status_line(status, verb, spinner, width)` — the status line in
-  a given style; `status_line` / `status_line_with_verb` are its comet case.
+  a given style; `status_line` / `status_line_with_verb` are its default
+  (`gravity`) case.
 - `ui::spinner_view` — `spinner_view_lines` (the page builder; its length is
   the reserved height, `docs/view-flow.md`), `spinner_picker_height`,
   `render_spinner_picker`.
@@ -283,7 +291,8 @@ wears it.
 
 ## Tests
 
-- `app/tests/spinner.rs` — the catalog (nine styles, comet first and default,
+- `app/tests/spinner.rs` — the catalog (nine styles listed comet-first;
+  gravity the default, of the enum and of a fresh `App`;
   distinct bare-word names, `from_name` round-trip), the per-directory
   persistence format (the round trip under the `spinner` key, the
   last-and-pinned rule, the lenient parse that refuses the mascot key),
@@ -293,7 +302,8 @@ wears it.
   wrapping ↑/↓ against the clamping jump keys, Enter/Space select, Esc/Ctrl+C,
   owns-every-key, mid-turn use leaving the turn untouched).
 - `ui/tests/status.rs` — every style's frames single- and fixed-width, the
-  default line byte-identical to the comet, each style's first frame and its
+  default line byte-identical to the gravity track at every phase (and
+  opening with the ball on its floor), each style's first frame and its
   one separator space, the one-span rule, the sparkle's bloom and gradient,
   the pulse's breath, the bars' brightening, the blocks' gradient, the
   classic steps; the gravity ball's exact frames at the walls, a quarter hop
@@ -309,9 +319,11 @@ wears it.
   height contract, flow eligibility, and the tick-stable / keystroke-sensitive
   flow signature.
 - `scripts/smoke.sh` Phase 110 — the picker end to end in a real terminal:
-  open from the palette, the live rows (the ball on its floor, the wave's
-  braille cells) and preview, the preview turning between two captures with
-  no turn running, ↓ moving the preview onto the gravity track, a filtered
+  open from the palette seated on the default gravity (its ✓ on a fresh
+  config home), the live rows (the ball on its floor, the wave's
+  braille cells) and the track previewing, ↑ moving the preview onto the
+  comet, that preview turning between two captures with
+  no turn running, a filtered
   Enter switching the style with a toast and a `spinner.json` write, the very
   next turn's status line opening with the new style mid pre-stream pause, and
   a **second process against the same config home launching with it**.

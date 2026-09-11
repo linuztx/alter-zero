@@ -1,4 +1,5 @@
-//! The live status line — comet spinner, shimmering verb, token tally — and
+//! The live status line — the session's spinner, shimmering verb, token
+//! tally (`docs/spinner.md` for the styles; `gravity` is the default) — and
 //! the dim `Done for Ns` summary it commits.
 //! See `docs/status-indicator.md`.
 
@@ -351,10 +352,10 @@ pub fn format_token_count(tokens: usize) -> String {
 
 /// The live status line shown in the strip above the box while a turn is in
 /// flight:
-/// `(●•·   ) {verb}… ({elapsed}[ · {arrow} {n} tokens][ · Thinking for {m}] · esc to
+/// `⣤⣀⣀⣀⣀⣀⣀⣀ {verb}… ({elapsed}[ · {arrow} {n} tokens][ · Thinking for {m}] · esc to
 /// interrupt)`.
 ///
-/// It opens with the comet spinner (`spinner_spans`) and the verb
+/// It opens with the spinner (`spinner_spans`) and the verb
 /// text **shimmers** — a bright-white band sweeping its white-grey chars
 /// (`shimmer_spans`) — both animations phase-driven by the boundary-supplied
 /// `elapsed`; the parenthesised metrics are dim. The token clause is omitted
@@ -367,8 +368,9 @@ pub fn format_token_count(tokens: usize) -> String {
 /// with no cue. Pure — it formats the (already boundary-stamped)
 /// [`TurnStatus`], so it is unit-tested with explicit values.
 ///
-/// This is [`styled_status_line`] in the default [`Spinner::Comet`] style;
-/// the strip itself passes the session's chosen style (`docs/spinner.md`).
+/// This is [`styled_status_line`] in the catalog's default style
+/// ([`Spinner::Gravity`], the ball on its braille track); the strip itself
+/// passes the session's own chosen style (`docs/spinner.md`).
 #[must_use]
 pub fn status_line(status: &TurnStatus, width: u16) -> Line<'static> {
     status_line_with_verb(status, None, width)
@@ -380,8 +382,8 @@ pub fn status_line(status: &TurnStatus, width: u16) -> Line<'static> {
 /// the turn's whimsical verb, Claude Code's
 /// `currentTodo.activeForm ?? randomVerb`. `None` keeps the turn's own verb;
 /// the caller derives the override per frame ([`crate::app::App::task_verb`])
-/// so completing the task snaps it back mid-turn. In the default comet style,
-/// like [`status_line`].
+/// so completing the task snaps it back mid-turn. In the default style, like
+/// [`status_line`].
 #[must_use]
 pub fn status_line_with_verb(status: &TurnStatus, verb: Option<&str>, width: u16) -> Line<'static> {
     styled_status_line(status, verb, Spinner::default(), width)

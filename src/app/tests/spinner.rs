@@ -23,7 +23,7 @@ fn names(app: &App) -> Vec<&'static str> {
 // ===== the catalog =====
 
 #[test]
-fn the_catalog_holds_the_nine_styles_comet_first() {
+fn the_catalog_holds_the_nine_styles_in_picker_order() {
     let names: Vec<&str> = Spinner::ALL.iter().map(|s| s.name()).collect();
     assert_eq!(
         names,
@@ -31,11 +31,20 @@ fn the_catalog_holds_the_nine_styles_comet_first() {
             "comet", "gravity", "wave", "sparkle", "dots", "blocks", "pulse", "bars", "line"
         ]
     );
+}
+
+#[test]
+fn gravity_is_the_default_style() {
+    // What a session with no `spinner.json` entry opens with — and so what
+    // `ui::status_line` renders (docs/spinner.md). The catalog still *lists*
+    // the comet first; the list's order and the default are separate things,
+    // and the picker seats its highlight on the active style either way.
     assert_eq!(
         Spinner::default(),
-        Spinner::Comet,
-        "the comet — today's status line — is the default"
+        Spinner::Gravity,
+        "the gravity track is the default"
     );
+    assert_eq!(App::new().spinner(), Spinner::Gravity, "a fresh session");
 }
 
 #[test]
@@ -237,8 +246,14 @@ fn up_and_down_wrap_at_the_ends() {
     let mut app = spinner_app();
     assert_eq!(
         app.highlighted_spinner(),
+        Some(Spinner::Gravity),
+        "opens on the active style — the default, the list's second row"
+    );
+    app.on_key(key(KeyCode::Up));
+    assert_eq!(
+        app.highlighted_spinner(),
         Some(Spinner::Comet),
-        "opens on the active style"
+        "↑ steps up the list"
     );
     app.on_key(key(KeyCode::Up));
     assert_eq!(
@@ -297,14 +312,10 @@ fn the_search_matches_descriptions_too() {
 #[test]
 fn enter_selects_the_highlighted_style_and_closes() {
     let mut app = spinner_app();
-    app.on_key(key(KeyCode::Down)); // comet (the open seat) → gravity
+    app.on_key(key(KeyCode::Down)); // gravity (the open seat) → wave
     let action = app.on_key(key(KeyCode::Enter));
-    assert_eq!(action, Action::SelectSpinner(Spinner::Gravity));
-    assert_eq!(
-        app.spinner(),
-        Spinner::Gravity,
-        "the pure state already moved"
-    );
+    assert_eq!(action, Action::SelectSpinner(Spinner::Wave));
+    assert_eq!(app.spinner(), Spinner::Wave, "the pure state already moved");
     assert!(app.spinner_picker.is_none(), "the picker closed");
 }
 
@@ -324,7 +335,7 @@ fn enter_on_an_empty_filter_is_a_no_op() {
     assert!(names(&app).is_empty());
     assert_eq!(app.on_key(key(KeyCode::Enter)), Action::None);
     assert!(app.spinner_picker.is_some(), "nothing selected, stays open");
-    assert_eq!(app.spinner(), Spinner::Comet, "the style is untouched");
+    assert_eq!(app.spinner(), Spinner::Gravity, "the style is untouched");
 }
 
 #[test]
@@ -393,7 +404,7 @@ fn the_picker_works_mid_turn_without_touching_the_turn() {
     app.on_key(key(KeyCode::Down));
     assert_eq!(
         app.on_key(key(KeyCode::Enter)),
-        Action::SelectSpinner(Spinner::Gravity)
+        Action::SelectSpinner(Spinner::Wave)
     );
     assert!(app.is_streaming(), "the turn is untouched");
     assert!(app.turn_active());

@@ -27,17 +27,22 @@ expect_has "$spin_palette" -F "Choose the status spinner style" "/spinner is mis
 tmux send-keys -t "$S110" Enter
 sleep 0.5
 spin_open="$(tmux capture-pane -t "$S110" -p)"
-echo "==== Phase 110: the picker open (comet highlighted, every row live) ===="
+echo "==== Phase 110: the picker open (gravity — the default — highlighted, every row live) ===="
 printf '%s\n' "$spin_open"
-for expect in "→ comet" "gravity" "wave" "sparkle" "dots" "blocks" "pulse" "bars" "line" "(1/9)" \
-	"Working…" "esc to interrupt" "A comet sweeping between two dim walls" \
+for expect in "→ gravity" "comet" "wave" "sparkle" "dots" "blocks" "pulse" "bars" "line" "(2/9)" \
+	"Working…" "esc to interrupt" "A ball hopping along the track" \
 	"Type to search · Enter to choose · Esc to cancel"; do
 	expect_has "$spin_open" -F "$expect" "the open picker is missing '$expect'"
 done
-# The comet's frame — a `(` wall, the `●` head, a `)` wall — shows twice: on
-# its own row and in the preview line.
-if [ "$(printf '%s\n' "$spin_open" | grep -c '(.*●.*)')" -lt 2 ]; then
-	fail "expected the comet on its row and in the preview"
+# A fresh config home has no `spinner.json`, so this is the catalog's default
+# (docs/spinner.md): the open seats on gravity and gravity wears the ✓.
+if ! printf '%s\n' "$spin_open" | grep -F "→ gravity" | grep -qF "✓"; then
+	fail "the default style (gravity) does not wear the ✓ on a fresh config home"
+fi
+# The comet's frame — a `(` wall, the `●` head, a `)` wall — shows on its own
+# row; the preview wears the highlighted gravity track instead (checked below).
+if [ "$(printf '%s\n' "$spin_open" | grep -c '(.*●.*)')" -lt 1 ]; then
+	fail "expected the comet on its own row"
 fi
 # The two braille tracks (docs/spinner.md). Their rows are LIVE — the ball
 # has moved on from its opening frame by the time the pane is captured — so
@@ -49,8 +54,10 @@ fi
 braille_cells() {
 	printf '%s' "$1" | LC_ALL=C grep -oE $'\xe2[\xa0-\xa3][\x80-\xbf]' | wc -l
 }
-spin_gravity_row="$(printf '%s\n' "$spin_open" | grep -E "^ *gravity ")"
-spin_wave_row="$(printf '%s\n' "$spin_open" | grep -E "^ *wave ")"
+# (the highlighted row carries the `→ ` marker in place of its indent, so
+# the name is matched after a space rather than at the line's start)
+spin_gravity_row="$(printf '%s\n' "$spin_open" | grep -E "(^| )gravity ")"
+spin_wave_row="$(printf '%s\n' "$spin_open" | grep -E "(^| )wave ")"
 if [ "$(braille_cells "$spin_gravity_row")" -ne 8 ]; then
 	fail "the gravity row is not an eight-cell braille track: '$spin_gravity_row'"
 fi
@@ -60,32 +67,39 @@ fi
 if [ "$(braille_cells "$spin_wave_row")" -ne 8 ]; then
 	fail "the wave row is not an eight-cell braille track: '$spin_wave_row'"
 fi
+# The preview at the open is the highlighted (default gravity) style: the
+# eight-cell braille track, not the comet's wall.
+spin_gravity_preview="$(printf '%s\n' "$spin_open" | grep -F "Working…")"
+if printf '%s\n' "$spin_gravity_preview" | grep -q '(.*●.*) Working'; then
+	fail "the preview wears the comet rather than the default gravity track"
+fi
+if [ "$(braille_cells "${spin_gravity_preview%% Working*}")" -ne 8 ]; then
+	fail "the preview does not open with the eight-cell braille track: '$spin_gravity_preview'"
+fi
+# ↑ to comet: the counter, the preview and the description follow the
+# selection — the preview line goes back to the comet's wall.
+tmux send-keys -t "$S110" Up
+sleep 0.4
+spin_comet="$(tmux capture-pane -t "$S110" -p)"
+echo "==== Phase 110: ↑ previews comet ===="
+printf '%s\n' "$spin_comet"
+expect_has "$spin_comet" -F "(1/9)" "the counter did not follow the selection"
+expect_has "$spin_comet" -F "A comet sweeping between two dim walls" "the description did not follow the selection"
+if ! printf '%s\n' "$spin_comet" | grep -F "Working…" | grep -q '(.*●.*) Working'; then
+	fail "the preview does not wear the comet after ↑"
+fi
 # The page is LIVE with no turn running: the preview line must have moved
-# between two captures 0.3 s apart (the comet steps a frame every 80 ms).
-spin_preview_a="$(printf '%s\n' "$spin_open" | grep -F "Working…")"
+# between two captures 0.3 s apart. Measured on the comet, whose ten frames
+# step every 80 ms — 0.3 s is never a whole 800 ms cycle, so two captures that
+# far apart can never show the same frame (the tracks are continuous curves
+# and can, at the instants their ping-pong mirrors).
+spin_preview_a="$(printf '%s\n' "$spin_comet" | grep -F "Working…")"
 sleep 0.3
 spin_preview_b="$(tmux capture-pane -t "$S110" -p | grep -F "Working…")"
 echo "==== Phase 110: the preview line 0.3 s apart ===="
 printf '%s\n%s\n' "$spin_preview_a" "$spin_preview_b"
 if [ "$spin_preview_a" = "$spin_preview_b" ]; then
 	fail "the preview did not animate with no turn running"
-fi
-# ↓ to gravity: the counter, the preview and the description follow the
-# selection — the preview line now opens with the braille track, not the
-# comet's wall.
-tmux send-keys -t "$S110" Down
-sleep 0.4
-spin_gravity="$(tmux capture-pane -t "$S110" -p)"
-echo "==== Phase 110: ↓ previews gravity ===="
-printf '%s\n' "$spin_gravity"
-expect_has "$spin_gravity" -F "(2/9)" "the counter did not follow the selection"
-expect_has "$spin_gravity" -F "A ball hopping along the track" "the description did not follow the selection"
-if printf '%s\n' "$spin_gravity" | grep -F "Working…" | grep -q '(.*●.*) Working'; then
-	fail "the preview still wears the comet after ↓"
-fi
-spin_gravity_preview="$(printf '%s\n' "$spin_gravity" | grep -F "Working…")"
-if [ "$(braille_cells "${spin_gravity_preview%% Working*}")" -ne 8 ]; then
-	fail "the preview does not open with the eight-cell braille track: '$spin_gravity_preview'"
 fi
 # Type-to-search matches descriptions too: `braille` narrows to dots; Enter
 # switches the style.

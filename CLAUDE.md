@@ -155,8 +155,9 @@ with a **live banner preview** rendered by the header's own builder, the
 choice persisted **per working directory** in `mascot.json` (`docs/per-directory-state.md`) and the switch's purge rebuild redrawing
 the banner at once) in `docs/mascot.md`, and the **`/spinner` picker** that
 chooses the status line's **spinner style** (the `/mascot` picker's twin over
-a nine-style catalog — `comet` (the default), the braille-track `gravity`
-ball and `wave`, `sparkle`, `dots`, `blocks`, `pulse`, `bars`, `line` —
+a nine-style catalog — `comet` (the list's first row, and the status line's
+look before there was a catalog), the braille-track `gravity`
+ball (**the default**) and `wave`, `sparkle`, `dots`, `blocks`, `pulse`, `bars`, `line` —
 whose page is **live**: every
 row wears its own spinner and the highlighted style previews as a whole
 sample status line through `ui::styled_status_line`, the strip's own
@@ -1764,9 +1765,11 @@ streaming reply's **frontier** is the one exclusion, since `StreamRender`
 commits its completed lines already and flowing it would re-sign per chunk;
 and the flow is the composer path's alone, a composer-replacing view's own
 page being what flows there. `docs/strip-flow.md`, `smoke.sh` Phase 106), a blank gap row,
-a codex-style **status line** (`(●•·   ) {verb}… ({elapsed}s · {↓|↑} {n} tokens ·
-Thinking for {m}s · esc to interrupt)` — opened by a comet spinner (a
-Larson-scanner sweep: a white head dragging a fading grey tail back and forth
+a codex-style **status line** (`⣤⣀⣀⣀⣀⣀⣀⣀ {verb}… ({elapsed}s · {↓|↑} {n} tokens ·
+Thinking for {m}s · esc to interrupt)` — opened by the session's spinner
+style (`docs/spinner.md`; by default `gravity`, a ball hopping along a
+braille track, and before the catalog always the comet: a
+Larson-scanner sweep, a white head dragging a fading grey tail back and forth
 between dim walls), the verb text
 shimmering with a white sweep ported from
 codex's `shimmer_spans`; on finish a dim `{done verb} for {n}s` summary commits to
@@ -2419,7 +2422,7 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   `REASONING_PEEK_LINES` live tail window — see `docs/thinking-stream.md`), the transcript timestamp (`timestamp_color()` — the dim
   `hh:mm AM/PM` stamp right-aligned on its own line under the *user* message,
   the only stamp shown, only in the Ctrl+O view), the status
-  indicator (`STATUS_*` — the comet spinner's white head + mid-grey
+  indicator (`STATUS_*` — the comet style's white head + mid-grey
   `spinner_tail_color()` fading tail + dim walls and the
   `SPINNER_FRAMES`/`SPINNER_INTERVAL` animation, dim metrics, the `↓`/`↑` arrows
   and `…` ellipsis, the `STATUS_INTERRUPT_HINT` (`esc to interrupt`, the detail's

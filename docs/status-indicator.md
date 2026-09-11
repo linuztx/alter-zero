@@ -8,7 +8,7 @@ modelled on the spinner line in openai/codex and Claude Code.
 
 ● Happy to help! …                                          (streaming preview — existing)
 
-(●•·   ) Working… (1s · ↓ 100 tokens · esc to interrupt)    (live status — comet sweeps, verb shimmers)
+⣤⣀⣀⣀⣀⣀⣀⣀ Working… (1s · ↓ 100 tokens · esc to interrupt)    (live status — the ball hops, verb shimmers)
                                                             (blank gap so the status clears the box)
 ─────────────────────────────────────                       (input box)
 ❯ ▏
@@ -52,7 +52,11 @@ arrow to `↓`. The pause is `DummyAi`'s (`stream::STARTUP_DELAY`, overridable v
 `ALTER_ZERO_STARTUP_DELAY_MS` — the smoke test runs short, one phase long); a
 real backend's own latency plays the same role.
 
-- **spinner** — the line opens with a **comet** (a Larson-scanner sweep): a
+- **spinner** — the line opens with the session's **spinner style**
+  (`docs/spinner.md`); the default is `gravity`, a ball hopping along a
+  braille track. This section describes the **comet**, the style the line
+  wore before there was a catalog and the shape the `SPINNER_*` frames and
+  every `(●•·   )` sketch below still refer to — a Larson-scanner sweep: a
   white bold head dragging a two-cell fading tail between dim parenthesis
   walls, one frame per 80 ms (`(●•·   )` → `(•●    )` → … → `(   ·•●)` (right
   wall) → `(    ●•)` (the tail whips around at the bounce) → back across to
@@ -299,14 +303,15 @@ shimmer, derives the frame index purely from `TurnStatus::elapsed`; the same
 32 ms draw re-arm animates it. Fixed-width frames mean the verb after the
 spinner never shifts as the comet moves.
 
-**The comet is the default of nine styles.** `/spinner` (`docs/spinner.md`)
-picks another — the braille-track `gravity` ball and `wave`, then `sparkle`,
+**The comet is one of nine styles, and no longer the default.** `/spinner`
+(`docs/spinner.md`) picks among them — the braille-track `gravity` ball
+(**the default**) and `wave`, then `sparkle`,
 `dots`, `blocks`, `pulse`, `bars`, `line` — from a picker whose rows and
 preview animate live, and persists it in `spinner.json`. The strip builds its status row through
 `ui::styled_status_line(status, verb, spinner, width)` for `App::spinner()`
 (main turn and agent session view alike); `status_line` /
-`status_line_with_verb` are its comet case, byte-identical to the line
-before there was a catalog. Every style keeps the comet's two rules — fixed
+`status_line_with_verb` are its **default** case, which is what a session
+with no saved choice opens with. Every style keeps the comet's two rules — fixed
 width across its frames, single-width glyphs — and the one-cell styles end
 their single span in the same separator space, so the verb's shimmer starts
 one column after the spinner whatever its width.
