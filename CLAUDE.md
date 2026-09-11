@@ -12,7 +12,10 @@ cargo test app::tests                       # run one module's tests
 cargo clippy --all-targets -- -D warnings   # lint (warnings are errors here)
 cargo fmt --check                           # formatting gate
 cargo doc --no-deps --lib                   # intra-doc links must resolve
-cargo build && bash scripts/smoke.sh        # drive the real binary in tmux
+cargo build && scripts/smoke.sh             # drive the real binary in tmux (every phase, in parallel)
+scripts/smoke.sh 55 permission              # only some phases (an id, a range, a name substring)
+scripts/smoke.sh --list                     # the phases, their tags and last durations
+bash scripts/smoke/phases/055-permission.sh # one phase on its own, output live (docs/smoke.md)
 cargo run --release --example mem_probe     # /model parse RSS (docs/memory.md)
 DISPLAY=:99 cargo test --test clipboard_linux -- --ignored   # the X11 paste read, under Xvfb
 (cd telemetry && node --test)               # the telemetry collector's pure half (docs/telemetry.md)
@@ -102,7 +105,10 @@ is testable with a plain `Buffer`/`TestBackend` and no real terminal. `src/tui/`
 `/resume` session recording + dir scan — `tui::recorder::SessionRecorder`/`list_sessions`,
 whose JSONL format/parse core is the pure `session` module — and the
 cross-session input-history file — `tui::history_store::InputHistoryStore`, whose JSONL
-format/parse core is the pure `history` module, `docs/history-persistence.md`) — verified via `scripts/smoke.sh`, not
+format/parse core is the pure `history` module, `docs/history-persistence.md`) — verified via `scripts/smoke.sh`
+(a runner over one file per phase under `scripts/smoke/phases/`, each sourcing
+`scripts/smoke/lib.sh` for its own tmux server, config home and the
+launch/poll/assert vocabulary — `docs/smoke.md`), not
 unit-tested save for the odd pure helper that has no terminal in it (like
 `term`'s `keyboard_enhancement_disabled` env predicate — see
 `docs/shift-enter.md` — or its `visible_cells` cell emitter, which skips the

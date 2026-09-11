@@ -199,17 +199,28 @@ pub(crate) fn find_session_by_id(root: Option<&Path>, id: &str) -> Result<PathBu
     }
 }
 
-/// The sessions root (`~/.alter-zero/sessions`, or `ALTER_ZERO_SESSIONS_DIR`
-/// — the smoke test points it at a temp dir); `None` disables recording (no
-/// HOME and no override). Shared by the [`SessionRecorder`] and the CLI
-/// resolution in `main` (`docs/cli.md`).
+/// The sessions root: `ALTER_ZERO_SESSIONS_DIR`, else `{config_home}/sessions`
+/// — `~/.alter-zero/sessions` by default, and *inside* a moved
+/// `ALTER_ZERO_CONFIG_DIR`, the way the checkpoints root resolves
+/// (`config::checkpoints_root`); `None` disables recording (no HOME and no
+/// override). Shared by the [`SessionRecorder`] and the CLI resolution in
+/// `main` (`docs/cli.md`). It used to fall back to `$HOME` regardless of the
+/// config home, so every session the smoke suite recorded behind its throwaway
+/// config dir landed in the developer's own `/resume` picker.
 pub(crate) fn sessions_root() -> Option<PathBuf> {
-    std::env::var_os("ALTER_ZERO_SESSIONS_DIR")
-        .map(PathBuf::from)
-        .or_else(|| {
-            std::env::var_os("HOME")
-                .map(|home| PathBuf::from(home).join(".alter-zero").join("sessions"))
-        })
+    sessions_root_from(
+        std::env::var_os("ALTER_ZERO_SESSIONS_DIR").map(PathBuf::from),
+        super::config::config_home(),
+    )
+}
+
+/// The pure half of [`sessions_root`]: the override wins, else the config
+/// home's `sessions/`, else nothing.
+fn sessions_root_from(
+    override_dir: Option<PathBuf>,
+    config_home: Option<PathBuf>,
+) -> Option<PathBuf> {
+    override_dir.or_else(|| config_home.map(|home| home.join("sessions")))
 }
 
 /// The numerically-named subdirectories of `dir`, sorted descending — the
@@ -401,5 +412,39 @@ impl Session<'_> {
             }
             None => false,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sessions_root_follows_the_config_home_when_nothing_overrides_it() {
+        // A moved `ALTER_ZERO_CONFIG_DIR` takes its rollouts with it, the way
+        // the checkpoints root already does: recording into `$HOME/.alter-zero`
+        // behind a redirected config home is how the smoke suite's throwaway
+        // sessions leaked into the developer's own `/resume` picker.
+        let home = PathBuf::from("/cfg-home");
+        assert_eq!(
+            sessions_root_from(None, Some(home.clone())),
+            Some(home.join("sessions"))
+        );
+    }
+
+    #[test]
+    fn sessions_root_override_outranks_the_config_home() {
+        assert_eq!(
+            sessions_root_from(
+                Some(PathBuf::from("/elsewhere")),
+                Some(PathBuf::from("/cfg-home"))
+            ),
+            Some(PathBuf::from("/elsewhere"))
+        );
+    }
+
+    #[test]
+    fn sessions_root_is_none_without_an_override_or_a_config_home() {
+        assert_eq!(sessions_root_from(None, None), None);
     }
 }

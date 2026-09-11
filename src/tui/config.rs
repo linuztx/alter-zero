@@ -294,8 +294,10 @@ fn signin_kind(auth: AuthScheme) -> SigninKind {
 
 /// The app's config home — where the `.env` key store and `config.json` live:
 /// `ALTER_ZERO_CONFIG_DIR`, else `~/.alter-zero`, else `None` (no HOME and no
-/// override, so file persistence is disabled). Matches where `providers.toml`
-/// and the sessions dir already resolve. See `docs/llm.md`.
+/// override, so file persistence is disabled). Every per-user file resolves
+/// under it — `providers.toml`, the `.env` key store, the checkpoints root and
+/// the sessions root (`resume::sessions_root`) alike — so moving it moves the
+/// whole state dir. See `docs/llm.md`.
 pub(crate) fn config_home() -> Option<PathBuf> {
     if let Some(dir) = std::env::var_os("ALTER_ZERO_CONFIG_DIR") {
         return Some(PathBuf::from(dir));

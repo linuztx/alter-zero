@@ -90,9 +90,13 @@ overlay machinery.
 ### The session file (src/session.rs, pure)
 
 - Files: `{root}/YYYY/MM/DD/rollout-YYYY-MM-DDThh-mm-ss-{id}.jsonl`, where
-  `{root}` is `~/.alter-zero/sessions` (override: `ALTER_ZERO_SESSIONS_DIR`,
-  the `ALTER_ZERO_STARTUP_DELAY_MS` pattern — the smoke test points it at a
-  temp dir). `{id}` is nanos-since-epoch + pid in hex — unique enough without
+  `{root}` is the config home's `sessions/` — `~/.alter-zero/sessions` by
+  default, and inside a moved `ALTER_ZERO_CONFIG_DIR`, so the state dir moves
+  whole (it used to fall back to `$HOME` regardless, which is how the smoke
+  suite's throwaway sessions reached the developer's own picker) — with
+  `ALTER_ZERO_SESSIONS_DIR` overriding it outright (the
+  `ALTER_ZERO_STARTUP_DELAY_MS` pattern — the smoke suite points it at a temp
+  dir). `{id}` is nanos-since-epoch + pid in hex — unique enough without
   a uuid dependency, and never parsed back (we resume by *path*). The path
   derivation is the pure `session::rollout_rel_path(date, time, id)`; the
   clock/pid stay at the boundary.
