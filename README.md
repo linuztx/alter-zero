@@ -27,6 +27,10 @@ Use the same tools for cybersecurity research, technical investigation, and ever
 
 </div>
 
+<div align="center">
+<img alt="Alter Zero terminal coding agent demo" src="assets/alter-zero-demo.gif" width="100%" />
+</div>
+
 ---
 
 ## Why Alter Zero
