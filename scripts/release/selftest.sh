@@ -21,6 +21,15 @@ set +e
 
 STEPS="$RELEASE_LIB_DIR"
 CHECKOUT="$(cd "$RELEASE_LIB_DIR/../.." && pwd)"
+
+# The fixtures are tagless unless a case says otherwise, so the runner's own
+# ref must not leak into them: `check` falls back to GITHUB_REF_TYPE /
+# GITHUB_REF_NAME when given no tag, and the release workflow runs this ON a
+# tag — so every fixture check inherited v{the release} and compared it
+# against the fixture's own version (0.4.2, 0.5.0), failing four cases in
+# exactly the run that matters most. The cases that DO want a tag set these
+# per command, which overrides the unset.
+unset GITHUB_REF_TYPE GITHUB_REF_NAME
 T="$(mktemp -d)"
 SERVER_PID=""
 trap 'stop_release; rm -rf "$T"' EXIT
