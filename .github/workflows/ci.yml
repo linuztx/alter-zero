@@ -58,13 +58,26 @@ jobs:
           shared-key: debug
       - run: sudo apt-get update && sudo apt-get install -y tmux
       - run: cargo build
-      - run: scripts/smoke.sh
-      - name: Keep the failing phases' logs
-        if: failure()
+      - name: Run every phase, one worker per core
+        # The suite's default of twice the core count is sized for a
+        # developer's box; on a loaded four-core machine it stretched the
+        # timing-sensitive permission phases past their waits.
+        id: parallel
+        continue-on-error: true
+        run: scripts/smoke.sh -j "$(nproc)"
+      - name: Re-run the failed phases alone before calling the job red
+        if: steps.parallel.outcome == 'failure'
+        run: |
+          cp -r target/smoke/logs target/smoke/logs-parallel
+          scripts/smoke.sh --failed --serial
+      - name: Keep the logs
+        if: failure() || steps.parallel.outcome == 'failure'
         uses: actions/upload-artifact@v4
         with:
           name: smoke-logs
-          path: target/smoke/logs
+          path: |
+            target/smoke/logs
+            target/smoke/logs-parallel
           if-no-files-found: ignore
           retention-days: 7
 

@@ -211,9 +211,14 @@ the reviewer who reads the commit.
 
 `.github/workflows/ci.yml` runs on every push to `main` and every pull
 request: **gate** (the four commands), **smoke** (the tmux suite over the
-real binary, its failing phases' logs kept as an artifact), **release
-tooling** (`shellcheck`, `selftest`, `check`), and **telemetry** (the
-collector's `node --test`). The release workflow repeats the gate and the
+real binary), **release tooling** (`shellcheck`, `selftest`, `check`), and
+**telemetry** (the collector's `node --test`). The smoke job runs one
+worker per core rather than the suite's default of twice that: a `-j 8`
+run on a four-core box here failed phases 58 and 61 — the permission
+prompt "never showed" inside its wait — and both passed alone. So the job
+re-runs whatever failed in the parallel pass serially, once, before it is
+called red, and keeps both passes' logs as an artifact whenever the first
+pass failed, so a flake leaves evidence instead of a green square. The release workflow repeats the gate and the
 tooling jobs rather than trusting a CI run that may not have happened on
 the tagged commit. The smoke suite is in CI because it is the only
 automated coverage of the terminal I/O boundary (`docs/smoke.md`); it is
