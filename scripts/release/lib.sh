@@ -290,9 +290,10 @@ check_sha256() {
 # Packaging.
 # ---------------------------------------------------------------------------
 # (dir, member, out.tar.gz): the member directory archived without the
-# builder's uid/gid, in name order, gzip without a timestamp — the same
-# bytes from the same inputs on GNU tar and on BSD tar (macOS, where
-# COPYFILE_DISABLE keeps the `._*` AppleDouble entries out).
+# builder's uid/gid, in name order, gzip without a timestamp — with the
+# entries' mtimes pinned by package_dist, the same bytes from the same
+# inputs on GNU tar and on BSD tar (macOS, where COPYFILE_DISABLE keeps the
+# `._*` AppleDouble entries out).
 tar_reproducible() {
 	local dir="$1" member="$2" out="$3"
 	if tar --version 2>/dev/null | grep -q GNU; then
@@ -319,6 +320,11 @@ package_dist() {
 		[ -f "$RELEASE_ROOT/$f" ] || die "missing $RELEASE_ROOT/$f — every asset ships it"
 		cp "$RELEASE_ROOT/$f" "$stage/$stem/"
 	done
+	# Every entry takes the binary's own mtime (its build time). `cp` stamps
+	# each copy with *now*, so without this two packagings of the same binary
+	# a second apart differ by nothing but that — which is exactly what the
+	# reproducibility check below caught once it straddled a second.
+	touch -r "$bin" "$stage/$stem" "$stage/$stem"/*
 	archive="$dist/$stem.tar.gz"
 	rm -f "$archive" "$archive.sha256"
 	tar_reproducible "$stage" "$stem" "$archive"

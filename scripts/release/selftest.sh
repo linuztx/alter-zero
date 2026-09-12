@@ -270,8 +270,9 @@ alter-zero-v0.4.2-$host/CHANGELOG.md
 alter-zero-v0.4.2-$host/LICENSE
 alter-zero-v0.4.2-$host/README.md
 alter-zero-v0.4.2-$host/alter-zero" "$(tar -tzf "$archive" | sed 's#/$##' | sort)"
+		sleep 1 # straddle a second boundary: the copies' own mtimes must not leak into the archive
 		second="$(package_dist "$T/fake-bin" 0.4.2 "$host" "$T/dist2")"
-		expect_eq "packaging is reproducible" "$(sha256_of "$archive")" "$(sha256_of "$second")"
+		expect_eq "packaging is reproducible across time" "$(sha256_of "$archive")" "$(sha256_of "$second")"
 		expect_ok "verify passes a good dist" bash "$STEPS/verify.sh" "$T/dist"
 		expect_contains "…running --version on the host's asset" "$OUT" "alter-zero --version"
 		expect_ok "verify takes an explicit version" bash "$STEPS/verify.sh" "$T/dist" --version 0.4.2

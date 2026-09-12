@@ -301,10 +301,14 @@ runner, because it needs no special runner label and the `cc` crate
 (oniguruma, `ring`) finds the cross compiler by the triple's prefix on
 every plan.
 
-**Reproducible archives.** `package_dist` archives without the builder's
-uid/gid, in name order, and gzips without a timestamp, so two packagings of
-the same binary are byte-identical (the selftest pins it). The binary
-itself is not claimed reproducible across machines.
+**Reproducible archives.** `package_dist` stamps every staged file with the
+binary's own mtime (its build time), archives without the builder's uid/gid,
+in name order, and gzips without a timestamp, so two packagings of the same
+binary are byte-identical whenever they run. The mtime line is the one that
+had to be learned: `cp` stamps each copy with *now*, so the check passed only
+while both packagings landed inside the same second, and the selftest now
+sleeps a second between them to keep that from coming back. The binary itself
+is not claimed reproducible across machines.
 
 **Versions are read in four places because they are written in four.** A
 single source would be better; short of generating the README, the next
