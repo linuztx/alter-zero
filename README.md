@@ -4,22 +4,24 @@
 
 # Alter Zero
 
-**An autonomous AI coding agent that lives in your terminal.**
+### Give your terminal a coding agent.
 
-It reads your code, edits files, runs commands, delegates to subagents and asks before it changes anything,
-all inline with your scrollback, on whichever model you already have access to.
+Read, build, debug, and review code with an agent that works alongside you.<br>
+Use the same tools for cybersecurity research, technical investigation, and everyday automation.
 
-[![Built with Rust](https://img.shields.io/badge/built%20with-Rust-orange?logo=rust&logoColor=white)](https://www.rust-lang.org)
-[![Platforms](https://img.shields.io/badge/platforms-Linux%20%7C%20macOS-blue)](#quick-start)
-[![Version](https://img.shields.io/badge/version-0.1.0-informational)](#quick-start)
-[![License](https://img.shields.io/badge/license-Apache--2.0-green)](LICENSE)
-[![Support](https://img.shields.io/badge/support-%2Fdonate-ff69b4)](#support-the-project)
+<p>
+  <a href="https://www.rust-lang.org"><img src="https://img.shields.io/badge/Built_with-Rust-F5A97F?style=for-the-badge&amp;logo=rust&amp;logoColor=white&amp;labelColor=181825" alt="Built with Rust" height="32"></a>
+  <a href="#quick-start"><img src="https://img.shields.io/badge/Platforms-Linux_%7C_macOS-89B4FA?style=for-the-badge&amp;logo=linux&amp;logoColor=white&amp;labelColor=181825" alt="Platforms: Linux and macOS" height="32"></a>
+  <a href="Cargo.toml"><img src="https://img.shields.io/badge/Version-0.1.0-89DCEB?style=for-the-badge&amp;logo=github&amp;logoColor=white&amp;labelColor=181825" alt="Version: 0.1.0" height="32"></a>
+  <br>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache--2.0-A6E3A1?style=for-the-badge&amp;logo=apache&amp;logoColor=white&amp;labelColor=181825" alt="License: Apache 2.0" height="32"></a>
+  <a href="#support-the-project"><img src="https://img.shields.io/badge/Support-Donate-CBA6F7?style=for-the-badge&amp;logo=githubsponsors&amp;logoColor=white&amp;labelColor=181825" alt="Support Alter Zero" height="32"></a>
+</p>
 
 [Quick start](#quick-start) ·
 [Features](#features) ·
-[Models & providers](#bring-your-own-model) ·
-[Commands](#slash-commands) ·
-[Shortcuts](#keyboard-shortcuts) ·
+[Model providers](#model-providers) ·
+[Commands & shortcuts](#commands--shortcuts) ·
 [Support](#support-the-project) ·
 [Acknowledgements](#acknowledgements)
 
@@ -29,15 +31,19 @@ all inline with your scrollback, on whichever model you already have access to.
 
 ## Why Alter Zero
 
-- **A real agent, not a chat box.** It reads, edits, runs and verifies in small checked steps, streaming every tool's output live as it works.
-- **You stay in charge.** Every file change is shown in full before it happens. Approve once, approve for the session, or say no with instructions.
-- **Any model you like.** Sign in with a subscription you already pay for, paste an API key, or run local models with Ollama.
-- **Extend it the way you already do.** Subagents, skills, hooks and MCP servers use Claude Code's file formats, so anything you have written for it works here unchanged.
-- **Light and fast.** A single native binary that is comfortable idling in your terminal all day.
+Alter Zero is an open-source AI coding agent written in Rust. It works directly in your project: reading files, making edits, running commands, and checking results while you follow along in your terminal. Coding is its focus, with the flexibility to investigate security issues, explore unfamiliar systems, and automate tasks using your existing tools.
+
+| What you get | Why it matters |
+| --- | --- |
+| **Work you can follow** | Live command output, readable diffs, and a task checklist make progress easy to inspect. |
+| **Control over execution** | Choose a permission mode, review proposed changes, and steer the agent while it works. |
+| **Your choice of model** | Connect with a supported subscription or API key, or run local models with Ollama. |
+| **Room to extend** | Add specialist subagents, reusable skills, lifecycle hooks, and MCP servers to fit your workflow. |
+| **A native terminal experience** | A single Rust binary with persistent sessions, inline images, and keyboard-driven controls. |
 
 ## Quick start
 
-You need a Rust toolchain ([rustup](https://rustup.rs) installs the pinned version automatically) and a modern terminal.
+On **Linux or macOS**, you need [rustup](https://rustup.rs), a C compiler, and a modern terminal. The repository pins the Rust toolchain, which rustup installs automatically.
 
 ```bash
 git clone https://github.com/linuztx/alter-zero.git
@@ -46,93 +52,98 @@ cargo install --path .
 alter-zero
 ```
 
-The first launch works with no account at all: until you sign in, Alter Zero runs an offline demo that plays scripted turns showing every kind of cell. Then, inside the app:
+Without a configured provider, Alter Zero opens an offline demo with scripted turns so you can explore the interface. To work on your own tasks:
 
-1. **`/login`** picks how you sign in: a subscription, an API key, or a local Ollama server.
-2. **`/model`** lists that provider's models and remembers your choice for this directory.
-3. Ask for something. `?` shows the keyboard shortcuts and `/` the commands whenever you need them.
+1. Run **`/login`** and choose a supported subscription, API provider, or local model server. Follow the prompts to connect.
+2. Run **`/model`** to choose a model. Alter Zero remembers your selection for this directory.
+3. Describe a task, review any approval prompts, and follow the work as it happens.
 
-Prefer environment variables? Point it at a provider before launch and the real backend takes over automatically:
+Sign-ins added through `/login` are saved to `~/.alter-zero/.env`, outside your repository. Use `/` to browse commands or `?` in an empty composer to see shortcuts.
+
+<details>
+<summary><strong>Connect with environment variables</strong></summary>
+
+You can also select your provider before launch. Set its API key variable and provider ID, then start the app. For example, with OpenRouter:
 
 ```bash
-export OPENROUTER_API_KEY=sk-...          # or <PROVIDER>_API_KEY
+export OPENROUTER_API_KEY="your-api-key"
 export ALTER_ZERO_PROVIDER=openrouter
-export ALTER_ZERO_MODEL=<model id>
 alter-zero
 ```
 
-Keys and tokens are saved to `~/.alter-zero/.env`, outside any repository, so you sign in once.
+Choose a model with `/model`, or set `ALTER_ZERO_MODEL` to its model ID before launching.
 
-## Bring your own model
+</details>
+
+## Put it to work
+
+Start with a concrete task and let the agent work through it with you.
+
+| Use case | Try asking |
+| --- | --- |
+| **Coding and debugging** | "Find why this test fails, fix the cause, and run the relevant tests." |
+| **Cybersecurity research** | "Review this repository for security vulnerabilities. Trace each finding to the code and suggest a fix." |
+| **Technical investigation** | "Trace how authentication works in this project and explain where access checks happen." |
+| **Automation** | "Write a script that summarises these logs and flags recurring errors." |
+
+## Model providers
+
+Connect to a supported subscription service, API provider, or local model server. Use `/login` to connect and `/model` to choose your model.
 
 | Provider | How you connect | Good to know |
 | --- | --- | --- |
-| **GitHub Copilot** | Subscription. Enter shows a one-time device code; approve it on GitHub and you are in. | Context window, vision and the reasoning levels are read from Copilot itself. |
-| **OpenAI (ChatGPT)** | Subscription. A browser sign-in for ChatGPT Plus and Pro seats. | Nothing to paste; the browser hands the session straight back. |
-| **Anthropic** | API key, or an account sign-in through the Anthropic Console. | Billed to your API organisation either way. |
-| **Agent Zero API** | API key. | Venice.ai's private models through the Agent Zero proxy, with a free daily quota for A0T token holders. |
-| **OpenRouter** | API key. | Hundreds of models from every major lab behind one key. |
-| **Ollama** | No key. Point it at your server, or accept the default. | Runs local models on your own machine; nothing leaves it. |
-| **Ollama Cloud** | API key. | The same open models on Ollama's hosted GPUs. |
+| **Agent Zero API** | API key. | Accesses Venice.ai models through the Agent Zero proxy, with a free daily quota for [A0T](https://www.agent-zero.ai/p/token/) token holders. |
+| **GitHub Copilot** | Subscription, using a one-time device code. | Model capabilities, including context window, vision, and reasoning levels, come from Copilot. |
+| **OpenAI (ChatGPT)** | Browser sign-in with a ChatGPT Plus or Pro account. | Uses the account sign-in flow; no API key to paste. |
+| **Anthropic** | API key or account sign-in through the Anthropic Console. | Usage is billed to your API organisation with either method. |
+| **OpenRouter** | API key. | Access models from multiple providers through one account. |
+| **Ollama** | Point Alter Zero at your local server; no key required. | Run inference on your own machine with locally hosted models. |
+| **Ollama Cloud** | API key. | Use open models hosted by Ollama. |
 
-Whatever you pick, the footer keeps you informed: the model, its thinking mode, and a live gauge of how much of its context window the conversation has used. Reasoning models get a **Ctrl+T** effort ladder read from the provider, models that cannot see images say so instead of failing a turn, and requests are shaped for prompt caching so long sessions stay affordable.
+The footer shows your active model, thinking mode, and context usage. **Ctrl+T** cycles the model's supported reasoning levels, vision support is checked before sending images, and requests support prompt caching where the provider allows it.
 
 ## Features
 
-### The agent does the work
+### Follow the work as it happens
 
-- **File tools that show their work.** Reads, writes and edits render as numbered, syntax-highlighted cells with green and red diff tints, and the characters that actually changed on a line are highlighted so you can review at a glance.
-- **Commands that stream.** A running command tails its output live; long ones fold to a compact peek you can expand at any time.
-- **Parallel and background work.** A batch of tool calls is announced up front so you see the whole plan. Long-running commands move to the background with **Ctrl+B** and report back when they finish; **↓** opens a manager to watch or stop them.
-- **A visible plan.** When the agent breaks a job into tasks, a live checklist sits under the status line and follows along as it works.
-- **It asks when it should.** Multiple-choice questions arrive as an inline form, with free-text answers, previews and notes when the agent needs a decision from you.
+- **Readable file changes.** Numbered, syntax-highlighted file views and diffs highlight the characters that changed, so edits are easy to review.
+- **Live commands and task progress.** Command output streams into the conversation, long results collapse into expandable previews, and a checklist tracks multi-step work.
+- **Parallel and background work.** Tool batches are announced before execution. Move a running command to the background with **Ctrl+B**, then use **Down** from an empty composer to inspect or stop it.
+- **Decisions in context.** Inline questions support multiple-choice and free-text answers. Send a message with **Enter** to steer the running turn, or use **Tab** to queue a follow-up.
 
-### You stay in control
+### Choose how much control to keep
 
-- **Approval before change.** A write, an edit or a command pauses the turn with an inline prompt showing the full content or diff. Answer **Yes**, **Yes for this session** (or *don't ask again* for that command prefix), or **No**. **Tab** rejects with instructions the agent will read, and **Ctrl+E** asks it to explain a command instead of running it.
-- **Four permission modes.** `manual` asks for everything, `edit` lets file changes through, `auto` adds a silent safety reviewer that clears routine commands and asks about the rest, and `master` runs unattended. Cycle them with **Shift+Tab**; your rules are remembered per project.
-- **Checkpoints and rewind.** Every turn can snapshot your working directory into an isolated store, never your own `.git`. **Esc Esc** steps back to an earlier message and restores both the conversation and your files to that point. Opt in per directory.
-- **A private scratchpad.** The agent gets a session-only temp directory for throwaway scripts and notes, so it never litters `/tmp` or your project.
-- **Trust before execution.** A project's own agents, hooks and MCP servers are listed but inert until you review and approve them with `/trust`.
+- **Review at the approval prompt.** Inspect proposed file content, diffs, and commands before approving them. Approve once, allow a session rule, or reject with instructions using **Tab**. **Ctrl+E** asks for a command explanation.
+- **Four permission modes.** `manual` asks before file changes and commands; `edit` allows file changes; `auto` adds a reviewer for routine commands; `master` runs unattended. Cycle modes with **Shift+Tab** and keep rules per project.
+- **Checkpoints and rewind.** Enable checkpoints per directory to snapshot your working files in a separate store. **Esc Esc** returns to an earlier message and, when a checkpoint is available, restores the files with it.
+- **Project trust.** Review project-defined agents, hooks, and MCP servers with `/trust` before they can run.
 
-### Delegate to subagents
+### Give the agent the right tools
 
-The agent can hand work to side agents that run their own tool loop over a fresh context. Each type is a small markdown file in `~/.alter-zero/agents/` (or a project's `.alter-zero/agents/`), with a name, a description, an optional model and an optional tool allowlist; `general-purpose` and `explore` come built in and are yours to edit. Running agents appear in a roster under the composer where you can open one's live session, chat with it directly, queue it follow-up work, or stop it.
+- **Subagents.** Delegate focused work to agents with their own context, model, and tool access. Built-in `general-purpose` and `explore` agents are editable, and you can open a running agent's session to chat, send follow-up work, or stop it.
+- **Skills.** Add reusable `SKILL.md` folders, mention one with `$`, or browse them with `/skills`. A built-in `skill-creator` helps you write your own.
+- **MCP servers.** Connect tools over stdio, HTTP, or SSE, including remote servers with OAuth. Manage connections with `/mcp` or `alter-zero mcp`.
+- **Hooks and project instructions.** Use `hooks.json` to approve, reject, or adjust tool calls and supply context. `AGENTS.md` files carry your project's conventions; `/init` helps create one.
 
-### Extend it
+### Pick up where you left off
 
-- **Skills.** Drop a `SKILL.md` folder into `~/.alter-zero/skills/` (or `.claude/skills/`) and the agent loads it on demand. Type `$` to mention one, or `/skills` to browse and toggle them. A built-in `skill-creator` teaches the agent to write new ones.
-- **MCP servers.** Declare them in `mcp.json` (or a Claude-Code-style `.mcp.json`) over stdio, HTTP or SSE, including remote servers that need OAuth. `/mcp` manages them live and `alter-zero mcp add` from the shell.
-- **Hooks.** Wire your own commands into the tool loop with `hooks.json`: refuse a call, rewrite its arguments, approve it, or hand the agent extra context. Every lifecycle event is covered, and `/hooks` lets you browse what is configured.
-- **Project docs.** `AGENTS.md` files are read at every turn so the agent knows your conventions, and `/init` writes a first one for you.
+- **Saved conversations.** `/resume` opens a searchable session picker. Use `--continue` for the latest session in this directory or `--resume <id>` for a specific one.
+- **Settings that stay with the project.** Model choices, permissions, skills, and appearance are remembered per directory. Input history carries across sessions and is searchable with **Ctrl+R**.
+- **Managed context.** `/compact` summarises long conversations, with automatic compaction as the context window fills. A session scratchpad holds temporary scripts and notes outside your project.
 
-### Sessions that persist
+### Make the terminal yours
 
-- **Every conversation is recorded.** Quit and the app tells you how to get back; `/resume` opens a searchable picker, `--continue` reopens the latest session in this directory, and `--resume <id>` a specific one.
-- **Per-directory memory.** The model, settings, permission rules, skill choices and the look you pick are remembered for each project you work in.
-- **Input history across sessions.** **↑/↓** recall earlier messages and **Ctrl+R** searches them, in this session and the ones before it.
-- **Context that manages itself.** `/compact` summarises a long conversation, and the app does it automatically as the window fills.
+- **Rich output.** Stream Markdown, tables, highlighted code, and collapsible reasoning blocks, with clickable URLs and file paths in supported terminals.
+- **Inline images.** Paste screenshots with **Ctrl+V**. Images render natively in kitty, iTerm2, and sixel terminals, with a character-based fallback elsewhere.
+- **Inspect the session.** **Ctrl+O** opens the expanded transcript; **Ctrl+D** shows the context sent to the model. Start a line with `!` for a shell command or use `@` to pick a file.
+- **Live customisation.** Preview eleven themes with `/theme`, six mascots with `/mascot`, and nine spinner styles with `/spinner`. `/settings` brings the remaining controls together in a searchable menu.
 
-### Built for the terminal
+## Commands & shortcuts
 
-- **Rich, live rendering.** Markdown, tables and highlighted code stream in as they arrive. URLs and file paths are clickable links in terminals that support them.
-- **Pictures, inline.** Paste a screenshot with **Ctrl+V** and it appears in the conversation; images the agent reads appear too, drawn natively in kitty, iTerm2 and sixel terminals and as half-block art everywhere else.
-- **Thinking you can see.** A reasoning model's thoughts stream in a live block, then collapse into a one-line summary you can expand.
-- **Two views on the truth.** **Ctrl+O** opens the full transcript with every tool expanded; **Ctrl+D** shows the exact context being sent to the model.
-- **Keep talking while it works.** **Enter** mid-turn hands your message to the running turn, **Tab** queues a follow-up turn, and **Alt+↑** pulls it back to edit.
-- **Your shell, one keystroke away.** Start a line with `!` to run a shell command right in the conversation. `@` opens a fuzzy file picker for paths.
-- **Resize-proof.** The conversation reflows to any terminal width without flicker.
+The essentials are always one keystroke away: `/` opens commands, and `?` in an empty composer shows shortcuts.
 
-### Make it yours
-
-- **`/theme`**: eleven colour themes, with the four Catppuccin flavours, One Dark, Dracula, Nord, Gruvbox, Solarized, Monokai, and an ANSI theme that follows your terminal. Each is previewed on real cells before you pick it.
-- **`/mascot`**: six banner mascots, previewed live.
-- **`/spinner`**: nine status-line spinner styles, previewed live. This and the mascot are remembered per project, so each one can wear its own.
-- **`/settings`**: everything else, in one searchable menu. Thinking visibility, image display and size, automatic image resizing, error retries, tools, permission mode, checkpoints, auto-compact, project docs, hooks, skills, temperature and a tool-call budget.
-
-## Slash commands
-
-Type `/` to open the palette.
+<details>
+<summary><strong>Slash commands</strong></summary>
 
 | Command | What it does |
 | --- | --- |
@@ -155,9 +166,10 @@ Type `/` to open the palette.
 | `/donate` | Support the project with a crypto donation |
 | `/quit` | Exit the app |
 
-## Keyboard shortcuts
+</details>
 
-Press `?` in an empty composer to see these in the app.
+<details>
+<summary><strong>Keyboard shortcuts</strong></summary>
 
 | Key | Action |
 | --- | --- |
@@ -183,9 +195,12 @@ Press `?` in an empty composer to see these in the app.
 | `Ctrl+W` / `Ctrl+U` / `Ctrl+K` | Delete the previous word, to the start of the line, to the end of the line |
 | `Ctrl+C` | Clear the draft, then quit |
 
-## Command line
+</details>
 
-```
+<details>
+<summary><strong>Command-line options</strong></summary>
+
+```text
 Usage: alter-zero [OPTIONS] [PROMPT]
        alter-zero mcp <COMMAND>
 
@@ -193,36 +208,53 @@ Arguments:
   [PROMPT]        Send this message as the first turn
 
 Options:
-  -c, --continue  Continue the most recent conversation in this directory
-  -r, --resume    Resume a conversation by id, or pick one from a list
-  -h, --help      Print help
-  -V, --version   Print version
+  -c, --continue     Continue the most recent conversation in this directory
+  -r, --resume [ID]  Resume a conversation by id, or pick one from a list
+  -h, --help         Print help
+  -V, --version      Print version
 ```
 
-`alter-zero "fix the failing test"` starts a session with that as its first turn, and `alter-zero -c "and now the docs"` sends one into the conversation you left off in.
+Start a task directly, or continue the work from your last session:
+
+```bash
+alter-zero "fix the failing test"
+alter-zero -c "now review the changes"
+```
+
+Run `alter-zero mcp --help` for MCP server management commands.
+
+</details>
 
 ## Where things live
 
-Everything Alter Zero remembers is in `~/.alter-zero/`: your sign-ins, the model and settings for each directory, permission rules, recorded sessions, input history, your agents and skills, and your hooks and MCP servers. A project can carry its own `.alter-zero/` folder with `agents/`, `skills/`, `hooks.json` and `mcp.json` (Claude Code's `.claude/skills/` and `.mcp.json` are honoured too), all held behind `/trust` until you approve them.
+Your sign-ins, saved sessions, input history, and per-directory settings live under `~/.alter-zero/`. Keep shared extensions there, or add project-specific ones alongside your code.
+
+<details>
+<summary><strong>Configuration and extension paths</strong></summary>
+
+| Location | Contents |
+| --- | --- |
+| `~/.alter-zero/.env` | Keys and tokens saved through `/login` |
+| `~/.alter-zero/agents/` and `~/.alter-zero/skills/` | Your shared agent definitions and skills |
+| `~/.alter-zero/hooks.json` and `~/.alter-zero/mcp.json` | Your shared hooks and MCP servers |
+| `.alter-zero/` in a project | Project-specific `agents/`, `skills/`, `hooks.json`, and `mcp.json` |
+| `AGENTS.md` | Project instructions read by the agent |
+
+Claude Code-style `.claude/skills/` and `.mcp.json` files are also supported. Project-defined agents, hooks, and MCP servers require approval through `/trust`.
+
+</details>
 
 ## Support the project
 
-Alter Zero is free and open source. If it earns a place in your terminal, a donation keeps the work going. `/donate` shows these addresses inside the app, each in a copyable box with its networks listed under it.
+Alter Zero is free and open source. If it earns a place in your terminal, a donation keeps the work going. `/donate` shows these addresses inside the app, each in a copyable box.
 
-| Coin | Address | Networks |
+| Coin | Supported network(s) | Address |
 | --- | --- | --- |
-| BTC (Bitcoin) | `bc1qhwamfrwuhz64pk00l75ykfff2ang22ns64chf7` | Bitcoin (Native SegWit) |
-| ETH (Ethereum) | `0xEAf6fbabB9DBE7a23BfE22A7A6c4aCe02063524b` | Ethereum, Linea, Base, Arbitrum, BNB Chain, OP, Polygon |
-| SOL (Solana) | `Gwhv5c6uAa6aAz1MjwzV9QJpbm7CJWy2kuCeZ75mFc94` | Solana |
+| BTC (Bitcoin) | Bitcoin Native SegWit | `bc1qhwamfrwuhz64pk00l75ykfff2ang22ns64chf7` |
+| ETH (Ethereum) | Ethereum, Linea, Base, Arbitrum, BNB Chain, OP, Polygon | `0xEAf6fbabB9DBE7a23BfE22A7A6c4aCe02063524b` |
+| SOL (Solana) | Solana | `Gwhv5c6uAa6aAz1MjwzV9QJpbm7CJWy2kuCeZ75mFc94` |
 
-> [!WARNING]
-> **Send each coin only over a network listed beside its address.** A transfer on any other network cannot be recovered — there is no support desk to reverse it.
->
-> - **BTC** goes over **Bitcoin** only. The address is Native SegWit (bech32, `bc1…`).
-> - **ETH** and EVM tokens go over **Ethereum, Linea, Base, Arbitrum, BNB Chain, OP or Polygon** — the same address on each. No other chain.
-> - **SOL** and SPL tokens go over **Solana** only.
->
-> Check the network your wallet has selected before you send, not after.
+> **Important:** Send only on a network listed for that address. Confirm that the asset and selected network match before sending. An address may look valid on another network, but funds sent on an unlisted or mismatched network may be unrecoverable.
 
 Thank you.
 
@@ -232,19 +264,10 @@ Alter Zero is released under the [Apache License 2.0](LICENSE). Copyright 2026 [
 
 ## Acknowledgements
 
-Alter Zero stands on the work of others:
+Alter Zero is made possible by the people, projects, and communities behind it:
 
-- [ratatui](https://ratatui.rs) and [crossterm](https://github.com/crossterm-rs/crossterm) for the terminal UI, [ratatui-image](https://github.com/benjajaja/ratatui-image) for the inline pictures, and [tokio](https://tokio.rs) for the event loop.
-- [Claude Code](https://claude.com/claude-code) and [Codex CLI](https://github.com/openai/codex), whose interaction design this project studies and borrows from throughout.
-- [syntect](https://github.com/trishume/syntect) and [two-face](https://github.com/CosmicHorrorDev/two-face) for syntax highlighting, and OpenAI's [tiktoken](https://github.com/openai/tiktoken) `o200k_base` vocabulary for the token counts.
-- The [Catppuccin](https://catppuccin.com), [Dracula](https://draculatheme.com), [Nord](https://www.nordtheme.com), [Gruvbox](https://github.com/morhetz/gruvbox), [Solarized](https://ethanschoonover.com/solarized), [Monokai](https://monokai.nl) and One Dark palettes behind the themes.
-- The [Model Context Protocol](https://modelcontextprotocol.io) and the providers that make the models reachable: GitHub Copilot, OpenAI, Anthropic, OpenRouter, Ollama, and Venice.ai through the Agent Zero community API.
-- [Agent Zero](https://agent-zero.ai) ([GitHub](https://github.com/agent0ai/agent-zero)) for the free [A0T](https://www.agent-zero.ai/p/token/) inference credit that helped me test this project. In return, the Agent Zero API is a first-class provider here.
+- [Agent Zero](https://agent-zero.ai) and its team for supporting the development of Alter Zero, including the free [A0T](https://www.agent-zero.ai/p/token/) inference credits used during testing.
+- [Claude Code](https://claude.com/claude-code) and [Codex CLI](https://github.com/openai/codex) for the interaction patterns that helped shape Alter Zero.
+- [ratatui](https://ratatui.rs) and [crossterm](https://github.com/crossterm-rs/crossterm) for the foundation of the terminal UI.
 
----
-
-<div align="center">
-
-Made by [linuztx](https://github.com/linuztx). Design notes for every feature live in [`docs/`](docs/).
-
-</div>
+See the additional [technical credits](docs/credits.md).
