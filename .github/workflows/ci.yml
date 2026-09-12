@@ -1,0 +1,87 @@
+# .github/workflows/ci.yml — the project's gate, on every push to main and
+# every pull request (docs/release.md). Each job is one thing a contributor
+# already runs before a commit, unchanged: the pre-commit gate (`cargo fmt
+# --check` + `clippy -D warnings` + `test` + `doc`), the smoke suite over the
+# real binary in tmux, the release tooling's own fixture tests plus the
+# version/changelog agreement, and the telemetry collector's pure-half tests.
+# The release workflow re-runs the gate and the tooling tests before it
+# builds anything.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # A CI checkout is never rebuilt after an edit, so incremental artifacts
+  # would only bloat the cache.
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  gate:
+    name: fmt · clippy · test · doc
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install the pinned toolchain
+        # rustup reads rust-toolchain.toml — the channel and the rustfmt and
+        # clippy components — so the version lives in one file. (Older rustups
+        # install it from `show`; newer ones need the explicit install.)
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: debug
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test
+      - run: cargo doc --no-deps --lib
+
+  smoke:
+    name: smoke suite (tmux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install the pinned toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: debug
+      - run: sudo apt-get update && sudo apt-get install -y tmux
+      - run: cargo build
+      - run: scripts/smoke.sh
+      - name: Keep the failing phases' logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-logs
+          path: target/smoke/logs
+          if-no-files-found: ignore
+          retention-days: 7
+
+  release-tooling:
+    name: release tooling
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - run: shellcheck -x scripts/release.sh scripts/release/*.sh
+      - run: scripts/release.sh selftest
+      - name: Cargo.toml, Cargo.lock, the README badge and CHANGELOG.md agree
+        run: scripts/release.sh check
+
+  telemetry:
+    name: telemetry collector tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - run: node --test
+        working-directory: telemetry

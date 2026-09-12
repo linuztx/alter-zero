@@ -10,3 +10,6 @@
 !/telemetry/.dev.vars.example
 /telemetry/.wrangler/
 /telemetry/node_modules/
+
+# scripts/release.sh build packages the release assets here (docs/release.md).
+/dist

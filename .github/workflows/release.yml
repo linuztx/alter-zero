@@ -1,0 +1,155 @@
+# .github/workflows/release.yml — build, verify and publish a release
+# (docs/release.md). Runs on a `vX.Y.Z` tag push, and by hand
+# (workflow_dispatch) as a REHEARSAL: the same check, gate, builds and
+# verification, the notes rendered into the job summary, and nothing
+# published unless the run is on a tag and asked to. Every step is a
+# scripts/release.sh command, so what the workflow does is what a developer
+# can run and read.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: >-
+          Publish the GitHub release. Honoured only when the run is on a
+          vX.Y.Z tag; off, the run is a rehearsal that builds and verifies
+          every asset and renders the notes without publishing anything.
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    name: version · changelog · tooling
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      publish: ${{ steps.mode.outputs.publish }}
+    steps:
+      - uses: actions/checkout@v5
+      - id: version
+        run: echo "version=$(scripts/release.sh version)" >> "$GITHUB_OUTPUT"
+      - name: The tag, Cargo.toml, Cargo.lock, the README badge and CHANGELOG.md agree
+        # On a tag, `check` reads GITHUB_REF_TYPE/GITHUB_REF_NAME and requires
+        # the tag to name Cargo.toml's version.
+        run: scripts/release.sh check
+      - run: shellcheck -x scripts/release.sh scripts/release/*.sh
+      - run: scripts/release.sh selftest
+      - id: mode
+        env:
+          ASKED: ${{ inputs.publish }}
+        run: |
+          if [ "$GITHUB_REF_TYPE" = tag ] && { [ "$GITHUB_EVENT_NAME" = push ] || [ "$ASKED" = true ]; }; then
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  gate:
+    name: fmt · clippy · test · doc
+    needs: check
+    runs-on: ubuntu-latest
+    env:
+      CARGO_INCREMENTAL: "0"
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install the pinned toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: debug
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test
+      - run: cargo doc --no-deps --lib
+
+  build:
+    name: build ${{ matrix.target }}
+    needs: [check, gate]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # ubuntu-22.04 pins the glibc floor (2.35) of the Linux assets; a
+          # newer image would raise it for every user who downloads one.
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-22.04
+          # Cross-compiled with the distribution's arm64 gcc (oniguruma's
+          # and ring's C sources need the target's compiler, not only a
+          # linker); scripts/release.sh build wires cargo and `cc` to it.
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-22.04
+            cross: gcc-aarch64-linux-gnu libc6-dev-arm64-cross
+          # Apple's clang cross-compiles between the two Mac CPUs, so both
+          # assets build on one (arm64) runner.
+          - target: x86_64-apple-darwin
+            os: macos-latest
+          - target: aarch64-apple-darwin
+            os: macos-latest
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install the pinned toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+      - run: rustup target add ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+      - name: Install the cross toolchain
+        if: matrix.cross
+        run: sudo apt-get update && sudo apt-get install -y ${{ matrix.cross }}
+      - run: scripts/release.sh build ${{ matrix.target }}
+      - run: scripts/release.sh verify dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ matrix.target }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: ${{ needs.check.outputs.publish == 'true' && 'publish' || 'rehearse publishing' }} v${{ needs.check.outputs.version }}
+    needs: [check, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.check.outputs.version }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: dist-*
+          path: dist
+          merge-multiple: true
+      - name: Verify every asset together
+        run: scripts/release.sh verify dist
+      - name: Render the release notes from CHANGELOG.md
+        run: |
+          scripts/release.sh notes "$VERSION" dist > release-notes.md
+          cat release-notes.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-notes
+          path: release-notes.md
+          retention-days: 7
+      - name: Rehearse (nothing is published)
+        if: needs.check.outputs.publish != 'true'
+        run: scripts/release.sh publish "$VERSION" dist --notes release-notes.md --dry-run
+      - name: Publish the GitHub release
+        if: needs.check.outputs.publish == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: scripts/release.sh publish "$VERSION" dist --notes release-notes.md

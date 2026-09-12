@@ -1,0 +1,8 @@
+# Keep the workflows' actions current (docs/release.md): they are pinned to
+# major tags, and this is what moves them when a major is released.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly

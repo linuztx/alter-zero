@@ -191,7 +191,8 @@ wl-clipboard-rs = "0.9"
 tiktoken-rs = "0.12.0"
 
 # Bake the project's pre-commit gate into every build so it can't silently
-# regress (there is no CI yet). Mirrors `clippy --all-targets -- -D warnings`.
+# regress off CI either (`.github/workflows/ci.yml` runs the same gate;
+# docs/release.md). Mirrors `clippy --all-targets -- -D warnings`.
 [lints.rust]
 unsafe_code = "forbid"
 warnings = "deny"

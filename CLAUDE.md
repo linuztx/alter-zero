@@ -16,6 +16,12 @@ cargo build && scripts/smoke.sh             # drive the real binary in tmux (eve
 scripts/smoke.sh 55 permission              # only some phases (an id, a range, a name substring)
 scripts/smoke.sh --list                     # the phases, their tags and last durations
 bash scripts/smoke/phases/055-permission.sh # one phase on its own, output live (docs/smoke.md)
+scripts/release.sh check [vX.Y.Z]           # Cargo.toml, Cargo.lock, the README badge and CHANGELOG.md agree (docs/release.md)
+scripts/release.sh build [TARGET]           # one platform's release archive + .sha256 into dist/
+scripts/release.sh verify dist              # the archives: checksums, layout, CPU, `alter-zero --version`
+scripts/release.sh notes X.Y.Z dist         # the release notes the workflow publishes, from CHANGELOG.md
+scripts/release.sh selftest                 # the release tooling's own fixture-driven tests
+scripts/release.sh prepare X.Y.Z            # bump the version everywhere, roll [Unreleased] into a dated section, then tag
 cargo run --release --example mem_probe     # /model parse RSS (docs/memory.md)
 cargo build --release --timings && scripts/build_timings.py   # where a release build's time goes (docs/build-time.md)
 DISPLAY=:99 cargo test --test clipboard_linux -- --ignored   # the X11 paste read, under Xvfb
@@ -31,6 +37,17 @@ narrowing its visibility) breaks the links that pointed at it. When that happens
 the fix is to qualify the path if the target is still public
 (`[`x`]` → `` [`x`](App::x) ``), else demote the link to a plain code span
 (`[`x`]` → `` `x` ``) so the prose still names it.
+
+CI runs that gate on every push to `main` and every pull request
+(`.github/workflows/ci.yml`: the gate, the smoke suite under tmux, the release
+tooling's `selftest` + `check`, and the telemetry collector's `node --test`),
+and a `vX.Y.Z` tag push runs `.github/workflows/release.yml` — the same gate,
+then one release build per platform (Linux x86_64 and arm64, macOS Intel and
+Apple silicon) packaged, checksummed and verified by `scripts/release.sh`, and
+a GitHub release whose notes are `CHANGELOG.md`'s section for the version
+(`docs/release.md`). Cutting a release is `scripts/release.sh prepare X.Y.Z`,
+a commit, an annotated tag and a push; `workflow_dispatch` rehearses the whole
+pipeline without publishing, and every step runs locally the same way.
 
 Toolchain: Rust **edition 2024**, `ratatui = 0.30.1` (crossterm is re-exported as
 `ratatui::crossterm` — import it from there, not as a separate crate), plus
