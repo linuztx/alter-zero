@@ -47,6 +47,9 @@ pub enum Cli {
     /// `mcp …` as the first argument: manage the user MCP config file
     /// (`docs/mcp-cli.md`).
     Mcp(McpCli),
+    /// `update` as the first argument: install the newest release over this
+    /// binary when one is out (`docs/update.md`). Takes nothing.
+    Update,
 }
 
 /// A TUI run's arguments (`docs/cli.md`): which conversation to open, and
@@ -208,16 +211,25 @@ const MAIN_DOC: HelpDoc = HelpDoc {
     usage: &[
         ("alter-zero", " [OPTIONS] [PROMPT]"),
         ("alter-zero mcp", " <COMMAND>"),
+        ("alter-zero update", ""),
     ],
     sections: &[
         Section {
             heading: "Commands:",
-            rows: &[Row {
-                literal: "mcp",
-                placeholder: "",
-                description: "Manage MCP servers in the user config file — see\n\
-                              alter-zero mcp --help",
-            }],
+            rows: &[
+                Row {
+                    literal: "mcp",
+                    placeholder: "",
+                    description: "Manage MCP servers in the user config file — see\n\
+                                  alter-zero mcp --help",
+                },
+                Row {
+                    literal: "update",
+                    placeholder: "",
+                    description: "Install the newest release over this binary, if one is\n\
+                                  out — the one-line installer, checksum-verified",
+                },
+            ],
         },
         Section {
             heading: "Arguments:",
@@ -427,6 +439,15 @@ where
     if args.peek().is_some_and(|first| first == "mcp") {
         args.next();
         return parse_mcp(args).map(Cli::Mcp);
+    }
+    // `update` routes the same way (docs/update.md), and takes nothing: a
+    // flag or a word after it is a mistake to report, not a prompt to run.
+    if args.peek().is_some_and(|first| first == "update") {
+        args.next();
+        return match args.next() {
+            None => Ok(Cli::Update),
+            Some(extra) => Err(format!("update takes no arguments (got '{extra}')")),
+        };
     }
     while let Some(arg) = args.next() {
         if arg == "--" {
@@ -1004,10 +1025,13 @@ Starts an interactive session by default — a quoted PROMPT is its first turn.
 
 Usage: alter-zero [OPTIONS] [PROMPT]
        alter-zero mcp <COMMAND>
+       alter-zero update
 
 Commands:
   mcp                 Manage MCP servers in the user config file — see
                       alter-zero mcp --help
+  update              Install the newest release over this binary, if one is
+                      out — the one-line installer, checksum-verified
 
 Arguments:
   [PROMPT]            Send this message as the first turn — of a new
@@ -1145,7 +1169,7 @@ Options:
         assert_eq!(
             text,
             "error: unrecognized argument: --frob\n\n\
-             Usage: alter-zero [OPTIONS] [PROMPT]\n       alter-zero mcp <COMMAND>\n\n\
+             Usage: alter-zero [OPTIONS] [PROMPT]\n       alter-zero mcp <COMMAND>\n       alter-zero update\n\n\
              For more information, try '--help'."
         );
         let styled = usage_error(HelpPage::Main, "x", HelpStyle::Ansi);
@@ -1180,6 +1204,22 @@ Options:
         assert!(colour_enabled(Some(""), Some("xterm")));
         assert!(!colour_enabled(Some("1"), Some("xterm")));
         assert!(!colour_enabled(None, Some("dumb")));
+    }
+
+    // ===== the update subcommand (docs/update.md) =====
+
+    #[test]
+    fn update_routes_as_the_first_argument_only_and_takes_nothing() {
+        assert_eq!(parsed(&["update"]), Ok(Cli::Update));
+        let err = parsed(&["update", "now"]).unwrap_err();
+        assert!(err.contains("update takes no arguments"), "{err}");
+        let err = parsed(&["update", "--help"]).unwrap_err();
+        assert!(err.contains("update takes no arguments"), "{err}");
+        // Anywhere else the word is a prompt like any other.
+        assert!(matches!(
+            parsed(&["-c", "update"]),
+            Ok(Cli::Session(SessionArgs { prompt: Some(p), .. })) if p == "update"
+        ));
     }
 
     // ===== the mcp subcommand (docs/mcp-cli.md) =====

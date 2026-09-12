@@ -79,6 +79,8 @@ pub(crate) fn resolve_cli() -> Result<Startup, i32> {
         // The mcp subcommand family (docs/mcp-cli.md): does its file work
         // and exits — success rides the same Err(0) channel --help uses.
         Cli::Mcp(cmd) => Err(super::mcp_cli::run(&cmd)),
+        // `alter-zero update` (docs/update.md): the same print-and-exit path.
+        Cli::Update => Err(super::update_cli::run()),
         Cli::Version => {
             println!("{} {}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
             Err(0)

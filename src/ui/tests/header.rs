@@ -419,3 +419,86 @@ fn telemetry_card_uses_the_active_theme_for_title_border_and_commands() {
         });
     }
 }
+
+#[test]
+fn update_card_keeps_every_character_at_all_widths_and_shares_the_telemetry_chrome() {
+    use crate::update::{DEFAULT_REPO_URL, notice};
+
+    let compact = |text: &str| {
+        text.chars()
+            .filter(|c| !c.is_whitespace() && !"╭╮╰╯─│*`".contains(*c))
+            .collect::<String>()
+    };
+    let expected = compact(&format!(
+        "Update available{}",
+        notice("0.1.0", "0.2.0", DEFAULT_REPO_URL)
+    ));
+    assert!(update_notice_lines(0, "0.1.0", "0.2.0", DEFAULT_REPO_URL).is_empty());
+    for width in 1..=160 {
+        let lines = update_notice_lines(width, "0.1.0", "0.2.0", DEFAULT_REPO_URL);
+        let rendered: String = lines.iter().map(plain).collect();
+        assert_eq!(
+            compact(&rendered),
+            expected,
+            "lost content at width {width}"
+        );
+        for line in &lines {
+            assert!(
+                line.width() <= usize::from(width),
+                "overflow at {width}: {line:?}"
+            );
+        }
+    }
+    let wide = update_notice_lines(120, "0.1.0", "0.2.0", DEFAULT_REPO_URL);
+    assert!(
+        wide.iter().all(|line| line.width() <= 78),
+        "bounded reading width"
+    );
+    assert_eq!(wide.len(), 7, "the card stays compact on a normal terminal");
+    // The same chrome as the telemetry card: one builder, two texts.
+    let telemetry = telemetry_notice_lines(120);
+    assert_eq!(
+        plain(&wide[0]).chars().next(),
+        plain(&telemetry[0]).chars().next()
+    );
+    assert_eq!(
+        plain(&wide[wide.len() - 1]),
+        plain(&telemetry[telemetry.len() - 1])
+    );
+}
+
+#[test]
+fn update_card_uses_the_active_theme_for_title_border_and_commands() {
+    use crate::ui::theme::{border_color, header_accent_color, telemetry_text_color};
+    use crate::update::DEFAULT_REPO_URL;
+
+    for theme in crate::app::Theme::ALL {
+        with_theme(theme, || {
+            let lines = update_notice_lines(80, "0.1.0", "0.2.0", DEFAULT_REPO_URL);
+            let span_for = |needle: &str| {
+                lines
+                    .iter()
+                    .flat_map(|line| &line.spans)
+                    .find(|span| span.content.contains(needle))
+                    .unwrap_or_else(|| panic!("missing {needle}"))
+            };
+            let title = span_for("Update available");
+            assert_eq!(title.style.fg, Some(header_accent_color()));
+            assert!(title.style.add_modifier.contains(Modifier::BOLD));
+            assert_eq!(span_for("╭").style.fg, Some(border_color()));
+            assert_eq!(span_for("running").style.fg, Some(telemetry_text_color()));
+            assert!(
+                span_for("v0.2.0")
+                    .style
+                    .add_modifier
+                    .contains(Modifier::BOLD),
+                "the new version is the one thing to see"
+            );
+            // The wrapper splits a code span at its space, so the command's
+            // second word stands for it; the title's `Update` is capitalised.
+            for command in ["update", "/settings", "ALTER_ZERO_UPDATE_CHECK=0"] {
+                assert_eq!(span_for(command).style.fg, Some(header_accent_color()));
+            }
+        });
+    }
+}

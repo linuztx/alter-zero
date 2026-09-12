@@ -195,6 +195,9 @@ impl Session<'_> {
             // the app (`docs/telemetry.md`).
             telemetry: config::telemetry_json_path().is_some()
                 && !config::telemetry_forbidden_by_env(),
+            // The same two conditions for the update check (`docs/update.md`).
+            update_check: config::update_json_path().is_some()
+                && !config::update_check_forbidden_by_env(),
         });
     }
 
@@ -299,6 +302,9 @@ impl Session<'_> {
             // The one per-user row: its file is telemetry.json, and turning
             // it on sends today's ping if none has gone (docs/telemetry.md).
             SettingKey::Telemetry => self.apply_telemetry_setting(),
+            // Its twin: update.json, and turning it on runs today's check if
+            // none has (docs/update.md).
+            SettingKey::UpdateCheck => self.apply_update_setting(),
         }
         // Persist this directory's entry as a read-modify-write over the file
         // itself, moving across only the key the user cycled — so an

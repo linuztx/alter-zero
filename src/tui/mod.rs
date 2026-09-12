@@ -46,6 +46,8 @@
 //! | [`resume`] | Finding recorded sessions on disk. |
 //! | [`settings`] | Applying a `/settings` knob the menu cycled (`docs/settings.md`). |
 //! | [`telemetry`] | The once-a-day anonymous usage ping: the install id, the notice, the send, the recorded day (`docs/telemetry.md`). |
+//! | [`update`] | The once-a-day update check: the request, the card under the banner, the recorded day (`docs/update.md`). |
+//! | [`update_cli`] | The `alter-zero update` subcommand: the check, then the one-line installer over this binary (`docs/update.md`). |
 //! | [`history_store`] | The cross-session input history (`docs/history-persistence.md`). |
 //! | [`shell`] | The `!` command runner (`docs/shell-command.md`). |
 //! | [`workers`] | The off-thread file-search / clipboard / model-list jobs. |
@@ -102,6 +104,8 @@ pub(crate) mod telemetry;
 pub(crate) mod theme;
 pub(crate) mod trust;
 pub(crate) mod turn;
+pub(crate) mod update;
+pub(crate) mod update_cli;
 pub(crate) mod view;
 pub(crate) mod workers;
 
@@ -225,6 +229,18 @@ pub(crate) struct Session<'t> {
     /// per session rather than one per turn — the file's `last_ping_day`,
     /// written only on a `2xx`, is still what retries the next launch.
     telemetry_attempted: Option<String>,
+    /// The update check worker's report (`docs/update.md`): the newest
+    /// release it found, which the **loop** then records in `update.json`
+    /// and announces — the telemetry channel's twin.
+    update_tx: tokio::sync::mpsc::UnboundedSender<String>,
+    update_rx: tokio::sync::mpsc::UnboundedReceiver<String>,
+    /// The UTC day this **session** last spawned a check for, so the
+    /// turn-start rollover costs a string compare on the common path.
+    update_attempted: Option<String>,
+    /// A newer release learned of while a turn was streaming: its card must
+    /// not land in the middle of a reply, so it waits here for the loop
+    /// bottom to find the session idle (`Session::flush_pending_update_notice`).
+    update_notice_pending: Option<String>,
     /// The `@` file-search worker's handle, kept so the thread's lifetime is
     /// tied to the session's. Never joined.
     _file_worker: JoinHandle<()>,

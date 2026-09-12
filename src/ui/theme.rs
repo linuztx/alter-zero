@@ -2095,13 +2095,16 @@ pub(super) fn header_meta_color() -> Color {
     footer_color()
 }
 
-/// Keep the first-run disclosure readable on wide terminals, with room for
-/// a rounded frame; very narrow panes use the same content without the box.
-pub(super) const TELEMETRY_CARD_MAX_WIDTH: usize = 76;
-pub(super) const TELEMETRY_CARD_MIN_WIDTH: usize = 24;
+/// Keep a startup notice card — the first-run telemetry disclosure, the
+/// update notice — readable on wide terminals, with room for a rounded
+/// frame; very narrow panes use the same content without the box.
+pub(super) const NOTICE_CARD_MAX_WIDTH: usize = 76;
+pub(super) const NOTICE_CARD_MIN_WIDTH: usize = 24;
 pub(super) const TELEMETRY_CARD_TITLE: &str = "Telemetry";
+/// The update card's title (`docs/update.md`).
+pub(super) const UPDATE_CARD_TITLE: &str = "Update available";
 
-/// Disclosure prose needs more contrast than the banner's cwd metadata.
+/// Notice prose needs more contrast than the banner's cwd metadata.
 pub(super) fn telemetry_text_color() -> Color {
     palette().text_muted
 }

@@ -95,7 +95,8 @@ pub use self::footer::{
     search_line, shell_mode_line, toast_line, toast_rows,
 };
 pub use self::header::{
-    header_lines, startup_notice_lines, startup_paragraph_lines, telemetry_notice_lines,
+    header_lines, notice_card_lines, startup_notice_lines, startup_paragraph_lines,
+    telemetry_notice_lines, update_notice_lines,
 };
 pub use self::hooks_view::{hooks_menu_height, hooks_view_lines, render_hooks_menu};
 pub use self::image::{image_block_lines, image_lines, item_images};

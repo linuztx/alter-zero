@@ -105,12 +105,40 @@ pub fn startup_paragraph_lines(text: &str, width: u16) -> Vec<Line<'static>> {
 }
 
 /// The one-time telemetry disclosure as a compact, themed card under the
-/// banner. Labels are bold and opt-out commands use the banner's accent.
-/// Prose and commands wrap without truncation; tiny panes drop the frame
-/// instead of spending their remaining columns on decoration. Like other
-/// startup notices, this is scrollback chrome and never enters history.
+/// banner (`docs/telemetry.md`): [`notice_card_lines`] over
+/// `telemetry::notice()`.
 #[must_use]
 pub fn telemetry_notice_lines(width: u16) -> Vec<Line<'static>> {
+    notice_card_lines(TELEMETRY_CARD_TITLE, &crate::telemetry::notice(), width)
+}
+
+/// The update notice as the same card (`docs/update.md`): [`notice_card_lines`]
+/// over `update::notice()` — a newer release `latest` is out, this is
+/// `current`, and `repo` is where the release page and the installer live.
+#[must_use]
+pub fn update_notice_lines(
+    width: u16,
+    current: &str,
+    latest: &str,
+    repo: &str,
+) -> Vec<Line<'static>> {
+    notice_card_lines(
+        UPDATE_CARD_TITLE,
+        &crate::update::notice(current, latest, repo),
+        width,
+    )
+}
+
+/// A startup notice as a compact, themed card under the banner: `heading`
+/// in the frame's top rule, `body` — inline markdown, paragraphs split on
+/// newlines — inside it. Labels are bold and commands use the banner's
+/// accent. Prose and commands wrap without truncation; tiny panes drop the
+/// frame instead of spending their remaining columns on decoration. Like
+/// other startup notices, this is scrollback chrome and never enters
+/// history. One builder for every such card, so the telemetry disclosure
+/// and the update notice can never drift apart in dress.
+#[must_use]
+pub fn notice_card_lines(heading: &str, body: &str, width: u16) -> Vec<Line<'static>> {
     if width == 0 {
         return Vec::new();
     }
@@ -121,8 +149,8 @@ pub fn telemetry_notice_lines(width: u16) -> Vec<Line<'static>> {
     };
     let card_width = usize::from(width)
         .saturating_sub(2 * cols(indent))
-        .min(TELEMETRY_CARD_MAX_WIDTH);
-    let framed = card_width >= TELEMETRY_CARD_MIN_WIDTH;
+        .min(NOTICE_CARD_MAX_WIDTH);
+    let framed = card_width >= NOTICE_CARD_MIN_WIDTH;
     let inner = if framed {
         card_width - 2 - 2 * cols(DEVICE_BOX_PAD)
     } else {
@@ -135,7 +163,7 @@ pub fn telemetry_notice_lines(width: u16) -> Vec<Line<'static>> {
     let text = Style::new().fg(telemetry_text_color());
     let mut lines = Vec::new();
     if framed {
-        let title_text = format!(" {TELEMETRY_CARD_TITLE} ");
+        let title_text = format!(" {heading} ");
         lines.push(Line::from(vec![
             Span::raw(indent),
             Span::styled(
@@ -152,13 +180,13 @@ pub fn telemetry_notice_lines(width: u16) -> Vec<Line<'static>> {
             ),
         ]));
     } else {
-        for row in wrap_inline(&[(TELEMETRY_CARD_TITLE.to_string(), title)], inner as u16) {
+        for row in wrap_inline(&[(heading.to_string(), title)], inner as u16) {
             let mut spans = vec![Span::raw(indent)];
             spans.extend(row);
             lines.push(Line::from(spans));
         }
     }
-    for paragraph in crate::telemetry::notice().split('\n') {
+    for paragraph in body.split('\n') {
         let segments = inline_spans(&markdown::parse_inline(paragraph), text);
         for row in wrap_inline(&segments, inner as u16) {
             let used: usize = row.iter().map(|span| cols(&span.content)).sum();

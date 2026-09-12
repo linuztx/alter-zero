@@ -75,6 +75,10 @@ pub enum SettingKey {
     Temperature,
     /// How many rounds of tool calls one turn may run (`0` = no limit).
     MaxToolCalls,
+    /// Ask the repository once a day whether a newer release is out and say
+    /// so under the banner (`docs/update.md`). Persists **per user**
+    /// (`update.json`), like its neighbour.
+    UpdateCheck,
     /// Send the anonymous daily usage ping (`docs/telemetry.md`). The one
     /// row that persists **per user** (`telemetry.json`), not per directory.
     Telemetry,
@@ -97,6 +101,7 @@ impl SettingKey {
         Self::Skills,
         Self::Temperature,
         Self::MaxToolCalls,
+        Self::UpdateCheck,
         Self::Telemetry,
     ];
 
@@ -118,6 +123,7 @@ impl SettingKey {
             Self::Skills => "Skills",
             Self::Temperature => "Temperature",
             Self::MaxToolCalls => "Max tool calls",
+            Self::UpdateCheck => "Update check",
             Self::Telemetry => "Telemetry",
         }
     }
@@ -160,6 +166,9 @@ impl SettingKey {
             Self::MaxToolCalls => {
                 "How many rounds of tool calls one turn may run before it gives up — 0 is no limit"
             }
+            Self::UpdateCheck => {
+                "Ask GitHub once a day whether a newer release is out and say so under the banner — one request that carries nothing about you"
+            }
             Self::Telemetry => {
                 "Send one anonymous ping a day (app version, OS, country) so Alter Zero's users can be counted — never your prompts, files or keys"
             }
@@ -196,6 +205,10 @@ pub struct SettingAvailability {
     /// count one person as many, so the row reports `false (unavailable)`
     /// rather than offering a toggle that would miscount.
     pub telemetry: bool,
+    /// Whether there is a config home to remember the day a check ran in
+    /// (`docs/update.md`), and the environment did not forbid the check.
+    /// Without one the row reports `false (unavailable)`.
+    pub update_check: bool,
 }
 
 impl Default for SettingAvailability {
@@ -207,6 +220,7 @@ impl Default for SettingAvailability {
             skills: true,
             images: true,
             telemetry: true,
+            update_check: true,
         }
     }
 }
@@ -284,6 +298,12 @@ pub struct SessionSettings {
     /// a second door onto state another file owns).
     #[serde(skip, default = "on")]
     pub telemetry: bool,
+    /// Ask once a day whether a newer release is out (default `true` —
+    /// opt-out, `docs/update.md`). **Never in `settings.json`** either: a
+    /// user preference kept in `update.json` beside the day of the last
+    /// check, seeded from there by the boundary.
+    #[serde(skip, default = "on")]
+    pub update_check: bool,
     /// What this host can actually run — never persisted, never cycled.
     #[serde(skip)]
     pub availability: SettingAvailability,
@@ -306,6 +326,7 @@ impl Default for SessionSettings {
             temperature: None,
             max_tool_calls: 0,
             telemetry: true,
+            update_check: true,
             availability: SettingAvailability::default(),
         }
     }
@@ -358,6 +379,13 @@ impl SessionSettings {
         self.telemetry && self.availability.telemetry
     }
 
+    /// Whether the daily update check actually runs: the knob **and** a
+    /// config home to remember the day in (`docs/update.md`).
+    #[must_use]
+    pub const fn update_check_active(&self) -> bool {
+        self.update_check && self.availability.update_check
+    }
+
     /// Whether the `skill` tool actually reaches the wire:
     /// [`skills_active`](Self::skills_active) **and** tools at all.
     ///
@@ -388,6 +416,8 @@ impl SessionSettings {
             SettingKey::PermissionMode => mode.is_some(),
             // Nowhere to keep an install id = nothing to turn on.
             SettingKey::Telemetry => self.availability.telemetry,
+            // Nowhere to remember the day a check ran, or forbidden for the run.
+            SettingKey::UpdateCheck => self.availability.update_check,
             _ => true,
         }
     }
@@ -417,6 +447,7 @@ impl SessionSettings {
             SettingKey::Skills => bool_text(self.skills_active()),
             SettingKey::Temperature => temperature_text(self.temperature),
             SettingKey::MaxToolCalls => self.max_tool_calls.to_string(),
+            SettingKey::UpdateCheck => bool_text(self.update_check_active()),
             SettingKey::Telemetry => bool_text(self.telemetry_active()),
         };
         if self.is_available(key, mode) {
@@ -455,6 +486,7 @@ impl SessionSettings {
             SettingKey::MaxToolCalls => {
                 self.max_tool_calls = next_in(TOOL_CALL_CHOICES, &self.max_tool_calls);
             }
+            SettingKey::UpdateCheck => self.update_check = !self.update_check,
             SettingKey::Telemetry => self.telemetry = !self.telemetry,
         }
         true
@@ -489,6 +521,8 @@ impl SessionSettings {
             // Not ours either — the switch persists per user in telemetry.json
             // (`docs/telemetry.md`).
             SettingKey::Telemetry => {}
+            // Nor this one — update.json (`docs/update.md`).
+            SettingKey::UpdateCheck => {}
         }
     }
 

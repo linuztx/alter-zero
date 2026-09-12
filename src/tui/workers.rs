@@ -244,6 +244,25 @@ pub(crate) fn spawn_telemetry_ping(
     });
 }
 
+/// Ask the repository for its newest release on a detached thread
+/// (`docs/update.md`), sending the version back on success so the loop —
+/// never this thread — records it in `update.json` and commits the notice.
+/// A failure sends nothing: the attempt's day was recorded at the spawn, so
+/// a dead network costs one request per day and nothing the user sees. The
+/// request itself is `update::fetch_latest`, over the shared cached HTTP
+/// client; it only *sends* — never a stdin reader (invariant 1).
+pub(crate) fn spawn_update_check(
+    repo: String,
+    version: String,
+    tx: tokio::sync::mpsc::UnboundedSender<String>,
+) {
+    std::thread::spawn(move || {
+        if let Ok(latest) = alter_zero::update::fetch_latest(&repo, &version) {
+            let _ = tx.send(latest);
+        }
+    });
+}
+
 /// Max files the `@` picker's worker indexes — bounds each walk's memory/time
 /// (codex's nucleo walk is similarly capped).
 const FILE_INDEX_CAP: usize = 10_000;

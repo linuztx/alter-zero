@@ -263,6 +263,8 @@ impl<'t> Session<'t> {
         // `select!` source, because the worker outlives nothing but must
         // never write the file itself.
         let (telemetry_tx, telemetry_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+        // The update check's report channel (docs/update.md), the same shape.
+        let (update_tx, update_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
         let (mcp_tx, mcp_rx) = tokio::sync::mpsc::unbounded_channel();
         let mcp_manager = config::mcp_enabled().then(|| {
             let manager = alter_zero::llm::mcp::McpManager::new(
@@ -287,6 +289,9 @@ impl<'t> Session<'t> {
         // run like every other knob.
         settings.telemetry =
             config::load_telemetry_file(config::telemetry_json_path().as_deref()).enabled;
+        // Likewise the Update check row's: update.json's (docs/update.md).
+        settings.update_check =
+            config::load_update_file(config::update_json_path().as_deref()).enabled;
         let settings = config::apply_setting_overrides(settings);
 
         // The user's lifecycle hooks (docs/hooks.md): `~/.alter-zero/hooks.json`
@@ -472,6 +477,10 @@ impl<'t> Session<'t> {
             telemetry_tx,
             telemetry_rx,
             telemetry_attempted: None,
+            update_tx,
+            update_rx,
+            update_attempted: None,
+            update_notice_pending: None,
             _file_worker: file_worker,
             registry,
             agent_registry,
@@ -523,6 +532,10 @@ impl<'t> Session<'t> {
         // the banner (before a [PROMPT]'s bubble below), and the send goes to
         // a detached thread. Nothing here can fail the boot.
         session.start_telemetry();
+        // The day's update check (docs/update.md), the same posture: after
+        // the first frame, a known newer release announced under the banner
+        // at once, the request itself on a detached thread.
+        session.start_update_check();
         // The [PROMPT] shortcut (docs/cli.md): the message given on the
         // command line becomes the first turn — after the loaded transcript
         // (if any) and the banner are queued, so its bubble lands under
@@ -877,6 +890,9 @@ impl<'t> Session<'t> {
             self.start_compact_turn(/*auto=*/ true);
             self.frame.schedule_frame();
         }
+        // A newer release the check found mid-turn is announced here, at the
+        // first idle loop bottom, never inside a streaming reply (docs/update.md).
+        self.flush_pending_update_notice();
         // Release any permission request dropped without an answer (Esc,
         // `/clear`): the tool thread parked on it would otherwise wait for a
         // decision that is never coming — a cancelled turn's reaps itself, but a

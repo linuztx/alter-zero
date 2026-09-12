@@ -11,8 +11,10 @@ failing test"` boots straight into that turn, and `alter-zero --resume {id}
 "and now the docs"` sends it into the reopened conversation — and `--help`
 is a titled, sectioned page in the app's own colour. (The same pre-TUI
 boundary also answers the `mcp` subcommand family — `alter-zero mcp
-add/add-json/remove/get/list`, `docs/mcp-cli.md` — routed by a first
-argument of `mcp` before the flag grammar below applies.)
+add/add-json/remove/get/list`, `docs/mcp-cli.md` — and `alter-zero
+update`, which installs the newest release over this binary through the
+one-line installer, `docs/update.md`; each is routed by its first argument
+before the flag grammar below applies.)
 
 ```
 $ alter-zero --help
@@ -22,10 +24,13 @@ Starts an interactive session by default — a quoted PROMPT is its first turn.
 
 Usage: alter-zero [OPTIONS] [PROMPT]
        alter-zero mcp <COMMAND>
+       alter-zero update
 
 Commands:
   mcp                 Manage MCP servers in the user config file — see
                       alter-zero mcp --help
+  update              Install the newest release over this binary, if one is
+                      out — the one-line installer, checksum-verified
 
 Arguments:
   [PROMPT]            Send this message as the first turn — of a new
@@ -199,6 +204,7 @@ error: unrecognized argument: --frob
 
 Usage: alter-zero [OPTIONS] [PROMPT]
        alter-zero mcp <COMMAND>
+       alter-zero update
 
 For more information, try '--help'.
 ```
@@ -211,10 +217,14 @@ page's grammar errors take the same shape over its six usage lines. Exit
 ### The pure `cli` module (src/cli.rs)
 
 - `Cli` — the parsed invocation: `Session(SessionArgs)` (the TUI run — how
-  to start, plus the optional prompt), `Help`, `Version`, `Mcp(McpCli)`.
+  to start, plus the optional prompt), `Help`, `Version`, `Mcp(McpCli)`,
+  `Update` (the `update` subcommand — `tui::update_cli::run` does the work,
+  `docs/update.md`).
   `SessionArgs { start: SessionStart, prompt: Option<String> }` with
   `SessionStart::{Fresh, Continue, Resume(Option<String>)}`.
-- `parse(args)` — over `std::env::args().skip(1)`: `--continue`/`-c`,
+- `parse(args)` — over `std::env::args().skip(1)`: a first argument of
+  `mcp` or `update` routes to that subcommand (`update` takes nothing — a
+  trailing argument is a usage error, never a guess); else `--continue`/`-c`,
   `--resume [id]`/`-r [id]` (also `--resume=id`), `--help`/`-h`,
   `--version`/`-V`, one positional `[PROMPT]`, `--` before it. Anything
   else — unknown flags, a second positional, `--continue --resume`

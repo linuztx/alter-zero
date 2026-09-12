@@ -221,6 +221,7 @@ fn an_unavailable_checkpoint_row_shows_its_effective_value_not_the_stored_one() 
             skills: true,
             images: true,
             telemetry: true,
+            update_check: true,
         },
         ..SessionSettings::default()
     };
@@ -243,6 +244,7 @@ fn an_unavailable_setting_says_so_and_refuses_to_cycle() {
             skills: true,
             images: true,
             telemetry: true,
+            update_check: true,
         },
         ..SessionSettings::default()
     };
@@ -280,7 +282,7 @@ fn json_round_trips_every_changed_value() {
     let mut s = SessionSettings::default();
     for key in SettingKey::ALL
         .iter()
-        .filter(|k| **k != SettingKey::Telemetry)
+        .filter(|k| **k != SettingKey::Telemetry && **k != SettingKey::UpdateCheck)
     {
         s.cycle(*key);
     }
@@ -368,6 +370,7 @@ fn availability_is_never_persisted() {
             skills: true,
             images: true,
             telemetry: true,
+            update_check: true,
         },
         ..SessionSettings::default()
     };
@@ -393,6 +396,7 @@ fn skills_are_not_offered_with_tools_off() {
             skills: true,
             images: true,
             telemetry: true,
+            update_check: true,
         },
         ..SessionSettings::default()
     };
@@ -586,5 +590,63 @@ fn telemetry_never_reaches_settings_json() {
     let mut file = SessionSettings::default();
     file.copy_value(SettingKey::Telemetry, &off);
     assert!(file.telemetry, "not this file's to record");
+    assert_eq!(file, SessionSettings::default());
+}
+
+// ===== the Update check row (docs/update.md) =====
+
+#[test]
+fn the_update_check_row_sits_above_telemetry_cycles_and_needs_a_config_home() {
+    // Opt-out like telemetry, and its neighbour: the two per-user rows close
+    // the menu, Telemetry last so nothing above it moves. Without a config
+    // home there is nowhere to remember the day a check ran, so the row
+    // reads unavailable like every knob the host can't serve.
+    let mut s = SessionSettings::default();
+    assert!(s.update_check, "on by default");
+    assert!(s.update_check_active());
+    let all = SettingKey::ALL;
+    assert_eq!(all[all.len() - 2], SettingKey::UpdateCheck);
+    assert_eq!(all.last(), Some(&SettingKey::Telemetry));
+    assert_eq!(s.value_text(SettingKey::UpdateCheck, MANUAL), "true");
+    assert!(s.cycle(SettingKey::UpdateCheck));
+    assert!(!s.update_check && !s.update_check_active());
+    assert_eq!(s.value_text(SettingKey::UpdateCheck, MANUAL), "false");
+    assert!(s.cycle(SettingKey::UpdateCheck));
+    assert!(s.update_check, "a boolean: back on");
+    s.availability.update_check = false;
+    assert!(!s.is_available(SettingKey::UpdateCheck, MANUAL));
+    assert!(
+        !s.update_check_active(),
+        "a stored yes the host can't honour"
+    );
+    assert_eq!(
+        s.value_text(SettingKey::UpdateCheck, MANUAL),
+        format!("false{UNAVAILABLE_SUFFIX}")
+    );
+    assert!(!s.cycle(SettingKey::UpdateCheck), "unavailable rows refuse");
+    assert!(s.update_check, "…and leave the value alone");
+    assert!(
+        SettingKey::UpdateCheck.description().contains("release"),
+        "the description says what is checked"
+    );
+}
+
+#[test]
+fn the_update_check_never_reaches_settings_json() {
+    // A user preference, not a project's: it lives in update.json. So the
+    // blob never serializes it, a settings.json that names it is ignored,
+    // and `copy_value` never moves it — the Telemetry pattern.
+    let off = SessionSettings {
+        update_check: false,
+        ..SessionSettings::default()
+    };
+    assert_eq!(off.to_json().trim(), "{}", "not written");
+    assert!(
+        SessionSettings::parse(r#"{"update_check": false}"#).update_check,
+        "not read"
+    );
+    let mut file = SessionSettings::default();
+    file.copy_value(SettingKey::UpdateCheck, &off);
+    assert!(file.update_check, "not this file's to record");
     assert_eq!(file, SessionSettings::default());
 }

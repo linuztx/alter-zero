@@ -23,7 +23,7 @@ per change.
   Permission mode         manual
   ...
   Max tool calls          0
-  (1/15)
+  (1/16)
 
   Hide the model's chain-of-thought…
 
@@ -34,7 +34,7 @@ per change.
 
 ## The settings
 
-Fifteen rows, each one a knob the running session actually reads. Every value
+Sixteen rows, each one a knob the running session actually reads. Every value
 **cycles** — there is no free-text field anywhere, so Enter and Space mean the
 same thing on every row and the menu never needs an edit mode.
 
@@ -54,6 +54,7 @@ same thing on every row and the menu never needs an edit mode.
 | **Skills** | `true` / `false` | Whether the `skill` tool is offered and the `<system-reminder>` listing rides the context (`docs/skills.md`). Seeded from `ALTER_ZERO_SKILLS`; **unavailable** when no `SKILL.md` loaded — there is nothing to turn on. |
 | **Temperature** | `default` / `0.0` / `0.3` / `0.5` / `0.7` / `1.0` | The sampling temperature every request carries; `default` sends none and leaves it to the provider. Seeded from `ALTER_ZERO_TEMPERATURE`. |
 | **Max tool calls** | **`0`** / `5` / `10` / `20` / `50` / `100` | How many tool **calls** one turn may run before it gives up (`llm::agent::run_agent`'s cap). **`0` is no limit, and the default** — see below. |
+| **Update check** | `true` / `false` | Whether the app asks the repository once a day whether a newer release is out and says so under the banner (`docs/update.md`: one `HEAD` of `/releases/latest`, answered by a redirect whose tag is the version — no body, no install id, nothing about you; the card names the release, `alter-zero update` and the off switch, once a day, never mid-reply). **Per user, not per directory**: persisted in `update.json`, never in `settings.json`. Seeded from `ALTER_ZERO_UPDATE_CHECK`; **unavailable** without a config home (nowhere to remember the day) **and whenever the variable forbids it** — the Telemetry rule, an environment that says no withdraws the row. `alter-zero update` on the command line is the user's own request and runs regardless. |
 | **Telemetry** | `true` / `false` | Whether the anonymous daily usage ping is sent (`docs/telemetry.md`: five fields — a payload version, a random install id, the app version, the OS and the architecture — never a prompt, path, model or key; the collector notes the country, never the address). **Per user, not per directory**: persisted in `telemetry.json`, never in `settings.json`. Seeded from `ALTER_ZERO_TELEMETRY`, outranked by `DO_NOT_TRACK=1`; **unavailable** without a config home (nowhere to keep the install id) **and whenever either variable forbids it** — alone among the rows, an environment that says no withdraws the row rather than merely seeding it, since an opt-out a keystroke could undo is not one (`docs/telemetry.md`). |
 
 ### The ceiling counts calls, not rounds
@@ -213,6 +214,11 @@ docs`.
   - **Hide thinking** and **Auto compact** need nothing beyond the pure flag:
     `tui::stream` consults `App::settings().show_thinking()` per phase and
     `App::should_auto_compact` gates on the flag.
+  - **Update check** writes its own file too — `update.json` — and turning
+    it on takes today's step at once: a newer release the file already knows
+    of is announced, and the day's request is sent when none has run
+    (`Session::apply_update_setting`, `docs/update.md`); turning it off sends
+    nothing more.
   - **Telemetry** writes its own file — `telemetry.json`, beside the install
     id — instead of this directory's `settings.json` entry, and turning it on
     sends today's ping at once when none has gone
@@ -265,9 +271,10 @@ An entry is a whole blob, never a layer over the seed (the diff format cannot
 tell a `true` left at its default from one deliberately chosen), and it is
 kept even once it equals the defaults — dropping it would let the seed back in.
 
-**Telemetry** is the one row that is not in this file at all. An opt-out that
-applied only to the directory you happened to be in would be a surprise, so
-its value lives in `telemetry.json` (`docs/telemetry.md`) — the field is
+**Telemetry** and **Update check** are the two rows that are not in this
+file at all. An opt-out that applied only to the directory you happened to be
+in would be a surprise, so their values live in `telemetry.json` and
+`update.json` (`docs/telemetry.md`, `docs/update.md`) — each field is
 `#[serde(skip)]` on `SessionSettings`, `copy_value` never moves it (the
 `PermissionMode` pattern), and `apply_setting` skips the `settings.json`
 write for it.

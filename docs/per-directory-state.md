@@ -209,6 +209,9 @@ Two consequences at the boundary:
   is the one knob that persists per *user*: `SessionSettings::telemetry` is
   `#[serde(skip)]`, `copy_value` never moves it, and the boundary seeds it
   from — and writes it back to — `telemetry.json` alone.
+- **`update.json`** — the once-a-day update check's switch and record
+  (`docs/update.md`): the same per-*user* rule for the same reason, with
+  `SessionSettings::update_check` `#[serde(skip)]` beside `telemetry`.
 - The **project-level `.alter-zero/`** layer (`docs/project-config.md`) is
   a different axis: files *inside* the project, behind `/trust`. Both files
   here live in the user's config home, keyed by directory, and need no trust

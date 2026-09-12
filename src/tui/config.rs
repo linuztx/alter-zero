@@ -917,6 +917,63 @@ fn telemetry_env_override() -> Option<bool> {
     alter_zero::telemetry::enabled_by_env(telemetry.as_deref(), dnt.as_deref())
 }
 
+/// The update-check file — `{config_home}/update.json`, its own per-user
+/// file like `telemetry.json` (`docs/update.md`).
+pub(crate) fn update_json_path() -> Option<PathBuf> {
+    config_home().map(|dir| dir.join(alter_zero::update::UPDATE_FILE_NAME))
+}
+
+/// Read `update.json`. Best-effort like [`load_telemetry_file`]: an absent,
+/// unreadable or corrupt file reads as the defaults (on, nothing known yet).
+pub(crate) fn load_update_file(path: Option<&Path>) -> alter_zero::update::UpdateFile {
+    path.and_then(|p| std::fs::read_to_string(p).ok())
+        .map(|text| alter_zero::update::UpdateFile::parse(&text))
+        .unwrap_or_default()
+}
+
+/// Change `update.json` through `edit`, as a **read-modify-write** over the
+/// file itself — [`update_telemetry_file`]'s twin: every writer (the check's
+/// day, the version it found, the notice's day, the `/settings` toggle) goes
+/// through here on the loop thread, a failed write is swallowed, and a
+/// `None` path edits nothing.
+pub(crate) fn update_update_file(
+    path: Option<&Path>,
+    edit: impl FnOnce(&mut alter_zero::update::UpdateFile),
+) -> alter_zero::update::UpdateFile {
+    let before = load_update_file(path);
+    let mut file = before.clone();
+    edit(&mut file);
+    if let Some(path) = path
+        && file != before
+    {
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let _ = std::fs::write(path, file.to_json());
+    }
+    file
+}
+
+/// The repository whose releases the check reads: `ALTER_ZERO_UPDATE_URL`
+/// when set and non-empty (a fork, the smoke suite's stand-in server), else
+/// the manifest's own (`update::DEFAULT_REPO_URL`).
+pub(crate) fn update_repo_url() -> String {
+    std::env::var(alter_zero::update::REPO_URL_ENV)
+        .ok()
+        .map(|url| url.trim().to_string())
+        .filter(|url| !url.is_empty())
+        .unwrap_or_else(|| alter_zero::update::DEFAULT_REPO_URL.to_string())
+}
+
+/// Whether the environment **forbids** the update check this run — a falsy
+/// `ALTER_ZERO_UPDATE_CHECK`. The telemetry rule (`telemetry_forbidden_by_env`):
+/// the `/settings` row reports itself unavailable, so a "send nothing"
+/// stated in the environment cannot be cycled around from inside the app.
+pub(crate) fn update_check_forbidden_by_env() -> bool {
+    let value = std::env::var(alter_zero::update::UPDATE_ENV).ok();
+    alter_zero::update::enabled_by_env(value.as_deref()) == Some(false)
+}
+
 /// Read the saved theme. Best-effort like [`load_spinner`] — an absent,
 /// unreadable, or corrupt file reads as `None` and the session keeps the
 /// default theme rather than failing startup.

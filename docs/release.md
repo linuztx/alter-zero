@@ -129,6 +129,17 @@ latest and a pinned release, a re-install over itself, a release with no
 asset for the machine, a tampered checksum (nothing installed, and the
 output says so), `--help`, and an unknown flag.
 
+The app drives the same script from inside: `alter-zero update`
+(`docs/update.md`) reads the latest tag off the same redirect and, when it is
+newer than the running binary, fetches `install.sh` to a temp file and runs
+it with `ALTER_ZERO_INSTALL_DIR` set to the binary's own directory,
+`ALTER_ZERO_VERSION` to the tag it just read and `ALTER_ZERO_INSTALL_BASE_URL`
+to the same repository — so the in-app update *is* the one-line install with
+its three variables filled in, and there is no second install path to keep
+correct. `release_server.py` therefore also serves the installer at
+`/install.sh` (its optional third argument), which is what lets `smoke.sh`
+Phase 116 run that command end to end against a packaged fake release.
+
 ## The scripts
 
 `scripts/release.sh` is one entry point over the steps under

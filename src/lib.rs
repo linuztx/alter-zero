@@ -111,6 +111,9 @@
 //! - [`ui`]          — pure rendering helpers (word-wrap, message lines, live
 //!   region), split one module per area with every styling constant in
 //!   `ui::theme` (see `docs/module-layout.md`).
+//! - [`update`]      — the once-a-day update check: the `update.json` format,
+//!   the version ordering, the tag read off GitHub's redirect, the card's
+//!   text (pure; see `docs/update.md`).
 
 /// The product's own name — what the agent is called wherever the app speaks
 /// about itself to the user: the startup banner's title
@@ -159,3 +162,4 @@ pub mod textarea;
 pub mod tokenizer;
 pub mod trust;
 pub mod ui;
+pub mod update;

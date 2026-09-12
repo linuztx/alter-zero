@@ -126,9 +126,9 @@ opening the viewport, running the loop — and everything else lives here:
 | `commit.rs` | Scrollback commits — the one place invariant 4 is enforced — and the toast. |
 | `models.rs` | `ModelSession`: the backend and every knob that selects it, plus the `/model`, Ctrl+T and probe arms (`docs/llm.md`). |
 | `login.rs` | The `/login` flow's boundary half: opening it, running a subscription's sign-in — a device code or a browser PKCE flow, per provider — and persisting what it mints (`docs/copilot.md`, `docs/chatgpt.md`). |
-| `config.rs` | Reading the environment: providers, keys, the per-directory `/model` selections and `/settings` knobs (`docs/per-directory-state.md`), permission rules, the per-user `telemetry.json` (`docs/telemetry.md`), paths. |
+| `config.rs` | Reading the environment: providers, keys, the per-directory `/model` selections and `/settings` knobs (`docs/per-directory-state.md`), permission rules, the per-user `telemetry.json` (`docs/telemetry.md`) and `update.json` (`docs/update.md`), paths. |
 | `bootstrap.rs` | `Session::bootstrap` / `shutdown` / `after_iteration` — assembly, teardown, loop-bottom work. |
-| `startup.rs` | The `--continue`/`--resume`/`[PROMPT]` argument resolution and the styled `--help` / usage-error printing (`docs/cli.md`). |
+| `startup.rs` | The `--continue`/`--resume`/`[PROMPT]` argument resolution, the styled `--help` / usage-error printing, and the `mcp` / `update` subcommand dispatch (`docs/cli.md`). |
 | `recorder.rs` | `SessionRecorder`: mirroring history to a rollout file (`docs/resume.md`). |
 | `resume.rs` | Finding recorded sessions on disk, and the `/resume` + backtrack arms. |
 | `history_store.rs` | `InputHistoryStore` (`docs/history-persistence.md`). |
@@ -137,8 +137,10 @@ opening the viewport, running the loop — and everything else lives here:
 | `theme.rs` | Applying a `/theme` selection: the `theme.json` write, the palette switch, the recolouring rebuild (`docs/theme.md`). |
 | `donate.rs` | Applying a `/donate` copy: the clipboard write + the toast (`docs/donate.md`). |
 | `telemetry.rs` | The once-a-day anonymous usage ping: the install id's mint, the one-time notice under the banner, the detached send, the delivered day's record (`docs/telemetry.md`). |
+| `update.rs` | The once-a-day update check: the detached `HEAD` of the repository's latest release, the `Update available` card under the banner (held back while a turn streams), the attempt's and the notice's day in `update.json` (`docs/update.md`). |
+| `update_cli.rs` | The `alter-zero update` subcommand: the same check, then the one-line installer fetched to a temp file and run over this binary's own directory (`docs/update.md`). |
 | `shell.rs` | The `!` command runner and its drain/cap unit tests (`docs/shell-command.md`). |
-| `workers.rs` | The off-thread file-search / clipboard / model-list / device-sign-in / telemetry-ping jobs. |
+| `workers.rs` | The off-thread file-search / clipboard / model-list / device-sign-in / telemetry-ping / update-check jobs. |
 | `host.rs` | Clocks, dates, the OS string, the uid, ids — the raw impurities. |
 
 ### `src/stream/` — the backend seam

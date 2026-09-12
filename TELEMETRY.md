@@ -252,6 +252,49 @@ per platform (`ubuntu 24.04`, `macos 15.3.1`);
 commands. Point your build at it with that variable, or change
 `telemetry::DEFAULT_ENDPOINT` in `src/telemetry.rs`.
 
+## The update check
+
+One other request leaves your machine on its own: **once a day**, after the
+first frame, the app asks whether a newer release is out, so it can say so
+under the banner and point you at `alter-zero update`. It is a separate
+feature with a separate switch, described in [`docs/update.md`](docs/update.md),
+and it belongs in this document because the document promises to be the
+complete list.
+
+The whole request is one `HEAD` of the repository's releases page —
+
+```
+HEAD https://github.com/linuztx/alter-zero/releases/latest
+User-Agent: alter-zero/0.1.0
+```
+
+— and the answer is a redirect to `…/releases/tag/vX.Y.Z`, whose tag is the
+version. **No body, no install id, no query string**: nothing identifies the
+install, and nothing is recorded by this project. GitHub sees the connection
+the way it sees you opening that page in a browser, no more. It is not the
+GitHub API and it downloads nothing; only `alter-zero update`, when you run
+it, fetches the installer and a release archive — and that command is your
+own request, so it runs whatever the switches below say.
+
+It is not covered by `DO_NOT_TRACK`, because it is not tracking: the
+convention is about analytics, and this measures nothing. It has its own
+switches instead, because a request to github.com you did not type is still
+one you may not want:
+
+| how | scope |
+|---|---|
+| **`/settings` → Update check** | permanent, for your user, in every directory |
+| **`ALTER_ZERO_UPDATE_CHECK=0`** | that run (`0`/`false`/`no`/`off`; `=1` turns it on for a run) |
+
+As with Telemetry, the variable withdraws the `/settings` row (`false
+(unavailable)`) so nothing in the app can quietly turn it back on, and without
+a config home nothing runs at all. What is kept is
+`~/.alter-zero/update.json`: the switch, the last day a check was attempted,
+the newest version the last check found, and the last day the notice was
+shown. `ALTER_ZERO_UPDATE_URL` points the check at another repository — a
+fork of your own — and `scripts/smoke.sh` Phase 116 drives the whole thing
+against a local stand-in server, so you can watch the one request it makes.
+
 ## Why this is opt-out
 
 An opt-in counter measures the people who go looking for a setting, which is

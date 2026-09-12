@@ -217,6 +217,7 @@ The essentials are always one keystroke away: `/` opens commands, and `?` in an 
 ```text
 Usage: alter-zero [OPTIONS] [PROMPT]
        alter-zero mcp <COMMAND>
+       alter-zero update
 
 Arguments:
   [PROMPT]        Send this message as the first turn
@@ -235,7 +236,7 @@ alter-zero "fix the failing test"
 alter-zero -c "now review the changes"
 ```
 
-Run `alter-zero mcp --help` for MCP server management commands.
+Run `alter-zero mcp --help` for MCP server management commands, and `alter-zero update` to install the newest release over the binary you are running.
 
 </details>
 

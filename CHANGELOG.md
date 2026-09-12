@@ -82,6 +82,12 @@ as a single self-contained binary for Linux and macOS.
 - **One-line install.** `curl -fsSL https://raw.githubusercontent.com/linuztx/alter-zero/main/install.sh | sh`
   picks the build for the machine, verifies its SHA-256 against the
   published checksum, and installs `alter-zero` into `~/.local/bin`.
+- **Update notice.** Once a day the app asks the repository's releases page
+  whether a newer version is out — one request, carrying nothing about you
+  — and says so under the banner, naming the release and `alter-zero
+  update`, which installs it over the running binary through the same
+  checksum-verified installer. Off with the **Update check** setting or
+  `ALTER_ZERO_UPDATE_CHECK=0`; `TELEMETRY.md` states the request in full.
 - **Release tooling.** A CI workflow running the project's gate (`fmt`,
   `clippy`, `test`, `doc`), the smoke suite, and the release tooling's own
   tests; a release workflow that, on a `vX.Y.Z` tag, verifies the version

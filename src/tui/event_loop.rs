@@ -112,6 +112,10 @@ pub(crate) async fn run(term: &mut InlineViewport, startup: Startup) -> io::Resu
             // 11. The day's telemetry ping was delivered: record the day so
             //     the next launch today sends nothing (docs/telemetry.md).
             Some(day) = session.telemetry_rx.recv() => session.on_telemetry_result(&day),
+
+            // 12. The update check answered: record what it found and, if
+            //     newer, announce it once the session is idle (docs/update.md).
+            Some(latest) = session.update_rx.recv() => session.on_update_result(&latest),
         }
         session.after_iteration();
     }

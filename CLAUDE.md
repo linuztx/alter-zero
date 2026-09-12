@@ -83,12 +83,12 @@ pays for and why (`moxcms` under `image`, the sixel quantiser under
 ## Architecture
 
 A **library** (`src/lib.rs` → `app`, `stream`, `ui`, `term`, `frame`, `paste`,
-`session`, `subprocess`, `history`, `textarea`, `file_search`, `clipboard`, `context`, `background`, `scratchpad`, `agents`, `subagents`, `frontmatter`, `ask`, `tasks`, `skills`, `steer`, `mcp`, `trust`, `checkpoint`, `project_doc`, `reminder`, `permission`, `settings`, `telemetry`, `cli`, `links`, `images`) holds the logic; **`src/main.rs`** is a 77-line shell —
+`session`, `subprocess`, `history`, `textarea`, `file_search`, `clipboard`, `context`, `background`, `scratchpad`, `agents`, `subagents`, `frontmatter`, `ask`, `tasks`, `skills`, `steer`, `mcp`, `trust`, `checkpoint`, `project_doc`, `reminder`, `permission`, `settings`, `telemetry`, `update`, `cli`, `links`, `images`) holds the logic; **`src/main.rs`** is a 77-line shell —
 the detached-exec hook, the CLI resolution, the viewport, the loop — over
 **`src/tui/`**, the binary-private tree that drives the codex-style **async
 (tokio) `select!`** loop (`event_loop`, `actions`, `turn`, `stream`, `agent`,
 `background`, `permission`, `view`, `commit`, `models`, `config`, `bootstrap`,
-`startup`, `recorder`, `resume`, `history_store`, `settings`, `telemetry`, `shell`, `workers`, `host`, `mascot`, `spinner`, `theme`, `donate`, `mcp`, `trust`, `login`,
+`startup`, `recorder`, `resume`, `history_store`, `settings`, `telemetry`, `update`, `update_cli`, `shell`, `workers`, `host`, `mascot`, `spinner`, `theme`, `donate`, `mcp`, `trust`, `login`,
 with the **`Session`** struct itself in `mod.rs` — every handler is an `impl
 Session` block in its area module, reaching the private fields the way `app/`'s
 submodules reach `App`'s). The four big ones are **directories
@@ -1628,7 +1628,7 @@ the **`/settings` menu** (`docs/settings.md`: the knobs that were only ever
 a hard-coded `agent::MAX_TOOL_ITERATIONS`, and an always-on auto-compaction —
 made *visible and changeable mid-session*
 in the `/model` picker's inline frame, the third composer-replacing picker:
-fifteen rows (**Hide thinking**, **Show images**, **Image width**,
+sixteen rows (**Hide thinking**, **Show images**, **Image width**,
 **Auto-resize images** — the three from `docs/images.md` — **Error retry**,
 **Tools**, **Permission
 mode**, **Checkpoints**, **Auto compact**, **Project docs**, **Hooks**,
@@ -1637,7 +1637,32 @@ mode**, **Checkpoints**, **Auto compact**, **Project docs**, **Hooks**,
 trips mid-task abandons the work half-done and Esc is already the stop
 button; it counts the **calls**, not the rounds, because a round can be a
 whole parallel batch, and a round the budget can only partly afford is
-clamped rather than refused whole; and **Telemetry** — the anonymous daily
+clamped rather than refused whole; **Update check** — the once-a-day
+newer-release check, `docs/update.md`: one `HEAD` of the repository's
+`/releases/latest` per UTC day, the tag read off the redirect it lands on (no
+API, no body, no install id — the `alter-zero/{version}` user agent and
+nothing else), the attempt's day recorded **at the spawn** so a dead network
+costs one request a day and nothing the user sees, the answer kept in the
+per-**user** `update.json` beside `telemetry.json` (`enabled`,
+`last_check_day`, `latest`, `notice_day`), and a newer release announced
+**once a day** through the `ui::update_notice_lines` card — the telemetry
+card's own frame, `ui::notice_card_lines`, naming the release page, `alter-zero
+update` and the off switch — committed after the first frame and **never
+inside a reply** (a result landing mid-turn waits in
+`Session::update_notice_pending` for the idle loop bottom, invariant 4), off
+with the row or `ALTER_ZERO_UPDATE_CHECK=0` (which withdraws the row, the
+Telemetry rule), `ALTER_ZERO_UPDATE_URL` pointing a fork or `smoke.sh`
+Phase 116's stand-in `release_server.py` at another repository root; and the
+**`alter-zero update` subcommand** (`cli::Cli::Update` → `tui::update_cli`,
+routed at the pre-TUI boundary like `mcp`) doing the install: the same
+`HEAD`, then `install.sh` fetched **to a temp file**, never piped (`sh` on an
+empty pipe exits 0) and shape-checked before it runs, with
+`ALTER_ZERO_INSTALL_DIR` = the running binary's own directory,
+`ALTER_ZERO_VERSION` = the tag just resolved and `ALTER_ZERO_INSTALL_BASE_URL`
+= the same repository, refusing a `target/{debug,release}` binary (a checkout
+to `git pull`, not an install to overwrite) and running regardless of
+`ALTER_ZERO_UPDATE_CHECK=0`, since an explicit command is the user's own
+request; and **Telemetry** — the anonymous daily
 usage ping, `docs/telemetry.md`: one `POST` a day per install carrying seven
 fields (a payload version, a random 128-bit install id, the app version, the
 OS, the architecture, on Linux the distribution's os-release `ID`, and that

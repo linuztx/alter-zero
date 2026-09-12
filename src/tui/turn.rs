@@ -135,6 +135,8 @@ impl Session<'_> {
         // a *turn* is what "used it today" means, and on the common path it
         // is a date read and a string compare that touch no file.
         self.telemetry_day_check();
+        // …and the update check's (docs/update.md): the same once-a-day rule.
+        self.update_day_check();
         // The whole conversation — the just-recorded user message included —
         // rides the request so a real model keeps its context across turns (the
         // AGENTS.md instructions in front); the image paths also travel the

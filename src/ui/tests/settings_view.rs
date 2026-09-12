@@ -230,6 +230,7 @@ fn an_unavailable_row_is_labelled_and_dimmed() {
         skills: true,
         images: true,
         telemetry: true,
+        update_check: true,
     });
     let buf = render(&app, 78);
     let all = SettingKey::ALL.len();
