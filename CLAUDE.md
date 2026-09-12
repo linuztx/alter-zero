@@ -2591,6 +2591,29 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   (`file_tool_path_params_instruct_absolute_paths`, which checks both the
   lead-in and the length), and the same rule governs the tool descriptions
   around them: state the capability and its sharp edges, drop the padding.
+- **The README is the front door, not the manual.** It answers three
+  questions — *what is this*, *why would I use it*, *how do I start* — and
+  stops. Everything else already has a home: the mechanism and the design
+  rationale in `docs/`, the complete statement of what leaves a machine in
+  `TELEMETRY.md`, what changed between versions in `CHANGELOG.md`. **A
+  feature landing does not earn a README section.** The daily update check
+  got a four-sentence paragraph in the install flow and it came straight
+  back out: it explained a background request, an env var and an off switch
+  to a reader who was two lines into running one command — the same rule
+  `docs/telemetry.md` had already written down for the ping ("a privacy
+  statement is a document someone goes looking for, not a section they
+  scroll past"). What stays in the main flow is what the reader needs *at
+  that moment* in order to act — the one-liner, and the sentence saying the
+  script checksums what it downloads and names the directory it installs
+  into, because trust asked for on a screen is trust earned on that same
+  screen. Everything needed only *sometimes* — environment variables, a
+  manual install, the slash-command table, the keyboard map, the `--help`
+  block, the config paths — folds into a
+  `<details><summary><strong>…</strong></summary>` block, the README's own
+  established shape for it, so the page stays short while the fact stays
+  reachable. Write for someone deciding whether to run this at all, not for
+  someone who already has: a sentence that begins "it also…" is usually a
+  `docs/` sentence.
 - **Never build a `Value` tree of a body you read a few fields out of.**
   Resident memory is a feature here — the app idles in the user's terminal
   all day, and glibc does **not** return a freed tree's pages to the OS

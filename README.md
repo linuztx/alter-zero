@@ -53,7 +53,21 @@ One line on Linux or macOS:
 curl -fsSL https://raw.githubusercontent.com/linuztx/alter-zero/main/install.sh | sh
 ```
 
-It picks the build for your machine, verifies its SHA-256 against the checksum published with the release, installs `alter-zero` into `~/.local/bin`, and tells you if that directory is not on your `PATH`. Set `ALTER_ZERO_INSTALL_DIR` to install somewhere else, or `ALTER_ZERO_VERSION=vX.Y.Z` to pin a release. Each release's notes also list every archive with its SHA-256 for a manual install, and [`CHANGELOG.md`](CHANGELOG.md) records what changed between versions.
+It picks the build for your machine, verifies its SHA-256 against the checksum published with the release, installs `alter-zero` into `~/.local/bin`, and tells you if that directory is not on your `PATH`.
+
+<details>
+<summary><strong>Install options</strong></summary>
+
+Set `ALTER_ZERO_INSTALL_DIR` to install somewhere else, or `ALTER_ZERO_VERSION=vX.Y.Z` to pin a release. [`CHANGELOG.md`](CHANGELOG.md) records what changed between versions.
+
+```bash
+ALTER_ZERO_INSTALL_DIR="$HOME/bin" ALTER_ZERO_VERSION=v0.1.0 \
+  sh -c "$(curl -fsSL https://raw.githubusercontent.com/linuztx/alter-zero/main/install.sh)"
+```
+
+For a manual install, each release's notes list every archive with its SHA-256, so you can download, verify, and extract one by hand.
+
+</details>
 
 ### Build from source
 
