@@ -86,7 +86,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - run: shellcheck -x scripts/release.sh scripts/release/*.sh
+      - run: shellcheck -x install.sh scripts/release.sh scripts/release/*.sh
       - run: scripts/release.sh selftest
       - name: Cargo.toml, Cargo.lock, the README badge and CHANGELOG.md agree
         run: scripts/release.sh check

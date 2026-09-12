@@ -45,7 +45,7 @@ jobs:
         # On a tag, `check` reads GITHUB_REF_TYPE/GITHUB_REF_NAME and requires
         # the tag to name Cargo.toml's version.
         run: scripts/release.sh check
-      - run: shellcheck -x scripts/release.sh scripts/release/*.sh
+      - run: shellcheck -x install.sh scripts/release.sh scripts/release/*.sh
       - run: scripts/release.sh selftest
       - id: mode
         env:

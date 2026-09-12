@@ -9,7 +9,8 @@
 # is the single place a release is described, so the notes cannot drift
 # from it. With a dist directory, an **Assets** table follows (each archive
 # linked to its download URL with its platform and SHA-256, read from the
-# `.sha256` beside it), then a verify-and-install snippet, and last the
+# `.sha256` beside it), then the one-line installer over the manual
+# verify-and-install steps, and last the
 # compare link to the previous release (or the tag's commit list for the
 # first). The workflow writes this to the release and to its job summary.
 #
@@ -53,7 +54,10 @@ if [ -n "$dist" ]; then
 	if [ -n "$rows" ]; then
 		printf '\n## Assets\n\n| Asset | Platform | SHA-256 |\n| --- | --- | --- |\n%s' "$rows"
 		printf '\nEach archive unpacks to a directory of the same name holding the `%s` binary, `LICENSE`, `README.md` and this release'"'"'s `CHANGELOG.md`; `SHA256SUMS` lists every checksum above in `sha256sum -c` form.\n' "$name"
-		printf '\n### Verify and install\n\n'
+		printf '\n### Install\n\n'
+		printf 'One line on Linux or macOS — it picks the build for your machine, verifies its SHA-256 against the value above, and installs `%s` to `~/.local/bin`:\n\n' "$name"
+		printf '```bash\ncurl -fsSL https://raw.githubusercontent.com/%s/main/install.sh | sh\n```\n\n' "$(repo_slug)"
+		printf 'Pin this release with `ALTER_ZERO_VERSION=%s`, or install by hand:\n\n' "$tag"
 		printf '```bash\n'
 		printf 'tag=%s\n' "$tag"
 		printf 'asset=%s-${tag}-%s   # pick your platform'"'"'s name from the table\n' "$name" "$first"

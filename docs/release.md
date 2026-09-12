@@ -86,6 +86,49 @@ empty. GitHub's auto-generated "what's changed" commit list was considered
 and not used: a commit subject is written for a reviewer, a changelog entry
 for a user, and the two rarely read the same.
 
+## The installer
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/linuztx/alter-zero/main/install.sh | sh
+```
+
+`install.sh` at the repository root is the one line the README leads with.
+It maps `uname` to a target triple (refusing Windows, musl, and a glibc
+older than the 2.35 floor with a message that points at building from
+source), reads the latest tag off github.com's `/releases/latest` redirect
+(no API call, so no rate limit — `ALTER_ZERO_VERSION=vX.Y.Z` or `--version`
+pins one instead), downloads the archive **and** its `.sha256`, refuses to
+go on without the checksum file or with one that does not match, extracts,
+copies the binary into `~/.local/bin` (`ALTER_ZERO_INSTALL_DIR` or `--dir`
+for elsewhere) beside any old one and moves it into place so a running
+`alter-zero` keeps its mapped file and the new one appears whole, runs the
+installed binary's `--version` as the last check, and ends with what to do
+next — the PATH line for the user's own shell when the directory is not on
+it, and how to uninstall. It never prompts: under `curl | sh` its stdin
+*is* the script.
+
+It is POSIX `sh`, not bash — no arrays, no `local`, no `[[` — because the
+pipe target is whatever `sh` is (bash 3.2 in POSIX mode on macOS, dash on
+Debian, busybox on a container), and the whole file is functions with a
+single `main "$@"` on the last line, so a connection that drops mid-download
+hands `sh` an incomplete file that defines nothing and runs nothing. The
+output wears the app's own look: the `crest` mascot in the banner gradient
+(truecolor when `COLORTERM` says so, the terminal's cyan otherwise), the
+`→`/`✔`/`✘` step glyphs, and none of it — no colour, ASCII glyphs — in a
+pipe, under `NO_COLOR`, or outside a UTF-8 locale.
+
+The script is served from `main` rather than attached to each release
+because the URL then never changes: an asset's name carries the version,
+and the installer resolves the version itself. That also means a fix to the
+installer reaches users without a release. Its offline test double is
+`scripts/release/release_server.py`, a stand-in for github.com's release
+pages — the redirect, the tag page, the download URLs over a directory —
+that the selftest points `ALTER_ZERO_INSTALL_BASE_URL` at, so every path
+through the installer runs against real archives with no network: the
+latest and a pinned release, a re-install over itself, a release with no
+asset for the machine, a tampered checksum (nothing installed, and the
+output says so), `--help`, and an unknown flag.
+
 ## The scripts
 
 `scripts/release.sh` is one entry point over the steps under
@@ -211,7 +254,8 @@ the reviewer who reads the commit.
 
 `.github/workflows/ci.yml` runs on every push to `main` and every pull
 request: **gate** (the four commands), **smoke** (the tmux suite over the
-real binary), **release tooling** (`shellcheck`, `selftest`, `check`), and
+real binary), **release tooling** (`shellcheck` over the scripts and
+`install.sh`, `selftest`, `check`), and
 **telemetry** (the collector's `node --test`). The smoke job runs one
 worker per core rather than the suite's default of twice that: a `-j 8`
 run on a four-core box here failed phases 58 and 61 — the permission
@@ -291,23 +335,25 @@ toolchain bump is the one edit it already is.
   the `file` and `--version` checks run for real, the CPU check firing on
   a mislabelled binary, `notes` with and without assets, `prepare` rolling
   a fixture forward and a first release, `publish --dry-run` with `gh`
-  absent from `PATH`. It needs bash, awk, sed, tar, gzip, `file` and a C
-  compiler, and runs in a couple of seconds; CI and the release workflow
-  both run it.
-- `shellcheck -x` over the scripts, in CI and in the release `check` job.
+  absent from `PATH`, and `install.sh` end to end against the stand-in
+  release server (above). It needs bash, awk, sed, tar, gzip, `file`, a C
+  compiler and python3, and runs in a few seconds; CI and the release
+  workflow both run it.
+- `shellcheck -x` over the scripts and `install.sh` (which it checks as
+  POSIX `sh`, flagging any bashism), in CI and in the release `check` job.
 - The scripts avoid bash 4 (`${var,,}`, associative arrays, `mapfile`),
   `sed -i`, `readlink -f` and gawk-only awk, since a macOS runner may hand
   them bash 3.2, BSD sed and BWK awk.
 - The first local rehearsal of this tooling built the x86_64 Linux asset
   in 2 m 15 s (a 22 MB binary, a 9.0 MB archive), `verify` ran the
-  packaged binary's `--version`, and the arm64 asset cross-compiled under
-  the same script.
+  packaged binary's `--version`, the arm64 asset cross-compiled under the
+  same script and ran under qemu, and `install.sh` installed the x86_64
+  archive from the stand-in server, checksum verified, in one line.
 
 ## Follow-ups
 
-Not done, and worth doing in this order when wanted: a `curl | sh`
-installer that picks the asset for the host and verifies its checksum; a
-Homebrew tap formula pointing at the macOS assets; signing the checksums
+Not done, and worth doing in this order when wanted: a Homebrew tap
+formula pointing at the macOS assets; signing the checksums
 (Sigstore `cosign` keyless from the workflow, or `minisign`) so a
 downloader can verify provenance and not just integrity; publishing the
 crate to crates.io (`cargo publish` from the `publish` job needs a token

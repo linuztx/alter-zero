@@ -79,6 +79,9 @@ as a single self-contained binary for Linux and macOS.
   OS, architecture) described in full in `TELEMETRY.md`, shown once at
   startup, and switched off with the **Telemetry** setting,
   `ALTER_ZERO_TELEMETRY=0`, or `DO_NOT_TRACK=1`.
+- **One-line install.** `curl -fsSL https://raw.githubusercontent.com/linuztx/alter-zero/main/install.sh | sh`
+  picks the build for the machine, verifies its SHA-256 against the
+  published checksum, and installs `alter-zero` into `~/.local/bin`.
 - **Release tooling.** A CI workflow running the project's gate (`fmt`,
   `clippy`, `test`, `doc`), the smoke suite, and the release tooling's own
   tests; a release workflow that, on a `vX.Y.Z` tag, verifies the version

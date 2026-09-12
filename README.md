@@ -45,22 +45,15 @@ Alter Zero is an open-source AI coding agent written in Rust. It works directly 
 
 Alter Zero runs on **Linux** (x86_64, arm64) and **macOS** (Intel, Apple silicon) in a modern terminal.
 
-### Install a release
+### Install
 
-Download the archive for your platform from the [latest release](https://github.com/linuztx/alter-zero/releases/latest), check it against the checksum published beside it, and put the binary on your `PATH`:
+One line on Linux or macOS:
 
 ```bash
-tag=v0.1.0   # the release you want
-asset=alter-zero-${tag}-x86_64-unknown-linux-gnu   # or aarch64-unknown-linux-gnu, x86_64-apple-darwin, aarch64-apple-darwin
-curl -fsSLO "https://github.com/linuztx/alter-zero/releases/download/${tag}/${asset}.tar.gz"
-curl -fsSLO "https://github.com/linuztx/alter-zero/releases/download/${tag}/${asset}.tar.gz.sha256"
-sha256sum -c "${asset}.tar.gz.sha256"   # macOS: shasum -a 256 -c "${asset}.tar.gz.sha256"
-tar -xzf "${asset}.tar.gz"
-mkdir -p ~/.local/bin && install -m 755 "${asset}/alter-zero" ~/.local/bin/   # or anywhere on your PATH
-alter-zero
+curl -fsSL https://raw.githubusercontent.com/linuztx/alter-zero/main/install.sh | sh
 ```
 
-Each release's notes list every asset with its SHA-256, and [`CHANGELOG.md`](CHANGELOG.md) records what changed between versions.
+It picks the build for your machine, verifies its SHA-256 against the checksum published with the release, installs `alter-zero` into `~/.local/bin`, and tells you if that directory is not on your `PATH`. Set `ALTER_ZERO_INSTALL_DIR` to install somewhere else, or `ALTER_ZERO_VERSION=vX.Y.Z` to pin a release. Each release's notes also list every archive with its SHA-256 for a manual install, and [`CHANGELOG.md`](CHANGELOG.md) records what changed between versions.
 
 ### Build from source
 

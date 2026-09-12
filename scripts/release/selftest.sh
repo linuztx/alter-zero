@@ -20,8 +20,31 @@ set -uo pipefail
 set +e
 
 STEPS="$RELEASE_LIB_DIR"
+CHECKOUT="$(cd "$RELEASE_LIB_DIR/../.." && pwd)"
 T="$(mktemp -d)"
-trap 'rm -rf "$T"' EXIT
+SERVER_PID=""
+trap 'stop_release; rm -rf "$T"' EXIT
+
+# serve_release DIST TAG — the stand-in github.com (release_server.py) over
+# DIST, on an ephemeral port printed on stdout; stop_release takes it down.
+serve_release() {
+	python3 "$STEPS/release_server.py" "$1" "$2" >"$T/port" 2>"$T/server.err" &
+	SERVER_PID=$!
+	local i=0
+	while [ ! -s "$T/port" ] && [ "$i" -lt 100 ]; do
+		sleep 0.05
+		i=$((i + 1))
+	done
+	cat "$T/port"
+}
+stop_release() {
+	if [ -n "$SERVER_PID" ]; then
+		kill "$SERVER_PID" 2>/dev/null
+		wait "$SERVER_PID" 2>/dev/null
+		SERVER_PID=""
+	fi
+	rm -f "$T/port"
+}
 PASS=0
 FAILED=0
 
@@ -300,6 +323,7 @@ alter-zero-v0.4.2-$host/alter-zero" "$(tar -tzf "$archive" | sed 's#/$##' | sort
 		# shellcheck disable=SC2016 # the snippet's ${asset} is literal text for the reader
 		expect_contains "…the install snippet" "$notes" 'sha256sum -c "${asset}.tar.gz.sha256"'
 		expect_contains "…and the compare link" "$notes" "**Full changelog**: https://github.com/example/alter-zero/compare/v0.4.1...v0.4.2"
+		expect_contains "…leading the install section with the one-liner" "$notes" "curl -fsSL https://raw.githubusercontent.com/example/alter-zero/main/install.sh | sh"
 
 		section "publish --dry-run"
 		expect_ok "a dry run needs no gh" env PATH="/nonexistent:$PATH" bash "$STEPS/publish.sh" 0.4.2 "$T/dist" --dry-run
@@ -309,6 +333,38 @@ alter-zero-v0.4.2-$host/alter-zero" "$(tar -tzf "$archive" | sed 's#/$##' | sort
 		if [ -f "$T/dist/SHA256SUMS" ]; then pass "…after writing SHA256SUMS"; else flunk "no SHA256SUMS written"; fi
 		expect_ok "the dist still verifies with SHA256SUMS" bash "$STEPS/verify.sh" "$T/dist"
 		expect_fail "publish refuses a dist that fails verify" bash "$STEPS/publish.sh" 0.4.2 "$T/dist-badsum" --dry-run
+
+		section "install.sh"
+		if command -v python3 >/dev/null 2>&1; then
+			base="http://127.0.0.1:$(serve_release "$T/dist" v0.4.2)"
+			expect_ok "install.sh installs the latest release from the stand-in server" env ALTER_ZERO_INSTALL_BASE_URL="$base" ALTER_ZERO_INSTALL_DIR="$T/home/bin" sh "$CHECKOUT/install.sh"
+			expect_contains "…reading the tag off the /releases/latest redirect" "$OUT" "v0.4.2 · latest"
+			expect_contains "…verifying the checksum" "$OUT" "matches the published value"
+			expect_contains "…and reporting the install" "$OUT" "Installed"
+			expect_contains "…with the PATH hint for a directory not on it" "$OUT" "is not on your PATH"
+			expect_lacks "…and no colour codes when piped" "$OUT" "$(printf '\033')"
+			if [ -x "$T/home/bin/alter-zero" ]; then pass "…the binary is executable"; else flunk "no executable at $T/home/bin/alter-zero"; fi
+			expect_eq "…and runs" "alter-zero 0.4.2" "$("$T/home/bin/alter-zero" --version 2>&1)"
+			expect_ok "install.sh takes --version and --dir" env ALTER_ZERO_INSTALL_BASE_URL="$base" sh "$CHECKOUT/install.sh" --version 0.4.2 --dir "$T/home/bin2"
+			expect_contains "…as a pinned release" "$OUT" "v0.4.2 · pinned"
+			expect_ok "…installing over itself again" env ALTER_ZERO_INSTALL_BASE_URL="$base" ALTER_ZERO_INSTALL_DIR="$T/home/bin2" sh "$CHECKOUT/install.sh"
+			expect_fail "install.sh refuses a release with no asset for the machine" env ALTER_ZERO_INSTALL_BASE_URL="$base" ALTER_ZERO_VERSION=v9.9.9 ALTER_ZERO_INSTALL_DIR="$T/home/bin3" sh "$CHECKOUT/install.sh"
+			expect_contains "…saying so" "$OUT" "no release asset"
+			if [ ! -e "$T/home/bin3/alter-zero" ]; then pass "…and installing nothing"; else flunk "…but left a binary behind"; fi
+			stop_release
+			base="http://127.0.0.1:$(serve_release "$T/dist-badsum" v0.4.2)"
+			expect_fail "install.sh refuses a download whose checksum does not match" env ALTER_ZERO_INSTALL_BASE_URL="$base" ALTER_ZERO_INSTALL_DIR="$T/home/bin4" sh "$CHECKOUT/install.sh"
+			expect_contains "…naming the mismatch" "$OUT" "checksum mismatch"
+			expect_contains "…and that nothing was installed" "$OUT" "Nothing was installed"
+			if [ ! -e "$T/home/bin4/alter-zero" ]; then pass "…truly"; else flunk "…but left a binary behind"; fi
+			stop_release
+			expect_ok "install.sh --help prints the usage" sh "$CHECKOUT/install.sh" --help
+			expect_contains "…naming the one-liner" "$OUT" "curl -fsSL"
+			expect_fail "install.sh refuses an unknown option" sh "$CHECKOUT/install.sh" --bogus
+			expect_ok "release_server.py parses" python3 -c 'import ast, sys; ast.parse(open(sys.argv[1]).read(), sys.argv[1])' "$STEPS/release_server.py"
+		else
+			warn "no python3 — skipping the install.sh cases"
+		fi
 	else
 		flunk "cc could not build the fixture binary: $(cat "$T/cc.log")"
 	fi

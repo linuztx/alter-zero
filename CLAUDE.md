@@ -47,7 +47,10 @@ Apple silicon) packaged, checksummed and verified by `scripts/release.sh`, and
 a GitHub release whose notes are `CHANGELOG.md`'s section for the version
 (`docs/release.md`). Cutting a release is `scripts/release.sh prepare X.Y.Z`,
 a commit, an annotated tag and a push; `workflow_dispatch` rehearses the whole
-pipeline without publishing, and every step runs locally the same way.
+pipeline without publishing, and every step runs locally the same way. Users
+install a release with the one-line `install.sh` (`curl … | sh`, POSIX `sh`,
+checksum-verified), which the selftest drives against
+`scripts/release/release_server.py`, a stand-in for github.com's release pages.
 
 Toolchain: Rust **edition 2024**, `ratatui = 0.30.1` (crossterm is re-exported as
 `ratatui::crossterm` — import it from there, not as a separate crate), plus

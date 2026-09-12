@@ -13,3 +13,5 @@
 
 # scripts/release.sh build packages the release assets here (docs/release.md).
 /dist
+# Python's bytecode cache (scripts/release/release_server.py under the selftest).
+__pycache__/
