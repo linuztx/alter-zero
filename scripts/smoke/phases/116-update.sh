@@ -23,6 +23,10 @@ if ! (
 	# shellcheck source=../../release/lib.sh
 	. "$SMOKE_ROOT/scripts/release/lib.sh"
 	package_dist "$BIN_ABS" 9.9.9 "$(host_target)" "$UP_DIST" >/dev/null
+	# A published release carries SHA256SUMS beside its archives, and that is
+	# the file install.sh verifies against — package_dist writes only the
+	# per-asset ones.
+	write_sha256sums "$UP_DIST" >/dev/null
 ); then
 	fail "could not package the fake v9.9.9 release with the release tooling"
 fi

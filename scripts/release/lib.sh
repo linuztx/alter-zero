@@ -332,3 +332,15 @@ package_dist() {
 	write_sha256 "$archive"
 	printf '%s\n' "$archive"
 }
+# DIST's per-asset checksums gathered into the one `sha256sum -c` file a
+# release publishes beside its archives — which is the file `install.sh`
+# reads, so anything standing in for a published release needs it and not
+# just the per-asset ones `package_dist` writes. It lives here because it
+# was three copies of one line in `publish`, the selftest's fixtures and
+# the smoke suite's stand-in release, and the copy that did not exist is
+# what broke the installer.
+write_sha256sums() {
+	local dist="$1"
+	( shopt -s nullglob; cat "$dist"/*.tar.gz.sha256 ) | sort -k 2 >"$dist/SHA256SUMS"
+	printf '%s\n' "$dist/SHA256SUMS"
+}

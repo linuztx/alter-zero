@@ -9,7 +9,7 @@
 # lines, the changelog grammar over a file with two releases, `check` against
 # a consistent tree and then each way of breaking it, `package_dist` +
 # `verify` over a real (tiny, C) binary so the CPU and `--version` checks run
-# for real, `notes` over that dist, `prepare` rolling a fixture forward, and
+# for real, `notes` over the changelog, `prepare` rolling a fixture forward, and
 # `publish --dry-run`. Needs only bash, awk, sed, tar, gzip, file and a C
 # compiler (the binary cases are skipped without one). Runs in a second or
 # two; CI runs it on every push and the release workflow before it builds.
@@ -147,6 +147,8 @@ EOF
 
 ## [0.4.2] - 2026-09-12
 
+**A fixed thing**
+
 ### Fixed
 
 - A thing that was broken.
@@ -203,7 +205,9 @@ expect_eq "heading date" "2026-09-12" "$(changelog_date 0.4.2)"
 expect_eq "no date for an unknown version" "" "$(changelog_date 0.9.9)"
 expect_eq "previous of 0.4.2" "0.4.1" "$(changelog_previous 0.4.2)"
 expect_eq "previous of the first release" "" "$(changelog_previous 0.4.1)"
-expect_eq "section body, trimmed" "### Fixed
+expect_eq "section body, trimmed" "**A fixed thing**
+
+### Fixed
 
 - A thing that was broken." "$(changelog_section 0.4.2)"
 expect_eq "last section stops before the link block" "### Added
@@ -292,6 +296,8 @@ alter-zero-v0.4.2-$host/alter-zero" "$(tar -tzf "$archive" | sed 's#/$##' | sort
 
 		cp -R "$T/dist" "$T/dist-badsum"
 		printf '%s  %s\n' "0000000000000000000000000000000000000000000000000000000000000000" "$(basename "$archive")" >"$T/dist-badsum/$(basename "$archive").sha256"
+		# …and in SHA256SUMS too, which is what a downloader actually reads.
+		write_sha256sums "$T/dist-badsum" >/dev/null
 		expect_fail "a wrong .sha256 fails" bash "$STEPS/verify.sh" "$T/dist-badsum"
 		expect_contains "…naming the checksum" "$OUT" ".sha256"
 
@@ -321,24 +327,15 @@ alter-zero-v0.4.2-$host/alter-zero" "$(tar -tzf "$archive" | sed 's#/$##' | sort
 		expect_fail "a host binary labelled as $other fails the CPU check" bash "$STEPS/verify.sh" "$T/dist-cpu"
 		expect_contains "…quoting file(1)" "$OUT" "file says"
 
-		section "notes"
-		expect_ok "notes render for a version with assets" bash "$STEPS/notes.sh" 0.4.2 "$T/dist"
-		notes="$OUT"
-		expect_contains "…opening on the changelog body" "$notes" "- A thing that was broken."
-		expect_contains "…with the assets table" "$notes" "| Asset | Platform | SHA-256 |"
-		expect_contains "…naming the archive" "$notes" "alter-zero-v0.4.2-$host.tar.gz"
-		expect_contains "…linking its download" "$notes" "https://github.com/example/alter-zero/releases/download/v0.4.2/alter-zero-v0.4.2-$host.tar.gz"
-		expect_contains "…with its hash" "$notes" "\`$(sha256_of "$archive")\`"
-		expect_contains "…and the platform" "$notes" "$(platform_label "$host")"
-		# shellcheck disable=SC2016 # the snippet's ${asset} is literal text for the reader
-		expect_contains "…the install snippet" "$notes" 'sha256sum -c "${asset}.tar.gz.sha256"'
-		expect_contains "…and the compare link" "$notes" "**Full changelog**: https://github.com/example/alter-zero/compare/v0.4.1...v0.4.2"
-		expect_contains "…leading the install section with the one-liner" "$notes" "curl -fsSL https://raw.githubusercontent.com/example/alter-zero/main/install.sh | sh"
-
 		section "publish --dry-run"
 		expect_ok "a dry run needs no gh" env PATH="/nonexistent:$PATH" bash "$STEPS/publish.sh" 0.4.2 "$T/dist" --dry-run
 		expect_contains "…printing the draft create" "$OUT" "gh release create v0.4.2 -R example/alter-zero --draft --verify-tag"
 		expect_contains "…with the notes" "$OUT" "--notes-file"
+		expect_contains "…titled by the tag alone" "$OUT" "--title v0.4.2 --notes-file"
+		expect_lacks "…never the tag plus the changelog's title" "$OUT" "A\\ fixed\\ thing"
+		expect_contains "…uploading the archive" "$OUT" "alter-zero-v0.4.2-$host.tar.gz"
+		expect_contains "…and SHA256SUMS" "$OUT" "SHA256SUMS"
+		expect_lacks "…but no per-asset checksum files" "$OUT" ".tar.gz.sha256"
 		expect_contains "…and the publish flip" "$OUT" "gh release edit v0.4.2 -R example/alter-zero --draft=false --latest"
 		if [ -f "$T/dist/SHA256SUMS" ]; then pass "…after writing SHA256SUMS"; else flunk "no SHA256SUMS written"; fi
 		expect_ok "the dist still verifies with SHA256SUMS" bash "$STEPS/verify.sh" "$T/dist"
@@ -355,6 +352,17 @@ alter-zero-v0.4.2-$host/alter-zero" "$(tar -tzf "$archive" | sed 's#/$##' | sort
 			expect_lacks "…and no colour codes when piped" "$OUT" "$(printf '\033')"
 			if [ -x "$T/home/bin/alter-zero" ]; then pass "…the binary is executable"; else flunk "no executable at $T/home/bin/alter-zero"; fi
 			expect_eq "…and runs" "alter-zero 0.4.2" "$("$T/home/bin/alter-zero" --version 2>&1)"
+			stop_release
+			mkdir -p "$T/dist-published"
+			cp "$T/dist"/*.tar.gz "$T/dist"/*.tar.gz.sha256 "$T/dist-published/"
+			write_sha256sums "$T/dist-published" >/dev/null
+			rm -f "$T/dist-published"/*.tar.gz.sha256
+			base="http://127.0.0.1:$(serve_release "$T/dist-published" v0.4.2)"
+			expect_ok "install.sh verifies against SHA256SUMS, with no per-asset file published" env ALTER_ZERO_INSTALL_BASE_URL="$base" ALTER_ZERO_INSTALL_DIR="$T/home/bin-pub" sh "$CHECKOUT/install.sh"
+			expect_contains "…reporting the match" "$OUT" "matches the published value"
+			if [ -x "$T/home/bin-pub/alter-zero" ]; then pass "…and installing the binary"; else flunk "no executable at $T/home/bin-pub/alter-zero"; fi
+			stop_release
+			base="http://127.0.0.1:$(serve_release "$T/dist" v0.4.2)"
 			expect_ok "install.sh takes --version and --dir" env ALTER_ZERO_INSTALL_BASE_URL="$base" sh "$CHECKOUT/install.sh" --version 0.4.2 --dir "$T/home/bin2"
 			expect_contains "…as a pinned release" "$OUT" "v0.4.2 · pinned"
 			expect_ok "…installing over itself again" env ALTER_ZERO_INSTALL_BASE_URL="$base" ALTER_ZERO_INSTALL_DIR="$T/home/bin2" sh "$CHECKOUT/install.sh"
@@ -382,11 +390,49 @@ else
 	warn "no C compiler — skipping the package/verify/notes/publish cases"
 fi
 
-section "notes without assets"
-expect_ok "notes render without a dist" bash "$STEPS/notes.sh" 0.4.1
-expect_lacks "…with no assets table" "$OUT" "## Assets"
-expect_contains "…and a first release links its commits" "$OUT" "**Full changelog**: https://github.com/example/alter-zero/commits/v0.4.1"
+section "notes"
+expect_ok "notes render for a version with a previous release" bash "$STEPS/notes.sh" 0.4.2
+notes="$OUT"
+expect_eq "…opening on the section's own bold title line" "**A fixed thing**" "$(printf '%s' "$notes" | head -1)"
+expect_contains "…over the changelog body" "$notes" "- A thing that was broken."
+expect_eq "…promoting it to no heading of its own" "0" "$(printf '%s\n' "$notes" | grep -c '^## ')"
+expect_ok "notes render for a version with no title" bash "$STEPS/notes.sh" 0.4.1
+expect_eq "…opening straight on the entries" "### Added" "$(printf '%s' "$OUT" | head -1)"
+expect_eq "…and inventing no title" "0" "$(printf '%s\n' "$OUT" | grep -c '^\*\*A ')"
+expect_contains "…and closing on the compare link" "$notes" "**Full changelog**: https://github.com/example/alter-zero/compare/v0.4.1...v0.4.2"
+expect_lacks "…with no assets table" "$notes" "## Assets"
+expect_lacks "…and no install section" "$notes" "### Install"
+expect_lacks "…nor the one-liner" "$notes" "install.sh | sh"
+expect_lacks "…and no contributors line" "$notes" "**Contributors**"
+expect_ok "notes render for a first release" bash "$STEPS/notes.sh" 0.4.1
+expect_contains "…linking its commits, with nothing to compare against" "$OUT" "**Full changelog**: https://github.com/example/alter-zero/commits/v0.4.1"
 expect_fail "notes refuse an unknown version" bash "$STEPS/notes.sh" 0.9.9
+expect_fail "notes refuse a second argument" bash "$STEPS/notes.sh" 0.4.2 "$T"
+expect_contains "…pointing at the usage" "$OUT" "usage: scripts/release.sh notes VERSION"
+
+# GitHub renders its own Contributors block — avatars, read off the release's
+# commits — between the body and the assets, so a line of our own would be the
+# same fact twice, in plain text, directly above the real one. The case that
+# used to print it is a tree with real history, which is what this fixture is.
+section "contributors"
+if command -v git >/dev/null 2>&1; then
+	fixture "$T/repo"
+	(
+		cd "$T/repo" || exit 1
+		git init -q . && git config user.email a@example.com && git config user.name "Ada Lovelace"
+		git add -A && git commit -qm "the thing" --no-gpg-sign
+		git tag -a v0.4.1 -m v0.4.1
+		printf 'x\n' >x.txt && git add -A
+		git -c user.name="Grace Hopper" -c user.email=g@example.com commit -qm "a fix" --no-gpg-sign
+		git tag -a v0.4.2 -m v0.4.2
+	) >/dev/null 2>&1
+	expect_ok "notes render inside a git repo" env RELEASE_ROOT="$T/repo" bash "$STEPS/notes.sh" 0.4.2
+	expect_lacks "…crediting nobody in the body" "$OUT" "**Contributors**"
+	expect_lacks "…naming no author of its own" "$OUT" "Grace Hopper"
+	expect_eq "…and ending on the compare link, with nothing after it" "**Full changelog**: https://github.com/example/alter-zero/compare/v0.4.1...v0.4.2" "$(printf '%s\n' "$OUT" | tail -1)"
+else
+	warn "no git — skipping the contributors cases"
+fi
 
 # ---------------------------------------------------------------------------
 section "prepare"
@@ -402,7 +448,9 @@ expect_eq "…taking the pending body" "### Added
 
 - Not yet rolled." "$(RELEASE_ROOT="$T/prep" changelog_section 0.5.0)"
 expect_eq "…leaving [Unreleased] empty" "" "$(RELEASE_ROOT="$T/prep" changelog_section Unreleased)"
-expect_eq "…older sections intact" "### Fixed
+expect_eq "…older sections intact" "**A fixed thing**
+
+### Fixed
 
 - A thing that was broken." "$(RELEASE_ROOT="$T/prep" changelog_section 0.4.2)"
 expect_eq "…compare link added" "https://github.com/example/alter-zero/compare/v0.4.2...v0.5.0" "$(RELEASE_ROOT="$T/prep" changelog_link 0.5.0)"

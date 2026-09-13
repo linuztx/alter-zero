@@ -13,7 +13,8 @@
 # binary cannot ship); and when this machine can run it, `--version` prints
 # `{name} {version}`. `SHA256SUMS`, when present, must agree with the
 # per-asset files and cover every archive. Nothing else may sit in dist/ —
-# `publish` uploads the whole directory. Reports every problem, then fails.
+# a stray file there is a packaging mistake, even though `publish` uploads
+# only the archives and SHA256SUMS. Reports every problem, then fails.
 set -euo pipefail
 # shellcheck source-path=SCRIPTDIR
 # shellcheck source=lib.sh

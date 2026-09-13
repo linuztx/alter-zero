@@ -10,6 +10,16 @@ name: Release
 on:
   push:
     tags: ["v*"]
+  # A pull request touching the release machinery runs the whole pipeline
+  # as a rehearsal (the check job computes publish=false off a tag): the
+  # only way the build → publish artifact handoff, or a bumped action's
+  # inputs, are exercised before a release depends on them.
+  pull_request:
+    paths:
+      - .github/workflows/release.yml
+      - scripts/release.sh
+      - scripts/release/**
+      - install.sh
   workflow_dispatch:
     inputs:
       publish:
@@ -38,7 +48,7 @@ jobs:
       version: ${{ steps.version.outputs.version }}
       publish: ${{ steps.mode.outputs.publish }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - id: version
         run: echo "version=$(scripts/release.sh version)" >> "$GITHUB_OUTPUT"
       - name: The tag, Cargo.toml, Cargo.lock, the README badge and CHANGELOG.md agree
@@ -64,7 +74,7 @@ jobs:
     env:
       CARGO_INCREMENTAL: "0"
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: Install the pinned toolchain
         run: rustup show active-toolchain || rustup toolchain install
       - uses: Swatinem/rust-cache@v2
@@ -100,7 +110,7 @@ jobs:
             os: macos-latest
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: Install the pinned toolchain
         run: rustup show active-toolchain || rustup toolchain install
       - run: rustup target add ${{ matrix.target }}
@@ -112,7 +122,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y ${{ matrix.cross }}
       - run: scripts/release.sh build ${{ matrix.target }}
       - run: scripts/release.sh verify dist
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: dist-${{ matrix.target }}
           path: dist/
@@ -128,8 +138,8 @@ jobs:
     env:
       VERSION: ${{ needs.check.outputs.version }}
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
         with:
           pattern: dist-*
           path: dist
@@ -138,9 +148,9 @@ jobs:
         run: scripts/release.sh verify dist
       - name: Render the release notes from CHANGELOG.md
         run: |
-          scripts/release.sh notes "$VERSION" dist > release-notes.md
+          scripts/release.sh notes "$VERSION" > release-notes.md
           cat release-notes.md >> "$GITHUB_STEP_SUMMARY"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: release-notes
           path: release-notes.md

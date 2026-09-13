@@ -75,16 +75,57 @@ matters more.
 
 ### The notes
 
-A release's notes are `CHANGELOG.md`'s `## [X.Y.Z]` section, verbatim, then
-an **Assets** table (each archive linked to its download URL, its platform,
-its SHA-256 read from the `.sha256` beside it), a verify-and-install
-snippet, and the compare link to the previous release (`…/commits/vX.Y.Z`
-for the first). The changelog is the one place a release is described —
-`notes` reads it and never paraphrases — so the entry written there is the
-entry users read, and `check` refuses a tag whose section is missing or
-empty. GitHub's auto-generated "what's changed" commit list was considered
-and not used: a commit subject is written for a reviewer, a changelog entry
-for a user, and the two rarely read the same.
+A release's notes are `CHANGELOG.md`'s `## [X.Y.Z]` section and the
+compare link to the previous release (`…/commits/vX.Y.Z` for the first) —
+nothing else. The changelog is the
+one place a release is described — `notes` reads it and never
+paraphrases — so the entry written there is the entry users read, and
+`check` refuses a tag whose section is missing or empty. GitHub's
+auto-generated "what's changed" commit list was considered and not used:
+a commit subject is written for a reviewer, a changelog entry for a user,
+and the two rarely read the same.
+
+**A section may carry a title.** Its first line may be a single **bold**
+line — `**Alter Zero Initial Release**` — naming the release rather than
+listing one of its changes. It needs no machinery: the section is rendered
+as written, so the line arrives in the notes as the bold text it already
+is, sitting over the `### Added` sections without out-shouting them. A
+heading was tried and came back out — `##` renders larger than the
+sections it introduces, so the name shouted over the changes it was
+supposed to introduce.
+
+The release itself is named by its **tag alone** (`v0.1.0`), deliberately.
+A title appended there — `v0.1.0 — Alter Zero Initial Release` — reads as
+noise in a releases list, where every row is already a version and the eye
+is scanning for numbers; the sentence belongs where someone has opened the
+release to read it. It is optional either way: a section that starts
+straight on `### Added` gets notes that do too, which is what every
+`prepare`d section begins as.
+
+**Contributors are GitHub's to render, not ours.** The release page
+already shows them between the body and the assets, as avatars read off
+the release's own commits. A `**Contributors** name, name` line under the
+body was written, published on `v0.1.0`, and removed: it was that block
+again in plain text, directly above the real one, and text loses to
+avatars at telling you who at a glance. Its `git log` is what the publish
+job's `fetch-depth: 0` was for, so the checkout went back to the default
+shallow clone with it.
+
+The notes used to carry more — an **Assets** table of every archive with
+its platform and SHA-256, then the one-line installer over a manual
+verify-and-install snippet — and both came out, because a release page
+answers those questions already and better: GitHub lists the uploaded
+assets with their sizes right under the notes, `SHA256SUMS` is one of
+them, and the installer is the README's first command. On the page they
+read as the same facts twice, pushing what actually changed below a table
+of hashes. What is new is the only thing the notes are for.
+
+**And only the archives and `SHA256SUMS` are uploaded.** The per-asset
+`.sha256` files are still written into `dist/` — `verify` reads each one —
+but publishing them put four rows of checksum files in the asset list
+ahead of the builds themselves. One `sha256sum -c` file covers every
+archive, so `install.sh` reads its line for the asset it just downloaded
+and still refuses to install anything it cannot verify.
 
 ## The installer
 
@@ -329,10 +370,39 @@ edits all four so nobody has to remember.
 **Actions pinned to major tags, moved by Dependabot.** `actions/checkout`,
 `actions/upload-artifact`, `actions/download-artifact` and
 `Swatinem/rust-cache` are referenced by major version, the ecosystem's
-norm, with `.github/dependabot.yml` proposing bumps monthly. Pinning each
-to a commit SHA (with the version in a trailing comment) is the hardening
-step for a repository that wants immunity from a retagged action; it costs
-a Dependabot-driven bump per release of each action.
+norm: a major tag floats minor and patch fixes to us, so only a *major*
+bump is ever a decision, and `.github/dependabot.yml` proposes those
+monthly — one pull request per action, the default.
+
+That default has a sharp edge worth naming, because its first run found
+it. Two of the four are a **pair**: the release's build jobs
+`upload-artifact` each platform's dist and the publish job
+`download-artifact`s them all back, and artifact majors have broken
+compatibility across that seam before (v3 uploads were unreadable by v4
+downloads, by design). Proposed as two pull requests, either merges green
+on its own and leaves the pair mismatched — and green meant nothing,
+because those two lines run only in `release.yml`, on a tag, while every
+check a pull request runs came from `ci.yml`.
+
+The answer is to make the check exist rather than to bundle the bumps:
+`release.yml` runs as a **rehearsal on any pull request that touches it**,
+the release scripts, or `install.sh`. Its check job computes
+`publish=false` off a tag, so the whole pipeline — gate, four platform
+builds, the artifact handoff, `verify`, the notes, `publish --dry-run` —
+runs and publishes nothing. A bump is now exercised where it lands: a
+half-moved pair or an input renamed in a new major is a red check, not a
+broken release. The cost is two macOS runners on a pull request that
+touches those paths, and those are rare by construction.
+
+Reading the target major's `action.yml` is still the review: the inputs
+this repository depends on are `pattern` and `merge-multiple` on the
+download, `if-no-files-found` and `retention-days` on the uploads, and
+`archive` defaulting to true so an uploaded artifact is still the zip the
+download unpacks. `grep -rn 'uses:' .github/workflows/*.yml` lists every
+pin. Pinning each to a commit SHA (with the version in a trailing
+comment) is the further hardening step for a repository that wants
+immunity from a retagged action; it costs a bump per release of each
+action.
 
 **The toolchain comes from `rust-toolchain.toml` alone.** The workflows
 run `rustup show active-toolchain || rustup toolchain install`, which

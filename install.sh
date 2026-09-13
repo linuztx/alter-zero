@@ -250,13 +250,19 @@ main() {
 
 	step "Download" "$asset.tar.gz"
 	fetch "$url" "$archive" progress || fail "no release asset for $target at $tag" "Looked for $url"
-	fetch "$url.sha256" "$archive.sha256" || fail "the checksum file for $asset.tar.gz is missing" "Refusing to install an unverified download. Looked for $url.sha256"
+	# SHA256SUMS covers every archive in the release — one published file
+	# rather than one beside each asset, which is what the release page
+	# lists and `sha256sum -c` reads.
+	sums="$tmp/SHA256SUMS"
+	sums_url="$BASE_URL/releases/download/$tag/SHA256SUMS"
+	fetch "$sums_url" "$sums" || fail "the checksum file for this release is missing" "Refusing to install an unverified download. Looked for $sums_url"
 	size=$(human_size "$(wc -c <"$archive" | tr -d ' ')")
 
-	expected=$(awk '{ print $1; exit }' "$archive.sha256")
+	expected=$(awk -v name="$asset.tar.gz" '$2 == name { print $1; exit }' "$sums")
+	[ -n "$expected" ] || fail "SHA256SUMS does not list $asset.tar.gz" "Refusing to install an unverified download. It lists: $(awk '{ print $2 }' "$sums" | paste -sd ' ' - | cut -c1-160)"
 	case "$expected" in
 	[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]*) ;;
-	*) fail "the published checksum file is malformed" "It reads: $(head -c 80 "$archive.sha256")" ;;
+	*) fail "the published checksum file is malformed" "SHA256SUMS reads: $(head -c 80 "$sums")" ;;
 	esac
 	[ "${#expected}" -eq 64 ] || fail "the published checksum file is malformed" "Expected 64 hex digits, got ${#expected}."
 	actual=$(sha256_of "$archive")

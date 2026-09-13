@@ -19,7 +19,7 @@ bash scripts/smoke/phases/055-permission.sh # one phase on its own, output live 
 scripts/release.sh check [vX.Y.Z]           # Cargo.toml, Cargo.lock, the README badge and CHANGELOG.md agree (docs/release.md)
 scripts/release.sh build [TARGET]           # one platform's release archive + .sha256 into dist/
 scripts/release.sh verify dist              # the archives: checksums, layout, CPU, `alter-zero --version`
-scripts/release.sh notes X.Y.Z dist         # the release notes the workflow publishes, from CHANGELOG.md
+scripts/release.sh notes X.Y.Z              # the release notes the workflow publishes: CHANGELOG.md's section, nothing else
 scripts/release.sh selftest                 # the release tooling's own fixture-driven tests
 scripts/release.sh prepare X.Y.Z            # bump the version everywhere, roll [Unreleased] into a dated section, then tag
 cargo run --release --example mem_probe     # /model parse RSS (docs/memory.md)

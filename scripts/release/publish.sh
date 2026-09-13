@@ -61,17 +61,21 @@ slug="$(repo_slug)"
 bash "$RELEASE_LIB_DIR/verify.sh" "$dist" --version "$version"
 
 shopt -s nullglob
-cat "$dist"/*.tar.gz.sha256 | sort -k 2 >"$dist/SHA256SUMS"
+write_sha256sums "$dist" >/dev/null
 info "wrote $dist/SHA256SUMS"
 
 if [ -z "$notes" ]; then
 	notes="$(mktemp)"
-	bash "$RELEASE_LIB_DIR/notes.sh" "$version" "$dist" >"$notes"
+	bash "$RELEASE_LIB_DIR/notes.sh" "$version" >"$notes"
 	info "rendered the notes from CHANGELOG.md into $notes"
 fi
 [ -s "$notes" ] || die "publish: notes file $notes is empty"
 
-assets=("$dist"/*.tar.gz "$dist"/*.tar.gz.sha256 "$dist/SHA256SUMS")
+# The per-asset .sha256 files stay in dist — `verify` reads each one — but
+# only the archives and the one SHA256SUMS are published: four extra rows
+# of checksum files pushed the builds themselves down the asset list, and
+# `install.sh` reads SHA256SUMS for exactly this reason.
+assets=("$dist"/*.tar.gz "$dist/SHA256SUMS")
 create=(gh release create "$tag" -R "$slug" --draft --verify-tag --title "$tag" --notes-file "$notes")
 if is_prerelease "$version"; then
 	create+=(--prerelease)

@@ -32,7 +32,7 @@ jobs:
     name: fmt · clippy · test · doc
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: Install the pinned toolchain
         # rustup reads rust-toolchain.toml — the channel and the rustfmt and
         # clippy components — so the version lives in one file. (Older rustups
@@ -50,7 +50,7 @@ jobs:
     name: smoke suite (tmux)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: Install the pinned toolchain
         run: rustup show active-toolchain || rustup toolchain install
       - uses: Swatinem/rust-cache@v2
@@ -72,7 +72,7 @@ jobs:
           scripts/smoke.sh --failed --serial
       - name: Keep the logs
         if: failure() || steps.parallel.outcome == 'failure'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: smoke-logs
           path: |
@@ -85,7 +85,7 @@ jobs:
     name: release tooling
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - run: shellcheck -x install.sh scripts/release.sh scripts/release/*.sh
       - run: scripts/release.sh selftest
       - name: Cargo.toml, Cargo.lock, the README badge and CHANGELOG.md agree
@@ -95,6 +95,6 @@ jobs:
     name: telemetry collector tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - run: node --test
         working-directory: telemetry

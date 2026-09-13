@@ -10,7 +10,7 @@
 #   scripts/release.sh check [TAG]               # Cargo.toml, Cargo.lock, the README badge and CHANGELOG.md agree (and with TAG)
 #   scripts/release.sh build [TARGET]            # a packaged binary + checksum into dist/ (default: the host target)
 #   scripts/release.sh verify [DIST]             # every asset in dist/: checksums, layout, CPU, `--version`
-#   scripts/release.sh notes VERSION [DIST]      # the release notes, from CHANGELOG.md + the assets
+#   scripts/release.sh notes VERSION             # the release notes: CHANGELOG.md's section + the compare link
 #   scripts/release.sh publish VERSION [DIST]    # the GitHub release (gh), or --dry-run to see the commands
 #   scripts/release.sh prepare VERSION           # bump the version everywhere, roll the changelog, ready to tag
 #   scripts/release.sh selftest                  # the tooling's own fixture-driven tests

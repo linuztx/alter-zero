@@ -14,8 +14,7 @@ release heading when a version is cut.
 
 ## [0.1.0] - 2026-09-12
 
-The first release: an autonomous coding agent that lives in the terminal,
-as a single self-contained binary for Linux and macOS.
+**Alter Zero Initial Release**
 
 ### Added
 
