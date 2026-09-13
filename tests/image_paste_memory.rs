@@ -53,7 +53,14 @@ fn shrinking_a_pasted_screenshot_never_materialises_its_pixels() {
         eprintln!("no /proc — skipping the resident-memory probe");
         return;
     }
-    let (width, height) = (2560u32, 1440u32);
+    // 4K, not 1440p: the payload is capped at 2000 px whatever the source is,
+    // so the budget below is a constant while `source_rgba` grows with the
+    // picture. At 2560x1440 the two crossed over and the whole-decode ceiling
+    // ended up the tighter of the pair, a couple of megabytes above a real
+    // streaming build — a red test on an allocator's mood rather than on a
+    // regression. A source this size is also what a screenshot on a modern
+    // display actually is.
+    let (width, height) = (4000u32, 2250u32);
     let source_rgba = width as usize * height as usize * 4;
 
     // Warm every path once on a small picture, so the readings below see the
@@ -112,13 +119,24 @@ fn shrinking_a_pasted_screenshot_never_materialises_its_pixels() {
     // 3. The model payload: the same file shrunk to 2000 px for the request.
     //    Budget: the payload's own pixels, its encoded bytes, and a copy's
     //    worth of slack for the encoder — still well under the source RGBA
-    //    (15 MB) this replaced.
+    //    (36 MB) this replaced.
     let before = rss_bytes().expect("rss");
     let small =
         alter_zero::images::downscale_to(&png, image::ImageFormat::Png, 2000).expect("shrunk");
     let growth = rss_bytes().expect("rss").saturating_sub(before);
     let payload_px = small.size.0 as usize * small.size.1 as usize * 4;
     let budget = payload_px + 2 * small.bytes.len() + 4 * 1024 * 1024;
+    // The two ceilings below only mean something in this order. `budget` is
+    // what a streaming build may cost; `source_rgba` is what decoding the
+    // whole picture would cost. If the slack in the first ever grows past
+    // the second, the first stops being reachable and the second becomes the
+    // real limit at whatever margin it happens to have — which is how this
+    // test came to fail on a 2.2 MB margin it never meant to set.
+    assert!(
+        budget < source_rgba,
+        "the payload budget ({budget} bytes) must stay under the source's own RGBA \
+         ({source_rgba} bytes), or neither ceiling below means anything"
+    );
     assert_eq!(small.size, (2000, 1125));
     drop(small);
     assert!(
