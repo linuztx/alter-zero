@@ -27,7 +27,7 @@ enabled = false
 [[d1_databases]]
 binding = "DB"
 database_name = "alter-zero-telemetry"
-database_id = "REPLACE-WITH-THE-ID-THAT-wrangler-d1-create-PRINTS"
+database_id = "97d07a66-5bb3-417f-8b03-8b6152e87b04"
 
 # Retention: once a day, drop rows older than RETENTION_DAYS so the table is a
 # rolling window rather than a permanent record of every install's every day.

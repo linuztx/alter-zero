@@ -12,7 +12,7 @@ release heading when a version is cut.
 
 ## [Unreleased]
 
-## [0.1.0] - 2026-09-12
+## [0.1.0] - 2026-09-13
 
 **Alter Zero Initial Release**
 
