@@ -462,6 +462,27 @@ mod tests {
     }
 
     #[test]
+    fn openrouter_ships_app_attribution_headers() {
+        let file = ProvidersFile::builtin();
+        let headers = &file
+            .get("openrouter")
+            .expect("openrouter present")
+            .extra_headers;
+        assert_eq!(
+            headers.get("HTTP-Referer").map(String::as_str),
+            Some("https://github.com/linuztx/alter-zero")
+        );
+        assert_eq!(
+            headers.get("X-OpenRouter-Title").map(String::as_str),
+            Some("Alter Zero")
+        );
+        assert_eq!(
+            headers.get("X-OpenRouter-Categories").map(String::as_str),
+            Some("cli-agent")
+        );
+    }
+
+    #[test]
     fn key_env_defaults_to_uppercased_id() {
         let file = ProvidersFile::builtin();
         let p = file.get("openrouter").unwrap();
