@@ -372,27 +372,44 @@ edits all four so nobody has to remember.
 `Swatinem/rust-cache` are referenced by major version, the ecosystem's
 norm: a major tag floats minor and patch fixes to us, so only a *major*
 bump is ever a decision, and `.github/dependabot.yml` proposes those
-monthly — one pull request per action, the default.
+monthly — every action's bump in **one pull request** (the file's
+`actions` group), and none until the release is a week old (its
+`cooldown`).
 
-That default has a sharp edge worth naming, because its first run found
-it. Two of the four are a **pair**: the release's build jobs
+Both settings come out of the first run. It opened three pull requests
+the moment the file reached the default branch — checkout 5 → 7,
+upload-artifact 4 → 7, download-artifact 4 → 8 — one per action, which
+is the default: not a misconfiguration, but a default with a sharp edge
+here. Two of the four are a **pair**: the release's build jobs
 `upload-artifact` each platform's dist and the publish job
 `download-artifact`s them all back, and artifact majors have broken
 compatibility across that seam before (v3 uploads were unreadable by v4
-downloads, by design). Proposed as two pull requests, either merges green
-on its own and leaves the pair mismatched — and green meant nothing,
-because those two lines run only in `release.yml`, on a tag, while every
-check a pull request runs came from `ci.yml`.
+downloads, by design). Proposed as two pull requests, a pair whose majors
+moved together has no green way through — each half is red against the
+other's old major — and the way out is the bump by hand that closed
+those three. Grouped, the pair moves in one pull request, and that pull
+request is exercised where it lands: `release.yml` runs as a
+**rehearsal on any pull request that touches it**, the release scripts,
+or `install.sh`. Its check job computes `publish=false` off a tag, so the
+whole pipeline — gate, four platform builds, the artifact handoff,
+`verify`, the notes, `publish --dry-run` — runs and publishes nothing.
+Without that trigger those two lines ran only on a tag, while every
+check a pull request runs came from `ci.yml`, so a half-moved pair
+merged green; now it is a red check, not a broken release, as is an
+input renamed in a new major. The cost is two macOS runners on a pull
+request that touches those paths, and those are rare by construction.
+The cooldown is the supply-chain half: a retagged or yanked action, or a
+major broken on arrival, shows in its first days, and against a monthly
+check the week costs at most one cycle.
 
-The answer is to make the check exist rather than to bundle the bumps:
-`release.yml` runs as a **rehearsal on any pull request that touches it**,
-the release scripts, or `install.sh`. Its check job computes
-`publish=false` off a tag, so the whole pipeline — gate, four platform
-builds, the artifact handoff, `verify`, the notes, `publish --dry-run` —
-runs and publishes nothing. A bump is now exercised where it lands: a
-half-moved pair or an input renamed in a new major is a red check, not a
-broken release. The cost is two macOS runners on a pull request that
-touches those paths, and those are rare by construction.
+The first run taught one habit too. **Closing one of Dependabot's pull
+requests by hand ignores that release** — in its own words on the three,
+"OK, I won't notify you again about this release, but will get in touch
+when a new version is available" — until main carries the version or the
+pull request is reopened. To take a bump, merge the pull request; to
+bump by hand, leave the pull request open and Dependabot closes it as no
+longer needed at its next check (monthly, or *Check for updates* on the
+repository's Dependabot page under Insights → Dependency graph).
 
 Reading the target major's `action.yml` is still the review: the inputs
 this repository depends on are `pattern` and `merge-multiple` on the

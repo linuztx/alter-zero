@@ -1,8 +1,30 @@
 # Keep the workflows' actions current (docs/release.md): they are pinned to
 # major tags, and this is what moves them when a major is released.
+#
+# Every bump rides ONE pull request, the `actions` group, not one per action
+# (the default, whose first run here opened three): upload-artifact and
+# download-artifact are a pair the release's build and publish jobs hand
+# artifacts across, and proposed separately a pair whose majors moved
+# together is red on both halves with no green way through but a bump by
+# hand. Grouped, the pair moves in the one pull request release.yml's
+# rehearsal builds, hands across and verifies as it will ship.
+#
+# The cooldown holds a release back until it is a week old: a retagged or
+# yanked action, or a major broken on arrival, shows in its first days, and
+# against a monthly check the wait costs at most one cycle.
+#
+# Closing one of these pull requests by hand ignores that release ("I won't
+# notify you again about this release"). To take a bump, merge; to bump by
+# hand, leave the pull request open — it closes as no longer needed at the
+# next check.
 version: 2
 updates:
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: monthly
+    groups:
+      actions:
+        patterns: ["*"]
+    cooldown:
+      default-days: 7
