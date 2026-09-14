@@ -21,6 +21,8 @@
 #
 #   ALTER_ZERO_LIVE_PROVIDER=a0_venice A0_VENICE_API_KEY=sk-a0-… \
 #   ALTER_ZERO_LIVE_MODEL=llama-3.3-70b scripts/live_smoke.sh
+#   ALTER_ZERO_LIVE_PROVIDER=venice VENICE_API_KEY=… \
+#   ALTER_ZERO_LIVE_MODEL=llama-3.3-70b scripts/live_smoke.sh
 set -uo pipefail
 
 PROVIDER="${ALTER_ZERO_LIVE_PROVIDER:-openrouter}"

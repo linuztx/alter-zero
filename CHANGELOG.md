@@ -12,6 +12,19 @@ release heading when a version is cut.
 
 ## [Unreleased]
 
+### Added
+
+- **Venice as a direct provider.** `/login` → **Use an API key** →
+  **Venice** takes a key from your own Venice.ai account, and `/model` lists
+  Venice's catalog straight from `api.venice.ai` — the same private,
+  uncensored models the Agent Zero API reaches through its proxy, over the
+  same request: the thinking mode still drives
+  `venice_parameters.disable_thinking`, the session's `prompt_cache_key`
+  still pins Venice's implicit prompt cache, and each model's context
+  window, vision, and reasoning support are still read off its `model_spec`
+  record. Set `VENICE_API_KEY` (or `ALTER_ZERO_PROVIDER=venice` with the key
+  in `.env`) to launch on it directly.
+
 ## [0.1.0] - 2026-09-13
 
 **Alter Zero Initial Release**

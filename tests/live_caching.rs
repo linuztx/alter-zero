@@ -16,6 +16,7 @@
 //!
 //! ```sh
 //! A0_VENICE_API_KEY=sk-a0-…    cargo test --test live_caching -- --ignored --nocapture live_venice
+//! VENICE_API_KEY=…             cargo test --test live_caching -- --ignored --nocapture live_venice_direct
 //! OPENROUTER_API_KEY=sk-or-…   cargo test --test live_caching -- --ignored --nocapture live_openrouter
 //! ANTHROPIC_API_KEY=sk-ant-…   cargo test --test live_caching -- --ignored --nocapture live_anthropic_api_key
 //! OLLAMA_API_KEY=…             cargo test --test live_caching -- --ignored --nocapture live_ollama_cloud
@@ -39,7 +40,8 @@
 //! After such a run, the value under that file's `*_REFRESH_TOKEN` key is the
 //! one to keep.
 //!
-//! `ALTER_ZERO_LIVE_VENICE_MODEL`, `ALTER_ZERO_LIVE_VENICE_CLAUDE_MODEL`,
+//! `ALTER_ZERO_LIVE_VENICE_MODEL` (the proxy and the direct provider alike),
+//! `ALTER_ZERO_LIVE_VENICE_CLAUDE_MODEL`,
 //! `ALTER_ZERO_LIVE_OPENROUTER_MODEL`, `ALTER_ZERO_LIVE_ANTHROPIC_MODEL`,
 //! `ALTER_ZERO_LIVE_CHATGPT_MODEL`, `ALTER_ZERO_LIVE_OLLAMA_CLOUD_MODEL` and
 //! `ALTER_ZERO_LIVE_COPILOT_MODEL` override each provider's default model
@@ -232,6 +234,30 @@ fn live_venice_claude_caches_without_our_own_breakpoints() {
     assert!(
         second.cached > 1_000,
         "turn 2 read the prefix back from the cache: {second:?}"
+    );
+}
+
+#[test]
+#[ignore = "hits the network; needs VENICE_API_KEY"]
+fn live_venice_direct_second_turn_reads_the_prefix_from_cache() {
+    // The direct provider (`docs/venice.md`) is the proxy's twin: the same
+    // request — `venice_parameters`, `prompt_cache_key`, no markers of ours —
+    // sent to Venice's own base with a key from the user's own account. What
+    // the proxy test proves about Venice's implicit cache must hold here
+    // without the proxy in between: turn 2 reads the prefix back.
+    let salt = salt();
+    let model = model_or(
+        "ALTER_ZERO_LIVE_VENICE_MODEL",
+        "openai-gpt-4o-mini-2024-07-18",
+    );
+    let cfg = config("venice", &model, Some(credential("VENICE_API_KEY")), salt);
+    assert_eq!(cfg.api_base, "https://api.venice.ai/api/v1");
+    let backend = LlmBackend::configure(cfg, Some(big_system_prompt(salt)), false);
+    let (first, second) = two_turns(&backend);
+    assert!(first.total() > 1_000, "the whole prefix billed: {first:?}");
+    assert!(
+        second.cached > 1_000,
+        "turn 2 read the prefix from Venice's cache: {second:?}"
     );
 }
 

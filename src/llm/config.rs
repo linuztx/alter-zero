@@ -569,6 +569,75 @@ api_base = "https://one.example/v1/"
         assert!(!body.contains_key("api_base"));
     }
 
+    #[test]
+    fn the_builtin_file_ships_venice_direct_beside_the_agent_zero_proxy() {
+        // Venice.ai reached two ways over one wire (`docs/venice.md`): through
+        // the Agent Zero proxy (`a0_venice`) and directly (`venice`), with a
+        // key from the user's own Venice account. Everything the request
+        // builder keys on is shared — the chat-completions wire, the
+        // pasted-key scheme, and the `venice_parameters` table whose presence
+        // is the Venice-family marker (`docs/reasoning.md`) — so the two must
+        // agree on all of it; only where the request goes and what unlocks
+        // it differ.
+        let file = ProvidersFile::builtin();
+        let venice = file.get("venice").expect("shipped");
+        let proxy = file.get("a0_venice").expect("shipped");
+        assert_eq!(venice.name, "Venice");
+        assert_eq!(venice.auth, AuthScheme::ApiKey);
+        assert_eq!(venice.wire_api, WireApi::Chat);
+        assert_eq!(venice.key_env("venice"), "VENICE_API_KEY");
+        assert_eq!(venice.kwargs.api_base, "https://api.venice.ai/api/v1");
+        // The proxy already lists its models from Venice itself; the direct
+        // provider chats where it lists, so the file names no second base.
+        assert_eq!(venice.api_model_base, None);
+        assert_eq!(venice.models_base(), proxy.models_base());
+        assert_eq!(
+            venice.api_key_url.as_deref(),
+            Some("https://venice.ai/settings/api")
+        );
+        assert!(
+            venice
+                .description
+                .as_deref()
+                .is_some_and(|d| d.contains("Venice")),
+            "the key step introduces the provider by name"
+        );
+        assert_eq!(
+            venice.extra_body(),
+            proxy.extra_body(),
+            "the same venice_parameters table, so the thinking toggle syncs for both"
+        );
+        assert!(venice.extra_headers.is_empty(), "no proxy identity to send");
+    }
+
+    #[test]
+    fn a_venice_selection_resolves_to_venice_itself_and_needs_its_key() {
+        // Resolved the way the boundary resolves it: the chat and the listing
+        // both go to Venice's own base, and — unlike a local Ollama — a key
+        // is required, so a keyless selection still falls back to the dummy.
+        let file = ProvidersFile::builtin();
+        let sel = Selection {
+            provider_id: "venice".to_string(),
+            model: "qwen3-235b".to_string(),
+            api_key: Some("venice-key".to_string()),
+            ..Selection::default()
+        };
+        let cfg = file.model_config(&sel).expect("resolves");
+        assert_eq!(cfg.provider_name, "Venice");
+        assert_eq!(cfg.api_base, "https://api.venice.ai/api/v1");
+        assert_eq!(cfg.api_model_base, "https://api.venice.ai/api/v1");
+        assert_eq!(cfg.auth, AuthScheme::ApiKey);
+        assert_eq!(cfg.wire_api, WireApi::Chat);
+        assert!(cfg.is_usable());
+        let keyless = file
+            .model_config(&Selection {
+                api_key: None,
+                ..sel
+            })
+            .expect("resolves");
+        assert!(!keyless.is_usable(), "a Venice key is required");
+    }
+
     // --- auth schemes: a pasted key vs a subscription sign-in (docs/copilot.md) ---
 
     #[test]

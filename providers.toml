@@ -58,6 +58,31 @@ api_base = "https://api.agent-zero.ai/venice/v1"
 [providers.a0_venice.kwargs.venice_parameters]
 include_venice_system_prompt = false
 
+# Venice.ai reached **directly** (docs/venice.md) — the Agent Zero API above is
+# these same models through Agent Zero's proxy, and this is the API behind it,
+# unlocked by a key from your own Venice account. One wire, one request: the
+# chat-completions endpoint, the `venice_parameters` table below (the
+# Venice-family marker the payload builder syncs `disable_thinking` to the
+# Ctrl+T mode on, docs/reasoning.md), the `prompt_cache_key` affinity hint
+# Venice documents (docs/prompt-caching.md), and the `model_spec` capability
+# sniffs the catalog already parses — the proxy lists from this very base. So
+# only the base and the key differ, and no `api_model_base` is needed: it
+# chats where it lists. The key variable is the id's default, `VENICE_API_KEY`.
+[providers.venice]
+name = "Venice"
+description = "Venice.ai's private, uncensored models straight from Venice's own API — the same catalog the Agent Zero API proxies, reached directly with a key from your Venice account."
+api_key_url = "https://venice.ai/settings/api"
+
+[providers.venice.kwargs]
+api_base = "https://api.venice.ai/api/v1"
+
+# Venice prepends its own system prompt unless told not to; the persona is the
+# whole system prompt here, exactly as through the proxy. And the table stays
+# for the proxy's reason: its presence is how the payload builder knows this
+# is a Venice-family provider whose `disable_thinking` must track the mode.
+[providers.venice.kwargs.venice_parameters]
+include_venice_system_prompt = false
+
 # GitHub Copilot is a *subscription*, not a pasted key: `auth` puts it in
 # `/login`'s subscription list, where Enter runs GitHub's device flow
 # (docs/copilot.md). What `api_key_env` stores is the resulting long-lived

@@ -74,8 +74,8 @@ On the wire (`openai::build_payload`, applied **after** the provider
 proxy) *ignores* `reasoning.enabled` — its hybrid reasoners keep thinking.
 The toggle it honours is `venice_parameters.disable_thinking`. So when the
 payload carries a `venice_parameters` table (the Venice-family marker — the
-built-in `a0_venice` provider always has one, for
-`include_venice_system_prompt`), the builder syncs `disable_thinking` to
+built-in `a0_venice` and `venice` providers always have one, for
+`include_venice_system_prompt`; `docs/venice.md`), the builder syncs `disable_thinking` to
 `mode == Off`, preserving the table's other keys; providers without the table
 (OpenRouter) keep a clean payload. `providers.toml` no longer pins
 `disable_thinking = true` statically — the mode owns it (previously thinking

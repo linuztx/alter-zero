@@ -126,6 +126,7 @@ Connect to a supported subscription service, API provider, or local model server
 | Provider | How you connect | Good to know |
 | --- | --- | --- |
 | **Agent Zero API** | API key. | Accesses Venice.ai models through the Agent Zero proxy, with a free daily quota for [A0T](https://www.agent-zero.ai/p/token/) token holders. |
+| **Venice** | API key. | Venice.ai's private, uncensored models straight from [Venice's own API](https://venice.ai/settings/api) — the same catalog the Agent Zero API proxies, reached with your own account. |
 | **GitHub Copilot** | Subscription, using a one-time device code. | Model capabilities, including context window, vision, and reasoning levels, come from Copilot. |
 | **OpenAI (ChatGPT)** | Browser sign-in with a ChatGPT Plus or Pro account. | Uses the account sign-in flow; no API key to paste. |
 | **Anthropic** | API key or account sign-in through the Anthropic Console. | Usage is billed to your API organisation with either method. |

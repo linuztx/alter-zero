@@ -1516,6 +1516,56 @@ mod tests {
     }
 
     #[test]
+    fn the_shipped_venice_provider_sends_the_proxys_request_to_venice_itself() {
+        // The direct Venice provider is the Agent Zero proxy's twin
+        // (`docs/venice.md`). Resolved through the shipped file exactly as the
+        // boundary resolves it, its request must carry everything the
+        // proxy's does — the `venice_parameters` table with
+        // `disable_thinking` synced to the mode, the session's
+        // `prompt_cache_key` (Venice's own cache-affinity hint) — and nothing
+        // Venice rejects: OpenRouter's `session_id` is an unrecognised key
+        // there. Only the endpoint moves.
+        use crate::llm::reasoning::ThinkingMode;
+        use crate::llm::{ProvidersFile, Selection};
+        let file = ProvidersFile::builtin();
+        let resolve = |provider_id: &str| {
+            file.model_config(&Selection {
+                provider_id: provider_id.to_string(),
+                model: "qwen3-235b".to_string(),
+                api_key: Some("key".to_string()),
+                thinking: Some(ThinkingMode::Off),
+                cache_key: Some("alter-zero-7".to_string()),
+                ..Selection::default()
+            })
+            .expect("shipped")
+        };
+        let venice = OpenAiClient::new(resolve("venice"));
+        assert_eq!(
+            venice.endpoint(),
+            "https://api.venice.ai/api/v1/chat/completions"
+        );
+        let direct = venice.build_payload(&[ChatMessage::user("hi")]);
+        assert_eq!(direct["venice_parameters"]["disable_thinking"], json!(true));
+        assert_eq!(
+            direct["venice_parameters"]["include_venice_system_prompt"],
+            json!(false)
+        );
+        assert_eq!(direct["prompt_cache_key"], json!("alter-zero-7"));
+        assert!(
+            direct.get("session_id").is_none(),
+            "Venice rejects unknown body keys"
+        );
+        // Byte-for-byte the proxy's request body: the two providers differ
+        // only in where it goes.
+        let proxy = OpenAiClient::new(resolve("a0_venice"));
+        assert_eq!(direct, proxy.build_payload(&[ChatMessage::user("hi")]));
+        assert_eq!(
+            proxy.endpoint(),
+            "https://api.agent-zero.ai/venice/v1/chat/completions"
+        );
+    }
+
+    #[test]
     fn payload_asks_for_the_streamed_usage_frame() {
         // The standard OpenAI `stream_options.include_usage` — both shipped
         // providers honour it, delivering the final usage frame the app snaps
