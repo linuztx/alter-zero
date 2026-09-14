@@ -547,6 +547,28 @@ impl App {
         }
     }
 
+    /// Inject one agent's **running command's** elapsed before a draw (the
+    /// [`set_agent_thinking`](App::set_agent_thinking) sibling), so its
+    /// session view's `bash` tail counts its `+N lines (Ns)` footer from the
+    /// call's own start rather than the agent's whole runtime
+    /// (`docs/agent-view-streaming.md`).
+    pub fn set_agent_command_elapsed(&mut self, id: &str, elapsed: Duration) {
+        if let Some(agent) = self.agents.iter_mut().find(|agent| agent.id == id) {
+            agent.set_command_elapsed(Some(elapsed));
+        }
+    }
+
+    /// Clear every agent's injected command elapsed — run before the live
+    /// clocks are re-injected each frame (the
+    /// [`clear_agent_thinking`](App::clear_agent_thinking) rule), so a
+    /// command that resolved (its clock is gone) drops its `(Ns)` instead of
+    /// freezing it.
+    pub fn clear_agent_command_elapsed(&mut self) {
+        for agent in &mut self.agents {
+            agent.set_command_elapsed(None);
+        }
+    }
+
     /// Sweep one roster entry (its linger expired). Deferred by the boundary
     /// while the user is inside that agent's session view. Also drops the
     /// selection/view if they pointed at it.

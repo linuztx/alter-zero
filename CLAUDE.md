@@ -733,7 +733,13 @@ calls in one round announced up front so the running one shows live while the
 not-yet-run ones show `⎿ Waiting…`, executed sequentially) in
 `docs/parallel-tools.md`; the **live-streaming `bash` tool** (a running command
 tails its output — the last rows, long lines word-wrapped to the width with
-spaces preserved, + a `+N lines (Ns)` footer — via a
+spaces preserved, + a `+N lines (Ns)` footer whose `(Ns)` is the
+**command's own** runtime — `App::command_elapsed`, the boundary's
+per-command clock started at the call's `ToolStart`, the masked
+`background_hint_elapsed` being the Ctrl+B hint's gate over the same value —
+never the turn's elapsed the status line counts (a call started a minute
+into a turn used to open on `(60s)`), the agent session view counting its
+own from the per-agent `AgentRun::command_elapsed` the same way — via a
 `StreamEvent::ToolOutput` channel, collapsing to the head peek `… +N lines
 (ctrl+o to expand)` when it finishes, Claude-Code style) in
 `docs/tool-streaming.md`; the **bounded peek** (`docs/long-lines.md`: a peek
@@ -816,7 +822,7 @@ path — `{session}/tasks/{id}.output` — while a `BackgroundRegistry` process 
 running model-`bash`/`!` command to the background mid-run (the live cell hints
 it with a dim `(ctrl+b to run in background)` row that waits a few seconds —
 `ui::TOOL_BACKGROUND_HINT_DELAY`, gated on the command's own boundary-injected
-`App::command_elapsed` — so a fast command never flashes it, Claude-Code-style;
+`App::background_hint_elapsed` — so a fast command never flashes it, Claude-Code-style;
 Ctrl+B itself works the whole time); the cell resolves `⎿ Running in the
 background (↓ to manage)`, the footer
 counts `· N shells` — and that count is the band's **entry point**: **↓ from an
@@ -1004,7 +1010,7 @@ the same dim `⎿ Waiting…` its batch siblings show (the approve seam runs bef
 `ToolStart`, so it genuinely is waiting — Claude Code's look; a truly running
 call, the main turn's own under a subagent's request, keeps its `⎿ Running…`
 at rest), and a subagent's request keeps the whole live
-`● Running 3 agents…` tree, with `App::command_elapsed` reading `None`
+`● Running 3 agents…` tree, with `App::background_hint_elapsed` reading `None`
 meanwhile so the delayed Ctrl+B hint never advertises a key the modal
 swallows — *on the main screen*: **inside a subagent session view the context
 is that agent's own queue**, its `● Bash(ls -la)` over `⎿ Waiting…` with every
@@ -1774,7 +1780,8 @@ before any output a `⎿ Running…` row, and once a `bash` command **streams** 
 **tails** its output — the last `TOOL_PEEK_ROWS` display **rows**, long lines
 word-wrapped like the Ctrl+O view (`ui::wrap_output` — never clipped at the
 width, spaces preserved), + a
-`+N lines (Ns)` footer counting the fully hidden source lines
+`+N lines (Ns)` footer counting the fully hidden source lines, its `(Ns)`
+the command's own runtime (`App::command_elapsed`, never the turn's)
 (`ui::running_command_lines`, `docs/tool-streaming.md`) — so a long
 command isn't clipped and the running state shows; a **parallel
 batch** previews the *whole* `tool_queue` — the running call over each dim

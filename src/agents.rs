@@ -211,6 +211,14 @@ pub struct AgentRun {
     /// shows `Thinking for Ns` and a settle needs no clock of its own.
     /// `None` outside a phase.
     pub thinking: Option<Duration>,
+    /// How long its **current running command** has executed —
+    /// boundary-injected each frame from `Session::agent_command_clocks`, the
+    /// [`thinking`](Self::thinking) pattern (cleared, then re-injected for the
+    /// running ones), so the session view's `bash` tail counts its `+N lines
+    /// (Ns)` footer from the call's own `ToolStart` — never from the agent's
+    /// whole [`runtime`](Self::runtime), which its status line shows
+    /// (`docs/agent-view-streaming.md`). `None` when no command is running.
+    pub command_elapsed: Option<Duration>,
     /// Set while this agent's failed request is being retried
     /// ([`StreamEvent::Retrying`]) — its session view's status line shows the
     /// same `retrying {attempt}/{max}` clause the main turn's does, and the
@@ -262,6 +270,7 @@ impl AgentRun {
             reasoning: None,
             round_reasoning: Vec::new(),
             thinking: None,
+            command_elapsed: None,
             retry: None,
         }
     }
@@ -876,6 +885,14 @@ impl AgentRun {
     /// side ([`interrupt`](Self::interrupt), an `Error`) needs no clock.
     pub fn set_thinking(&mut self, elapsed: Option<Duration>) {
         self.thinking = elapsed;
+    }
+
+    /// Inject the running command's elapsed (the boundary's per-agent
+    /// command clock, the [`set_thinking`](Self::set_thinking) pattern) —
+    /// what the session view's running `bash` cell counts its `+N lines
+    /// (Ns)` footer with. `None` when no command is running.
+    pub fn set_command_elapsed(&mut self, elapsed: Option<Duration>) {
+        self.command_elapsed = elapsed;
     }
 
     /// Close the open thinking phase, recording it as a

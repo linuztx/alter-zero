@@ -77,7 +77,8 @@ impl Session<'_> {
         let thinking = self.clocks.thinking_start.map(|start| start.elapsed());
         self.app.set_status_times(elapsed, thinking);
         // The current running command's own elapsed (None when none is
-        // running), gating the delayed Ctrl+B hint (docs/background.md).
+        // running): the `(Ns)` its cell displays (docs/tool-streaming.md) and,
+        // masked, the delayed Ctrl+B hint's gate (docs/background.md).
         self.app
             .set_command_elapsed(self.clocks.command_start.map(|start| start.elapsed()));
         // The animation phase for the live region's pulsing bullets — a phase,

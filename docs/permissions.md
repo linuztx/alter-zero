@@ -116,7 +116,7 @@ do: it genuinely *is* waiting — the approve seam runs **before** its
 header-only special case) just made a two-call batch read as one waiting call
 and one mystery. A call that is truly executing (the main turn's own tool,
 under a *subagent's* request) keeps its running row instead, drawn at rest —
-the prompt is a still frame (`docs/tool-pulse.md`). `App::command_elapsed`
+the prompt is a still frame (`docs/tool-pulse.md`). `App::background_hint_elapsed`
 reads as `None` while a prompt is open, which drops the delayed
 `(ctrl+b to run in background)` hint: the prompt owns every key, so that one
 would be advertising a binding it swallows.

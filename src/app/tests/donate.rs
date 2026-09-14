@@ -309,9 +309,13 @@ fn an_open_page_suppresses_the_ctrl_b_hint_clock_and_asks_no_animation() {
     app.begin_stream();
     app.start_tool("Bash", "sleep 100", None);
     app.set_command_elapsed(Some(Duration::from_secs(5)));
-    assert!(app.command_elapsed().is_some());
+    assert!(app.background_hint_elapsed().is_some());
     app.open_donate_picker();
-    assert_eq!(app.command_elapsed(), None, "the page swallows Ctrl+B");
+    assert_eq!(
+        app.background_hint_elapsed(),
+        None,
+        "the page swallows Ctrl+B"
+    );
 
     let app = donate_app();
     assert!(

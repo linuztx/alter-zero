@@ -152,7 +152,7 @@ user who wants more than one address copies the next without reopening. The page
 works **mid-turn** like every picker — it only replaces the composer, and the
 streaming strip keeps its rows above it — and, like every picker, it blanks
 the running cell's `(ctrl+b to run in background)` hint while open
-(`App::command_elapsed`), since it would swallow the Ctrl+B the hint
+(`App::background_hint_elapsed`), since it would swallow the Ctrl+B the hint
 advertises.
 
 No text is entered anywhere on the page, so the hardware cursor is

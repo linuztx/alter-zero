@@ -241,9 +241,15 @@ impl App {
     }
     /// Inject the current running command's elapsed each frame (the
     /// [`set_status_times`](App::set_status_times) pattern — the clock lives at
-    /// the boundary). `None` when no command is running. Read by the preview to
-    /// delay the `(ctrl+b to run in background)` hint until a command has run a
-    /// few seconds, so a fast command never flashes it (`docs/background.md`).
+    /// the boundary, started at the call's `ToolStart` / the `!` shell's
+    /// launch). `None` when no command is running. Two readers: the running
+    /// cell **displays** it — the `bash` tail's `+N lines (Ns)` footer, the
+    /// `!` shell's `⎿ Running… (Ns)` row ([`command_elapsed`](App::command_elapsed),
+    /// `docs/tool-streaming.md`) — and the preview delays the `(ctrl+b to run
+    /// in background)` hint on it until a command has run a few seconds, so a
+    /// fast command never flashes it
+    /// ([`background_hint_elapsed`](App::background_hint_elapsed),
+    /// `docs/background.md`).
     pub fn set_command_elapsed(&mut self, elapsed: Option<Duration>) {
         self.command_elapsed = elapsed;
     }
@@ -269,11 +275,13 @@ impl App {
     pub const fn pulse(&self) -> Duration {
         self.pulse
     }
-    /// How long the current running command has executed, or `None` when no
-    /// command is running (the boundary hasn't injected one). See
-    /// [`set_command_elapsed`](App::set_command_elapsed).
+    /// The running command's elapsed **as the Ctrl+B hint's gate** — the
+    /// injected [`command_elapsed`](App::command_elapsed), or `None` wherever
+    /// the `(ctrl+b to run in background)` hint it delays must not show.
+    /// Named for that one job: the plain getter answers what the setter set,
+    /// and only this one is masked.
     ///
-    /// Also `None` while a tool-permission prompt is open: the prompt owns
+    /// `None` while a tool-permission prompt is open: the prompt owns
     /// every key, so Ctrl+B does nothing there — and the hint this gates would
     /// be advertising it (`docs/permissions.md`). Nothing is really *running*
     /// while a call waits on the user, either. The ↓ manager band and **every**
@@ -284,7 +292,7 @@ impl App {
     /// `docs/skills.md`, `docs/mascot.md`, `docs/spinner.md`, `docs/theme.md`,
     /// `docs/donate.md`).
     #[must_use]
-    pub fn command_elapsed(&self) -> Option<Duration> {
+    pub fn background_hint_elapsed(&self) -> Option<Duration> {
         if self.permission.is_some()
             || self.background_view.is_some()
             || self.model_picker.is_some()
@@ -299,6 +307,22 @@ impl App {
         {
             return None;
         }
+        self.command_elapsed
+    }
+    /// How long the current running command has executed — exactly what
+    /// [`set_command_elapsed`](App::set_command_elapsed) injected, `None` when
+    /// no command is running (the boundary injects `None` at every
+    /// resolution). This is what the running cell *displays*: the `bash`
+    /// tail's `+N lines (Ns)` footer and the `!` shell's `⎿ Running… (Ns)`
+    /// row (`ui::running_command_lines`, `docs/tool-streaming.md`). It is the
+    /// command's own clock, never the turn's — a `bash` call that starts a
+    /// minute into a turn opens on `(0s)`, not on the status indicator's
+    /// `60s` — and it is never masked: a picker or the ↓ band swallows
+    /// Ctrl+B and so blanks the hint's gate
+    /// ([`background_hint_elapsed`](App::background_hint_elapsed)), but keeps
+    /// the running cell on screen above itself, still counting.
+    #[must_use]
+    pub const fn command_elapsed(&self) -> Option<Duration> {
         self.command_elapsed
     }
     /// Inject the streaming strip preview's row count before a draw (the

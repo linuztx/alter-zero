@@ -461,13 +461,17 @@ fn the_open_manager_band_suppresses_the_ctrl_b_hint_clock() {
     app.begin_stream();
     app.start_tool("Bash", "sleep 100", None);
     app.set_command_elapsed(Some(Duration::from_secs(5)));
-    assert!(app.command_elapsed().is_some());
+    assert!(app.background_hint_elapsed().is_some());
     app.bg_started("bash_1", "sleep 200", None, true, None);
     app.open_background_view();
-    assert_eq!(app.command_elapsed(), None, "the band swallows Ctrl+B");
+    assert_eq!(
+        app.background_hint_elapsed(),
+        None,
+        "the band swallows Ctrl+B"
+    );
     app.close_background_view();
     assert!(
-        app.command_elapsed().is_some(),
+        app.background_hint_elapsed().is_some(),
         "the hint clock returns when the band closes"
     );
 }
@@ -484,9 +488,13 @@ fn an_open_inline_picker_suppresses_the_ctrl_b_hint_clock() {
         app.begin_stream();
         app.start_tool("Bash", "sleep 100", None);
         app.set_command_elapsed(Some(Duration::from_secs(5)));
-        assert!(app.command_elapsed().is_some());
+        assert!(app.background_hint_elapsed().is_some());
         open(&mut app);
-        assert_eq!(app.command_elapsed(), None, "the picker swallows Ctrl+B");
+        assert_eq!(
+            app.background_hint_elapsed(),
+            None,
+            "the picker swallows Ctrl+B"
+        );
     };
     hint_clock_off(|app| app.open_model_picker("a"));
     hint_clock_off(|app| app.open_key_onboarding(Vec::new(), Vec::new(), "~/.alter-zero/.env"));
@@ -638,4 +646,46 @@ fn the_details_page_of_the_last_shell_closes_the_band() {
         app.background_view.is_none(),
         "the only shell it was watching is gone — no empty list to fall back to"
     );
+}
+
+#[test]
+fn the_command_clock_stays_readable_where_the_hint_gate_is_blanked() {
+    // Two readers of one injected clock: `background_hint_elapsed` is the
+    // Ctrl+B hint's *gate*, blanked wherever the key is swallowed (above),
+    // while `command_elapsed` answers what `set_command_elapsed` set — the
+    // *display*, the running cell's `+N lines (Ns)` footer — which the band
+    // and every picker keep on screen above themselves, still counting
+    // (docs/tool-streaming.md).
+    let mut app = App::new();
+    app.begin_stream();
+    app.start_tool("Bash", "sleep 100", None);
+    assert_eq!(app.command_elapsed(), None, "no clock injected yet");
+    app.set_command_elapsed(Some(Duration::from_secs(5)));
+    assert_eq!(app.command_elapsed(), Some(Duration::from_secs(5)));
+    app.bg_started("bash_1", "sleep 200", None, true, None);
+    app.open_background_view();
+    assert_eq!(
+        app.background_hint_elapsed(),
+        None,
+        "the band swallows Ctrl+B"
+    );
+    assert_eq!(
+        app.command_elapsed(),
+        Some(Duration::from_secs(5)),
+        "the display clock keeps counting under the band"
+    );
+    app.close_background_view();
+    app.open_settings();
+    assert_eq!(
+        app.background_hint_elapsed(),
+        None,
+        "the picker swallows Ctrl+B"
+    );
+    assert_eq!(
+        app.command_elapsed(),
+        Some(Duration::from_secs(5)),
+        "the display clock keeps counting under a picker"
+    );
+    app.set_command_elapsed(None);
+    assert_eq!(app.command_elapsed(), None, "cleared with the command");
 }

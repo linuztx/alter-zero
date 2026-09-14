@@ -164,8 +164,10 @@ fn trim_preview(mut lines: Vec<Line<'static>>, rows: usize, tail: bool) -> Vec<L
 /// ([`super::agent::agent_view_preview_lines`]) — a subagent's running
 /// command tails its output exactly like the main turn's, which a second
 /// thinner copy of this walk did not (`docs/agent-view-streaming.md`).
-/// `elapsed` is whose runtime the `(Ns)` clauses show: the turn's for the
-/// main strip, the agent's own for its view.
+/// `elapsed` is the **running command's own** runtime — what every `(Ns)`
+/// here shows: the main strip's boundary-injected [`App::command_elapsed`],
+/// the agent view's [`AgentRun::command_elapsed`](crate::agents::AgentRun::command_elapsed)
+/// — never the turn's or the agent's elapsed, which the status line counts.
 pub(super) fn live_call_lines(
     tool: &ToolCall,
     elapsed: Duration,
@@ -198,10 +200,20 @@ pub(super) fn live_call_lines(
 /// Shared by [`preview_lines`] (drawn) and [`preview_rows`] (sized) so the two
 /// agree by construction (the strip's `debug_assert`).
 pub(super) fn preview_tool_lines(app: &App, width: u16) -> Vec<Line<'static>> {
-    let elapsed = app.status().map_or(Duration::ZERO, |s| s.elapsed);
+    // The `(Ns)` a running command shows is the command's **own** runtime —
+    // the boundary's per-command clock (`App::command_elapsed`, started at
+    // the call's `ToolStart` / the `!` shell's launch), never the turn's
+    // `elapsed` the status line counts: a `bash` call that started a minute
+    // into a turn used to open on `+N lines (60s)`, the status indicator's
+    // number copied under a cell that had just begun
+    // (docs/tool-streaming.md). Never masked — `background_hint_elapsed` is
+    // the Ctrl+B hint's *gate*, blanked under a picker that keeps this strip
+    // on screen. Zero until the first injection (the boundary injects before
+    // every draw; a unit test may not).
+    let elapsed = app.command_elapsed().unwrap_or(Duration::ZERO);
     // The shared animation phase every running bullet in this strip breathes
-    // against (`docs/tool-pulse.md`) — distinct from `elapsed`, which is the
-    // *turn's* runtime and is displayed.
+    // against (`docs/tool-pulse.md`) — distinct from `elapsed`, which is a
+    // measurement and is displayed.
     let pulse = app.pulse();
     let mut lines = Vec::new();
     // The round's live agent group leads the strip — its blue tree cell over
@@ -239,7 +251,7 @@ pub(super) fn preview_tool_lines(app: &App, width: u16) -> Vec<Line<'static>> {
         if tool.status == ToolStatus::Running
             && (tool.shell || is_command_tool(tool))
             && app
-                .command_elapsed()
+                .background_hint_elapsed()
                 .is_some_and(|elapsed| elapsed >= TOOL_BACKGROUND_HINT_DELAY)
         {
             lines.push(result_row(1, TOOL_BACKGROUND_HINT.to_string()));

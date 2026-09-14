@@ -192,12 +192,16 @@ fn the_open_picker_needs_no_animation_frames() {
 fn the_open_picker_hides_the_ctrl_b_hint_like_its_siblings() {
     let mut app = App::new();
     app.set_command_elapsed(Some(Duration::from_secs(5)));
-    assert!(app.command_elapsed().is_some());
+    assert!(app.background_hint_elapsed().is_some());
     app.open_theme_picker();
-    assert_eq!(app.command_elapsed(), None, "the picker swallows Ctrl+B");
+    assert_eq!(
+        app.background_hint_elapsed(),
+        None,
+        "the picker swallows Ctrl+B"
+    );
     app.close_theme_picker();
     assert!(
-        app.command_elapsed().is_some(),
+        app.background_hint_elapsed().is_some(),
         "closed: the hint comes back"
     );
 }

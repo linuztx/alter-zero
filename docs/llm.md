@@ -256,7 +256,7 @@ the bottom rule — the shape of the user's mock):
   seat comes from that same split, so it can never drift off the `❯` search
   row. One consequence of the picker owning every key: the running cell's
   delayed `(ctrl+b to run in background)` hint is suppressed while it is open
-  (`App::command_elapsed` reads `None` — the permission-prompt rule), since
+  (`App::background_hint_elapsed` reads `None` — the permission-prompt rule), since
   Ctrl+B would not reach the runner from inside the picker. The `/login` flow
   and the `/settings` menu are the same view family and behave identically
   (`docs/settings.md`).

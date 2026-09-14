@@ -112,7 +112,8 @@ A **command-style** tool (a non-shell backend tool that is not a `read`/`write`/
   `TOOL_PEEK_ROWS` display **rows** of output, then `+{hidden} lines
   ({secs}s)` when any source lines are fully hidden above (else just the tail —
   the status line carries the timer). No output yet → the existing
-  `⎿ Running…` row. Long lines **word-wrap** the same way (`wrap_output`)
+  `⎿ Running…` row. The `({secs}s)` is the **command's own** runtime, never
+  the turn's — *Whose clock the footer shows*, below. Long lines **word-wrap** the same way (`wrap_output`)
   instead of clipping at the terminal edge; the window is counted in wrapped
   rows, so a single long line tail-follows its own newest rows without
   growing the strip past its budget, and the newest-first walk wraps only
@@ -126,6 +127,44 @@ A **command-style** tool (a non-shell backend tool that is not a `read`/`write`/
   paint agree by construction.)
 - **Ctrl+O** (`tool_full_lines`): the whole output, uncapped — `wrap_output`
   too, so the expanded view and the inline peek render identically.
+
+### Whose clock the footer shows
+
+The `+N lines (Ns)` footer — and the `!` shell's `⎿ Running… (Ns)` row —
+count from the moment the **command** started, never from the turn's start.
+`preview_tool_lines` used to hand the status indicator's clock (the turn's
+`elapsed`) down to `running_command_lines`, so a `bash` call that began a
+minute into a turn opened on `+N lines (60s)` under a cell that had just
+started, the footer and the `Working… (60s ·` beside it counting in step —
+the reported bug. Two clocks, two questions: the status line answers *how
+long has this turn run*, the footer *how long has this command run*.
+
+The command clock already existed. `StatusClocks::command_start` is set at
+a model `bash` call's `ToolStart` and at a `!` shell's launch (`run_shell`,
+which starts it together with the turn's, so the shell row's number is
+unchanged), cleared at every resolution and injected each frame as
+`App::set_command_elapsed` — the delayed `(ctrl+b to run in background)`
+hint had waited on it since `docs/background.md`. The strip now reads the
+same injection through `App::command_elapsed`, the plain getter that answers
+what the setter set. The hint's gate is the separately named
+`App::background_hint_elapsed`: the same value masked to `None` wherever
+Ctrl+B is swallowed — a permission prompt, the ↓ manager band, every
+composer-replacing picker — because those keep the running cell on screen
+above themselves, where its footer must go on counting while a hint for a
+key they eat must not show. Naming the masked one for its one job is what
+keeps a reader from picking the wrong twin: the getter that shares the
+setter's name is the honest one.
+
+The **agent session view** had the same bug with the agent's whole runtime
+(`run.runtime`, what its status line shows) and takes the same shape: a
+per-agent clock, `Session::agent_command_clocks`, inserted at that agent's
+`ToolStart` and injected before each draw as `AgentRun::command_elapsed`,
+the thinking clock's twin (`docs/agent-view-streaming.md`). Which entries
+still apply is *derived* at the roster tick from the run's own queue — an
+agent without a running front call loses its clock — rather than removed at
+each of the four resolution events and two local settles, so no future
+resolution path has to remember it. The main strip needs no such pruning:
+its one `command_start` is cleared at the boundary's own resolution arms.
 
 ### The `Exit code: N` frame, reframed for display
 

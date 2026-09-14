@@ -241,7 +241,7 @@ open — unless its page is flowing, where they pause like under any other
 flowed view and the flow-exit rebuild regenerates them), so the transition
 running-cell → committed-cell reads exactly like it does over the composer. One consequence of the band owning every key: the
 running cell's delayed `(ctrl+b to run in background)` hint is suppressed
-while the band is open — `App::command_elapsed` reads `None`, the
+while the band is open — `App::background_hint_elapsed` reads `None`, the
 permission-prompt rule — since Ctrl+B would not reach the runner from
 inside the band.
 
@@ -302,11 +302,18 @@ running `!` shell cell gets the same row. The hint is **delayed**,
 Claude-Code-style: it appears only once the command has been running for
 `ui::TOOL_BACKGROUND_HINT_DELAY` (3s), so a command that finishes right away
 never flashes it (it isn't needed for a fast command). The gate is the
-command's **own** elapsed — `App::command_elapsed`, boundary-injected each
+command's **own** elapsed — `App::background_hint_elapsed`, boundary-injected each
 frame from `StatusClocks::command_start` (the `set_status_times` pattern): a
 model `bash` call's clock starts at its `ToolStart`, a `!` shell run's in
 `run_shell`, cleared at the command's resolution and each turn start. Turn
-elapsed won't do — a model tool can start deep into a turn. **Ctrl+B itself
+elapsed won't do — a model tool can start deep into a turn. The same clock
+is what the running cell **displays** — the `bash` tail's `+N lines (Ns)`
+footer and the `!` shell's `⎿ Running… (Ns)` row read it through the plain
+`App::command_elapsed`, what `set_command_elapsed` set; `background_hint_elapsed`
+is that value *masked* for the hint's one job: the band and every
+composer-replacing picker blank it (they swallow the key) while keeping the
+running cell on screen above themselves, where its footer must go on
+counting (`docs/tool-streaming.md`, *Whose clock the footer shows*). **Ctrl+B itself
 works the whole time** (`can_move_to_background` is ungated); only the
 discoverability hint waits, so pressing it on a still-fresh command still
 backgrounds it. Ctrl+B returns

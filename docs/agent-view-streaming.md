@@ -106,13 +106,27 @@ flow exit — collapsed a multi-row preview to one row for that frame.
 `live_call_lines(tool, elapsed, pulse, width)`, and `agent_view_preview_lines`
 calls it. A subagent's running `bash` now tails its output with the same
 `+N lines (Ns)` footer, and its `!`-shell/plain cases stay identical. The
-elapsed is the agent's own `run.runtime` (what `agent_view_status` already
-shows), not the main turn's.
+elapsed is the **command's own**, on both surfaces: the main strip reads
+`App::command_elapsed` (`docs/tool-streaming.md`), and the agent view reads
+`AgentRun::command_elapsed` — boundary-injected each frame from
+`Session::agent_command_clocks`, the thinking clock's twin (an entry
+inserted at the agent's `ToolStart`, `clear_agent_command_elapsed` then
+`set_agent_command_elapsed` per running one before each draw — so a
+resolved command's `(Ns)` drops rather than freezes). One deliberate
+difference: the thinking clock is *removed* at its one settle helper, while
+a command resolves on four events and two local settles, so the command
+map is **pruned at the roster tick** from the run's own queue instead — an
+agent whose front call is not `Running` loses its entry — and no resolution
+path carries a removal to forget. It used to be the agent's whole
+`run.runtime` (what `agent_view_status` shows), which put the status line's
+number under a call that had just begun — the same bug the main strip had
+with the turn's elapsed (`docs/tool-streaming.md`, *Whose clock the footer
+shows*).
 
 The delayed `(ctrl+b to run in background)` hint is deliberately **not** shared:
-`App::command_elapsed` is the *main* turn's command clock, and Ctrl+B in the
-agent view moves the whole group, not the call. Advertising it off another
-turn's clock would be a lie.
+`App::background_hint_elapsed` gates it off the *main* turn's command clock, and
+Ctrl+B in the agent view moves the whole group, not the call. Advertising it off
+another turn's clock would be a lie.
 
 ### 3. The agent thinks out loud
 

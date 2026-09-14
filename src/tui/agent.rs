@@ -31,7 +31,7 @@ use std::time::{Duration, Instant};
 use ratatui::text::Line;
 
 use alter_zero::agents::{AGENT_LINGER, AgentEvent};
-use alter_zero::app::{AgentStop, HistoryItem, Role, ToastKind, View};
+use alter_zero::app::{AgentStop, HistoryItem, Role, ToastKind, ToolStatus, View};
 use alter_zero::stream::{AgentChatDelivery, StreamEvent};
 use alter_zero::ui;
 
@@ -75,6 +75,18 @@ impl Session<'_> {
             self.agent_thinking_clocks
                 .insert(id.to_string(), Instant::now());
             self.app.set_agent_thinking(id, Duration::ZERO);
+        }
+        // The command clock — the main turn's `StatusClocks::command_start`,
+        // per agent: started at the call's `ToolStart` and injected each
+        // frame as the `(Ns)` the session view's tail counts — the call's
+        // own runtime, never the agent's. Nothing removes it here: which
+        // clocks still apply is derived from the run's queue at each roster
+        // tick (`tick_agent_roster`), so no resolution path has to remember
+        // it (`docs/agent-view-streaming.md`).
+        if matches!(event, StreamEvent::ToolStart { .. }) {
+            self.agent_command_clocks
+                .insert(id.to_string(), Instant::now());
+            self.app.set_agent_command_elapsed(id, Duration::ZERO);
         }
         // Settle the phase this event ends — the one settle helper, at all
         // three of its points: `ThinkingEnd`, a backend error, and a run that
@@ -640,6 +652,28 @@ impl Session<'_> {
             }
             true
         });
+        // The running commands' elapsed, the same clear-then-inject — after
+        // the sweep, so a swept agent's clock goes with it. Which clocks still
+        // apply is **derived** from the roster, never tracked at each
+        // resolution: a clock whose agent no longer has a running front call
+        // — the call resolved on any of its four events, the run settled or
+        // was stopped, the row swept — is dropped here, so no resolution path
+        // has to remember to remove it (the thinking clock has one settle
+        // helper to hang its removal on; a command has no such single
+        // point). A resolved command's `(Ns)` thus drops rather than
+        // freezes, and the next call's `ToolStart` starts from zero.
+        self.app.clear_agent_command_elapsed();
+        let app = &self.app;
+        self.agent_command_clocks.retain(|id, _| {
+            app.agent(id).is_some_and(|run| {
+                run.tool_queue
+                    .front()
+                    .is_some_and(|call| call.status == ToolStatus::Running)
+            })
+        });
+        for (id, started) in &self.agent_command_clocks {
+            self.app.set_agent_command_elapsed(id, started.elapsed());
+        }
     }
 }
 

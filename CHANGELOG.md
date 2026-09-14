@@ -12,6 +12,15 @@ release heading when a version is cut.
 
 ## [Unreleased]
 
+### Fixed
+
+- The running `bash` cell's `+N lines (Ns)` footer now counts from the
+  moment the command started instead of copying the status indicator's
+  turn timer, so a command launched a minute into a turn opens on `(0s)`
+  rather than `(60s)`. A subagent's session view counts its own running
+  command the same way, from that call's start rather than the agent's
+  whole runtime.
+
 ## [0.1.0] - 2026-09-13
 
 **Alter Zero Initial Release**

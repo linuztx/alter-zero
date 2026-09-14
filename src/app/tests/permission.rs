@@ -390,12 +390,12 @@ fn the_ctrl_b_hint_is_not_advertised_while_a_prompt_is_open() {
     // must therefore read as "nothing running" while a call waits on the user.
     let mut app = App::new();
     app.set_command_elapsed(Some(Duration::from_secs(30)));
-    assert!(app.command_elapsed().is_some());
+    assert!(app.background_hint_elapsed().is_some());
     app.open_permission(bash_request("p1"));
-    assert_eq!(app.command_elapsed(), None);
+    assert_eq!(app.background_hint_elapsed(), None);
     app.on_key(key(KeyCode::Char('1')));
     assert!(
-        app.command_elapsed().is_some(),
+        app.background_hint_elapsed().is_some(),
         "the clock comes back with the answer"
     );
 }

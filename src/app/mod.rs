@@ -645,9 +645,14 @@ pub struct App {
     /// shell run) has been executing — boundary-injected each frame
     /// ([`set_command_elapsed`](App::set_command_elapsed), the
     /// [`set_status_times`](App::set_status_times) pattern; the clock lives in
-    /// `main.rs`). `None` when no command is running. Gates the delayed
-    /// `(ctrl+b to run in background)` preview hint so a fast command never
-    /// flashes it (`docs/background.md`).
+    /// `tui::StatusClocks`, started at the call's `ToolStart`). `None` when no
+    /// command is running. The `(Ns)` the running cell displays
+    /// ([`command_elapsed`](App::command_elapsed), `docs/tool-streaming.md`)
+    /// — the command's own clock, never the turn's — and, masked wherever
+    /// Ctrl+B is swallowed, the gate of the delayed `(ctrl+b to run in
+    /// background)` preview hint, so a fast command never flashes it
+    /// ([`background_hint_elapsed`](App::background_hint_elapsed),
+    /// `docs/background.md`).
     command_elapsed: Option<Duration>,
     /// The **animation frame clock** — time since the loop started, injected
     /// before every draw ([`set_pulse`](App::set_pulse)). Purely a phase: the

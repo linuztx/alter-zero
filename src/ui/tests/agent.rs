@@ -638,14 +638,28 @@ fn an_agent_views_running_command_tails_its_streamed_output() {
     for i in 1..=9 {
         app.apply_agent_event("a1", &StreamEvent::ToolOutput(format!("line {i}\n")));
     }
-    app.set_agent_runtime("a1", Duration::from_secs(9));
+    // The footer's `(Ns)` is the **command's** own clock — injected per
+    // agent like the thinking phase's (`set_agent_command_elapsed`) — never
+    // the agent's whole runtime, which its status line shows: a call an
+    // agent starts a minute in used to open on `+N lines (60s)`.
+    app.set_agent_runtime("a1", Duration::from_secs(60));
+    app.set_agent_command_elapsed("a1", Duration::from_secs(9));
     app.open_agent_view("a1");
     let lines = preview_lines(&app, 60, None, preview_rows(&app, 60));
     let all: String = lines.iter().map(|l| plain(l) + "\n").collect();
     assert!(all.contains("line 9"), "the newest line tails: {all:?}");
     assert!(!all.contains("line 4"), "older lines are hidden: {all:?}");
-    assert!(all.contains("+5 lines (9s)"), "the footer shows: {all:?}");
+    assert!(
+        all.contains("+5 lines (9s)"),
+        "the footer counts the command's own runtime: {all:?}"
+    );
     assert_eq!(usize::from(preview_rows(&app, 60)), lines.len());
+    let run = app.agent("a1").expect("listed");
+    assert_eq!(
+        agent_view_status(run).elapsed,
+        Duration::from_secs(60),
+        "the status line still carries the agent's runtime"
+    );
 }
 
 #[test]

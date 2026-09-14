@@ -363,7 +363,7 @@ pub(super) const TOOL_BACKGROUND_HINT: &str = "(ctrl+b to run in background)";
 /// `(ctrl+b to run in background)` hint — Claude-Code-style, so a command that
 /// finishes right away never flashes it (Ctrl+B itself still works the whole
 /// time; only the discoverability hint waits). Gated on the boundary-injected
-/// [`App::command_elapsed`]. See `docs/background.md`.
+/// [`App::background_hint_elapsed`]. See `docs/background.md`.
 pub(super) const TOOL_BACKGROUND_HINT_DELAY: Duration = Duration::from_secs(3);
 
 /// The ↓ manager's list title.

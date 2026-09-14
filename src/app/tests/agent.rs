@@ -1064,3 +1064,33 @@ fn a_nested_tool_header_splits_back_into_its_name_and_path() {
         "a prefix is not the name"
     );
 }
+
+#[test]
+fn an_agents_command_clock_is_injected_per_agent_and_cleared_per_frame() {
+    // The per-agent twin of `set_agent_thinking`/`clear_agent_thinking`
+    // (docs/agent-view-streaming.md): before a draw the boundary clears
+    // every agent's command elapsed and re-injects the running commands'
+    // from their own clocks, so a command that resolved (its clock is gone)
+    // drops its `(Ns)` instead of freezing it, and one agent's clock never
+    // reaches another's footer.
+    let mut app = App::new();
+    app.begin_stream();
+    app.start_agent_group(false, &agent_specs(false));
+    app.set_agent_command_elapsed("a1", Duration::from_secs(9));
+    assert_eq!(
+        app.agent("a1").expect("listed").command_elapsed,
+        Some(Duration::from_secs(9))
+    );
+    assert_eq!(
+        app.agent("a2").expect("listed").command_elapsed,
+        None,
+        "only the named agent's clock is set"
+    );
+    app.set_agent_command_elapsed("zz", Duration::from_secs(1));
+    app.clear_agent_command_elapsed();
+    assert_eq!(
+        app.agent("a1").expect("listed").command_elapsed,
+        None,
+        "the per-frame clear drops every clock"
+    );
+}

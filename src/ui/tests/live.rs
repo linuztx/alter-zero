@@ -20,7 +20,10 @@ fn render_live_tails_a_running_bash_tool_with_its_streamed_output() {
     for i in 1..=9 {
         app.push_tool_output(&format!("line {i}\n"));
     }
-    app.set_status_times(Duration::from_secs(9), None);
+    // The `(Ns)` is the command's own clock, not the status line's
+    // (`set_command_elapsed`, docs/tool-streaming.md) — inject both, apart.
+    app.set_status_times(Duration::from_secs(60), None);
+    app.set_command_elapsed(Some(Duration::from_secs(9)));
     let pv = preview_rows(&app, 60);
     let h = live_height(&app.input, 60, 24, true, pv, 0, 0, 0, 0, 0, 0);
     let mut buf = buffer(60, h);
@@ -32,6 +35,58 @@ fn render_live_tails_a_running_bash_tool_with_its_streamed_output() {
     assert!(all.contains("line 9"), "the newest line tails: {all:?}");
     assert!(!all.contains("line 4"), "older lines are hidden: {all:?}");
     assert!(all.contains("+5 lines (9s)"), "the footer shows: {all:?}");
+}
+
+#[test]
+fn the_running_tails_footer_counts_from_the_commands_own_start() {
+    // The reported bug: a `bash` call that started a minute into a turn
+    // opened on `+N lines (60s)` — the footer copied the status indicator's
+    // number (the turn's elapsed) under a cell that had just begun. The
+    // footer counts from the command's own `ToolStart` instead: the clock
+    // the boundary already keeps for the delayed Ctrl+B hint
+    // (`set_command_elapsed`, docs/background.md), read unmasked
+    // (docs/tool-streaming.md).
+    let mut app = App::new();
+    app.begin_stream();
+    app.set_status_times(Duration::from_secs(60), None);
+    app.start_tool(
+        "Bash",
+        "for i in $(seq 1 100); do echo $i; sleep 1; done",
+        None,
+    );
+    for i in 1..=9 {
+        app.push_tool_output(&format!("{i}\n"));
+    }
+    app.set_command_elapsed(Some(Duration::from_secs(9)));
+    let footer = |app: &App| {
+        preview_tool_lines(app, 60)
+            .iter()
+            .map(plain)
+            .find(|l| l.contains("lines ("))
+            .expect("the tail carries its footer")
+            .trim()
+            .to_string()
+    };
+    assert_eq!(
+        footer(&app),
+        "+5 lines (9s)",
+        "the command's own runtime, never the turn's 60s"
+    );
+    // A clock to *display*, not the Ctrl+B hint's gate: a composer-replacing
+    // picker blanks `background_hint_elapsed` (it swallows the key) while
+    // keeping the strip — this running cell — on screen above itself, so the
+    // footer must keep counting there (docs/llm.md, docs/background.md).
+    app.open_settings();
+    assert_eq!(
+        app.background_hint_elapsed(),
+        None,
+        "the picker swallows Ctrl+B"
+    );
+    assert_eq!(
+        footer(&app),
+        "+5 lines (9s)",
+        "the footer still counts under a picker"
+    );
 }
 
 #[test]
@@ -488,6 +543,9 @@ fn the_running_shell_preview_is_the_flush_running_peek() {
     let mut app = App::new();
     app.begin_shell("sleep 5");
     app.set_status_times(Duration::from_secs(5), None);
+    // The `!` run IS the command: `run_shell` starts both clocks together,
+    // and the row shows the command's (docs/shell-command.md).
+    app.set_command_elapsed(Some(Duration::from_secs(5)));
     let q = queued_rows(&app, 60);
     // A shell turn hides the status line (has_status false), so the strip is
     // preview + gap only — sized exactly as main.rs::draw does.

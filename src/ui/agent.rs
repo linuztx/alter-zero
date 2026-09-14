@@ -225,7 +225,7 @@ fn single_live_agent_lines(
     ));
     if !background
         && app
-            .command_elapsed()
+            .background_hint_elapsed()
             .is_some_and(|elapsed| elapsed >= TOOL_BACKGROUND_HINT_DELAY)
     {
         lines.push(result_row(1, TOOL_BACKGROUND_HINT.to_string()));
@@ -364,7 +364,7 @@ pub fn live_agent_group_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     // (docs/background.md). Live-only by construction.
     if !live.background
         && app
-            .command_elapsed()
+            .background_hint_elapsed()
             .is_some_and(|elapsed| elapsed >= TOOL_BACKGROUND_HINT_DELAY)
     {
         lines.push(result_row(1, TOOL_BACKGROUND_HINT.to_string()));
@@ -838,11 +838,13 @@ pub(super) fn agent_view_preview_lines(
             // A live strip like the main one — the agent's running call
             // breathes here too (`docs/tool-pulse.md`) and a running command
             // tails its streamed output (`docs/tool-streaming.md`). The
-            // elapsed is the agent's own, which is what its status line
-            // shows.
+            // elapsed is the **command's** own — boundary-injected per agent
+            // like the thinking phase's, `AgentRun::command_elapsed` — never
+            // the agent's whole `runtime`, which its status line shows: a
+            // call started a minute in used to open on `+N lines (60s)`.
             lines.extend(super::live::live_call_lines(
                 tool,
-                run.runtime,
+                run.command_elapsed.unwrap_or(Duration::ZERO),
                 pulse,
                 width,
                 paths,
