@@ -129,7 +129,10 @@ deliberately independent — how you authenticate and what shape the request
 takes are two questions. A third optional key, `api_base_env`, names an
 environment variable that replaces the base (Ollama's `OLLAMA_HOST`). Resolution order for the file: `ALTER_ZERO_PROVIDERS_FILE`
 → `./providers.toml` → `~/.alter-zero/providers.toml` → a built-in default with the
-two shipped providers (`a0_venice` — the Agent Zero/Venice proxy — and `openrouter`).
+shipped providers (`a0_venice` — the Agent Zero/Venice proxy — and `venice`,
+Venice's own API behind it, `docs/venice.md`; `openrouter`; `github_copilot`;
+`openai_chatgpt`; `anthropic` and `anthropic_console`; `ollama` and
+`ollama_cloud`).
 
 The active backend is chosen at startup — from env, then the **persisted
 selection** (`~/.alter-zero/config.json`, written by `/model` — **this working

@@ -64,7 +64,9 @@ sleep 0.4
 login_keys="$(tmux capture-pane -t "$S103" -p)"
 echo "==== Phase 103: the API-key provider list ===="
 printf '%s\n' "$login_keys"
-for want in "Agent Zero API" "OpenRouter" "Keys are saved to" "esc back"; do
+# Venice is here twice on purpose — through the Agent Zero proxy and directly
+# (docs/venice.md) — and both rows must be offered a key field.
+for want in "Agent Zero API" "Venice" "OpenRouter" "Keys are saved to" "esc back"; do
 	expect_has "$login_keys" -F "$want" "the API-key list did not show \"$want\""
 done
 expect_lacks "$login_keys" -F "GitHub Copilot" "a subscription provider was offered a key field"

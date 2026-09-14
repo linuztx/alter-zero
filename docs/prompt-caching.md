@@ -227,6 +227,7 @@ every provider's minimum cacheable size), printing both usage frames:
 
 ```sh
 A0_VENICE_API_KEY=sk-a0-…    cargo test --test live_caching -- --ignored --nocapture live_venice
+VENICE_API_KEY=…             cargo test --test live_caching -- --ignored --nocapture live_venice_direct
 OPENROUTER_API_KEY=sk-or-…   cargo test --test live_caching -- --ignored --nocapture live_openrouter
 ANTHROPIC_API_KEY=sk-ant-…   cargo test --test live_caching -- --ignored --nocapture live_anthropic_api_key
 OLLAMA_API_KEY=…             cargo test --test live_caching -- --ignored --nocapture live_ollama_cloud

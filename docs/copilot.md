@@ -9,7 +9,7 @@ step that asks the prior question first, and a second half behind it.
 ```
 /login
   ├─ Use a subscription ──► GitHub Copilot ──► device code ──► (approved)
-  └─ Use an API key ──────► Agent Zero API / OpenRouter ──► paste the key
+  └─ Use an API key ──────► Agent Zero API / Venice / OpenRouter / … ──► paste the key
 ```
 
 Both halves end in the **same place**: a secret in `~/.alter-zero/.env` under
@@ -157,7 +157,7 @@ carries, a second dim hint row naming the step's keys, Esc now stepping *back*
 to the method root rather than closing outright, and the key step's own
 description-and-key-page block (`docs/llm.md`). The list shows exactly the
 providers whose key is pasted — **Agent Zero API**, **Anthropic**,
-**OpenRouter**, **Ollama Cloud**, **Ollama** — with a subscription provider
+**OpenRouter**, **Ollama Cloud**, **Ollama**, **Venice** — with a subscription provider
 filtered out, since offering a key field for a flow that has none is a dead
 end.
 
