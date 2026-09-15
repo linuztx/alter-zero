@@ -12,6 +12,16 @@ release heading when a version is cut.
 
 ## [Unreleased]
 
+### Changed
+
+- The `/resume` picker scrolls like the `/model` list: on a list taller
+  than the screen the highlighted session rides the middle row, so the
+  sessions above and below it stay in view and each ↑/↓ scrolls the next
+  one in. It used to pin the highlight to the edge it had crossed, so
+  scrolling down showed one new row at the bottom and nothing beyond it,
+  and scrolling back up moved the highlight over the rows already on
+  screen without scrolling at all.
+
 ## [0.1.1] - 2026-09-15
 
 ### Added

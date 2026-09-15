@@ -200,6 +200,35 @@ fn resume_picker_scrolls_to_keep_the_selection_visible() {
     );
 }
 
+#[test]
+fn resume_picker_keeps_the_selection_centered_like_the_model_list() {
+    // A 12-row screen leaves the picker a 5-row body (rows 4..9). Mid-list
+    // the highlight rides the middle row so the sessions above *and* below
+    // it stay in view, and each ↓ scrolls the next one in — the `/model`
+    // list's `centered_window`, not the palette's edge-pinned `menu_window`,
+    // which parked the highlight on the bottom row and hid what came next.
+    let previews: Vec<String> = (0..30).map(|i| format!("message number {i}")).collect();
+    let refs: Vec<&str> = previews.iter().map(String::as_str).collect();
+    let mut app = resume_app(&refs);
+    for selected in [15, 16] {
+        app.resume_picker.as_mut().unwrap().selected = selected;
+        let mut buf = buffer(40, 12);
+        render_resume_picker(buf.area, &mut buf, &app);
+        let body: Vec<String> = (4..9).map(|y| row(&buf, y, 40)).collect();
+        assert!(
+            body[2].starts_with("❯ "),
+            "the selection rides the middle row: {body:?}"
+        );
+        for (offset, line) in body.iter().enumerate() {
+            let expected = format!("message number {}", selected + offset - 2);
+            assert!(
+                line.trim_end().ends_with(&expected),
+                "row {offset} shows session {expected:?}: {body:?}"
+            );
+        }
+    }
+}
+
 // ===== /resume session picker (docs/resume.md) =====
 
 /// An app with the picker open over one session per preview, all aged

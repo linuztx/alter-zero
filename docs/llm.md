@@ -321,7 +321,7 @@ the bottom rule — the shape of the user's mock):
   centered** (`ui::centered_window`): on a long list the selection rides the
   middle row so the models above *and* below it stay in view, sliding to an edge
   only when the list runs out on that side (near the top/bottom). The `/login`
-  provider list scrolls the same way.
+  provider list and the `/resume` session picker scroll the same way.
 - On select, the loop rebuilds the backend for the new provider/model, updates the
   footer (`App::set_session_info`), and **persists the choice to `config.json`**
   (so it's the default next run — in this working directory,

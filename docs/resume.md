@@ -266,8 +266,16 @@ that timestamp per row), the preview ellipsis-truncated to the width
 (`cols()` math). The selected row lights up in the palette's selected colour
 **on a full-width `resume_selected_bg()` tint** (padded to the edge in columns
 — the user-message block pattern, codex's background blend); the rest dim.
-The row window scrolls to keep the selection visible (derived from `selected`
-and the list height; no stored scroll offset).
+The row window keeps the selection **centered** (`ui::centered_window`, the
+`/model` list's rule — derived from `selected` and the body height, no stored
+scroll offset): on a list taller than the screen the highlight rides the
+middle row, so the sessions above *and* below it stay in view and every ↑/↓
+scrolls the next one in, sliding to an edge only when the list runs out on
+that side (the first rows anchor at the top, the last flush with the tail).
+The palette's `menu_window` used to window it instead, which pinned the
+highlight to whichever edge it had crossed — ↓ from the bottom row scrolled
+exactly one new session in and hid everything beyond it, and ↑ walked the
+highlight back up the rows already on screen without scrolling at all.
 
 ## Known divergences from codex
 
@@ -344,8 +352,9 @@ and the list height; no stored scroll offset).
   compact form when narrow, dropped when narrower), marker + dim age +
   preview rows with the selection lit **on the full-width background tint**,
   the age column following the active sort key, the right-aligned
-  `{n}/{total}` count, both empty states, narrow-width truncation, and the
-  selection kept visible in a short window.
+  `{n}/{total}` count, both empty states, narrow-width truncation, the
+  selection kept visible in a short window, and — mid-list — kept
+  **centered** in it with the rows above and below in view (`/model`'s rule).
 - `scripts/smoke.sh` Phase 31 (the I/O boundary): with
   `ALTER_ZERO_SESSIONS_DIR` pointed at a temp dir — a turn writes a rollout
   file (meta + user + assistant lines); a second launch's `/resume` picker

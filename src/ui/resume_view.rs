@@ -124,10 +124,13 @@ fn resume_toolbar_spans(picker: &ResumePicker, compact: bool) -> Vec<Span<'stati
 
 /// Render the full-screen `/resume` session picker — codex's resume picker,
 /// sized down (docs/resume.md): the slash-tiled title, the type-to-search
-/// line, the dense session rows (windowed to keep the selection visible, the
-/// palette's [`menu_window`]), and the bottom rule carrying
-/// `{selected+1}/{total}` over the dim key hints. Pure — `term.rs` paints
-/// this onto the alternate screen, like the transcript pager.
+/// line, the dense session rows (windowed to keep the selection **centered**
+/// — the `/model` list's [`centered_window`], so the sessions above *and*
+/// below the highlight stay in view and each ↑/↓ scrolls the next one in,
+/// where the palette's edge-pinned `menu_window` hid what came next), and
+/// the bottom rule carrying `{selected+1}/{total}` over the dim key hints.
+/// Pure — `term.rs` paints this onto the alternate screen, like the
+/// transcript pager.
 pub fn render_resume_picker(area: Rect, buf: &mut Buffer, app: &App) {
     let [
         title_area,
@@ -205,7 +208,7 @@ pub fn render_resume_picker(area: Rect, buf: &mut Buffer, app: &App) {
         ))]
     } else {
         let height = (body_area.height as usize).max(1);
-        let start = menu_window(matches.len(), selected, height);
+        let start = centered_window(matches.len(), selected, height);
         matches
             .iter()
             .enumerate()
