@@ -118,6 +118,14 @@ overlay machinery.
   Streaming deltas, the status line, and token tallies are never recorded —
   codex's persistence policy. (A *settled* thinking phase is an ordinary
   history item and does get its line; the raw deltas do not.)
+  Two **sidecar** records ride the same file without being history items:
+  `"checkpoint"` (`docs/checkpoint.md`) and `"model"` — the session's own
+  model selection (`docs/session-model.md`: `llm::settings::ModelSelection`,
+  the `config.json` entry's shape, written right after the meta line and
+  again on every `/model` pick, Ctrl+T cycle and probe answer; the newest
+  wins, `session::parse_model`), which is what a resume runs the rest of
+  the conversation on — the `session_meta` line's `model` names only the
+  model the file was created on and is never read back.
 - Serialization is `serde`/`serde_json` on **module-local record types**
   (`SessionMeta`, a tagged line enum) mapped to/from the app types, so the
   on-disk format is decoupled from `app/` and the app types stay
@@ -150,8 +158,13 @@ A `SessionRecorder` owns the root dir, the active file path + meta, and a
 - Recording failures are ignored (`let _ =`) — the TUI must not die because
   a disk filled; codex logs and carries on similarly.
 - On resume, the recorder **adopts** the loaded file (path, its parsed meta,
-  `recorded = items.len()`) and appends from there — same-file accumulation,
-  codex's `Resume{path}` mode.
+  `recorded = items.len()`, its newest `model` record) and appends from there
+  — same-file accumulation, codex's `Resume{path}` mode. The session's
+  selection rides the recorder beside the meta (`set_model`, a
+  `selection_written` watermark — the checkpoint pattern): a changed
+  selection flushes at the next `sync` as a new `model` line, the file's
+  first write carries it right after the meta, and a rewrite re-emits the
+  current one (`docs/session-model.md`).
 - The scan for the picker also lives here: walk `{root}` year/month/day dirs
   descending collecting candidates (bounded by `RESUME_WALK_CAP`), sort by
   mtime descending (codex's Updated sort) **before** capping the expensive
@@ -211,7 +224,13 @@ A `SessionRecorder` owns the root dir, the active file path + meta, and a
   overlay return (`overlay_return_repaint` — flush what queued, repaint the
   live region).
 - `Action::ResumeSession(path)` → read + `session::parse_session` at the
-  boundary. Ok: `app.load_session(items)`, recorder adopts the file,
+  boundary. Ok: `app.load_session(items)`, recorder adopts the file, **the
+  session's model is restored** from the file's newest `model` record
+  (`Session::restore_session_model` → `ModelSession::restore`, a `/model`
+  switch minus the `config.json` write — the footer, the Ctrl+T seed and
+  the gauge follow; an environment pin keeps the pinned model, a provider
+  this machine has no key for keeps the current one under a red `Can't
+  resume on …` toast; `docs/session-model.md`),
   `exit_overlay` + a **purge** `repaint_conversation` (like `/clear`) — the
   loaded session *replaces* the whole conversation, so the rebuild fills
   scrollback with its full history; a plain return would leave the previous
@@ -361,3 +380,6 @@ highlight back up the rows already on screen without scrolling at all.
   lists it (preview visible), Enter repaints the old conversation inline, a
   follow-up turn **appends to the same file** (no second file), and the
   relaunch after *that* shows both turns; `/clear` then starts a fresh file.
+  Phase 117 drives the model side of a resume — a conversation comes back
+  on the model its file records, not the directory's current entry
+  (`docs/session-model.md`).

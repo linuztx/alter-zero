@@ -25,6 +25,12 @@
 //!   is this directory's from now on, and a directory launched in for the
 //!   first time takes the last selection made anywhere and pins it as its own
 //!   at startup — so a switch elsewhere never moves it afterwards.
+//! - **…and then the session's own.** The directory's entry is what a *new*
+//!   session starts on; the conversation's rollout records the model it
+//!   actually runs ([`ModelSession::session_selection`]), and a resume
+//!   brings that back through [`ModelSession::restore`] without writing
+//!   `config.json` (`docs/session-model.md`) — so two instances in one
+//!   directory each keep their own model.
 //!
 //! The dummy backend is the fallback throughout, so the app always runs
 //! offline; a real model activates only when a provider, a model and a key all
@@ -100,6 +106,11 @@ pub(crate) struct ModelSession {
     stall_ms: Option<u64>,
     /// `ALTER_ZERO_CONTEXT_WINDOW`, which outranks whatever a provider reports.
     env_context_window: Option<u64>,
+    /// The `ALTER_ZERO_PROVIDER` / `ALTER_ZERO_MODEL` pins, read once: they
+    /// decide the startup selection, and outrank a resumed conversation's
+    /// recorded model the same way (`docs/session-model.md`).
+    env_provider: Option<String>,
+    env_model: Option<String>,
     /// The live selection: which provider, which model, what it can do.
     active_provider: Option<String>,
     active_model: String,
@@ -109,6 +120,11 @@ pub(crate) struct ModelSession {
     /// user didn't ask for (a `/settings` knob) carries it forward instead of
     /// silently dropping the Ctrl+T choice (`docs/reasoning.md`).
     active_thinking: Option<ThinkingMode>,
+    /// The session's own selection — the pair the live backend runs plus
+    /// what the session knows about it — which the rollout records so a
+    /// resume brings the conversation back on it (`docs/session-model.md`).
+    /// `None` on the dummy (and the stalled test backend).
+    session_selection: Option<ModelSelection>,
     /// The backend itself — the dummy unless a real provider/model/key resolved.
     backend: Box<dyn ReplySource>,
     /// Whether [`Self::backend`] is a **real** model rather than the dummy (or
@@ -247,9 +263,11 @@ impl ModelSession {
         let prompt_context = config::prompt_context(cwd, scratchpad);
         // The provider the /model picker lists from and switches within: env,
         // else the saved selection, else the file's default.
-        let active_provider = std::env::var("ALTER_ZERO_PROVIDER")
+        let env_provider = std::env::var("ALTER_ZERO_PROVIDER")
             .ok()
-            .filter(|s| !s.is_empty())
+            .filter(|s| !s.is_empty());
+        let active_provider = env_provider
+            .clone()
             .or_else(|| saved_provider.clone())
             .or_else(|| providers.default_provider());
         // The saved provider/model are ONE selection: pairing the saved model
@@ -260,10 +278,10 @@ impl ModelSession {
             .as_ref()
             .map(|s| s.model.clone())
             .filter(|_| active_provider == saved_provider);
-        let env_model = std::env::var("ALTER_ZERO_MODEL")
+        let env_model_pin = std::env::var("ALTER_ZERO_MODEL")
             .ok()
-            .filter(|s| !s.is_empty())
-            .or(saved_model);
+            .filter(|s| !s.is_empty());
+        let env_model = env_model_pin.clone().or(saved_model);
         let stall_ms = config::stall_ms();
         let env_context_window = config::context_window_override();
         // The saved thinking blob describes the saved (provider, model)
@@ -318,6 +336,24 @@ impl ModelSession {
         // capability state and its probe only make sense against a live provider.
         // `ALTER_ZERO_STALL_MS` preempts both with the test-only wedged backend.
         let real_backend = stall_ms.is_none() && real_config.is_some();
+        // The session's own selection (docs/session-model.md): the pair the
+        // real backend runs, with the facts the file recorded for it when
+        // they apply — an unknown fact stays unknown, so a resume probes for
+        // it exactly as this launch does.
+        let session_selection = real_backend
+            .then(|| active_provider.as_deref().zip(env_model.as_deref()))
+            .flatten()
+            .map(|(provider, model)| {
+                ModelSelection::new(provider, model)
+                    .with_thinking(
+                        saved
+                            .as_ref()
+                            .and_then(|s| s.thinking.clone())
+                            .filter(|_| selection_is_saved),
+                    )
+                    .with_vision(saved_vision)
+                    .with_context(saved_context)
+            });
         let backend: Box<dyn ReplySource> = match (stall_ms, real_config) {
             (Some(ms), _) => Box::new(stream::StallAi::new(Duration::from_millis(ms))),
             (None, Some(cfg)) => Box::new(session_backend(
@@ -398,11 +434,14 @@ impl ModelSession {
             prompt_context,
             stall_ms,
             env_context_window,
+            env_provider,
+            env_model: env_model_pin,
             active_provider,
             active_model,
             active_vision: real_backend.then_some(saved_vision).flatten(),
             active_context: real_backend.then_some(saved_context).flatten(),
             active_thinking: startup_thinking.as_ref().map(|(_, mode)| *mode),
+            session_selection,
             backend,
             real_backend,
             registry: registry.clone(),
@@ -844,17 +883,92 @@ impl ModelSession {
         // probe is stale.
         self.probe_pending = false;
         self.persisted_selection = Some((provider.to_string(), id.to_string()));
+        let selection = ModelSelection::new(provider, id)
+            .with_thinking(Some(config::thinking_settings_of(thinking)))
+            .with_vision(vision)
+            .with_context(context);
         // This directory's choice from now on — and the last one made
         // anywhere, which is what the next new directory starts with.
-        config::save_selection(
-            self.settings_path.as_deref(),
-            &self.project,
-            &ModelSelection::new(provider, id)
-                .with_thinking(Some(config::thinking_settings_of(thinking)))
-                .with_vision(vision)
-                .with_context(context),
-        );
+        config::save_selection(self.settings_path.as_deref(), &self.project, &selection);
+        // …and this session's own, which its rollout records
+        // (docs/session-model.md).
+        self.session_selection = Some(selection);
         true
+    }
+
+    /// Bring a resumed conversation back on the model its rollout recorded
+    /// (`docs/session-model.md`): a [`switch_to`](Self::switch_to) minus the
+    /// `config.json` write — a resume chooses nothing, and the directory's
+    /// entry stays what a *new* session starts on. The recorded thinking
+    /// mode, vision and window ride the rebuild; a fact the record never
+    /// learned (a session recorded before its probe answered) is probed for
+    /// again, the startup rule — the caller spawns
+    /// [`take_probe`](Self::take_probe).
+    ///
+    /// Refused when an environment pin outranks the record (the startup
+    /// precedence, `llm::env_outranks`) or when no usable config resolves
+    /// for it (the provider is not in the table, or its key is gone); the
+    /// session then keeps the model it has.
+    pub(crate) fn restore(&mut self, recorded: &ModelSelection) -> Restore {
+        if llm::env_outranks(
+            self.env_provider.as_deref(),
+            self.env_model.as_deref(),
+            recorded,
+        ) {
+            return Restore::Pinned;
+        }
+        // Outer None = support unknown (probe); Some(None) = a known
+        // non-reasoner; Some(Some(state)) = seed the Ctrl+T cycle.
+        let thinking: Option<Option<Thinking>> = recorded
+            .thinking
+            .as_ref()
+            .map(llm::ThinkingSettings::to_seed);
+        let seed = thinking.clone().flatten();
+        let mode = seed.as_ref().map(|(_, mode)| *mode);
+        let Some(cfg) = self
+            .config_for(
+                &recorded.provider,
+                &recorded.model,
+                mode,
+                recorded.vision,
+                recorded.context,
+            )
+            .filter(ModelConfig::is_usable)
+        else {
+            return Restore::Unusable;
+        };
+        self.rebuild(cfg);
+        self.real_backend = true;
+        self.active_provider = Some(recorded.provider.clone());
+        self.active_model = recorded.model.clone();
+        self.active_vision = recorded.vision;
+        self.active_context = recorded.context;
+        self.active_thinking = mode;
+        self.session_selection = Some(recorded.clone());
+        // What the record never learned, the probe finds out — the startup
+        // rule (docs/reasoning.md, docs/tools.md). It replaces any probe
+        // still queued for the model this one supersedes.
+        self.probe = (thinking.is_none() || recorded.vision.is_none()).then(|| {
+            let cfg = config::model_config_for(
+                &self.providers,
+                &self.env_file,
+                &recorded.provider,
+                &recorded.model,
+                self.temperature,
+                None,
+                None,
+                None,
+            );
+            (recorded.provider.clone(), cfg)
+        });
+        self.probe_pending = self.probe.is_some();
+        Restore::Restored(seed)
+    }
+
+    /// The session's own selection, for the rollout's `model` record
+    /// (`docs/session-model.md`); `None` on the dummy.
+    pub(crate) fn session_selection(&self) -> Option<&ModelSelection> {
+        self.session_selection.as_ref()
     }
 
     /// Rebind the *next* turn's backend so a Ctrl+T thinking mode rides its
@@ -884,24 +998,28 @@ impl ModelSession {
     /// onto the pair `config.json` already records for this directory: an
     /// env-overridden selection never writes back (env always wins, never
     /// sticks), so persisting its thinking would hijack the saved default.
-    pub(crate) fn persist(&self, thinking: Option<&Thinking>) {
-        let Some(provider) = self.active_provider.as_deref() else {
+    /// The session's own record follows either way (`docs/session-model.md`):
+    /// a resumed conversation on a model other than the entry's still keeps
+    /// its facts fresh in its rollout.
+    pub(crate) fn persist(&mut self, thinking: Option<&Thinking>) {
+        if !self.real_backend {
+            return; // the dummy has no selection to describe
+        }
+        let Some(provider) = self.active_provider.clone() else {
             return;
         };
+        let selection = ModelSelection::new(&provider, &self.active_model)
+            .with_thinking(Some(config::thinking_settings_of(thinking)))
+            .with_vision(self.active_vision)
+            .with_context(self.active_context);
         if self
             .persisted_selection
             .as_ref()
-            .is_some_and(|(p, m)| p == provider && *m == self.active_model)
+            .is_some_and(|(p, m)| *p == provider && *m == self.active_model)
         {
-            config::save_capabilities(
-                self.settings_path.as_deref(),
-                &self.project,
-                &ModelSelection::new(provider, &self.active_model)
-                    .with_thinking(Some(config::thinking_settings_of(thinking)))
-                    .with_vision(self.active_vision)
-                    .with_context(self.active_context),
-            );
+            config::save_capabilities(self.settings_path.as_deref(), &self.project, &selection);
         }
+        self.session_selection = Some(selection);
     }
 
     /// Apply the capability probe's answer for `provider` (`docs/reasoning.md`,
@@ -1091,6 +1209,34 @@ impl ModelSession {
             )),
         }
     }
+}
+
+/// What [`ModelSession::restore`] did about a resumed conversation's
+/// recorded model (`docs/session-model.md`).
+pub(crate) enum Restore {
+    /// The session now runs the record; the Ctrl+T seed for `App` (`None`
+    /// = the model has no thinking, or its support is still unknown and a
+    /// probe is queued).
+    Restored(Option<Thinking>),
+    /// An environment pin outranks the record — the session keeps the
+    /// pinned model, silently: the pin is the user's own doing.
+    Pinned,
+    /// No usable config resolves for the record — the session keeps the
+    /// model it has, and the caller says why.
+    Unusable,
+}
+
+/// What a resume did about the recorded model
+/// ([`Session::restore_session_model`], `docs/session-model.md`).
+pub(crate) struct ModelRestore {
+    /// The session now runs the record — what the recorder is told, so a
+    /// record it could not honour is kept rather than overwritten by the
+    /// fallback.
+    pub(crate) honoured: bool,
+    /// Why it could not — the toast the caller raises **last**, so the
+    /// actionable failure outranks the checkpoint confirmation it would
+    /// otherwise share the row with.
+    pub(crate) failure: Option<String>,
 }
 
 /// Build a session [`LlmBackend`] with the **full shared attachment set** —
@@ -1405,18 +1551,94 @@ impl Session<'_> {
         {
             self.sync_backend_info();
             self.app.set_thinking(thinking);
+            // The pick is this conversation's model from here on — its
+            // rollout records it (docs/session-model.md).
+            self.record_session_model(true);
             self.toast(format!("Switched model to {id}"), ToastKind::Info);
         } else {
-            // A subscription has no env var to "set" — you sign in to it, and
-            // naming GITHUB_COPILOT_TOKEN would send the user looking for a
-            // key to paste that does not exist (`docs/copilot.md`). A
-            // host-configured provider never lands here: no key, no refusal.
-            let fix = if self.models.is_subscription(provider) {
-                "run /login and sign in".to_string()
-            } else {
-                format!("run /login to set {}", self.models.key_env(provider))
-            };
+            let fix = self.login_fix(provider);
             self.toast(format!("Can't switch to {id}: {fix}"), ToastKind::Error);
+        }
+    }
+
+    /// The `/login` step that would make `provider` usable — the wording a
+    /// refused `/model` pick and a refused resume share. A subscription has
+    /// no env var to "set" — you sign in to it, and naming
+    /// GITHUB_COPILOT_TOKEN would send the user looking for a key to paste
+    /// that does not exist (`docs/copilot.md`). A host-configured provider
+    /// never lands here: no key, no refusal.
+    fn login_fix(&self, provider: &str) -> String {
+        if self.models.is_subscription(provider) {
+            "run /login and sign in".to_string()
+        } else {
+            format!("run /login to set {}", self.models.key_env(provider))
+        }
+    }
+
+    /// Mirror the session's model selection into the recorder
+    /// (`docs/session-model.md`), after every site that moves it or learns
+    /// about it: a `/model` pick (`chosen`, which also overrides a kept
+    /// record), a Ctrl+T cycle, the probe's answer, a resume. The recorder
+    /// flushes a changed selection as the rollout's next `model` line at the
+    /// loop bottom.
+    pub(crate) fn record_session_model(&mut self, chosen: bool) {
+        let name = self.models.model_name();
+        let selection = self.models.session_selection().cloned();
+        if chosen {
+            self.recorder.pick_model(&name, selection);
+        } else {
+            self.recorder.set_model(&name, selection);
+        }
+    }
+
+    /// Bring a resumed conversation back on the model its rollout recorded
+    /// (`docs/session-model.md`) — the `/resume` picker's arm and the
+    /// `--continue`/`--resume` boot alike. On a restore the footer, the
+    /// Ctrl+D prompts, the context gauge and the Ctrl+T seed follow, and a
+    /// probe is spawned for whatever the record never learned. `None` (a
+    /// file with no record) restores nothing.
+    pub(crate) fn restore_session_model(
+        &mut self,
+        recorded: Option<&ModelSelection>,
+    ) -> ModelRestore {
+        let Some(recorded) = recorded else {
+            return ModelRestore {
+                honoured: false,
+                failure: None,
+            };
+        };
+        match self.models.restore(recorded) {
+            Restore::Restored(thinking) => {
+                self.sync_backend_info();
+                self.app.set_thinking(thinking);
+                self.spawn_pending_probe();
+                ModelRestore {
+                    honoured: true,
+                    failure: None,
+                }
+            }
+            Restore::Pinned => ModelRestore {
+                honoured: false,
+                failure: None,
+            },
+            Restore::Unusable => ModelRestore {
+                honoured: false,
+                failure: Some(format!(
+                    "Can't resume on {}: {}",
+                    recorded.model,
+                    self.login_fix(&recorded.provider)
+                )),
+            },
+        }
+    }
+
+    /// Spawn the capability probe [`ModelSession`] has queued, if any — at
+    /// bootstrap, and after a resume onto a model whose facts the record
+    /// never learned (`docs/session-model.md`). Its answer lands on
+    /// `probe_rx`, gated by `probe_pending`.
+    pub(crate) fn spawn_pending_probe(&mut self) {
+        if let Some((provider, cfg)) = self.models.take_probe() {
+            spawn_model_fetch(provider, cfg, CancelToken::new(), self.probe_tx.clone());
         }
     }
 
@@ -1433,6 +1655,7 @@ impl Session<'_> {
             .as_ref()
             .map(|t| (t.support.clone(), t.mode));
         self.models.persist(thinking.as_ref());
+        self.record_session_model(false);
         self.toast(format!("Thinking: {}", mode.label()), ToastKind::Info);
     }
 
@@ -1471,6 +1694,9 @@ impl Session<'_> {
             // An inheriting subagent's gauge shares that window
             // (`docs/agent-context-gauge.md`).
             self.sync_agent_view_context();
+            // …and the session's record learns the same facts
+            // (docs/session-model.md).
+            self.record_session_model(false);
             self.frame.schedule_frame();
         }
     }

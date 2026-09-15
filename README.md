@@ -170,7 +170,7 @@ The footer shows your active model, thinking mode, and context usage. **Ctrl+T**
 ### Pick up where you left off
 
 - **Saved conversations.** `/resume` opens a searchable session picker. Use `--continue` for the latest session in this directory or `--resume <id>` for a specific one.
-- **Settings that stay with the project.** Model choices, permissions, skills, and appearance are remembered per directory. Input history carries across sessions and is searchable with **Ctrl+R**.
+- **Settings that stay with the project.** Model choices, permissions, skills, and appearance are remembered per directory, and every saved conversation resumes on the model it was using. Input history carries across sessions and is searchable with **Ctrl+R**.
 - **Managed context.** `/compact` summarises long conversations, with automatic compaction as the context window fills. A session scratchpad holds temporary scripts and notes outside your project.
 
 ### Make the terminal yours

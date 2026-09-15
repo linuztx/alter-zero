@@ -339,6 +339,7 @@ impl Session<'_> {
         // store's reflog); an unknown commit (a session from a different cwd) or
         // no checkpoints leave the code untouched.
         let session_checkpoints = session::parse_checkpoints(&text);
+        let recorded_model = session::parse_model(&text);
         let restored = self.restore_final_checkpoint(&session_checkpoints);
         self.app.load_session(items);
         self.remember_loaded_image_sizes();
@@ -346,6 +347,11 @@ impl Session<'_> {
         // record's snapshot) — the shared registry follows, so the model's
         // next `tasklist` sees the resumed tasks (docs/task-tools.md).
         self.sync_task_registry();
+        // The model side of the resume (docs/session-model.md): the
+        // conversation comes back on the model its file records — before the
+        // recorder adopts the file, which is told whether that record is
+        // what the session now runs.
+        let model = self.restore_session_model(recorded_model.as_ref());
         // A file whose last line lost its newline (a torn write) must not have
         // the next append glued onto it — the recorder prefixes the repair. The
         // parsed checkpoints are adopted too so later turns extend the same chain
@@ -358,7 +364,10 @@ impl Session<'_> {
             torn,
             session_checkpoints,
             self.app.history_generation(),
+            recorded_model,
+            model.honoured,
         );
+        self.record_session_model(false);
         // The session boundary for the hooks: SessionStart(resume) fires at
         // the next turn's top (docs/hooks.md).
         self.models.queue_session_source("resume");
@@ -375,6 +384,10 @@ impl Session<'_> {
         self.repaint_conversation()?;
         if restored {
             self.toast(CHECKPOINT_RESTORED_NOTICE, ToastKind::Info);
+        }
+        // Last, so the actionable failure outranks the confirmation.
+        if let Some(failure) = model.failure {
+            self.toast(failure, ToastKind::Error);
         }
         Ok(())
     }

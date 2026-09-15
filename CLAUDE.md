@@ -1755,7 +1755,21 @@ directory opts in. The `/model` selection is per directory the same way
 selection, which a directory launched in for the first time adopts and pins
 as its own at startup — `ModelSession::resolve` via `config::adopt_selection`
 — so a switch elsewhere never moves it; `switch_to` records the directory's
-entry *and* the last selection, `persist` only the directory's own pair) — and so are the **`/mascot` and `/spinner` looks** (`mascot.json`/`spinner.json` each gaining `config.json`'s `projects` map over the last choice, a directory pinning that last at its first launch and a choice made in it becoming its entry *and* the last, through one pure `app::LookFile<T>` shared by the two twin catalogs via the `app::Look` trait — `tui::config::adopt_look` at bootstrap, `save_look` from the pickers' Enter, `docs/per-directory-state.md`, `smoke.sh` Phase 114).
+entry *and* the last selection, `persist` only the directory's own pair) — **and
+the session's own on top of that** (`docs/session-model.md`: the rollout
+gains an append-only `model` record — `llm::settings::ModelSelection`, the
+`config.json` entry's own shape — written with the file, on every `/model`
+pick, Ctrl+T cycle and probe answer, the newest winning
+(`session::parse_model`, the `parse_checkpoints` sidecar's twin), that
+`/resume`, `--resume` and `--continue` all hand to `ModelSession::restore`
+through the one `Session::restore_session_model` — a `/model` switch minus
+the `config.json` write, an `ALTER_ZERO_MODEL`/`ALTER_ZERO_PROVIDER` pin
+outranking it (`llm::settings::env_outranks`, the startup precedence asked
+again), a provider this machine has no key for keeping the current model
+under a red `Can't resume on …` toast and leaving the record alone — so the
+directory's entry is only what a *new* session starts on, and two instances
+in one directory each keep, and each resume, their own model; `smoke.sh`
+Phase 117) — and so are the **`/mascot` and `/spinner` looks** (`mascot.json`/`spinner.json` each gaining `config.json`'s `projects` map over the last choice, a directory pinning that last at its first launch and a choice made in it becoming its entry *and* the last, through one pure `app::LookFile<T>` shared by the two twin catalogs via the `app::Look` trait — `tui::config::adopt_look` at bootstrap, `save_look` from the pickers' Enter, `docs/per-directory-state.md`, `smoke.sh` Phase 114).
 
 ### The runtime model and its invariants
 
