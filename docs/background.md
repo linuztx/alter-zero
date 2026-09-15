@@ -40,9 +40,16 @@ told the result in a new turn.
   without being told the user moved it, it expects the full output and
   re-reads the interim file round after round waiting for it. The recorded
   `tool.output` is this same text, so `context::context_messages` replays the
-  explanation into every later turn's context too. (The `bash` description
-  itself stays terse — the handoff text carries its own instructions at the
-  moment they matter.)
+  explanation into every later turn's context too. Both close on what happens
+  to the **model** — *you will be notified with the final output when it
+  finishes* — rather than on the harness's own re-invocation: "you will be
+  re-invoked" names a mechanism the model can do nothing with, and reads as an
+  interruption to brace for instead of a result to expect. The `agent` tool's
+  launch text (`backend::agent_launch_text`) promises it in the same words, so
+  one vocabulary covers both ways of backgrounding. (The `bash` description
+  still keeps the launch facts out — it says what the flag does and names one
+  case it is for, a dev server or a full test suite, while the handoff text
+  carries its own instructions at the moment they matter.)
 - `ToolStatus::Backgrounded` is the resolved status: green header bullet, the
   fixed row as its body inline, in the preview, and in the Ctrl+O transcript.
   The wire/tool-result content in the derived context stays `tool.output`

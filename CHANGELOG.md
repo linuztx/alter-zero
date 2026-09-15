@@ -21,6 +21,15 @@ release heading when a version is cut.
   scrolling down showed one new row at the bottom and nothing beyond it,
   and scrolling back up moved the highlight over the rows already on
   screen without scrolling at all.
+- The `bash` tool's `run_in_background` now says what the flag is *for* — a
+  dev server, a watch build, a full test suite — rather than only how it
+  works, and notes that it defaults to false (the `agent` tool's own
+  `run_in_background` defaults the other way). And both background launches,
+  a command and a subagent alike, now answer with *you will be notified with
+  the final output when it finishes* in place of *you will be re-invoked*: a
+  result to expect rather than an internal event to brace for. Between them,
+  fewer long commands run in the foreground, and fewer rounds are spent
+  re-reading the interim output file for a result that arrives on its own.
 
 ### Fixed
 
