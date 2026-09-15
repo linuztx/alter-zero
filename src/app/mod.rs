@@ -18,7 +18,7 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use crate::agents::{AgentRun, AgentStatus};
 use crate::ask::AskRequest;
 use crate::file_search::{FileMatch, at_token};
-use crate::llm::{ModelEntry, ReasoningSupport, ThinkingMode};
+use crate::llm::{ModelEntry, ReasoningSupport, ServiceTier, SpeedState, ThinkingMode};
 use crate::permission::{PermissionDecision, PermissionKind, PermissionMode, PermissionRequest};
 use crate::session::SessionSummary;
 use crate::stream::{AgentCallDone, AgentSpec, StreamEvent, ToolCallSummary};
@@ -549,6 +549,15 @@ pub struct App {
     ///
     /// [`set_session_info`]: App::set_session_info
     pub thinking: Option<ThinkingState>,
+    /// The active model's **speed tiers** and the one `/fast` selected —
+    /// `None` when the model lists no tier (every provider but the ChatGPT
+    /// backend today, and the dummy). Injected at the boundary
+    /// ([`App::set_speed`], the [`set_thinking`] pattern), cycled by `/fast`,
+    /// and shown beside the model name in the footer. See
+    /// `docs/fast-mode.md`.
+    ///
+    /// [`set_thinking`]: App::set_thinking
+    pub speed: Option<SpeedState>,
     /// Real text behind each large-paste placeholder currently in the composer,
     /// as `(placeholder, real_text)` pairs in insertion order (codex's
     /// `pending_pastes`). A paste over [`crate::paste::LARGE_PASTE_CHAR_THRESHOLD`]
@@ -833,6 +842,14 @@ impl App {
         self.thinking = thinking.map(|(support, mode)| ThinkingState { support, mode });
     }
 
+    /// Inject the active model's speed tiers + selection (a `/model` switch,
+    /// the startup seed, or the boundary's capability probe) — `None` for a
+    /// model listing no tier, which also blanks the footer's tier word and
+    /// makes `/fast` explain instead of cycle. See `docs/fast-mode.md`.
+    pub fn set_speed(&mut self, speed: Option<SpeedState>) {
+        self.speed = speed;
+    }
+
     /// Ctrl+T: advance the thinking mode through the model's cycle and
     /// hand the loop the new mode ([`Action::SetThinking`]) — or, on a model
     /// with no reasoning, an explanatory transient toast.
@@ -848,6 +865,23 @@ impl App {
                     .as_ref()
                     .map_or("This model", |s| s.model.as_str());
                 Action::Toast(format!("{model} does not support thinking"))
+            }
+        }
+    }
+
+    /// `/fast`: step the speed tier through the model's cycle and hand the
+    /// loop the new selection ([`Action::SetSpeed`]) — or, on a model that
+    /// lists no tier, an explanatory transient toast (Ctrl+T's rule for a
+    /// non-reasoner). See `docs/fast-mode.md`.
+    fn cycle_speed(&mut self) -> Action {
+        match self.speed.as_mut() {
+            Some(state) => Action::SetSpeed(state.advance()),
+            None => {
+                let model = self
+                    .session
+                    .as_ref()
+                    .map_or("This model", |s| s.model.as_str());
+                Action::Toast(format!("{model} does not support fast mode"))
             }
         }
     }

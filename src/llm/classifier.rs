@@ -392,6 +392,10 @@ impl SafetyClassifier {
             cfg.model = model;
         }
         cfg.thinking = None;
+        // …and at standard speed: a verdict is a few tokens, priority
+        // processing bills plan usage, and an overriding classifier model
+        // may list no tier at all (docs/fast-mode.md).
+        cfg.service_tier = None;
         let cwd = std::env::current_dir()
             .map(|d| d.display().to_string())
             .unwrap_or_else(|_| "(unknown)".to_string());
@@ -874,5 +878,20 @@ mod tests {
                 "{reply:?} must not produce a verdict"
             );
         }
+    }
+
+    #[test]
+    fn a_verdict_is_asked_for_at_standard_speed() {
+        // The session's `/fast` tier is for the conversation; a safety
+        // verdict is a few tokens whose speed is not worth the plan usage
+        // priority processing bills — and `ALTER_ZERO_CLASSIFIER_MODEL` may
+        // name a model that lists no tier at all (docs/fast-mode.md).
+        let mut cfg = ModelConfig::fallback();
+        cfg.service_tier = Some("priority".to_string());
+        let classifier = SafetyClassifier::new(&cfg);
+        let payload = classifier
+            .client
+            .build_payload(&[crate::llm::ChatMessage::user("ls")]);
+        assert!(payload.get("service_tier").is_none(), "{payload}");
     }
 }

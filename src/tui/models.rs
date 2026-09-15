@@ -38,7 +38,7 @@ use alter_zero::app::{ProviderChoice, SubscriptionChoice, ToastKind};
 use alter_zero::background::BackgroundRegistry;
 use alter_zero::llm::{
     self, EnvFile, LlmBackend, ModelConfig, ModelEntry, ModelSelection, ProvidersFile,
-    ReasoningSupport, ThinkingMode,
+    ReasoningSupport, STANDARD_LABEL, ServiceTier, SpeedSettings, SpeedState, ThinkingMode,
 };
 use alter_zero::permission::PermissionGate;
 use alter_zero::settings::SessionSettings;
@@ -109,6 +109,19 @@ pub(crate) struct ModelSession {
     /// user didn't ask for (a `/settings` knob) carries it forward instead of
     /// silently dropping the Ctrl+T choice (`docs/reasoning.md`).
     active_thinking: Option<ThinkingMode>,
+    /// The speed tiers the active model lists and the `/fast` selection
+    /// riding its requests (`docs/fast-mode.md`) — `None` when it lists
+    /// none (or the support is not yet known: the probe finds out). Tracked
+    /// for `active_thinking`'s reason: a rebuild the user didn't ask for must
+    /// carry the tier forward.
+    active_speed: Option<SpeedState>,
+    /// Whether [`Self::active_speed`] is **known** rather than merely absent —
+    /// learned from the saved blob, a `/model` switch or the probe's answer.
+    /// `persist` writes the speed blob only then
+    /// (`SpeedSettings::recorded`): a persist that ran before the probe
+    /// answered used to write the empty "lists no tier" marker, which the
+    /// next launch read as a reason never to probe again.
+    speed_known: bool,
     /// The backend itself — the dummy unless a real provider/model/key resolved.
     backend: Box<dyn ReplySource>,
     /// Whether [`Self::backend`] is a **real** model rather than the dummy (or
@@ -291,6 +304,15 @@ impl ModelSession {
             .as_ref()
             .and_then(|s| s.context)
             .filter(|_| selection_is_saved);
+        // The saved speed blob (docs/fast-mode.md) — the same rule: None =
+        // unknown (the probe finds out), the empty blob = a model known to
+        // list no tier, else the tiers and the /fast choice to seed from.
+        let saved_speed: Option<SpeedSettings> = saved
+            .as_ref()
+            .and_then(|s| s.speed.clone())
+            .filter(|_| selection_is_saved);
+        let startup_speed: Option<SpeedState> =
+            saved_speed.as_ref().and_then(SpeedSettings::to_state);
 
         // A real model activates only when a provider, a model and a key all
         // resolve — and `ALTER_ZERO_DUMMY` isn't forcing the dummy. Anything else
@@ -311,6 +333,7 @@ impl ModelSession {
                     // override outranking the saved one, as the gauge's own
                     // `context_window` reads them (docs/ollama.md).
                     env_context_window.or(saved_context),
+                    startup_speed.as_ref().and_then(|s| s.tier.clone()),
                 )
             })
             .filter(ModelConfig::is_usable);
@@ -364,22 +387,24 @@ impl ModelSession {
         // model reasons or sees images (an env-selected model, or the first run
         // since the upgrade that added the blob), fetch the provider's
         // `/models` once in the background and read the record out of it.
-        let probe = (real_backend && (saved_thinking.is_none() || saved_vision.is_none()))
-            .then(|| active_provider.as_deref().zip(env_model.as_deref()))
-            .flatten()
-            .map(|(p, m)| {
-                let cfg = config::model_config_for(
-                    &providers,
-                    &env_file,
-                    p,
-                    m,
-                    temperature,
-                    None,
-                    None,
-                    None,
-                );
-                (p.to_string(), cfg)
-            });
+        let probe = (real_backend
+            && (saved_thinking.is_none() || saved_vision.is_none() || saved_speed.is_none()))
+        .then(|| active_provider.as_deref().zip(env_model.as_deref()))
+        .flatten()
+        .map(|(p, m)| {
+            let cfg = config::model_config_for(
+                &providers,
+                &env_file,
+                p,
+                m,
+                temperature,
+                None,
+                None,
+                None,
+                None,
+            );
+            (p.to_string(), cfg)
+        });
         Self {
             providers,
             env_path_display: ui::display_cwd(&env_file_path, home),
@@ -403,6 +428,8 @@ impl ModelSession {
             active_vision: real_backend.then_some(saved_vision).flatten(),
             active_context: real_backend.then_some(saved_context).flatten(),
             active_thinking: startup_thinking.as_ref().map(|(_, mode)| *mode),
+            active_speed: real_backend.then_some(startup_speed).flatten(),
+            speed_known: real_backend && saved_speed.is_some(),
             backend,
             real_backend,
             registry: registry.clone(),
@@ -530,6 +557,19 @@ impl ModelSession {
         self.thinking_seed.take()
     }
 
+    /// The active model's speed state — what `App::set_speed` is fed after
+    /// every switch, probe and startup (`docs/fast-mode.md`). `None` when the
+    /// model lists no tier or none is known yet.
+    pub(crate) fn speed_state(&self) -> Option<SpeedState> {
+        self.active_speed.clone()
+    }
+
+    /// The selected speed tier's wire id — what every rebuild threads into
+    /// the request (`None` = standard).
+    fn active_tier(&self) -> Option<String> {
+        self.active_speed.as_ref().and_then(|s| s.tier.clone())
+    }
+
     /// The capability probe to spawn at bootstrap, if one is due.
     pub(crate) fn take_probe(&mut self) -> Option<(String, Option<ModelConfig>)> {
         self.probe.take()
@@ -548,6 +588,7 @@ impl ModelSession {
         thinking: Option<ThinkingMode>,
         vision: Option<bool>,
         context: Option<u64>,
+        service_tier: Option<String>,
     ) -> Option<ModelConfig> {
         config::model_config_for(
             &self.providers,
@@ -558,6 +599,7 @@ impl ModelSession {
             thinking,
             vision,
             self.env_context_window.or(context),
+            service_tier,
         )
     }
 
@@ -621,6 +663,7 @@ impl ModelSession {
                     self.active_thinking,
                     self.active_vision,
                     self.active_context,
+                    self.active_tier(),
                 )
                 .filter(ModelConfig::is_usable)
         {
@@ -823,10 +866,17 @@ impl ModelSession {
         thinking: Option<&Thinking>,
         vision: Option<bool>,
         context: Option<u64>,
+        service_tiers: Vec<ServiceTier>,
     ) -> bool {
         let mode = thinking.map(|(_, mode)| *mode);
+        // The /fast choice carries across the switch when the new model
+        // lists the same tier — codex keeps its configured tier for any
+        // model that supports it — and falls back to standard otherwise
+        // (docs/fast-mode.md).
+        let speed = SpeedState::new(service_tiers, self.active_tier());
+        let tier = speed.as_ref().and_then(|s| s.tier.clone());
         let Some(cfg) = self
-            .config_for(provider, id, mode, vision, context)
+            .config_for(provider, id, mode, vision, context, tier)
             .filter(ModelConfig::is_usable)
         else {
             return false;
@@ -840,6 +890,8 @@ impl ModelSession {
         self.active_vision = vision;
         self.active_context = context;
         self.active_thinking = mode;
+        self.active_speed = speed;
+        self.speed_known = true;
         // The switch knows its support first-hand — a still-in-flight startup
         // probe is stale.
         self.probe_pending = false;
@@ -852,7 +904,8 @@ impl ModelSession {
             &ModelSelection::new(provider, id)
                 .with_thinking(Some(config::thinking_settings_of(thinking)))
                 .with_vision(vision)
-                .with_context(context),
+                .with_context(context)
+                .with_speed(SpeedSettings::recorded(true, self.active_speed.as_ref())),
         );
         true
     }
@@ -873,6 +926,36 @@ impl ModelSession {
                     Some(mode),
                     self.active_vision,
                     self.active_context,
+                    self.active_tier(),
+                )
+                .filter(ModelConfig::is_usable)
+        {
+            self.rebuild(cfg);
+        }
+    }
+
+    /// Rebind the *next* turn's backend so a `/fast` selection rides its
+    /// request (`docs/fast-mode.md`) — `rebind_thinking`'s twin: the running
+    /// turn streams on its own thread, untouched. `tier` is the selected
+    /// tier's wire id, `None` for standard; a model listing no tier has no
+    /// state to move and is left alone.
+    pub(crate) fn rebind_speed(&mut self, tier: Option<String>) {
+        if !self.real_backend {
+            return; // nothing to rebind: the dummy has no request to carry a tier
+        }
+        let Some(speed) = self.active_speed.as_mut() else {
+            return;
+        };
+        speed.tier = tier;
+        if let Some(provider) = self.active_provider.clone()
+            && let Some(cfg) = self
+                .config_for(
+                    &provider,
+                    &self.active_model.clone(),
+                    self.active_thinking,
+                    self.active_vision,
+                    self.active_context,
+                    self.active_tier(),
                 )
                 .filter(ModelConfig::is_usable)
         {
@@ -899,7 +982,14 @@ impl ModelSession {
                 &ModelSelection::new(provider, &self.active_model)
                     .with_thinking(Some(config::thinking_settings_of(thinking)))
                     .with_vision(self.active_vision)
-                    .with_context(self.active_context),
+                    .with_context(self.active_context)
+                    // Nothing at all while the tiers are still unknown — the
+                    // empty blob would stop the next launch's probe
+                    // (`SpeedSettings::recorded`, docs/fast-mode.md).
+                    .with_speed(SpeedSettings::recorded(
+                        self.speed_known,
+                        self.active_speed.as_ref(),
+                    )),
             );
         }
     }
@@ -927,12 +1017,23 @@ impl ModelSession {
             });
         let vision = entry.and_then(|entry| entry.vision);
         let context = entry.and_then(|entry| entry.context);
+        // The listed speed tiers, keeping the current /fast choice only when
+        // the record still offers it (docs/fast-mode.md).
+        let speed = SpeedState::new(
+            entry
+                .map(|entry| entry.service_tiers.clone())
+                .unwrap_or_default(),
+            self.active_tier(),
+        );
+        let tier = speed.as_ref().and_then(|s| s.tier.clone());
         // Rebind when something actually changes a request: a thinking mode to
         // ride it, a known-blind model whose attachments must degrade
-        // (Some(true)/None both attach — nothing to rebind for), or — on the
-        // one wire that sends it — a window now known (docs/ollama.md).
+        // (Some(true)/None both attach — nothing to rebind for), a selected
+        // tier the record no longer lists, or — on the one wire that sends
+        // it — a window now known (docs/ollama.md).
         let window_matters = context.is_some() && self.wire_sends_context(provider);
-        if (thinking.is_some() || vision == Some(false) || window_matters)
+        let tier_dropped = tier != self.active_tier();
+        if (thinking.is_some() || vision == Some(false) || window_matters || tier_dropped)
             && let Some(cfg) = self
                 .config_for(
                     provider,
@@ -940,6 +1041,7 @@ impl ModelSession {
                     thinking.as_ref().map(|(_, mode)| *mode),
                     vision,
                     context,
+                    tier,
                 )
                 .filter(ModelConfig::is_usable)
         {
@@ -948,6 +1050,8 @@ impl ModelSession {
         self.active_vision = vision;
         self.active_context = context;
         self.active_thinking = thinking.as_ref().map(|(_, mode)| *mode);
+        self.active_speed = speed;
+        self.speed_known = true;
         self.persist(thinking.as_ref());
         Some(thinking)
     }
@@ -980,6 +1084,7 @@ impl ModelSession {
                     thinking,
                     self.active_vision,
                     self.active_context,
+                    self.active_tier(),
                 )
             })
             .filter(ModelConfig::is_usable)
@@ -1049,7 +1154,7 @@ impl ModelSession {
         let cancel = CancelToken::new();
         self.fetch_cancel = Some(cancel.clone());
         for choice in &configured {
-            let cfg = self.config_for(&choice.id, &self.active_model, None, None, None);
+            let cfg = self.config_for(&choice.id, &self.active_model, None, None, None, None);
             spawn_model_fetch(choice.name.clone(), cfg, cancel.clone(), tx.clone());
         }
         configured.len()
@@ -1391,6 +1496,7 @@ impl Session<'_> {
         reasoning: Option<ReasoningSupport>,
         vision: Option<bool>,
         context: Option<u64>,
+        service_tiers: Vec<ServiceTier>,
     ) {
         self.models.cancel_model_fetch();
         // The picked entry's reasoning support seeds the Ctrl+T cycle at its
@@ -1399,12 +1505,19 @@ impl Session<'_> {
             let mode = support.default_mode();
             (support, mode)
         });
-        if self
-            .models
-            .switch_to(provider, id, thinking.as_ref(), vision, context)
-        {
+        if self.models.switch_to(
+            provider,
+            id,
+            thinking.as_ref(),
+            vision,
+            context,
+            service_tiers,
+        ) {
             self.sync_backend_info();
             self.app.set_thinking(thinking);
+            // …and its listed speed tiers seed /fast (docs/fast-mode.md).
+            let speed = self.models.speed_state();
+            self.app.set_speed(speed);
             self.toast(format!("Switched model to {id}"), ToastKind::Info);
         } else {
             // A subscription has no env var to "set" — you sign in to it, and
@@ -1434,6 +1547,33 @@ impl Session<'_> {
             .map(|t| (t.support.clone(), t.mode));
         self.models.persist(thinking.as_ref());
         self.toast(format!("Thinking: {}", mode.label()), ToastKind::Info);
+    }
+
+    /// `/fast` stepped the speed tier (the pure state already moved —
+    /// `docs/fast-mode.md`). Rebind the *next* turn's backend so the tier
+    /// rides its request (the running turn streams on its own thread,
+    /// untouched — the Ctrl+T pattern), persist the choice beside the model
+    /// selection, and confirm with a transient toast that repeats the
+    /// backend's own cost statement for the tier — `Speed: fast — 1.5x speed,
+    /// increased usage` — since the price of the speed is worth saying where
+    /// it is bought.
+    pub(crate) fn set_speed(&mut self, tier: Option<ServiceTier>) {
+        self.models
+            .rebind_speed(tier.as_ref().map(|t| t.id.clone()));
+        let thinking = self
+            .app
+            .thinking
+            .as_ref()
+            .map(|t| (t.support.clone(), t.mode));
+        self.models.persist(thinking.as_ref());
+        let text = match &tier {
+            Some(tier) if !tier.description.is_empty() => {
+                format!("Speed: {} — {}", tier.label(), tier.description)
+            }
+            Some(tier) => format!("Speed: {}", tier.label()),
+            None => format!("Speed: {STANDARD_LABEL}"),
+        };
+        self.toast(text, ToastKind::Info);
     }
 
     /// Persist a key to the `.env` store and confirm — or report why it couldn't
@@ -1466,6 +1606,9 @@ impl Session<'_> {
             && let Some(thinking) = self.models.apply_probe(provider, &entries)
         {
             self.app.set_thinking(thinking);
+            // The listed speed tiers, for /fast (docs/fast-mode.md).
+            let speed = self.models.speed_state();
+            self.app.set_speed(speed);
             let window = self.models.context_window();
             self.app.set_context_window(window);
             // An inheriting subagent's gauge shares that window

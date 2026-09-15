@@ -92,7 +92,9 @@ footer-mode multiplexing: the Ctrl+R `reverse-i-search: {query}` line
   columns plus a `FOOTER_MODE_GAP` gutter are reserved off the chain's budget
   up front, so the `…` truncation always eats the left content and never the
   one segment with a safety meaning. A full row reads
-  `deepseek-v3.2 medium · ~/Codes/tmp · 1.3k/160k (0.8%) · 1 shell     manual`.
+  `deepseek-v3.2 medium · ~/Codes/tmp · 1.3k/160k (0.8%) · 1 shell     manual`;
+  a selected speed tier follows the thinking mode — `gpt-5.5 medium fast ·
+  ~/repo` (`/fast`, `docs/fast-mode.md`) — and standard shows nothing.
   **Inside a subagent's session view the model and gauge segments describe
   that agent** (`docs/agent-context-gauge.md`): the gauge is the viewed
   agent's own context — `AgentRun::context_used`, the last usage frame's
@@ -159,7 +161,8 @@ reseat, resizes) already accounts for the row.
   row (and not while the palette is open); the cursor doesn't move when the
   footer shows; inside an agent session view the gauge is the viewed agent's
   own context and a pinned model is named without the session's thinking mode
-  (`docs/agent-context-gauge.md`).
+  (`docs/agent-context-gauge.md`); a selected speed tier wears its name after
+  the thinking mode and standard adds nothing (`docs/fast-mode.md`).
 - `scripts/smoke.sh`: the startup frame shows `dummy_model_name · ~` under the
   box; opening the palette (`/`) hides it; dismissing brings it back; Phase
   111 opens a subagent's session view under a forced window and reads that

@@ -49,6 +49,7 @@ fn main() {
             // affinity key so multi-round turns pin to one warm cache
             // (docs/prompt-caching.md).
             cache_key: Some(format!("tool-smoke-{}", std::process::id())),
+            service_tier: None,
         })
         .expect("openrouter is a built-in provider");
 

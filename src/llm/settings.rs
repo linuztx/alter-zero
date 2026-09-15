@@ -10,6 +10,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use super::reasoning::{ReasoningEffort, ReasoningSupport, ThinkingMode};
+use super::service_tier::{ServiceTier, SpeedState};
 
 /// The persisted `config.json`.
 ///
@@ -57,6 +58,13 @@ pub struct Settings {
     /// without a re-probe. Absent = unknown. See `docs/compact.md`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context: Option<u64>,
+    /// The saved model's speed tiers and the `/fast` choice over them
+    /// (`docs/fast-mode.md`) — restored at startup so the cycle starts where
+    /// it left off and the tier rides the first request. Absent = unknown (a
+    /// legacy file) — the probe finds out; the empty blob is the marker for a
+    /// model known to list none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub speed: Option<SpeedSettings>,
     /// One entry per working directory (its absolute path): the selection
     /// made *in* that directory, or the last one pinned there at its first
     /// launch. Omitted when empty, so a file with no entries is byte-for-byte
@@ -85,6 +93,9 @@ pub struct ModelSelection {
     /// The model's context window in tokens (`docs/compact.md`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context: Option<u64>,
+    /// The model's speed tiers and the `/fast` choice (`docs/fast-mode.md`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub speed: Option<SpeedSettings>,
 }
 
 impl ModelSelection {
@@ -97,6 +108,7 @@ impl ModelSelection {
             thinking: None,
             vision: None,
             context: None,
+            speed: None,
         }
     }
 
@@ -119,6 +131,15 @@ impl ModelSelection {
     #[must_use]
     pub fn with_context(mut self, context: Option<u64>) -> Self {
         self.context = context;
+        self
+    }
+
+    /// The same selection with the model's speed blob attached (`None` =
+    /// unknown; [`SpeedSettings::from_state`]`(None)` for a model known to
+    /// list no tier).
+    #[must_use]
+    pub fn with_speed(mut self, speed: Option<SpeedSettings>) -> Self {
+        self.speed = speed;
         self
     }
 
@@ -222,6 +243,57 @@ impl ThinkingSettings {
     }
 }
 
+/// The persisted speed state (`docs/fast-mode.md`): the tiers the model's
+/// record listed and the selected one's wire id, kept beside the thinking
+/// blob. The **empty** blob (`{}`) records "this model lists no tier" so
+/// startup doesn't re-probe `/models` for it, the way
+/// [`ThinkingSettings::unsupported`] does for reasoning; an absent blob is a
+/// file from before the feature — unknown, and probed. A hand-edited or stale
+/// file degrades: a chosen tier the list no longer offers reads as standard
+/// ([`SpeedState::new`]).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SpeedSettings {
+    /// The tiers the record listed, in its order (the cycle's order).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tiers: Vec<ServiceTier>,
+    /// The selected tier's wire id; absent is standard.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tier: Option<String>,
+}
+
+impl SpeedSettings {
+    /// The blob recording a live state — or, for `None`, the marker for a
+    /// model known to list no tier.
+    #[must_use]
+    pub fn from_state(state: Option<&SpeedState>) -> Self {
+        state.map_or_else(Self::default, |state| Self {
+            tiers: state.tiers.clone(),
+            tier: state.tier.clone(),
+        })
+    }
+
+    /// What to seed `App::set_speed` with: `None` for the no-tier marker,
+    /// else the restored state (a stale choice falling back to standard).
+    #[must_use]
+    pub fn to_state(&self) -> Option<SpeedState> {
+        SpeedState::new(self.tiers.clone(), self.tier.clone())
+    }
+
+    /// The blob a persist should write — the **three-state** rule the
+    /// boundary's `persist` follows. `known` says whether the tiers were ever
+    /// learned first-hand (the saved blob, a `/model` switch, the probe's
+    /// answer); until they are, the answer is `None`: **write no blob**. The
+    /// empty blob is the "known to list none" marker, and writing it for a
+    /// state that is merely *unknown* — a Ctrl+T persisting before the
+    /// startup probe answers, or a probe that failed — would tell the next
+    /// launch not to probe, leaving `/fast` dead for that model in that
+    /// directory with nothing ever saying why.
+    #[must_use]
+    pub fn recorded(known: bool, state: Option<&SpeedState>) -> Option<Self> {
+        known.then(|| Self::from_state(state))
+    }
+}
+
 impl Settings {
     /// Parse a `config.json` body, best-effort: malformed or empty JSON yields
     /// the default (all-unset) settings rather than an error, so a corrupt file
@@ -274,6 +346,14 @@ impl Settings {
         self
     }
 
+    /// The same settings with the saved model's speed blob attached (`None`
+    /// = unknown). See `docs/fast-mode.md`.
+    #[must_use]
+    pub fn with_speed(mut self, speed: Option<SpeedSettings>) -> Self {
+        self.speed = speed;
+        self
+    }
+
     // ----- per-directory selections (docs/per-directory-state.md) -----
 
     /// The last selection made anywhere — the top-level fields — when both
@@ -287,6 +367,7 @@ impl Settings {
             thinking: self.thinking.clone(),
             vision: self.vision,
             context: self.context,
+            speed: self.speed.clone(),
         })
     }
 
@@ -297,6 +378,7 @@ impl Settings {
         self.thinking = selection.thinking.clone();
         self.vision = selection.vision;
         self.context = selection.context;
+        self.speed = selection.speed.clone();
     }
 
     /// The entry a working directory holds, if it has one of its own.
@@ -660,5 +742,97 @@ mod tests {
         assert!(json.contains("\"projects\""), "{json}");
         assert!(json.contains("/home/u/a"), "{json}");
         assert_eq!(Settings::parse(&json), s);
+    }
+
+    // ===== the speed blob (docs/fast-mode.md) =====
+
+    fn fast_tier() -> ServiceTier {
+        ServiceTier::new("priority", "Fast", "1.5x speed, increased usage")
+    }
+
+    #[test]
+    fn the_speed_blob_round_trips_and_a_legacy_file_loads_with_none() {
+        // The tiers the model's record listed and the /fast choice persist
+        // beside the thinking blob so startup seeds the cycle from the file;
+        // a file from before the feature simply has it unknown (the probe
+        // finds out), and an unset blob stays off the wire.
+        let blob = SpeedSettings {
+            tiers: vec![fast_tier()],
+            tier: Some("priority".to_string()),
+        };
+        let s = Settings::for_selection("openai_chatgpt", "gpt-5.5").with_speed(Some(blob.clone()));
+        let restored = Settings::parse(&s.to_json());
+        assert_eq!(restored, s);
+        assert_eq!(restored.speed, Some(blob));
+        let legacy = Settings::parse(r#"{"provider":"p","model":"m"}"#);
+        assert_eq!(legacy.speed, None);
+        assert!(
+            !Settings::for_selection("p", "m")
+                .to_json()
+                .contains("speed")
+        );
+    }
+
+    #[test]
+    fn a_model_known_to_list_no_tier_is_a_marker_that_seeds_nothing() {
+        // "This model has no speed tier" is worth keeping — without it every
+        // startup would re-probe /models for nothing. The empty blob is that
+        // marker: `{}` on disk, `None` as a state; a real state round-trips
+        // whole, a stale choice the list no longer offers degrading to
+        // standard rather than wedging.
+        let marker = SpeedSettings::from_state(None);
+        assert_eq!(marker, SpeedSettings::default());
+        assert_eq!(marker.to_state(), None);
+        let s = Settings::for_selection("p", "m").with_speed(Some(marker));
+        assert!(s.to_json().contains("\"speed\": {}"), "{}", s.to_json());
+        assert_eq!(
+            Settings::parse(&s.to_json()).speed,
+            Some(SpeedSettings::default())
+        );
+
+        let state = SpeedState::new(vec![fast_tier()], Some("priority".to_string())).unwrap();
+        let blob = SpeedSettings::from_state(Some(&state));
+        assert_eq!(blob.to_state(), Some(state));
+        let stale = SpeedSettings {
+            tiers: vec![fast_tier()],
+            tier: Some("ultrafast".to_string()),
+        };
+        assert_eq!(stale.to_state().unwrap().tier, None);
+    }
+
+    #[test]
+    fn a_directory_entry_keeps_its_speed_blob_and_the_last_selection_learns_it() {
+        let blob = SpeedSettings::from_state(None);
+        let mut s = Settings::for_selection("p", "m");
+        s.record("/a", &own("p", "m").with_speed(Some(blob.clone())));
+        assert_eq!(s.project("/a").unwrap().speed, Some(blob.clone()));
+        assert_eq!(s.last().unwrap().speed, Some(blob));
+        assert_eq!(Settings::parse(&s.to_json()), s);
+    }
+
+    #[test]
+    fn a_speed_state_that_is_not_yet_known_records_no_blob_at_all() {
+        // Three states, and the middle one is the trap: the tiers are
+        // *unknown* until the startup probe answers, and a Ctrl+T (or
+        // anything else) that persists meanwhile must write nothing — the
+        // empty blob is the "known to list none" marker, and writing it for
+        // an unknown would stop the probe from ever running again, leaving
+        // /fast dead for that model in that directory.
+        assert_eq!(SpeedSettings::recorded(false, None), None);
+        assert_eq!(
+            SpeedSettings::recorded(true, None),
+            Some(SpeedSettings::default()),
+            "known to list none: the marker"
+        );
+        let state = SpeedState::new(vec![fast_tier()], Some("priority".to_string())).unwrap();
+        assert_eq!(
+            SpeedSettings::recorded(true, Some(&state)),
+            Some(SpeedSettings::from_state(Some(&state)))
+        );
+        assert_eq!(
+            SpeedSettings::recorded(false, Some(&state)),
+            None,
+            "a state that somehow exists before it is known still waits for the probe"
+        );
     }
 }

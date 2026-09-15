@@ -8,6 +8,7 @@ use serde::Deserialize;
 
 use super::config::ModelConfig;
 use super::reasoning::{ReasoningEffort, ReasoningSupport};
+use super::service_tier::ServiceTier;
 use super::{LlmError, Result};
 use crate::stream::CancelToken;
 
@@ -38,6 +39,13 @@ pub struct ModelEntry {
     /// trigger. `None` = unknown (a bare OpenAI-style list; the gauge hides
     /// and auto-compact stays off). See `docs/compact.md`.
     pub context: Option<u64>,
+    /// The **speed tiers** the record lists — codex's fast mode
+    /// (`docs/fast-mode.md`): a `priority` tier means the model can be asked
+    /// for priority processing, and `/fast` cycles through whatever is here.
+    /// Empty for every list that says nothing about tiers (all but the
+    /// ChatGPT backend's today) — no fast mode there, and no unknown to
+    /// probe for: a list is what it lists.
+    pub service_tiers: Vec<ServiceTier>,
 }
 
 /// The OpenAI `/models` envelope: `{ "data": [ { "id", "name"? } ] }`. Each
@@ -120,7 +128,60 @@ fn entry_of(record: &serde_json::Value, provider: &str) -> Option<ModelEntry> {
         reasoning: reasoning_support_of(record),
         vision: vision_support_of(record),
         context: context_window_of(record),
+        service_tiers: service_tiers_of(record),
     })
+}
+
+/// Read one `/models` record's **speed tiers** (`docs/fast-mode.md`) — the
+/// ChatGPT backend's `service_tiers`, each `{id, name, description}` in the
+/// record's order (a tier without a string id is skipped; a nameless one is
+/// named by its id). With no such list, the older `additional_speed_tiers:
+/// ["fast"]` marker still means the fast tier, as codex's own parse reads it
+/// (`ModelPreset::supports_fast_mode`). Every other provider's record says
+/// nothing about tiers and reads as none.
+fn service_tiers_of(record: &serde_json::Value) -> Vec<ServiceTier> {
+    let listed: Vec<ServiceTier> = record
+        .get("service_tiers")
+        .and_then(serde_json::Value::as_array)
+        .map(|tiers| {
+            tiers
+                .iter()
+                .filter_map(|tier| {
+                    let id = tier.get("id")?.as_str()?.trim();
+                    if id.is_empty() {
+                        return None;
+                    }
+                    let text = |key: &str| {
+                        tier.get(key)
+                            .and_then(serde_json::Value::as_str)
+                            .map(str::trim)
+                            .filter(|s| !s.is_empty())
+                    };
+                    Some(ServiceTier::new(
+                        id,
+                        text("name").unwrap_or(id),
+                        text("description").unwrap_or(""),
+                    ))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    if !listed.is_empty() {
+        return listed;
+    }
+    let legacy_fast = record
+        .get("additional_speed_tiers")
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(|tiers| {
+            tiers
+                .iter()
+                .any(|t| t.as_str().is_some_and(|s| s.eq_ignore_ascii_case("fast")))
+        });
+    if legacy_fast {
+        vec![ServiceTier::fast()]
+    } else {
+        Vec::new()
+    }
 }
 
 /// One record's `capabilities` object, when it is GitHub Copilot's — the
@@ -1074,6 +1135,57 @@ mod tests {
     }
 
     #[test]
+    fn a_chatgpt_records_service_tiers_are_the_fast_mode_catalog() {
+        // Codex's fast mode: a record listing a `priority` tier can be asked
+        // for priority processing (docs/fast-mode.md). Every tier rides the
+        // entry in the record's order, description included — the cost
+        // statement the /fast toast repeats.
+        let models = chatgpt_catalog(
+            r#"{"slug":"gpt-5.6-sol","service_tiers":[
+                {"id":"priority","name":"Fast","description":"1.5x speed, increased usage"},
+                {"id":"ultrafast","name":"Ultrafast","description":"The fastest available responses."}],
+                "additional_speed_tiers":["fast"]}"#,
+        );
+        assert_eq!(
+            models[0].service_tiers,
+            vec![
+                ServiceTier::new("priority", "Fast", "1.5x speed, increased usage"),
+                ServiceTier::new("ultrafast", "Ultrafast", "The fastest available responses."),
+            ]
+        );
+    }
+
+    #[test]
+    fn the_legacy_speed_tier_marker_still_reads_as_the_fast_tier() {
+        // Older records name fast mode only as `additional_speed_tiers:
+        // ["fast"]` (codex's SPEED_TIER_FAST, which its parse still honours):
+        // that alone is the fast tier, with no description to show.
+        let models = chatgpt_catalog(r#"{"slug":"gpt-5.4","additional_speed_tiers":["fast"]}"#);
+        assert_eq!(models[0].service_tiers, vec![ServiceTier::fast()]);
+        let other = chatgpt_catalog(r#"{"slug":"m","additional_speed_tiers":["turbo"]}"#);
+        assert!(other[0].service_tiers.is_empty());
+    }
+
+    #[test]
+    fn a_tier_record_without_an_id_is_skipped_and_a_nameless_one_takes_its_id() {
+        let models = chatgpt_catalog(
+            r#"{"slug":"m","service_tiers":[{"name":"Broken"},{"id":"priority"}]}"#,
+        );
+        assert_eq!(
+            models[0].service_tiers,
+            vec![ServiceTier::new("priority", "priority", "")]
+        );
+    }
+
+    #[test]
+    fn a_record_that_lists_no_tier_offers_none() {
+        // Every other provider's list (and the platform's own) says nothing
+        // about tiers — no fast mode there, and no field to misread.
+        let models = parse_models(r#"{"data":[{"id":"gpt-4o"}]}"#, "openai").unwrap();
+        assert!(models[0].service_tiers.is_empty());
+    }
+
+    #[test]
     fn a_chatgpt_record_marked_invisible_is_not_offered() {
         // `hide` only means "not a headline model" — still selectable. Only
         // `none` is withheld.
@@ -1133,6 +1245,7 @@ mod tests {
             reasoning: None,
             vision: None,
             context: None,
+            service_tiers: Vec::new(),
         }];
         assert_eq!(catalog_or_error(one.clone(), chatgpt).unwrap(), one);
         // And an ordinary provider's empty list is not an error at all.

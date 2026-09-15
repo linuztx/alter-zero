@@ -130,6 +130,7 @@ pub(crate) fn model_config_for(
     thinking: Option<ThinkingMode>,
     vision: Option<bool>,
     context: Option<u64>,
+    service_tier: Option<String>,
 ) -> Option<ModelConfig> {
     let sel = Selection {
         provider_id: provider.to_string(),
@@ -141,6 +142,7 @@ pub(crate) fn model_config_for(
         context,
         api_base: resolve_api_base(providers, env_file, provider),
         cache_key: Some(session_cache_key().to_string()),
+        service_tier,
     };
     providers.model_config(&sel)
 }

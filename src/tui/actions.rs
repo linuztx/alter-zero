@@ -184,8 +184,10 @@ impl Session<'_> {
                 reasoning,
                 vision,
                 context,
-            } => self.select_model(&provider, &id, reasoning, vision, context),
+                service_tiers,
+            } => self.select_model(&provider, &id, reasoning, vision, context, service_tiers),
             Action::SetThinking(mode) => self.set_thinking(mode),
+            Action::SetSpeed(tier) => self.set_speed(tier),
             Action::OpenKeyOnboarding => self.open_key_onboarding(),
             Action::CloseKeyOnboarding => {
                 // Esc/Ctrl+C dismissed the flow. A device sign-in it was

@@ -21,6 +21,7 @@ scripts/smoke/phases/         one file per phase: NNN-slug.sh
   107b-imagetransmit.sh
   115-telemetry.sh
   116-update.sh
+  117-fastmode.sh
 ```
 
 A **phase** is one self-contained scenario: a file that sources the library,

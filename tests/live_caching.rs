@@ -87,6 +87,7 @@ fn config(provider_id: &str, model: &str, key: Option<String>, salt: u64) -> Mod
             context: None,
             api_base: None,
             cache_key: Some(format!("alter-zero-live-cache-{salt}")),
+            service_tier: None,
         })
         .unwrap_or_else(|| panic!("{provider_id} is a built-in provider"))
 }
@@ -550,4 +551,65 @@ fn live_copilot_reports_its_usage_frame() {
     let (first, second) = two_turns(&backend);
     assert!(first.total() > 1_000, "the whole prefix billed: {first:?}");
     assert!(second.total() > 1_000, "{second:?}");
+}
+
+#[test]
+#[ignore = "hits the network; needs OPENAI_CHATGPT_REFRESH_TOKEN + ALTER_ZERO_LIVE_TOKEN_STORE"]
+fn live_chatgpt_fast_mode_is_listed_and_a_priority_request_is_served() {
+    // Codex's fast mode on the wire (`docs/fast-mode.md`): the listing names
+    // the tier per model, and a request carrying `service_tier: "priority"`
+    // beside the routing hint is served like any other. The same one-word
+    // prompt runs at standard and at fast — one sample each, timed for the
+    // record only: what this proves is that the field and the header are
+    // accepted, not how much faster the answer came.
+    use alter_zero::llm::ServiceTier;
+    alter_zero::llm::chatgpt::set_store_path(token_store());
+    let salt = salt();
+    let refresh = credential("OPENAI_CHATGPT_REFRESH_TOKEN");
+    let probe = config("openai_chatgpt", "probe", Some(refresh.clone()), salt);
+    let listed = fetch_models(&probe, &CancelToken::new()).expect("the ChatGPT model listing");
+    for m in &listed {
+        let tiers: Vec<String> = m
+            .service_tiers
+            .iter()
+            .map(|t| format!("{}={} ({})", t.name, t.id, t.description))
+            .collect();
+        println!("{}: {tiers:?}", m.id);
+    }
+    let fast: Vec<&alter_zero::llm::ModelEntry> = listed
+        .iter()
+        .filter(|m| m.service_tiers.iter().any(ServiceTier::is_fast))
+        .collect();
+    assert!(!fast.is_empty(), "no listed model names a fast tier");
+    let model = std::env::var("ALTER_ZERO_LIVE_CHATGPT_MODEL")
+        .ok()
+        .or_else(|| {
+            fast.iter()
+                .find(|m| m.id.contains("mini"))
+                .map(|m| m.id.clone())
+        })
+        .unwrap_or_else(|| fast[0].id.clone());
+    let tier = listed
+        .iter()
+        .find(|m| m.id == model)
+        .and_then(|m| m.service_tiers.iter().find(|t| t.is_fast()).cloned())
+        .expect("the model under test lists a fast tier");
+    println!(
+        "model under test: {model}, tier {} ({})",
+        tier.id, tier.description
+    );
+    let standard = config("openai_chatgpt", &model, Some(refresh), salt);
+    let mut priority = standard.clone();
+    priority.service_tier = Some(tier.id.clone());
+    for (label, cfg) in [("standard", standard), ("fast", priority)] {
+        let backend = LlmBackend::configure(cfg, Some("Answer in one word.".to_string()), false);
+        let started = std::time::Instant::now();
+        let (text, usage) = complete_with_usage(&backend, "Say the word ready.");
+        println!(
+            "{label}: {:?} in {:.2?}, usage {usage:?}",
+            text.trim(),
+            started.elapsed()
+        );
+        assert!(!text.trim().is_empty(), "{label}: an answer came back");
+    }
 }

@@ -347,7 +347,27 @@ included — a rung above `max` that no other provider names and that
 `ReasoningEffort` gained for it. Encrypted reasoning deliberately does **not**
 round-trip: carrying it would mean a new `ChatMessage` field threaded through
 `context`, the rollout and the transcript, so the model re-reasons each round
-— a quality cost, not an error) in `docs/chatgpt.md`; the **Anthropic
+— a quality cost, not an error) in `docs/chatgpt.md`, and **fast mode**
+— codex's `/fast`, `docs/fast-mode.md`: a model whose ChatGPT record lists
+a `priority` service tier (`service_tiers: [{id, name, description}]`,
+every model on the account today, `Fast — 1.5x speed, increased usage`) is
+switched to priority processing by the `/fast` command — a static
+`COMMANDS` row right after `/model`, cycling standard → the listed tiers →
+standard (the pure `llm::service_tier::SpeedState`, so a record listing
+`ultrafast` too is reached on the next press), a `Speed: fast — 1.5x
+speed, increased usage` toast repeating the backend's own cost statement,
+and a `{model} does not support fast mode` toast on a model listing none,
+Ctrl+T's rule — the choice riding both OpenAI wires as the top-level
+`service_tier` beside codex's `x-codex-routing-hint:
+model={model}[;tier={tier}]` header (sent on every ChatGPT request, tier or
+not), shown after the thinking mode in the footer (`gpt-5.5 medium fast ·
+~/repo`), persisted as `config.json`'s `speed` blob beside the `thinking`
+one (the empty blob marking a model known to list none, an absent one
+probed for like an unknown thinking state) and carried across a `/model`
+switch to a model listing the same tier — while a pinned subagent model
+(`with_model`) and the auto-mode classifier run standard, since a tier the
+model does not list is a request the backend may refuse; verified live
+(`tests/live_caching.rs`); the **Anthropic
 provider** — Claude reached two ways over one **third wire format**
 (`wire_api = "anthropic"`, `src/llm/anthropic.rs`, `docs/claude.md`): a
 pasted Console key and an **account sign-in**, `auth = "anthropic_console"`,
@@ -2326,7 +2346,7 @@ live in the pure `file_search` module, and the `/resume` primitives
 Typing a bare `/token` opens a **slash-command palette** below the input box (a
 third live-region band): `App::command_menu` holds the highlight, the registry
 `app::COMMANDS` (`SlashCommand { name, description, effect }` — currently `/help`,
-`/clear`, `/copy`, `/init`, `/compact`, `/resume`, `/model`, `/login`, `/settings`, `/theme`, `/mascot`, `/spinner`, `/hooks`, `/skills`, `/mcp`, `/trust`, `/donate`, and `/quit`) is filtered by `matching_commands`, and ↑/↓ scroll / Tab+Enter run
+`/clear`, `/copy`, `/init`, `/compact`, `/resume`, `/model`, `/fast`, `/login`, `/settings`, `/theme`, `/mascot`, `/spinner`, `/hooks`, `/skills`, `/mcp`, `/trust`, `/donate`, and `/quit`) is filtered by `matching_commands`, and ↑/↓ scroll / Tab+Enter run
 the highlighted command. Descriptions line up in a column, and the selection is
 shown **by colour** — the whole highlighted row lights up cyan (name *and*
 description the same colour) while the others are dimmed grey, no caret. A command

@@ -12,6 +12,24 @@ release heading when a version is cut.
 
 ## [Unreleased]
 
+### Added
+
+- **Fast mode for ChatGPT models** — codex's `/fast`, ported
+  (`docs/fast-mode.md`). A model whose ChatGPT listing names a speed tier
+  (every model on a signed-in account today: `Fast — 1.5x speed, increased
+  usage`, `2x` on `gpt-6-astra`) can be switched to priority processing with
+  `/fast`: the request carries `service_tier: "priority"` beside codex's
+  `x-codex-routing-hint` header, the footer shows `fast` after the thinking
+  mode, the toast repeats the backend's own cost statement, and the choice
+  persists per directory beside the model selection (`config.json`'s new
+  `speed` blob) and carries across a `/model` switch to another model that
+  lists the tier. A model listing more than one tier cycles through each; one
+  listing none answers `/fast` with a `does not support fast mode` toast, as
+  Ctrl+T does for a non-reasoner. A subagent pinned to another model and the
+  auto-mode classifier run at standard speed. Existing installs probe the
+  listing once in the background at their next launch, exactly as the
+  vision field did when it arrived, and record what they learn.
+
 ## [0.1.2] - 2026-09-15
 
 ### Changed

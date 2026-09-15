@@ -142,7 +142,7 @@ Connect to a supported subscription service, API provider, or local model server
 | **Ollama** | Point Alter Zero at your local server; no key required. | Run inference on your own machine with locally hosted models. |
 | **Ollama Cloud** | API key. | Use open models hosted by Ollama. |
 
-The footer shows your active model, thinking mode, and context usage. **Ctrl+T** cycles the model's supported reasoning levels, vision support is checked before sending images, and requests support prompt caching where the provider allows it.
+The footer shows your active model, thinking mode, speed tier and context usage. **Ctrl+T** cycles the model's supported reasoning levels, **`/fast`** switches a ChatGPT model that offers it to priority processing (faster replies at increased plan usage), vision support is checked before sending images, and requests support prompt caching where the provider allows it.
 
 ## Features
 
@@ -196,6 +196,7 @@ The essentials are always one keystroke away: `/` opens commands, and `?` in an 
 | `/compact` | Summarise the conversation to free up context |
 | `/resume` | Resume a saved chat |
 | `/model` | Switch the active model |
+| `/fast` | Toggle fast mode (faster replies, more usage) |
 | `/login` | Add or update a provider sign-in |
 | `/settings` | Open the settings menu |
 | `/theme` | Choose the colour theme |

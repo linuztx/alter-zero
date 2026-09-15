@@ -91,6 +91,12 @@ pub enum CommandEffect {
     /// switch only rebinds the *next* turn's backend. See `docs/llm.md` /
     /// `docs/toast.md`.
     Model,
+    /// Cycle the active model's **speed tier** — codex's `/fast`
+    /// (`docs/fast-mode.md`): standard → fast (→ any further tier the
+    /// model's record lists) → standard, riding the *next* request as
+    /// `service_tier`, so it works mid-turn exactly as Ctrl+T does; on a
+    /// model that lists no tier it raises an explanatory toast instead.
+    Fast,
     /// Open the inline `/login` API-key onboarding flow. Works **mid-turn** like
     /// `/model` — saving a key never touches the running turn. See `docs/llm.md`
     /// / `docs/toast.md`.
@@ -195,6 +201,14 @@ pub const COMMANDS: &[SlashCommand] = &[
         name: "model",
         description: "Switch the active model",
         effect: CommandEffect::Model,
+    },
+    SlashCommand {
+        name: "fast",
+        // Codex lists the tier's own description here ("1.5x speed,
+        // increased usage"); a static row says what the speed costs in the
+        // same breath, since that is the half a user cannot see coming.
+        description: "Toggle fast mode (faster replies, more usage)",
+        effect: CommandEffect::Fast,
     },
     SlashCommand {
         name: "login",
@@ -419,6 +433,13 @@ impl App {
                 // thread). Selecting rebinds only the *next* turn's backend. The
                 // *loop* fetches the model list. See docs/llm.md / docs/toast.md.
                 Action::OpenModelPicker
+            }
+            CommandEffect::Fast => {
+                // /fast works mid-turn like Ctrl+T: the pure state steps at
+                // once and the *loop* rebinds only the next turn's backend,
+                // persists, and toasts (docs/fast-mode.md). A model listing
+                // no tier answers with the toast itself.
+                self.cycle_speed()
             }
             CommandEffect::Login => {
                 // /login works mid-turn like /model — saving a key never touches

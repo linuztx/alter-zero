@@ -243,3 +243,94 @@ fn opening_the_picker_abandons_the_palette_and_shortcuts() {
     assert!(!app.shortcuts_open);
     assert!(app.command_menu.is_none());
 }
+
+// ===== /fast — the speed tier cycle (docs/fast-mode.md) =====
+
+fn fast_tier() -> ServiceTier {
+    ServiceTier::new("priority", "Fast", "1.5x speed, increased usage")
+}
+
+fn fast_capable() -> Option<SpeedState> {
+    SpeedState::new(vec![fast_tier()], None)
+}
+
+#[test]
+fn the_palette_lists_fast_right_after_model() {
+    // Codex lists its tier commands directly after /model; so does the
+    // static palette, with a description that says what the speed costs.
+    let names: Vec<&str> = COMMANDS.iter().map(|c| c.name).collect();
+    let model = names.iter().position(|n| *n == "model").expect("/model");
+    assert_eq!(names.get(model + 1), Some(&"fast"));
+    let fast = COMMANDS.iter().find(|c| c.name == "fast").unwrap();
+    assert_eq!(fast.effect, CommandEffect::Fast);
+    assert!(fast.description.contains("usage"), "{:?}", fast.description);
+}
+
+#[test]
+fn set_speed_seeds_and_clears_the_state() {
+    let mut app = App::new();
+    assert!(app.speed.is_none(), "unknown/unsupported by default");
+    app.set_speed(fast_capable());
+    let state = app.speed.as_ref().expect("seeded");
+    assert_eq!(state.tiers, vec![fast_tier()]);
+    assert_eq!(state.tier, None, "standard until /fast says otherwise");
+    app.set_speed(None);
+    assert!(
+        app.speed.is_none(),
+        "a switch to a model listing no tier clears it"
+    );
+}
+
+#[test]
+fn slash_fast_cycles_the_speed_tier_and_hands_the_loop_the_selection() {
+    let mut app = App::new();
+    app.set_speed(fast_capable());
+    type_chars(&mut app, "/fast");
+    assert_eq!(
+        app.on_key(key(KeyCode::Enter)),
+        Action::SetSpeed(Some(fast_tier())),
+        "standard steps to fast"
+    );
+    assert_eq!(
+        app.speed.as_ref().unwrap().tier.as_deref(),
+        Some("priority")
+    );
+    assert_eq!(app.input.text(), "", "the command is consumed");
+    assert!(app.command_menu.is_none(), "and the palette closed");
+    type_chars(&mut app, "/fast");
+    assert_eq!(
+        app.on_key(key(KeyCode::Enter)),
+        Action::SetSpeed(None),
+        "fast wraps to standard"
+    );
+    assert_eq!(app.speed.as_ref().unwrap().tier, None);
+}
+
+#[test]
+fn slash_fast_without_support_raises_an_info_toast() {
+    // A model listing no tier (or the dummy backend): /fast explains
+    // instead of dying silently — Ctrl+T's rule for a non-reasoner.
+    let mut app = App::new();
+    app.set_session_info("dummy_model_name", "~/repo");
+    type_chars(&mut app, "/fast");
+    assert_eq!(
+        app.on_key(key(KeyCode::Enter)),
+        Action::Toast("dummy_model_name does not support fast mode".into())
+    );
+    assert!(app.speed.is_none());
+}
+
+#[test]
+fn slash_fast_works_mid_turn_for_the_next_turn() {
+    // Like /model and Ctrl+T, the cycle never touches the running turn —
+    // the tier simply rides the next request.
+    let mut app = App::new();
+    app.set_speed(fast_capable());
+    app.begin_stream();
+    type_chars(&mut app, "/fast");
+    assert_eq!(
+        app.on_key(key(KeyCode::Enter)),
+        Action::SetSpeed(Some(fast_tier()))
+    );
+    assert!(app.turn_active(), "the turn keeps running underneath");
+}
