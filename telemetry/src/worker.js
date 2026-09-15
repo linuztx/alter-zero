@@ -1,9 +1,12 @@
 // The Alter Zero telemetry collector (docs/telemetry.md): a Cloudflare Worker
 // over a D1 table. Four routes and a cron:
 //
-//   POST /v1/ping        the app's daily ping → one `INSERT OR IGNORE` row keyed
-//                        on the server's UTC date and the install id, with the
-//                        country the edge saw. 204 on success.
+//   POST /v1/ping        the app's daily ping → one row keyed on the server's
+//                        UTC date and the install id, with the country the
+//                        edge saw — an upsert, so the day's second ping from
+//                        an install (the one `alter-zero update` sends) moves
+//                        the row rather than adding one or being dropped.
+//                        204 on success.
 //   GET  /v1/stats       the numbers as JSON (`?days=`, 1–365, default 30)
 //   GET  /               the numbers as a page
 //   GET  /healthz        `ok`
@@ -120,8 +123,16 @@ async function handlePing(request, env) {
   // lookup on the peer; the header is the same fact for a request that
   // arrived through a custom-domain proxy.
   const country = normalizeCountry(request.cf?.country ?? request.headers.get('cf-ipcountry'));
+  // One row per install per day, keyed on the server's date and the id — and
+  // an install's SECOND ping that day refreshes the row rather than being
+  // dropped. The app pings again the day it is updated, carrying the new
+  // version (`telemetry::should_ping`), and `INSERT OR IGNORE` threw that
+  // ping away with a 204, so the row — and the dashboard's Versions panel —
+  // stayed on the old version until midnight UTC. `excluded` is the row that
+  // would have been inserted: the newer facts, every describing column.
   await env.DB.prepare(
-    'INSERT OR IGNORE INTO pings (day, id, country, version, os, arch, distro, os_version) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)',
+    'INSERT INTO pings (day, id, country, version, os, arch, distro, os_version) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8) ' +
+      'ON CONFLICT(day, id) DO UPDATE SET country = excluded.country, version = excluded.version, os = excluded.os, arch = excluded.arch, distro = excluded.distro, os_version = excluded.os_version',
   )
     .bind(utcDay(), id, country, version, os, arch, distro, osVersion)
     .run();

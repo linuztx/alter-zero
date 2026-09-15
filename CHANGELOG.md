@@ -22,6 +22,20 @@ release heading when a version is cut.
   and scrolling back up moved the highlight over the rows already on
   screen without scrolling at all.
 
+### Fixed
+
+- Telemetry now reports an update the day it happens. The daily ping names
+  the app version, but its once-a-day throttle was keyed on the day alone, so
+  the first launch after `alter-zero update` sent nothing until midnight UTC
+  — and the collector's `INSERT OR IGNORE` dropped a same-day ping outright
+  (answering `204`), so even a forced one left the day's row, and the
+  dashboard's Versions panel, on the old version. `telemetry.json` now records
+  `last_ping_version` beside `last_ping_day`, a launch on a different version
+  pings again, and the collector's `(day, id)` row is an upsert that moves the
+  install onto its new version. The install id survives an update, so an
+  update is still one user, never a new install. Redeploy the collector
+  (`cd telemetry && npx wrangler deploy`); no database migration is needed.
+
 ## [0.1.1] - 2026-09-15
 
 ### Added

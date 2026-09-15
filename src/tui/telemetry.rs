@@ -1,7 +1,8 @@
 //! The anonymous daily usage ping at the boundary (`docs/telemetry.md`): the
-//! install id's mint, the one-time notice, the send, and the delivered day's
-//! record — everything `telemetry` (the pure half) leaves to the side that
-//! can read a clock, draw entropy, touch the file and spawn a thread.
+//! install id's mint, the one-time notice, the send, and the record of the
+//! delivered day and version — everything `telemetry` (the pure half) leaves
+//! to the side that can read a clock, draw entropy, touch the file and spawn
+//! a thread.
 //!
 //! Four rules hold the whole thing to its promise:
 //!
@@ -25,15 +26,20 @@
 //!   (`workers::spawn_telemetry_ping`), so a slow or dead collector costs
 //!   the user nothing.
 //! - **The loop writes the file; the worker only reports.** The worker sends
-//!   back the day it delivered and [`Session::on_telemetry_result`] records
-//!   it, so `telemetry.json` has one writer thread and the `/settings`
+//!   back the day it delivered and the version the ping carried
+//!   (`telemetry::Delivery`) and [`Session::on_telemetry_result`] records
+//!   both, so `telemetry.json` has one writer thread and the `/settings`
 //!   toggle can never race it. Every write is
 //!   `config::update_telemetry_file`'s read-modify-write, so a day recorded
 //!   while the user was turning telemetry off cannot resurrect their `true`.
+//!   The version is what makes the first launch after `alter-zero update`
+//!   ping once more that day (`telemetry::should_ping`): the ping reports
+//!   which version the install is on, and keyed on the day alone the update
+//!   went unreported until midnight UTC.
 
 use ratatui::text::Line;
 
-use alter_zero::telemetry::{self, Ping, TelemetryFile};
+use alter_zero::telemetry::{self, Delivery, Ping, TelemetryFile};
 use alter_zero::ui;
 
 use super::workers::spawn_telemetry_ping;
@@ -80,11 +86,12 @@ impl Session<'_> {
         self.telemetry_tick();
     }
 
-    /// The worker delivered today's ping: record the day, so the next launch
-    /// today sends nothing. The file's one writer is this loop thread.
-    pub(crate) fn on_telemetry_result(&mut self, day: &str) {
+    /// The worker delivered today's ping: record the day and the version it
+    /// carried, so the next launch today on this version sends nothing. The
+    /// file's one writer is this loop thread.
+    pub(crate) fn on_telemetry_result(&mut self, delivered: &Delivery) {
         config::update_telemetry_file(config::telemetry_json_path().as_deref(), |file| {
-            file.record_ping(day);
+            file.record_ping(&delivered.day, &delivered.version);
         });
     }
 
@@ -115,12 +122,15 @@ impl Session<'_> {
     }
 
     /// Spawn the send when `telemetry::should_ping` says today's has not been
-    /// delivered, and remember that this session tried. The payload is the
-    /// five fields and nothing else (`telemetry::Ping`): the id the file
-    /// holds, the crate version, the OS and the architecture.
+    /// delivered from this version — the first launch after an update pings
+    /// once more that day — and remember that this session tried. The
+    /// payload is the seven fields and nothing else (`telemetry::Ping`): the
+    /// id the file holds, the crate version, the OS, the architecture and
+    /// the platform's own name and version.
     fn send_ping_if_due(&mut self, file: &TelemetryFile) {
         let today = host::utc_day();
-        if !telemetry::should_ping(file, &today) {
+        let version = env!("CARGO_PKG_VERSION");
+        if !telemetry::should_ping(file, &today, version) {
             return;
         }
         let Some(id) = file.install_id.as_deref().filter(|id| {
@@ -133,7 +143,7 @@ impl Session<'_> {
         let (distro, os_version) = platform();
         let ping = Ping::new(
             id,
-            env!("CARGO_PKG_VERSION"),
+            version,
             std::env::consts::OS,
             std::env::consts::ARCH,
             distro.as_deref(),

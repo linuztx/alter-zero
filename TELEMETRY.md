@@ -14,7 +14,8 @@ third-party analytics service.
 
 ## What is sent
 
-One `POST` of about a hundred and twenty bytes, at most once per UTC day:
+One `POST` of about a hundred and twenty bytes, once per UTC day — and once
+more on the day you update the app, since the version is one of the fields:
 
 ```json
 {"v":2,"id":"6f1c2a4d9e0b7c3a5f8e1d2c4b6a7980","version":"0.1.0","os":"linux","arch":"x86_64","distro":"ubuntu","os_version":"24.04"}
@@ -122,10 +123,15 @@ midnight is counted on the new day rather than only on the day you launched
 it. Either way it is one ping per day: launch the app fifty times, or leave it
 open and send a hundred messages, and the day still produces exactly one.
 
-The day is recorded only once the collector has actually accepted the ping, so
-launching while offline does not burn the day; the next launch that gets
-through counts. A collector that keeps failing is tried once per day, not once
-per message.
+The one exception is the day you update. The ping names the app version, so
+the first launch after `alter-zero update` sends the day's ping again with the
+new one — under the same install id, so it is still one user, now on the new
+version; the collector replaces that day's row rather than adding one.
+
+The day — and the version that ping carried — is recorded only once the
+collector has actually accepted the ping, so launching while offline does not
+burn the day; the next launch that gets through counts. A collector that keeps
+failing is tried once per day, not once per message.
 
 ## Turning it off
 
@@ -190,6 +196,7 @@ nothing, because there is nothing to disclose.
   "enabled": true,
   "install_id": "6f1c2a4d9e0b7c3a5f8e1d2c4b6a7980",
   "last_ping_day": "2026-09-06",
+  "last_ping_version": "0.1.0",
   "notice_shown": true
 }
 ```
@@ -199,8 +206,9 @@ Deleting the file resets the install: a new id, and the notice once more.
 
 ## What is kept on the server
 
-One row per install per day, and the primary key is what makes a second ping
-that day a no-op:
+One row per install per day — the primary key — and a second ping that day
+from the same install updates that row (the ping an update sends moves it
+onto the new version) rather than adding another:
 
 ```sql
 CREATE TABLE pings (
@@ -210,6 +218,8 @@ CREATE TABLE pings (
   version TEXT NOT NULL,
   os      TEXT NOT NULL,
   arch    TEXT NOT NULL,
+  distro  TEXT NOT NULL DEFAULT '',  -- Linux only; '' elsewhere
+  os_version TEXT NOT NULL DEFAULT '',  -- '' when the platform names none
   PRIMARY KEY (day, id)
 );
 ```

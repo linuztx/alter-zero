@@ -229,6 +229,13 @@ What it does, in order:
 The subcommand ignores `ALTER_ZERO_UPDATE_CHECK`: that variable silences the
 *automatic* check, and an explicit command is the user's own request.
 
+The next launch on the new binary also sends the day's telemetry ping again,
+carrying the new version — the one exception to that ping's once-a-day rule
+(`docs/telemetry.md` *When it is sent*) — so the dashboard's Versions panel
+moves the install the same day rather than at midnight UTC. It is the same
+install id, so it counts as the same user on a new version, never as a new
+install.
+
 ## The `/settings` row
 
 **Update check** sits above **Telemetry** (`SettingKey::UpdateCheck`), the

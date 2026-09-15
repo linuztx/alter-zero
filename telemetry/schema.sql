@@ -1,5 +1,7 @@
 -- The Alter Zero telemetry table (docs/telemetry.md): one row per install per
--- UTC day, whatever the client does — the primary key is the dedup.
+-- UTC day, whatever the client does — the primary key is the dedup, and the
+-- worker's `ON CONFLICT(day, id) DO UPDATE` refreshes the row on the day's
+-- second ping (the one an update sends), so it says what the install is on now.
 --
 --   npx wrangler d1 execute alter-zero-telemetry --remote --file=schema.sql
 CREATE TABLE IF NOT EXISTS pings (
