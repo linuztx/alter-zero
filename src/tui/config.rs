@@ -27,7 +27,8 @@ use alter_zero::app::{KeyKind, Look, LookFile, ProviderChoice, SigninKind, Subsc
 use alter_zero::checkpoint;
 use alter_zero::llm::{
     self, AuthScheme, EnvFile, ModelConfig, ModelSelection, ProvidersFile, ReasoningSupport,
-    Selection, Settings, ThinkingMode, ThinkingSettings, backend::DEFAULT_SYSTEM_PROMPT,
+    Selection, ServiceTierSettings, ServiceTierSupport, Settings, ThinkingMode, ThinkingSettings,
+    backend::DEFAULT_SYSTEM_PROMPT,
 };
 use alter_zero::permission::{PermissionRules, PermissionsFile};
 use alter_zero::scratchpad;
@@ -114,13 +115,15 @@ pub(crate) fn resolve_api_key(
 /// `docs/reasoning.md`. `vision` is the model's known image-input support —
 /// `Some(false)` makes the backend degrade attachments instead of letting
 /// the provider fail the turn; `None` = unknown, attach optimistically. See
-/// `docs/tools.md`. `context` is the window the session gauges against,
+/// `docs/tools.md`. `service_tier` is the already-resolved speed lane the
+/// request runs in — `None` for the standard one (`docs/fast-mode.md`).
+/// `context` is the window the session gauges against,
 /// which the Ollama wire sends as `options.num_ctx` (`docs/ollama.md`).
 ///
 /// A provider whose base is environment-configurable (`api_base_env` —
 /// Ollama's `OLLAMA_HOST`) has that variable resolved here, the way the key
 /// is: the process env first, then the `.env` store.
-#[allow(clippy::too_many_arguments)] // the capability trio plus the window, resolved together
+#[allow(clippy::too_many_arguments)] // the capability set plus the window, resolved together
 pub(crate) fn model_config_for(
     providers: &ProvidersFile,
     env_file: &EnvFile,
@@ -128,6 +131,7 @@ pub(crate) fn model_config_for(
     model: &str,
     temperature: Option<f32>,
     thinking: Option<ThinkingMode>,
+    service_tier: Option<String>,
     vision: Option<bool>,
     context: Option<u64>,
 ) -> Option<ModelConfig> {
@@ -137,6 +141,7 @@ pub(crate) fn model_config_for(
         api_key: resolve_api_key(providers, env_file, provider),
         temperature,
         thinking,
+        service_tier,
         vision,
         context,
         api_base: resolve_api_base(providers, env_file, provider),
@@ -702,6 +707,21 @@ pub(crate) fn thinking_settings_of(
     match thinking {
         Some((support, mode)) => ThinkingSettings::from_state(support, *mode),
         None => ThinkingSettings::unsupported(),
+    }
+}
+
+/// The persisted service-tier blob for a **definitively known** set of lanes
+/// — the [`thinking_settings_of`] twin: `None` here means the record said this
+/// model publishes none, and records the `unsupported` marker so a relaunch
+/// knows not to re-probe. Never reach for it when the lanes are merely
+/// *unknown*; that must write no blob at all (`ModelSession::persist`).
+/// See `docs/fast-mode.md`.
+pub(crate) fn service_tier_settings_of(
+    tiers: Option<&(ServiceTierSupport, Option<String>)>,
+) -> ServiceTierSettings {
+    match tiers {
+        Some((support, selected)) => ServiceTierSettings::from_state(support, selected.as_deref()),
+        None => ServiceTierSettings::unsupported(),
     }
 }
 

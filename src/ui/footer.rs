@@ -300,6 +300,13 @@ pub fn footer_line(app: &App, width: u16) -> Line<'static> {
             if let Some(thinking) = &app.thinking {
                 model.push(Span::styled(format!(" {}", thinking.mode.label()), dim));
             }
+            // The speed lane, when the request will actually run in it —
+            // `gpt-5.6-sol high fast · ~/repo` (`docs/fast-mode.md`). It reads
+            // as another word about the model because that is what it is: the
+            // standard lane says nothing, so an unmarked row is the norm.
+            if let Some(tier) = app.service_tier_label() {
+                model.push(Span::styled(format!(" {tier}"), dim));
+            }
             model
         }
     };

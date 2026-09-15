@@ -8,6 +8,7 @@ use serde::Deserialize;
 
 use super::config::ModelConfig;
 use super::reasoning::{ReasoningEffort, ReasoningSupport};
+use super::service_tier::{FAST_NAME, ServiceTier, ServiceTierSupport};
 use super::{LlmError, Result};
 use crate::stream::CancelToken;
 
@@ -38,6 +39,11 @@ pub struct ModelEntry {
     /// trigger. `None` = unknown (a bare OpenAI-style list; the gauge hides
     /// and auto-compact stays off). See `docs/compact.md`.
     pub context: Option<u64>,
+    /// The **service tiers** the model offers — the speed lanes `/fast`
+    /// switches between, published only by the ChatGPT backend's records.
+    /// `None` = the record named none, so there is nothing to switch and the
+    /// request carries no `service_tier`. See `docs/fast-mode.md`.
+    pub tiers: Option<ServiceTierSupport>,
 }
 
 /// The OpenAI `/models` envelope: `{ "data": [ { "id", "name"? } ] }`. Each
@@ -120,6 +126,7 @@ fn entry_of(record: &serde_json::Value, provider: &str) -> Option<ModelEntry> {
         reasoning: reasoning_support_of(record),
         vision: vision_support_of(record),
         context: context_window_of(record),
+        tiers: service_tier_support_of(record),
     })
 }
 
@@ -400,6 +407,88 @@ fn reasoning_support_of(record: &serde_json::Value) -> Option<ReasoningSupport> 
         },
         can_disable: true,
         default_effort: None,
+    })
+}
+
+/// Read one `/models` record's **service tiers** — the speed lanes a request
+/// can run in (`docs/fast-mode.md`). Only the ChatGPT backend publishes them,
+/// so every other provider's list is untouched by this sniff.
+///
+/// Two spellings, in the order the backend deprecated them:
+///
+/// - `service_tiers` — the live shape, an array of `{id, name, description}`.
+///   The `id` is what the wire takes (`priority`), the `name` what the user
+///   reads (`Fast`); they deliberately differ, which is why the deprecated
+///   spelling below cannot simply be preferred.
+/// - `additional_speed_tiers` — an older array of bare names (`["fast"]`)
+///   with no id of its own, so the name stands in for both.
+///
+/// `None` when the record names neither, or names an empty list: either way
+/// there is no lane to switch to, and `/fast` has nothing to do.
+fn service_tier_support_of(record: &serde_json::Value) -> Option<ServiceTierSupport> {
+    let default_tier = record
+        .get("default_service_tier")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string);
+    let listed: Vec<ServiceTier> = record
+        .get("service_tiers")
+        .and_then(serde_json::Value::as_array)
+        .map(|tiers| {
+            tiers
+                .iter()
+                .filter_map(|tier| {
+                    let id = tier.get("id").and_then(serde_json::Value::as_str)?;
+                    if id.is_empty() {
+                        return None;
+                    }
+                    let str_field = |name: &str| {
+                        tier.get(name)
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or_default()
+                            .to_string()
+                    };
+                    let name = tier.get("name").and_then(serde_json::Value::as_str);
+                    Some(ServiceTier {
+                        id: id.to_string(),
+                        name: name.filter(|n| !n.is_empty()).unwrap_or(id).to_string(),
+                        description: str_field("description"),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let tiers = if listed.is_empty() {
+        // The deprecated spelling names the lane and nothing else, so the
+        // name is the id too — `ServiceTierSupport::fast` knows both.
+        record
+            .get("additional_speed_tiers")
+            .and_then(serde_json::Value::as_array)
+            .map(|names| {
+                names
+                    .iter()
+                    .filter_map(serde_json::Value::as_str)
+                    .filter(|name| !name.is_empty())
+                    .map(|name| ServiceTier {
+                        id: name.to_string(),
+                        name: if name.eq_ignore_ascii_case(FAST_NAME) {
+                            "Fast".to_string()
+                        } else {
+                            name.to_string()
+                        },
+                        description: String::new(),
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default()
+    } else {
+        listed
+    };
+    if tiers.is_empty() {
+        return None;
+    }
+    Some(ServiceTierSupport {
+        tiers,
+        default_tier,
     })
 }
 
@@ -1036,6 +1125,86 @@ mod tests {
     }
 
     #[test]
+    fn a_chatgpt_records_service_tiers_are_the_lanes_it_offers() {
+        let models = chatgpt_catalog(
+            r#"{"slug":"m","service_tiers":[
+                {"id":"priority","name":"Fast","description":"2x speed, increased usage"}
+            ]}"#,
+        );
+        let tiers = models[0].tiers.as_ref().expect("tiers parsed");
+        assert_eq!(
+            tiers.fast().map(|t| (t.id.clone(), t.name.clone())),
+            Some(("priority".to_string(), "Fast".to_string()))
+        );
+        assert_eq!(tiers.default_tier, None);
+        // A record with an empty list says "no lanes", which is a different
+        // answer from a record that never mentions them — but both leave the
+        // `/fast` command with nothing to switch, so both read as None.
+        assert!(
+            chatgpt_catalog(r#"{"slug":"m","service_tiers":[]}"#)[0]
+                .tiers
+                .is_none()
+        );
+        assert!(chatgpt_catalog(r#"{"slug":"m"}"#)[0].tiers.is_none());
+    }
+
+    #[test]
+    fn a_record_with_several_lanes_still_finds_the_fast_one() {
+        // The real `gpt-5.6-sol` shape: two lanes, and the fast one is
+        // `priority` — `ultrafast` is a *different*, faster tier. Picking the
+        // first row, or matching on "the name contains fast", gets it wrong.
+        let models = chatgpt_catalog(
+            r#"{"slug":"gpt-5.6-sol","service_tiers":[
+                {"id":"priority","name":"Fast","description":"1.5x speed, increased usage"},
+                {"id":"ultrafast","name":"Ultrafast","description":"The fastest available responses."}
+            ],"additional_speed_tiers":["fast"]}"#,
+        );
+        let tiers = models[0].tiers.as_ref().expect("tiers parsed");
+        assert_eq!(tiers.tiers.len(), 2, "both lanes are kept");
+        assert_eq!(
+            tiers.fast().map(|t| t.id.clone()),
+            Some("priority".to_string())
+        );
+        // And the other lane is selectable on its own — the id is generic.
+        assert!(tiers.supports("ultrafast"));
+        assert_eq!(
+            tiers.for_request(Some("ultrafast")),
+            Some("ultrafast".to_string())
+        );
+    }
+
+    #[test]
+    fn a_records_catalog_default_tier_is_carried() {
+        let models = chatgpt_catalog(
+            r#"{"slug":"m","default_service_tier":"priority",
+                "service_tiers":[{"id":"priority","name":"Fast","description":"d"}]}"#,
+        );
+        let tiers = models[0].tiers.as_ref().expect("tiers parsed");
+        assert_eq!(tiers.default_tier.as_deref(), Some("priority"));
+    }
+
+    #[test]
+    fn the_deprecated_speed_tier_spelling_still_names_the_fast_lane() {
+        // Older records name the lane only in `additional_speed_tiers`, as the
+        // bare word `fast` rather than the `priority` the wire takes.
+        let models = chatgpt_catalog(r#"{"slug":"m","additional_speed_tiers":["fast"]}"#);
+        let tiers = models[0].tiers.as_ref().expect("tiers parsed");
+        assert_eq!(tiers.fast().map(|t| t.id.clone()), Some("fast".to_string()));
+        // `service_tiers` wins when both are present — it is the live shape,
+        // and it alone carries the id the API actually takes.
+        let both = chatgpt_catalog(
+            r#"{"slug":"m","additional_speed_tiers":["fast"],
+                "service_tiers":[{"id":"priority","name":"Fast","description":"d"}]}"#,
+        );
+        let tiers = both[0].tiers.as_ref().expect("tiers parsed");
+        assert_eq!(tiers.tiers.len(), 1);
+        assert_eq!(
+            tiers.fast().map(|t| t.id.clone()),
+            Some("priority".to_string())
+        );
+    }
+
+    #[test]
     fn a_chatgpt_records_reasoning_levels_are_the_ctrl_t_ladder() {
         // Like Copilot, this backend publishes the exact rungs the model
         // takes — including `ultra`, which no other provider names.
@@ -1133,6 +1302,7 @@ mod tests {
             reasoning: None,
             vision: None,
             context: None,
+            tiers: None,
         }];
         assert_eq!(catalog_or_error(one.clone(), chatgpt).unwrap(), one);
         // And an ordinary provider's empty list is not an error at all.

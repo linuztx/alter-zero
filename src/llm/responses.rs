@@ -68,6 +68,13 @@ fn request<'a>(cfg: &ModelConfig, tools: &[Value], messages: &'a [ChatMessage]) 
     if let Some(key) = cfg.cache_key.as_deref().filter(|k| !k.is_empty()) {
         fields.insert("prompt_cache_key".to_string(), json!(key));
     }
+    // The speed lane (`docs/fast-mode.md`). Already resolved against what the
+    // model offers, so it is sent verbatim — and **omitted entirely** for the
+    // standard lane rather than sent as `null`, which this backend rejects
+    // exactly as it rejects a tier the model does not have.
+    if let Some(tier) = cfg.service_tier.as_deref().filter(|t| !t.is_empty()) {
+        fields.insert("service_tier".to_string(), json!(tier));
+    }
     // The Responses API spells reasoning as an object with an `effort`, the
     // same word Chat Completions uses — but `enabled: false` is not a thing
     // here, so `Off` sends *no* reasoning field rather than a disable the
@@ -444,6 +451,23 @@ mod tests {
         // And none of Chat Completions' own field names survive.
         assert!(payload.get("messages").is_none());
         assert!(payload.get("stream_options").is_none());
+    }
+
+    #[test]
+    fn an_active_service_tier_rides_the_request() {
+        let mut cfg = ModelConfig::fallback();
+        // Standard lane: the field is absent, not null — an unknown tier id
+        // is a 400 here, and `null` is one too.
+        assert!(
+            build_payload(&cfg, &[], &[user("hi")])
+                .get("service_tier")
+                .is_none()
+        );
+        cfg.service_tier = Some("priority".to_string());
+        assert_eq!(
+            build_payload(&cfg, &[], &[user("hi")])["service_tier"],
+            json!("priority")
+        );
     }
 
     #[test]

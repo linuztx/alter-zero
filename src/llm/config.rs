@@ -327,6 +327,7 @@ impl ProvidersFile {
             wire_api: provider.wire_api,
             temperature: sel.temperature,
             thinking: sel.thinking,
+            service_tier: sel.service_tier.clone(),
             vision: sel.vision,
             context: sel.context,
             cache_key: sel.cache_key.clone(),
@@ -352,6 +353,12 @@ pub struct Selection {
     /// into the request payload. `None` sends no reasoning parameter at all.
     /// See `docs/reasoning.md`.
     pub thinking: Option<ThinkingMode>,
+    /// The **service tier** the next request runs in — the speed lane
+    /// `/fast` switches, already filtered through the model's own
+    /// [`ServiceTierSupport`](super::service_tier::ServiceTierSupport), so
+    /// what lands here is exactly what the wire sends. `None` = the standard
+    /// lane, which sends no field at all. See `docs/fast-mode.md`.
+    pub service_tier: Option<String>,
     /// Whether the model accepts image input, when known (from the same
     /// `/v1/models` records the picker lists — `ModelEntry::vision`).
     /// `Some(false)` makes the backend degrade attachments gracefully instead
@@ -394,6 +401,12 @@ pub struct ModelConfig {
     pub temperature: Option<f32>,
     /// The active thinking mode (see [`Selection::thinking`]).
     pub thinking: Option<ThinkingMode>,
+    /// The **service tier** this request runs in, already resolved against
+    /// what the model offers (see [`Selection::service_tier`]) — so the
+    /// payload builder sends it verbatim or not at all. `None` is the
+    /// standard lane. Only the Responses wire carries it; see
+    /// `docs/fast-mode.md`.
+    pub service_tier: Option<String>,
     /// The model's image-input support (see [`Selection::vision`]).
     pub vision: Option<bool>,
     /// The session's context window (see [`Selection::context`]) — sent as
@@ -421,6 +434,7 @@ impl ModelConfig {
             wire_api: WireApi::Chat,
             temperature: None,
             thinking: None,
+            service_tier: None,
             vision: None,
             context: None,
             cache_key: None,
@@ -904,6 +918,7 @@ api_base = "https://a/v1"
             api_key: Some("sk-test".to_string()),
             temperature: Some(0.7),
             thinking: None,
+            service_tier: None,
             vision: None,
             context: None,
             api_base: None,

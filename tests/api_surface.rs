@@ -77,6 +77,7 @@ use alter_zero::app::{
     Role,
     SigninKind,
     SearchState,
+    ServiceTierState,
     SessionInfo,
     SettingRow,
     SettingsPicker,

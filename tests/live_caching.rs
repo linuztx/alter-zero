@@ -83,6 +83,7 @@ fn config(provider_id: &str, model: &str, key: Option<String>, salt: u64) -> Mod
             api_key: key,
             temperature: None,
             thinking: None,
+            service_tier: None,
             vision: None,
             context: None,
             api_base: None,

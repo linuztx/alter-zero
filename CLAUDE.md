@@ -422,6 +422,34 @@ cycle** (a reasoning-capable model's effort — detected per model from the
 provider's `/v1/models`, shown beside the model name in the footer, cycled
 with a `Thinking: {mode}` toast, riding the request as the unified `reasoning`
 parameter, persisted beside the `/model` selection) in `docs/reasoning.md`;
+the **`/fast` service tier** (codex's Fast mode: the speed lane a request
+runs in, published per model by the ChatGPT backend's own `/models` records —
+`service_tiers`, or the deprecated `additional_speed_tiers` — so nothing is
+hardcoded and no other provider's list is touched. `/fast` toggles it, the
+footer marks it beside the thinking mode, and the Responses request gains one
+field. Four traps, each one a way a naive port breaks: the tier is *called*
+`Fast` and goes on the wire as **`priority`**, so the id and the name are
+never conflated; the standard lane **omits** the field rather than sending
+`null`, which this backend rejects exactly as it rejects an unknown tier;
+an explicit standard choice is a *third* state beside "fast" and "never
+chose" — the `default` sentinel, which is never sent and whose whole job is to
+suppress a record's own `default_service_tier`, since otherwise a model that
+names one would turn fast silently back on at every launch (and the same three
+states govern *writing* the saved blob, where "not known yet" must write
+nothing: a Ctrl+T pressed before the capability probe answers would otherwise
+record the "no lanes" marker that stops the next launch probing, killing
+`/fast` on that model for good); and a model may offer **several** lanes —
+`gpt-5.6-sol` lists `priority` beside a faster `ultrafast` — so the fast one is
+found by **id**, never by position and never by "the name contains fast", both
+of which pick the wrong row there. A stale choice the
+model no longer offers degrades to standard rather than 400ing the turn; the
+choice persists per working directory beside the `/model` selection, seeded at
+bootstrap so the command and the marker are live before the capability probe
+answers; and a model offering no lane gets an explanatory toast, the contract
+Ctrl+T keeps on a non-reasoner. It is a command rather than a keybinding
+because codex ships its own `toggle_fast_mode` binding unbound and surfaces it
+in the palette under `/model`, which is where the lane belongs — it is a
+property of the model) in `docs/fast-mode.md`;
 the **thinking stream** — that reasoning, *shown* (a phase's
 chain-of-thought streams live in the strip wearing the **tool cell's shape**:
 a `● Thinking…` header — the same `TOOL_BULLET` a running tool wears, because
@@ -1974,7 +2002,9 @@ codex's footer status line, `{model} · {cwd}` dim and two-space inset
 (`dummy_model_name · ~/repo      manual` — the Shift+Tab **permission mode**
 pinned flush at the row's right edge, `docs/permissions.md`, hidden when
 permissions are off; a reasoning-capable model carries its Ctrl+T
-thinking mode beside the name — `{model} {mode} · {cwd}`, `docs/reasoning.md`)
+thinking mode beside the name, and a model running in a non-standard
+**service tier** its lane after that — `{model} {mode} {lane} · {cwd}`,
+`docs/reasoning.md` / `docs/fast-mode.md`)
 — whenever no band is open (the palette/shortcuts
 band displaces it, and the Ctrl+R search line / `!` shell-mode hint take its
 slot; `App::set_session_info` injects the strings at the boundary
@@ -2326,7 +2356,7 @@ live in the pure `file_search` module, and the `/resume` primitives
 Typing a bare `/token` opens a **slash-command palette** below the input box (a
 third live-region band): `App::command_menu` holds the highlight, the registry
 `app::COMMANDS` (`SlashCommand { name, description, effect }` — currently `/help`,
-`/clear`, `/copy`, `/init`, `/compact`, `/resume`, `/model`, `/login`, `/settings`, `/theme`, `/mascot`, `/spinner`, `/hooks`, `/skills`, `/mcp`, `/trust`, `/donate`, and `/quit`) is filtered by `matching_commands`, and ↑/↓ scroll / Tab+Enter run
+`/clear`, `/copy`, `/init`, `/compact`, `/resume`, `/model`, `/fast`, `/login`, `/settings`, `/theme`, `/mascot`, `/spinner`, `/hooks`, `/skills`, `/mcp`, `/trust`, `/donate`, and `/quit`) is filtered by `matching_commands`, and ↑/↓ scroll / Tab+Enter run
 the highlighted command. Descriptions line up in a column, and the selection is
 shown **by colour** — the whole highlighted row lights up cyan (name *and*
 description the same colour) while the others are dimmed grey, no caret. A command

@@ -377,6 +377,12 @@ A `403` is also what an unrecognised `originator` earns, with a message that
 does not say so — which is why that header is pinned in `providers.toml`
 rather than left to a default.
 
+## Service tiers
+
+The same `/models` records also publish the **speed lane** a model can run in
+— OpenAI's `Fast` tier, which goes on the wire as `service_tier: "priority"`.
+That is `/fast`, and it has its own document: `docs/fast-mode.md`.
+
 ## Environment
 
 | variable | effect |
@@ -392,7 +398,8 @@ rather than left to a default.
 | `src/llm/auth.rs` | `request_auth` — the one seam every outbound call resolves through |
 | `src/llm/responses.rs` | the Responses wire format, both directions (pure) |
 | `src/llm/openai.rs` | `request_url`/`request_payload` (the wire branch), `drain_responses`, `pump_lines` |
-| `src/llm/models.rs` | the `{"models": …}` envelope and the three record sniffs |
+| `src/llm/models.rs` | the `{"models": …}` envelope and the record sniffs |
+| `src/llm/service_tier.rs` | the `Fast` service tier `/fast` switches (`docs/fast-mode.md`) |
 | `src/app/login.rs` | `SigninKind`, `DeviceLogin::copy_target` |
 | `src/ui/login_view.rs` | the browser page's wording |
 | `src/tui/workers.rs` | `spawn_signin` — which flow a provider runs |

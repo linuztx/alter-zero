@@ -91,6 +91,12 @@ pub enum CommandEffect {
     /// switch only rebinds the *next* turn's backend. See `docs/llm.md` /
     /// `docs/toast.md`.
     Model,
+    /// Toggle the active model's **fast** service tier (`/fast`) — the speed
+    /// lane the request runs in. Works **mid-turn** like `/model`: it only
+    /// rebinds the *next* turn's backend. A model that offers no fast lane
+    /// gets an explanatory toast rather than a dead command. See
+    /// `docs/fast-mode.md`.
+    Fast,
     /// Open the inline `/login` API-key onboarding flow. Works **mid-turn** like
     /// `/model` — saving a key never touches the running turn. See `docs/llm.md`
     /// / `docs/toast.md`.
@@ -195,6 +201,15 @@ pub const COMMANDS: &[SlashCommand] = &[
         name: "model",
         description: "Switch the active model",
         effect: CommandEffect::Model,
+    },
+    SlashCommand {
+        // Named for the tier, not for a verb, because that is what the
+        // backend calls it and what the footer marker reads
+        // (`docs/fast-mode.md`). It sits right after `/model` — the lane is a
+        // property of the model, and codex lists its tiers there too.
+        name: "fast",
+        description: "Toggle the model's fast service tier",
+        effect: CommandEffect::Fast,
     },
     SlashCommand {
         name: "login",
@@ -419,6 +434,12 @@ impl App {
                 // thread). Selecting rebinds only the *next* turn's backend. The
                 // *loop* fetches the model list. See docs/llm.md / docs/toast.md.
                 Action::OpenModelPicker
+            }
+            CommandEffect::Fast => {
+                // Mid-turn like /model: the lane binds the *next* request,
+                // never the one streaming on its own thread. The pure state
+                // moves here; the loop rebinds, persists and toasts.
+                self.toggle_service_tier()
             }
             CommandEffect::Login => {
                 // /login works mid-turn like /model — saving a key never touches

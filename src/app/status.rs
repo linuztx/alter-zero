@@ -120,6 +120,19 @@ pub struct ThinkingState {
     pub mode: ThinkingMode,
 }
 
+/// The active model's **service tiers** and the lane chosen in them — the
+/// [`ThinkingState`] twin for `/fast`. See `docs/fast-mode.md`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServiceTierState {
+    /// The lanes the provider's model record published.
+    pub support: crate::llm::ServiceTierSupport,
+    /// The chosen lane's id, or the
+    /// [`DEFAULT_ID`](crate::llm::service_tier::DEFAULT_ID) sentinel for an
+    /// explicit standard lane. `None` = never chosen, so the catalog default
+    /// (if any) applies.
+    pub selected: Option<String>,
+}
+
 impl App {
     /// Count a just-submitted user message into the live tally as **uploaded
     /// input** — the tokens grow and the arrow points `↑` (like a tool result

@@ -39,6 +39,7 @@ fn backend() -> LlmBackend {
         api_key: Some(key),
         temperature: Some(0.0),
         thinking: None,
+        service_tier: None,
         vision: None,
         context: None,
         api_base: None,

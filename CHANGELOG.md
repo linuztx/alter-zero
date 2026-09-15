@@ -12,6 +12,24 @@ release heading when a version is cut.
 
 ## [Unreleased]
 
+### Added
+
+- **`/fast` — the ChatGPT backend's Fast service tier** (`docs/fast-mode.md`).
+  Some models can run a request in a faster lane; OpenAI's ChatGPT backend
+  publishes it per model and charges more usage for it. `/fast` toggles it,
+  the footer marks it beside the thinking mode
+  (`gpt-5.6-sol high fast · ~/repo`), and the request carries one extra field.
+  The lanes are read from the model's own `/models` record, so nothing is
+  hardcoded and no other provider's list is touched; the choice persists per
+  working directory beside the `/model` selection, so it survives a restart
+  and is live from the first frame rather than waiting on the startup
+  capability probe. On a model that offers no fast lane, `/fast` explains
+  rather than doing nothing — the contract Ctrl+T already keeps on a model
+  with no reasoning. Note that the tier is *called* Fast but goes on the wire
+  as `priority`, and that an explicit standard lane is a distinct choice from
+  never having chosen one: a model whose record names a default lane would
+  otherwise turn fast silently back on at every launch.
+
 ## [0.1.2] - 2026-09-15
 
 ### Changed

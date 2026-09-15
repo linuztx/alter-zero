@@ -10,6 +10,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use super::reasoning::{ReasoningEffort, ReasoningSupport, ThinkingMode};
+use super::service_tier::{ServiceTier, ServiceTierSupport};
 
 /// The persisted `config.json`.
 ///
@@ -44,6 +45,12 @@ pub struct Settings {
     /// See `docs/reasoning.md`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thinking: Option<ThinkingSettings>,
+    /// The saved model's **service tiers** and the lane chosen in them, when
+    /// its record published any — restored at startup so `/fast` and the
+    /// footer marker work before any probe answers. Absent = unknown. See
+    /// `docs/fast-mode.md`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service_tier: Option<ServiceTierSettings>,
     /// The saved model's image-input support, when its `/v1/models` record
     /// said either way — restored at startup so the backend gates image
     /// attachments without a re-probe. Absent = unknown (a legacy file, or a
@@ -79,6 +86,9 @@ pub struct ModelSelection {
     /// The model's reasoning capability + chosen mode (`docs/reasoning.md`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thinking: Option<ThinkingSettings>,
+    /// The model's service tiers + chosen lane (`docs/fast-mode.md`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service_tier: Option<ServiceTierSettings>,
     /// The model's image-input support (`docs/tools.md`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vision: Option<bool>,
@@ -95,6 +105,7 @@ impl ModelSelection {
             provider: provider.into(),
             model: model.into(),
             thinking: None,
+            service_tier: None,
             vision: None,
             context: None,
         }
@@ -105,6 +116,15 @@ impl ModelSelection {
     #[must_use]
     pub fn with_thinking(mut self, thinking: Option<ThinkingSettings>) -> Self {
         self.thinking = thinking;
+        self
+    }
+
+    /// The same selection with the model's service tiers + chosen lane
+    /// attached (`None` = unknown; [`ServiceTierSettings::unsupported`] for a
+    /// model known to offer none).
+    #[must_use]
+    pub fn with_service_tier(mut self, service_tier: Option<ServiceTierSettings>) -> Self {
+        self.service_tier = service_tier;
         self
     }
 
@@ -127,6 +147,115 @@ impl ModelSelection {
     #[must_use]
     pub fn pair(&self) -> (&str, &str) {
         (&self.provider, &self.model)
+    }
+}
+
+/// The persisted **service tier** state: the lanes the model published and
+/// the one chosen in them, as plain strings so a hand-edited or
+/// future-versioned file still loads. See `docs/fast-mode.md`.
+///
+/// [`ThinkingSettings`]' twin, and for the same reason: without it a relaunch
+/// would have no idea whether the saved model has a fast lane, so `/fast` and
+/// the footer marker would both be dead until a probe answered.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ServiceTierSettings {
+    /// `Some(false)` records "this model offers no tiers" so startup doesn't
+    /// re-probe for them; absent/`Some(true)` means the rest describes a real
+    /// set of lanes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub supported: Option<bool>,
+    /// The chosen lane's **id** — the wire value (`priority`), or the
+    /// [`DEFAULT_ID`](super::service_tier::DEFAULT_ID) sentinel for an
+    /// explicit standard lane. Absent = never chosen, so the catalog default
+    /// (if any) applies.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selected: Option<String>,
+    /// The lanes the model offers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tiers: Option<Vec<TierSettings>>,
+    /// The catalog's own default lane, when it named one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_tier: Option<String>,
+}
+
+/// One persisted lane — the three fields a [`ServiceTier`] carries, so the
+/// footer and the toast can name it with no refetch.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TierSettings {
+    pub id: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub name: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub description: String,
+}
+
+impl ServiceTierSettings {
+    /// The blob recording a live set of lanes and the one chosen.
+    #[must_use]
+    pub fn from_state(support: &ServiceTierSupport, selected: Option<&str>) -> Self {
+        Self {
+            supported: Some(true),
+            selected: selected.map(str::to_string),
+            tiers: Some(
+                support
+                    .tiers
+                    .iter()
+                    .map(|tier| TierSettings {
+                        id: tier.id.clone(),
+                        name: tier.name.clone(),
+                        description: tier.description.clone(),
+                    })
+                    .collect(),
+            ),
+            default_tier: support.default_tier.clone(),
+        }
+    }
+
+    /// The marker blob for a model known to offer no lanes at all — startup
+    /// then skips the probe entirely, exactly as
+    /// [`ThinkingSettings::unsupported`] does for reasoning.
+    #[must_use]
+    pub fn unsupported() -> Self {
+        Self {
+            supported: Some(false),
+            ..Self::default()
+        }
+    }
+
+    /// Restore the live state: the lanes and the chosen id, or `None` for the
+    /// [`unsupported`](Self::unsupported) marker and for a blob that lists no
+    /// lanes (a truncated or hand-edited file — there is nothing to switch).
+    #[must_use]
+    pub fn to_state(&self) -> Option<(ServiceTierSupport, Option<String>)> {
+        if self.supported == Some(false) {
+            return None;
+        }
+        let tiers: Vec<ServiceTier> = self
+            .tiers
+            .as_deref()
+            .unwrap_or_default()
+            .iter()
+            .filter(|tier| !tier.id.is_empty())
+            .map(|tier| ServiceTier {
+                id: tier.id.clone(),
+                name: if tier.name.is_empty() {
+                    tier.id.clone()
+                } else {
+                    tier.name.clone()
+                },
+                description: tier.description.clone(),
+            })
+            .collect();
+        if tiers.is_empty() {
+            return None;
+        }
+        Some((
+            ServiceTierSupport {
+                tiers,
+                default_tier: self.default_tier.clone(),
+            },
+            self.selected.clone(),
+        ))
     }
 }
 
@@ -258,6 +387,14 @@ impl Settings {
         self
     }
 
+    /// The same settings with the saved model's service tiers + chosen lane
+    /// attached (`None` for a model with no lanes of its own).
+    #[must_use]
+    pub fn with_service_tier(mut self, service_tier: Option<ServiceTierSettings>) -> Self {
+        self.service_tier = service_tier;
+        self
+    }
+
     /// The same settings with the saved model's image-input support attached
     /// (`None` = the record didn't say).
     #[must_use]
@@ -285,6 +422,7 @@ impl Settings {
             provider: self.provider.clone()?,
             model: self.model.clone()?,
             thinking: self.thinking.clone(),
+            service_tier: self.service_tier.clone(),
             vision: self.vision,
             context: self.context,
         })
@@ -295,6 +433,7 @@ impl Settings {
         self.provider = Some(selection.provider.clone());
         self.model = Some(selection.model.clone());
         self.thinking = selection.thinking.clone();
+        self.service_tier = selection.service_tier.clone();
         self.vision = selection.vision;
         self.context = selection.context;
     }
@@ -369,6 +508,7 @@ impl Settings {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::llm::service_tier::ServiceTier;
 
     #[test]
     fn parse_reads_provider_and_model() {
@@ -453,6 +593,72 @@ mod tests {
         let (restored, mode) = blob.to_state();
         assert_eq!(restored, support);
         assert_eq!(mode, ThinkingMode::On);
+    }
+
+    #[test]
+    fn a_service_tier_choice_round_trips_through_json() {
+        let support = ServiceTierSupport {
+            tiers: vec![ServiceTier {
+                id: "priority".to_string(),
+                name: "Fast".to_string(),
+                description: "2x speed, increased usage".to_string(),
+            }],
+            default_tier: None,
+        };
+        let s = Settings::for_selection("openai_chatgpt", "gpt-5.6-sol").with_service_tier(Some(
+            ServiceTierSettings::from_state(&support, Some("priority")),
+        ));
+        let restored = Settings::parse(&s.to_json());
+        assert_eq!(restored, s);
+        let blob = restored.service_tier.unwrap();
+        assert_eq!(
+            blob.to_state(),
+            Some((support, Some("priority".to_string())))
+        );
+    }
+
+    #[test]
+    fn a_model_known_to_offer_no_tiers_records_that_too() {
+        // The `ThinkingSettings::unsupported` marker's twin: it is what keeps
+        // startup from re-probing a model that has no lanes.
+        let blob = ServiceTierSettings::unsupported();
+        assert_eq!(blob.to_state(), None);
+        let s = Settings::for_selection("p", "m").with_service_tier(Some(blob));
+        assert_eq!(Settings::parse(&s.to_json()), s);
+    }
+
+    #[test]
+    fn a_legacy_file_without_a_service_tier_loads_with_none() {
+        let s = Settings::parse(r#"{"provider":"openrouter","model":"m"}"#);
+        assert_eq!(s.service_tier, None);
+        assert!(
+            !Settings::for_selection("p", "m")
+                .to_json()
+                .contains("service_tier"),
+            "an unset tier is skipped in the output"
+        );
+    }
+
+    #[test]
+    fn a_service_tier_follows_its_selection_across_directories() {
+        let blob = ServiceTierSettings::from_state(
+            &ServiceTierSupport {
+                tiers: vec![ServiceTier {
+                    id: "priority".to_string(),
+                    name: "Fast".to_string(),
+                    description: String::new(),
+                }],
+                default_tier: None,
+            },
+            Some("priority"),
+        );
+        let mut s = Settings::for_selection("openai_chatgpt", "gpt-5.6-sol")
+            .with_service_tier(Some(blob.clone()));
+        assert!(s.adopt("/repo"));
+        assert_eq!(
+            s.project("/repo").and_then(|e| e.service_tier.clone()),
+            Some(blob)
+        );
     }
 
     #[test]

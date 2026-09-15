@@ -273,6 +273,7 @@ pub(super) fn model_entry(id: &str, provider: &str, name: &str) -> ModelEntry {
         reasoning: None,
         vision: None,
         context: None,
+        tiers: None,
     }
 }
 

@@ -38,7 +38,7 @@ use alter_zero::app::{ProviderChoice, SubscriptionChoice, ToastKind};
 use alter_zero::background::BackgroundRegistry;
 use alter_zero::llm::{
     self, EnvFile, LlmBackend, ModelConfig, ModelEntry, ModelSelection, ProvidersFile,
-    ReasoningSupport, ThinkingMode,
+    ReasoningSupport, ServiceTierSupport, ThinkingMode,
 };
 use alter_zero::permission::PermissionGate;
 use alter_zero::settings::SessionSettings;
@@ -53,6 +53,12 @@ use super::{Session, config};
 /// big its context window is. `None` anywhere means "unknown" — the startup
 /// probe finds out, and until it does the loop stays optimistic.
 type Thinking = (ReasoningSupport, ThinkingMode);
+
+/// A model's **service tiers** and the lane chosen in them, as the loop
+/// tracks them — the [`Thinking`] twin for `/fast` (`docs/fast-mode.md`).
+/// The inner `None` means no lane was ever chosen, so the catalog's own
+/// default (if any) applies.
+type Tiers = (ServiceTierSupport, Option<String>);
 
 /// The reply backend plus the configuration that chose it.
 pub(crate) struct ModelSession {
@@ -109,6 +115,10 @@ pub(crate) struct ModelSession {
     /// user didn't ask for (a `/settings` knob) carries it forward instead of
     /// silently dropping the Ctrl+T choice (`docs/reasoning.md`).
     active_thinking: Option<ThinkingMode>,
+    /// The **resolved** service tier the live backend was built with — what
+    /// the request actually sends, carried forward by an unrelated rebuild
+    /// for the same reason the thinking mode is (`docs/fast-mode.md`).
+    active_service_tier: Option<String>,
     /// The backend itself — the dummy unless a real provider/model/key resolved.
     backend: Box<dyn ReplySource>,
     /// Whether [`Self::backend`] is a **real** model rather than the dummy (or
@@ -176,6 +186,10 @@ pub(crate) struct ModelSession {
     /// The thinking state [`Self::resolve`] recovered from `config.json`, handed
     /// to `App` once at bootstrap.
     thinking_seed: Option<Thinking>,
+    /// The service-tier state [`Self::resolve`] recovered from `config.json`
+    /// — the lanes and the chosen one — handed to `App` once at bootstrap so
+    /// `/fast` and the footer marker work before any probe answers.
+    service_tier_seed: Option<Tiers>,
     /// The capability probe bootstrap should spawn: the active provider's **id**
     /// (the `select!` arm matches it against `active_provider`) and the config to
     /// fetch with. Taken once.
@@ -291,6 +305,22 @@ impl ModelSession {
             .as_ref()
             .and_then(|s| s.context)
             .filter(|_| selection_is_saved);
+        // The saved service-tier blob, read exactly as saved_thinking is:
+        // outer None = the lanes are unknown (the probe below finds out);
+        // Some(None) = a model known to publish none; Some(Some(state)) =
+        // seed `/fast` and the footer marker. See docs/fast-mode.md.
+        let saved_tiers: Option<Option<Tiers>> = saved
+            .as_ref()
+            .and_then(|s| s.service_tier.as_ref())
+            .filter(|_| selection_is_saved)
+            .map(llm::ServiceTierSettings::to_state);
+        let startup_tiers = saved_tiers.clone().flatten();
+        // What the first request carries — the chosen lane filtered through
+        // the lanes the model actually offers, so a stale choice is dropped
+        // rather than 400ing the opening turn.
+        let startup_service_tier = startup_tiers
+            .as_ref()
+            .and_then(|(support, selected)| support.for_request(selected.as_deref()));
 
         // A real model activates only when a provider, a model and a key all
         // resolve — and `ALTER_ZERO_DUMMY` isn't forcing the dummy. Anything else
@@ -306,6 +336,7 @@ impl ModelSession {
                     model,
                     temperature,
                     startup_thinking.as_ref().map(|(_, mode)| *mode),
+                    startup_service_tier.clone(),
                     saved_vision,
                     // The window the first request is built with — the env
                     // override outranking the saved one, as the gauge's own
@@ -364,22 +395,24 @@ impl ModelSession {
         // model reasons or sees images (an env-selected model, or the first run
         // since the upgrade that added the blob), fetch the provider's
         // `/models` once in the background and read the record out of it.
-        let probe = (real_backend && (saved_thinking.is_none() || saved_vision.is_none()))
-            .then(|| active_provider.as_deref().zip(env_model.as_deref()))
-            .flatten()
-            .map(|(p, m)| {
-                let cfg = config::model_config_for(
-                    &providers,
-                    &env_file,
-                    p,
-                    m,
-                    temperature,
-                    None,
-                    None,
-                    None,
-                );
-                (p.to_string(), cfg)
-            });
+        let probe = (real_backend
+            && (saved_thinking.is_none() || saved_vision.is_none() || saved_tiers.is_none()))
+        .then(|| active_provider.as_deref().zip(env_model.as_deref()))
+        .flatten()
+        .map(|(p, m)| {
+            let cfg = config::model_config_for(
+                &providers,
+                &env_file,
+                p,
+                m,
+                temperature,
+                None,
+                None,
+                None,
+                None,
+            );
+            (p.to_string(), cfg)
+        });
         Self {
             providers,
             env_path_display: ui::display_cwd(&env_file_path, home),
@@ -403,6 +436,7 @@ impl ModelSession {
             active_vision: real_backend.then_some(saved_vision).flatten(),
             active_context: real_backend.then_some(saved_context).flatten(),
             active_thinking: startup_thinking.as_ref().map(|(_, mode)| *mode),
+            active_service_tier: real_backend.then_some(startup_service_tier).flatten(),
             backend,
             real_backend,
             registry: registry.clone(),
@@ -426,6 +460,7 @@ impl ModelSession {
             fetch_cancel: None,
             probe_pending: probe.is_some(),
             thinking_seed: real_backend.then_some(startup_thinking).flatten(),
+            service_tier_seed: real_backend.then_some(startup_tiers).flatten(),
             probe,
         }
     }
@@ -530,6 +565,12 @@ impl ModelSession {
         self.thinking_seed.take()
     }
 
+    /// The service-tier state recovered from `config.json`, handed to `App`
+    /// once (`docs/fast-mode.md`).
+    pub(crate) fn take_service_tier_seed(&mut self) -> Option<Tiers> {
+        self.service_tier_seed.take()
+    }
+
     /// The capability probe to spawn at bootstrap, if one is due.
     pub(crate) fn take_probe(&mut self) -> Option<(String, Option<ModelConfig>)> {
         self.probe.take()
@@ -541,11 +582,13 @@ impl ModelSession {
     /// or `None` when the provider isn't in the table. `context` is the
     /// window a request is built with — the env override outranks it here
     /// exactly as it outranks the gauge (`docs/ollama.md`).
+    #[allow(clippy::too_many_arguments)] // the capability set, resolved together
     fn config_for(
         &self,
         provider: &str,
         model: &str,
         thinking: Option<ThinkingMode>,
+        service_tier: Option<String>,
         vision: Option<bool>,
         context: Option<u64>,
     ) -> Option<ModelConfig> {
@@ -556,6 +599,7 @@ impl ModelSession {
             model,
             self.temperature,
             thinking,
+            service_tier,
             vision,
             self.env_context_window.or(context),
         )
@@ -619,6 +663,7 @@ impl ModelSession {
                     &provider,
                     &self.active_model.clone(),
                     self.active_thinking,
+                    self.active_service_tier.clone(),
                     self.active_vision,
                     self.active_context,
                 )
@@ -816,17 +861,23 @@ impl ModelSession {
     /// provider/model and adopt its capabilities, persisting the choice so it
     /// is the default next run. `false` when the config isn't usable (no key) —
     /// the current backend then stands, and the caller says so.
+    #[allow(clippy::too_many_arguments)] // the picked row's capability set
     pub(crate) fn switch_to(
         &mut self,
         provider: &str,
         id: &str,
         thinking: Option<&Thinking>,
+        tiers: Option<&Tiers>,
         vision: Option<bool>,
         context: Option<u64>,
     ) -> bool {
         let mode = thinking.map(|(_, mode)| *mode);
+        // The picked row's own lanes decide what the first request to it
+        // carries — a lane chosen on the *previous* model means nothing here
+        // (`docs/fast-mode.md`).
+        let tier = tiers.and_then(|(support, selected)| support.for_request(selected.as_deref()));
         let Some(cfg) = self
-            .config_for(provider, id, mode, vision, context)
+            .config_for(provider, id, mode, tier.clone(), vision, context)
             .filter(ModelConfig::is_usable)
         else {
             return false;
@@ -840,6 +891,7 @@ impl ModelSession {
         self.active_vision = vision;
         self.active_context = context;
         self.active_thinking = mode;
+        self.active_service_tier = tier;
         // The switch knows its support first-hand — a still-in-flight startup
         // probe is stale.
         self.probe_pending = false;
@@ -851,6 +903,7 @@ impl ModelSession {
             &self.project,
             &ModelSelection::new(provider, id)
                 .with_thinking(Some(config::thinking_settings_of(thinking)))
+                .with_service_tier(Some(config::service_tier_settings_of(tiers)))
                 .with_vision(vision)
                 .with_context(context),
         );
@@ -871,6 +924,34 @@ impl ModelSession {
                     &provider,
                     &self.active_model.clone(),
                     Some(mode),
+                    self.active_service_tier.clone(),
+                    self.active_vision,
+                    self.active_context,
+                )
+                .filter(ModelConfig::is_usable)
+        {
+            self.rebuild(cfg);
+        }
+    }
+
+    /// Rebind the *next* turn's backend so a `/fast` choice rides its request
+    /// — [`Self::rebind_thinking`]'s twin, and mid-turn safe for the same
+    /// reason: the running turn streams on its own thread with the config it
+    /// was built from. `tier` is the **resolved** lane (already filtered
+    /// against what the model offers), so `None` is the standard one. See
+    /// `docs/fast-mode.md`.
+    pub(crate) fn rebind_service_tier(&mut self, tier: Option<String>) {
+        if !self.real_backend {
+            return; // the dummy has no request to carry a lane
+        }
+        self.active_service_tier = tier.clone();
+        if let Some(provider) = self.active_provider.clone()
+            && let Some(cfg) = self
+                .config_for(
+                    &provider,
+                    &self.active_model.clone(),
+                    self.active_thinking,
+                    tier,
                     self.active_vision,
                     self.active_context,
                 )
@@ -884,7 +965,16 @@ impl ModelSession {
     /// onto the pair `config.json` already records for this directory: an
     /// env-overridden selection never writes back (env always wins, never
     /// sticks), so persisting its thinking would hijack the saved default.
-    pub(crate) fn persist(&self, thinking: Option<&Thinking>) {
+    ///
+    /// `tiers` carries a **third** state the thinking blob has no need for:
+    /// the outer `None` means *not known yet* (a probe still pending, or one
+    /// that failed) and writes nothing, where `Some(None)` is the definitive
+    /// "this model publishes no lanes" marker. Collapsing the two would let a
+    /// Ctrl+T pressed before the probe answers record `unsupported` for a
+    /// model that does have a fast lane — and since that marker is what stops
+    /// the *next* launch probing, `/fast` would then be dead there for good.
+    /// See `docs/fast-mode.md`.
+    pub(crate) fn persist(&self, thinking: Option<&Thinking>, tiers: Option<Option<&Tiers>>) {
         let Some(provider) = self.active_provider.as_deref() else {
             return;
         };
@@ -898,6 +988,7 @@ impl ModelSession {
                 &self.project,
                 &ModelSelection::new(provider, &self.active_model)
                     .with_thinking(Some(config::thinking_settings_of(thinking)))
+                    .with_service_tier(tiers.map(config::service_tier_settings_of))
                     .with_vision(self.active_vision)
                     .with_context(self.active_context),
             );
@@ -914,7 +1005,8 @@ impl ModelSession {
         &mut self,
         provider: &str,
         models: &[ModelEntry],
-    ) -> Option<Option<Thinking>> {
+        chosen_tier: Option<String>,
+    ) -> Option<(Option<Thinking>, Option<Tiers>)> {
         if self.active_provider.as_deref() != Some(provider) {
             return None;
         }
@@ -925,6 +1017,23 @@ impl ModelSession {
                 let mode = support.default_mode();
                 (support, mode)
             });
+        // The lanes the record publishes. The probe learns what the model
+        // *offers*, never what the user picked — a choice already made (from
+        // `config.json`, or a `/fast` that raced the probe) is kept, and only
+        // re-filtered against the freshly-learned lanes.
+        //
+        // `chosen_tier` is the **raw** choice, handed in by the caller from
+        // `App`, and it has to be: `active_service_tier` is the *resolved*
+        // lane, where an explicit standard choice and never having chosen are
+        // both `None`. Reading that instead would let the record's own
+        // `default_service_tier` apply over a user who deliberately asked for
+        // the standard lane — turning fast silently back on at every launch.
+        let tiers: Option<Tiers> = entry
+            .and_then(|entry| entry.tiers.clone())
+            .map(|support| (support, chosen_tier));
+        let tier = tiers
+            .as_ref()
+            .and_then(|(support, selected)| support.for_request(selected.as_deref()));
         let vision = entry.and_then(|entry| entry.vision);
         let context = entry.and_then(|entry| entry.context);
         // Rebind when something actually changes a request: a thinking mode to
@@ -932,12 +1041,16 @@ impl ModelSession {
         // (Some(true)/None both attach — nothing to rebind for), or — on the
         // one wire that sends it — a window now known (docs/ollama.md).
         let window_matters = context.is_some() && self.wire_sends_context(provider);
-        if (thinking.is_some() || vision == Some(false) || window_matters)
+        // A lane the request will now carry — or one it was carrying and the
+        // record says the model does not offer — changes the request too.
+        let tier_matters = tier != self.active_service_tier;
+        if (thinking.is_some() || vision == Some(false) || window_matters || tier_matters)
             && let Some(cfg) = self
                 .config_for(
                     provider,
                     &self.active_model.clone(),
                     thinking.as_ref().map(|(_, mode)| *mode),
+                    tier.clone(),
                     vision,
                     context,
                 )
@@ -948,8 +1061,10 @@ impl ModelSession {
         self.active_vision = vision;
         self.active_context = context;
         self.active_thinking = thinking.as_ref().map(|(_, mode)| *mode);
-        self.persist(thinking.as_ref());
-        Some(thinking)
+        self.active_service_tier = tier;
+        // The record answered, so the lanes are known either way.
+        self.persist(thinking.as_ref(), Some(tiers.as_ref()));
+        Some((thinking, tiers))
     }
 
     /// The one-off **tools-free** backend a `/compact` turn runs on (codex
@@ -978,6 +1093,9 @@ impl ModelSession {
                     provider,
                     &self.active_model,
                     thinking,
+                    // The summarization turn runs in the same lane the
+                    // conversation does — it is the same account's request.
+                    self.active_service_tier.clone(),
                     self.active_vision,
                     self.active_context,
                 )
@@ -1049,7 +1167,7 @@ impl ModelSession {
         let cancel = CancelToken::new();
         self.fetch_cancel = Some(cancel.clone());
         for choice in &configured {
-            let cfg = self.config_for(&choice.id, &self.active_model, None, None, None);
+            let cfg = self.config_for(&choice.id, &self.active_model, None, None, None, None);
             spawn_model_fetch(choice.name.clone(), cfg, cancel.clone(), tx.clone());
         }
         configured.len()
@@ -1391,6 +1509,7 @@ impl Session<'_> {
         reasoning: Option<ReasoningSupport>,
         vision: Option<bool>,
         context: Option<u64>,
+        tiers: Option<ServiceTierSupport>,
     ) {
         self.models.cancel_model_fetch();
         // The picked entry's reasoning support seeds the Ctrl+T cycle at its
@@ -1399,12 +1518,21 @@ impl Session<'_> {
             let mode = support.default_mode();
             (support, mode)
         });
-        if self
-            .models
-            .switch_to(provider, id, thinking.as_ref(), vision, context)
-        {
+        // Its lanes seed `/fast` **unchosen**, so the new model's own catalog
+        // default applies rather than a lane picked for the old one
+        // (docs/fast-mode.md).
+        let tiers: Option<Tiers> = tiers.map(|support| (support, None));
+        if self.models.switch_to(
+            provider,
+            id,
+            thinking.as_ref(),
+            tiers.as_ref(),
+            vision,
+            context,
+        ) {
             self.sync_backend_info();
             self.app.set_thinking(thinking);
+            self.app.set_service_tier(tiers);
             self.toast(format!("Switched model to {id}"), ToastKind::Info);
         } else {
             // A subscription has no env var to "set" — you sign in to it, and
@@ -1432,8 +1560,51 @@ impl Session<'_> {
             .thinking
             .as_ref()
             .map(|t| (t.support.clone(), t.mode));
-        self.models.persist(thinking.as_ref());
+        // Ctrl+T establishes nothing about the lanes: hand over what `App`
+        // holds, and let `None` (probe pending) leave the saved blob alone
+        // rather than record a "no lanes" this key never learned.
+        let tiers = self.app_tiers();
+        self.models
+            .persist(thinking.as_ref(), tiers.as_ref().map(Some));
         self.toast(format!("Thinking: {}", mode.label()), ToastKind::Info);
+    }
+
+    /// The service tiers + chosen lane as `App` currently holds them — what
+    /// the persist call records beside the selection (`docs/fast-mode.md`).
+    fn app_tiers(&self) -> Option<Tiers> {
+        self.app
+            .service_tier
+            .as_ref()
+            .map(|state| (state.support.clone(), state.selected.clone()))
+    }
+
+    /// `/fast` switched the service tier (the pure state already moved —
+    /// `docs/fast-mode.md`). Rebind the *next* turn's backend so the lane
+    /// rides its request (the running turn streams on its own thread,
+    /// untouched — the Ctrl+T pattern), persist the choice beside the model
+    /// selection, and confirm with a transient toast naming the lane.
+    pub(crate) fn set_service_tier(&mut self) {
+        // The choice **resolved** against the model's own lanes — which is
+        // what the wire sends: an explicit standard choice and a lane the
+        // model turns out not to offer both come back `None`.
+        let resolved = self.app.service_tier_for_request();
+        self.models.rebind_service_tier(resolved);
+        let tiers = self.app_tiers();
+        let thinking = self
+            .app
+            .thinking
+            .as_ref()
+            .map(|t| (t.support.clone(), t.mode));
+        // `/fast` only ever acts on a model whose lanes are known, so this
+        // is definitive.
+        self.models.persist(thinking.as_ref(), Some(tiers.as_ref()));
+        // The toast names the lane's own word, so it reads the same as the
+        // footer marker it just turned on or off.
+        let state = match self.app.service_tier_label() {
+            Some(label) => format!("Fast mode: on ({label} service tier)"),
+            None => "Fast mode: off".to_string(),
+        };
+        self.toast(state, ToastKind::Info);
     }
 
     /// Persist a key to the `.env` store and confirm — or report why it couldn't
@@ -1463,9 +1634,18 @@ impl Session<'_> {
     ) {
         self.models.settle_probe();
         if let Ok(entries) = result
-            && let Some(thinking) = self.models.apply_probe(provider, &entries)
+            && let Some((thinking, tiers)) = {
+                // The raw choice as `App` holds it — see `apply_probe`.
+                let chosen = self
+                    .app
+                    .service_tier
+                    .as_ref()
+                    .and_then(|state| state.selected.clone());
+                self.models.apply_probe(provider, &entries, chosen)
+            }
         {
             self.app.set_thinking(thinking);
+            self.app.set_service_tier(tiers);
             let window = self.models.context_window();
             self.app.set_context_window(window);
             // An inheriting subagent's gauge shares that window

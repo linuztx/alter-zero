@@ -32,6 +32,7 @@ mod permission;
 mod queue;
 mod reasoning;
 mod resume;
+mod service_tier;
 mod settings;
 mod skill_picker;
 mod skills_menu;
@@ -231,6 +232,7 @@ pub(super) fn model(id: &str, provider: &str, name: &str) -> ModelEntry {
         reasoning: None,
         vision: None,
         context: None,
+        tiers: None,
     }
 }
 

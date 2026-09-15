@@ -108,6 +108,7 @@ fn backend_with_deepwiki(manager: McpManager) -> LlmBackend {
         api_key: Some(key),
         auth: alter_zero::llm::AuthScheme::ApiKey,
         wire_api: alter_zero::llm::WireApi::Chat,
+        service_tier: None,
         temperature: Some(0.0),
         thinking: None,
         vision: None,

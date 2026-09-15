@@ -18,6 +18,7 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use crate::agents::{AgentRun, AgentStatus};
 use crate::ask::AskRequest;
 use crate::file_search::{FileMatch, at_token};
+use crate::llm::service_tier::ServiceTierSupport;
 use crate::llm::{ModelEntry, ReasoningSupport, ThinkingMode};
 use crate::permission::{PermissionDecision, PermissionKind, PermissionMode, PermissionRequest};
 use crate::session::SessionSummary;
@@ -98,7 +99,9 @@ pub use self::settings::{SettingRow, SettingsPicker};
 pub use self::skill_picker::SkillPicker;
 pub use self::skills_menu::{SkillMenuRow, SkillsMenu};
 pub use self::spinner::{Spinner, SpinnerPicker, SpinnerRow};
-pub use self::status::{RetryInfo, ThinkingState, TokenArrow, TurnStatus, TurnSummary};
+pub use self::status::{
+    RetryInfo, ServiceTierState, ThinkingState, TokenArrow, TurnStatus, TurnSummary,
+};
 pub use self::tasks::TaskCallRecord;
 pub use self::theme::{Theme, ThemePicker, ThemeRow, parse_theme_file, theme_file_json};
 pub use self::tools::{
@@ -549,6 +552,14 @@ pub struct App {
     ///
     /// [`set_session_info`]: App::set_session_info
     pub thinking: Option<ThinkingState>,
+    /// The active model's service tiers and the lane chosen in them —
+    /// `None` when the model publishes none (or they're unknown, e.g. the
+    /// dummy backend). Injected at the boundary ([`App::set_service_tier`],
+    /// the [`set_thinking`] pattern), toggled by `/fast`, and marked beside
+    /// the model name in the footer. See `docs/fast-mode.md`.
+    ///
+    /// [`set_thinking`]: App::set_thinking
+    pub service_tier: Option<ServiceTierState>,
     /// Real text behind each large-paste placeholder currently in the composer,
     /// as `(placeholder, real_text)` pairs in insertion order (codex's
     /// `pending_pastes`). A paste over [`crate::paste::LARGE_PASTE_CHAR_THRESHOLD`]
@@ -850,6 +861,62 @@ impl App {
                 Action::Toast(format!("{model} does not support thinking"))
             }
         }
+    }
+
+    /// Inject the active model's service tiers + chosen lane (a `/model`
+    /// switch, the startup seed, or the boundary's capability probe) —
+    /// `None` for a model that publishes none, which also blanks the
+    /// footer's marker and makes `/fast` explain instead of toggle. See
+    /// `docs/fast-mode.md`.
+    pub fn set_service_tier(&mut self, tiers: Option<(ServiceTierSupport, Option<String>)>) {
+        self.service_tier = tiers.map(|(support, selected)| ServiceTierState { support, selected });
+    }
+
+    /// `/fast`: switch the request between the model's fast lane and the
+    /// standard one, then hand the loop an [`Action::SetServiceTier`] to
+    /// rebind and persist it — or, on a model that offers no fast lane, an
+    /// explanatory transient toast, exactly as Ctrl+T does on a model with no
+    /// reasoning. The command is never silently dead.
+    ///
+    /// Going back to standard records the explicit `default` sentinel rather
+    /// than clearing the choice: they are different states, and only the
+    /// sentinel outranks a catalog default (`docs/fast-mode.md`).
+    pub(super) fn toggle_service_tier(&mut self) -> Action {
+        let next = self
+            .service_tier
+            .as_ref()
+            .and_then(|state| state.support.toggled_fast(state.selected.as_deref()));
+        match next {
+            Some(id) => {
+                if let Some(state) = self.service_tier.as_mut() {
+                    state.selected = Some(id);
+                }
+                Action::SetServiceTier
+            }
+            None => {
+                let model = self
+                    .session
+                    .as_ref()
+                    .map_or("This model", |s| s.model.as_str());
+                Action::Toast(format!("{model} does not offer a fast service tier"))
+            }
+        }
+    }
+
+    /// The footer's lane marker — `Some("fast")` only while the request will
+    /// actually run in the fast lane. See `docs/fast-mode.md`.
+    #[must_use]
+    pub fn service_tier_label(&self) -> Option<&'static str> {
+        let state = self.service_tier.as_ref()?;
+        state.support.label(state.selected.as_deref())
+    }
+
+    /// The lane the next request should carry, already filtered against what
+    /// the model offers — what the boundary hands [`crate::llm::Selection`].
+    #[must_use]
+    pub fn service_tier_for_request(&self) -> Option<String> {
+        let state = self.service_tier.as_ref()?;
+        state.support.for_request(state.selected.as_deref())
     }
 
     /// Raise a transient [`Toast`] above the box (replacing any current one). The

@@ -196,6 +196,7 @@ The essentials are always one keystroke away: `/` opens commands, and `?` in an 
 | `/compact` | Summarise the conversation to free up context |
 | `/resume` | Resume a saved chat |
 | `/model` | Switch the active model |
+| `/fast` | Toggle the model's fast service tier |
 | `/login` | Add or update a provider sign-in |
 | `/settings` | Open the settings menu |
 | `/theme` | Choose the colour theme |

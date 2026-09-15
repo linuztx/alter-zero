@@ -198,11 +198,20 @@ sleep 0.2
 # Typing "/" lists the commands below the box (their descriptions are unique to
 # the open palette) — the first 8 only, MENU_MAX_ROWS being the cap; everything
 # past that starts off-window and ↓ scrolls it in. The assertions below name
-# commands by position-independent facts (the 8th is the window's last row,
-# /quit is the registry's last entry) rather than by ordinal.
+# commands by position-independent facts (the registry's first two entries,
+# /quit is its last) rather than by ordinal — and the CAP itself is asserted by
+# COUNTING the rows, not by naming whichever command happens to sit on the
+# eighth. Naming it was the trap the comment already warned about for the
+# count: this line used to pin "/login, the 8th command", and `/fast`
+# (docs/fast-mode.md) landing before it broke a check about MENU_MAX_ROWS for
+# a reason that had nothing to do with MENU_MAX_ROWS. A palette row starts at
+# column 0 with its slash, which nothing else on screen does.
 expect_has "$palette_open" -F "List the available commands" "typing '/' did not open the command palette (/help missing)"
 expect_has "$palette_open" -F "Clear the conversation" "the command palette did not list /clear"
-expect_has "$palette_open" -F "Add or update a provider API key" "the command palette did not list /login (the 8th command, the window's last row)"
+palette_rows="$(printf '%s\n' "$palette_open" | grep -c '^/' || true)"
+if [ "$palette_rows" -ne 8 ]; then
+	fail "the command palette shows $palette_rows rows, not the 8 MENU_MAX_ROWS caps it at"
+fi
 expect_lacks "$palette_open" -F "Exit the app" "the palette shows /quit (the registry's last command) in its first window — the 8-row cap is gone"
 expect_has "$palette_scrolled" -F "Exit the app" "↓ to the last command did not scroll /quit into the palette window"
 expect_lacks "$palette_scrolled" -F "List the available commands" "the scrolled palette still shows /help — the window did not move"

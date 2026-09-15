@@ -46,6 +46,7 @@ fn selecting_a_model_carries_its_reasoning_support() {
             reasoning: Some(trio_support()),
             vision: None,
             context: None,
+            tiers: None,
         }
     );
 }
@@ -370,6 +371,7 @@ fn enter_selects_the_highlighted_model_and_closes() {
             reasoning: None,
             vision: None,
             context: None,
+            tiers: None,
         }
     );
     assert!(app.model_picker.is_none(), "selecting closes the picker");

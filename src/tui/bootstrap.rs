@@ -573,6 +573,11 @@ impl<'t> Session<'t> {
         // the Ctrl+T cycle starts where it left off (docs/reasoning.md).
         let thinking = self.models.take_thinking_seed();
         self.app.set_thinking(thinking);
+        // The service tiers `config.json` recorded for this exact selection,
+        // so `/fast` and the footer marker are live from the first frame
+        // rather than waiting on the capability probe (docs/fast-mode.md).
+        let tiers = self.models.take_service_tier_seed();
+        self.app.set_service_tier(tiers);
         // The footer's right-edge permission segment (docs/permissions.md):
         // seeded from the gate (which just loaded this project's saved mode), or
         // hidden entirely when permissions are disabled — nothing asks, so a mode

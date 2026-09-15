@@ -830,6 +830,8 @@ pub fn entry_of(
         reasoning,
         vision: has("vision"),
         context: context_window(record, server_default, uncapped),
+        // Ollama serves one lane: a local server has no priority queue.
+        tiers: None,
     })
 }
 

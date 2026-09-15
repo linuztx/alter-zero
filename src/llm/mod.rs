@@ -37,6 +37,7 @@ pub mod openai;
 pub mod reasoning;
 pub mod responses;
 pub mod retry;
+pub mod service_tier;
 pub mod settings;
 pub mod skill;
 pub mod subagent;
@@ -52,7 +53,8 @@ pub use config::{AuthScheme, ModelConfig, ProvidersFile, Selection, WireApi};
 pub use keystore::EnvFile;
 pub use models::ModelEntry;
 pub use reasoning::{ReasoningEffort, ReasoningSupport, ThinkingMode};
-pub use settings::{ModelSelection, Settings, ThinkingSettings};
+pub use service_tier::{ServiceTier, ServiceTierSupport};
+pub use settings::{ModelSelection, ServiceTierSettings, Settings, ThinkingSettings};
 
 /// One message in a chat-completion request.
 ///

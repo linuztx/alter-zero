@@ -42,6 +42,7 @@ fn config(model: &str, thinking: Option<ThinkingMode>, context: Option<u64>) -> 
             api_key: std::env::var("OLLAMA_API_KEY").ok(),
             temperature: Some(0.0),
             thinking,
+            service_tier: None,
             vision: None,
             context,
             api_base: std::env::var("OLLAMA_HOST").ok(),
