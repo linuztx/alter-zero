@@ -76,7 +76,11 @@ cycle seeds where it left off, the footer and the context gauge follow —
 and `config.json` is **not** touched. A resume chooses nothing; the
 directory's entry stays what the last `/model` pick there made it.
 
-Three cases stop it:
+A record naming exactly what the session already runs — the common
+`--continue` in a directory whose entry the conversation ran on — restores
+nothing: no rebuild, and no second probe for facts a queued one will learn.
+The whole selection is compared, not the pair, so a record carrying another
+Ctrl+T mode still restores. Three cases stop it:
 
 - **An environment pin.** `ALTER_ZERO_MODEL` pins the model for the run
   whatever the record says, and `ALTER_ZERO_PROVIDER` pins the provider — a
@@ -143,9 +147,12 @@ Instance A on `x`, instance B on `y`, same cwd:
   directory, the first on the directory's entry and the second on an
   `ALTER_ZERO_MODEL` pin, each recording its own `model` line; the
   directory's entry then moved as a `/model` pick elsewhere would move it;
-  `--resume {path}` comes back on the first session's model and leaves
-  `config.json` untouched, `--continue` on the second's, a fresh launch on
-  the directory's entry, the `/resume` picker inside that fresh session on
-  the first's, an env pin over `--resume` on the pinned model, and a record
-  naming a provider this machine cannot reach on the fresh launch's model
-  under the `Can't resume on …` toast.
+  `--resume {path}` of a conversation on the entry's own model appends no
+  redundant line; the entry then moved, `--resume {path}` comes back on the
+  first session's model and leaves `config.json` untouched, `--continue` on
+  the second's, a fresh launch on the directory's entry, the `/resume`
+  picker inside that fresh session on the first's, an env pin over
+  `--resume` on the pinned model, a record naming a provider this machine
+  cannot reach on the fresh launch's model under the `Can't resume on …`
+  toast, and a rollout with no record (a pre-feature file) on the
+  directory's entry, which it then records.

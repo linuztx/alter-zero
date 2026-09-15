@@ -11,13 +11,17 @@ smoke_begin
 # runs the directory's entry and records it; (b) the second, pinned to
 # another model by ALTER_ZERO_MODEL, records its own — and the pin never
 # reaches config.json. (c) The entry then moves, as a /model pick in a third
-# instance would move it. (d) `--resume {path}` comes back on the first
+# instance would move it — but first, (b2) `--resume {path}` of the first
+# conversation while the entry still IS its model restores nothing and
+# appends no redundant line. (d) `--resume {path}` comes back on the first
 # session's model, not the entry's, and writes nothing to config.json;
 # (e) `--continue` — the newest conversation here — on the second's;
 # (f) a fresh launch on the moved entry, and the /resume picker inside it
 # on the first's; (g) an env pin over `--resume` keeps the pinned model;
 # (h) a record naming a provider this machine cannot reach keeps the launch's
-# model under the red `Can't resume on …` toast.
+# model under the red `Can't resume on …` toast; (i) a rollout with no
+# record at all — a file from before sessions kept their model — resumes on
+# the directory's entry, silently, and then records it.
 S117="${S}_sessmodel"
 SM_CFG="$(mktemp -d "$SMOKE_TMP/sessmodel-cfg.XXXXXX")"
 SM_DIR="$(work_dir sessmodel)"
@@ -87,6 +91,18 @@ sm_model_lines "$SM_F2"
 expect_has "$(sm_model_lines "$SM_F2")" -F '"model":"model-b"' "instance 2's rollout does not record its own model"
 expect_has "$(sm_model_lines "$SM_F1")" -F '"model":"model-a"' "instance 2 rewrote instance 1's record"
 expect_lacks "$(cat "$SM_CFG/config.json")" -F "model-b" "an environment pin reached config.json (env wins for the run, never sticks)"
+
+# (b2) Resuming the first conversation while the entry still IS its model:
+# already running exactly the record, so nothing is rebuilt and no line is
+# appended.
+launch -c "$SM_DIR" "$S117" 100 30 "$APP_SM --resume $SM_F1"
+sm_b2="$(wait_pane 5 "$S117" -F "model-a")"
+note "--resume of instance 1's conversation on the entry's own model"
+printf '%s\n' "$sm_b2"
+expect_has "$sm_b2" -F "model-a" "--resume onto the model already running did not keep it"
+expect_has "$sm_b2" -F "! echo first" "--resume did not repaint the first conversation"
+sm_quit "$S117"
+expect_eq "$(sm_model_lines "$SM_F1" | wc -l | tr -d ' ')" "1" "a resume onto the model already running appended a redundant model line"
 
 # (c) The directory's entry moves on — as a /model pick in another instance
 # would move it — to a model neither conversation ever ran.
@@ -165,3 +181,22 @@ expect_has "$sm_h" -F "model-c" "the session did not stay on the launch's own mo
 sm_quit "$S117"
 expect_has "$(sm_model_lines "$SM_F3")" -F '"model":"ghost"' "an unusable record was overwritten with the fallback model (a forced fallback is not a choice)"
 expect_eq "$(sm_model_lines "$SM_F3" | wc -l | tr -d ' ')" "1" "an unusable record gained a model line"
+
+# (i) A rollout with no record — a file from before sessions kept their
+# model: the session stays on the directory's entry, says nothing, and the
+# file then records what it came back on so the NEXT resume has an answer.
+SM_F4="$SM_CFG/stripped.jsonl"
+grep -vF '"type":"model"' "$SM_F1" >"$SM_F4"
+expect_eq "$(sm_model_lines "$SM_F4" | wc -l | tr -d ' ')" "0" "the stripped rollout still carries a model line (the phase would test nothing)"
+launch -c "$SM_DIR" "$S117" 100 30 "$APP_SM --resume $SM_F4"
+sm_i="$(wait_pane 5 "$S117" -F "model-c")"
+note "--resume of a rollout recorded before sessions kept their model"
+printf '%s\n' "$sm_i"
+expect_has "$sm_i" -F "model-c" "a rollout with no record did not resume on the directory's entry"
+expect_has "$sm_i" -F "! echo first" "the stripped rollout's conversation was not loaded"
+expect_lacks "$sm_i" -F "Can't resume" "a rollout with no record raised a restore failure (there was nothing to restore)"
+sm_quit "$S117"
+note "the stripped rollout's model lines after the resume"
+sm_model_lines "$SM_F4"
+expect_eq "$(sm_model_lines "$SM_F4" | wc -l | tr -d ' ')" "1" "a rollout with no record did not record the model it came back on"
+expect_has "$(sm_model_lines "$SM_F4")" -F '"model":"model-c"' "the stripped rollout recorded a model other than the one the session ran"

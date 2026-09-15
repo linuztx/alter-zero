@@ -917,6 +917,14 @@ impl ModelSession {
         ) {
             return Restore::Pinned;
         }
+        // Already on exactly this — the common `--continue` in a directory
+        // whose entry the conversation ran on: nothing to rebuild, and a
+        // probe still queued for it stays queued rather than being replaced
+        // by an identical one. The whole selection is compared, not the
+        // pair: a record carrying another Ctrl+T mode still restores.
+        if self.session_selection.as_ref() == Some(recorded) {
+            return Restore::AlreadyActive;
+        }
         // Outer None = support unknown (probe); Some(None) = a known
         // non-reasoner; Some(Some(state)) = seed the Ctrl+T cycle.
         let thinking: Option<Option<Thinking>> = recorded
@@ -1218,6 +1226,9 @@ pub(crate) enum Restore {
     /// = the model has no thinking, or its support is still unknown and a
     /// probe is queued).
     Restored(Option<Thinking>),
+    /// The session was already running exactly the record — nothing was
+    /// rebuilt, and nothing needs syncing.
+    AlreadyActive,
     /// An environment pin outranks the record — the session keeps the
     /// pinned model, silently: the pin is the user's own doing.
     Pinned,
@@ -1617,6 +1628,10 @@ impl Session<'_> {
                     failure: None,
                 }
             }
+            Restore::AlreadyActive => ModelRestore {
+                honoured: true,
+                failure: None,
+            },
             Restore::Pinned => ModelRestore {
                 honoured: false,
                 failure: None,
