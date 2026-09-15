@@ -7,8 +7,15 @@
 // `Request` and a stub `env`.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 
 import worker from '../src/worker.js';
+
+// A real SQLite, when this Node has one (`node:sqlite`, unflagged since
+// 22.13), so the statement the worker issues can be proved against the real
+// `schema.sql` rather than only pattern-matched: an `ON CONFLICT` target that
+// names no unique index is a runtime error no regex would catch.
+const sqlite = await import('node:sqlite').then((m) => m, () => null);
 
 // Existing route tests use an available limiter; denial/failure cases live in
 // ping-protection.test.js and invoke the same Worker with explicit bindings.
@@ -89,8 +96,17 @@ test('a good ping is stored once, keyed on the day and id, with the edge country
   assert.equal(response.status, 204);
   assert.equal(db.calls.length, 1);
   const { sql, args } = db.calls[0];
-  // INSERT OR IGNORE is what makes a second ping that day a no-op.
-  assert.match(sql, /INSERT OR IGNORE INTO pings/);
+  // One row per install per day is the primary key's job; a second ping that
+  // day must UPDATE the row it collides with, never be dropped — the day an
+  // install runs `alter-zero update` it pings once more, carrying the new
+  // version, and `INSERT OR IGNORE` threw exactly that ping away, leaving
+  // the day's row (and the dashboard's Versions panel) on the old one.
+  assert.match(sql, /^INSERT INTO pings/);
+  assert.doesNotMatch(sql, /OR IGNORE/);
+  assert.match(sql, /ON CONFLICT\s*\(day, id\) DO UPDATE SET/);
+  for (const column of ['country', 'version', 'os', 'arch', 'distro', 'os_version']) {
+    assert.match(sql, new RegExp(`\\b${column} = excluded\\.${column}\\b`), `${column} is refreshed`);
+  }
   // The binding ORDER is the thing worth pinning: a swap here would file
   // every install under the wrong column and no test of the pure half
   // would notice.
@@ -104,6 +120,53 @@ test('a good ping is stored once, keyed on the day and id, with the edge country
   assert.equal(distro, 'ubuntu');
   assert.equal(osVersion, '24.04');
 });
+
+test(
+  "the day's second ping — an update — moves the row to the new version, in a real SQLite",
+  { skip: sqlite === null && 'node:sqlite is not available on this Node' },
+  async () => {
+    // The statement the worker ISSUES, replayed against the table
+    // `schema.sql` CREATES: 0.1.0 pings, the install updates, 0.1.1 pings the
+    // same day. One row, and it says 0.1.1 — the version the install is on.
+    const real = new sqlite.DatabaseSync(':memory:');
+    real.exec(readFileSync(new URL('../schema.sql', import.meta.url), 'utf8'));
+    for (const version of ['0.1.0', '0.1.1']) {
+      const db = fakeDb();
+      const response = await worker.fetch(pingRequest({ ...PING, version }), { ...rateLimitEnv, DB: db });
+      assert.equal(response.status, 204);
+      const { sql, args } = db.calls[0];
+      real.prepare(sql).run(...args);
+    }
+    // `node:sqlite` hands back null-prototype rows; spread them so a strict
+    // deep-equal compares the fields and not the prototype.
+    const rows = real
+      .prepare('SELECT day, id, country, version, os, arch, distro, os_version FROM pings')
+      .all()
+      .map((row) => ({ ...row }));
+    assert.equal(rows.length, 1, 'one row per install per day, whatever the client does');
+    assert.equal(rows[0].id, ID);
+    assert.equal(rows[0].version, '0.1.1', 'the row follows the install onto its new version');
+    assert.equal(rows[0].country, 'PH');
+    assert.equal(rows[0].distro, 'ubuntu');
+    assert.equal(rows[0].os_version, '24.04');
+    // And the same table the migration builds up from a v1-era one, so a
+    // deployment that predates payload v2 takes the statement too.
+    const migrated = new sqlite.DatabaseSync(':memory:');
+    migrated.exec(
+      'CREATE TABLE pings (day TEXT NOT NULL, id TEXT NOT NULL, country TEXT NOT NULL, version TEXT NOT NULL, os TEXT NOT NULL, arch TEXT NOT NULL, PRIMARY KEY (day, id))',
+    );
+    migrated.exec(readFileSync(new URL('../migrations/0001_platform.sql', import.meta.url), 'utf8'));
+    for (const version of ['0.1.0', '0.1.1']) {
+      const db = fakeDb();
+      await worker.fetch(pingRequest({ ...PING, version }), { ...rateLimitEnv, DB: db });
+      migrated.prepare(db.calls[0].sql).run(...db.calls[0].args);
+    }
+    assert.deepEqual(
+      migrated.prepare('SELECT version, COUNT(*) AS n FROM pings').all().map((row) => ({ ...row })),
+      [{ version: '0.1.1', n: 1 }],
+    );
+  },
+);
 
 test('a client with no distribution files a blank one, never a placeholder', async () => {
   const db = fakeDb();

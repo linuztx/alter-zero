@@ -114,7 +114,8 @@ curl -s -H "Authorization: Bearer $TOKEN" https://alter-zero-telemetry.<subdomai
 
 The app sends
 `{"v":2,"id":"…32 hex…","version":"0.1.0","os":"linux","arch":"x86_64","distro":"ubuntu","os_version":"24.04"}`
-at most once per UTC day per install. `distro` is the Linux distribution's
+once per UTC day per install, and once more on the day the install is
+updated (the version is one of the fields). `distro` is the Linux distribution's
 os-release `ID` — absent entirely on macOS and Windows — and `os_version` is
 that platform's own version: `VERSION_ID` on Linux, `ProductVersion` on
 macOS, absent for a rolling release and on Windows. Both are read from a
@@ -122,8 +123,10 @@ file; nothing is run to find them. A client still on payload `v1` has never
 heard of either and is counted exactly as before. The worker validates every
 field
 (anything else is a `400`, and a body over 1 KiB a `413`), keys the row on
-**its own** UTC date and the id —
-`INSERT OR IGNORE`, so a second ping on one day is a no-op — and adds the
+**its own** UTC date and the id — an upsert, `INSERT … ON CONFLICT(day, id)
+DO UPDATE`, so an install's second ping on one day refreshes that row (the
+ping an update sends moves it onto the new version) rather than adding one
+or being dropped — and adds the
 country Cloudflare's edge saw (`request.cf.country`; `ZZ` when it had none).
 The client's address is not stored or logged. For abuse prevention, the
 collector uses it in memory to derive a daily keyed digest, passed only to

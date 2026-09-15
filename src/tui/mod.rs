@@ -45,7 +45,7 @@
 //! | [`recorder`] | Mirroring history to a rollout file (`docs/resume.md`). |
 //! | [`resume`] | Finding recorded sessions on disk. |
 //! | [`settings`] | Applying a `/settings` knob the menu cycled (`docs/settings.md`). |
-//! | [`telemetry`] | The once-a-day anonymous usage ping: the install id, the notice, the send, the recorded day (`docs/telemetry.md`). |
+//! | [`telemetry`] | The once-a-day anonymous usage ping (once more on the day of an update): the install id, the notice, the send, the recorded day and version (`docs/telemetry.md`). |
 //! | [`update`] | The once-a-day update check: the request, the card under the banner, the recorded day (`docs/update.md`). |
 //! | [`update_cli`] | The `alter-zero update` subcommand: the check, then the one-line installer over this binary (`docs/update.md`). |
 //! | [`history_store`] | The cross-session input history (`docs/history-persistence.md`). |
@@ -226,11 +226,11 @@ pub(crate) struct Session<'t> {
     /// connections outlive turns like background shells.
     mcp_rx: tokio::sync::mpsc::UnboundedReceiver<alter_zero::llm::mcp::McpEvent>,
     /// The telemetry ping worker's report (`docs/telemetry.md`): the UTC day
-    /// it delivered, which the **loop** then records in `telemetry.json` —
-    /// the worker never writes the file, so it can't race the `/settings`
-    /// toggle's write. Silent on failure.
-    telemetry_tx: tokio::sync::mpsc::UnboundedSender<String>,
-    telemetry_rx: tokio::sync::mpsc::UnboundedReceiver<String>,
+    /// it delivered and the version the ping carried, which the **loop**
+    /// then records in `telemetry.json` — the worker never writes the file,
+    /// so it can't race the `/settings` toggle's write. Silent on failure.
+    telemetry_tx: tokio::sync::mpsc::UnboundedSender<alter_zero::telemetry::Delivery>,
+    telemetry_rx: tokio::sync::mpsc::UnboundedReceiver<alter_zero::telemetry::Delivery>,
     /// The UTC day this **session** last spawned a ping for, successful or
     /// not (`docs/telemetry.md`). Two jobs: the turn-start rollover check
     /// compares against it and returns without touching the file on the

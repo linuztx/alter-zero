@@ -100,6 +100,9 @@ fi
 if [ "$(tm_field "$TM_CFG/home/telemetry.json" last_ping_day)" != "$(date -u +%Y-%m-%d)" ]; then
 	tm_fail "last_ping_day was not recorded as today after the stub's 204"
 fi
+if [ "$(tm_field "$TM_CFG/home/telemetry.json" last_ping_version)" != "$TM_VERSION" ]; then
+	tm_fail "last_ping_version was not recorded as $TM_VERSION after the stub's 204"
+fi
 if [ "$(tm_field "$TM_CFG/home/telemetry.json" notice_shown)" != "true" ]; then
 	tm_fail "notice_shown was not recorded"
 fi
@@ -301,6 +304,52 @@ fi
 tm_quit
 kill "$TM_SERVER5" 2>/dev/null
 wait "$TM_SERVER5" 2>/dev/null
+
+# (f) The first launch after an update: the file says today's ping went from
+# ANOTHER version, so the day's ping goes once more — the same id, the crate's
+# version, recorded once the stub answered — and nothing else changes: no
+# notice again, no new install id. Keyed on the day alone this launch stayed
+# silent until midnight UTC, and the dashboard kept the install on the old
+# version for the day it had updated (docs/telemetry.md *When it is sent*).
+sed -i -E 's/"last_ping_version": *"[^"]*"/"last_ping_version": "0.0.0"/' "$TM_CFG/home/telemetry.json"
+if [ "$(tm_field "$TM_CFG/home/telemetry.json" last_ping_version)" != "0.0.0" ]; then
+	tm_fail "could not stage the pre-update file: last_ping_version did not take"
+fi
+tmux new-session -d -s "$S115" -x 100 -y 30 "$TM_BASE ALTER_ZERO_CONFIG_DIR=$TM_CFG/home $BIN"
+tm_updated=""
+for _ in $(seq 1 60); do # up to ~6s: a real (loopback) request again
+	tm_updated="$(tmux capture-pane -t "$S115" -p -S -40)"
+	if [ "$(tm_field "$TM_CFG/home/telemetry.json" last_ping_version)" = "$TM_VERSION" ]; then
+		break
+	fi
+	sleep 0.1
+done
+echo "==== Phase 115: the first launch after an update (one more ping, the new version) ===="
+printf '%s\n' "$tm_updated"
+echo "==== Phase 115: telemetry.json + the stub's log after the update ===="
+cat "$TM_CFG/home/telemetry.json" 2>/dev/null
+cat "$TM_LOG" 2>/dev/null
+if [ "$(tm_field "$TM_CFG/home/telemetry.json" last_ping_version)" != "$TM_VERSION" ]; then
+	tm_fail "the launch after an update did not record last_ping_version = $TM_VERSION"
+fi
+if [ "$(tm_field "$TM_CFG/home/telemetry.json" last_ping_day)" != "$(date -u +%Y-%m-%d)" ]; then
+	tm_fail "the update-day ping lost the recorded day"
+fi
+if [ "$(tm_field "$TM_CFG/home/telemetry.json" install_id)" != "$tm_id" ]; then
+	tm_fail "an update minted a new install id — it must stay the same install"
+fi
+if [ "$(tm_pings)" != "2" ]; then
+	tm_fail "expected exactly one more ping after an update, got $(tm_pings) in the log"
+fi
+tm_line2="$(sed -n 2p "$TM_LOG" 2>/dev/null)"
+case "$tm_line2" in
+"/v1/ping alter-zero/$TM_VERSION "*"\"id\":\"$tm_id\""*"\"version\":\"$TM_VERSION\""*) ;;
+*) tm_fail "the update-day ping did not carry the same id and the crate's version: '$tm_line2'" ;;
+esac
+if printf '%s' "$tm_updated" | grep -qF "$TM_NOTICE"; then
+	tm_fail "the launch after an update repeated the one-time notice"
+fi
+tm_quit
 
 kill "$TM_SERVER" 2>/dev/null
 wait "$TM_SERVER" 2>/dev/null

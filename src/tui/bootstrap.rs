@@ -262,7 +262,8 @@ impl<'t> Session<'t> {
         // The telemetry ping's report channel (docs/telemetry.md) — its own
         // `select!` source, because the worker outlives nothing but must
         // never write the file itself.
-        let (telemetry_tx, telemetry_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+        let (telemetry_tx, telemetry_rx) =
+            tokio::sync::mpsc::unbounded_channel::<alter_zero::telemetry::Delivery>();
         // The update check's report channel (docs/update.md), the same shape.
         let (update_tx, update_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
         let (mcp_tx, mcp_rx) = tokio::sync::mpsc::unbounded_channel();

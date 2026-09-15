@@ -1680,8 +1680,14 @@ and never a prompt, a path, a model name or a key), the
 the address, sent *after* the first frame — and again at any **turn start** that
 opens a new UTC day, so a session left open across midnight still counts,
 bounded to one attempt per day per session so a refusing collector is never
-retried per turn — on a detached worker whose only
-report is the delivered day, which the **loop** records (the worker never
+retried per turn, **and once more on the first launch after an update**,
+whatever the day, since the version is one of the fields (`last_ping_version`
+recorded beside `last_ping_day`, `telemetry::should_ping` keyed on both; the
+collector's `(day, id)` row is an upsert, so that ping moves the install onto
+its new version instead of being dropped with a `204` — the "updated but the
+dashboard still says 0.1.0" bug had both halves) — on a detached worker whose
+only report is the delivered day and version (`telemetry::Delivery`), which
+the **loop** records (the worker never
 writes the file) in `telemetry.json` — its own per-**user** file beside the
 install id, the one row not in `settings.json`, since an opt-out that applied
 to one directory would be a surprise — disclosed once under the banner through

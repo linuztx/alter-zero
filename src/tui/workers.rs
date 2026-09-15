@@ -225,8 +225,9 @@ fn spawn_device_login(cancel: CancelToken, tx: tokio::sync::mpsc::UnboundedSende
 }
 
 /// Deliver the day's telemetry ping on a detached thread (`docs/telemetry.md`),
-/// sending `day` back on success so the loop — never this thread — records
-/// it in `telemetry.json`. A failure sends nothing: there is nothing the user
+/// sending `day` and the version the ping carried back on success
+/// (`telemetry::Delivery`) so the loop — never this thread — records them in
+/// `telemetry.json`. A failure sends nothing: there is nothing the user
 /// could act on, and the next launch that day simply tries again. The send
 /// itself is `telemetry::send_ping`, over the shared cached HTTP client; the
 /// receiver closing first (a quick quit) just drops the result. It only
@@ -235,11 +236,14 @@ pub(crate) fn spawn_telemetry_ping(
     endpoint: String,
     ping: alter_zero::telemetry::Ping,
     day: String,
-    tx: tokio::sync::mpsc::UnboundedSender<String>,
+    tx: tokio::sync::mpsc::UnboundedSender<alter_zero::telemetry::Delivery>,
 ) {
     std::thread::spawn(move || {
         if alter_zero::telemetry::send_ping(&endpoint, &ping).is_ok() {
-            let _ = tx.send(day);
+            let _ = tx.send(alter_zero::telemetry::Delivery {
+                day,
+                version: ping.version,
+            });
         }
     });
 }

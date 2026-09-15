@@ -5,7 +5,9 @@
 //! This module is the pure half: the `telemetry.json` format
 //! ([`TelemetryFile`]), the install id it keeps, the wire payload ([`Ping`] —
 //! the *whole* body, pinned field by field by a test), the once-a-day decision
-//! ([`should_ping`]) and the environment predicate ([`enabled_by_env`]). No
+//! ([`should_ping`] — once a day, and once more on the day the app is
+//! updated, since the version is one of the fields), the worker's report
+//! ([`Delivery`]) and the environment predicate ([`enabled_by_env`]). No
 //! clock, no entropy, no filesystem, no network: the boundary
 //! (`tui::telemetry`) reads the UTC date, draws the random bytes, does the
 //! read-modify-write over the file, and spawns the send — the one impure
@@ -74,7 +76,8 @@ pub const MACOS_VERSION_PLIST: &str = "/System/Library/CoreServices/SystemVersio
 pub const OS_VERSION_MAX_LEN: usize = 16;
 
 /// What `telemetry.json` holds: the switch, the install id, the last day a
-/// ping was delivered, and whether the one-time notice has been shown.
+/// ping was delivered and the version it carried, and whether the one-time
+/// notice has been shown.
 ///
 /// Every field is written on every save — this is a status file the user may
 /// open, and `"enabled": true` on the page says more than its absence would —
@@ -96,6 +99,13 @@ pub struct TelemetryFile {
     /// recorded only on a `2xx`, so an offline launch is retried by the next
     /// launch that day rather than lost.
     pub last_ping_day: Option<String>,
+    /// The app version that ping carried. The day's ping says which version
+    /// the install is on and `alter-zero update` changes the answer mid-day,
+    /// so the throttle is keyed on both ([`should_ping`]): the first launch
+    /// after an update pings once more, whatever the day. `None` in a file
+    /// written by a build that recorded only the day — an update by
+    /// definition, so that launch pings too.
+    pub last_ping_version: Option<String>,
     /// Whether the one-time disclosure has been committed under the banner.
     pub notice_shown: bool,
 }
@@ -106,6 +116,7 @@ impl Default for TelemetryFile {
             enabled: true,
             install_id: None,
             last_ping_day: None,
+            last_ping_version: None,
             notice_shown: false,
         }
     }
@@ -144,10 +155,23 @@ impl TelemetryFile {
         self.install_id.as_deref().unwrap_or_default()
     }
 
-    /// Note that the collector accepted today's ping.
-    pub fn record_ping(&mut self, day: &str) {
+    /// Note that the collector accepted today's ping, sent from `version`.
+    pub fn record_ping(&mut self, day: &str, version: &str) {
         self.last_ping_day = Some(day.to_string());
+        self.last_ping_version = Some(version.to_string());
     }
+}
+
+/// What the worker reports back once the collector answered `2xx`: the day
+/// the ping was delivered on and the version it carried — exactly what
+/// [`TelemetryFile::record_ping`] keeps, so the loop records what was
+/// actually sent rather than re-deriving it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Delivery {
+    /// The boundary's UTC date at the spawn (`YYYY-MM-DD`).
+    pub day: String,
+    /// The [`Ping::version`] that went.
+    pub version: String,
 }
 
 /// Exactly 32 lowercase hex characters — the shape the collector validates
@@ -345,12 +369,24 @@ impl Ping {
 }
 
 /// Whether a ping is due: none has been delivered on `today` (the boundary's
-/// UTC date, `YYYY-MM-DD`). The collector dedups on `(day, id)` as well, so
-/// a second ping on one day — two machines on one config home, a clock jump
-/// — still counts once.
+/// UTC date, `YYYY-MM-DD`) **from this `version`**.
+///
+/// One a day is the rule, and the day the app is updated is its one
+/// exception: the ping names the version, `alter-zero update` changes it,
+/// and a throttle keyed on the day alone kept the next launch silent until
+/// midnight UTC — so the dashboard showed an install still on the old
+/// release for the rest of the day it had updated. A version that differs
+/// from the recorded one (a downgrade too — the row should say what the
+/// install is on) makes the ping due again, as does a file that recorded no
+/// version at all, which a build before this field wrote. The collector's
+/// row for `(day, id)` takes the newer ping's values, so the second ping
+/// *moves* the row rather than adding one, and a second ping on one day with
+/// nothing changed — two machines on one config home, a clock jump — still
+/// counts once.
 #[must_use]
-pub fn should_ping(file: &TelemetryFile, today: &str) -> bool {
+pub fn should_ping(file: &TelemetryFile, today: &str, version: &str) -> bool {
     file.last_ping_day.as_deref() != Some(today)
+        || file.last_ping_version.as_deref() != Some(version)
 }
 
 /// What the environment says about telemetry for this run, given the raw
@@ -461,6 +497,7 @@ mod tests {
         assert!(d.enabled, "opt-out: on until turned off");
         assert!(d.install_id.is_none());
         assert!(d.last_ping_day.is_none());
+        assert!(d.last_ping_version.is_none());
         assert!(!d.notice_shown);
     }
 
@@ -470,11 +507,17 @@ mod tests {
         // included, so `enabled: true` is visible rather than implied.
         let mut file = TelemetryFile::default();
         file.install_id_or_mint(BYTES_A);
-        file.record_ping("2026-09-06");
+        file.record_ping("2026-09-06", "0.1.0");
         file.notice_shown = true;
         file.enabled = false;
         let json = file.to_json();
-        for key in ["enabled", "install_id", "last_ping_day", "notice_shown"] {
+        for key in [
+            "enabled",
+            "install_id",
+            "last_ping_day",
+            "last_ping_version",
+            "notice_shown",
+        ] {
             assert!(json.contains(&format!("\"{key}\"")), "{key}: {json}");
         }
         assert_eq!(TelemetryFile::parse(&json), file);
@@ -756,11 +799,47 @@ mod tests {
     #[test]
     fn a_ping_goes_once_per_utc_day() {
         let mut file = TelemetryFile::default();
-        assert!(should_ping(&file, "2026-09-06"), "never pinged");
-        file.record_ping("2026-09-06");
-        assert!(!should_ping(&file, "2026-09-06"), "already today");
-        assert!(should_ping(&file, "2026-09-07"), "a new day");
+        assert!(should_ping(&file, "2026-09-06", "0.1.0"), "never pinged");
+        file.record_ping("2026-09-06", "0.1.0");
+        assert!(!should_ping(&file, "2026-09-06", "0.1.0"), "already today");
+        assert!(should_ping(&file, "2026-09-07", "0.1.0"), "a new day");
         assert_eq!(file.last_ping_day.as_deref(), Some("2026-09-06"));
+        assert_eq!(file.last_ping_version.as_deref(), Some("0.1.0"));
+    }
+
+    #[test]
+    fn the_first_launch_after_an_update_pings_again_that_day() {
+        // The version is one of the ping's seven fields, so the day's ping
+        // says which version the install is on — and `alter-zero update`
+        // changes the answer mid-day. Keying the throttle on the day alone
+        // meant the next launch stayed silent until midnight UTC, and the
+        // dashboard kept the install on the old version for the whole day
+        // (the "updated to 0.1.1 but the site still says 0.1.0" report).
+        let mut file = TelemetryFile::default();
+        file.record_ping("2026-09-15", "0.1.0");
+        assert!(
+            should_ping(&file, "2026-09-15", "0.1.1"),
+            "the same day, a new version: due again"
+        );
+        file.record_ping("2026-09-15", "0.1.1");
+        assert!(
+            !should_ping(&file, "2026-09-15", "0.1.1"),
+            "delivered on this version today: done"
+        );
+        assert!(
+            should_ping(&file, "2026-09-15", "0.1.0"),
+            "a downgrade is a version change too — the row should say so"
+        );
+
+        // A file written by a build that recorded only the day — every
+        // install out there on the day this lands — is an update by
+        // definition, so its first launch on this build pings once more.
+        let old = TelemetryFile::parse(
+            r#"{"enabled": true, "install_id": "6f1c2a4d9e0b7c3a5f8e1d2c4b6a7980", "last_ping_day": "2026-09-15", "notice_shown": true}"#,
+        );
+        assert_eq!(old.last_ping_day.as_deref(), Some("2026-09-15"));
+        assert!(old.last_ping_version.is_none());
+        assert!(should_ping(&old, "2026-09-15", "0.1.2"));
     }
 
     #[test]

@@ -26,8 +26,9 @@ describe the same feature to two different readers.
 
 ## What is sent
 
-One `POST` to the collector, body `application/json`, at most once per UTC
-day per install:
+One `POST` to the collector, body `application/json`, once per UTC day per
+install — and once more on the day the install is updated, since the version
+is one of the fields (*When it is sent*):
 
 ```json
 {"v":2,"id":"6f1c2a4d9e0b7c3a5f8e1d2c4b6a7980","version":"0.1.0","os":"linux","arch":"x86_64","distro":"ubuntu","os_version":"24.04"}
@@ -132,15 +133,37 @@ connection pool and no second runtime thread to a process that idles in a
 terminal all day (`docs/memory.md`).
 
 The client throttles itself to **one ping per UTC day**: `telemetry.json`
-records `last_ping_day`, and `telemetry::should_ping` compares it with the
-boundary's UTC date. The day is recorded **only when the collector answered
-`2xx`** — the worker reports back over its own channel
-(`Session::on_telemetry_result`, the eleventh `select!` source) and the
-*loop* does the read-modify-write, so a launch while offline is simply
+records `last_ping_day` and `last_ping_version`, and `telemetry::should_ping`
+compares them with the boundary's UTC date and `CARGO_PKG_VERSION`. Both are
+recorded **only when the collector answered `2xx`** — the worker reports back
+over its own channel (`telemetry::Delivery`: the day and the version the ping
+carried; `Session::on_telemetry_result`, the eleventh `select!` source) and
+the *loop* does the read-modify-write, so a launch while offline is simply
 retried by the next launch that day rather than lost, and the file is never
-written from two threads. The collector dedups on `(day, id)` too, so even a
-client that pinged twice (a clock jump, two machines sharing one config home)
-counts once.
+written from two threads. The collector keys its row on `(day, id)` too, so
+even a client that pinged twice (a clock jump, two machines sharing one
+config home) counts once.
+
+**The day the app is updated pings twice**, and that is the rule's one
+exception. The ping names the version, and `alter-zero update` changes the
+answer mid-day: keyed on the day alone, the throttle kept the next launch
+silent until midnight UTC, so the dashboard's Versions panel showed an
+install still on the old release for the rest of the day it had updated —
+the reported *updated to 0.1.1, but the site still says 0.1.0*. So the
+version is recorded beside the day, and a launch on a different version (a
+downgrade too — the row should say what the install is on) sends the day's
+ping again. The collector's half of the same fix is that its `(day, id)` row
+is an **upsert**, not an `INSERT OR IGNORE`: the second ping *moves* the row
+onto the new version rather than being dropped — which it was, silently,
+with a `204`: a re-ping forced by editing the file's day back by hand was
+accepted, the client recorded the day, and the table kept the old row, which
+is exactly why the file updated and the site did not. A file written by a
+build that recorded only the day reads `last_ping_version: None`, which is
+an update by definition, so the first launch on this build pings once more
+too. What does *not* move is the count of installs: the id lives in
+`telemetry.json`, which an update leaves alone, so an update is never a new
+install — one person counted twice would be the bug the id exists to
+prevent.
 
 It is also checked at **every turn start**, not only at launch: this app idles
 in a terminal all day, so a session left open across midnight would otherwise
@@ -244,6 +267,7 @@ it):
   "enabled": true,
   "install_id": "6f1c2a4d9e0b7c3a5f8e1d2c4b6a7980",
   "last_ping_day": "2026-09-06",
+  "last_ping_version": "0.1.0",
   "notice_shown": true
 }
 ```
@@ -251,7 +275,9 @@ it):
 `telemetry::TelemetryFile` is the pure format. `parse` is lenient — a
 corrupt or empty file reads as the defaults (on, no id, never pinged, notice
 not yet shown), so a bad file costs at most a new id and a repeated notice,
-never the session. `install_id_or_mint` keeps a valid id (32 lowercase hex)
+never the session; a file from a build that never wrote `last_ping_version`
+reads as pinged from no version, which is what makes that build's first
+launch ping again (*When it is sent*). `install_id_or_mint` keeps a valid id (32 lowercase hex)
 and replaces anything else with the random bytes the boundary hands it
 (`getrandom`, the PKCE verifier's source), so the module never touches the
 entropy source itself and a test can mint a known id. Every write is a
@@ -276,7 +302,7 @@ runner.
 
 | route | who | does |
 |---|---|---|
-| `POST /v1/ping` | the app | checks the network rate limit before reading the body or using D1; validates the payload (`v` ∈ {1, 2}, `id` 32 hex, `version` ≤ 32 chars of `[0-9A-Za-z.+-]`, `os`/`arch` ≤ 16 of `[a-z0-9_]`, an optional `distro` ≤ 32 of `[a-z0-9._-]` and an optional `os_version` ≤ 16 of the same opening on a letter or digit, body ≤ 1 KiB of UTF-8, enforced while streaming); then `INSERT OR IGNORE` one row keyed on **the server's** UTC date and the id with the edge's country. Answers `204`; a bad or unreadable body `400`; a big one `413`; anything but `POST` `405`; rate limiting `429`; unavailable protection `503`. Every refusal is a JSON `{"error": …}` |
+| `POST /v1/ping` | the app | checks the network rate limit before reading the body or using D1; validates the payload (`v` ∈ {1, 2}, `id` 32 hex, `version` ≤ 32 chars of `[0-9A-Za-z.+-]`, `os`/`arch` ≤ 16 of `[a-z0-9_]`, an optional `distro` ≤ 32 of `[a-z0-9._-]` and an optional `os_version` ≤ 16 of the same opening on a letter or digit, body ≤ 1 KiB of UTF-8, enforced while streaming); then upserts one row keyed on **the server's** UTC date and the id with the edge's country — an install's second ping that day refreshes the row's version, platform and country (`INSERT … ON CONFLICT(day, id) DO UPDATE`) rather than adding a row or being dropped, which is what lets the ping an update sends move the install onto its new version. Answers `204`; a bad or unreadable body `400`; a big one `413`; anything but `POST` `405`; rate limiting `429`; unavailable protection `503`. Every refusal is a JSON `{"error": …}` |
 | `GET /v1/stats?days=30` | you | JSON: today's users, 7- and 30-day distinct users, total installs seen, per-day users and new installs, users per country, per app version, per OS, per platform (`ubuntu` + `24.04`) over the window (`days` clamped to 1–365). Its refusals are JSON too — this is the route a script reads |
 | `GET /` | you | the same numbers as a page (below) |
 | `GET /healthz` | uptime checks | `ok` |
@@ -405,7 +431,11 @@ files under plain `linux`. An existing deployment gains both columns with
 `migrations/0001_platform.sql` (`npm run db:migrate`); a database created from
 the current `schema.sql` already has them.
 
-One row per install per day, whatever the client does. A daily cron
+One row per install per day, whatever the client does — and the row holds
+the newest thing the install said that day: the worker's `ON CONFLICT(day,
+id) DO UPDATE` refreshes every describing column from the incoming ping, so
+the one an update sends moves the install onto its new version instead of
+being ignored, and the same day's count of users never changes. A daily cron
 (`scheduled`) deletes rows older than `RETENTION_DAYS` (400 by default) so
 the table stays a rolling window rather than a permanent record of every
 install's every day; "new installs" is derived from the rows that remain, so
@@ -506,9 +536,11 @@ this file.
 
 - **Pure** (`src/telemetry.rs`): the file round-trip and its leniency, the id
   mint (a valid id is kept, an invalid one replaced, the hex shape), the
-  payload's exact fields, the once-a-day decision, and the environment
-  predicate (`DO_NOT_TRACK` outranking `ALTER_ZERO_TELEMETRY`, an unset pair
-  deferring to the file).
+  payload's exact fields, the once-a-day decision and its update-day
+  exception (a new version the same day is due, a downgrade too, and so is a
+  file that recorded no version), and the environment predicate
+  (`DO_NOT_TRACK` outranking `ALTER_ZERO_TELEMETRY`, an unset pair deferring
+  to the file).
 - **Settings** (`src/settings/tests.rs`, `src/app/tests/settings.rs`,
   `src/ui/tests/settings_view.rs`): the row exists, cycles, is never
   serialized into `settings.json`, never moves through `copy_value`, and
@@ -520,8 +552,14 @@ this file.
   body is capped by, the token-carrying links, and that the dashboard escapes
   and coerces what it prints — including that an empty window draws no bar.
 - **Collector routes** (`telemetry/test/worker.test.js`): the fetch handler
-  over a fake D1 — the `INSERT OR IGNORE` binding *in order*, the edge's
-  country reaching the row (and `ZZ` when it has none), a malformed body as a
+  over a fake D1 — the upsert's shape (`ON CONFLICT(day, id) DO UPDATE`,
+  every describing column refreshed from `excluded`) and its binding *in
+  order*; wherever the Node has `node:sqlite` (22.13 and later; skipped with
+  a reason elsewhere), the statement the worker actually issues replayed
+  against the real `schema.sql` — and against a v1-era table brought up by
+  the migration — proving that the day's second ping moves the row's version
+  and adds no row; the edge's country reaching the row (and `ZZ` when it has
+  none), a malformed body as a
   400 that writes nothing, the size and method refusals, the stats and
   dashboard shapes, the token gating both read routes but never the ping (and
   reaching the page's own links without ever printing a token the reader did
@@ -535,9 +573,12 @@ this file.
   deployed edge; a local test double cannot prove those properties.
 - **Boundary** (`scripts/smoke.sh` Phase 115): a local Python stub stands in
   for the collector; a fresh config home's first launch shows the notice,
-  posts exactly the five-field body once, and records the day; the relaunch
-  shows no notice and posts nothing; `/settings` turns it off with a toast and
-  the file says so; under `DO_NOT_TRACK=1` the row is unavailable, Space
+  posts exactly the seven-field body once, and records the day and the
+  version; the relaunch shows no notice and posts nothing; `/settings` turns
+  it off with a toast and the file says so; the first launch after an update
+  (the file's recorded version edited to another) posts exactly one more
+  ping, carrying the same id and the crate's version, records it, and repeats
+  no notice; under `DO_NOT_TRACK=1` the row is unavailable, Space
   refuses, and no file or ping appears; and against a collector that answers
   `500`, one attempt is made at boot and **still one** after a turn — the
   rollover check must not retry per turn. Every other phase runs with
