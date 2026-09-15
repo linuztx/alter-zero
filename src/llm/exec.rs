@@ -152,7 +152,7 @@ pub fn background_launch_text(task: &crate::background::LaunchedTask) -> String 
     format!(
         "Command running in the background. Output is streaming to {} — \
          read that file to check progress.\n\
-         You will be re-invoked with the final output when it exits.",
+         You will be notified with the final output when it finishes.",
         task.output_path.display(),
     )
 }
@@ -1279,6 +1279,26 @@ mod tests {
             "the interim path is the model's progress channel: {text}"
         );
         assert!(text.lines().count() <= 2, "short: {text}");
+    }
+
+    #[test]
+    fn background_launch_text_promises_a_completion_notice() {
+        // The second line is the one the model acts on, so it states what
+        // happens to *it*: the final output arrives on its own when the
+        // command finishes. "You will be re-invoked" named the harness's
+        // own mechanism instead — a word a model can do nothing with, and
+        // one that reads as a threat of interruption rather than a promise
+        // of delivery (docs/background.md).
+        let task = crate::background::LaunchedTask {
+            id: "bash_3".to_string(),
+            output_path: std::path::PathBuf::from("/tmp/tasks/bash_3.output"),
+        };
+        let text = background_launch_text(&task);
+        assert!(
+            text.contains("notified with the final output when it finishes"),
+            "got {text}"
+        );
+        assert!(!text.contains("re-invoked"), "got {text}");
     }
 
     #[test]

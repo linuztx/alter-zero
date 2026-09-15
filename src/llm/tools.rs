@@ -533,7 +533,7 @@ fn agent_spec() -> Value {
          see this conversation, so give it a complete, self-contained prompt \
          and say what to return. Several calls in one message run \
          concurrently. Agents run in the background by default — the call \
-         returns at once and you are re-invoked when one finishes; pass \
+         returns at once and you are notified when one finishes; pass \
          run_in_background false to wait for the result.",
         json!({
             "type": "object",
@@ -586,8 +586,11 @@ fn bash_spec() -> Value {
          - Prefer the `read` tool over `cat` to inspect files.\n\
          - Long output is truncated; a non-zero exit status is reported.\n\
          - `timeout` is in milliseconds: default 120000, max 600000.\n\
-         - `run_in_background` runs the command detached: it keeps running \
-         across turns and re-invokes you when it exits.",
+         - `run_in_background` runs the command detached: the call returns \
+         at once, the command keeps running across turns, and you are \
+         notified when it finishes. Use it for a long-running command you \
+         should not sit and wait on — a dev server, a watch build, a full \
+         test suite.",
         json!({
             "type": "object",
             "properties": {
@@ -603,7 +606,7 @@ fn bash_spec() -> Value {
                 "run_in_background": {
                     "type": "boolean",
                     "description": "Set to true to run this command in the \
-                        background."
+                        background. Defaults to false."
                 },
                 "description": {
                     "type": "string",
@@ -1796,16 +1799,41 @@ mod tests {
             desc.contains("`run_in_background` runs the command detached"),
             "got {desc}"
         );
-        assert!(desc.contains("re-invokes you when it exits"), "got {desc}");
+        assert!(
+            desc.contains("you are notified when it finishes"),
+            "got {desc}"
+        );
+        // And one concrete example of what the flag is *for*: a model given
+        // only the mechanism backgrounds a command it needed the output of,
+        // and waits out the one it should have detached (docs/background.md).
+        assert!(desc.contains("dev server"), "got {desc}");
+        // `notification` — the thing the harness renders — stays out; being
+        // *notified* is the model's own contract and is what the bullet
+        // above promises, so only the noun is stale here.
         for stale in [
             "task ID",
             "interim",
             "notification",
-            "notified",
             "The user may also move",
         ] {
             assert!(!desc.contains(stale), "stale detail `{stale}` in: {desc}");
         }
+    }
+
+    #[test]
+    fn agent_description_promises_a_completion_notice() {
+        // The `agent` schema backgrounds by default, so it owes the same
+        // promise `bash` makes, in the same words: the launch returns now
+        // and the result is delivered when the agent finishes.
+        let desc = agent_spec()["function"]["description"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(
+            desc.contains("you are notified when one finishes"),
+            "got {desc}"
+        );
+        assert!(!desc.contains("re-invoked"), "got {desc}");
     }
 
     #[test]
@@ -1830,8 +1858,10 @@ mod tests {
             "the list the user watches",
             "agent ID",
             "watch, stop, or message",
+            // The noun only: a *notification* is something the harness
+            // renders, while being *notified* is what the background
+            // schemas promise the model itself.
             "notification",
-            "notified",
         ];
         for spec in &specs {
             let text = spec["function"].to_string();
@@ -1873,10 +1903,12 @@ mod tests {
 
     #[test]
     fn bash_param_descriptions_are_terse() {
-        // `run_in_background`'s full contract (detach, re-invoke) lives in
-        // the tool description — the property row is one sentence. The
-        // `description` param says what to write, never where the harness
-        // shows it.
+        // `run_in_background`'s full contract (detach, completion notice,
+        // what it is for) lives in the tool description — the property row
+        // is one sentence plus the default, which is worth its clause
+        // because the `agent` tool's own `run_in_background` defaults the
+        // other way. The `description` param says what to write, never
+        // where the harness shows it.
         let specs = tool_specs();
         let props = &specs[0]["function"]["parameters"]["properties"];
         assert!(props["timeout"].is_object(), "the param is `timeout` now");
@@ -1886,7 +1918,7 @@ mod tests {
         );
         assert_eq!(
             props["run_in_background"]["description"],
-            "Set to true to run this command in the background."
+            "Set to true to run this command in the background. Defaults to false."
         );
         let desc = props["description"]["description"].as_str().unwrap();
         for stale in ["UI", "notification"] {

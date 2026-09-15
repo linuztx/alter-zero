@@ -1145,8 +1145,8 @@ const AGENT_WAIT_POLL: std::time::Duration = std::time::Duration::from_millis(30
 pub fn agent_launch_text(description: &str) -> String {
     format!(
         "Async agent \"{description}\" launched and working in the \
-         background. You will be re-invoked with its final response when it \
-         completes. Do not wait or poll for it — continue with the rest of \
+         background. You will be notified with its final response when it \
+         finishes. Do not wait or poll for it — continue with the rest of \
          the task (or end your turn) and briefly tell the user what you \
          launched."
     )
@@ -2241,6 +2241,14 @@ mod tests {
         assert!(!text.contains("agentId"), "no id label: {text}");
         assert!(text.contains("\"Scan the logs\""), "got {text}");
         assert!(text.contains("Do not wait or poll"), "got {text}");
+        // The completion promise reads like `bash`'s: one vocabulary for
+        // the one mechanism, stated as what the model gets rather than as
+        // the harness's own re-invocation (exec::background_launch_text).
+        assert!(
+            text.contains("notified with its final response when it finishes"),
+            "got {text}"
+        );
+        assert!(!text.contains("re-invoked"), "got {text}");
     }
 
     #[test]
