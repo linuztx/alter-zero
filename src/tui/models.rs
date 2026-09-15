@@ -115,6 +115,13 @@ pub(crate) struct ModelSession {
     /// for `active_thinking`'s reason: a rebuild the user didn't ask for must
     /// carry the tier forward.
     active_speed: Option<SpeedState>,
+    /// Whether [`Self::active_speed`] is **known** rather than merely absent —
+    /// learned from the saved blob, a `/model` switch or the probe's answer.
+    /// `persist` writes the speed blob only then
+    /// (`SpeedSettings::recorded`): a persist that ran before the probe
+    /// answered used to write the empty "lists no tier" marker, which the
+    /// next launch read as a reason never to probe again.
+    speed_known: bool,
     /// The backend itself — the dummy unless a real provider/model/key resolved.
     backend: Box<dyn ReplySource>,
     /// Whether [`Self::backend`] is a **real** model rather than the dummy (or
@@ -422,6 +429,7 @@ impl ModelSession {
             active_context: real_backend.then_some(saved_context).flatten(),
             active_thinking: startup_thinking.as_ref().map(|(_, mode)| *mode),
             active_speed: real_backend.then_some(startup_speed).flatten(),
+            speed_known: real_backend && saved_speed.is_some(),
             backend,
             real_backend,
             registry: registry.clone(),
@@ -883,6 +891,7 @@ impl ModelSession {
         self.active_context = context;
         self.active_thinking = mode;
         self.active_speed = speed;
+        self.speed_known = true;
         // The switch knows its support first-hand — a still-in-flight startup
         // probe is stale.
         self.probe_pending = false;
@@ -896,7 +905,7 @@ impl ModelSession {
                 .with_thinking(Some(config::thinking_settings_of(thinking)))
                 .with_vision(vision)
                 .with_context(context)
-                .with_speed(Some(SpeedSettings::from_state(self.active_speed.as_ref()))),
+                .with_speed(SpeedSettings::recorded(true, self.active_speed.as_ref())),
         );
         true
     }
@@ -974,7 +983,13 @@ impl ModelSession {
                     .with_thinking(Some(config::thinking_settings_of(thinking)))
                     .with_vision(self.active_vision)
                     .with_context(self.active_context)
-                    .with_speed(Some(SpeedSettings::from_state(self.active_speed.as_ref()))),
+                    // Nothing at all while the tiers are still unknown — the
+                    // empty blob would stop the next launch's probe
+                    // (`SpeedSettings::recorded`, docs/fast-mode.md).
+                    .with_speed(SpeedSettings::recorded(
+                        self.speed_known,
+                        self.active_speed.as_ref(),
+                    )),
             );
         }
     }
@@ -1036,6 +1051,7 @@ impl ModelSession {
         self.active_context = context;
         self.active_thinking = thinking.as_ref().map(|(_, mode)| *mode);
         self.active_speed = speed;
+        self.speed_known = true;
         self.persist(thinking.as_ref());
         Some(thinking)
     }

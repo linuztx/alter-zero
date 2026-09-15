@@ -278,6 +278,20 @@ impl SpeedSettings {
     pub fn to_state(&self) -> Option<SpeedState> {
         SpeedState::new(self.tiers.clone(), self.tier.clone())
     }
+
+    /// The blob a persist should write — the **three-state** rule the
+    /// boundary's `persist` follows. `known` says whether the tiers were ever
+    /// learned first-hand (the saved blob, a `/model` switch, the probe's
+    /// answer); until they are, the answer is `None`: **write no blob**. The
+    /// empty blob is the "known to list none" marker, and writing it for a
+    /// state that is merely *unknown* — a Ctrl+T persisting before the
+    /// startup probe answers, or a probe that failed — would tell the next
+    /// launch not to probe, leaving `/fast` dead for that model in that
+    /// directory with nothing ever saying why.
+    #[must_use]
+    pub fn recorded(known: bool, state: Option<&SpeedState>) -> Option<Self> {
+        known.then(|| Self::from_state(state))
+    }
 }
 
 impl Settings {
@@ -794,5 +808,31 @@ mod tests {
         assert_eq!(s.project("/a").unwrap().speed, Some(blob.clone()));
         assert_eq!(s.last().unwrap().speed, Some(blob));
         assert_eq!(Settings::parse(&s.to_json()), s);
+    }
+
+    #[test]
+    fn a_speed_state_that_is_not_yet_known_records_no_blob_at_all() {
+        // Three states, and the middle one is the trap: the tiers are
+        // *unknown* until the startup probe answers, and a Ctrl+T (or
+        // anything else) that persists meanwhile must write nothing — the
+        // empty blob is the "known to list none" marker, and writing it for
+        // an unknown would stop the probe from ever running again, leaving
+        // /fast dead for that model in that directory.
+        assert_eq!(SpeedSettings::recorded(false, None), None);
+        assert_eq!(
+            SpeedSettings::recorded(true, None),
+            Some(SpeedSettings::default()),
+            "known to list none: the marker"
+        );
+        let state = SpeedState::new(vec![fast_tier()], Some("priority".to_string())).unwrap();
+        assert_eq!(
+            SpeedSettings::recorded(true, Some(&state)),
+            Some(SpeedSettings::from_state(Some(&state)))
+        );
+        assert_eq!(
+            SpeedSettings::recorded(false, Some(&state)),
+            None,
+            "a state that somehow exists before it is known still waits for the probe"
+        );
     }
 }

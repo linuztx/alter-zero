@@ -194,6 +194,17 @@ Three requests deliberately run at **standard** whatever the session's tier:
   tiers adopted and persisted. A selected tier the record no longer lists
   is dropped and the backend rebound so the next request stops carrying it.
   As everywhere, an env-overridden selection never writes back.
+- **Until the probe answers, the tiers are a third state — unknown — and
+  `persist` treats it as one.** `ModelSession::speed_known` says whether the
+  tiers were ever learned first-hand (the saved blob, a switch, the probe),
+  and `SpeedSettings::recorded(known, state)` writes **no blob at all**
+  while they were not: a Ctrl+T that persists in the seconds before the
+  probe answers, or after a probe that failed, would otherwise write the
+  empty blob — the marker for a model *known* to list none — and the next
+  launch would read it as a reason never to probe again, leaving `/fast`
+  dead for that model in that directory with nothing ever saying why. The
+  review of a parallel implementation demonstrated exactly that sequence
+  against this code, which is why the rule has a pure test of its own.
 
 `/clear` and `/resume` never touch the state (the model did not change); a
 switch to a model listing no tier clears it (`App::set_speed(None)`), which
@@ -219,11 +230,15 @@ The tier parse (a listed catalog, the legacy marker, a nameless or id-less
 entry, a record listing none), the state and its cycle (the toggle, the
 multi-tier walk, the stale-choice fallback), the two payloads and the
 routing hint, the pinned-model and classifier drops, the settings
-round-trip (the blob, the empty marker, a legacy file), the `/fast` grammar
-(the palette row, the cycle, the unsupported toast, mid-turn), and the
-footer rendering are unit-tested in their modules. The boundary wiring —
-probe, persistence, backend rebinds — is exercised by the live test and by
-running the app.
+round-trip (the blob, the empty marker, a legacy file, the three-state
+`recorded` rule), the `/fast` grammar (the palette row, the cycle, the
+unsupported toast, mid-turn), and the footer rendering are unit-tested in
+their modules. The boundary wiring — probe, persistence, backend rebinds —
+is exercised by the live test and by running the app; `smoke.sh` Phase 117
+drives the palette row and the unsupported toast in the real binary, and
+Phase 1 asserts the palette's row cap by counting rows rather than naming
+whichever command sits eighth, so the next command inserted before `/login`
+breaks nothing.
 
 ## Known limitations (v1)
 
