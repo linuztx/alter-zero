@@ -300,6 +300,11 @@ pub fn footer_line(app: &App, width: u16) -> Line<'static> {
             if let Some(thinking) = &app.thinking {
                 model.push(Span::styled(format!(" {}", thinking.mode.label()), dim));
             }
+            // The selected speed tier follows the thinking mode — `fast` —
+            // and standard shows nothing (docs/fast-mode.md).
+            if let Some(tier) = app.speed.as_ref().and_then(|speed| speed.selected()) {
+                model.push(Span::styled(format!(" {}", tier.label()), dim));
+            }
             model
         }
     };

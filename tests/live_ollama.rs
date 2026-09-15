@@ -46,6 +46,7 @@ fn config(model: &str, thinking: Option<ThinkingMode>, context: Option<u64>) -> 
             context,
             api_base: std::env::var("OLLAMA_HOST").ok(),
             cache_key: None,
+            service_tier: None,
         })
         .expect("ollama is a built-in provider")
 }

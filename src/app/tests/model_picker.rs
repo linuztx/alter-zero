@@ -46,6 +46,7 @@ fn selecting_a_model_carries_its_reasoning_support() {
             reasoning: Some(trio_support()),
             vision: None,
             context: None,
+            service_tiers: Vec::new(),
         }
     );
 }
@@ -370,6 +371,7 @@ fn enter_selects_the_highlighted_model_and_closes() {
             reasoning: None,
             vision: None,
             context: None,
+            service_tiers: Vec::new(),
         }
     );
     assert!(app.model_picker.is_none(), "selecting closes the picker");
@@ -399,4 +401,24 @@ fn esc_on_the_provider_step_clears_the_query_then_closes() {
     assert!(app.key_onboarding.is_some(), "first Esc only clears");
     assert_eq!(app.on_key(key(KeyCode::Esc)), Action::CloseKeyOnboarding);
     assert!(app.key_onboarding.is_none());
+}
+
+#[test]
+fn selecting_a_model_carries_its_speed_tiers() {
+    // Enter on a picker row hands the loop the entry's listed tiers, so a
+    // successful switch can seed /fast without refetching /models
+    // (docs/fast-mode.md).
+    let mut quick = model("gpt-5.5", "openai_chatgpt", "GPT-5.5");
+    quick.service_tiers = vec![ServiceTier::new("priority", "Fast", "1.5x speed")];
+    let mut app = model_app(&[model("plain", "openrouter", "Plain"), quick]);
+    type_chars(&mut app, "gpt-5.5");
+    let action = app.on_key(key(KeyCode::Enter));
+    assert!(
+        matches!(
+            &action,
+            Action::SelectModel { service_tiers, .. } if service_tiers.len() == 1
+                && service_tiers[0].id == "priority"
+        ),
+        "the entry's tiers ride the action: {action:?}"
+    );
 }

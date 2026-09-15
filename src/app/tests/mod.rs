@@ -10,7 +10,7 @@ pub(super) use super::*;
 
 // ===== Ctrl+T thinking mode (docs/reasoning.md) =====
 
-use crate::llm::ReasoningEffort;
+use crate::llm::{ReasoningEffort, ServiceTier, SpeedState};
 
 mod agent;
 mod ask;
@@ -231,6 +231,7 @@ pub(super) fn model(id: &str, provider: &str, name: &str) -> ModelEntry {
         reasoning: None,
         vision: None,
         context: None,
+        service_tiers: Vec::new(),
     }
 }
 

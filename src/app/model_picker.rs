@@ -350,6 +350,7 @@ impl App {
                         reasoning: model.reasoning.clone(),
                         vision: model.vision,
                         context: model.context,
+                        service_tiers: model.service_tiers.clone(),
                     };
                     self.close_model_picker();
                     return action;

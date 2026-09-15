@@ -113,6 +113,7 @@ fn backend_with_deepwiki(manager: McpManager) -> LlmBackend {
         vision: None,
         context: None,
         cache_key: None,
+        service_tier: None,
         extra_headers: Vec::new(),
         extra_body: serde_json::Map::new(),
     };

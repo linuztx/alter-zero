@@ -140,6 +140,10 @@ pub enum Action {
         /// seeding the footer gauge + auto-compact without a refetch — `None`
         /// when the record didn't report one. See `docs/compact.md`.
         context: Option<u64>,
+        /// The picked entry's listed **speed tiers** (the ChatGPT backend's
+        /// `service_tiers`), seeding `/fast` without a refetch — empty for a
+        /// model that lists none. See `docs/fast-mode.md`.
+        service_tiers: Vec<ServiceTier>,
     },
     /// Ctrl+T cycled the thinking mode ([`App::thinking`] already advanced
     /// to the carried mode). The loop rebinds the *next* turn's backend to it,
@@ -147,6 +151,12 @@ pub enum Action {
     /// its expiry — why this isn't a direct `show_toast`). See
     /// `docs/reasoning.md`.
     SetThinking(ThinkingMode),
+    /// `/fast` stepped the speed tier ([`App::speed`] already advanced to
+    /// the carried selection — `None` is standard). The loop rebinds the
+    /// *next* turn's backend to it, persists the choice beside the model
+    /// selection, and presents the `Speed: {tier}` toast (arming its expiry
+    /// — why this isn't a direct `show_toast`). See `docs/fast-mode.md`.
+    SetSpeed(Option<ServiceTier>),
     /// `/settings`: open the inline settings menu. Like `/model` it works
     /// mid-turn — it only replaces the composer. The loop has nothing to fetch;
     /// it just repaints (the rows derive from state it already has). See

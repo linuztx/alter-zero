@@ -1018,3 +1018,47 @@ fn the_queued_memo_rebuilds_when_the_theme_changes() {
         "…and back"
     );
 }
+
+#[test]
+fn footer_line_shows_the_speed_tier_beside_the_thinking_mode() {
+    // A selected speed tier wears its name right after the thinking mode —
+    // `{model} {mode} {tier} · {cwd}` — so fast mode is always visible
+    // (docs/fast-mode.md); standard shows nothing.
+    use crate::llm::{ReasoningEffort, ReasoningSupport, ServiceTier, SpeedState, ThinkingMode};
+    let mut app = with_session();
+    app.set_thinking(Some((
+        ReasoningSupport {
+            efforts: vec![ReasoningEffort::Medium],
+            can_disable: true,
+            default_effort: None,
+        },
+        ThinkingMode::Effort(ReasoningEffort::Medium),
+    )));
+    let fast = ServiceTier::new("priority", "Fast", "1.5x speed, increased usage");
+    app.set_speed(SpeedState::new(vec![fast], None));
+    assert_eq!(
+        plain(&footer_line(&app, 60)),
+        "  dummy_model_name medium · ~/alter-zero",
+        "standard: no tier word"
+    );
+    app.speed.as_mut().unwrap().advance();
+    let line = footer_line(&app, 60);
+    assert_eq!(
+        plain(&line),
+        "  dummy_model_name medium fast · ~/alter-zero"
+    );
+    for span in &line.spans[1..] {
+        assert_eq!(
+            span.style.fg,
+            Some(footer_color()),
+            "dim: {:?}",
+            span.content
+        );
+    }
+    // Without a thinking mode the tier still follows the model name.
+    app.set_thinking(None);
+    assert_eq!(
+        plain(&footer_line(&app, 60)),
+        "  dummy_model_name fast · ~/alter-zero"
+    );
+}

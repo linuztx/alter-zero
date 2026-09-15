@@ -50,6 +50,7 @@ actually changes something, and the file stays a plain diff until then.
   "provider": "openrouter",
   "model": "openai/gpt-4o-mini",
   "thinking": { "supported": false },
+  "speed": {},
   "projects": {
     "/home/user/work/api": {
       "provider": "a0_venice",
@@ -62,10 +63,12 @@ actually changes something, and the file stays a plain diff until then.
 ```
 
 `llm::settings::Settings` is the pure format. The top-level fields — the pair
-plus the model's `thinking` blob, `vision` and `context`
-(`docs/reasoning.md`, `docs/tools.md`, `docs/compact.md`) — are the last
-selection made anywhere; each `projects` entry is a `ModelSelection`, the
-same five fields with the pair required. Five pure operations, each
+plus the model's `thinking` blob, `vision`, `context` and the `speed` blob
+(`docs/reasoning.md`, `docs/tools.md`, `docs/compact.md`,
+`docs/fast-mode.md` — the listed speed tiers and the `/fast` choice, `{}`
+being the marker for a model known to list none) — are the last selection
+made anywhere; each `projects` entry is a `ModelSelection`, the same six
+fields with the pair required. Five pure operations, each
 unit-tested:
 
 - `selection_for(dir)` — the directory's entry, else the last selection.

@@ -818,6 +818,21 @@ pub fn session_headers(cache_key: Option<&str>) -> Vec<(String, String)> {
         .unwrap_or_default()
 }
 
+/// Codex's per-request routing hint header (`docs/fast-mode.md`).
+pub const ROUTING_HINT_HEADER: &str = "x-codex-routing-hint";
+
+/// The routing hint's value: `model={model}` on every request, and
+/// `;tier={tier}` appended when a speed tier is selected — codex's
+/// `build_routing_hint_header`, which sends the model half on every request
+/// to this backend whether or not a tier is. Pure.
+#[must_use]
+pub fn routing_hint(model: &str, tier: Option<&str>) -> String {
+    match tier {
+        Some(tier) => format!("model={model};tier={tier}"),
+        None => format!("model={model}"),
+    }
+}
+
 /// The `User-Agent` the backend expects to see — Codex's shape, since the
 /// client id is Codex's, carrying the same [`CLIENT_VERSION`] the `/models`
 /// query does (a request whose two version claims disagreed would be a

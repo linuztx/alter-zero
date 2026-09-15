@@ -40,6 +40,7 @@ fn backend() -> LlmBackend {
         context: None,
         api_base: None,
         cache_key: None,
+        service_tier: None,
     };
     let cfg = providers.model_config(&sel).expect("a0_venice is built in");
     LlmBackend::configure(

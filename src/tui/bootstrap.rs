@@ -573,6 +573,10 @@ impl<'t> Session<'t> {
         // the Ctrl+T cycle starts where it left off (docs/reasoning.md).
         let thinking = self.models.take_thinking_seed();
         self.app.set_thinking(thinking);
+        // The speed tiers + /fast choice it recorded for that same selection,
+        // so the tier rides the first request too (docs/fast-mode.md).
+        let speed = self.models.speed_state();
+        self.app.set_speed(speed);
         // The footer's right-edge permission segment (docs/permissions.md):
         // seeded from the gate (which just loaded this project's saved mode), or
         // hidden entirely when permissions are disabled — nothing asks, so a mode

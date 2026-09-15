@@ -202,7 +202,8 @@ sleep 0.2
 # /quit is the registry's last entry) rather than by ordinal.
 expect_has "$palette_open" -F "List the available commands" "typing '/' did not open the command palette (/help missing)"
 expect_has "$palette_open" -F "Clear the conversation" "the command palette did not list /clear"
-expect_has "$palette_open" -F "Add or update a provider API key" "the command palette did not list /login (the 8th command, the window's last row)"
+expect_has "$palette_open" -F "Toggle fast mode" "the command palette did not list /fast (the 8th command, the window's last row — docs/fast-mode.md)"
+expect_lacks "$palette_open" -F "Add or update a provider API key" "the palette shows /login (the 9th command) in its first window — the 8-row cap is gone"
 expect_lacks "$palette_open" -F "Exit the app" "the palette shows /quit (the registry's last command) in its first window — the 8-row cap is gone"
 expect_has "$palette_scrolled" -F "Exit the app" "↓ to the last command did not scroll /quit into the palette window"
 expect_lacks "$palette_scrolled" -F "List the available commands" "the scrolled palette still shows /help — the window did not move"

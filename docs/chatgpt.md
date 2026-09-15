@@ -212,6 +212,7 @@ Three fields are **mandatory** rather than conventional, and omitting any is a
   "stream": true,
   "tools": [ … ], "tool_choice": "auto", "parallel_tool_calls": true,
   "reasoning": {"effort": "medium", "summary": "auto"},
+  "service_tier": "priority",   // /fast — codex's fast mode, docs/fast-mode.md
   "prompt_cache_key": "…"
 }
 ```
@@ -264,6 +265,11 @@ demands each property be required.
 
 `Off` sends **no** `reasoning` field. This API has no `enabled: false`, and
 inventing one is a 400.
+
+`service_tier` is codex's **fast mode** (`docs/fast-mode.md`): the selected
+speed tier's id, present only when `/fast` selected one the model's record
+lists, with the `x-codex-routing-hint` header naming the model and the tier
+beside the cache-affinity headers below.
 
 ### The stream
 
@@ -321,6 +327,7 @@ already share, so no other provider's list is touched:
 | context | `context_window` × `effective_context_window_percent` (the field is absent live, so the 95% default is what applies) | the footer gauge, auto-compact |
 | vision | `input_modalities` contains `image` | `docs/tools.md`'s image degradation |
 | reasoning | `supported_reasoning_levels` + `default_reasoning_level` | the Ctrl+T cycle |
+| speed tiers | `service_tiers` (`[{id, name, description}]`, the `priority` one being codex's fast mode) | `/fast` (`docs/fast-mode.md`) |
 
 The envelope is `{"models": […]}`, not `{"data": […]}` — one extra field on
 the response struct, so a second parse function never has to exist.
@@ -391,6 +398,7 @@ rather than left to a default.
 | `src/llm/chatgpt.rs` | the claims parse, the flow's URLs/bodies, the freshness rule (pure); the loopback listener, the exchanges, the cache and the rotation write-back (boundary) |
 | `src/llm/auth.rs` | `request_auth` — the one seam every outbound call resolves through |
 | `src/llm/responses.rs` | the Responses wire format, both directions (pure) |
+| `src/llm/service_tier.rs` | the speed tiers a record lists and the `/fast` cycle over them (pure) — `docs/fast-mode.md` |
 | `src/llm/openai.rs` | `request_url`/`request_payload` (the wire branch), `drain_responses`, `pump_lines` |
 | `src/llm/models.rs` | the `{"models": …}` envelope and the three record sniffs |
 | `src/app/login.rs` | `SigninKind`, `DeviceLogin::copy_target` |

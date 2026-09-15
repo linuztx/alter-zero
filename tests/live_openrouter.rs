@@ -54,6 +54,7 @@ fn backend_with(model: String, thinking: Option<ThinkingMode>, vision: Option<bo
         vision,
         context: None,
         cache_key: None,
+        service_tier: None,
         extra_headers: Vec::new(),
         extra_body: serde_json::Map::new(),
     };
@@ -207,6 +208,7 @@ fn live_anthropic_prompt_cache_writes_then_reads() {
         vision: None,
         context: None,
         cache_key: Some(format!("alter-zero-live-cache-{salt}")),
+        service_tier: None,
         extra_headers: Vec::new(),
         extra_body: serde_json::Map::new(),
     };
@@ -304,6 +306,7 @@ fn live_venice_reports_usage_and_hits_its_cache() {
         context: None,
         api_base: None,
         cache_key: Some(format!("alter-zero-live-venice-{salt}")),
+        service_tier: None,
     };
     let cfg = providers.model_config(&sel).expect("a0_venice is built in");
     let backend = LlmBackend::configure(cfg, Some(big_system_prompt(salt)), false);
@@ -672,6 +675,7 @@ fn live_environment_context_reaches_the_model() {
         vision: None,
         context: None,
         cache_key: None,
+        service_tier: None,
         extra_headers: Vec::new(),
         extra_body: serde_json::Map::new(),
     };
@@ -741,6 +745,7 @@ fn live_scratchpad_context_reaches_the_model() {
         vision: None,
         context: None,
         cache_key: None,
+        service_tier: None,
         extra_headers: Vec::new(),
         extra_body: serde_json::Map::new(),
     };
@@ -794,6 +799,7 @@ fn scratchpad_targets(scratchpad: &std::path::Path, cwd: &str, task: &str) -> Ve
         vision: None,
         context: None,
         cache_key: None,
+        service_tier: None,
         extra_headers: Vec::new(),
         extra_body: serde_json::Map::new(),
     };
@@ -898,6 +904,7 @@ fn live_scratchpad_write_runs_without_a_permission_prompt() {
         vision: None,
         context: None,
         cache_key: None,
+        service_tier: None,
         extra_headers: Vec::new(),
         extra_body: serde_json::Map::new(),
     };
@@ -2333,6 +2340,7 @@ fn live_classifier() -> alter_zero::llm::classifier::SafetyClassifier {
         vision: None,
         context: None,
         cache_key: None,
+        service_tier: None,
         extra_headers: Vec::new(),
         extra_body: serde_json::Map::new(),
     };
@@ -2580,6 +2588,7 @@ fn live_tools_setting_decides_whether_the_model_is_offered_any() {
         vision: None,
         context: None,
         cache_key: None,
+        service_tier: None,
         extra_headers: Vec::new(),
         extra_body: serde_json::Map::new(),
     };
@@ -2646,6 +2655,7 @@ fn live_error_retry_setting_bounds_the_attempts() {
         vision: None,
         context: None,
         cache_key: None,
+        service_tier: None,
         extra_headers: Vec::new(),
         extra_body: serde_json::Map::new(),
     };
@@ -2710,6 +2720,7 @@ fn live_temperature_setting_rides_the_request() {
             vision: None,
             context: None,
             cache_key: None,
+            service_tier: None,
             extra_headers: Vec::new(),
             extra_body: serde_json::Map::new(),
         };
@@ -2762,6 +2773,7 @@ fn live_max_tool_calls_bounds_a_parallel_batch() {
         vision: None,
         context: None,
         cache_key: None,
+        service_tier: None,
         extra_headers: Vec::new(),
         extra_body: serde_json::Map::new(),
     };
@@ -3329,6 +3341,7 @@ fn skill_backend_and_context(
         vision: None,
         context: None,
         cache_key: None,
+        service_tier: None,
         extra_headers: Vec::new(),
         extra_body: serde_json::Map::new(),
     };
@@ -3968,6 +3981,7 @@ fn venice_backend(system: Option<String>) -> LlmBackend {
         context: None,
         api_base: None,
         cache_key: None,
+        service_tier: None,
     };
     let cfg = providers.model_config(&sel).expect("a0_venice is built in");
     LlmBackend::with_system_prompt(cfg, system)
@@ -4291,6 +4305,7 @@ fn venice_skill_backend(registry: &alter_zero::skills::SkillRegistry) -> LlmBack
         context: None,
         api_base: None,
         cache_key: None,
+        service_tier: None,
     };
     let cfg = providers.model_config(&sel).expect("a0_venice is built in");
     LlmBackend::configure(

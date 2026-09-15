@@ -330,6 +330,7 @@ impl ProvidersFile {
             vision: sel.vision,
             context: sel.context,
             cache_key: sel.cache_key.clone(),
+            service_tier: sel.service_tier.clone(),
             extra_headers: provider
                 .extra_headers
                 .iter()
@@ -373,6 +374,11 @@ pub struct Selection {
     /// requests land on the same provider/server and hit its warm prompt
     /// cache. The boundary mints one per process. See `docs/prompt-caching.md`.
     pub cache_key: Option<String>,
+    /// The selected **speed tier**'s wire id (`priority` for codex's fast
+    /// mode) — the `/fast` choice, riding the request as `service_tier`.
+    /// `None` is standard: no field at all. Only ever set to a tier the
+    /// model's own record listed (`docs/fast-mode.md`).
+    pub service_tier: Option<String>,
 }
 
 /// The fully-resolved config one [`super::openai::OpenAiClient`] talks with.
@@ -401,6 +407,8 @@ pub struct ModelConfig {
     pub context: Option<u64>,
     /// The per-session cache-affinity key (see [`Selection::cache_key`]).
     pub cache_key: Option<String>,
+    /// The selected speed tier's wire id (see [`Selection::service_tier`]).
+    pub service_tier: Option<String>,
     pub extra_headers: Vec<(String, String)>,
     /// Provider kwargs merged into the request body (e.g. `venice_parameters`).
     pub extra_body: serde_json::Map<String, serde_json::Value>,
@@ -424,6 +432,7 @@ impl ModelConfig {
             vision: None,
             context: None,
             cache_key: None,
+            service_tier: None,
             extra_headers: Vec::new(),
             extra_body: serde_json::Map::new(),
         }
@@ -908,6 +917,7 @@ api_base = "https://a/v1"
             context: None,
             api_base: None,
             cache_key: None,
+            service_tier: None,
         };
         let cfg = file.model_config(&sel).expect("resolves");
         assert_eq!(cfg.model, "anthropic/claude-3.5-haiku");
@@ -948,6 +958,7 @@ api_base = "https://a/v1"
             model: "openai/gpt-4o-mini".to_string(),
             api_key: Some("k".to_string()),
             cache_key: Some("alter-zero-42".to_string()),
+            service_tier: None,
             ..Default::default()
         };
         let cfg = file.model_config(&sel).expect("resolves");
@@ -1106,5 +1117,28 @@ api_base = "http://127.0.0.1:11434"
         let cfg = file.model_config(&sel).expect("resolves");
         assert_eq!(cfg.context, Some(32_768));
         assert_eq!(ModelConfig::fallback().context, None);
+    }
+
+    #[test]
+    fn the_selection_carries_its_speed_tier_into_the_config() {
+        // The `/fast` choice rides the request the way the thinking mode
+        // does (docs/fast-mode.md): `None` is standard — no field at all.
+        let file = ProvidersFile::builtin();
+        let sel = Selection {
+            provider_id: "openai_chatgpt".to_string(),
+            model: "gpt-5.5".to_string(),
+            service_tier: Some("priority".to_string()),
+            ..Selection::default()
+        };
+        let cfg = file.model_config(&sel).expect("a built-in provider");
+        assert_eq!(cfg.service_tier.as_deref(), Some("priority"));
+        assert_eq!(ModelConfig::fallback().service_tier, None);
+        let standard = file
+            .model_config(&Selection {
+                service_tier: None,
+                ..sel
+            })
+            .unwrap();
+        assert_eq!(standard.service_tier, None);
     }
 }

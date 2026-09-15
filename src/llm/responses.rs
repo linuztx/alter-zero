@@ -80,6 +80,12 @@ fn request<'a>(cfg: &ModelConfig, tools: &[Value], messages: &'a [ChatMessage]) 
             json!({"effort": effort, "summary": "auto"}),
         );
     }
+    // Codex's fast mode (`docs/fast-mode.md`): the selected speed tier's id,
+    // top-level — `priority` — and nothing for standard, which is the
+    // backend's own default rather than a value it needs told.
+    if let Some(tier) = cfg.service_tier.as_deref() {
+        fields.insert("service_tier".to_string(), json!(tier));
+    }
     for (k, v) in &cfg.extra_body {
         fields.insert(k.clone(), v.clone());
     }
@@ -713,6 +719,24 @@ mod tests {
         assert!(
             std::ptr::eq(image_url.as_ptr(), url.as_ptr()) && image_url.len() == url.len(),
             "the part points at the shared encoding"
+        );
+    }
+
+    #[test]
+    fn the_selected_speed_tier_rides_as_the_top_level_service_tier() {
+        // Codex's fast mode on the wire (docs/fast-mode.md): the tier's id,
+        // top-level, beside `reasoning` — and nothing at all for standard,
+        // the backend's own default, rather than a `"default"` it would
+        // have to know.
+        let mut cfg = ModelConfig::fallback();
+        cfg.service_tier = Some("priority".to_string());
+        let payload = build_payload(&cfg, &[], &[user("hi")]);
+        assert_eq!(payload["service_tier"], "priority");
+        cfg.service_tier = None;
+        assert!(
+            build_payload(&cfg, &[], &[user("hi")])
+                .get("service_tier")
+                .is_none()
         );
     }
 }

@@ -830,6 +830,8 @@ pub fn entry_of(
         reasoning,
         vision: has("vision"),
         context: context_window(record, server_default, uncapped),
+        // Ollama's `/api/show` names no speed tier (`docs/fast-mode.md`).
+        service_tiers: Vec::new(),
     })
 }
 

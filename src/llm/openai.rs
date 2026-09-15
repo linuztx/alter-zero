@@ -106,17 +106,19 @@ impl OpenAiClient {
     /// Point this client at a different **model** on the same provider — an
     /// agent definition's `model:` (`docs/subagents.md`).
     ///
-    /// The thinking mode and the vision verdict are dropped with the swap:
-    /// both were detected for the model being replaced, and sending a
-    /// `reasoning` parameter to a model that doesn't reason is how a provider
-    /// comes to reject the whole request. Everything else — base, key,
-    /// headers, provider kwargs, temperature, cache key — is the provider's
-    /// and stays.
+    /// The thinking mode, the vision verdict and the speed tier are dropped
+    /// with the swap: all three were detected for the model being replaced,
+    /// and sending a `reasoning` parameter to a model that doesn't reason —
+    /// or a `service_tier` to one that lists none (`docs/fast-mode.md`) — is
+    /// how a provider comes to reject the whole request. Everything else —
+    /// base, key, headers, provider kwargs, temperature, cache key — is the
+    /// provider's and stays.
     #[must_use]
     pub fn with_model(mut self, model: &str) -> Self {
         self.cfg.model = model.to_string();
         self.cfg.thinking = None;
         self.cfg.vision = None;
+        self.cfg.service_tier = None;
         self
     }
 
@@ -229,6 +231,13 @@ impl OpenAiClient {
         }
         if let Some(t) = self.cfg.temperature {
             fields.insert("temperature".to_string(), json!(t));
+        }
+        // The selected speed tier (`docs/fast-mode.md`) — OpenAI's own
+        // `service_tier` parameter, which chat completions take exactly as
+        // the Responses wire does. Only ever a tier the model's record
+        // listed, so no provider here sees a field its shim would refuse.
+        if let Some(tier) = self.cfg.service_tier.as_deref() {
+            fields.insert("service_tier".to_string(), json!(tier));
         }
         if !self.tools.is_empty() {
             fields.insert("tools".to_string(), json!(self.tools));
@@ -370,6 +379,13 @@ impl OpenAiClient {
         for (name, value) in super::chatgpt::session_headers(self.cfg.cache_key.as_deref()) {
             req = req.header(name, value);
         }
+        // Codex's routing hint: the model on every request, and the speed
+        // tier beside it when one is selected (`docs/fast-mode.md`) — the
+        // edge's own note of where a priority request should go.
+        req = req.header(
+            super::chatgpt::ROUTING_HINT_HEADER,
+            super::chatgpt::routing_hint(&self.cfg.model, self.cfg.service_tier.as_deref()),
+        );
         req
     }
 
@@ -1535,6 +1551,7 @@ mod tests {
                 api_key: Some("key".to_string()),
                 thinking: Some(ThinkingMode::Off),
                 cache_key: Some("alter-zero-7".to_string()),
+                service_tier: None,
                 ..Selection::default()
             })
             .expect("shipped")
@@ -2472,6 +2489,58 @@ data: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\
         let outcome = out.expect("an empty keep-alive stream is not an error");
         assert!(outcome.text.response.is_empty());
         assert!(deltas.is_empty());
+    }
+
+    // --- the speed tier (docs/fast-mode.md) ---
+
+    #[test]
+    fn a_chat_payload_carries_the_selected_service_tier() {
+        // OpenAI's chat completions take the same `service_tier` the
+        // Responses wire does; a standard selection sends no field.
+        let mut cfg = ModelConfig::fallback();
+        cfg.service_tier = Some("priority".to_string());
+        let p = OpenAiClient::new(cfg.clone()).build_payload(&[ChatMessage::user("hi")]);
+        assert_eq!(p["service_tier"], "priority");
+        cfg.service_tier = None;
+        let p = OpenAiClient::new(cfg).build_payload(&[ChatMessage::user("hi")]);
+        assert!(p.get("service_tier").is_none(), "{p}");
+    }
+
+    #[test]
+    fn a_chatgpt_request_carries_the_routing_hint_naming_the_model_and_tier() {
+        // Codex's `x-codex-routing-hint`: `model={model}` on every request to
+        // the ChatGPT backend, `;tier={tier}` appended when a speed tier is
+        // selected — the edge's own hint for where a fast request goes.
+        let mut cfg = ModelConfig::fallback();
+        cfg.auth = crate::llm::AuthScheme::OpenAiChatGpt;
+        cfg.model = "gpt-5.5".to_string();
+        assert_eq!(
+            built_header(cfg.clone(), "x-codex-routing-hint").as_deref(),
+            Some("model=gpt-5.5")
+        );
+        cfg.service_tier = Some("priority".to_string());
+        assert_eq!(
+            built_header(cfg, "x-codex-routing-hint").as_deref(),
+            Some("model=gpt-5.5;tier=priority")
+        );
+        // A pasted-key provider never sees codex's header.
+        let mut plain = ModelConfig::fallback();
+        plain.service_tier = Some("priority".to_string());
+        assert_eq!(built_header(plain, "x-codex-routing-hint"), None);
+    }
+
+    #[test]
+    fn a_pinned_model_drops_the_sessions_speed_tier_with_its_thinking_mode() {
+        // A subagent definition's `model:` swaps the model in; the tier was
+        // detected for the model being replaced, and a tier the new model
+        // does not offer is a request the backend may refuse — so it goes
+        // the way the thinking mode and the vision verdict go.
+        let mut cfg = ModelConfig::fallback();
+        cfg.service_tier = Some("priority".to_string());
+        let p = OpenAiClient::new(cfg)
+            .with_model("other")
+            .build_payload(&[ChatMessage::user("hi")]);
+        assert!(p.get("service_tier").is_none(), "{p}");
     }
 }
 
