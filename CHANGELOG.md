@@ -12,6 +12,8 @@ release heading when a version is cut.
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-09-15
+
 ### Changed
 
 - The `/resume` picker scrolls like the `/model` list: on a list taller
@@ -152,6 +154,7 @@ release heading when a version is cut.
   release whose notes come from this file — driven end to end by
   `scripts/release.sh`, which also rehearses a release locally.
 
-[Unreleased]: https://github.com/linuztx/alter-zero/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/linuztx/alter-zero/compare/v0.1.2...HEAD
+[0.1.2]: https://github.com/linuztx/alter-zero/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/linuztx/alter-zero/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/linuztx/alter-zero/releases/tag/v0.1.0
