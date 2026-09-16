@@ -547,6 +547,16 @@ re-placing the old size (every resize purge-rebuilds from history anyway,
 which is what re-measures the picture — and the purge drops the encoded
 protocols, since a kitty placement transmits its pixels once and one that
 outlived the `ESC[3J` would place an image the terminal may have dropped).
+The key is deliberately **not** the file's bytes, so an encoding remembers
+the **file state** it was made from — the `(len, mtime)` the payload sidecar
+and the wire attachment already key on — and a hit is a hit only while the
+file still has it: the agent turning the cat it just showed black and white
+*in place* and reading it again reserves the same placement, which used to
+be served the colour cat from the cache while Ctrl+O, encoding the
+alternate screen's copy fresh, showed the conversion
+(`ImageStore::encode` stats the path per paint — microseconds — a gone file
+keeping its picture rather than retrying per frame; `docs/images.md` *A
+file rewritten in place*, `smoke.sh` Phase 107d).
 **A screen switch is not the same thing and it is not optional**: kitty (and
 Ghostty) keeps a *separate image store per screen buffer* — its own spec says
 the alternate screen's images are cleared on the 1049 switch — so a protocol

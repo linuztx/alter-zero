@@ -257,8 +257,16 @@ pub fn payload_cache_key(path: &Path, len: u64, mtime_nanos: u128, max: u32) -> 
         .collect()
 }
 
-/// The file's size and modification time, the two facts the key is made of.
-fn file_state(path: &Path) -> Option<(u64, u128)> {
+/// A file's size and modification time (nanoseconds since the epoch) — the
+/// two facts every picture cache in this module keys on: the payload sidecar
+/// here, the wire attachment ([`super::attachment`]) and the encoded picture
+/// ([`super::store`]) alike. A changed file is a different state, so a stale
+/// copy is never served, and reading it is one `stat`, never the bytes.
+pub(super) type FileState = (u64, u128);
+
+/// The [`FileState`] of the file at `path` as it is now — `None` when the
+/// file can't be described (gone, unreadable).
+pub(super) fn file_state(path: &Path) -> Option<FileState> {
     let meta = std::fs::metadata(path).ok()?;
     let mtime = meta
         .modified()

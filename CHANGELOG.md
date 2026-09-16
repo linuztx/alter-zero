@@ -12,6 +12,19 @@ release heading when a version is cut.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A picture rewritten in place shows its new bytes.** Ask the agent to
+  download a picture, then to turn it black and white: the conversion
+  happened, the agent read the file again, and the new inline cell still
+  showed the colour version — while Ctrl+O showed the conversion. The
+  encoded pictures are cached per placement, and a placement is the file's
+  path and cell size, so the same file rewritten at the same size was served
+  the entry encoded before the change. An encoding now remembers the file's
+  size and mtime it was made from — the two facts the upload caches already
+  key on — and a file that no longer matches is encoded afresh
+  (`docs/images.md`, *A file rewritten in place*; `smoke.sh` Phase 107d).
+
 ## [0.2.0] - 2026-09-16
 
 ### Added

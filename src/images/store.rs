@@ -4,11 +4,14 @@
 //! Everything that *acts* here is I/O — a `Picker` built from the environment
 //! and an ioctl, a file decoded off disk, an escape sequence stamped into a
 //! `Buffer` cell — so it is exercised by `scripts/smoke.sh` (Phase 107), not
-//! by unit tests; the detection's own predicates are pure and are. The pure
-//! half it serves (which cells are reserved, and how many) lives beside it in
-//! [`super::geometry`]. See `docs/images.md`.
+//! by unit tests; the detection's own predicates are pure and are, and the
+//! cache's file-state rule is proved by a half-block store drawing into a
+//! `Buffer` with no terminal. The pure half it serves (which cells are
+//! reserved, and how many) lives beside it in [`super::geometry`]. See
+//! `docs/images.md`.
 
 use std::collections::HashMap;
+use std::path::Path;
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -19,6 +22,7 @@ use ratatui_image::picker::{Picker, ProtocolType};
 use ratatui_image::sliced::{SignedPosition, SlicedImage, SlicedProtocol};
 
 use super::geometry::{FontSize, carrier_parts};
+use super::payload::{FileState, file_state};
 use super::registry::{Placement, placement};
 
 /// Environment gate: a falsy value turns inline pictures off entirely.
@@ -143,6 +147,14 @@ struct Encoded {
     /// isn't re-read on every frame of every turn.
     protocol: Option<SlicedProtocol>,
     bytes: usize,
+    /// The file's size and mtime this picture was encoded from (`None` when
+    /// the file could not be described). A placement interns on the path
+    /// and the cell size, so this is what tells the same path **rewritten in
+    /// place** apart from the picture already encoded: the agent turns the
+    /// cat it just showed black and white and reads it again, and the new
+    /// cell reserves the same placement — served the cached entry, it showed
+    /// the colour cat (`docs/images.md`, *A file rewritten in place*).
+    state: Option<FileState>,
 }
 
 /// One reserved block as the frame actually holds it: where its visible rows
@@ -267,13 +279,35 @@ impl ImageStore {
         {
             picker.set_protocol_type(forced);
         }
+        Self::from_picker(
+            picker,
+            retransmit_forced(env(IMAGE_RETRANSMIT_ENV).as_deref()),
+        )
+    }
+
+    /// A store that draws with `protocol` at a `font` cell size, trusting
+    /// the terminal to keep its screens' pictures — what
+    /// [`detect`](Self::detect) builds once it has decided both, and what a
+    /// unit test builds directly: a half-block store draws real coloured
+    /// cells into a `Buffer` with no terminal anywhere, which is how the
+    /// cache's own rules are proved.
+    #[must_use]
+    pub fn with_protocol(protocol: ProtocolType, font: FontSize) -> Self {
+        #[allow(deprecated)]
+        let mut picker = Picker::from_fontsize(ratatui_image::FontSize::new(font.0, font.1));
+        picker.set_protocol_type(protocol);
+        Self::from_picker(picker, false)
+    }
+
+    /// The store over a decided picker, its cache empty.
+    fn from_picker(picker: Picker, retransmit: bool) -> Self {
         Self {
             picker: Some(picker),
             encoded: HashMap::new(),
             order: Vec::new(),
             bytes: 0,
             screen: PRIMARY,
-            retransmit: retransmit_forced(env(IMAGE_RETRANSMIT_ENV).as_deref()),
+            retransmit,
         }
     }
 
@@ -464,12 +498,26 @@ impl ImageStore {
         SlicedImage::new(protocol, position).render(area, buf);
     }
 
-    /// Encode `place` if it isn't cached — decode the file, fit it into the
-    /// reserved cells, and charge the result against the byte budget.
+    /// Encode `place` unless the cache already holds it **for the file as it
+    /// is now** — decode the file, fit it into the reserved cells, and charge
+    /// the result against the byte budget.
+    ///
+    /// A hit is a hit only while the file's size and mtime are what the entry
+    /// was encoded from ([`Encoded::state`]); a rewritten file drops the entry
+    /// and encodes afresh, so the second `read` of a picture the agent just
+    /// converted draws the conversion. That check is one `stat` per visible
+    /// block per paint — microseconds, against the decode and the upload it
+    /// stands in for — and it reads the file's state, never its bytes. A file
+    /// that has since **gone** is not a file that changed: the picture
+    /// already encoded keeps drawing, and nothing is retried per frame.
     fn encode(&mut self, place: &Placement) {
         let key = self.key(place.id);
-        if self.encoded.contains_key(&key) {
-            return;
+        let state = file_state(Path::new(&place.path));
+        if let Some(cached) = self.encoded.get(&key) {
+            if state.is_none() || cached.state == state {
+                return;
+            }
+            self.drop_entry(key);
         }
         let Some(picker) = self.picker.as_ref() else {
             return;
@@ -493,7 +541,14 @@ impl ImageStore {
                 * 4
                 / 3
         });
-        self.encoded.insert(key, Encoded { protocol, bytes });
+        self.encoded.insert(
+            key,
+            Encoded {
+                protocol,
+                bytes,
+                state,
+            },
+        );
         self.order.push(key);
         self.bytes = self.bytes.saturating_add(bytes);
         self.evict(key);
