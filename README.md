@@ -17,6 +17,7 @@ Use the same tools for cybersecurity research, technical investigation, and ever
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache--2.0-A6E3A1?style=for-the-badge&amp;logo=apache&amp;logoColor=white&amp;labelColor=181825" alt="License: Apache 2.0" height="32"></a>
   <a href="#support-the-project"><img src="https://img.shields.io/badge/Support-Donate-CBA6F7?style=for-the-badge&amp;logo=githubsponsors&amp;logoColor=white&amp;labelColor=181825" alt="Support Alter Zero" height="32"></a>
   <a href="https://ko-fi.com/linuztx"><img src="https://img.shields.io/badge/Ko--fi-Support-F38BA8?style=for-the-badge&amp;logo=kofi&amp;logoColor=white&amp;labelColor=181825" alt="Support Alter Zero on Ko-fi" height="32"></a>
+  <a href="https://deepwiki.com/linuztx/alter-zero"><img src="https://deepwiki.com/badge.svg" alt="Ask DeepWiki"></a>
 </p>
 
 [Quick start](#quick-start) ·
