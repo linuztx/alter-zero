@@ -139,7 +139,10 @@ The active backend is chosen at startup — from env, then the **persisted
 selection** (`~/.alter-zero/config.json`, written by `/model` — **this working
 directory's** entry, or the last selection made anywhere for a directory
 launched in for the first time, `docs/per-directory-state.md`), then the
-file's default — and can be switched live by `/model`:
+file's default — and can be switched live by `/model`. A **resumed**
+conversation then brings back the model its own rollout recorded, the
+directory's entry being only what a *new* session starts on
+(`docs/session-model.md`; the env pins below still outrank it):
 
 | env var | meaning | default |
 | --- | --- | --- |
@@ -208,7 +211,11 @@ directory's entry *and* the new last selection (`tui::config::save_selection`,
 a read-modify-write). So a model picked in a directory is the default on every
 later run **in that directory** — and if its key still resolves, the real
 backend activates automatically at startup. `docs/per-directory-state.md` has
-the whole rule and why the two files differ.
+the whole rule and why the two files differ. The pick is recorded a second
+time, in the session's own rollout (`docs/session-model.md`), which is what
+`/resume`, `--resume` and `--continue` restore: a resumed conversation runs
+on the model it was on, whatever the directory's entry says by then, and
+two instances in one directory can each keep their own.
 
 ## The inline `/model` picker
 

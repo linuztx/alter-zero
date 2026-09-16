@@ -448,6 +448,22 @@ impl Settings {
     }
 }
 
+/// Does an environment pin outrank a saved selection? The startup precedence
+/// (`docs/llm.md`), asked again when a resume brings a conversation's own
+/// model back (`docs/session-model.md`): `ALTER_ZERO_MODEL` pins the model
+/// for the run whatever the record says, and `ALTER_ZERO_PROVIDER` alone pins
+/// the provider — a saved pair applies only under the provider it was saved
+/// with, since a different provider may not serve that model at all. Both
+/// values arrive already filtered of empties (an empty variable is no pin).
+#[must_use]
+pub fn env_outranks(
+    env_provider: Option<&str>,
+    env_model: Option<&str>,
+    selection: &ModelSelection,
+) -> bool {
+    env_model.is_some() || env_provider.is_some_and(|provider| provider != selection.provider)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -834,5 +850,29 @@ mod tests {
             None,
             "a state that somehow exists before it is known still waits for the probe"
         );
+    }
+
+    // ===== the environment pin over a conversation's own model (docs/session-model.md) =====
+
+    #[test]
+    fn an_environment_pin_outranks_a_sessions_recorded_selection() {
+        // The startup precedence, asked again when a resume brings a
+        // conversation's model back: `ALTER_ZERO_MODEL` pins the model for the
+        // run whatever the record says, and `ALTER_ZERO_PROVIDER` alone pins
+        // the provider — a pair applies only under the provider it was saved
+        // with. No pin at all: the record applies.
+        let recorded = own("openrouter", "vendor/model-1");
+        assert!(!env_outranks(None, None, &recorded));
+        assert!(env_outranks(None, Some("vendor/other"), &recorded));
+        assert!(env_outranks(Some("venice"), None, &recorded));
+        assert!(
+            !env_outranks(Some("openrouter"), None, &recorded),
+            "the record's own provider pinned: its model still applies"
+        );
+        assert!(env_outranks(
+            Some("openrouter"),
+            Some("vendor/other"),
+            &recorded
+        ));
     }
 }

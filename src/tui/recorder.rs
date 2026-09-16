@@ -21,6 +21,7 @@ use std::path::{Path, PathBuf};
 
 use alter_zero::app::HistoryItem;
 use alter_zero::checkpoint;
+use alter_zero::llm::ModelSelection;
 use alter_zero::session::{self, SessionMeta};
 
 use super::host::{session_id, utc_stamp};
@@ -60,9 +61,27 @@ pub(crate) struct SessionRecorder {
     /// How many of [`checkpoints`](Self::checkpoints) are already on disk — the
     /// checkpoint twin of `recorded`, so an append only writes the new ones.
     checkpoints_written: usize,
-    /// The meta context of a *new* session file, captured once at startup.
+    /// The meta context of a *new* session file: the cwd once at startup, the
+    /// model name as of the last [`set_model`](Self::set_model).
     cwd: String,
     model: String,
+    /// The session's own model selection (`docs/session-model.md`) — what
+    /// the file's `model` sidecar line records, so a resume brings the
+    /// conversation back on it. `None` on the dummy: nothing to restore to.
+    selection: Option<ModelSelection>,
+    /// What the active file's **newest** `model` line says — `None` while no
+    /// file exists or it carries none. The selection's on-disk watermark
+    /// (the checkpoint pattern): a selection that differs flushes as a new
+    /// line at the next [`sync`](Self::sync), the file's first write carries
+    /// it right after the meta, and a rewrite re-emits it.
+    written: Option<ModelSelection>,
+    /// An adopted file's record the session could **not** honour — the
+    /// provider has no key here, or an environment pin outranked it — is
+    /// kept as it is rather than overwritten by the fallback: a forced
+    /// fallback is not a choice, and the file should still name the model
+    /// the conversation was on. Cleared by a `/model` pick
+    /// ([`pick_model`](Self::pick_model)) and by `/clear`'s fresh file.
+    keep_record: bool,
     /// The hooks' view of the rollout path (`docs/hooks.md`): published on
     /// every `active` transition, so a payload's `transcript_path` names the
     /// file this conversation is actually recorded to — `None` while no file
@@ -79,7 +98,7 @@ pub(crate) struct SessionRecorder {
 }
 
 impl SessionRecorder {
-    pub(crate) fn new(model: &str, cwd: &Path) -> Self {
+    pub(crate) fn new(model: &str, selection: Option<ModelSelection>, cwd: &Path) -> Self {
         Self {
             root: sessions_root(),
             active: None,
@@ -89,9 +108,47 @@ impl SessionRecorder {
             checkpoints_written: 0,
             cwd: cwd.display().to_string(),
             model: model.to_string(),
+            selection,
+            written: None,
+            keep_record: false,
             transcript: alter_zero::llm::hooks::TranscriptCell::default(),
             generation: 0,
         }
+    }
+
+    /// The session's model moved, or something was learned about it — a
+    /// Ctrl+T cycle, the capability probe's answer, a resume's own restore
+    /// (`docs/session-model.md`). `model` is the backend's name (the meta
+    /// line of the next file `/clear` starts); `selection` is what the
+    /// file's next `model` line records, flushed by the next
+    /// [`sync`](Self::sync) when it differs from the newest one on disk.
+    pub(crate) fn set_model(&mut self, model: &str, selection: Option<ModelSelection>) {
+        self.model = model.to_string();
+        self.selection = selection;
+    }
+
+    /// A `/model` pick — the one change that overrides a kept record
+    /// ([`keep_record`](Self::keep_record)): the user chose, so the file
+    /// follows the session from here on.
+    pub(crate) fn pick_model(&mut self, model: &str, selection: Option<ModelSelection>) {
+        self.keep_record = false;
+        self.set_model(model, selection);
+    }
+
+    /// The selection the file should name: the session's own, unless an
+    /// adopted record is being kept.
+    fn recorded_selection(&self) -> Option<&ModelSelection> {
+        if self.keep_record {
+            self.written.as_ref()
+        } else {
+            self.selection.as_ref()
+        }
+    }
+
+    /// Whether the file's newest `model` line is out of date.
+    fn selection_pending(&self) -> bool {
+        let target = self.recorded_selection();
+        target.is_some() && target != self.written.as_ref()
     }
 
     /// Share the rollout path with the hook sink (`docs/hooks.md`): the cell
@@ -177,8 +234,9 @@ impl SessionRecorder {
         }
         let items_grew = history.len() > self.recorded;
         let checkpoints_pending = self.checkpoints.len() > self.checkpoints_written;
-        // Nothing new to write — neither items nor checkpoints.
-        if !items_grew && !checkpoints_pending {
+        // Nothing new to write — neither items, checkpoints nor a changed
+        // model selection (docs/session-model.md).
+        if !items_grew && !checkpoints_pending && !self.selection_pending() {
             return;
         }
         // A checkpoint with no file yet (the startup/`/clear` pristine snapshot)
@@ -186,6 +244,7 @@ impl SessionRecorder {
         // empty session leaves no file. Hold it in memory until a history item
         // creates the file, at which point `append` flushes it alongside. A
         // pending checkpoint with a file that already exists does flush now.
+        // A selection alone is held the same way: the create writes it.
         if !items_grew && self.active.is_none() {
             return;
         }
@@ -205,6 +264,10 @@ impl SessionRecorder {
         self.repair_newline = false;
         self.checkpoints.clear();
         self.checkpoints_written = 0;
+        // The new conversation runs on the session's own model: its file
+        // records that at creation, a kept record belonging to the old file.
+        self.written = None;
+        self.keep_record = false;
         self.publish_transcript();
     }
 
@@ -214,7 +277,12 @@ impl SessionRecorder {
     /// repairs it first. `checkpoints` are the file's own recorded snapshots
     /// (`docs/checkpoint.md`), taken over as already-written so later turns
     /// extend the same chain and a backtrack after resuming restores against
-    /// them.
+    /// them. `model` is the file's newest `model` record and `honoured`
+    /// whether the session now runs it (`docs/session-model.md`): a record
+    /// it could not honour is kept rather than overwritten by the fallback,
+    /// until a `/model` pick; a file with no record takes the session's
+    /// model at the next `sync`.
+    #[allow(clippy::too_many_arguments)] // everything one adopted file carries
     pub(crate) fn adopt(
         &mut self,
         path: PathBuf,
@@ -223,12 +291,16 @@ impl SessionRecorder {
         torn: bool,
         checkpoints: Vec<checkpoint::Checkpoint>,
         generation: u64,
+        model: Option<ModelSelection>,
+        honoured: bool,
     ) {
         self.active = Some((path, meta));
         self.recorded = recorded;
         self.repair_newline = torn;
         self.checkpoints_written = checkpoints.len();
         self.checkpoints = checkpoints;
+        self.keep_record = !honoured && model.is_some();
+        self.written = model;
         // The load that adopted this file bumped the generation; swallowing
         // it here keeps the next sync on the append path instead of
         // pointlessly rewriting the file that was just read.
@@ -243,6 +315,10 @@ impl SessionRecorder {
         if self.active.is_none() {
             self.active = self.create_session();
             self.publish_transcript();
+            // The create wrote the meta line and the model line together.
+            if self.active.is_some() {
+                self.written = self.recorded_selection().cloned();
+            }
         }
         let Some((path, _)) = self.active.as_ref() else {
             return; // recording disabled, or the create failed
@@ -256,6 +332,15 @@ impl SessionRecorder {
         // starts a line of its own (the junk stays, skipped by the reader).
         if std::mem::take(&mut self.repair_newline) {
             text.push('\n');
+        }
+        // A changed model selection lands BEFORE the items it produced
+        // (docs/session-model.md); the newest line is the one a resume reads.
+        if self.selection_pending()
+            && let Some(selection) = self.recorded_selection().cloned()
+        {
+            text.push_str(&session::model_line(&selection, &stamp));
+            text.push('\n');
+            self.written = Some(selection);
         }
         for item in items {
             text.push_str(&session::item_line(item, &stamp));
@@ -294,8 +379,13 @@ impl SessionRecorder {
             originator: "alter-zero".to_string(),
             version: env!("CARGO_PKG_VERSION").to_string(),
         };
-        let first_line = format!("{}\n", session::meta_line(&meta, &meta.timestamp));
-        std::fs::write(&path, first_line).ok()?;
+        let mut head = format!("{}\n", session::meta_line(&meta, &meta.timestamp));
+        // The session's model, right after the meta (docs/session-model.md).
+        if let Some(selection) = self.recorded_selection() {
+            head.push_str(&session::model_line(selection, &meta.timestamp));
+            head.push('\n');
+        }
+        std::fs::write(&path, head).ok()?;
         Some((path, meta))
     }
 
@@ -311,11 +401,18 @@ impl SessionRecorder {
         // (docs/checkpoint.md), in lockstep with the in-memory list.
         checkpoint::retain_surviving(&mut self.checkpoints, history.len());
         self.checkpoints_written = self.checkpoints.len();
-        let Some((path, meta)) = self.active.as_ref() else {
+        let Some((path, meta)) = self.active.clone() else {
             return;
         };
         let stamp = utc_stamp();
-        let mut text = format!("{}\n", session::meta_line(meta, &meta.timestamp));
+        let mut text = format!("{}\n", session::meta_line(&meta, &meta.timestamp));
+        // One model line, right after the meta — the selection the file
+        // should name (docs/session-model.md).
+        let selection = self.recorded_selection().cloned();
+        if let Some(selection) = &selection {
+            text.push_str(&session::model_line(selection, &stamp));
+            text.push('\n');
+        }
         for item in history {
             text.push_str(&session::item_line(item, &stamp));
             text.push('\n');
@@ -324,6 +421,7 @@ impl SessionRecorder {
             text.push_str(&session::checkpoint_line(checkpoint, &stamp));
             text.push('\n');
         }
+        self.written = selection;
         let _ = std::fs::write(path, text);
     }
 }

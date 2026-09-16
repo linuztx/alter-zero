@@ -40,6 +40,16 @@ first launch and is independent from then on. The settings' seed never moves,
 so a directory without an entry cannot drift; its entry can wait until it
 actually changes something, and the file stays a plain diff until then.
 
+The model has a **third axis** the other files don't: the session
+(`docs/session-model.md`). The directory's entry is what a *new* session
+starts on, and nothing more — each conversation's rollout records the model
+it actually runs on (an append-only `model` record, `ModelSelection`-shaped
+like the entry itself, written with the file and on every `/model` pick,
+Ctrl+T cycle and probe answer), and `/resume`, `--resume` and `--continue`
+bring that model back without touching the entry. So two instances in one
+directory each keep, and each resume, their own model; the entry only ever
+moves on a `/model` pick.
+
 "A directory" is the process cwd exactly as `permissions.json` keys it
 (`Session::cwd`, not the git root): `repo/` and `repo/src` are two entries.
 
@@ -90,7 +100,12 @@ the thinking/vision/context seeds, `persisted_selection` — reads that entry
 exactly as it used to read the flat file. `switch_to` writes through
 `save_selection` (`record`), `persist` through `save_capabilities`
 (`record_capabilities`); both are read-modify-writes. `ModelSession::project`
-is the key.
+is the key. A resumed conversation then overrides the entry with its own
+recorded model through `ModelSession::restore` — a switch minus the write,
+so the entry keeps meaning "what a new session here starts on"
+(`docs/session-model.md`); `persisted_selection` still names the entry's
+pair, which is what keeps a Ctrl+T in a session running another model from
+writing that model over the entry.
 
 ## `settings.json`
 
@@ -203,6 +218,10 @@ Two consequences at the boundary:
 ## What is *not* per directory
 
 - **`.env`** — a key is the user's, not a project's; `/login` is unchanged.
+- **The rollout's `model` record** — the model a *conversation* runs on
+  (`docs/session-model.md`): `config.json`'s entry seeds a new session, the
+  rollout carries the session's own from then on, and a resume restores it
+  rather than the entry.
 - **`theme.json`** — the colours are the user's: a theme is matched to the
   terminal the user sits at, not to a project (`docs/theme.md`).
 - **`permissions.json`**, **`skills.json`** — already per project; unchanged.
@@ -234,5 +253,7 @@ pre-seeded last model is pinned per directory; Phase 114 drives the two
 looks the same way — a mascot and a spinner chosen in the first directory
 are its own and the last, the second directory's first launch pins that
 last and its own choices never move the first's, and a third directory
-takes the new last. The live `/model` write is exercised against a real
-provider in the tmux run described in the commit.
+takes the new last; Phase 118 drives the session axis — two instances in
+one directory on two models, each resuming on its own while a fresh launch
+takes the entry (`docs/session-model.md`). The live `/model` write is
+exercised against a real provider in the tmux run described in the commit.

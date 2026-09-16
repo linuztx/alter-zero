@@ -29,6 +29,19 @@ release heading when a version is cut.
   auto-mode classifier run at standard speed. Existing installs probe the
   listing once in the background at their next launch, exactly as the
   vision field did when it arrived, and record what they learn.
+- **A conversation remembers its model.** Every session's rollout now
+  records the model it runs on — with the file, and again on each `/model`
+  pick, Ctrl+T cycle and capability probe — and `/resume`, `--resume` and
+  `--continue` bring that model back instead of the directory's current
+  entry. Two alter-zero instances in the same directory can each run their
+  own model: a `/model` pick in one still sets what a *new* session there
+  starts on, but the other instance keeps the model it has, and resuming
+  either conversation later reopens it on the model it was on. An
+  `ALTER_ZERO_MODEL`/`ALTER_ZERO_PROVIDER` pin still wins for the run, and a
+  recorded model whose provider has no key on this machine is reported with
+  a `Can't resume on …` toast rather than silently swapped. The record
+  carries the model's speed tier too, so a conversation switched to `/fast`
+  comes back on it (`docs/session-model.md`).
 
 ## [0.1.2] - 2026-09-15
 

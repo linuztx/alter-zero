@@ -270,7 +270,11 @@ page's grammar errors take the same shape over its six usage lines. Exit
   - `Load`: mirrors the picker's `ResumeSession` arm — restore the cwd to
     the session's final checkpoint (backup snapshot first, unknown commits
     no-op; `docs/checkpoint.md`), `app.load_session(items)`, recorder
-    `adopt` (same file accumulates, torn-tail repair included) — then
+    `adopt` (same file accumulates, torn-tail repair included), **the
+    session's model restored** from the file's newest `model` record
+    (`docs/session-model.md` — the directory's `config.json` entry seeds a
+    *new* session only; an `ALTER_ZERO_MODEL`/`ALTER_ZERO_PROVIDER` pin
+    still outranks the record for the run) — then
     commits the loaded conversation to scrollback at the boundary: the
     header banner, a blank, and `ui::repaint_lines(history, width,
     RESIZE_REFLOW_MAX_ROWS)` through the normal `insert_before` pipeline.

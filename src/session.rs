@@ -26,6 +26,7 @@ use crate::app::{
     ToolStatus, TurnSummary,
 };
 use crate::checkpoint::Checkpoint;
+use crate::llm::ModelSelection;
 
 /// The `session_meta` payload — the first line of every rollout file (codex's
 /// `SessionMeta`: identity plus enough context to label the session later).
@@ -128,6 +129,13 @@ enum ItemRecord {
     /// mid-turn. Old builds skip the unknown record type (the
     /// forward-compatibility contract).
     HookNote(HookNoteRecord),
+    /// The session's own model selection (`docs/session-model.md`) — not a
+    /// [`HistoryItem`] but recorded in the same file, so a resume brings the
+    /// conversation back on the model it ran on. The payload is the
+    /// `config.json` entry's own shape. Parsed by [`parse_model`] (the newest
+    /// wins), skipped by [`parse_session`]. Old builds skip the unknown
+    /// record type (the forward-compatibility contract).
+    Model(ModelSelection),
 }
 
 /// A [`crate::app::HookNote`] on disk: the transcript heading and the
@@ -462,6 +470,33 @@ pub fn meta_line(meta: &SessionMeta, stamp: &str) -> String {
     line(stamp, ItemRecord::SessionMeta(meta.clone()))
 }
 
+/// Serialize the session's model selection as a rollout line
+/// (`docs/session-model.md`) — written right after the meta line, and again
+/// whenever the selection changes, so the file's newest one is the model the
+/// conversation runs on. `stamp` is the write-time line stamp.
+#[must_use]
+pub fn model_line(selection: &ModelSelection, stamp: &str) -> String {
+    line(stamp, ItemRecord::Model(selection.clone()))
+}
+
+/// The model a rollout's conversation runs on: its **newest** `model` line
+/// (`docs/session-model.md`) — a `/model` pick, a Ctrl+T cycle or the probe's
+/// answer appends a record rather than rewriting the file, so the walk is
+/// from the end and stops at the first one it parses. Malformed lines and
+/// other record types are skipped, like [`parse_checkpoints`]; `None` when
+/// the file records none (a session on the dummy, or one written by a build
+/// from before the record existed), in which case a resume keeps the
+/// session's model.
+#[must_use]
+pub fn parse_model(text: &str) -> Option<ModelSelection> {
+    text.lines().rev().find_map(|line| {
+        match serde_json::from_str::<LineRecord>(line.trim()).ok()?.item {
+            ItemRecord::Model(selection) => Some(selection),
+            _ => None,
+        }
+    })
+}
+
 /// Serialize one finished history item as a rollout line. `stamp` is the
 /// write-time line stamp (UTC, boundary-supplied).
 #[must_use]
@@ -783,8 +818,10 @@ pub fn parse_session(text: &str) -> Option<(SessionMeta, Vec<HistoryItem>)> {
             }
             // Checkpoints ride the same file but aren't transcript items —
             // `parse_checkpoints` reads them for the code reset. Skip here so
-            // the loaded history matches what the user actually said.
-            ItemRecord::Checkpoint(_) => {}
+            // the loaded history matches what the user actually said. The
+            // session's model record is the same kind of sidecar
+            // (`parse_model`, docs/session-model.md).
+            ItemRecord::Checkpoint(_) | ItemRecord::Model(_) => {}
         }
     }
     meta.map(|meta| (meta, items))
@@ -900,6 +937,8 @@ pub fn rollout_rel_path(date: (i32, u32, u32), time: (u32, u32, u32), id: &str) 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use crate::llm::{ModelSelection, ThinkingSettings};
 
     fn meta() -> SessionMeta {
         SessionMeta {
@@ -1904,5 +1943,72 @@ mod tests {
             panic!()
         };
         assert_eq!(g.agents[0].status, AgentStatus::Interrupted);
+    }
+    // ===== the session's own model (docs/session-model.md) =====
+
+    fn selection() -> ModelSelection {
+        ModelSelection::new("openrouter", "vendor/model-1")
+            .with_vision(Some(true))
+            .with_context(Some(128_000))
+    }
+
+    #[test]
+    fn model_line_is_a_tagged_json_line_carrying_the_selection() {
+        let line = model_line(&selection(), "t9");
+        let value: serde_json::Value = serde_json::from_str(&line).expect("valid JSON");
+        assert_eq!(value["type"], "model");
+        assert_eq!(value["timestamp"], "t9");
+        assert_eq!(value["payload"]["provider"], "openrouter");
+        assert_eq!(value["payload"]["model"], "vendor/model-1");
+        assert_eq!(value["payload"]["vision"], true);
+        assert_eq!(value["payload"]["context"], 128_000);
+        assert!(
+            value["payload"].get("thinking").is_none(),
+            "an unknown fact stays off the line — config.json's own rule: {line}"
+        );
+        assert!(!line.contains('\n'));
+    }
+
+    #[test]
+    fn parse_model_reads_the_newest_record_back_whole() {
+        // A `/model` switch (or a Ctrl+T cycle, or the probe's answer)
+        // APPENDS a record rather than rewriting the file, so the LAST one is
+        // the session's model — with everything the session learned about it
+        // (the thinking blob included) round-tripped.
+        let first = ModelSelection::new("p", "old");
+        let last = selection().with_thinking(Some(ThinkingSettings::unsupported()));
+        let mut text = file_of(&[message(Role::User, "hi")]);
+        text.push_str(&model_line(&first, "t"));
+        text.push('\n');
+        text.push_str(&item_line(&message(Role::Assistant, "yo"), "t"));
+        text.push('\n');
+        text.push_str(&model_line(&last, "t"));
+        text.push('\n');
+        assert_eq!(parse_model(&text), Some(last));
+    }
+
+    #[test]
+    fn a_file_without_a_model_record_has_no_session_model() {
+        // A rollout recorded on the dummy, or by a build from before the
+        // record existed: nothing to restore — the session keeps its model.
+        assert_eq!(parse_model(&file_of(&[message(Role::User, "hi")])), None);
+        assert_eq!(parse_model(""), None);
+        assert_eq!(parse_model("not json\n{\"type\":\"model\"}\n"), None);
+    }
+
+    #[test]
+    fn model_lines_are_invisible_to_the_transcript_and_checkpoint_parses() {
+        // The checkpoint rule: a sidecar record among the items must not
+        // become a history item, and the other sidecar must not see it.
+        let items = vec![message(Role::User, "hi"), message(Role::Assistant, "yo")];
+        let mut text = file_of(&items);
+        text.push_str(&model_line(&selection(), "t"));
+        text.push('\n');
+        let (_, parsed) = parse_session(&text).expect("parses");
+        assert_eq!(
+            parsed, items,
+            "the model record doesn't leak into the transcript"
+        );
+        assert!(parse_checkpoints(&text).is_empty());
     }
 }

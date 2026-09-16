@@ -54,7 +54,7 @@ pub use keystore::EnvFile;
 pub use models::ModelEntry;
 pub use reasoning::{ReasoningEffort, ReasoningSupport, ThinkingMode};
 pub use service_tier::{STANDARD_LABEL, ServiceTier, SpeedState};
-pub use settings::{ModelSelection, Settings, SpeedSettings, ThinkingSettings};
+pub use settings::{ModelSelection, Settings, SpeedSettings, ThinkingSettings, env_outranks};
 
 /// One message in a chat-completion request.
 ///

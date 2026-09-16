@@ -36,7 +36,7 @@ use alter_zero::paste::PasteBurst;
 use alter_zero::project_doc;
 use alter_zero::scratchpad;
 use alter_zero::session;
-use alter_zero::stream::{CancelToken, StreamEvent};
+use alter_zero::stream::StreamEvent;
 use alter_zero::term::InlineViewport;
 use alter_zero::ui;
 
@@ -47,7 +47,7 @@ use super::recorder::SessionRecorder;
 use super::shell::{SHELL_POLL_INTERVAL, SHELL_QUIT_KILL_WINDOW};
 use super::startup::{LoadedSession, Startup, StartupSession};
 use super::view::RESIZE_REFLOW_MAX_ROWS;
-use super::workers::{ModelFetch, spawn_file_search_worker, spawn_model_fetch};
+use super::workers::{ModelFetch, spawn_file_search_worker};
 use super::{Session, StatusClocks, config, host};
 
 impl<'t> Session<'t> {
@@ -355,7 +355,7 @@ impl<'t> Session<'t> {
         let steer = alter_zero::steer::SteerQueue::new();
 
         // The reply backend and everything that selects it (docs/llm.md).
-        let mut models = ModelSession::resolve(
+        let models = ModelSession::resolve(
             &cwd,
             home.as_deref(),
             scratchpad_dir.as_deref(),
@@ -388,18 +388,24 @@ impl<'t> Session<'t> {
         let (model_tx, model_rx) = tokio::sync::mpsc::unbounded_channel::<ModelFetch>();
         // The capability probe's own channel, so a concurrently-open `/model`
         // picker can't confuse the results (docs/reasoning.md).
+        // Spawned once the startup directive is applied (`spawn_pending_probe`
+        // below): a `--resume` may replace the queued probe with its own
+        // model's (docs/session-model.md).
         let (probe_tx, probe_rx) = tokio::sync::mpsc::unbounded_channel::<ModelFetch>();
-        if let Some((provider, cfg)) = models.take_probe() {
-            spawn_model_fetch(provider, cfg, CancelToken::new(), probe_tx);
-        }
 
         // The /resume session recorder (docs/resume.md): mirrors App::history to a
         // rollout file, lazily created on the first recorded item so empty
         // sessions never touch disk. It publishes the rollout path into the
         // hooks' transcript cell whenever the active file changes
         // (docs/hooks.md).
-        let recorder =
-            SessionRecorder::new(&models.model_name(), &cwd).with_transcript(hook_transcript);
+        // …and it carries the session's own model selection, which the file's
+        // `model` line records for a resume (docs/session-model.md).
+        let recorder = SessionRecorder::new(
+            &models.model_name(),
+            models.session_selection().cloned(),
+            &cwd,
+        )
+        .with_transcript(hook_transcript);
         // The filesystem checkpoint store (docs/checkpoint.md): an isolated git
         // object store — never the user's real .git — that snapshots the whole cwd
         // per turn so a /resume or Esc-Esc backtrack can reset the code, not just
@@ -472,6 +478,7 @@ impl<'t> Session<'t> {
             device_expires: None,
             model_tx,
             model_rx,
+            probe_tx,
             probe_rx,
             bg_rx,
             agent_rx,
@@ -527,6 +534,9 @@ impl<'t> Session<'t> {
         session.report_mcp_errors();
         session.report_trust_state(trust_error);
         let picker = session.apply_startup(startup);
+        // The capability probe for whatever model the session ended up on —
+        // the directory's entry, or a resumed conversation's own.
+        session.spawn_pending_probe();
         session.paint_first_frame(picker)?;
         // The day's anonymous usage ping (docs/telemetry.md), AFTER the first
         // frame is queued so it can never delay it: the install id is minted
@@ -744,6 +754,7 @@ impl<'t> Session<'t> {
                     items,
                 } = *loaded;
                 let session_checkpoints = session::parse_checkpoints(&text);
+                let recorded_model = session::parse_model(&text);
                 let restored = self.restore_final_checkpoint(&session_checkpoints);
                 let count = items.len();
                 self.app.load_session(items);
@@ -752,6 +763,11 @@ impl<'t> Session<'t> {
                 // registry follows, exactly like the `/resume` picker's load
                 // (docs/task-tools.md).
                 self.sync_task_registry();
+                // The model side of the resume (docs/session-model.md): the
+                // conversation comes back on the model its file records —
+                // before the recorder adopts the file, which is told whether
+                // that record is what the session now runs.
+                let model = self.restore_session_model(recorded_model.as_ref());
                 let torn = !text.is_empty() && !text.ends_with('\n');
                 self.recorder.adopt(
                     path,
@@ -760,13 +776,20 @@ impl<'t> Session<'t> {
                     torn,
                     session_checkpoints,
                     self.app.history_generation(),
+                    recorded_model,
+                    model.honoured,
                 );
+                self.record_session_model(false);
                 // A --continue/--resume boot is a *resume* boundary, not a
                 // startup one: swap the seeded source so the SessionStart
                 // hooks hear what actually happened (docs/hooks.md).
                 self.models.set_session_source("resume");
                 if restored {
                     self.toast(CHECKPOINT_RESTORED_NOTICE, ToastKind::Info);
+                }
+                // Last, so the actionable failure outranks the confirmation.
+                if let Some(failure) = model.failure {
+                    self.toast(failure, ToastKind::Error);
                 }
                 false
             }
