@@ -1,6 +1,7 @@
-//! The inline `/login` onboarding — the method root, the subscription list and
-//! its device-code page, the API-key provider list and its masked key field.
-//! See `docs/llm.md` and `docs/copilot.md`.
+//! The inline `/login` onboarding — the method root, the subscription list,
+//! the sign-in method choice a two-way subscription puts first, the sign-in
+//! page, the API-key provider list and its masked key field. See
+//! `docs/llm.md`, `docs/copilot.md` and `docs/chatgpt.md`.
 
 use crate::app::ProviderChoice;
 
@@ -394,6 +395,46 @@ fn device_page_lines(device: &DeviceLogin, width: u16) -> Vec<Line<'static>> {
     login_page(blocks, width)
 }
 
+/// The sign-in method choice ([`KeyStep::SigninMethod`], `docs/chatgpt.md`):
+/// a cyan `Select {subscription} login method:` title over the ways in the
+/// chosen subscription offers — `Browser login (default)` / `Device code
+/// login (headless)` — in the root's own row dress (no status: the rows are
+/// the answers, not things that can be configured), over the root's hint.
+///
+/// **No `❯` filter and no counter.** Two rows are a question, not a list to
+/// search, and the page exists so the row's Enter can ask it rather than
+/// silently opening one flow and hiding the other. Built as blocks like the
+/// sign-in page, so the shape is rule, gap, title, gap, rows, gap, hint, gap,
+/// rule — the shape the user asked for, and the one `smoke.sh` Phase 119
+/// reads back.
+fn signin_method_page_lines(onboarding: &KeyOnboarding, width: u16) -> Vec<Line<'static>> {
+    let name = onboarding
+        .chosen_subscription()
+        .map_or("", |s| s.name.as_str());
+    // A subscription's name is the file's to choose; `login_title` `…`-cuts
+    // one that would spill past the frame and take the rule with it.
+    let title =
+        format!("{LOGIN_SIGNIN_METHOD_TITLE_PREFIX}{name}{LOGIN_SIGNIN_METHOD_TITLE_SUFFIX}");
+    let rows: Vec<Line<'static>> = onboarding
+        .signin_method_labels()
+        .iter()
+        .enumerate()
+        .map(|(i, label)| login_row(label, None, i == onboarding.selected, width))
+        .collect();
+    login_page(
+        vec![
+            vec![login_title(&title, width)],
+            rows,
+            vec![model_placeholder_row(
+                LOGIN_SIGNIN_METHOD_HINT,
+                model_meta_color(),
+                width,
+            )],
+        ],
+        width,
+    )
+}
+
 /// A framed `/login` page built from content **blocks**: top rule, gap, each
 /// non-empty block separated by exactly one blank row, gap, bottom rule.
 ///
@@ -513,7 +554,8 @@ fn list_page_lines(onboarding: &KeyOnboarding, width: u16) -> Vec<Line<'static>>
 }
 
 /// The whole framed page as lines, per step — the three lists share
-/// [`list_page_lines`], the device page is [`device_page_lines`], and the key
+/// [`list_page_lines`], the sign-in method choice is
+/// [`signin_method_page_lines`], the device page is [`device_page_lines`], and the key
 /// step is a cyan `Enter your {provider} API key` title over what the provider
 /// file says the provider *is* ([`provider_about_lines`] — omitted when it
 /// says nothing), the masked `❯` field, and a dim `Enter to save · Esc to go
@@ -525,6 +567,7 @@ pub(super) fn key_onboarding_lines(onboarding: &KeyOnboarding, width: u16) -> Ve
         KeyStep::Method | KeyStep::Subscription | KeyStep::Provider => {
             list_page_lines(onboarding, width)
         }
+        KeyStep::SigninMethod => signin_method_page_lines(onboarding, width),
         KeyStep::Device => match &onboarding.device {
             Some(device) => device_page_lines(device, width),
             // Unreachable in practice (the step and the page open together),
@@ -561,7 +604,7 @@ pub(super) fn key_onboarding_lines(onboarding: &KeyOnboarding, width: u16) -> Ve
 }
 
 /// Render the **inline** `/login` onboarding flow into the live region, in
-/// place of the composer. Five steps sharing the `/model` picker's framed look
+/// place of the composer. Six steps sharing the `/model` picker's framed look
 /// — bottom-anchored like every framed view (`docs/view-flow.md`). Pure —
 /// `render_live` paints this. See `docs/llm.md` and `docs/copilot.md`.
 pub fn render_key_onboarding(area: Rect, buf: &mut Buffer, onboarding: &KeyOnboarding) {

@@ -360,8 +360,43 @@ pub(super) fn sample_subscriptions() -> Vec<SubscriptionChoice> {
         name: "GitHub Copilot".into(),
         description: "Sign in with your GitHub account".into(),
         configured: true,
-        kind: SigninKind::DeviceCode,
+        kinds: vec![SigninKind::DeviceCode],
     }]
+}
+
+/// A subscription that offers **two** ways in — the browser (its default)
+/// and a device code for a headless machine (`docs/chatgpt.md`).
+pub(super) fn chatgpt_subscription() -> SubscriptionChoice {
+    SubscriptionChoice {
+        id: "openai_chatgpt".into(),
+        name: "ChatGPT Codex".into(),
+        description: "Sign in with your ChatGPT Plus/Pro account".into(),
+        configured: false,
+        kinds: vec![SigninKind::BrowserLink, SigninKind::DeviceCode],
+    }
+}
+
+/// `/login` open with GitHub Copilot *and* ChatGPT Codex on the subscription
+/// list — Copilot first, so the existing walks keep their rows.
+pub(super) fn login_app_with_chatgpt() -> App {
+    let mut app = App::new();
+    let mut subscriptions = sample_subscriptions();
+    subscriptions.push(chatgpt_subscription());
+    app.open_key_onboarding(sample_choices(), subscriptions, "~/.alter-zero/.env");
+    app
+}
+
+/// Drive the flow to ChatGPT Codex's sign-in method choice.
+pub(super) fn signin_method_app() -> App {
+    let mut app = login_app_with_chatgpt();
+    app.on_key(key(KeyCode::Enter)); // "Use a subscription"
+    app.on_key(key(KeyCode::Down)); // ChatGPT Codex
+    app.on_key(key(KeyCode::Enter));
+    assert_eq!(
+        app.key_onboarding.as_ref().unwrap().step,
+        KeyStep::SigninMethod
+    );
+    app
 }
 
 pub(super) fn login_app() -> App {

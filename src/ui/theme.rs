@@ -988,6 +988,21 @@ pub(super) const LOGIN_NO_METHOD_MATCH: &str = "No matching options";
 /// The list placeholder when the subscription filter matches nothing.
 pub(super) const LOGIN_NO_SUBSCRIPTION_MATCH: &str = "No matching subscriptions";
 
+// --- The sign-in method choice (docs/chatgpt.md). A subscription offering two
+// ways in — ChatGPT Codex's browser flow, or a device code for a headless
+// machine — asks which before opening a page: a cyan title naming the
+// subscription over two rows in the root's own dress, and no filter, since a
+// question with two answers is not searched. ---
+
+/// The choice's title, around the subscription's name:
+/// `Select ChatGPT Codex login method:`.
+pub(super) const LOGIN_SIGNIN_METHOD_TITLE_PREFIX: &str = "Select ";
+pub(super) const LOGIN_SIGNIN_METHOD_TITLE_SUFFIX: &str = " login method:";
+
+/// The dim hint under the choice — the root's own words: Esc steps back to
+/// the subscription list here, which is what cancelling a choice means.
+pub(super) const LOGIN_SIGNIN_METHOD_HINT: &str = LOGIN_METHOD_HINT;
+
 // --- The device-code page (docs/copilot.md). A subscription sign-in shows the
 // provider's one-time code in a rounded box over the URL to enter it at, and
 // waits. No browser is launched — the URL is text the user opens themselves. ---

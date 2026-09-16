@@ -1,6 +1,7 @@
 //! The inline `/login` onboarding: pick how you sign in — a **subscription**
-//! (GitHub Copilot's device flow) or an **API key** (pick a provider, paste its
-//! key). See `docs/llm.md` and `docs/copilot.md`.
+//! (GitHub Copilot's device flow, ChatGPT Codex's browser or device code) or
+//! an **API key** (pick a provider, paste its key). See `docs/llm.md`,
+//! `docs/copilot.md` and `docs/chatgpt.md`.
 
 use std::time::Duration;
 
@@ -19,6 +20,11 @@ pub enum KeyStep {
     Method,
     /// Choosing which subscription to sign in to (a filterable list).
     Subscription,
+    /// Choosing **how** the chosen subscription signs in, when it offers more
+    /// than one way — ChatGPT Codex's browser or device code
+    /// (`docs/chatgpt.md`). A titled two-row question, not a searchable
+    /// list; a subscription offering one way skips it.
+    SigninMethod,
     /// The chosen subscription's device-code page (its code, and the wait).
     Device,
     /// Choosing which provider to set a key for (a filterable list).
@@ -121,9 +127,38 @@ pub enum SigninKind {
     #[default]
     DeviceCode,
     /// A long authorize link the user opens; the browser redirects back to a
-    /// loopback listener, so there is nothing to type (OpenAI ChatGPT).
+    /// loopback listener, so there is nothing to type (ChatGPT Codex).
     BrowserLink,
 }
+
+impl SigninKind {
+    /// The row this kind takes on the sign-in method choice
+    /// ([`KeyStep::SigninMethod`]): `Browser login (default)` / `Device code
+    /// login (headless)`. The first kind a subscription lists is its default
+    /// and says so; otherwise the device code says what it is *for*, since
+    /// "headless" is the one word that tells a user on an SSH box which row
+    /// is theirs, and the browser row needs no qualifier at all.
+    #[must_use]
+    pub fn method_label(self, default: bool) -> String {
+        let (name, note) = match self {
+            Self::BrowserLink => (LOGIN_BROWSER_METHOD, None),
+            Self::DeviceCode => (LOGIN_DEVICE_METHOD, Some(LOGIN_HEADLESS_NOTE)),
+        };
+        match (default, note) {
+            (true, _) => format!("{name} ({LOGIN_DEFAULT_NOTE})"),
+            (false, Some(note)) => format!("{name} ({note})"),
+            (false, None) => name.to_string(),
+        }
+    }
+}
+
+/// The method rows' wording — the two kinds by name, and the parenthesised
+/// notes: the default (whichever kind is listed first) and the device code's
+/// reason to exist.
+const LOGIN_BROWSER_METHOD: &str = "Browser login";
+const LOGIN_DEVICE_METHOD: &str = "Device code login";
+const LOGIN_DEFAULT_NOTE: &str = "default";
+const LOGIN_HEADLESS_NOTE: &str = "headless";
 
 /// One selectable subscription row — the same shape as [`ProviderChoice`] but
 /// carrying a *description* instead of an env var, since signing in is a flow
@@ -138,8 +173,27 @@ pub struct SubscriptionChoice {
     pub description: String,
     /// Whether this subscription is already signed in (shown with a ✓).
     pub configured: bool,
-    /// Which sign-in page this row opens.
-    pub kind: SigninKind,
+    /// The sign-in pages this row can open, **the first being the default**.
+    /// One kind opens its page at once; more than one puts the choice to the
+    /// user first ([`KeyStep::SigninMethod`]) — ChatGPT Codex offers its
+    /// browser flow and, for a headless machine, a device code
+    /// (`docs/chatgpt.md`).
+    pub kinds: Vec<SigninKind>,
+}
+
+impl SubscriptionChoice {
+    /// The page Enter opens when there is no choice to make — the first kind
+    /// listed, or the device page for a row that (impossibly) lists none.
+    #[must_use]
+    pub fn default_kind(&self) -> SigninKind {
+        self.kinds.first().copied().unwrap_or_default()
+    }
+
+    /// Does this row have more than one way in, so that Enter asks which?
+    #[must_use]
+    pub fn offers_choice(&self) -> bool {
+        self.kinds.len() > 1
+    }
 }
 
 /// How far the device-code sign-in has got. The page stays up through every
@@ -205,8 +259,10 @@ impl DeviceLogin {
 /// The inline `/login` onboarding flow's state (`None` on [`App`] when closed).
 /// Like the `/model` picker it **replaces the composer** in the bottom live
 /// region; unlike it, it's a multi-step flow rooted at [`KeyStep::Method`] —
-/// a subscription sign-in ([`KeyStep::Subscription`] → [`KeyStep::Device`]) or
-/// an API key ([`KeyStep::Provider`] → [`KeyStep::Key`]). The chosen key is
+/// a subscription sign-in ([`KeyStep::Subscription`] → [`KeyStep::Device`],
+/// with [`KeyStep::SigninMethod`] between them for a subscription that offers
+/// two ways in) or an API key ([`KeyStep::Provider`] → [`KeyStep::Key`]). The
+/// chosen key is
 /// persisted to `.env` by the boundary ([`Action::SaveApiKey`]). See
 /// `docs/llm.md` and `docs/copilot.md`.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -229,6 +285,12 @@ pub struct KeyOnboarding {
     /// step opens so the key entry keeps its provider even as the (unused)
     /// filter would otherwise reorder matches.
     pub chosen: Option<usize>,
+    /// The subscription whose sign-in method is being chosen (an index into
+    /// `subscriptions`), set when [`KeyStep::SigninMethod`] opens and kept
+    /// through the page it opens — so Esc from that page returns to the
+    /// choice rather than the list. `None` for a subscription that offered
+    /// one way in and never asked.
+    pub chosen_subscription: Option<usize>,
     /// The API key being typed / pasted (the key step). Rendered masked.
     pub key_input: String,
     /// The open device-code page ([`KeyStep::Device`]); `None` otherwise.
@@ -322,14 +384,65 @@ impl KeyOnboarding {
         self.chosen.and_then(|i| self.providers.get(i))
     }
 
+    /// The subscription whose sign-in method is being chosen (the method
+    /// step, and the page it opened), if any.
+    #[must_use]
+    pub fn chosen_subscription(&self) -> Option<&SubscriptionChoice> {
+        self.chosen_subscription
+            .and_then(|i| self.subscriptions.get(i))
+    }
+
+    /// The ways in the chosen subscription offers, in row order — the method
+    /// step's rows. Empty when no subscription is chosen.
+    #[must_use]
+    pub fn signin_kinds(&self) -> &[SigninKind] {
+        self.chosen_subscription()
+            .map_or(&[], |s| s.kinds.as_slice())
+    }
+
+    /// The highlighted way in (the method step).
+    #[must_use]
+    pub fn highlighted_signin_kind(&self) -> Option<SigninKind> {
+        self.signin_kinds().get(self.selected).copied()
+    }
+
+    /// The method step's row labels, in order — the first marked as the
+    /// default ([`SigninKind::method_label`]).
+    #[must_use]
+    pub fn signin_method_labels(&self) -> Vec<String> {
+        self.signin_kinds()
+            .iter()
+            .enumerate()
+            .map(|(i, kind)| kind.method_label(i == 0))
+            .collect()
+    }
+
     /// How many rows the current list step offers — the wrap/clamp bound the
-    /// key handling shares across the three lists.
+    /// key handling shares across the lists.
     fn list_len(&self) -> usize {
         match self.step {
             KeyStep::Method => self.method_matches().len(),
             KeyStep::Subscription => self.subscription_matches().len(),
+            KeyStep::SigninMethod => self.signin_kinds().len(),
             KeyStep::Provider => self.matches().len(),
             KeyStep::Device | KeyStep::Key => 0,
+        }
+    }
+
+    /// Open the sign-in page for `choice` with `kind`'s flow, and tell the
+    /// boundary to run it. The row's name titles the page; the kind decides
+    /// its wording and which flow the worker runs (`docs/chatgpt.md`).
+    fn open_signin_page(&mut self, choice: &SubscriptionChoice, kind: SigninKind) -> Action {
+        self.go(KeyStep::Device);
+        self.device = Some(DeviceLogin {
+            provider_id: choice.id.clone(),
+            provider_name: choice.name.clone(),
+            kind,
+            ..DeviceLogin::default()
+        });
+        Action::StartDeviceLogin {
+            provider: choice.id.clone(),
+            kind,
         }
     }
 
@@ -426,10 +539,14 @@ impl App {
     ///   type-to-filter with Backspace, `Enter` activates the highlighted row,
     ///   `Esc` clears a non-empty filter then steps *back* (the method step,
     ///   being the root, closes instead), `Ctrl+C` closes.
+    /// - **Sign-in method** (a subscription offering two ways in): ↑/↓ move
+    ///   wrapping, Home/End jump, `Enter` opens the highlighted way's page,
+    ///   `Esc` steps back to the subscription list, `Ctrl+C` closes. No
+    ///   filter — it is a question with two answers — so typing does nothing.
     /// - **Device** (the sign-in page): `c` copies the code — or, on a
-    ///   browser flow, the link — once there is one,
-    ///   `Esc` cancels the sign-in back to the subscription list, `Ctrl+C`
-    ///   closes.
+    ///   browser flow, the link — once there is one, `Esc` cancels the
+    ///   sign-in back to where it was opened from (the method choice, else
+    ///   the subscription list), `Ctrl+C` closes.
     /// - **Key** (masked entry — or a host shown plain, [`KeyKind`]):
     ///   printable keys and Backspace edit the field, `Enter` saves a
     ///   non-empty value ([`Action::SaveApiKey`]) — or a host field's default
@@ -457,6 +574,7 @@ impl App {
             KeyStep::Method | KeyStep::Subscription | KeyStep::Provider => {
                 self.on_key_login_list(key)
             }
+            KeyStep::SigninMethod => self.on_key_signin_method(key),
             KeyStep::Device => self.on_key_device(key),
             KeyStep::Key => self.on_key_login_key(key),
         }
@@ -528,14 +646,20 @@ impl App {
                 let Some(choice) = onboarding.highlighted_subscription().cloned() else {
                     return Action::None;
                 };
-                onboarding.go(KeyStep::Device);
-                onboarding.device = Some(DeviceLogin {
-                    provider_id: choice.id.clone(),
-                    provider_name: choice.name,
-                    kind: choice.kind,
-                    ..DeviceLogin::default()
-                });
-                Action::StartDeviceLogin(choice.id)
+                // A row with two ways in asks which first; the index is
+                // pinned in the *unfiltered* list, the provider step's rule.
+                if choice.offers_choice() {
+                    let idx = onboarding
+                        .subscriptions
+                        .iter()
+                        .position(|s| s.id == choice.id);
+                    onboarding.go(KeyStep::SigninMethod);
+                    onboarding.chosen_subscription = idx;
+                    return Action::None;
+                }
+                onboarding.chosen_subscription = None;
+                let kind = choice.default_kind();
+                onboarding.open_signin_page(&choice, kind)
             }
             KeyStep::Provider => {
                 // Pin the highlighted provider's index in the *unfiltered*
@@ -552,13 +676,48 @@ impl App {
                 }
                 Action::None
             }
-            KeyStep::Device | KeyStep::Key => Action::None,
+            KeyStep::SigninMethod | KeyStep::Device | KeyStep::Key => Action::None,
         }
     }
 
+    /// Keys on the sign-in method choice: ↑/↓ (wrapping) and Home/End move,
+    /// `Enter` opens the highlighted way's page, `Esc` steps back to the
+    /// subscription list. Everything else is swallowed — two rows are a
+    /// question, not a list to search, so there is no filter to type into.
+    fn on_key_signin_method(&mut self, key: KeyEvent) -> Action {
+        let Some(onboarding) = self.key_onboarding.as_mut() else {
+            return Action::None;
+        };
+        let len = onboarding.list_len();
+        match key.code {
+            KeyCode::Up => onboarding.selected = wrap_step(onboarding.selected, len, -1),
+            KeyCode::Down => onboarding.selected = wrap_step(onboarding.selected, len, 1),
+            KeyCode::Home => onboarding.selected = 0,
+            KeyCode::End => onboarding.selected = len.saturating_sub(1),
+            KeyCode::Enter => {
+                let Some(kind) = onboarding.highlighted_signin_kind() else {
+                    return Action::None;
+                };
+                let Some(choice) = onboarding.chosen_subscription().cloned() else {
+                    return Action::None;
+                };
+                return onboarding.open_signin_page(&choice, kind);
+            }
+            KeyCode::Esc => {
+                onboarding.chosen_subscription = None;
+                onboarding.go(KeyStep::Subscription);
+            }
+            _ => {}
+        }
+        Action::None
+    }
+
     /// Keys on the device-code page: `c` copies the code, `Esc` cancels the
-    /// sign-in back to the subscription list. Everything else is swallowed —
-    /// the page is a wait, not a field.
+    /// sign-in back to where it was opened from — the method choice, with the
+    /// way just tried still highlighted (codex's own browser page says "on a
+    /// headless machine, press Esc and choose the device code", so the choice
+    /// must be one Esc away), else the subscription list. Everything else is
+    /// swallowed — the page is a wait, not a field.
     fn on_key_device(&mut self, key: KeyEvent) -> Action {
         let Some(onboarding) = self.key_onboarding.as_mut() else {
             return Action::None;
@@ -572,8 +731,15 @@ impl App {
                     Action::CopyDeviceCode(target.to_string())
                 }),
             KeyCode::Esc => {
-                onboarding.device = None;
-                onboarding.go(KeyStep::Subscription);
+                let tried = onboarding.device.take().map(|d| d.kind);
+                if onboarding.chosen_subscription().is_some() {
+                    onboarding.go(KeyStep::SigninMethod);
+                    onboarding.selected = tried
+                        .and_then(|kind| onboarding.signin_kinds().iter().position(|k| *k == kind))
+                        .unwrap_or(0);
+                } else {
+                    onboarding.go(KeyStep::Subscription);
+                }
                 Action::CancelDeviceLogin
             }
             _ => Action::None,
@@ -636,8 +802,8 @@ impl App {
     /// pasted text is the API key — interior whitespace and control characters
     /// (a trailing newline from the paste, say) are dropped and the rest
     /// appended. On a list step it extends the filter query like a
-    /// [`paste_into_resume_search`], whitespace collapsed; the device page has
-    /// no field, so a paste there is ignored.
+    /// [`paste_into_resume_search`], whitespace collapsed; the device page and
+    /// the sign-in method choice have no field, so a paste there is ignored.
     ///
     /// [`paste_into_resume_search`]: App::paste_into_resume_search
     pub fn paste_into_key_onboarding(&mut self, pasted: &str) {
@@ -652,7 +818,7 @@ impl App {
                     .collect();
                 onboarding.key_input.push_str(&cleaned);
             }
-            KeyStep::Device => {}
+            KeyStep::SigninMethod | KeyStep::Device => {}
             KeyStep::Method | KeyStep::Subscription | KeyStep::Provider => {
                 let flat = pasted.split_whitespace().collect::<Vec<_>>().join(" ");
                 if flat.is_empty() {

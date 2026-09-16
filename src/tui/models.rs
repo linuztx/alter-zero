@@ -245,6 +245,12 @@ impl ModelSession {
         // stays on disk and the next launch is a forced re-login
         // (`docs/chatgpt.md`).
         llm::chatgpt::set_store_path(env_file_path.clone());
+        // And where its sign-in flows go, when the environment points them
+        // somewhere other than OpenAI's own auth server — read here, at the
+        // boundary, and handed in once (`docs/chatgpt.md`).
+        if let Some(issuer) = config::openai_issuer() {
+            llm::chatgpt::set_issuer(issuer);
+        }
         // Anthropic rotates its refresh token the same way, and the write-back
         // happens just as deep on a backend thread (`docs/claude.md`).
         llm::claude::set_store_path(env_file_path.clone());

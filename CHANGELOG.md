@@ -12,6 +12,31 @@ release heading when a version is cut.
 
 ## [Unreleased]
 
+### Added
+
+- **Device code sign-in for ChatGPT Codex** (`docs/chatgpt.md`). A machine
+  with no browser — an SSH session, a container — could not sign in to the
+  ChatGPT subscription, since its only flow handed the user a link a browser
+  had to bring back to a local port. Enter on the `ChatGPT Codex` row in
+  `/login` now asks how to sign in first, `Browser login (default)` or
+  `Device code login (headless)`, and the device row runs Codex's own
+  device-code flow: a one-time code shown beside `auth.openai.com/codex/device`
+  on the same page GitHub Copilot's code lands on, counted down while OpenAI
+  is polled for the approval, and the same refresh token stored at the end —
+  `/model`, the ✓ marks and the next launch need nothing new. Esc from either
+  sign-in page returns to the choice with the row just tried highlighted.
+  `ALTER_ZERO_OPENAI_ISSUER` points both flows at another auth server (a
+  fork's own, or the smoke suite's local stub, which drives the whole flow
+  offline).
+
+### Changed
+
+- The OpenAI subscription provider is named **ChatGPT Codex** in `/login`
+  and the docs (it was `OpenAI (ChatGPT)`): it is the ChatGPT seat reached
+  the way Codex reaches it, and the old name read as a second OpenAI API-key
+  provider. The provider id, its `OPENAI_CHATGPT_REFRESH_TOKEN` variable and
+  every stored selection are unchanged, so nothing needs signing in again.
+
 ### Fixed
 
 - **A picture rewritten in place shows its new bytes.** Ask the agent to

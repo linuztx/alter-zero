@@ -317,7 +317,7 @@ fn login_subscriptions() -> Vec<SubscriptionChoice> {
         name: "GitHub Copilot".into(),
         description: "Sign in with your GitHub account".into(),
         configured: true,
-        kind: SigninKind::DeviceCode,
+        kinds: vec![SigninKind::DeviceCode],
     }]
 }
 
@@ -380,6 +380,25 @@ pub(super) fn login_app_provider() -> App {
 pub(super) fn login_app_subscription() -> App {
     let mut app = login_app();
     app.key_onboarding.as_mut().unwrap().step = KeyStep::Subscription;
+    app
+}
+
+/// …or on ChatGPT Codex's sign-in method choice — the one subscription that
+/// offers two ways in, a browser and a device code (`docs/chatgpt.md`).
+pub(super) fn login_app_signin_method() -> App {
+    let mut app = App::new();
+    let mut subscriptions = login_subscriptions();
+    subscriptions.push(SubscriptionChoice {
+        id: "openai_chatgpt".into(),
+        name: "ChatGPT Codex".into(),
+        description: "Sign in with your ChatGPT Plus/Pro account".into(),
+        configured: false,
+        kinds: vec![SigninKind::BrowserLink, SigninKind::DeviceCode],
+    });
+    app.open_key_onboarding(login_choices(), subscriptions, "~/.alter-zero/.env");
+    let onboarding = app.key_onboarding.as_mut().unwrap();
+    onboarding.step = KeyStep::SigninMethod;
+    onboarding.chosen_subscription = Some(1);
     app
 }
 

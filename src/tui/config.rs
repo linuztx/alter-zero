@@ -276,20 +276,24 @@ pub(crate) fn subscription_choices(
             name: p.name.clone(),
             description: p.description.clone().unwrap_or_default(),
             configured: resolve_api_key(providers, env_file, id).is_some(),
-            kind: signin_kind(p.auth),
+            kinds: signin_kinds(p.auth),
         })
         .collect()
 }
 
-/// Which sign-in page a scheme opens. The provider file decides, so a row's
-/// page is never guessed from what the flow happens to have filled in yet.
-fn signin_kind(auth: AuthScheme) -> SigninKind {
+/// Which sign-in pages a scheme offers, the first being its default. The
+/// provider file decides, so a row's page is never guessed from what the
+/// flow happens to have filled in yet — and a scheme listing two puts the
+/// choice to the user (`KeyStep::SigninMethod`).
+fn signin_kinds(auth: AuthScheme) -> Vec<SigninKind> {
     match auth {
-        // Both are a browser page with a link and a wait; only the constants
-        // behind them differ (`docs/chatgpt.md`, `docs/claude.md`).
-        AuthScheme::OpenAiChatGpt | AuthScheme::AnthropicConsole => SigninKind::BrowserLink,
+        // The browser by default, and OpenAI's device code for a headless
+        // machine — the two flows Codex itself offers (`docs/chatgpt.md`).
+        AuthScheme::OpenAiChatGpt => vec![SigninKind::BrowserLink, SigninKind::DeviceCode],
+        // A browser page with a link and a wait (`docs/claude.md`).
+        AuthScheme::AnthropicConsole => vec![SigninKind::BrowserLink],
         AuthScheme::GithubCopilot | AuthScheme::ApiKey | AuthScheme::OptionalKey => {
-            SigninKind::DeviceCode
+            vec![SigninKind::DeviceCode]
         }
     }
 }
@@ -881,6 +885,17 @@ pub(crate) fn update_telemetry_file(
         let _ = std::fs::write(path, file.to_json());
     }
     file
+}
+
+/// Where OpenAI's sign-in flows go: `ALTER_ZERO_OPENAI_ISSUER` when set and
+/// non-empty (the smoke suite's local stand-in for the auth server, or a
+/// fork's own), else `None` — the module's built-in default stands
+/// (`docs/chatgpt.md`).
+pub(crate) fn openai_issuer() -> Option<String> {
+    std::env::var(alter_zero::llm::chatgpt::ISSUER_ENV)
+        .ok()
+        .map(|url| url.trim().to_string())
+        .filter(|url| !url.is_empty())
 }
 
 /// Where the daily ping goes: `ALTER_ZERO_TELEMETRY_URL` when set and

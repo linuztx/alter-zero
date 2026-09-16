@@ -28,7 +28,7 @@ use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::thread::JoinHandle;
 
-use alter_zero::app::{App, ToastKind};
+use alter_zero::app::{App, SigninKind, ToastKind};
 use alter_zero::clipboard;
 use alter_zero::file_search::{FileMatch, rank_files};
 use alter_zero::llm::{self, ModelConfig, ModelEntry};
@@ -65,20 +65,65 @@ pub(crate) enum DeviceEvent {
 /// approves, the prompt expires, or `cancel` trips (Esc on the page, or the
 /// flow being closed out from under it).
 ///
-/// Which flow runs is the **provider's**, not a guess: GitHub's device code
-/// (`docs/copilot.md`) or OpenAI's browser PKCE (`docs/chatgpt.md`). Both
-/// report on the same two messages, because both pages are the same page —
-/// something to show, then a wait.
+/// Which flow runs is the **provider's** and the **row's**, not a guess:
+/// GitHub's device code (`docs/copilot.md`), OpenAI's browser PKCE or its
+/// device code (`docs/chatgpt.md` — the one provider offering two, so its
+/// `kind` is what the user picked on the method choice), or Anthropic's
+/// browser PKCE (`docs/claude.md`). All report on the same two messages,
+/// because every page is the same page — something to show, then a wait.
 pub(crate) fn spawn_signin(
     provider: String,
+    kind: SigninKind,
     cancel: CancelToken,
     tx: tokio::sync::mpsc::UnboundedSender<DeviceEvent>,
 ) {
-    match provider.as_str() {
-        CHATGPT_PROVIDER => spawn_chatgpt_login(cancel, tx),
-        CLAUDE_PROVIDER => spawn_claude_login(cancel, tx),
+    match (provider.as_str(), kind) {
+        (CHATGPT_PROVIDER, SigninKind::DeviceCode) => spawn_chatgpt_device_login(cancel, tx),
+        (CHATGPT_PROVIDER, SigninKind::BrowserLink) => spawn_chatgpt_login(cancel, tx),
+        (CLAUDE_PROVIDER, _) => spawn_claude_login(cancel, tx),
         _ => spawn_device_login(cancel, tx),
     }
+}
+
+/// Run OpenAI's device-code flow: ask for a code, publish it with the page
+/// to enter it at, then poll until the user approves it there — the same
+/// shape as GitHub's, on OpenAI's own endpoints (`docs/chatgpt.md`).
+fn spawn_chatgpt_device_login(
+    cancel: CancelToken,
+    tx: tokio::sync::mpsc::UnboundedSender<DeviceEvent>,
+) {
+    std::thread::spawn(move || {
+        let device = match llm::chatgpt::request_device_code() {
+            Ok(device) => device,
+            Err(e) => {
+                let _ = tx.send(DeviceEvent::Done(Err(e.to_string())));
+                return;
+            }
+        };
+        if tx
+            .send(DeviceEvent::Code {
+                verification_uri: llm::chatgpt::device_verification_url(),
+                user_code: device.user_code().to_string(),
+                expires_at: std::time::Instant::now() + llm::chatgpt::DEVICE_CODE_TIMEOUT,
+            })
+            .is_err()
+        {
+            return;
+        }
+        let result = llm::chatgpt::await_device_approval(&device, &cancel)
+            // The seat rides back with the token, exactly as the browser
+            // flow's does.
+            .map(|(refresh, access)| {
+                (
+                    refresh,
+                    access.plan.as_deref().map(llm::chatgpt::plan_label),
+                )
+            })
+            .map_err(|e| e.to_string());
+        if !cancel.is_cancelled() {
+            let _ = tx.send(DeviceEvent::Done(result));
+        }
+    });
 }
 
 /// The provider id whose sign-in is Anthropic's browser flow. Matching on the

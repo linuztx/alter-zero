@@ -24,17 +24,23 @@ sleep 0.5
 # the wrong sign-in page — and the failure reads as "the browser page fell
 # back to the device wording", which blames the code under test rather than
 # the walk. `chatgpt` matches this row's id, name and description, and no
-# other row's anything.
+# other row's anything. Enter on the row opens the sign-in METHOD choice
+# (this subscription offers a device code too — Phase 119 drives that half),
+# on which the browser row is the highlighted default: one more Enter.
 tmux send-keys -t "$S104" Enter
 sleep 0.4
 tmux send-keys -t "$S104" -l "chatgpt"
 sleep 0.3
 tmux send-keys -t "$S104" Enter
+sleep 0.4
+chatgpt_choice="$(tmux capture-pane -t "$S104" -p)"
+expect_has "$chatgpt_choice" -E '^ *→ Browser login \(default\)' "the row did not open the method choice with the browser row highlighted"
+tmux send-keys -t "$S104" Enter
 sleep 1.2
 chatgpt_page="$(tmux capture-pane -t "$S104" -p)"
 echo "==== Phase 104: the ChatGPT browser sign-in page ===="
 printf '%s\n' "$chatgpt_page"
-for want in "Sign in to OpenAI (ChatGPT)" "this window continues by itself" \
+for want in "Sign in to ChatGPT Codex" "this window continues by itself" \
 	"c copy link" "Waiting for the browser"; do
 	expect_has "$chatgpt_page" -F "$want" "the browser sign-in page did not show \"$want\""
 done
@@ -58,14 +64,24 @@ expect_has "$chatgpt_page" -E '^ *https://auth\.openai\.com/oauth/authorize' "th
 for unwanted in "enter this one-time code" "c copy code" "Open https://"; do
 	expect_lacks "$chatgpt_page" -F "$unwanted" "the browser page fell back to the device-code wording (\"$unwanted\")"
 done
-# Esc cancels the sign-in back to the subscription list, releasing the port.
+# Esc cancels the sign-in back to the method choice it was opened from —
+# releasing the port — with the browser row still highlighted, so the other
+# row is one keystroke away; a second Esc steps back to the subscription list.
 tmux send-keys -t "$S104" Escape
 sleep 0.5
 chatgpt_back="$(tmux capture-pane -t "$S104" -p)"
-if ! printf '%s' "$chatgpt_back" | grep -qF "OpenAI (ChatGPT)"; then
-	fail "Esc on the sign-in page did not return to the subscription list"
+if ! printf '%s' "$chatgpt_back" | grep -qF "Select ChatGPT Codex login method:"; then
+	fail "Esc on the sign-in page did not return to the method choice"
 	printf '%s\n' "$chatgpt_back" >&2
 fi
+expect_has "$chatgpt_back" -E '^ *→ Browser login \(default\)' "the row just tried is not the highlighted one after Esc"
 expect_lacks "$chatgpt_back" -F "Waiting for the browser" "Esc left the sign-in page up"
+tmux send-keys -t "$S104" Escape
+sleep 0.4
+chatgpt_list="$(tmux capture-pane -t "$S104" -p)"
+if ! printf '%s' "$chatgpt_list" | grep -qF "enter sign in"; then
+	fail "Esc on the method choice did not return to the subscription list"
+	printf '%s\n' "$chatgpt_list" >&2
+fi
 tmux kill-session -t "$S104" 2>/dev/null
 echo "==== Phase 104: the browser sign-in page is worded for a link, not a code ===="

@@ -9,6 +9,8 @@ step that asks the prior question first, and a second half behind it.
 ```
 /login
   ├─ Use a subscription ──► GitHub Copilot ──► device code ──► (approved)
+  │                    ├──► ChatGPT Codex ──► browser | device code ──► (approved)   docs/chatgpt.md
+  │                    └──► Anthropic Console ──► browser ──► (approved)              docs/claude.md
   └─ Use an API key ──────► Agent Zero API / Venice / OpenRouter / … ──► paste the key
 ```
 
@@ -19,7 +21,9 @@ next launch all keep working with no second mechanism to teach them.
 
 ## The pages
 
-Five steps, one `KeyOnboarding` (`src/app/login.rs`), all sharing the `/model`
+Six steps, one `KeyOnboarding` (`src/app/login.rs`) — the sixth, the sign-in
+method choice a two-way subscription puts in front of its page, is
+`docs/chatgpt.md`'s — all sharing the `/model`
 picker's frame. **Every title is cyan** (`login_title_color()` = the palette
 accent the whole picker family selects with), so the flow's headings read as
 one rather than as a fourth colour to learn.
@@ -51,7 +55,7 @@ would say nothing they don't. Type-to-filter works here like every list step
   ❯
 
 → GitHub Copilot · ✔ configured
-  OpenAI (ChatGPT) · ◯ unconfigured
+  ChatGPT Codex · ◯ unconfigured
   (1/2)
 
   ↑↓ navigate  enter sign in  esc back

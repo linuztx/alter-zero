@@ -862,9 +862,11 @@ pub fn cursor_visible(app: &App) -> bool {
         return false;
     }
     // The `/login` device page is a wait, not a field — the same menu rule: a
-    // kitty cursor trail would streak across it on every countdown tick.
+    // kitty cursor trail would streak across it on every countdown tick. The
+    // sign-in method choice above it has nothing to type into either
+    // (`docs/chatgpt.md`).
     if let Some(onboarding) = &app.key_onboarding
-        && onboarding.step == KeyStep::Device
+        && matches!(onboarding.step, KeyStep::Device | KeyStep::SigninMethod)
     {
         return false;
     }
@@ -1145,10 +1147,11 @@ pub fn cursor_position(area: Rect, app: &App) -> (u16, u16) {
         let lines = super::login_view::key_onboarding_lines(onboarding, area.width);
         let prompt = super::login_view::login_prompt_row(&lines);
         let (query_cols, row) = match onboarding.step {
-            // The device page has no field at all; the (hidden — see
-            // `cursor_visible`) caret parks at the frame's top, off the code
-            // and out of the way of the countdown's redraws.
-            KeyStep::Device => (0, DEVICE_CURSOR_ROW),
+            // The device page has no field at all, nor has the sign-in method
+            // choice before it; the (hidden — see `cursor_visible`) caret
+            // parks at the frame's top, off the code and the rows and out of
+            // the way of the countdown's redraws.
+            KeyStep::SigninMethod | KeyStep::Device => (0, DEVICE_CURSOR_ROW),
             // One mask glyph per key character sits after the prompt.
             KeyStep::Key => (
                 onboarding.key_input.chars().count(),

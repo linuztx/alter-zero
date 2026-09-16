@@ -35,7 +35,7 @@ printf '%s\n' "$login_subs"
 # The rows are names and their ✓, not sentences: the one-line descriptions
 # used to trail each name and were dropped so the three lists read as one
 # shape. What the list must still show is every subscription, by name.
-for want in "Anthropic Console" "GitHub Copilot" "OpenAI (ChatGPT)" "enter sign in"; do
+for want in "Anthropic Console" "GitHub Copilot" "ChatGPT Codex" "enter sign in"; do
 	expect_has "$login_subs" -F "$want" "the subscription list did not show \"$want\""
 done
 expect_lacks "$login_subs" -F "Sign in with your" "a row still trails its description"
