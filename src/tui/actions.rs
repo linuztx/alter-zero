@@ -200,7 +200,9 @@ impl Session<'_> {
                 env_var,
                 key,
             } => self.save_api_key(&provider, &env_var, &key),
-            Action::StartDeviceLogin(provider) => self.start_device_login(&provider),
+            Action::StartDeviceLogin { provider, kind } => {
+                self.start_device_login(&provider, kind);
+            }
             Action::CancelDeviceLogin => self.cancel_device_login(),
             Action::CopyDeviceCode(code) => self.copy_device_code(&code),
             Action::OpenSettings => self.open_settings(),

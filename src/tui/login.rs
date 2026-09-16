@@ -3,7 +3,7 @@
 //! sign-in on a worker, and persisting what it mints. See `docs/copilot.md`
 //! and `docs/llm.md`.
 
-use alter_zero::app::ToastKind;
+use alter_zero::app::{SigninKind, ToastKind};
 use alter_zero::clipboard;
 use alter_zero::llm;
 use alter_zero::stream::CancelToken;
@@ -28,12 +28,12 @@ impl Session<'_> {
             .open_key_onboarding(providers, subscriptions, env_path);
     }
 
-    /// Enter on a subscription row: start its device sign-in on a worker
-    /// thread. The pure core already opened the page; this only supplies it.
-    /// A provider that isn't actually a device-flow one reports on the page
-    /// rather than silently doing nothing — the row could only come from a
-    /// provider file we misread.
-    pub(crate) fn start_device_login(&mut self, provider: &str) {
+    /// Enter on a subscription row (or its sign-in method choice): start the
+    /// sign-in `kind` names on a worker thread. The pure core already opened
+    /// the page; this only supplies it. A provider that isn't actually a
+    /// sign-in one reports on the page rather than silently doing nothing —
+    /// the row could only come from a provider file we misread.
+    pub(crate) fn start_device_login(&mut self, provider: &str, kind: SigninKind) {
         self.cancel_device_login();
         if !self.models.is_subscription(provider) {
             self.app
@@ -42,7 +42,7 @@ impl Session<'_> {
         }
         let cancel = CancelToken::new();
         self.device_cancel = Some(cancel.clone());
-        spawn_signin(provider.to_string(), cancel, self.device_tx.clone());
+        spawn_signin(provider.to_string(), kind, cancel, self.device_tx.clone());
     }
 
     /// Reap a running device flow's worker, if any. Idempotent — Esc, Ctrl+C

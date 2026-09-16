@@ -161,17 +161,18 @@ api_model_base = "https://openrouter.ai/api/v1"
 api_base = "https://openrouter.ai/api/v1"
 
 # OpenAI's ChatGPT seat is a *subscription* too, and a second kind of sign-in:
-# `/login` runs OpenAI's PKCE loopback flow in the browser (docs/chatgpt.md).
-# What `api_key_env` stores is the long-lived **refresh** token; every request
-# mints a ~1h access token from it, so nothing here is sent verbatim. The
-# backend speaks the **Responses** API, not chat completions — hence
-# `wire_api` — and `originator` is server-side allowlisted: a value OpenAI
-# does not know earns a 403.
+# `/login` runs OpenAI's PKCE loopback flow in the browser — or, on a headless
+# machine, Codex's own device code; Enter on the row asks which
+# (docs/chatgpt.md). What `api_key_env` stores is the long-lived **refresh**
+# token; every request mints a ~1h access token from it, so nothing here is
+# sent verbatim. The backend speaks the **Responses** API, not chat
+# completions — hence `wire_api` — and `originator` is server-side
+# allowlisted: a value OpenAI does not know earns a 403.
 [providers.openai_chatgpt]
-name = "OpenAI (ChatGPT)"
+name = "ChatGPT Codex"
 auth = "openai_chatgpt"
 wire_api = "responses"
-description = "Sign in with your ChatGPT Plus/Pro account"
+description = "Sign in with your ChatGPT Plus/Pro account, in a browser or with a device code"
 api_key_env = "OPENAI_CHATGPT_REFRESH_TOKEN"
 
 # `originator` is checked against an allow-list server-side: a value OpenAI

@@ -305,7 +305,32 @@ underline rather than the chat link dress. The listener binds `127.0.0.1:1455` (
 back to `1457`) while the redirect URI names `localhost`: OpenAI's allow-list
 is pinned to those two ports against Codex's client id, so a port of our own
 is refused at the authorize step — and binding `"localhost"` can resolve to
-`::1` and miss the browser entirely. What is stored is the **refresh** token,
+`::1` and miss the browser entirely. A headless machine has no browser to
+hand that link to, so the row offers **two** flows: Enter on `ChatGPT
+Codex` opens a titled two-row **sign-in method choice** first
+(`KeyStep::SigninMethod` — `Select ChatGPT Codex login method:` over
+`Browser login (default)` / `Device code login (headless)`, the root's own
+row dress and hint, no `❯` filter and a hidden cursor since two rows are a
+question rather than a list, Esc from *either* page returning to it with the
+row just tried highlighted, codex's own "on a headless machine press Esc and
+choose the device code"), whose device row runs **Codex's device-code flow**
+(`chatgpt::request_device_code` / `await_device_approval`,
+`docs/chatgpt.md`): `POST {issuer}/api/accounts/deviceauth/usercode` for a
+code (its `interval` arriving as a *string*, floored at a second, five when
+absent), the Copilot device page showing it beside `{issuer}/codex/device`
+with a fifteen-minute countdown, a poll of `/deviceauth/token` that reads
+`403` **and** `404` as pending, and the grant's **server-minted** PKCE
+verifier redeemed at the shared `/oauth/token` with `redirect_uri =
+{issuer}/deviceauth/callback` — no port bound, no `state`, the same
+`exchange_code` the browser flow ends in, so everything after the token set
+is byte-identical between the two. Which pages a row can open is the
+scheme's to say (`tui::config::signin_kinds` → `SubscriptionChoice::kinds`,
+the first the default; a row listing one opens it at once, Copilot's way),
+`Action::StartDeviceLogin { provider, kind }` carries the pick to the
+worker, and `ALTER_ZERO_OPENAI_ISSUER` (read at the boundary, handed in once
+through `chatgpt::set_issuer`) points both flows at `smoke.sh` Phase 119's
+local stub, which answers codex's own wire shapes and reads the exchange
+back off its log. What is stored is the **refresh** token,
 and it **rotates**: OpenAI may retire the one just used, and re-presenting a
 retired one is terminal, so `chatgpt::persist_refresh` writes the new value
 straight back into the `.env` store (through a path `tui::models` hands the

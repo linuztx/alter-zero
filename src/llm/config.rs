@@ -685,7 +685,7 @@ api_base = "https://api.githubcopilot.com"
         // short-lived access token from it (`docs/chatgpt.md`).
         let text = r#"
 [providers.openai_chatgpt]
-name = "OpenAI (ChatGPT)"
+name = "ChatGPT Codex"
 auth = "openai_chatgpt"
 description = "Sign in with your ChatGPT account"
 [providers.openai_chatgpt.kwargs]

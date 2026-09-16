@@ -1158,3 +1158,97 @@ fn a_provider_is_findable_by_the_words_of_its_description() {
     onboarding.query = "major lab".into();
     assert_eq!(onboarding.matches().len(), 1);
 }
+
+// --- the sign-in method choice: browser or device code (docs/chatgpt.md) ---
+
+#[test]
+fn the_sign_in_method_choice_is_a_titled_two_row_question() {
+    // The exact shape: rule(0) gap(1) title(2) gap(3) rows(4,5) gap(6)
+    // hint(7) gap(8) rule(9). A title, because the two rows answer a question
+    // the subscription list did not ask; no `❯` filter and no `(1/2)`
+    // counter, because a question with two answers is not searched.
+    use crate::ui::login_view::key_onboarding_lines;
+    let app = login_app_signin_method();
+    let onboarding = app.key_onboarding.as_ref().unwrap();
+    let lines = key_onboarding_lines(onboarding, 76);
+    let texts: Vec<String> = lines
+        .iter()
+        .map(|l| plain(l).trim_end().to_string())
+        .collect();
+    let is_rule = |t: &str| !t.is_empty() && t.chars().all(|c| c == '─');
+    assert_eq!(texts.len(), 10, "{texts:?}");
+    assert!(is_rule(&texts[0]) && is_rule(&texts[9]), "{texts:?}");
+    assert_eq!(texts[1], "", "{texts:?}");
+    assert_eq!(texts[2].trim(), "Select ChatGPT Codex login method:");
+    assert_eq!(texts[3], "", "{texts:?}");
+    assert_eq!(texts[4], "→ Browser login (default)", "{texts:?}");
+    assert_eq!(texts[5], "  Device code login (headless)", "{texts:?}");
+    assert_eq!(texts[6], "", "{texts:?}");
+    assert_eq!(
+        texts[7].trim(),
+        "↑↓ navigate  enter select  escape/ctrl+c cancel"
+    );
+    assert_eq!(texts[8], "", "{texts:?}");
+    assert!(
+        !texts.iter().any(|t| t.contains('❯')),
+        "no filter: {texts:?}"
+    );
+    assert!(
+        !texts.iter().any(|t| t.contains("(1/2)")),
+        "no counter: {texts:?}"
+    );
+    // The title wears the flow's own heading colour, the highlighted row the
+    // selection accent, the other row the plain name colour — the root's
+    // rows exactly.
+    assert_eq!(span_fg(&lines[2], "Select"), Some(login_title_color()));
+    assert_eq!(span_fg(&lines[4], "Browser"), Some(model_selected_color()));
+    assert_ne!(span_fg(&lines[5], "Device"), Some(model_selected_color()));
+    assert_eq!(span_fg(&lines[7], "navigate"), Some(model_meta_color()));
+}
+
+#[test]
+fn the_highlight_follows_the_selection_on_the_method_choice() {
+    let mut app = login_app_signin_method();
+    app.key_onboarding.as_mut().unwrap().selected = 1;
+    let onboarding = app.key_onboarding.as_ref().unwrap();
+    let mut buf = buffer(76, 10);
+    render_key_onboarding(buf.area, &mut buf, onboarding);
+    assert!(
+        row(&buf, 4, 76).starts_with("  Browser login (default)"),
+        "{:?}",
+        row(&buf, 4, 76)
+    );
+    assert!(
+        row(&buf, 5, 76).starts_with("→ Device code login (headless)"),
+        "{:?}",
+        row(&buf, 5, 76)
+    );
+}
+
+#[test]
+fn the_method_choice_hides_the_cursor_and_parks_it_on_the_title() {
+    // A menu with nothing to type into — the device page's rule: a kitty
+    // cursor trail would streak across it on every ↑/↓, so the caret hides
+    // and its seat parks on the frame's first content row, off the rows.
+    let app = login_app_signin_method();
+    assert!(!cursor_visible(&app), "a question, not a field");
+    let onboarding = app.key_onboarding.as_ref().unwrap();
+    let rows = crate::ui::login_view::key_onboarding_lines(onboarding, 76).len() as u16;
+    let (_, y) = cursor_position(Rect::new(0, 0, 76, rows), &app);
+    assert_eq!(y, DEVICE_CURSOR_ROW, "the frame's first content row");
+}
+
+#[test]
+fn a_long_subscription_name_still_fits_the_method_title() {
+    // The title names the row that opened it; a narrow terminal cuts it with
+    // an ellipsis rather than spilling past the frame.
+    use crate::ui::login_view::key_onboarding_lines;
+    let mut app = login_app_signin_method();
+    app.key_onboarding.as_mut().unwrap().subscriptions[1].name =
+        "A Subscription With A Very Long Name Indeed".into();
+    let onboarding = app.key_onboarding.as_ref().unwrap();
+    let lines = key_onboarding_lines(onboarding, 30);
+    let title = plain(&lines[2]);
+    assert!(crate::ui::wrap::cols(&title) <= 30, "{title:?}");
+    assert!(title.contains('…'), "{title:?}");
+}

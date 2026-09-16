@@ -1,6 +1,7 @@
-//! OpenAI's ChatGPT seat as a provider: the browser PKCE sign-in, the token
-//! layers every request needs, and the request identity the ChatGPT backend
-//! insists on. See `docs/chatgpt.md`.
+//! OpenAI's ChatGPT seat as a provider: the browser PKCE sign-in, its
+//! device-code twin for a headless machine, the token layers every request
+//! needs, and the request identity the ChatGPT backend insists on. See
+//! `docs/chatgpt.md`.
 //!
 //! Two token layers, the same split [`super::copilot`] keeps for GitHub:
 //!
@@ -14,9 +15,9 @@
 //! The account id the backend routes on rides in that access token's own
 //! claims, so nothing beyond the refresh token has to be stored.
 //!
-//! The pure halves (the claim parse, the URL/body builders, the freshness
-//! rule) are unit-tested; the HTTP calls and the loopback listener are
-//! boundary code.
+//! The pure halves (the claim parse, the URL/body builders, the device
+//! flow's shapes and verdicts, the freshness rule) are unit-tested; the HTTP
+//! calls and the loopback listener are boundary code.
 
 use std::collections::HashMap;
 use std::io::{Read, Write};
@@ -37,8 +38,42 @@ use crate::stream::CancelToken;
 /// redirect allow-list is pinned to it.
 pub const CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
 
-/// Where the flow's calls go.
-const ISSUER: &str = "https://auth.openai.com";
+/// Where the flows' calls go, unless [`ISSUER_ENV`] says otherwise.
+pub const DEFAULT_ISSUER: &str = "https://auth.openai.com";
+
+/// The environment variable that points both sign-in flows at another
+/// issuer — the smoke suite's local stand-in for OpenAI's auth server
+/// (`smoke.sh` Phase 119), or a fork's own. Read at the boundary and handed
+/// in once through [`set_issuer`], the `set_store_path` pattern: the pure
+/// builders never read the environment themselves.
+pub const ISSUER_ENV: &str = "ALTER_ZERO_OPENAI_ISSUER";
+
+/// The issuer in force — [`DEFAULT_ISSUER`] until the boundary sets one.
+fn issuer_slot() -> &'static Mutex<Option<String>> {
+    static ISSUER: OnceLock<Mutex<Option<String>>> = OnceLock::new();
+    ISSUER.get_or_init(|| Mutex::new(None))
+}
+
+/// Point both sign-in flows (and the token endpoint they share) at `url`
+/// instead of OpenAI's own auth server. Boundary-only; called once at
+/// startup when [`ISSUER_ENV`] is set. A trailing slash is dropped so the
+/// paths built on it never double one up.
+pub fn set_issuer(url: impl Into<String>) {
+    let url = url.into();
+    let trimmed = url.trim().trim_end_matches('/').to_string();
+    if let Ok(mut slot) = issuer_slot().lock() {
+        *slot = (!trimmed.is_empty()).then_some(trimmed);
+    }
+}
+
+/// The issuer the flows build their URLs on.
+fn issuer() -> String {
+    issuer_slot()
+        .lock()
+        .ok()
+        .and_then(|slot| slot.clone())
+        .unwrap_or_else(|| DEFAULT_ISSUER.to_string())
+}
 
 /// The loopback port the redirect URI names. **Not** a free choice: OpenAI
 /// allow-lists exactly these two against [`CLIENT_ID`], so a port of our own
@@ -81,6 +116,16 @@ const OP_TIMEOUT: Duration = Duration::from_secs(30);
 /// How long the sign-in page waits for the browser to come back before giving
 /// up. Generous: a first sign-in may involve creating an account.
 pub const AUTH_TIMEOUT: Duration = Duration::from_secs(600);
+
+/// How long a device code stays valid — Codex's own fifteen minutes, which is
+/// both the poll's deadline and what the page counts down from. OpenAI's
+/// code response names no expiry of its own, unlike GitHub's.
+pub const DEVICE_CODE_TIMEOUT: Duration = Duration::from_secs(15 * 60);
+
+/// Seconds between polls when the code response names no `interval`. Codex
+/// defaults to zero there, which is a tight loop against the server; GitHub's
+/// own device flow asks for five.
+pub const DEVICE_DEFAULT_INTERVAL: u64 = 5;
 
 /// The most any of the flow's responses may buffer — [`super::copilot`]'s
 /// posture at the size these bodies actually are. It also bounds what a
@@ -267,13 +312,14 @@ pub fn authorize_url(challenge: &str, state: &str, port: u16) -> String {
         ("state".to_string(), state.to_string()),
         ("originator".to_string(), ORIGINATOR.to_string()),
     ]);
-    format!("{ISSUER}/oauth/authorize?{query}")
+    format!("{}/oauth/authorize?{query}", issuer())
 }
 
-/// The token endpoint both grants post to.
+/// The token endpoint every grant posts to — the browser flow's code, the
+/// device flow's code, and the refresh alike.
 #[must_use]
 fn token_url() -> String {
-    format!("{ISSUER}/oauth/token")
+    format!("{}/oauth/token", issuer())
 }
 
 /// The authorization-code grant's body. **Form-encoded** — the refresh grant
@@ -379,6 +425,195 @@ pub fn auth_advice(status: u16, body: &str) -> Option<String> {
                 .to_string(),
         ),
         _ => None,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The device-code flow's shapes (pure) — docs/chatgpt.md
+// ---------------------------------------------------------------------------
+
+/// Where the device-code flow's four calls go, off one issuer: Codex's own
+/// paths, verbatim. The code request and the poll live under
+/// `/api/accounts/deviceauth`; the page the user types the code at is
+/// `/codex/device`; and the grant is bound to `/deviceauth/callback`, which
+/// the exchange must repeat even though nothing ever listens there.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeviceEndpoints {
+    /// `POST` — ask for a code.
+    pub usercode: String,
+    /// `POST` — poll for the grant.
+    pub token: String,
+    /// Where the user enters the code (shown on the page).
+    pub verification: String,
+    /// The redirect URI the exchange repeats verbatim.
+    pub redirect_uri: String,
+}
+
+impl DeviceEndpoints {
+    /// The endpoints for `issuer` — a trailing slash tolerated, so a stub's
+    /// `http://127.0.0.1:8080/` builds the same paths as OpenAI's own.
+    #[must_use]
+    pub fn for_issuer(issuer: &str) -> Self {
+        let base = issuer.trim_end_matches('/');
+        Self {
+            usercode: format!("{base}/api/accounts/deviceauth/usercode"),
+            token: format!("{base}/api/accounts/deviceauth/token"),
+            verification: format!("{base}/codex/device"),
+            redirect_uri: format!("{base}/deviceauth/callback"),
+        }
+    }
+}
+
+/// The page the user enters a device code at, on the issuer in force.
+#[must_use]
+pub fn device_verification_url() -> String {
+    DeviceEndpoints::for_issuer(&issuer()).verification
+}
+
+/// The code request's body: the client id and nothing else — the server
+/// mints the PKCE pair itself and hands it back with the grant.
+#[must_use]
+pub fn device_code_request_body() -> serde_json::Value {
+    serde_json::json!({ "client_id": CLIENT_ID })
+}
+
+/// What the code request answered: the pair the poll presents, and how often
+/// to present it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeviceCode {
+    /// The server's handle on this attempt — presented by every poll, never
+    /// shown.
+    device_auth_id: String,
+    /// The short code the user types at [`DeviceEndpoints::verification`].
+    user_code: String,
+    /// Seconds between polls, as sent; `None` when the response names none.
+    interval: Option<u64>,
+}
+
+/// The wire shape of the code response. The interval arrives as a
+/// **string** (`"5"`) from the reference server, so both spellings are
+/// accepted; either name of the code is, too, since the reference reads both.
+#[derive(Debug, Deserialize)]
+struct RawDeviceCode {
+    device_auth_id: String,
+    #[serde(alias = "usercode")]
+    user_code: String,
+    #[serde(default)]
+    interval: Option<RawInterval>,
+}
+
+/// A number, or a string holding one.
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum RawInterval {
+    Seconds(u64),
+    Text(String),
+}
+
+impl RawInterval {
+    fn seconds(&self) -> Option<u64> {
+        match self {
+            Self::Seconds(n) => Some(*n),
+            Self::Text(text) => text.trim().parse().ok(),
+        }
+    }
+}
+
+impl DeviceCode {
+    /// Parse the code response.
+    ///
+    /// # Errors
+    /// A body that isn't the response's shape, or that names no id or no
+    /// code, is a decode error — there is nothing to poll with either way.
+    pub fn parse(body: &str) -> Result<Self> {
+        let raw: RawDeviceCode =
+            serde_json::from_str(body).map_err(|e| LlmError::Decode(e.to_string()))?;
+        if raw.device_auth_id.is_empty() || raw.user_code.is_empty() {
+            return Err(LlmError::Decode(
+                "OpenAI returned no device code".to_string(),
+            ));
+        }
+        Ok(Self {
+            device_auth_id: raw.device_auth_id,
+            user_code: raw.user_code,
+            interval: raw.interval.and_then(|i| i.seconds()),
+        })
+    }
+
+    /// The code to show and copy.
+    #[must_use]
+    pub fn user_code(&self) -> &str {
+        &self.user_code
+    }
+
+    /// How long to wait between polls: what the server asked, floored at a
+    /// second (a zero would be a tight loop), [`DEVICE_DEFAULT_INTERVAL`]
+    /// when it asked nothing.
+    #[must_use]
+    pub fn poll_interval(&self) -> Duration {
+        Duration::from_secs(self.interval.unwrap_or(DEVICE_DEFAULT_INTERVAL).max(1))
+    }
+}
+
+/// The poll's body: the pair the code request issued.
+#[must_use]
+pub fn device_poll_body(device: &DeviceCode) -> serde_json::Value {
+    serde_json::json!({
+        "device_auth_id": device.device_auth_id,
+        "user_code": device.user_code,
+    })
+}
+
+/// What an approved poll carries: an authorization code and the PKCE pair
+/// the **server** minted for it, whose verifier the exchange repeats.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct DeviceGrant {
+    /// The code to redeem at the token endpoint.
+    pub authorization_code: String,
+    /// The challenge the server bound the code to (informational here).
+    #[serde(default)]
+    pub code_challenge: String,
+    /// The verifier the exchange must present.
+    pub code_verifier: String,
+}
+
+/// One poll's outcome.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DevicePoll {
+    /// Not approved yet — ask again after the interval.
+    Pending,
+    /// Approved: redeem this.
+    Approved(DeviceGrant),
+    /// The flow is over — the sentence to show.
+    Failed(String),
+}
+
+/// Read a poll response the way Codex does: `403` and `404` both mean "not
+/// yet" (the server answers a pending code with either), a `2xx` carries the
+/// grant, and anything else ends the flow.
+#[must_use]
+pub fn device_poll_verdict(status: u16, body: &str) -> DevicePoll {
+    match status {
+        403 | 404 => DevicePoll::Pending,
+        200..=299 => match serde_json::from_str::<DeviceGrant>(body) {
+            Ok(grant) if !grant.authorization_code.is_empty() => DevicePoll::Approved(grant),
+            _ => DevicePoll::Failed("OpenAI approved the code but sent no grant".to_string()),
+        },
+        _ => DevicePoll::Failed(format!("OpenAI answered {status} to the device code poll")),
+    }
+}
+
+/// Explain a failed code request in terms the user can act on. A `404` is
+/// Codex's own reading: device code login is not enabled for this server —
+/// and the other row is one Esc away, so name it.
+#[must_use]
+pub fn device_code_advice(status: u16, body: &str) -> Option<String> {
+    match status {
+        404 => Some(
+            "OpenAI's device code sign-in is not available right now — press Esc and choose Browser login instead."
+                .to_string(),
+        ),
+        _ => auth_advice(status, body),
     }
 }
 
@@ -582,7 +817,18 @@ pub fn begin_signin() -> Result<Signin> {
 /// exchange OpenAI refused.
 pub fn await_callback(signin: &Signin, cancel: &CancelToken) -> Result<(String, Access)> {
     let code = wait_for_code(&signin.listener, &signin.state, cancel)?;
-    let body = code_exchange_body(&code, &signin.verifier, &signin.redirect_uri);
+    exchange_code(&code, &signin.verifier, &signin.redirect_uri)
+}
+
+/// Redeem an authorization code for the token set — the one exchange both
+/// sign-ins end in, differing only in whose PKCE verifier and which redirect
+/// they repeat. Returns the refresh token to store and the seat it turned
+/// out to be.
+///
+/// # Errors
+/// A token exchange OpenAI refused, or a token set with no refresh token.
+fn exchange_code(code: &str, verifier: &str, redirect_uri: &str) -> Result<(String, Access)> {
+    let body = code_exchange_body(code, verifier, redirect_uri);
     let client = super::http_client(OP_TIMEOUT)?;
     let resp = client
         .post(token_url())
@@ -608,6 +854,116 @@ pub fn await_callback(signin: &Signin, cancel: &CancelToken) -> Result<(String, 
         })?;
     let access = access_from(&tokens)?;
     Ok((refresh, access))
+}
+
+/// Ask OpenAI for a device code. The caller shows [`DeviceCode::user_code`]
+/// beside [`device_verification_url`], then blocks in
+/// [`await_device_approval`]. Codex's client identity rides the request as
+/// it rides every other call to this issuer.
+///
+/// # Errors
+/// A code request OpenAI refused — a `404` meaning the flow is not offered
+/// here, which the message says — or a transport failure.
+pub fn request_device_code() -> Result<DeviceCode> {
+    let endpoints = DeviceEndpoints::for_issuer(&issuer());
+    let client = super::http_client(OP_TIMEOUT)?;
+    let resp = client
+        .post(endpoints.usercode)
+        .header("content-type", "application/json")
+        .header("accept", "application/json")
+        .header("originator", ORIGINATOR)
+        .header("user-agent", user_agent())
+        .json(&device_code_request_body())
+        .send()
+        .map_err(|e| LlmError::Http(e.to_string()))?;
+    let status = resp.status().as_u16();
+    let text = read_body(resp);
+    if !(200..300).contains(&status) {
+        let explained = device_code_advice(status, &text).unwrap_or_else(|| {
+            let trimmed = text.trim();
+            if trimmed.is_empty() {
+                format!("OpenAI answered {status} to the device code request")
+            } else {
+                format!("OpenAI answered {status}: {trimmed}")
+            }
+        });
+        return Err(LlmError::Api {
+            status,
+            body: explained,
+        });
+    }
+    DeviceCode::parse(&text)
+}
+
+/// Poll until the user approves `device`'s code on OpenAI's page, then redeem
+/// the grant it carries. Blocks for as long as that takes — up to
+/// [`DEVICE_CODE_TIMEOUT`] — napping on the transport's cadence so Esc on
+/// the page is honoured promptly. Returns the refresh token to store and the
+/// seat it turned out to be.
+///
+/// # Errors
+/// A cancelled flow, an expired code, a poll OpenAI refused, or a token
+/// exchange it refused.
+pub fn await_device_approval(
+    device: &DeviceCode,
+    cancel: &CancelToken,
+) -> Result<(String, Access)> {
+    let endpoints = DeviceEndpoints::for_issuer(&issuer());
+    let client = super::http_client(OP_TIMEOUT)?;
+    let deadline = Instant::now() + DEVICE_CODE_TIMEOUT;
+    let interval = device.poll_interval();
+    let body = device_poll_body(device);
+    loop {
+        // Sleep *first*: the user has not even read the code yet.
+        if !nap(interval, cancel) {
+            return Err(LlmError::Cancelled);
+        }
+        if Instant::now() >= deadline {
+            return Err(LlmError::Http(
+                "The code expired — press Esc and sign in again.".to_string(),
+            ));
+        }
+        let resp = client
+            .post(&endpoints.token)
+            .header("content-type", "application/json")
+            .header("accept", "application/json")
+            .header("originator", ORIGINATOR)
+            .header("user-agent", user_agent())
+            .json(&body)
+            .send()
+            .map_err(|e| LlmError::Http(format!("Could not reach OpenAI: {e}")))?;
+        let status = resp.status().as_u16();
+        let text = read_body(resp);
+        match device_poll_verdict(status, &text) {
+            DevicePoll::Pending => {}
+            DevicePoll::Approved(grant) => {
+                return exchange_code(
+                    &grant.authorization_code,
+                    &grant.code_verifier,
+                    &endpoints.redirect_uri,
+                );
+            }
+            DevicePoll::Failed(reason) => {
+                return Err(LlmError::Api {
+                    status,
+                    body: reason,
+                });
+            }
+        }
+    }
+}
+
+/// Sleep `total` in [`POLL_NAP`] slices, returning `false` the moment
+/// `cancel` trips — [`super::copilot`]'s nap, for the same reason.
+fn nap(total: Duration, cancel: &CancelToken) -> bool {
+    let until = Instant::now() + total;
+    while Instant::now() < until {
+        if cancel.is_cancelled() {
+            return false;
+        }
+        std::thread::sleep(POLL_NAP.min(until.saturating_duration_since(Instant::now())));
+    }
+    !cancel.is_cancelled()
 }
 
 /// Block until the callback arrives on `listener`, answering the browser
@@ -1124,5 +1480,143 @@ mod tests {
         assert!(auth_advice(403, "{}").unwrap().contains("plan"));
         assert!(auth_advice(400, r#"{"error":"server_hiccup"}"#).is_none());
         assert!(auth_advice(500, "").is_none());
+    }
+
+    // --- the device-code flow (docs/chatgpt.md) ---
+
+    #[test]
+    fn the_device_endpoints_hang_off_the_issuer() {
+        // Codex's own four: the code request and the poll under
+        // `/api/accounts/deviceauth`, the page the user types the code at,
+        // and the redirect the server binds the PKCE pair to.
+        let ep = DeviceEndpoints::for_issuer("https://auth.openai.com");
+        assert_eq!(
+            ep.usercode,
+            "https://auth.openai.com/api/accounts/deviceauth/usercode"
+        );
+        assert_eq!(
+            ep.token,
+            "https://auth.openai.com/api/accounts/deviceauth/token"
+        );
+        assert_eq!(ep.verification, "https://auth.openai.com/codex/device");
+        assert_eq!(
+            ep.redirect_uri,
+            "https://auth.openai.com/deviceauth/callback"
+        );
+        // An override's trailing slash (a stub's `http://127.0.0.1:8080/`)
+        // must not double up.
+        let ep = DeviceEndpoints::for_issuer("http://127.0.0.1:8080/");
+        assert_eq!(ep.verification, "http://127.0.0.1:8080/codex/device");
+    }
+
+    #[test]
+    fn the_issuer_defaults_to_openai_and_the_override_has_a_name() {
+        assert_eq!(DEFAULT_ISSUER, "https://auth.openai.com");
+        assert_eq!(ISSUER_ENV, "ALTER_ZERO_OPENAI_ISSUER");
+        // And the code's life is Codex's own fifteen minutes — what the
+        // page counts down from.
+        assert_eq!(DEVICE_CODE_TIMEOUT, Duration::from_secs(15 * 60));
+    }
+
+    #[test]
+    fn the_device_code_request_names_only_the_client_id() {
+        assert_eq!(
+            device_code_request_body(),
+            serde_json::json!({"client_id": CLIENT_ID})
+        );
+    }
+
+    #[test]
+    fn a_device_code_response_parses_its_interval_as_a_string_or_a_number() {
+        // The reference sends the interval as a **string** ("5"); a number
+        // is accepted too, since nothing says it will stay one.
+        let device = DeviceCode::parse(
+            r#"{"device_auth_id":"device-auth-123","user_code":"CODE-12345","interval":"5"}"#,
+        )
+        .unwrap();
+        assert_eq!(device.user_code(), "CODE-12345");
+        assert_eq!(device.poll_interval(), Duration::from_secs(5));
+        let device =
+            DeviceCode::parse(r#"{"device_auth_id":"d","user_code":"C","interval":7}"#).unwrap();
+        assert_eq!(device.poll_interval(), Duration::from_secs(7));
+        // Absent: a sensible default rather than the reference's zero, which
+        // is a tight loop against the server — and zero itself is floored.
+        let device = DeviceCode::parse(r#"{"device_auth_id":"d","user_code":"C"}"#).unwrap();
+        assert_eq!(
+            device.poll_interval(),
+            Duration::from_secs(DEVICE_DEFAULT_INTERVAL)
+        );
+        let device =
+            DeviceCode::parse(r#"{"device_auth_id":"d","user_code":"C","interval":"0"}"#).unwrap();
+        assert_eq!(device.poll_interval(), Duration::from_secs(1));
+        // No id, or no code, is nothing to poll with.
+        assert!(DeviceCode::parse(r#"{"user_code":"C"}"#).is_err());
+        assert!(DeviceCode::parse(r#"{"device_auth_id":"d","user_code":""}"#).is_err());
+        assert!(DeviceCode::parse("not json").is_err());
+    }
+
+    #[test]
+    fn the_poll_presents_the_pair_the_code_request_issued() {
+        let device = DeviceCode::parse(
+            r#"{"device_auth_id":"device-auth-123","user_code":"CODE-12345","interval":"5"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            device_poll_body(&device),
+            serde_json::json!({"device_auth_id": "device-auth-123", "user_code": "CODE-12345"})
+        );
+    }
+
+    #[test]
+    fn a_poll_is_pending_until_the_grant_arrives() {
+        // Codex's reading of the poll: 403 and 404 both mean "not yet", a
+        // 200 carries the grant, and anything else is a real failure.
+        assert_eq!(device_poll_verdict(403, ""), DevicePoll::Pending);
+        assert_eq!(device_poll_verdict(404, "{}"), DevicePoll::Pending);
+        let grant = r#"{"authorization_code":"poll-code-321","code_challenge":"cc","code_verifier":"code-verifier-321"}"#;
+        match device_poll_verdict(200, grant) {
+            DevicePoll::Approved(grant) => {
+                assert_eq!(grant.authorization_code, "poll-code-321");
+                assert_eq!(grant.code_verifier, "code-verifier-321");
+            }
+            other => panic!("{other:?}"),
+        }
+        assert!(matches!(
+            device_poll_verdict(200, "not json"),
+            DevicePoll::Failed(_)
+        ));
+        assert!(matches!(
+            device_poll_verdict(500, ""),
+            DevicePoll::Failed(_)
+        ));
+        assert!(matches!(
+            device_poll_verdict(400, r#"{"error":"expired"}"#),
+            DevicePoll::Failed(_)
+        ));
+    }
+
+    #[test]
+    fn the_grant_is_redeemed_with_its_own_verifier_at_the_device_callback() {
+        // The *server* minted the PKCE pair here; the exchange repeats its
+        // verifier and the device callback the pair was bound to — never a
+        // loopback port, since none was opened.
+        let ep = DeviceEndpoints::for_issuer("https://auth.openai.com");
+        let body = code_exchange_body("poll-code-321", "code-verifier-321", &ep.redirect_uri);
+        assert!(body.starts_with("grant_type=authorization_code"));
+        assert!(body.contains("&code=poll-code-321"));
+        assert!(body.contains("&code_verifier=code-verifier-321"));
+        assert!(
+            body.contains("&redirect_uri=https%3A%2F%2Fauth.openai.com%2Fdeviceauth%2Fcallback")
+        );
+    }
+
+    #[test]
+    fn a_missing_device_endpoint_points_at_the_browser_row() {
+        // Codex's own reading of a 404 on the code request: device code
+        // login is not enabled for this server. The page can name the other
+        // row, since the choice is one Esc away.
+        let advice = device_code_advice(404, "").unwrap();
+        assert!(advice.contains("Browser login"), "{advice}");
+        assert!(device_code_advice(500, "").is_none());
     }
 }

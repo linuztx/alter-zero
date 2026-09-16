@@ -293,11 +293,19 @@ pub enum Action {
     /// The onboarding flow was dismissed (Esc/Ctrl+C): [`App::key_onboarding`]
     /// is already cleared; the loop just repaints the collapsed region.
     CloseKeyOnboarding,
-    /// Enter on a subscription row: start that provider's device-code sign-in
-    /// (the id, e.g. `github_copilot`). The pure core already opened the
-    /// device page; the loop runs the flow on a worker thread and feeds the
-    /// code back through [`App::set_device_code`]. See `docs/copilot.md`.
-    StartDeviceLogin(String),
+    /// Enter on a subscription row (or on its sign-in method choice): start
+    /// that provider's sign-in — `provider` the id (e.g. `github_copilot`),
+    /// `kind` which of its flows to run, since ChatGPT Codex's device code
+    /// and its browser flow open the same page and only the row says which
+    /// (`docs/chatgpt.md`). The pure core already opened the page; the loop
+    /// runs the flow on a worker thread and feeds what to show back through
+    /// [`App::set_device_code`]. See `docs/copilot.md`.
+    StartDeviceLogin {
+        /// The provider id whose sign-in runs.
+        provider: String,
+        /// Which of its flows: the device code or the browser link.
+        kind: SigninKind,
+    },
     /// Esc (or Ctrl+C) on the device page: abandon the sign-in. The pure core
     /// already tore the page down; the loop cancels the worker.
     CancelDeviceLogin,

@@ -1,14 +1,23 @@
-# OpenAI ChatGPT as a provider
+# ChatGPT Codex as a provider
 
 Sign in with a ChatGPT Plus/Pro/Team seat instead of pasting an API key —
-`/login` → **Use a subscription** → **OpenAI (ChatGPT)**.
+`/login` → **Use a subscription** → **ChatGPT Codex** → **Browser login**
+(or **Device code login** on a machine with no browser).
 
 This is the second subscription provider, after GitHub Copilot
 (`docs/copilot.md`), and it reuses that feature's whole shape: the `/login`
 fork, the `.env` store, the two-token split, the `/model` picker's ✓, the
 capability probe. What it adds is a second *sign-in* shape (a browser, not a
-code) and a second *wire format* (Responses, not Chat Completions) — and those
-two are the whole of the new work.
+code), a second *wire format* (Responses, not Chat Completions) — and, since
+a headless machine has no browser to hand a link to, a device-code twin of
+the sign-in, ported from Codex's own, which is what made the row the one
+subscription that has to ask *how* before it opens a page.
+
+The provider is **named for what it is**: the ChatGPT seat reached the way
+Codex reaches it. It was `OpenAI (ChatGPT)`, which read as a second OpenAI
+API-key provider; the id `openai_chatgpt`, the `OPENAI_CHATGPT_REFRESH_TOKEN`
+variable and every stored selection kept their names, so the rename cost no
+one a sign-in.
 
 > **A caveat worth stating.** This API is undocumented and unversioned, and
 > the OAuth client id it uses is Codex's own — there is no third-party
@@ -23,10 +32,10 @@ two are the whole of the new work.
 
 ```toml
 [providers.openai_chatgpt]
-name = "OpenAI (ChatGPT)"
+name = "ChatGPT Codex"
 auth = "openai_chatgpt"                          # ← a sign-in, not a pasted key
 wire_api = "responses"                           # ← and a different request shape
-description = "Sign in with your ChatGPT Plus/Pro account"
+description = "Sign in with your ChatGPT Plus/Pro account, in a browser or with a device code"
 api_key_env = "OPENAI_CHATGPT_REFRESH_TOKEN"
 
 [providers.openai_chatgpt.extra_headers]
@@ -127,9 +136,57 @@ The account-id header is attached **conditionally**. A token that carries no
 auth claims still authenticates; sending an empty account id is a *different*
 (and invalid) routing hint than sending none.
 
-## The sign-in
+## The sign-ins
 
-Not a device flow — OpenAI's is a browser PKCE loopback:
+Two, and the row asks which before it opens either.
+
+### The choice
+
+A subscription row used to open one page. ChatGPT Codex has two, so Enter on
+its row opens a **choice** first (`KeyStep::SigninMethod`) — the shape asked
+for, verbatim:
+
+```
+────────────────────────────────────────────────────────────────────────────
+
+  Select ChatGPT Codex login method:
+
+→ Browser login (default)
+  Device code login (headless)
+
+  ↑↓ navigate  enter select  escape/ctrl+c cancel
+
+────────────────────────────────────────────────────────────────────────────
+```
+
+- A **title**, unlike the three `/login` lists: the rows answer a question
+  the subscription list did not ask, so the page says whose question it is.
+- **No `❯` filter and no counter.** Two rows are a question, not a list to
+  search; typing does nothing, and the hardware cursor hides (the device
+  page's rule — a kitty cursor trail would streak across it on every ↑/↓),
+  its seat parked on the title row like the device page's.
+- The rows are `SigninKind::method_label`: the first kind the row lists is
+  the default and says so; the device code says what it is *for*, since
+  "headless" is the one word that tells an SSH user which row is theirs.
+- ↑/↓ wrap, Enter opens the highlighted flow's page, Esc steps back to the
+  subscription list, Ctrl+C closes.
+- **Esc from a page opened this way returns to the choice**, with the row
+  just tried still highlighted — codex's own browser page says "on a headless
+  machine, press Esc and choose the device code", so the choice must be one
+  Esc away. A page a single-flow subscription opened (Copilot's) still
+  returns to the list, since there was never a choice.
+
+Which rows a subscription offers is the provider file's `auth` scheme's to
+say (`tui::config::signin_kinds` → `SubscriptionChoice::kinds`, the first
+being the default): `openai_chatgpt` lists both, `github_copilot` its device
+code, `anthropic_console` its browser. A row listing one kind opens its page
+at once, exactly as before; `Action::StartDeviceLogin { provider, kind }`
+carries the pick to the worker, since the two ChatGPT flows open the *same*
+page and only the row knows which flow to run behind it.
+
+### The browser flow
+
+OpenAI's default is a browser PKCE loopback:
 
 1. Bind `127.0.0.1:1455`, falling back to `1457`. **Neither port is a free
    choice**: OpenAI's redirect allow-list is pinned to those two against this
@@ -150,16 +207,78 @@ additionally requests two connectors scopes; they buy nothing here.
 
 **No browser is launched.** The URL is text the user opens, which is also what
 makes the flow work over SSH — forward port 1455 and the callback lands in the
-right process.
+right process. When even that is too much to ask of the machine, the other
+row is one Esc away.
+
+### The device-code flow
+
+The browser flow needs a browser on the machine the TUI runs on, or a
+forwarded port. On a headless box — an SSH session into a server, a
+container — neither is a given, so Codex offers a second flow, and this
+client ports it whole (`chatgpt::request_device_code` /
+`await_device_approval`):
+
+1. `POST {issuer}/api/accounts/deviceauth/usercode` with `{"client_id": …}`
+   → `{"device_auth_id", "user_code", "interval"}`. The interval arrives as a
+   **string** (`"5"`); a number is accepted too, and an absent one falls to
+   five seconds rather than the reference's zero, which is a tight loop
+   against the server. A `404` here means device code login is not enabled
+   for this server — Codex's own reading — and the page says to press Esc
+   and choose the browser row instead.
+2. Show the code beside `{issuer}/codex/device`, the page the user types it
+   at. This is **the Copilot device page, exactly** (`docs/copilot.md`):
+   `Visit …` over `and enter this one-time code`, the code in its box,
+   `Waiting for approval… · expires in 14:59`, `c copy code`. The
+   fifteen-minute countdown is Codex's own poll deadline; OpenAI's code
+   response names no expiry, unlike GitHub's.
+3. `POST {issuer}/api/accounts/deviceauth/token` with `{"device_auth_id",
+   "user_code"}` every `interval` seconds (sleeping first — the user has not
+   read the code yet) for up to those fifteen minutes. A `403` **or** a
+   `404` is "not yet" — the server answers a pending code with either — a
+   `2xx` carries the grant, and anything else ends the flow.
+4. The grant is `{"authorization_code", "code_challenge", "code_verifier"}`:
+   the **server** minted the PKCE pair, so the exchange repeats *its*
+   verifier, form-encoded at the same `/oauth/token` the browser flow posts
+   to, with `redirect_uri = {issuer}/deviceauth/callback` — a URI nothing
+   ever listens on, repeated because the grant was bound to it.
+
+Nothing is bound locally: no port, no `state`. That is the point, and it is
+why the two flows share one `exchange_code` and everything after it — the
+token set, the refresh token's rotation, the claims read off the access
+token, the cache — is byte-identical between them. Codex's requests to this
+issuer carry its `originator` and `User-Agent`, so these do too.
+
+The page is worded off `SigninKind::DeviceCode`, so the table under *The
+page* below reads left-to-right for this flow: `Visit`, a box, `c copy
+code`, a wait for approval. A page that fell back to the browser wording
+would tell the user to wait for a redirect that is never coming.
+
+`smoke.sh` Phase 119 drives the whole flow against a local stub standing in
+for the auth server, answering Codex's own wire shapes — the string
+interval, a `403` and then a `404` before the grant, the server-minted
+verifier, a token set whose access token claims a `pro` plan — and reads the
+exchange back off the stub's log: the pair the code request issued on every
+poll, and the device callback (never a loopback port) on the exchange.
+
+#### The issuer
+
+Both flows, and the refresh they share, build their URLs on one **issuer**,
+`https://auth.openai.com` by default. `ALTER_ZERO_OPENAI_ISSUER` points them
+elsewhere — a fork's own auth server, or the smoke suite's stub — read once
+at the boundary and handed in through `chatgpt::set_issuer`, the
+`set_store_path` pattern: the pure URL builders never read the environment.
+`DeviceEndpoints::for_issuer` derives the four device paths from it,
+trimming a trailing slash so a stub's `http://127.0.0.1:8080/` builds the
+same paths OpenAI's own does.
 
 ### The page
 
 `KeyStep::Device` is shared with Copilot's device page, because the two really
 are the same page: something to show, then a wait. What differs is carried by
-`SigninKind` on the row, injected from the provider's `auth` scheme — never
-guessed from what the flow happens to have filled in yet:
+`SigninKind` on the page, taken from the row the user picked (or the row's
+only kind) — never guessed from what the flow happens to have filled in yet:
 
-| | `DeviceCode` (Copilot) | `BrowserLink` (ChatGPT) |
+| | `DeviceCode` (Copilot, and ChatGPT's device code) | `BrowserLink` (ChatGPT's browser) |
 | --- | --- | --- |
 | shows | `Visit {url}` + a **code in a box** | the bare URL, bright, and no box |
 | the second row says | `and enter this one-time code` | `Sign in there — this window continues by itself` |
@@ -377,8 +496,10 @@ it already does for Copilot:
 | `the account listed no models — its ChatGPT plan may not include Codex, or this client is too old for the models it serves` | the `/models` fetch authenticated and came back empty (see `client_version` above) |
 | `Your ChatGPT sign-in has expired. Run /login and sign in again.` | the refresh token expired, was reused, or was revoked — all terminal |
 | `OpenAI refused this request. A ChatGPT plan that includes Codex is needed.` | a 403: the seat, not the request |
-| `ports 1455 and 1457 are both in use` | another sign-in is holding them; no third port is allow-listed |
+| `ports 1455 and 1457 are both in use` | another sign-in is holding them; no third port is allow-listed — or use the device code, which binds none |
 | `the callback's state doesn't match` | a stale browser tab answered; start again |
+| `OpenAI's device code sign-in is not available right now — press Esc and choose Browser login instead.` | the code request answered `404`: device code login is not enabled for this server (Codex's own reading) |
+| `The code expired — press Esc and sign in again.` | fifteen minutes of polling without an approval |
 
 A `403` is also what an unrecognised `originator` earns, with a message that
 does not say so — which is why that header is pinned in `providers.toml`
@@ -390,17 +511,20 @@ rather than left to a default.
 | --- | --- |
 | `OPENAI_CHATGPT_REFRESH_TOKEN` | the stored refresh token (a real env var wins over `.env`, as everywhere) |
 | `ALTER_ZERO_ENV_FILE` | relocates the store the rotation writes back to |
+| `ALTER_ZERO_OPENAI_ISSUER` | the auth server both sign-ins (and the refresh) talk to — a fork's, or `smoke.sh` Phase 119's local stub; `https://auth.openai.com` by default |
 
 ## Files
 
 | file | what's in it |
 | --- | --- |
-| `src/llm/chatgpt.rs` | the claims parse, the flow's URLs/bodies, the freshness rule (pure); the loopback listener, the exchanges, the cache and the rotation write-back (boundary) |
+| `src/llm/chatgpt.rs` | the claims parse, both flows' URLs/bodies, the device flow's code/poll/grant shapes and verdicts, the freshness rule (pure); the loopback listener, the code request and the approval poll, the shared code exchange, the cache, the rotation write-back and the issuer override (boundary) |
 | `src/llm/auth.rs` | `request_auth` — the one seam every outbound call resolves through |
 | `src/llm/responses.rs` | the Responses wire format, both directions (pure) |
 | `src/llm/service_tier.rs` | the speed tiers a record lists and the `/fast` cycle over them (pure) — `docs/fast-mode.md` |
 | `src/llm/openai.rs` | `request_url`/`request_payload` (the wire branch), `drain_responses`, `pump_lines` |
 | `src/llm/models.rs` | the `{"models": …}` envelope and the three record sniffs |
-| `src/app/login.rs` | `SigninKind`, `DeviceLogin::copy_target` |
-| `src/ui/login_view.rs` | the browser page's wording |
-| `src/tui/workers.rs` | `spawn_signin` — which flow a provider runs |
+| `src/app/login.rs` | `SigninKind` and its method rows, `SubscriptionChoice::kinds`, the `KeyStep::SigninMethod` choice and its keys, `DeviceLogin::copy_target` |
+| `src/ui/login_view.rs` | the choice's page and the browser page's wording |
+| `src/tui/config.rs` | `signin_kinds` — which pages a scheme offers; `openai_issuer` — the override |
+| `src/tui/workers.rs` | `spawn_signin` — which flow a provider and a pick run |
+| `scripts/smoke/phases/119-chatgptdevice.sh` | the choice and the device flow, driven against a local stub of the auth server |

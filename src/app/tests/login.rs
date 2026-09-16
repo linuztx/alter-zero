@@ -116,15 +116,175 @@ fn esc_on_the_method_step_closes_the_flow() {
 fn enter_on_a_subscription_starts_its_device_login() {
     let mut app = login_app();
     app.on_key(key(KeyCode::Enter)); // subscriptions
+    // A subscription offering one way in opens its page at once — no
+    // method choice stands between the row and the sign-in.
     assert_eq!(
         app.on_key(key(KeyCode::Enter)),
-        Action::StartDeviceLogin("github_copilot".to_string())
+        Action::StartDeviceLogin {
+            provider: "github_copilot".to_string(),
+            kind: SigninKind::DeviceCode,
+        }
     );
     let onboarding = app.key_onboarding.as_ref().unwrap();
     assert_eq!(onboarding.step, KeyStep::Device);
     let device = onboarding.device.as_ref().expect("the device page opened");
     assert_eq!(device.provider_name, "GitHub Copilot");
+    assert_eq!(device.kind, SigninKind::DeviceCode);
     assert_eq!(device.status, DeviceStatus::Starting);
+}
+
+// --- the sign-in method choice: a subscription offering two ways in (docs/chatgpt.md) ---
+
+#[test]
+fn enter_on_a_subscription_offering_two_sign_ins_opens_the_method_choice() {
+    // ChatGPT Codex signs in through a browser by default, or with a device
+    // code on a headless machine. The row cannot open one page and hide the
+    // other, so Enter on it asks which — a titled two-row choice, the
+    // default highlighted, no page open yet.
+    let mut app = login_app_with_chatgpt();
+    app.on_key(key(KeyCode::Enter)); // subscriptions
+    app.on_key(key(KeyCode::Down)); // ChatGPT Codex
+    assert_eq!(app.on_key(key(KeyCode::Enter)), Action::None);
+    let onboarding = app.key_onboarding.as_ref().unwrap();
+    assert_eq!(onboarding.step, KeyStep::SigninMethod);
+    assert_eq!(
+        onboarding.chosen_subscription().map(|s| s.name.as_str()),
+        Some("ChatGPT Codex")
+    );
+    assert_eq!(
+        onboarding.signin_method_labels(),
+        vec!["Browser login (default)", "Device code login (headless)"]
+    );
+    assert_eq!(onboarding.selected, 0, "the default is highlighted");
+    assert!(onboarding.device.is_none(), "no sign-in page yet");
+}
+
+#[test]
+fn a_sign_in_kind_names_its_method_row() {
+    // The first kind a subscription lists is its default and says so; the
+    // device code says what it is for, since "headless" is the one word that
+    // tells an SSH user which row is theirs.
+    assert_eq!(
+        SigninKind::BrowserLink.method_label(true),
+        "Browser login (default)"
+    );
+    assert_eq!(
+        SigninKind::DeviceCode.method_label(false),
+        "Device code login (headless)"
+    );
+    assert_eq!(
+        SigninKind::DeviceCode.method_label(true),
+        "Device code login (default)"
+    );
+    assert_eq!(SigninKind::BrowserLink.method_label(false), "Browser login");
+}
+
+#[test]
+fn enter_on_the_default_row_starts_the_browser_sign_in() {
+    let mut app = signin_method_app();
+    assert_eq!(
+        app.on_key(key(KeyCode::Enter)),
+        Action::StartDeviceLogin {
+            provider: "openai_chatgpt".to_string(),
+            kind: SigninKind::BrowserLink,
+        }
+    );
+    let onboarding = app.key_onboarding.as_ref().unwrap();
+    assert_eq!(onboarding.step, KeyStep::Device);
+    let device = onboarding.device.as_ref().expect("the sign-in page opened");
+    assert_eq!(device.provider_id, "openai_chatgpt");
+    assert_eq!(device.provider_name, "ChatGPT Codex");
+    assert_eq!(device.kind, SigninKind::BrowserLink);
+    assert_eq!(device.status, DeviceStatus::Starting);
+}
+
+#[test]
+fn the_device_code_row_starts_the_device_sign_in() {
+    // The same page GitHub Copilot's code lands on, so the boundary must be
+    // told which flow to run — the page alone cannot say.
+    let mut app = signin_method_app();
+    app.on_key(key(KeyCode::Down));
+    assert_eq!(
+        app.on_key(key(KeyCode::Enter)),
+        Action::StartDeviceLogin {
+            provider: "openai_chatgpt".to_string(),
+            kind: SigninKind::DeviceCode,
+        }
+    );
+    let device = app
+        .key_onboarding
+        .as_ref()
+        .unwrap()
+        .device
+        .as_ref()
+        .expect("the device page opened");
+    assert_eq!(device.kind, SigninKind::DeviceCode);
+    assert_eq!(device.provider_name, "ChatGPT Codex");
+}
+
+#[test]
+fn the_method_choice_wraps_and_ignores_typing() {
+    // Two rows, no filter: it is a question with two answers, not a list to
+    // search, so a typed character neither moves the highlight nor opens a
+    // query.
+    let mut app = signin_method_app();
+    app.on_key(key(KeyCode::Up));
+    assert_eq!(app.key_onboarding.as_ref().unwrap().selected, 1, "wraps");
+    app.on_key(key(KeyCode::Down));
+    assert_eq!(
+        app.key_onboarding.as_ref().unwrap().selected,
+        0,
+        "wraps back"
+    );
+    app.on_key(key(KeyCode::End));
+    assert_eq!(app.key_onboarding.as_ref().unwrap().selected, 1);
+    assert_eq!(app.on_key(key(KeyCode::Char('x'))), Action::None);
+    let onboarding = app.key_onboarding.as_ref().unwrap();
+    assert_eq!(onboarding.step, KeyStep::SigninMethod);
+    assert_eq!(onboarding.selected, 1, "typing moves nothing");
+    assert!(onboarding.query.is_empty(), "and opens no filter");
+    app.paste_into_key_onboarding("pasted");
+    assert!(app.key_onboarding.as_ref().unwrap().query.is_empty());
+}
+
+#[test]
+fn esc_on_the_method_choice_steps_back_to_the_subscription_list() {
+    let mut app = signin_method_app();
+    assert_eq!(app.on_key(key(KeyCode::Esc)), Action::None);
+    let onboarding = app.key_onboarding.as_ref().unwrap();
+    assert_eq!(onboarding.step, KeyStep::Subscription);
+    assert!(onboarding.chosen_subscription().is_none());
+    assert_eq!(onboarding.subscriptions.len(), 2, "nothing was dropped");
+}
+
+#[test]
+fn esc_on_a_page_reached_through_the_method_choice_returns_to_it() {
+    // Codex's own browser page says "on a headless machine, press Esc and
+    // choose the device code": the choice must be one Esc away from the page
+    // it opened, with the row just tried still highlighted.
+    let mut app = signin_method_app();
+    app.on_key(key(KeyCode::Down));
+    app.on_key(key(KeyCode::Enter)); // the device page
+    assert_eq!(app.on_key(key(KeyCode::Esc)), Action::CancelDeviceLogin);
+    let onboarding = app.key_onboarding.as_ref().unwrap();
+    assert_eq!(onboarding.step, KeyStep::SigninMethod);
+    assert_eq!(onboarding.selected, 1, "the row just tried");
+    assert!(onboarding.device.is_none(), "the page is torn down");
+    // …and from a page a single-flow subscription opened, Esc still returns
+    // to the list, since there was never a choice to return to.
+    let mut app = device_app();
+    app.on_key(key(KeyCode::Esc));
+    assert_eq!(
+        app.key_onboarding.as_ref().unwrap().step,
+        KeyStep::Subscription
+    );
+}
+
+#[test]
+fn ctrl_c_on_the_method_choice_closes_the_flow_with_nothing_to_cancel() {
+    let mut app = signin_method_app();
+    assert_eq!(app.on_key(ctrl('c')), Action::CloseKeyOnboarding);
+    assert!(app.key_onboarding.is_none());
 }
 
 #[test]
