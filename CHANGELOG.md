@@ -12,6 +12,8 @@ release heading when a version is cut.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-09-16
+
 ### Added
 
 - **Fast mode for ChatGPT models** — codex's `/fast`, ported
@@ -29,6 +31,9 @@ release heading when a version is cut.
   auto-mode classifier run at standard speed. Existing installs probe the
   listing once in the background at their next launch, exactly as the
   vision field did when it arrived, and record what they learn.
+
+### Changed
+
 - **A conversation remembers its model.** Every session's rollout now
   records the model it runs on — with the file, and again on each `/model`
   pick, Ctrl+T cycle and capability probe — and `/resume`, `--resume` and
@@ -185,7 +190,8 @@ release heading when a version is cut.
   release whose notes come from this file — driven end to end by
   `scripts/release.sh`, which also rehearses a release locally.
 
-[Unreleased]: https://github.com/linuztx/alter-zero/compare/v0.1.2...HEAD
+[Unreleased]: https://github.com/linuztx/alter-zero/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/linuztx/alter-zero/compare/v0.1.2...v0.2.0
 [0.1.2]: https://github.com/linuztx/alter-zero/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/linuztx/alter-zero/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/linuztx/alter-zero/releases/tag/v0.1.0
