@@ -137,14 +137,8 @@ impl AttachmentStamp {
     /// The stamp of the file at `path` as it is now, under the current
     /// setting — `None` when the file can't be described (gone, unreadable).
     fn of(path: &Path) -> Option<Self> {
-        let meta = std::fs::metadata(path).ok()?;
-        let mtime_nanos = meta
-            .modified()
-            .ok()?
-            .duration_since(std::time::UNIX_EPOCH)
-            .ok()?
-            .as_nanos();
-        Some(Self::new(meta.len(), mtime_nanos, auto_resizing()))
+        let (len, mtime_nanos) = super::payload::file_state(path)?;
+        Some(Self::new(len, mtime_nanos, auto_resizing()))
     }
 }
 

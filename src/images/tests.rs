@@ -1,10 +1,14 @@
 //! Unit tests for the pure half of [`super`] — the cell math, the carrier,
-//! and the two format helpers. The boundary ([`super::store`]) is smoke-tested.
+//! and the two format helpers. The boundary ([`super::store`]) is smoke-tested,
+//! save for its cache's file-state rule, which a half-block store proves here
+//! with no terminal anywhere (it draws real coloured cells into a `Buffer`).
 
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
-use ratatui::layout::Size;
+use ratatui::buffer::Buffer;
+use ratatui::layout::{Rect, Size};
 use ratatui::style::Color;
+use ratatui_image::picker::ProtocolType;
 use ratatui_image::{FontSize as PickerFontSize, Resize};
 
 use super::*;
@@ -1184,4 +1188,130 @@ fn attachment_mime_follows_the_extension_with_png_as_the_default() {
     assert_eq!(attachment_mime(p("a.gif")), "image/gif");
     assert_eq!(attachment_mime(p("a.webp")), "image/webp");
     assert_eq!(attachment_mime(p("no-extension")), "image/png");
+}
+
+// ===== the encoded pictures (`store`, docs/images.md "A file rewritten in place") =====
+
+/// A solid-colour PNG, so every half-block cell the encoder emits carries
+/// exactly that colour and an assertion can name it.
+fn solid_png(w: u32, h: u32, rgb: [u8; 3]) -> Vec<u8> {
+    let mut out = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(w, h, image::Rgb(rgb)))
+        .write_to(&mut out, image::ImageFormat::Png)
+        .unwrap();
+    out.into_inner()
+}
+
+/// Write `png` at `path` with its mtime pinned `mtime_secs` after the epoch.
+/// The filesystem's own clock is coarse enough for two writes in one test to
+/// share a stamp, and what the store must see is a *different* one.
+fn write_png_at(path: &std::path::Path, png: &[u8], mtime_secs: u64) {
+    std::fs::write(path, png).unwrap();
+    std::fs::File::options()
+        .write(true)
+        .open(path)
+        .unwrap()
+        .set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(mtime_secs))
+        .unwrap();
+}
+
+/// A frame holding exactly the block `placement` reserves, the way the pure
+/// line builders emit it: `rows` lines of `cols` blank cells, each carrying
+/// the placement's carrier for its row.
+fn reserved_frame(placement: &Placement) -> Buffer {
+    let mut buf = Buffer::empty(Rect::new(0, 0, placement.cols, placement.rows));
+    for y in 0..placement.rows {
+        for x in 0..placement.cols {
+            buf.cell_mut((x, y)).unwrap().underline_color = carrier(placement.id, y);
+        }
+    }
+    buf
+}
+
+/// The one foreground colour every cell of `buf` wears, or `None` when they
+/// disagree — a solid picture paints one colour, and a blank block paints
+/// `Color::Reset`.
+fn every_fg(buf: &Buffer) -> Option<Color> {
+    let mut cells = buf.content().iter();
+    let first = cells.next()?.fg;
+    cells.all(|cell| cell.fg == first).then_some(first)
+}
+
+const HALFBLOCK_FONT: FontSize = (5, 10);
+
+fn halfblock_policy() -> ImagePolicy {
+    ImagePolicy {
+        show: true,
+        available: true,
+        max_cols: 120,
+        font: HALFBLOCK_FONT,
+        auto_resize: true,
+    }
+}
+
+#[test]
+fn a_picture_rewritten_in_place_is_re_encoded_from_the_new_bytes() {
+    // The agent downloads a picture, shows it, converts it in place — same
+    // path, same pixel size — and reads it again. The new cell reserves the
+    // same placement (that is the interner's contract), and the store must
+    // not answer it with the picture it encoded before the file changed.
+    let _guard = policy_lock();
+    set_policy(halfblock_policy());
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("cat.png");
+    write_png_at(&path, &solid_png(100, 60, [255, 0, 0]), 1_000_000);
+    let placement = place(path.to_str().unwrap(), (100, 60), 100).expect("reserved");
+    assert_eq!((placement.cols, placement.rows), (20, 6));
+    let mut store = ImageStore::with_protocol(ProtocolType::Halfblocks, HALFBLOCK_FONT);
+    let mut frame = reserved_frame(&placement);
+    store.stamp(&mut frame);
+    assert_eq!(
+        every_fg(&frame),
+        Some(Color::Rgb(255, 0, 0)),
+        "the first paint is the red picture"
+    );
+
+    // Same path, same size, same byte length even — only the bytes and the
+    // mtime differ, which is exactly what a `convert -colorspace Gray` leaves.
+    write_png_at(&path, &solid_png(100, 60, [0, 0, 255]), 2_000_000);
+    let again = place(path.to_str().unwrap(), (100, 60), 100).expect("reserved");
+    assert_eq!(
+        again.id, placement.id,
+        "the same file at the same size is the same placement — the key the stale picture hid behind"
+    );
+    let mut frame = reserved_frame(&again);
+    store.stamp(&mut frame);
+    assert_eq!(
+        every_fg(&frame),
+        Some(Color::Rgb(0, 0, 255)),
+        "a fresh paint of the same placement draws the file as it is now"
+    );
+    set_policy(ImagePolicy::default());
+}
+
+#[test]
+fn a_picture_whose_file_is_gone_keeps_drawing_what_was_encoded() {
+    // A file that is gone is not a file that changed: the picture already in
+    // the cache keeps drawing rather than going blank — and rather than the
+    // store retrying the decode on every frame.
+    let _guard = policy_lock();
+    set_policy(halfblock_policy());
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("gone.png");
+    write_png_at(&path, &solid_png(100, 60, [255, 0, 0]), 1_000_000);
+    let placement = place(path.to_str().unwrap(), (100, 60), 100).expect("reserved");
+    let mut store = ImageStore::with_protocol(ProtocolType::Halfblocks, HALFBLOCK_FONT);
+    let mut frame = reserved_frame(&placement);
+    store.stamp(&mut frame);
+    assert_eq!(every_fg(&frame), Some(Color::Rgb(255, 0, 0)));
+
+    std::fs::remove_file(&path).unwrap();
+    let mut frame = reserved_frame(&placement);
+    store.stamp(&mut frame);
+    assert_eq!(
+        every_fg(&frame),
+        Some(Color::Rgb(255, 0, 0)),
+        "the encoded picture outlives its file"
+    );
+    set_policy(ImagePolicy::default());
 }

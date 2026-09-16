@@ -67,6 +67,35 @@ well as the path is what makes a resize correct: a narrower terminal produces a
 different placement id, so the boundary encodes a fresh picture instead of
 re-placing the old one at the wrong size.
 
+### A file rewritten in place
+
+The key is the path and the size — which is also what it is **not**: the
+file's bytes. The agent downloads a picture, shows it, turns it black and
+white in place and reads it again, and the new cell reserves the *same*
+placement — same path, same pixel size — while the store's cache, keyed on
+the placement, still holds the picture it encoded from the colour file.
+Served that entry, the new cell showed the colour cat. That was the reported
+bug, and its one odd detail is explained by *Screen switches* below: Ctrl+O
+showed the conversion, because kitty keeps an entry per screen and the
+alternate screen had none yet, so it encoded from the file as it was by then
+— any protocol sharing one entry across both screens shows the stale picture
+there too, which is what Phase 107d drives under half-blocks.
+
+So an encoding remembers the **file state** it was made from — size and
+mtime, the same `(len, mtime)` the payload sidecar and the wire attachment
+already key on (*Memory*) — and a hit is a hit only while the file still has
+it: `ImageStore::encode` `stat`s the path on every paint of a block, drops
+the entry on a mismatch and encodes afresh, which for kitty is a new upload
+under a new image id, so the placeholders already in scrollback keep naming
+the picture they were painted with. The check is one `stat` per visible
+block per paint — microseconds, against the decode and the upload it stands
+in for — and it reads the file's state, never its bytes. A file that has
+since **gone** is not a file that changed: the picture already encoded keeps
+drawing, and nothing is retried per frame. The unit tests drive a half-block
+store into a `Buffer` with no terminal anywhere (`ImageStore::with_protocol`
+— red, rewritten blue at a distinct mtime, painted blue; deleted, still
+painted); `smoke.sh` Phase 107d does the same against the real binary.
+
 ### Where the pixel size comes from
 
 The row reservation is pure, so it can't open the file. Two sources, and only
@@ -420,3 +449,7 @@ Phase 107b reads the raw byte stream and asserts a kitty transmit lands going
 switches*).
 Phase 107c drives a picture taller than the pager and asserts the
 bottom-pinned open still draws its visible part.
+Phase 107d overwrites the picture a resumed cell shows — same path, same
+size, the same byte length even — and asserts the transcript's next paint of
+that placement draws the new colour and none of the old (*A file rewritten
+in place*).
