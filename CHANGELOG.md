@@ -31,11 +31,33 @@ release heading when a version is cut.
 
 ### Changed
 
+- **Every speed tier a model lists is a command of its own**
+  (`docs/fast-mode.md`). `/fast` was a static palette row that cycled
+  standard → every listed tier → standard, and answered `does not support
+  fast mode` on a model listing none. The palette now builds one command
+  per tier out of the model's own `service_tiers` — `/fast`, `/ultrafast`,
+  whatever the record names — listed right after `/model` with the
+  backend's own description (`1.5x speed, increased usage`), so a tier the
+  backend adds tomorrow is a command the day it is listed and nothing about
+  a tier is hardcoded. Each command toggles its tier, codex's way: run it to
+  select the tier (`Speed: fast — 1.5x speed, increased usage`, the footer
+  wearing the name after the thinking mode), run it again for standard, run
+  another tier's to switch straight over. A model listing no tier lists no
+  such command — `/fast` typed there matches nothing — and `/help` lists
+  whatever the palette shows. `smoke.sh` Phase 117 drives both a model
+  listing none and a stub-served listing naming two.
 - The OpenAI subscription provider is named **ChatGPT Codex** in `/login`
-  and the docs (it was `OpenAI (ChatGPT)`): it is the ChatGPT seat reached
-  the way Codex reaches it, and the old name read as a second OpenAI API-key
-  provider. The provider id, its `OPENAI_CHATGPT_REFRESH_TOKEN` variable and
-  every stored selection are unchanged, so nothing needs signing in again.
+  and the docs (it was `OpenAI (ChatGPT)`), **its id is `chatgpt_codex`
+  and its token variable `CHATGPT_CODEX_REFRESH_TOKEN`** (they were
+  `openai_chatgpt` and `OPENAI_CHATGPT_REFRESH_TOKEN`): it is the ChatGPT
+  seat reached the way Codex reaches it, and the old spellings read as a
+  second OpenAI API-key provider (`docs/chatgpt.md`). Nothing needs signing
+  in or choosing again — a token stored under the old variable still signs
+  in until the next rotation writes it back under the new one, a
+  `config.json` selection or a rollout's `model` record naming the old id
+  lands on the provider, an `ALTER_ZERO_PROVIDER` still exporting it pins
+  the same provider, and a provider file of your own spelling
+  `auth = "openai_chatgpt"` still reads as the sign-in.
 
 ### Fixed
 

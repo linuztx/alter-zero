@@ -1041,7 +1041,7 @@ fn footer_line_shows_the_speed_tier_beside_the_thinking_mode() {
         "  dummy_model_name medium · ~/alter-zero",
         "standard: no tier word"
     );
-    app.speed.as_mut().unwrap().advance();
+    app.speed.as_mut().unwrap().toggle("priority");
     let line = footer_line(&app, 60);
     assert_eq!(
         plain(&line),
@@ -1060,5 +1060,19 @@ fn footer_line_shows_the_speed_tier_beside_the_thinking_mode() {
     assert_eq!(
         plain(&footer_line(&app, 60)),
         "  dummy_model_name fast · ~/alter-zero"
+    );
+    // Whatever tier a record lists wears its own name there — the word is
+    // the selection's label, so a new tier needs nothing of the footer.
+    let ultrafast = ServiceTier::new("ultrafast", "Ultrafast", "The fastest available responses.");
+    app.set_speed(SpeedState::new(
+        vec![
+            ServiceTier::new("priority", "Fast", "1.5x speed, increased usage"),
+            ultrafast,
+        ],
+        Some("ultrafast".to_string()),
+    ));
+    assert_eq!(
+        plain(&footer_line(&app, 60)),
+        "  dummy_model_name ultrafast · ~/alter-zero"
     );
 }

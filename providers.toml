@@ -19,7 +19,7 @@
 #   - `api_base_env` (optional) names an environment variable whose value
 #     replaces `kwargs.api_base` when set (Ollama's `OLLAMA_HOST`).
 #   - `auth` (optional) is how the provider authenticates: a pasted key by
-#     default, a subscription sign-in (`github_copilot`, `openai_chatgpt`,
+#     default, a subscription sign-in (`github_copilot`, `chatgpt_codex`,
 #     `anthropic_console`), or `optional_key` for a server that needs none.
 #   - `wire_api` (optional) is the request shape: chat completions by default,
 #     `responses`, `anthropic`, or `ollama` (docs/chatgpt.md, docs/claude.md,
@@ -168,21 +168,21 @@ api_base = "https://openrouter.ai/api/v1"
 # sent verbatim. The backend speaks the **Responses** API, not chat
 # completions — hence `wire_api` — and `originator` is server-side
 # allowlisted: a value OpenAI does not know earns a 403.
-[providers.openai_chatgpt]
+[providers.chatgpt_codex]
 name = "ChatGPT Codex"
-auth = "openai_chatgpt"
+auth = "chatgpt_codex"
 wire_api = "responses"
 description = "Sign in with your ChatGPT Plus/Pro account, in a browser or with a device code"
-api_key_env = "OPENAI_CHATGPT_REFRESH_TOKEN"
+api_key_env = "CHATGPT_CODEX_REFRESH_TOKEN"
 
 # `originator` is checked against an allow-list server-side: a value OpenAI
 # does not know earns a 403 whose message does not say so. The `User-Agent`
 # rides the request too, but is built at runtime (it names the OS and arch),
 # so it comes from the auth seam rather than from here.
-[providers.openai_chatgpt.extra_headers]
+[providers.chatgpt_codex.extra_headers]
 originator = "codex_cli_rs"
 
-[providers.openai_chatgpt.kwargs]
+[providers.chatgpt_codex.kwargs]
 # The ChatGPT backend, which is a different world from `api.openai.com`: it
 # takes no API key, and the platform API takes no ChatGPT token.
 api_base = "https://chatgpt.com/backend-api/codex"

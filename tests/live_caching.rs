@@ -23,7 +23,7 @@
 //! GITHUB_COPILOT_TOKEN=ghu_…   cargo test --test live_caching -- --ignored --nocapture live_copilot
 //! ANTHROPIC_CONSOLE_REFRESH_TOKEN=sk-ant-ort01-… ALTER_ZERO_LIVE_TOKEN_STORE=/tmp/live.env \
 //!                              cargo test --test live_caching -- --ignored --nocapture live_anthropic_console
-//! OPENAI_CHATGPT_REFRESH_TOKEN=rt.1.… ALTER_ZERO_LIVE_TOKEN_STORE=/tmp/live.env \
+//! CHATGPT_CODEX_REFRESH_TOKEN=rt.1.… ALTER_ZERO_LIVE_TOKEN_STORE=/tmp/live.env \
 //!                              cargo test --test live_caching -- --ignored --nocapture live_chatgpt
 //! ```
 //!
@@ -415,7 +415,7 @@ fn print_raw_anthropic_usage_frames(cfg: &ModelConfig, system: &str) {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[ignore = "hits the network; needs OPENAI_CHATGPT_REFRESH_TOKEN + ALTER_ZERO_LIVE_TOKEN_STORE"]
+#[ignore = "hits the network; needs CHATGPT_CODEX_REFRESH_TOKEN + ALTER_ZERO_LIVE_TOKEN_STORE"]
 fn live_chatgpt_responses_second_turn_reads_the_prefix_from_cache() {
     // The Responses wire (`docs/chatgpt.md`): the system prompt hoisted into
     // `instructions`, `prompt_cache_key` riding every request, the usage
@@ -423,8 +423,8 @@ fn live_chatgpt_responses_second_turn_reads_the_prefix_from_cache() {
     // identical prefix automatically past 1024 tokens.
     alter_zero::llm::chatgpt::set_store_path(token_store());
     let salt = salt();
-    let refresh = credential("OPENAI_CHATGPT_REFRESH_TOKEN");
-    let probe = config("openai_chatgpt", "probe", Some(refresh.clone()), salt);
+    let refresh = credential("CHATGPT_CODEX_REFRESH_TOKEN");
+    let probe = config("chatgpt_codex", "probe", Some(refresh.clone()), salt);
     let listed = fetch_models(&probe, &CancelToken::new()).expect("the ChatGPT model listing");
     let ids: Vec<&str> = listed.iter().map(|m| m.id.as_str()).collect();
     println!("ChatGPT models: {ids:?}");
@@ -436,7 +436,7 @@ fn live_chatgpt_responses_second_turn_reads_the_prefix_from_cache() {
             .to_string()
     });
     println!("model under test: {model}");
-    let cfg = config("openai_chatgpt", &model, Some(refresh), salt);
+    let cfg = config("chatgpt_codex", &model, Some(refresh), salt);
     let backend = LlmBackend::configure(cfg, Some(big_system_prompt(salt)), false);
     let (first, second) = two_turns(&backend);
     assert!(first.total() > 1_000, "the whole prefix billed: {first:?}");
@@ -447,7 +447,7 @@ fn live_chatgpt_responses_second_turn_reads_the_prefix_from_cache() {
 }
 
 #[test]
-#[ignore = "hits the network; needs OPENAI_CHATGPT_REFRESH_TOKEN + ALTER_ZERO_LIVE_TOKEN_STORE; diagnostic"]
+#[ignore = "hits the network; needs CHATGPT_CODEX_REFRESH_TOKEN + ALTER_ZERO_LIVE_TOKEN_STORE; diagnostic"]
 fn live_chatgpt_cache_diagnostics() {
     // Two A/B rounds over the ChatGPT backend, printed rather than asserted:
     // (A) the request exactly as the app sends it, with a pause before the
@@ -457,7 +457,7 @@ fn live_chatgpt_cache_diagnostics() {
     // the reference client sends beside `prompt_cache_key`. Whichever
     // reports cache reads tells what the backend's routing keys on.
     alter_zero::llm::chatgpt::set_store_path(token_store());
-    let refresh = credential("OPENAI_CHATGPT_REFRESH_TOKEN");
+    let refresh = credential("CHATGPT_CODEX_REFRESH_TOKEN");
     let model = model_or("ALTER_ZERO_LIVE_CHATGPT_MODEL", "gpt-5.4-mini");
     let pause = std::time::Duration::from_secs(12);
     let beta = ("OpenAI-Beta", "responses=experimental");
@@ -477,7 +477,7 @@ fn live_chatgpt_cache_diagnostics() {
     ];
     for (offset, (label, headers)) in variants.iter().enumerate() {
         let salt = salt() + offset as u64;
-        let mut cfg = config("openai_chatgpt", &model, Some(refresh.clone()), salt);
+        let mut cfg = config("chatgpt_codex", &model, Some(refresh.clone()), salt);
         let key = cfg.cache_key.clone().expect("the cache key");
         for (name, value) in *headers {
             cfg.extra_headers
@@ -554,7 +554,7 @@ fn live_copilot_reports_its_usage_frame() {
 }
 
 #[test]
-#[ignore = "hits the network; needs OPENAI_CHATGPT_REFRESH_TOKEN + ALTER_ZERO_LIVE_TOKEN_STORE"]
+#[ignore = "hits the network; needs CHATGPT_CODEX_REFRESH_TOKEN + ALTER_ZERO_LIVE_TOKEN_STORE"]
 fn live_chatgpt_fast_mode_is_listed_and_a_priority_request_is_served() {
     // Codex's fast mode on the wire (`docs/fast-mode.md`): the listing names
     // the tier per model, and a request carrying `service_tier: "priority"`
@@ -565,8 +565,8 @@ fn live_chatgpt_fast_mode_is_listed_and_a_priority_request_is_served() {
     use alter_zero::llm::ServiceTier;
     alter_zero::llm::chatgpt::set_store_path(token_store());
     let salt = salt();
-    let refresh = credential("OPENAI_CHATGPT_REFRESH_TOKEN");
-    let probe = config("openai_chatgpt", "probe", Some(refresh.clone()), salt);
+    let refresh = credential("CHATGPT_CODEX_REFRESH_TOKEN");
+    let probe = config("chatgpt_codex", "probe", Some(refresh.clone()), salt);
     let listed = fetch_models(&probe, &CancelToken::new()).expect("the ChatGPT model listing");
     for m in &listed {
         let tiers: Vec<String> = m
@@ -598,7 +598,7 @@ fn live_chatgpt_fast_mode_is_listed_and_a_priority_request_is_served() {
         "model under test: {model}, tier {} ({})",
         tier.id, tier.description
     );
-    let standard = config("openai_chatgpt", &model, Some(refresh), salt);
+    let standard = config("chatgpt_codex", &model, Some(refresh), salt);
     let mut priority = standard.clone();
     priority.service_tier = Some(tier.id.clone());
     for (label, cfg) in [("standard", standard), ("fast", priority)] {

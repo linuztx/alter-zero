@@ -41,7 +41,11 @@ fn the_command_registry_is_non_empty_with_unique_lowercase_names() {
             "names are stored without the slash"
         );
         assert_eq!(c.name, c.name.to_lowercase(), "names are lowercase");
-        assert!(seen.insert(c.name), "duplicate command /{}", c.name);
+        assert!(
+            seen.insert(c.name.as_ref()),
+            "duplicate command /{}",
+            c.name
+        );
     }
 }
 
@@ -72,6 +76,7 @@ fn palette_descriptions_are_concise_and_product_name_free() {
             .find(|c| c.name == name)
             .unwrap_or_else(|| panic!("/{name} is registered"))
             .description
+            .as_ref()
     };
     assert_eq!(desc("quit"), "Exit the app");
     assert_eq!(desc("trust"), "Review and approve this project's config");
@@ -80,11 +85,11 @@ fn palette_descriptions_are_concise_and_product_name_free() {
 #[test]
 fn matching_commands_filters_by_name_prefix_case_insensitively() {
     assert_eq!(
-        matching_commands("").len(),
+        matching_commands(COMMANDS, "").len(),
         COMMANDS.len(),
         "an empty query lists everything"
     );
-    let hits = matching_commands("HE");
+    let hits = matching_commands(COMMANDS, "HE");
     assert!(hits.iter().any(|c| c.name == "help"));
     assert!(
         hits.iter().all(|c| c.name.starts_with("he")),
@@ -244,36 +249,123 @@ fn opening_the_picker_abandons_the_palette_and_shortcuts() {
     assert!(app.command_menu.is_none());
 }
 
-// ===== /fast — the speed tier cycle (docs/fast-mode.md) =====
+// ===== the per-tier speed commands (docs/fast-mode.md) =====
 
 fn fast_tier() -> ServiceTier {
     ServiceTier::new("priority", "Fast", "1.5x speed, increased usage")
 }
 
-fn fast_capable() -> Option<SpeedState> {
-    SpeedState::new(vec![fast_tier()], None)
+fn ultrafast_tier() -> ServiceTier {
+    ServiceTier::new("ultrafast", "Ultrafast", "The fastest available responses.")
+}
+
+fn two_tiers() -> Option<SpeedState> {
+    SpeedState::new(vec![fast_tier(), ultrafast_tier()], None)
+}
+
+/// The palette rows that are speed tiers, by name.
+fn tier_rows(app: &App) -> Vec<String> {
+    app.commands()
+        .iter()
+        .filter(|c| matches!(c.effect, CommandEffect::ServiceTier(_)))
+        .map(|c| c.name.to_string())
+        .collect()
 }
 
 #[test]
-fn the_palette_lists_fast_right_after_model() {
-    // Codex lists its tier commands directly after /model; so does the
-    // static palette, with a description that says what the speed costs.
-    let names: Vec<&str> = COMMANDS.iter().map(|c| c.name).collect();
+fn the_registry_has_no_static_fast_command() {
+    // Fast mode is a per-tier command derived from the model's listing
+    // (codex's `SlashCommandItem::ServiceTier`): a model that lists no tier
+    // gets no row, so the palette never offers a speed it cannot switch to.
+    assert!(
+        COMMANDS.iter().all(|c| c.name != "fast"),
+        "the static registry carries no /fast"
+    );
+    assert!(
+        !COMMANDS
+            .iter()
+            .any(|c| matches!(c.effect, CommandEffect::ServiceTier(_))),
+        "no tier is hardcoded"
+    );
+    let app = App::new();
+    assert_eq!(
+        app.commands().len(),
+        COMMANDS.len(),
+        "no tier listed, no tier row"
+    );
+    assert!(tier_rows(&app).is_empty());
+    assert!(matching_commands(&app.commands(), "fast").is_empty());
+}
+
+#[test]
+fn every_listed_tier_becomes_a_command_right_after_model() {
+    // Codex inserts its tier commands directly after /model, one per tier
+    // the record lists, in the record's order; the row's description is
+    // the backend's own cost statement for the tier.
+    let mut app = App::new();
+    app.set_speed(two_tiers());
+    let commands = app.commands();
+    let names: Vec<&str> = commands.iter().map(|c| c.name.as_ref()).collect();
     let model = names.iter().position(|n| *n == "model").expect("/model");
-    assert_eq!(names.get(model + 1), Some(&"fast"));
-    let fast = COMMANDS.iter().find(|c| c.name == "fast").unwrap();
-    assert_eq!(fast.effect, CommandEffect::Fast);
-    assert!(fast.description.contains("usage"), "{:?}", fast.description);
+    assert_eq!(&names[model + 1..model + 3], ["fast", "ultrafast"]);
+    assert_eq!(names.len(), COMMANDS.len() + 2);
+    let fast = &commands[model + 1];
+    assert_eq!(fast.description, "1.5x speed, increased usage");
+    assert_eq!(fast.effect, CommandEffect::ServiceTier(fast_tier()));
+    let ultrafast = &commands[model + 2];
+    assert_eq!(ultrafast.description, "The fastest available responses.");
+    assert_eq!(
+        ultrafast.effect,
+        CommandEffect::ServiceTier(ultrafast_tier())
+    );
+    // The filter sees them like any other row.
+    let ultra: Vec<&SlashCommand> = matching_commands(&commands, "ULTRA");
+    assert_eq!(ultra.len(), 1);
+    assert_eq!(ultra[0].name, "ultrafast");
+    // A switch to a model listing none takes the rows away again.
+    app.set_speed(None);
+    assert!(tier_rows(&app).is_empty());
+    assert!(matching_commands(&app.commands(), "ultra").is_empty());
+}
+
+#[test]
+fn a_tier_row_degrades_gracefully_on_a_record_that_says_less() {
+    // A tier the record did not describe gets a generic description rather
+    // than an empty column; a tier whose name cannot be a palette token
+    // gets no row; a tier named after a built-in command never shadows it
+    // (the built-in is the door to everything else).
+    let bare = ServiceTier::new("priority", "Fast", "");
+    let unusable = ServiceTier::new("x", "!!!", "");
+    let clash = ServiceTier::new("y", "Model", "a tier that would shadow /model");
+    let mut app = App::new();
+    app.set_speed(SpeedState::new(vec![bare.clone(), unusable, clash], None));
+    assert_eq!(tier_rows(&app), ["fast"]);
+    let commands = app.commands();
+    let fast = commands.iter().find(|c| c.name == "fast").unwrap();
+    assert_eq!(fast.description, "Toggle fast mode");
+    assert_eq!(fast.effect, CommandEffect::ServiceTier(bare));
+    assert_eq!(
+        commands.iter().filter(|c| c.name == "model").count(),
+        1,
+        "/model is listed once, and it is the built-in"
+    );
+    assert_eq!(
+        commands.iter().find(|c| c.name == "model").unwrap().effect,
+        CommandEffect::Model
+    );
 }
 
 #[test]
 fn set_speed_seeds_and_clears_the_state() {
     let mut app = App::new();
     assert!(app.speed.is_none(), "unknown/unsupported by default");
-    app.set_speed(fast_capable());
+    app.set_speed(two_tiers());
     let state = app.speed.as_ref().expect("seeded");
-    assert_eq!(state.tiers, vec![fast_tier()]);
-    assert_eq!(state.tier, None, "standard until /fast says otherwise");
+    assert_eq!(state.tiers, vec![fast_tier(), ultrafast_tier()]);
+    assert_eq!(
+        state.tier, None,
+        "standard until a tier command says otherwise"
+    );
     app.set_speed(None);
     assert!(
         app.speed.is_none(),
@@ -282,50 +374,59 @@ fn set_speed_seeds_and_clears_the_state() {
 }
 
 #[test]
-fn slash_fast_cycles_the_speed_tier_and_hands_the_loop_the_selection() {
+fn a_tier_command_toggles_its_tier_and_hands_the_loop_the_selection() {
+    // Codex's `toggle_service_tier_from_ui`: the command's tier when it is
+    // not the selection, standard when it is — and another tier's command
+    // switches straight to that tier, no standard step between.
     let mut app = App::new();
-    app.set_speed(fast_capable());
-    type_chars(&mut app, "/fast");
+    app.set_speed(two_tiers());
+    type_chars(&mut app, "/ultrafast");
     assert_eq!(
         app.on_key(key(KeyCode::Enter)),
-        Action::SetSpeed(Some(fast_tier())),
-        "standard steps to fast"
+        Action::SetSpeed(Some(ultrafast_tier())),
+        "standard steps straight to ultrafast"
     );
     assert_eq!(
         app.speed.as_ref().unwrap().tier.as_deref(),
-        Some("priority")
+        Some("ultrafast")
     );
     assert_eq!(app.input.text(), "", "the command is consumed");
     assert!(app.command_menu.is_none(), "and the palette closed");
     type_chars(&mut app, "/fast");
     assert_eq!(
         app.on_key(key(KeyCode::Enter)),
+        Action::SetSpeed(Some(fast_tier())),
+        "ultrafast → fast directly"
+    );
+    type_chars(&mut app, "/fast");
+    assert_eq!(
+        app.on_key(key(KeyCode::Enter)),
         Action::SetSpeed(None),
-        "fast wraps to standard"
+        "the selected tier's own command is the way back to standard"
     );
     assert_eq!(app.speed.as_ref().unwrap().tier, None);
 }
 
 #[test]
-fn slash_fast_without_support_raises_an_info_toast() {
-    // A model listing no tier (or the dummy backend): /fast explains
-    // instead of dying silently — Ctrl+T's rule for a non-reasoner.
+fn a_tier_command_typed_on_a_model_listing_none_matches_nothing() {
+    // No row, no run: the query matches no command, Enter is swallowed like
+    // any other miss, and `/fast` is never sent to the model as a message.
     let mut app = App::new();
     app.set_session_info("dummy_model_name", "~/repo");
     type_chars(&mut app, "/fast");
-    assert_eq!(
-        app.on_key(key(KeyCode::Enter)),
-        Action::Toast("dummy_model_name does not support fast mode".into())
-    );
+    assert!(app.command_menu.is_some(), "the palette is open");
+    assert!(app.highlighted_command().is_none());
+    assert_eq!(app.on_key(key(KeyCode::Enter)), Action::None);
+    assert_eq!(app.input.text(), "/fast", "the draft stays");
     assert!(app.speed.is_none());
 }
 
 #[test]
-fn slash_fast_works_mid_turn_for_the_next_turn() {
-    // Like /model and Ctrl+T, the cycle never touches the running turn —
+fn a_tier_command_works_mid_turn_for_the_next_turn() {
+    // Like /model and Ctrl+T, the switch never touches the running turn —
     // the tier simply rides the next request.
     let mut app = App::new();
-    app.set_speed(fast_capable());
+    app.set_speed(two_tiers());
     app.begin_stream();
     type_chars(&mut app, "/fast");
     assert_eq!(
@@ -333,4 +434,33 @@ fn slash_fast_works_mid_turn_for_the_next_turn() {
         Action::SetSpeed(Some(fast_tier()))
     );
     assert!(app.turn_active(), "the turn keeps running underneath");
+}
+
+#[test]
+fn slash_help_lists_the_tier_commands_where_the_palette_shows_them() {
+    // /help enumerates what the palette offers this session — the tier rows
+    // included, right after /model, each with its own description.
+    let mut app = App::new();
+    app.set_speed(two_tiers());
+    type_chars(&mut app, "/help");
+    let Action::Notice(text) = app.on_key(key(KeyCode::Enter)) else {
+        panic!("/help commits a notice when idle");
+    };
+    let lines: Vec<&str> = text.lines().collect();
+    let model = lines
+        .iter()
+        .position(|l| l.starts_with("/model — "))
+        .expect("/model listed");
+    assert_eq!(lines[model + 1], "/fast — 1.5x speed, increased usage");
+    assert_eq!(
+        lines[model + 2],
+        "/ultrafast — The fastest available responses."
+    );
+    // …and a model listing none lists none.
+    let mut plain = App::new();
+    type_chars(&mut plain, "/help");
+    let Action::Notice(text) = plain.on_key(key(KeyCode::Enter)) else {
+        panic!("/help commits a notice when idle");
+    };
+    assert!(!text.contains("/fast"), "{text}");
 }

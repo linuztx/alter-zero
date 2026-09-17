@@ -94,7 +94,9 @@ footer-mode multiplexing: the Ctrl+R `reverse-i-search: {query}` line
   one segment with a safety meaning. A full row reads
   `deepseek-v3.2 medium · ~/Codes/tmp · 1.3k/160k (0.8%) · 1 shell     manual`;
   a selected speed tier follows the thinking mode — `gpt-5.5 medium fast ·
-  ~/repo` (`/fast`, `docs/fast-mode.md`) — and standard shows nothing.
+  ~/repo`, `gpt-5.6-sol ultrafast · ~/repo` — wearing whatever name the
+  model's listing gave the tier its command selected (`/fast`,
+  `/ultrafast`, `docs/fast-mode.md`), and standard shows nothing.
   **Inside a subagent's session view the model and gauge segments describe
   that agent** (`docs/agent-context-gauge.md`): the gauge is the viewed
   agent's own context — `AgentRun::context_used`, the last usage frame's

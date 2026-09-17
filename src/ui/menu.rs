@@ -123,7 +123,7 @@ fn menu_row_lines(cmd: &SlashCommand, selected: bool, width: u16) -> Vec<Line<'s
             name_style,
         ))];
     }
-    let mut rows = wrap_text(cmd.description, desc_width as u16).into_iter();
+    let mut rows = wrap_text(&cmd.description, desc_width as u16).into_iter();
     let first = rows.next().unwrap_or_default();
     let mut lines = vec![Line::from(vec![
         Span::styled(name, name_style),
@@ -139,8 +139,9 @@ fn menu_row_lines(cmd: &SlashCommand, selected: bool, width: u16) -> Vec<Line<'s
     lines
 }
 
-/// The styled lines for the open command palette: the filtered commands with
-/// their descriptions **wrapped** to the width, windowed by
+/// The styled lines for the open command palette: the session's commands
+/// ([`App::commands`] — the active model's speed-tier rows included) filtered
+/// by the query, their descriptions **wrapped** to the width, windowed by
 /// `menu_window_rows` to keep the selection visible inside the
 /// `MENU_MAX_ROWS` **row budget** — at widths where every description fits
 /// its row that is the familiar eight commands, and where descriptions wrap
@@ -155,7 +156,8 @@ pub fn command_menu_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     let Some(query) = command_query(app.input.text()) else {
         return Vec::new();
     };
-    let matches = matching_commands(query);
+    let commands = app.commands();
+    let matches = matching_commands(&commands, query);
     if matches.is_empty() {
         return vec![Line::from(Span::styled(
             MENU_NO_MATCH.to_string(),

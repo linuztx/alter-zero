@@ -20,7 +20,7 @@ submit "$S104" "/login"
 sleep 0.5
 # Enter opens the subscription list, then the row is picked by NAME rather
 # than by counting Downs: the list is alphabetical by provider id, so every
-# subscription added ahead of `openai_chatgpt` used to shift this phase onto
+# subscription added ahead of `chatgpt_codex` used to shift this phase onto
 # the wrong sign-in page — and the failure reads as "the browser page fell
 # back to the device wording", which blames the code under test rather than
 # the walk. `chatgpt` matches this row's id, name and description, and no

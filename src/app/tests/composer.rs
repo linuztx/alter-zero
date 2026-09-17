@@ -596,15 +596,23 @@ fn typing_filters_and_clamps_the_selection() {
     // the highlight (and Enter) lands on nothing.
     let mut app = App::new();
     type_str(&mut app, "/c");
-    assert_eq!(matching_commands("c").len(), 3, "/clear, /copy, /compact");
+    assert_eq!(
+        matching_commands(&app.commands(), "c").len(),
+        3,
+        "/clear, /copy, /compact"
+    );
     app.on_key(key(KeyCode::Down)); // highlight /copy (index 1)
     assert_eq!(app.command_menu.as_ref().unwrap().selected, 1);
     type_str(&mut app, "l"); // "/cl" — only /clear matches now
-    assert_eq!(matching_commands("cl").len(), 1, "only /clear matches");
+    assert_eq!(
+        matching_commands(&app.commands(), "cl").len(),
+        1,
+        "only /clear matches"
+    );
     assert_eq!(app.command_menu.as_ref().unwrap().selected, 0, "clamped");
     assert_eq!(
-        app.highlighted_command().map(|c| c.name),
-        Some("clear"),
+        app.highlighted_command().map(|c| c.name.into_owned()),
+        Some("clear".to_string()),
         "the highlight lands on a real row, so Enter still runs something"
     );
 }

@@ -368,7 +368,7 @@ pub(super) fn sample_subscriptions() -> Vec<SubscriptionChoice> {
 /// and a device code for a headless machine (`docs/chatgpt.md`).
 pub(super) fn chatgpt_subscription() -> SubscriptionChoice {
     SubscriptionChoice {
-        id: "openai_chatgpt".into(),
+        id: "chatgpt_codex".into(),
         name: "ChatGPT Codex".into(),
         description: "Sign in with your ChatGPT Plus/Pro account".into(),
         configured: false,

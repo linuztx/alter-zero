@@ -73,7 +73,7 @@ impl RequestAuth {
 ///   the same answer, a stored key or none (`docs/ollama.md`).
 /// - **[`AuthScheme::GithubCopilot`]** → the exchanged Copilot bearer and the
 ///   account's own host (`docs/copilot.md`).
-/// - **[`AuthScheme::OpenAiChatGpt`]** → an access token minted from the
+/// - **[`AuthScheme::ChatGptCodex`]** → an access token minted from the
 ///   stored refresh token, plus the `chatgpt-account-id` the backend routes
 ///   on (`docs/chatgpt.md`).
 /// - **[`AuthScheme::AnthropicConsole`]** → an access token minted from the
@@ -127,7 +127,7 @@ pub(crate) fn request_auth(cfg: &ModelConfig) -> Result<RequestAuth> {
                 headers: Vec::new(),
             })
         }
-        AuthScheme::OpenAiChatGpt => {
+        AuthScheme::ChatGptCodex => {
             let Some(refresh) = stored else {
                 return Ok(RequestAuth::default());
             };
@@ -206,7 +206,7 @@ mod tests {
         // request that can only fail.
         for scheme in [
             AuthScheme::GithubCopilot,
-            AuthScheme::OpenAiChatGpt,
+            AuthScheme::ChatGptCodex,
             AuthScheme::AnthropicConsole,
         ] {
             let mut cfg = ModelConfig::fallback();
