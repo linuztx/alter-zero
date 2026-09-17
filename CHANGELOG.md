@@ -12,6 +12,8 @@ release heading when a version is cut.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-09-17
+
 ### Added
 
 - **Device code sign-in for ChatGPT Codex** (`docs/chatgpt.md`). A machine
@@ -250,7 +252,8 @@ release heading when a version is cut.
   release whose notes come from this file — driven end to end by
   `scripts/release.sh`, which also rehearses a release locally.
 
-[Unreleased]: https://github.com/linuztx/alter-zero/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/linuztx/alter-zero/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/linuztx/alter-zero/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/linuztx/alter-zero/compare/v0.1.2...v0.2.0
 [0.1.2]: https://github.com/linuztx/alter-zero/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/linuztx/alter-zero/compare/v0.1.0...v0.1.1
