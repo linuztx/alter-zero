@@ -146,6 +146,8 @@ pub enum View {
     /// (system prompt + every derived context message, placeholders and
     /// bracketed tool formats unrendered). See `docs/context.md`.
     ContextDebug,
+    /// The full-screen, read-only Git change review.
+    DiffReview,
 }
 
 impl View {
@@ -162,7 +164,7 @@ impl View {
     pub const fn is_overlay(self) -> bool {
         matches!(
             self,
-            Self::ToolOutput | Self::ResumePicker | Self::ContextDebug
+            Self::ToolOutput | Self::ResumePicker | Self::ContextDebug | Self::DiffReview
         )
     }
 }

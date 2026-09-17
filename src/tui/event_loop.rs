@@ -78,6 +78,7 @@ pub(crate) async fn run(term: &mut InlineViewport, startup: Startup) -> io::Resu
 
             // 5. A finished Ctrl+V clipboard read.
             Some(result) = session.img_rx.recv() => session.on_image_paste(result),
+            Some(result) = session.diff_rx.recv() => session.on_diff_result(result)?,
 
             // 5b. The `/login` device flow's worker: the code to show, then
             //     the sign-in's verdict (`docs/copilot.md`).

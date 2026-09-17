@@ -12,6 +12,22 @@ release heading when a version is cut.
 
 ## [Unreleased]
 
+### Added
+
+- **Full-screen Git change review with `/diff`** (`docs/diff.md`). Review
+  staged, unstaged, and untracked changes in a searchable file browser beside
+  the selected file's patch. A partially staged file appears separately for
+  the index and working tree, so later edits do not hide staged work. The
+  review follows the active theme, with addition/deletion counts, old/new
+  line numbers, colored changes, hunk navigation, and horizontal scrolling.
+  Tab switches panes; narrow terminals show the focused pane at full width.
+  Git reads run in the background, `r` refreshes the snapshot, and Esc, `q`,
+  or Ctrl+C returns to the conversation, including replies that finished
+  while the review was open. Works from repository subdirectories and linked
+  worktrees, including repositories without a first commit. Binary files and
+  large previews carry explicit notices. Only opens inside a Git worktree;
+  reviewing never stages or changes project files.
+
 ## [0.3.0] - 2026-09-17
 
 ### Added

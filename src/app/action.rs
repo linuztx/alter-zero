@@ -11,6 +11,12 @@ use super::*;
 /// The result of handling a key press, interpreted by the event loop.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Action {
+    /// Load the repository's changes and open the full-screen review.
+    OpenDiffReview,
+    /// Reload the open review without changing Git's index or working tree.
+    RefreshDiffReview,
+    /// Return from the Git review to the conversation.
+    CloseDiffReview,
     /// Nothing to do.
     None,
     /// The user submitted a (non-empty) message; start a reply for it. Any

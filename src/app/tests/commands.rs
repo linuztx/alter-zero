@@ -4,6 +4,15 @@
 use super::*;
 
 #[test]
+fn diff_command_is_available_for_review() {
+    let app = App::new();
+    let commands = app.commands();
+    let matches = matching_commands(&commands, "diff");
+    assert_eq!(matches.len(), 1);
+    assert_eq!(matches[0].name, "diff");
+}
+
+#[test]
 fn a_slash_closes_the_band_and_opens_the_palette() {
     // The band and the palette never show together.
     let mut app = App::new();

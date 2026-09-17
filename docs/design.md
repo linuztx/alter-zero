@@ -189,12 +189,22 @@ unit-tested must be unit-tested.
   (`App::set_clock`, a real `chrono::Local` clock in `tui::host`; `None` in unit
   tests → empty stamp) and each item stores the pre-formatted string, so the
   pure library stays clock-free. See `docs/timestamps.md`.
+- **The `/diff` Git review.** A read-only, alternate-screen review of the
+  current Git worktree, including staged, unstaged, and untracked files. A
+  themed two-pane layout puts a searchable, filterable file list beside the
+  selected patch, with change counts, old/new line numbers, hunk navigation,
+  and visible pane focus. `1`–`4` select All/Unstaged/Staged/Untracked;
+  `/` searches paths, Tab changes focus, `n`/`N` move between hunks, and `r`
+  refreshes. Git loads asynchronously. Outside a Git worktree the loading
+  screen returns to chat with an explanatory toast; no repository is initialized.
+  `q`, Esc, or Ctrl+C return to the preserved conversation. See `docs/diff.md`;
+  `smoke.sh` Phase 120 covers the complete review flow in temporary repos.
 - **Slash-command palette (Claude-Code style).** When the input is a **bare
   command token** — `/`, `/he`, `/help`, but *not* `ask /help` or anything past a
   space/newline — a scrollable command **palette opens below the input box** (a
   third band in the live region). It lists a registry of `SlashCommand`s
   (`app::COMMANDS`: name + description + effect — currently `/help`, `/clear`,
-  `/copy`, `/init`, `/compact`, `/resume`, `/model`, `/login`, `/settings`,
+  `/copy`, `/diff`, `/init`, `/compact`, `/resume`, `/model`, `/login`, `/settings`,
   `/theme`, `/mascot`, `/spinner`, `/hooks`, `/skills`, `/mcp`, `/trust`, `/donate`, and `/quit`),
   filtered by name-prefix as you type after the `/`; `/` alone matches everything.
   ↑/↓ move the highlight, and the list shows at most `MENU_MAX_ROWS` (8) rows at a

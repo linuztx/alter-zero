@@ -385,6 +385,7 @@ impl Session<'_> {
             View::Conversation => self.draw_conversation(),
             View::ToolOutput => self.draw_tool_view(),
             View::ResumePicker => self.draw_resume_picker(),
+            View::DiffReview => self.draw_diff_review(),
             View::ContextDebug => self.draw_context_view(),
         }
     }

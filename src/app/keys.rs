@@ -11,6 +11,9 @@ use super::*;
 
 impl App {
     pub fn on_key(&mut self, key: KeyEvent) -> Action {
+        if self.view == View::DiffReview {
+            return self.on_key_diff_review(key);
+        }
         // A pending `AskUserQuestion` modal owns every key, ahead of even the
         // permission prompt (the two queue behind each other, so at most one
         // is ever open) — the main turn's thread is blocked on the answers.
@@ -154,6 +157,7 @@ impl App {
             View::ToolOutput => self.on_key_tool_view(key),
             View::ResumePicker => self.on_key_resume_picker(key),
             View::ContextDebug => self.on_key_context_debug(key),
+            View::DiffReview => self.on_key_diff_review(key),
         }
     }
 

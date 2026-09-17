@@ -32,6 +32,7 @@ mod backtrack;
 mod commands;
 mod compact;
 mod composer;
+mod diff;
 mod donate;
 mod file_picker;
 mod hooks_menu;
@@ -75,6 +76,7 @@ pub use self::commands::{
 pub(crate) use self::compact::estimate_messages_tokens;
 pub use self::compact::{COMPACT_VERB, Compaction};
 pub use self::composer::{SHELL_EMPTY_NOTICE, shell_query};
+pub use self::diff::{DiffFilter, DiffFocus, DiffReview};
 pub use self::donate::{DONATION_ADDRESSES, DonatePicker, DonationAddress};
 pub use self::file_picker::FileSearch;
 pub use self::hooks_menu::{HooksLevel, HooksMenu};
@@ -297,6 +299,8 @@ pub struct App {
     history_generation: u64,
     /// Which screen is showing (Ctrl+O toggles to the tool-output view).
     pub view: View,
+    /// The Git review snapshot and navigation state, released on close.
+    diff_review: Option<DiffReview>,
     /// The tool-output view's vertical scroll offset, in lines from the top.
     pub tool_scroll: usize,
     /// Whether the tool-output view is pinned to the bottom (tail-follow): it

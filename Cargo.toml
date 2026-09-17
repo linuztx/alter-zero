@@ -119,7 +119,7 @@ regex = "1"
 # binary is absent — macOS, minimal images). This crate forbids `unsafe` (no
 # libc/pre_exec), and rustix is already in the tree via crossterm — `process`
 # just enables its setsid wrapper.
-rustix = { version = "1", features = ["process", "termios"] }
+rustix = { version = "1", features = ["process", "termios", "fs"] }
 # Real token counting for the status-line tally (`tokenizer` module): the
 # o200k_base split pattern's `(?i:…)` groups and `(?!\S)` lookahead need a
 # backtracking engine — the same one `tiktoken-rs` uses for it. The vocabulary

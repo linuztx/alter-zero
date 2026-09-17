@@ -160,6 +160,9 @@ impl Session<'_> {
             Action::LeaveAgentView => self.leave_agent_view()?,
             Action::AgentChat { id, text } => self.agent_chat(&id, &text),
             Action::ToggleToolView => self.toggle_tool_view()?,
+            Action::OpenDiffReview => self.open_diff_review(),
+            Action::RefreshDiffReview => self.load_diff_review(),
+            Action::CloseDiffReview => self.close_diff_review()?,
             Action::ToggleContextDebug => self.toggle_context_debug()?,
             Action::ConfirmBacktrack => self.confirm_backtrack()?,
             Action::OpenResumePicker => self.open_resume_picker()?,
@@ -539,6 +542,7 @@ impl Session<'_> {
                 self.dispatch_file_search();
             }
             View::ResumePicker => self.app.paste_into_resume_search(pasted),
+            View::DiffReview => self.app.paste_into_diff_search(pasted),
             View::ToolOutput | View::ContextDebug => {}
         }
         self.burst.reset();

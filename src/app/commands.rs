@@ -96,6 +96,8 @@ pub enum CommandEffect {
     /// [`RESUME_BUSY_NOTICE`] toast while a turn is active (codex blocks it
     /// mid-task; it swaps the whole conversation). See `docs/resume.md`.
     Resume,
+    /// Review the working tree and index in a full-screen Git diff viewer.
+    Diff,
     /// Open the inline `/model` picker. Works **mid-turn** — it only replaces the
     /// composer, never the running turn (which streams on its own thread); a
     /// switch only rebinds the *next* turn's backend. See `docs/llm.md` /
@@ -250,6 +252,7 @@ pub const COMMANDS: &[SlashCommand] = &[
     // The active model's speed tiers list right after this row
     // (`App::commands`).
     SlashCommand::builtin("model", "Switch the active model", CommandEffect::Model),
+    SlashCommand::builtin("diff", "Review Git changes", CommandEffect::Diff),
     SlashCommand::builtin(
         "login",
         "Add or update a provider API key",
@@ -427,6 +430,7 @@ impl App {
         self.input.clear();
         self.command_menu = None;
         match effect {
+            CommandEffect::Diff => Action::OpenDiffReview,
             CommandEffect::Clear => {
                 self.clear_conversation();
                 Action::Clear

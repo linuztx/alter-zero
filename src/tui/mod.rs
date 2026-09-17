@@ -83,8 +83,10 @@ pub(crate) mod background;
 pub(crate) mod bootstrap;
 pub(crate) mod commit;
 pub(crate) mod config;
+pub(crate) mod diff;
 pub(crate) mod donate;
 pub(crate) mod event_loop;
+pub(crate) mod git_diff_loader;
 pub(crate) mod history_store;
 pub(crate) mod host;
 pub(crate) mod login;
@@ -205,6 +207,10 @@ pub(crate) struct Session<'t> {
     /// A Ctrl+V clipboard read's result channel (`docs/image-paste.md`).
     img_tx: tokio::sync::mpsc::UnboundedSender<Result<PathBuf, String>>,
     img_rx: tokio::sync::mpsc::UnboundedReceiver<Result<PathBuf, String>>,
+    /// Git review workers report by generation so closed reviews cannot reopen.
+    diff_tx: tokio::sync::mpsc::UnboundedSender<diff::DiffResult>,
+    diff_rx: tokio::sync::mpsc::UnboundedReceiver<diff::DiffResult>,
+    diff_generation: u64,
     /// The `/login` device-flow worker's channel (`docs/copilot.md`), the
     /// `CancelToken` Esc reaps it with, and when the shown code expires — the
     /// countdown the page ticks, injected per draw like every other clock.

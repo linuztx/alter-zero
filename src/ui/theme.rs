@@ -2468,3 +2468,35 @@ pub(super) const ASK_REVIEW_ANSWER_MAX_ROWS: usize = 4;
 pub(super) const ASK_REVIEW_BULLET: &str = "● ";
 
 pub(super) const ASK_ANSWER_ARROW: &str = "→ ";
+
+// --- Full-screen Git review (/diff). Geometry is shared with paging. ---
+pub(super) const DIFF_MARGIN: u16 = 1;
+pub(super) const DIFF_HEADER_ROWS: u16 = 4;
+pub(super) const DIFF_FOOTER_ROWS: u16 = 2;
+pub(super) const DIFF_PANE_HEADER_ROWS: u16 = 1;
+pub(super) const DIFF_SPLIT_MIN_WIDTH: u16 = 76;
+pub(super) const DIFF_SIDEBAR_MIN: u16 = 26;
+pub(super) const DIFF_SIDEBAR_MAX: u16 = 42;
+pub(super) const DIFF_PANE_GAP: u16 = 1;
+pub(super) const DIFF_FILE_ROWS: usize = 2;
+pub(super) const DIFF_MIN_GUTTER: usize = 3;
+pub(super) const DIFF_COMPACT_FILTER_WIDTH: u16 = 58;
+pub(super) const DIFF_BADGE: &str = " DIFF ";
+pub(super) const DIFF_SELECTED: &str = "▎";
+pub(super) const DIFF_SEPARATOR: &str = " · ";
+pub(super) const DIFF_GUTTER_SEPARATOR: &str = "│";
+pub(super) const DIFF_SCROLL_TRACK: &str = "│";
+pub(super) const DIFF_SCROLL_THUMB: &str = "┃";
+pub(super) const DIFF_CARET: &str = "▏";
+
+pub(super) fn diff_pane_bg() -> Color {
+    palette().user_bg
+}
+
+pub(super) fn diff_border_color(focused: bool) -> Color {
+    if focused {
+        menu_selected_color()
+    } else {
+        tool_dim_color()
+    }
+}

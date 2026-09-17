@@ -151,7 +151,9 @@ impl App {
             View::Conversation => View::ToolOutput,
             // The Ctrl+O guard in on_key keeps the picker and the Ctrl+D view
             // out of here; the arm is only exhaustiveness.
-            View::ToolOutput | View::ResumePicker | View::ContextDebug => View::Conversation,
+            View::ToolOutput | View::ResumePicker | View::ContextDebug | View::DiffReview => {
+                View::Conversation
+            }
         };
         self.tool_scroll = 0;
         self.tool_follow = self.view == View::ToolOutput;
@@ -234,7 +236,9 @@ impl App {
         self.backtrack = Backtrack::default();
         self.view = match self.view {
             View::Conversation => View::ContextDebug,
-            View::ContextDebug | View::ToolOutput | View::ResumePicker => View::Conversation,
+            View::ContextDebug | View::ToolOutput | View::ResumePicker | View::DiffReview => {
+                View::Conversation
+            }
         };
         self.debug_scroll = 0;
         self.debug_follow = self.view == View::ContextDebug;

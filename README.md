@@ -193,6 +193,7 @@ The essentials are always one keystroke away: `/` opens commands, and `?` in an 
 | `/help` | List the available commands |
 | `/clear` | Clear the conversation |
 | `/copy` | Copy the last response to the clipboard |
+| `/diff` | Review staged, unstaged, and untracked Git changes in a full-screen viewer |
 | `/init` | Create an `AGENTS.md` contributor guide |
 | `/compact` | Summarise the conversation to free up context |
 | `/resume` | Resume a saved chat |
