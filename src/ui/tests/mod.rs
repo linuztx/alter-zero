@@ -389,7 +389,7 @@ pub(super) fn login_app_signin_method() -> App {
     let mut app = App::new();
     let mut subscriptions = login_subscriptions();
     subscriptions.push(SubscriptionChoice {
-        id: "openai_chatgpt".into(),
+        id: "chatgpt_codex".into(),
         name: "ChatGPT Codex".into(),
         description: "Sign in with your ChatGPT Plus/Pro account".into(),
         configured: false,

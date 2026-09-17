@@ -185,14 +185,14 @@ fn enter_on_the_default_row_starts_the_browser_sign_in() {
     assert_eq!(
         app.on_key(key(KeyCode::Enter)),
         Action::StartDeviceLogin {
-            provider: "openai_chatgpt".to_string(),
+            provider: "chatgpt_codex".to_string(),
             kind: SigninKind::BrowserLink,
         }
     );
     let onboarding = app.key_onboarding.as_ref().unwrap();
     assert_eq!(onboarding.step, KeyStep::Device);
     let device = onboarding.device.as_ref().expect("the sign-in page opened");
-    assert_eq!(device.provider_id, "openai_chatgpt");
+    assert_eq!(device.provider_id, "chatgpt_codex");
     assert_eq!(device.provider_name, "ChatGPT Codex");
     assert_eq!(device.kind, SigninKind::BrowserLink);
     assert_eq!(device.status, DeviceStatus::Starting);
@@ -207,7 +207,7 @@ fn the_device_code_row_starts_the_device_sign_in() {
     assert_eq!(
         app.on_key(key(KeyCode::Enter)),
         Action::StartDeviceLogin {
-            provider: "openai_chatgpt".to_string(),
+            provider: "chatgpt_codex".to_string(),
             kind: SigninKind::DeviceCode,
         }
     );

@@ -32,7 +32,7 @@ network calls are boundary code (like `main.rs`/`term.rs`), verified by hand.
 | `llm/settings.rs` | `Settings` — the `config.json` reader/writer persisting the `/model` selection across runs, **per working directory** (`docs/per-directory-state.md`) | **pure** |
 | `llm/thinking.rs` | `ThinkingSplitter` — peels `<think>`/`<reasoning>` tags (and native `reasoning` deltas) out of the stream | **pure** |
 | `llm/reasoning.rs` | `ThinkingMode`/`ReasoningSupport` — the Ctrl+T thinking-mode cycle + its request body (`docs/reasoning.md`) | **pure** |
-| `llm/service_tier.rs` | `ServiceTier`/`SpeedState` — codex's fast mode: the speed tiers a ChatGPT model lists and the `/fast` cycle over them, riding the request as `service_tier` (`docs/fast-mode.md`) | **pure** |
+| `llm/service_tier.rs` | `ServiceTier`/`SpeedState` — codex's fast mode: the speed tiers a ChatGPT model lists, each one a palette command of its own (`/fast`, `/ultrafast`) that toggles it, riding the request as `service_tier` (`docs/fast-mode.md`) | **pure** |
 | `llm/openai.rs` | `OpenAiClient` — endpoint/payload build (pure) + the blocking SSE stream (boundary). The request is a typed `ChatRequest` written from the messages by reference; `build_payload` is the JSON-tree view the tests read | split |
 | `llm/body.rs` | how a request leaves the process (`docs/memory.md`): `BodySource`, the trait each wire's owned request implements by writing its typed, borrowed form; `streamed_request`, which serializes it on its own thread into a bounded pipe of 64 KB chunks the transport pumps, with `Content-Length` from a counting pass — so a body carrying a picture is never held whole | **pure** |
 | `llm/models.rs` | `/v1/models` response → `Vec<ModelEntry>` (parse pure; fetch boundary; each entry carries its model's reasoning capability — `docs/reasoning.md`; records decode one at a time off borrowed `RawValue` slices, never a whole-list tree — `docs/memory.md`; the Ollama wire's `/api/tags` + `/api/show` walk lives here too) | split |
@@ -132,7 +132,7 @@ environment variable that replaces the base (Ollama's `OLLAMA_HOST`). Resolution
 → `./providers.toml` → `~/.alter-zero/providers.toml` → a built-in default with the
 shipped providers (`a0_venice` — the Agent Zero/Venice proxy — and `venice`,
 Venice's own API behind it, `docs/venice.md`; `openrouter`; `github_copilot`;
-`openai_chatgpt`; `anthropic` and `anthropic_console`; `ollama` and
+`chatgpt_codex`; `anthropic` and `anthropic_console`; `ollama` and
 `ollama_cloud`).
 
 The active backend is chosen at startup — from env, then the **persisted

@@ -255,6 +255,70 @@ fn the_narrow_palette_windows_fewer_commands_inside_the_row_budget() {
 }
 
 #[test]
+fn the_palette_lists_the_active_models_speed_tiers_after_model() {
+    // The tier rows are ordinary palette entries (docs/fast-mode.md): one per
+    // tier the model lists, right after /model, each wearing the backend's
+    // own description in the description column and lighting up whole when
+    // selected like any other row. A query narrows to them like any other.
+    use crate::llm::{ServiceTier, SpeedState};
+    let mut app = palette("/", 8);
+    app.set_speed(SpeedState::new(
+        vec![
+            ServiceTier::new("priority", "Fast", "1.5x speed, increased usage"),
+            ServiceTier::new("ultrafast", "Ultrafast", "The fastest available responses."),
+        ],
+        None,
+    ));
+    let lines = command_menu_lines(&app, 100);
+    let texts = command_rows(&lines);
+    let model = texts
+        .iter()
+        .position(|t| t.starts_with("/model"))
+        .expect("/model in the window");
+    assert!(
+        texts[model + 1].starts_with("/fast")
+            && texts[model + 1].ends_with("1.5x speed, increased usage"),
+        "{texts:?}"
+    );
+    assert!(
+        texts[model + 2].starts_with("/ultrafast")
+            && texts[model + 2].ends_with("The fastest available responses."),
+        "{texts:?}"
+    );
+    // The description column lines up with the built-ins' (one row each).
+    let col = |t: &str| t.find("1.5x").or_else(|| t.find("The fastest")).unwrap();
+    assert_eq!(col(&texts[model + 1]), col(&texts[model + 2]));
+    assert_eq!(col(&texts[model + 1]), MENU_DESC_COL);
+    // /ultrafast (the ninth row) is selected and lit, the window having
+    // scrolled to keep it visible.
+    let ultra = lines
+        .iter()
+        .find(|l| plain(l).starts_with("/ultrafast"))
+        .expect("the selected tier row is in the window");
+    assert!(
+        ultra
+            .spans
+            .iter()
+            .all(|s| s.style.fg == Some(menu_selected_color()) || s.content.trim().is_empty()),
+        "the selected tier row lights up whole"
+    );
+    // A query narrows to the tier rows like any other command.
+    app.input = TextArea::from_text("/ultra");
+    app.command_menu = Some(crate::app::CommandMenu { selected: 0 });
+    let narrowed = command_rows(&command_menu_lines(&app, 100));
+    assert_eq!(narrowed.len(), 1, "{narrowed:?}");
+    assert!(narrowed[0].starts_with("/ultrafast"), "{narrowed:?}");
+    // …and a model listing none shows none, the built-ins untouched.
+    app.set_speed(None);
+    app.input = TextArea::from_text("/");
+    assert!(
+        !command_rows(&command_menu_lines(&app, 100))
+            .iter()
+            .any(|t| t.starts_with("/fast") || t.starts_with("/ultrafast")),
+    );
+}
+
+#[test]
 fn a_degenerate_width_ellipsizes_the_command_name() {
     // Below the description column there is no room for descriptions at all;
     // the name alone shows, `…`-cut to the width — codex's popup shape

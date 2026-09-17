@@ -1128,7 +1128,7 @@ fn persist_refresh(refresh_token: &str) {
     if std::fs::write(&path, updated).is_ok() {
         // The store holds plaintext secrets. An existing file keeps the mode
         // it was created with, but a rotation is also the one write that can
-        // *create* it — a real `OPENAI_CHATGPT_REFRESH_TOKEN` in the process
+        // *create* it — a real `CHATGPT_CODEX_REFRESH_TOKEN` in the process
         // environment resolves with no `.env` on disk at all — and creating
         // it world-readable would be a quiet downgrade of the store the
         // `/login` path takes care to lock down.
@@ -1148,10 +1148,48 @@ fn set_owner_only(path: &Path) {
     let _ = path;
 }
 
+/// The provider id `providers.toml` gives the ChatGPT Codex seat — and, since
+/// the boundary matches on it (`tui::workers`), the one place it is spelled
+/// in code.
+pub const PROVIDER_ID: &str = "chatgpt_codex";
+
+/// The provider's id before it was named for what it is: `openai_chatgpt`,
+/// which read as a second OpenAI API-key provider. A saved selection —
+/// `config.json`'s, a rollout's `model` record — may still say it, and
+/// [`canonical_provider_id`] reads it as [`PROVIDER_ID`] so nothing needs
+/// choosing again (`docs/chatgpt.md`).
+pub const LEGACY_PROVIDER_ID: &str = "openai_chatgpt";
+
 /// The environment variable the refresh token lives under — the same name
 /// `providers.toml` gives the provider's `api_key_env`, pinned here because
 /// the rotation write-back cannot ask the provider file.
-pub const REFRESH_ENV_VAR: &str = "OPENAI_CHATGPT_REFRESH_TOKEN";
+pub const REFRESH_ENV_VAR: &str = "CHATGPT_CODEX_REFRESH_TOKEN";
+
+/// The variable's name before the rename. A token stored under it — in the
+/// `.env` store or the process environment — still signs in: the boundary's
+/// key lookup falls back through [`legacy_key_env`], and the next rotation
+/// writes the token back under [`REFRESH_ENV_VAR`].
+pub const LEGACY_REFRESH_ENV_VAR: &str = "OPENAI_CHATGPT_REFRESH_TOKEN";
+
+/// A saved provider id as this build spells it: [`LEGACY_PROVIDER_ID`]
+/// reads as [`PROVIDER_ID`], every other id is itself.
+#[must_use]
+pub fn canonical_provider_id(id: &str) -> &str {
+    if id == LEGACY_PROVIDER_ID {
+        PROVIDER_ID
+    } else {
+        id
+    }
+}
+
+/// The name a credential for `key_env` was stored under before a rename, if
+/// there was one — only [`REFRESH_ENV_VAR`]'s, [`LEGACY_REFRESH_ENV_VAR`].
+/// The boundary consults it after the current name comes up empty and before
+/// the generic `ALTER_ZERO_API_KEY`.
+#[must_use]
+pub fn legacy_key_env(key_env: &str) -> Option<&'static str> {
+    (key_env == REFRESH_ENV_VAR).then_some(LEGACY_REFRESH_ENV_VAR)
+}
 
 /// The per-request headers the ChatGPT backend keys its **prompt cache** on:
 /// the session's cache-affinity key under Codex's two names, `session_id`
@@ -1618,5 +1656,32 @@ mod tests {
         let advice = device_code_advice(404, "").unwrap();
         assert!(advice.contains("Browser login"), "{advice}");
         assert!(device_code_advice(500, "").is_none());
+    }
+
+    #[test]
+    fn the_legacy_provider_id_reads_as_the_renamed_one_and_nothing_else_moves() {
+        // `openai_chatgpt` was the id before the provider was named for what
+        // it is; a saved selection still saying it lands on the same
+        // provider (docs/chatgpt.md). Every other id — the new one included
+        // — is itself.
+        assert_eq!(canonical_provider_id(LEGACY_PROVIDER_ID), PROVIDER_ID);
+        assert_eq!(canonical_provider_id("chatgpt_codex"), "chatgpt_codex");
+        assert_eq!(canonical_provider_id("openrouter"), "openrouter");
+        assert_eq!(PROVIDER_ID, "chatgpt_codex");
+        assert_eq!(LEGACY_PROVIDER_ID, "openai_chatgpt");
+    }
+
+    #[test]
+    fn only_the_refresh_token_variable_has_a_legacy_name() {
+        // A token stored under the old variable still signs in: the lookup
+        // falls back to it for this one variable and no other.
+        assert_eq!(
+            legacy_key_env(REFRESH_ENV_VAR),
+            Some(LEGACY_REFRESH_ENV_VAR)
+        );
+        assert_eq!(REFRESH_ENV_VAR, "CHATGPT_CODEX_REFRESH_TOKEN");
+        assert_eq!(LEGACY_REFRESH_ENV_VAR, "OPENAI_CHATGPT_REFRESH_TOKEN");
+        assert_eq!(legacy_key_env("OPENROUTER_API_KEY"), None);
+        assert_eq!(legacy_key_env(LEGACY_REFRESH_ENV_VAR), None, "no chain");
     }
 }

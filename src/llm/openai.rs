@@ -373,7 +373,7 @@ impl OpenAiClient {
         &self,
         mut req: reqwest::blocking::RequestBuilder,
     ) -> reqwest::blocking::RequestBuilder {
-        if self.cfg.auth != super::AuthScheme::OpenAiChatGpt {
+        if self.cfg.auth != super::AuthScheme::ChatGptCodex {
             return req;
         }
         for (name, value) in super::chatgpt::session_headers(self.cfg.cache_key.as_deref()) {
@@ -504,7 +504,7 @@ impl OpenAiClient {
             // A ChatGPT request that 401s has an expired sign-in behind it,
             // and the wire body says only `invalid_token` — a sentence the
             // user cannot act on.
-            super::AuthScheme::OpenAiChatGpt => super::chatgpt::auth_advice(*status, body),
+            super::AuthScheme::ChatGptCodex => super::chatgpt::auth_advice(*status, body),
             // The Anthropic refusals a user can do something about are
             // several and need different answers — an expired sign-in, a
             // scope, a spend cap (`docs/claude.md`).
@@ -1709,7 +1709,7 @@ mod tests {
         // 6.7k prefix without these, 6.4k with them). The session key rides
         // Codex's two header names.
         let mut cfg = ModelConfig::fallback();
-        cfg.auth = crate::llm::AuthScheme::OpenAiChatGpt;
+        cfg.auth = crate::llm::AuthScheme::ChatGptCodex;
         cfg.cache_key = Some("alter-zero-42".to_string());
         assert_eq!(
             built_header(cfg.clone(), "session_id").as_deref(),
@@ -2512,7 +2512,7 @@ data: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\
         // the ChatGPT backend, `;tier={tier}` appended when a speed tier is
         // selected — the edge's own hint for where a fast request goes.
         let mut cfg = ModelConfig::fallback();
-        cfg.auth = crate::llm::AuthScheme::OpenAiChatGpt;
+        cfg.auth = crate::llm::AuthScheme::ChatGptCodex;
         cfg.model = "gpt-5.5".to_string();
         assert_eq!(
             built_header(cfg.clone(), "x-codex-routing-hint").as_deref(),

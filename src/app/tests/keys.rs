@@ -621,7 +621,7 @@ fn enter_with_no_matching_command_does_not_submit() {
     let mut app = App::new();
     type_str(&mut app, "/zzz");
     assert!(app.command_menu.is_some(), "palette is open but empty");
-    assert!(matching_commands("zzz").is_empty());
+    assert!(matching_commands(&app.commands(), "zzz").is_empty());
     assert_eq!(
         app.on_key(key(KeyCode::Enter)),
         Action::None,

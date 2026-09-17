@@ -282,9 +282,12 @@ impl ModelSession {
         let prompt_context = config::prompt_context(cwd, scratchpad);
         // The provider the /model picker lists from and switches within: env,
         // else the saved selection, else the file's default.
+        // Read as this build spells it: a shell still exporting the ChatGPT
+        // Codex provider's old id pins the same provider (`docs/chatgpt.md`).
         let env_provider = std::env::var("ALTER_ZERO_PROVIDER")
             .ok()
-            .filter(|s| !s.is_empty());
+            .filter(|s| !s.is_empty())
+            .map(|id| llm::chatgpt::canonical_provider_id(&id).to_string());
         let active_provider = env_provider
             .clone()
             .or_else(|| saved_provider.clone())
@@ -1811,8 +1814,8 @@ impl Session<'_> {
         self.toast(format!("Thinking: {}", mode.label()), ToastKind::Info);
     }
 
-    /// `/fast` stepped the speed tier (the pure state already moved —
-    /// `docs/fast-mode.md`). Rebind the *next* turn's backend so the tier
+    /// A tier's palette command toggled the speed tier (the pure state
+    /// already moved — `docs/fast-mode.md`). Rebind the *next* turn's backend so the tier
     /// rides its request (the running turn streams on its own thread,
     /// untouched — the Ctrl+T pattern), persist the choice beside the model
     /// selection, and confirm with a transient toast that repeats the

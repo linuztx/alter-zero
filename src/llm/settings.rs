@@ -7,7 +7,7 @@
 
 use std::collections::BTreeMap;
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 use super::reasoning::{ReasoningEffort, ReasoningSupport, ThinkingMode};
 use super::service_tier::{ServiceTier, SpeedState};
@@ -34,8 +34,14 @@ use super::service_tier::{ServiceTier, SpeedState};
 /// ```
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Settings {
-    /// The provider id of the last selection made anywhere (e.g. `openrouter`).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// The provider id of the last selection made anywhere (e.g. `openrouter`)
+    /// — read through `canonical_provider`, so a file naming a provider by
+    /// an id it has since shed still loads.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "canonical_provider_opt"
+    )]
     pub provider: Option<String>,
     /// The model id of the last selection made anywhere.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -58,9 +64,9 @@ pub struct Settings {
     /// without a re-probe. Absent = unknown. See `docs/compact.md`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context: Option<u64>,
-    /// The saved model's speed tiers and the `/fast` choice over them
-    /// (`docs/fast-mode.md`) — restored at startup so the cycle starts where
-    /// it left off and the tier rides the first request. Absent = unknown (a
+    /// The saved model's speed tiers and the choice over them
+    /// (`docs/fast-mode.md`) — restored at startup so the tier commands
+    /// start where they left off and the tier rides the first request. Absent = unknown (a
     /// legacy file) — the probe finds out; the empty blob is the marker for a
     /// model known to list none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -80,7 +86,11 @@ pub struct Settings {
 /// selection read back through [`Settings::last`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModelSelection {
-    /// The provider id (e.g. `openrouter`).
+    /// The provider id (e.g. `openrouter`) — read through
+    /// `canonical_provider`, so a directory's entry, or a rollout's
+    /// `model` record (`docs/session-model.md`), written under an id the
+    /// provider has since shed still lands on it.
+    #[serde(deserialize_with = "canonical_provider")]
     pub provider: String,
     /// The model id.
     pub model: String,
@@ -96,6 +106,25 @@ pub struct ModelSelection {
     /// The model's speed tiers and the `/fast` choice (`docs/fast-mode.md`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub speed: Option<SpeedSettings>,
+}
+
+/// Deserialize a provider id as this build spells it — the ChatGPT Codex
+/// provider's old `openai_chatgpt` reads as `chatgpt_codex`
+/// ([`chatgpt::canonical_provider_id`](super::chatgpt::canonical_provider_id)),
+/// every other id as itself — so renaming a provider costs no saved
+/// selection its model. Serialization writes the canonical id back, which
+/// is how a file migrates on its next write.
+fn canonical_provider<'de, D: Deserializer<'de>>(deserializer: D) -> Result<String, D::Error> {
+    String::deserialize(deserializer)
+        .map(|id| super::chatgpt::canonical_provider_id(&id).to_string())
+}
+
+/// `canonical_provider` for the optional top-level id.
+fn canonical_provider_opt<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<String>, D::Error> {
+    Option::<String>::deserialize(deserializer)
+        .map(|id| id.map(|id| super::chatgpt::canonical_provider_id(&id).to_string()))
 }
 
 impl ModelSelection {
@@ -469,6 +498,27 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_saved_selection_naming_the_legacy_chatgpt_id_reads_as_the_renamed_provider() {
+        // The provider was `openai_chatgpt` before it was named for what it
+        // is (docs/chatgpt.md); a config.json written then still loads — the
+        // top-level last selection and a directory's entry alike — and is
+        // written back under the new id. Every other id is itself.
+        let s = Settings::parse(
+            r#"{"provider":"openai_chatgpt","model":"gpt-5.5",
+                "projects":{"/p":{"provider":"openai_chatgpt","model":"gpt-5.6-sol"}}}"#,
+        );
+        assert_eq!(s.provider.as_deref(), Some("chatgpt_codex"));
+        assert_eq!(s.projects["/p"].provider, "chatgpt_codex");
+        assert_eq!(s.projects["/p"].model, "gpt-5.6-sol");
+        assert!(!s.to_json().contains("openai_chatgpt"), "{}", s.to_json());
+        let other = Settings::parse(r#"{"provider":"openrouter","model":"m"}"#);
+        assert_eq!(other.provider.as_deref(), Some("openrouter"));
+        let bare: ModelSelection =
+            serde_json::from_str(r#"{"provider":"openai_chatgpt","model":"m"}"#).unwrap();
+        assert_eq!(bare.provider, "chatgpt_codex");
+    }
+
+    #[test]
     fn parse_reads_provider_and_model() {
         let s =
             Settings::parse(r#"{"provider":"openrouter","model":"anthropic/claude-3.5-haiku"}"#);
@@ -776,7 +826,7 @@ mod tests {
             tiers: vec![fast_tier()],
             tier: Some("priority".to_string()),
         };
-        let s = Settings::for_selection("openai_chatgpt", "gpt-5.5").with_speed(Some(blob.clone()));
+        let s = Settings::for_selection("chatgpt_codex", "gpt-5.5").with_speed(Some(blob.clone()));
         let restored = Settings::parse(&s.to_json());
         assert_eq!(restored, s);
         assert_eq!(restored.speed, Some(blob));

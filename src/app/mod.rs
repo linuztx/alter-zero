@@ -549,11 +549,12 @@ pub struct App {
     ///
     /// [`set_session_info`]: App::set_session_info
     pub thinking: Option<ThinkingState>,
-    /// The active model's **speed tiers** and the one `/fast` selected —
-    /// `None` when the model lists no tier (every provider but the ChatGPT
-    /// backend today, and the dummy). Injected at the boundary
-    /// ([`App::set_speed`], the [`set_thinking`] pattern), cycled by `/fast`,
-    /// and shown beside the model name in the footer. See
+    /// The active model's **speed tiers** and the one selected — `None`
+    /// when the model lists no tier (every provider but the ChatGPT backend
+    /// today, and the dummy). Injected at the boundary ([`App::set_speed`],
+    /// the [`set_thinking`] pattern), each tier toggled by its own palette
+    /// command (`/fast`, `/ultrafast`, … — [`App::commands`]), and the
+    /// selection shown beside the model name in the footer. See
     /// `docs/fast-mode.md`.
     ///
     /// [`set_thinking`]: App::set_thinking
@@ -845,7 +846,7 @@ impl App {
     /// Inject the active model's speed tiers + selection (a `/model` switch,
     /// the startup seed, or the boundary's capability probe) — `None` for a
     /// model listing no tier, which also blanks the footer's tier word and
-    /// makes `/fast` explain instead of cycle. See `docs/fast-mode.md`.
+    /// takes the tier rows out of the palette. See `docs/fast-mode.md`.
     pub fn set_speed(&mut self, speed: Option<SpeedState>) {
         self.speed = speed;
     }
@@ -869,20 +870,17 @@ impl App {
         }
     }
 
-    /// `/fast`: step the speed tier through the model's cycle and hand the
-    /// loop the new selection ([`Action::SetSpeed`]) — or, on a model that
-    /// lists no tier, an explanatory transient toast (Ctrl+T's rule for a
-    /// non-reasoner). See `docs/fast-mode.md`.
-    fn cycle_speed(&mut self) -> Action {
+    /// A tier's palette command (`/fast`, `/ultrafast`, …): toggle it
+    /// through the model's speed state ([`SpeedState::toggle`]) and hand the
+    /// loop the new selection ([`Action::SetSpeed`]). The row exists only
+    /// while [`App::speed`] lists the tier — nothing clears the state
+    /// between one keystroke's row build and its dispatch — so a state that
+    /// is gone is a no-op rather than a toast about a row that was just
+    /// shown. See `docs/fast-mode.md`.
+    fn toggle_speed_tier(&mut self, tier: &ServiceTier) -> Action {
         match self.speed.as_mut() {
-            Some(state) => Action::SetSpeed(state.advance()),
-            None => {
-                let model = self
-                    .session
-                    .as_ref()
-                    .map_or("This model", |s| s.model.as_str());
-                Action::Toast(format!("{model} does not support fast mode"))
-            }
+            Some(state) => Action::SetSpeed(state.toggle(&tier.id)),
+            None => Action::None,
         }
     }
 

@@ -155,7 +155,7 @@ fn slash_spinner_opens_the_picker() {
 
 #[test]
 fn the_palette_lists_spinner_beside_mascot() {
-    let names: Vec<&str> = COMMANDS.iter().map(|c| c.name).collect();
+    let names: Vec<&str> = COMMANDS.iter().map(|c| c.name.as_ref()).collect();
     let mascot = names.iter().position(|n| *n == "mascot").expect("mascot");
     assert_eq!(
         names.get(mascot + 1),

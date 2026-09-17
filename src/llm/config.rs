@@ -29,11 +29,13 @@ pub enum AuthScheme {
     /// short-lived access token from. See `docs/chatgpt.md`.
     ///
     /// Renamed explicitly: `rename_all = "snake_case"` spells this variant
-    /// `open_ai_chat_gpt`, and an `auth` value that doesn't match falls
+    /// `chat_gpt_codex`, and an `auth` value that doesn't match falls
     /// silently through to [`Self::ApiKey`] below — a subscription provider
-    /// that looks configured and asks for a pasted key instead.
-    #[serde(rename = "openai_chatgpt")]
-    OpenAiChatGpt,
+    /// that looks configured and asks for a pasted key instead. The alias
+    /// is the scheme's name before the provider was renamed, so a provider
+    /// file written against that build still reads as a sign-in.
+    #[serde(rename = "chatgpt_codex", alias = "openai_chatgpt")]
+    ChatGptCodex,
     /// An Anthropic **Console** account: `/login` runs Anthropic's own PKCE
     /// flow and stores the resulting **refresh** token, which each request
     /// mints a short-lived access token from. Usage bills to the account's
@@ -44,7 +46,7 @@ pub enum AuthScheme {
     ///
     /// `rename_all = "snake_case"` already spells this `anthropic_console`,
     /// which is the value the provider file uses — unlike
-    /// [`Self::OpenAiChatGpt`] above, no explicit rename is needed. A test
+    /// [`Self::ChatGptCodex`] above, no explicit rename is needed. A test
     /// pins it, since a mismatch degrades **silently** into
     /// [`Self::ApiKey`]: a sign-in provider that looks configured and asks
     /// for a pasted key instead.
@@ -684,17 +686,26 @@ api_base = "https://api.githubcopilot.com"
         // stored secret is a refresh token, and every request mints the
         // short-lived access token from it (`docs/chatgpt.md`).
         let text = r#"
-[providers.openai_chatgpt]
+[providers.chatgpt_codex]
 name = "ChatGPT Codex"
-auth = "openai_chatgpt"
+auth = "chatgpt_codex"
 description = "Sign in with your ChatGPT account"
-[providers.openai_chatgpt.kwargs]
+[providers.chatgpt_codex.kwargs]
 api_base = "https://chatgpt.com/backend-api/codex"
 "#;
         let file = ProvidersFile::parse(text).unwrap();
-        let chatgpt = file.get("openai_chatgpt").unwrap();
-        assert_eq!(chatgpt.auth, AuthScheme::OpenAiChatGpt);
+        let chatgpt = file.get("chatgpt_codex").unwrap();
+        assert_eq!(chatgpt.auth, AuthScheme::ChatGptCodex);
         assert!(chatgpt.auth.is_subscription());
+        // A provider file written against the old build still spells the
+        // scheme `openai_chatgpt`: the alias keeps it a sign-in rather than
+        // letting it fall through to a pasted key (docs/chatgpt.md).
+        let legacy =
+            ProvidersFile::parse(&text.replace("chatgpt_codex", "openai_chatgpt")).unwrap();
+        assert_eq!(
+            legacy.get("openai_chatgpt").unwrap().auth,
+            AuthScheme::ChatGptCodex
+        );
     }
 
     // --- the wire format a provider speaks (docs/chatgpt.md) ---
@@ -738,13 +749,13 @@ api_base = "https://x/v1"
     fn model_config_carries_the_providers_wire_format() {
         let file = ProvidersFile::builtin();
         let sel = Selection {
-            provider_id: "openai_chatgpt".to_string(),
+            provider_id: "chatgpt_codex".to_string(),
             model: "gpt-5.5".to_string(),
             ..Selection::default()
         };
         let cfg = file.model_config(&sel).expect("shipped");
         assert_eq!(cfg.wire_api, WireApi::Responses);
-        assert_eq!(cfg.auth, AuthScheme::OpenAiChatGpt);
+        assert_eq!(cfg.auth, AuthScheme::ChatGptCodex);
     }
 
     #[test]
@@ -1125,7 +1136,7 @@ api_base = "http://127.0.0.1:11434"
         // does (docs/fast-mode.md): `None` is standard — no field at all.
         let file = ProvidersFile::builtin();
         let sel = Selection {
-            provider_id: "openai_chatgpt".to_string(),
+            provider_id: "chatgpt_codex".to_string(),
             model: "gpt-5.5".to_string(),
             service_tier: Some("priority".to_string()),
             ..Selection::default()

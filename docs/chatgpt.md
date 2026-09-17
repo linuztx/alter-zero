@@ -14,10 +14,32 @@ the sign-in, ported from Codex's own, which is what made the row the one
 subscription that has to ask *how* before it opens a page.
 
 The provider is **named for what it is**: the ChatGPT seat reached the way
-Codex reaches it. It was `OpenAI (ChatGPT)`, which read as a second OpenAI
-API-key provider; the id `openai_chatgpt`, the `OPENAI_CHATGPT_REFRESH_TOKEN`
-variable and every stored selection kept their names, so the rename cost no
-one a sign-in.
+Codex reaches it. It was `OpenAI (ChatGPT)` with the id `openai_chatgpt`
+and the variable `OPENAI_CHATGPT_REFRESH_TOKEN`, which read as a second
+OpenAI API-key provider; the name, the id (`chatgpt_codex`) and the
+variable (`CHATGPT_CODEX_REFRESH_TOKEN`) now all say the same thing. The
+rename cost no one a sign-in or a choice, because the old spellings are
+still read where they can turn up (`llm::chatgpt`'s `LEGACY_PROVIDER_ID` /
+`LEGACY_REFRESH_ENV_VAR`, each beside its current name):
+
+- a token stored under `OPENAI_CHATGPT_REFRESH_TOKEN` — in the `.env` store
+  or exported by the shell — still signs in: the boundary's key lookup
+  (`tui::config::resolve_api_key`) tries the current name, then the legacy
+  one (`chatgpt::legacy_key_env`), then the generic `ALTER_ZERO_API_KEY`,
+  and the next rotation writes the token back under the current name;
+- a `config.json` selection (the last one, or a directory's entry) and a
+  rollout's `model` record (`docs/session-model.md`) naming
+  `openai_chatgpt` land on the provider: `ModelSelection`'s `provider`
+  deserializes through `chatgpt::canonical_provider_id`, and the next write
+  stores the current id — which is how a file migrates;
+- an `ALTER_ZERO_PROVIDER=openai_chatgpt` still pins the same provider, and
+  a provider file of your own spelling `auth = "openai_chatgpt"` still reads
+  as the sign-in (`AuthScheme::ChatGptCodex`'s serde alias) rather than
+  falling through to a pasted key.
+
+`smoke.sh` Phase 117 launches the real binary with the token under the old
+variable and asserts the provider activates and the rotation lands under
+the new one.
 
 > **A caveat worth stating.** This API is undocumented and unversioned, and
 > the OAuth client id it uses is Codex's own — there is no third-party
@@ -31,17 +53,17 @@ one a sign-in.
 ## What a provider file says
 
 ```toml
-[providers.openai_chatgpt]
+[providers.chatgpt_codex]
 name = "ChatGPT Codex"
-auth = "openai_chatgpt"                          # ← a sign-in, not a pasted key
+auth = "chatgpt_codex"                          # ← a sign-in, not a pasted key
 wire_api = "responses"                           # ← and a different request shape
 description = "Sign in with your ChatGPT Plus/Pro account, in a browser or with a device code"
-api_key_env = "OPENAI_CHATGPT_REFRESH_TOKEN"
+api_key_env = "CHATGPT_CODEX_REFRESH_TOKEN"
 
-[providers.openai_chatgpt.extra_headers]
+[providers.chatgpt_codex.extra_headers]
 originator = "codex_cli_rs"
 
-[providers.openai_chatgpt.kwargs]
+[providers.chatgpt_codex.kwargs]
 api_base = "https://chatgpt.com/backend-api/codex"
 ```
 
@@ -54,10 +76,12 @@ written against a newer build must still parse:
 | `auth` | `AuthScheme` | `api_key` | which `/login` list the provider is in, and what the `Authorization` header gets |
 | `wire_api` | `WireApi` | `chat` | `/responses` vs `/chat/completions` — the URL *and* the body |
 
-`AuthScheme::OpenAiChatGpt` carries an explicit `#[serde(rename)]`:
-`rename_all = "snake_case"` spells the variant `open_ai_chat_gpt`, and a
+`AuthScheme::ChatGptCodex` carries an explicit `#[serde(rename)]`:
+`rename_all = "snake_case"` spells the variant `chat_gpt_codex`, and a
 mismatched `auth` value falls silently through to `ApiKey` — a subscription
-provider that looks configured and asks for a pasted key instead.
+provider that looks configured and asks for a pasted key instead. Its
+`alias` is the scheme's old spelling, `openai_chatgpt`, so a provider file
+written against that build still reads as the sign-in.
 
 **`wire_api` is deliberately not derived from `auth`.** How you authenticate
 and what shape the request takes are two questions: an OpenAI API key can
@@ -124,7 +148,7 @@ could not carry:
 - **`ApiKey`** → the stored key, no override, no headers, and **no I/O at
   all**. Every existing provider's path is byte-identical.
 - **`GithubCopilot`** → the exchanged bearer and the account's own host.
-- **`OpenAiChatGpt`** → the minted access token, plus `chatgpt-account-id`,
+- **`ChatGptCodex`** → the minted access token, plus `chatgpt-account-id`,
   `user-agent`, and `x-openai-fedramp` when the account needs that edge.
 
 A subscription config with no stored token resolves to nothing rather than
@@ -178,7 +202,7 @@ for, verbatim:
 
 Which rows a subscription offers is the provider file's `auth` scheme's to
 say (`tui::config::signin_kinds` → `SubscriptionChoice::kinds`, the first
-being the default): `openai_chatgpt` lists both, `github_copilot` its device
+being the default): `chatgpt_codex` lists both, `github_copilot` its device
 code, `anthropic_console` its browser. A row listing one kind opens its page
 at once, exactly as before; `Action::StartDeviceLogin { provider, kind }`
 carries the pick to the worker, since the two ChatGPT flows open the *same*
@@ -355,7 +379,7 @@ same request carrying the Codex CLI's `session_id` and `conversation_id`
 headers read **6400** of them, and `OpenAI-Beta: responses=experimental` on
 its own changed nothing. So the session's cache key rides both header names
 (`chatgpt::session_headers`, pure; attached by
-`openai::chatgpt_request_headers`, gated on the `OpenAiChatGpt` auth scheme
+`openai::chatgpt_request_headers`, gated on the `ChatGptCodex` auth scheme
 the way Copilot's per-request headers are gated on its own), beside the body
 key it also carries. Without them every agentic round re-billed the whole
 conversation at full price on a subscription that never showed a bill —
@@ -386,7 +410,7 @@ demands each property be required.
 inventing one is a 400.
 
 `service_tier` is codex's **fast mode** (`docs/fast-mode.md`): the selected
-speed tier's id, present only when `/fast` selected one the model's record
+speed tier's id, present only when a tier's command (`/fast`, `/ultrafast`) selected one the model's record
 lists, with the `x-codex-routing-hint` header naming the model and the tier
 beside the cache-affinity headers below.
 
@@ -446,7 +470,7 @@ already share, so no other provider's list is touched:
 | context | `context_window` × `effective_context_window_percent` (the field is absent live, so the 95% default is what applies) | the footer gauge, auto-compact |
 | vision | `input_modalities` contains `image` | `docs/tools.md`'s image degradation |
 | reasoning | `supported_reasoning_levels` + `default_reasoning_level` | the Ctrl+T cycle |
-| speed tiers | `service_tiers` (`[{id, name, description}]`, the `priority` one being codex's fast mode) | `/fast` (`docs/fast-mode.md`) |
+| speed tiers | `service_tiers` (`[{id, name, description}]`, the `priority` one being codex's fast mode) | a command per tier — `/fast`, `/ultrafast` (`docs/fast-mode.md`) |
 
 The envelope is `{"models": […]}`, not `{"data": […]}` — one extra field on
 the response struct, so a second parse function never has to exist.
@@ -509,7 +533,8 @@ rather than left to a default.
 
 | variable | effect |
 | --- | --- |
-| `OPENAI_CHATGPT_REFRESH_TOKEN` | the stored refresh token (a real env var wins over `.env`, as everywhere) |
+| `CHATGPT_CODEX_REFRESH_TOKEN` | the stored refresh token (a real env var wins over `.env`, as everywhere) |
+| `OPENAI_CHATGPT_REFRESH_TOKEN` | the variable's name before the rename — still read when the current one is unset, never written |
 | `ALTER_ZERO_ENV_FILE` | relocates the store the rotation writes back to |
 | `ALTER_ZERO_OPENAI_ISSUER` | the auth server both sign-ins (and the refresh) talk to — a fork's, or `smoke.sh` Phase 119's local stub; `https://auth.openai.com` by default |
 
@@ -520,7 +545,7 @@ rather than left to a default.
 | `src/llm/chatgpt.rs` | the claims parse, both flows' URLs/bodies, the device flow's code/poll/grant shapes and verdicts, the freshness rule (pure); the loopback listener, the code request and the approval poll, the shared code exchange, the cache, the rotation write-back and the issuer override (boundary) |
 | `src/llm/auth.rs` | `request_auth` — the one seam every outbound call resolves through |
 | `src/llm/responses.rs` | the Responses wire format, both directions (pure) |
-| `src/llm/service_tier.rs` | the speed tiers a record lists and the `/fast` cycle over them (pure) — `docs/fast-mode.md` |
+| `src/llm/service_tier.rs` | the speed tiers a record lists, each tier's command name, and the toggle its command runs (pure) — `docs/fast-mode.md` |
 | `src/llm/openai.rs` | `request_url`/`request_payload` (the wire branch), `drain_responses`, `pump_lines` |
 | `src/llm/models.rs` | the `{"models": …}` envelope and the three record sniffs |
 | `src/app/login.rs` | `SigninKind` and its method rows, `SubscriptionChoice::kinds`, the `KeyStep::SigninMethod` choice and its keys, `DeviceLogin::copy_target` |

@@ -408,7 +408,7 @@ fn selecting_a_model_carries_its_speed_tiers() {
     // Enter on a picker row hands the loop the entry's listed tiers, so a
     // successful switch can seed /fast without refetching /models
     // (docs/fast-mode.md).
-    let mut quick = model("gpt-5.5", "openai_chatgpt", "GPT-5.5");
+    let mut quick = model("gpt-5.5", "chatgpt_codex", "GPT-5.5");
     quick.service_tiers = vec![ServiceTier::new("priority", "Fast", "1.5x speed")];
     let mut app = model_app(&[model("plain", "openrouter", "Plain"), quick]);
     type_chars(&mut app, "gpt-5.5");

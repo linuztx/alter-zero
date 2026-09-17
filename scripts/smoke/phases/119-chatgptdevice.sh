@@ -159,7 +159,7 @@ expect_has "$done_pane" -E '^❯' "the composer did not come back after the sign
 # in the same key store a pasted key lands in — nothing else.
 dc_env="$(cat "$SMOKE_CFG/.env" 2>/dev/null)"
 dump "the key store" "$dc_env"
-expect_has "$dc_env" -F "OPENAI_CHATGPT_REFRESH_TOKEN=refresh-token-119" "the refresh token was not stored"
+expect_has "$dc_env" -F "CHATGPT_CODEX_REFRESH_TOKEN=refresh-token-119" "the refresh token was not stored"
 expect_lacks "$dc_env" -F "poll-code-119" "an authorization code leaked into the key store"
 
 # And what went over the wire, off the stub's log: the code request naming

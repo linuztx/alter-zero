@@ -288,7 +288,7 @@ GitHub charges the user's round and not the agent's tool loop),
 `docs/copilot.md`; the **OpenAI ChatGPT sign-in** — the subscription list's
 second row, and the two things a second subscription turned out to need
 (`docs/chatgpt.md`): a second *sign-in shape* and a second *wire format*.
-`auth = "openai_chatgpt"` runs OpenAI's **browser PKCE loopback** on the same
+`auth = "chatgpt_codex"` runs OpenAI's **browser PKCE loopback** on the same
 worker Copilot's device flow uses and reports on the same two messages,
 because the two pages are the same page — something to show, then a wait; what
 differs rides `SigninKind` on the row, injected from the provider's `auth`
@@ -376,13 +376,22 @@ round-trip: carrying it would mean a new `ChatMessage` field threaded through
 — codex's `/fast`, `docs/fast-mode.md`: a model whose ChatGPT record lists
 a `priority` service tier (`service_tiers: [{id, name, description}]`,
 every model on the account today, `Fast — 1.5x speed, increased usage`) is
-switched to priority processing by the `/fast` command — a static
-`COMMANDS` row right after `/model`, cycling standard → the listed tiers →
-standard (the pure `llm::service_tier::SpeedState`, so a record listing
-`ultrafast` too is reached on the next press), a `Speed: fast — 1.5x
-speed, increased usage` toast repeating the backend's own cost statement,
-and a `{model} does not support fast mode` toast on a model listing none,
-Ctrl+T's rule — the choice riding both OpenAI wires as the top-level
+switched to priority processing by **a command per listed tier** — the
+palette builds `/fast`, `/ultrafast`, whatever the record names, out of
+the model's own `service_tiers` (`App::commands`: the static `COMMANDS`
+registry with one `SlashCommand::tier` row per tier spliced in right after
+`/model`, codex's `SlashCommandItem::ServiceTier`; named by
+`ServiceTier::command_name`, the lowercased name slugged to one token,
+described by the record's own cost statement, carrying the tier as
+`CommandEffect::ServiceTier`, no row for a tier listing nothing usable or
+shadowing a built-in), so nothing about a tier is hardcoded and a tier the
+backend adds tomorrow is a command the day it is listed; each command
+toggles its tier (`SpeedState::toggle`, codex's
+`toggle_service_tier_from_ui`: select it, the same command again for
+standard, another tier's command switching straight over), with a `Speed:
+fast — 1.5x speed, increased usage` toast repeating the backend's own cost
+statement, and a model listing no tier lists no such command at all (an
+unmatched `/fast` is swallowed like any other miss) — the choice riding both OpenAI wires as the top-level
 `service_tier` beside codex's `x-codex-routing-hint:
 model={model}[;tier={tier}]` header (sent on every ChatGPT request, tier or
 not), shown after the thinking mode in the footer (`gpt-5.5 medium fast ·
@@ -2395,7 +2404,7 @@ live in the pure `file_search` module, and the `/resume` primitives
 Typing a bare `/token` opens a **slash-command palette** below the input box (a
 third live-region band): `App::command_menu` holds the highlight, the registry
 `app::COMMANDS` (`SlashCommand { name, description, effect }` — currently `/help`,
-`/clear`, `/copy`, `/init`, `/compact`, `/resume`, `/model`, `/fast`, `/login`, `/settings`, `/theme`, `/mascot`, `/spinner`, `/hooks`, `/skills`, `/mcp`, `/trust`, `/donate`, and `/quit`) is filtered by `matching_commands`, and ↑/↓ scroll / Tab+Enter run
+`/clear`, `/copy`, `/init`, `/compact`, `/resume`, `/model`, `/login`, `/settings`, `/theme`, `/mascot`, `/spinner`, `/hooks`, `/skills`, `/mcp`, `/trust`, `/donate`, and `/quit` — plus, right after `/model`, one row per speed tier the active model lists, `/fast`, `/ultrafast`, built from the listing by `App::commands` rather than registered, `docs/fast-mode.md`) is filtered by `matching_commands`, and ↑/↓ scroll / Tab+Enter run
 the highlighted command. Descriptions line up in a column, and the selection is
 shown **by colour** — the whole highlighted row lights up cyan (name *and*
 description the same colour) while the others are dimmed grey, no caret. A command

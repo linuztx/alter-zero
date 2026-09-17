@@ -1,13 +1,17 @@
-//! Speed tiers — the pure core behind `/fast` (`docs/fast-mode.md`).
+//! Speed tiers — the pure core behind the per-tier commands, `/fast` and
+//! whatever else a model lists (`docs/fast-mode.md`).
 //!
 //! Codex's *fast mode* is a **service tier** on the request: a model whose
 //! `/models` record lists a tier with the wire id `priority` can be asked
 //! for priority processing, and the ChatGPT backend answers ~1.5–2× faster
 //! at increased plan usage. This module holds what the record said
-//! ([`ServiceTier`]) and the session's choice over it ([`SpeedState`]) with
-//! the cycle `/fast` steps through; the parse is in [`super::models`], the
-//! wire field in [`super::responses`] / [`super::openai`], and the boundary
-//! wiring in `tui::models`. Pure and unit-tested; no HTTP here.
+//! ([`ServiceTier`] — and the palette name each tier's command takes,
+//! [`ServiceTier::command_name`]) and the session's choice over it
+//! ([`SpeedState`], with the toggle a tier's command runs,
+//! [`SpeedState::toggle`]); the parse is in [`super::models`], the wire
+//! field in [`super::responses`] / [`super::openai`], the rows in
+//! `app::commands`, and the boundary wiring in `tui::models`. Pure and
+//! unit-tested; no HTTP here.
 
 use serde::{Deserialize, Serialize};
 
@@ -20,8 +24,8 @@ pub const STANDARD_LABEL: &str = "standard";
 /// `ModelServiceTier`, verbatim: the **id** is the wire value the request
 /// carries (`priority`), the **name** what a catalog shows (`Fast`), and the
 /// **description** the backend's own one-line cost statement (`1.5x speed,
-/// increased usage`), which the `/fast` toast repeats so the price of the
-/// speed is said where it is bought. Serializable because `config.json`
+/// increased usage`), which the tier's palette row and its toast repeat so
+/// the price of the speed is said where it is bought. Serializable because `config.json`
 /// keeps the listed tiers beside the model selection, the way it keeps the
 /// reasoning ladder (`docs/per-directory-state.md`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -85,16 +89,47 @@ impl ServiceTier {
             self.name.to_ascii_lowercase()
         }
     }
+
+    /// The slash command's name for this tier — codex's rule
+    /// (`ServiceTierCommand::name = tier.name.to_lowercase()`, so `/fast`,
+    /// `/ultrafast`): the [`label`] as **one palette token**. A bare
+    /// `/token` ends at whitespace (`app::command_query`) and a catalog is
+    /// free to name a tier `Super Fast` someday, so anything but letters,
+    /// digits, `-` and `_` folds to `-`, runs collapse and the ends are
+    /// trimmed (`super-fast`). Empty when nothing usable is left — the
+    /// palette then lists no row for the tier rather than a `/` that
+    /// matches everything.
+    ///
+    /// [`label`]: ServiceTier::label
+    #[must_use]
+    pub fn command_name(&self) -> String {
+        let mut name = String::new();
+        let mut separator_pending = false;
+        for ch in self.label().chars() {
+            if ch.is_alphanumeric() || ch == '_' {
+                if separator_pending && !name.is_empty() {
+                    name.push('-');
+                }
+                separator_pending = false;
+                name.push(ch);
+            } else {
+                separator_pending = true;
+            }
+        }
+        name
+    }
 }
 
 /// The active model's speed state: the tiers its record listed and the one
 /// selected (`None` = standard, no `service_tier` on the wire). Lives on
-/// `App::speed`; `/fast` steps it through [`SpeedState::advance`], the footer
-/// shows [`SpeedState::label`] beside the model name, and the boundary
-/// threads [`SpeedState::tier`] into each request (`docs/fast-mode.md`).
+/// `App::speed`; each listed tier is a palette command that runs
+/// [`SpeedState::toggle`] on it, the footer shows [`SpeedState::label`]
+/// beside the model name, and the boundary threads [`SpeedState::tier`]
+/// into each request (`docs/fast-mode.md`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SpeedState {
-    /// The tiers the model offers, in the record's order — the cycle's order.
+    /// The tiers the model offers, in the record's order — the palette's
+    /// order.
     pub tiers: Vec<ServiceTier>,
     /// The selected tier's id, when one is; `None` is standard.
     pub tier: Option<String>,
@@ -105,7 +140,8 @@ impl SpeedState {
     /// list offers it — a saved choice the model no longer lists falls back
     /// to standard rather than riding a request that would be refused.
     /// `None` when the model lists no tier at all: there is nothing to
-    /// select, the footer shows no speed, and `/fast` explains instead.
+    /// select, the footer shows no speed, and the palette lists no tier
+    /// command.
     #[must_use]
     pub fn new(tiers: Vec<ServiceTier>, tier: Option<String>) -> Option<Self> {
         if tiers.is_empty() {
@@ -138,28 +174,24 @@ impl SpeedState {
             .map_or_else(|| STANDARD_LABEL.to_string(), ServiceTier::label)
     }
 
-    /// The selection after this one in the cycle: standard → the first
-    /// listed tier → each next one → standard again. With one listed tier
-    /// (the usual catalog) that is codex's own `/fast` toggle.
-    #[must_use]
-    pub fn next(&self) -> Option<ServiceTier> {
-        let at = self
-            .tier
-            .as_deref()
-            .and_then(|id| self.tiers.iter().position(|t| t.id == id));
-        match at {
-            None => self.tiers.first().cloned(),
-            Some(i) => self.tiers.get(i + 1).cloned(),
+    /// Run the tier `id`'s command — codex's `toggle_service_tier_from_ui`:
+    /// **standard** when `id` is the selection, else `id`'s tier, so `/fast`
+    /// on a fast session is the way back and `/ultrafast` on one switches
+    /// straight over with no standard step between. An `id` the model does
+    /// not list changes nothing and answers the selection as it stands (the
+    /// palette only offers listed tiers, so that caller is stale). Returns
+    /// the new selection for the loop to rebind, persist and toast.
+    pub fn toggle(&mut self, id: &str) -> Option<ServiceTier> {
+        let Some(tier) = self.tiers.iter().find(|t| t.id == id).cloned() else {
+            return self.selected().cloned();
+        };
+        if self.tier.as_deref() == Some(id) {
+            self.tier = None;
+            None
+        } else {
+            self.tier = Some(tier.id.clone());
+            Some(tier)
         }
-    }
-
-    /// Step the cycle ([`next`]) and return the new selection.
-    ///
-    /// [`next`]: SpeedState::next
-    pub fn advance(&mut self) -> Option<ServiceTier> {
-        let next = self.next();
-        self.tier = next.as_ref().map(|t| t.id.clone());
-        next
     }
 }
 
@@ -222,34 +254,82 @@ mod tests {
     fn the_label_names_the_selection_or_standard() {
         let mut state = SpeedState::new(vec![fast()], None).unwrap();
         assert_eq!(state.label(), STANDARD_LABEL);
-        state.advance();
+        state.toggle("priority");
         assert_eq!(state.label(), "fast");
     }
 
     #[test]
-    fn a_single_tier_cycles_as_a_toggle() {
-        // The common catalog: one `priority` tier, so /fast is codex's own
-        // on/off toggle.
+    fn a_tier_command_is_named_by_its_lowercased_name() {
+        // Codex's rule (`ServiceTierCommand::name = tier.name.to_lowercase()`):
+        // the row is `/fast` for `Fast` and `/ultrafast` for `Ultrafast` —
+        // never the wire id, since `/priority` says nothing to a user.
+        assert_eq!(fast().command_name(), "fast");
+        assert_eq!(ultrafast().command_name(), "ultrafast");
+        assert_eq!(
+            ServiceTier::new("priority", "", "").command_name(),
+            "priority",
+            "a nameless tier is named by its id, as its label is"
+        );
+    }
+
+    #[test]
+    fn a_tier_command_name_is_one_palette_token() {
+        // A name a catalog could someday carry — spaces, a slash, capitals —
+        // still has to sit in a bare `/token` (`command_query` ends the
+        // token at whitespace), so the name is slugged: anything but
+        // letters, digits and `-`/`_` folds to `-`, runs collapse, and the
+        // ends are trimmed.
+        assert_eq!(
+            ServiceTier::new("x", "Super Fast", "").command_name(),
+            "super-fast"
+        );
+        assert_eq!(
+            ServiceTier::new("x", " Flex / Batch ", "").command_name(),
+            "flex-batch"
+        );
+        assert_eq!(
+            ServiceTier::new("x", "!!!", "").command_name(),
+            "",
+            "nothing usable leaves no name — the palette skips such a tier"
+        );
+    }
+
+    #[test]
+    fn toggling_a_listed_tier_selects_it_and_toggling_it_again_is_standard() {
+        // Codex's `toggle_service_tier_from_ui`: the command's tier when it
+        // is not the selection, the explicit default when it is.
         let mut state = SpeedState::new(vec![fast()], None).unwrap();
-        assert_eq!(state.next(), Some(fast()));
-        assert_eq!(state.advance(), Some(fast()), "standard → fast");
+        assert_eq!(state.toggle("priority"), Some(fast()), "standard → fast");
         assert_eq!(state.tier.as_deref(), Some("priority"));
-        assert_eq!(state.advance(), None, "fast → standard");
+        assert_eq!(state.toggle("priority"), None, "fast → standard");
         assert_eq!(state.tier, None);
     }
 
     #[test]
-    fn several_tiers_cycle_in_catalog_order_then_wrap_to_standard() {
-        // A model listing more than one tier steps through each in the order
-        // its record listed them — `/fast` reaches ultrafast on the second
-        // press — and wraps back to standard.
+    fn toggling_another_listed_tier_switches_straight_to_it() {
+        // `/fast` then `/ultrafast` lands on ultrafast with no standard step
+        // between: each command is its own switch, not a stop on a cycle.
         let mut state = SpeedState::new(vec![fast(), ultrafast()], None).unwrap();
-        assert_eq!(state.advance(), Some(fast()));
-        assert_eq!(state.advance(), Some(ultrafast()));
+        assert_eq!(state.toggle("priority"), Some(fast()));
+        assert_eq!(state.toggle("ultrafast"), Some(ultrafast()));
         assert!(!state.is_fast(), "ultrafast is not the fast tier");
         assert_eq!(state.label(), "ultrafast");
-        assert_eq!(state.advance(), None);
-        assert_eq!(state.advance(), Some(fast()), "and round again");
+        assert_eq!(state.toggle("ultrafast"), None);
+        assert_eq!(state.tier, None);
+    }
+
+    #[test]
+    fn toggling_a_tier_the_model_does_not_list_changes_nothing() {
+        // Total rather than panicking: the palette only ever offers listed
+        // tiers, so an unlisted id is a stale caller, and the answer is the
+        // selection as it stands.
+        let mut state = SpeedState::new(vec![fast()], Some("priority".to_string())).unwrap();
+        assert_eq!(
+            state.toggle("ultrafast"),
+            Some(fast()),
+            "the selection stands"
+        );
+        assert_eq!(state.tier.as_deref(), Some("priority"));
     }
 
     #[test]

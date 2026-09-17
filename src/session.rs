@@ -1997,6 +1997,20 @@ mod tests {
     }
 
     #[test]
+    fn parse_model_reads_a_record_naming_the_legacy_chatgpt_id_as_the_renamed_provider() {
+        // A rollout recorded before the ChatGPT Codex provider was renamed
+        // says `openai_chatgpt`; resuming it lands on the same provider
+        // rather than on a `Can't resume on openai_chatgpt` toast
+        // (docs/chatgpt.md).
+        let line = model_line(&selection(), "t").replace("\"openrouter\"", "\"openai_chatgpt\"");
+        assert!(line.contains("openai_chatgpt"), "{line}");
+        let text = format!("{}{line}\n", file_of(&[message(Role::User, "hi")]));
+        let parsed = parse_model(&text).expect("the record parses");
+        assert_eq!(parsed.provider, "chatgpt_codex");
+        assert_eq!(parsed.model, selection().model);
+    }
+
+    #[test]
     fn model_lines_are_invisible_to_the_transcript_and_checkpoint_parses() {
         // The checkpoint rule: a sidecar record among the items must not
         // become a history item, and the other sidecar must not see it.

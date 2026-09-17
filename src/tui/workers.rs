@@ -179,7 +179,7 @@ fn spawn_claude_login(cancel: CancelToken, tx: tokio::sync::mpsc::UnboundedSende
 /// The provider id whose sign-in is OpenAI's browser flow. Matching on the id
 /// keeps `workers` from needing the provider file: the *page* already knows
 /// its kind, and this only has to agree with it.
-const CHATGPT_PROVIDER: &str = "openai_chatgpt";
+const CHATGPT_PROVIDER: &str = llm::chatgpt::PROVIDER_ID;
 
 /// Run OpenAI's PKCE loopback flow: bind the callback port, publish the URL
 /// to open, then block until the browser comes back. See `docs/chatgpt.md`.

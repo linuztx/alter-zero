@@ -6,6 +6,16 @@
 //! `docs/copy.md`, `docs/init.md`, `docs/compact.md`, `docs/resume.md` — and a
 //! mid-turn rejection surfaces as a toast rather than a scrollback bullet
 //! (`docs/toast.md`).
+//!
+//! The registry is static, but the palette is not quite: the active model's
+//! **speed tiers** each get a row of their own — `/fast`, `/ultrafast`,
+//! whatever the listing names — spliced in after `/model` by
+//! [`App::commands`], codex's `SlashCommandItem::ServiceTier`
+//! (`docs/fast-mode.md`). Nothing about a tier is hardcoded here: the rows
+//! are built from what the record said, so a tier the backend adds tomorrow
+//! is a command the day it is listed.
+
+use std::borrow::Cow;
 
 use super::*;
 
@@ -58,7 +68,7 @@ pub const COMPACT_EMPTY_NOTICE: &str = "Nothing to compact";
 /// What running a slash command does. The palette dispatches one of these on
 /// select; `App::run_selected_command` turns it into an [`Action`] for the loop.
 /// Wiring a stub up later is just swapping its effect here.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CommandEffect {
     /// Clear the conversation history (`/clear`).
     Clear,
@@ -91,12 +101,15 @@ pub enum CommandEffect {
     /// switch only rebinds the *next* turn's backend. See `docs/llm.md` /
     /// `docs/toast.md`.
     Model,
-    /// Cycle the active model's **speed tier** — codex's `/fast`
-    /// (`docs/fast-mode.md`): standard → fast (→ any further tier the
-    /// model's record lists) → standard, riding the *next* request as
-    /// `service_tier`, so it works mid-turn exactly as Ctrl+T does; on a
-    /// model that lists no tier it raises an explanatory toast instead.
-    Fast,
+    /// Toggle one of the active model's **speed tiers** — codex's per-tier
+    /// commands, `/fast`, `/ultrafast`, … (`docs/fast-mode.md`). The row
+    /// exists only while the model's record lists the tier, and running it
+    /// selects the tier — or, when it is the selection already, standard —
+    /// riding the *next* request as `service_tier`, so it works mid-turn
+    /// exactly as Ctrl+T does. The tier rides the effect so the row is
+    /// self-describing: it is the one effect no static registry entry
+    /// carries, since the rows are built from the listing.
+    ServiceTier(ServiceTier),
     /// Open the inline `/login` API-key onboarding flow. Works **mid-turn** like
     /// `/model` — saving a key never touches the running turn. See `docs/llm.md`
     /// / `docs/toast.md`.
@@ -146,125 +159,132 @@ pub enum CommandEffect {
 }
 
 /// One entry in the slash-command palette: how it shows (`name`/`description`)
-/// and what it does (`effect`). Adding a command is a one-line addition to
-/// [`COMMANDS`]; the palette, filtering, and scrolling don't change.
-#[derive(Debug, Clone, Copy)]
+/// and what it does (`effect`). The static registry ([`COMMANDS`]) holds the
+/// **built-in** rows, borrowed for the program's life; a **tier** row
+/// ([`SlashCommand::tier`]) is built per session from what the active
+/// model's listing says and owns its strings — hence the `Cow`s, which let
+/// one type serve both without the registry giving up being a `const`.
+/// Adding a built-in command is a one-line addition to [`COMMANDS`]; the
+/// palette, filtering, and scrolling don't change.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SlashCommand {
     /// The command name **without** the leading slash (e.g. `"help"`), lowercase.
-    pub name: &'static str,
+    pub name: Cow<'static, str>,
     /// A one-line description shown dimmed beside the name in the palette.
-    pub description: &'static str,
+    pub description: Cow<'static, str>,
     /// What selecting it does.
     pub effect: CommandEffect,
 }
 
-/// The available slash commands, in the order they list in the palette. Adding a
-/// command is a one-line entry here plus an effect arm in `run_selected_command`;
-/// the palette, filtering, and scrolling don't change.
+impl SlashCommand {
+    /// A built-in row — what the [`COMMANDS`] table is made of.
+    #[must_use]
+    pub const fn builtin(
+        name: &'static str,
+        description: &'static str,
+        effect: CommandEffect,
+    ) -> Self {
+        Self {
+            name: Cow::Borrowed(name),
+            description: Cow::Borrowed(description),
+            effect,
+        }
+    }
+
+    /// The row for one speed tier the active model lists — codex's
+    /// `ServiceTierCommand`: named by [`ServiceTier::command_name`] (`fast`,
+    /// `ultrafast`), described by the backend's own cost statement for the
+    /// tier (`1.5x speed, increased usage` — the price of the speed said
+    /// where it is bought, which is the half a user cannot see coming) or,
+    /// when the record gave none, `Toggle {label} mode`, and carrying the
+    /// tier as its effect. `None` for a tier whose name leaves no palette
+    /// token at all.
+    #[must_use]
+    pub fn tier(tier: &ServiceTier) -> Option<Self> {
+        let name = tier.command_name();
+        if name.is_empty() {
+            return None;
+        }
+        let description = if tier.description.is_empty() {
+            format!("Toggle {} mode", tier.label())
+        } else {
+            tier.description.clone()
+        };
+        Some(Self {
+            name: Cow::Owned(name),
+            description: Cow::Owned(description),
+            effect: CommandEffect::ServiceTier(tier.clone()),
+        })
+    }
+}
+
+/// The built-in slash commands, in the order they list in the palette. Adding
+/// a command is a one-line entry here plus an effect arm in
+/// `run_selected_command`; the palette, filtering, and scrolling don't change.
+/// The speed-tier rows are deliberately **not** here: they are what the
+/// active model lists, spliced in after `/model` by [`App::commands`].
 pub const COMMANDS: &[SlashCommand] = &[
-    SlashCommand {
-        name: "help",
-        description: "List the available commands",
-        effect: CommandEffect::Help,
-    },
-    SlashCommand {
-        name: "clear",
-        description: "Clear the conversation",
-        effect: CommandEffect::Clear,
-    },
-    SlashCommand {
-        name: "copy",
-        description: "Copy the last response to the clipboard",
-        effect: CommandEffect::Copy,
-    },
-    SlashCommand {
-        name: "init",
-        // Codex says "…with instructions for Codex" — the palette keeps its
-        // descriptions concise and product-name-free.
-        description: "Create an AGENTS.md contributor guide",
-        effect: CommandEffect::Init,
-    },
-    SlashCommand {
-        name: "compact",
-        // Codex's wording ("summarize conversation to prevent hitting the
-        // context limit") was the palette's longest row; this says the same
-        // thing inside the standard 80-column description room.
-        description: "Summarize the conversation to free up context",
-        effect: CommandEffect::Compact,
-    },
-    SlashCommand {
-        name: "resume",
-        description: "Resume a saved chat",
-        effect: CommandEffect::Resume,
-    },
-    SlashCommand {
-        name: "model",
-        description: "Switch the active model",
-        effect: CommandEffect::Model,
-    },
-    SlashCommand {
-        name: "fast",
-        // Codex lists the tier's own description here ("1.5x speed,
-        // increased usage"); a static row says what the speed costs in the
-        // same breath, since that is the half a user cannot see coming.
-        description: "Toggle fast mode (faster replies, more usage)",
-        effect: CommandEffect::Fast,
-    },
-    SlashCommand {
-        name: "login",
-        description: "Add or update a provider API key",
-        effect: CommandEffect::Login,
-    },
-    SlashCommand {
-        name: "settings",
-        description: "Open settings menu",
-        effect: CommandEffect::Settings,
-    },
-    SlashCommand {
-        name: "theme",
-        description: "Choose the colour theme",
-        effect: CommandEffect::Theme,
-    },
-    SlashCommand {
-        name: "mascot",
-        description: "Choose the banner mascot",
-        effect: CommandEffect::Mascot,
-    },
-    SlashCommand {
-        name: "spinner",
-        description: "Choose the status spinner style",
-        effect: CommandEffect::Spinner,
-    },
-    SlashCommand {
-        name: "hooks",
-        description: "Browse the configured lifecycle hooks",
-        effect: CommandEffect::Hooks,
-    },
-    SlashCommand {
-        name: "skills",
-        description: "Browse skills and enable or disable each one",
-        effect: CommandEffect::Skills,
-    },
-    SlashCommand {
-        name: "mcp",
-        description: "Manage MCP servers",
-        effect: CommandEffect::Mcp,
-    },
-    SlashCommand {
-        name: "trust",
-        description: "Review and approve this project's config",
-        effect: CommandEffect::Trust,
-    },
-    SlashCommand {
-        name: "donate",
-        description: "Support the project with a crypto donation",
-        effect: CommandEffect::Donate,
-    },
-    SlashCommand {
-        name: "quit",
-        description: "Exit the app",
-        effect: CommandEffect::Quit,
-    },
+    SlashCommand::builtin("help", "List the available commands", CommandEffect::Help),
+    SlashCommand::builtin("clear", "Clear the conversation", CommandEffect::Clear),
+    SlashCommand::builtin(
+        "copy",
+        "Copy the last response to the clipboard",
+        CommandEffect::Copy,
+    ),
+    // Codex says "…with instructions for Codex" — the palette keeps its
+    // descriptions concise and product-name-free.
+    SlashCommand::builtin(
+        "init",
+        "Create an AGENTS.md contributor guide",
+        CommandEffect::Init,
+    ),
+    // Codex's wording ("summarize conversation to prevent hitting the
+    // context limit") was the palette's longest row; this says the same
+    // thing inside the standard 80-column description room.
+    SlashCommand::builtin(
+        "compact",
+        "Summarize the conversation to free up context",
+        CommandEffect::Compact,
+    ),
+    SlashCommand::builtin("resume", "Resume a saved chat", CommandEffect::Resume),
+    // The active model's speed tiers list right after this row
+    // (`App::commands`).
+    SlashCommand::builtin("model", "Switch the active model", CommandEffect::Model),
+    SlashCommand::builtin(
+        "login",
+        "Add or update a provider API key",
+        CommandEffect::Login,
+    ),
+    SlashCommand::builtin("settings", "Open settings menu", CommandEffect::Settings),
+    SlashCommand::builtin("theme", "Choose the colour theme", CommandEffect::Theme),
+    SlashCommand::builtin("mascot", "Choose the banner mascot", CommandEffect::Mascot),
+    SlashCommand::builtin(
+        "spinner",
+        "Choose the status spinner style",
+        CommandEffect::Spinner,
+    ),
+    SlashCommand::builtin(
+        "hooks",
+        "Browse the configured lifecycle hooks",
+        CommandEffect::Hooks,
+    ),
+    SlashCommand::builtin(
+        "skills",
+        "Browse skills and enable or disable each one",
+        CommandEffect::Skills,
+    ),
+    SlashCommand::builtin("mcp", "Manage MCP servers", CommandEffect::Mcp),
+    SlashCommand::builtin(
+        "trust",
+        "Review and approve this project's config",
+        CommandEffect::Trust,
+    ),
+    SlashCommand::builtin(
+        "donate",
+        "Support the project with a crypto donation",
+        CommandEffect::Donate,
+    ),
+    SlashCommand::builtin("quit", "Exit the app", CommandEffect::Quit),
 ];
 
 /// The open slash-command palette: which match row is highlighted. The matches
@@ -290,24 +310,58 @@ pub fn command_query(input: &str) -> Option<&str> {
     }
 }
 
-/// The commands whose name starts with `query` (case-insensitive), in registry
-/// order. An empty query matches everything.
+/// The rows of `commands` whose name starts with `query` (case-insensitive),
+/// in their order — the palette's filter over [`App::commands`], the
+/// session's rows with the tier commands spliced in. An empty query matches
+/// everything.
 #[must_use]
-pub fn matching_commands(query: &str) -> Vec<&'static SlashCommand> {
+pub fn matching_commands<'a>(commands: &'a [SlashCommand], query: &str) -> Vec<&'a SlashCommand> {
     let q = query.to_lowercase();
-    COMMANDS.iter().filter(|c| c.name.starts_with(&q)).collect()
+    commands.iter().filter(|c| c.name.starts_with(&q)).collect()
 }
 
 /// The `/help` notice: a header followed by every command's `/name — description`.
-fn help_text() -> String {
+fn help_text(commands: &[SlashCommand]) -> String {
     let mut text = String::from("Available commands:");
-    for cmd in COMMANDS {
+    for cmd in commands {
         text.push_str(&format!("\n/{} — {}", cmd.name, cmd.description));
     }
     text
 }
 
 impl App {
+    /// The palette's rows for this session: [`COMMANDS`] with one row per
+    /// speed tier the active model lists spliced in **right after `/model`**
+    /// — where codex inserts its tier commands, a tier being a fact about
+    /// the model just switched to (`docs/fast-mode.md`). Built from
+    /// [`App::speed`] on demand rather than stored, so the rows can never
+    /// disagree with the state the footer and the next request read; a
+    /// built-in's clone is a borrowed pointer copy, so a keystroke's rebuild
+    /// costs nothing. A tier whose name leaves no palette token, or whose
+    /// name is a listed command's already — a built-in must never be
+    /// shadowed, `/model` being the door to everything else — gets no row.
+    #[must_use]
+    pub fn commands(&self) -> Vec<SlashCommand> {
+        let tiers = self
+            .speed
+            .as_ref()
+            .map_or(&[][..], |speed| speed.tiers.as_slice());
+        let mut commands: Vec<SlashCommand> = Vec::with_capacity(COMMANDS.len() + tiers.len());
+        for command in COMMANDS {
+            commands.push(command.clone());
+            if command.effect != CommandEffect::Model {
+                continue;
+            }
+            for row in tiers.iter().filter_map(SlashCommand::tier) {
+                let taken = |c: &SlashCommand| c.name == row.name;
+                if !COMMANDS.iter().any(taken) && !commands.iter().any(taken) {
+                    commands.push(row);
+                }
+            }
+        }
+        commands
+    }
+
     /// Re-derive the palette after an edit. Opens it when the input *becomes* a
     /// command token, clamps the highlight when the filter narrows, and closes it
     /// when the input stops being a command token. The `had_query` flag (the state
@@ -325,7 +379,7 @@ impl App {
         match command_query(self.input.text()) {
             None => self.command_menu = None,
             Some(query) => {
-                let matches = matching_commands(query).len();
+                let matches = matching_commands(&self.commands(), query).len();
                 match &mut self.command_menu {
                     Some(menu) => menu.selected = menu.selected.min(matches.saturating_sub(1)),
                     // Just entered command mode → open at the top.
@@ -344,19 +398,22 @@ impl App {
         let Some(query) = command_query(self.input.text()) else {
             return;
         };
-        let matches = matching_commands(query).len();
+        let matches = matching_commands(&self.commands(), query).len();
         if let Some(menu) = &mut self.command_menu {
             menu.selected = wrap_step(menu.selected, matches, delta);
         }
     }
 
     /// The command currently highlighted in the palette, if one is (the palette is
-    /// open and the query matches at least one command).
+    /// open and the query matches at least one command) — its own copy, since
+    /// a tier row is built per call ([`App::commands`]).
     #[must_use]
-    pub fn highlighted_command(&self) -> Option<&'static SlashCommand> {
+    pub fn highlighted_command(&self) -> Option<SlashCommand> {
         let menu = self.command_menu.as_ref()?;
         let query = command_query(self.input.text())?;
-        matching_commands(query).get(menu.selected).copied()
+        matching_commands(&self.commands(), query)
+            .get(menu.selected)
+            .map(|command| (*command).clone())
     }
 
     /// Run the highlighted command: consume the input, close the palette, and
@@ -381,7 +438,7 @@ impl App {
                 if self.turn_active() {
                     Action::Toast(HELP_BUSY_NOTICE.to_string())
                 } else {
-                    Action::Notice(help_text())
+                    Action::Notice(help_text(&self.commands()))
                 }
             }
             CommandEffect::Copy => Action::Copy(self.last_assistant_text()),
@@ -434,12 +491,13 @@ impl App {
                 // *loop* fetches the model list. See docs/llm.md / docs/toast.md.
                 Action::OpenModelPicker
             }
-            CommandEffect::Fast => {
-                // /fast works mid-turn like Ctrl+T: the pure state steps at
-                // once and the *loop* rebinds only the next turn's backend,
-                // persists, and toasts (docs/fast-mode.md). A model listing
-                // no tier answers with the toast itself.
-                self.cycle_speed()
+            CommandEffect::ServiceTier(tier) => {
+                // A tier's command works mid-turn like Ctrl+T: the pure state
+                // toggles at once and the *loop* rebinds only the next turn's
+                // backend, persists, and toasts (docs/fast-mode.md). The row
+                // exists only while the model lists the tier, so there is no
+                // "unsupported" case to explain.
+                self.toggle_speed_tier(&tier)
             }
             CommandEffect::Login => {
                 // /login works mid-turn like /model — saving a key never touches

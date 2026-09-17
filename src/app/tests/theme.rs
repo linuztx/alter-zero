@@ -147,7 +147,7 @@ fn slash_theme_opens_the_picker() {
 
 #[test]
 fn the_palette_lists_theme_ahead_of_mascot() {
-    let names: Vec<&str> = COMMANDS.iter().map(|c| c.name).collect();
+    let names: Vec<&str> = COMMANDS.iter().map(|c| c.name.as_ref()).collect();
     let theme = names.iter().position(|n| *n == "theme").expect("theme");
     assert_eq!(
         names.get(theme + 1),

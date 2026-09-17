@@ -95,14 +95,21 @@ pub(crate) fn resolve_env(env_file: &EnvFile, name: &str) -> Option<String> {
         })
 }
 
-/// Resolve a provider's API key: its own env var (process env then `.env`), else
+/// Resolve a provider's API key: its own env var (process env then `.env`),
+/// else the name that variable had before a rename (a token stored under
+/// `OPENAI_CHATGPT_REFRESH_TOKEN` still signs in — `docs/chatgpt.md`), else
 /// the generic `ALTER_ZERO_API_KEY`. Empty values count as unset.
 pub(crate) fn resolve_api_key(
     providers: &ProvidersFile,
     env_file: &EnvFile,
     provider: &str,
 ) -> Option<String> {
-    resolve_env(env_file, &key_env_name(providers, provider))
+    let key_env = key_env_name(providers, provider);
+    resolve_env(env_file, &key_env)
+        .or_else(|| {
+            alter_zero::llm::chatgpt::legacy_key_env(&key_env)
+                .and_then(|legacy| resolve_env(env_file, legacy))
+        })
         .or_else(|| resolve_env(env_file, "ALTER_ZERO_API_KEY"))
 }
 
@@ -225,7 +232,9 @@ fn choices_where(
             let pointed_at = host_var
                 .as_deref()
                 .is_some_and(|var| resolve_env(env_file, var).is_some())
-                || std::env::var("ALTER_ZERO_PROVIDER").ok().as_deref() == Some(id.as_str());
+                || std::env::var("ALTER_ZERO_PROVIDER")
+                    .ok()
+                    .is_some_and(|env| alter_zero::llm::chatgpt::canonical_provider_id(&env) == id);
             let configured = keyed || pointed_at;
             // What `/login` asks for, and what its Enter saves: the host
             // for a host-configured provider, the key for everyone else.
@@ -289,7 +298,7 @@ fn signin_kinds(auth: AuthScheme) -> Vec<SigninKind> {
     match auth {
         // The browser by default, and OpenAI's device code for a headless
         // machine — the two flows Codex itself offers (`docs/chatgpt.md`).
-        AuthScheme::OpenAiChatGpt => vec![SigninKind::BrowserLink, SigninKind::DeviceCode],
+        AuthScheme::ChatGptCodex => vec![SigninKind::BrowserLink, SigninKind::DeviceCode],
         // A browser page with a link and a wait (`docs/claude.md`).
         AuthScheme::AnthropicConsole => vec![SigninKind::BrowserLink],
         AuthScheme::GithubCopilot | AuthScheme::ApiKey | AuthScheme::OptionalKey => {

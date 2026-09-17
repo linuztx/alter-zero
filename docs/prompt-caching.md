@@ -134,7 +134,7 @@ gets it in the form it actually keys on:
   `OpenAI-Beta: responses=experimental` on its own changed nothing. So
   `chatgpt::session_headers` puts the session key under both names and
   `openai::chatgpt_request_headers` attaches them, gated on the
-  `OpenAiChatGpt` auth scheme exactly as Copilot's per-request headers are
+  `ChatGptCodex` auth scheme exactly as Copilot's per-request headers are
   gated on its own — a pasted-key provider never sees a header it did not
   ask for.
 - **Nothing** — GitHub Copilot. Its proxy answers an unrecognised body shape
@@ -232,7 +232,7 @@ OPENROUTER_API_KEY=sk-or-…   cargo test --test live_caching -- --ignored --noc
 ANTHROPIC_API_KEY=sk-ant-…   cargo test --test live_caching -- --ignored --nocapture live_anthropic_api_key
 OLLAMA_API_KEY=…             cargo test --test live_caching -- --ignored --nocapture live_ollama_cloud
 GITHUB_COPILOT_TOKEN=ghu_…   cargo test --test live_caching -- --ignored --nocapture live_copilot
-OPENAI_CHATGPT_REFRESH_TOKEN=rt.1.… ALTER_ZERO_LIVE_TOKEN_STORE=/tmp/live.env \
+CHATGPT_CODEX_REFRESH_TOKEN=rt.1.… ALTER_ZERO_LIVE_TOKEN_STORE=/tmp/live.env \
                              cargo test --test live_caching -- --ignored --nocapture live_chatgpt
 ANTHROPIC_CONSOLE_REFRESH_TOKEN=… ALTER_ZERO_LIVE_TOKEN_STORE=/tmp/live.env \
                              cargo test --test live_caching -- --ignored --nocapture live_anthropic_console

@@ -151,11 +151,12 @@ pub enum Action {
     /// its expiry — why this isn't a direct `show_toast`). See
     /// `docs/reasoning.md`.
     SetThinking(ThinkingMode),
-    /// `/fast` stepped the speed tier ([`App::speed`] already advanced to
-    /// the carried selection — `None` is standard). The loop rebinds the
-    /// *next* turn's backend to it, persists the choice beside the model
-    /// selection, and presents the `Speed: {tier}` toast (arming its expiry
-    /// — why this isn't a direct `show_toast`). See `docs/fast-mode.md`.
+    /// A tier's palette command (`/fast`, `/ultrafast`, …) toggled the speed
+    /// tier ([`App::speed`] already moved to the carried selection — `None`
+    /// is standard). The loop rebinds the *next* turn's backend to it,
+    /// persists the choice beside the model selection, and presents the
+    /// `Speed: {tier}` toast (arming its expiry — why this isn't a direct
+    /// `show_toast`). See `docs/fast-mode.md`.
     SetSpeed(Option<ServiceTier>),
     /// `/settings`: open the inline settings menu. Like `/model` it works
     /// mid-turn — it only replaces the composer. The loop has nothing to fetch;

@@ -617,7 +617,7 @@ const DEFAULT_EFFECTIVE_CONTEXT_PERCENT: u64 = 95;
 /// # Errors
 /// An empty ChatGPT catalog becomes an [`LlmError`] naming both causes.
 fn catalog_or_error(models: Vec<ModelEntry>, auth: super::AuthScheme) -> Result<Vec<ModelEntry>> {
-    if models.is_empty() && auth == super::AuthScheme::OpenAiChatGpt {
+    if models.is_empty() && auth == super::AuthScheme::ChatGptCodex {
         return Err(LlmError::Api {
             status: 200,
             body: "the account listed no models — its ChatGPT plan may not include Codex, \
@@ -659,7 +659,7 @@ fn models_url(base: &str, auth: super::AuthScheme, wire: super::WireApi) -> Stri
         return format!("{base}/api/tags");
     }
     match auth {
-        super::AuthScheme::OpenAiChatGpt => {
+        super::AuthScheme::ChatGptCodex => {
             // Required, and load-bearing: the backend filters the catalog by
             // it (`chatgpt::CLIENT_VERSION`), answering a version below every
             // record's own gate with an empty list on an HTTP 200.
@@ -1059,7 +1059,7 @@ mod tests {
     /// array is `models`, the id is `slug`, and every capability is a
     /// top-level field.
     fn chatgpt_catalog(record: &str) -> Vec<ModelEntry> {
-        parse_models(&format!(r#"{{"models":[{record}]}}"#), "openai_chatgpt").unwrap()
+        parse_models(&format!(r#"{{"models":[{record}]}}"#), "chatgpt_codex").unwrap()
     }
 
     #[test]
@@ -1211,7 +1211,7 @@ mod tests {
         // `CARGO_PKG_VERSION`, which means nothing to OpenAI.
         let mut cfg = ModelConfig::fallback();
         cfg.api_model_base = "https://chatgpt.com/backend-api/codex".to_string();
-        cfg.auth = super::super::AuthScheme::OpenAiChatGpt;
+        cfg.auth = super::super::AuthScheme::ChatGptCodex;
         let url = models_endpoint(&cfg);
         assert!(
             url.ends_with(&format!(
@@ -1232,7 +1232,7 @@ mod tests {
         // no access, or a gate raised past the version we send — and the
         // picker showing an empty provider says none of that. Every other
         // provider's empty list stays an ordinary empty list.
-        let chatgpt = super::super::AuthScheme::OpenAiChatGpt;
+        let chatgpt = super::super::AuthScheme::ChatGptCodex;
         let err = catalog_or_error(Vec::new(), chatgpt).expect_err("empty is an error here");
         let shown = err.to_string();
         assert!(shown.contains("no models"), "{shown}");
@@ -1240,7 +1240,7 @@ mod tests {
         // A non-empty one passes straight through.
         let one = vec![ModelEntry {
             id: "gpt-5.5".to_string(),
-            provider: "openai_chatgpt".to_string(),
+            provider: "chatgpt_codex".to_string(),
             display_name: "GPT-5.5".to_string(),
             reasoning: None,
             vision: None,
@@ -1261,7 +1261,7 @@ mod tests {
         // Without it the listing is refused rather than defaulted.
         let mut cfg = ModelConfig::fallback();
         cfg.api_model_base = "https://chatgpt.com/backend-api/codex".to_string();
-        cfg.auth = super::super::AuthScheme::OpenAiChatGpt;
+        cfg.auth = super::super::AuthScheme::ChatGptCodex;
         let url = models_endpoint(&cfg);
         assert!(url.starts_with("https://chatgpt.com/backend-api/codex/models?client_version="));
         // Every other provider's URL is untouched.
