@@ -1,6 +1,6 @@
 [package]
 name = "alter-zero"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2024"
 authors = ["linuztx <linuztx@gmail.com>"]
 description = "An autonomous AI coding agent that lives in your terminal."
