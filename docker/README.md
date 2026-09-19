@@ -293,7 +293,7 @@ exactly as a paste would.
 | --- | --- |
 | **Alter Zero** | the latest release, at `/usr/local/bin/alter-zero` |
 | Shell and files | `bash` `git` `ssh` `curl` `wget` `jq` `rg` `file` `less` `nano` `tree` `xxd` `unzip` |
-| Python | `python3` and `pip` from a virtualenv at `/opt/az-venv`, active everywhere — see [Python](#python) |
+| Python | `python3` and `pip` from a virtualenv at `/opt/az-venv`, active by default — see [Python](#python) |
 | Network | `nmap` `nc` `socat` `whois` `dig` `nslookup` `ping` `traceroute` `ip` `ss` `ifconfig` `netstat` `openssl` |
 | Terminal | terminfo for kitty, Alacritty, foot, WezTerm, Rio, VTE |
 
@@ -341,9 +341,8 @@ Only scan machines you are authorised to test.
 
 ## Python
 
-`python3` and `pip` come from a **virtualenv at `/opt/az-venv`**, and it is
-already active — in your shell, in the agent's commands, in anything either
-of you starts:
+`python3` and `pip` come from a **virtualenv at `/opt/az-venv`**, active by
+default in your shell and the agent's commands:
 
 ```sh
 docker exec -it alter-zero-kali bash
@@ -351,8 +350,11 @@ docker exec -it alter-zero-kali bash
 └─# pip install requests        # just works
 ```
 
-You never activate it by hand. The image exports `VIRTUAL_ENV` and puts the
-venv first on `PATH`, so every process inherits it however it was started.
+The image exports `VIRTUAL_ENV` and puts the venv first on `PATH`. Shell hooks
+also restore the defaults for login shells, including `bash -l` and
+`su - root`, so these need no manual activation. Nonempty `VIRTUAL_ENV` and
+`PIP_CACHE_DIR` overrides are preserved. Recreate the container using a rebuilt
+image to receive updated hooks; your existing home volume can stay.
 
 This is not decoration. Kali marks its system Python **externally managed**
 (PEP 668), so a plain `pip install` there is refused, and the image ships no

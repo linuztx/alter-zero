@@ -228,8 +228,8 @@ A container that fails to start is removed again: a port already in use fails
 
 ## Python lives in a virtualenv
 
-`python3` and `pip` resolve to **`/opt/az-venv`**, and it is active in every
-process without anyone activating it.
+`python3` and `pip` resolve to **`/opt/az-venv`** by default in your shell and
+the agent's commands, without manual activation.
 
 It is not a convenience. Kali marks its system Python **externally managed**
 (PEP 668), so `pip install` there is refused, and the image ships no system
@@ -253,8 +253,8 @@ ENV VIRTUAL_ENV=/opt/az-venv \
     PATH=/opt/az-venv/bin:/usr/local/sbin:…
 ```
 
-which is what `activate` does anyway, minus the prompt, and an environment
-variable is inherited by every process however it was started.
+Child processes inherit these settings unless something clears or replaces
+their environment.
 
 That alone is not enough, and the gap is easy to miss because the documented
 command does not hit it. A **login** shell runs `/etc/profile`, which on
@@ -264,24 +264,30 @@ Debian and Kali rewrites `PATH` for root outright:
 /etc/profile:5:  PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 ```
 
-so `bash -l` answered with `/usr/bin/python3`, **no `pip` on `PATH` at all**,
-and `VIRTUAL_ENV` still exported — an environment contradicting itself, which
-is worse than being plainly off. `docker exec -it … bash` is not a login shell
-and never showed it; `bash -l` and `su -` did. **`/etc/profile.d/az-venv.sh`**
-is sourced after that rewrite and puts the venv back, guarded so it is
-idempotent however many shells nest.
+so `bash -l` used to find `/usr/bin/python3` and **no `pip`**, despite retaining
+`VIRTUAL_ENV`. `su - root` has a separate problem: it clears `VIRTUAL_ENV` and
+`PIP_CACHE_DIR` as well. Restoring `PATH` only when `VIRTUAL_ENV` is already
+set fixes `bash -l` but misses `su -`.
 
-**`/etc/bash.bashrc`** then adds the two things only the real `activate`
-script gives an interactive shell — `deactivate`, and the prompt. It is
-`/etc/bash.bashrc` and not `/root/.bashrc` for the volume reason above: the
-block has to live somewhere a later image can still change. It **strips the
-ENV copy of the venv off `PATH` first**, because `activate` prepends
-unconditionally and every nested shell would otherwise stack another entry;
-the test pins the count at one. Kali's own `.bashrc` turns out to render
-`$VIRTUAL_ENV` into its `┌──(az-venv)(root㉿host)` prompt already and to set
+**`/etc/profile.d/az-venv.sh`** handles both: it initializes and exports missing
+or empty `VIRTUAL_ENV` and `PIP_CACHE_DIR` to `/opt/az-venv` and `/var/cache/pip`,
+preserves nonempty overrides, and adds the venv to `PATH` only if absent.
+
+**`/etc/bash.bashrc`** sources that same helper before the real `activate`
+script adds `deactivate` and the prompt. The order matters: interactive login
+Bash runs `/etc/bash.bashrc` from `/etc/profile` before the `profile.d` files,
+so waiting for `profile.d` would leave an interactive `su -` without
+`deactivate`. The block **strips the venv copy off `PATH` before activation**,
+because `activate` prepends unconditionally. Kali's own `.bashrc` renders
+`$VIRTUAL_ENV` into its `┌──(az-venv)(root㉿host)` prompt and sets
 `VIRTUAL_ENV_DISABLE_PROMPT=1` so `activate` does not also prepend one — so
 the prompt assertion checks the *rendered* prompt (`${PS1@P}`) rather than a
 literal prefix, and holds whichever of the two mechanisms draws it.
+
+Both hooks live outside the persistent `/root` volume. Rebuild the image and
+recreate the container with it (`docker/run.sh --replace`) to receive these
+changes while keeping the home volume; rebuilding alone does not update a
+running container.
 
 **pip's cache is `/var/cache/pip`, not `~/.cache/pip`.** `/root` is a named
 volume, and under rootless Podman a volume whose host directory falls outside

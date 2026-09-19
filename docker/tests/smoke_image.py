@@ -21,6 +21,7 @@ import os
 import pty
 import re
 import select
+import shlex
 import shutil
 import signal
 import struct
@@ -136,6 +137,36 @@ def check_venv():
     prompt = run("bash", "-ic", 'printf "%s" "${PS1@P}"').stdout
     assert "az-venv" in prompt, f"the prompt does not name the venv: {prompt!r}"
     assert run("bash", "-ic", "type -t deactivate").stdout.strip() == "function", "no deactivate"
+
+
+def check_login_venv():
+    """Login must restore exported defaults even when su clears the environment."""
+    probe = "python3 -c " + shlex.quote(
+        "import json, os, shutil, sys; "
+        "print(json.dumps([sys.prefix, os.environ.get('VIRTUAL_ENV'), "
+        "os.environ.get('PIP_CACHE_DIR'), shutil.which('python3'), shutil.which('pip'), "
+        f"os.environ['PATH'].split(':').count('{VENV}/bin')]))"
+    )
+    expected = [VENV, VENV, PIP_CACHE, f"{VENV}/bin/python3", f"{VENV}/bin/pip", 1]
+    interactive_probe = probe + '; printf "\\n%s\\n" "${PS1@P}"; type -t deactivate'
+    cases = (
+        ("su login", ["su", "-", "root", "-c", probe], False),
+        # /etc/profile reads bash.bashrc before profile.d. A direct interactive
+        # login must get prompt/deactivate before a later hook restores PATH.
+        ("interactive login with reset environment",
+         ["env", "-u", "VIRTUAL_ENV", "-u", "PIP_CACHE_DIR", "bash", "-lic", interactive_probe], True),
+        # Exercise actual nesting: another login shell must not stack PATH.
+        ("nested login", ["su", "-", "root", "-c", "bash -lic " + shlex.quote(interactive_probe)], True),
+    )
+    for label, command, interactive in cases:
+        result = run(*command)
+        assert result.returncode == 0, f"{label}: {result.stdout}\n{result.stderr}"
+        first_line, _, shell_output = result.stdout.partition("\n")
+        seen = json.loads(first_line)
+        assert seen == expected, f"{label}: {seen}"
+        if interactive:
+            assert "az-venv" in shell_output, f"{label}: no venv in prompt: {shell_output!r}"
+            assert shell_output.splitlines()[-1] == "function", f"{label}: no deactivate: {shell_output!r}"
 
 
 def check_pip_cache():
@@ -336,6 +367,7 @@ def main():
     check_telemetry_is_left_alone()
     version = check_tools()
     check_venv()
+    check_login_venv()
     check_pip_cache()
     check_scanner_runs()
     check_nothing_listens()
