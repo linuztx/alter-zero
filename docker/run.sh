@@ -245,7 +245,7 @@ if [ "$existing" -eq 1 ] && [ "$reset_config" -eq 0 ]; then
 {{if and .Config.User (ne .Config.User "root") (ne .Config.User "0")}}unsupported|custom user{{"\n"}}{{end}}
 {{if ne .Config.WorkingDir "/workspace"}}unsupported|custom working directory{{"\n"}}{{end}}
 {{if ne .Config.Hostname "az-kali"}}unsupported|custom hostname{{"\n"}}{{end}}
-{{printf "process|%s|%s\n" .Path (json .Args)}}
+{{printf "process|%q|%s\n" .Path (json .Args)}}
 {{range .HostConfig.SecurityOpt}}{{printf "security|%s\n" .}}{{end}}' "$name") || cannot_inherit "container inspection failed"
 	old_home="" old_workspace="" old_workspace_type="" old_ports="" old_clipboard=0 old_restart=""
 	old_raw=0 old_raw_add=0 old_raw_drop=0 format_seen=0
@@ -315,6 +315,7 @@ if [ "$existing" -eq 1 ] && [ "$reset_config" -eq 0 ]; then
 		process)
 			# Older Podman versions join Config.Entrypoint into a string.
 			# Path and Args preserve the actual argv on both engines.
+			first=$(inspect_path "$first") || exit 1
 			if [ "$first" != /usr/bin/tini ] || [ "$second" != '["--","sleep","infinity"]' ] || [ -n "$third$fourth" ]; then
 				cannot_inherit "custom container process"
 			fi

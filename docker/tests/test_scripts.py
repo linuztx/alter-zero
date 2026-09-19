@@ -56,7 +56,7 @@ if args[:2] == ["image", "inspect"]:
 if args[:2] == ["container", "inspect"]:
     if "--format" in args:
         default = "format|1\\nimage|alter-zero:kali\\nport|127.0.0.1|8080|8080/tcp\\nport|127.0.0.1|8888|8888/tcp\\ncapadd|NET_RAW\\nrestart|unless-stopped\\nnetwork|bridge\\nsecurity|no-new-privileges"
-        default += "\\nprocess|/usr/bin/tini|" + json.dumps(["--", "sleep", "infinity"], separators=(",", ":"))
+        default += "\\nprocess|" + json.dumps("/usr/bin/tini") + "|" + json.dumps(["--", "sleep", "infinity"], separators=(",", ":"))
         for source, target in (("alter-zero-home", "/root"), ("alter-zero-workspace", "/workspace")):
             default += "\\nmount|volume|" + json.dumps(source) + "|" + json.dumps(target) + "|true"
         print(env("STUB_INSPECT", default))
@@ -472,7 +472,7 @@ class RunTests(ScriptCase):
         mount = f"mount|bind|{workspace}|/workspace|true" if workspace else "mount|volume|kept-work|/workspace|true"
         lines = [
             "format|1", "image|custom:kali", "mount|volume|kept-home|/root|true", mount,
-            'process|/usr/bin/tini|["--","sleep","infinity"]',
+            'process|"/usr/bin/tini"|["--","sleep","infinity"]',
             "network|bridge", "restart|unless-stopped", "security|no-new-privileges", *records,
         ]
         encoded = []
@@ -516,14 +516,25 @@ class RunTests(ScriptCase):
                 self.assertEqual(self.one(calls, "run")["args"][-1], "custom:kali")
 
     def test_replacement_refuses_a_changed_or_ambiguously_joined_process(self):
-        default_process = 'process|/usr/bin/tini|["--","sleep","infinity"]'
-        for process in ('process|/usr/bin/env|["--","sleep","infinity"]',
-                        'process|/usr/bin/tini|["--","sleep","60"]',
-                        'process|/usr/bin/tini|["-- sleep","infinity"]',
-                        'process|/usr/bin/tini|["--","sleep infinity"]',
-                        'process|/usr/bin/tini|"-- sleep infinity"'):
+        default_process = 'process|"/usr/bin/tini"|["--","sleep","infinity"]'
+        for process in ('process|"/usr/bin/env"|["--","sleep","infinity"]',
+                        'process|"/usr/bin/tini"|["--","sleep","60"]',
+                        'process|"/usr/bin/tini"|["-- sleep","infinity"]',
+                        'process|"/usr/bin/tini"|["--","sleep infinity"]',
+                        'process|"/usr/bin/tini"|"-- sleep infinity"'):
             for engine in ("docker", "podman"):
                 with self.subTest(engine=engine, process=process):
+                    old = self.old_settings().replace(default_process, process)
+                    result, calls = self.run_sh("--engine", engine, "--replace", STUB_CONTAINER="1", STUB_INSPECT=old)
+                    self.assertRefused(result, calls, "run", "rm", saying="cannot preserve")
+
+    def test_executable_paths_cannot_inject_inspection_records(self):
+        default_process = 'process|"/usr/bin/tini"|["--","sleep","infinity"]'
+        for executable in ('/usr/bin/tini|["--","sleep","infinity"]',
+                           '/usr/bin/tini\nprocess|/usr/bin/tini|["--","sleep","infinity"]'):
+            for engine in ("docker", "podman"):
+                with self.subTest(engine=engine, executable=executable):
+                    process = f'process|{json.dumps(executable)}|["--","sleep","infinity"]'
                     old = self.old_settings().replace(default_process, process)
                     result, calls = self.run_sh("--engine", engine, "--replace", STUB_CONTAINER="1", STUB_INSPECT=old)
                     self.assertRefused(result, calls, "run", "rm", saying="cannot preserve")
