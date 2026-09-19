@@ -84,28 +84,48 @@ RUN printf '%s\n' \
 # disabled." A cache has no business in the volume that holds sign-ins
 # anyway, so it lives in the image, where it is always container root's own.
 #
-# The appended .bashrc block is the interactive dress on top — the (az-venv)
-# prompt and a working `deactivate`, which only the real activate script
-# provides. PATH already carries the venv from ENV and activate prepends
-# unconditionally, so the ENV copy is dropped first; otherwise every nested
-# shell stacks another entry.
+# Two files put it in every shell, and both are in the image rather than in
+# /root — which is a named volume, so anything written there reaches a fresh
+# volume once and an upgrading user never.
+#
+#   /etc/profile.d/az-venv.sh  restores the venv after /etc/profile rewrites
+#       PATH. `su -` also clears VIRTUAL_ENV and PIP_CACHE_DIR, so initialize
+#       and export missing defaults before restoring PATH. Keep nonempty
+#       overrides and add the venv's bin directory only once.
+#   /etc/bash.bashrc  the interactive dress — the (az-venv) prompt and a
+#       working `deactivate`, which only the real activate script provides.
+#       It sources the same defaults first: an interactive login shell runs
+#       this file before /etc/profile gets to profile.d.
+#       PATH already carries the venv, and activate prepends unconditionally,
+#       so the copy is dropped first or every nested shell stacks another.
+#
 ARG VENV=/opt/az-venv
 RUN python3 -m venv "$VENV" \
     && "$VENV/bin/pip" install --no-cache-dir --upgrade pip \
     && mkdir -p /var/cache/pip \
     && printf '%s\n' \
+        '# Alter Zero (docker/Dockerfile): login shells can reset PATH and su -' \
+        '# clears the image environment. Restore missing defaults, once.' \
+        ': "${VIRTUAL_ENV:=/opt/az-venv}"' \
+        ': "${PIP_CACHE_DIR:=/var/cache/pip}"' \
+        'case ":$PATH:" in' \
+        '    *:"$VIRTUAL_ENV"/bin:*) ;;' \
+        '    *) PATH="$VIRTUAL_ENV/bin:$PATH" ;;' \
+        'esac' \
+        'export VIRTUAL_ENV PIP_CACHE_DIR PATH' \
+        > /etc/profile.d/az-venv.sh \
+    && printf '%s\n' \
         '' \
-        '# Alter Zero (docker/Dockerfile): VIRTUAL_ENV and PATH are already set' \
-        '# by the image, so every process is in the venv however it started —' \
-        '# dash, bash, and the sh -c calls the agent runs its own tools through.' \
-        '# This adds only what an interactive shell wants: prompt and deactivate.' \
+        '# Alter Zero (docker/Dockerfile): initialize before activation because' \
+        '# interactive login shells read this file before profile.d.' \
+        '. /etc/profile.d/az-venv.sh' \
         'if [ -n "${VIRTUAL_ENV:-}" ] && [ -r "$VIRTUAL_ENV/bin/activate" ]; then' \
         '    PATH=":$PATH:"' \
         '    PATH="${PATH//:$VIRTUAL_ENV\/bin:/:}"' \
         '    PATH="${PATH#:}"; PATH="${PATH%:}"' \
         '    . "$VIRTUAL_ENV/bin/activate"' \
         'fi' \
-        >> /root/.bashrc
+        >> /etc/bash.bashrc
 
 # Anything else you want baked in: docker/build.sh --with "binutils tcpdump".
 # Its own layer, after the tools, so adding a package never reinstalls them.

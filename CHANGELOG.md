@@ -39,15 +39,21 @@ release heading when a version is cut.
   on one engine and scanned on the other. It stays one named capability, never
   `--privileged` and never host networking; `docker/run.sh --no-net-raw` drops
   it. `python3` and `pip` come from a virtualenv at `/opt/az-venv` that is
-  already active for every process — your shell and the agent's own commands
-  alike — so `pip install` works out of the box. Kali's system Python is
+  active by default in your shell and the agent's own commands, so
+  `pip install` works out of the box. Kali's system Python is
   marked externally managed (PEP 668) and the image carries no system `pip`,
   so without it a Python package could not be installed at all; the system
   interpreter stays untouched at `/usr/bin/python3`, and pip caches into
   `/var/cache/pip` rather than under `/root`, so a home volume the container
   cannot write does not make every install open with a warning that the cache
   was disabled. The container `docker/run.sh` creates is named
-  **`alter-zero-kali`**, with the Linux hostname **`az-kali`**.
+  **`alter-zero-kali`**, with the Linux hostname **`az-kali`**. The virtualenv
+  also works in login shells: `bash -l` retains `VIRTUAL_ENV` but loses its
+  `PATH` entry, while `su - root` also clears `VIRTUAL_ENV` and `PIP_CACHE_DIR`.
+  The shared shell hook restores missing defaults and `PATH`, preserving
+  nonempty overrides. Interactive shells get `deactivate` from the image
+  rather than the `/root` volume. Recreate the container using the rebuilt
+  image to receive these changes while preserving home data.
 
 ### Changed
 

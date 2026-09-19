@@ -76,13 +76,19 @@ somewhere to `exec` into. Kali's `nmap` carries forced file capabilities a
 container cannot grant, so it would not even exec — `setcap -r` plus a
 `DPkg::Post-Invoke` hook that re-strips after every `apt` run.
 **Python is a virtualenv at `/opt/az-venv`** activated by `ENV`
-(`VIRTUAL_ENV` + `PATH`), never a `.bashrc` line — the agent's own `bash` tool
-runs `sh -c` and `/bin/sh` here is dash, so a `.bashrc` activation would cover
-a human's shell and miss every command the agent runs; an environment variable
-is inherited by everything. It exists because Kali's system Python is PEP 668
-externally managed and the image has no system `pip`. `/root/.bashrc`
-additionally sources the real `activate` for `deactivate` and the prompt,
-stripping the ENV copy off `PATH` first so nested shells don't stack entries.
+(`VIRTUAL_ENV` + `PATH`), so the agent's own `sh -c` commands inherit it too;
+`/bin/sh` is dash and never reads `.bashrc`. Kali's system Python is PEP 668
+externally managed and the image has no system `pip`. Login shells need two
+hooks, both outside the persistent `/root` volume. `bash -l` retains
+`VIRTUAL_ENV` but `/etc/profile` resets `PATH`; `su - root` also clears
+`VIRTUAL_ENV` and `PIP_CACHE_DIR`. `/etc/profile.d/az-venv.sh` initializes and
+exports missing or empty defaults, preserves nonempty overrides, and adds the
+venv to `PATH` only if absent. `/etc/bash.bashrc` sources this helper before
+the real `activate` adds `deactivate` and the prompt, stripping the venv from
+`PATH` first to avoid duplicates. That ordering is necessary because
+interactive login Bash runs `/etc/bash.bashrc` before `profile.d`. Recreate
+the container using the rebuilt image to receive hook updates while retaining
+the home volume.
 `PIP_CACHE_DIR=/var/cache/pip` keeps the cache **out of the `/root` volume**:
 a rootless-Podman volume outside the user's subuid range reads as `nobody`
 inside, unwritable by container root, and pip then disables its cache loudly
