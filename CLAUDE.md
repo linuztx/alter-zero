@@ -80,9 +80,13 @@ container cannot grant, so it would not even exec — `setcap -r` plus a
 runs `sh -c` and `/bin/sh` here is dash, so a `.bashrc` activation would cover
 a human's shell and miss every command the agent runs; an environment variable
 is inherited by everything. It exists because Kali's system Python is PEP 668
-externally managed and the image has no system `pip`. `/root/.bashrc`
-additionally sources the real `activate` for `deactivate` and the prompt,
-stripping the ENV copy off `PATH` first so nested shells don't stack entries.
+externally managed and the image has no system `pip`. Two files finish it, both in the
+image because `/root` is a **volume** a later image can never revise:
+`/etc/profile.d/az-venv.sh` puts the venv back after `/etc/profile` rewrites
+`PATH` for root (without it `bash -l` and `su -` got the system interpreter
+and no `pip`, while `VIRTUAL_ENV` still claimed otherwise), and
+`/etc/bash.bashrc` sources the real `activate` for `deactivate` and the
+prompt, stripping the ENV copy off `PATH` first so nested shells don't stack.
 `PIP_CACHE_DIR=/var/cache/pip` keeps the cache **out of the `/root` volume**:
 a rootless-Podman volume outside the user's subuid range reads as `nobody`
 inside, unwritable by container root, and pip then disables its cache loudly

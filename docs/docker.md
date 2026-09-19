@@ -240,25 +240,41 @@ exists to discourage, and `apt install python3-…` only reaches what Kali
 happens to package.
 
 **How it is activated is the part worth writing down.** The obvious move is a
-line in `.bashrc`, and it would have been wrong here: the agent runs its own
-`bash` tool through **`sh -c`**, and this image's `/bin/sh` is **dash**, which
-never reads `.bashrc`. That activation would have covered a human's
-`exec -it … bash` and missed every command the agent itself runs — the
-majority of what happens in this container, and the half nobody would think to
-test. So the image sets the environment instead:
+line in `.bashrc`, and it would have been wrong twice over. The agent runs its
+own `bash` tool through **`sh -c`**, and this image's `/bin/sh` is **dash**,
+which never reads `.bashrc` — that activation would have covered a human's
+`exec -it … bash` and missed every command the agent itself runs. And
+`/root` is a *named volume*: anything written to `/root/.bashrc` in the image
+reaches a fresh volume once, by copy-up, and an upgrading user never. So the
+image sets the environment instead:
 
 ```dockerfile
-ENV VIRTUAL_ENV=/opt/az-venv     PATH=/opt/az-venv/bin:/usr/local/sbin:…
+ENV VIRTUAL_ENV=/opt/az-venv \
+    PATH=/opt/az-venv/bin:/usr/local/sbin:…
 ```
 
 which is what `activate` does anyway, minus the prompt, and an environment
-variable is inherited by every process however it was started — dash, bash,
-`docker exec`, the agent's tool calls, a `python3 -m http.server` someone
-starts three levels deep. `smoke_image.py` asserts exactly that, through
-`sh -c` and `bash -c` as well as in-process.
+variable is inherited by every process however it was started.
 
-`/root/.bashrc` then adds the two things only the real `activate` script
-gives an interactive shell — `deactivate`, and the prompt. It **strips the
+That alone is not enough, and the gap is easy to miss because the documented
+command does not hit it. A **login** shell runs `/etc/profile`, which on
+Debian and Kali rewrites `PATH` for root outright:
+
+```
+/etc/profile:5:  PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+```
+
+so `bash -l` answered with `/usr/bin/python3`, **no `pip` on `PATH` at all**,
+and `VIRTUAL_ENV` still exported — an environment contradicting itself, which
+is worse than being plainly off. `docker exec -it … bash` is not a login shell
+and never showed it; `bash -l` and `su -` did. **`/etc/profile.d/az-venv.sh`**
+is sourced after that rewrite and puts the venv back, guarded so it is
+idempotent however many shells nest.
+
+**`/etc/bash.bashrc`** then adds the two things only the real `activate`
+script gives an interactive shell — `deactivate`, and the prompt. It is
+`/etc/bash.bashrc` and not `/root/.bashrc` for the volume reason above: the
+block has to live somewhere a later image can still change. It **strips the
 ENV copy of the venv off `PATH` first**, because `activate` prepends
 unconditionally and every nested shell would otherwise stack another entry;
 the test pins the count at one. Kali's own `.bashrc` turns out to render

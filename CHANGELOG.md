@@ -47,7 +47,12 @@ release heading when a version is cut.
   `/var/cache/pip` rather than under `/root`, so a home volume the container
   cannot write does not make every install open with a warning that the cache
   was disabled. The container `docker/run.sh` creates is named
-  **`alter-zero-kali`**, with the Linux hostname **`az-kali`**.
+  **`alter-zero-kali`**, with the Linux hostname **`az-kali`**. The virtualenv
+  is active in every shell, login shells included — `/etc/profile` rewrites
+  `PATH` for root, so `bash -l` and `su -` used to find the system interpreter
+  and no `pip` while still reporting a virtualenv — and the interactive
+  `deactivate` comes from the image rather than from the `/root` volume, so an
+  existing container picks it up on rebuild.
 
 ### Changed
 
