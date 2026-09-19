@@ -175,6 +175,27 @@ So, like the reference harness:
 `ALTER_ZERO_IMAGE_CELL_SIZE` (`9x18`) override both;
 `ALTER_ZERO_IMAGES=0` turns the whole feature off.
 
+### In a container
+
+Detection from the environment has one consequence worth writing down: **the
+environment has to be the terminal's.** A process started with `docker exec`
+sees the image's generic `TERM=xterm-256color` and none of the rest, so every
+picture falls to half-blocks on a terminal that could have drawn it. The
+headless Kali container's documented command forwards the variables this
+section reads, per session:
+
+```sh
+docker exec -it -e TERM -e COLORTERM -e TERM_PROGRAM -e KITTY_WINDOW_ID -e TMUX \
+  alter-zero-kali alter-zero
+```
+
+A bare `-e NAME` takes the value from the caller's own environment. `TMUX` is
+on the list deliberately: it is what keeps the multiplexer rule above honest
+inside the container too. Measured on the raw byte stream, resuming a rollout
+that holds an image read (`docs/docker.md` *Terminal identity*): no flags, 0
+kitty escapes and 35 half-block cells; the flags from a kitty terminal, 8
+escapes carrying 37 KB of picture; the flags inside tmux, half-blocks again.
+
 ## Painting
 
 `ImageStore::stamp(buf)` runs in **four** places, and missing one leaves the

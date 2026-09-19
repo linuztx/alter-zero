@@ -1,0 +1,117 @@
+ALTER ZERO ON HEADLESS KALI LINUX - QUICK REFERENCE
+====================================================
+The full guide is docker/README.md. Run everything from the repository root.
+With Podman, add "--engine podman" to the scripts and type "podman" where
+this says "docker". Nothing else changes.
+
+
+1. BUILD   (about a minute; nothing is compiled)
+
+   docker/build.sh                          build the image  alter-zero:kali
+   docker/build.sh --engine podman          ...with Podman
+   docker/build.sh ~/projects/site          build, then create the container
+                                            on that folder (step 2 included)
+   docker/build.sh --version v0.4.0         pin a release (default: latest)
+   docker/build.sh --with "binutils tcpdump"    bake in extra apt packages
+   docker/build.sh --no-pull                do not refresh the Kali base
+   docker/build.sh --no-cache               rebuild every layer
+
+   The image downloads the published Alter Zero release, SHA-256-verified by
+   install.sh. "latest" is looked up on every build, so a rebuild picks up a
+   new release. A bare "docker build" would keep the one it first cached.
+
+
+2. CREATE THE CONTAINER
+
+   Container name: alter-zero-kali. Linux hostname (in the prompt): az-kali.
+   --name changes only the container name.
+
+   docker/run.sh ~/projects/site            /workspace = that folder
+   docker/run.sh                            /workspace = a named volume
+   docker/run.sh --name az-api ~/projects/api      a second container
+   docker/run.sh --replace ~/projects/other        recreate; data is kept
+   docker/run.sh --clipboard ~/projects/site       Ctrl+V can paste images
+                                                   (run from your desktop)
+
+   Ports 8080 and 8888 are published to 127.0.0.1 on your machine:
+
+   docker/run.sh --port 3000                publish 3000 instead
+   docker/run.sh --port 9000:8080           your 9000 -> container 8080
+   docker/run.sh --bind 0.0.0.0             open them to your network
+   docker/run.sh --no-ports                 publish nothing
+   docker/run.sh --no-net-raw               drop NET_RAW (granted so that a
+                                            SYN scan works; nmap -sT is fine
+                                            without it)
+   docker/run.sh DIR -- --cap-add NET_ADMIN anything after -- goes to the engine
+
+
+3. OPEN ALTER ZERO   (from your own terminal)
+
+   docker exec -it \
+     -e TERM -e COLORTERM -e TERM_PROGRAM \
+     -e KITTY_WINDOW_ID -e TMUX \
+     alter-zero-kali alter-zero
+
+   The -e flags forward your terminal's identity. Without them pictures are
+   drawn as coloured half-blocks instead of real images (kitty, Ghostty,
+   iTerm2, WezTerm, VS Code...). Then: /login, /model, and describe a task.
+   For a ChatGPT subscription choose "Device code login (headless)".
+
+
+4. EVERYDAY
+
+   docker exec -it alter-zero-kali bash     a root shell in /workspace
+   docker stop alter-zero-kali              stop
+   docker start alter-zero-kali             start
+   docker rm -f alter-zero-kali             remove (volumes are kept)
+   docker cp ./file alter-zero-kali:/workspace/      copy a file in
+   docker cp alter-zero-kali:/workspace/file ./      copy a file out
+
+   A server inside must listen on 0.0.0.0 to be reachable from your machine:
+   docker exec -it alter-zero-kali python3 -m http.server 8080 --bind 0.0.0.0
+   then open http://localhost:8080
+
+
+5. WHAT IS KEPT
+
+   /workspace   your folder, or the volume alter-zero-workspace      kept
+   /root        the volume alter-zero-home: sign-ins, settings,      kept
+                sessions, shell history, SSH keys
+   the rest     apt-installed packages, /tmp, /opt        lost on rm / --replace
+
+   Delete the data too:  docker volume rm alter-zero-home alter-zero-workspace
+
+
+6. UPDATE
+
+   docker/build.sh
+   docker/run.sh --replace ~/projects/site
+
+
+7. GOOD TO KNOW
+
+   - Runs as root; no user is added. Rootless Podman/Docker map that root to
+     YOU, so files it creates in your folder are yours. Under the usual
+     rootful Docker they are root's: sudo chown -R "$USER": ~/projects/site
+   - python3 and pip come from a virtualenv at /opt/az-venv that is already
+     active everywhere — your shell, the agent's commands, anything they
+     start. `pip install X` just works. Kali's system Python refuses pip
+     (PEP 668) and ships no pip, which is why. Packages are lost when the
+     container is replaced; bake them in with --with, or a Dockerfile
+     FROM alter-zero:kali.
+   - Never --privileged, never host networking. The engine's default
+     capabilities plus NET_RAW (Docker grants that one already; Podman does
+     not, and without it `nmap localhost` cannot open a raw socket), and
+     no-new-privileges. Drop it with --no-net-raw.
+   - Telemetry is untouched: on by default exactly as in a normal install,
+     with its first-run notice. Your off switches still work (/settings, or
+     -e ALTER_ZERO_TELEMETRY=0 on docker exec). See TELEMETRY.md.
+   - Inside tmux pictures fall back to half-blocks on purpose. Override with
+     -e ALTER_ZERO_IMAGE_PROTOCOL=kitty if your tmux passes graphics through.
+   - Only scan machines you are authorised to test.
+
+
+8. TEST
+
+   python3 -m unittest discover -s docker/tests -p 'test_*.py' -v
+   docker/tests/smoke.sh [--engine podman]

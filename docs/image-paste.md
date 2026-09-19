@@ -29,6 +29,36 @@ placeholder is the *same* idea with a `PathBuf` payload instead of `String`.
 > `Ctrl+V` key that **actively reads the system clipboard** via `arboard`. The two
 > paths are unrelated despite both being "paste".
 
+## Containers and SSH: a session with no display
+
+Ctrl+V reads the clipboard of the desktop **the process can reach**, and a
+terminal connection carries none: `docker exec -it` and `ssh` forward
+keystrokes, never the display server's selection. Such a session names no
+display — neither `DISPLAY` nor `WAYLAND_DISPLAY` — and on Linux a paste there
+is refused **before anything is probed** (`require_display`, step 0 below):
+
+```
+Failed to paste image: no desktop clipboard in this session (neither DISPLAY
+nor WAYLAND_DISPLAY is set). Save the image file where this session can reach
+it, then ask Alter Zero to read its path.
+```
+
+It used to fall through to `arboard`, whose probe for an X server could stall
+for seconds and then reported whatever it ran into — a message about X11 to
+someone who had never heard of it. The refusal names both variables because
+forwarding one *is* the fix, and ends on the way around it because that works
+everywhere: put the picture where the session can read it and ask for it by
+path. The image-aware `read` tool then uploads it to a vision model and draws
+it inline, exactly as a paste would. (A path typed or `@`-picked into the
+composer is text, not an attachment — it is the `read` that attaches.)
+
+The headless Kali container forwards the display server on request —
+`docker/run.sh --clipboard`, the Wayland socket and/or X11 with its cookie
+(`docs/docker.md` *The clipboard*) — after which the variables are set and the
+ordinary path below runs, unchanged. A display that is named but cannot be
+reached (a forwarded socket gone stale after a re-login) keeps `arboard`'s own
+cause and gains the same advice.
+
 ## Trigger
 
 `App::on_key` (conversation view only — the Ctrl+O overlay has no composer) maps
@@ -44,6 +74,15 @@ clipboard read happens at the boundary in `main.rs`.
 `term.rs`): a port of codex's
 `paste_image_as_png` + `paste_image_to_temp_png`, **run on a worker thread**
 (see *Async delivery* below):
+
+On Linux it first asks whether the session names a display at all —
+`require_display(DISPLAY, WAYLAND_DISPLAY)`, the refusal above. It is **pure
+over the two values**, which is not a nicety: edition 2024 makes mutating the
+process environment `unsafe` and this crate forbids `unsafe`, so a rule that
+read the environment itself could not be unit-tested. A variable that is set
+but empty names nothing; one that is not UTF-8 is still a display, the
+backend's to accept or refuse. It connects to nothing and guesses at no socket
+path — a configured display is left entirely to the steps below.
 
 0. **The owner's own encoded bytes, streamed (Linux)** — before arboard is
    so much as constructed, since each construction is an X11 connection and a
@@ -70,8 +109,10 @@ clipboard read happens at the boundary in `main.rs`.
    numbers: the round trip this replaces was a ~24 MB spike per paste and —
    through glibc's dynamic `mmap` threshold — the reason later pictures
    *stuck*.
-1. `arboard::Clipboard::new()` — failure (no display / headless / no clipboard
-   server) returns `Err("clipboard unavailable: …")`.
+1. `arboard::Clipboard::new()` — failure (a display that is named but cannot
+   be reached, no clipboard server) returns `Err("clipboard unavailable: …")`
+   with arboard's cause kept whole (`clipboard_unavailable`), and on Linux the
+   same way around it the no-display refusal gives.
 2. **Files first**: if the clipboard holds a file list (e.g. a file copied from
    a GUI file manager), `image_from_files` takes the first usable entry —
    a file already in an accepted format (`png`/`jpg`/`jpeg`/`gif`/`webp`,
@@ -364,11 +405,19 @@ renders `[Image #N]` as a text marker. The `?` shortcuts band gains a
 - `stream/dummy/turns.rs`: every user-facing script `opening`s with the
   acknowledgement when the cue carries images
   and emits nothing at 0; `DummyAi::spawn` carries the new parameter.
-- `scripts/smoke.sh`: a phase pressing Ctrl+V with **no image on the clipboard**
-  (the headless CI reality — `arboard` errors) asserts the red
-  `Failed to paste image` notice appears and the app stays alive. The happy
+- `scripts/smoke.sh`: a phase pressing Ctrl+V with **no display named** (the
+  headless CI reality, and every container and SSH login) asserts the red
+  `Failed to paste image` notice says why (`no desktop clipboard`, naming
+  `WAYLAND_DISPLAY`) and what works instead (`read its path`), and that the
+  app stays alive. The happy
   path's composer half (a path → placeholder) is covered by the `attach_image`
   unit tests — codex tests it the same way.
+- `clipboard.rs` unit-tests the display rule with no environment touched:
+  every unset/empty pairing refuses with both variables named and the
+  read-by-path advice; either display — a non-UTF-8 one included — keeps the
+  native path; an unreachable clipboard keeps its cause; and both sentences
+  are pinned to `APP_NAME`. The forwarding itself is driven end to end in
+  `docs/docker.md` against a real X server and a real Wayland compositor.
 - `clipboard.rs` also unit-tests the streaming core headless: `CappedWriter`
   (bytes verbatim under the cap, `InvalidData` past it, the cap itself
   allowed) and `stream_encoded_image_into_capped` (an encoded PNG lands

@@ -234,6 +234,9 @@ impl<W: Write> Write for CappedWriter<W> {
 /// image-shaped on the clipboard, or an encode/write error — returns a short
 /// human-readable message for the red `Failed to paste image: {msg}` notice the
 /// loop commits (codex's `new_error_event`), and leaves nothing in the folder.
+/// On Linux a session naming **no display at all** is refused first, before
+/// anything is probed (`require_display`): that is every container and SSH
+/// login, where the old answer was whatever arboard's X11 probe ran into.
 ///
 /// Mirrors codex: prefer an image *file* on the clipboard (e.g. one copied in
 /// a GUI file manager) — copied verbatim when it is already in an accepted
@@ -243,6 +246,17 @@ impl<W: Write> Write for CappedWriter<W> {
 /// RGBA image bytes (e.g. a screenshot on macOS or Windows, where the OS
 /// hands over pixels), which are PNG-encoded.
 pub fn read_clipboard_image(dir: &Path) -> Result<PathBuf, String> {
+    // A session that names no display has no clipboard to reach — a
+    // container entered with `docker exec -it`, an SSH login: the terminal
+    // carries keystrokes, never the desktop's selection. Say so at once, and
+    // what works instead, rather than let arboard go looking for an X server
+    // and report whatever that probe ran into (`docs/docker.md`).
+    #[cfg(target_os = "linux")]
+    require_display(
+        std::env::var_os("DISPLAY").as_deref(),
+        std::env::var_os("WAYLAND_DISPLAY").as_deref(),
+    )?;
+
     // Linux first, and before arboard is so much as constructed (each
     // construction is an X11 connection and a serving thread, torn down again
     // at the end): the owner offers a screenshot as `image/png` already — the
@@ -258,8 +272,7 @@ pub fn read_clipboard_image(dir: &Path) -> Result<PathBuf, String> {
         Ok(None) | Err(StreamError::Failed(_)) => {}
     }
 
-    let mut clipboard =
-        arboard::Clipboard::new().map_err(|e| format!("clipboard unavailable: {e}"))?;
+    let mut clipboard = arboard::Clipboard::new().map_err(clipboard_unavailable)?;
 
     // An image *file* on the clipboard (codex's `file_list()` path — one copied
     // in a GUI file manager) is handled without a full decode where possible.
@@ -273,6 +286,49 @@ pub fn read_clipboard_image(dir: &Path) -> Result<PathBuf, String> {
     let image = clipboard_raw_image(&mut clipboard)
         .ok_or_else(|| "no image on the clipboard".to_string())?;
     encode_png_into(dir, &image)
+}
+
+/// Why a Linux paste is refused in a session that names no display, and what
+/// to do instead. It names both variables because the fix is to forward one
+/// (`docs/docker.md` *The clipboard*), and it speaks for **this** agent
+/// ([`crate::APP_NAME`], pinned by a test).
+#[cfg(target_os = "linux")]
+const NO_DISPLAY_REASON: &str = "no desktop clipboard in this session (neither DISPLAY nor \
+     WAYLAND_DISPLAY is set). Save the image file where this session can reach it, then ask \
+     Alter Zero to read its path.";
+
+/// What a Linux paste adds when a display *is* named but cannot be reached —
+/// a forwarded socket that went stale, an X server refusing the cookie.
+#[cfg(target_os = "linux")]
+const UNREACHABLE_HINT: &str = ". Check this session's display connection, or save the image \
+     file where this session can reach it and ask Alter Zero to read its path.";
+
+/// Whether this session names a display server at all. Pure over the two
+/// values [`read_clipboard_image`] reads, so the rule is tested without
+/// touching the process environment: a variable that is set but empty names
+/// nothing, and one this process cannot read as UTF-8 is still a display —
+/// the backend's to accept or refuse. It connects to nothing and guesses at
+/// no socket path: a configured display is left to its own backend.
+#[cfg(target_os = "linux")]
+fn require_display(
+    display: Option<&std::ffi::OsStr>,
+    wayland: Option<&std::ffi::OsStr>,
+) -> Result<(), String> {
+    let names = |value: Option<&std::ffi::OsStr>| value.is_some_and(|v| !v.is_empty());
+    if names(display) || names(wayland) {
+        Ok(())
+    } else {
+        Err(NO_DISPLAY_REASON.to_string())
+    }
+}
+
+/// The message for a clipboard that could not be opened: the backend's own
+/// cause, kept whole, and on Linux the way around it.
+fn clipboard_unavailable(error: impl std::fmt::Display) -> String {
+    let reason = format!("clipboard unavailable: {error}");
+    #[cfg(target_os = "linux")]
+    let reason = reason + UNREACHABLE_HINT;
+    reason
 }
 
 /// Stream an **already-encoded** image — the clipboard's own `image/png`
@@ -665,6 +721,82 @@ mod tests {
         .write_to(&mut out, image::ImageFormat::Png)
         .unwrap();
         out.into_inner()
+    }
+
+    // ===== a session with no display (docs/image-paste.md, docs/docker.md) =====
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_session_with_no_display_is_refused_before_any_clipboard_is_probed() {
+        let empty = std::ffi::OsStr::new("");
+        for (display, wayland) in [
+            (None, None),
+            (Some(empty), None),
+            (None, Some(empty)),
+            (Some(empty), Some(empty)),
+        ] {
+            let reason = require_display(display, wayland).unwrap_err();
+            // The cause, naming both variables: a container user has to know
+            // which ones to forward.
+            assert!(reason.contains("no desktop clipboard"), "{reason}");
+            assert!(reason.contains("DISPLAY"), "{reason}");
+            assert!(reason.contains("WAYLAND_DISPLAY"), "{reason}");
+            // And what works instead, since Ctrl+V here never will.
+            assert!(reason.contains("image file"), "{reason}");
+            assert!(reason.contains("read its path"), "{reason}");
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn either_display_keeps_the_native_paste_path() {
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt;
+
+        let empty = OsStr::new("");
+        let x11 = OsStr::new(":0");
+        let wayland = OsStr::new("wayland-0");
+        // A value this process cannot read as UTF-8 is still a configured
+        // display, and the backend's to accept or refuse.
+        let not_utf8 = OsStr::from_bytes(b"wayland-\xff");
+        for (display, wayland) in [
+            (Some(x11), None),
+            (None, Some(wayland)),
+            (Some(x11), Some(wayland)),
+            (Some(empty), Some(wayland)),
+            (Some(x11), Some(empty)),
+            (None, Some(not_utf8)),
+        ] {
+            assert_eq!(require_display(display, wayland), Ok(()));
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn both_paste_refusals_speak_the_apps_own_name() {
+        // Wording ported from a reference tool arrives carrying that tool's
+        // name (CLAUDE.md *Conventions*), so each sentence is pinned to ours.
+        for sentence in [NO_DISPLAY_REASON, UNREACHABLE_HINT] {
+            assert!(sentence.contains(crate::APP_NAME), "{sentence}");
+        }
+    }
+
+    #[test]
+    fn an_unreachable_clipboard_keeps_its_cause() {
+        let reason = clipboard_unavailable("X11 server connection timed out");
+        assert!(
+            reason.starts_with("clipboard unavailable: X11 server connection timed out"),
+            "{reason}"
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn an_unreachable_linux_clipboard_points_at_the_image_file_instead() {
+        let reason = clipboard_unavailable("X11 server connection timed out");
+        assert!(reason.contains("display"), "{reason}");
+        assert!(reason.contains("image file"), "{reason}");
+        assert!(reason.contains("read its path"), "{reason}");
     }
 
     // ===== where a paste is saved (docs/image-paste.md) =====

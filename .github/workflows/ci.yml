@@ -4,8 +4,9 @@
 # --check` + `clippy -D warnings` + `test` + `doc`), the smoke suite over the
 # real binary in tmux, the release tooling's own fixture tests plus the
 # version/changelog agreement, and the telemetry collector's pure-half tests.
-# The release workflow re-runs the gate and the tooling tests before it
-# builds anything.
+# The release workflow re-runs the gate and the tooling tests before it builds
+# anything, and the headless Kali container has its own workflow
+# (container.yml).
 name: CI
 
 on:
@@ -98,3 +99,9 @@ jobs:
       - uses: actions/checkout@v7
       - run: node --test
         working-directory: telemetry
+
+  # The headless Kali container has its own workflow, container.yml: building
+  # it reaches Docker Hub, a Kali mirror and github.com's release redirect, and
+  # it can only be broken by docker/ itself (it installs a *published*
+  # release), so it is triggered by changes to that packaging rather than on
+  # every pull request.

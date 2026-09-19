@@ -83,6 +83,21 @@ For a manual install, each release's notes list every archive with its SHA-256, 
 
 </details>
 
+<details>
+<summary><strong>Run it in a Kali Linux container</strong></summary>
+
+`docker/` builds a small headless Kali Rolling image around the latest release, with a working set of command-line tools, for Docker or Podman. One command builds it and starts a container on a folder of yours:
+
+```bash
+docker/build.sh ~/projects/site              # add --engine podman for Podman
+docker exec -it -e TERM -e COLORTERM -e TERM_PROGRAM -e KITTY_WINDOW_ID -e TMUX \
+  alter-zero-kali alter-zero
+```
+
+The `-e` flags hand over your terminal's identity, so pictures render as real images rather than half-blocks. The [container guide](docker/README.md) covers workspaces, the published ports, pasting images, and adding tools.
+
+</details>
+
 ### Build from source
 
 You need [rustup](https://rustup.rs) and a C compiler. The repository pins the Rust toolchain, which rustup installs automatically.

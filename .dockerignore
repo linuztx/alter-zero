@@ -1,0 +1,11 @@
+# The container build (docker/Dockerfile) uses the repository root as its
+# context, and this is an ALLOWLIST: everything is excluded, then the three
+# files the Dockerfile COPYs are let back in. So a build can never sweep up
+# .git, target/, a local .env holding API keys, or anything else in a working
+# checkout — and the context the engine uploads is a few kilobytes.
+#
+# Docker and Podman both read this file from the context root.
+**
+!install.sh
+!LICENSE
+!TELEMETRY.md
