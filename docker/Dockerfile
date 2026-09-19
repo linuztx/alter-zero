@@ -31,9 +31,17 @@ FROM ${KALI_IMAGE} AS tools
 # The setcap line: Kali ships the scanner with forced file capabilities
 # (net_admin among them). A container's default set has no NET_ADMIN, and the
 # kernel then refuses to exec the binary at all — "Operation not permitted",
-# as root too. Without them root simply uses whatever the runtime grants. A
-# later `apt upgrade` would put them back, so the dpkg hook written beside it
-# strips them again after every package run.
+# as root too. Without them root simply uses whatever the runtime grants
+# (docker/run.sh adds NET_RAW, which is what a SYN scan needs). A later
+# `apt upgrade` would put them back, so the dpkg hook written beside it strips
+# them again after every package run.
+#
+# `setcap -r` exits 1 when there is nothing to remove, so it is tolerated
+# rather than chained strictly: on a future Kali that ships the scanner
+# without those capabilities this line becomes a no-op, and failing the whole
+# build at the moment its own reason disappeared would be absurd. Nothing is
+# silently lost — smoke_image.py asserts the capabilities are gone *and* that
+# the binary runs, so a real regression still fails, in the test that owns it.
 RUN printf '%s\n' \
         '# Alter Zero container (docker/Dockerfile): a headless image reads none of these.' \
         'path-exclude /usr/share/doc/*' \
@@ -52,7 +60,7 @@ RUN printf '%s\n' \
         net-tools iproute2 iputils-ping traceroute \
         nmap whois netcat-openbsd socat bind9-dnsutils openssl \
         kitty-terminfo ncurses-term \
-    && setcap -r /usr/lib/nmap/nmap \
+    && { setcap -r /usr/lib/nmap/nmap 2>/dev/null || true; } \
     && printf '%s\n' \
         '// Alter Zero container (docker/Dockerfile): keep the scanner runnable.' \
         'DPkg::Post-Invoke { "if [ -x /usr/lib/nmap/nmap ]; then setcap -r /usr/lib/nmap/nmap 2>/dev/null || true; fi"; };' \

@@ -30,6 +30,12 @@ services:
       - "${ALTER_ZERO_BIND:-127.0.0.1}:8888:8888"
     security_opt:
       - no-new-privileges:true
+    # What docker/run.sh grants (docs/docker.md *One capability is granted*):
+    # as root `nmap localhost` is a SYN scan, and Podman's default set has no
+    # NET_RAW where Docker's does. Delete these two lines for run.sh's
+    # --no-net-raw; `nmap -sT` works without them.
+    cap_add:
+      - NET_RAW
     restart: unless-stopped
     # Telemetry is deliberately not mentioned: the app keeps its defaults.
 

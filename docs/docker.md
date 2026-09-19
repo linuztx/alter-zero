@@ -56,9 +56,13 @@ one, and nothing about a new Alter Zero release should reinstall it.
 The context is the repository root, because the Dockerfile `COPY`s
 `install.sh`, `LICENSE` and `TELEMETRY.md` from it. `/.dockerignore` is
 therefore `**` followed by three `!` lines. Measured, the context sent to the
-engine is **519 bytes** — from a checkout holding `.git`, a multi-gigabyte
-`target/`, and quite possibly a local `.env` of API keys. A denylist would have
-to be kept right forever; an allowlist is right by construction.
+engine is **those three files and nothing else** — 39,574 bytes, which
+buildkit reports as `transferring context: 39.75kB` — from a checkout holding
+`.git`, a multi-gigabyte `target/`, and quite possibly a local `.env` of API
+keys. (The `519B` that buildkit prints a step earlier is the `.dockerignore`
+itself being loaded, not the context; they are separate `[internal] load`
+steps and it is an easy number to quote by mistake.) A denylist would have to
+be kept right forever; an allowlist is right by construction.
 
 ## What is in it, by measurement
 
@@ -116,8 +120,47 @@ error.
 
 `run.sh` adds `--security-opt no-new-privileges` (root needs no setuid helper)
 and never `--privileged`. `run.sh DIR -- ARGS…` hands anything after `--` to
-the engine verbatim, which is how `--cap-add NET_RAW` or `--network host` are
-asked for, deliberately and per container.
+the engine verbatim, which is how `--cap-add NET_ADMIN` or `--network host`
+are asked for, deliberately and per container.
+
+### One capability is granted: `NET_RAW`
+
+The image ships a scanner, and as root `nmap localhost` is a SYN scan, which
+opens a raw socket. The engines disagree about that by default, so the same
+image behaved differently on each — which is precisely what the first line of
+`docker/README.md` promises it does not:
+
+```
+$ podman run --rm alter-zero:kali nmap localhost
+Couldn't open a raw socket. Error: (1) Operation not permitted
+QUITTING!
+$ docker run --rm alter-zero:kali nmap localhost
+Nmap scan report for localhost (127.0.0.1) …
+```
+
+So `run.sh` passes `--cap-add NET_RAW`. The reasoning for granting it by
+default rather than on request: it is the *more permissive of the two
+engines' own defaults*, not an escalation past either; it is one named
+capability, not `--privileged` and not `--cap-add ALL`; its reach is the
+container's own network namespace, which under rootless Podman is a
+slirp4netns/pasta namespace of the user's own; `no-new-privileges` still
+applies; and a network-tools image whose flagship tool cannot run is simply
+broken. `--no-net-raw` drops it for anyone who wants the narrower set, at the
+cost of `nmap -sS`, `traceroute -I` and `tcpdump` (`nmap -sT` is unaffected).
+
+It is a flag of its own because the `--` passthrough cannot do this one job.
+Capabilities are lists, not last-one-wins flags, and the engines disagree
+about a capability named in both, measured: given `--cap-add NET_RAW
+--cap-drop NET_RAW`, Docker keeps it — silently — and Podman refuses the
+container (`capability "CAP_NET_RAW" cannot be dropped and added`). So
+`run.sh -- --cap-drop NET_RAW` is wrong twice, differently per engine, and
+`run.sh`'s header and the README say so. `compose.yml` carries the same
+`cap_add`, pinned to `run.sh`'s own default argv by `ComposeParity` in the
+stub suite: "the same container" under `podman compose` would otherwise be
+the one place the raw-socket refusal survived.
+
+`docker/tests/smoke.sh` runs a real SYN scan in the container `run.sh`
+creates, on both engines, so the parity is a test and not a claim.
 
 ### The scanner that would not exec
 
@@ -142,12 +185,15 @@ capabilities, so an `apt upgrade` inside the container breaks the tool again.
 strips them after every package run; `smoke_image.py` re-applies them by hand
 and runs the hook's command to prove it.
 
-What the engines grant by default, measured:
+What the engines grant **by default**, measured — the disagreement `run.sh`
+closes by granting `NET_RAW` itself:
 
 | | `NET_RAW` | `ping` | connect scan | raw-packet scan |
 | --- | --- | --- | --- | --- |
 | Docker | yes | works | works | works |
-| Podman | **no** | works | works | `Couldn't open a raw socket` until `-- --cap-add NET_RAW` |
+| Podman | **no** | works | works | `Couldn't open a raw socket` |
+| either, through `run.sh` | yes | works | works | works |
+| either, `run.sh --no-net-raw` | no | works | works | `Couldn't open a raw socket` |
 
 ## The container idles
 
@@ -315,10 +361,15 @@ home) without one test run landing in the production numbers.
 | `docker/tests/smoke_image.py` | the image | run inside it, no network: root and no added user, tools, terminfo, the scanner and its dpkg hook, no listeners, telemetry on |
 | `docker/tests/smoke.sh` | an engine | the above, then `run.sh` for real: files cross the mount both ways, a server inside answers on the published port, everything it made is removed |
 
-CI's `container` job is a matrix over **both engines**: it lints the scripts,
-runs the stub suite, builds the image and runs the smoke, once with Docker and
-once with Podman. It installs the latest *published* release, so it tests the
-packaging rather than the commit's own Rust.
+They run in **`container.yml`**, a workflow of their own: the stub suite and
+`shellcheck` first, then the image built and smoked on **both engines**. Its
+trigger is the point — every push to `main` (the image comes from a *rolling*
+base and the newest release, so that is the canary for upstream drift), but a
+pull request only when it touches the packaging (`docker/**`, `install.sh`,
+the allowlist, the two COPYed files). Nothing in `src/` can break it — it
+installs a *published* release — so charging every unrelated pull request two
+full Kali builds, against Docker Hub, a Kali mirror and github.com's release
+redirect, would buy flake and nothing else.
 
 ## Refused
 

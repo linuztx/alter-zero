@@ -67,8 +67,9 @@ saw forever, reporting success, so `docker/build.sh` follows the
 `/releases/latest` redirect itself, validates the tag, and passes it as the
 `ALTER_ZERO_VERSION` build argument, whose value is what re-keys the layer.
 The context is the repository root behind an **allowlist** `/.dockerignore`
-(`**` then three `!` lines — 519 bytes sent, never `.git`, `target/` or a
-local `.env`). The image is **root with no user added**, its tools chosen by
+(`**` then three `!` lines — those three files and ~40 kB sent, never `.git`,
+`target/` or a local `.env`). The image is **root with no user added**, its
+tools chosen by
 measured size (a dpkg `path-exclude` keeps docs/man/locales from unpacking:
 435 → 393 MB), `EXPOSE`s 8080/8888, and idles under `tini` so the container is
 somewhere to `exec` into. Kali's `nmap` carries forced file capabilities a

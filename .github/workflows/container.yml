@@ -1,0 +1,68 @@
+# .github/workflows/container.yml — the headless Kali container (docs/docker.md).
+#
+# Its own workflow rather than a job in ci.yml, because of what triggers it.
+# The image installs the latest **published** release, so nothing in src/ can
+# break it and running it on every pull request would buy nothing: what it
+# can be broken by is the packaging itself — docker/, install.sh (it runs
+# inside the build), the context allowlist, and the two files the Dockerfile
+# COPYs. So those paths trigger it, and `main` and a manual run always do.
+# Building it twice pulls a rolling base and ~55 MB of apt per engine and
+# reaches three networks; an unrelated pull request should not go red because
+# a Kali mirror is having a bad day.
+name: container
+
+on:
+  # Every push to main, unfiltered: the image is built from a *rolling* base
+  # and the newest release, so this is also the canary for upstream drift —
+  # a Kali that stops shipping the scanner's file capabilities, a release
+  # asset that moved. That is worth a build on a branch that moves rarely.
+  push:
+    branches: [main]
+  # A pull request pays for it only when it touches the packaging.
+  pull_request:
+    paths:
+      - docker/**
+      - install.sh
+      - .dockerignore
+      - LICENSE
+      - TELEMETRY.md
+      - .github/workflows/container.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: container-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  scripts:
+    # The pure half: no engine, no network, seconds. Both scripts run under a
+    # PATH of stubs, so what is asserted is the exact argv the engine would
+    # have been given.
+    name: build.sh and run.sh (stub engine)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: shellcheck -x docker/build.sh docker/run.sh docker/lib.sh docker/tests/smoke.sh
+      - run: python3 -m unittest discover -s docker/tests -p 'test_*.py' -v
+
+  image:
+    name: image + run.sh (${{ matrix.engine }})
+    needs: scripts
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        engine: [docker, podman]
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build from the latest published release
+        run: docker/build.sh --engine ${{ matrix.engine }}
+      - name: Drive the image and run.sh for real
+        # Inside: tools, root, the scanner, and the real CLI launched with no
+        # network beside a stub collector, so telemetry is proved on without a
+        # ping leaving CI. Outside: run.sh's mount, its published port, and a
+        # real SYN scan — the NET_RAW parity between the two engines.
+        run: docker/tests/smoke.sh --engine ${{ matrix.engine }}

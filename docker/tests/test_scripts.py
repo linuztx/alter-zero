@@ -322,19 +322,35 @@ class RunTests(ScriptCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.one(calls, "run")["args"], [
             "run", "--detach", "--name", "alter-zero-kali", "--hostname", "alter-zero-kali",
-            "--security-opt", "no-new-privileges",
+            "--security-opt", "no-new-privileges", "--cap-add", "NET_RAW",
             "--volume", "alter-zero-home:/root", "--volume", "alter-zero-workspace:/workspace",
             "--publish", "127.0.0.1:8080:8080", "--publish", "127.0.0.1:8888:8888",
             "--restart", "unless-stopped",
             "alter-zero:kali",
         ])
 
-    def test_it_never_asks_for_privileged_mode_or_another_user(self):
-        _, calls = self.run_sh("--clipboard", WAYLAND_DISPLAY="", DISPLAY="")
+    def test_net_raw_is_granted_so_the_scanner_the_image_ships_can_run(self):
+        # As root, nmap defaults to a SYN scan, which needs a raw socket.
+        # Docker grants NET_RAW by default and Podman 4.x does not, so without
+        # this the same image answers `nmap localhost` with "Couldn't open a
+        # raw socket" on one engine and scans on the other.
         _, calls = self.run_sh()
-        args = self.one(calls, "run")["args"]
-        for flag in ("--privileged", "--user", "-u", "--cap-add", "--network"):
-            self.assertNotIn(flag, args)
+        self.assertEqual(value_of(self.one(calls, "run")["args"], "--cap-add"), ["NET_RAW"])
+
+    def test_no_net_raw_drops_it(self):
+        result, calls = self.run_sh("--no-net-raw")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("--cap-add", self.one(calls, "run")["args"])
+
+    def test_it_never_asks_for_privileged_mode_a_user_or_the_hosts_network(self):
+        for args in ([], ["--no-net-raw"]):
+            with self.subTest(args=args):
+                _, calls = self.run_sh(*args)
+                argv = self.one(calls, "run")["args"]
+                for flag in ("--privileged", "--user", "-u", "--network", "--cap-drop"):
+                    self.assertNotIn(flag, argv)
+                # One capability, named, and never a blanket grant.
+                self.assertNotIn("ALL", argv)
 
     def test_it_prints_the_command_that_forwards_the_terminals_identity(self):
         # The five variables are what let the app pick real graphics over
@@ -406,8 +422,11 @@ class RunTests(ScriptCase):
         self.assertIn("none published", result.stdout)
 
     def test_bad_ports_and_addresses_are_refused(self):
+        # An empty --port used to publish nothing and report "none published",
+        # while --no-ports --port "" errored: same input, two answers.
         for args in (("--port", "0"), ("--port", "65536"), ("--port", "http"), ("--port", "80:x"),
-                     ("--port", "123456"), ("--bind", "example.com"), ("--no-ports", "--port", "80")):
+                     ("--port", "123456"), ("--port", ""), ("--bind", "example.com"),
+                     ("--no-ports", "--port", "80")):
             with self.subTest(args=args):
                 result, calls = self.run_sh(*args)
                 self.assertRefused(result, calls)
@@ -434,6 +453,15 @@ class RunTests(ScriptCase):
         self.assertEqual([c["args"][0] for c in calls], ["image", "container", "run", "rm"])
         self.assertIn("--port", result.stderr)
         self.assertNotIn("Started", result.stdout)
+
+    def test_an_empty_or_option_shaped_image_is_refused(self):
+        # Narrower than --name/--home-volume on purpose: '/' and ':' are how
+        # image names are spelled (me/az:dev), so only the two the engine
+        # could not make sense of are refused here.
+        for bad in ("", "-rf"):
+            with self.subTest(bad=bad):
+                result, calls = self.run_sh("--image", bad)
+                self.assertRefused(result, calls, saying="not an image name")
 
     def test_names_the_engine_would_misread_are_refused(self):
         for option in ("--name", "--home-volume"):
@@ -526,6 +554,16 @@ class RunTests(ScriptCase):
         self.assertEqual(len(value_of(self.one(calls, "run")["args"], "--mount")), 3)
         self.assertIn("Wayland and X11 forwarded", result.stdout)
 
+    def test_a_socket_path_the_engine_cannot_mount_says_so(self):
+        # ',' ends the --mount source. The X11 branch fails on one; the
+        # Wayland branch used to blank the path instead, and the user then got
+        # "found no desktop session to forward" — wrong about the cause.
+        runtime = self.dir / "rt,dir"
+        sock = self.socket_at(runtime / "wayland-0")
+        result, calls = self.run_sh("--clipboard", WAYLAND_DISPLAY=str(sock))
+        self.assertRefused(result, calls, saying="','")
+        self.assertNotIn("found no desktop session", result.stderr)
+
     def test_a_remote_display_is_not_a_local_socket(self):
         # SSH X forwarding (localhost:10.0) is TCP on the host's loopback.
         result, calls = self.run_sh("--clipboard", DISPLAY="localhost:10.0")
@@ -567,6 +605,40 @@ class RunUnderSelinux(ScriptCase):
     def test_the_home_directory_is_never_relabelled(self):
         result, calls = self.script(RUN, str(self.home))
         self.assertRefused(result, calls, saying="refusing to relabel your home directory")
+
+
+# ---------------------------------------------------------------------------
+class ComposeParity(ScriptCase):
+    """compose.yml is documented as "the same container" run.sh creates
+    (docker/README.md *Compose*), so what run.sh grants by default it must
+    grant too. Read as text: this suite is standard library only."""
+
+    stubs = ("docker",)
+
+    def compose_list(self, key):
+        lines = (ROOT / "docker" / "compose.yml").read_text().splitlines()
+        values, inside = [], False
+        for line in lines:
+            stripped = line.split("#", 1)[0].strip()
+            if stripped == f"{key}:":
+                inside = True
+            elif inside and stripped.startswith("- "):
+                values.append(stripped[2:].strip().strip("\"'"))
+            elif inside and stripped:
+                break
+        return values
+
+    def test_compose_grants_the_capabilities_run_sh_grants(self):
+        # Podman's default set has no NET_RAW, so a compose.yml without it
+        # answers `nmap localhost` with "Couldn't open a raw socket" under
+        # `podman compose` — the engine disagreement run.sh closes.
+        _, calls = self.script(RUN)
+        granted = value_of(self.one(calls, "run")["args"], "--cap-add")
+        self.assertEqual(granted, ["NET_RAW"], "run.sh's own default, as the premise")
+        self.assertEqual(self.compose_list("cap_add"), granted)
+
+    def test_compose_keeps_no_new_privileges(self):
+        self.assertEqual(self.compose_list("security_opt"), ["no-new-privileges:true"])
 
 
 if __name__ == "__main__":

@@ -77,4 +77,16 @@ done
 [ "$answer" = "from the container" ] || fail "http://$mapped answered '$answer'"
 printf 'a server inside answers on http://%s\n' "$mapped"
 
+step "the scanner can open a raw socket"
+# `nmap localhost` as root is a SYN scan. Docker grants NET_RAW by default and
+# Podman does not, so this is the check that keeps the two engines answering
+# the same way (docs/docker.md *Privileges*).
+scan=$("$engine" exec "$name" nmap -sS -Pn -n -p 8080 127.0.0.1 2>&1) ||
+	fail "a SYN scan failed inside the container" "$scan"
+case "$scan" in
+*"raw socket"*) fail "a SYN scan could not open a raw socket — NET_RAW is missing" "$scan" ;;
+esac
+printf '%s\n' "$scan" | grep -Eq '^8080/tcp +open' || fail "a SYN scan did not see the open port" "$scan"
+printf 'a SYN scan opens a raw socket and sees the port\n'
+
 printf '\nsmoke: passed (%s, %s)\n' "$engine" "$image"

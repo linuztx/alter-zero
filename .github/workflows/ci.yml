@@ -3,10 +3,10 @@
 # already runs before a commit, unchanged: the pre-commit gate (`cargo fmt
 # --check` + `clippy -D warnings` + `test` + `doc`), the smoke suite over the
 # real binary in tmux, the release tooling's own fixture tests plus the
-# version/changelog agreement, the telemetry collector's pure-half tests, and
-# the headless Kali container built and smoke-tested on Docker and on Podman.
-# The release workflow re-runs the gate and the tooling tests before it
-# builds anything.
+# version/changelog agreement, and the telemetry collector's pure-half tests.
+# The release workflow re-runs the gate and the tooling tests before it builds
+# anything, and the headless Kali container has its own workflow
+# (container.yml).
 name: CI
 
 on:
@@ -100,24 +100,8 @@ jobs:
       - run: node --test
         working-directory: telemetry
 
-  container:
-    # docker/ — the headless Kali image (docs/docker.md), on both engines the
-    # scripts promise. The image installs the latest PUBLISHED release, so this
-    # job tests the packaging, not the commit's own Rust.
-    name: Kali container (${{ matrix.engine }})
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        engine: [docker, podman]
-    steps:
-      - uses: actions/checkout@v7
-      - run: shellcheck -x docker/build.sh docker/run.sh docker/lib.sh docker/tests/smoke.sh
-      - name: build.sh and run.sh under a stub engine — no engine, no network
-        run: python3 -m unittest discover -s docker/tests -p 'test_*.py' -v
-      - name: Build the image from the latest release
-        run: docker/build.sh --engine ${{ matrix.engine }}
-      - name: The image and run.sh, for real
-        # The CLI is launched inside a container with no network, beside a
-        # stub collector: telemetry is proved on without a ping leaving CI.
-        run: docker/tests/smoke.sh --engine ${{ matrix.engine }}
+  # The headless Kali container has its own workflow, container.yml: building
+  # it reaches Docker Hub, a Kali mirror and github.com's release redirect, and
+  # it can only be broken by docker/ itself (it installs a *published*
+  # release), so it is triggered by changes to that packaging rather than on
+  # every pull request.

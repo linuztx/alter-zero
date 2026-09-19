@@ -36,7 +36,10 @@ this says "docker". Nothing else changes.
    docker/run.sh --port 9000:8080           your 9000 -> container 8080
    docker/run.sh --bind 0.0.0.0             open them to your network
    docker/run.sh --no-ports                 publish nothing
-   docker/run.sh DIR -- --cap-add NET_RAW   anything after -- goes to the engine
+   docker/run.sh --no-net-raw               drop NET_RAW (granted so that a
+                                            SYN scan works; nmap -sT is fine
+                                            without it)
+   docker/run.sh DIR -- --cap-add NET_ADMIN anything after -- goes to the engine
 
 
 3. OPEN ALTER ZERO   (from your own terminal)
@@ -87,7 +90,10 @@ this says "docker". Nothing else changes.
    - Runs as root; no user is added. Rootless Podman/Docker map that root to
      YOU, so files it creates in your folder are yours. Under the usual
      rootful Docker they are root's: sudo chown -R "$USER": ~/projects/site
-   - Never --privileged. Default capabilities plus no-new-privileges.
+   - Never --privileged, never host networking. The engine's default
+     capabilities plus NET_RAW (Docker grants that one already; Podman does
+     not, and without it `nmap localhost` cannot open a raw socket), and
+     no-new-privileges. Drop it with --no-net-raw.
    - Telemetry is untouched: on by default exactly as in a normal install,
      with its first-run notice. Your off switches still work (/settings, or
      -e ALTER_ZERO_TELEMETRY=0 on docker exec). See TELEMETRY.md.

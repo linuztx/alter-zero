@@ -33,7 +33,12 @@ release heading when a version is cut.
   half-blocks; `docker/run.sh --clipboard` forwards the desktop's Wayland
   and/or X11 socket so Ctrl+V can paste a copied image. Telemetry is left
   exactly as it is in any install, and the container reports its distribution
-  as `kali`.
+  as `kali`. The container is granted `NET_RAW` — as root, `nmap localhost` is
+  a SYN scan, and Docker grants that capability by default where Podman 4.x
+  does not, so without it the same image answered `Couldn't open a raw socket`
+  on one engine and scanned on the other. It stays one named capability, never
+  `--privileged` and never host networking; `docker/run.sh --no-net-raw` drops
+  it.
 
 ### Changed
 

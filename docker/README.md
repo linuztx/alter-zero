@@ -309,14 +309,26 @@ reinstall it.
 
 ### Privileges
 
-The container gets the engine's default capabilities and
-`no-new-privileges`. It is never `--privileged`. TCP connect scans, DNS, HTTP
-and the rest work as they are. Raw-packet features (SYN scans, OS detection,
-`tcpdump`) need `NET_RAW`, which Docker grants by default and Podman does not.
-Anything after `--` goes straight to `docker run`:
+The container gets the engine's default capabilities plus **`NET_RAW`**, and
+`no-new-privileges`. It is never `--privileged` and never uses host
+networking.
+
+`NET_RAW` is there because the image ships a scanner: as root, `nmap
+localhost` is a SYN scan, and that opens a raw socket. Docker grants the
+capability by default and Podman 4.x does not, so without it the same image
+answers `Couldn't open a raw socket` on one engine and scans on the other.
+It is one named capability, scoped to the container's own network namespace.
+`--no-net-raw` drops it, and `nmap -sS`, `traceroute -I` and `tcpdump` go with
+it (`nmap -sT` still works — a connect scan needs nothing special). Use that
+flag rather than `-- --cap-drop NET_RAW`: next to the `--cap-add` that `run.sh`
+passes, Docker silently keeps the capability and Podman refuses to create the
+container.
+
+Anything after `--` goes straight to `docker run`, for whatever else a job
+needs:
 
 ```sh
-docker/run.sh ~/projects/site -- --cap-add NET_RAW --cap-add NET_ADMIN
+docker/run.sh ~/projects/site -- --cap-add NET_ADMIN
 docker/run.sh ~/projects/site -- --network host
 ```
 
@@ -388,7 +400,7 @@ Your own off switches still work, and are yours to use: `/settings` →
 | `docker could not start …` | Usually 8080 or 8888 is taken on your machine. `--port 18080:8080`, or `--no-ports`. |
 | `container … is not running` | `docker start alter-zero-kali`. |
 | `nmap: Operation not permitted` | Kali ships it with file capabilities a container cannot grant. The image strips them and re-strips after every `apt` run; by hand: `setcap -r /usr/lib/nmap/nmap`. |
-| `Couldn't open a raw socket … Operation not permitted` | A raw-packet scan needs `NET_RAW`, which Podman does not grant by default. See [Privileges](#privileges). |
+| `Couldn't open a raw socket … Operation not permitted` | A SYN scan needs `NET_RAW`. `docker/run.sh` grants it, so this means the container was made another way, or with `--no-net-raw`. Recreate it: `docker/run.sh --replace …`, or use `nmap -sT`. See [Privileges](#privileges). |
 | Files in my folder belong to root | Rootful Docker. See [Who owns the files](#who-owns-the-files). |
 
 ## Testing

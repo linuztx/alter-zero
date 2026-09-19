@@ -28,6 +28,8 @@
 #   -b, --bind ADDRESS           the host address the ports listen on
 #                                (default: 127.0.0.1 — this machine only)
 #       --no-ports               publish nothing
+#       --no-net-raw             drop NET_RAW, which is granted so that the
+#                                scanner works (`nmap -sS`, traceroute, tcpdump)
 #       --clipboard              forward this desktop's Wayland and/or X11
 #                                socket so Ctrl+V can read a copied image
 #       --home-volume NAME       the volume kept at /root: sign-ins, settings,
@@ -36,7 +38,10 @@
 #                                first. Volumes and mounted folders are kept.
 #   -h, --help
 #
-# Anything after `--` goes to `docker run` as is: -- --cap-add NET_RAW
+# Anything after `--` goes to `docker run` as is: -- --cap-add NET_ADMIN
+# (To drop NET_RAW use --no-net-raw, not `-- --cap-drop NET_RAW`: beside the
+# --cap-add this script passes, Docker ignores the drop and Podman refuses
+# the container.)
 #
 # POSIX sh only, like install.sh.
 set -eu
@@ -89,7 +94,7 @@ publish_spec() {
 }
 
 want_engine="" name="$DEFAULT_NAME" image="$DEFAULT_IMAGE" home_volume="$DEFAULT_HOME_VOLUME"
-bind="$DEFAULT_BIND" ports="" no_ports=0 clipboard=0 replace=0 workspace=""
+bind="$DEFAULT_BIND" ports="" no_ports=0 net_raw=1 clipboard=0 replace=0 workspace=""
 while [ $# -gt 0 ]; do
 	case "$1" in
 	-e | --engine) need_value "$1" $#; want_engine=$2; shift 2 ;;
@@ -98,13 +103,14 @@ while [ $# -gt 0 ]; do
 	--name=*) name=${1#*=}; shift ;;
 	-t | --image) need_value "$1" $#; image=$2; shift 2 ;;
 	--image=*) image=${1#*=}; shift ;;
-	-p | --port) need_value "$1" $#; ports="$ports $2"; shift 2 ;;
-	--port=*) ports="$ports ${1#*=}"; shift ;;
+	-p | --port) need_value "$1" $#; [ -n "$2" ] || fail "--port needs a port"; ports="$ports $2"; shift 2 ;;
+	--port=*) [ -n "${1#*=}" ] || fail "--port needs a port"; ports="$ports ${1#*=}"; shift ;;
 	-b | --bind) need_value "$1" $#; bind=$2; shift 2 ;;
 	--bind=*) bind=${1#*=}; shift ;;
 	--home-volume) need_value "$1" $#; home_volume=$2; shift 2 ;;
 	--home-volume=*) home_volume=${1#*=}; shift ;;
 	--no-ports) no_ports=1; shift ;;
+	--no-net-raw) net_raw=0; shift ;;
 	--clipboard) clipboard=1; shift ;;
 	--replace) replace=1; shift ;;
 	-h | --help) usage; exit 0 ;;
@@ -127,6 +133,12 @@ case "$name" in
 esac
 case "$home_volume" in
 '' | [!A-Za-z0-9]* | *[!A-Za-z0-9_.-]*) fail "not a volume name: $home_volume" ;;
+esac
+# The engine would refuse an empty image itself, but with its own message
+# about a name it never received; the sibling options all answer for
+# themselves here.
+case "$image" in
+'' | -*) fail "not an image name: $image" ;;
 esac
 case "$bind" in
 '' | *[!0-9A-Fa-f.:]*) fail "not an address: $bind" "Use an IP of this machine, like 127.0.0.1 or 0.0.0.0." ;;
@@ -178,11 +190,21 @@ fi
 hostname=$(printf '%s' "$name" | tr '_.' '--' | cut -c1-63)
 
 # Assemble `run …` in front of whatever followed `--`, which stays last so it
-# can override anything here.
+# can override what is here — except the capability below, which is a list
+# and not a last-one-wins flag; --no-net-raw is its off switch.
 passthrough=$#
 set -- "$@" run --detach --name "$name" --hostname "$hostname" \
-	--security-opt no-new-privileges \
-	--volume "$home_volume:/root" --volume "$mount"
+	--security-opt no-new-privileges
+# NET_RAW, because the image ships a scanner and running as root makes `nmap
+# localhost` a SYN scan, which opens a raw socket. Docker grants this
+# capability by default; Podman 4.x dropped it — so without this line the same
+# image answers "Couldn't open a raw socket" on one engine and scans on the
+# other, which is exactly what "works the same with Docker and Podman" must
+# not mean. It is one named capability, scoped to the container's own network
+# namespace: no --privileged, no host networking, no_new_privileges still on.
+# --no-net-raw drops it, and traceroute, tcpdump and `nmap -sS` go with it.
+if [ "$net_raw" -eq 1 ]; then set -- "$@" --cap-add NET_RAW; fi
+set -- "$@" --volume "$home_volume:/root" --volume "$mount"
 
 # ---------------------------------------------------------------------------
 # Ports. Nothing in the image listens; these are for what you start.
@@ -210,8 +232,10 @@ if [ "$clipboard" -eq 1 ]; then
 		/*) socket=$WAYLAND_DISPLAY ;;
 		*) socket="${XDG_RUNTIME_DIR:-}/$WAYLAND_DISPLAY" ;;
 		esac
-		case "$socket" in *,*) socket="" ;; esac
-		if [ -n "$socket" ] && [ -S "$socket" ]; then
+		# ',' ends the --mount source. Say so, rather than blank the path and
+		# report "found no desktop session" — the X11 branch below fails here.
+		case "$socket" in *,*) fail "the engine cannot mount a path containing ',': $socket" ;; esac
+		if [ -S "$socket" ]; then
 			# The one socket, never the runtime dir around it (D-Bus, PipeWire,
 			# your keyring's agent all live there).
 			set -- "$@" --mount "type=bind,src=$socket,dst=/run/alter-zero/wayland-0,ro" \
@@ -229,7 +253,7 @@ if [ "$clipboard" -eq 1 ]; then
 	:*)
 		number=${DISPLAY#:}
 		number=${number%%.*}
-		case "$x11_dir" in *,*) number="" ;; esac
+		case "$x11_dir" in *,*) fail "the engine cannot mount a path containing ',': $x11_dir" ;; esac
 		if [ -n "$number" ] && [ -S "$x11_dir/X$number" ]; then
 			set -- "$@" --mount "type=bind,src=$x11_dir,dst=/tmp/.X11-unix,ro" --env "DISPLAY=:$number"
 			# The server checks a cookie filed under this machine's hostname,
@@ -238,7 +262,7 @@ if [ "$clipboard" -eq 1 ]; then
 			# the file, so a refreshed cookie is seen without a new container.
 			if command -v xauth >/dev/null 2>&1; then
 				state="${XDG_STATE_HOME:-${HOME:?}/.local/state}/alter-zero/docker/$name"
-				case "$state" in *,*) fail "cannot mount a path containing ',': $state" ;; esac
+				case "$state" in *,*) fail "the engine cannot mount a path containing ',': $state" ;; esac
 				mkdir -p -- "$state" && chmod 700 "$state"
 				# chmod, not umask: a folder with a default ACL ignores the
 				# umask, and this file is about to hold the display's cookie.
