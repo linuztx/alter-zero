@@ -185,15 +185,12 @@ else
 	where="the $DEFAULT_WORKSPACE_VOLUME volume"
 fi
 
-# The shell prompt then says where you are (root@alter-zero-kali), which a
-# container id never does. A name allows '_' and '.'; a hostname does not.
-hostname=$(printf '%s' "$name" | tr '_.' '--' | cut -c1-63)
-
 # Assemble `run …` in front of whatever followed `--`, which stays last so it
 # can override what is here — except the capability below, which is a list
 # and not a last-one-wins flag; --no-net-raw is its off switch.
+# Keep the Linux hostname short and independent of the engine's container name.
 passthrough=$#
-set -- "$@" run --detach --name "$name" --hostname "$hostname" \
+set -- "$@" run --detach --name "$name" --hostname "$DEFAULT_HOSTNAME" \
 	--security-opt no-new-privileges
 # NET_RAW, because the image ships a scanner and running as root makes `nmap
 # localhost` a SYN scan, which opens a raw socket. Docker grants this

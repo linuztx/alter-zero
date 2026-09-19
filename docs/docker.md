@@ -74,6 +74,7 @@ alone with `apt-get install --no-install-recommends --assume-no`:
 | `git` (+ perl) | 120 MB | kept — `/diff` and the checkpoints shell out to it |
 | `nmap` | 31 MB | kept — asked for by name |
 | `python3` | 30 MB | kept — the agent's scripting language, and `http.server` is how the ports are demonstrated |
+| `python3-venv` | 2.9 MB | kept — the only source of `pip` here; see *Python lives in a virtualenv* |
 | `openssh-client` | 26 MB | kept — `git@…` remotes, and a Kali box without `ssh` would be a surprise |
 | `curl` `wget` `ca-certificates` | 23 MB | kept — `install.sh` needs one |
 | `bind9-dnsutils` | 14 MB | kept — `dig` |
@@ -100,7 +101,8 @@ dpkg `path-exclude` file written **before** the install (the technique
 Each package's `copyright` file is kept. The rule stays in force for whatever
 the user installs later; the README says how to lift it.
 
-Final size: **393 MB on disk, 262 MB over the 131 MB Kali base.**
+Final size: **409 MB on disk, 278 MB over the 131 MB Kali base** — the 393 MB
+that leaves, plus the 16 MB of `python3-venv` and the virtualenv it builds.
 
 ## Root, and no user
 
@@ -223,6 +225,78 @@ SELinux host adds `:Z` while refusing to relabel the home directory itself.
 A container that fails to start is removed again: a port already in use fails
 *after* `create`, and the leftover would block the retry with a confusing
 "already exists".
+
+## Python lives in a virtualenv
+
+`python3` and `pip` resolve to **`/opt/az-venv`**, and it is active in every
+process without anyone activating it.
+
+It is not a convenience. Kali marks its system Python **externally managed**
+(PEP 668), so `pip install` there is refused, and the image ships no system
+`pip` at all — `python3-venv` is what brings one, through `ensurepip`. Without
+the venv the agent cannot install a Python package at all, and the obvious
+workarounds are both wrong: `--break-system-packages` is the flag PEP 668
+exists to discourage, and `apt install python3-…` only reaches what Kali
+happens to package.
+
+**How it is activated is the part worth writing down.** The obvious move is a
+line in `.bashrc`, and it would have been wrong here: the agent runs its own
+`bash` tool through **`sh -c`**, and this image's `/bin/sh` is **dash**, which
+never reads `.bashrc`. That activation would have covered a human's
+`exec -it … bash` and missed every command the agent itself runs — the
+majority of what happens in this container, and the half nobody would think to
+test. So the image sets the environment instead:
+
+```dockerfile
+ENV VIRTUAL_ENV=/opt/az-venv     PATH=/opt/az-venv/bin:/usr/local/sbin:…
+```
+
+which is what `activate` does anyway, minus the prompt, and an environment
+variable is inherited by every process however it was started — dash, bash,
+`docker exec`, the agent's tool calls, a `python3 -m http.server` someone
+starts three levels deep. `smoke_image.py` asserts exactly that, through
+`sh -c` and `bash -c` as well as in-process.
+
+`/root/.bashrc` then adds the two things only the real `activate` script
+gives an interactive shell — `deactivate`, and the prompt. It **strips the
+ENV copy of the venv off `PATH` first**, because `activate` prepends
+unconditionally and every nested shell would otherwise stack another entry;
+the test pins the count at one. Kali's own `.bashrc` turns out to render
+`$VIRTUAL_ENV` into its `┌──(az-venv)(root㉿host)` prompt already and to set
+`VIRTUAL_ENV_DISABLE_PROMPT=1` so `activate` does not also prepend one — so
+the prompt assertion checks the *rendered* prompt (`${PS1@P}`) rather than a
+literal prefix, and holds whichever of the two mechanisms draws it.
+
+**pip's cache is `/var/cache/pip`, not `~/.cache/pip`.** `/root` is a named
+volume, and under rootless Podman a volume whose host directory falls outside
+the user's subuid range appears inside the container as `nobody` — container
+root cannot write it, because `CAP_DAC_OVERRIDE` stops at the user-namespace
+boundary — so pip prefaced every install with *"The directory
+'/root/.cache/pip' or its parent directory is not owned or is not writable …
+The cache has been disabled."* Reproduced by bind-mounting a host-root-owned
+directory at `/root` (it reads `65534:65534` inside), and silenced by the
+move: the cache is the one thing here with no business in the volume that
+holds sign-ins, and in the image layer it is always container root's own.
+It is lost on `run.sh --replace`, which is what a cache is for.
+
+Note what this does **not** fix: a `/root` that container root cannot write is
+a broken home volume, and Alter Zero's own `/root/.alter-zero` is on the far
+side of it too. The cache move stops pip complaining about someone else's
+problem; the volume still wants recreating.
+
+Cost: `python3-venv` 2.9 MB plus the venv's own 13 MB, so the image goes
+**393 → 409 MB**. The system interpreter is untouched at `/usr/bin/python3`,
+and `apt install python3-…` still works for anyone who wants that instead.
+
+What the venv does **not** get is persistence: `/opt` is not a volume, so a
+runtime `pip install` writes to the container's writable layer. It survives
+`stop`/`start` and is lost on
+`run.sh --replace`, exactly like an `apt install` at runtime. Making it a
+third volume was refused — it would mask the built venv on first run under
+some engines, and the honest fix for a package you want permanently is to bake
+it in with `RUN pip install ...` in a Dockerfile `FROM alter-zero:kali`.
+`--with python3-...` installs distribution packages for the system interpreter,
+not the virtualenv. The README says so where someone would hit it.
 
 ## Ports
 

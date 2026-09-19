@@ -10,6 +10,7 @@
 
 DEFAULT_IMAGE="alter-zero:kali"
 DEFAULT_NAME="alter-zero-kali"
+DEFAULT_HOSTNAME="az-kali"
 DEFAULT_HOME_VOLUME="alter-zero-home"
 DEFAULT_WORKSPACE_VOLUME="alter-zero-workspace"
 # Published to the host by default; the Dockerfile EXPOSEs the same two.

@@ -25,7 +25,7 @@ release heading when a version is cut.
   (`docker/run.sh --port`, `--bind`, `--no-ports`). The tools are chosen by
   measured size — `git`, `ssh`, `curl`, `jq`, `rg`, `python3`, `nmap`, `nc`,
   `socat`, `whois`, `dig`, `ping`, `traceroute`, `ip`, `ss`, `net-tools` and a
-  few more, about 260 MB over the Kali base with no desktop, metapackage or
+  few more, about 280 MB over the Kali base with no desktop, metapackage or
   compiler — and `--with "PKG …"` bakes in your own. Opening it with
   `docker exec -it -e TERM -e COLORTERM -e TERM_PROGRAM -e KITTY_WINDOW_ID
   -e TMUX alter-zero-kali alter-zero` forwards your terminal's identity, which
@@ -38,7 +38,16 @@ release heading when a version is cut.
   does not, so without it the same image answered `Couldn't open a raw socket`
   on one engine and scanned on the other. It stays one named capability, never
   `--privileged` and never host networking; `docker/run.sh --no-net-raw` drops
-  it.
+  it. `python3` and `pip` come from a virtualenv at `/opt/az-venv` that is
+  already active for every process — your shell and the agent's own commands
+  alike — so `pip install` works out of the box. Kali's system Python is
+  marked externally managed (PEP 668) and the image carries no system `pip`,
+  so without it a Python package could not be installed at all; the system
+  interpreter stays untouched at `/usr/bin/python3`, and pip caches into
+  `/var/cache/pip` rather than under `/root`, so a home volume the container
+  cannot write does not make every install open with a warning that the cache
+  was disabled. The container `docker/run.sh` creates is named
+  **`alter-zero-kali`**, with the Linux hostname **`az-kali`**.
 
 ### Changed
 

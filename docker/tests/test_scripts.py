@@ -321,7 +321,7 @@ class RunTests(ScriptCase):
         result, calls = self.run_sh()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.one(calls, "run")["args"], [
-            "run", "--detach", "--name", "alter-zero-kali", "--hostname", "alter-zero-kali",
+            "run", "--detach", "--name", "alter-zero-kali", "--hostname", "az-kali",
             "--security-opt", "no-new-privileges", "--cap-add", "NET_RAW",
             "--volume", "alter-zero-home:/root", "--volume", "alter-zero-workspace:/workspace",
             "--publish", "127.0.0.1:8080:8080", "--publish", "127.0.0.1:8888:8888",
@@ -470,10 +470,10 @@ class RunTests(ScriptCase):
                     result, calls = self.run_sh(option, bad)
                     self.assertRefused(result, calls)
 
-    def test_a_name_that_is_no_hostname_gets_one(self):
+    def test_a_custom_container_name_keeps_the_short_hostname(self):
         _, calls = self.run_sh("--name", "my_box.1")
         args = self.one(calls, "run")["args"]
-        self.assertEqual((value_of(args, "--name"), value_of(args, "--hostname")), (["my_box.1"], ["my-box-1"]))
+        self.assertEqual((value_of(args, "--name"), value_of(args, "--hostname")), (["my_box.1"], ["az-kali"]))
 
     def test_home_volume_and_image_and_passthrough(self):
         _, calls = self.run_sh("--home-volume", "work-home", "--image", "me/az:dev", "--", "--cap-add", "NET_RAW")

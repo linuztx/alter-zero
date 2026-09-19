@@ -71,10 +71,22 @@ The context is the repository root behind an **allowlist** `/.dockerignore`
 `target/` or a local `.env`). The image is **root with no user added**, its
 tools chosen by
 measured size (a dpkg `path-exclude` keeps docs/man/locales from unpacking:
-435 → 393 MB), `EXPOSE`s 8080/8888, and idles under `tini` so the container is
+435 → 393 MB, 409 MB with the venv below), `EXPOSE`s 8080/8888, and idles under `tini` so the container is
 somewhere to `exec` into. Kali's `nmap` carries forced file capabilities a
 container cannot grant, so it would not even exec — `setcap -r` plus a
 `DPkg::Post-Invoke` hook that re-strips after every `apt` run.
+**Python is a virtualenv at `/opt/az-venv`** activated by `ENV`
+(`VIRTUAL_ENV` + `PATH`), never a `.bashrc` line — the agent's own `bash` tool
+runs `sh -c` and `/bin/sh` here is dash, so a `.bashrc` activation would cover
+a human's shell and miss every command the agent runs; an environment variable
+is inherited by everything. It exists because Kali's system Python is PEP 668
+externally managed and the image has no system `pip`. `/root/.bashrc`
+additionally sources the real `activate` for `deactivate` and the prompt,
+stripping the ENV copy off `PATH` first so nested shells don't stack entries.
+`PIP_CACHE_DIR=/var/cache/pip` keeps the cache **out of the `/root` volume**:
+a rootless-Podman volume outside the user's subuid range reads as `nobody`
+inside, unwritable by container root, and pip then disables its cache loudly
+on every install.
 `docker/run.sh` owns what a user would otherwise paste: the workspace (a
 folder of theirs, created as *them*, or a named volume), the shared
 `alter-zero-home` volume at `/root`, the two ports on **loopback**,

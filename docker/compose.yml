@@ -14,7 +14,7 @@ services:
   alter-zero:
     image: ${ALTER_ZERO_IMAGE:-alter-zero:kali}
     container_name: alter-zero-kali
-    hostname: alter-zero-kali
+    hostname: az-kali
     # Built by docker/build.sh, which resolves the latest release first; a
     # `build:` section here would let a cached layer pin an old one.
     pull_policy: never

@@ -56,7 +56,7 @@ RUN printf '%s\n' \
     && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
         ca-certificates curl wget git openssh-client \
         jq ripgrep file less nano tree xxd unzip \
-        python3 procps tini libcap2-bin \
+        python3 python3-venv procps tini libcap2-bin \
         net-tools iproute2 iputils-ping traceroute \
         nmap whois netcat-openbsd socat bind9-dnsutils openssl \
         kitty-terminfo ncurses-term \
@@ -67,6 +67,45 @@ RUN printf '%s\n' \
         > /etc/apt/apt.conf.d/90alter-zero-nmap-caps \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
+
+# Kali marks its system Python "externally managed" (PEP 668), so a plain
+# `pip install` there is refused — and this image ships no system pip at all.
+# So Python lives in a virtualenv: the supported way in, and the agent can
+# install what a task needs without touching the distribution's packages.
+# The ENV below is what activates it; this only builds it, and the cache
+# directory beside it.
+#
+# That cache is deliberately NOT pip's default ~/.cache/pip. /root is a named
+# volume, and under rootless Podman a volume whose host directory falls
+# outside the user's subuid range appears inside the container as nobody —
+# container root cannot write it, since CAP_DAC_OVERRIDE stops at the user
+# namespace boundary — and pip then prefaces every install with "The
+# directory '/root/.cache/pip' … is not writable. The cache has been
+# disabled." A cache has no business in the volume that holds sign-ins
+# anyway, so it lives in the image, where it is always container root's own.
+#
+# The appended .bashrc block is the interactive dress on top — the (az-venv)
+# prompt and a working `deactivate`, which only the real activate script
+# provides. PATH already carries the venv from ENV and activate prepends
+# unconditionally, so the ENV copy is dropped first; otherwise every nested
+# shell stacks another entry.
+ARG VENV=/opt/az-venv
+RUN python3 -m venv "$VENV" \
+    && "$VENV/bin/pip" install --no-cache-dir --upgrade pip \
+    && mkdir -p /var/cache/pip \
+    && printf '%s\n' \
+        '' \
+        '# Alter Zero (docker/Dockerfile): VIRTUAL_ENV and PATH are already set' \
+        '# by the image, so every process is in the venv however it started —' \
+        '# dash, bash, and the sh -c calls the agent runs its own tools through.' \
+        '# This adds only what an interactive shell wants: prompt and deactivate.' \
+        'if [ -n "${VIRTUAL_ENV:-}" ] && [ -r "$VIRTUAL_ENV/bin/activate" ]; then' \
+        '    PATH=":$PATH:"' \
+        '    PATH="${PATH//:$VIRTUAL_ENV\/bin:/:}"' \
+        '    PATH="${PATH#:}"; PATH="${PATH%:}"' \
+        '    . "$VIRTUAL_ENV/bin/activate"' \
+        'fi' \
+        >> /root/.bashrc
 
 # Anything else you want baked in: docker/build.sh --with "binutils tcpdump".
 # Its own layer, after the tools, so adding a package never reinstalls them.
@@ -123,9 +162,17 @@ RUN mkdir -p /workspace && mkdir -m 0700 /run/alter-zero
 # Telemetry is deliberately left alone: nothing here sets ALTER_ZERO_TELEMETRY
 # or DO_NOT_TRACK, so the app behaves exactly as an ordinary install does —
 # its first-run notice, its daily ping, its own off switches (TELEMETRY.md).
+#
+# VIRTUAL_ENV + PATH rather than a .bashrc line, because .bashrc would reach a
+# person's `exec -it … bash` and miss everything else: the agent runs its own
+# `bash` tool through `sh -c`, and /bin/sh here is dash, which never reads it.
+# An environment variable is inherited by every process whatever started it.
 ENV LANG=C.UTF-8 \
     TERM=xterm-256color \
-    COLORTERM=truecolor
+    COLORTERM=truecolor \
+    VIRTUAL_ENV=/opt/az-venv \
+    PIP_CACHE_DIR=/var/cache/pip \
+    PATH=/opt/az-venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 # Root, as Kali's own image is: no user is added.
 WORKDIR /workspace

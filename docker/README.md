@@ -9,7 +9,7 @@ It works the same with **Docker** and **Podman**.
   build is about a minute.
 - **It runs as root**, as Kali's own image does. No user is added.
 - **It is small on purpose**: no desktop, no Kali metapackage, no compiler.
-  About 260 MB on top of the Kali base.
+  About 280 MB on top of the Kali base.
 - **Ports 8080 and 8888** are published to your machine, for whatever you or
   the agent start on them.
 - **Telemetry is left exactly as it is** in an ordinary install. See
@@ -65,6 +65,10 @@ docker/run.sh                     # ...or on a named volume instead
 ```
 
 Both take `--help`.
+
+The container name is `alter-zero-kali`, which Docker and Podman commands
+use. Its Linux hostname is `az-kali`, as shown in the shell prompt.
+`--name` changes only the container name; the hostname stays `az-kali`.
 
 ## Everyday use
 
@@ -288,7 +292,8 @@ exactly as a paste would.
 | | |
 | --- | --- |
 | **Alter Zero** | the latest release, at `/usr/local/bin/alter-zero` |
-| Shell and files | `bash` `git` `ssh` `curl` `wget` `jq` `rg` `file` `less` `nano` `tree` `xxd` `unzip` `python3` |
+| Shell and files | `bash` `git` `ssh` `curl` `wget` `jq` `rg` `file` `less` `nano` `tree` `xxd` `unzip` |
+| Python | `python3` and `pip` from a virtualenv at `/opt/az-venv`, active everywhere — see [Python](#python) |
 | Network | `nmap` `nc` `socat` `whois` `dig` `nslookup` `ping` `traceroute` `ip` `ss` `ifconfig` `netstat` `openssl` |
 | Terminal | terminfo for kitty, Alacritty, foot, WezTerm, Rio, VTE |
 
@@ -333,6 +338,42 @@ docker/run.sh ~/projects/site -- --network host
 ```
 
 Only scan machines you are authorised to test.
+
+## Python
+
+`python3` and `pip` come from a **virtualenv at `/opt/az-venv`**, and it is
+already active — in your shell, in the agent's commands, in anything either
+of you starts:
+
+```sh
+docker exec -it alter-zero-kali bash
+┌──(az-venv)(root㉿az-kali)-[/workspace]
+└─# pip install requests        # just works
+```
+
+You never activate it by hand. The image exports `VIRTUAL_ENV` and puts the
+venv first on `PATH`, so every process inherits it however it was started.
+
+This is not decoration. Kali marks its system Python **externally managed**
+(PEP 668), so a plain `pip install` there is refused, and the image ships no
+system `pip` at all — without the venv, the agent simply cannot install a
+Python package. Distribution packages stay untouched: `/usr/bin/python3` is
+still the system interpreter, and `apt install python3-…` still works.
+
+pip caches downloads in `/var/cache/pip`, not under `/root` — a home volume
+the container cannot write (rootless Podman, a volume outside your subuid
+range) would otherwise make pip disable its cache and say so on every install.
+
+An interactive shell also gets `deactivate`, if you want the system
+interpreter for a moment. Or just call it by path: `/usr/bin/python3`.
+
+> **Packages you install at runtime live in the container's writable layer.** They
+> survive `stop`/`start`, and they are lost when the container is replaced
+> (`docker/run.sh --replace`) — the same as anything else you `apt install` at
+> runtime. For a package you want permanently in the virtualenv, add
+> `RUN pip install numpy` to your own Dockerfile built `FROM alter-zero:kali`.
+> `docker/build.sh --with python3-numpy` instead installs NumPy for the system
+> interpreter, `/usr/bin/python3`.
 
 ## Updating
 

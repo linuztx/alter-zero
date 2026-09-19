@@ -25,6 +25,7 @@ import shutil
 import signal
 import struct
 import subprocess
+import sys
 import tempfile
 import termios
 import time
@@ -40,6 +41,10 @@ TOOLS = (
 )
 # Forwarding `-e TERM` from these terminals must not break less/nano/git.
 TERMINALS = ("xterm-256color", "tmux-256color", "xterm-kitty", "alacritty", "foot", "wezterm")
+# Every Python tool runs out of this virtualenv (docs/docker.md *Python*).
+VENV = "/opt/az-venv"
+# pip's cache, deliberately outside the /root volume (docs/docker.md *Python*).
+PIP_CACHE = "/var/cache/pip"
 # Setting any of these in the image would change what the app reports home.
 TELEMETRY_KEYS = ("ALTER_ZERO_TELEMETRY", "DO_NOT_TRACK", "ALTER_ZERO_TELEMETRY_URL")
 
@@ -77,6 +82,67 @@ def check_tools():
     version = run("alter-zero", "--version").stdout.strip()
     assert re.fullmatch(r"alter-zero \d+\.\d+\.\d+(?:[-+][\w.-]+)?", version), version
     return version.removeprefix("alter-zero ")
+
+
+def check_venv():
+    """The virtualenv is active for *every* process, not just interactive bash.
+
+    The agent runs its own `bash` tool through `sh -c`, and this image's /bin/sh
+    is dash — so a .bashrc activation would reach a human's shell and miss the
+    agent entirely. The image sets VIRTUAL_ENV and PATH instead, which every
+    process inherits however it was started."""
+    assert os.environ.get("VIRTUAL_ENV") == VENV, os.environ.get("VIRTUAL_ENV")
+    # This interpreter was found on PATH, so it is the venv's own.
+    assert sys.prefix == VENV, sys.prefix
+    for tool in ("python", "python3", "pip", "pip3"):
+        assert shutil.which(tool) == f"{VENV}/bin/{tool}", f"{tool} -> {shutil.which(tool)}"
+    assert run("pip", "--version").stdout.startswith(f"pip "), "the venv has no working pip"
+    assert f"{VENV}/lib" in run("pip", "--version").stdout, run("pip", "--version").stdout
+
+    # Kali marks its system Python externally managed (PEP 668), which is what
+    # makes a `pip install` there fail; the venv is the supported way in.
+    assert list(Path("/usr/lib").glob("python3*/EXTERNALLY-MANAGED")), "no PEP 668 marker"
+    assert Path("/usr/bin/python3").is_file(), "the system interpreter is still there"
+
+    # The two shells that matter: dash, which the agent's tool calls use, and
+    # an interactive bash, which is what a person gets from `exec -it … bash`.
+    for shell in (["sh", "-c"], ["bash", "-c"], ["bash", "-ic"]):
+        seen = run(*shell, "command -v python3; echo $VIRTUAL_ENV").stdout.split()
+        assert seen == [f"{VENV}/bin/python3", VENV], f"{shell}: {seen}"
+    # …and PATH carries it exactly once, so sourcing activate did not stack.
+    entries = run("bash", "-ic", "printf %s \"$PATH\"").stdout.split(":")
+    assert entries.count(f"{VENV}/bin") == 1, entries
+    # The prompt names it. Assert the *rendered* prompt (bash's ${PS1@P})
+    # rather than a literal prefix: Kali's own .bashrc draws $VIRTUAL_ENV into
+    # its ┌──(az-venv)(root㉿host) line and sets VIRTUAL_ENV_DISABLE_PROMPT=1
+    # so activate does not also prepend one. Either mechanism, same thing seen.
+    prompt = run("bash", "-ic", 'printf "%s" "${PS1@P}"').stdout
+    assert "az-venv" in prompt, f"the prompt does not name the venv: {prompt!r}"
+    assert run("bash", "-ic", "type -t deactivate").stdout.strip() == "function", "no deactivate"
+
+
+def check_pip_cache():
+    """pip's cache must not live under /root.
+
+    /root is a named volume, and under rootless Podman a volume whose host
+    directory falls outside the user's subuid range shows up inside the
+    container as nobody: container root cannot write it, CAP_DAC_OVERRIDE
+    stopping at the namespace boundary. pip then greets every install with
+    "The directory '/root/.cache/pip' or its parent directory is not owned or
+    is not writable … The cache has been disabled." A cache is the one thing
+    here with no business in the volume that holds sign-ins anyway, so it
+    lives in the image, where it is always the container root's own."""
+    cache = os.environ.get("PIP_CACHE_DIR")
+    assert cache == PIP_CACHE, f"PIP_CACHE_DIR is {cache!r}"
+    assert not cache.startswith("/root"), f"{cache} is inside the home volume"
+    assert Path(cache).is_dir(), f"{cache} does not exist"
+    assert os.access(cache, os.W_OK), f"{cache} is not writable"
+    # pip agrees, rather than us merely having exported a variable at it.
+    assert run("pip", "cache", "dir").stdout.strip() == cache, run("pip", "cache", "dir").stdout
+    # And nothing warns on a real install attempt (offline, so it fails at the
+    # network — the warning, if any, is printed before that).
+    attempt = run("pip", "install", "a-package-that-does-not-exist")
+    assert "cache has been disabled" not in attempt.stdout + attempt.stderr, attempt.stdout
 
 
 def check_scanner_runs():
@@ -205,10 +271,13 @@ def check_telemetry_is_on(version):
                 while time.monotonic() < deadline:
                     first.pump(collector)
                     assert first.status is None, f"the CLI exited early:\n{first.text()[-1500:]}"
-                    if collector.pings and state().get("last_ping_version") == version:
+                    screen = first.text()
+                    # Telemetry can finish before the first frame reaches the PTY.
+                    if (collector.pings and state().get("last_ping_version") == version
+                            and "Alter Zero" in screen and "ALTER_ZERO_TELEMETRY=0" in screen):
                         break
                 else:
-                    raise AssertionError(f"no ping reached the collector:\n{first.text()[-1500:]}")
+                    raise AssertionError(f"CLI startup or telemetry did not complete:\n{first.text()[-1500:]}")
                 screen = first.text()
             finally:
                 first.close(collector)
@@ -249,6 +318,8 @@ def main():
     check_identity()
     check_telemetry_is_left_alone()
     version = check_tools()
+    check_venv()
+    check_pip_cache()
     check_scanner_runs()
     check_nothing_listens()
     ping = check_telemetry_is_on(version)

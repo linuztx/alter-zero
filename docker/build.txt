@@ -23,6 +23,9 @@ this says "docker". Nothing else changes.
 
 2. CREATE THE CONTAINER
 
+   Container name: alter-zero-kali. Linux hostname (in the prompt): az-kali.
+   --name changes only the container name.
+
    docker/run.sh ~/projects/site            /workspace = that folder
    docker/run.sh                            /workspace = a named volume
    docker/run.sh --name az-api ~/projects/api      a second container
@@ -90,6 +93,12 @@ this says "docker". Nothing else changes.
    - Runs as root; no user is added. Rootless Podman/Docker map that root to
      YOU, so files it creates in your folder are yours. Under the usual
      rootful Docker they are root's: sudo chown -R "$USER": ~/projects/site
+   - python3 and pip come from a virtualenv at /opt/az-venv that is already
+     active everywhere — your shell, the agent's commands, anything they
+     start. `pip install X` just works. Kali's system Python refuses pip
+     (PEP 668) and ships no pip, which is why. Packages are lost when the
+     container is replaced; bake them in with --with, or a Dockerfile
+     FROM alter-zero:kali.
    - Never --privileged, never host networking. The engine's default
      capabilities plus NET_RAW (Docker grants that one already; Podman does
      not, and without it `nmap localhost` cannot open a raw socket), and
