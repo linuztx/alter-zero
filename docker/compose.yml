@@ -32,8 +32,9 @@ services:
       - no-new-privileges:true
     # What docker/run.sh grants (docs/docker.md *One capability is granted*):
     # as root `nmap localhost` is a SYN scan, and Podman's default set has no
-    # NET_RAW where Docker's does. Delete these two lines for run.sh's
-    # --no-net-raw; `nmap -sT` works without them.
+    # NET_RAW where Docker's does. To match run.sh's --no-net-raw, replace
+    # cap_add with cap_drop below; just removing cap_add leaves Docker's
+    # default grant in place. `nmap -sT` works without NET_RAW.
     cap_add:
       - NET_RAW
     restart: unless-stopped

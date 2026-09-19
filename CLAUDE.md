@@ -85,7 +85,8 @@ hooks, both outside the persistent `/root` volume. `bash -l` retains
 exports missing or empty defaults, preserves nonempty overrides, and adds the
 venv to `PATH` only if absent. `/etc/bash.bashrc` sources this helper before
 the real `activate` adds `deactivate` and the prompt, stripping the venv from
-`PATH` first to avoid duplicates. That ordering is necessary because
+`PATH` with a literal match so spaces and pattern characters in custom paths
+do not cause duplicates or break deactivation. That ordering is necessary because
 interactive login Bash runs `/etc/bash.bashrc` before `profile.d`. Recreate
 the container using the rebuilt image to receive hook updates while retaining
 the home volume.
@@ -97,7 +98,14 @@ on every install.
 folder of theirs, created as *them*, or a named volume), the shared
 `alter-zero-home` volume at `/root`, the two ports on **loopback**,
 `no-new-privileges`, never `--privileged`, anything after `--` handed to the
-engine; `build.sh DIR` is build-then-`run.sh DIR`. Two things there are easy
+engine; `build.sh DIR` is build-then-`run.sh DIR`. `--replace` inherits the
+existing managed settings (image, home/workspace mounts, ports, clipboard and
+NET_RAW), with explicit options taking precedence. Validate launcher inputs
+before removing the old container. Unsupported inspected configurations
+require `--replace --reset-config` and a complete set of desired options.
+`--no-net-raw` must explicitly pass `--cap-drop NET_RAW` on both engines;
+omitting the add would retain Docker's default grant. Resolve both HOME and
+the workspace physically before the SELinux home-directory guard. Two things there are easy
 to get wrong. **The `exec` command forwards the terminal's identity** —
 `-e TERM -e COLORTERM -e TERM_PROGRAM -e KITTY_WINDOW_ID -e TMUX`, the
 variables `ImageStore::detect` actually reads — without which pictures fall to
