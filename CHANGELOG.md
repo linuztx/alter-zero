@@ -12,6 +12,40 @@ release heading when a version is cut.
 
 ## [Unreleased]
 
+### Added
+
+- **A headless Kali Linux container** (`docker/README.md`, `docs/docker.md`).
+  `docker/build.sh` builds a small Kali Rolling image around the latest
+  published release — downloaded and SHA-256-verified by `install.sh`, never
+  compiled, so a build is about a minute — and `docker/build.sh ~/projects/site`
+  goes on to create a container with that folder as its `/workspace`. It works
+  the same with Podman: `--engine podman`. The container runs as root, keeps
+  sign-ins, settings and sessions in a volume that outlives it, and publishes
+  ports 8080 and 8888 to your machine for whatever you start inside
+  (`docker/run.sh --port`, `--bind`, `--no-ports`). The tools are chosen by
+  measured size — `git`, `ssh`, `curl`, `jq`, `rg`, `python3`, `nmap`, `nc`,
+  `socat`, `whois`, `dig`, `ping`, `traceroute`, `ip`, `ss`, `net-tools` and a
+  few more, about 260 MB over the Kali base with no desktop, metapackage or
+  compiler — and `--with "PKG …"` bakes in your own. Opening it with
+  `docker exec -it -e TERM -e COLORTERM -e TERM_PROGRAM -e KITTY_WINDOW_ID
+  -e TMUX alter-zero-kali alter-zero` forwards your terminal's identity, which
+  is what draws real pictures in kitty, Ghostty, iTerm2 and WezTerm instead of
+  half-blocks; `docker/run.sh --clipboard` forwards the desktop's Wayland
+  and/or X11 socket so Ctrl+V can paste a copied image. Telemetry is left
+  exactly as it is in any install, and the container reports its distribution
+  as `kali`.
+
+### Changed
+
+- **Image paste says why it cannot work where there is no display**
+  (`docs/image-paste.md`). In a container or an SSH session Ctrl+V has no
+  desktop clipboard to read, and it used to answer with whatever a probe for
+  an X server ran into, sometimes after a pause. It now answers at once:
+  `no desktop clipboard in this session (neither DISPLAY nor WAYLAND_DISPLAY
+  is set)`, followed by what works instead — save the image where the session
+  can reach it and ask Alter Zero to read its path. A display that is named
+  but unreachable keeps its original cause and gains the same advice.
+
 ## [0.4.0] - 2026-09-18
 
 ### Added

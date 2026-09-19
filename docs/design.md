@@ -15,6 +15,14 @@ Claude Code (a bottom-pinned input field framed by a top/bottom rule, messages
 and tool calls flowing above it in normal scrollback). Everything that can be
 unit-tested must be unit-tested.
 
+The same binary also ships as a **headless Kali Linux container**
+([`docker.md`](docker.md)): the published release on Kali Rolling with a small
+set of command-line tools, for Docker and Podman. It changes nothing about the
+app — the container is somewhere to `exec` into — but it is where two things
+the app takes from its surroundings have to be handed over on purpose: the
+terminal's identity, which picks the image protocol, and the display server,
+which Ctrl+V reads the clipboard from.
+
 ## Behaviour
 
 - The app runs in ratatui's **inline viewport** (no alternate screen). Normal

@@ -1,0 +1,40 @@
+# docker/compose.yml — the container docker/run.sh creates, for those who
+# prefer Compose (docker/README.md). Build the image first: docker/build.sh
+#
+#   docker compose -f docker/compose.yml up -d
+#   ALTER_ZERO_WORKSPACE=~/projects/site docker compose -f docker/compose.yml up -d
+#   docker exec -it -e TERM -e COLORTERM -e TERM_PROGRAM -e KITTY_WINDOW_ID -e TMUX \
+#     alter-zero-kali alter-zero
+#
+# `podman compose` reads the same file. `down` keeps the volumes — never add
+# --volumes unless you mean to delete your sign-ins and sessions.
+name: alter-zero
+
+services:
+  alter-zero:
+    image: ${ALTER_ZERO_IMAGE:-alter-zero:kali}
+    container_name: alter-zero-kali
+    hostname: alter-zero-kali
+    # Built by docker/build.sh, which resolves the latest release first; a
+    # `build:` section here would let a cached layer pin an old one.
+    pull_policy: never
+    volumes:
+      - alter-zero-home:/root
+      # A folder of yours when ALTER_ZERO_WORKSPACE names one (an absolute
+      # path, or one starting ./ or ~/), else the named volume.
+      - ${ALTER_ZERO_WORKSPACE:-alter-zero-workspace}:/workspace
+    ports:
+      # This machine only. Nothing in the image listens; these are for what
+      # you start. Set ALTER_ZERO_BIND=0.0.0.0 to open them to your network.
+      - "${ALTER_ZERO_BIND:-127.0.0.1}:8080:8080"
+      - "${ALTER_ZERO_BIND:-127.0.0.1}:8888:8888"
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+    # Telemetry is deliberately not mentioned: the app keeps its defaults.
+
+volumes:
+  alter-zero-home:
+    name: alter-zero-home
+  alter-zero-workspace:
+    name: alter-zero-workspace

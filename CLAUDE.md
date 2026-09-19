@@ -26,6 +26,10 @@ cargo run --release --example mem_probe     # /model parse RSS (docs/memory.md)
 cargo build --release --timings && scripts/build_timings.py   # where a release build's time goes (docs/build-time.md)
 DISPLAY=:99 cargo test --test clipboard_linux -- --ignored   # the X11 paste read, under Xvfb
 (cd telemetry && node --test)               # the telemetry collector's pure half (docs/telemetry.md)
+docker/build.sh [--engine podman] [DIR]     # the headless Kali image from the latest release; DIR also creates the container on it (docs/docker.md)
+docker/run.sh [--engine podman] [DIR]       # create the container: DIR at /workspace, ports 8080/8888, --clipboard
+python3 -m unittest discover -s docker/tests -p 'test_*.py'   # both scripts under a stub engine: no engine, no network
+docker/tests/smoke.sh [--engine podman]     # the built image + run.sh against a real engine
 ```
 
 The standard pre-commit gate used throughout this project is: `cargo fmt --check`
@@ -51,6 +55,48 @@ pipeline without publishing, and every step runs locally the same way. Users
 install a release with the one-line `install.sh` (`curl … | sh`, POSIX `sh`,
 checksum-verified), which the selftest drives against
 `scripts/release/release_server.py`, a stand-in for github.com's release pages.
+
+**`docker/`** packages that same published release on headless **Kali
+Rolling**, for Docker and Podman alike (`docs/docker.md` the design,
+`docker/README.md` + the plain-text `docker/build.txt` the usage). Nothing is
+compiled: the Dockerfile runs `install.sh` in a stage of its own and copies
+the one binary out. The decision the build script exists for is that
+**"latest" is resolved outside the build** — a `latest` asked for inside a
+`RUN` is cached on the instruction's text and reinstalls the release it first
+saw forever, reporting success, so `docker/build.sh` follows the
+`/releases/latest` redirect itself, validates the tag, and passes it as the
+`ALTER_ZERO_VERSION` build argument, whose value is what re-keys the layer.
+The context is the repository root behind an **allowlist** `/.dockerignore`
+(`**` then three `!` lines — 519 bytes sent, never `.git`, `target/` or a
+local `.env`). The image is **root with no user added**, its tools chosen by
+measured size (a dpkg `path-exclude` keeps docs/man/locales from unpacking:
+435 → 393 MB), `EXPOSE`s 8080/8888, and idles under `tini` so the container is
+somewhere to `exec` into. Kali's `nmap` carries forced file capabilities a
+container cannot grant, so it would not even exec — `setcap -r` plus a
+`DPkg::Post-Invoke` hook that re-strips after every `apt` run.
+`docker/run.sh` owns what a user would otherwise paste: the workspace (a
+folder of theirs, created as *them*, or a named volume), the shared
+`alter-zero-home` volume at `/root`, the two ports on **loopback**,
+`no-new-privileges`, never `--privileged`, anything after `--` handed to the
+engine; `build.sh DIR` is build-then-`run.sh DIR`. Two things there are easy
+to get wrong. **The `exec` command forwards the terminal's identity** —
+`-e TERM -e COLORTERM -e TERM_PROGRAM -e KITTY_WINDOW_ID -e TMUX`, the
+variables `ImageStore::detect` actually reads — without which pictures fall to
+half-blocks; it is the documentation, printed by `run.sh`, not a wrapper. And
+**`--clipboard` forwards the display server, since `exec -it` carries only
+keystrokes**: the Wayland socket alone (never the runtime dir) **and** X11
+with a cookie rewritten to the wildcard family (the server files it under a
+hostname the container does not share) — both, because a compositor with no
+data-control protocol serves its clipboard over XWayland and
+`clipboard::linux` falls back to it; sources are `--mount`, which fails on a
+missing path where `-v` would create a root-owned folder in the runtime dir,
+and such a container gets no restart policy. **Telemetry is left alone** —
+the image sets neither off switch, and `smoke_image.py` proves it is still on
+by launching the real CLI under `--network=none` beside a stub collector, so
+no test ping can reach production. The one source change is
+`clipboard::require_display`: a session naming no display is refused at once
+with the cause and the way around it, instead of whatever arboard's X11 probe
+ran into.
 
 Toolchain: Rust **edition 2024**, `ratatui = 0.30.1` (crossterm is re-exported as
 `ratatui::crossterm` — import it from there, not as a separate crate), plus
