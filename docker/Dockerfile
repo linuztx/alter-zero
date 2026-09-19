@@ -84,15 +84,34 @@ RUN printf '%s\n' \
 # disabled." A cache has no business in the volume that holds sign-ins
 # anyway, so it lives in the image, where it is always container root's own.
 #
-# The appended .bashrc block is the interactive dress on top — the (az-venv)
-# prompt and a working `deactivate`, which only the real activate script
-# provides. PATH already carries the venv from ENV and activate prepends
-# unconditionally, so the ENV copy is dropped first; otherwise every nested
-# shell stacks another entry.
+# Two files put it in every shell, and both are in the image rather than in
+# /root — which is a named volume, so anything written there reaches a fresh
+# volume once and an upgrading user never.
+#
+#   /etc/profile.d/az-venv.sh  a *login* shell runs /etc/profile, which
+#       rewrites PATH for root outright and drops the venv with it. `bash -l`
+#       answered with the system interpreter and no pip at all, while
+#       VIRTUAL_ENV still said a venv was active. profile.d is sourced after
+#       that rewrite, so it puts the venv back; the guard keeps it idempotent.
+#   /etc/bash.bashrc  the interactive dress — the (az-venv) prompt and a
+#       working `deactivate`, which only the real activate script provides.
+#       PATH already carries the venv, and activate prepends unconditionally,
+#       so the copy is dropped first or every nested shell stacks another.
+#
 ARG VENV=/opt/az-venv
 RUN python3 -m venv "$VENV" \
     && "$VENV/bin/pip" install --no-cache-dir --upgrade pip \
     && mkdir -p /var/cache/pip \
+    && printf '%s\n' \
+        '# Alter Zero (docker/Dockerfile): /etc/profile rewrites PATH for root,' \
+        '# which drops the venv the image put there. Put it back, once.' \
+        'if [ -n "${VIRTUAL_ENV:-}" ]; then' \
+        '    case ":$PATH:" in' \
+        '        *:"$VIRTUAL_ENV"/bin:*) ;;' \
+        '        *) PATH="$VIRTUAL_ENV/bin:$PATH" ;;' \
+        '    esac' \
+        'fi' \
+        > /etc/profile.d/az-venv.sh \
     && printf '%s\n' \
         '' \
         '# Alter Zero (docker/Dockerfile): VIRTUAL_ENV and PATH are already set' \
@@ -105,7 +124,7 @@ RUN python3 -m venv "$VENV" \
         '    PATH="${PATH#:}"; PATH="${PATH%:}"' \
         '    . "$VIRTUAL_ENV/bin/activate"' \
         'fi' \
-        >> /root/.bashrc
+        >> /etc/bash.bashrc
 
 # Anything else you want baked in: docker/build.sh --with "binutils tcpdump".
 # Its own layer, after the tools, so adding a package never reinstalls them.

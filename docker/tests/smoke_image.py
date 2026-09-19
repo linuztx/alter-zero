@@ -104,14 +104,31 @@ def check_venv():
     assert list(Path("/usr/lib").glob("python3*/EXTERNALLY-MANAGED")), "no PEP 668 marker"
     assert Path("/usr/bin/python3").is_file(), "the system interpreter is still there"
 
-    # The two shells that matter: dash, which the agent's tool calls use, and
-    # an interactive bash, which is what a person gets from `exec -it … bash`.
-    for shell in (["sh", "-c"], ["bash", "-c"], ["bash", "-ic"]):
+    # Every shape a shell here comes in. dash is what the agent's own tool
+    # calls use; interactive bash is `exec -it … bash`; and the *login* forms
+    # are the ones that bite — /etc/profile rewrites PATH for root, dropping
+    # the venv the image put there, so `bash -l` used to answer with the
+    # system interpreter and no pip at all while VIRTUAL_ENV still claimed a
+    # venv was active.
+    for shell in (["sh", "-c"], ["bash", "-c"], ["bash", "-ic"],
+                  ["sh", "-lc"], ["bash", "-lc"], ["bash", "-lic"]):
         seen = run(*shell, "command -v python3; echo $VIRTUAL_ENV").stdout.split()
         assert seen == [f"{VENV}/bin/python3", VENV], f"{shell}: {seen}"
+        # pip is the one that goes missing entirely, so name it separately.
+        found = run(*shell, "command -v pip").stdout.strip()
+        assert found == f"{VENV}/bin/pip", f"{shell}: pip -> {found!r}"
+        # …and PATH never stacks, however many of these nest.
+        entries = run(*shell, 'printf %s "$PATH"').stdout.split(":")
+        assert entries.count(f"{VENV}/bin") == 1, f"{shell}: {entries}"
     # …and PATH carries it exactly once, so sourcing activate did not stack.
-    entries = run("bash", "-ic", "printf %s \"$PATH\"").stdout.split(":")
-    assert entries.count(f"{VENV}/bin") == 1, entries
+    assert run("bash", "-ic", "type -t deactivate").stdout.strip() == "function", "no deactivate"
+    # …and it comes from the image, not from /root. /root is a named volume:
+    # anything written to /root/.bashrc reaches a fresh volume once and an
+    # upgrading user never, so the interactive block lives in /etc/bash.bashrc.
+    marker = "Alter Zero (docker/Dockerfile)"
+    assert marker in Path("/etc/bash.bashrc").read_text(), "the block is not in the image"
+    assert marker not in Path("/root/.bashrc").read_text(), \
+        "the block is in the /root volume, where an upgrade can never reach it"
     # The prompt names it. Assert the *rendered* prompt (bash's ${PS1@P})
     # rather than a literal prefix: Kali's own .bashrc draws $VIRTUAL_ENV into
     # its ┌──(az-venv)(root㉿host) line and sets VIRTUAL_ENV_DISABLE_PROMPT=1
