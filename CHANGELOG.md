@@ -73,6 +73,9 @@ release heading when a version is cut.
   and `NET_RAW` choice unless explicitly overridden. Invalid launcher inputs
   are rejected before removing the old container. Unsupported configurations
   require an intentional `--reset-config` with the desired options.
+  Docker's default shared label on named volumes is accepted, while shared
+  bind mounts remain protected. Process validation uses the executable and
+  exact arguments so older Podman inspection formats also work.
 - **Capability and SELinux safeguards apply consistently.** `--no-net-raw`
   explicitly drops Docker's default capability as well as Podman's, and a
   symlinked home directory cannot bypass the guard against relabeling it.
