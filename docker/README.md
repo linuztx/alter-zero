@@ -147,9 +147,10 @@ inside it.
 | everything else | packages you `apt install`ed, files under `/tmp`, `/opt` | **no** |
 
 `--replace` keeps the existing workspace and home mounts, image name, port
-mappings, clipboard setting and `NET_RAW` choice. Options you supply override
-those settings. The launcher checks its inputs before removing the old
-container; an invalid workspace, port or desktop session leaves it running.
+mappings, clipboard setting, PID limit and `NET_RAW` choice. Options you supply
+override those settings. The launcher checks its inputs before removing the
+old container; an invalid workspace, port, IP address or desktop session
+leaves it running.
 Other files in the container's writable layer are still lost on replacement.
 To delete the volumes as well: `docker volume rm alter-zero-home
 alter-zero-workspace`.
@@ -401,11 +402,16 @@ sockets can be refreshed. Use `--no-clipboard` to disable forwarding or
 If a port was configured for automatic allocation (an empty or zero host
 port), the engine may assign a different host port on replacement.
 
-Only the settings managed by `run.sh` are inherited. If an existing container
-uses an unsupported configuration, replacement stops before removing it.
+Only the settings managed by `run.sh` are inherited. Custom environment
+overrides, CPU limits and other detected unsupported settings stop replacement
+before the old container is removed. Environment defaults are checked against
+the image that created the container, even if its tag now points to a newer
+image.
 `--replace --reset-config` intentionally starts from the launcher's defaults;
 pass the complete workspace, volume, port and other options you want to keep,
 including any engine options after `--`.
+
+The PID limit is inherited; override it with `-- --pids-limit NUMBER`.
 
 Errors reported only by the engine, such as a port already in use, can still
 prevent startup after the old container has been removed. Correct the error

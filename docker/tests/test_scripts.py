@@ -11,6 +11,7 @@ container, a real registry or github.com.
 
 import json
 import os
+import shlex
 import shutil
 import socket
 import subprocess
@@ -52,10 +53,17 @@ if name == "selinuxenabled":
     sys.exit(0)
 # docker / podman
 if args[:2] == ["image", "inspect"]:
+    if "--format" in args and args[args.index("--format") + 1].startswith("{{{{range .Config.Env}}}}"):
+        print(env("STUB_IMAGE_ENV", json.dumps("PATH=/usr/bin")))
     sys.exit(0 if env("STUB_IMAGE", "1") == "1" else 1)
 if args[:2] == ["container", "inspect"]:
     if "--format" in args:
+        if args[args.index("--format") + 1].startswith("{{{{range .Config.Env}}}}"):
+            print(env("STUB_CONTAINER_ENV", json.dumps("PATH=/usr/bin")))
+            sys.exit(0 if env("STUB_CONTAINER", "0") == "1" else 1)
         default = "format|1\\nimage|alter-zero:kali\\nport|127.0.0.1|8080|8080/tcp\\nport|127.0.0.1|8888|8888/tcp\\ncapadd|NET_RAW\\nrestart|unless-stopped\\nnetwork|bridge\\nsecurity|no-new-privileges"
+        default += "\\nimage-id|sha256:" + "a" * 64 + "\\npids|<nil>"
+        default += "\\nprocess|" + json.dumps("/usr/bin/tini") + "|" + json.dumps(["--", "sleep", "infinity"], separators=(",", ":"))
         for source, target in (("alter-zero-home", "/root"), ("alter-zero-workspace", "/workspace")):
             default += "\\nmount|volume|" + json.dumps(source) + "|" + json.dumps(target) + "|true"
         print(env("STUB_INSPECT", default))
@@ -170,7 +178,8 @@ class BuildTests(ScriptCase):
                 self.assertEqual(call["name"], "podman")
                 self.assertIn("--pull=always", call["args"])
                 self.assertNotIn("--pull", call["args"])
-                self.assertIn("docker/run.sh --engine podman", result.stdout, "the next step names the engine")
+                hints = [line.strip() for line in result.stdout.splitlines() if line.strip().startswith("docker/run.sh ")]
+                self.assertEqual(value_of(shlex.split(hints[0], comments=True), "--engine"), ["podman"])
 
     def test_the_flag_outranks_the_environment(self):
         _, calls = self.build("--engine", "docker", CONTAINER_ENGINE="podman")
@@ -226,6 +235,44 @@ class BuildTests(ScriptCase):
         self.assertNotIn("--pull", args)
         self.assertIn("--no-cache", args)
 
+    def test_printed_commands_use_the_built_image_and_engine(self):
+        for engine in ("docker", "podman"):
+            with self.subTest(engine=engine):
+                image = "registry.example:5000/team/az:dev"
+                built, calls = self.build("--engine", engine, "--image", image, "--version", "v0.4.0")
+                self.assertEqual(built.returncode, 0, built.stderr)
+                self.assertEqual(value_of(self.one(calls, "build")["args"], "-t"), [image])
+                hints = [line.strip() for line in built.stdout.splitlines() if line.strip().startswith("docker/run.sh ")]
+                self.assertEqual(len(hints), 3, built.stdout)
+                for index, hint in enumerate(hints):
+                    with self.subTest(hint=hint):
+                        script = self.dir / f"launch-hint-{index}.sh"
+                        script.write_text("#!/bin/sh\n" + hint + "\n")
+                        # Execute exactly the printed command. A changed engine
+                        # preference and an old default image must not redirect it.
+                        result, calls = self.script(script, cwd=ROOT,
+                                                    CONTAINER_ENGINE="podman" if engine == "docker" else "docker",
+                                                    STUB_CONTAINER="1" if index == 2 else "0")
+                        self.assertEqual(result.returncode, 0, result.stderr)
+                        launched = self.one(calls, "run")
+                        self.assertEqual((launched["name"], launched["args"][-1]), (engine, image))
+                        self.assertEqual(len(self.engine_calls(calls, "rm")), 1 if index == 2 else 0)
+
+    def test_printed_image_argument_is_shell_quoted(self):
+        marker = self.dir / "hint-injected"
+        # A real engine rejects this tag, but the stub lets the output boundary
+        # prove it never turns an argument into executable shell syntax.
+        image = f"az:dev'; : > {marker}; #"
+        built, _ = self.build("--image", image, "--version", "v0.4.0")
+        self.assertEqual(built.returncode, 0, built.stderr)
+        hint = next(line.strip() for line in built.stdout.splitlines() if line.strip().startswith("docker/run.sh "))
+        script = self.dir / "quoted-launch-hint.sh"
+        script.write_text("#!/bin/sh\n" + hint + "\n")
+        result, calls = self.script(script, cwd=ROOT)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(marker.exists(), "the printed argument executed shell code")
+        self.assertEqual(self.one(calls, "run")["args"][-1], image)
+
     def test_arguments_after_a_double_dash_are_the_engines_own(self):
         _, calls = self.build("--", "--platform", "linux/arm64")
         args = self.one(calls, "build")["args"]
@@ -245,7 +292,7 @@ class BuildTests(ScriptCase):
         result, calls = self.build("--engine", "podman", "--name", "site", "--replace", "projects/site", STUB_CONTAINER="1")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual([c["args"][0] for c in calls if c["name"] == "podman"],
-                         ["build", "container", "container", "image", "rm", "run"], "built first, then created")
+                         ["build", "container", "container", "image", "container", "image", "rm", "run"], "built first, then created")
         run = self.one(calls, "run")
         self.assertEqual(value_of(run["args"], "--name"), ["site"])
         self.assertIn(f"{self.dir / 'projects' / 'site'}:/workspace", value_of(run["args"], "--volume"))
@@ -285,7 +332,8 @@ class BuildWithOnlyPodman(ScriptCase):
         result, calls = self.script(BUILD)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.one(calls, "build")["name"], "podman")
-        self.assertNotIn("--engine", result.stdout, "an auto-picked engine needs no flag in the hints")
+        hint = next(line.strip() for line in result.stdout.splitlines() if line.strip().startswith("docker/run.sh "))
+        self.assertEqual(value_of(shlex.split(hint, comments=True), "--engine"), ["podman"])
 
     def test_asking_for_the_missing_engine_says_so(self):
         result, calls = self.script(BUILD, "--engine", "docker")
@@ -429,6 +477,45 @@ class RunTests(ScriptCase):
         _, calls = self.run_sh("--bind", "::1", "--port", "3000")
         self.assertEqual(value_of(self.one(calls, "run")["args"], "--publish"), ["[::1]:3000:3000"])
 
+    def test_invalid_ip_addresses_do_not_remove_an_existing_container(self):
+        invalid = (
+            "127.0.0.999", "dead", ":::1", "1:2:3", "01.2.3.4", "127.0.00.1",
+            "1.2.3", "1.2.3.4.5", "1::2::3", "12345::1", "::ffff:192.0.2.999",
+            "::ffff:192.00.2.1",
+        )
+        for address in invalid:
+            full_address = f"[{address}]" if ":" in address else address
+            for options in (["--bind", address], ["--port", f"{full_address}:8000:80"]):
+                with self.subTest(options=options):
+                    result, calls = self.run_sh("--replace", *options, STUB_CONTAINER="1")
+                    self.assertRefused(result, calls, "run", "rm")
+
+    def test_valid_ipv4_and_ipv6_addresses_publish_on_the_requested_address(self):
+        valid = (
+            "0.0.0.0", "127.0.0.1", "255.255.255.255", "::", "::1", "2001:db8::1",
+            "1:2:3:4:5:6:7:8", "::ffff:192.0.2.1", "1:2:3:4:5:6:192.0.2.1", "::192.0.2.1",
+        )
+        for address in valid:
+            full_address = f"[{address}]" if ":" in address else address
+            for options in (["--bind", address, "--port", "8000:80"],
+                            ["--port", f"{full_address}:8000:80"]):
+                with self.subTest(options=options):
+                    result, calls = self.run_sh(*options)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(value_of(self.one(calls, "run")["args"], "--publish"),
+                                     [f"{full_address}:8000:80"])
+
+    def test_empty_full_bind_is_allowed_but_missing_bind_and_malformed_ipv6_are_not(self):
+        result, calls = self.run_sh("--port", ":8000:80")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(value_of(self.one(calls, "run")["args"], "--publish"), [":8000:80"])
+        for options in (["--bind", ""], ["--port", "[]:8000:80"], ["--port", "[::1:8000:80"],
+                        ["--port", "[::1]]:8000:80"], ["--port", "::1:8000:80"],
+                        ["--port", "[::1]:8000:80:90"]):
+            with self.subTest(options=options):
+                result, calls = self.run_sh("--replace", *options, STUB_CONTAINER="1")
+                self.assertRefused(result, calls, "run", "rm")
+
     def test_no_ports(self):
         result, calls = self.run_sh("--no-ports")
         self.assertEqual(value_of(self.one(calls, "run")["args"], "--publish"), [])
@@ -455,7 +542,7 @@ class RunTests(ScriptCase):
     def test_replace_removes_then_creates(self):
         result, calls = self.run_sh("--replace", "--name", "site", STUB_CONTAINER="1")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual([c["args"][0] for c in calls], ["container", "container", "image", "rm", "run"])
+        self.assertEqual([c["args"][0] for c in calls], ["container", "container", "image", "container", "image", "rm", "run"])
         self.assertEqual(self.one(calls, "rm")["args"], ["rm", "-f", "site"])
         self.assertIn("untouched", result.stdout, "and says what was NOT removed")
 
@@ -471,6 +558,8 @@ class RunTests(ScriptCase):
         mount = f"mount|bind|{workspace}|/workspace|true" if workspace else "mount|volume|kept-work|/workspace|true"
         lines = [
             "format|1", "image|custom:kali", "mount|volume|kept-home|/root|true", mount,
+            "image-id|sha256:" + "a" * 64, "pids|<nil>",
+            'process|"/usr/bin/tini"|["--","sleep","infinity"]',
             "network|bridge", "restart|unless-stopped", "security|no-new-privileges", *records,
         ]
         encoded = []
@@ -504,6 +593,38 @@ class RunTests(ScriptCase):
         self.assertEqual(value_of(args, "--volume"), ["kept-home:/root", "kept-work:/workspace"])
         self.assertEqual(value_of(args, "--publish"), [])
         self.assertEqual(value_of(args, "--cap-drop"), ["NET_RAW"])
+
+    def test_replacement_accepts_the_image_default_process_for_both_engines(self):
+        for engine in ("docker", "podman"):
+            with self.subTest(engine=engine):
+                result, calls = self.run_sh("--engine", engine, "--replace", STUB_CONTAINER="1",
+                                            STUB_INSPECT=self.old_settings())
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(self.one(calls, "run")["args"][-1], "custom:kali")
+
+    def test_replacement_refuses_a_changed_or_ambiguously_joined_process(self):
+        default_process = 'process|"/usr/bin/tini"|["--","sleep","infinity"]'
+        for process in ('process|"/usr/bin/env"|["--","sleep","infinity"]',
+                        'process|"/usr/bin/tini"|["--","sleep","60"]',
+                        'process|"/usr/bin/tini"|["-- sleep","infinity"]',
+                        'process|"/usr/bin/tini"|["--","sleep infinity"]',
+                        'process|"/usr/bin/tini"|"-- sleep infinity"'):
+            for engine in ("docker", "podman"):
+                with self.subTest(engine=engine, process=process):
+                    old = self.old_settings().replace(default_process, process)
+                    result, calls = self.run_sh("--engine", engine, "--replace", STUB_CONTAINER="1", STUB_INSPECT=old)
+                    self.assertRefused(result, calls, "run", "rm", saying="cannot preserve")
+
+    def test_executable_paths_cannot_inject_inspection_records(self):
+        default_process = 'process|"/usr/bin/tini"|["--","sleep","infinity"]'
+        for executable in ('/usr/bin/tini|["--","sleep","infinity"]',
+                           '/usr/bin/tini\nprocess|/usr/bin/tini|["--","sleep","infinity"]'):
+            for engine in ("docker", "podman"):
+                with self.subTest(engine=engine, executable=executable):
+                    process = f'process|{json.dumps(executable)}|["--","sleep","infinity"]'
+                    old = self.old_settings().replace(default_process, process)
+                    result, calls = self.run_sh("--engine", engine, "--replace", STUB_CONTAINER="1", STUB_INSPECT=old)
+                    self.assertRefused(result, calls, "run", "rm", saying="cannot preserve")
 
     def test_replace_preserves_each_engines_default_net_raw_when_not_explicit(self):
         old = self.old_settings()
@@ -563,16 +684,50 @@ class RunTests(ScriptCase):
                 self.assertRefused(result, calls, "run", "rm", saying="cannot preserve")
 
     def test_shared_labels_and_custom_propagation_are_not_silently_changed(self):
+        workspace = self.dir / "shared-work"
+        workspace.mkdir()
         for record in ('mount-mode|"/workspace"|"z"|"rprivate"',
                        'mount-mode|"/workspace"|""|"rshared"',
                        'mount-option|"/workspace"|"z"', 'mount-option|"/workspace"|"noexec"'):
             with self.subTest(record=record):
-                old = self.old_settings(record)
+                old = self.old_settings(record, workspace=workspace)
                 result, calls = self.run_sh("--replace", STUB_CONTAINER="1", STUB_INSPECT=old)
                 self.assertRefused(result, calls, "run", "rm", saying="cannot preserve")
                 result, calls = self.run_sh("--replace", "--workspace-volume", "new-work",
                                             STUB_CONTAINER="1", STUB_INSPECT=old)
                 self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_default_shared_labels_on_named_volumes_keep_the_same_data_mounts(self):
+        # Docker's default named volumes can inspect as Mode="z", even though
+        # run.sh did not request relabeling. Podman can report mount options
+        # separately. Neither representation should block a normal upgrade or
+        # turn the named volumes into bind mounts/private relabel requests.
+        fixtures = (
+            ("docker", ('mount-mode|"/root"|"z"|""', 'mount-mode|"/workspace"|"z"|""')),
+            ("docker", ('mount-mode|"/root"|"rw,z"|"rprivate"',
+                        'mount-mode|"/workspace"|"rw,z"|"rprivate"')),
+            ("podman", ('mount-option|"/root"|"z"', 'mount-option|"/workspace"|"z"')),
+        )
+        for engine, records in fixtures:
+            with self.subTest(engine=engine, records=records):
+                result, calls = self.run_sh("--engine", engine, "--replace", STUB_CONTAINER="1",
+                                            STUB_INSPECT=self.old_settings(*records))
+                self.assertEqual(result.returncode, 0, result.stderr)
+                volumes = value_of(self.one(calls, "run")["args"], "--volume")
+                self.assertEqual([value.split(":")[:2] for value in volumes],
+                                 [["kept-home", "/root"], ["kept-work", "/workspace"]])
+                for value in volumes:
+                    options = value.split(":")[2:]
+                    self.assertNotIn("Z", ",".join(options).split(","), "shared labels must not become private")
+
+    def test_named_volumes_still_reject_unsupported_mount_options(self):
+        for record in ('mount-option|"/root"|"noexec"', 'mount-option|"/workspace"|"noexec"',
+                       'mount-mode|"/root"|"z,noexec"|""',
+                       'mount-mode|"/workspace"|"z"|"rshared"'):
+            with self.subTest(record=record):
+                result, calls = self.run_sh("--replace", STUB_CONTAINER="1",
+                                            STUB_INSPECT=self.old_settings(record))
+                self.assertRefused(result, calls, "run", "rm", saying="cannot preserve")
 
     def test_default_podman_mount_options_and_private_labels_are_supported(self):
         old = self.old_settings('mount-mode|"/workspace"|"Z"|"rprivate"',

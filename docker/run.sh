@@ -58,6 +58,48 @@ here=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 
 usage() { sed -n '2,/^set -eu/p' "$0" | sed '$d' | sed 's/^# \{0,1\}//'; }
 
+# Validate the IP syntax here, before --replace can remove a working
+# container. A character allowlist alone accepts 127.0.0.999 and :::1.
+# awk is POSIX; the host needs no Python, jq or network lookup.
+valid_ip() {
+	case "$1" in '' | *[!0-9A-Fa-f.:]*) return 1 ;; esac
+	LC_ALL=C awk -v address="$1" '
+	function ipv4(value, parts, count, i) {
+		count = split(value, parts, ".")
+		if (count != 4) return 0
+		for (i = 1; i <= count; i++) {
+			if (parts[i] !~ /^[0-9]+$/ || length(parts[i]) > 3 ||
+			    (length(parts[i]) > 1 && substr(parts[i], 1, 1) == "0") ||
+			    parts[i] + 0 > 255) return 0
+		}
+		return 1
+	}
+	function groups(value, parts, count, i) {
+		if (value == "") return 0
+		count = split(value, parts, ":")
+		for (i = 1; i <= count; i++) {
+			if (parts[i] !~ /^[0-9A-Fa-f]+$/ || length(parts[i]) > 4) return -1
+		}
+		return count
+	}
+	function valid(value, tail, halves, count, left, right) {
+		if (index(value, ":") == 0) return ipv4(value)
+		if (index(value, ".") != 0) {
+			tail = value
+			sub(/^.*:/, "", tail)
+			if (!ipv4(tail)) return 0
+			# A final IPv4 address occupies two IPv6 groups.
+			sub(/[^:]*$/, "0:0", value)
+		}
+		count = split(value, halves, "::")
+		if (count == 1) return groups(value) == 8
+		if (count != 2) return 0
+		left = groups(halves[1]); right = groups(halves[2])
+		return left >= 0 && right >= 0 && left + right < 8
+	}
+	BEGIN { exit valid(address) ? 0 : 1 }'
+}
+
 valid_port() {
 	case "$1" in '' | *[!0-9]*) return 1 ;; esac
 	[ "${#1}" -le 5 ] && [ "$1" -ge 1 ] && [ "$1" -le 65535 ]
@@ -95,6 +137,7 @@ publish_spec() {
 	\[*\]:*:*)
 		address=${spec%%]*}; address=${address#\[}
 		pair=${spec#*\]:}; host_port=${pair%%:*}; container_port=${pair#*:}
+		[ "$spec" = "[$address]:$pair" ] || fail "not a published address: $spec"
 		case "$address" in *:*) ;; *) fail "not an IPv6 address: $address" ;; esac
 		full_form=1
 		;;
@@ -113,7 +156,8 @@ publish_spec() {
 		;;
 	esac
 	if [ "$full_form" -eq 1 ]; then
-		case "$address" in *[!0-9A-Fa-f.:]*) fail "not a published address: $address" ;; esac
+		# An empty address in the engine's full form means all interfaces.
+		[ -z "$address" ] || valid_ip "$address" || fail "not a published address: $address"
 		case "$host_port" in '' | 0) ;; *) valid_port_range "$host_port" || fail "not a port: $1" ;; esac
 	elif ! valid_port_range "$host_port"; then
 		fail "not a port: $1" "Use ports 1-65535, or an ascending port range."
@@ -191,9 +235,7 @@ esac
 case "$image" in
 '' | -*) fail "not an image name: $image" ;;
 esac
-case "$bind" in
-'' | *[!0-9A-Fa-f.:]*) fail "not an address: $bind" "Use an IP of this machine, like 127.0.0.1 or 0.0.0.0." ;;
-esac
+valid_ip "$bind" || fail "not an address: $bind" "Use an IP of this machine, like 127.0.0.1 or 0.0.0.0."
 if [ "$no_ports" -eq 1 ] && [ -n "$ports" ]; then
 	fail "--no-ports and --port contradict each other"
 fi
@@ -228,7 +270,7 @@ if [ "$existing" -eq 1 ] && [ "$reset_config" -eq 0 ]; then
 	fi
 	# shellcheck disable=SC2016 # Go-template variables, not shell expansion.
 	settings=$("$engine" container inspect --format '
-{{printf "format|1\nimage|%s\n" .Config.Image}}
+{{printf "format|1\nimage|%s\nimage-id|%s\n" .Config.Image .Image}}
 {{range $mount := .Mounts}}{{printf "mount|%s|" .Type}}{{if eq .Type "volume"}}{{printf "%q" .Name}}{{else}}{{printf "%q" .Source}}{{end}}{{printf "|%q|%t\n" .Destination .RW}}{{printf "mount-mode|%q|%q|%q\n" .Destination .Mode .Propagation}}'"$mount_options_template"'{{end}}
 {{range $port, $bindings := .HostConfig.PortBindings}}{{range $bindings}}{{printf "port|%s|%s|%s\n" .'"$host_ip_field"' .HostPort $port}}{{end}}{{end}}
 {{range .HostConfig.CapAdd}}{{printf "capadd|%s\n" .}}{{end}}{{range .HostConfig.CapDrop}}{{printf "capdrop|%s\n" .}}{{end}}
@@ -239,26 +281,43 @@ if [ "$existing" -eq 1 ] && [ "$reset_config" -eq 0 ]; then
 {{if .HostConfig.Devices}}unsupported|custom devices{{"\n"}}{{end}}
 {{if and .HostConfig.Memory (ne (printf "%v" .HostConfig.Memory) "0")}}unsupported|memory limit{{"\n"}}{{end}}
 {{if and .HostConfig.CpuShares (ne (printf "%v" .HostConfig.CpuShares) "0")}}unsupported|CPU shares{{"\n"}}{{end}}
+{{if and .HostConfig.CpuQuota (ne (printf "%v" .HostConfig.CpuQuota) "0")}}unsupported|CPU quota{{"\n"}}{{end}}
+{{if and .HostConfig.CpuPeriod (ne (printf "%v" .HostConfig.CpuPeriod) "0")}}unsupported|CPU period{{"\n"}}{{end}}
+{{if and .HostConfig.NanoCpus (ne (printf "%v" .HostConfig.NanoCpus) "0")}}unsupported|CPU limit{{"\n"}}{{end}}
+{{if .HostConfig.CpusetCpus}}unsupported|CPU affinity{{"\n"}}{{end}}
+{{if .HostConfig.CpusetMems}}unsupported|CPU memory-node affinity{{"\n"}}{{end}}
+{{if and .HostConfig.CpuRealtimePeriod (ne (printf "%v" .HostConfig.CpuRealtimePeriod) "0")}}unsupported|real-time CPU period{{"\n"}}{{end}}
+{{if and .HostConfig.CpuRealtimeRuntime (ne (printf "%v" .HostConfig.CpuRealtimeRuntime) "0")}}unsupported|real-time CPU runtime{{"\n"}}{{end}}
+{{printf "pids|"}}{{.HostConfig.PidsLimit}}{{"\n"}}
 {{if .HostConfig.ExtraHosts}}unsupported|custom host entries{{"\n"}}{{end}}
 {{if .HostConfig.Dns}}unsupported|custom DNS{{"\n"}}{{end}}
 {{if .HostConfig.UsernsMode}}unsupported|custom user namespace{{"\n"}}{{end}}
 {{if and .Config.User (ne .Config.User "root") (ne .Config.User "0")}}unsupported|custom user{{"\n"}}{{end}}
 {{if ne .Config.WorkingDir "/workspace"}}unsupported|custom working directory{{"\n"}}{{end}}
 {{if ne .Config.Hostname "az-kali"}}unsupported|custom hostname{{"\n"}}{{end}}
-{{if ne (printf "%v" .Config.Entrypoint) "[/usr/bin/tini --]"}}unsupported|custom entrypoint{{"\n"}}{{end}}
-{{if ne (printf "%v" .Config.Cmd) "[sleep infinity]"}}unsupported|custom command{{"\n"}}{{end}}
+{{printf "process|%q|%s\n" .Path (json .Args)}}
 {{range .HostConfig.SecurityOpt}}{{printf "security|%s\n" .}}{{end}}' "$name") || cannot_inherit "container inspection failed"
 	old_home="" old_workspace="" old_workspace_type="" old_ports="" old_clipboard=0 old_restart=""
+	original_image="" old_pids="" old_wayland=0 old_x11=0 old_xauthority=0
 	old_raw=0 old_raw_add=0 old_raw_drop=0 format_seen=0
 	# Docker grants NET_RAW by default; Podman requires an explicit grant.
 	if [ "$engine" = docker ]; then old_raw=1; fi
 	while IFS='|' read -r kind first second third fourth extra; do
 		[ -z "$extra" ] || cannot_inherit "an inspect value contains an unsupported delimiter"
-		case "$kind" in mount | mount-mode | mount-option | port) ;; *) [ -z "$second$third$fourth" ] || cannot_inherit "an inspect value contains an unsupported delimiter" ;; esac
+		case "$kind" in mount | mount-mode | mount-option | port | process) ;; *) [ -z "$second$third$fourth" ] || cannot_inherit "an inspect value contains an unsupported delimiter" ;; esac
 		case "$kind" in
 		'') ;;
 		format) [ "$first" = 1 ] || cannot_inherit "unknown inspect format"; format_seen=1 ;;
 		image) if [ "$image_set" -eq 0 ]; then image=$first; fi ;;
+		image-id) original_image=$first ;;
+		pids)
+			case "$first" in
+			'<nil>' | '<no value>' | '') ;;
+			-1 | 0) old_pids=$first ;;
+			*[!0-9]*) cannot_inherit "an invalid process limit" ;;
+			*) old_pids=$first ;;
+			esac
+			;;
 		mount)
 			second=$(inspect_path "$second") || exit 1
 			third=$(inspect_path "$third") || exit 1
@@ -281,6 +340,11 @@ if [ "$existing" -eq 1 ] && [ "$reset_config" -eq 0 ]; then
 			/run/alter-zero/wayland-0 | /tmp/.X11-unix | /run/alter-zero/x11)
 				[ "$first:$fourth" = bind:false ] || cannot_inherit "an unsupported clipboard mount"
 				old_clipboard=1
+				case "$third" in
+				/run/alter-zero/wayland-0) old_wayland=1 ;;
+				/tmp/.X11-unix) old_x11=1 ;;
+				/run/alter-zero/x11) old_xauthority=1 ;;
+				esac
 				;;
 			*) cannot_inherit "an extra mount at $third" ;;
 			esac
@@ -289,12 +353,36 @@ if [ "$existing" -eq 1 ] && [ "$reset_config" -eq 0 ]; then
 			first=$(inspect_path "$first") || exit 1
 			second=$(inspect_path "$second") || exit 1
 			case "$first" in /workspace) [ "$workspace_set" -eq 0 ] || continue ;; /root) [ "$home_set" -eq 0 ] || continue ;; esac
+			# Docker adds shared 'z' to named volumes by default. Reattaching
+			# the same volume keeps that behavior; a bind mount is different,
+			# because the launcher would relabel it privately with :Z.
+			shared_volume=0
+			case "$first" in
+			/root) [ -z "$old_home" ] || shared_volume=1 ;;
+			/workspace) if [ "$old_workspace_type" = volume ]; then shared_volume=1; fi ;;
+			esac
 			if [ "$kind" = mount-mode ]; then
 				third=$(inspect_path "$third") || exit 1
-				case "$second" in '' | rw | ro | Z | rw,Z | Z,rw) ;; *) cannot_inherit "mount mode $second at $first" ;; esac
+				case "$second" in
+				'' | rw | ro | Z | rw,Z | Z,rw) ;;
+				z | rw,z | z,rw) [ "$shared_volume" -eq 1 ] || cannot_inherit "mount mode $second at $first" ;;
+				*) cannot_inherit "mount mode $second at $first" ;;
+				esac
 				case "$third" in '' | private | rprivate) ;; *) cannot_inherit "mount propagation $third at $first" ;; esac
 			else
-				case "$second" in rw | ro | bind | rbind | nosuid | nodev | private | rprivate | Z) ;; *) cannot_inherit "mount option $second at $first" ;; esac
+				case "$second" in
+				rw | ro | bind | rbind | nosuid | nodev | private | rprivate | Z) ;;
+				z) [ "$shared_volume" -eq 1 ] || cannot_inherit "mount option $second at $first" ;;
+				*) cannot_inherit "mount option $second at $first" ;;
+				esac
+			fi
+			;;
+		process)
+			# Older Podman versions join Config.Entrypoint into a string.
+			# Path and Args preserve the actual argv on both engines.
+			first=$(inspect_path "$first") || exit 1
+			if [ "$first" != /usr/bin/tini ] || [ "$second" != '["--","sleep","infinity"]' ] || [ -n "$third$fourth" ]; then
+				cannot_inherit "custom container process"
 			fi
 			;;
 		port)
@@ -320,6 +408,45 @@ if [ "$existing" -eq 1 ] && [ "$reset_config" -eq 0 ]; then
 $settings
 EOF
 	[ "$format_seen" -eq 1 ] || cannot_inherit "empty container inspection"
+	# Compare to the image that created this container, not a tag that may now
+	# point at an upgrade. Keep values quoted throughout: no evaluation, word
+	# splitting, or secret values in diagnostics. Only launcher-managed desktop
+	# variables and the engines' exact root/hostname markers are exceptions.
+	image_digest=${original_image#sha256:}
+	case "$image_digest" in '' | *[!0-9a-fA-F]*) cannot_inherit "the original image ID is unavailable" ;; esac
+	[ "${#image_digest}" -eq 64 ] || cannot_inherit "the original image ID is unavailable"
+	# shellcheck disable=SC2016 # Go template, not shell expansion.
+	environment_template='{{range .Config.Env}}{{printf "%q\n" .}}{{end}}'
+	image_environment=$("$engine" image inspect --format "$environment_template" "$original_image") || cannot_inherit "the original image environment is unavailable"
+	container_environment=$("$engine" container inspect --format "$environment_template" "$name") || cannot_inherit "the container environment is unavailable"
+	newline='
+'
+	while IFS= read -r entry; do
+		[ -n "$entry" ] || continue
+		case "$newline$image_environment$newline" in *"$newline$entry$newline"*) continue ;; esac
+		case "$entry" in
+		'"HOME=/root"' | '"HOSTNAME=az-kali"') continue ;;
+		'"container=podman"') if [ "$engine" = podman ]; then continue; fi ;;
+		'"WAYLAND_DISPLAY=wayland-0"' | '"XDG_RUNTIME_DIR=/run/alter-zero"') if [ "$old_wayland" -eq 1 ]; then continue; fi ;;
+		'"XAUTHORITY=/run/alter-zero/x11/Xauthority"') if [ "$old_xauthority" -eq 1 ]; then continue; fi ;;
+		\"DISPLAY=:*\")
+			display_number=${entry#\"DISPLAY=:}; display_number=${display_number%\"}
+			case "$display_number" in '' | *[!0-9]*) ;; *) if [ "$old_x11" -eq 1 ]; then continue; fi ;; esac
+			;;
+		esac
+		cannot_inherit "custom environment variables"
+	done <<EOF
+$container_environment
+EOF
+	while IFS= read -r entry; do
+		[ -n "$entry" ] || continue
+		case "$newline$container_environment$newline" in *"$newline$entry$newline"*) ;; *) cannot_inherit "changed or removed image environment variables" ;; esac
+	done <<EOF
+$image_environment
+EOF
+	# PID defaults differ by engine and host configuration. Reuse the inspected
+	# limit rather than guessing; an explicit option after -- still wins.
+	if [ -n "$old_pids" ]; then set -- --pids-limit "$old_pids" "$@"; fi
 	if [ "$old_raw_add" -eq 1 ] && [ "$old_raw_drop" -eq 1 ] && [ "$net_raw_set" -eq 0 ]; then cannot_inherit "conflicting NET_RAW grants and drops"; fi
 	if [ "$home_set" -eq 0 ]; then [ -n "$old_home" ] || cannot_inherit "no persistent home mount"; home_volume=$old_home; fi
 	if [ "$workspace_set" -eq 0 ]; then

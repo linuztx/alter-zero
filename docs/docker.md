@@ -212,11 +212,16 @@ folder, or the `alter-zero-workspace` volume) and `/root` (the
 `alter-zero-home` volume — sign-ins, settings, sessions, the telemetry install
 id). Everything else is the container's writable layer and is lost on
 replacement. `run.sh --replace` inspects the existing container and inherits
-its workspace/home mounts, image name, published ports, clipboard setting
-and `NET_RAW` choice. Explicit options override the inherited settings.
+its workspace/home mounts, image name, published ports, clipboard setting,
+PID limit and `NET_RAW` choice. Explicit options override the inherited settings.
 Port inheritance uses the configured mappings; an automatically allocated
 host port remains automatic and may receive a different number.
-Unsupported configurations are refused before removal; `--reset-config`
+Custom environment overrides and CPU limits are refused before removal.
+Environment values are compared with the original image ID, not its mutable
+tag, and errors do not reveal their contents. Engine defaults and managed
+clipboard variables are handled separately. The PID limit is carried forward
+explicitly rather than guessed from engine defaults. Detected unsupported
+configurations require `--reset-config`, which
 deliberately uses supplied options and defaults instead, so extra engine
 flags must be supplied again. No `VOLUME` is declared in the image: an
 undeclared mount would become an anonymous volume, which persists data nobody
@@ -233,8 +238,8 @@ SELinux host adds `:Z` while refusing to relabel the home directory itself.
 Both the workspace and home are resolved to physical paths before comparison,
 so a symlinked home cannot bypass that protection.
 
-Workspace, port and clipboard validation runs before removal of an existing
-container. A rejected launcher option leaves it intact. This is not a rollback
+Workspace, port, IP address and clipboard validation runs before removal of
+an existing container. A rejected launcher option leaves it intact. This is not a rollback
 mechanism: a failure reported by the engine after removal can still require
 retrying creation with corrected engine options.
 

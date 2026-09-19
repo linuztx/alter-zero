@@ -70,9 +70,17 @@ release heading when a version is cut.
 
 - **Container replacement preserves launch settings.** `docker/run.sh
   --replace` retains the existing mounts, image name, ports, clipboard setting
-  and `NET_RAW` choice unless explicitly overridden. Invalid launcher inputs
-  are rejected before removing the old container. Unsupported configurations
-  require an intentional `--reset-config` with the desired options.
+  and `NET_RAW` choice unless explicitly overridden, and carries forward the
+  PID limit. Malformed IPv4 and IPv6 addresses are rejected before removing
+  the old container. Custom environment overrides and CPU limits require an
+  intentional `--reset-config` with the desired options instead of silently
+  disappearing on replacement.
+  Docker's default shared label on named volumes is accepted, while shared
+  bind mounts remain protected. Process validation uses the executable and
+  exact arguments so older Podman inspection formats also work.
+- **Custom-image builds print the correct launch commands.** The commands
+  printed by `docker/build.sh --image NAME` explicitly select that image for
+  both creation and replacement.
 - **Capability and SELinux safeguards apply consistently.** `--no-net-raw`
   explicitly drops Docker's default capability as well as Podman's, and a
   symlinked home directory cannot bypass the guard against relabeling it.
