@@ -180,7 +180,7 @@ Next, create the container (its data outlives it, in named volumes):
   docker/run.sh$flag ~/projects/site      # /workspace is that folder
 
 Already have one from an older build? Recreate it to move onto this image;
-sign-ins, settings and your files are kept:
+existing mounts, ports, clipboard and capability settings are retained:
 
   docker/run.sh$flag --replace
 EOF

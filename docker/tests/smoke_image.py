@@ -169,6 +169,32 @@ def check_login_venv():
             assert shell_output.splitlines()[-1] == "function", f"{label}: no deactivate: {shell_output!r}"
 
 
+def check_custom_venv():
+    """A valid venv path can contain spaces and shell pattern metacharacters."""
+    with tempfile.TemporaryDirectory(prefix="alter-zero-venv-") as scratch:
+        custom = str(Path(scratch) / "custom [1]* venv")
+        created = run("/usr/bin/python3", "-m", "venv", "--without-pip", custom)
+        assert created.returncode == 0, created.stderr
+        probe = "python3 -c " + shlex.quote(
+            "import json, os, shutil, sys; "
+            "print(json.dumps([sys.prefix, os.environ.get('VIRTUAL_ENV'), "
+            "shutil.which('python3'), os.environ['PATH'].split(':')]))"
+        )
+        command = probe + "; deactivate; " + probe
+        env = dict(os.environ, VIRTUAL_ENV=custom)
+        for shell in (["bash", "-ic", command], ["bash", "-lic", command],
+                      ["bash", "-ic", "bash -ic " + shlex.quote(command)]):
+            result = run(*shell, env=env)
+            assert result.returncode == 0, f"{shell}: {result.stdout}\n{result.stderr}"
+            before, after = map(json.loads, result.stdout.splitlines())
+            assert before[:3] == [custom, custom, f"{custom}/bin/python3"], before
+            assert before[3].count(f"{custom}/bin") == 1, before
+            # Deactivation must remove the custom venv, even if the inherited
+            # image PATH still contains its default /opt/az-venv interpreter.
+            assert after[0] != custom and after[1] is None, after
+            assert f"{custom}/bin" not in after[3], after
+
+
 def check_pip_cache():
     """pip's cache must not live under /root.
 
@@ -368,6 +394,7 @@ def main():
     version = check_tools()
     check_venv()
     check_login_venv()
+    check_custom_venv()
     check_pip_cache()
     check_scanner_runs()
     check_nothing_listens()

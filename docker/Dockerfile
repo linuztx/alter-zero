@@ -121,7 +121,7 @@ RUN python3 -m venv "$VENV" \
         '. /etc/profile.d/az-venv.sh' \
         'if [ -n "${VIRTUAL_ENV:-}" ] && [ -r "$VIRTUAL_ENV/bin/activate" ]; then' \
         '    PATH=":$PATH:"' \
-        '    PATH="${PATH//:$VIRTUAL_ENV\/bin:/:}"' \
+        '    PATH="${PATH//":$VIRTUAL_ENV/bin:"/:}"' \
         '    PATH="${PATH#:}"; PATH="${PATH%:}"' \
         '    . "$VIRTUAL_ENV/bin/activate"' \
         'fi' \

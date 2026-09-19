@@ -147,8 +147,10 @@ capability, not `--privileged` and not `--cap-add ALL`; its reach is the
 container's own network namespace, which under rootless Podman is a
 slirp4netns/pasta namespace of the user's own; `no-new-privileges` still
 applies; and a network-tools image whose flagship tool cannot run is simply
-broken. `--no-net-raw` drops it for anyone who wants the narrower set, at the
-cost of `nmap -sS`, `traceroute -I` and `tcpdump` (`nmap -sT` is unaffected).
+broken. `--no-net-raw` passes only `--cap-drop NET_RAW`, explicitly dropping
+the capability on both engines at the cost of `nmap -sS`, `traceroute -I`
+and `tcpdump` (`nmap -sT` is unaffected). Omitting `--cap-add` alone would
+leave Docker's default grant in place.
 
 It is a flag of its own because the `--` passthrough cannot do this one job.
 Capabilities are lists, not last-one-wins flags, and the engines disagree
@@ -162,7 +164,8 @@ stub suite: "the same container" under `podman compose` would otherwise be
 the one place the raw-socket refusal survived.
 
 `docker/tests/smoke.sh` runs a real SYN scan in the container `run.sh`
-creates, on both engines, so the parity is a test and not a claim.
+creates, then checks that `--no-net-raw` removes the capability and prevents
+opening a raw socket on both engines.
 
 ### The scanner that would not exec
 
@@ -207,9 +210,15 @@ never stops it. `tini` reaps what those sessions leave behind.
 State lives in two places that outlive the container: `/workspace` (the user's
 folder, or the `alter-zero-workspace` volume) and `/root` (the
 `alter-zero-home` volume — sign-ins, settings, sessions, the telemetry install
-id). Everything else is the container's writable layer. That split is what
-makes `run.sh --replace` safe, and `--replace` is in turn how the folder, the
-ports and the image are changed. No `VOLUME` is declared in the image: an
+id). Everything else is the container's writable layer and is lost on
+replacement. `run.sh --replace` inspects the existing container and inherits
+its workspace/home mounts, image name, published ports, clipboard setting
+and `NET_RAW` choice. Explicit options override the inherited settings.
+Port inheritance uses the configured mappings; an automatically allocated
+host port remains automatic and may receive a different number.
+Unsupported configurations are refused before removal; `--reset-config`
+deliberately uses supplied options and defaults instead, so extra engine
+flags must be supplied again. No `VOLUME` is declared in the image: an
 undeclared mount would become an anonymous volume, which persists data nobody
 can find and orphans it on `rm`.
 
@@ -221,6 +230,13 @@ project, and one person stays one telemetry install.
 user* — because an engine handed a missing path makes it itself, owned by root.
 It refuses `/`, refuses a path containing `:` (the `-v` separator), and on an
 SELinux host adds `:Z` while refusing to relabel the home directory itself.
+Both the workspace and home are resolved to physical paths before comparison,
+so a symlinked home cannot bypass that protection.
+
+Workspace, port and clipboard validation runs before removal of an existing
+container. A rejected launcher option leaves it intact. This is not a rollback
+mechanism: a failure reported by the engine after removal can still require
+retrying creation with corrected engine options.
 
 A container that fails to start is removed again: a port already in use fails
 *after* `create`, and the leftover would block the retry with a confusing
@@ -278,7 +294,9 @@ script adds `deactivate` and the prompt. The order matters: interactive login
 Bash runs `/etc/bash.bashrc` from `/etc/profile` before the `profile.d` files,
 so waiting for `profile.d` would leave an interactive `su -` without
 `deactivate`. The block **strips the venv copy off `PATH` before activation**,
-because `activate` prepends unconditionally. Kali's own `.bashrc` renders
+because `activate` prepends unconditionally. The match treats the path
+literally, including spaces and pattern characters such as brackets, so a
+custom virtualenv is added once and removed by `deactivate`. Kali's own `.bashrc` renders
 `$VIRTUAL_ENV` into its `┌──(az-venv)(root㉿host)` prompt and sets
 `VIRTUAL_ENV_DISABLE_PROMPT=1` so `activate` does not also prepend one — so
 the prompt assertion checks the *rendered* prompt (`${PS1@P}`) rather than a

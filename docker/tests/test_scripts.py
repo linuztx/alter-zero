@@ -54,6 +54,11 @@ if name == "selinuxenabled":
 if args[:2] == ["image", "inspect"]:
     sys.exit(0 if env("STUB_IMAGE", "1") == "1" else 1)
 if args[:2] == ["container", "inspect"]:
+    if "--format" in args:
+        default = "format|1\\nimage|alter-zero:kali\\nport|127.0.0.1|8080|8080/tcp\\nport|127.0.0.1|8888|8888/tcp\\ncapadd|NET_RAW\\nrestart|unless-stopped\\nnetwork|bridge\\nsecurity|no-new-privileges"
+        for source, target in (("alter-zero-home", "/root"), ("alter-zero-workspace", "/workspace")):
+            default += "\\nmount|volume|" + json.dumps(source) + "|" + json.dumps(target) + "|true"
+        print(env("STUB_INSPECT", default))
     sys.exit(0 if env("STUB_CONTAINER", "0") == "1" else 1)
 if args[:1] == ["run"]:
     sys.exit(int(env("STUB_RUN_EXIT", "0")))
@@ -240,7 +245,7 @@ class BuildTests(ScriptCase):
         result, calls = self.build("--engine", "podman", "--name", "site", "--replace", "projects/site", STUB_CONTAINER="1")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual([c["args"][0] for c in calls if c["name"] == "podman"],
-                         ["build", "image", "container", "rm", "run"], "built first, then created")
+                         ["build", "container", "container", "image", "rm", "run"], "built first, then created")
         run = self.one(calls, "run")
         self.assertEqual(value_of(run["args"], "--name"), ["site"])
         self.assertIn(f"{self.dir / 'projects' / 'site'}:/workspace", value_of(run["args"], "--volume"))
@@ -338,16 +343,20 @@ class RunTests(ScriptCase):
         self.assertEqual(value_of(self.one(calls, "run")["args"], "--cap-add"), ["NET_RAW"])
 
     def test_no_net_raw_drops_it(self):
-        result, calls = self.run_sh("--no-net-raw")
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertNotIn("--cap-add", self.one(calls, "run")["args"])
+        for engine in ("docker", "podman"):
+            with self.subTest(engine=engine):
+                result, calls = self.run_sh("--engine", engine, "--no-net-raw")
+                self.assertEqual(result.returncode, 0, result.stderr)
+                args = self.one(calls, "run")["args"]
+                self.assertNotIn("--cap-add", args)
+                self.assertEqual(value_of(args, "--cap-drop"), ["NET_RAW"])
 
     def test_it_never_asks_for_privileged_mode_a_user_or_the_hosts_network(self):
         for args in ([], ["--no-net-raw"]):
             with self.subTest(args=args):
                 _, calls = self.run_sh(*args)
                 argv = self.one(calls, "run")["args"]
-                for flag in ("--privileged", "--user", "-u", "--network", "--cap-drop"):
+                for flag in ("--privileged", "--user", "-u", "--network"):
                     self.assertNotIn(flag, argv)
                 # One capability, named, and never a blanket grant.
                 self.assertNotIn("ALL", argv)
@@ -399,6 +408,10 @@ class RunTests(ScriptCase):
             ("-p", "9000:53/udp"): ["127.0.0.1:9000:53/udp"],
             ("-p", "0.0.0.0:80:8080"): ["0.0.0.0:80:8080"],
             ("-p", "[::1]:80:8080/tcp"): ["[::1]:80:8080/tcp"],
+            ("-p", "127.0.0.1::8080"): ["127.0.0.1::8080"],
+            ("-p", "[::1]:0:8080"): ["[::1]:0:8080"],
+            ("-p", "127.0.0.1:8000-8002:9000-9002"): ["127.0.0.1:8000-8002:9000-9002"],
+            ("-p", "127.0.0.1:0080-0081:0090-0091"): ["127.0.0.1:0080-0081:0090-0091"],
             ("-p", "3000", "-p", "3001"): ["127.0.0.1:3000:3000", "127.0.0.1:3001:3001"],
         }
         for args, expected in cases.items():
@@ -442,15 +455,162 @@ class RunTests(ScriptCase):
     def test_replace_removes_then_creates(self):
         result, calls = self.run_sh("--replace", "--name", "site", STUB_CONTAINER="1")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual([c["args"][0] for c in calls], ["image", "container", "rm", "run"])
+        self.assertEqual([c["args"][0] for c in calls], ["container", "container", "image", "rm", "run"])
         self.assertEqual(self.one(calls, "rm")["args"], ["rm", "-f", "site"])
         self.assertIn("untouched", result.stdout, "and says what was NOT removed")
+
+    def test_invalid_replacement_leaves_the_existing_container_running(self):
+        for args in (["/"], ["--port", "70000"], ["--clipboard"],
+                     ["--port", "127.0.0.1:70000:80"], ["--port", "[::1]:70000:80"],
+                     ["--port", "127.0.0.1:8000-8002:9000-9001"], ["--port", "[::1]:80:bad"]):
+            with self.subTest(args=args):
+                result, calls = self.run_sh("--replace", *args, STUB_CONTAINER="1")
+                self.assertRefused(result, calls, "run", "rm")
+
+    def old_settings(self, *records, workspace=None):
+        mount = f"mount|bind|{workspace}|/workspace|true" if workspace else "mount|volume|kept-work|/workspace|true"
+        lines = [
+            "format|1", "image|custom:kali", "mount|volume|kept-home|/root|true", mount,
+            "network|bridge", "restart|unless-stopped", "security|no-new-privileges", *records,
+        ]
+        encoded = []
+        for line in lines:
+            fields = line.split("|")
+            if fields[0] == "mount":
+                fields[2:4] = [json.dumps(field) for field in fields[2:4]]
+            encoded.append("|".join(fields))
+        return "\n".join(encoded)
+
+    def test_replace_inherits_legacy_image_bind_home_and_published_ports(self):
+        workspace = self.dir / "existing work"
+        workspace.mkdir()
+        old = self.old_settings("port|127.0.0.1|9000|8080/tcp", "port|::1|5353|53/udp",
+                                "capadd|CAP_NET_RAW", workspace=workspace)
+        for engine in ("docker", "podman"):
+            with self.subTest(engine=engine):
+                result, calls = self.run_sh("--engine", engine, "--replace", STUB_CONTAINER="1", STUB_INSPECT=old)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                args = self.one(calls, "run")["args"]
+                self.assertEqual(args[-1], "custom:kali")
+                self.assertEqual(value_of(args, "--volume"), ["kept-home:/root", f"{workspace}:/workspace"])
+                self.assertEqual(value_of(args, "--publish"), ["127.0.0.1:9000:8080/tcp", "[::1]:5353:53/udp"])
+                self.assertEqual(value_of(args, "--cap-add"), ["NET_RAW"])
+
+    def test_replace_inherits_named_workspace_no_ports_and_capability_drop(self):
+        old = self.old_settings("capdrop|CAP_NET_RAW")
+        result, calls = self.run_sh("--replace", STUB_CONTAINER="1", STUB_INSPECT=old)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        args = self.one(calls, "run")["args"]
+        self.assertEqual(value_of(args, "--volume"), ["kept-home:/root", "kept-work:/workspace"])
+        self.assertEqual(value_of(args, "--publish"), [])
+        self.assertEqual(value_of(args, "--cap-drop"), ["NET_RAW"])
+
+    def test_replace_preserves_each_engines_default_net_raw_when_not_explicit(self):
+        old = self.old_settings()
+        for engine, flag in (("docker", "--cap-add"), ("podman", "--cap-drop")):
+            with self.subTest(engine=engine):
+                result, calls = self.run_sh("--engine", engine, "--replace", STUB_CONTAINER="1", STUB_INSPECT=old)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(value_of(self.one(calls, "run")["args"], flag), ["NET_RAW"])
+
+    def test_explicit_options_override_inherited_settings(self):
+        old = self.old_settings("capdrop|NET_RAW", "port|127.0.0.1|8000|80/tcp",
+                                "mount|bind|/old/socket|/run/alter-zero/wayland-0|false")
+        result, calls = self.run_sh("--replace", "--image", "new:kali", "--home-volume", "new-home",
+                                    "--workspace-volume", "new-work", "--port", "9090", "--net-raw",
+                                    "--no-clipboard", STUB_CONTAINER="1", STUB_INSPECT=old)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        args = self.one(calls, "run")["args"]
+        self.assertEqual(args[-1], "new:kali")
+        self.assertEqual(value_of(args, "--volume"), ["new-home:/root", "new-work:/workspace"])
+        self.assertEqual(value_of(args, "--publish"), ["127.0.0.1:9090:9090"])
+        self.assertEqual(value_of(args, "--cap-add"), ["NET_RAW"])
+        self.assertEqual(value_of(args, "--mount"), [])
+
+    def test_explicit_bind_changes_inherited_port_addresses(self):
+        old = self.old_settings("port|127.0.0.1|9000|8080/tcp")
+        result, calls = self.run_sh("--replace", "--bind", "::1", STUB_CONTAINER="1", STUB_INSPECT=old)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(value_of(self.one(calls, "run")["args"], "--publish"), ["[::1]:9000:8080/tcp"])
+
+    def test_explicit_no_ports_removes_inherited_publications(self):
+        old = self.old_settings("port|127.0.0.1|9000|8080/tcp")
+        result, calls = self.run_sh("--replace", "--no-ports", STUB_CONTAINER="1", STUB_INSPECT=old)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(value_of(self.one(calls, "run")["args"], "--publish"), [])
+
+    def test_unsupported_replacement_configuration_is_refused_before_removal(self):
+        for record in ("mount|bind|/other|/data|true", "unsupported|privileged mode",
+                       "network|host", "capadd|NET_ADMIN", "unsupported|custom hostname"):
+            with self.subTest(record=record):
+                result, calls = self.run_sh("--replace", STUB_CONTAINER="1", STUB_INSPECT=self.old_settings(record))
+                self.assertRefused(result, calls, "run", "rm", saying="--reset-config")
+
+    def test_readonly_or_missing_data_mounts_are_not_silently_replaced(self):
+        old = self.old_settings()
+        for changed in (old.replace('"kept-work"|"/workspace"|true', '"kept-work"|"/workspace"|false'),
+                        old.replace('mount|volume|"kept-home"|"/root"|true', "")):
+            with self.subTest(inspect=changed):
+                result, calls = self.run_sh("--replace", STUB_CONTAINER="1", STUB_INSPECT=changed)
+                self.assertRefused(result, calls, "run", "rm", saying="cannot preserve")
+
+    def test_inspect_mount_paths_cannot_split_or_escape_the_record_format(self):
+        for source in ("", "/work\nmount|volume|wrong|/root|true", '/work"quote', "/work\\backslash", "/work|delimiter"):
+            with self.subTest(source=source):
+                old = self.old_settings().replace('mount|volume|"kept-work"|"/workspace"|true',
+                    f'mount|bind|{json.dumps(source)}|"/workspace"|true')
+                result, calls = self.run_sh("--replace", STUB_CONTAINER="1", STUB_INSPECT=old)
+                self.assertRefused(result, calls, "run", "rm", saying="cannot preserve")
+
+    def test_shared_labels_and_custom_propagation_are_not_silently_changed(self):
+        for record in ('mount-mode|"/workspace"|"z"|"rprivate"',
+                       'mount-mode|"/workspace"|""|"rshared"',
+                       'mount-option|"/workspace"|"z"', 'mount-option|"/workspace"|"noexec"'):
+            with self.subTest(record=record):
+                old = self.old_settings(record)
+                result, calls = self.run_sh("--replace", STUB_CONTAINER="1", STUB_INSPECT=old)
+                self.assertRefused(result, calls, "run", "rm", saying="cannot preserve")
+                result, calls = self.run_sh("--replace", "--workspace-volume", "new-work",
+                                            STUB_CONTAINER="1", STUB_INSPECT=old)
+                self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_default_podman_mount_options_and_private_labels_are_supported(self):
+        old = self.old_settings('mount-mode|"/workspace"|"Z"|"rprivate"',
+                                'mount-option|"/root"|"nosuid"', 'mount-option|"/root"|"nodev"',
+                                'mount-option|"/root"|"rbind"')
+        result, calls = self.run_sh("--engine", "podman", "--replace", STUB_CONTAINER="1", STUB_INSPECT=old)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.one(calls, "run")
+
+    def test_conflicting_old_capability_flags_require_an_explicit_choice(self):
+        old = self.old_settings("capadd|NET_RAW", "capdrop|NET_RAW")
+        result, calls = self.run_sh("--replace", STUB_CONTAINER="1", STUB_INSPECT=old)
+        self.assertRefused(result, calls, "run", "rm", saying="conflicting NET_RAW")
+        result, calls = self.run_sh("--replace", "--no-net-raw", STUB_CONTAINER="1", STUB_INSPECT=old)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(value_of(self.one(calls, "run")["args"], "--cap-drop"), ["NET_RAW"])
+
+    def test_reset_config_is_an_explicit_return_to_defaults(self):
+        result, calls = self.run_sh("--replace", "--reset-config", STUB_CONTAINER="1",
+                                    STUB_INSPECT="unsupported|custom configuration")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse([c for c in calls if "--format" in c["args"]])
+        args = self.one(calls, "run")["args"]
+        self.assertEqual(value_of(args, "--volume"), ["alter-zero-home:/root", "alter-zero-workspace:/workspace"])
+        self.assertEqual(args[-1], "alter-zero:kali")
+        result, calls = self.run_sh("--reset-config")
+        self.assertRefused(result, calls, "run", "rm", saying="requires --replace")
+
+    def test_workspace_folder_and_named_volume_are_mutually_exclusive(self):
+        for args in (["site", "--workspace-volume", "work"], ["--workspace-volume", "work", "site"]):
+            result, calls = self.run_sh(*args)
+            self.assertRefused(result, calls, "run", "rm", saying="only one workspace")
 
     def test_a_container_that_failed_to_start_is_cleaned_up(self):
         # A taken port fails after `create`, and the leftover would block the retry.
         result, calls = self.run_sh(STUB_RUN_EXIT="125")
         self.assertNotEqual(result.returncode, 0)
-        self.assertEqual([c["args"][0] for c in calls], ["image", "container", "run", "rm"])
+        self.assertEqual([c["args"][0] for c in calls], ["container", "image", "run", "rm"])
         self.assertIn("--port", result.stderr)
         self.assertNotIn("Started", result.stdout)
 
@@ -513,6 +673,20 @@ class RunTests(ScriptCase):
         sock = self.socket_at(self.dir / "rt" / "wayland-0")
         _, calls = self.run_sh("--clipboard", WAYLAND_DISPLAY=str(sock))
         self.assertNotIn("--restart", self.one(calls, "run")["args"])
+
+    def test_replace_refreshes_inherited_clipboard_from_current_desktop(self):
+        sock = self.socket_at(self.dir / "rt" / "wayland-new")
+        old = self.old_settings("mount|bind|/old/session/socket|/run/alter-zero/wayland-0|false")
+        result, calls = self.run_sh("--replace", STUB_CONTAINER="1", STUB_INSPECT=old, WAYLAND_DISPLAY=str(sock))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        args = self.one(calls, "run")["args"]
+        self.assertEqual(value_of(args, "--mount"), [f"type=bind,src={sock},dst=/run/alter-zero/wayland-0,ro"])
+        self.assertNotIn("--restart", args)
+
+    def test_missing_desktop_for_inherited_clipboard_keeps_existing_container(self):
+        old = self.old_settings("mount|bind|/old/session/socket|/run/alter-zero/wayland-0|false")
+        result, calls = self.run_sh("--replace", STUB_CONTAINER="1", STUB_INSPECT=old)
+        self.assertRefused(result, calls, "run", "rm", saying="found no desktop session")
 
     def test_clipboard_sources_are_mounts_that_fail_when_missing(self):
         # `-v` would CREATE a missing source as a root-owned folder — in the
@@ -605,6 +779,14 @@ class RunUnderSelinux(ScriptCase):
     def test_the_home_directory_is_never_relabelled(self):
         result, calls = self.script(RUN, str(self.home))
         self.assertRefused(result, calls, saying="refusing to relabel your home directory")
+
+    def test_a_symlinked_home_directory_is_never_relabelled(self):
+        alias = self.dir / "home-link"
+        alias.symlink_to(self.home, target_is_directory=True)
+        for workspace in (alias, self.home):
+            with self.subTest(workspace=workspace):
+                result, calls = self.script(RUN, str(workspace), HOME=str(alias))
+                self.assertRefused(result, calls, saying="refusing to relabel your home directory")
 
 
 # ---------------------------------------------------------------------------

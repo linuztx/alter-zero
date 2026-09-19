@@ -66,6 +66,20 @@ release heading when a version is cut.
   can reach it and ask Alter Zero to read its path. A display that is named
   but unreachable keeps its original cause and gains the same advice.
 
+### Fixed
+
+- **Container replacement preserves launch settings.** `docker/run.sh
+  --replace` retains the existing mounts, image name, ports, clipboard setting
+  and `NET_RAW` choice unless explicitly overridden. Invalid launcher inputs
+  are rejected before removing the old container. Unsupported configurations
+  require an intentional `--reset-config` with the desired options.
+- **Capability and SELinux safeguards apply consistently.** `--no-net-raw`
+  explicitly drops Docker's default capability as well as Podman's, and a
+  symlinked home directory cannot bypass the guard against relabeling it.
+- **Custom virtualenv paths are matched literally.** Spaces and pattern
+  characters such as brackets no longer cause duplicate PATH entries or
+  prevent `deactivate` from removing the selected virtualenv.
+
 ## [0.4.0] - 2026-09-18
 
 ### Added

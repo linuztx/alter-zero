@@ -89,4 +89,52 @@ esac
 printf '%s\n' "$scan" | grep -Eq '^8080/tcp +open' || fail "a SYN scan did not see the open port" "$scan"
 printf 'a SYN scan opens a raw socket and sees the port\n'
 
+step "invalid replacement options leave the working container alone"
+before=$("$engine" container inspect --format '{{.Id}}' "$name")
+if "$here/../run.sh" --engine "$engine" --image "$image" --name "$name" \
+	--replace --port 70000 >"$work/rejected-replacement.log" 2>&1; then
+	fail "an invalid replacement port was accepted"
+fi
+[ "$("$engine" container inspect --format '{{.Id}}' "$name")" = "$before" ] ||
+	fail "invalid options removed the original container"
+[ "$("$engine" container inspect --format '{{.State.Running}}' "$name")" = true ] ||
+	fail "invalid options stopped the original container"
+printf 'invalid options leave the original container running\n'
+
+step "replacement keeps mounts and ports, and explicitly drops NET_RAW"
+"$engine" exec "$name" sh -c 'printf "keep this home\n" > /root/.smoke-home-keep'
+# Only the capability changes. The image, custom home volume, workspace
+# folder, and loopback port mapping must be inherited from the container.
+"$here/../run.sh" --engine "$engine" --name "$name" --replace --no-net-raw >/dev/null
+check_replacement() {
+	[ "$("$engine" exec "$name" cat /workspace/from-host.txt)" = "from the host" ] || fail "replacement lost the workspace mount"
+	[ "$("$engine" exec "$name" cat /root/.smoke-home-keep)" = "keep this home" ] || fail "replacement lost the home volume"
+	[ "$("$engine" exec "$name" hostname)" = "$DEFAULT_HOSTNAME" ] || fail "replacement lost the hostname"
+	case "$("$engine" port "$name" 8080/tcp)" in
+	127.0.0.1:*) ;;
+	*) fail "replacement lost the loopback port mapping" ;;
+	esac
+	"$engine" exec -i "$name" python3 - <<'PY'
+import socket
+from pathlib import Path
+
+status = dict(line.split(":", 1) for line in Path("/proc/self/status").read_text().splitlines())
+for field in ("CapEff", "CapBnd"):
+    assert not int(status[field].strip(), 16) & (1 << 13), f"NET_RAW remains in {field}"
+try:
+    raw = socket.socket(socket.AF_INET, socket.SOCK_RAW, socket.IPPROTO_ICMP)
+except PermissionError:
+    pass
+else:
+    raw.close()
+    raise AssertionError("--no-net-raw still permits raw sockets")
+PY
+}
+check_replacement
+
+# A later bare replacement must also remember the disabled capability.
+"$here/../run.sh" --engine "$engine" --name "$name" --replace >/dev/null
+check_replacement
+printf 'replacement preserves the workspace, home, ports, hostname and disabled NET_RAW\n'
+
 printf '\nsmoke: passed (%s, %s)\n' "$engine" "$image"

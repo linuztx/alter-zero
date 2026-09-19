@@ -146,9 +146,16 @@ inside it.
 | `/root` | the `alter-zero-home` volume: sign-ins, settings, sessions, shell history, SSH keys | yes |
 | everything else | packages you `apt install`ed, files under `/tmp`, `/opt` | **no** |
 
-So recreating the container is safe and is how you change its folder, ports or
-image. To delete the data as well: `docker volume rm alter-zero-home
+`--replace` keeps the existing workspace and home mounts, image name, port
+mappings, clipboard setting and `NET_RAW` choice. Options you supply override
+those settings. The launcher checks its inputs before removing the old
+container; an invalid workspace, port or desktop session leaves it running.
+Other files in the container's writable layer are still lost on replacement.
+To delete the volumes as well: `docker volume rm alter-zero-home
 alter-zero-workspace`.
+
+To switch from a host folder back to a named workspace, use
+`docker/run.sh --replace --workspace-volume alter-zero-workspace`.
 
 ## Ports
 
@@ -298,13 +305,13 @@ exactly as a paste would.
 | Terminal | terminfo for kitty, Alacritty, foot, WezTerm, Rio, VTE |
 
 Left out because they are large and not everyone wants them: `binutils`
-(`strings`, `objdump`; +33 MB), `tcpdump` (+22 MB), `pip`/`venv`, a compiler,
-man pages, translations.
+(`strings`, `objdump`; +33 MB), `tcpdump` (+22 MB), a compiler, man pages,
+translations.
 
 **Add your own**, baked into the image:
 
 ```sh
-docker/build.sh --with "binutils tcpdump python3-pip"
+docker/build.sh --with "binutils tcpdump"
 ```
 
 or for the life of one container: `apt update && apt install -y sqlmap`.
@@ -323,8 +330,9 @@ localhost` is a SYN scan, and that opens a raw socket. Docker grants the
 capability by default and Podman 4.x does not, so without it the same image
 answers `Couldn't open a raw socket` on one engine and scans on the other.
 It is one named capability, scoped to the container's own network namespace.
-`--no-net-raw` drops it, and `nmap -sS`, `traceroute -I` and `tcpdump` go with
-it (`nmap -sT` still works — a connect scan needs nothing special). Use that
+`--no-net-raw` explicitly drops it on both engines, and `nmap -sS`,
+`traceroute -I` and `tcpdump` go with it (`nmap -sT` still works — a connect
+scan needs nothing special). Use that
 flag rather than `-- --cap-drop NET_RAW`: next to the `--cap-add` that `run.sh`
 passes, Docker silently keeps the capability and Podman refuses to create the
 container.
@@ -382,9 +390,26 @@ interpreter for a moment. Or just call it by path: `/usr/bin/python3`.
 A new Alter Zero release, or a fresher Kali base:
 
 ```sh
-docker/build.sh                          # resolves the latest release again
-docker/run.sh --replace ~/projects/site  # move the container onto the new image
+docker/build.sh               # resolves the latest release again
+docker/run.sh --replace       # use the rebuilt image with existing launch settings
 ```
+
+For example, a container created with `--clipboard --no-ports` keeps both
+settings on replacement. Run the command from your desktop so clipboard
+sockets can be refreshed. Use `--no-clipboard` to disable forwarding or
+`--net-raw` to re-enable raw sockets after previously dropping them.
+If a port was configured for automatic allocation (an empty or zero host
+port), the engine may assign a different host port on replacement.
+
+Only the settings managed by `run.sh` are inherited. If an existing container
+uses an unsupported configuration, replacement stops before removing it.
+`--replace --reset-config` intentionally starts from the launcher's defaults;
+pass the complete workspace, volume, port and other options you want to keep,
+including any engine options after `--`.
+
+Errors reported only by the engine, such as a port already in use, can still
+prevent startup after the old container has been removed. Correct the error
+and retry with the intended configuration.
 
 `build.sh` looks the latest release up **every time**, before the engine
 consults its layer cache. That is the whole reason to build with it rather
