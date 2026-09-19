@@ -15,8 +15,7 @@ use super::layout::{
 use super::reasoning::live_reasoning_lines;
 use super::theme::*;
 use super::tool::{
-    command_display_lines, is_command_tool, live_tool_lines, result_row, running_command_lines,
-    shell_running_line,
+    is_command_tool, live_tool_lines, result_row, running_command_lines, shell_running_line,
 };
 use super::*;
 
@@ -156,7 +155,8 @@ fn trim_preview(mut lines: Vec<Line<'static>>, rows: usize, tail: bool) -> Vec<L
 /// One live call's strip rows: a `!` shell run's single `⎿ Running… (Ns)`
 /// row, a running backend command tool (`bash`) **tailing its streamed
 /// output** (`running_command_lines` — the header + last lines + a
-/// `+N lines (Ns)` footer, `docs/tool-streaming.md`), else the plain live
+/// `+N lines (Ns · timeout …)` clock row, or `⎿ Running… (Ns · timeout …)`
+/// before any output, `docs/tool-streaming.md`), else the plain live
 /// cell whose running bullet pulses (`docs/tool-pulse.md`).
 ///
 /// The one renderer for a live cell, shared by the main strip
@@ -178,10 +178,7 @@ pub(super) fn live_call_lines(
     if tool.shell && tool.status == ToolStatus::Running {
         return vec![shell_running_line(elapsed)];
     }
-    if is_command_tool(tool)
-        && tool.status == ToolStatus::Running
-        && !command_display_lines(tool).is_empty()
-    {
+    if is_command_tool(tool) && tool.status == ToolStatus::Running {
         return running_command_lines(tool, elapsed, pulse, width, paths);
     }
     live_tool_lines(tool, width, pulse, paths)
@@ -192,9 +189,10 @@ pub(super) fn live_call_lines(
 /// scrollback (the running call live, each not-yet-started sibling a dim
 /// `⎿ Waiting…` cell — `docs/parallel-tools.md`). A running backend `bash` cell
 /// that has streamed output **tails** it — the header + last lines + a
-/// `+N lines (Ns)` footer (`running_command_lines`; the mock,
-/// `docs/tool-streaming.md`) — before any output arrives it is the plain
-/// `⎿ Running…` peek. A lone `!` shell run collapses to its single
+/// `+N lines (Ns · timeout …)` clock row (`running_command_lines`; the mock,
+/// `docs/tool-streaming.md`) — before any output arrives it is the
+/// `⎿ Running… (Ns · timeout …)` row, the same clock on the corner row. A
+/// lone `!` shell run collapses to its single
 /// `⎿ Running… (Ns)` row (the elapsed rides the preview since a shell turn hides
 /// the status line); the shell is never batched, so it is always the only call.
 /// Shared by [`preview_lines`] (drawn) and [`preview_rows`] (sized) so the two

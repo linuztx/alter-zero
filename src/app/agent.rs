@@ -549,8 +549,8 @@ impl App {
 
     /// Inject one agent's **running command's** elapsed before a draw (the
     /// [`set_agent_thinking`](App::set_agent_thinking) sibling), so its
-    /// session view's `bash` tail counts its `+N lines (Ns)` footer from the
-    /// call's own start rather than the agent's whole runtime
+    /// session view's `bash` tail counts its `+N lines (Ns · timeout …)` clock
+    /// row from the call's own start rather than the agent's whole runtime
     /// (`docs/agent-view-streaming.md`).
     pub fn set_agent_command_elapsed(&mut self, id: &str, elapsed: Duration) {
         if let Some(agent) = self.agents.iter_mut().find(|agent| agent.id == id) {

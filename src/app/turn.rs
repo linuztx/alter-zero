@@ -61,6 +61,37 @@ pub fn format_elapsed(secs: u64) -> String {
     format!("{}h {}m", minutes / 60, minutes % 60)
 }
 
+/// Humanize a **timeout** — a limit, not a measurement — for the running
+/// `bash` cell's `(22s · timeout 1m 50s)` clock row (`docs/tool-streaming.md`):
+/// [`format_elapsed`]'s units with every zero part dropped, since a limit
+/// reads whole (`2m` for the tool's 120 000 ms default, never `2m 0s`, where
+/// the elapsed beside it keeps its seconds because it moves): `10m`,
+/// `1m 50s`, `30s`, `1h 1m 1s`; and a sub-second remainder kept as a
+/// fraction with its trailing zeros trimmed (`1.5s`, `0.25s`), because a
+/// model may send any millisecond count and a limit shown rounded is a limit
+/// misreported. `0s` for zero.
+#[must_use]
+pub fn format_timeout(ms: u64) -> String {
+    let hours = ms / 3_600_000;
+    let minutes = (ms / 60_000) % 60;
+    let secs = (ms / 1_000) % 60;
+    let millis = ms % 1_000;
+    let mut parts = Vec::with_capacity(3);
+    if hours > 0 {
+        parts.push(format!("{hours}h"));
+    }
+    if minutes > 0 {
+        parts.push(format!("{minutes}m"));
+    }
+    if millis > 0 {
+        let fraction = format!("{millis:03}");
+        parts.push(format!("{secs}.{}s", fraction.trim_end_matches('0')));
+    } else if secs > 0 || parts.is_empty() {
+        parts.push(format!("{secs}s"));
+    }
+    parts.join(" ")
+}
+
 impl App {
     /// Finalise the current run of assistant text as a history message so a
     /// following tool call slots after it in order, then start a fresh empty

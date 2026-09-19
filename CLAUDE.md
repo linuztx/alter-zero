@@ -856,10 +856,18 @@ calls in one round announced up front so the running one shows live while the
 not-yet-run ones show `⎿ Waiting…`, executed sequentially) in
 `docs/parallel-tools.md`; the **live-streaming `bash` tool** (a running command
 tails its output — the last rows, long lines word-wrapped to the width with
-spaces preserved, + a `+N lines (Ns)` footer whose `(Ns)` is the
-**command's own** runtime — `App::command_elapsed`, the boundary's
+spaces preserved, + a `+N lines (22s · timeout 1m 50s)` footer whose `22s`
+is the **command's own** runtime — `App::command_elapsed`, the boundary's
 per-command clock started at the call's `ToolStart`, the masked
 `background_hint_elapsed` being the Ctrl+B hint's gate over the same value —
+and whose `timeout` is the limit the call runs under, the model's own
+`timeout` read off the recorded `ToolCall::arguments`
+(`llm::tools::bash_timeout_ms`, the executor's default-and-clamp rule,
+humanized whole by `app::format_timeout` — `2m`, never `2m 0s`); the clock
+clause is **always** on the live cell — a bare `(10s · timeout 10m)` row
+under output that fits the window, and `⎿ Running… (10s · timeout 2m)` on
+the corner row of a command that has printed nothing, which used to sit on
+a bare `⎿ Running…` for as long as it took —
 never the turn's elapsed the status line counts (a call started a minute
 into a turn used to open on `(60s)`), the agent session view counting its
 own from the per-agent `AgentRun::command_elapsed` the same way — via a
@@ -1919,12 +1927,16 @@ plus, *while a turn is in flight*, a strip above it — a streaming preview row 
 preview shows a running tool's cell when one is executing — its bullet a
 **breathing grey**, `docs/tool-pulse.md` — a backend tool's
 **whole** collapsed cell, the wrapped `● name(args)` header *plus* its output;
-before any output a `⎿ Running…` row, and once a `bash` command **streams** it
+before any output a `⎿ Running… (10s · timeout 2m)` row — the command's
+own clock and the timeout it runs under, so a silent command still shows
+it is alive — and once a `bash` command **streams** it
 **tails** its output — the last `TOOL_PEEK_ROWS` display **rows**, long lines
 word-wrapped like the Ctrl+O view (`ui::wrap_output` — never clipped at the
 width, spaces preserved), + a
-`+N lines (Ns)` footer counting the fully hidden source lines, its `(Ns)`
-the command's own runtime (`App::command_elapsed`, never the turn's)
+`+N lines (22s · timeout 1m 50s)` footer counting the fully hidden display
+rows (a bare `(10s · timeout 10m)` row when none are), its elapsed
+the command's own runtime (`App::command_elapsed`, never the turn's) and
+its timeout the model's own `timeout` off the call's verbatim arguments
 (`ui::running_command_lines`, `docs/tool-streaming.md`) — so a long
 command isn't clipped and the running state shows; a **parallel
 batch** previews the *whole* `tool_queue` — the running call over each dim

@@ -34,7 +34,66 @@ fn render_live_tails_a_running_bash_tool_with_its_streamed_output() {
         .join("\n");
     assert!(all.contains("line 9"), "the newest line tails: {all:?}");
     assert!(!all.contains("line 4"), "older lines are hidden: {all:?}");
-    assert!(all.contains("+5 lines (9s)"), "the footer shows: {all:?}");
+    assert!(
+        all.contains("+5 lines (9s · timeout 2m)"),
+        "the footer shows: {all:?}"
+    );
+}
+
+#[test]
+fn a_silent_running_command_shows_its_clock_and_timeout_live() {
+    // The reported ask, third shape: a command that has printed nothing
+    // shows how long it has run and how long it may on its Running row —
+    // `⎿ Running… (10s · timeout 2m)` — with the delayed Ctrl+B hint under
+    // it, instead of a bare `⎿ Running…` that said nothing for as long as
+    // the command took (docs/tool-streaming.md).
+    let mut app = App::new();
+    app.begin_stream();
+    let command = r#"python3 -c "import time; time.sleep(100)""#;
+    app.start_tool(
+        "Bash",
+        command,
+        Some(&format!(r#"{{"command":{command:?},"timeout":120000}}"#)),
+    );
+    app.set_command_elapsed(Some(Duration::from_secs(10)));
+    let preview: Vec<String> = preview_tool_lines(&app, 80).iter().map(plain).collect();
+    assert_eq!(
+        preview,
+        [
+            format!("● Bash({command})"),
+            "  ⎿  Running… (10s · timeout 2m)".to_string(),
+            "     (ctrl+b to run in background)".to_string(),
+        ]
+    );
+    // The strip is sized off the same walk, so the row it gained is reserved.
+    assert_eq!(usize::from(preview_rows(&app, 80)), preview.len());
+}
+
+#[test]
+fn a_running_command_whose_output_fits_shows_the_clock_row_under_it() {
+    // Second shape: output, but nothing hidden above the window — the clock
+    // row stands alone under the output, counting against the model's own
+    // `timeout` (600 000 ms here, read off the verbatim arguments).
+    let mut app = App::new();
+    app.begin_stream();
+    app.start_tool(
+        "Bash",
+        "python3 -u -c \"…\"",
+        Some(r#"{"command":"python3 -u -c \"…\"","timeout":600000}"#),
+    );
+    app.push_tool_output("hello world\n");
+    app.set_command_elapsed(Some(Duration::from_secs(10)));
+    let preview: Vec<String> = preview_tool_lines(&app, 80).iter().map(plain).collect();
+    assert_eq!(
+        preview[1..],
+        [
+            "  ⎿  hello world",
+            "     (10s · timeout 10m)",
+            "     (ctrl+b to run in background)",
+        ],
+        "{preview:?}"
+    );
+    assert_eq!(usize::from(preview_rows(&app, 80)), preview.len());
 }
 
 #[test]
@@ -69,7 +128,7 @@ fn the_running_tails_footer_counts_from_the_commands_own_start() {
     };
     assert_eq!(
         footer(&app),
-        "+5 lines (9s)",
+        "+5 lines (9s · timeout 2m)",
         "the command's own runtime, never the turn's 60s"
     );
     // A clock to *display*, not the Ctrl+B hint's gate: a composer-replacing
@@ -84,7 +143,7 @@ fn the_running_tails_footer_counts_from_the_commands_own_start() {
     );
     assert_eq!(
         footer(&app),
-        "+5 lines (9s)",
+        "+5 lines (9s · timeout 2m)",
         "the footer still counts under a picker"
     );
 }

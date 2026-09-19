@@ -721,8 +721,75 @@ fn running_command_lines_tails_recent_output_with_the_elapsed() {
     );
     assert_eq!(
         body.last().unwrap().trim(),
-        "+5 lines (9s)",
-        "the footer counts hidden lines and the elapsed: {body:?}"
+        "+5 lines (9s · timeout 2m)",
+        "the footer counts hidden lines, the elapsed and the timeout: {body:?}"
+    );
+}
+
+#[test]
+fn the_running_footer_names_the_timeout_the_call_runs_under() {
+    // The reported ask: beside the elapsed, the footer says how long the
+    // command *may* run — the model's own `timeout`, read off the call's
+    // verbatim arguments (`ToolCall::arguments`) and humanized as a limit:
+    // `+18 lines (22s · timeout 1m 50s)` (docs/tool-streaming.md).
+    let command = "for i in $(seq 1 100); do echo $i; sleep 1; done";
+    let out = (1..=22)
+        .map(|i| i.to_string())
+        .collect::<Vec<_>>()
+        .join("\n");
+    let mut t = tool("Bash", command, ToolStatus::Running, &out);
+    t.arguments = Some(format!(r#"{{"command":{command:?},"timeout":110000}}"#));
+    let lines: Vec<String> = running_command_lines(
+        &t,
+        Duration::from_secs(22),
+        Duration::ZERO,
+        80,
+        &PathDisplay::VERBATIM,
+    )
+    .iter()
+    .map(plain)
+    .collect();
+    assert_eq!(
+        lines[1..],
+        [
+            "  ⎿  19",
+            "     20",
+            "     21",
+            "     22",
+            "     +18 lines (22s · timeout 1m 50s)",
+        ],
+        "{lines:?}"
+    );
+}
+
+#[test]
+fn a_running_command_with_no_output_counts_on_its_running_row() {
+    // A silent command used to sit on a bare `⎿ Running…` for as long as it
+    // ran. The row carries the clock clause now — `Running… (10s · timeout
+    // 2m)` — so the user can see it is alive, and for how much longer at
+    // most (docs/tool-streaming.md).
+    let t = tool(
+        "Bash",
+        r#"python3 -c "import time; time.sleep(100)""#,
+        ToolStatus::Running,
+        "",
+    );
+    let lines: Vec<String> = running_command_lines(
+        &t,
+        Duration::from_secs(10),
+        Duration::ZERO,
+        80,
+        &PathDisplay::VERBATIM,
+    )
+    .iter()
+    .map(plain)
+    .collect();
+    assert_eq!(
+        lines,
+        [
+            r#"● Bash(python3 -c "import time; time.sleep(100)")"#,
+            "  ⎿  Running… (10s · timeout 2m)",
+        ]
     );
 }
 
@@ -745,7 +812,7 @@ fn running_footers_humanize_the_elapsed_past_a_minute() {
     );
     assert_eq!(
         plain(lines.last().unwrap()).trim(),
-        "+5 lines (2m 3s)",
+        "+5 lines (2m 3s · timeout 2m)",
         "the streaming footer humanizes"
     );
     let row = plain(&crate::ui::tool::shell_running_line(Duration::from_secs(
@@ -758,9 +825,11 @@ fn running_footers_humanize_the_elapsed_past_a_minute() {
 }
 
 #[test]
-fn running_command_lines_without_overflow_shows_no_footer() {
-    // Fewer lines than the window: show them all, no `+N lines` footer (the
-    // status line carries the timer).
+fn running_command_lines_without_overflow_shows_the_clock_row_alone() {
+    // Fewer lines than the window: show them all, then the clock row with
+    // no `+N lines` count in front of it — `(1s · timeout 2m)` — so a
+    // command whose output fits still says how long it has run and how long
+    // it may (docs/tool-streaming.md).
     let t = tool("Bash", "echo", ToolStatus::Running, "a\nb");
     let lines = running_command_lines(
         &t,
@@ -769,16 +838,13 @@ fn running_command_lines_without_overflow_shows_no_footer() {
         80,
         &PathDisplay::VERBATIM,
     );
-    assert_eq!(
-        lines.len(),
-        3,
-        "header + 2 output rows, no footer: {:?}",
-        lines.iter().map(plain).collect::<Vec<_>>()
-    );
+    let body: Vec<String> = lines[1..].iter().map(plain).collect();
+    assert_eq!(body.len(), 3, "2 output rows + the clock row: {body:?}");
     assert!(
-        !lines.iter().any(|l| plain(l).contains("lines (")),
-        "no footer when nothing is hidden"
+        !body.iter().any(|l| l.contains("lines (")),
+        "no hidden count when nothing is hidden: {body:?}"
     );
+    assert_eq!(body[2].trim(), "(1s · timeout 2m)", "{body:?}");
 }
 
 #[test]
@@ -812,7 +878,7 @@ fn running_command_lines_tail_window_counts_display_rows_when_lines_wrap() {
     assert_eq!(body[3].trim(), "x".repeat(35), "…across the window's rows");
     assert_eq!(
         body.last().unwrap().trim(),
-        "+1 lines (7s)",
+        "+1 lines (7s · timeout 2m)",
         "the footer counts the one fully hidden line: {body:?}"
     );
 }
@@ -2492,7 +2558,7 @@ fn the_running_tail_footer_counts_hidden_rows() {
     .collect();
     let footer = lines.last().unwrap();
     assert!(
-        footer.contains("+18 lines (3s)"),
+        footer.contains("+18 lines (3s · timeout 2m)"),
         "the 18 wrapped rows above the window: {lines:?}"
     );
 }
@@ -3433,7 +3499,11 @@ fn the_running_tail_never_reshapes_what_is_still_streaming() {
     .iter()
     .map(plain)
     .collect();
-    assert_eq!(lines[1..], ["  ⎿  {\"a\":1,\"b\":2}"], "{lines:?}");
+    assert_eq!(
+        lines[1..],
+        ["  ⎿  {\"a\":1,\"b\":2}", "     (1s · timeout 2m)"],
+        "{lines:?}"
+    );
 }
 
 #[test]

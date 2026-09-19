@@ -21,9 +21,9 @@ started render as dim `⎿ Waiting…` cells — Claude-Code's parallel-tool loo
   ⎿  Waiting…
 ```
 
-The running call **tails its live output** (the last lines + a `+N lines (Ns)`
-footer) as it streams — see `docs/tool-streaming.md`; the `⎿ Waiting…` siblings
-are unchanged.
+The running call **tails its live output** (the last lines + a `+N lines (Ns ·
+timeout …)` footer, its own clock beside the timeout it runs under) as it
+streams — see `docs/tool-streaming.md`; the `⎿ Waiting…` siblings are unchanged.
 
 This lifts the old limitation (`docs/tools.md`, before this change: *"Parallel
 tool calls … are executed sequentially (the TUI shows one running tool at a

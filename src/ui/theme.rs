@@ -224,8 +224,9 @@ pub(super) const TOOL_LINE_ELLIPSIS: &str = "…";
 
 /// The window the **running** command tail shows (`running_command_lines`):
 /// the last four wrapped display **rows** of what the command has printed,
-/// under the `+N lines (Ns)` footer — the unit the user reads the cell in
-/// (`docs/long-lines.md`). It is also the ceiling of the **settled** block,
+/// over the `+N lines (Ns · timeout …)` clock row — the unit the user reads
+/// the cell in (`docs/long-lines.md`). It is also the ceiling of the
+/// **settled** block,
 /// hint included: [`TOOL_FOLD_ROWS`] rows over the `… +N lines` hint, or
 /// `TOOL_FOLD_ROWS + 1` rows shown whole — so a `bash` cell never *grows*
 /// when it settles, whatever shape its output has; the rest is one `ctrl+o`
@@ -365,6 +366,17 @@ pub(super) const TOOL_BACKGROUND_HINT: &str = "(ctrl+b to run in background)";
 /// time; only the discoverability hint waits). Gated on the boundary-injected
 /// [`App::background_hint_elapsed`]. See `docs/background.md`.
 pub(super) const TOOL_BACKGROUND_HINT_DELAY: Duration = Duration::from_secs(3);
+
+/// The separator inside a running command's clock clause, between the
+/// command's own elapsed and the timeout it runs under:
+/// `(22s · timeout 1m 50s)` — the footer's [`FOOTER_SEPARATOR`], the one
+/// dot the whole chrome joins facts with (`docs/tool-streaming.md`).
+pub(super) const TOOL_CLOCK_SEPARATOR: &str = " · ";
+
+/// The label in front of the timeout in that clause — `timeout 1m 50s`.
+/// A limit needs naming where an elapsed does not: bare, the two numbers
+/// would read as a range.
+pub(super) const TOOL_TIMEOUT_LABEL: &str = "timeout ";
 
 /// The ↓ manager's list title.
 pub(super) const BG_TITLE: &str = "Background";

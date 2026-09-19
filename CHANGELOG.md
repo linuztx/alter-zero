@@ -60,6 +60,18 @@ release heading when a version is cut.
   can reach it and ask Alter Zero to read its path. A display that is named
   but unreachable keeps its original cause and gains the same advice.
 
+- **The running `Bash` cell shows its own clock and its timeout, whatever
+  its output** (`docs/tool-streaming.md`). The live cell's footer reads
+  `+18 lines (22s · timeout 1m 50s)`: how long the command has run beside
+  the timeout it runs under — the model's own `timeout`, the tool's 2m
+  default when it named none — so a long command says how much of its
+  budget is left. The clock row is always there now: a command whose
+  output fits the window shows a bare `(10s · timeout 10m)` row under it,
+  and a command that has printed nothing counts on its `⎿ Running… (10s ·
+  timeout 2m)` row instead of sitting on a bare `Running…` for as long as
+  it takes. The Ctrl+B hint follows as before; the `!` shell's
+  `⎿ Running… (Ns)` row is unchanged, a `!` command having no timeout.
+
 ## [0.4.0] - 2026-09-18
 
 ### Added

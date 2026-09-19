@@ -321,7 +321,7 @@ fn comet_spans(frame: &str) -> Vec<Span<'static>> {
 // (and every in-module unqualified use) keeps working: the app's own display
 // strings (an agent notice's `finished · 6m 2s`) humanize with the same
 // helper, so it lives beside the state that formats with it.
-pub use crate::app::format_elapsed;
+pub use crate::app::{format_elapsed, format_timeout};
 
 /// Humanize a token count for the status line and the turn summary: bare under
 /// a thousand (`842`), one-decimal thousands up to a million (`8.1k`, a

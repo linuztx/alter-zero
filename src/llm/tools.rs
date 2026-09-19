@@ -766,10 +766,46 @@ impl BashArgs {
     /// The effective timeout in milliseconds, clamped to [`BASH_MAX_TIMEOUT_MS`].
     #[must_use]
     pub fn timeout_ms(&self) -> u64 {
-        self.timeout
-            .unwrap_or(BASH_DEFAULT_TIMEOUT_MS)
-            .clamp(1, BASH_MAX_TIMEOUT_MS)
+        effective_bash_timeout_ms(self.timeout)
     }
+}
+
+/// The one rule behind every `bash` timeout: the model's own `timeout` when
+/// it named one, else [`BASH_DEFAULT_TIMEOUT_MS`], clamped to
+/// `1..=`[`BASH_MAX_TIMEOUT_MS`]. Shared by the executor
+/// ([`BashArgs::timeout_ms`]) and the running cell's clock row
+/// ([`bash_timeout_ms`]), so what the cell names is what the executor
+/// enforces.
+fn effective_bash_timeout_ms(timeout: Option<u64>) -> u64 {
+    timeout
+        .unwrap_or(BASH_DEFAULT_TIMEOUT_MS)
+        .clamp(1, BASH_MAX_TIMEOUT_MS)
+}
+
+/// The `timeout` field alone, for [`bash_timeout_ms`]: a typed one-field
+/// parse skips the `command` — a kilobyte of heredoc on a big call — without
+/// copying it, where deserializing the whole [`BashArgs`] would allocate the
+/// command on every animation frame the live cell is drawn.
+#[derive(Deserialize)]
+struct BashTimeoutArgs {
+    #[serde(default, alias = "timeout_ms")]
+    timeout: Option<u64>,
+}
+
+/// The per-command timeout, in milliseconds, that a `bash` call with these
+/// verbatim `arguments` runs under — [`BashArgs::timeout_ms`]'s rule read off
+/// the one field, so the live cell can name the limit beside its clock
+/// (`(22s · timeout 1m 50s)`, `docs/tool-streaming.md`). A call with no
+/// argument record (`None` — the dummy backend's scripted calls, a call the
+/// app synthesized) or arguments that are not an object takes the default:
+/// what the executor applies to a call that names no timeout, and never a
+/// hidden clause.
+#[must_use]
+pub fn bash_timeout_ms(arguments: Option<&str>) -> u64 {
+    let timeout = arguments
+        .and_then(|args| parse_args::<BashTimeoutArgs>(args).ok())
+        .and_then(|args| args.timeout);
+    effective_bash_timeout_ms(timeout)
 }
 
 /// Parsed `read` arguments.
@@ -1953,6 +1989,43 @@ mod tests {
         // alias (a hook's `updatedInput`, an older fixture).
         let d: BashArgs = parse_args(r#"{"command":"x","timeout_ms":7000}"#).unwrap();
         assert_eq!(d.timeout_ms(), 7000);
+    }
+
+    #[test]
+    fn bash_timeout_ms_reads_the_timeout_off_the_verbatim_arguments() {
+        // The running cell names the timeout its command runs under
+        // (`docs/tool-streaming.md`) off the call's recorded arguments alone
+        // — `BashArgs::timeout_ms`'s rule over the one field, whatever else
+        // the object carries.
+        assert_eq!(
+            bash_timeout_ms(Some(r#"{"command":"sleep 100","timeout":110000}"#)),
+            110_000
+        );
+        assert_eq!(
+            bash_timeout_ms(Some(r#"{"command":"ls -la"}"#)),
+            BASH_DEFAULT_TIMEOUT_MS,
+            "a call naming no timeout runs under the default"
+        );
+        assert_eq!(
+            bash_timeout_ms(None),
+            BASH_DEFAULT_TIMEOUT_MS,
+            "a call with no argument record (the dummy's scripted calls) runs under the default too"
+        );
+        assert_eq!(
+            bash_timeout_ms(Some(r#"{"command":"x","timeout":9999999}"#)),
+            BASH_MAX_TIMEOUT_MS,
+            "clamped to the cap, as the executor clamps it"
+        );
+        assert_eq!(
+            bash_timeout_ms(Some(r#"{"command":"x","timeout_ms":7000}"#)),
+            7000,
+            "the pre-rename spelling counts"
+        );
+        assert_eq!(
+            bash_timeout_ms(Some("not json")),
+            BASH_DEFAULT_TIMEOUT_MS,
+            "unparseable arguments fall back to the default rather than hiding the clause"
+        );
     }
 
     #[test]

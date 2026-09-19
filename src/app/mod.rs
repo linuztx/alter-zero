@@ -109,7 +109,7 @@ pub use self::tools::{
 pub use self::trust_menu::TrustMenu;
 pub use self::turn::{
     DONE_VERBS, INTERRUPT_NOTICE, InterruptedTurn, SHELL_VERB, StreamError, WORKING_VERBS,
-    format_elapsed,
+    format_elapsed, format_timeout,
 };
 pub(crate) use self::types::count_tokens;
 pub use self::types::{

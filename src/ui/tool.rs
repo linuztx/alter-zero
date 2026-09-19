@@ -508,14 +508,37 @@ fn pretty_json_line(line: &str) -> Option<String> {
     serde_json::to_string_pretty(&value).ok()
 }
 
+/// The clock clause every shape of the running command cell carries —
+/// `(22s · timeout 1m 50s)`: the command's own `elapsed`
+/// ([`format_elapsed`]-humanized, ticking) beside the timeout it runs under
+/// (`timeout_ms`, [`format_timeout`]-humanized as a whole limit), so the user
+/// can see how much of the budget is left (`docs/tool-streaming.md`, *The
+/// clock row is always there*).
+fn command_clock_clause(elapsed: Duration, timeout_ms: u64) -> String {
+    format!(
+        "({}{TOOL_CLOCK_SEPARATOR}{TOOL_TIMEOUT_LABEL}{})",
+        format_elapsed(elapsed.as_secs()),
+        format_timeout(timeout_ms)
+    )
+}
+
 /// The live preview for a **running** command-style backend tool (`bash`): the
 /// coloured `● name(args)` header, the **last** [`TOOL_PEEK_ROWS`] display
 /// **rows** of its output under the `⎿` gutter (the *tail* — what just
-/// streamed), then a `+{hidden} lines ({secs}s)` footer when any source lines
-/// are fully hidden above it. This is Claude-Code's running-command look (the
-/// mock; `docs/tool-streaming.md`) — the asymmetric twin of the finished head
-/// peek in [`tool_lines`]. The `elapsed` is boundary-supplied (like the shell
-/// running row and the status timer), so this is drawn from
+/// streamed), then the **clock row** — `+{hidden} lines ({elapsed} · timeout
+/// {limit})` when any display rows are fully hidden above the window, the
+/// bare `({elapsed} · timeout {limit})` when none are, and for a command that
+/// has printed nothing yet the clause rides the corner row itself:
+/// `⎿ Running… ({elapsed} · timeout {limit})`. The clause is on the cell in
+/// **every** shape, so a silent `sleep 100` no longer sits on a bare
+/// `Running…` for as long as it takes, and the limit is the model's own
+/// `timeout` read off the call's verbatim arguments
+/// ([`bash_timeout_ms`](crate::llm::tools::bash_timeout_ms) — the executor's
+/// default-and-clamp rule, so the cell names exactly what is enforced). This
+/// is Claude-Code's running-command look (the mock; `docs/tool-streaming.md`)
+/// with the timeout beside the clock — the asymmetric twin of the finished
+/// head peek in [`tool_lines`]. The `elapsed` is boundary-supplied (like the
+/// shell running row and the status timer), so this is drawn from
 /// [`preview_tool_lines`] where `App` is in hand.
 ///
 /// Long lines **word-wrap, spaces preserved** ([`wrap_output`] — the same
@@ -526,10 +549,10 @@ fn pretty_json_line(line: &str) -> Option<String> {
 /// newest-first wraps only what the window can show — never the whole
 /// retained buffer — per animation frame.
 ///
-/// Two clocks ride in: `elapsed` is how long the command has run (the `(Ns)`
-/// footer), `pulse` is the frame phase its bullet breathes at. Live-only by
-/// construction — only the strip calls this — so the pulse is unconditional
-/// here (`docs/tool-pulse.md`).
+/// Two clocks ride in: `elapsed` is how long the command has run (the clock
+/// row's first number), `pulse` is the frame phase its bullet breathes at.
+/// Live-only by construction — only the strip calls this — so the pulse is
+/// unconditional here (`docs/tool-pulse.md`).
 pub(super) fn running_command_lines(
     tool: &ToolCall,
     elapsed: Duration,
@@ -538,11 +561,21 @@ pub(super) fn running_command_lines(
     paths: &PathDisplay,
 ) -> Vec<Line<'static>> {
     let mut lines = tool_header_lines(tool, width, /*collapsed=*/ true, Some(pulse), paths);
+    let clock = command_clock_clause(
+        elapsed,
+        crate::llm::tools::bash_timeout_ms(tool.arguments.as_deref()),
+    );
+    let display = command_display_lines(tool);
+    if display.is_empty() {
+        // Nothing printed yet: the clause rides the `⎿ Running…` row, so a
+        // silent command still shows it is alive and how long it may be.
+        lines.push(result_row(0, format!("{TOOL_RUNNING} {clock}")));
+        return lines;
+    }
     let peek_width = (width as usize)
         .saturating_sub(cols(TOOL_RESULT_PREFIX))
         .max(1);
     let wrap_width = u16::try_from(peek_width).unwrap_or(u16::MAX);
-    let display = command_display_lines(tool);
     // The tail window: the last TOOL_PEEK_ROWS wrapped rows, each remembering
     // its source line index *and* how many of that line's rows it dropped, so
     // the footer can count what scrolled off in display rows.
@@ -576,16 +609,16 @@ pub(super) fn running_command_lines(
     for (i, (_, row)) in window.into_iter().enumerate() {
         lines.push(output_row(i, row));
     }
-    if hidden > 0 {
-        // A continuation row (index ≥ 1) so it indents under the content column;
-        // the `+N lines ({elapsed})` footer is meta, so it stays the dim
-        // `result_row` — the elapsed humanized past a minute like every
-        // runtime display.
-        lines.push(result_row(
-            shown,
-            format!("+{hidden} lines ({})", format_elapsed(elapsed.as_secs())),
-        ));
-    }
+    // The clock row closes the cell whatever is hidden: `+N lines` in front
+    // of the clause when rows scrolled off the window, the clause alone when
+    // the output fits. A continuation row (index ≥ 1) so it indents under
+    // the content column; it is meta, so it stays the dim `result_row`.
+    let footer = if hidden > 0 {
+        format!("+{hidden} lines {clock}")
+    } else {
+        clock
+    };
+    lines.push(result_row(shown, footer));
     lines
 }
 

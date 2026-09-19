@@ -105,7 +105,8 @@ flow exit — collapsed a multi-row preview to one row for that frame.
 `ui::live::preview_tool_lines`' per-call body moves into a shared
 `live_call_lines(tool, elapsed, pulse, width)`, and `agent_view_preview_lines`
 calls it. A subagent's running `bash` now tails its output with the same
-`+N lines (Ns)` footer, and its `!`-shell/plain cases stay identical. The
+`+N lines (Ns · timeout …)` footer — and the same `⎿ Running… (Ns · timeout …)`
+row before any output — and its `!`-shell/plain cases stay identical. The
 elapsed is the **command's own**, on both surfaces: the main strip reads
 `App::command_elapsed` (`docs/tool-streaming.md`), and the agent view reads
 `AgentRun::command_elapsed` — boundary-injected each frame from

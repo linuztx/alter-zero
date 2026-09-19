@@ -392,11 +392,16 @@ fn running_command_lines_wraps_a_long_tail_line_instead_of_clipping() {
         40,
         &PathDisplay::VERBATIM,
     );
-    // width 40 − the 5-col `  ⎿  ` gutter = 35 content cols → 2 rows.
+    // width 40 − the 5-col `  ⎿  ` gutter = 35 content cols → 2 rows, then
+    // the clock row (docs/tool-streaming.md).
     let body: Vec<String> = lines[1..].iter().map(plain).collect();
-    assert_eq!(body.len(), 2, "the 60-col line wraps to two rows: {body:?}");
+    assert_eq!(
+        body.len(),
+        3,
+        "the 60-col line wraps to two rows over the clock row: {body:?}"
+    );
     // Strip the 5-char `  ⎿  ` gutter / continuation indent off each row.
-    let joined: String = body
+    let joined: String = body[..2]
         .iter()
         .map(|l| l.chars().skip(5).collect::<String>())
         .collect::<Vec<_>>()
@@ -407,8 +412,8 @@ fn running_command_lines_wraps_a_long_tail_line_instead_of_clipping() {
 #[test]
 fn preview_rows_counts_a_wrapped_running_tail() {
     // Strip sizing and paint agree when the tail wraps: preview_rows
-    // counts the wrapped rows (header + windowed tail + the Ctrl+B hint),
-    // not one row per source line.
+    // counts the wrapped rows (header + windowed tail + the clock row + the
+    // Ctrl+B hint), not one row per source line.
     let mut app = App::new();
     app.begin_stream();
     app.start_tool("Bash", "cat log", None);
@@ -417,8 +422,8 @@ fn preview_rows_counts_a_wrapped_running_tail() {
     app.push_tool_output(&"y".repeat(70)); // 35 content cols → 2 rows
     assert_eq!(
         preview_rows(&app, 40),
-        4,
-        "header + 2 wrapped tail rows + the Ctrl+B hint"
+        5,
+        "header + 2 wrapped tail rows + the clock row + the Ctrl+B hint"
     );
 }
 

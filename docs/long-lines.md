@@ -345,7 +345,7 @@ grep, three rows instead of ten:
 | The display lines (`exec_display_lines`, `prettify_json_lines`, `pretty_json_line`) | `ui/tool.rs` |
 | The collapsed output fold (`result_peek_block`) | `ui/tool.rs` |
 | The first-block window (`BlankPolicy`, `is_blank_row`) | `ui/tool.rs` |
-| The running tail's `+N lines ({secs}s)` footer | `ui/tool.rs` (`running_command_lines`) |
+| The running tail's `+N lines ({secs}s · timeout …)` clock row | `ui/tool.rs` (`running_command_lines`) |
 | The numbered file cell's per-line clip | `ui/file_cell.rs` (`numbered_row_lines`) |
 
 Tests: `ui::tests::wrap` (the counter primitives and the fill rule) and
