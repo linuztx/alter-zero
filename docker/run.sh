@@ -245,8 +245,7 @@ if [ "$existing" -eq 1 ] && [ "$reset_config" -eq 0 ]; then
 {{if and .Config.User (ne .Config.User "root") (ne .Config.User "0")}}unsupported|custom user{{"\n"}}{{end}}
 {{if ne .Config.WorkingDir "/workspace"}}unsupported|custom working directory{{"\n"}}{{end}}
 {{if ne .Config.Hostname "az-kali"}}unsupported|custom hostname{{"\n"}}{{end}}
-{{if ne (printf "%v" .Config.Entrypoint) "[/usr/bin/tini --]"}}unsupported|custom entrypoint{{"\n"}}{{end}}
-{{if ne (printf "%v" .Config.Cmd) "[sleep infinity]"}}unsupported|custom command{{"\n"}}{{end}}
+{{printf "process|%s|%s\n" .Path (json .Args)}}
 {{range .HostConfig.SecurityOpt}}{{printf "security|%s\n" .}}{{end}}' "$name") || cannot_inherit "container inspection failed"
 	old_home="" old_workspace="" old_workspace_type="" old_ports="" old_clipboard=0 old_restart=""
 	old_raw=0 old_raw_add=0 old_raw_drop=0 format_seen=0
@@ -254,7 +253,7 @@ if [ "$existing" -eq 1 ] && [ "$reset_config" -eq 0 ]; then
 	if [ "$engine" = docker ]; then old_raw=1; fi
 	while IFS='|' read -r kind first second third fourth extra; do
 		[ -z "$extra" ] || cannot_inherit "an inspect value contains an unsupported delimiter"
-		case "$kind" in mount | mount-mode | mount-option | port) ;; *) [ -z "$second$third$fourth" ] || cannot_inherit "an inspect value contains an unsupported delimiter" ;; esac
+		case "$kind" in mount | mount-mode | mount-option | port | process) ;; *) [ -z "$second$third$fourth" ] || cannot_inherit "an inspect value contains an unsupported delimiter" ;; esac
 		case "$kind" in
 		'') ;;
 		format) [ "$first" = 1 ] || cannot_inherit "unknown inspect format"; format_seen=1 ;;
@@ -289,12 +288,35 @@ if [ "$existing" -eq 1 ] && [ "$reset_config" -eq 0 ]; then
 			first=$(inspect_path "$first") || exit 1
 			second=$(inspect_path "$second") || exit 1
 			case "$first" in /workspace) [ "$workspace_set" -eq 0 ] || continue ;; /root) [ "$home_set" -eq 0 ] || continue ;; esac
+			# Docker adds shared 'z' to named volumes by default. Reattaching
+			# the same volume keeps that behavior; a bind mount is different,
+			# because the launcher would relabel it privately with :Z.
+			shared_volume=0
+			case "$first" in
+			/root) [ -z "$old_home" ] || shared_volume=1 ;;
+			/workspace) if [ "$old_workspace_type" = volume ]; then shared_volume=1; fi ;;
+			esac
 			if [ "$kind" = mount-mode ]; then
 				third=$(inspect_path "$third") || exit 1
-				case "$second" in '' | rw | ro | Z | rw,Z | Z,rw) ;; *) cannot_inherit "mount mode $second at $first" ;; esac
+				case "$second" in
+				'' | rw | ro | Z | rw,Z | Z,rw) ;;
+				z | rw,z | z,rw) [ "$shared_volume" -eq 1 ] || cannot_inherit "mount mode $second at $first" ;;
+				*) cannot_inherit "mount mode $second at $first" ;;
+				esac
 				case "$third" in '' | private | rprivate) ;; *) cannot_inherit "mount propagation $third at $first" ;; esac
 			else
-				case "$second" in rw | ro | bind | rbind | nosuid | nodev | private | rprivate | Z) ;; *) cannot_inherit "mount option $second at $first" ;; esac
+				case "$second" in
+				rw | ro | bind | rbind | nosuid | nodev | private | rprivate | Z) ;;
+				z) [ "$shared_volume" -eq 1 ] || cannot_inherit "mount option $second at $first" ;;
+				*) cannot_inherit "mount option $second at $first" ;;
+				esac
+			fi
+			;;
+		process)
+			# Older Podman versions join Config.Entrypoint into a string.
+			# Path and Args preserve the actual argv on both engines.
+			if [ "$first" != /usr/bin/tini ] || [ "$second" != '["--","sleep","infinity"]' ] || [ -n "$third$fourth" ]; then
+				cannot_inherit "custom container process"
 			fi
 			;;
 		port)

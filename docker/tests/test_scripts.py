@@ -56,6 +56,7 @@ if args[:2] == ["image", "inspect"]:
 if args[:2] == ["container", "inspect"]:
     if "--format" in args:
         default = "format|1\\nimage|alter-zero:kali\\nport|127.0.0.1|8080|8080/tcp\\nport|127.0.0.1|8888|8888/tcp\\ncapadd|NET_RAW\\nrestart|unless-stopped\\nnetwork|bridge\\nsecurity|no-new-privileges"
+        default += "\\nprocess|/usr/bin/tini|" + json.dumps(["--", "sleep", "infinity"], separators=(",", ":"))
         for source, target in (("alter-zero-home", "/root"), ("alter-zero-workspace", "/workspace")):
             default += "\\nmount|volume|" + json.dumps(source) + "|" + json.dumps(target) + "|true"
         print(env("STUB_INSPECT", default))
@@ -471,6 +472,7 @@ class RunTests(ScriptCase):
         mount = f"mount|bind|{workspace}|/workspace|true" if workspace else "mount|volume|kept-work|/workspace|true"
         lines = [
             "format|1", "image|custom:kali", "mount|volume|kept-home|/root|true", mount,
+            'process|/usr/bin/tini|["--","sleep","infinity"]',
             "network|bridge", "restart|unless-stopped", "security|no-new-privileges", *records,
         ]
         encoded = []
@@ -504,6 +506,27 @@ class RunTests(ScriptCase):
         self.assertEqual(value_of(args, "--volume"), ["kept-home:/root", "kept-work:/workspace"])
         self.assertEqual(value_of(args, "--publish"), [])
         self.assertEqual(value_of(args, "--cap-drop"), ["NET_RAW"])
+
+    def test_replacement_accepts_the_image_default_process_for_both_engines(self):
+        for engine in ("docker", "podman"):
+            with self.subTest(engine=engine):
+                result, calls = self.run_sh("--engine", engine, "--replace", STUB_CONTAINER="1",
+                                            STUB_INSPECT=self.old_settings())
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(self.one(calls, "run")["args"][-1], "custom:kali")
+
+    def test_replacement_refuses_a_changed_or_ambiguously_joined_process(self):
+        default_process = 'process|/usr/bin/tini|["--","sleep","infinity"]'
+        for process in ('process|/usr/bin/env|["--","sleep","infinity"]',
+                        'process|/usr/bin/tini|["--","sleep","60"]',
+                        'process|/usr/bin/tini|["-- sleep","infinity"]',
+                        'process|/usr/bin/tini|["--","sleep infinity"]',
+                        'process|/usr/bin/tini|"-- sleep infinity"'):
+            for engine in ("docker", "podman"):
+                with self.subTest(engine=engine, process=process):
+                    old = self.old_settings().replace(default_process, process)
+                    result, calls = self.run_sh("--engine", engine, "--replace", STUB_CONTAINER="1", STUB_INSPECT=old)
+                    self.assertRefused(result, calls, "run", "rm", saying="cannot preserve")
 
     def test_replace_preserves_each_engines_default_net_raw_when_not_explicit(self):
         old = self.old_settings()
@@ -563,16 +586,50 @@ class RunTests(ScriptCase):
                 self.assertRefused(result, calls, "run", "rm", saying="cannot preserve")
 
     def test_shared_labels_and_custom_propagation_are_not_silently_changed(self):
+        workspace = self.dir / "shared-work"
+        workspace.mkdir()
         for record in ('mount-mode|"/workspace"|"z"|"rprivate"',
                        'mount-mode|"/workspace"|""|"rshared"',
                        'mount-option|"/workspace"|"z"', 'mount-option|"/workspace"|"noexec"'):
             with self.subTest(record=record):
-                old = self.old_settings(record)
+                old = self.old_settings(record, workspace=workspace)
                 result, calls = self.run_sh("--replace", STUB_CONTAINER="1", STUB_INSPECT=old)
                 self.assertRefused(result, calls, "run", "rm", saying="cannot preserve")
                 result, calls = self.run_sh("--replace", "--workspace-volume", "new-work",
                                             STUB_CONTAINER="1", STUB_INSPECT=old)
                 self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_default_shared_labels_on_named_volumes_keep_the_same_data_mounts(self):
+        # Docker's default named volumes can inspect as Mode="z", even though
+        # run.sh did not request relabeling. Podman can report mount options
+        # separately. Neither representation should block a normal upgrade or
+        # turn the named volumes into bind mounts/private relabel requests.
+        fixtures = (
+            ("docker", ('mount-mode|"/root"|"z"|""', 'mount-mode|"/workspace"|"z"|""')),
+            ("docker", ('mount-mode|"/root"|"rw,z"|"rprivate"',
+                        'mount-mode|"/workspace"|"rw,z"|"rprivate"')),
+            ("podman", ('mount-option|"/root"|"z"', 'mount-option|"/workspace"|"z"')),
+        )
+        for engine, records in fixtures:
+            with self.subTest(engine=engine, records=records):
+                result, calls = self.run_sh("--engine", engine, "--replace", STUB_CONTAINER="1",
+                                            STUB_INSPECT=self.old_settings(*records))
+                self.assertEqual(result.returncode, 0, result.stderr)
+                volumes = value_of(self.one(calls, "run")["args"], "--volume")
+                self.assertEqual([value.split(":")[:2] for value in volumes],
+                                 [["kept-home", "/root"], ["kept-work", "/workspace"]])
+                for value in volumes:
+                    options = value.split(":")[2:]
+                    self.assertNotIn("Z", ",".join(options).split(","), "shared labels must not become private")
+
+    def test_named_volumes_still_reject_unsupported_mount_options(self):
+        for record in ('mount-option|"/root"|"noexec"', 'mount-option|"/workspace"|"noexec"',
+                       'mount-mode|"/root"|"z,noexec"|""',
+                       'mount-mode|"/workspace"|"z"|"rshared"'):
+            with self.subTest(record=record):
+                result, calls = self.run_sh("--replace", STUB_CONTAINER="1",
+                                            STUB_INSPECT=self.old_settings(record))
+                self.assertRefused(result, calls, "run", "rm", saying="cannot preserve")
 
     def test_default_podman_mount_options_and_private_labels_are_supported(self):
         old = self.old_settings('mount-mode|"/workspace"|"Z"|"rprivate"',
