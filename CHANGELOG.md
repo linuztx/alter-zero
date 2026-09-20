@@ -12,6 +12,17 @@ release heading when a version is cut.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`/mcp` no longer parks the cursor on its bottom rule when nothing is
+  configured.** A `/mcp` page with no server rows has no highlighted `❯` for
+  the hidden cursor to rest on, so it fell to the far corner of the closing
+  rule — where a terminal with a cursor-move animation (kitty and kin) flew
+  to nowhere on every open. A page without a highlight now rests just past
+  its closing hint, the way Ctrl+O, Ctrl+D and `/resume` do; the `/hooks`
+  and `/mcp` detail pages and a hookless event's empty state follow the same
+  rule, and only a terminal too short to show the hint keeps the corner.
+
 ## [0.5.0] - 2026-09-20
 
 ### Added

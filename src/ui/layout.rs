@@ -911,16 +911,32 @@ pub fn overlay_cursor_seat(buf: &Buffer) -> (u16, u16) {
     (area.left(), area.top())
 }
 
+/// Whether a built page line shows **text** rather than chrome: a glyph that
+/// is not the [`VIEW_RULE`] a framing rule is made of. Blank rows and the
+/// rules are what the seat skips on its way to a page's closing hint.
+fn is_text_row(line: &ratatui::text::Line<'_>) -> bool {
+    line.spans
+        .iter()
+        .flat_map(|span| span.content.chars())
+        .any(|c| !c.is_whitespace() && !VIEW_RULE.contains(c))
+}
+
 /// The hidden cursor's seat inside a no-text-entry menu: the highlighted
 /// `❯` row's marker column, found by scanning the built lines for the
 /// selection marker span — the views are content-driven, so the row is
 /// wherever the content put it. The [`view_split`] the paint uses seats the
 /// body under any streaming strip, and a body taller than its area is
 /// painted **bottom-anchored** ([`view_body_skip`], `docs/view-flow.md`), so
-/// the marker's page row is shifted by the same skipped top rows; a
-/// marker-less page (a detail view) and a marker whose row the anchor
-/// scrolled off fall back to the far corner, where the seat reads as chrome
-/// (the manager band's old rule).
+/// the marker's page row is shifted by the same skipped top rows.
+///
+/// A page with no painted marker — a detail view, an empty `/mcp` or
+/// `/hooks` list, a highlight the anchor scrolled off — seats the way the
+/// full-screen overlays do ([`overlay_cursor_seat`]): the cell just past the
+/// page's last **text**, its closing hint. Never the framing rule under it:
+/// that is chrome, and a seat at its far end is where a terminal's cursor
+/// animation flew to nowhere on every open of an unconfigured `/mcp` (the
+/// reported artifact). The far corner stays the last resort, for a region
+/// too short to paint even the hint.
 fn menu_marker_seat(lines: &[ratatui::text::Line<'_>], area: Rect) -> (u16, u16) {
     let corner = (
         area.x + area.width.saturating_sub(1),
@@ -929,26 +945,41 @@ fn menu_marker_seat(lines: &[ratatui::text::Line<'_>], area: Rect) -> (u16, u16)
     let body_h = u16::try_from(lines.len()).unwrap_or(u16::MAX);
     let [_, body] = view_split(area, body_h);
     let skip = super::view_flow::view_body_skip(lines.len(), body.height);
-    for (i, line) in lines.iter().enumerate() {
+    // The bottom anchor paints `lines[skip..]`: a page row above the skip has
+    // no on-screen row.
+    let painted_y = |page_row: usize| -> Option<u16> {
+        let row = u16::try_from(page_row.checked_sub(skip)?).ok()?;
+        (row < body.height).then(|| body.y + row)
+    };
+    let seat_x = |col: usize| area.x + (col.min(usize::from(area.width.saturating_sub(1))) as u16);
+    let marker = lines.iter().enumerate().find_map(|(i, line)| {
         let mut before = 0usize;
         for span in &line.spans {
             if span.content.as_ref() == HOOKS_MARKER {
-                // The bottom anchor paints `lines[skip..]`: a marker above the
-                // skip has no on-screen row.
-                let Some(row) = i.checked_sub(skip) else {
-                    return corner;
-                };
-                let Ok(row) = u16::try_from(row) else {
-                    return corner;
-                };
-                if row >= body.height {
-                    return corner;
-                }
-                let x = area.x + (before.min(usize::from(area.width.saturating_sub(1))) as u16);
-                return (x, body.y + row);
+                return Some((i, before));
             }
             before += cols(&span.content);
         }
+        None
+    });
+    if let Some((page_row, col)) = marker
+        && let Some(y) = painted_y(page_row)
+    {
+        return (seat_x(col), y);
+    }
+    if let Some((page_row, line)) = lines
+        .iter()
+        .enumerate()
+        .rev()
+        .find(|(_, line)| is_text_row(line))
+        && let Some(y) = painted_y(page_row)
+    {
+        let text: String = line
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect();
+        return (seat_x(cols(text.trim_end())), y);
     }
     corner
 }
@@ -1090,8 +1121,9 @@ pub fn cursor_position(area: Rect, app: &App) -> (u16, u16) {
     // (a kitty cursor animation blinks at whatever seat one picks), while
     // the *seat* tracks the highlighted `❯` row, so the cursor's return
     // when the menu closes starts somewhere sensible. A marker-less page
-    // (the hook detail) falls back to the far corner. The `/trust` review
-    // menu is its sibling and seats the same way.
+    // (the hook detail, a hookless list) seats after its closing hint, the
+    // overlays' rule. The `/trust` review menu is its sibling and seats the
+    // same way.
     if app.hooks_menu.is_some() {
         let lines = super::hooks_view::hooks_view_lines(app, area.width);
         return menu_marker_seat(&lines, area);

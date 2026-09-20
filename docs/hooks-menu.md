@@ -30,7 +30,11 @@ hardware cursor** while the menu is up — the permission prompt's rule
 terminal with a cursor animation (kitty) blinks at whatever seat one picks.
 The *seat* still tracks the highlighted `❯` row (`ui::layout`'s marker
 scan), so a terminal that ignores the hide — and the cursor's return when
-the menu closes — starts from somewhere meaningful.
+the menu closes — starts from somewhere meaningful. A page with no `❯` —
+the hook detail, an event's empty state — seats just past its closing hint
+instead, the full-screen overlays' rule (`overlay_cursor_seat`): never on
+the bottom rule, whose far corner is where such a page used to park the
+seat (`docs/view-flow.md`).
 
 Because browsing touches nothing, `/hooks` works mid-turn (the `/model`
 rule), and closing is pure collapse — the loop has nothing to reap.

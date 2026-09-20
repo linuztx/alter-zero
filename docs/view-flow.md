@@ -28,7 +28,12 @@ Two rules, both pure policy in `ui`, acted on by the boundary:
    `ui::view_body_skip` decides how many top rows to skip — so the interactive
    tail (action rows, the hint, the bottom rule) is always on screen. The
    hidden-cursor seat (`menu_marker_seat`) subtracts the same skip, so the `❯`
-   the cursor parks on is the one actually painted.
+   the cursor parks on is the one actually painted. A page with no painted
+   `❯` — a detail view, an unconfigured `/mcp` list, a highlight the anchor
+   scrolled off — seats just past its last text row, the closing hint (the
+   overlays' `overlay_cursor_seat` rule; a framing rule is chrome and is
+   skipped), and only a region too short to paint even the hint keeps the
+   far corner.
 
 2. **The skipped top flows into real scrollback.** When the page exceeds the
    rows its painted tail gets — the whole terminal for a framed view (the body

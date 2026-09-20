@@ -299,7 +299,7 @@ fn model_name_line(picker: &ModelPicker, width: u16) -> Line<'static> {
 /// frame, matching the input box's rules).
 pub(super) fn model_rule(width: u16) -> Line<'static> {
     Line::from(Span::styled(
-        "─".repeat(width as usize),
+        VIEW_RULE.repeat(width as usize),
         Style::new().fg(border_color()),
     ))
 }
