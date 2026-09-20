@@ -411,10 +411,13 @@ module once at startup, since the mint runs several layers below the
 boundary — skipping that call is not a crash but a forced re-login at the next
 launch). The `chatgpt-account-id` the backend routes on is read out of the
 minted access token's own claims, which is what keeps the store to one value
-with nothing to drift; the cached life comes from that token's `exp` with a
-five-minute skew **and a sixty-second floor**, the floor standing in for the
-`refresh_in` duration Copilot has and OpenAI does not (a clock hours ahead
-then costs one extra mint a minute instead of one per request). Copilot's
+with nothing to drift; the cached life comes from the token response's own
+`expires_in` — a **duration**, Copilot's `refresh_in` under OAuth's name, so a
+clock running ahead cannot shorten it — with a five-minute skew off the end,
+falling back to the bearer's absolute `exp` only when the response names
+none, **and a sixty-second floor** for a fresh token that clock reads as
+already expired (one extra mint a minute instead of one, and a rotation, per
+request; `docs/chatgpt.md`). Copilot's
 `(bearer, base)` seam widened into `auth::request_auth`'s `RequestAuth`
 {bearer, base, headers} to carry that account header — `AuthScheme::ApiKey`
 still answering with the stored key, no override and **no I/O at all**. The

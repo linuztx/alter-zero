@@ -16,10 +16,13 @@ release heading when a version is cut.
 
 - **Prompt caching across turns, and the token refreshes behind it.** The
   request a new human turn sent used to rebuild every earlier tool call from
-  the display history — fresh `call_0`, `call_1`… ids, a parallel batch
-  split into one call per assistant message — so the provider saw a
-  different prefix from the one it had cached and re-read the conversation
-  at full price from the first tool call on. The backend now keeps its last
+  the display history — a parallel batch split into one call per assistant
+  message, and fresh `call_0`, `call_1`… ids on the wires that carry an id
+  through unrewritten — so the provider saw a different prefix from the one
+  it had cached and re-read the conversation at full price from the first
+  batch on (measured live: a follow-up turn after a parallel batch read 62%
+  of its input from OpenRouter's cache before, 99.9% after). The backend now
+  keeps its last
   request and reuses that exact prefix whenever the rebuilt conversation
   matches it — text, images, tool names, arguments and results alike, so a
   rewind, an edit or a compaction still send what they mean — and a blank
