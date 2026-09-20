@@ -6,11 +6,14 @@ use super::*;
 /// gap, hint, gap, bottom rule — pinned here so a builder change that adds
 /// or drops a row fails a height test (`key_onboarding_lines`).
 const LOGIN_KEY_ROWS: u16 = 9;
+use crate::hooks::{HooksFile, HooksOverview};
 use crate::ui::layout::live_layout;
 use crate::ui::theme::{
-    GAP_ROWS, INPUT_CHROME_ROWS, LIVE_MIN_HEIGHT, MENU_MAX_ROWS, MODEL_SEARCH_ROW, STATUS_GAP_ROWS,
-    STATUS_ROWS,
+    GAP_ROWS, HOOKS_DETAIL_HINT, INPUT_CHROME_ROWS, LIVE_MIN_HEIGHT, MCP_LIST_HINT, MENU_MAX_ROWS,
+    MODEL_INDENT, MODEL_SEARCH_ROW, STATUS_GAP_ROWS, STATUS_ROWS, TRUST_HINT,
 };
+use crate::ui::wrap::cols;
+use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 #[test]
 fn preview_rows_reports_the_injected_stream_preview_height() {
@@ -988,6 +991,112 @@ fn the_menu_cursor_seat_follows_a_bottom_anchored_body() {
         (x, y),
         (2, (marker_at - skip) as u16),
         "the seat lands on the painted ❯ row"
+    );
+}
+
+#[test]
+fn a_marker_less_menu_page_seats_the_cursor_after_its_closing_hint() {
+    // `/mcp` with nothing configured lists no rows, so there is no `❯` for
+    // the hidden cursor to seat on — and the fallback used to be the far
+    // corner: the last cell of the bottom rule, where a kitty cursor
+    // animation flew to nowhere on every open (the reported bug). The
+    // overlays' rule applies instead (`overlay_cursor_seat` — Ctrl+O,
+    // Ctrl+D, `/resume`): the cell just past the page's last **text**, the
+    // closing hint, never the framing rule under it.
+    let width = 76u16;
+    let mut app = App::new();
+    app.open_mcp_menu(vec![]);
+    let height = crate::ui::mcp_menu_height(&app, width, 60).unwrap();
+    let mut buf = buffer(width, height);
+    render_mcp_menu(buf.area, &mut buf, &app);
+    assert!(
+        (0..height).all(|y| !row(&buf, y, width).trim_start().starts_with('❯')),
+        "the empty list wears no marker"
+    );
+    let hint_row = (0..height)
+        .find(|&y| row(&buf, y, width).contains(MCP_LIST_HINT))
+        .expect("the closing hint row");
+    assert!(
+        row(&buf, height - 1, width).starts_with('─'),
+        "the bottom rule closes the page"
+    );
+    let after_hint = (cols(MODEL_INDENT) + cols(MCP_LIST_HINT)) as u16;
+    assert_eq!(
+        cursor_position(buf.area, &app),
+        (after_hint, hint_row),
+        "the seat is the cell just past the hint, not the rule's corner"
+    );
+
+    // A `/hooks` event with nothing configured is the same marker-less
+    // shape — its empty-state page closes on the bare Esc hint — same seat.
+    let mut app = App::new();
+    app.open_hooks_menu(HooksOverview::from_file(&HooksFile::default()), None, true);
+    app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)); // the first event
+    let height = crate::ui::hooks_menu_height(&app, width, 60).unwrap();
+    let mut buf = buffer(width, height);
+    render_hooks_menu(buf.area, &mut buf, &app);
+    assert!(
+        (0..height).all(|y| !row(&buf, y, width).trim_start().starts_with('❯')),
+        "nothing configured, nothing highlighted"
+    );
+    let hint_row = (0..height)
+        .find(|&y| row(&buf, y, width).contains(HOOKS_DETAIL_HINT))
+        .expect("the hookless page closes on its Esc hint");
+    let after_hint = (cols(MODEL_INDENT) + cols(HOOKS_DETAIL_HINT)) as u16;
+    assert_eq!(cursor_position(buf.area, &app), (after_hint, hint_row));
+}
+
+#[test]
+fn a_menu_whose_marker_scrolled_off_seats_on_the_painted_hint_before_the_corner() {
+    // The bottom anchor can scroll the highlighted `❯` into the flowed top
+    // while the closing hint still paints: the seat then takes the hint —
+    // the marker-less rule, one fallback for both cases — and only a region
+    // too short to paint even the hint keeps the far corner.
+    let mut app = App::new();
+    app.open_trust_menu(crate::trust::TrustReview {
+        root: "~/repo".into(),
+        trusted: false,
+        files: vec![crate::trust::TrustFileReview {
+            label: "Hooks".into(),
+            path: "~/repo/.alter-zero/hooks.json".into(),
+            items: (0..40)
+                .map(|i| format!("PreToolUse (bash): ./guard-{i}.sh"))
+                .collect(),
+            error: None,
+            pending: true,
+        }],
+    });
+    let width = 60u16;
+    let lines = crate::ui::trust_view_lines(&app, width);
+    let marker_at = lines
+        .iter()
+        .position(|l| {
+            l.spans
+                .iter()
+                .any(|s| s.content.as_ref() == crate::ui::theme::HOOKS_MARKER)
+        })
+        .expect("an option row carries the ❯");
+    let hint_at = lines
+        .iter()
+        .rposition(|l| plain(l).contains(TRUST_HINT))
+        .expect("the closing hint row");
+    assert!(marker_at < hint_at, "the options sit above the hint");
+    // A region holding exactly the hint and what follows it: the `❯` is in
+    // the flowed top, the hint is the painted body's first row.
+    let height = u16::try_from(lines.len() - hint_at).unwrap();
+    let area = Rect::new(0, 0, width, height);
+    let after_hint = (cols(MODEL_INDENT) + cols(TRUST_HINT)) as u16;
+    assert_eq!(
+        cursor_position(area, &app),
+        (after_hint, 0),
+        "the painted hint, not the corner"
+    );
+    // Only the bottom rule on screen: nothing left to seat on but the corner.
+    let area = Rect::new(0, 0, width, 1);
+    assert_eq!(
+        cursor_position(area, &app),
+        (width - 1, 0),
+        "the corner is the last resort"
     );
 }
 

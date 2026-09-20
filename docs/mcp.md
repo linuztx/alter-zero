@@ -584,9 +584,14 @@ deliberately the **hooks-menu twin** rather than a new shape: no text entry
 permission prompt's rule, `ui::cursor_visible`: a menu has nothing for one
 to point at, and a kitty cursor animation blinks at whatever seat it picks
 — the reported artifact under the bottom rule), the *seat* instead tracking
-the highlighted `❯` row (`ui::layout`'s marker scan; the Auth page's
-`URL >` field is typed into, so its caret comes back — the amend-field
-exception) — ↑/↓ (wrapping at the ends)/digits/Enter/Esc, a selection-centred
+the highlighted `❯` row (`ui::layout`'s marker scan — and on a page with no
+`❯` to track, the empty list or the tool detail, resting just past the
+closing hint the way the Ctrl+O/Ctrl+D/`/resume` overlays do
+(`overlay_cursor_seat`'s rule), never on the framing rule under it: the
+far corner of the bottom rule is where an unconfigured `/mcp` used to send
+a kitty cursor animation on every open, `docs/view-flow.md`; the Auth
+page's `URL >` field is typed into, so its caret comes back — the
+amend-field exception) — ↑/↓ (wrapping at the ends)/digits/Enter/Esc, a selection-centred
 window with `↑ N more above` / `↓ N more below` overflow markers, working
 mid-turn (the strip stays above it). Pages:
 

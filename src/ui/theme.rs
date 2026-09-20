@@ -889,6 +889,12 @@ pub(super) const RESUME_TOOLBAR_MIN_GAP: usize = 2;
 /// counter, name) so the content sits off the frame's left edge.
 pub(super) const MODEL_INDENT: &str = "  ";
 
+/// The glyph a framed view's top and bottom rules repeat across the width
+/// (`model_rule`). Named so the hidden-cursor seat can tell a rule row from
+/// text: a page with no `❯` seats after its last text row and skips the
+/// rule under it (`layout::menu_marker_seat`, `docs/view-flow.md`).
+pub(super) const VIEW_RULE: &str = "─";
+
 /// The search line's prompt glyph (cyan), the `❯` the query types after.
 pub(super) const MODEL_PROMPT: &str = "❯ ";
 
