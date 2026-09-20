@@ -917,8 +917,10 @@ stays exact (a skipped blank is a row Ctrl+O paints, so it is counted like any
 other — dropping them from the tally would re-open the `+1 lines` lie in a
 politer dress), an all-blank output is left exactly as it was (no first block
 to prefer, and an empty window would strand the hint with no `⎿` corner), and
-only the two exec cells take the rule — the backend `bash` tool and the `!`
-shell command, one cell shape by design — while a diff body's spacing (content)
+only the backend `bash` cell takes the rule — the `!` shell command, one
+cell shape by design, **no longer folds at all** (`docs/shell-command.md`:
+its whole output shows inline, the `…` cap marker closing a cut one), so it
+takes no policy — while a diff body's spacing (content)
 and an ask cell's `· Q → A` rows keep `BlankPolicy::Keep` and render
 byte-identically; the running *tail* keeps its blanks too, being what the
 command just printed); and the **session scratchpad** (Claude-Code's
@@ -2697,19 +2699,19 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   hint (`shell_mode_line`) and the red `! ` that doubles as the composer
   prompt while `App::shell_mode` is on and as the `Role::Shell` exec-cell
   header bullet in `message_lines`; shell `tool_lines`/`tool_full_lines` are
-  headerless `⎿` blocks — inline folded at `TOOL_FOLD_ROWS` aligned display
-  rows (an output of exactly four rows shown whole), each wrapped
+  headerless `⎿` blocks — inline the **whole** output, **never folded**
+  (`result_full_block`: the user ran the command to read its output, so
+  nothing waits behind a `… +N lines (ctrl+o to expand)` hint — that fold
+  is the backend `bash` cell's alone), every row aligned under the corner
   (`result_row` does the corner/continuation indent; a line wider than the
   terminal **word-wraps with spaces preserved** like the Ctrl+O view
-  (`wrap_output`, via `result_peek_block`)
-  rather than clipping — the fold is the budget, in the unit the cell is
-  *read* in, keeping four wrapping lines from costing three times what four
-  short ones do; `docs/long-lines.md`) then `… +N lines (ctrl+o
-  to expand)` (counting display **rows**, what expanding adds), `⎿ Running…` live, the retained output uncapped in the Ctrl+O view;
+  (`wrap_output`) rather than clipping; `docs/long-lines.md`), `⎿ Running…`
+  live, the same rows uncapped in the Ctrl+O view;
   output over `tui::shell`'s `SHELL_OUTPUT_MAX_BYTES` is **capped in memory** as it's
   read (`tui::shell::append_capped`, codex's pattern — bounds peak RSS so `! tree ~/`
-  can't spike memory; the dropped tail is gone, not saved) and the expanded cell
-  appends a dim `TOOL_TRUNCATED_MARKER` (`…`) when `tool.truncated` —
+  can't spike memory; the dropped tail is gone, not saved) and both the
+  inline cell and the expanded one
+  append a dim `TOOL_TRUNCATED_MARKER` (`…`) when `tool.truncated` —
   kept flush by `conversation_lines`), and
   the live-region row geometry (`GAP_ROWS`/`STATUS_ROWS`/`STATUS_GAP_ROWS`/`INPUT_CHROME_ROWS`/`LIVE_MIN_HEIGHT`;
   the status + gap strip shows *while a turn is active*, and the preview + gap

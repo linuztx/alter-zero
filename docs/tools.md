@@ -383,8 +383,11 @@ OPENROUTER_API_KEY=sk-... cargo run --example tool_smoke -- \
 
 ## Rendering (codex's `diff_render`, in the `⎿` gutter)
 
-A `bash` cell renders like the `!` shell cell: the coloured `● Bash(cmd)` header
-over a **multi-line `⎿` output peek** — the head of the output **folded**
+A `bash` cell renders in the `!` shell cell's shape — the coloured
+`● Bash(cmd)` header over a **multi-line `⎿` output peek** — but where the
+shell cell shows its whole output inline (`docs/shell-command.md`: the user
+ran that command to read it), the `bash` cell's reader is the model, so
+its head is **folded**
 Claude Code's way: its first `TOOL_FOLD_ROWS` (3) wrapped rows, then
 `… +N lines (ctrl+o to expand)` counting the display rows the expansion adds
 (an output of exactly four rows shows whole — a hint hiding one row would cost

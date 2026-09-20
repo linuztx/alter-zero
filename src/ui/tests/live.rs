@@ -4,8 +4,8 @@ use super::*;
 use crate::ui::live::preview_tool_lines;
 use crate::ui::theme::{
     INPUT_CHROME_ROWS, MODEL_SEARCH_ROW, STATUS_GAP_ROWS, STATUS_ROWS, TOOL_BACKGROUND_HINT,
-    TOOL_BACKGROUND_HINT_DELAY, TOOL_FOLD_ROWS, TOOL_PULSE_PERIOD, footer_focus_bg,
-    footer_focus_fg, tool_pulse_bright, tool_pulse_dim,
+    TOOL_BACKGROUND_HINT_DELAY, TOOL_PULSE_PERIOD, footer_focus_bg, footer_focus_fg,
+    tool_pulse_bright, tool_pulse_dim,
 };
 use crate::ui::wrap::cols;
 
@@ -570,9 +570,10 @@ fn the_previewed_match_highlights_the_query_reversed() {
 }
 
 #[test]
-fn a_long_shell_output_caps_the_preview_with_an_expand_hint() {
-    // More than the fold → the first TOOL_FOLD_ROWS rows, then a
-    // `… +N lines (ctrl+o to expand)` row aligned with them.
+fn a_long_shell_output_shows_every_row_inline() {
+    // Past what a `bash` cell would fold, the `!` shell cell keeps going:
+    // every row inline, continuation rows aligned under the corner, and no
+    // `… +N lines (ctrl+o to expand)` row (docs/shell-command.md).
     let output = (1..=6)
         .map(|n| n.to_string())
         .collect::<Vec<_>>()
@@ -583,17 +584,13 @@ fn a_long_shell_output_caps_the_preview_with_an_expand_hint() {
         .iter()
         .map(|l| plain(l).trim_end().to_string())
         .collect();
-    assert_eq!(
-        lines.len(),
-        TOOL_FOLD_ROWS + 1,
-        "folded lines + the hint row"
-    );
+    assert_eq!(lines.len(), 6, "every row, no hint: {lines:?}");
     assert_eq!(lines[0], "  ⎿  1");
     assert_eq!(lines[1], "     2", "continuation aligned, no corner");
-    let hidden = 6 - TOOL_FOLD_ROWS;
-    assert_eq!(
-        lines[TOOL_FOLD_ROWS],
-        format!("     … +{hidden} lines (ctrl+o to expand)")
+    assert_eq!(lines[5], "     6");
+    assert!(
+        !lines.iter().any(|l| l.contains("ctrl+o")),
+        "nothing folded: {lines:?}"
     );
 }
 

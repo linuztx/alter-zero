@@ -5,10 +5,10 @@ use super::*;
 use crate::ui::theme::{
     CODE_TAB_WIDTH, EXPAND_HINT, FILE_PEEK_LINES, TOOL_FOLD_ROWS, TOOL_HEADER_ELLIPSIS,
     TOOL_HEADER_MAX_COLS, TOOL_HEADER_MAX_LINES, TOOL_JSON_PRETTY_MAX_BYTES, TOOL_LINE_ELLIPSIS,
-    TOOL_LINE_MAX_ROWS, TOOL_PULSE_PERIOD, tool_args_color, tool_diff_add_bg, tool_diff_add_color,
-    tool_diff_add_mark_bg, tool_diff_del_bg, tool_diff_del_color, tool_diff_del_mark_bg,
-    tool_dim_color, tool_fail_color, tool_ok_color, tool_output_color, tool_pulse_bright,
-    tool_pulse_dim, tool_running_color, tool_waiting_color,
+    TOOL_LINE_MAX_ROWS, TOOL_PULSE_PERIOD, TOOL_TRUNCATED_MARKER, tool_args_color,
+    tool_diff_add_bg, tool_diff_add_color, tool_diff_add_mark_bg, tool_diff_del_bg,
+    tool_diff_del_color, tool_diff_del_mark_bg, tool_dim_color, tool_fail_color, tool_ok_color,
+    tool_output_color, tool_pulse_bright, tool_pulse_dim, tool_running_color, tool_waiting_color,
 };
 use crate::ui::tool::{live_tool_lines, running_command_lines, tool_full_lines};
 use crate::ui::wrap::cols;
@@ -334,8 +334,9 @@ fn a_committed_cell_never_carries_a_pulse_frame() {
 fn tool_lines_collapses_a_command_output_to_a_multiline_peek_plus_hint() {
     // A finished command-style backend tool (bash) shows the first
     // TOOL_FOLD_ROWS rows of its output — the head, Claude-Code style — then a
-    // `… +N lines (ctrl+o to expand)` hint (docs/tool-streaming.md), like the
-    // `!` shell cell. (This is the mock's finished state.)
+    // `… +N lines (ctrl+o to expand)` hint (docs/tool-streaming.md); the `!`
+    // shell cell alone shows its output whole. (This is the mock's finished
+    // state.)
     let out = "l1\nl2\nl3\nl4\nl5\nl6";
     let lines = tool_lines(
         &tool("Bash", "seq 6", ToolStatus::Ok, out),
@@ -515,10 +516,12 @@ fn a_finished_command_peek_reads_a_blank_only_output_as_no_output() {
 }
 
 #[test]
-fn a_shell_cell_peek_follows_the_same_first_block_rule() {
-    // The `!` shell cell is the same exec cell as the backend `bash` one
-    // (docs/shell-command.md) — headerless, same gutter, same budget — so its
-    // peek skips the leading blanks and stops at the first interior one too.
+fn a_shell_cell_shows_its_whole_output_inline() {
+    // The `!` shell cell does not fold (docs/shell-command.md): the user ran
+    // the command to read its output, so every display line shows inline —
+    // the same rows the Ctrl+O view paints, the leading blanks the command
+    // printed included — with no `… +N lines (ctrl+o to expand)` hint. Only
+    // the backend `bash` cell keeps Claude Code's fold.
     let mut t = tool(
         "printf '\\n\\nout\\n'",
         "",
@@ -530,14 +533,72 @@ fn a_shell_cell_peek_follows_the_same_first_block_rule() {
         .iter()
         .map(plain)
         .collect();
-    assert_eq!(lines.len(), 4, "the block's three rows + hint: {lines:?}");
-    assert_eq!(gutter_content(&lines[0]), "out", "{lines:?}");
-    assert_eq!(gutter_content(&lines[1]), "tail", "{lines:?}");
-    assert_eq!(gutter_content(&lines[2]), "more", "{lines:?}");
-    assert!(
-        lines[3].contains("+2 lines"),
-        "the two skipped blanks are counted: {lines:?}"
+    assert_eq!(
+        lines.len(),
+        5,
+        "every display line, nothing folded: {lines:?}"
     );
+    assert_eq!(gutter_content(&lines[0]), "", "{lines:?}");
+    assert_eq!(gutter_content(&lines[1]), "", "{lines:?}");
+    assert_eq!(gutter_content(&lines[2]), "out", "{lines:?}");
+    assert_eq!(gutter_content(&lines[3]), "tail", "{lines:?}");
+    assert_eq!(gutter_content(&lines[4]), "more", "{lines:?}");
+    assert!(
+        !lines.iter().any(|l| l.contains("ctrl+o")),
+        "nothing is hidden, so nothing to expand: {lines:?}"
+    );
+}
+
+#[test]
+fn a_shell_cell_keeps_its_interior_blank_lines() {
+    // With no fold there is no block to prefer: an interior blank line is a
+    // row the command printed, shown as one — exactly as Ctrl+O shows it.
+    let mut t = tool(
+        "git status",
+        "",
+        ToolStatus::Ok,
+        "On branch main\n\nChanges not staged:\n  modified: a\n\nUntracked:\n  b",
+    );
+    t.shell = true;
+    let lines: Vec<String> = tool_lines(&t, 80, &PathDisplay::VERBATIM)
+        .iter()
+        .map(|l| plain(l).trim_end().to_string())
+        .collect();
+    assert_eq!(
+        lines,
+        [
+            "  ⎿  On branch main",
+            "",
+            "     Changes not staged:",
+            "       modified: a",
+            "",
+            "     Untracked:",
+            "       b",
+        ],
+        "{lines:?}"
+    );
+}
+
+#[test]
+fn a_truncated_shell_cell_marks_the_cut_inline() {
+    // Output over the in-memory cap used to rely on the `… +N lines` hint to
+    // say more followed; with the whole retained output inline, the dim `…`
+    // marker the Ctrl+O view appends closes the inline cell too, so the cut
+    // is still visible (docs/shell-command.md).
+    let mut t = tool("seq 1 50000", "", ToolStatus::Ok, "1\n2\n3\n4\n5\n6");
+    t.shell = true;
+    t.truncated = true;
+    let lines: Vec<String> = tool_lines(&t, 80, &PathDisplay::VERBATIM)
+        .iter()
+        .map(|l| plain(l).trim_end().to_string())
+        .collect();
+    assert_eq!(lines.len(), 7, "six retained rows + the marker: {lines:?}");
+    assert_eq!(lines[5], "     6", "{lines:?}");
+    assert_eq!(lines[6].trim(), TOOL_TRUNCATED_MARKER, "{lines:?}");
+    // A complete output appends nothing.
+    t.truncated = false;
+    let complete = tool_lines(&t, 80, &PathDisplay::VERBATIM);
+    assert_eq!(complete.len(), 6, "no marker on a complete output");
 }
 
 #[test]
@@ -2446,21 +2507,22 @@ fn everyday_short_output_counts_the_same_as_before() {
 }
 
 #[test]
-fn a_shell_cell_folds_a_pathological_line_too() {
-    // The headerless `!` exec cell shares the peek, so it is bounded the same
-    // way (a `! curl` of a JSON API used to paint twelve rows).
+fn a_shell_cell_shows_a_pathological_line_whole() {
+    // The headerless `!` exec cell is not folded: a 600-column line wraps to
+    // every row it needs (35 content columns at width 40 → 18 rows) and the
+    // last row carries the tail of the line, never a hint.
     let mut t = tool("curl -s api", "", ToolStatus::Ok, &"x".repeat(600));
     t.shell = true;
     let lines: Vec<String> = tool_lines(&t, 40, &PathDisplay::VERBATIM)
         .iter()
         .map(plain)
         .collect();
+    assert_eq!(lines.len(), 18, "every wrapped row shows: {lines:?}");
     assert_eq!(
-        lines.len(),
-        TOOL_FOLD_ROWS + 1,
-        "headerless: the fold + hint: {lines:?}"
+        lines.last().unwrap().trim(),
+        "x".repeat(600 - 17 * 35),
+        "the line's tail, not a hint: {lines:?}"
     );
-    assert!(lines.last().unwrap().contains("+15 lines"), "{lines:?}");
 }
 
 #[test]
@@ -3429,7 +3491,8 @@ fn an_exec_cell_pretty_prints_a_json_line_like_claude_code() {
 
 #[test]
 fn a_shell_cell_pretty_prints_json_too() {
-    // The `!` exec cell is the same cell shape (docs/shell-command.md).
+    // The `!` exec cell reshapes a JSON line the same way — and, unfolded,
+    // shows the whole reshaped document inline (docs/shell-command.md).
     let mut t = tool("curl -s api", "", ToolStatus::Ok, WIKI_JSON);
     t.shell = true;
     let lines: Vec<String> = tool_lines(&t, 72, &PathDisplay::VERBATIM)
@@ -3438,7 +3501,8 @@ fn a_shell_cell_pretty_prints_json_too() {
         .collect();
     assert_eq!(lines[0], "  ⎿  {");
     assert_eq!(lines[1], "       \"batchcomplete\": \"\",");
-    assert!(lines.last().unwrap().contains("+9 lines"), "{lines:?}");
+    assert_eq!(lines.len(), 12, "the whole reshaped document: {lines:?}");
+    assert_eq!(lines.last().unwrap().trim(), "}", "{lines:?}");
 }
 
 #[test]

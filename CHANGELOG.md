@@ -71,6 +71,16 @@ release heading when a version is cut.
   timeout 2m)` row instead of sitting on a bare `Running…` for as long as
   it takes. The Ctrl+B hint follows as before; the `!` shell's
   `⎿ Running… (Ns)` row is unchanged, a `!` command having no timeout.
+- **A `!` shell command shows its whole output inline**
+  (`docs/shell-command.md`). The committed cell used to fold after three
+  rows behind `… +N lines (ctrl+o to expand)`, so reading a `! git status`
+  or a `! ls -la` meant opening the transcript. Every line shows in the
+  conversation now — blank lines kept, long lines word-wrapped, the
+  reshaped JSON document whole — with nothing to expand. Output over the
+  in-memory cap still stops where it always did, and the dim `…` marker
+  that only the Ctrl+O view carried now closes the inline cell too, so a
+  cut is visible where the output is read. The model's `Bash` cell keeps
+  Claude Code's fold.
 
 ## [0.4.0] - 2026-09-18
 

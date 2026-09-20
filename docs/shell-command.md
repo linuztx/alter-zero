@@ -80,18 +80,21 @@ In `on_key_conversation`'s Enter arm, in shell mode:
 ### Running it — the exec cell (`App::begin_shell` + the boundary runner)
 
 The committed result is one Claude-Code-style **exec cell** — the `! command`
-dark header, then the output as a `⎿` block (the first line under the corner,
-the rest aligned beneath it), **folded** inline at `TOOL_FOLD_ROWS` (3)
-display rows — Claude Code's fold, an output of exactly four rows shown whole
-— each line **fully wrapped**, with a `… +N lines (ctrl+o to expand)` hint
-when more is hidden. A line wider than the terminal **word-wraps, spaces
-preserved** (`wrap_output`, the same wrapper the Ctrl+O view uses — prose like
-a `sudo` error breaks at words, `ls -l` columns that fit stay byte-exact)
-instead of clipping at the edge, so no output text disappears; the row budget
-is what keeps four *wrapping* lines from costing three times what four short
-ones do (`docs/long-lines.md`), a line that is a JSON document is reshaped
-for display like the `bash` cell's (`exec_display_lines`), and the `+N lines`
-count includes a line only partially shown:
+dark header, then the **whole** output as a `⎿` block (the first line under
+the corner, the rest aligned beneath it), **never folded**: the user ran the
+command to read its output, so every display line shows inline, blank lines
+included, and nothing waits behind a `… +N lines (ctrl+o to expand)` hint —
+that fold is the backend `bash` cell's alone (`docs/tool-streaming.md`),
+where the reader is the model and the peek is a courtesy. A line wider than
+the terminal **word-wraps, spaces preserved** (`wrap_output`, the same
+wrapper the Ctrl+O view uses — prose like a `sudo` error breaks at words,
+`ls -l` columns that fit stay byte-exact) instead of clipping at the edge,
+so no output text disappears, and a line that is a JSON document is reshaped
+for display like the `bash` cell's (`exec_display_lines`). The rows are
+exactly the ones the Ctrl+O view paints (`result_full_block`, the inline
+twin of `tool_full_body`'s row pipeline), so the two views agree row for
+row and Ctrl+O is never *needed* to read a `!` command's output — it is
+still there, as the scrolling pager over the whole conversation:
 
 ```
 ! ls                           ← Role::Shell header: dark user-style line
@@ -103,8 +106,15 @@ count includes a line only partially shown:
   ⎿  .
      ├── index.html
      ├── script.js
-     … +3 lines (ctrl+o to expand)   ← folded at TOOL_FOLD_ROWS, rest in Ctrl+O
+     ├── styles.css            ← every line, however many — no fold, no hint
+     └── vendor
+         └── lib.js
 ```
+
+The bound is the **in-memory cap** (`SHELL_OUTPUT_MAX_BYTES`, below), not a
+row budget: a `! seq 1 50000` commits its retained head — thousands of rows
+— into the terminal's own scrollback, where the terminal's scrolling reads
+it, and closes on the `…` marker where the cap cut it.
 
 `begin_shell(command)` (pure) sets up the turn so the existing paths produce
 exactly that:
@@ -125,8 +135,8 @@ exactly that:
   While it runs the strip's preview row is `  ⎿ Running… (Ns)` —
   `render_live`'s `shell_running_line(elapsed)`, the elapsed the hidden status
   would have carried — sitting flush under the committed header; on `ToolEnd`
-  the committed `⎿` block (folded at `TOOL_FOLD_ROWS` aligned rows, then `… +N
-  lines (ctrl+o to expand)`) replaces it (`result_row` does the corner/
+  the committed `⎿` block (every row, aligned, unfolded) replaces it
+  (`result_row` does the corner/
   continuation alignment). `conversation_lines` skips the blank spacer after a
   Shell message so the repaint keeps the cell flush.
 
@@ -186,8 +196,8 @@ preview) — but it lives only in `App.history`, and the peak is what mattered.
 The runner sends `ToolEnd { output: head, ok, truncated }` (`truncated` true when
 bytes were dropped; a normal backend tool always sends `false`). The loop calls
 `App::set_tool_truncated()` before `end_tool`, so the recorded
-`ToolCall.truncated` makes the **expanded** (Ctrl+O) cell append a dim `…` marker
-after the last retained line:
+`ToolCall.truncated` makes the cell — the inline one and the expanded
+(Ctrl+O) one alike — append a dim `…` marker after the last retained line:
 
 ```
 ! tree ~/
@@ -195,19 +205,16 @@ after the last retained line:
      ├── Codes
      ├── Downloads
      ├── Documents
-     … +18514 lines (ctrl+o to expand)   ← inline: the usual peek hint
-
-(Ctrl+O view, pinned to the bottom)
-     …
+     …                                   ← (thousands of retained rows)
      └── zzz/last-retained-line
-    …                                   ← TOOL_TRUNCATED_MARKER: the cap cut here
+     …                                   ← TOOL_TRUNCATED_MARKER: the cap cut here
 ```
 
-`ui::tool_full_lines` appends `ui::TOOL_TRUNCATED_MARKER` (`…`) when
-`tool.truncated`. Inline (`tool_lines`) needs no extra marker — the existing
-`… +N lines (ctrl+o to expand)` peek hint already signals more (its count is of
-the *retained* lines, so it under-counts a truncated output). The dropped bytes
-are **not recoverable**: unlike a paged file there is nothing to expand to; the
+`ui::tool_full_lines` and `ui::tool_lines` both append
+`ui::TOOL_TRUNCATED_MARKER` (`…`) when `tool.truncated`: the inline cell shows
+the whole retained output and no hint says more followed, so the marker is
+the only thing that tells the reader the cap cut it. The dropped bytes are
+**not recoverable**: unlike a paged file there is nothing to expand to; the
 `…` only says "this is where the cap cut it".
 
 Reading goes through `String::from_utf8_lossy`, so non-UTF-8 output no longer
@@ -247,8 +254,8 @@ The `?` shortcuts band gains a `! for shell command` entry.
   strip being preview + gap only (no `esc to interrupt`, req 3);
   `message_lines(Role::Shell…)` is the dark user-style line with the red
   `! ` bullet, width-padded; a shell tool renders headerless — inline a `⎿`
-  block folded at `TOOL_FOLD_ROWS` rows (continuation lines aligned under the
-  corner) with a `… +N lines (ctrl+o to expand)` hint when more is hidden,
+  block of **every** row (continuation lines aligned under the corner), never
+  folded and never hinting at Ctrl+O,
   `⎿ Running…` while running (`tool_lines`; the live preview adds the elapsed);
   the Ctrl+O `tool_full_lines` is headerless too
   (no `● ls` bullet) and shows the retained output uncapped under `⎿`,
@@ -257,8 +264,8 @@ The `?` shortcuts band gains a `! for shell command` entry.
   assistant's markdown — the `! command` header itself and a user's bubble
   wrap with `wrap_output` too, `docs/textarea.md`); a
   truncated output (`tool.truncated` set) appends a dim `…`
-  (`TOOL_TRUNCATED_MARKER`) line after the last retained line in the expanded
-  view, while a complete output appends nothing; `conversation_lines` and
+  (`TOOL_TRUNCATED_MARKER`) line after the last retained line, inline and in
+  the expanded view alike, while a complete output appends nothing; `conversation_lines` and
   `transcript_lines` keep the
   cell flush (no spacer after the Shell header); shell mode swaps the
   composer prompt to a red `! `; `footer_rows` is 1 in the mode without session
@@ -274,10 +281,11 @@ The `?` shortcuts band gains a `! for shell command` entry.
   `⎿ Running… (Ns)` preview with **no** `esc to interrupt` status (req 3), and
   Esc resolves it `⎿ Interrupted by user` with **no** `Conversation interrupted`
   notice (req 2). **Phase 22**: a `!` command with >100KB output
-  (`seq 1 50000`) renders its retained head with the `+N lines (ctrl+o to
-  expand)` peek hint, writes **no** `/tmp/alter-zero-shell-*.txt` file (the
-  output is capped in memory, never saved), and the Ctrl+O view ends with the `…`
-  truncation marker.
+  (`seq 1 50000`) commits its whole retained head inline — numeric rows on
+  screen, no `+N lines (ctrl+o to expand)` hint — closed by the `…`
+  truncation marker, writes **no** `/tmp/alter-zero-shell-*.txt` file (the
+  output is capped in memory, never saved), and the Ctrl+O view ends with the
+  same `…`.
 
 ## Known limitations (v1)
 

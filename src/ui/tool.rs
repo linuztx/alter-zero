@@ -639,13 +639,14 @@ fn approval_note_row(tool: &ToolCall) -> Option<Line<'static>> {
 /// Build the styled lines for one tool call as shown **inline**.
 ///
 /// A `!` shell command is **headerless** — its `Role::Shell` header (`! pwd`)
-/// sits flush above (docs/shell-command.md) — and shows its output as a `⎿`
-/// block (each line aligned under the corner) folded at `TOOL_FOLD_ROWS`
-/// display **rows** — so a wrapping line costs the cell no more than a short
-/// one — then a `… +N lines (ctrl+o to expand)` hint when more is hidden
-/// (Claude-Code's exec cell). A backend tool keeps its coloured
-/// `● name(args)` header over the same folded peek. The full output is only
-/// rendered in the separate tool-output view, never here.
+/// sits flush above (docs/shell-command.md) — and shows its **whole** output
+/// as a `⎿` block (each line aligned under the corner, word-wrapped), never
+/// folded: the user ran it to read the output, so nothing waits behind a
+/// hint, and the dim `…` marker closes a cell the in-memory cap cut. A
+/// backend tool keeps its coloured `● name(args)` header over a **folded**
+/// peek — `TOOL_FOLD_ROWS` display rows, then `… +N lines (ctrl+o to
+/// expand)` when more is hidden (Claude-Code's exec cell) — with the full
+/// output only in the separate tool-output view.
 ///
 /// A **running** bullet renders at rest (the flat grey) — this is the renderer
 /// that feeds scrollback commits and the frozen transcript, where a colour
@@ -1072,25 +1073,25 @@ fn tool_cell_body(
     }
 
     if tool.shell {
-        // The running/empty single-row states; else the head peek — the
-        // exec cell's display lines folded at TOOL_FOLD_ROWS display rows.
-        // (Truncation of an over-cap output is marked only in the expanded view;
-        // inline, the `… +N lines (ctrl+o to expand)` hint already signals more.)
+        // The `!` shell cell never folds (docs/shell-command.md): the user
+        // ran the command to read its output, so every display line shows
+        // inline — the rows the Ctrl+O view paints, blanks kept — and the
+        // dim `…` marker closes a cell the in-memory cap cut, since the
+        // `… +N lines` hint that used to say more followed is gone. The
+        // running/empty single-row states stay.
         let display = exec_display_lines(tool);
-        return match tool.status {
+        let mut lines = match tool.status {
             // A shell command is never batched, so it is never `Waiting`; the
             // arm is here only to keep the match total and correct if it ever is.
-            ToolStatus::Waiting => vec![result_row(0, TOOL_WAITING.to_string())],
-            ToolStatus::Running => vec![result_row(0, TOOL_RUNNING.to_string())],
+            ToolStatus::Waiting => return vec![result_row(0, TOOL_WAITING.to_string())],
+            ToolStatus::Running => return vec![result_row(0, TOOL_RUNNING.to_string())],
             _ if display.is_empty() => vec![result_row(0, TOOL_NO_OUTPUT.to_string())],
-            _ => result_peek_block(
-                &display,
-                peek_width,
-                WrapMode::Output,
-                BlankPolicy::FirstBlock,
-                |i, text, _| output_row(i, text),
-            ),
+            _ => result_full_block(&display, peek_width),
         };
+        if tool.truncated {
+            lines.push(result_row(lines.len(), TOOL_TRUNCATED_MARKER.to_string()));
+        }
+        return lines;
     }
 
     // A `write`/`edit` cell in the numbered `llm::tools` format renders
@@ -1218,6 +1219,22 @@ impl BlankPolicy {
 /// [`split_display_lines`], so trimming spaces is the whole test.
 fn is_blank_row(line: &str) -> bool {
     line.trim().is_empty()
+}
+
+/// Every display row of `out_lines`, **unfolded**: each line wrapped to
+/// `peek_width` ([`WrapMode::Output`] — word boundaries, spaces preserved,
+/// the Ctrl+O view's wrapper), the first row under the `⎿` corner and every
+/// later one aligned beneath it ([`output_row`]). The `!` shell cell's block
+/// (`docs/shell-command.md`): the same rows [`tool_full_body`] paints for the
+/// transcript, so the inline cell and Ctrl+O agree row for row.
+fn result_full_block(out_lines: &[String], peek_width: usize) -> Vec<Line<'static>> {
+    let wrap_width = u16::try_from(peek_width).unwrap_or(u16::MAX);
+    out_lines
+        .iter()
+        .flat_map(|line| wrap_output(line, wrap_width))
+        .enumerate()
+        .map(|(i, text)| output_row(i, text))
+        .collect()
 }
 
 /// The head peek of `out_lines`, folded Claude Code's way: its first
