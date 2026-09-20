@@ -53,9 +53,9 @@ subtree inside it:
 
 | Module | Holds |
 |--------|-------|
-| `dummy/mod.rs` | `DummyAi` — the `ReplySource` impl, `turn_events`, and the playback pacing. |
+| `dummy/mod.rs` | `DummyAi` — the `ReplySource` impl, `turn_events`, and the playback pacing (`with_startup_delay` / `with_chunk_delay`, the two knobs `ALTER_ZERO_STARTUP_DELAY_MS` / `ALTER_ZERO_CHUNK_DELAY_MS` set). |
 | `dummy/scenario.rs` | **The registry**: `Cue`, `Scenario`, `SCENARIOS`, `select`. |
-| `dummy/script.rs` | The canned replies, the `handoff!()` sentence they close on, and the streaming/output primitives (`chunks`, `dummy_response`, `reply_parts`, `image_ack`; the file-cell bodies come straight from `llm::tools::write_report`/`update_report`). |
+| `dummy/script.rs` | The canned replies, the `handoff!()` sentence they close on, and the streaming/output primitives (`chunks`, `tokens` — the token-sized split the slow-stream stress demo streams by (`docs/slow-stream.md`), `dummy_response`, `reply_parts`, `image_ack`; the file-cell bodies come straight from `llm::tools::write_report`/`update_report`). |
 | `dummy/turns.rs` | The **pure** scripted turns — one `Cue -> Vec<StreamEvent>` per scenario. |
 | `dummy/gated.rs` | The turns that *ask*, blocking on the permission gate. |
 | `dummy/agent.rs` | The two turns that stream a **launched subagent's own round** on the agent channel, so the agent session view is drivable offline (`docs/agent-view-streaming.md`) — one that streams a table, one whose own parallel `bash` batch **asks** on the shared permission gate. |
@@ -168,6 +168,7 @@ picked. Same trick `ui::TranscriptCache`'s counters use.
 | `compact` | the summarization marker | `/compact`'s text-only handoff summary (`docs/compact.md`) |
 | `agent-stream` | "subagent" | one background subagent that streams **its own session** — a thinking phase then a forming table — the only demo that drives the agent session view's strip (`docs/agent-view-streaming.md`) |
 | `table` | "table" | a streaming GFM table with wide emoji (`docs/table-streaming.md`) |
+| `markdown` | "markdown", not "agents.md" | the slow-stream stress tour: every markdown element in one long text-only reply, streamed in **token-sized** pieces (`tokens`) — the document `smoke.sh` Phase 121 streams at a few tokens a second (`docs/slow-stream.md`) |
 | `agents` | "agents", not "agents.md" | a two-subagent group, foreground or background (`docs/agent-tool.md`) |
 | `parallel-batch` | "parallel" | three parallel `Bash(ping …)` calls and their `⎿ Waiting…` cells (`docs/parallel-tools.md`) |
 | `files` | "diff"/"edit"/"write", not "agents.md" | a `Write` then an `Edit` of the same file: the numbered file cell and its green/red diff hunk (`docs/tools.md`) |

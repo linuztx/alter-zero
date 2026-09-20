@@ -166,8 +166,9 @@ impl Session<'_> {
     /// The strip's streaming preview: **the rows scrollback does not hold
     /// yet** — the uncommitted tail of the render, which is the reply's last
     /// row for settled prose, every wrapped row of a withheld source line, the
-    /// whole forming table, or nothing at all when the frontier just committed
-    /// clean (capped to `ui::stream_preview_max_rows` so a tall tail
+    /// whole forming table — never fewer rows than a token ago less what
+    /// committed since, padded with blanks so the box holds still,
+    /// `docs/slow-stream.md` (capped to `ui::stream_preview_max_rows` so a tall tail
     /// tail-follows on a small screen) — computed cheaply by
     /// `ui::StreamRender::preview`; `None` when idle or while a tool runs (the
     /// tool's own header previews instead).

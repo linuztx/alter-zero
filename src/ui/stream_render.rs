@@ -57,6 +57,20 @@ pub struct StreamRender {
     /// instead of re-rendering the trailing line (for a huge line, O(line) at
     /// ~30 fps starved the loop).
     preview_memo: Option<(PreviewKey, Vec<Line<'static>>)>,
+    /// The fewest rows the next [`preview`](Self::preview) may answer with:
+    /// the height of the last preview, less every row [`commit`](Self::commit)
+    /// has since moved to scrollback. The strip is the region's only elastic
+    /// content and the region is content-anchored, so a preview that shrinks
+    /// by more than what committed lifts the box — and drops it again a
+    /// token later, once the next line lands. A slow model makes that a
+    /// visible bounce (`docs/slow-stream.md`): a fence marker renders no row
+    /// where its first two backticks did, a wrapped table header collapses
+    /// into a shorter grid or record when its delimiter confirms. So the
+    /// preview
+    /// is **padded with blank rows up to this floor** — the rows the next
+    /// content will land on — and the invariant every prefix holds is
+    /// `preview.len() + committed_now >= previous preview.len()`.
+    preview_floor: usize,
 }
 
 /// What pins a memoized preview: `(consumed, tail length, committed, width,
@@ -91,6 +105,7 @@ impl StreamRender {
             nl_scanned: 0,
             last_eval: (0, 0),
             preview_memo: None,
+            preview_floor: 0,
         }
     }
 
@@ -113,6 +128,7 @@ impl StreamRender {
             self.nl_scanned = 0;
             self.last_eval = (0, 0);
             self.preview_memo = None;
+            self.preview_floor = 0;
         }
         // The last '\n' at or after `consumed` terminates the last complete line;
         // everything up to it is now frozen. `consumed` always lands right after a
@@ -171,6 +187,16 @@ impl StreamRender {
     /// call. Replaces `stable_commit`; O(text appended since the last call).
     #[must_use]
     pub fn commit(&mut self, text: &str, width: u16) -> Vec<Line<'static>> {
+        let out = self.commit_rows(text, width);
+        // Rows that moved to scrollback push the region down by as much as
+        // the strip may now shrink (`preview_floor`).
+        self.preview_floor = self.preview_floor.saturating_sub(out.len());
+        out
+    }
+
+    /// The body of [`commit`](Self::commit): the stable rows for `text`,
+    /// before the preview floor is lowered by them.
+    fn commit_rows(&mut self, text: &str, width: u16) -> Vec<Line<'static>> {
         self.advance(text, width);
         // A huge single source line (a minified dump — no newline ever
         // arrives) makes every step below O(trailing line): the withhold
@@ -390,6 +416,13 @@ impl StreamRender {
     /// grid still streams row-by-row with its columns re-fitting as wider cells
     /// arrive (docs/table-streaming.md).
     ///
+    /// Never fewer rows than the strip held a token ago, less what committed
+    /// since (`preview_floor`): a trailing line that rendered no row of its
+    /// own (a fence marker), a frontier that just committed clean (a closing
+    /// fence), or a table re-laid out shorter is padded with blank rows, so
+    /// the strip keeps its rows and the box never hops up between tokens
+    /// (`docs/slow-stream.md`).
+    ///
     /// Capped to the **newest** `max_rows` rows so a tail taller than the strip
     /// (a big table, a very long withheld code line) tail-follows its frontier.
     /// O(new complete lines since the last call + the trailing line + the open
@@ -477,21 +510,41 @@ impl StreamRender {
         // The reply so far renders to zero rows and nothing has committed (only
         // a code fence, or only whitespace): batch `assistant_lines` still
         // emits the bullet home, so the preview must match it or the strip
-        // would diverge from a repaint. With rows already committed an empty
-        // tail means exactly that — everything is in scrollback and the strip
-        // has nothing to add.
+        // would diverge from a repaint.
         if rows.is_empty() && self.committed == 0 && self.frozen.is_empty() {
-            return vec![empty_assistant_row(
+            rows.push(empty_assistant_row(
                 &self.renderer.bullet,
                 self.renderer.color,
-            )];
+            ));
         }
         // Tail-follow: keep the newest rows when the tail outgrows the cap (the
         // top of a big table scrolls out of the strip and reappears when the
-        // closed block commits whole).
+        // closed block commits whole). Before the padding below, so the cap
+        // always spends its rows on content first.
         if rows.len() > max_rows {
             rows.drain(..rows.len() - max_rows);
         }
+        // Never fewer rows than the strip held a token ago, less what has
+        // moved to scrollback since (`preview_floor`) — nor none at all
+        // while rows have committed. Padded with blank rows, the rows the
+        // next content will land on. Three shapes used to shrink here and
+        // each lifted the box, then dropped it a token later — one frame at
+        // a fast stream, a visible bounce at a slow model's pace
+        // (`docs/slow-stream.md`): a closing ``` left nothing to preview, so
+        // the strip dropped its slot *and* its gap (two rows); an opener
+        // streamed a backtick at a time rendered no row where its `` `` ``
+        // prose had (one row); and a table header wrapped as prose collapsed
+        // into a shorter grid or record the moment its delimiter confirmed,
+        // or its grid into records when its first row arrived, at a narrow
+        // width. The padding is geometry, not content: the next content
+        // takes its rows, `finish` never sees it, and the batch render's
+        // trailing-blank trim is why the differential harness tolerates
+        // trailing blank rows beyond the batch render and nothing else.
+        let floor = self.preview_floor.min(max_rows).max(1);
+        while rows.len() < floor {
+            rows.push(Line::from(vec![Span::raw(INDENT.to_string())]));
+        }
+        self.preview_floor = rows.len();
         rows
     }
 }

@@ -143,10 +143,15 @@ pub struct InlineViewport {
     /// [`take_modal_scrolled`]: InlineViewport::take_modal_scrolled
     modal_scrolled: bool,
     /// The screen row just below the live region as it was last **painted**
-    /// ([`paint_frame`] records it) — unlike `view.height`, immune to the
-    /// between-paint re-syncs of [`set_view_height`]. Read by the loop
+    /// ([`paint_frame`] records it; every `scroll_up` carries it along, since
+    /// the painted rows move with the screen) — unlike `view.height`, immune
+    /// to the between-paint re-syncs of [`set_view_height`]. Read by the loop
     /// ([`painted_bottom`]) to tell a modal region pinned flush at the screen
-    /// bottom from one still floating above it (`docs/permissions.md`).
+    /// bottom from one still floating above it (`docs/permissions.md`), and
+    /// by [`paint_frame`] itself to blank exactly the rows the previous
+    /// region left **below** the one it just painted — the only clearing a
+    /// frame does, now that a commit repaints the region in place instead of
+    /// blanking it first (`docs/slow-stream.md`).
     ///
     /// [`paint_frame`]: InlineViewport::paint_frame
     /// [`set_view_height`]: InlineViewport::set_view_height
@@ -470,12 +475,29 @@ impl InlineViewport {
         Ok(buf)
     }
 
-    /// Paint one already-rendered frame `buf` to the backend: prepare the screen
-    /// (`scroll_up` / vacated-row clear from `repin`), emit the cells, and place the
-    /// cursor. Split out so [`draw`] can bracket exactly this work in a synchronized
-    /// update. When the region sat still (no scroll, no vacated rows, same rect as
-    /// last frame) only the cells that **changed** since `prev` are sent — a keystroke
-    /// ships a couple of cells, not the whole region; otherwise it repaints in full.
+    /// Paint one already-rendered frame `buf` to the backend: scroll as `repin`
+    /// says, emit the cells **over whatever the rows hold**, blank the rows the
+    /// previous region left below the new one, and place the cursor. Split out
+    /// so [`draw`] can bracket exactly this work in a synchronized update. When
+    /// the region sat still (no scroll, no vacated rows, same rect as last
+    /// frame) only the cells that **changed** since `prev` are sent — a
+    /// keystroke ships a couple of cells, not the whole region; otherwise it
+    /// repaints in full.
+    ///
+    /// The order is the point: the box is painted in place and **never
+    /// blanked first**. A scrollback commit used to clear the whole region
+    /// (`ESC[J`) before this repaint, which put one presentable boxless state
+    /// inside every commit frame — invisible under a synchronized update,
+    /// but a terminal without mode 2026 that renders a half-parsed frame (a
+    /// commit frame is a few KB, a pty read is 4 KB) showed the box vanish and
+    /// return once per committed line, which a slow model makes a blink a
+    /// second. Overwriting instead leaves such a terminal a partly-updated box
+    /// at worst (`docs/slow-stream.md`). What a frame *does* blank is exactly
+    /// the rows the last painted region occupied below this one — a shrink's
+    /// vacated rows (`repin.clear_below`), or the tail of a region a commit
+    /// pushed down by fewer rows than the strip collapsed (`painted_bottom`,
+    /// carried through the scrolls) — and those sit below the box, which is
+    /// the bottom-most content, so blanking them can never blink anything.
     ///
     /// [`draw`]: InlineViewport::draw
     fn paint_frame(
@@ -486,9 +508,7 @@ impl InlineViewport {
         app: &App,
     ) -> io::Result<()> {
         self.scroll_up(repin.scroll_up)?;
-        if repin.clear_below > 0 {
-            self.clear_rows(repin.top.saturating_add(height), repin.clear_below)?;
-        }
+        let bottom = repin.top.saturating_add(height);
         match &self.prev {
             Some(prev)
                 if repin.scroll_up == 0 && repin.clear_below == 0 && prev.area == buf.area =>
@@ -500,10 +520,19 @@ impl InlineViewport {
             }
             _ => self.blit(buf)?,
         }
+        // Below the region is always free, so taking the larger of the two
+        // stale bottoms over-clears at worst a blank row.
+        let stale_bottom = self
+            .painted_bottom
+            .max(bottom.saturating_add(repin.clear_below));
+        if stale_bottom > bottom {
+            self.clear_rows(bottom, stale_bottom - bottom)?;
+        }
         // Record where this frame's region actually ended on screen — the
         // datum `painted_bottom` serves the loop (`view.height` alone can't:
-        // `set_view_height` re-syncs it between paints for the flush plan).
-        self.painted_bottom = repin.top.saturating_add(height);
+        // `set_view_height` re-syncs it between paints for the flush plan)
+        // and the next frame's stale-row clear above.
+        self.painted_bottom = bottom;
         let (x, y) = ui::cursor_position(self.view, app);
         self.backend.set_cursor_position(Position::new(x, y))?;
         // Re-show the cursor at its final prompt seat, undoing the frame-start
@@ -555,8 +584,9 @@ impl InlineViewport {
     /// Commit `lines` into scrollback directly above the viewport, pushing the
     /// viewport down to sit just below them. Port of ratatui's portable
     /// `insert_before`: draw the lines into the rows above the viewport, scrolling
-    /// the screen up only as much as needed, then leave the viewport cleared for
-    /// the repaint that follows in the same frame.
+    /// the screen up only as much as needed, and leave the viewport's rows to
+    /// the repaint that follows in the same frame — stale, never blanked
+    /// (`docs/slow-stream.md`).
     fn write_above(&mut self, mut lines: Vec<Line<'static>>) -> io::Result<()> {
         // One commit can exceed u16 rows (a multi-megabyte paste expands back
         // to its full text on send): chunk it so the `as u16` below is exact —
@@ -618,14 +648,19 @@ impl InlineViewport {
         drawn += remaining - scroll;
 
         self.view.y = drawn as u16;
-        // Clear the viewport now-stale on screen; the paint that follows in this
-        // same frame redraws it. We clear *after* drawing (not before scrolling)
-        // to dodge a tmux bug where a full clear immediately followed by a scroll
-        // spills garbage to scrollback.
-        self.backend
-            .set_cursor_position(Position::new(0, self.view.y))?;
-        self.backend.clear_region(ClearType::AfterCursor)?;
-        self.prev = None; // the viewport area on screen is now cleared, not last-drawn
+        // The rows the region now occupies hold stale cells — the previous
+        // region's lower rows, shifted up by the scroll — and they are
+        // deliberately NOT blanked here: the live-region paint that follows
+        // in this same frame overwrites every one of them in place, and
+        // [`paint_frame`] blanks whatever the previous region left *below*
+        // the new one. The `ESC[J` that used to sit here was the one
+        // presentable boxless state left in a commit frame (it also needed
+        // ordering care around a tmux bug that spilled a full clear followed
+        // by a scroll into scrollback — moot with no full clear at all).
+        // `docs/slow-stream.md`.
+        //
+        // [`paint_frame`]: InlineViewport::paint_frame
+        self.prev = None; // the region's cells on screen are stale, not last-drawn
         Ok(())
     }
 
@@ -663,6 +698,9 @@ impl InlineViewport {
     fn clear_scrollback_and_screen(&mut self) -> io::Result<()> {
         write!(self.backend, "\x1b[r\x1b[0m\x1b[H\x1b[2J\x1b[3J\x1b[H")?;
         self.prev = None;
+        // A blank screen holds no painted region for the rebuild's paint to
+        // clear beneath (the rebuild's own scrolls keep it at zero).
+        self.painted_bottom = 0;
         // The purge takes the pictures with it: a kitty placement transmits
         // its pixels once per encoded protocol, so one that outlived the
         // purge would place an image the terminal may already have dropped.
@@ -977,8 +1015,18 @@ impl InlineViewport {
         }
         // A quit can land between an `insert_before` and the draw tick that would
         // have flushed it (e.g. `/help` then an instant Ctrl+C): write any queued
-        // lines now so committed content is never lost with the session.
+        // lines now so committed content is never lost with the session. No
+        // frame repaints the region on the way out, so the flush would leave
+        // the old box's rows shifted and torn where the region now sits —
+        // blank them, which is what `write_above`'s own clear did for this
+        // one path before commits repainted in place (`docs/slow-stream.md`).
+        let flushed = !self.pending.is_empty();
         self.flush_pending()?;
+        if flushed {
+            self.backend
+                .set_cursor_position(Position::new(0, self.view.y))?;
+            self.backend.clear_region(ClearType::AfterCursor)?;
+        }
         // Pop the keyboard-enhancement flags we pushed in `init` (while still in
         // raw mode) so the parent shell doesn't inherit enhanced key reporting.
         if self.keyboard_enhanced {
@@ -1098,11 +1146,15 @@ impl InlineViewport {
 
     /// Scroll the whole screen up `n` rows by appending lines at the bottom, so
     /// the rows that fall off the top enter the terminal's real scrollback.
+    /// Everything painted moves up with them, the last painted region's
+    /// bottom included — `painted_bottom` is a screen row, so it is carried
+    /// here, at the one place the screen scrolls.
     fn scroll_up(&mut self, n: u16) -> io::Result<()> {
         if n > 0 {
             self.backend
                 .set_cursor_position(Position::new(0, self.screen.height.saturating_sub(1)))?;
             self.backend.append_lines(n)?;
+            self.painted_bottom = self.painted_bottom.saturating_sub(n);
         }
         Ok(())
     }

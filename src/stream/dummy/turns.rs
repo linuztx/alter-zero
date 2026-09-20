@@ -12,7 +12,10 @@ use std::time::Duration;
 
 use super::super::{AgentCallDone, AgentSpec, StreamEvent, ToolCallSummary};
 use super::scenario::Cue;
-use super::script::{chunks, dummy_response, handoff, image_ack, reply_parts, tool_output_events};
+use super::script::{
+    MARKDOWN_TOUR, chunks, dummy_response, handoff, image_ack, reply_parts, tokens,
+    tool_output_events,
+};
 
 /// The dummy's canned reasoning, streamed word-by-word as
 /// [`StreamEvent::ThinkingChunk`]s during its thinking phase — the offline
@@ -704,6 +707,20 @@ pub(in crate::stream) fn compact_turn(_cue: &Cue) -> Vec<StreamEvent> {
 pub(in crate::stream) fn table_turn(cue: &Cue) -> Vec<StreamEvent> {
     let mut events = opening(cue);
     events.extend(say(&dummy_response(cue.text())));
+    events.push(StreamEvent::StreamDone);
+    events
+}
+
+/// The slow-stream stress demo (`docs/slow-stream.md`): the whole
+/// [`MARKDOWN_TOUR`] as **one** text-only message — no thinking phase and no
+/// tool calls, which would split the reply around them — streamed in
+/// [`tokens`]' token-sized pieces rather than words, so the boundaries land
+/// inside markers and across line breaks the way a real model's do. Played
+/// at the dummy's chunk pace, which `ALTER_ZERO_CHUNK_DELAY_MS` slows to a
+/// struggling model's few tokens a second.
+pub(in crate::stream) fn markdown_turn(cue: &Cue) -> Vec<StreamEvent> {
+    let mut events = opening(cue);
+    events.extend(tokens(MARKDOWN_TOUR).into_iter().map(StreamEvent::Chunk));
     events.push(StreamEvent::StreamDone);
     events
 }

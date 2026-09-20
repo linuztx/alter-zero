@@ -598,7 +598,35 @@ transcript stays still to keep its cache's signature clock-free; the `pulse`
 spinner style keeps the raised-cosine breath over the `pulse_dim` role) in
 `docs/tool-pulse.md`; the flicker-free frame pipeline
 (scrollback commits deferred into the draw's synchronized update) in
-`docs/flicker.md`; the **clickable OSC 8 links** (every URL an assistant
+`docs/flicker.md`, and its **slow-stream** half in `docs/slow-stream.md` — a
+model streaming a few tokens a second keeps every intermediate state on
+screen long enough to read, so the dummy grew a **pace knob**
+(`ALTER_ZERO_CHUNK_DELAY_MS`, `DummyAi::with_chunk_delay`, the startup
+delay's twin) and a **token-sized chunker** (`stream::tokens`: three-character
+pieces on average, every marker run split one character at a time, so `**`
+streams as `*` + `*` and a fence one backtick at a time — the boundaries a
+word split never produced) behind the `markdown` scenario, whose
+`stream::MARKDOWN_TOUR` streams every block kind as one text-only message;
+what the stress found is that a scrollback commit **blanked the live region**
+(`ESC[J`) before repainting it — invisible inside the synchronized update,
+but a presentable boxless state for a terminal without mode 2026 whose pty
+read splits the frame, once per committed line — so `term::paint_frame` now
+repaints the region **in place** and blanks only the rows the previous region
+left below it (`painted_bottom`, carried through every `scroll_up`), and
+`smoke.sh` Phase 121 pins zero region clears over a 65 s token-paced turn
+beside scrollback immutability, no row on screen twice, and a box that
+never hops up — the second thing the stress found: a closing fence left
+the strip nothing to preview, so it dropped its slot and gap and the box
+bounced two rows on every code block (and an opener streamed a backtick at
+a time bounced it one row, its `` `` `` prose row giving way to a fence
+that renders none), and at a narrow width a table header wrapped as prose
+collapsed into a shorter grid when its delimiter confirmed), which
+`StreamRender::preview` now answers with a **floor** — the last preview's
+height less every row `commit` has since moved to scrollback, padded with
+blank rows the next content lands on — so the preview never loses more
+rows than a step committed, the invariant the differential harness now
+carries over the fuzz corpus at every width, with `matches_up_to_padding`
+as the contract's one tolerance; the **clickable OSC 8 links** (every URL an assistant
 reply shows — a bare URL in prose/lists/table cells, inline/fenced/indented
 code, a heading, or a `[text](url)` target — is painted inside an OSC 8
 hyperlink carrying the whole URL, so a wrapped URL's every fragment opens the

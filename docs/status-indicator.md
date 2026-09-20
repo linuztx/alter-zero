@@ -324,6 +324,10 @@ pause is to show it off. The wait is an interruptible `nap` (an Esc during it
 reaps the thread at once and streams nothing). The delay is configurable
 (`DummyAi::with_startup_delay`); `main.rs` reads `ALTER_ZERO_STARTUP_DELAY_MS`
 (so the smoke test runs short and one phase long), defaulting to `STARTUP_DELAY`.
+Its twin, `ALTER_ZERO_CHUNK_DELAY_MS` (`DummyAi::with_chunk_delay`), sets the
+pause after every streamed piece — `CHUNK_DELAY`, 45 ms, by default — which is
+how the offline backend mimics a model streaming a few tokens a second
+(`docs/slow-stream.md`).
 A real backend's own first-token latency plays the same role. During the pause
 the strip is **status + gap only** — no preview row is reserved (`preview_rows`
 is 0 while the reply buffer is empty and no tool runs), so the status sits

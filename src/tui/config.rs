@@ -1149,6 +1149,18 @@ pub(crate) fn startup_delay() -> Duration {
         .map_or(stream::STARTUP_DELAY, Duration::from_millis)
 }
 
+/// The dummy's pause after every streamed piece of reply text:
+/// [`stream::CHUNK_DELAY`] unless `ALTER_ZERO_CHUNK_DELAY_MS` overrides it —
+/// the startup delay's twin, and how the offline backend mimics a model
+/// streaming a few tokens a second (`docs/slow-stream.md`; the smoke suite's
+/// slow-stream phase drives the inline pipeline at that pace).
+pub(crate) fn chunk_delay() -> Duration {
+    std::env::var("ALTER_ZERO_CHUNK_DELAY_MS")
+        .ok()
+        .and_then(|ms| ms.parse::<u64>().ok())
+        .map_or(stream::CHUNK_DELAY, Duration::from_millis)
+}
+
 /// The sampling temperature every request carries (`ALTER_ZERO_TEMPERATURE`),
 /// or `None` to leave it to the provider's default.
 pub(crate) fn temperature() -> Option<f32> {

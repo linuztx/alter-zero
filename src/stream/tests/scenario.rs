@@ -23,6 +23,7 @@ const EXAMPLES: &[&str] = &[
     "show me the hooks demo",
     "launch a subagent that streams a table",
     "show me a table",
+    "stream some markdown to me",
     "call agents for weather",
     "run three pings in parallel",
     "show me a diff",

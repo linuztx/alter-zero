@@ -277,3 +277,44 @@ fn the_dummy_declines_a_chat_with_no_subagents_attached() {
         crate::stream::AgentChatDelivery::Declined
     );
 }
+
+#[test]
+fn dummy_ai_paces_its_chunks_by_the_configured_chunk_delay() {
+    // A slow model streams a few tokens a second, and the whole point of
+    // `ALTER_ZERO_CHUNK_DELAY_MS` is to make the dummy do the same, so the
+    // TUI can be watched — and smoke-tested — at that pace
+    // (`docs/slow-stream.md`). Play a text-only turn with a deliberate
+    // per-chunk pause and assert successive chunks are at least that far
+    // apart; cancel after a few so the test stays short.
+    let delay = Duration::from_millis(60);
+    let (tx, mut rx) = unbounded_channel();
+    let cancel = CancelToken::new();
+    let handle = DummyAi::with_startup_delay(Duration::ZERO)
+        .with_chunk_delay(delay)
+        .spawn(
+            "stream some markdown".to_string(),
+            vec![],
+            vec![],
+            tx,
+            cancel.clone(),
+        );
+    let mut stamps = Vec::new();
+    while stamps.len() < 4 {
+        match rx.blocking_recv() {
+            Some(StreamEvent::Chunk(_)) => stamps.push(std::time::Instant::now()),
+            Some(_) => {}
+            None => break,
+        }
+    }
+    cancel.cancel();
+    while rx.blocking_recv().is_some() {}
+    handle.join().unwrap();
+    assert_eq!(stamps.len(), 4, "four chunks arrived before the cancel");
+    for pair in stamps.windows(2) {
+        let gap = pair[1].duration_since(pair[0]);
+        assert!(
+            gap >= delay,
+            "chunks arrived {gap:?} apart, under the {delay:?} chunk delay"
+        );
+    }
+}

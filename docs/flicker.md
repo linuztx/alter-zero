@@ -61,8 +61,9 @@ shape in `main.rs` barely changes.
   The old body (ratatui's portable insert-before scroll math, with the
   tmux-safe draw-then-clear ordering) survives as the private `write_above`.
 - **`draw` flushes the queue inside its frame.** The existing BSU/ESU bracket
-  now contains: `flush_pending` (write the queued lines above the viewport →
-  the region on screen is cleared), then re-pin, render, and repaint the live
+  now contains: `flush_pending` (write the queued lines above the viewport —
+  the region's rows are left stale, to be overwritten in place; see *The
+  commit clear — retired* below), then re-pin, render, and repaint the live
   region, then place the cursor — one flush at the end. Scrollback growth and
   the box repaint land as a single atomic update; there is no longer any
   flushed state without the box. Frames with nothing pending keep the `prev`
@@ -130,6 +131,21 @@ the cursor is only ever *shown* where it comes to rest:
 - Pending lines are always the newest content, so `reflow`'s
   regenerate-from-history covers them; dropping the queue there loses nothing.
 - Every queueing path schedules a frame already; `restore` is the backstop.
+
+## The commit clear — retired (2026-09-20)
+
+`write_above` kept one more step from ratatui's `insert_before`: after the
+scroll and the committed rows, an `ESC[J` blanking the live region for the
+repaint that followed in the same frame. Inside the synchronized update it is
+never presented — Phase 15's rule — but a terminal that honours no mode 2026
+renders whatever it has parsed when its refresh comes due, and a commit frame
+of a few KB can straddle a pty read with the clear in the first half: a
+presented frame with no box, once per committed line. A slow model makes that
+a blink a second (`docs/slow-stream.md`, which measured it). The region is
+now repainted **in place** — the blit overwrites every cell — and
+`paint_frame` blanks only the rows the previous region left below the new
+one, so no frame ever holds a boxless state, bracketed or not. Phase 121 pins
+the count of region clears at zero.
 
 ## Known divergences from codex
 

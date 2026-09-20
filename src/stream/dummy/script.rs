@@ -161,6 +161,139 @@ pub fn chunks(text: &str) -> Vec<String> {
     text.split_inclusive(' ').map(str::to_string).collect()
 }
 
+/// The longest piece [`tokens`] makes, in characters — the top of its length
+/// cycle.
+pub const TOKEN_MAX_CHARS: usize = 6;
+
+/// The cycle of piece lengths [`tokens`] walks a reply with, in characters.
+/// Averages three — roughly a real tokenizer's pieces over markdown-heavy
+/// text — and mixes one-character pieces in, so a boundary lands on every
+/// kind of position a real stream can put one on: mid-word, between a
+/// newline and the next line's first character, right after a marker.
+const TOKEN_LENGTHS: [usize; 9] = [4, 1, 3, 2, 5, 1, 3, 2, 6];
+
+/// The characters whose **runs** [`tokens`] always splits: the markdown
+/// markers the renderer classifies a line by (`**`, `` ``` ``, `---`, `##`,
+/// `|---|`) and the digits of an ordinal (`10.`). A run of two or more is
+/// cut after its first character, so every partial-marker predicate the
+/// streaming committer carries (`markdown::is_partial_fence`,
+/// `is_partial_heading`, `is_partial_thematic_break`,
+/// `is_partial_list_marker`, `has_open_inline`) is exercised on every
+/// occurrence — the boundaries a whole-word split never produced.
+const TOKEN_RUN_CHARS: &[char] = &['*', '_', '~', '`', '#', '-', '|', '=', '>', ':'];
+
+/// Split text into **token-sized** streamable pieces — the stress twin of
+/// [`chunks`] (`docs/slow-stream.md`).
+///
+/// A slow model streams tokens, not words: a few characters at a time, cut
+/// without regard to word or line boundaries, so the renderer meets an
+/// emphasis run as `*` then `*bo`, a fence opener one backtick at a time, and
+/// a paragraph break riding one piece with the next line's first characters.
+/// The word split can never produce those shapes, and they are exactly where
+/// a prefix-stable renderer earns its keep. The pieces walk
+/// `TOKEN_LENGTHS` in a cycle, cut short wherever a `TOKEN_RUN_CHARS` run
+/// would otherwise ride one piece whole; every piece is at most
+/// [`TOKEN_MAX_CHARS`] characters, never empty, and never cuts a character in
+/// half. Deterministic, so a turn's piece count — and so its length at a
+/// given pace — is the same every run; concatenated, the pieces equal the
+/// input exactly.
+#[must_use]
+pub fn tokens(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut lengths = TOKEN_LENGTHS.iter().cycle();
+    let mut rest = text;
+    while !rest.is_empty() {
+        let want = *lengths.next().expect("the cycle never ends");
+        let mut end = rest.len();
+        let mut prev: Option<char> = None;
+        for (count, (at, c)) in rest.char_indices().enumerate() {
+            // The cycle's length reached — or two marker characters in a
+            // row, cut between them so the run streams one at a time.
+            if count == want || (prev.is_some_and(is_run_char) && is_run_char(c)) {
+                end = at;
+                break;
+            }
+            prev = Some(c);
+        }
+        out.push(rest[..end].to_string());
+        rest = &rest[end..];
+    }
+    out
+}
+
+/// Whether `c` belongs to a run [`tokens`] splits — a markdown marker or a
+/// digit (an ordinal's `10` streams as `1` then `0`, the partial list-marker
+/// shape).
+fn is_run_char(c: char) -> bool {
+    TOKEN_RUN_CHARS.contains(&c) || c.is_ascii_digit()
+}
+
+/// The **markdown tour** — the slow-stream stress demo's reply, played for a
+/// prompt mentioning "markdown" (`docs/slow-stream.md`): every block kind the
+/// renderer knows in one document, streamed by [`tokens`] as one text-only
+/// message so the incremental renderer carries the whole thing from its
+/// first character to its last, with nothing to split it. It is written so
+/// that no two content lines render alike (the smoke suite counts each row
+/// of the settled transcript once to prove nothing streamed twice), with a
+/// blank line *inside* a fence (content, never a paragraph break), a code
+/// line that wraps at eighty columns (a withheld multi-row line), and a
+/// table with two-column emoji (the wide-glyph grid) — the three shapes the
+/// strip has to hold whole. Closes on the hand-off like every demo.
+pub const MARKDOWN_TOUR: &str = concat!(
+    "# A markdown tour, streamed slowly\n\n",
+    "I'm the built-in demo backend, and this reply is a stress test rather \
+     than an answer: every markdown element the renderer knows, streamed a \
+     few characters at a time — the pace of a struggling local model — so \
+     you can watch the pipeline hold still. A row that reaches scrollback \
+     never changes; only the strip above the box moves.\n\n",
+    "## Inline styles\n\n",
+    "Prose with **bold**, *italic*, ~~struck~~ and `inline code`; a \
+     [link](https://github.com/linuztx/alter-zero) and a bare URL, \
+     https://ratatui.rs/ — each marker is line-local, so the line is held \
+     back until it closes.\n\n",
+    "## Lists\n\n",
+    "- A bullet long enough to wrap onto a second row at eighty columns, so \
+     the hanging indent under the marker shows.\n",
+    "- A bullet carrying `code` and **bold** inside it.\n",
+    "  - A nested bullet under that one.\n",
+    "    - And one level deeper still.\n",
+    "1. An ordered item.\n",
+    "2. A second one, with *emphasis*.\n",
+    "10. A two-digit ordinal, so the numbers realign.\n",
+    "- [x] A finished task.\n",
+    "- [ ] An open task.\n\n",
+    "> A blockquote spanning\n",
+    "> two source lines, both dimmed.\n\n",
+    "## Code\n\n",
+    "```python\n",
+    "def fibonacci(n: int) -> int:\n",
+    "    \"\"\"The n-th Fibonacci number, iteratively.\"\"\"\n",
+    "    a, b = 0, 1\n",
+    "    for _ in range(n):\n",
+    "        a, b = b, a + b\n",
+    "\n",
+    "    return a  # the blank line above is content, not a paragraph break\n",
+    "```\n\n",
+    "```rust\n",
+    "fn very_long_function_name_with_a_really_long_signature(input: &str, \
+     width: usize) -> String {\n",
+    "    format!(\"{input:>width$}\")\n",
+    "}\n",
+    "```\n\n",
+    "## A table\n\n",
+    "| Element | Rendered as | Streams as |\n",
+    "|---------|-------------|------------|\n",
+    "| Heading | bold text, its `#` markers kept | one settled line |\n",
+    "| Fence | highlighted code, the fences hidden | a line held whole ✅ |\n",
+    "| Table | this grid, columns fit to every row | the whole block ✅ |\n\n",
+    "---\n\n",
+    "### The end\n\n",
+    "Every block kind, at a pace slow enough to read. **ctrl+o** shows the \
+     same transcript rendered whole, and a resize repaints it from history — \
+     both must match what streamed.\n\n",
+    handoff!()
+);
+
 /// A canned tool output as per-line [`StreamEvent::ToolOutput`] chunks (each
 /// line keeping its `\n`), so the dummy streams a `Bash` cell's output the way
 /// the real executor does — the live cell **tails** it as it arrives, before the

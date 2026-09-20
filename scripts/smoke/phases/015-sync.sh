@@ -29,20 +29,23 @@ tmux kill-session -t "$S12" 2>/dev/null
 sync_clears=$(sed -e $'s/\x1b\[?2026h/\\\n@SYNC@\\\n/g' \
 	-e $'s/\x1b\[?2026l/\\\n@ENDS@\\\n/g' \
 	-e $'s/\x1b\[0\{0,1\}J/\\\n@CLRJ@\\\n/g' "$RAW15" | awk '
-	/@SYNC@/ { depth = 1; seen = 1; next }
+	/@SYNC@/ { depth = 1; seen = 1; frames++; next }
 	/@ENDS@/ { depth = 0; next }
 	/@CLRJ@/ { total++; if (seen && depth == 0) bad++ }
-	END { printf "total=%d outside=%d", total + 0, bad + 0 }')
+	END { printf "frames=%d total=%d outside=%d", frames + 0, total + 0, bad + 0 }')
 rm -f "$RAW15"
 echo "==== Phase 15: live-region clears in the raw output stream — $sync_clears ===="
 
-# Phase 15: flicker-free commits (docs/flicker.md). The recorded turn must have
-# committed lines (so the clear-the-region path actually ran), and every one of
-# those clears must sit inside a synchronized-update block — a clear outside
-# means a terminal could present the boxless state (the streaming blink).
+# Phase 15: flicker-free commits (docs/flicker.md). The recording must hold
+# synchronized frames (so the meter saw the turn at all), and every
+# live-region clear must sit inside one — a clear outside means a terminal
+# could present the boxless state (the streaming blink). A commit no longer
+# clears the region at all — it is repainted in place, so `total=0` is the
+# design (docs/slow-stream.md; Phase 121 pins that count) and the liveness
+# check is on the frames.
 case "$sync_clears" in
-total=0*)
-	fail "the recorded turn shows no live-region clears — the commit path did not run (recording broken?)"
+frames=0*)
+	fail "the recorded turn shows no synchronized frames — the draw path did not run (recording broken?)"
 	;;
 esac
 case "$sync_clears" in

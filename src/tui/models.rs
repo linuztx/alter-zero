@@ -415,6 +415,10 @@ impl ModelSession {
                 // which is the only offline way to drive the agent session
                 // view (`docs/agent-view-streaming.md`).
                 let dummy = DummyAi::with_startup_delay(config::startup_delay())
+                    // …and the per-chunk pace, so `ALTER_ZERO_CHUNK_DELAY_MS`
+                    // makes the demo stream as slowly as a struggling model
+                    // (docs/slow-stream.md).
+                    .with_chunk_delay(config::chunk_delay())
                     .with_ask(ask.clone())
                     .with_agents(agents.clone())
                     // …and the mid-turn queue, so the offline demo takes a

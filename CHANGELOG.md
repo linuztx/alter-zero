@@ -22,6 +22,40 @@ release heading when a version is cut.
   its closing hint, the way Ctrl+O, Ctrl+D and `/resume` do; the `/hooks`
   and `/mcp` detail pages and a hookless event's empty state follow the same
   rule, and only a terminal too short to show the hint keeps the corner.
+- **A slow model no longer blinks the input box on terminals without
+  synchronized output.** Every line a reply committed to scrollback blanked
+  the live region before repainting it. Inside a synchronized update
+  (DEC mode 2026) that was invisible, but Terminal.app, xterm and older VTE
+  terminals render whatever they have parsed when their refresh comes due,
+  and a commit frame of a few kilobytes can split across a pty read with
+  the clear in the first half — a frame with no box, once per committed
+  line, which a model streaming a few tokens a second made a blink about
+  once a second. The region is repainted in place now and only the rows the
+  previous region left below it are cleared, so no frame ever holds a
+  boxless state, bracketed or not (`docs/slow-stream.md`).
+- **The input box no longer bounces at a streamed code fence.** A closing
+  fence left the streaming strip with nothing to preview, so the strip
+  dropped its preview row and gap and the box hopped up two rows until the
+  next line's first character arrived; an opening fence streamed a
+  character at a time went from a row of prose to no row at all for the
+  length of a token, a one-row hop. One frame each at a fast stream, half a
+  second on every code block at a slow model's pace. The strip now keeps
+  the rows it had until the next content fills them (the same rule keeps a
+  table that re-lays out shorter on a narrow terminal from lifting the box),
+  so the box holds still between tokens and only ever moves down.
+
+### Added
+
+- **A slow-stream stress rig for the offline backend.**
+  `ALTER_ZERO_CHUNK_DELAY_MS` sets the dummy's pause after every streamed
+  piece (the twin of `ALTER_ZERO_STARTUP_DELAY_MS`), and a prompt mentioning
+  *markdown* plays a new demo: every markdown element the renderer knows —
+  headings, inline styles, links, nested and ordered lists, task items, a
+  blockquote, two fenced code blocks, a table, a rule — in one long reply
+  streamed in token-sized pieces that split markers one character at a time,
+  the way a real model's tokens arrive. `ALTER_ZERO_CHUNK_DELAY_MS=400
+  alter-zero` then `stream some markdown` watches the pipeline hold still at
+  a struggling model's pace; `scripts/smoke.sh` Phase 121 proves it does.
 
 ## [0.5.0] - 2026-09-20
 

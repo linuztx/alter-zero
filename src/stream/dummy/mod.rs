@@ -34,7 +34,7 @@ pub(super) mod scenario;
 pub(super) mod script;
 mod turns;
 
-pub use self::script::{chunks, dummy_response, image_ack};
+pub use self::script::{MARKDOWN_TOUR, TOKEN_MAX_CHARS, chunks, dummy_response, image_ack, tokens};
 pub use self::turns::AGENT_DELAY;
 
 /// The full ordered sequence of events for one dummy turn — the **pure** twin
@@ -73,7 +73,9 @@ pub fn turn_events(prompt: &str, image_count: usize) -> Vec<StreamEvent> {
 pub const STARTUP_DELAY: Duration = Duration::from_secs(3);
 
 /// Delay between streamed chunks. Small enough to feel responsive, large
-/// enough that the word-by-word reveal is visible.
+/// enough that the word-by-word reveal is visible. The default of
+/// [`DummyAi::with_chunk_delay`], which the app overrides from
+/// `ALTER_ZERO_CHUNK_DELAY_MS` to mimic a slow model (`docs/slow-stream.md`).
 pub const CHUNK_DELAY: Duration = Duration::from_millis(45);
 
 /// How long a dummy tool "runs" — the pause between its `ToolStart` and
@@ -95,6 +97,11 @@ pub struct DummyAi {
     /// first ([`STARTUP_DELAY`] by default; the app overrides it from
     /// `ALTER_ZERO_STARTUP_DELAY_MS`, tests use a short value).
     startup_delay: Duration,
+    /// Pause after every streamed piece of reply text (and each live tool
+    /// output line) — [`CHUNK_DELAY`] by default; the app overrides it from
+    /// `ALTER_ZERO_CHUNK_DELAY_MS`, which is how the offline backend mimics
+    /// a model streaming a few tokens a second (`docs/slow-stream.md`).
+    chunk_delay: Duration,
     /// The shared tool-permission gate, when the app attached one — lets the
     /// **offline** dummy drive the whole approval round trip for a prompt
     /// mentioning "permission" (`docs/permissions.md`, `smoke.sh` Phase 55).
@@ -120,6 +127,7 @@ impl Default for DummyAi {
     fn default() -> Self {
         Self {
             startup_delay: STARTUP_DELAY,
+            chunk_delay: CHUNK_DELAY,
             permissions: None,
             ask: None,
             agents: None,
@@ -143,6 +151,16 @@ impl DummyAi {
             startup_delay,
             ..Self::default()
         }
+    }
+
+    /// A dummy pacing its reply at `chunk_delay` per streamed piece — the app
+    /// threads `ALTER_ZERO_CHUNK_DELAY_MS` through here so the demo streams
+    /// as slowly as a struggling model, and the smoke suite drives the
+    /// inline pipeline at that pace (`docs/slow-stream.md`).
+    #[must_use]
+    pub fn with_chunk_delay(mut self, chunk_delay: Duration) -> Self {
+        self.chunk_delay = chunk_delay;
+        self
     }
 
     /// Attach the session's permission gate, so a prompt mentioning
@@ -210,6 +228,7 @@ impl ReplySource for DummyAi {
         cancel: CancelToken,
     ) -> JoinHandle<()> {
         let startup_delay = self.startup_delay;
+        let chunk_delay = self.chunk_delay;
         // The dummy can't read the files, only acknowledge how many arrived.
         let image_count = images.len();
         let permissions = self.permissions.clone();
@@ -238,7 +257,7 @@ impl ReplySource for DummyAi {
                         tx: &tx,
                         cancel: &cancel,
                     }),
-                    None => replay(turns::tools_turn(&cue), &tx, &cancel, &steer),
+                    None => replay(turns::tools_turn(&cue), &tx, &cancel, &steer, chunk_delay),
                 },
                 // The ask demo raises the question modal and blocks on the
                 // ask gate the same way (`docs/ask.md`).
@@ -248,7 +267,7 @@ impl ReplySource for DummyAi {
                         tx: &tx,
                         cancel: &cancel,
                     }),
-                    None => replay(turns::tools_turn(&cue), &tx, &cancel, &steer),
+                    None => replay(turns::tools_turn(&cue), &tx, &cancel, &steer, chunk_delay),
                 },
                 // The subagent demo streams on the agent channel too, from
                 // the launched agent's own thread (docs/agent-view-streaming.md).
@@ -262,9 +281,9 @@ impl ReplySource for DummyAi {
                         // (docs/permissions.md).
                         gate: permissions.as_ref(),
                     }),
-                    None => replay(turns::tools_turn(&cue), &tx, &cancel, &steer),
+                    None => replay(turns::tools_turn(&cue), &tx, &cancel, &steer, chunk_delay),
                 },
-                Play::Script(script) => replay(script(&cue), &tx, &cancel, &steer),
+                Play::Script(script) => replay(script(&cue), &tx, &cancel, &steer, chunk_delay),
             }
         })
     }
@@ -305,8 +324,9 @@ impl ReplySource for DummyAi {
 }
 
 /// Play a scripted turn onto the channel: send each event, then pause for as
-/// long as [`pace`] says so the reply visibly streams. Stops early — sending
-/// nothing further — the moment `cancel` is tripped or the receiver hangs up.
+/// long as [`pace`] says so the reply visibly streams — every piece of reply
+/// text `chunk_delay` apart. Stops early — sending nothing further — the
+/// moment `cancel` is tripped or the receiver hangs up.
 ///
 /// **Tool boundaries are round boundaries here** (`docs/queue.md`): a resolved
 /// call is the point a real agent loop would build its next request at, so
@@ -319,6 +339,7 @@ fn replay(
     tx: &UnboundedSender<StreamEvent>,
     cancel: &CancelToken,
     steer: &crate::steer::SteerQueue,
+    chunk_delay: Duration,
 ) {
     for event in events {
         if cancel.is_cancelled() {
@@ -328,7 +349,7 @@ fn replay(
             event,
             StreamEvent::ToolEnd { .. } | StreamEvent::ToolAnswered { .. }
         );
-        let pause = pace(&event);
+        let pause = pace(&event, chunk_delay);
         if tx.send(event).is_err() {
             return; // receiver gone — stop quietly
         }
@@ -348,11 +369,12 @@ fn replay(
 /// How long to pause *after* sending `event`, so a scripted turn plays back at
 /// human speed: a tool "runs" for [`TOOL_DELAY`] (grey) before its `ToolEnd`
 /// resolves it, the model "thinks" one [`THINK_CHUNK_DELAY`] step per reasoning
-/// event, and every word/output line trickles at [`CHUNK_DELAY`]. `None` means
-/// the next event follows immediately.
-fn pace(event: &StreamEvent) -> Option<Duration> {
+/// event, and every word/output line trickles at `chunk_delay` —
+/// [`CHUNK_DELAY`] unless the backend was built slower. `None` means the next
+/// event follows immediately.
+fn pace(event: &StreamEvent, chunk_delay: Duration) -> Option<Duration> {
     match event {
-        StreamEvent::Chunk(_) => Some(CHUNK_DELAY),
+        StreamEvent::Chunk(_) => Some(chunk_delay),
         StreamEvent::ToolStart { .. } => Some(TOOL_DELAY),
         // A foreground agent group "runs" between its announcement
         // and its resolution so the live tree cell shows; a
@@ -360,7 +382,7 @@ fn pace(event: &StreamEvent) -> Option<Duration> {
         StreamEvent::AgentBatch { background, .. } if !background => Some(AGENT_DELAY),
         // Each streamed output line pauses like a word so the live
         // cell visibly tails (docs/tool-streaming.md).
-        StreamEvent::ToolOutput(_) => Some(CHUNK_DELAY),
+        StreamEvent::ToolOutput(_) => Some(chunk_delay),
         // Each task-tool call pauses like a running tool so the checklist
         // under the status line visibly grows row by row
         // (docs/task-tools.md).
