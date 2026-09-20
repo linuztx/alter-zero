@@ -138,8 +138,14 @@ const BODY_MAX_BYTES: u64 = 64 * 1024;
 /// flight.
 const REFRESH_SKEW: Duration = Duration::from_secs(300);
 
-/// The fallback when an access token does not expose its expiry. An explicit
-/// expiry always wins, even when it is shorter than this fallback.
+/// The **floor** on a cached access token's life when nothing trustworthy
+/// says otherwise: a token response naming no `expires_in` whose bearer
+/// names no `exp` — or an `exp` this machine's clock reads as already past,
+/// which a token minted a moment ago cannot be; that is the clock running
+/// ahead, the bug [`super::copilot`] avoids by keying off a duration. An
+/// uncached bearer would refresh — and *rotate* — on every single request,
+/// so a token is cached at least this long. A known life shorter than this
+/// is honoured, never extended.
 const MIN_CACHE: Duration = Duration::from_secs(60);
 
 // ---------------------------------------------------------------------------
@@ -354,6 +360,11 @@ pub struct TokenSet {
     pub refresh_token: Option<String>,
     #[serde(default)]
     pub id_token: Option<String>,
+    /// The grant's life in seconds — a **duration**, which is what makes it
+    /// the cache lifetime's first choice over the bearer's absolute `exp`
+    /// (`cache_lifetime`): a clock running ahead cannot shorten it.
+    #[serde(default)]
+    pub expires_in: Option<u64>,
 }
 
 impl TokenSet {
@@ -374,21 +385,24 @@ impl TokenSet {
     }
 }
 
-/// How long an access token expiring at `expires_at` may be cached, given the
-/// wall clock `now` (both Unix seconds). A five-minute `REFRESH_SKEW` comes off
-/// the end; a short remaining life is cached for at most half that life.
-/// The fallback applies only when the token does not name an expiry.
+/// How long a minted access token may be cached: from the grant's own
+/// `expires_in` when the token response names one — a **duration**, immune
+/// to this machine's clock — else from the bearer's absolute `exp` against
+/// the wall clock `now` (both Unix seconds). A five-minute `REFRESH_SKEW`
+/// comes off the end, and a short life is cached for at most half of it,
+/// so a known expiry is never extended. When neither says — or `exp` reads
+/// as already past, which a token minted a moment ago cannot be: that is the
+/// clock running ahead, not a dead token — the `MIN_CACHE` floor applies:
+/// one mint a minute at worst, never one (and a rotation) per request.
 #[must_use]
-pub fn cache_lifetime(expires_at: Option<u64>, now: u64) -> Duration {
-    let Some(exp) = expires_at else {
-        // A token that doesn't say: trust it for a conservative single minute
-        // rather than forever.
+pub fn cache_lifetime(expires_in: Option<u64>, expires_at: Option<u64>, now: u64) -> Duration {
+    let life = expires_in.or_else(|| expires_at.filter(|&exp| exp > now).map(|exp| exp - now));
+    let Some(secs) = life else {
         return MIN_CACHE;
     };
-    let remaining = Duration::from_secs(exp.saturating_sub(now));
-    remaining
-        .saturating_sub(REFRESH_SKEW)
-        .max(MIN_CACHE.min(remaining / 2))
+    let life = Duration::from_secs(secs);
+    life.saturating_sub(REFRESH_SKEW)
+        .max(MIN_CACHE.min(life / 2))
 }
 
 /// Explain a sign-in or refresh failure in terms the user can act on. The
@@ -1107,6 +1121,7 @@ fn authorize_with(
     let tokens = refresh(&presented)?;
     let access = access_from(&tokens)?;
     let lifetime = cache_lifetime(
+        tokens.expires_in,
         parse_claims(&access.bearer).ok().and_then(|c| c.expires_at),
         unix_now(),
     );
@@ -1472,25 +1487,51 @@ mod tests {
 
     #[test]
     fn a_token_is_cached_until_shortly_before_its_own_expiry() {
-        // An hour-long token, five minutes held back.
+        // An hour-long token, five minutes held back — read off the bearer's
+        // own `exp` when the response names no duration.
         assert_eq!(
-            cache_lifetime(Some(3600), 0),
+            cache_lifetime(None, Some(3600), 0),
             Duration::from_secs(3600 - 300)
         );
     }
 
     #[test]
-    fn auth_cache_regression_explicit_jwt_expiry_wins_over_the_fallback() {
-        assert_eq!(cache_lifetime(Some(10), 11), Duration::ZERO);
-        assert!(cache_lifetime(Some(10), 9) < Duration::from_secs(1));
+    fn the_cache_lifetime_prefers_the_grant_duration_to_the_absolute_expiry() {
+        // The token response's `expires_in` is a duration, immune to the
+        // clock — the mitigation `docs/copilot.md` describes, available here
+        // after all. A clock hours ahead makes `exp` look already past; the
+        // duration is what keeps that from re-minting on every request.
+        assert_eq!(
+            cache_lifetime(Some(864_000), Some(10), 1_000_000),
+            Duration::from_secs(864_000 - 300)
+        );
+        // A short duration is honoured, never extended past its life.
+        assert_eq!(cache_lifetime(Some(60), None, 0), Duration::from_secs(30));
+        assert_eq!(cache_lifetime(Some(10), None, 0), Duration::from_secs(5));
+        assert_eq!(cache_lifetime(Some(0), None, 0), Duration::ZERO);
     }
 
     #[test]
-    fn explicit_expiry_is_never_extended_by_the_fallback() {
-        assert_eq!(cache_lifetime(Some(10), 1_000_000), Duration::ZERO);
-        assert_eq!(cache_lifetime(Some(3600), 3599), Duration::from_millis(500));
-        // Only a token that names no expiry uses the fallback.
-        assert_eq!(cache_lifetime(None, 0), MIN_CACHE);
+    fn a_clock_running_ahead_cannot_make_every_request_re_mint() {
+        // No duration to go on, and an `exp` the local clock says is past:
+        // the server minted this token a moment ago, so it is the clock that
+        // is wrong. Cache for the floor rather than for nothing — an uncached
+        // bearer refreshes (and *rotates*) on every single request.
+        assert_eq!(cache_lifetime(None, Some(10), 1_000_000), MIN_CACHE);
+        assert_eq!(cache_lifetime(None, Some(1_000_000), 1_000_000), MIN_CACHE);
+        // An expiry still ahead is honoured: the skew comes off the end and
+        // a short remainder is never extended past half of itself.
+        assert_eq!(
+            cache_lifetime(None, Some(4_000), 400),
+            Duration::from_secs(3_300)
+        );
+        assert_eq!(
+            cache_lifetime(None, Some(3600), 3599),
+            Duration::from_millis(500)
+        );
+        // A token that names no expiry at all is trusted for the floor, not
+        // forever.
+        assert_eq!(cache_lifetime(None, None, 0), MIN_CACHE);
     }
 
     // --- the rotation chain ---
@@ -1502,6 +1543,40 @@ mod tests {
             )),
             refresh_token: Some(rotated.to_string()),
             ..TokenSet::default()
+        }
+    }
+
+    #[test]
+    fn a_token_response_carries_its_grants_duration() {
+        let tokens = TokenSet::parse(r#"{"access_token":"a.b.c","expires_in":864000}"#).unwrap();
+        assert_eq!(tokens.expires_in, Some(864_000));
+        assert_eq!(
+            TokenSet::parse(r#"{"access_token":"a.b.c"}"#)
+                .unwrap()
+                .expires_in,
+            None
+        );
+    }
+
+    #[test]
+    fn auth_cache_regression_a_skewed_clock_still_caches_the_minted_bearer() {
+        // The bearer's `exp` reads as long past on this machine's clock. With
+        // the grant's duration to go on — and even without it — the minted
+        // token is cached, so the next request must not refresh again.
+        for (key, expires_in) in [
+            ("chatgpt-skew-with-duration", Some(3_600)),
+            ("chatgpt-skew-without-duration", None),
+        ] {
+            let minted = TokenSet {
+                access_token: Some(jwt(serde_json::json!({"exp": 10, "jti": key}))),
+                refresh_token: Some(format!("{key}-rotated")),
+                expires_in,
+                ..TokenSet::default()
+            };
+            let fresh = authorize_with(key, |_| Ok(minted.clone())).unwrap();
+            let hit = authorize_with(key, |_| panic!("a skewed exp must not re-mint")).unwrap();
+            assert_eq!(hit.bearer, fresh.bearer);
+            forget(key);
         }
     }
 

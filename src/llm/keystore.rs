@@ -26,7 +26,8 @@ impl EnvFile {
     /// Update a persisted provider credential, returning the new file text.
     /// Read, merge and replacement are serialized within the process so
     /// simultaneous provider refreshes preserve each other's values. A
-    /// private temporary file is synced before atomically replacing the store.
+    /// private temporary file is synced before atomically replacing the
+    /// store — the file a symlinked store names, so the link survives.
     ///
     /// # Errors
     /// Returns file-system errors without replacing an unreadable store or
@@ -42,6 +43,17 @@ impl EnvFile {
             Err(error) => return Err(error),
         };
         let updated = Self::upsert(&current, key, value);
+        // Write *through* a link: a store symlinked in from a dotfiles
+        // checkout keeps living there — the rename below replaces the file
+        // the link names, never the link, which the old in-place write
+        // never touched either. A store that does not exist yet is created
+        // where it is named.
+        let target = match std::fs::canonicalize(path) {
+            Ok(target) => target,
+            Err(error) if error.kind() == ErrorKind::NotFound => path.to_path_buf(),
+            Err(error) => return Err(error),
+        };
+        let path = target.as_path();
         let parent = path
             .parent()
             .filter(|p| !p.as_os_str().is_empty())
@@ -281,6 +293,42 @@ mod tests {
         assert_eq!(
             std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
             0o600
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn auth_cache_regression_updates_write_through_a_symlinked_store() {
+        // A store kept in a dotfiles checkout and symlinked into the config
+        // home: the update lands in the file the link names, and the link
+        // survives — replacing it with a plain file would quietly detach
+        // the store from the checkout, which is exactly what the old
+        // in-place write never did.
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("secrets").join("alter-zero.env");
+        std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+        std::fs::write(&target, "OTHER=keep\n").unwrap();
+        let link = dir.path().join(".env");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        let updated = EnvFile::update(&link, "TOKEN", "new").unwrap();
+        assert_eq!(updated, "OTHER=keep\nTOKEN=new\n");
+        assert!(
+            std::fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_symlink(),
+            "the link is still a link"
+        );
+        let text = std::fs::read_to_string(&target).unwrap();
+        assert_eq!(
+            text, updated,
+            "the update landed in the file the link names"
+        );
+        assert!(
+            std::fs::read_dir(dir.path())
+                .unwrap()
+                .all(|entry| entry.unwrap().file_name() != "alter-zero.env"),
+            "nothing was written beside the link"
         );
     }
 

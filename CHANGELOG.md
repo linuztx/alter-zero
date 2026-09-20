@@ -12,6 +12,37 @@ release heading when a version is cut.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Prompt caching across turns, and the token refreshes behind it.** The
+  request a new human turn sent used to rebuild every earlier tool call from
+  the display history — fresh `call_0`, `call_1`… ids, a parallel batch
+  split into one call per assistant message — so the provider saw a
+  different prefix from the one it had cached and re-read the conversation
+  at full price from the first tool call on. The backend now keeps its last
+  request and reuses that exact prefix whenever the rebuilt conversation
+  matches it — text, images, tool names, arguments and results alike, so a
+  rewind, an edit or a compaction still send what they mean — and a blank
+  line a model emits before its calls no longer counts as a difference,
+  which is what had kept the Claude and ChatGPT wires from ever matching.
+  The explicit cache breakpoints (OpenRouter's Anthropic and Qwen routing)
+  anchor on the previous request's frontier — a tool result, not only the
+  last human message — so a large parallel batch cannot push the previous
+  write out of the provider's lookback. Requests that miss the access-token
+  cache at the same moment (a batch of subagents, the `/model` fetch beside
+  a turn) share one refresh instead of each presenting the same single-use
+  refresh token, which retired it for all of them; a rotation from a rebuilt
+  config repoints every older alias, and a fresh sign-in forgets every
+  cached bearer of the account it replaces. The `.env` key store is written
+  atomically through one serialized updater, sign-in and refresh alike —
+  created private, written through a symlink to the file it names, never
+  replaced with a partial file when the old one cannot be read. And a
+  ChatGPT token's cached life comes from the grant's own `expires_in`
+  duration rather than the bearer's absolute `exp`, so a clock running ahead
+  cannot make every request re-mint (and rotate) the token.
+  (`docs/prompt-caching.md`, `docs/chatgpt.md`, `docs/claude.md`,
+  `docs/copilot.md`)
+
 ## [0.5.0] - 2026-09-20
 
 ### Added

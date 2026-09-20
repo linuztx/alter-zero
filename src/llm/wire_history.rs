@@ -71,9 +71,10 @@ fn retained_bytes(messages: &[ChatMessage]) -> usize {
     })
 }
 
-/// IDs, batch envelopes and adjacent plain-message boundaries may differ.
-/// Argument JSON is deliberately compared verbatim: edits, hook rewrites and
-/// lossy older records must not silently resurrect an earlier request.
+/// IDs, batch envelopes, adjacent plain-message boundaries and a
+/// whitespace-only lead before a batch's calls may differ. Argument JSON is
+/// deliberately compared verbatim: edits, hook rewrites and lossy older
+/// records must not silently resurrect an earlier request.
 #[derive(Debug, PartialEq, Eq)]
 enum Atom<'a> {
     Message(&'a str, Cow<'a, MessageContent>),
@@ -147,7 +148,13 @@ fn atoms(messages: &[ChatMessage]) -> Option<Vec<(Atom<'_>, Option<usize>)>> {
                 return None;
             }
         }
-        if !matches!(&message.content, MessageContent::Text(text) if text.is_empty()) {
+        // Nothing but whitespace before the calls is no message: the wire
+        // carries whatever the model emitted (a `\n\n` on the Responses and
+        // Messages wires), while the app records no segment for a
+        // whitespace-only run (`App::flush_streaming_segment`), so the replay
+        // comes back empty. Either way the round said nothing before its
+        // calls.
+        if !matches!(&message.content, MessageContent::Text(text) if text.trim().is_empty()) {
             push_message(&mut out, message, None);
         }
         for call in &message.tool_calls {
@@ -346,6 +353,54 @@ mod tests {
             ChatMessage::tool_result("id", "source"),
         ];
         assert_eq!(matching_prefix(&previous, &current), None);
+    }
+
+    #[test]
+    fn newline_only_assistant_text_before_calls_matches_the_recorded_empty_one() {
+        // On the Responses and Messages wires a model that emits only `\n\n`
+        // before its calls sends that text back as the round's content, while
+        // the app records no assistant segment for it
+        // (`App::flush_streaming_segment` drops a whitespace-only run), so the
+        // replay carries an empty content. Same round, same conversation: the
+        // provider's copy must still be the one reused.
+        let previous = vec![
+            ChatMessage::system("stable"),
+            ChatMessage::user("inspect"),
+            ChatMessage::assistant_tool_calls(
+                "\n\n",
+                vec![call("provider_A", "read", r#"{"path":"a.rs"}"#)],
+            ),
+            ChatMessage::tool_result("provider_A", "source A"),
+        ];
+        let mut current = vec![
+            ChatMessage::system("stable"),
+            ChatMessage::user("inspect"),
+            ChatMessage::assistant_tool_calls(
+                "",
+                vec![call("call_0", "read", r#"{"path":"a.rs"}"#)],
+            ),
+            ChatMessage::tool_result("call_0", "source A"),
+            ChatMessage::new("assistant", "done"),
+            ChatMessage::user("next"),
+        ];
+        assert_eq!(matching_prefix(&previous, &current), Some(4));
+        let mut history = WireHistory::default();
+        history.remember(&previous);
+        history.restore(&mut current);
+        assert_eq!(&current[..4], previous.as_slice());
+        assert_eq!(current[4].content, MessageContent::Text("done".into()));
+        // Words before the calls are content: a replay that lost them is a
+        // different conversation and never matches.
+        let spoken = vec![
+            ChatMessage::system("stable"),
+            ChatMessage::user("inspect"),
+            ChatMessage::assistant_tool_calls(
+                "Reading.",
+                vec![call("provider_A", "read", r#"{"path":"a.rs"}"#)],
+            ),
+            ChatMessage::tool_result("provider_A", "source A"),
+        ];
+        assert_eq!(matching_prefix(&spoken, &current), None);
     }
 
     #[test]

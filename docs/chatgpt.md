@@ -122,7 +122,9 @@ Login and both rotating providers share `EnvFile::update`: its read, update
 and atomic replacement are serialized within the process. A private temporary
 file prevents partially written credentials and concurrent writes losing other
 provider keys. Read errors are propagated rather than treating an unreadable
-store as an empty one. Refresh persistence remains best-effort.
+store as an empty one. A store that is a symlink — kept in a dotfiles
+checkout, say — is written through to the file it names, so the link
+survives the replacement. Refresh persistence remains best-effort.
 These locks coordinate threads in one process; they do not coordinate two
 separate running applications sharing the same rotating credential.
 
@@ -146,11 +148,18 @@ server is going to validate anyway; they grant nothing.
 
 Copilot's exchange publishes a `refresh_in` **duration**, and `docs/copilot.md`
 explains why keying off the absolute `expires_at` instead re-exchanges on
-every request when the user's clock runs ahead. OpenAI publishes only the
-absolute `exp`, so that mitigation isn't available. `cache_lifetime` subtracts
-a five-minute skew, with a floor no larger than half the remaining lifetime
-or sixty seconds. A known expiry is never extended: an already-expired token
-is not cached. Missing expiry information gets a conservative sixty seconds.
+every request when the user's clock runs ahead. OpenAI's token response
+publishes the same thing under OAuth's own name — `expires_in`, 864 000
+seconds (ten days) on a refresh measured 2026-09-20, the bearer's own
+`exp - iat` agreeing — so `cache_lifetime` keys off that duration first and
+falls back to the bearer's absolute `exp` only when the response names none.
+Either way a five-minute skew comes off the end and a short life is cached
+for at most half of itself, so a known expiry is never extended. When nothing
+trustworthy says — no duration, and an `exp` this clock reads as already
+past, which a token minted a moment ago cannot be — the sixty-second floor
+applies: one mint a minute at worst. Leaving such a token *uncached* would
+refresh, and so **rotate**, on every single request, which is the failure
+the floor exists to prevent.
 
 ### The seam
 
