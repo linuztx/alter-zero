@@ -245,7 +245,7 @@ renderer, animated off the injected frame clock with no turn running
 than its rows so a frame never churns a purge rebuild; the choice persisted
 **per working directory** in `spinner.json` (`docs/per-directory-state.md`) and seeded at bootstrap, the styles' frames and colour
 rules in `ui/theme.rs` — `sparkle`/`blocks` wearing the banner gradient,
-`pulse` the tool bullet's breath, the two tracks drawn procedurally on a
+`pulse` a raised-cosine breath at the tool bullet's cadence, the two tracks drawn procedurally on a
 braille canvas from whole-millisecond ping-pong/hop curves rather than
 tabled — and the switch needing no rebuild, the status line being
 live-only) in `docs/spinner.md`, and the **`/theme` picker** that switches
@@ -538,7 +538,7 @@ parameter, persisted beside the `/model` selection) in `docs/reasoning.md`;
 the **thinking stream** — that reasoning, *shown* (a phase's
 chain-of-thought streams live in the strip wearing the **tool cell's shape**:
 a `● Thinking…` header — the same `TOOL_BULLET` a running tool wears, because
-it means the same thing, breathing at the frame pulse beside a label carrying
+it means the same thing, blinking at the frame pulse beside a label carrying
 the status line's **shimmer** (`ui::status::shimmer_spans_from`, the same wave
 `Working…` wears but floored at the near-white `reasoning_shimmer_base()`, since
 codex's grey base is right for a metric and unreadable for a header) — over the
@@ -567,15 +567,21 @@ cell's tokenizer estimate is **snapped** to the provider's own
 the round's usage frame lands, split by weight across a round's several
 phases; gated by `ALTER_ZERO_SHOW_THINKING`, whose falsy value restores the
 old counted-and-dropped behaviour exactly) in `docs/thinking-stream.md`;
-the **running bullet's pulse** (a tool in flight no longer
+the **running bullet's blink** (a tool in flight no longer
 shows a blue `●` — it shows the permission prompt's grey, and in the live
-region that grey *breathes* dim→bright→dim once a second, Claude-Code's
-running dot: a raised cosine over the boundary-injected `App::set_pulse`
-frame clock (one shared phase, so a mixed round's tool cells and its agent
-tree blink in step and a background agent animates between turns), applied
-by `ui::live_tool_lines` in the strip only — `tool_lines` renders at rest so
-a scrollback commit can never freeze a frame mid-breath, and the Ctrl+O
-transcript stays still to keep its cache's signature clock-free) in
+region that bullet *blinks*, Claude-Code's running dot: shown in that one
+grey for the first half of every second and hidden behind blanks of its own
+width for the second, so the header text never shifts — never a second,
+dimmer shade (the breath it replaced blended two greys, and under a
+terminal palette stood still); `ui::tool::bullet_span` is the one source of
+every live `●` — tool header, `● Calling …` MCP cell, agent tree and lone
+`● Agent(…)` cell, `● Thinking…` — over the boundary-injected
+`App::set_pulse` frame clock (one shared phase, so a mixed round's tool
+cells and its agent tree blink in step and a background agent animates
+between turns), applied in the strip only — `tool_lines` renders at rest so
+a scrollback commit can never freeze the hidden half, and the Ctrl+O
+transcript stays still to keep its cache's signature clock-free; the `pulse`
+spinner style keeps the raised-cosine breath over the `pulse_dim` role) in
 `docs/tool-pulse.md`; the flicker-free frame pipeline
 (scrollback commits deferred into the draw's synchronized update) in
 `docs/flicker.md`; the **clickable OSC 8 links** (every URL an assistant
@@ -1012,7 +1018,7 @@ never re-pushes it, and surfaced by `ReplySource::agent_system_reminder` so
 the agent session view's Ctrl+D leads with the same block the agent read),
 reporting on a dedicated `agents::AgentEvent` channel (a seventh
 `select!` source — agents outlive turns); a foreground group shows the live
-breathing-grey `● Running {n} agents…` tree (per-agent description · tool uses · tokens
+blinking-grey `● Running {n} agents…` tree (per-agent description · tool uses · tokens
 · a **sticky** `{Name}: {detail}` activity — one grammar for every call
 (`agents::activity_line`): a bash call's own `description`, held between
 calls, else `{Name}: {args}` (`Write: game.py` — never the header's
@@ -1165,7 +1171,7 @@ the asked-about call, or the tree that asked — never dropped; on a page that
 **flows** the context rides along whole and uncollapsed when it is *static*
 (a queued `⎿ Waiting…` cell cannot change — the approve seam runs before its
 `ToolStart`), and gives way only when it **ticks** (a live agent tree's
-breathing bullet and advancing counters, a running call's streamed peek —
+blinking bullet and advancing counters, a running call's streamed peek —
 a flowed row is frozen in scrollback, so ticking content would go stale
 there or re-sign the flow into a purge rebuild per tick;
 `context_is_stable`, `docs/view-flow.md`)); the region
@@ -1927,7 +1933,7 @@ Esc/Ctrl+C cancel restoring the pre-search draft and cursor; see
 `docs/history-search.md`) —
 plus, *while a turn is in flight*, a strip above it — a streaming preview row (the
 preview shows a running tool's cell when one is executing — its bullet a
-**breathing grey**, `docs/tool-pulse.md` — a backend tool's
+**blinking grey**, `docs/tool-pulse.md` — a backend tool's
 **whole** collapsed cell, the wrapped `● name(args)` header *plus* its output;
 before any output a `⎿ Running… (10s · timeout 2m)` row — the command's
 own clock and the timeout it runs under, so a silent command still shows
@@ -2275,7 +2281,7 @@ of bug:
    one-line peek). When the model requests a **parallel batch** of calls in one
    round, they are announced up front (`StreamEvent::ToolBatch` →
    `App::start_tool_batch`, filling the `App::tool_queue` `VecDeque`) so the live
-   region shows *every* call at once — the running one live (pulsing grey), the not-yet-run
+   region shows *every* call at once — the running one live (blinking grey), the not-yet-run
    siblings as dim `⎿ Waiting…` cells (`ToolStatus::Waiting`), each committing to
    scrollback as its `ToolEnd` arrives. Execution stays **sequential** (only the
    front of the queue is ever `Running`, so the invariant is "at most one running
@@ -2420,7 +2426,7 @@ backend interleaves `StreamEvent::ToolStart{name,args}`/`ToolEnd{output,ok,trunc
 running `bash` cell tails them via `App::push_tool_output`, `docs/tool-streaming.md`)
 and a `ThinkingStart`/`ThinkingEnd` pair (with `ThinkingChunk` reasoning
 deltas streamed in between) between `Chunk`s; the loop shows the tool
-running (pulsing grey) then commits it collapsed (green/red), and flips its `thinking_start`
+running (blinking grey) then commits it collapsed (green/red), and flips its `thinking_start`
 `Instant` so the status line shows/drops `Thinking for Ns` — while the
 reasoning deltas themselves accumulate in `App::reasoning` for the live
 `● Thinking…` block, collapsing at `ThinkingEnd` into the committed

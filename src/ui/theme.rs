@@ -175,7 +175,7 @@ pub(super) fn border_color() -> Color {
 
 // --- Tool-call styling. A tool renders as a coloured bullet header
 // `● name(args)` plus a collapsed `⎿` peek of its output; the bullet colour is
-// the tool's lifecycle (a breathing grey while it runs, green ok, red fail —
+// the tool's lifecycle (a blinking grey while it runs, green ok, red fail —
 // `docs/tool-pulse.md`). The full output is
 // only shown in the Ctrl+O tool-output view, never inline. ---
 
@@ -289,7 +289,7 @@ pub(super) const TOOL_NO_OUTPUT: &str = "(no output)";
 // ---------------------------------------------------------------------------
 // The thinking stream (docs/thinking-stream.md). It borrows the tool cell's
 // shape while it runs — a [`TOOL_BULLET`] `● Thinking…` header (its bullet
-// breathing like a running tool's, its label carrying the status line's
+// blinking like a running tool's, its label carrying the status line's
 // [`shimmer_base`] white sweep) over the chain-of-thought in the
 // [`TOOL_RESULT_PREFIX`] `⎿` gutter — and then collapses into a **bullet-less**
 // `Thought for … · … tokens (ctrl+o to expand)` line: the [`summary_lines`]
@@ -465,43 +465,47 @@ pub(super) const TOOL_WAITING: &str = "Waiting…";
 /// (It was a blue `#61AFEF`; the blue survives as [`context_user_color`], which
 /// is a role tag, not a running state.)
 ///
-/// In the **live region** the bullet does not sit at rest — it breathes
-/// between [`tool_pulse_dim`] and [`tool_pulse_bright`] (see
-/// [`tool_pulse_color`](super::tool::tool_pulse_color)), Claude-Code's running
-/// dot. The breath's peak is this same grey, so the animation only ever dips
-/// *below* the resting colour — this value is both the still frame and the top
-/// of the cycle. A frozen render (a scrollback commit, the Ctrl+O transcript's
-/// pager) shows it.
+/// In the **live region** the bullet does not sit still — it **blinks**
+/// ([`bullet_span`](super::tool::bullet_span)), Claude-Code's running dot:
+/// shown in this one grey for half of every [`TOOL_PULSE_PERIOD`], then
+/// hidden behind blanks of its own width for the other half. It is the only
+/// colour a running bullet ever wears — there is no dimmer second shade for
+/// it to ease toward — so a frozen render (a scrollback commit, the Ctrl+O
+/// transcript's pager) shows exactly this, and the strip shows this or
+/// nothing.
 pub(super) fn tool_running_color() -> Color {
     tool_dim_color()
 }
 
-// A running bullet's pulse — the raised-cosine breath the live region animates
-// it with, one full dim→bright→dim cycle per `TOOL_PULSE_PERIOD`. Its two ends
-// are blended through `wrap::blend_color` (which steps rather than mixes when
-// a theme names a terminal-palette colour, `docs/theme.md`); the same shape as
-// the status line's `SHIMMER_*` wave, and driven by the same boundary-injected
-// frame clock (`App::set_pulse`). See `docs/tool-pulse.md`.
+// The running bullet's **cadence**, and the breath the `pulse` spinner style
+// still borrows (`docs/spinner.md`). The bullet itself no longer blends
+// colours — it blinks (`tool::tool_pulse_visible`) — but the `pulse` spinner
+// keeps the raised-cosine dim→bright→dim breath these two ends describe, its
+// ends blended through `wrap::blend_color` (which steps rather than mixes when
+// a theme names a terminal-palette colour, `docs/theme.md`), in step with the
+// bullet off the same boundary-injected frame clock (`App::set_pulse`). See
+// `docs/tool-pulse.md`.
 
-/// The dim end of the breath — where the cycle starts and ends. Well below the
-/// resting grey, so the dip carries the whole animation (the peak can't help:
-/// it *is* the resting grey) without the bullet ever vanishing.
+/// The dim end of the `pulse` spinner's breath — where its cycle starts and
+/// ends. Well below the resting grey, so the dip carries the whole animation
+/// without the dot ever vanishing.
 pub(super) fn tool_pulse_dim() -> Color {
     palette().pulse_dim
 }
 
-/// The bright end of the breath, reached at the half-cycle — [`tool_dim_color`]
-/// exactly, so the bullet **never goes brighter than the grey it rests on**.
-/// The pulse dips *down* from the permission prompt's grey and comes back; it
-/// does not flash toward white, which read as a blink rather than a breath and
-/// pulled the eye off the reply.
+/// The bright end of that breath at the tool bullet's level —
+/// [`tool_dim_color`] exactly, the running bullet's own grey — which the
+/// `bars` spinner style takes for its lowest bar so even `▁` reads
+/// ([`spinner_bars_low`]); the `pulse` style crests past it to white.
 pub(super) fn tool_pulse_bright() -> Color {
     tool_dim_color()
 }
 
-/// One full dim→bright→dim breath. Slow enough to read as a pulse rather than a
-/// flicker, brisk enough to say "something is happening" — and comfortably
-/// coarser than the 32 ms animation frame the loop re-arms while a turn runs.
+/// One full blink — shown for the first half, hidden for the second — and one
+/// full breath of the `pulse` spinner. Slow enough to read as a pulse rather
+/// than a flicker, brisk enough to say "something is happening" — and
+/// comfortably coarser than the 32 ms animation frame the loop re-arms while
+/// a turn runs.
 pub(super) const TOOL_PULSE_PERIOD: Duration = Duration::from_millis(1000);
 
 /// Dim grey — a tool queued in a batch but not yet started (its `● name(args)`
@@ -1755,12 +1759,13 @@ pub(super) const SPINNER_BLOCKS_FRAMES: &[&str] = &["▙", "▛", "▜", "▟"];
 pub(super) const SPINNER_BLOCKS_INTERVAL: Duration = Duration::from_millis(150);
 
 /// `pulse` — one still `●` whose colour breathes [`spinner_pulse_dim`] →
-/// [`spinner_pulse_bright`] → dim once per [`SPINNER_PULSE_PERIOD`]: the
-/// running tool bullet's breath (docs/tool-pulse.md), taken up to white at
-/// the crest so it reads as a status line's head rather than a resting cell.
+/// [`spinner_pulse_bright`] → dim once per [`SPINNER_PULSE_PERIOD`]: a
+/// raised-cosine swell at the running tool bullet's cadence (that bullet
+/// itself blinks, docs/tool-pulse.md), taken up to white at the crest so it
+/// reads as a status line's head rather than a resting cell.
 pub(super) const SPINNER_PULSE_FRAMES: &[&str] = &["●"];
 
-/// The bottom of the `pulse` breath — the tool bullet's own dim.
+/// The bottom of the `pulse` breath — the palette's `pulse_dim`.
 pub(super) fn spinner_pulse_dim() -> Color {
     tool_pulse_dim()
 }
@@ -1770,8 +1775,8 @@ pub(super) fn spinner_pulse_bright() -> Color {
     shimmer_highlight()
 }
 
-/// One `pulse` breath — the tool bullet's period, so a pulsing status line
-/// and a running tool cell breathe in step.
+/// One `pulse` breath — the tool bullet's blink period, so a pulsing status
+/// line and a running tool cell move in step.
 pub(super) const SPINNER_PULSE_PERIOD: Duration = TOOL_PULSE_PERIOD;
 
 /// `bars` — a bar rising `▁` → `█` and falling back, brightening
@@ -1784,7 +1789,8 @@ pub(super) const SPINNER_BARS_FRAMES: &[&str] = &[
 /// How long each `bars` frame shows — a 0.84 s rise and fall.
 pub(super) const SPINNER_BARS_INTERVAL: Duration = Duration::from_millis(60);
 
-/// The lowest bar's grey — the tool pulse's bright, so even `▁` reads.
+/// The lowest bar's grey — the running tool bullet's own grey
+/// ([`tool_pulse_bright`]), so even `▁` reads.
 pub(super) fn spinner_bars_low() -> Color {
     tool_pulse_bright()
 }

@@ -922,8 +922,8 @@ fn the_sparkle_blooms_into_a_star_and_back_in_the_banner_gradient() {
 
 #[test]
 fn the_pulse_dot_breathes_dim_to_bright_without_moving() {
-    // One glyph, coloured by the running bullet's own raised-cosine breath
-    // (docs/tool-pulse.md) — dim at the bottom of the breath, white at the
+    // One glyph, coloured by a raised-cosine breath at the running bullet's
+    // cadence (docs/spinner.md) — dim at the bottom of the breath, white at the
     // top, half a period later — so it swells rather than flicks.
     assert_eq!(styled_frame(Spinner::Pulse, 0), "●");
     assert_eq!(styled_frame(Spinner::Pulse, 500), "●");

@@ -261,8 +261,8 @@ impl App {
     /// nothing displays it — so its epoch is arbitrary; what matters is that it
     /// advances with the loop's 32 ms re-arm.
     ///
-    /// One clock for every pulsing bullet, so a round's tool cells and its agent
-    /// tree breathe in unison rather than each on its own timer. Unlike the
+    /// One clock for every blinking bullet, so a round's tool cells and its agent
+    /// tree blink in unison rather than each on its own timer. Unlike the
     /// turn's `elapsed` it keeps running between turns, so a background agent's
     /// live cell animates too. See `docs/tool-pulse.md`.
     pub fn set_pulse(&mut self, pulse: Duration) {
@@ -271,7 +271,7 @@ impl App {
 
     /// The current animation phase — see [`set_pulse`](App::set_pulse). Zero
     /// until the boundary injects one (the unit-test default), which simply
-    /// renders every pulsing bullet at the bottom of its breath.
+    /// renders every blinking bullet shown — the top of its cycle.
     #[must_use]
     pub const fn pulse(&self) -> Duration {
         self.pulse

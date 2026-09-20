@@ -228,8 +228,8 @@ fn draw_wave(track: &mut Track, elapsed: Duration) {
 /// - `sparkle` and `blocks` walk the banner's cyan → blue gradient
 ///   (`docs/header.md`) — the spark by its bloom level (`·` cyan, `✽` blue,
 ///   back down the fade), the block by its turn;
-/// - `pulse` breathes the running tool bullet's raised cosine
-///   ([`breath`], `docs/tool-pulse.md`) from [`spinner_pulse_dim`] to white;
+/// - `pulse` breathes a raised cosine at the running tool bullet's cadence
+///   ([`breath`], `docs/spinner.md`) from [`spinner_pulse_dim`] to white;
 /// - `bars` brightens with height, [`spinner_bars_low`] at `▁` to white at `█`;
 /// - everything else wears the comet head's white.
 ///

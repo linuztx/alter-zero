@@ -22,7 +22,7 @@ no saved choice opens with.
 | `sparkle` | `· ✢ ✳ ✶ ✻ ✽ ✻ ✶ ✳ ✢` — a spark blooming into a star, accent → link | 120 ms |
 | `dots`    | `⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏` — the classic braille spinner            | 80 ms  |
 | `blocks`  | `▙ ▛ ▜ ▟` — the mascots' quadrant glyphs turning, accent → link | 150 ms |
-| `pulse`   | `●` — one dot breathing dim → white, the running tool bullet's breath | 1 s breath |
+| `pulse`   | `●` — one dot breathing dim → white at the running tool bullet's cadence | 1 s breath |
 | `bars`    | `▁ ▂ ▃ ▄ ▅ ▆ ▇ █ ▇ …` — a level meter, brightening with height | 60 ms |
 | `line`    | `\| / - \` — the classic ASCII spinner, for any font        | 100 ms |
 
@@ -99,13 +99,12 @@ dense already, and a synthesized bold blurs them), and every other style is
   (the accent at `·`, the link at `✽`, back down the fade), the
   block by its turn, the ball by its position, the wave by each cell's place
   on the track — so the theme's accent rides the status line;
-- `pulse` breathes the running tool bullet's raised cosine
-  (`ui::wrap::breath`, the helper `tool_pulse_color` now shares,
-  `docs/tool-pulse.md`) from the bullet's own dim (`tool_pulse_dim()`) up to
-  white — brighter at the crest than the bullet, because a status line's head
-  has to read where a resting cell only has to be noticed — and it shares the
-  bullet's period, so a pulsing status line and a running tool cell breathe
-  in step;
+- `pulse` breathes a raised cosine (`ui::wrap::breath`) from the palette's
+  `pulse_dim` (`tool_pulse_dim()`) up to white — the swell the running tool
+  bullet used to have before it blinked (`docs/tool-pulse.md`), kept here
+  because a status line's head has to *read* where a cell only has to be
+  noticed — and it shares the bullet's period, so a pulsing status line and a
+  blinking tool cell move in step;
 - `bars` brightens with height, the tool pulse's bright grey at `▁` to white
   at `█`;
 - `dots` and `line` wear the comet head's white.
@@ -284,8 +283,8 @@ wears it.
   the reserved height, `docs/view-flow.md`), `spinner_picker_height`,
   `render_spinner_picker`.
 - `ui::status::Track` (private) — the eight-cell braille canvas the two
-  tracks draw on; `ui::wrap::{breath, ping_pong, hop}` — the shared motion
-  curves (`pulse` and the tool bullet's `tool_pulse_color`; the tracks).
+  tracks draw on; `ui::wrap::{breath, ping_pong, hop}` — the motion curves
+  (`pulse`; the tracks).
 - `tui::spinner::Session::select_spinner`, `tui::config::{spinner_json_path,
   adopt_look, save_look}`.
 

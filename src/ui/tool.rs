@@ -5,42 +5,63 @@
 use super::assistant::expand_code_tabs;
 use super::file_cell::{diff_line_color, file_cell_lines, gutter_row, is_diff_tool};
 use super::theme::*;
-use super::wrap::{
-    WrapMode, blend_color, cols, truncate_cols, wrap_output, wrap_output_hanging, wrap_verbatim,
-};
+use super::wrap::{WrapMode, cols, truncate_cols, wrap_output, wrap_output_hanging, wrap_verbatim};
 use super::*;
 
 /// The bullet colour for a tool's lifecycle: dim waiting, grey running, green
 /// ok, red fail — and green for a call that resolved by moving to the
 /// background (the launch succeeded; see `docs/background.md`).
 ///
-/// `pulse` is the live region's frame clock (`App::pulse`): `Some` animates a
-/// **running** bullet through [`tool_pulse_color`], `None` renders it at rest.
-/// Only `Running` ever animates — a queued sibling and a resolved call mean the
-/// same thing on every frame, so making them move would say nothing. See
-/// `docs/tool-pulse.md`.
-fn tool_status_color(status: ToolStatus, pulse: Option<Duration>) -> Color {
+/// One colour per state, on every frame: a running bullet's animation is the
+/// **blink** ([`bullet_span`]), never a second colour, so this is all the
+/// colour a cell ever wears. See `docs/tool-pulse.md`.
+fn tool_status_color(status: ToolStatus) -> Color {
     match status {
         ToolStatus::Waiting => tool_waiting_color(),
-        ToolStatus::Running => pulse.map_or(tool_running_color(), tool_pulse_color),
+        ToolStatus::Running => tool_running_color(),
         ToolStatus::Ok | ToolStatus::Backgrounded => tool_ok_color(),
         ToolStatus::Failed => tool_fail_color(),
     }
 }
 
-/// A running bullet's colour for the frame at `elapsed` — the breath
-/// Claude-Code's running dot has: a raised cosine easing
-/// [`tool_pulse_dim`] → [`tool_pulse_bright`] → [`tool_pulse_dim`] once per
-/// [`TOOL_PULSE_PERIOD`], so it swells and fades rather than flicking on and
-/// off.
+/// Whether a blinking bullet is **shown** on the frame at `elapsed`: on for
+/// the first half of every [`TOOL_PULSE_PERIOD`], off for the second —
+/// Claude-Code's running dot, which flicks between there and not there
+/// rather than easing between two greys. Inside each half it holds; there is
+/// no in-between frame.
 ///
 /// Pure, like [`shimmer_spans`](super::status) and the comet spinner: the phase
 /// derives entirely from the boundary-supplied `elapsed`
 /// ([`App::set_pulse`](crate::app::App::set_pulse)), and the loop's 32 ms
-/// animation re-arm is what makes it move. See `docs/tool-pulse.md`.
-pub(super) fn tool_pulse_color(elapsed: Duration) -> Color {
-    let t = super::wrap::breath(elapsed, TOOL_PULSE_PERIOD);
-    blend_color(tool_pulse_bright(), tool_pulse_dim(), t)
+/// animation re-arm is what makes it move. Whole milliseconds, so the edge
+/// lands on the same frame however the clock is read. See `docs/tool-pulse.md`.
+pub(super) fn tool_pulse_visible(elapsed: Duration) -> bool {
+    let period = TOOL_PULSE_PERIOD.as_millis().max(1);
+    (elapsed.as_millis() % period) * 2 < period
+}
+
+/// The `●` a cell header opens with, in `color` — or, on a frame the blink
+/// hides it, **blanks of the same width** in the same style, so the header
+/// text beside it keeps its column and the row's width never changes
+/// (`docs/tool-pulse.md`). `blink` is the live region's frame clock
+/// (`App::pulse`) for a bullet that is animating — a **running** call's, and
+/// only in the strip; `None` renders it at rest, which is what every
+/// scrollback commit and the Ctrl+O transcript do, so a hidden frame can never
+/// be frozen into a buffer nobody redraws.
+pub(super) fn bullet_span(color: Color, blink: Option<Duration>) -> Span<'static> {
+    let style = Style::new().fg(color).add_modifier(Modifier::BOLD);
+    match blink {
+        Some(at) if !tool_pulse_visible(at) => Span::styled(" ".repeat(cols(TOOL_BULLET)), style),
+        _ => Span::styled(TOOL_BULLET.to_string(), style),
+    }
+}
+
+/// The blink clock for a bullet of `status`: the frame `pulse` while the call
+/// is **running**, `None` otherwise. Only `Running` ever animates — a queued
+/// sibling and a resolved call mean the same thing on every frame, so making
+/// them move would say nothing.
+fn running_blink(status: ToolStatus, pulse: Option<Duration>) -> Option<Duration> {
+    pulse.filter(|_| status == ToolStatus::Running)
 }
 
 /// The coloured bullet header row(s) for a backend tool call: `● {name}({args})`,
@@ -77,13 +98,15 @@ pub(super) fn tool_header_lines(
     pulse: Option<Duration>,
     paths: &PathDisplay,
 ) -> Vec<Line<'static>> {
-    let bullet_style = Style::new()
-        .fg(tool_status_color(tool.status, pulse))
-        .add_modifier(Modifier::BOLD);
     let name_style = Style::new()
         .fg(tool_name_color())
         .add_modifier(Modifier::BOLD);
-    let bullet = || Span::styled(TOOL_BULLET.to_string(), bullet_style);
+    let bullet = || {
+        bullet_span(
+            tool_status_color(tool.status),
+            running_blink(tool.status, pulse),
+        )
+    };
     // An MCP header wears its server capitalized (`Deepwiki - ask_question
     // (MCP)`) while the record keeps the configured spelling — the context
     // replay inverts `tool.name`, so the capitalization lives only at this
@@ -550,8 +573,8 @@ fn command_clock_clause(elapsed: Duration, timeout_ms: u64) -> String {
 /// retained buffer — per animation frame.
 ///
 /// Two clocks ride in: `elapsed` is how long the command has run (the clock
-/// row's first number), `pulse` is the frame phase its bullet breathes at.
-/// Live-only by construction — only the strip calls this — so the pulse is
+/// row's first number), `pulse` is the frame phase its bullet blinks at.
+/// Live-only by construction — only the strip calls this — so the blink is
 /// unconditional here (`docs/tool-pulse.md`).
 pub(super) fn running_command_lines(
     tool: &ToolCall,
@@ -658,9 +681,9 @@ pub fn tool_lines(tool: &ToolCall, width: u16, paths: &PathDisplay) -> Vec<Line<
 }
 
 /// [`tool_lines`] for the **live region**: identical, except a running bullet
-/// breathes at the frame `pulse` ([`tool_pulse_color`]). Only the live strip
+/// blinks at the frame `pulse` ([`bullet_span`]). Only the live strip
 /// calls this — its rows are redrawn every animation frame and never committed,
-/// so the moving colour can't be frozen into scrollback. See
+/// so a hidden frame can't be frozen into scrollback. See
 /// `docs/tool-pulse.md`.
 #[must_use]
 pub(super) fn live_tool_lines(
@@ -718,12 +741,12 @@ fn ask_cell_lines(
     }
     let out_lines = tool_output_lines(tool);
     let (headline, rest) = out_lines.split_first()?;
-    let bullet_style = Style::new()
-        .fg(tool_status_color(tool.status, pulse))
-        .add_modifier(Modifier::BOLD);
     let head_room = (width as usize).saturating_sub(cols(TOOL_BULLET)).max(1);
     let mut lines = vec![Line::from(vec![
-        Span::styled(TOOL_BULLET.to_string(), bullet_style),
+        bullet_span(
+            tool_status_color(tool.status),
+            running_blink(tool.status, pulse),
+        ),
         Span::styled(
             truncate_cols(headline, head_room).to_string(),
             Style::new()
@@ -762,7 +785,7 @@ fn ask_cell_lines(
 /// quiet, the full `{server} - {tool} (MCP)({args})` story living in Ctrl+O:
 ///
 /// - **Running**: `● Calling {server}… (ctrl+o to expand)` — the bullet
-///   coloured (and, live, breathing) by status — and nothing else: echoing a
+///   coloured by status (and, live, blinking) — and nothing else: echoing a
 ///   peek of the question under it says what the header already does, at the
 ///   cost of a row and a wrapped fragment of the argument.
 /// - **Waiting**: the same header over the dim `⎿ Waiting…` its non-MCP
@@ -962,12 +985,9 @@ fn mcp_calling_header(
     width: u16,
 ) -> Line<'static> {
     let label = &format!("{MCP_CALLING_PREFIX}{label}{MCP_CALLING_SUFFIX}");
-    let bullet_style = Style::new()
-        .fg(tool_status_color(status, pulse))
-        .add_modifier(Modifier::BOLD);
     let label_room = (width as usize).saturating_sub(cols(TOOL_BULLET)).max(1);
     let mut spans = vec![
-        Span::styled(TOOL_BULLET.to_string(), bullet_style),
+        bullet_span(tool_status_color(status), running_blink(status, pulse)),
         Span::styled(
             truncate_cols(label, label_room).to_string(),
             Style::new()
@@ -1346,7 +1366,7 @@ fn tool_full_body(tool: &ToolCall, width: u16, paths: &PathDisplay) -> Vec<Line<
     // row list (`docs/tool-view-performance.md`) whose refresh short-circuits
     // on a signature that has no clock in it. Animating here would either not
     // move or cost a full-tail re-render every 32 ms, for a bullet nobody is
-    // watching breathe. See `docs/tool-pulse.md`.
+    // watching blink. See `docs/tool-pulse.md`.
     let pulse: Option<Duration> = None;
     // The resolved ask cell keeps its headline header in the transcript too,
     // with the answer rows uncapped (`docs/ask.md`).

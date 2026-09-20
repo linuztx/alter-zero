@@ -33,9 +33,11 @@ if [ -z "$agentperm_row" ]; then
 	fail "the gated subagent demo never put its row on the footer roster"
 fi
 # The lead's own cell IS right in the main view — a lone foreground launch
-# wears the tool-cell look there (docs/agent-tool.md).
+# wears the tool-cell look there (docs/agent-tool.md). Matched without its
+# bullet: a running cell's `●` blinks, so a one-shot capture catches it
+# hidden half the time (docs/tool-pulse.md).
 agentperm_main="$(tmux capture-pane -t "$S98" -p)"
-expect_has "$agentperm_main" -F "● Agent(Run ls -la via subagent)" "the main view is missing the lead's live agent cell"
+expect_has "$agentperm_main" -F "Agent(Run ls -la via subagent)" "the main view is missing the lead's live agent cell"
 # ↓ opens the roster on `● main`, a second ↓ steps onto the agent, Enter opens
 # its session — all inside the demo's pre-roll, before its first request.
 tmux send-keys -t "$S98" Down
@@ -62,7 +64,7 @@ expect_has "$agentperm_view" -F "● Bash(pwd)" "the batch's waiting sibling is 
 if [ "$(printf '%s' "$agentperm_view" | grep -cF "⎿  Waiting…")" -ne 2 ]; then
 	fail "both queued cells must read '⎿ Waiting…' above the prompt"
 fi
-expect_lacks "$agentperm_view" -F "● Agent(Run ls -la via subagent)" "the LEAD's agent cell covered the agent's own cells (the reported bug)"
+expect_lacks "$agentperm_view" -F "Agent(Run ls -la via subagent)" "the LEAD's agent cell covered the agent's own cells (the reported bug)"
 expect_has "$agentperm_view" -F "Bash command · from the general-purpose agent" "the prompt does not say which subagent asked"
 # Answer it (option 1), let the batch drain, then Esc back to the main view:
 # the lead's cell is on screen there, and the agent's own cells are not.

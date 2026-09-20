@@ -3,12 +3,12 @@
 
 use super::*;
 use crate::ui::theme::{
-    CODE_TAB_WIDTH, EXPAND_HINT, FILE_PEEK_LINES, TOOL_FOLD_ROWS, TOOL_HEADER_ELLIPSIS,
-    TOOL_HEADER_MAX_COLS, TOOL_HEADER_MAX_LINES, TOOL_JSON_PRETTY_MAX_BYTES, TOOL_LINE_ELLIPSIS,
-    TOOL_LINE_MAX_ROWS, TOOL_PULSE_PERIOD, TOOL_TRUNCATED_MARKER, tool_args_color,
-    tool_diff_add_bg, tool_diff_add_color, tool_diff_add_mark_bg, tool_diff_del_bg,
-    tool_diff_del_color, tool_diff_del_mark_bg, tool_dim_color, tool_fail_color, tool_ok_color,
-    tool_output_color, tool_pulse_bright, tool_pulse_dim, tool_running_color, tool_waiting_color,
+    CODE_TAB_WIDTH, EXPAND_HINT, FILE_PEEK_LINES, TOOL_BULLET, TOOL_FOLD_ROWS,
+    TOOL_HEADER_ELLIPSIS, TOOL_HEADER_MAX_COLS, TOOL_HEADER_MAX_LINES, TOOL_JSON_PRETTY_MAX_BYTES,
+    TOOL_LINE_ELLIPSIS, TOOL_LINE_MAX_ROWS, TOOL_PULSE_PERIOD, TOOL_TRUNCATED_MARKER,
+    tool_args_color, tool_diff_add_bg, tool_diff_add_color, tool_diff_add_mark_bg,
+    tool_diff_del_bg, tool_diff_del_color, tool_diff_del_mark_bg, tool_dim_color, tool_fail_color,
+    tool_ok_color, tool_output_color, tool_running_color, tool_waiting_color,
 };
 use crate::ui::tool::{live_tool_lines, running_command_lines, tool_full_lines};
 use crate::ui::wrap::cols;
@@ -259,28 +259,47 @@ fn a_running_bullet_is_the_permission_prompts_grey_never_blue() {
 }
 
 #[test]
-fn a_running_bullet_breathes_across_the_pulse_period() {
-    // …and in the live region it pulses, Claude-Code's running dot: dim at the
-    // top of the cycle, back up at the half, down again — a pure function of
-    // the boundary-injected frame clock, like the status shimmer. The breath
-    // only ever dips **below** the resting grey; its peak is that same grey, so
-    // the bullet never brightens toward white.
+fn a_running_bullet_blinks_across_the_pulse_period() {
+    // …and in the live region it blinks, Claude Code's running dot: shown
+    // for the first half of every TOOL_PULSE_PERIOD, hidden for the second —
+    // a pure function of the boundary-injected frame clock. Hidden is the
+    // same width of blanks, so the header text never shifts; shown is the
+    // one resting grey, never a blend of two (docs/tool-pulse.md).
     let call = tool("Bash", "cargo test", ToolStatus::Running, "");
     let bullet = |at: Duration| {
-        live_tool_lines(&call, 80, at, &PathDisplay::VERBATIM)[0].spans[0]
-            .style
-            .fg
+        let mut lines = live_tool_lines(&call, 80, at, &PathDisplay::VERBATIM);
+        let line = lines.swap_remove(0);
+        (
+            line.spans[0].content.to_string(),
+            line.spans[0].style.fg,
+            plain(&line),
+        )
     };
+    let blanks = " ".repeat(cols(TOOL_BULLET));
     let half = TOOL_PULSE_PERIOD / 2;
-    assert_eq!(bullet(Duration::ZERO), Some(tool_pulse_dim()));
-    assert_eq!(bullet(half), Some(tool_pulse_bright()));
-    // A full period later it is back where it started — the cycle loops.
-    assert_eq!(bullet(TOOL_PULSE_PERIOD), Some(tool_pulse_dim()));
-    assert_eq!(bullet(TOOL_PULSE_PERIOD + half), Some(tool_pulse_bright()));
-    // Between the extremes it is genuinely in between, not snapped to one end.
-    let mid = bullet(TOOL_PULSE_PERIOD / 4);
-    assert_ne!(mid, Some(tool_pulse_dim()));
-    assert_ne!(mid, Some(tool_pulse_bright()));
+    let (glyph, color, text) = bullet(Duration::ZERO);
+    assert_eq!(glyph, TOOL_BULLET, "shown at the top of the cycle");
+    assert_eq!(
+        color,
+        Some(tool_running_color()),
+        "one colour — the resting grey"
+    );
+    assert_eq!(text, "● Bash(cargo test)");
+    let (glyph, _, text) = bullet(half);
+    assert_eq!(
+        glyph, blanks,
+        "hidden at the half: blanks of the same width"
+    );
+    assert_eq!(
+        text, "  Bash(cargo test)",
+        "the header text keeps its column"
+    );
+    // Inside each half it holds — no in-between frame, never a blend.
+    assert_eq!(bullet(TOOL_PULSE_PERIOD / 4).0, TOOL_BULLET);
+    assert_eq!(bullet(TOOL_PULSE_PERIOD * 3 / 4).0, blanks);
+    // A full period later the cycle loops.
+    assert_eq!(bullet(TOOL_PULSE_PERIOD).0, TOOL_BULLET);
+    assert_eq!(bullet(TOOL_PULSE_PERIOD + half).0, blanks);
 }
 
 #[test]
@@ -295,12 +314,15 @@ fn only_a_running_bullet_pulses() {
     ] {
         let call = tool("X", "y", status, "out");
         for at in [Duration::ZERO, TOOL_PULSE_PERIOD / 2] {
+            let lines = live_tool_lines(&call, 80, at, &PathDisplay::VERBATIM);
             assert_eq!(
-                live_tool_lines(&call, 80, at, &PathDisplay::VERBATIM)[0].spans[0]
-                    .style
-                    .fg,
+                lines[0].spans[0].style.fg,
                 Some(color),
                 "{status:?} never animates"
+            );
+            assert_eq!(
+                lines[0].spans[0].content, TOOL_BULLET,
+                "{status:?} never hides its bullet"
             );
         }
     }
@@ -308,25 +330,15 @@ fn only_a_running_bullet_pulses() {
 
 #[test]
 fn a_committed_cell_never_carries_a_pulse_frame() {
-    // `tool_lines` feeds scrollback, where a colour is frozen forever. It
-    // renders a running bullet **at rest** — the flat grey — so a cell can
-    // never be committed mid-breath.
+    // `tool_lines` feeds scrollback, where a row is frozen forever. It
+    // renders a running bullet **at rest** — shown, in the flat grey — so a
+    // cell can never be committed on the blink's hidden half, headless.
     let call = tool("Bash", "cargo test", ToolStatus::Running, "");
+    let lines = tool_lines(&call, 80, &PathDisplay::VERBATIM);
+    assert_eq!(lines[0].spans[0].style.fg, Some(tool_running_color()));
     assert_eq!(
-        tool_lines(&call, 80, &PathDisplay::VERBATIM)[0].spans[0]
-            .style
-            .fg,
-        Some(tool_running_color())
-    );
-    // The peak of the breath *is* the resting grey — the pulse only dips below
-    // it — so what a commit must never freeze is the **dip**. That is also the
-    // value an un-injected clock would render (phase 0), which is exactly the
-    // accident this renderer split exists to prevent.
-    assert_ne!(tool_running_color(), tool_pulse_dim());
-    assert_eq!(
-        tool_running_color(),
-        tool_pulse_bright(),
-        "the breath tops out at the resting grey, never brighter"
+        lines[0].spans[0].content, TOOL_BULLET,
+        "at rest the bullet is always drawn"
     );
 }
 

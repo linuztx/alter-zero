@@ -142,7 +142,7 @@ seam runs before its `ToolStart`, so nothing can change while the answer is
 pending, and it rides into scrollback **whole and uncollapsed** (there is no
 screenful left to compete for, so hiding siblings behind the summary row
 would lose them for nothing). A **live agent group** or a **running call** is
-not — the tree's bullet breathes at the frame pulse and its `{n} tool uses ·
+not — the tree's bullet blinks at the frame pulse and its `{n} tool uses ·
 {tokens} tokens` counters advance, a running call's streamed output grows its
 peek — and a flowed row is frozen in scrollback, so ticking content would go
 stale there or re-sign the flow into a purge rebuild every tick

@@ -411,7 +411,7 @@ so a `bash` command and its output are as legible as a normal message rather tha
 the old muted grey. Only the structural bits stay dim ([`tool_dim_color()`]): the
 `⎿` corner glyph, the `Running…`/`Waiting…`/`(no output)` placeholders and the
 `… +N lines` / `+N lines (Ns · timeout …)` hints. The `●` bullet keeps its lifecycle colour
-(breathing grey while it runs — `docs/tool-pulse.md` — vivid green ok · red
+(blinking grey while it runs — `docs/tool-pulse.md` — vivid green ok · red
 fail). This is uniform across **every** tool
 — `bash`/`read`/`write`/`edit` and any future tool — because the header goes
 through the shared `tool_header_lines` and command/shell output through the

@@ -21,7 +21,7 @@
 use super::file_cell::gutter_row_styled;
 use super::status::shimmer_spans_from;
 use super::theme::*;
-use super::tool::tool_pulse_color;
+use super::tool::bullet_span;
 use super::wrap::{cols, wrap_output};
 use super::*;
 
@@ -49,19 +49,16 @@ fn body_width(width: u16) -> u16 {
 }
 
 /// The `● Thinking…` header of an open phase: the same [`TOOL_BULLET`] a
-/// running tool wears (because it means the same thing) in `bullet_color`,
+/// running tool wears (because it means the same thing), in the running grey,
 /// over the label built by `label`.
 ///
 /// The two callers differ only in how alive the row is allowed to look. In the
-/// strip the bullet breathes ([`tool_pulse_color`]) and the label **shimmers**
-/// ([`shimmer_spans_from`]); in the Ctrl+O pager both render flat, because
-/// that view's cache signature is deliberately clock-free
-/// (`docs/tool-pulse.md`).
-fn thinking_header(bullet_color: Color, label: Vec<Span<'static>>) -> Line<'static> {
-    let mut spans = vec![Span::styled(
-        TOOL_BULLET.to_string(),
-        Style::new().fg(bullet_color).add_modifier(Modifier::BOLD),
-    )];
+/// strip the bullet blinks (`blink` is the frame clock, [`bullet_span`]) and
+/// the label **shimmers** ([`shimmer_spans_from`]); in the Ctrl+O pager both
+/// render flat (`blink: None`), because that view's cache signature is
+/// deliberately clock-free (`docs/tool-pulse.md`).
+fn thinking_header(blink: Option<Duration>, label: Vec<Span<'static>>) -> Line<'static> {
+    let mut spans = vec![bullet_span(tool_running_color(), blink)];
     spans.extend(label);
     Line::from(spans)
 }
@@ -141,7 +138,7 @@ pub(super) fn reasoning_live_full_lines(text: &str, width: u16) -> Vec<Line<'sta
         REASONING_RUNNING.to_string(),
         Style::new().fg(reasoning_text_color()),
     )];
-    let mut lines = vec![thinking_header(tool_running_color(), label)];
+    let mut lines = vec![thinking_header(None, label)];
     lines.extend(gutter_body(text, width));
     lines
 }
@@ -166,7 +163,7 @@ fn gutter_body(text: &str, width: u16) -> Vec<Line<'static>> {
 }
 
 /// The **live** block for an open thinking phase, drawn in the strip's preview
-/// slot: a `● Thinking…` header — the bullet breathing at the frame `pulse`
+/// slot: a `● Thinking…` header — the bullet blinking at the frame `pulse`
 /// and the label carrying the status line's **shimmer** sweep
 /// ([`shimmer_spans_from`], the same wave the `Working…` verb below it wears,
 /// but floored at the near-white [`reasoning_shimmer_base`] so it reads as
@@ -185,7 +182,7 @@ fn gutter_body(text: &str, width: u16) -> Vec<Line<'static>> {
 /// every animation frame costs O(window), not O(reasoning).
 pub(super) fn live_reasoning_lines(text: &str, pulse: Duration, width: u16) -> Vec<Line<'static>> {
     let mut lines = vec![thinking_header(
-        tool_pulse_color(pulse),
+        Some(pulse),
         shimmer_spans_from(REASONING_RUNNING, pulse, reasoning_shimmer_base()),
     )];
     let inner = body_width(width);

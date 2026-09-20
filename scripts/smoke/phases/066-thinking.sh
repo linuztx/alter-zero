@@ -43,7 +43,10 @@ expect_has "$think_live" -F "Let me read the file first." "the chain-of-thought 
 # sits under a blank row instead of butting against the paragraph that was
 # streaming (the reported bug — the flush used to wait for the phase's end, so
 # the spacer only appeared when the cell collapsed, jolting it down a row).
-if ! printf '%s' "$think_live" | grep -B 1 -F "● Thinking…" | head -1 | grep -qE "^[[:space:]]*$"; then
+# The header is matched with OR without its bullet: a live `●` blinks, so the
+# frame that first carried the thought may have caught it hidden — two blanks
+# where the bullet was, the label still in its column (docs/tool-pulse.md).
+if ! printf '%s' "$think_live" | grep -B 1 -E "^(● |  )Thinking…" | head -1 | grep -qE "^[[:space:]]*$"; then
 	fail "the live '● Thinking…' header is not preceded by a blank row: the segment before it was not finalised (invariant 4)"
 fi
 # …then the collapsed cell, once the phase ends.

@@ -81,6 +81,18 @@ release heading when a version is cut.
   that only the Ctrl+O view carried now closes the inline cell too, so a
   cut is visible where the output is read. The model's `Bash` cell keeps
   Claude Code's fold.
+- **A running tool's bullet blinks instead of breathing**
+  (`docs/tool-pulse.md`). The `●` on a `Bash`, `Read`, `Write` or `Edit`
+  cell that is still executing used to ease between two greys once a
+  second. It is now Claude Code's running dot: the one resting grey, shown
+  for half a second and hidden for the next, the header text holding its
+  column while the dot is away, so `Bash(…)` never shifts. The same blink
+  runs the live `● Running {n} agents…` tree, a lone `● Agent(…)` cell, the
+  `● Calling …` MCP cell and the `● Thinking…` header, all on one clock, and
+  it works the same under the `ansi` theme, where the old breath had no
+  second shade to move between and stood still. Committed cells and the
+  Ctrl+O transcript keep their bullet as before; the `pulse` spinner style
+  keeps its breath.
 
 ## [0.4.0] - 2026-09-18
 

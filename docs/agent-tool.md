@@ -275,7 +275,7 @@ zero new plumbing. The TUI cell is a new `HistoryItem::AgentNotice` —
 
 ## Rendering (`ui`)
 
-- **Live group cell** (`live_agent_group_lines`): a breathing-grey `● Running {n}
+- **Live group cell** (`live_agent_group_lines`): a blinking-grey `● Running {n}
   agents… (ctrl+o to expand)` over the tree —
   `   ├ {description} · {n} tool uses · {tokens} tokens` with a
   `   │ ⎿  {activity}` status row per agent — plus the delayed
@@ -311,7 +311,7 @@ zero new plumbing. The TUI cell is a new `HistoryItem::AgentNotice` —
   alone: its white `Bash(…)` header wrapped over several rows above a dim
   `Running…` line, which read as the
   main turn's own running cell and grew the strip under counters that tick
-  every frame. The bullet's breathing grey already says the call is running,
+  every frame. The bullet's blinking grey already says the call is running,
   so the row says *what* is running and nothing more.
 - **The session view's strip** (`agent_view_preview_lines`): the main strip's
   branches over the viewed agent's own state, in the same order — its live

@@ -4,8 +4,8 @@ use super::*;
 use crate::ui::agent::{AgentCellView, agent_cell_lines, agent_group_full_lines};
 use crate::ui::live::preview_lines;
 use crate::ui::theme::{
-    TOOL_PULSE_PERIOD, tool_dim_color, tool_fail_color, tool_ok_color, tool_output_color,
-    tool_pulse_bright, tool_pulse_dim,
+    TOOL_BULLET, TOOL_PULSE_PERIOD, tool_dim_color, tool_fail_color, tool_ok_color,
+    tool_output_color, tool_running_color,
 };
 use crate::ui::wrap::cols;
 
@@ -267,11 +267,12 @@ fn a_multi_agent_tree_keeps_the_sticky_tool_activity() {
 }
 
 #[test]
-fn a_live_agent_groups_bullet_breathes_like_a_running_tool() {
+fn a_live_agent_groups_bullet_blinks_like_a_running_tool() {
     // The tree header is the round's "this is happening now" bullet, so it
-    // pulses on the same clock as a running tool cell — the two are on screen
+    // blinks on the same clock as a running tool cell — the two are on screen
     // together in a mixed round and must not blink out of step
-    // (`docs/tool-pulse.md`).
+    // (`docs/tool-pulse.md`): shown in the resting grey, then hidden behind
+    // blanks of its own width so the header text never shifts.
     let mut app = App::new();
     app.begin_stream();
     app.start_agent_group(
@@ -281,10 +282,22 @@ fn a_live_agent_groups_bullet_breathes_like_a_running_tool() {
             spec("a2", "Fetch Oslo", false),
         ],
     );
-    let bullet = |app: &App| live_agent_group_lines(app, 90)[0].spans[0].style.fg;
-    assert_eq!(bullet(&app), Some(tool_pulse_dim()));
+    let bullet = |app: &App| {
+        let line = live_agent_group_lines(app, 90).swap_remove(0);
+        (
+            line.spans[0].content.to_string(),
+            line.spans[0].style.fg,
+            plain(&line),
+        )
+    };
+    let (glyph, color, text) = bullet(&app);
+    assert_eq!(glyph, TOOL_BULLET);
+    assert_eq!(color, Some(tool_running_color()));
+    assert!(text.starts_with("● Running 2 agents…"), "{text:?}");
     app.set_pulse(TOOL_PULSE_PERIOD / 2);
-    assert_eq!(bullet(&app), Some(tool_pulse_bright()));
+    let (glyph, _, text) = bullet(&app);
+    assert_eq!(glyph, " ".repeat(cols(TOOL_BULLET)), "hidden at the half");
+    assert!(text.starts_with("  Running 2 agents…"), "{text:?}");
 }
 
 #[test]

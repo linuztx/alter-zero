@@ -2,7 +2,7 @@
 
 When the model requests **several tool calls in one assistant turn** (e.g. three
 `Bash` commands at once), the TUI now shows **all of them up front**: the one
-executing renders live (a breathing-grey bullet over `⎿ Running…`, then its
+executing renders live (a blinking grey bullet over `⎿ Running…`, then its
 output — `docs/tool-pulse.md`), and the ones not yet
 started render as dim `⎿ Waiting…` cells — Claude-Code's parallel-tool look:
 

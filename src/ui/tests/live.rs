@@ -5,7 +5,7 @@ use crate::ui::live::preview_tool_lines;
 use crate::ui::theme::{
     INPUT_CHROME_ROWS, MODEL_SEARCH_ROW, STATUS_GAP_ROWS, STATUS_ROWS, TOOL_BACKGROUND_HINT,
     TOOL_BACKGROUND_HINT_DELAY, TOOL_PULSE_PERIOD, footer_focus_bg, footer_focus_fg,
-    tool_pulse_bright, tool_pulse_dim,
+    tool_running_color,
 };
 use crate::ui::wrap::cols;
 
@@ -323,12 +323,13 @@ fn render_live_shows_streaming_text_in_preview_row() {
 }
 
 #[test]
-fn render_live_previews_a_running_tool_with_a_pulsing_bullet() {
+fn render_live_previews_a_running_tool_with_a_blinking_bullet() {
     // While a tool runs, the strip's preview row shows its coloured header
     // instead of the assistant text, so the user sees what's executing — and
-    // the bullet **breathes** at the injected frame phase rather than sitting
-    // on a flat colour (`docs/tool-pulse.md`). This is the only place the
-    // pulse reaches the screen, so it is the wiring this test pins.
+    // the bullet **blinks** at the injected frame phase, Claude Code's running
+    // dot: shown in the one resting grey, then hidden, the header text never
+    // moving (`docs/tool-pulse.md`). This is the only place the blink reaches
+    // the screen, so it is the wiring this test pins.
     let mut app = App::new();
     app.begin_stream();
     app.start_tool("Read", "src/main.rs", None);
@@ -337,27 +338,26 @@ fn render_live_previews_a_running_tool_with_a_pulsing_bullet() {
     let mut buf = buffer(40, h);
     render_live(buf.area, &mut buf, &app);
 
-    let preview = row(&buf, 0, 40);
+    let shown = row(&buf, 0, 40);
     assert!(
-        preview.contains("Read(src/main.rs)"),
-        "preview shows the running tool header: {preview:?}"
+        shown.starts_with("● Read(src/main.rs)"),
+        "an un-injected clock shows the bullet: {shown:?}"
     );
-    let dim = buf[(0, 0)].fg;
-    assert_eq!(
-        dim,
-        tool_pulse_dim(),
-        "an un-injected clock renders the bottom of the breath"
-    );
-    // Half a period on, the same cell is at the bright end — the boundary's
-    // per-frame `set_pulse` is what animates it.
-    app.set_pulse(TOOL_PULSE_PERIOD / 2);
-    render_live(buf.area, &mut buf, &app);
     assert_eq!(
         buf[(0, 0)].fg,
-        tool_pulse_bright(),
-        "the injected frame clock moves the bullet"
+        tool_running_color(),
+        "the shown bullet wears the one resting grey"
     );
-    assert_ne!(dim, buf[(0, 0)].fg, "…so it visibly changes between frames");
+    // Half a period on, the same cell is blank — the boundary's per-frame
+    // `set_pulse` is what blinks it — and the header has not shifted.
+    app.set_pulse(TOOL_PULSE_PERIOD / 2);
+    render_live(buf.area, &mut buf, &app);
+    let hidden = row(&buf, 0, 40);
+    assert_eq!(buf[(0, 0)].symbol(), " ", "hidden at the half: {hidden:?}");
+    assert!(
+        hidden.starts_with("  Read(src/main.rs)"),
+        "the header text keeps its column: {hidden:?}"
+    );
 }
 
 #[test]

@@ -83,7 +83,7 @@ pub fn render_live(area: Rect, buf: &mut Buffer, app: &App) {
 /// whole forming table (docs/table-streaming.md) — `stream_preview` is the
 /// boundary's cheap render of it ([`StreamRender::preview`], falling back to
 /// re-rendering the last line from the buffer when absent, for unit tests).
-/// An **open thinking phase** previews its live block — the breathing
+/// An **open thinking phase** previews its live block — the blinking
 /// `● Thinking…` header over the tail of the chain-of-thought
 /// (`docs/thinking-stream.md`) — after the agent/tool branches (what is
 /// genuinely executing is what the user waits on) and before the reply's,
@@ -209,7 +209,7 @@ pub(super) fn preview_tool_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     // on screen. Zero until the first injection (the boundary injects before
     // every draw; a unit test may not).
     let elapsed = app.command_elapsed().unwrap_or(Duration::ZERO);
-    // The shared animation phase every running bullet in this strip breathes
+    // The shared animation phase every running bullet in this strip blinks
     // against (`docs/tool-pulse.md`) — distinct from `elapsed`, which is a
     // measurement and is displayed.
     let pulse = app.pulse();
@@ -415,7 +415,7 @@ pub(super) fn strip_content_rows(app: &App, width: u16, preview_n: u16) -> u16 {
 ///
 /// The strip moves on its own at the turn's 32 ms animation cadence — output
 /// streams into the running cell, the elapsed and the token tally advance,
-/// the bullet breathes — so signing its rows would purge-rebuild the screen
+/// the bullet blinks — so signing its rows would purge-rebuild the screen
 /// thirty times a second. This hashes only what a **structural** change moves:
 /// which conversation is on screen, whether a turn's status line is up, each
 /// queued call's name/arguments/status, the live agent group's members, and

@@ -390,7 +390,7 @@ pub(crate) struct StatusClocks {
     /// `App::set_command_elapsed` (`docs/background.md`).
     command_start: Option<Instant>,
     /// When the event loop started — the epoch of the **animation phase** every
-    /// pulsing bullet breathes against (`App::set_pulse`, `docs/tool-pulse.md`).
+    /// blinking bullet blinks against (`App::set_pulse`, `docs/tool-pulse.md`).
     /// Unlike the others this is never cleared: one monotonic clock, so a
     /// round's tool cells and its agent tree stay in step, and a background
     /// agent's live cell keeps animating between turns.

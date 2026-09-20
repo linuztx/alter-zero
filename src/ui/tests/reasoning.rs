@@ -251,16 +251,17 @@ fn the_transcript_header_never_shimmers() {
 }
 
 #[test]
-fn the_live_bullet_breathes_but_the_committed_one_never_does() {
-    // The pulse is live-only, like a running tool's (docs/tool-pulse.md): a
-    // scrollback commit must never freeze a frame of the animation.
-    let dim = live_reasoning_lines("x", Duration::ZERO, 60)[0].spans[0]
-        .style
-        .fg;
-    let bright = live_reasoning_lines("x", TOOL_PULSE_PERIOD / 2, 60)[0].spans[0]
-        .style
-        .fg;
-    assert_ne!(dim, bright, "the live header pulses");
+fn the_live_bullet_blinks_but_the_committed_one_never_does() {
+    // The blink is live-only, like a running tool's (docs/tool-pulse.md): a
+    // scrollback commit must never freeze a hidden frame of the animation.
+    let shown = live_reasoning_lines("x", Duration::ZERO, 60)[0].spans[0]
+        .content
+        .to_string();
+    let hidden = live_reasoning_lines("x", TOOL_PULSE_PERIOD / 2, 60)[0].spans[0]
+        .content
+        .to_string();
+    assert_eq!(shown, "● ", "the live header shows its bullet");
+    assert_eq!(hidden, "  ", "…and hides it half a period on");
     assert_eq!(
         reasoning_lines(&thought("x", 1, 1), 60)[0].spans[0]
             .style

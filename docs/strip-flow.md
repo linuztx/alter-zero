@@ -72,7 +72,7 @@ two are the same list and nothing flows at all.
 ### Frozen, not re-signed
 
 The strip is the most volatile thing on the screen: output streams into the
-running cell, the elapsed and the token tally advance, the bullet breathes —
+running cell, the elapsed and the token tally advance, the bullet blinks —
 all at the 32 ms cadence an active turn re-arms. Signing the flow on its rows
 would purge-rebuild the whole screen thirty times a second, so it takes the ↓
 manager's `FlowSign::Frozen` (`docs/view-flow.md`) over

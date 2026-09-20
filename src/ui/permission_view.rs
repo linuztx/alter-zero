@@ -585,7 +585,7 @@ pub fn permission_lines(app: &App, width: u16, term_height: u16) -> Vec<Line<'st
         // the region's own height (`docs/view-flow.md`).
         context_lines(app, width, usize::MAX)
     } else {
-        // …unless it **ticks**: a live agent group's bullet breathes at the
+        // …unless it **ticks**: a live agent group's bullet blinks at the
         // frame pulse and its counters advance as the agents work. A flowed
         // row is frozen in scrollback, so ticking content would either go
         // stale there or re-sign the flow into a purge rebuild per tick. It
@@ -608,7 +608,7 @@ pub fn permission_lines(app: &App, width: u16, term_height: u16) -> Vec<Line<'st
 /// A queued call is: the approve seam runs before its `ToolStart`, so a
 /// `⎿ Waiting…` cell cannot change while the answer is pending. Two things
 /// are not, and both are about something still *moving*: a **live agent
-/// group** (its bullet breathes at the frame pulse, its `{n} tool uses ·
+/// group** (its bullet blinks at the frame pulse, its `{n} tool uses ·
 /// {tokens} tokens` counters advance) and a **running call** — the main
 /// turn's own, under a subagent's request — whose streamed output grows the
 /// cell's peek. Either one is enough to hold the whole context back.
