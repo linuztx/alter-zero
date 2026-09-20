@@ -168,19 +168,24 @@ if [ -n "$workspace" ]; then
 	exec "$here/run.sh" "$@" "$workspace"
 fi
 
-# Name the engine in the hints only when it was chosen: run.sh picks its own
-# the same way, so an unqualified command lands on the same one.
-flag=""
-if [ -n "$want_engine" ] || [ -n "${CONTAINER_ENGINE:-}" ]; then flag=" --engine $engine"; fi
+# Keep the printed commands tied to the engine and image just built, even if
+# defaults or the selected engine change before the user runs them.
+shell_quote() {
+	printf "'"
+	printf '%s' "$1" | sed "s/'/'\\\\''/g"
+	printf "'"
+}
+engine_arg=$(shell_quote "$engine")
+image_arg=$(shell_quote "$image")
 cat <<EOF
 
 Next, create the container (its data outlives it, in named volumes):
 
-  docker/run.sh$flag                      # /workspace is a named volume
-  docker/run.sh$flag ~/projects/site      # /workspace is that folder
+  docker/run.sh --engine $engine_arg --image $image_arg                      # /workspace is a named volume
+  docker/run.sh --engine $engine_arg --image $image_arg ~/projects/site      # /workspace is that folder
 
 Already have one from an older build? Recreate it to move onto this image;
-sign-ins, settings and your files are kept:
+existing mounts, ports, clipboard and capability settings are retained:
 
-  docker/run.sh$flag --replace
+  docker/run.sh --engine $engine_arg --image $image_arg --replace
 EOF

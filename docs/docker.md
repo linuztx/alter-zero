@@ -147,8 +147,10 @@ capability, not `--privileged` and not `--cap-add ALL`; its reach is the
 container's own network namespace, which under rootless Podman is a
 slirp4netns/pasta namespace of the user's own; `no-new-privileges` still
 applies; and a network-tools image whose flagship tool cannot run is simply
-broken. `--no-net-raw` drops it for anyone who wants the narrower set, at the
-cost of `nmap -sS`, `traceroute -I` and `tcpdump` (`nmap -sT` is unaffected).
+broken. `--no-net-raw` passes only `--cap-drop NET_RAW`, explicitly dropping
+the capability on both engines at the cost of `nmap -sS`, `traceroute -I`
+and `tcpdump` (`nmap -sT` is unaffected). Omitting `--cap-add` alone would
+leave Docker's default grant in place.
 
 It is a flag of its own because the `--` passthrough cannot do this one job.
 Capabilities are lists, not last-one-wins flags, and the engines disagree
@@ -162,7 +164,8 @@ stub suite: "the same container" under `podman compose` would otherwise be
 the one place the raw-socket refusal survived.
 
 `docker/tests/smoke.sh` runs a real SYN scan in the container `run.sh`
-creates, on both engines, so the parity is a test and not a claim.
+creates, then checks that `--no-net-raw` removes the capability and prevents
+opening a raw socket on both engines.
 
 ### The scanner that would not exec
 
@@ -207,9 +210,20 @@ never stops it. `tini` reaps what those sessions leave behind.
 State lives in two places that outlive the container: `/workspace` (the user's
 folder, or the `alter-zero-workspace` volume) and `/root` (the
 `alter-zero-home` volume — sign-ins, settings, sessions, the telemetry install
-id). Everything else is the container's writable layer. That split is what
-makes `run.sh --replace` safe, and `--replace` is in turn how the folder, the
-ports and the image are changed. No `VOLUME` is declared in the image: an
+id). Everything else is the container's writable layer and is lost on
+replacement. `run.sh --replace` inspects the existing container and inherits
+its workspace/home mounts, image name, published ports, clipboard setting,
+PID limit and `NET_RAW` choice. Explicit options override the inherited settings.
+Port inheritance uses the configured mappings; an automatically allocated
+host port remains automatic and may receive a different number.
+Custom environment overrides and CPU limits are refused before removal.
+Environment values are compared with the original image ID, not its mutable
+tag, and errors do not reveal their contents. Engine defaults and managed
+clipboard variables are handled separately. The PID limit is carried forward
+explicitly rather than guessed from engine defaults. Detected unsupported
+configurations require `--reset-config`, which
+deliberately uses supplied options and defaults instead, so extra engine
+flags must be supplied again. No `VOLUME` is declared in the image: an
 undeclared mount would become an anonymous volume, which persists data nobody
 can find and orphans it on `rm`.
 
@@ -221,6 +235,13 @@ project, and one person stays one telemetry install.
 user* — because an engine handed a missing path makes it itself, owned by root.
 It refuses `/`, refuses a path containing `:` (the `-v` separator), and on an
 SELinux host adds `:Z` while refusing to relabel the home directory itself.
+Both the workspace and home are resolved to physical paths before comparison,
+so a symlinked home cannot bypass that protection.
+
+Workspace, port, IP address and clipboard validation runs before removal of
+an existing container. A rejected launcher option leaves it intact. This is not a rollback
+mechanism: a failure reported by the engine after removal can still require
+retrying creation with corrected engine options.
 
 A container that fails to start is removed again: a port already in use fails
 *after* `create`, and the leftover would block the retry with a confusing
@@ -228,8 +249,8 @@ A container that fails to start is removed again: a port already in use fails
 
 ## Python lives in a virtualenv
 
-`python3` and `pip` resolve to **`/opt/az-venv`**, and it is active in every
-process without anyone activating it.
+`python3` and `pip` resolve to **`/opt/az-venv`** by default in your shell and
+the agent's commands, without manual activation.
 
 It is not a convenience. Kali marks its system Python **externally managed**
 (PEP 668), so `pip install` there is refused, and the image ships no system
@@ -240,32 +261,56 @@ exists to discourage, and `apt install python3-…` only reaches what Kali
 happens to package.
 
 **How it is activated is the part worth writing down.** The obvious move is a
-line in `.bashrc`, and it would have been wrong here: the agent runs its own
-`bash` tool through **`sh -c`**, and this image's `/bin/sh` is **dash**, which
-never reads `.bashrc`. That activation would have covered a human's
-`exec -it … bash` and missed every command the agent itself runs — the
-majority of what happens in this container, and the half nobody would think to
-test. So the image sets the environment instead:
+line in `.bashrc`, and it would have been wrong twice over. The agent runs its
+own `bash` tool through **`sh -c`**, and this image's `/bin/sh` is **dash**,
+which never reads `.bashrc` — that activation would have covered a human's
+`exec -it … bash` and missed every command the agent itself runs. And
+`/root` is a *named volume*: anything written to `/root/.bashrc` in the image
+reaches a fresh volume once, by copy-up, and an upgrading user never. So the
+image sets the environment instead:
 
 ```dockerfile
-ENV VIRTUAL_ENV=/opt/az-venv     PATH=/opt/az-venv/bin:/usr/local/sbin:…
+ENV VIRTUAL_ENV=/opt/az-venv \
+    PATH=/opt/az-venv/bin:/usr/local/sbin:…
 ```
 
-which is what `activate` does anyway, minus the prompt, and an environment
-variable is inherited by every process however it was started — dash, bash,
-`docker exec`, the agent's tool calls, a `python3 -m http.server` someone
-starts three levels deep. `smoke_image.py` asserts exactly that, through
-`sh -c` and `bash -c` as well as in-process.
+Child processes inherit these settings unless something clears or replaces
+their environment.
 
-`/root/.bashrc` then adds the two things only the real `activate` script
-gives an interactive shell — `deactivate`, and the prompt. It **strips the
-ENV copy of the venv off `PATH` first**, because `activate` prepends
-unconditionally and every nested shell would otherwise stack another entry;
-the test pins the count at one. Kali's own `.bashrc` turns out to render
-`$VIRTUAL_ENV` into its `┌──(az-venv)(root㉿host)` prompt already and to set
+That alone is not enough, and the gap is easy to miss because the documented
+command does not hit it. A **login** shell runs `/etc/profile`, which on
+Debian and Kali rewrites `PATH` for root outright:
+
+```
+/etc/profile:5:  PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+```
+
+so `bash -l` used to find `/usr/bin/python3` and **no `pip`**, despite retaining
+`VIRTUAL_ENV`. `su - root` has a separate problem: it clears `VIRTUAL_ENV` and
+`PIP_CACHE_DIR` as well. Restoring `PATH` only when `VIRTUAL_ENV` is already
+set fixes `bash -l` but misses `su -`.
+
+**`/etc/profile.d/az-venv.sh`** handles both: it initializes and exports missing
+or empty `VIRTUAL_ENV` and `PIP_CACHE_DIR` to `/opt/az-venv` and `/var/cache/pip`,
+preserves nonempty overrides, and adds the venv to `PATH` only if absent.
+
+**`/etc/bash.bashrc`** sources that same helper before the real `activate`
+script adds `deactivate` and the prompt. The order matters: interactive login
+Bash runs `/etc/bash.bashrc` from `/etc/profile` before the `profile.d` files,
+so waiting for `profile.d` would leave an interactive `su -` without
+`deactivate`. The block **strips the venv copy off `PATH` before activation**,
+because `activate` prepends unconditionally. The match treats the path
+literally, including spaces and pattern characters such as brackets, so a
+custom virtualenv is added once and removed by `deactivate`. Kali's own `.bashrc` renders
+`$VIRTUAL_ENV` into its `┌──(az-venv)(root㉿host)` prompt and sets
 `VIRTUAL_ENV_DISABLE_PROMPT=1` so `activate` does not also prepend one — so
 the prompt assertion checks the *rendered* prompt (`${PS1@P}`) rather than a
 literal prefix, and holds whichever of the two mechanisms draws it.
+
+Both hooks live outside the persistent `/root` volume. Rebuild the image and
+recreate the container with it (`docker/run.sh --replace`) to receive these
+changes while keeping the home volume; rebuilding alone does not update a
+running container.
 
 **pip's cache is `/var/cache/pip`, not `~/.cache/pip`.** `/root` is a named
 volume, and under rootless Podman a volume whose host directory falls outside
@@ -305,8 +350,15 @@ The Dockerfile `EXPOSE`s 8080 and 8888 and `run.sh` publishes both — to
 or the agent starts. Loopback is the default because this is a root shell an
 agent can start servers in, and Docker's published ports bypass `ufw`; `--bind
 0.0.0.0` is one flag away for someone who means it. `--port` accepts `PORT`,
-`HOST:CONTAINER`, either with `/udp`, or the engine's full form verbatim, and
-replaces the default pair rather than adding to it.
+`HOST:CONTAINER`, either with `/udp`, or the full `IP:HOST:CONTAINER` form,
+and replaces the default pair rather than adding to it. An empty or zero host
+port in the full form selects an available port on both engines; `run.sh`
+normalizes zero to the empty form because Podman rejects literal zero.
+Fixed host and container ranges must contain the same number of ports,
+counting a single port as a range of one. Docker also supports selecting an
+available host port from a range for one container port; Podman rejects that
+form. Unsupported range lengths are rejected before replacement removes the
+existing container.
 
 ## Terminal identity
 

@@ -21,6 +21,7 @@ import os
 import pty
 import re
 import select
+import shlex
 import shutil
 import signal
 import struct
@@ -104,14 +105,31 @@ def check_venv():
     assert list(Path("/usr/lib").glob("python3*/EXTERNALLY-MANAGED")), "no PEP 668 marker"
     assert Path("/usr/bin/python3").is_file(), "the system interpreter is still there"
 
-    # The two shells that matter: dash, which the agent's tool calls use, and
-    # an interactive bash, which is what a person gets from `exec -it … bash`.
-    for shell in (["sh", "-c"], ["bash", "-c"], ["bash", "-ic"]):
+    # Every shape a shell here comes in. dash is what the agent's own tool
+    # calls use; interactive bash is `exec -it … bash`; and the *login* forms
+    # are the ones that bite — /etc/profile rewrites PATH for root, dropping
+    # the venv the image put there, so `bash -l` used to answer with the
+    # system interpreter and no pip at all while VIRTUAL_ENV still claimed a
+    # venv was active.
+    for shell in (["sh", "-c"], ["bash", "-c"], ["bash", "-ic"],
+                  ["sh", "-lc"], ["bash", "-lc"], ["bash", "-lic"]):
         seen = run(*shell, "command -v python3; echo $VIRTUAL_ENV").stdout.split()
         assert seen == [f"{VENV}/bin/python3", VENV], f"{shell}: {seen}"
+        # pip is the one that goes missing entirely, so name it separately.
+        found = run(*shell, "command -v pip").stdout.strip()
+        assert found == f"{VENV}/bin/pip", f"{shell}: pip -> {found!r}"
+        # …and PATH never stacks, however many of these nest.
+        entries = run(*shell, 'printf %s "$PATH"').stdout.split(":")
+        assert entries.count(f"{VENV}/bin") == 1, f"{shell}: {entries}"
     # …and PATH carries it exactly once, so sourcing activate did not stack.
-    entries = run("bash", "-ic", "printf %s \"$PATH\"").stdout.split(":")
-    assert entries.count(f"{VENV}/bin") == 1, entries
+    assert run("bash", "-ic", "type -t deactivate").stdout.strip() == "function", "no deactivate"
+    # …and it comes from the image, not from /root. /root is a named volume:
+    # anything written to /root/.bashrc reaches a fresh volume once and an
+    # upgrading user never, so the interactive block lives in /etc/bash.bashrc.
+    marker = "Alter Zero (docker/Dockerfile)"
+    assert marker in Path("/etc/bash.bashrc").read_text(), "the block is not in the image"
+    assert marker not in Path("/root/.bashrc").read_text(), \
+        "the block is in the /root volume, where an upgrade can never reach it"
     # The prompt names it. Assert the *rendered* prompt (bash's ${PS1@P})
     # rather than a literal prefix: Kali's own .bashrc draws $VIRTUAL_ENV into
     # its ┌──(az-venv)(root㉿host) line and sets VIRTUAL_ENV_DISABLE_PROMPT=1
@@ -119,6 +137,62 @@ def check_venv():
     prompt = run("bash", "-ic", 'printf "%s" "${PS1@P}"').stdout
     assert "az-venv" in prompt, f"the prompt does not name the venv: {prompt!r}"
     assert run("bash", "-ic", "type -t deactivate").stdout.strip() == "function", "no deactivate"
+
+
+def check_login_venv():
+    """Login must restore exported defaults even when su clears the environment."""
+    probe = "python3 -c " + shlex.quote(
+        "import json, os, shutil, sys; "
+        "print(json.dumps([sys.prefix, os.environ.get('VIRTUAL_ENV'), "
+        "os.environ.get('PIP_CACHE_DIR'), shutil.which('python3'), shutil.which('pip'), "
+        f"os.environ['PATH'].split(':').count('{VENV}/bin')]))"
+    )
+    expected = [VENV, VENV, PIP_CACHE, f"{VENV}/bin/python3", f"{VENV}/bin/pip", 1]
+    interactive_probe = probe + '; printf "\\n%s\\n" "${PS1@P}"; type -t deactivate'
+    cases = (
+        ("su login", ["su", "-", "root", "-c", probe], False),
+        # /etc/profile reads bash.bashrc before profile.d. A direct interactive
+        # login must get prompt/deactivate before a later hook restores PATH.
+        ("interactive login with reset environment",
+         ["env", "-u", "VIRTUAL_ENV", "-u", "PIP_CACHE_DIR", "bash", "-lic", interactive_probe], True),
+        # Exercise actual nesting: another login shell must not stack PATH.
+        ("nested login", ["su", "-", "root", "-c", "bash -lic " + shlex.quote(interactive_probe)], True),
+    )
+    for label, command, interactive in cases:
+        result = run(*command)
+        assert result.returncode == 0, f"{label}: {result.stdout}\n{result.stderr}"
+        first_line, _, shell_output = result.stdout.partition("\n")
+        seen = json.loads(first_line)
+        assert seen == expected, f"{label}: {seen}"
+        if interactive:
+            assert "az-venv" in shell_output, f"{label}: no venv in prompt: {shell_output!r}"
+            assert shell_output.splitlines()[-1] == "function", f"{label}: no deactivate: {shell_output!r}"
+
+
+def check_custom_venv():
+    """A valid venv path can contain spaces and shell pattern metacharacters."""
+    with tempfile.TemporaryDirectory(prefix="alter-zero-venv-") as scratch:
+        custom = str(Path(scratch) / "custom [1]* venv")
+        created = run("/usr/bin/python3", "-m", "venv", "--without-pip", custom)
+        assert created.returncode == 0, created.stderr
+        probe = "python3 -c " + shlex.quote(
+            "import json, os, shutil, sys; "
+            "print(json.dumps([sys.prefix, os.environ.get('VIRTUAL_ENV'), "
+            "shutil.which('python3'), os.environ['PATH'].split(':')]))"
+        )
+        command = probe + "; deactivate; " + probe
+        env = dict(os.environ, VIRTUAL_ENV=custom)
+        for shell in (["bash", "-ic", command], ["bash", "-lic", command],
+                      ["bash", "-ic", "bash -ic " + shlex.quote(command)]):
+            result = run(*shell, env=env)
+            assert result.returncode == 0, f"{shell}: {result.stdout}\n{result.stderr}"
+            before, after = map(json.loads, result.stdout.splitlines())
+            assert before[:3] == [custom, custom, f"{custom}/bin/python3"], before
+            assert before[3].count(f"{custom}/bin") == 1, before
+            # Deactivation must remove the custom venv, even if the inherited
+            # image PATH still contains its default /opt/az-venv interpreter.
+            assert after[0] != custom and after[1] is None, after
+            assert f"{custom}/bin" not in after[3], after
 
 
 def check_pip_cache():
@@ -319,6 +393,8 @@ def main():
     check_telemetry_is_left_alone()
     version = check_tools()
     check_venv()
+    check_login_venv()
+    check_custom_venv()
     check_pip_cache()
     check_scanner_runs()
     check_nothing_listens()

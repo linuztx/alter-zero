@@ -146,9 +146,17 @@ inside it.
 | `/root` | the `alter-zero-home` volume: sign-ins, settings, sessions, shell history, SSH keys | yes |
 | everything else | packages you `apt install`ed, files under `/tmp`, `/opt` | **no** |
 
-So recreating the container is safe and is how you change its folder, ports or
-image. To delete the data as well: `docker volume rm alter-zero-home
+`--replace` keeps the existing workspace and home mounts, image name, port
+mappings, clipboard setting, PID limit and `NET_RAW` choice. Options you supply
+override those settings. The launcher checks its inputs before removing the
+old container; an invalid workspace, port, IP address or desktop session
+leaves it running.
+Other files in the container's writable layer are still lost on replacement.
+To delete the volumes as well: `docker volume rm alter-zero-home
 alter-zero-workspace`.
+
+To switch from a host folder back to a named workspace, use
+`docker/run.sh --replace --workspace-volume alter-zero-workspace`.
 
 ## Ports
 
@@ -293,18 +301,18 @@ exactly as a paste would.
 | --- | --- |
 | **Alter Zero** | the latest release, at `/usr/local/bin/alter-zero` |
 | Shell and files | `bash` `git` `ssh` `curl` `wget` `jq` `rg` `file` `less` `nano` `tree` `xxd` `unzip` |
-| Python | `python3` and `pip` from a virtualenv at `/opt/az-venv`, active everywhere — see [Python](#python) |
+| Python | `python3` and `pip` from a virtualenv at `/opt/az-venv`, active by default — see [Python](#python) |
 | Network | `nmap` `nc` `socat` `whois` `dig` `nslookup` `ping` `traceroute` `ip` `ss` `ifconfig` `netstat` `openssl` |
 | Terminal | terminfo for kitty, Alacritty, foot, WezTerm, Rio, VTE |
 
 Left out because they are large and not everyone wants them: `binutils`
-(`strings`, `objdump`; +33 MB), `tcpdump` (+22 MB), `pip`/`venv`, a compiler,
-man pages, translations.
+(`strings`, `objdump`; +33 MB), `tcpdump` (+22 MB), a compiler, man pages,
+translations.
 
 **Add your own**, baked into the image:
 
 ```sh
-docker/build.sh --with "binutils tcpdump python3-pip"
+docker/build.sh --with "binutils tcpdump"
 ```
 
 or for the life of one container: `apt update && apt install -y sqlmap`.
@@ -323,8 +331,9 @@ localhost` is a SYN scan, and that opens a raw socket. Docker grants the
 capability by default and Podman 4.x does not, so without it the same image
 answers `Couldn't open a raw socket` on one engine and scans on the other.
 It is one named capability, scoped to the container's own network namespace.
-`--no-net-raw` drops it, and `nmap -sS`, `traceroute -I` and `tcpdump` go with
-it (`nmap -sT` still works — a connect scan needs nothing special). Use that
+`--no-net-raw` explicitly drops it on both engines, and `nmap -sS`,
+`traceroute -I` and `tcpdump` go with it (`nmap -sT` still works — a connect
+scan needs nothing special). Use that
 flag rather than `-- --cap-drop NET_RAW`: next to the `--cap-add` that `run.sh`
 passes, Docker silently keeps the capability and Podman refuses to create the
 container.
@@ -341,9 +350,8 @@ Only scan machines you are authorised to test.
 
 ## Python
 
-`python3` and `pip` come from a **virtualenv at `/opt/az-venv`**, and it is
-already active — in your shell, in the agent's commands, in anything either
-of you starts:
+`python3` and `pip` come from a **virtualenv at `/opt/az-venv`**, active by
+default in your shell and the agent's commands:
 
 ```sh
 docker exec -it alter-zero-kali bash
@@ -351,8 +359,11 @@ docker exec -it alter-zero-kali bash
 └─# pip install requests        # just works
 ```
 
-You never activate it by hand. The image exports `VIRTUAL_ENV` and puts the
-venv first on `PATH`, so every process inherits it however it was started.
+The image exports `VIRTUAL_ENV` and puts the venv first on `PATH`. Shell hooks
+also restore the defaults for login shells, including `bash -l` and
+`su - root`, so these need no manual activation. Nonempty `VIRTUAL_ENV` and
+`PIP_CACHE_DIR` overrides are preserved. Recreate the container using a rebuilt
+image to receive updated hooks; your existing home volume can stay.
 
 This is not decoration. Kali marks its system Python **externally managed**
 (PEP 668), so a plain `pip install` there is refused, and the image ships no
@@ -380,9 +391,32 @@ interpreter for a moment. Or just call it by path: `/usr/bin/python3`.
 A new Alter Zero release, or a fresher Kali base:
 
 ```sh
-docker/build.sh                          # resolves the latest release again
-docker/run.sh --replace ~/projects/site  # move the container onto the new image
+docker/build.sh               # resolves the latest release again
+docker/run.sh --replace       # use the rebuilt image with existing launch settings
 ```
+
+For example, a container created with `--clipboard --no-ports` keeps both
+settings on replacement. Run the command from your desktop so clipboard
+sockets can be refreshed. Use `--no-clipboard` to disable forwarding or
+`--net-raw` to re-enable raw sockets after previously dropping them.
+For automatic allocation on either engine, use an empty or zero host port,
+such as `--port 127.0.0.1::8080` or `--port 127.0.0.1:0:8080`. The engine
+may assign a different host port on replacement.
+
+Only the settings managed by `run.sh` are inherited. Custom environment
+overrides, CPU limits and other detected unsupported settings stop replacement
+before the old container is removed. Environment defaults are checked against
+the image that created the container, even if its tag now points to a newer
+image.
+`--replace --reset-config` intentionally starts from the launcher's defaults;
+pass the complete workspace, volume, port and other options you want to keep,
+including any engine options after `--`.
+
+The PID limit is inherited; override it with `-- --pids-limit NUMBER`.
+
+Errors reported only by the engine, such as a port already in use, can still
+prevent startup after the old container has been removed. Correct the error
+and retry with the intended configuration.
 
 `build.sh` looks the latest release up **every time**, before the engine
 consults its layer cache. That is the whole reason to build with it rather
