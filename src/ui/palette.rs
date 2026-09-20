@@ -25,8 +25,8 @@ use crate::highlight::CodeTheme;
 /// One theme's colours, by **role**. Every colour the chrome paints is one
 /// of these or derived from one (the accessor functions in [`super::theme`]
 /// hold the derivations — a link's blue is also the list marker's and the
-/// banner gradient's far end; the running bullet's breath tops out at
-/// `dim`), so a new theme is one table of twenty-one values and nothing
+/// banner gradient's far end; the running bullet blinks in `dim`), so a
+/// new theme is one table of twenty-one values and nothing
 /// else.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct Palette {
@@ -79,7 +79,9 @@ pub(super) struct Palette {
     pub diff_del_mark_bg: Color,
     /// The status verb's resting grey, under the shimmer's sweep to `text`.
     pub shimmer_base: Color,
-    /// The bottom of a running bullet's breath (its top is `dim`).
+    /// The bottom of the `pulse` spinner style's breath (its top is the
+    /// text colour; the running tool bullet itself blinks in `dim`,
+    /// `docs/tool-pulse.md`).
     pub pulse_dim: Color,
     /// The syntax theme the code blocks and file cells are coloured with —
     /// the same family as the chrome, so a reply's code and the frame around
@@ -364,9 +366,11 @@ const MONOKAI: Palette = Palette {
 /// without: the diff rows keep the terminal ground (only the marks tint,
 /// both on the bright-black so a row's sign says which), the gradient and
 /// the shimmer step between their two ends instead of blending
-/// ([`super::wrap::lerp_color`]), and the running bullet holds still,
-/// since its breath's two ends are the same bright-black. The reply text is
-/// the terminal's default foreground, which is the point.
+/// ([`super::wrap::lerp_color`]), and the `pulse` spinner holds still,
+/// since its breath's two ends are the same bright-black — while the
+/// running bullet blinks exactly as it does everywhere, a blink needing no
+/// second shade. The reply text is the terminal's default foreground, which
+/// is the point.
 const ANSI: Palette = Palette {
     text: Color::Reset,
     text_muted: Color::Gray,

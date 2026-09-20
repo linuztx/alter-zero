@@ -121,7 +121,9 @@ the row's last character to say the same thing twice.
 The hint used to count **source lines** not fully shown, which is how 1.8 KB of
 hidden JSON became `… +1 lines`. It now counts **display rows** not shown — the
 rows the expansion actually paints — for the cells whose output has no line
-numbers (`bash`, `!` shell, the diff fallback, an ask cell's answers). The two
+numbers (`bash`, the diff fallback, an ask cell's answers; the `!` shell cell
+shows its whole output inline and has no hint to count,
+`docs/shell-command.md`). The two
 numbers are *the same* for everyday output (short lines are one row each); they
 diverge exactly where the old count lied.
 
@@ -204,10 +206,12 @@ Three details make it hold up:
   no-ops (`BlankPolicy::window` returns the whole slice).
 - **Only command output gets it.** A diff body's spacing is content, and an
   ask cell's `· Q → A` rows have no blanks to skip — those cells pass
-  `BlankPolicy::Keep`, so their rendering is byte-identical. The two that pass
-  `FirstBlock` are the two exec cells: the backend `bash` tool and the `!`
-  shell command, which are one cell shape by design
-  (`docs/shell-command.md`).
+  `BlankPolicy::Keep`, so their rendering is byte-identical. The one that
+  passes `FirstBlock` is the backend `bash` cell. The `!` shell command,
+  one cell shape by design, **does not fold at all** any more — its whole
+  output shows inline, blank lines and all, the `…` cap marker closing a
+  cut one (`docs/shell-command.md`) — so it takes no policy: a peek window
+  is a fold's concern, and the shell cell has none.
 
 The rule is applied to **source** lines, before wrapping, so a wrapping line
 inside the block still shows whole up to the fold and the blank after it still
@@ -345,15 +349,17 @@ grep, three rows instead of ten:
 | The display lines (`exec_display_lines`, `prettify_json_lines`, `pretty_json_line`) | `ui/tool.rs` |
 | The collapsed output fold (`result_peek_block`) | `ui/tool.rs` |
 | The first-block window (`BlankPolicy`, `is_blank_row`) | `ui/tool.rs` |
-| The running tail's `+N lines ({secs}s)` footer | `ui/tool.rs` (`running_command_lines`) |
+| The running tail's `+N lines ({secs}s · timeout …)` clock row | `ui/tool.rs` (`running_command_lines`) |
 | The numbered file cell's per-line clip | `ui/file_cell.rs` (`numbered_row_lines`) |
 
 Tests: `ui::tests::wrap` (the counter primitives and the fill rule) and
 `ui::tests::tool` (every cell shape —
 `a_finished_peek_never_spends_more_rows_than_the_row_ceiling` is the block
 budget's own, `an_exec_cell_pretty_prints_a_json_line_like_claude_code` and
-`a_four_row_output_shows_whole_instead_of_hiding_one_row` the port's), plus
-`scripts/smoke.sh` Phase 92, which drives real commands through the binary: a
-750-character single line (the folded cell and the whole line in Ctrl+O), four
-wrapping lines (the 3-row fold, the honest count, and every row still in
-Ctrl+O), and a blank-shaped output (the first-block window).
+`a_four_row_output_shows_whole_instead_of_hiding_one_row` the port's). On
+screen, the fold is Phase 38's settled `Bash(ping …)` cells (`… +3 lines
+(ctrl+o to expand)` under the dummy backend's real commands); Phase 92 drives
+the same three shapes — a 750-character single line, four wrapping lines, a
+blank-shaped output — through `!` commands, which since
+`docs/shell-command.md` retired the shell cell's fold assert the opposite
+contract: every row inline, no hint, and Ctrl+O agreeing row for row.

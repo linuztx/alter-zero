@@ -3,12 +3,12 @@
 
 use super::*;
 use crate::ui::theme::{
-    CODE_TAB_WIDTH, EXPAND_HINT, FILE_PEEK_LINES, TOOL_FOLD_ROWS, TOOL_HEADER_ELLIPSIS,
-    TOOL_HEADER_MAX_COLS, TOOL_HEADER_MAX_LINES, TOOL_JSON_PRETTY_MAX_BYTES, TOOL_LINE_ELLIPSIS,
-    TOOL_LINE_MAX_ROWS, TOOL_PULSE_PERIOD, tool_args_color, tool_diff_add_bg, tool_diff_add_color,
-    tool_diff_add_mark_bg, tool_diff_del_bg, tool_diff_del_color, tool_diff_del_mark_bg,
-    tool_dim_color, tool_fail_color, tool_ok_color, tool_output_color, tool_pulse_bright,
-    tool_pulse_dim, tool_running_color, tool_waiting_color,
+    CODE_TAB_WIDTH, EXPAND_HINT, FILE_PEEK_LINES, TOOL_BULLET, TOOL_FOLD_ROWS,
+    TOOL_HEADER_ELLIPSIS, TOOL_HEADER_MAX_COLS, TOOL_HEADER_MAX_LINES, TOOL_JSON_PRETTY_MAX_BYTES,
+    TOOL_LINE_ELLIPSIS, TOOL_LINE_MAX_ROWS, TOOL_PULSE_PERIOD, TOOL_TRUNCATED_MARKER,
+    tool_args_color, tool_diff_add_bg, tool_diff_add_color, tool_diff_add_mark_bg,
+    tool_diff_del_bg, tool_diff_del_color, tool_diff_del_mark_bg, tool_dim_color, tool_fail_color,
+    tool_ok_color, tool_output_color, tool_running_color, tool_waiting_color,
 };
 use crate::ui::tool::{live_tool_lines, running_command_lines, tool_full_lines};
 use crate::ui::wrap::cols;
@@ -259,28 +259,47 @@ fn a_running_bullet_is_the_permission_prompts_grey_never_blue() {
 }
 
 #[test]
-fn a_running_bullet_breathes_across_the_pulse_period() {
-    // …and in the live region it pulses, Claude-Code's running dot: dim at the
-    // top of the cycle, back up at the half, down again — a pure function of
-    // the boundary-injected frame clock, like the status shimmer. The breath
-    // only ever dips **below** the resting grey; its peak is that same grey, so
-    // the bullet never brightens toward white.
+fn a_running_bullet_blinks_across_the_pulse_period() {
+    // …and in the live region it blinks, Claude Code's running dot: shown
+    // for the first half of every TOOL_PULSE_PERIOD, hidden for the second —
+    // a pure function of the boundary-injected frame clock. Hidden is the
+    // same width of blanks, so the header text never shifts; shown is the
+    // one resting grey, never a blend of two (docs/tool-pulse.md).
     let call = tool("Bash", "cargo test", ToolStatus::Running, "");
     let bullet = |at: Duration| {
-        live_tool_lines(&call, 80, at, &PathDisplay::VERBATIM)[0].spans[0]
-            .style
-            .fg
+        let mut lines = live_tool_lines(&call, 80, at, &PathDisplay::VERBATIM);
+        let line = lines.swap_remove(0);
+        (
+            line.spans[0].content.to_string(),
+            line.spans[0].style.fg,
+            plain(&line),
+        )
     };
+    let blanks = " ".repeat(cols(TOOL_BULLET));
     let half = TOOL_PULSE_PERIOD / 2;
-    assert_eq!(bullet(Duration::ZERO), Some(tool_pulse_dim()));
-    assert_eq!(bullet(half), Some(tool_pulse_bright()));
-    // A full period later it is back where it started — the cycle loops.
-    assert_eq!(bullet(TOOL_PULSE_PERIOD), Some(tool_pulse_dim()));
-    assert_eq!(bullet(TOOL_PULSE_PERIOD + half), Some(tool_pulse_bright()));
-    // Between the extremes it is genuinely in between, not snapped to one end.
-    let mid = bullet(TOOL_PULSE_PERIOD / 4);
-    assert_ne!(mid, Some(tool_pulse_dim()));
-    assert_ne!(mid, Some(tool_pulse_bright()));
+    let (glyph, color, text) = bullet(Duration::ZERO);
+    assert_eq!(glyph, TOOL_BULLET, "shown at the top of the cycle");
+    assert_eq!(
+        color,
+        Some(tool_running_color()),
+        "one colour — the resting grey"
+    );
+    assert_eq!(text, "● Bash(cargo test)");
+    let (glyph, _, text) = bullet(half);
+    assert_eq!(
+        glyph, blanks,
+        "hidden at the half: blanks of the same width"
+    );
+    assert_eq!(
+        text, "  Bash(cargo test)",
+        "the header text keeps its column"
+    );
+    // Inside each half it holds — no in-between frame, never a blend.
+    assert_eq!(bullet(TOOL_PULSE_PERIOD / 4).0, TOOL_BULLET);
+    assert_eq!(bullet(TOOL_PULSE_PERIOD * 3 / 4).0, blanks);
+    // A full period later the cycle loops.
+    assert_eq!(bullet(TOOL_PULSE_PERIOD).0, TOOL_BULLET);
+    assert_eq!(bullet(TOOL_PULSE_PERIOD + half).0, blanks);
 }
 
 #[test]
@@ -295,12 +314,15 @@ fn only_a_running_bullet_pulses() {
     ] {
         let call = tool("X", "y", status, "out");
         for at in [Duration::ZERO, TOOL_PULSE_PERIOD / 2] {
+            let lines = live_tool_lines(&call, 80, at, &PathDisplay::VERBATIM);
             assert_eq!(
-                live_tool_lines(&call, 80, at, &PathDisplay::VERBATIM)[0].spans[0]
-                    .style
-                    .fg,
+                lines[0].spans[0].style.fg,
                 Some(color),
                 "{status:?} never animates"
+            );
+            assert_eq!(
+                lines[0].spans[0].content, TOOL_BULLET,
+                "{status:?} never hides its bullet"
             );
         }
     }
@@ -308,25 +330,15 @@ fn only_a_running_bullet_pulses() {
 
 #[test]
 fn a_committed_cell_never_carries_a_pulse_frame() {
-    // `tool_lines` feeds scrollback, where a colour is frozen forever. It
-    // renders a running bullet **at rest** — the flat grey — so a cell can
-    // never be committed mid-breath.
+    // `tool_lines` feeds scrollback, where a row is frozen forever. It
+    // renders a running bullet **at rest** — shown, in the flat grey — so a
+    // cell can never be committed on the blink's hidden half, headless.
     let call = tool("Bash", "cargo test", ToolStatus::Running, "");
+    let lines = tool_lines(&call, 80, &PathDisplay::VERBATIM);
+    assert_eq!(lines[0].spans[0].style.fg, Some(tool_running_color()));
     assert_eq!(
-        tool_lines(&call, 80, &PathDisplay::VERBATIM)[0].spans[0]
-            .style
-            .fg,
-        Some(tool_running_color())
-    );
-    // The peak of the breath *is* the resting grey — the pulse only dips below
-    // it — so what a commit must never freeze is the **dip**. That is also the
-    // value an un-injected clock would render (phase 0), which is exactly the
-    // accident this renderer split exists to prevent.
-    assert_ne!(tool_running_color(), tool_pulse_dim());
-    assert_eq!(
-        tool_running_color(),
-        tool_pulse_bright(),
-        "the breath tops out at the resting grey, never brighter"
+        lines[0].spans[0].content, TOOL_BULLET,
+        "at rest the bullet is always drawn"
     );
 }
 
@@ -334,8 +346,9 @@ fn a_committed_cell_never_carries_a_pulse_frame() {
 fn tool_lines_collapses_a_command_output_to_a_multiline_peek_plus_hint() {
     // A finished command-style backend tool (bash) shows the first
     // TOOL_FOLD_ROWS rows of its output — the head, Claude-Code style — then a
-    // `… +N lines (ctrl+o to expand)` hint (docs/tool-streaming.md), like the
-    // `!` shell cell. (This is the mock's finished state.)
+    // `… +N lines (ctrl+o to expand)` hint (docs/tool-streaming.md); the `!`
+    // shell cell alone shows its output whole. (This is the mock's finished
+    // state.)
     let out = "l1\nl2\nl3\nl4\nl5\nl6";
     let lines = tool_lines(
         &tool("Bash", "seq 6", ToolStatus::Ok, out),
@@ -515,10 +528,12 @@ fn a_finished_command_peek_reads_a_blank_only_output_as_no_output() {
 }
 
 #[test]
-fn a_shell_cell_peek_follows_the_same_first_block_rule() {
-    // The `!` shell cell is the same exec cell as the backend `bash` one
-    // (docs/shell-command.md) — headerless, same gutter, same budget — so its
-    // peek skips the leading blanks and stops at the first interior one too.
+fn a_shell_cell_shows_its_whole_output_inline() {
+    // The `!` shell cell does not fold (docs/shell-command.md): the user ran
+    // the command to read its output, so every display line shows inline —
+    // the same rows the Ctrl+O view paints, the leading blanks the command
+    // printed included — with no `… +N lines (ctrl+o to expand)` hint. Only
+    // the backend `bash` cell keeps Claude Code's fold.
     let mut t = tool(
         "printf '\\n\\nout\\n'",
         "",
@@ -530,14 +545,72 @@ fn a_shell_cell_peek_follows_the_same_first_block_rule() {
         .iter()
         .map(plain)
         .collect();
-    assert_eq!(lines.len(), 4, "the block's three rows + hint: {lines:?}");
-    assert_eq!(gutter_content(&lines[0]), "out", "{lines:?}");
-    assert_eq!(gutter_content(&lines[1]), "tail", "{lines:?}");
-    assert_eq!(gutter_content(&lines[2]), "more", "{lines:?}");
-    assert!(
-        lines[3].contains("+2 lines"),
-        "the two skipped blanks are counted: {lines:?}"
+    assert_eq!(
+        lines.len(),
+        5,
+        "every display line, nothing folded: {lines:?}"
     );
+    assert_eq!(gutter_content(&lines[0]), "", "{lines:?}");
+    assert_eq!(gutter_content(&lines[1]), "", "{lines:?}");
+    assert_eq!(gutter_content(&lines[2]), "out", "{lines:?}");
+    assert_eq!(gutter_content(&lines[3]), "tail", "{lines:?}");
+    assert_eq!(gutter_content(&lines[4]), "more", "{lines:?}");
+    assert!(
+        !lines.iter().any(|l| l.contains("ctrl+o")),
+        "nothing is hidden, so nothing to expand: {lines:?}"
+    );
+}
+
+#[test]
+fn a_shell_cell_keeps_its_interior_blank_lines() {
+    // With no fold there is no block to prefer: an interior blank line is a
+    // row the command printed, shown as one — exactly as Ctrl+O shows it.
+    let mut t = tool(
+        "git status",
+        "",
+        ToolStatus::Ok,
+        "On branch main\n\nChanges not staged:\n  modified: a\n\nUntracked:\n  b",
+    );
+    t.shell = true;
+    let lines: Vec<String> = tool_lines(&t, 80, &PathDisplay::VERBATIM)
+        .iter()
+        .map(|l| plain(l).trim_end().to_string())
+        .collect();
+    assert_eq!(
+        lines,
+        [
+            "  ⎿  On branch main",
+            "",
+            "     Changes not staged:",
+            "       modified: a",
+            "",
+            "     Untracked:",
+            "       b",
+        ],
+        "{lines:?}"
+    );
+}
+
+#[test]
+fn a_truncated_shell_cell_marks_the_cut_inline() {
+    // Output over the in-memory cap used to rely on the `… +N lines` hint to
+    // say more followed; with the whole retained output inline, the dim `…`
+    // marker the Ctrl+O view appends closes the inline cell too, so the cut
+    // is still visible (docs/shell-command.md).
+    let mut t = tool("seq 1 50000", "", ToolStatus::Ok, "1\n2\n3\n4\n5\n6");
+    t.shell = true;
+    t.truncated = true;
+    let lines: Vec<String> = tool_lines(&t, 80, &PathDisplay::VERBATIM)
+        .iter()
+        .map(|l| plain(l).trim_end().to_string())
+        .collect();
+    assert_eq!(lines.len(), 7, "six retained rows + the marker: {lines:?}");
+    assert_eq!(lines[5], "     6", "{lines:?}");
+    assert_eq!(lines[6].trim(), TOOL_TRUNCATED_MARKER, "{lines:?}");
+    // A complete output appends nothing.
+    t.truncated = false;
+    let complete = tool_lines(&t, 80, &PathDisplay::VERBATIM);
+    assert_eq!(complete.len(), 6, "no marker on a complete output");
 }
 
 #[test]
@@ -721,8 +794,75 @@ fn running_command_lines_tails_recent_output_with_the_elapsed() {
     );
     assert_eq!(
         body.last().unwrap().trim(),
-        "+5 lines (9s)",
-        "the footer counts hidden lines and the elapsed: {body:?}"
+        "+5 lines (9s · timeout 2m)",
+        "the footer counts hidden lines, the elapsed and the timeout: {body:?}"
+    );
+}
+
+#[test]
+fn the_running_footer_names_the_timeout_the_call_runs_under() {
+    // The reported ask: beside the elapsed, the footer says how long the
+    // command *may* run — the model's own `timeout`, read off the call's
+    // verbatim arguments (`ToolCall::arguments`) and humanized as a limit:
+    // `+18 lines (22s · timeout 1m 50s)` (docs/tool-streaming.md).
+    let command = "for i in $(seq 1 100); do echo $i; sleep 1; done";
+    let out = (1..=22)
+        .map(|i| i.to_string())
+        .collect::<Vec<_>>()
+        .join("\n");
+    let mut t = tool("Bash", command, ToolStatus::Running, &out);
+    t.arguments = Some(format!(r#"{{"command":{command:?},"timeout":110000}}"#));
+    let lines: Vec<String> = running_command_lines(
+        &t,
+        Duration::from_secs(22),
+        Duration::ZERO,
+        80,
+        &PathDisplay::VERBATIM,
+    )
+    .iter()
+    .map(plain)
+    .collect();
+    assert_eq!(
+        lines[1..],
+        [
+            "  ⎿  19",
+            "     20",
+            "     21",
+            "     22",
+            "     +18 lines (22s · timeout 1m 50s)",
+        ],
+        "{lines:?}"
+    );
+}
+
+#[test]
+fn a_running_command_with_no_output_counts_on_its_running_row() {
+    // A silent command used to sit on a bare `⎿ Running…` for as long as it
+    // ran. The row carries the clock clause now — `Running… (10s · timeout
+    // 2m)` — so the user can see it is alive, and for how much longer at
+    // most (docs/tool-streaming.md).
+    let t = tool(
+        "Bash",
+        r#"python3 -c "import time; time.sleep(100)""#,
+        ToolStatus::Running,
+        "",
+    );
+    let lines: Vec<String> = running_command_lines(
+        &t,
+        Duration::from_secs(10),
+        Duration::ZERO,
+        80,
+        &PathDisplay::VERBATIM,
+    )
+    .iter()
+    .map(plain)
+    .collect();
+    assert_eq!(
+        lines,
+        [
+            r#"● Bash(python3 -c "import time; time.sleep(100)")"#,
+            "  ⎿  Running… (10s · timeout 2m)",
+        ]
     );
 }
 
@@ -745,7 +885,7 @@ fn running_footers_humanize_the_elapsed_past_a_minute() {
     );
     assert_eq!(
         plain(lines.last().unwrap()).trim(),
-        "+5 lines (2m 3s)",
+        "+5 lines (2m 3s · timeout 2m)",
         "the streaming footer humanizes"
     );
     let row = plain(&crate::ui::tool::shell_running_line(Duration::from_secs(
@@ -758,9 +898,11 @@ fn running_footers_humanize_the_elapsed_past_a_minute() {
 }
 
 #[test]
-fn running_command_lines_without_overflow_shows_no_footer() {
-    // Fewer lines than the window: show them all, no `+N lines` footer (the
-    // status line carries the timer).
+fn running_command_lines_without_overflow_shows_the_clock_row_alone() {
+    // Fewer lines than the window: show them all, then the clock row with
+    // no `+N lines` count in front of it — `(1s · timeout 2m)` — so a
+    // command whose output fits still says how long it has run and how long
+    // it may (docs/tool-streaming.md).
     let t = tool("Bash", "echo", ToolStatus::Running, "a\nb");
     let lines = running_command_lines(
         &t,
@@ -769,16 +911,13 @@ fn running_command_lines_without_overflow_shows_no_footer() {
         80,
         &PathDisplay::VERBATIM,
     );
-    assert_eq!(
-        lines.len(),
-        3,
-        "header + 2 output rows, no footer: {:?}",
-        lines.iter().map(plain).collect::<Vec<_>>()
-    );
+    let body: Vec<String> = lines[1..].iter().map(plain).collect();
+    assert_eq!(body.len(), 3, "2 output rows + the clock row: {body:?}");
     assert!(
-        !lines.iter().any(|l| plain(l).contains("lines (")),
-        "no footer when nothing is hidden"
+        !body.iter().any(|l| l.contains("lines (")),
+        "no hidden count when nothing is hidden: {body:?}"
     );
+    assert_eq!(body[2].trim(), "(1s · timeout 2m)", "{body:?}");
 }
 
 #[test]
@@ -812,7 +951,7 @@ fn running_command_lines_tail_window_counts_display_rows_when_lines_wrap() {
     assert_eq!(body[3].trim(), "x".repeat(35), "…across the window's rows");
     assert_eq!(
         body.last().unwrap().trim(),
-        "+1 lines (7s)",
+        "+1 lines (7s · timeout 2m)",
         "the footer counts the one fully hidden line: {body:?}"
     );
 }
@@ -2380,21 +2519,22 @@ fn everyday_short_output_counts_the_same_as_before() {
 }
 
 #[test]
-fn a_shell_cell_folds_a_pathological_line_too() {
-    // The headerless `!` exec cell shares the peek, so it is bounded the same
-    // way (a `! curl` of a JSON API used to paint twelve rows).
+fn a_shell_cell_shows_a_pathological_line_whole() {
+    // The headerless `!` exec cell is not folded: a 600-column line wraps to
+    // every row it needs (35 content columns at width 40 → 18 rows) and the
+    // last row carries the tail of the line, never a hint.
     let mut t = tool("curl -s api", "", ToolStatus::Ok, &"x".repeat(600));
     t.shell = true;
     let lines: Vec<String> = tool_lines(&t, 40, &PathDisplay::VERBATIM)
         .iter()
         .map(plain)
         .collect();
+    assert_eq!(lines.len(), 18, "every wrapped row shows: {lines:?}");
     assert_eq!(
-        lines.len(),
-        TOOL_FOLD_ROWS + 1,
-        "headerless: the fold + hint: {lines:?}"
+        lines.last().unwrap().trim(),
+        "x".repeat(600 - 17 * 35),
+        "the line's tail, not a hint: {lines:?}"
     );
-    assert!(lines.last().unwrap().contains("+15 lines"), "{lines:?}");
 }
 
 #[test]
@@ -2492,7 +2632,7 @@ fn the_running_tail_footer_counts_hidden_rows() {
     .collect();
     let footer = lines.last().unwrap();
     assert!(
-        footer.contains("+18 lines (3s)"),
+        footer.contains("+18 lines (3s · timeout 2m)"),
         "the 18 wrapped rows above the window: {lines:?}"
     );
 }
@@ -3363,7 +3503,8 @@ fn an_exec_cell_pretty_prints_a_json_line_like_claude_code() {
 
 #[test]
 fn a_shell_cell_pretty_prints_json_too() {
-    // The `!` exec cell is the same cell shape (docs/shell-command.md).
+    // The `!` exec cell reshapes a JSON line the same way — and, unfolded,
+    // shows the whole reshaped document inline (docs/shell-command.md).
     let mut t = tool("curl -s api", "", ToolStatus::Ok, WIKI_JSON);
     t.shell = true;
     let lines: Vec<String> = tool_lines(&t, 72, &PathDisplay::VERBATIM)
@@ -3372,7 +3513,8 @@ fn a_shell_cell_pretty_prints_json_too() {
         .collect();
     assert_eq!(lines[0], "  ⎿  {");
     assert_eq!(lines[1], "       \"batchcomplete\": \"\",");
-    assert!(lines.last().unwrap().contains("+9 lines"), "{lines:?}");
+    assert_eq!(lines.len(), 12, "the whole reshaped document: {lines:?}");
+    assert_eq!(lines.last().unwrap().trim(), "}", "{lines:?}");
 }
 
 #[test]
@@ -3433,7 +3575,11 @@ fn the_running_tail_never_reshapes_what_is_still_streaming() {
     .iter()
     .map(plain)
     .collect();
-    assert_eq!(lines[1..], ["  ⎿  {\"a\":1,\"b\":2}"], "{lines:?}");
+    assert_eq!(
+        lines[1..],
+        ["  ⎿  {\"a\":1,\"b\":2}", "     (1s · timeout 2m)"],
+        "{lines:?}"
+    );
 }
 
 #[test]

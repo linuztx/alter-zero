@@ -50,7 +50,7 @@ chrome paints is one of these or derived from one:
 | --- | --- |
 | `text` | the reply text, the composer prompt, a tool's name/arguments/output, the shimmer's crest, the comet's head |
 | `text_muted` | an unselected model id, a settings value, the comet's mid-tail, the thinking header's shimmer floor |
-| `dim` | the `⎿` corners and placeholders, the footer, the hints, the counters, a waiting or resting-running bullet, quotes, timestamps — and the top of a running bullet's breath |
+| `dim` | the `⎿` corners and placeholders, the footer, the hints, the counters, a waiting or running bullet (the one grey it blinks in), quotes, timestamps |
 | `border` | the composer box's rules and every framed view's |
 | `user_fg` / `user_bg` | the `❯ …` user bubble (and a `!` command's header) — muted on purpose |
 | `selection_bg` | the `/resume` picker's selected row |
@@ -64,7 +64,7 @@ chrome paints is one of these or derived from one:
 | `diff_add_bg` / `diff_del_bg` | an added / removed numbered row's ground |
 | `diff_add_mark_bg` / `diff_del_mark_bg` | the brighter marks under the characters that actually changed (`docs/inline-diff.md`) |
 | `shimmer_base` | the status verb's resting grey, under the sweep to `text` |
-| `pulse_dim` | the bottom of a running bullet's breath |
+| `pulse_dim` | the bottom of the `pulse` spinner style's breath |
 | `code` | the `highlight::CodeTheme` the code blocks and file cells are coloured with |
 
 The **derivations** are the accessor functions in `ui/theme.rs`
@@ -103,8 +103,10 @@ their terminal:
   without saying so. What sixteen colours cannot express goes without: the
   diff rows keep the terminal ground (only the marks tint, both on the
   bright-black, so a row's sign says which), the gradient and the shimmer
-  **step** between their two ends instead of blending, and the running
-  bullet holds still, its breath's two ends being the same bright-black.
+  **step** between their two ends instead of blending, and the `pulse`
+  spinner holds still, its breath's two ends being the same bright-black —
+  while the running bullet blinks in that bright-black exactly as it does
+  everywhere, a blink needing no second shade (`docs/tool-pulse.md`).
 
 That stepping is the one generalisation the blends needed:
 `ui::wrap::lerp_color` and `blend_color` take `Color`s rather than RGB

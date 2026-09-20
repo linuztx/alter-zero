@@ -259,7 +259,7 @@ renderer, animated off the injected frame clock with no turn running
 than its rows so a frame never churns a purge rebuild; the choice persisted
 **per working directory** in `spinner.json` (`docs/per-directory-state.md`) and seeded at bootstrap, the styles' frames and colour
 rules in `ui/theme.rs` — `sparkle`/`blocks` wearing the banner gradient,
-`pulse` the tool bullet's breath, the two tracks drawn procedurally on a
+`pulse` a raised-cosine breath at the tool bullet's cadence, the two tracks drawn procedurally on a
 braille canvas from whole-millisecond ping-pong/hop curves rather than
 tabled — and the switch needing no rebuild, the status line being
 live-only) in `docs/spinner.md`, and the **`/theme` picker** that switches
@@ -552,7 +552,7 @@ parameter, persisted beside the `/model` selection) in `docs/reasoning.md`;
 the **thinking stream** — that reasoning, *shown* (a phase's
 chain-of-thought streams live in the strip wearing the **tool cell's shape**:
 a `● Thinking…` header — the same `TOOL_BULLET` a running tool wears, because
-it means the same thing, breathing at the frame pulse beside a label carrying
+it means the same thing, blinking at the frame pulse beside a label carrying
 the status line's **shimmer** (`ui::status::shimmer_spans_from`, the same wave
 `Working…` wears but floored at the near-white `reasoning_shimmer_base()`, since
 codex's grey base is right for a metric and unreadable for a header) — over the
@@ -581,15 +581,21 @@ cell's tokenizer estimate is **snapped** to the provider's own
 the round's usage frame lands, split by weight across a round's several
 phases; gated by `ALTER_ZERO_SHOW_THINKING`, whose falsy value restores the
 old counted-and-dropped behaviour exactly) in `docs/thinking-stream.md`;
-the **running bullet's pulse** (a tool in flight no longer
+the **running bullet's blink** (a tool in flight no longer
 shows a blue `●` — it shows the permission prompt's grey, and in the live
-region that grey *breathes* dim→bright→dim once a second, Claude-Code's
-running dot: a raised cosine over the boundary-injected `App::set_pulse`
-frame clock (one shared phase, so a mixed round's tool cells and its agent
-tree blink in step and a background agent animates between turns), applied
-by `ui::live_tool_lines` in the strip only — `tool_lines` renders at rest so
-a scrollback commit can never freeze a frame mid-breath, and the Ctrl+O
-transcript stays still to keep its cache's signature clock-free) in
+region that bullet *blinks*, Claude-Code's running dot: shown in that one
+grey for the first half of every second and hidden behind blanks of its own
+width for the second, so the header text never shifts — never a second,
+dimmer shade (the breath it replaced blended two greys, and under a
+terminal palette stood still); `ui::tool::bullet_span` is the one source of
+every live `●` — tool header, `● Calling …` MCP cell, agent tree and lone
+`● Agent(…)` cell, `● Thinking…` — over the boundary-injected
+`App::set_pulse` frame clock (one shared phase, so a mixed round's tool
+cells and its agent tree blink in step and a background agent animates
+between turns), applied in the strip only — `tool_lines` renders at rest so
+a scrollback commit can never freeze the hidden half, and the Ctrl+O
+transcript stays still to keep its cache's signature clock-free; the `pulse`
+spinner style keeps the raised-cosine breath over the `pulse_dim` role) in
 `docs/tool-pulse.md`; the flicker-free frame pipeline
 (scrollback commits deferred into the draw's synchronized update) in
 `docs/flicker.md`; the **clickable OSC 8 links** (every URL an assistant
@@ -870,10 +876,18 @@ calls in one round announced up front so the running one shows live while the
 not-yet-run ones show `⎿ Waiting…`, executed sequentially) in
 `docs/parallel-tools.md`; the **live-streaming `bash` tool** (a running command
 tails its output — the last rows, long lines word-wrapped to the width with
-spaces preserved, + a `+N lines (Ns)` footer whose `(Ns)` is the
-**command's own** runtime — `App::command_elapsed`, the boundary's
+spaces preserved, + a `+N lines (22s · timeout 1m 50s)` footer whose `22s`
+is the **command's own** runtime — `App::command_elapsed`, the boundary's
 per-command clock started at the call's `ToolStart`, the masked
 `background_hint_elapsed` being the Ctrl+B hint's gate over the same value —
+and whose `timeout` is the limit the call runs under, the model's own
+`timeout` read off the recorded `ToolCall::arguments`
+(`llm::tools::bash_timeout_ms`, the executor's default-and-clamp rule,
+humanized whole by `app::format_timeout` — `2m`, never `2m 0s`); the clock
+clause is **always** on the live cell — a bare `(10s · timeout 10m)` row
+under output that fits the window, and `⎿ Running… (10s · timeout 2m)` on
+the corner row of a command that has printed nothing, which used to sit on
+a bare `⎿ Running…` for as long as it took —
 never the turn's elapsed the status line counts (a call started a minute
 into a turn used to open on `(60s)`), the agent session view counting its
 own from the per-agent `AgentRun::command_elapsed` the same way — via a
@@ -923,8 +937,10 @@ stays exact (a skipped blank is a row Ctrl+O paints, so it is counted like any
 other — dropping them from the tally would re-open the `+1 lines` lie in a
 politer dress), an all-blank output is left exactly as it was (no first block
 to prefer, and an empty window would strand the hint with no `⎿` corner), and
-only the two exec cells take the rule — the backend `bash` tool and the `!`
-shell command, one cell shape by design — while a diff body's spacing (content)
+only the backend `bash` cell takes the rule — the `!` shell command, one
+cell shape by design, **no longer folds at all** (`docs/shell-command.md`:
+its whole output shows inline, the `…` cap marker closing a cut one), so it
+takes no policy — while a diff body's spacing (content)
 and an ask cell's `· Q → A` rows keep `BlankPolicy::Keep` and render
 byte-identically; the running *tail* keeps its blanks too, being what the
 command just printed); and the **session scratchpad** (Claude-Code's
@@ -1016,7 +1032,7 @@ never re-pushes it, and surfaced by `ReplySource::agent_system_reminder` so
 the agent session view's Ctrl+D leads with the same block the agent read),
 reporting on a dedicated `agents::AgentEvent` channel (a seventh
 `select!` source — agents outlive turns); a foreground group shows the live
-breathing-grey `● Running {n} agents…` tree (per-agent description · tool uses · tokens
+blinking-grey `● Running {n} agents…` tree (per-agent description · tool uses · tokens
 · a **sticky** `{Name}: {detail}` activity — one grammar for every call
 (`agents::activity_line`): a bash call's own `description`, held between
 calls, else `{Name}: {args}` (`Write: game.py` — never the header's
@@ -1169,7 +1185,7 @@ the asked-about call, or the tree that asked — never dropped; on a page that
 **flows** the context rides along whole and uncollapsed when it is *static*
 (a queued `⎿ Waiting…` cell cannot change — the approve seam runs before its
 `ToolStart`), and gives way only when it **ticks** (a live agent tree's
-breathing bullet and advancing counters, a running call's streamed peek —
+blinking bullet and advancing counters, a running call's streamed peek —
 a flowed row is frozen in scrollback, so ticking content would go stale
 there or re-sign the flow into a purge rebuild per tick;
 `context_is_stable`, `docs/view-flow.md`)); the region
@@ -1931,14 +1947,18 @@ Esc/Ctrl+C cancel restoring the pre-search draft and cursor; see
 `docs/history-search.md`) —
 plus, *while a turn is in flight*, a strip above it — a streaming preview row (the
 preview shows a running tool's cell when one is executing — its bullet a
-**breathing grey**, `docs/tool-pulse.md` — a backend tool's
+**blinking grey**, `docs/tool-pulse.md` — a backend tool's
 **whole** collapsed cell, the wrapped `● name(args)` header *plus* its output;
-before any output a `⎿ Running…` row, and once a `bash` command **streams** it
+before any output a `⎿ Running… (10s · timeout 2m)` row — the command's
+own clock and the timeout it runs under, so a silent command still shows
+it is alive — and once a `bash` command **streams** it
 **tails** its output — the last `TOOL_PEEK_ROWS` display **rows**, long lines
 word-wrapped like the Ctrl+O view (`ui::wrap_output` — never clipped at the
 width, spaces preserved), + a
-`+N lines (Ns)` footer counting the fully hidden source lines, its `(Ns)`
-the command's own runtime (`App::command_elapsed`, never the turn's)
+`+N lines (22s · timeout 1m 50s)` footer counting the fully hidden display
+rows (a bare `(10s · timeout 10m)` row when none are), its elapsed
+the command's own runtime (`App::command_elapsed`, never the turn's) and
+its timeout the model's own `timeout` off the call's verbatim arguments
 (`ui::running_command_lines`, `docs/tool-streaming.md`) — so a long
 command isn't clipped and the running state shows; a **parallel
 batch** previews the *whole* `tool_queue` — the running call over each dim
@@ -2275,7 +2295,7 @@ of bug:
    one-line peek). When the model requests a **parallel batch** of calls in one
    round, they are announced up front (`StreamEvent::ToolBatch` →
    `App::start_tool_batch`, filling the `App::tool_queue` `VecDeque`) so the live
-   region shows *every* call at once — the running one live (pulsing grey), the not-yet-run
+   region shows *every* call at once — the running one live (blinking grey), the not-yet-run
    siblings as dim `⎿ Waiting…` cells (`ToolStatus::Waiting`), each committing to
    scrollback as its `ToolEnd` arrives. Execution stays **sequential** (only the
    front of the queue is ever `Running`, so the invariant is "at most one running
@@ -2420,7 +2440,7 @@ backend interleaves `StreamEvent::ToolStart{name,args}`/`ToolEnd{output,ok,trunc
 running `bash` cell tails them via `App::push_tool_output`, `docs/tool-streaming.md`)
 and a `ThinkingStart`/`ThinkingEnd` pair (with `ThinkingChunk` reasoning
 deltas streamed in between) between `Chunk`s; the loop shows the tool
-running (pulsing grey) then commits it collapsed (green/red), and flips its `thinking_start`
+running (blinking grey) then commits it collapsed (green/red), and flips its `thinking_start`
 `Instant` so the status line shows/drops `Thinking for Ns` — while the
 reasoning deltas themselves accumulate in `App::reasoning` for the live
 `● Thinking…` block, collapsing at `ThinkingEnd` into the committed
@@ -2699,19 +2719,19 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   hint (`shell_mode_line`) and the red `! ` that doubles as the composer
   prompt while `App::shell_mode` is on and as the `Role::Shell` exec-cell
   header bullet in `message_lines`; shell `tool_lines`/`tool_full_lines` are
-  headerless `⎿` blocks — inline folded at `TOOL_FOLD_ROWS` aligned display
-  rows (an output of exactly four rows shown whole), each wrapped
+  headerless `⎿` blocks — inline the **whole** output, **never folded**
+  (`result_full_block`: the user ran the command to read its output, so
+  nothing waits behind a `… +N lines (ctrl+o to expand)` hint — that fold
+  is the backend `bash` cell's alone), every row aligned under the corner
   (`result_row` does the corner/continuation indent; a line wider than the
   terminal **word-wraps with spaces preserved** like the Ctrl+O view
-  (`wrap_output`, via `result_peek_block`)
-  rather than clipping — the fold is the budget, in the unit the cell is
-  *read* in, keeping four wrapping lines from costing three times what four
-  short ones do; `docs/long-lines.md`) then `… +N lines (ctrl+o
-  to expand)` (counting display **rows**, what expanding adds), `⎿ Running…` live, the retained output uncapped in the Ctrl+O view;
+  (`wrap_output`) rather than clipping; `docs/long-lines.md`), `⎿ Running…`
+  live, the same rows uncapped in the Ctrl+O view;
   output over `tui::shell`'s `SHELL_OUTPUT_MAX_BYTES` is **capped in memory** as it's
   read (`tui::shell::append_capped`, codex's pattern — bounds peak RSS so `! tree ~/`
-  can't spike memory; the dropped tail is gone, not saved) and the expanded cell
-  appends a dim `TOOL_TRUNCATED_MARKER` (`…`) when `tool.truncated` —
+  can't spike memory; the dropped tail is gone, not saved) and both the
+  inline cell and the expanded one
+  append a dim `TOOL_TRUNCATED_MARKER` (`…`) when `tool.truncated` —
   kept flush by `conversation_lines`), and
   the live-region row geometry (`GAP_ROWS`/`STATUS_ROWS`/`STATUS_GAP_ROWS`/`INPUT_CHROME_ROWS`/`LIVE_MIN_HEIGHT`;
   the status + gap strip shows *while a turn is active*, and the preview + gap

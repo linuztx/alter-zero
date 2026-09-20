@@ -3,7 +3,7 @@
 //! See `docs/agent-tool.md`.
 
 use super::theme::*;
-use super::tool::{result_row, shown_args, tool_pulse_color};
+use super::tool::{bullet_span, result_row, shown_args};
 use super::wrap::{cols, truncate_cols};
 use super::*;
 
@@ -149,13 +149,17 @@ fn agent_tree_rows(
 }
 
 /// The group cell's `● {header}` row: the coloured bullet, the white header
-/// text, and a dim trailing hint.
-fn agent_group_header(color: Color, text: String, hint: &str) -> Line<'static> {
+/// text, and a dim trailing hint. `blink` is the live tree's frame clock —
+/// the running tool bullet's own blink ([`bullet_span`]) — and `None` for a
+/// recorded group, which sits at rest.
+fn agent_group_header(
+    color: Color,
+    blink: Option<Duration>,
+    text: String,
+    hint: &str,
+) -> Line<'static> {
     Line::from(vec![
-        Span::styled(
-            TOOL_BULLET.to_string(),
-            Style::new().fg(color).add_modifier(Modifier::BOLD),
-        ),
+        bullet_span(color, blink),
         Span::styled(text, Style::new().fg(tool_name_color())),
         Span::styled(hint.to_string(), Style::new().fg(tool_dim_color())),
     ])
@@ -163,12 +167,10 @@ fn agent_group_header(color: Color, text: String, hint: &str) -> Line<'static> {
 
 /// A **single** agent's `● Agent({description})` cell header — the tool-cell
 /// look a lone launch keeps instead of the group tree (`docs/agent-tool.md`).
-fn agent_cell_header(color: Color, description: &str) -> Line<'static> {
+/// `blink` as in [`agent_group_header`].
+fn agent_cell_header(color: Color, blink: Option<Duration>, description: &str) -> Line<'static> {
     Line::from(vec![
-        Span::styled(
-            TOOL_BULLET.to_string(),
-            Style::new().fg(color).add_modifier(Modifier::BOLD),
-        ),
+        bullet_span(color, blink),
         Span::styled(
             "Agent".to_string(),
             Style::new()
@@ -211,10 +213,11 @@ fn single_live_agent_lines(
     background: bool,
     width: u16,
 ) -> Vec<Line<'static>> {
-    // The same breathing grey a running tool cell has — this *is* the round's
-    // running cell (`docs/tool-pulse.md`).
+    // The same blinking grey bullet a running tool cell has — this *is* the
+    // round's running cell (`docs/tool-pulse.md`).
     let mut lines = vec![agent_cell_header(
-        tool_pulse_color(app.pulse()),
+        tool_running_color(),
+        Some(app.pulse()),
         &run.description,
     )];
     lines.push(agent_activity_row(
@@ -252,7 +255,7 @@ pub fn agent_group_lines(group: &crate::app::AgentGroup, width: u16) -> Vec<Line
     };
     if let [entry] = group.agents.as_slice() {
         let dim = Style::new().fg(tool_dim_color());
-        let mut lines = vec![agent_cell_header(color, &entry.description)];
+        let mut lines = vec![agent_cell_header(color, None, &entry.description)];
         let (settle, settle_color) = if group.background {
             (AGENT_BACKGROUNDED.to_string(), tool_dim_color())
         } else {
@@ -280,6 +283,7 @@ pub fn agent_group_lines(group: &crate::app::AgentGroup, width: u16) -> Vec<Line
     let mut lines = if group.background {
         vec![agent_group_header(
             color,
+            None,
             format!(
                 "{} background {} launched",
                 group.agents.len(),
@@ -294,6 +298,7 @@ pub fn agent_group_lines(group: &crate::app::AgentGroup, width: u16) -> Vec<Line
     } else {
         vec![agent_group_header(
             color,
+            None,
             format!("{} finished", agent_count_phrase(group.agents.len())),
             EXPAND_HINT,
         )]
@@ -323,8 +328,8 @@ pub fn agent_group_lines(group: &crate::app::AgentGroup, width: u16) -> Vec<Line
 }
 
 /// The **live** agent group's tree cell — the strip preview while the round's
-/// agents run: a breathing-grey `● Running {n} agents… (ctrl+o to expand)`
-/// header (the running tool cell's pulse, `docs/tool-pulse.md`) over
+/// agents run: a blinking-grey `● Running {n} agents… (ctrl+o to expand)`
+/// header (the running tool cell's blink, `docs/tool-pulse.md`) over
 /// live tree rows (counters ticking, the status row showing each agent's
 /// current activity). Rendered from the roster entries the live group names;
 /// an id already swept renders nothing (it settled long ago).
@@ -344,7 +349,8 @@ pub fn live_agent_group_lines(app: &App, width: u16) -> Vec<Line<'static>> {
         return single_live_agent_lines(app, run, live.background, width);
     }
     let mut lines = vec![agent_group_header(
-        tool_pulse_color(app.pulse()),
+        tool_running_color(),
+        Some(app.pulse()),
         format!("Running {}…", agent_count_phrase(runs.len())),
         EXPAND_HINT,
     )];
@@ -836,8 +842,9 @@ pub(super) fn agent_view_preview_lines(
                 lines.push(Line::default());
             }
             // A live strip like the main one — the agent's running call
-            // breathes here too (`docs/tool-pulse.md`) and a running command
-            // tails its streamed output (`docs/tool-streaming.md`). The
+            // blinks here too (`docs/tool-pulse.md`) and a running command
+            // tails its streamed output under the `(Ns · timeout …)` clock
+            // row, on its `⎿ Running…` row before any (`docs/tool-streaming.md`). The
             // elapsed is the **command's** own — boundary-injected per agent
             // like the thinking phase's, `AgentRun::command_elapsed` — never
             // the agent's whole `runtime`, which its status line shows: a

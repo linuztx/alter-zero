@@ -66,6 +66,40 @@ release heading when a version is cut.
   can reach it and ask Alter Zero to read its path. A display that is named
   but unreachable keeps its original cause and gains the same advice.
 
+- **The running `Bash` cell shows its own clock and its timeout, whatever
+  its output** (`docs/tool-streaming.md`). The live cell's footer reads
+  `+18 lines (22s · timeout 1m 50s)`: how long the command has run beside
+  the timeout it runs under — the model's own `timeout`, the tool's 2m
+  default when it named none — so a long command says how much of its
+  budget is left. The clock row is always there now: a command whose
+  output fits the window shows a bare `(10s · timeout 10m)` row under it,
+  and a command that has printed nothing counts on its `⎿ Running… (10s ·
+  timeout 2m)` row instead of sitting on a bare `Running…` for as long as
+  it takes. The Ctrl+B hint follows as before; the `!` shell's
+  `⎿ Running… (Ns)` row is unchanged, a `!` command having no timeout.
+- **A `!` shell command shows its whole output inline**
+  (`docs/shell-command.md`). The committed cell used to fold after three
+  rows behind `… +N lines (ctrl+o to expand)`, so reading a `! git status`
+  or a `! ls -la` meant opening the transcript. Every line shows in the
+  conversation now — blank lines kept, long lines word-wrapped, the
+  reshaped JSON document whole — with nothing to expand. Output over the
+  in-memory cap still stops where it always did, and the dim `…` marker
+  that only the Ctrl+O view carried now closes the inline cell too, so a
+  cut is visible where the output is read. The model's `Bash` cell keeps
+  Claude Code's fold.
+- **A running tool's bullet blinks instead of breathing**
+  (`docs/tool-pulse.md`). The `●` on a `Bash`, `Read`, `Write` or `Edit`
+  cell that is still executing used to ease between two greys once a
+  second. It is now Claude Code's running dot: the one resting grey, shown
+  for half a second and hidden for the next, the header text holding its
+  column while the dot is away, so `Bash(…)` never shifts. The same blink
+  runs the live `● Running {n} agents…` tree, a lone `● Agent(…)` cell, the
+  `● Calling …` MCP cell and the `● Thinking…` header, all on one clock, and
+  it works the same under the `ansi` theme, where the old breath had no
+  second shade to move between and stood still. Committed cells and the
+  Ctrl+O transcript keep their bullet as before; the `pulse` spinner style
+  keeps its breath.
+
 ## [0.4.0] - 2026-09-18
 
 ### Added

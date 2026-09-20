@@ -383,8 +383,11 @@ OPENROUTER_API_KEY=sk-... cargo run --example tool_smoke -- \
 
 ## Rendering (codex's `diff_render`, in the `⎿` gutter)
 
-A `bash` cell renders like the `!` shell cell: the coloured `● Bash(cmd)` header
-over a **multi-line `⎿` output peek** — the head of the output **folded**
+A `bash` cell renders in the `!` shell cell's shape — the coloured
+`● Bash(cmd)` header over a **multi-line `⎿` output peek** — but where the
+shell cell shows its whole output inline (`docs/shell-command.md`: the user
+ran that command to read it), the `bash` cell's reader is the model, so
+its head is **folded**
 Claude Code's way: its first `TOOL_FOLD_ROWS` (3) wrapped rows, then
 `… +N lines (ctrl+o to expand)` counting the display rows the expansion adds
 (an output of exactly four rows shows whole — a hint hiding one row would cost
@@ -395,8 +398,10 @@ is reshaped for display** with two-space indentation (`ui::exec_display_lines`,
 Claude Code's tool result does the same), so a `curl` of an API reads `{` /
 `"batchcomplete": "",` / `"query": {` instead of a wall of braces — the record
 stays byte-exact. **While it runs the cell streams and tails its output** — the
-header, the last lines, and a `+N lines (Ns)` footer — see
-`docs/tool-streaming.md`.
+header, the last lines, and a `+N lines (22s · timeout 1m 50s)` footer naming
+the command's own clock and the timeout it runs under (a bare `(10s · timeout
+10m)` row when nothing is hidden, `⎿ Running… (10s · timeout 2m)` before any
+output) — see `docs/tool-streaming.md`.
 
 **The whole cell reads like a normal reply — Claude-Code's noticeable look.**
 The entire `(...)` header body — the command text, its framing `(`/`)`, **and** a
@@ -405,8 +410,8 @@ and the **output** under the `⎿` gutter is the same white (`tool_output_color(
 so a `bash` command and its output are as legible as a normal message rather than
 the old muted grey. Only the structural bits stay dim ([`tool_dim_color()`]): the
 `⎿` corner glyph, the `Running…`/`Waiting…`/`(no output)` placeholders and the
-`… +N lines` / `+N lines (Ns)` hints. The `●` bullet keeps its lifecycle colour
-(breathing grey while it runs — `docs/tool-pulse.md` — vivid green ok · red
+`… +N lines` / `+N lines (Ns · timeout …)` hints. The `●` bullet keeps its lifecycle colour
+(blinking grey while it runs — `docs/tool-pulse.md` — vivid green ok · red
 fail). This is uniform across **every** tool
 — `bash`/`read`/`write`/`edit` and any future tool — because the header goes
 through the shared `tool_header_lines` and command/shell output through the
@@ -512,9 +517,11 @@ identically — but only the inline peek (and the live preview) cuts the command
 
 **A running backend tool previews its whole cell.** While the model's tool runs,
 the streaming strip's preview slot shows the *full* live cell — the wrapped
-header **plus** its output. Before any output a `bash` cell shows `⎿ Running…`;
-once output streams it **tails** — the last `TOOL_PEEK_ROWS` rows and a
-`+N lines (Ns)` footer (`ui::running_command_lines`; see
+header **plus** its output. Before any output a `bash` cell shows
+`⎿ Running… (10s · timeout 2m)` — the command's own clock beside the timeout
+it runs under; once output streams it **tails** — the last `TOOL_PEEK_ROWS`
+rows and a `+N lines (22s · timeout 1m 50s)` footer, or the bare clock row
+when nothing is hidden (`ui::running_command_lines`; see
 `docs/tool-streaming.md`) — so the running state is visible and a long command
 still isn't clipped mid-run. The preview slot is sized by `ui::preview_rows`
 (0 idle · 1 for a streaming reply / `!` shell run · N for a running backend

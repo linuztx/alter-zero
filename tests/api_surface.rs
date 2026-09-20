@@ -342,6 +342,7 @@ use alter_zero::ui::{
     footer_line,
     footer_rows,
     format_elapsed,
+    format_timeout,
     format_token_count,
     header_lines,
     hooks_menu_height,

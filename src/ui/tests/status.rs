@@ -128,6 +128,30 @@ fn format_elapsed_combines_hours_and_minutes_past_an_hour() {
 }
 
 #[test]
+fn format_timeout_drops_the_zero_parts_a_limit_has_no_use_for() {
+    // The running `bash` cell's `(22s · timeout 1m 50s)` clause names the
+    // command's timeout beside its ticking elapsed (docs/tool-streaming.md).
+    // A limit reads whole: `2m` for the tool's 120 000 ms default, never
+    // `2m 0s` — the elapsed keeps its seconds because it moves.
+    assert_eq!(format_timeout(120_000), "2m");
+    assert_eq!(format_timeout(110_000), "1m 50s");
+    assert_eq!(format_timeout(600_000), "10m");
+    assert_eq!(format_timeout(30_000), "30s");
+    assert_eq!(format_timeout(3_600_000), "1h");
+    assert_eq!(format_timeout(3_661_000), "1h 1m 1s");
+}
+
+#[test]
+fn format_timeout_keeps_a_sub_second_remainder() {
+    // A model may send any millisecond count; a limit shown rounded is a
+    // limit misreported, so the fraction stays, trailing zeros trimmed.
+    assert_eq!(format_timeout(1_500), "1.5s");
+    assert_eq!(format_timeout(250), "0.25s");
+    assert_eq!(format_timeout(61_001), "1m 1.001s");
+    assert_eq!(format_timeout(0), "0s");
+}
+
+#[test]
 fn status_line_humanizes_a_long_elapsed_into_minutes_and_seconds() {
     let text = plain(&status_line(&status(100, TokenArrow::Down, 90, None), 200));
     assert!(
@@ -898,8 +922,8 @@ fn the_sparkle_blooms_into_a_star_and_back_in_the_banner_gradient() {
 
 #[test]
 fn the_pulse_dot_breathes_dim_to_bright_without_moving() {
-    // One glyph, coloured by the running bullet's own raised-cosine breath
-    // (docs/tool-pulse.md) — dim at the bottom of the breath, white at the
+    // One glyph, coloured by a raised-cosine breath at the running bullet's
+    // cadence (docs/spinner.md) — dim at the bottom of the breath, white at the
     // top, half a period later — so it swells rather than flicks.
     assert_eq!(styled_frame(Spinner::Pulse, 0), "●");
     assert_eq!(styled_frame(Spinner::Pulse, 500), "●");

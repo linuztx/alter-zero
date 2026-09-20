@@ -468,9 +468,10 @@ pub(super) fn blend_color(fg: Color, bg: Color, alpha: f32) -> Color {
 
 /// Where a **breath** is at `elapsed`: a raised cosine easing 0 → 1 → 0 once
 /// per `period`, so a colour driven by it swells and fades rather than
-/// flicking on and off — the running tool bullet's pulse (`docs/tool-pulse.md`)
-/// and the `pulse` spinner style's (`docs/spinner.md`). Pure: the phase
-/// derives entirely from the boundary-supplied clock.
+/// flicking on and off — the `pulse` spinner style's swell (`docs/spinner.md`;
+/// the running tool bullet blinks instead, `tool::tool_pulse_visible`,
+/// `docs/tool-pulse.md`). Pure: the phase derives entirely from the
+/// boundary-supplied clock.
 pub(super) fn breath(elapsed: std::time::Duration, period: std::time::Duration) -> f32 {
     let period = period.as_secs_f32();
     // `phase` is 0…1 through one breath; the cosine turns it into 0 → 1 → 0.

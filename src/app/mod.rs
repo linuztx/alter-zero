@@ -109,7 +109,7 @@ pub use self::tools::{
 pub use self::trust_menu::TrustMenu;
 pub use self::turn::{
     DONE_VERBS, INTERRUPT_NOTICE, InterruptedTurn, SHELL_VERB, StreamError, WORKING_VERBS,
-    format_elapsed,
+    format_elapsed, format_timeout,
 };
 pub(crate) use self::types::count_tokens;
 pub use self::types::{
@@ -670,7 +670,7 @@ pub struct App {
     command_elapsed: Option<Duration>,
     /// The **animation frame clock** — time since the loop started, injected
     /// before every draw ([`set_pulse`](App::set_pulse)). Purely a phase: the
-    /// live region's running bullets breathe against it, in unison, and nothing
+    /// live region's running bullets blink against it, in unison, and nothing
     /// ever displays it. See `docs/tool-pulse.md`.
     pulse: Duration,
     /// The subagent roster (`docs/agent-tool.md`): one [`AgentRun`] per

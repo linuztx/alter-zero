@@ -507,7 +507,7 @@ An MCP cell is recognised by its display name's ` (MCP)` suffix (pure —
 survives a `/resume` with no extra record field). Inline it is deliberately
 quiet; Ctrl+O carries the full story:
 
-- **Running**: `● Calling {server}… (ctrl+o to expand)` — the breathing
+- **Running**: `● Calling {server}… (ctrl+o to expand)` — the blinking
   grey bullet, the hint dim on the header — **and nothing else**. It used to
   carry a `⎿ "{question}"` peek row; a fragment of one argument, wrapped at
   the width, says what the header already said and costs the row.

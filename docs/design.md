@@ -116,7 +116,7 @@ which Ctrl+V reads the clipboard from.
   shrink must each leave exactly one input box with the conversation tail in
   view).
 - **Tool calls (Claude-Code style).** A reply can interleave tool calls. Each
-  renders inline as a **coloured bullet header** `● name(args)` — a **breathing grey** while
+  renders inline as a **coloured bullet header** `● name(args)` — a **blinking grey** while
   it runs (shown live in the bottom region's preview row), **green** when it
   succeeds, **red** when it fails — plus a **collapsed** one-line `⎿` peek of its
   output with a `(ctrl+o to expand)` hint when more is hidden. The full output is
@@ -710,7 +710,7 @@ file-search worker ► tokio mpsc ───┘                           draw ti
   scrollback; redraw (preview row shows the partial last line).
 - On `ToolStart{name,args}`: `flush_streaming_segment` finalises the run of text
   before the tool (so it slots ahead of the tool in order) and commits its
-  remainder; `start_tool` shows the tool running (pulsing grey) in the preview row.
+  remainder; `start_tool` shows the tool running (blinking grey) in the preview row.
 - On `ToolEnd{output,ok,truncated}`: `end_tool` records the finished tool; commit it
   *collapsed* (green/red) to scrollback. The full output is kept for the Ctrl+O
   view.
@@ -804,7 +804,7 @@ file-search worker ► tokio mpsc ───┘                           draw ti
   placeholder for the next command or MCP call (`docs/permissions.md`).
 - `Message { role, text, timestamp }` — one finished message (the `timestamp` is
   displayed only for **user** messages, in the Ctrl+O transcript).
-- `ToolStatus { Running, Ok, Failed }` — a tool's lifecycle (pulsing grey while
+- `ToolStatus { Running, Ok, Failed }` — a tool's lifecycle (blinking grey while
   it runs — `docs/tool-pulse.md` — then green/red).
 - `ToolCall { name, args, status, output, timestamp, shell, truncated,
   context_output, approval_note }` — one

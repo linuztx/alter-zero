@@ -24,7 +24,7 @@ Thought for 1m 5s · 1.5k tokens (ctrl+o to expand)
 Two shapes, deliberately: while it runs it **is** a tool cell — a `●` bullet
 over a `⎿` gutter, because that is what is happening (something working, with
 output under it) — and it is the **only** part of the feature that moves: the
-bullet breathes like any running tool's, and `Thinking…` carries the status
+bullet blinks like any running tool's, and `Thinking…` carries the status
 line's shimmer sweep. When it settles the cell shape goes away entirely: no
 bullet, because nothing is happening any more. What is left is a fact about
 the turn, in the bullet-less shape `Done for 7s` already uses, with the
@@ -37,7 +37,7 @@ All of it to the live block, none to the settled line:
 
 | Surface | Renders | Why |
 | --- | --- | --- |
-| **Strip** (live) | `● Thinking…` — breathing bullet, shimmering bold-white label | the one place something is still happening, and nothing here is ever committed, so motion is free |
+| **Strip** (live) | `● Thinking…` — blinking bullet, shimmering bold-white label | the one place something is still happening, and nothing here is ever committed, so motion is free |
 | **Inline** (settled) | one dim row, `Done for Ns`'s exact dress | a finished thought is a footnote about work already done |
 | **Ctrl+O** (expanded) | the same dim row, minus the hint | no hint to make room for — this *is* the expansion |
 
@@ -69,7 +69,7 @@ machinery in `term.rs`.
 
 `ui::live_reasoning_lines` renders
 
-- the `● Thinking…` header — the tool cell's own `TOOL_BULLET`, **breathing**
+- the `● Thinking…` header — the tool cell's own `TOOL_BULLET`, **blinking**
   at the shared frame pulse (`docs/tool-pulse.md`) exactly like a running
   tool's, beside a label carrying the status line's **shimmer** sweep
   (`ui::status::shimmer_spans_from`, the same wave the `Working…` verb below it

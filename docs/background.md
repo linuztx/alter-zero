@@ -314,8 +314,8 @@ frame from `StatusClocks::command_start` (the `set_status_times` pattern): a
 model `bash` call's clock starts at its `ToolStart`, a `!` shell run's in
 `run_shell`, cleared at the command's resolution and each turn start. Turn
 elapsed won't do — a model tool can start deep into a turn. The same clock
-is what the running cell **displays** — the `bash` tail's `+N lines (Ns)`
-footer and the `!` shell's `⎿ Running… (Ns)` row read it through the plain
+is what the running cell **displays** — the `bash` cell's `+N lines (Ns ·
+timeout …)` clock row and the `!` shell's `⎿ Running… (Ns)` row read it through the plain
 `App::command_elapsed`, what `set_command_elapsed` set; `background_hint_elapsed`
 is that value *masked* for the hint's one job: the band and every
 composer-replacing picker blank it (they swallow the key) while keeping the

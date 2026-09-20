@@ -15,12 +15,17 @@ Running (live, in the strip above the box):        Finished (committed to scroll
      64 bytes from … icmp_seq=7 … time=247 ms             64 bytes from … icmp_seq=1 … time=32.1 ms
      64 bytes from … icmp_seq=8 … time=332 ms             64 bytes from … icmp_seq=2 … time=71.1 ms
      64 bytes from … icmp_seq=9 … time=144 ms             … +11 lines (ctrl+o to expand)
-     +5 lines (9s)
+     +5 lines (9s · timeout 2m)
+     (ctrl+b to run in background)
 
 ● Bash(ping -c 10 facebook.com)                     (a parallel batch's not-yet-run
   ⎿  Waiting…                                        siblings stay `⎿ Waiting…` until
                                                       each one's turn — docs/parallel-tools.md)
 ```
+
+The footer's clause is the **command's own clock beside the timeout it
+runs under** — `(9s · timeout 2m)` — and it is on the live cell whatever
+the output's shape (*The clock row is always there*, below).
 
 The two states are deliberately asymmetric — while **running** you want the
 **tail** (what just happened); once **finished** you want the **head** with an
@@ -109,11 +114,14 @@ A **command-style** tool (a non-shell backend tool that is not a `read`/`write`/
   *source* line's `+`/`-` marker, so a continuation row keeps its tint.)
 - **Running** (`running_command_lines`, drawn only in the live strip's preview
   where the boundary-supplied `elapsed` is available): the header, the **last**
-  `TOOL_PEEK_ROWS` display **rows** of output, then `+{hidden} lines
-  ({secs}s)` when any source lines are fully hidden above (else just the tail —
-  the status line carries the timer). No output yet → the existing
-  `⎿ Running…` row. The `({secs}s)` is the **command's own** runtime, never
-  the turn's — *Whose clock the footer shows*, below. Long lines **word-wrap** the same way (`wrap_output`)
+  `TOOL_PEEK_ROWS` display **rows** of output, then the **clock row** —
+  `+{hidden} lines ({elapsed} · timeout {limit})` when any rows are fully
+  hidden above the window, the bare `({elapsed} · timeout {limit})` when
+  none are. No output yet → `⎿ Running… ({elapsed} · timeout {limit})`, the
+  clause on the corner row itself. The `{elapsed}` is the **command's own**
+  runtime, never the turn's — *Whose clock the footer shows*, below — and
+  the `{limit}` is the timeout the call runs under — *The clock row is
+  always there*, below. Long lines **word-wrap** the same way (`wrap_output`)
   instead of clipping at the terminal edge; the window is counted in wrapped
   rows, so a single long line tail-follows its own newest rows without
   growing the strip past its budget, and the newest-first walk wraps only
@@ -130,8 +138,8 @@ A **command-style** tool (a non-shell backend tool that is not a `read`/`write`/
 
 ### Whose clock the footer shows
 
-The `+N lines (Ns)` footer — and the `!` shell's `⎿ Running… (Ns)` row —
-count from the moment the **command** started, never from the turn's start.
+The `+N lines (Ns · timeout …)` footer — and the `!` shell's `⎿ Running… (Ns)`
+row — count from the moment the **command** started, never from the turn's start.
 `preview_tool_lines` used to hand the status indicator's clock (the turn's
 `elapsed`) down to `running_command_lines`, so a `bash` call that began a
 minute into a turn opened on `+N lines (60s)` under a cell that had just
@@ -165,6 +173,64 @@ agent without a running front call loses its clock — rather than removed at
 each of the four resolution events and two local settles, so no future
 resolution path has to remember it. The main strip needs no such pruning:
 its one `command_start` is cleared at the boundary's own resolution arms.
+
+### The clock row is always there
+
+The footer used to exist only while the output had overflowed the tail
+window: a command whose output fit showed just its rows, and a command that
+had printed nothing sat on a bare `⎿ Running…` for as long as it took — a
+`sleep 100`, a build with quiet output, a test suite's warm-up — with
+nothing on the cell saying it was alive, and nothing anywhere saying how
+long it might go on. The status line carries the *turn's* timer, which is
+the wrong number (the reported "footer counts the turn" bug, above), and the
+timeout the model chose was known only to the executor.
+
+The live cell now shows the command's clock **beside the timeout it runs
+under**, in every shape the running cell takes:
+
+```
+● Bash(for i in $(seq 1 100); do echo $i; sleep 1; done)
+  ⎿  19
+     20
+     21
+     22
+     +18 lines (22s · timeout 1m 50s)          ← rows hidden above the window
+     (ctrl+b to run in background)
+
+● Bash(python3 -u -c "
+      import time…)
+  ⎿  hello world
+     (10s · timeout 10m)                       ← output that fits: the clause alone
+     (ctrl+b to run in background)
+
+● Bash(python3 -c "import time; time.sleep(100)")
+  ⎿  Running… (10s · timeout 2m)              ← nothing printed yet
+     (ctrl+b to run in background)
+```
+
+The timeout is the model's own: `llm::tools::bash_timeout_ms` reads the
+`timeout` (or the pre-rename `timeout_ms`) off the call's verbatim
+`ToolCall::arguments` and applies `BashArgs::timeout_ms`'s rule — the
+120 000 ms default when the call names none, clamped to the 600 000 ms cap
+— so the cell names exactly the limit the executor enforces. A call with no
+argument record (the dummy backend's scripted calls) shows the default, which
+is what such a call would run under. Reading the one field off the arguments
+per animation frame is deliberate: a `bash` call's `command` can be a
+kilobyte of heredoc, and a typed one-field parse skips it without copying
+it, where parsing the whole `BashArgs` would allocate the command thirty
+times a second for nothing.
+
+The limit is humanized by `app::format_timeout`, `format_elapsed`'s sibling
+with the zero parts dropped — `2m`, `10m`, `1m 50s`, `1.5s` for a
+sub-second remainder — because a limit is a whole (`2m 0s` says the same
+thing twice) while the elapsed keeps its seconds because it moves. The
+`!` shell's `⎿ Running… (Ns)` row is unchanged: a `!` command has no
+timeout, so there is nothing to name.
+
+The row is live-only, like the tail it closes: `tool_lines` (scrollback
+commits, the permission prompt's context, the frozen Ctrl+O transcript)
+still renders a running command at rest as `⎿ Running…`, since those
+surfaces have no clock to tick.
 
 ### The `Exit code: N` frame, reframed for display
 
@@ -230,9 +296,9 @@ OPENROUTER_API_KEY=sk-... ALTER_ZERO_CA_FILE=/root/.ccr/ca-bundle.crt \
 ## A short terminal freezes the cell instead of trimming it
 
 The live tail is the region's elastic content, so a terminal without room for
-the whole cell used to drop its rows — the `+N lines (Ns)` footer first, then
-the output rows, then the header — into no buffer at all. The strip
+the whole cell used to drop its rows — the `+N lines (Ns · timeout …)` footer
+first, then the output rows, then the header — into no buffer at all. The strip
 bottom-anchors now and commits the rows it cannot paint into the terminal's own
 scrollback, frozen: the cell **scrolls**, keeping its newest rows and its
-`+N lines` footer on screen while its head stays readable by scrolling up.
+clock row on screen while its head stays readable by scrolling up.
 See `docs/strip-flow.md`.

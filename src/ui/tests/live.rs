@@ -4,8 +4,8 @@ use super::*;
 use crate::ui::live::preview_tool_lines;
 use crate::ui::theme::{
     INPUT_CHROME_ROWS, MODEL_SEARCH_ROW, STATUS_GAP_ROWS, STATUS_ROWS, TOOL_BACKGROUND_HINT,
-    TOOL_BACKGROUND_HINT_DELAY, TOOL_FOLD_ROWS, TOOL_PULSE_PERIOD, footer_focus_bg,
-    footer_focus_fg, tool_pulse_bright, tool_pulse_dim,
+    TOOL_BACKGROUND_HINT_DELAY, TOOL_PULSE_PERIOD, footer_focus_bg, footer_focus_fg,
+    tool_running_color,
 };
 use crate::ui::wrap::cols;
 
@@ -34,7 +34,66 @@ fn render_live_tails_a_running_bash_tool_with_its_streamed_output() {
         .join("\n");
     assert!(all.contains("line 9"), "the newest line tails: {all:?}");
     assert!(!all.contains("line 4"), "older lines are hidden: {all:?}");
-    assert!(all.contains("+5 lines (9s)"), "the footer shows: {all:?}");
+    assert!(
+        all.contains("+5 lines (9s · timeout 2m)"),
+        "the footer shows: {all:?}"
+    );
+}
+
+#[test]
+fn a_silent_running_command_shows_its_clock_and_timeout_live() {
+    // The reported ask, third shape: a command that has printed nothing
+    // shows how long it has run and how long it may on its Running row —
+    // `⎿ Running… (10s · timeout 2m)` — with the delayed Ctrl+B hint under
+    // it, instead of a bare `⎿ Running…` that said nothing for as long as
+    // the command took (docs/tool-streaming.md).
+    let mut app = App::new();
+    app.begin_stream();
+    let command = r#"python3 -c "import time; time.sleep(100)""#;
+    app.start_tool(
+        "Bash",
+        command,
+        Some(&format!(r#"{{"command":{command:?},"timeout":120000}}"#)),
+    );
+    app.set_command_elapsed(Some(Duration::from_secs(10)));
+    let preview: Vec<String> = preview_tool_lines(&app, 80).iter().map(plain).collect();
+    assert_eq!(
+        preview,
+        [
+            format!("● Bash({command})"),
+            "  ⎿  Running… (10s · timeout 2m)".to_string(),
+            "     (ctrl+b to run in background)".to_string(),
+        ]
+    );
+    // The strip is sized off the same walk, so the row it gained is reserved.
+    assert_eq!(usize::from(preview_rows(&app, 80)), preview.len());
+}
+
+#[test]
+fn a_running_command_whose_output_fits_shows_the_clock_row_under_it() {
+    // Second shape: output, but nothing hidden above the window — the clock
+    // row stands alone under the output, counting against the model's own
+    // `timeout` (600 000 ms here, read off the verbatim arguments).
+    let mut app = App::new();
+    app.begin_stream();
+    app.start_tool(
+        "Bash",
+        "python3 -u -c \"…\"",
+        Some(r#"{"command":"python3 -u -c \"…\"","timeout":600000}"#),
+    );
+    app.push_tool_output("hello world\n");
+    app.set_command_elapsed(Some(Duration::from_secs(10)));
+    let preview: Vec<String> = preview_tool_lines(&app, 80).iter().map(plain).collect();
+    assert_eq!(
+        preview[1..],
+        [
+            "  ⎿  hello world",
+            "     (10s · timeout 10m)",
+            "     (ctrl+b to run in background)",
+        ],
+        "{preview:?}"
+    );
+    assert_eq!(usize::from(preview_rows(&app, 80)), preview.len());
 }
 
 #[test]
@@ -69,7 +128,7 @@ fn the_running_tails_footer_counts_from_the_commands_own_start() {
     };
     assert_eq!(
         footer(&app),
-        "+5 lines (9s)",
+        "+5 lines (9s · timeout 2m)",
         "the command's own runtime, never the turn's 60s"
     );
     // A clock to *display*, not the Ctrl+B hint's gate: a composer-replacing
@@ -84,7 +143,7 @@ fn the_running_tails_footer_counts_from_the_commands_own_start() {
     );
     assert_eq!(
         footer(&app),
-        "+5 lines (9s)",
+        "+5 lines (9s · timeout 2m)",
         "the footer still counts under a picker"
     );
 }
@@ -264,12 +323,13 @@ fn render_live_shows_streaming_text_in_preview_row() {
 }
 
 #[test]
-fn render_live_previews_a_running_tool_with_a_pulsing_bullet() {
+fn render_live_previews_a_running_tool_with_a_blinking_bullet() {
     // While a tool runs, the strip's preview row shows its coloured header
     // instead of the assistant text, so the user sees what's executing — and
-    // the bullet **breathes** at the injected frame phase rather than sitting
-    // on a flat colour (`docs/tool-pulse.md`). This is the only place the
-    // pulse reaches the screen, so it is the wiring this test pins.
+    // the bullet **blinks** at the injected frame phase, Claude Code's running
+    // dot: shown in the one resting grey, then hidden, the header text never
+    // moving (`docs/tool-pulse.md`). This is the only place the blink reaches
+    // the screen, so it is the wiring this test pins.
     let mut app = App::new();
     app.begin_stream();
     app.start_tool("Read", "src/main.rs", None);
@@ -278,27 +338,26 @@ fn render_live_previews_a_running_tool_with_a_pulsing_bullet() {
     let mut buf = buffer(40, h);
     render_live(buf.area, &mut buf, &app);
 
-    let preview = row(&buf, 0, 40);
+    let shown = row(&buf, 0, 40);
     assert!(
-        preview.contains("Read(src/main.rs)"),
-        "preview shows the running tool header: {preview:?}"
+        shown.starts_with("● Read(src/main.rs)"),
+        "an un-injected clock shows the bullet: {shown:?}"
     );
-    let dim = buf[(0, 0)].fg;
-    assert_eq!(
-        dim,
-        tool_pulse_dim(),
-        "an un-injected clock renders the bottom of the breath"
-    );
-    // Half a period on, the same cell is at the bright end — the boundary's
-    // per-frame `set_pulse` is what animates it.
-    app.set_pulse(TOOL_PULSE_PERIOD / 2);
-    render_live(buf.area, &mut buf, &app);
     assert_eq!(
         buf[(0, 0)].fg,
-        tool_pulse_bright(),
-        "the injected frame clock moves the bullet"
+        tool_running_color(),
+        "the shown bullet wears the one resting grey"
     );
-    assert_ne!(dim, buf[(0, 0)].fg, "…so it visibly changes between frames");
+    // Half a period on, the same cell is blank — the boundary's per-frame
+    // `set_pulse` is what blinks it — and the header has not shifted.
+    app.set_pulse(TOOL_PULSE_PERIOD / 2);
+    render_live(buf.area, &mut buf, &app);
+    let hidden = row(&buf, 0, 40);
+    assert_eq!(buf[(0, 0)].symbol(), " ", "hidden at the half: {hidden:?}");
+    assert!(
+        hidden.starts_with("  Read(src/main.rs)"),
+        "the header text keeps its column: {hidden:?}"
+    );
 }
 
 #[test]
@@ -511,9 +570,10 @@ fn the_previewed_match_highlights_the_query_reversed() {
 }
 
 #[test]
-fn a_long_shell_output_caps_the_preview_with_an_expand_hint() {
-    // More than the fold → the first TOOL_FOLD_ROWS rows, then a
-    // `… +N lines (ctrl+o to expand)` row aligned with them.
+fn a_long_shell_output_shows_every_row_inline() {
+    // Past what a `bash` cell would fold, the `!` shell cell keeps going:
+    // every row inline, continuation rows aligned under the corner, and no
+    // `… +N lines (ctrl+o to expand)` row (docs/shell-command.md).
     let output = (1..=6)
         .map(|n| n.to_string())
         .collect::<Vec<_>>()
@@ -524,17 +584,13 @@ fn a_long_shell_output_caps_the_preview_with_an_expand_hint() {
         .iter()
         .map(|l| plain(l).trim_end().to_string())
         .collect();
-    assert_eq!(
-        lines.len(),
-        TOOL_FOLD_ROWS + 1,
-        "folded lines + the hint row"
-    );
+    assert_eq!(lines.len(), 6, "every row, no hint: {lines:?}");
     assert_eq!(lines[0], "  ⎿  1");
     assert_eq!(lines[1], "     2", "continuation aligned, no corner");
-    let hidden = 6 - TOOL_FOLD_ROWS;
-    assert_eq!(
-        lines[TOOL_FOLD_ROWS],
-        format!("     … +{hidden} lines (ctrl+o to expand)")
+    assert_eq!(lines[5], "     6");
+    assert!(
+        !lines.iter().any(|l| l.contains("ctrl+o")),
+        "nothing folded: {lines:?}"
     );
 }
 

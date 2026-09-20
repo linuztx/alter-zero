@@ -50,10 +50,12 @@ for expect in "Bash(ping -c 20 google.com)" "run three pings in parallel"; do
 		printf '%s\n' "$sf_full" >&2
 	fi
 done
-# Its running row too — matched as a whole cell row (`⎿  Running…` alone),
-# never as the substring the demo's own narration also contains.
-if ! printf '%s\n' "$sf_full" | grep -qE '^[[:space:]]*⎿[[:space:]]+Running…[[:space:]]*$'; then
-	fail "the flowed head lost the running call's '⎿ Running…' row"
+# Its running row too — matched as a whole cell row (`⎿  Running… (Ns ·
+# timeout 2m)`: the live row carries the command's clock and its timeout,
+# docs/tool-streaming.md), never as the substring the demo's own narration
+# also contains.
+if ! printf '%s\n' "$sf_full" | grep -qE '^[[:space:]]*⎿[[:space:]]+Running… \([0-9]+s · timeout 2m\)[[:space:]]*$'; then
+	fail "the flowed head lost the running call's '⎿ Running… (Ns · timeout 2m)' row"
 	printf '%s\n' "$sf_full" >&2
 fi
 sf_heads="$(printf '%s\n' "$sf_full" | grep -cF "Bash(ping -c 20 google.com)" || true)"
@@ -69,7 +71,7 @@ expect_lacks "$sf_done" -F "esc to interrupt" "the frozen status line survived t
 # The live cell rows, as whole rows: this demo's closing narration *quotes*
 # `⎿ Waiting…` mid-sentence, so a substring match would fail on the prose.
 for stale in "Waiting…" "Running…"; do
-	expect_lacks "$sf_done" -E "^[[:space:]]*⎿[[:space:]]+${stale}[[:space:]]*\$" "a frozen '⎿ $stale' row survived the turn (the purge should have wiped the strip)"
+	expect_lacks "$sf_done" -E "^[[:space:]]*⎿[[:space:]]+${stale}( \\([^)]*\\))?[[:space:]]*\$" "a frozen '⎿ $stale' row survived the turn (the purge should have wiped the strip)"
 done
 for cell in "Bash(ping -c 20 google.com)" "Bash(ping -c 20 facebook.com)" "Bash(ping -c 20 x.invalid)"; do
 	sf_n="$(printf '%s\n' "$sf_done" | grep -cF "$cell" || true)"

@@ -15,8 +15,7 @@ use super::layout::{
 use super::reasoning::live_reasoning_lines;
 use super::theme::*;
 use super::tool::{
-    command_display_lines, is_command_tool, live_tool_lines, result_row, running_command_lines,
-    shell_running_line,
+    is_command_tool, live_tool_lines, result_row, running_command_lines, shell_running_line,
 };
 use super::*;
 
@@ -84,7 +83,7 @@ pub fn render_live(area: Rect, buf: &mut Buffer, app: &App) {
 /// whole forming table (docs/table-streaming.md) — `stream_preview` is the
 /// boundary's cheap render of it ([`StreamRender::preview`], falling back to
 /// re-rendering the last line from the buffer when absent, for unit tests).
-/// An **open thinking phase** previews its live block — the breathing
+/// An **open thinking phase** previews its live block — the blinking
 /// `● Thinking…` header over the tail of the chain-of-thought
 /// (`docs/thinking-stream.md`) — after the agent/tool branches (what is
 /// genuinely executing is what the user waits on) and before the reply's,
@@ -156,7 +155,8 @@ fn trim_preview(mut lines: Vec<Line<'static>>, rows: usize, tail: bool) -> Vec<L
 /// One live call's strip rows: a `!` shell run's single `⎿ Running… (Ns)`
 /// row, a running backend command tool (`bash`) **tailing its streamed
 /// output** (`running_command_lines` — the header + last lines + a
-/// `+N lines (Ns)` footer, `docs/tool-streaming.md`), else the plain live
+/// `+N lines (Ns · timeout …)` clock row, or `⎿ Running… (Ns · timeout …)`
+/// before any output, `docs/tool-streaming.md`), else the plain live
 /// cell whose running bullet pulses (`docs/tool-pulse.md`).
 ///
 /// The one renderer for a live cell, shared by the main strip
@@ -178,10 +178,7 @@ pub(super) fn live_call_lines(
     if tool.shell && tool.status == ToolStatus::Running {
         return vec![shell_running_line(elapsed)];
     }
-    if is_command_tool(tool)
-        && tool.status == ToolStatus::Running
-        && !command_display_lines(tool).is_empty()
-    {
+    if is_command_tool(tool) && tool.status == ToolStatus::Running {
         return running_command_lines(tool, elapsed, pulse, width, paths);
     }
     live_tool_lines(tool, width, pulse, paths)
@@ -192,9 +189,10 @@ pub(super) fn live_call_lines(
 /// scrollback (the running call live, each not-yet-started sibling a dim
 /// `⎿ Waiting…` cell — `docs/parallel-tools.md`). A running backend `bash` cell
 /// that has streamed output **tails** it — the header + last lines + a
-/// `+N lines (Ns)` footer (`running_command_lines`; the mock,
-/// `docs/tool-streaming.md`) — before any output arrives it is the plain
-/// `⎿ Running…` peek. A lone `!` shell run collapses to its single
+/// `+N lines (Ns · timeout …)` clock row (`running_command_lines`; the mock,
+/// `docs/tool-streaming.md`) — before any output arrives it is the
+/// `⎿ Running… (Ns · timeout …)` row, the same clock on the corner row. A
+/// lone `!` shell run collapses to its single
 /// `⎿ Running… (Ns)` row (the elapsed rides the preview since a shell turn hides
 /// the status line); the shell is never batched, so it is always the only call.
 /// Shared by [`preview_lines`] (drawn) and [`preview_rows`] (sized) so the two
@@ -211,7 +209,7 @@ pub(super) fn preview_tool_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     // on screen. Zero until the first injection (the boundary injects before
     // every draw; a unit test may not).
     let elapsed = app.command_elapsed().unwrap_or(Duration::ZERO);
-    // The shared animation phase every running bullet in this strip breathes
+    // The shared animation phase every running bullet in this strip blinks
     // against (`docs/tool-pulse.md`) — distinct from `elapsed`, which is a
     // measurement and is displayed.
     let pulse = app.pulse();
@@ -417,7 +415,7 @@ pub(super) fn strip_content_rows(app: &App, width: u16, preview_n: u16) -> u16 {
 ///
 /// The strip moves on its own at the turn's 32 ms animation cadence — output
 /// streams into the running cell, the elapsed and the token tally advance,
-/// the bullet breathes — so signing its rows would purge-rebuild the screen
+/// the bullet blinks — so signing its rows would purge-rebuild the screen
 /// thirty times a second. This hashes only what a **structural** change moves:
 /// which conversation is on screen, whether a turn's status line is up, each
 /// queued call's name/arguments/status, the live agent group's members, and

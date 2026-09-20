@@ -228,8 +228,8 @@ fn draw_wave(track: &mut Track, elapsed: Duration) {
 /// - `sparkle` and `blocks` walk the banner's cyan → blue gradient
 ///   (`docs/header.md`) — the spark by its bloom level (`·` cyan, `✽` blue,
 ///   back down the fade), the block by its turn;
-/// - `pulse` breathes the running tool bullet's raised cosine
-///   ([`breath`], `docs/tool-pulse.md`) from [`spinner_pulse_dim`] to white;
+/// - `pulse` breathes a raised cosine at the running tool bullet's cadence
+///   ([`breath`], `docs/spinner.md`) from [`spinner_pulse_dim`] to white;
 /// - `bars` brightens with height, [`spinner_bars_low`] at `▁` to white at `█`;
 /// - everything else wears the comet head's white.
 ///
@@ -321,7 +321,7 @@ fn comet_spans(frame: &str) -> Vec<Span<'static>> {
 // (and every in-module unqualified use) keeps working: the app's own display
 // strings (an agent notice's `finished · 6m 2s`) humanize with the same
 // helper, so it lives beside the state that formats with it.
-pub use crate::app::format_elapsed;
+pub use crate::app::{format_elapsed, format_timeout};
 
 /// Humanize a token count for the status line and the turn summary: bare under
 /// a thousand (`842`), one-decimal thousands up to a million (`8.1k`, a
