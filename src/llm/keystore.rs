@@ -4,8 +4,8 @@
 //! The `/login` onboarding flow collects an API key and saves it here so it
 //! survives across runs; the boundary (`main.rs`) loads the file at startup and
 //! consults it during key resolution (a real process env var still wins). This
-//! module is **pure** and unit-tested — the actual file read/write is the
-//! boundary's job.
+//! parser is pure; [`EnvFile::update`] is the shared atomic file boundary
+//! used by both sign-in and background refreshes.
 //!
 //! The grammar is the common `.env` subset: `KEY=VALUE` lines, `#` comments,
 //! blank lines, an optional `export ` prefix, and optional surrounding quotes
@@ -23,6 +23,41 @@ pub struct EnvFile {
 }
 
 impl EnvFile {
+    /// Update a persisted provider credential, returning the new file text.
+    /// Read, merge and replacement are serialized within the process so
+    /// simultaneous provider refreshes preserve each other's values. A
+    /// private temporary file is synced before atomically replacing the store.
+    ///
+    /// # Errors
+    /// Returns file-system errors without replacing an unreadable store or
+    /// truncating the existing file when writing its replacement fails.
+    pub fn update(path: &std::path::Path, key: &str, value: &str) -> std::io::Result<String> {
+        use std::io::{ErrorKind, Write};
+
+        static UPDATES: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _update = UPDATES.lock().unwrap_or_else(|error| error.into_inner());
+        let current = match std::fs::read_to_string(path) {
+            Ok(text) => text,
+            Err(error) if error.kind() == ErrorKind::NotFound => String::new(),
+            Err(error) => return Err(error),
+        };
+        let updated = Self::upsert(&current, key, value);
+        let parent = path
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or_else(|| std::path::Path::new("."));
+        std::fs::create_dir_all(parent)?;
+        // NamedTempFile creates with 0600 on Unix, before any secret bytes
+        // are written. Replacement also tightens an older store's mode.
+        let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
+        temporary.write_all(updated.as_bytes())?;
+        temporary.as_file().sync_all()?;
+        temporary.persist(path).map_err(|error| error.error)?;
+        #[cfg(unix)]
+        std::fs::File::open(parent)?.sync_all()?;
+        Ok(updated)
+    }
+
     /// Parse `.env` text into its key/value pairs. Malformed lines (no `=`, an
     /// invalid key) are skipped rather than erroring — a partial file still
     /// yields whatever keys it can.
@@ -194,6 +229,60 @@ fn quote(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn auth_cache_regression_updates_do_not_replace_an_unreadable_store() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".env");
+        let existing = [0xff, 0xfe, 0xfd];
+        std::fs::write(&path, existing).unwrap();
+        assert!(EnvFile::update(&path, "TOKEN", "new").is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), existing);
+    }
+
+    #[test]
+    fn auth_cache_regression_parallel_credential_updates_preserve_every_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".env");
+        std::fs::write(&path, "# existing comment\nUNCHANGED=keep\n").unwrap();
+        let barrier = std::sync::Barrier::new(32);
+        std::thread::scope(|scope| {
+            for index in 0..32 {
+                let path = &path;
+                let barrier = &barrier;
+                scope.spawn(move || {
+                    barrier.wait();
+                    let key = format!("PROVIDER_{index}");
+                    for revision in 0..8 {
+                        EnvFile::update(path, &key, &format!("revision-{revision}")).unwrap();
+                    }
+                });
+            }
+        });
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.starts_with("# existing comment\n"));
+        let parsed = EnvFile::parse(&text);
+        assert_eq!(parsed.get("UNCHANGED"), Some("keep"));
+        for index in 0..32 {
+            assert_eq!(parsed.get(&format!("PROVIDER_{index}")), Some("revision-7"));
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn auth_cache_regression_updated_credentials_are_private() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".env");
+        std::fs::write(&path, "TOKEN=old\n").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let updated = EnvFile::update(&path, "TOKEN", "new").unwrap();
+        assert_eq!(updated, "TOKEN=new\n");
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
 
     #[test]
     fn parses_simple_pairs() {

@@ -22,7 +22,7 @@
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::net::TcpListener;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -138,11 +138,8 @@ const BODY_MAX_BYTES: u64 = 64 * 1024;
 /// flight.
 const REFRESH_SKEW: Duration = Duration::from_secs(300);
 
-/// The **floor** on a cached access token's life. `exp` is an absolute time,
-/// so a clock running ahead makes every token look already-expired and would
-/// re-mint on every single request — the bug [`super::copilot`] avoids by
-/// keying off a *duration* instead. There is no such duration here, so the
-/// floor is the guard: a token is always cached at least this long.
+/// The fallback when an access token does not expose its expiry. An explicit
+/// expiry always wins, even when it is shorter than this fallback.
 const MIN_CACHE: Duration = Duration::from_secs(60);
 
 // ---------------------------------------------------------------------------
@@ -379,8 +376,8 @@ impl TokenSet {
 
 /// How long an access token expiring at `expires_at` may be cached, given the
 /// wall clock `now` (both Unix seconds). A five-minute `REFRESH_SKEW` comes off
-/// the end; `MIN_CACHE` is the floor that keeps a skewed clock from re-minting
-/// on every request.
+/// the end; a short remaining life is cached for at most half that life.
+/// The fallback applies only when the token does not name an expiry.
 #[must_use]
 pub fn cache_lifetime(expires_at: Option<u64>, now: u64) -> Duration {
     let Some(exp) = expires_at else {
@@ -389,7 +386,9 @@ pub fn cache_lifetime(expires_at: Option<u64>, now: u64) -> Duration {
         return MIN_CACHE;
     };
     let remaining = Duration::from_secs(exp.saturating_sub(now));
-    remaining.saturating_sub(REFRESH_SKEW).max(MIN_CACHE)
+    remaining
+        .saturating_sub(REFRESH_SKEW)
+        .max(MIN_CACHE.min(remaining / 2))
 }
 
 /// Explain a sign-in or refresh failure in terms the user can act on. The
@@ -650,6 +649,23 @@ fn cache() -> &'static Mutex<HashMap<String, Cached>> {
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+/// Serialize cache misses through refresh, rotation, and persistence. A
+/// refresh token can be single-use, so locking only the map lookup is unsafe.
+/// Warm hits remain independent of an unrelated account's slow refresh.
+fn refresh_gate() -> &'static Mutex<()> {
+    static GATE: Mutex<()> = Mutex::new(());
+    &GATE
+}
+
+/// Resolve aliases before the lookup: another config may have refreshed the
+/// same account while this config still holds an older refresh token.
+fn cached_access(refresh_token: &str) -> Option<Access> {
+    let presented = live_refresh_token(refresh_token);
+    let map = cache().lock().ok()?;
+    let entry = map.get(&presented)?;
+    (entry.until > Instant::now()).then(|| entry.access.clone())
+}
+
 /// The **freshest** refresh token for one the session is still holding.
 ///
 /// Rotation is not only a disk concern: the live [`ModelConfig`] carries the
@@ -680,6 +696,13 @@ fn live_refresh_token(stored: &str) -> String {
 /// has been superseded by `rotated`.
 fn note_rotation(stored: &str, presented: &str, rotated: &str) {
     if let Ok(mut map) = rotations().lock() {
+        // A rebuilt config may present a newer alias than the original
+        // config. Repoint every alias, keeping the map one hop deep.
+        for target in map.values_mut() {
+            if target == presented {
+                *target = rotated.to_string();
+            }
+        }
         map.insert(stored.to_string(), rotated.to_string());
         if presented != stored {
             map.insert(presented.to_string(), rotated.to_string());
@@ -708,14 +731,23 @@ pub fn set_store_path(path: impl Into<PathBuf>) {
 /// is how a user recovers from a token the server has stopped honouring, so
 /// the cached one must not outlive the sign-in that replaced it.
 pub fn forget(refresh_token: &str) {
-    if let Ok(mut map) = cache().lock() {
-        map.remove(refresh_token);
-    }
-    // The chain too: a fresh sign-in mints a token unrelated to whatever the
-    // old one had rotated into, and following a stale link would present a
-    // token from the account the user just replaced.
+    let _refresh = refresh_gate().lock().unwrap_or_else(|e| e.into_inner());
+    let current = live_refresh_token(refresh_token);
+    let mut aliases = vec![refresh_token.to_string(), current.clone()];
     if let Ok(mut map) = rotations().lock() {
-        map.remove(refresh_token);
+        map.retain(|alias, target| {
+            if alias == refresh_token || target == &current {
+                aliases.push(alias.clone());
+                false
+            } else {
+                true
+            }
+        });
+    }
+    if let Ok(mut map) = cache().lock() {
+        for alias in aliases {
+            map.remove(&alias);
+        }
     }
 }
 
@@ -1050,15 +1082,66 @@ fn access_from(tokens: &TokenSet) -> Result<Access> {
 /// # Errors
 /// A refresh OpenAI refused, or a transport failure.
 pub fn authorize(refresh_token: &str) -> Result<Access> {
-    if let Ok(map) = cache().lock()
-        && let Some(entry) = map.get(refresh_token)
-        && entry.until > Instant::now()
-    {
-        return Ok(entry.access.clone());
+    authorize_with(refresh_token, exchange_refresh)
+}
+
+/// Keep the refresh transport replaceable so concurrent cache misses can be
+/// exercised deterministically without a live account.
+fn authorize_with(
+    refresh_token: &str,
+    refresh: impl FnOnce(&str) -> Result<TokenSet>,
+) -> Result<Access> {
+    if let Some(access) = cached_access(refresh_token) {
+        return Ok(access);
+    }
+    let _refresh = refresh_gate().lock().unwrap_or_else(|e| e.into_inner());
+    // A worker that was already refreshing may have filled this cache while
+    // we waited. Never present its now-retired refresh token a second time.
+    if let Some(access) = cached_access(refresh_token) {
+        return Ok(access);
     }
     // What to actually present: the stored token, or whatever a previous
     // rotation turned it into. The config still holds the original.
     let presented = live_refresh_token(refresh_token);
+    let refresh_started = Instant::now();
+    let tokens = refresh(&presented)?;
+    let access = access_from(&tokens)?;
+    let lifetime = cache_lifetime(
+        parse_claims(&access.bearer).ok().and_then(|c| c.expires_at),
+        unix_now(),
+    );
+    // The alias map keeps old configs working; only the current alias needs
+    // a bearer entry. Keeping one under every retired token leaks old JWTs.
+    let cache_key = if let Some(rotated) = tokens
+        .refresh_token
+        .filter(|t| !t.is_empty() && *t != presented)
+    {
+        persist_refresh(&rotated);
+        note_rotation(refresh_token, &presented, &rotated);
+        rotated
+    } else {
+        presented.clone()
+    };
+    if let Ok(mut map) = cache().lock() {
+        map.remove(&presented);
+        let now = Instant::now();
+        map.retain(|_, entry| entry.until > now);
+        if let Some(until) = refresh_started.checked_add(lifetime)
+            && until > now
+        {
+            map.insert(
+                cache_key,
+                Cached {
+                    access: access.clone(),
+                    until,
+                },
+            );
+        }
+    }
+    Ok(access)
+}
+
+fn exchange_refresh(presented: &str) -> Result<TokenSet> {
     let client = super::http_client(OP_TIMEOUT)?;
     let resp = client
         .post(token_url())
@@ -1066,7 +1149,7 @@ pub fn authorize(refresh_token: &str) -> Result<Access> {
         .header("accept", "application/json")
         .header("originator", ORIGINATOR)
         .header("user-agent", user_agent())
-        .json(&refresh_body(&presented))
+        .json(&refresh_body(presented))
         .send()
         .map_err(|e| LlmError::Http(e.to_string()))?;
     let status = resp.status().as_u16();
@@ -1074,42 +1157,7 @@ pub fn authorize(refresh_token: &str) -> Result<Access> {
     if !(200..300).contains(&status) {
         return Err(token_failure(status, &text));
     }
-    let tokens = TokenSet::parse(&text)?;
-    let access = access_from(&tokens)?;
-    let lifetime = cache_lifetime(
-        parse_claims(&access.bearer).ok().and_then(|c| c.expires_at),
-        unix_now(),
-    );
-    if let Ok(mut map) = cache().lock() {
-        map.insert(
-            refresh_token.to_string(),
-            Cached {
-                access: access.clone(),
-                until: Instant::now() + lifetime,
-            },
-        );
-    }
-    // Rotation: remember what the retired token became — on disk for the next
-    // launch, and in memory for this session, whose config still holds the
-    // original — and cache the access token under the new key too, so a
-    // config that *has* been rebuilt hits rather than re-minting.
-    if let Some(rotated) = tokens
-        .refresh_token
-        .filter(|t| !t.is_empty() && *t != presented)
-    {
-        persist_refresh(&rotated);
-        note_rotation(refresh_token, &presented, &rotated);
-        if let Ok(mut map) = cache().lock() {
-            map.insert(
-                rotated,
-                Cached {
-                    access: access.clone(),
-                    until: Instant::now() + lifetime,
-                },
-            );
-        }
-    }
-    Ok(access)
+    TokenSet::parse(&text)
 }
 
 /// Write a rotated refresh token back into the `.env` key store, in place.
@@ -1120,32 +1168,7 @@ fn persist_refresh(refresh_token: &str) {
     let Some(path) = store_path().lock().ok().and_then(|p| p.clone()) else {
         return;
     };
-    let current = std::fs::read_to_string(&path).unwrap_or_default();
-    let updated = super::EnvFile::upsert(&current, REFRESH_ENV_VAR, refresh_token);
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    if std::fs::write(&path, updated).is_ok() {
-        // The store holds plaintext secrets. An existing file keeps the mode
-        // it was created with, but a rotation is also the one write that can
-        // *create* it — a real `CHATGPT_CODEX_REFRESH_TOKEN` in the process
-        // environment resolves with no `.env` on disk at all — and creating
-        // it world-readable would be a quiet downgrade of the store the
-        // `/login` path takes care to lock down.
-        set_owner_only(&path);
-    }
-}
-
-/// `0600` on the key store — the same guard `/login`'s own write applies, and
-/// the same one the MCP token store uses.
-fn set_owner_only(path: &Path) {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
-    }
-    #[cfg(not(unix))]
-    let _ = path;
+    let _ = super::EnvFile::update(&path, REFRESH_ENV_VAR, refresh_token);
 }
 
 /// The provider id `providers.toml` gives the ChatGPT Codex seat — and, since
@@ -1457,18 +1480,158 @@ mod tests {
     }
 
     #[test]
-    fn a_clock_running_ahead_cannot_make_every_request_re_mint() {
-        // The bug the Copilot module avoids by keying off a *duration*: an
-        // absolute `exp` already in the past would otherwise re-mint on every
-        // single request. The floor is the guard.
-        assert_eq!(cache_lifetime(Some(10), 1_000_000), MIN_CACHE);
-        assert_eq!(cache_lifetime(Some(3600), 3599), MIN_CACHE);
-        // And a token that names no expiry is trusted for the floor, not
-        // forever.
+    fn auth_cache_regression_explicit_jwt_expiry_wins_over_the_fallback() {
+        assert_eq!(cache_lifetime(Some(10), 11), Duration::ZERO);
+        assert!(cache_lifetime(Some(10), 9) < Duration::from_secs(1));
+    }
+
+    #[test]
+    fn explicit_expiry_is_never_extended_by_the_fallback() {
+        assert_eq!(cache_lifetime(Some(10), 1_000_000), Duration::ZERO);
+        assert_eq!(cache_lifetime(Some(3600), 3599), Duration::from_millis(500));
+        // Only a token that names no expiry uses the fallback.
         assert_eq!(cache_lifetime(None, 0), MIN_CACHE);
     }
 
     // --- the rotation chain ---
+
+    fn cache_test_tokens(rotated: &str) -> TokenSet {
+        TokenSet {
+            access_token: Some(jwt(
+                serde_json::json!({"exp": unix_now() + 3600, "jti": rotated}),
+            )),
+            refresh_token: Some(rotated.to_string()),
+            ..TokenSet::default()
+        }
+    }
+
+    #[test]
+    fn auth_cache_regression_concurrent_misses_refresh_once() {
+        use std::sync::Barrier;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let key = "chatgpt-concurrent-original";
+        let barrier = Barrier::new(32);
+        let exchanges = AtomicUsize::new(0);
+        std::thread::scope(|scope| {
+            let threads: Vec<_> = (0..32)
+                .map(|_| {
+                    scope.spawn(|| {
+                        barrier.wait();
+                        authorize_with(key, |presented| {
+                            let count = exchanges.fetch_add(1, Ordering::SeqCst);
+                            // Keep the first refresh in flight while the other
+                            // workers look up the same still-empty cache.
+                            std::thread::sleep(Duration::from_millis(25));
+                            if count != 0 || presented != key {
+                                return Err(LlmError::Decode("refresh token reused".to_string()));
+                            }
+                            Ok(cache_test_tokens("chatgpt-concurrent-rotated"))
+                        })
+                    })
+                })
+                .collect();
+            let results: Vec<_> = threads.into_iter().map(|t| t.join().unwrap()).collect();
+            assert_eq!(exchanges.load(Ordering::SeqCst), 1);
+            assert!(results.iter().all(Result::is_ok));
+            assert!(results.windows(2).all(|pair| {
+                pair[0].as_ref().unwrap().bearer == pair[1].as_ref().unwrap().bearer
+            }));
+        });
+        forget(key);
+    }
+
+    #[test]
+    fn auth_cache_regression_old_alias_hits_the_newest_bearer_after_expiry() {
+        let original = "chatgpt-expiry-original";
+        let second = "chatgpt-expiry-second";
+        let third = "chatgpt-expiry-third";
+        authorize_with(original, |_| Ok(cache_test_tokens(second))).unwrap();
+        cache().lock().unwrap().get_mut(second).unwrap().until = Instant::now();
+        let refreshed = authorize_with(second, |presented| {
+            assert_eq!(presented, second);
+            Ok(cache_test_tokens(third))
+        })
+        .unwrap();
+        let from_original = authorize_with(original, |_| {
+            panic!("old aliases must hit the freshly minted bearer")
+        })
+        .unwrap();
+        assert_eq!(from_original.bearer, refreshed.bearer);
+        assert_eq!(live_refresh_token(original), third);
+        forget(original);
+        forget(second);
+        forget(third);
+    }
+
+    #[test]
+    fn auth_cache_regression_forget_clears_every_rotation_alias() {
+        let original = "chatgpt-forget-original";
+        let second = "chatgpt-forget-second";
+        let third = "chatgpt-forget-third";
+        authorize_with(original, |_| Ok(cache_test_tokens(second))).unwrap();
+        cache().lock().unwrap().get_mut(second).unwrap().until = Instant::now();
+        authorize_with(second, |_| Ok(cache_test_tokens(third))).unwrap();
+        forget(original);
+        for key in [original, second, third] {
+            assert_eq!(live_refresh_token(key), key);
+            assert!(!cache().lock().unwrap().contains_key(key));
+        }
+    }
+
+    #[test]
+    fn auth_cache_regression_a_failed_refresh_can_be_retried() {
+        let key = "chatgpt-retry-original";
+        assert!(
+            authorize_with(key, |_| {
+                Err(LlmError::Http("temporary failure".to_string()))
+            })
+            .is_err()
+        );
+        let fresh = authorize_with(key, |presented| {
+            assert_eq!(presented, key);
+            Ok(cache_test_tokens("chatgpt-retry-rotated"))
+        })
+        .unwrap();
+        let hit = authorize_with(key, |_| panic!("successful retry must be cached")).unwrap();
+        assert_eq!(hit.bearer, fresh.bearer);
+        forget(key);
+    }
+
+    #[test]
+    fn auth_cache_regression_rotations_do_not_retain_obsolete_bearers() {
+        let original = "chatgpt-bounded-original";
+        for index in 0..64 {
+            let current = live_refresh_token(original);
+            if let Some(entry) = cache().lock().unwrap().get_mut(&current) {
+                entry.until = Instant::now();
+            }
+            authorize_with(original, |_| {
+                Ok(cache_test_tokens(&format!("chatgpt-bounded-{index}")))
+            })
+            .unwrap();
+        }
+        let entries = cache()
+            .lock()
+            .unwrap()
+            .keys()
+            .filter(|key| key.starts_with("chatgpt-bounded-"))
+            .count();
+        assert_eq!(entries, 1);
+        forget(original);
+    }
+
+    #[test]
+    fn auth_cache_regression_rotation_from_a_reloaded_config_updates_old_configs() {
+        let original = "chatgpt-reloaded-original";
+        let second = "chatgpt-reloaded-second";
+        let third = "chatgpt-reloaded-third";
+        note_rotation(original, original, second);
+        note_rotation(second, second, third);
+        assert_eq!(live_refresh_token(original), third);
+        forget(original);
+        forget(second);
+    }
 
     #[test]
     fn a_rotated_refresh_token_is_what_the_next_refresh_presents() {

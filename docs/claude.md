@@ -149,8 +149,12 @@ token the session started with — refreshing successfully. Skipping either is
 not a crash but a forced re-login at the next launch.
 
 The token's cached life comes from `expires_in` (a *duration*, so a skewed
-clock cannot make a token look already dead) minus a five-minute skew, with a
-sixty-second floor.
+clock cannot make a token look already dead) minus a five-minute skew. For
+short-lived tokens the floor is capped at half their remaining lifetime, up
+to sixty seconds; an explicitly expired token is never cached. Concurrent
+misses share one refresh, and all retired aliases point to the newest token.
+Rotation and login share the atomic, serialized key-store updater described
+in `docs/chatgpt.md`, preserving other providers' credentials.
 
 A sign-in that granted no inference scope is refused **at the sign-in**
 (`scopes_allow_inference`), because the alternative is a token that

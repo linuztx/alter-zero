@@ -48,6 +48,10 @@ pub const DEFAULT_SYSTEM_PROMPT: &str = include_str!("../../prompts/alter_zero.m
 #[derive(Debug, Clone)]
 pub struct LlmBackend {
     client: OpenAiClient,
+    /// The last request's exact prefix, reused only when the next turn's
+    /// reconstructed context is semantically identical. Backend rebuilds
+    /// reset it alongside the model/tool configuration.
+    wire_history: Arc<Mutex<super::wire_history::WireHistory>>,
     model: String,
     system_prompt: Option<String>,
     tools_enabled: bool,
@@ -192,6 +196,7 @@ impl LlmBackend {
         }
         Self {
             client,
+            wire_history: Arc::new(Mutex::new(super::wire_history::WireHistory::default())),
             model,
             system_prompt,
             tools_enabled,
@@ -383,6 +388,7 @@ impl LlmBackend {
             specs.extend(manager.tool_specs());
         }
         self.client = self.client.clone().with_tools(specs);
+        self.wire_history = Arc::new(Mutex::new(super::wire_history::WireHistory::default()));
     }
 
     /// Set how many times a failed request is retried before the error is
@@ -653,6 +659,7 @@ impl ReplySource for LlmBackend {
         cancel: CancelToken,
     ) -> JoinHandle<()> {
         let client = self.client.clone();
+        let wire_history = Arc::clone(&self.wire_history);
         let system = self.system_prompt.clone();
         let background = self.background.clone();
         let vision = self.vision;
@@ -694,6 +701,9 @@ impl ReplySource for LlmBackend {
                 &context,
                 crate::images::attachment_data_url,
             );
+            if let Ok(mut previous) = wire_history.lock() {
+                previous.restore(&mut messages);
+            }
             // The turn's opening hooks (docs/hooks.md): the SessionStart
             // drain, then UserPromptSubmit — here on the backend thread, the
             // codex placement, so nothing ever blocks the loop or the first
@@ -755,7 +765,12 @@ impl ReplySource for LlmBackend {
                 &cancel,
                 max_tool_calls,
                 &mut messages,
-                |msgs| stream_round(&client, msgs, &tx, &cancel, max_retries),
+                |msgs| {
+                    if let Ok(mut previous) = wire_history.lock() {
+                        previous.remember(msgs);
+                    }
+                    stream_round(&client, msgs, &tx, &cancel, max_retries)
+                },
                 // An `askuserquestion` call takes the ask path — raise the
                 // modal and block this thread on the user's answers
                 // (docs/ask.md); a task tool call runs against the shared

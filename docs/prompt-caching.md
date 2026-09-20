@@ -85,7 +85,7 @@ that.
 ## Breakpoint placement (≤ 3 of Anthropic's 4)
 
 ```
-[system  ← ①] [user] [assistant] [user ← ③] [assistant+tool_calls] [tool ← ②]
+[system ← ①] … [previous request's final message ← ③] [assistant+tool_calls] [tool ← ②]
 ```
 
 1. **The system message** — the big stable prefix (persona + environment)
@@ -96,9 +96,14 @@ that.
    new results are fresh input; across turns it sits on the newest user
    message. Verified live that OpenRouter's Anthropic routing accepts the
    marker on a `tool`-role message (and a Qwen tool round completes with it).
-3. **The last `user` message before ②** — insurance for the provider's
-   bounded lookback when many blocks land between two requests (a big
-   parallel batch).
+3. **The previous request's frontier** — the last cacheable message before
+   the newest assistant response, including a tool result from the previous
+   round. Pinning only the last human message loses intervening tool context
+   when new content exceeds the provider's lookback. On the native Messages
+   wire, tool results become user blocks, so its previous user message already
+   identifies that boundary. Claude's own API counts consecutive tool-use and
+   tool-result runs as one lookback position; a large batch alone does not
+   exhaust that API's window, but a long text/image suffix can.
 
 Marking converts a plain-string content into the one-text-part array (the only
 shape that can carry `cache_control`); a parts array (a vision message) gets
@@ -108,6 +113,27 @@ text blocks); the frontier walks back past them. Minimum-size rules
 (1k–4k tokens depending on the model) are the provider's own: a small
 conversation's marks are simply ignored until the prefix grows past the
 threshold, so there is nothing to gate app-side.
+
+Reapplying the transform replaces its old markers instead of accumulating
+them. Blank system/developer text is omitted on the native Messages wire,
+where an empty marked block would reject the request.
+
+## Keeping the conversation prefix stable
+
+Display history reconstructs tool IDs and splits parallel calls into separate
+assistant/result pairs. Those messages carry equivalent information, but
+changing their wire representation at the next human turn loses prompt-cache
+reuse from that point onward.
+
+The active backend retains its last request and restores that exact prefix
+only when the rebuilt history has matching text, images, ordered tool names,
+arguments and results. Generated IDs, batch envelopes and adjacent same-role
+plain-message boundaries may differ.
+Any mismatch uses the newly derived history, so edits, rewinds and compaction
+cannot resurrect stale context. Retention is capped at 8 MiB (images share
+their existing allocation); backend rebuilds and process restarts discard it.
+Older rollouts still reconstruct their tool records normally. MCP tool
+definitions use stable name order so discovery order does not change a prompt.
 
 ## Cache affinity: what each backend routes on
 
@@ -274,6 +300,42 @@ balance that cannot cover it is a 402 naming the number (`You requested up to
 nearly-empty OpenRouter balance can refuse a big-output model outright; the
 live test sets `max_tokens: 32` through the config's `extra_body` for its
 one-word answers.
+
+## Stress audit (2026-09-20)
+
+The deterministic suite now exercises 32 simultaneous authorization callers
+per subscription provider, 64 successive refresh rotations, 32 concurrent
+credential-store writers, 64 human turns with 16 parallel tool calls each,
+and breakpoint placement across 32 rounds at batch sizes 1, 19, 20, 21 and 64.
+It also covers large text/image followups, repeated marker preparation,
+hook-message merging, interrupted-turn ID collisions, changed history and
+retained-memory limits. The complete local gate passed: 4,007 tests, formatting,
+Clippy with warnings denied, documentation, and login smoke phases 103/104/119.
+
+Live tests used the production provider configurations and synthetic prompts.
+All three existing identical-request baseline tests passed: Venice read 6,528
+of 6,749 input tokens, OpenRouter read 8,004 of 8,007, and ChatGPT's
+catalog-selected `codex-auto-review` model read 5,888 of 6,748.
+
+The new `live_*_growing_conversation_keeps_cache` tests send six growing turns,
+print all usage frames, and then strictly require substantial reuse on each
+of the five followups. They are ignored by default, since provider availability
+and cache placement are outside the local test's control. Their observed
+results were:
+
+| Provider/model | Five followups | Strict live result |
+| --- | --- | --- |
+| OpenRouter / `~anthropic/claude-haiku-latest` | 40,250 / 40,360 input tokens reused (99.7%) | Passed |
+| ChatGPT / `gpt-5.6-luna` | First two followups reported zero; last three each read 5,888 tokens (51.8% overall) | Failed the every-followup requirement |
+| Venice proxy / `openai-gpt-4o-mini-2024-07-18` | No cache reads reported across the five followups, including with production settings | Failed the every-followup requirement |
+
+The growing-request system prompt and routing key remain unchanged, and prior
+messages remain an exact prefix. Separate raw Venice probes, both with and
+without an output limit, omitted cache counters from their usage objects.
+Consequently the normalized zero cannot establish whether Venice actually
+missed its cache or omitted its accounting. No fabricated cache count or
+production delay was added to conceal these results. A provider hit on an
+identical request does not prove reliable hits throughout a growing session.
 
 ## Known limitations
 

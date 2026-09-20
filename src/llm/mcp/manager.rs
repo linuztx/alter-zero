@@ -654,6 +654,14 @@ impl McpManager {
                 ));
             }
         }
+        // A reconnect may enumerate the identical tools in another order.
+        // Tool definitions precede the conversation in provider prompts, so
+        // preserving a stable order keeps the whole cached prefix reusable.
+        out.sort_by(|left, right| {
+            left["function"]["name"]
+                .as_str()
+                .cmp(&right["function"]["name"].as_str())
+        });
         out
     }
 
@@ -968,6 +976,47 @@ mod tests {
         assert!(outcome.ok, "{}", outcome.output);
         assert_eq!(outcome.output, "echoed");
         manager.shutdown();
+    }
+
+    #[test]
+    fn offered_tool_order_is_stable_when_servers_reorder_their_listing() {
+        let (manager, _rx) = manager_with(vec![stdio_entry("zeta"), stdio_entry("alpha")]);
+        {
+            let mut inner = manager.lock();
+            for server in &mut inner.servers {
+                server.status = McpServerStatus::Connected;
+                server.tools = ["second", "first"]
+                    .into_iter()
+                    .map(|name| McpToolInfo {
+                        name: name.into(),
+                        description: format!("{name} tool"),
+                        input_schema: serde_json::json!({"type": "object"}),
+                    })
+                    .collect();
+            }
+        }
+        let before = manager.tool_specs();
+        {
+            let mut inner = manager.lock();
+            inner.servers.reverse();
+            for server in &mut inner.servers {
+                server.tools.reverse();
+            }
+        }
+        assert_eq!(manager.tool_specs(), before);
+        let names: Vec<_> = before
+            .iter()
+            .map(|spec| spec["function"]["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            names,
+            [
+                "mcp__alpha__first",
+                "mcp__alpha__second",
+                "mcp__zeta__first",
+                "mcp__zeta__second"
+            ]
+        );
     }
 
     /// A dual-era HTTP fixture that can be **upgraded** mid-test: it starts

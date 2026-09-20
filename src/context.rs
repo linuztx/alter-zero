@@ -248,7 +248,7 @@ impl ContextMessage {
 }
 
 /// How adjacent same-role plain-text context entries are joined when merged.
-const MERGE_SEPARATOR: &str = "\n\n";
+pub(crate) const MERGE_SEPARATOR: &str = "\n\n";
 
 /// The wire tool name (lowercase, as declared to the provider) for a finished
 /// tool's display `name` (title-cased by `llm::tools::display_name`). The four

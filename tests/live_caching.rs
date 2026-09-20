@@ -108,6 +108,14 @@ fn model_or(var: &str, default: &str) -> String {
 /// usage frame. Panics on a backend error.
 fn complete_with_usage(backend: &LlmBackend, prompt: &str) -> (String, Vec<TokenUsage>) {
     let context = vec![ContextMessage::new(ContextRole::User, prompt)];
+    complete_context_with_usage(backend, prompt, context)
+}
+
+fn complete_context_with_usage(
+    backend: &LlmBackend,
+    prompt: &str,
+    context: Vec<ContextMessage>,
+) -> (String, Vec<TokenUsage>) {
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
     let handle = backend.spawn(prompt.to_string(), vec![], context, tx, CancelToken::new());
     let mut reply = String::new();
@@ -146,6 +154,107 @@ fn two_turns(backend: &LlmBackend) -> (TokenUsage, TokenUsage) {
         second.cache_write
     );
     (first, second)
+}
+
+/// Exercise growing history, rather than just replaying an identical request.
+/// Six short rounds keep the live test bounded while checking that every warm
+/// request reports reuse. Concurrency and large tool batches are covered by
+/// the deterministic unit stress tests, without charging a live account.
+fn growing_turns_keep_cache(backend: &LlmBackend) {
+    let mut context = Vec::new();
+    let mut cached = 0;
+    let mut input = 0;
+    let mut misses = Vec::new();
+    for round in 0..6 {
+        let prompt = format!("Round {round}. Reply with exactly ONE, nothing else.");
+        context.push(ContextMessage::new(ContextRole::User, &prompt));
+        let (reply, usages) = complete_context_with_usage(backend, &prompt, context.clone());
+        assert_eq!(usages.len(), 1, "a tools-free turn reports one round");
+        let usage = usages[0];
+        println!("growing round {round}: {usage:?}");
+        assert!(usage.input > 1_000, "the complete prefix was accounted for");
+        assert!(usage.cached <= usage.input, "cache reads are part of input");
+        if round > 0 {
+            if usage.cached <= 1_000 {
+                misses.push(round);
+            }
+            cached += usage.cached;
+            input += usage.input;
+        }
+        context.push(ContextMessage::new(ContextRole::Assistant, reply));
+    }
+    println!(
+        "warm input reused: {cached}/{input} tokens ({:.1}%)",
+        cached as f64 * 100.0 / input as f64
+    );
+    assert!(
+        misses.is_empty(),
+        "warm rounds without substantial reuse: {misses:?}"
+    );
+}
+
+#[test]
+#[ignore = "six live requests; needs A0_VENICE_API_KEY"]
+fn live_venice_growing_conversation_keeps_cache() {
+    let salt = salt();
+    let model = model_or(
+        "ALTER_ZERO_LIVE_VENICE_MODEL",
+        "openai-gpt-4o-mini-2024-07-18",
+    );
+    let cfg = config(
+        "a0_venice",
+        &model,
+        Some(credential("A0_VENICE_API_KEY")),
+        salt,
+    );
+    growing_turns_keep_cache(&LlmBackend::configure(
+        cfg,
+        Some(big_system_prompt(salt)),
+        false,
+    ));
+}
+
+#[test]
+#[ignore = "six live requests; needs OPENROUTER_API_KEY; costs a few cents"]
+fn live_openrouter_growing_conversation_keeps_cache() {
+    let salt = salt();
+    let model = model_or(
+        "ALTER_ZERO_LIVE_OPENROUTER_MODEL",
+        "~anthropic/claude-haiku-latest",
+    );
+    let mut cfg = config(
+        "openrouter",
+        &model,
+        Some(credential("OPENROUTER_API_KEY")),
+        salt,
+    );
+    cfg.extra_body
+        .insert("max_tokens".into(), serde_json::json!(32));
+    growing_turns_keep_cache(&LlmBackend::configure(
+        cfg,
+        Some(big_system_prompt(salt)),
+        false,
+    ));
+}
+
+#[test]
+#[ignore = "six live requests; needs CHATGPT_CODEX_REFRESH_TOKEN + ALTER_ZERO_LIVE_TOKEN_STORE + ALTER_ZERO_LIVE_CHATGPT_MODEL"]
+fn live_chatgpt_growing_conversation_keeps_cache() {
+    alter_zero::llm::chatgpt::set_store_path(token_store());
+    let salt = salt();
+    let model = std::env::var("ALTER_ZERO_LIVE_CHATGPT_MODEL")
+        .expect("set ALTER_ZERO_LIVE_CHATGPT_MODEL to a model available to your account");
+    let cfg = config(
+        "chatgpt_codex",
+        &model,
+        Some(credential("CHATGPT_CODEX_REFRESH_TOKEN")),
+        salt,
+    );
+    growing_turns_keep_cache(&LlmBackend::configure(
+        cfg,
+        Some(big_system_prompt(salt)),
+        false,
+    ));
 }
 
 /// A raw HTTP client for the frame-level probes, trusting the same CA bundle

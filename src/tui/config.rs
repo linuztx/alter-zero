@@ -322,31 +322,6 @@ pub(crate) fn config_home() -> Option<PathBuf> {
 
 /// The `.env` key store path: `ALTER_ZERO_ENV_FILE`, else `{config_home}/.env`,
 /// else `./.env` when there's no config home. Written by the `/login` flow.
-/// Write the `.env` key store **owner-only**: the file holds plaintext API
-/// keys, so it is created `0o600` — and a pre-existing file's mode is
-/// tightened, since `mode()` only applies at creation — matching the
-/// credential-file convention of gh/codex/Claude Code. On non-unix the plain
-/// write applies.
-pub(crate) fn write_key_store(path: &std::path::Path, contents: &str) -> io::Result<()> {
-    #[cfg(unix)]
-    {
-        use std::io::Write;
-        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-        let mut file = std::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(0o600)
-            .open(path)?;
-        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
-        file.write_all(contents.as_bytes())
-    }
-    #[cfg(not(unix))]
-    {
-        std::fs::write(path, contents)
-    }
-}
-
 pub(crate) fn env_file_path() -> PathBuf {
     if let Some(path) = std::env::var_os("ALTER_ZERO_ENV_FILE") {
         return PathBuf::from(path);

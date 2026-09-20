@@ -408,6 +408,13 @@ struct CachedBearer {
 /// on each while GitHub rate-limits the endpoint.
 static BEARERS: OnceLock<Mutex<HashMap<String, CachedBearer>>> = OnceLock::new();
 
+/// Coalesce simultaneous misses instead of rate-limiting the account with
+/// one token exchange per worker. Fresh cache hits never take this lock.
+fn exchange_gate() -> &'static Mutex<()> {
+    static GATE: Mutex<()> = Mutex::new(());
+    &GATE
+}
+
 /// What a request to a Copilot-backed config actually sends.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CopilotAuth {
@@ -426,18 +433,31 @@ pub struct CopilotAuth {
 /// # Errors
 /// A refused or unparseable exchange becomes an [`LlmError`].
 pub fn authorize(oauth_token: &str) -> Result<CopilotAuth> {
+    authorize_with(oauth_token, exchange)
+}
+
+fn authorize_with(
+    oauth_token: &str,
+    exchange: impl FnOnce(&str) -> Result<ExchangedToken>,
+) -> Result<CopilotAuth> {
     let cache = BEARERS.get_or_init(|| Mutex::new(HashMap::new()));
-    let now = std::time::Instant::now();
-    if let Ok(map) = cache.lock()
-        && let Some(hit) = map.get(oauth_token)
-        && hit.good_until > now
-    {
-        return Ok(CopilotAuth {
+    let cached = || {
+        let map = cache.lock().ok()?;
+        let hit = map.get(oauth_token)?;
+        (hit.good_until > std::time::Instant::now()).then(|| CopilotAuth {
             bearer: hit.bearer.clone(),
             api_base: hit.api_base.clone(),
             plan: hit.plan.clone(),
-        });
+        })
+    };
+    if let Some(auth) = cached() {
+        return Ok(auth);
     }
+    let _exchange = exchange_gate().lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(auth) = cached() {
+        return Ok(auth);
+    }
+    let now = std::time::Instant::now();
     let exchanged = exchange(oauth_token)?;
     let auth = CopilotAuth {
         bearer: exchanged.token.clone(),
@@ -461,6 +481,7 @@ pub fn authorize(oauth_token: &str) -> Result<CopilotAuth> {
 /// Forget a stored token's cached bearer — what a fresh sign-in owes, so the
 /// next request exchanges rather than reusing the previous account's.
 pub fn forget(oauth_token: &str) {
+    let _exchange = exchange_gate().lock().unwrap_or_else(|e| e.into_inner());
     if let Some(cache) = BEARERS.get()
         && let Ok(mut map) = cache.lock()
     {
@@ -804,6 +825,36 @@ fn nap(total: Duration, cancel: &CancelToken) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn auth_cache_regression_concurrent_misses_exchange_once() {
+        use std::sync::Barrier;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let key = "copilot-concurrent-original";
+        let barrier = Barrier::new(32);
+        let exchanges = AtomicUsize::new(0);
+        std::thread::scope(|scope| {
+            let threads: Vec<_> = (0..32)
+                .map(|_| {
+                    scope.spawn(|| {
+                        barrier.wait();
+                        authorize_with(key, |_| {
+                            exchanges.fetch_add(1, Ordering::SeqCst);
+                            std::thread::sleep(Duration::from_millis(25));
+                            ExchangedToken::parse(r#"{"token":"bearer","refresh_in":1500}"#)
+                        })
+                        .unwrap()
+                    })
+                })
+                .collect();
+            for thread in threads {
+                assert_eq!(thread.join().unwrap().bearer, "bearer");
+            }
+        });
+        assert_eq!(exchanges.load(Ordering::SeqCst), 1);
+        forget(key);
+    }
 
     // --- the device-code response ---
 

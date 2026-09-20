@@ -100,17 +100,31 @@ The same split `docs/copilot.md` keeps, with different lifetimes:
 process-global map keyed by the refresh token — a turn's rounds, the `/model`
 fetch and every subagent's thread want the same bearer.
 
+Concurrent cache misses share a refresh gate and check the cache again after
+waiting, so only one caller exchanges a rotating token. Warm cache hits do not
+wait for unrelated refreshes. Every retired alias resolves to the newest token
+before the cache lookup, including after several rotations through rebuilt
+configs; old bearer entries are removed when a token rotates.
+
 Two things make this different from Copilot's exchange:
 
 **The refresh token rotates, and a reused one is terminal.** OpenAI may hand
 back a *new* refresh token with each use, and re-presenting the retired one
 answers `refresh_token_reused` — which is not recoverable, only re-signable.
-So the rotation is written straight back to the `.env` store, in place, via
+So the rotation is written straight back to the `.env` store via
 `chatgpt::persist_refresh`. That write needs a path the minting code does not
 have (it runs on a backend thread, several layers below the boundary), so
 `tui::models` calls `chatgpt::set_store_path` once at startup. Skipping that
 call is not a crash — it is a forced re-login at the next launch, which is
 exactly the kind of failure that reads as a different bug.
+
+Login and both rotating providers share `EnvFile::update`: its read, update
+and atomic replacement are serialized within the process. A private temporary
+file prevents partially written credentials and concurrent writes losing other
+provider keys. Read errors are propagated rather than treating an unreadable
+store as an empty one. Refresh persistence remains best-effort.
+These locks coordinate threads in one process; they do not coordinate two
+separate running applications sharing the same rotating credential.
 
 The disk write is only half of it. The live `ModelConfig` carries the token the
 session *started* with and nothing reloads it mid-run, so once that token is
@@ -133,10 +147,10 @@ server is going to validate anyway; they grant nothing.
 Copilot's exchange publishes a `refresh_in` **duration**, and `docs/copilot.md`
 explains why keying off the absolute `expires_at` instead re-exchanges on
 every request when the user's clock runs ahead. OpenAI publishes only the
-absolute `exp`, so that mitigation isn't available — the guard here is a
-**floor**: `cache_lifetime` subtracts a five-minute skew from the remaining
-life and then clamps to at least sixty seconds. A clock hours ahead costs one
-extra mint a minute instead of one per request.
+absolute `exp`, so that mitigation isn't available. `cache_lifetime` subtracts
+a five-minute skew, with a floor no larger than half the remaining lifetime
+or sixty seconds. A known expiry is never extended: an already-expired token
+is not cached. Missing expiry information gets a conservative sixty seconds.
 
 ### The seam
 

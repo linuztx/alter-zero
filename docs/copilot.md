@@ -207,6 +207,9 @@ fetch and every subagent's thread need the same bearer, and re-exchanging per
 request would spend a network round trip on each against an endpoint GitHub
 rate-limits.
 
+Concurrent cache misses share an exchange gate and recheck the cache after
+waiting, so parallel subagents do not all exchange the same OAuth token.
+
 **The cached lifetime comes from `refresh_in`, not `expires_at`.** A user whose
 clock runs ahead gets an `expires_at` already in the past, and keying off it
 re-exchanges on *every single request*. `refresh_in` is a duration and immune to
