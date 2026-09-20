@@ -29,9 +29,12 @@ fn wrapped_code_and_heading_links_never_commit_partial_targets() {
                 );
                 let mut visible = committed.clone();
                 visible.extend(render.preview(prefix, width, usize::MAX));
-                assert_eq!(
-                    visible,
-                    message_lines(Role::Assistant, prefix, width),
+                assert!(
+                    matches_up_to_padding(
+                        &visible,
+                        &message_lines(Role::Assistant, prefix, width),
+                        crate::ui::assistant::row_is_blank,
+                    ),
                     "live preview matches batch including link carriers: {prefix:?}"
                 );
             }
@@ -457,18 +460,28 @@ fn stream_render_matches_batch_render_on_every_prefix() {
                     .iter()
                     .map(styled)
                     .collect();
+                // …allowing the strip's blank padding rows past the batch
+                // render's end (`docs/slow-stream.md`).
+                let content = got_preview
+                    .iter()
+                    .rposition(|row| row.iter().any(|(t, ..)| !t.trim().is_empty()))
+                    .map_or(0, |i| i + 1);
+                let is_suffix = |got: &[Vec<(String, Option<Color>, Modifier)>]| {
+                    got.len() <= batch_prefix.len()
+                        && got[..] == batch_prefix[batch_prefix.len() - got.len()..]
+                };
                 assert!(
-                    got_preview.len() <= batch_prefix.len()
-                        && got_preview[..]
-                            == batch_prefix[batch_prefix.len() - got_preview.len()..],
+                    is_suffix(&got_preview) || is_suffix(&got_preview[..content]),
                     "preview must be a suffix of the batch render at {prefix:?} (w={width}):\n got {got_preview:?}\nwant a tail of {batch_prefix:?}"
                 );
                 // (d) while a table is open, scrollback + strip together show
                 // the WHOLE render — the table streams visibly even though
-                // none of it has committed to scrollback yet.
+                // none of it has committed to scrollback yet. The strip's
+                // blank padding rows past the block (docs/slow-stream.md)
+                // are not content, so they are not counted.
                 if ends_in_open_table(prefix) {
                     assert_eq!(
-                        committed.len() + got_preview.len(),
+                        committed.len() + content,
                         batch_prefix.len(),
                         "open table: committed + preview must span the whole render at {prefix:?} (w={width})"
                     );
@@ -637,9 +650,14 @@ fn stream_render_preview_is_the_uncommitted_tail_of_the_render() {
             .collect();
         // No trimming here: `message_lines` already drops a reply-trailing
         // blank run outside a fence, and keeps it inside one — exactly the
-        // rule the preview follows.
+        // rule the preview follows. The one allowance is the strip's blank
+        // padding, kept so it never shrinks between two tokens
+        // (`docs/slow-stream.md`).
         expected.drain(..committed.len().min(expected.len()));
-        assert_eq!(got, expected, "preview mismatch at {acc:?}");
+        assert!(
+            matches_up_to_padding(&got, &expected, |s| blank_text(s)),
+            "preview mismatch at {acc:?}: {got:?} vs {expected:?}"
+        );
     }
     // Advancing the preview never disturbs the commits: the two together still
     // reconstruct the whole reply exactly.
@@ -915,9 +933,93 @@ fn a_closing_fence_never_previews_an_already_committed_row() {
         .map(plain)
         .collect();
     assert!(
-        preview.is_empty(),
-        "nothing is left uncommitted, so the strip previews nothing: {preview:?}"
+        preview.iter().all(|row| row.trim().is_empty()),
+        "nothing is left uncommitted, so the strip previews no content: {preview:?}"
     );
+}
+
+#[test]
+fn the_strip_never_shrinks_between_two_tokens_without_a_commit() {
+    // The region is content-anchored, so rows leaving the strip must be rows
+    // that moved to scrollback — otherwise the box hops UP and drops back a
+    // token later, a bounce a slow model makes visible (`docs/slow-stream.md`).
+    // Two shapes did exactly that, both at a code fence streamed one
+    // backtick at a time: the closing ``` left nothing to preview (the slot
+    // and its gap vanished — two rows), and the opening ``` after a paragraph
+    // break rendered no row where `` `` `` had rendered one (one row). Drive
+    // the boundary's rhythm — commit, then preview, per character — and hold
+    // that the preview never loses more rows than that step committed.
+    // The table is the third shape: at a narrow width its header, wrapped
+    // as prose while the delimiter streams, collapses into a shorter grid
+    // when the delimiter confirms, and the grid into key/value records when
+    // the first row arrives.
+    for full in [
+        "Intro line.\n\n```py\nx = 1\n```\n\n```rs\nlet y = 2;\n```\n\nOutro.",
+        "## A table\n\n| Element | Rendered as | Streams as |\n|---------|-------------|------------|\n| Heading | bold text | one line |\n| Fence | code | held whole |\n\ndone",
+    ] {
+        for width in [20u16, 40, 80] {
+            let mut render = StreamRender::new();
+            let mut prev_rows = 0usize;
+            for end in 1..=full.len() {
+                let prefix = &full[..end];
+                let committed_now = render.commit(prefix, width).len();
+                let rows = render.preview(prefix, width, usize::MAX).len();
+                assert!(
+                    rows + committed_now >= prev_rows,
+                    "w={width}: the strip shrank from {prev_rows} to {rows} rows with \
+                     {committed_now} row(s) committing at {prefix:?} — the box would hop up"
+                );
+                prev_rows = rows;
+            }
+        }
+    }
+}
+
+#[test]
+fn a_fence_line_previews_one_blank_placeholder_row() {
+    // The two fence states behind the bounce, pinned by shape. A closing ```
+    // that committed every code row previews one blank row — the row the
+    // next line will land on — instead of nothing; an opening ``` after a
+    // paragraph break keeps the row the `` `` `` prose held a token earlier.
+    // Streamed by prefix in the boundary's rhythm — a commit, then the
+    // frame's preview, per piece (a one-shot commit of the whole text
+    // withholds the last code row for the preview instead, since it never
+    // saw the fence open; and the floor the padding rests on is the height
+    // of the *previous* preview, so the strip has to be drawn between the
+    // pieces here as it is between tokens).
+    let width = 40;
+    let stream = |render: &mut StreamRender, text: &str| {
+        let mut rows = Vec::new();
+        for end in 1..=text.len() {
+            let _ = render.commit(&text[..end], width);
+            rows = render.preview(&text[..end], width, usize::MAX);
+        }
+        rows.iter().map(plain).collect::<Vec<_>>()
+    };
+    let mut render = StreamRender::new();
+    let closed = stream(&mut render, "```py\nx = 1\n```\n");
+    assert_eq!(
+        closed,
+        vec!["  ".to_string()],
+        "the closing fence: one blank row"
+    );
+    let mut render = StreamRender::new();
+    let opener = stream(&mut render, "Intro.\n\n```");
+    assert_eq!(
+        opener,
+        vec!["  ".to_string(), "  ".to_string()],
+        "the opener after a paragraph break: the break's blank row and the placeholder"
+    );
+    // …and the placeholder is geometry, not content: the next line takes
+    // its place rather than stacking under it.
+    let mut render = StreamRender::new();
+    let next = stream(&mut render, "```py\nx = 1\n```\nnext");
+    assert_eq!(next, vec!["  next".to_string()]);
+    // The bullet-home case is untouched: a reply that has committed nothing
+    // yet previews its bullet, never a bare blank.
+    let mut render = StreamRender::new();
+    let first = stream(&mut render, "```py");
+    assert_eq!(first, vec!["● ".to_string()]);
 }
 
 #[test]

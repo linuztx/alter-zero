@@ -441,3 +441,25 @@ pub(super) fn spec(id: &str, desc: &str, background: bool) -> crate::stream::Age
         background,
     }
 }
+
+/// Whether `screen` — scrollback plus the strip — is the batch render
+/// `batch`, or `batch` plus **trailing blank rows**: the padding the strip
+/// keeps so it never shrinks between two tokens by more than what moved to
+/// scrollback, and the box never hops up (`StreamRender::preview`'s floor,
+/// `docs/slow-stream.md`). The one tolerance the shared-frontier contract
+/// allows, and only in that shape — every content row must match exactly,
+/// and a blank tail row inside an open fence is content on both sides.
+pub(super) fn matches_up_to_padding<T: PartialEq>(
+    screen: &[T],
+    batch: &[T],
+    blank: impl Fn(&T) -> bool,
+) -> bool {
+    screen.len() >= batch.len()
+        && screen[..batch.len()] == batch[..]
+        && screen[batch.len()..].iter().all(blank)
+}
+
+/// [`matches_up_to_padding`] for a single row's text.
+pub(super) fn blank_text(row: &str) -> bool {
+    row.trim().is_empty()
+}

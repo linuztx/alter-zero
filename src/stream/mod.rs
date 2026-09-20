@@ -30,8 +30,8 @@ mod tests;
 
 pub use self::cancel::CancelToken;
 pub use self::dummy::{
-    AGENT_DELAY, CHUNK_DELAY, DummyAi, STARTUP_DELAY, THINK_CHUNK_DELAY, TOOL_DELAY, chunks,
-    dummy_response, image_ack, turn_events,
+    AGENT_DELAY, CHUNK_DELAY, DummyAi, MARKDOWN_TOUR, STARTUP_DELAY, THINK_CHUNK_DELAY,
+    TOKEN_MAX_CHARS, TOOL_DELAY, chunks, dummy_response, image_ack, tokens, turn_events,
 };
 pub use self::event::{AgentCallDone, AgentSpec, StreamEvent, TokenUsage, ToolCallSummary};
 pub use self::source::{AgentChatDelivery, ReplySource};

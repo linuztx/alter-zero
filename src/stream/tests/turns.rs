@@ -757,3 +757,99 @@ fn an_agents_prompt_scripts_the_two_agent_demo() {
             .any(|e| matches!(e, StreamEvent::AgentBatch { .. }))
     );
 }
+
+#[test]
+fn a_markdown_prompt_streams_a_long_structured_document_token_by_token() {
+    // The slow-stream stress demo (`docs/slow-stream.md`): a prompt
+    // mentioning "markdown" plays a text-only turn — no thinking phase, no
+    // tool calls, so the whole document is ONE message and the incremental
+    // renderer carries every block kind from the first character to the
+    // last — whose chunks are token-sized pieces rather than words, so the
+    // boundaries land inside markers and across line breaks the way a real
+    // model's tokens do. Every markdown element the renderer knows is in it,
+    // and it closes on the hand-off like every user-facing demo.
+    let events = turn_events("stream some markdown to me", 0);
+    let text = chunk_text(&events);
+    assert_eq!(text, MARKDOWN_TOUR, "the chunks reconstruct the document");
+    assert!(
+        events
+            .iter()
+            .all(|e| matches!(e, StreamEvent::Chunk(_) | StreamEvent::StreamDone)),
+        "a markdown turn is text-only: {events:?}"
+    );
+    assert!(matches!(events.last(), Some(StreamEvent::StreamDone)));
+    let pieces = events.len() - 1;
+    assert!(
+        pieces > chunks(MARKDOWN_TOUR).len(),
+        "the document streams in token-sized pieces, finer than words ({pieces} pieces)"
+    );
+    for needle in [
+        "# ",
+        "\n## ",
+        "\n### ",
+        "**",
+        "*italic*",
+        "~~",
+        "`inline code`",
+        "](https://",
+        "\n- ",
+        "\n  - ",
+        "\n1. ",
+        "\n10. ",
+        "- [x] ",
+        "- [ ] ",
+        "\n> ",
+        "```python\n",
+        "```rust\n",
+        "\n| ",
+        "|---",
+        "\n---\n",
+        "✅",
+        "https://",
+    ] {
+        assert!(
+            MARKDOWN_TOUR.contains(needle),
+            "the tour is missing the {needle:?} element"
+        );
+    }
+    // A fence with a blank line INSIDE it (content, never a paragraph break)
+    // and a code line long enough to wrap at eighty columns (a withheld
+    // multi-row line): the two shapes the strip has to hold whole.
+    assert!(
+        MARKDOWN_TOUR.contains("\n\n    return"),
+        "a blank line inside a fence"
+    );
+    assert!(
+        MARKDOWN_TOUR.lines().any(|l| l.chars().count() > 80),
+        "a code line that wraps at eighty columns"
+    );
+}
+
+#[test]
+fn the_markdown_tour_acknowledges_images_and_hands_off() {
+    // Two images attached open the reply with the acknowledgement, in front
+    // of the document (the image-channel rule every demo follows).
+    let text = chunk_text(&turn_events("stream some markdown to me", 2));
+    assert!(text.starts_with("Looking at your 2 images. "));
+    assert!(text.ends_with(MARKDOWN_TOUR));
+}
+
+#[test]
+fn every_content_line_of_the_markdown_tour_is_distinct() {
+    // The smoke suite proves nothing streams twice by counting each row of
+    // the settled transcript once (`docs/slow-stream.md`): that only works
+    // if no two source lines render alike, so the document is written with
+    // every non-blank line distinct — table delimiter rows and fence
+    // markers excepted, being structural.
+    let mut seen = std::collections::HashSet::new();
+    for line in MARKDOWN_TOUR.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with("```") || trimmed.starts_with("|-") {
+            continue;
+        }
+        assert!(
+            seen.insert(trimmed),
+            "a repeated line in the tour: {trimmed:?}"
+        );
+    }
+}

@@ -149,6 +149,11 @@ type Row = (
     Option<Color>,
 );
 
+/// Whether a styled row is visually blank — every span whitespace.
+fn blank_row(row: &[Row]) -> bool {
+    row.iter().all(|(t, ..)| t.trim().is_empty())
+}
+
 fn styled(l: &Line) -> Vec<Row> {
     l.spans
         .iter()
@@ -179,12 +184,15 @@ fn assert_stream_matches_batch(full: &str, width: u16, ctx: &str) {
         .collect();
     let mut render = StreamRender::new();
     let mut committed: Vec<Vec<Row>> = Vec::new();
+    let mut prev_preview_rows = 0usize;
     for end in 1..=full.len() {
         if !full.is_char_boundary(end) {
             continue;
         }
         let prefix = &full[..end];
-        committed.extend(render.commit(prefix, width).iter().map(styled));
+        let committed_now = render.commit(prefix, width);
+        let committed_now_rows = committed_now.len();
+        committed.extend(committed_now.iter().map(styled));
         assert!(
             committed.len() <= expected.len() && committed[..] == expected[..committed.len()],
             "{ctx}: a committed row diverged at {prefix:?} (w={width})\nfull doc: {full:?}\n got {committed:?}\nwant a prefix of {expected:?}"
@@ -208,10 +216,24 @@ fn assert_stream_matches_batch(full: &str, width: u16, ctx: &str) {
         // strip share one frontier*).
         let mut on_screen = committed.clone();
         on_screen.extend(got_preview.iter().cloned());
-        assert_eq!(
-            on_screen, batch_prefix,
+        // The one tolerance (`matches_up_to_padding`): the strip pads with
+        // blank rows rather than shrink between two tokens
+        // (`docs/slow-stream.md`), rows the batch render — trimming a
+        // reply's trailing blanks — does not hold.
+        assert!(
+            matches_up_to_padding(&on_screen, &batch_prefix, |r| blank_row(r)),
             "{ctx}: scrollback + strip must be the reply so far at {prefix:?} (w={width}):\n             committed {committed:?}\npreview {got_preview:?}"
         );
+        // …and the strip never SHRINKS without a commit: the region is
+        // content-anchored, so rows leaving the preview must be rows that
+        // moved to scrollback, or the box hops up (the bounce a slow model
+        // makes visible on every fence, `docs/slow-stream.md`).
+        assert!(
+            got_preview.len() + committed_now_rows >= prev_preview_rows,
+            "{ctx}: the strip shrank from {prev_preview_rows} to {} rows with only {committed_now_rows} row(s) committing at {prefix:?} (w={width}): the box would hop up",
+            got_preview.len()
+        );
+        prev_preview_rows = got_preview.len();
     }
     committed.extend(render.finish(full, width).iter().map(styled));
     assert_eq!(
@@ -638,10 +660,10 @@ fn a_purge_rebuild_plus_the_strip_still_shows_the_whole_reply() {
                     .iter()
                     .map(plain)
                     .collect();
-                assert_eq!(
-                    screen, batch,
+                assert!(
+                    matches_up_to_padding(&screen, &batch, |s| blank_text(s)),
                     "case {case}: a rebuild at {prefix:?} (w={width}) does not \
-                     reconstruct the reply"
+                     reconstruct the reply: {screen:?} vs {batch:?}"
                 );
             }
         }
@@ -855,9 +877,9 @@ fn assert_agent_view_matches_batch(full: &str, width: u16, ctx: &str) {
             .iter()
             .map(styled)
             .collect();
-        assert_eq!(
-            on_screen, batch,
-            "{ctx}: the agent view's scrollback + strip must be its reply so far at {prefix:?} (w={width})"
+        assert!(
+            matches_up_to_padding(&on_screen, &batch, |r| blank_row(r)),
+            "{ctx}: the agent view's scrollback + strip must be its reply so far at {prefix:?} (w={width}): {on_screen:?} vs {batch:?}"
         );
     }
     committed.extend(render.finish(full, width).iter().map(styled));
@@ -912,4 +934,78 @@ fn an_agent_views_live_tool_cell_outranks_its_streaming_frontier() {
     assert_eq!(rows[1], "  ⎿  Waiting…");
     let run = app.agent("a1").expect("the roster entry");
     assert!(run.streaming.is_none(), "the segment was finalised");
+}
+
+#[test]
+fn the_markdown_tour_streams_prefix_stable_at_every_width() {
+    // The slow-stream stress demo's document (`docs/slow-stream.md`): every
+    // block kind the renderer knows, in the one long text-only reply
+    // `scripts/smoke.sh` Phase 121 streams token by token. The smoke phase
+    // proves the *boundary* holds up at a slow pace; this is the same
+    // document under the pure differential invariant, every char prefix at
+    // three widths — the eighty columns the phase streams at, where the
+    // rust signature is a withheld two-row code line, and two narrower ones
+    // where the table falls back to records and the bullets wrap.
+    let doc = crate::stream::MARKDOWN_TOUR;
+    for width in [20u16, 40, 80] {
+        assert_stream_matches_batch(doc, width, "markdown tour");
+    }
+}
+
+#[test]
+fn the_markdown_tour_never_previews_a_committed_row_token_by_token() {
+    // The boundary's own rhythm: `commit` on every streamed piece, then the
+    // strip's `preview` capped to what an 80×24 terminal's live region can
+    // reserve — driven over the exact token-sized pieces the dummy streams
+    // (`stream::tokens`), so the boundaries land where a slow model's do. At
+    // no step may a non-blank preview row already sit in scrollback (the
+    // slow-stream duplicate-line shape, which at a few tokens a second stays
+    // on screen long enough to read), and the capped preview must always be
+    // the newest rows of the uncapped one (tail-follow, never the head).
+    let doc = crate::stream::MARKDOWN_TOUR;
+    let width = 80;
+    let cap = 14; // an 80×24 screen less the status, gaps, box and footer
+    let mut render = StreamRender::new();
+    let mut committed: Vec<Vec<Row>> = Vec::new();
+    let mut acc = String::new();
+    let mut previewed_rows = 0usize;
+    for piece in crate::stream::tokens(doc) {
+        acc.push_str(&piece);
+        committed.extend(render.commit(&acc, width).iter().map(styled));
+        let full = render.preview(&acc, width, usize::MAX);
+        let capped = render.preview(&acc, width, cap);
+        assert!(capped.len() <= cap, "the cap bounds the strip");
+        let tail: Vec<Vec<Row>> = full
+            .iter()
+            .skip(full.len().saturating_sub(cap))
+            .map(styled)
+            .collect();
+        let capped_rows: Vec<Vec<Row>> = capped.iter().map(styled).collect();
+        assert_eq!(
+            capped_rows, tail,
+            "the capped preview tail-follows at {acc:?}"
+        );
+        previewed_rows += capped.len();
+        for row in &capped_rows {
+            if row.iter().any(|(t, ..)| !t.trim().is_empty()) {
+                assert!(
+                    !committed.contains(row),
+                    "preview row {row:?} is already in scrollback at {acc:?}"
+                );
+            }
+        }
+    }
+    committed.extend(render.finish(&acc, width).iter().map(styled));
+    let expected: Vec<Vec<Row>> = message_lines(Role::Assistant, doc, width)
+        .iter()
+        .map(styled)
+        .collect();
+    assert_eq!(
+        committed, expected,
+        "the token-paced stream reconstructs the tour"
+    );
+    assert!(
+        previewed_rows > 0,
+        "the strip previewed something along the way"
+    );
 }

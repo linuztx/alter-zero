@@ -241,6 +241,17 @@ pub(in crate::stream) const SCENARIOS: &[Scenario] = &[
         selects: |cue| cue.mentions("table"),
         play: Play::Script(turns::table_turn),
     },
+    // The slow-stream stress demo: every markdown element in one long
+    // text-only reply, streamed token by token (docs/slow-stream.md). Below
+    // the table demo, whose cue a "markdown table" prompt also carries.
+    Scenario {
+        #[cfg(test)]
+        name: "markdown",
+        // Never for `/init`, whose canned prompt asks for Markdown headings
+        // — the same AGENTS.md guard the agent and file demos carry.
+        selects: |cue| cue.mentions("markdown") && !cue.mentions("agents.md"),
+        play: Play::Script(turns::markdown_turn),
+    },
     // A two-subagent group, foreground or background (docs/agent-tool.md).
     Scenario {
         #[cfg(test)]

@@ -99,8 +99,10 @@ pub fn preview_rows(app: &App, width: u16) -> u16 {
     }
     // A streaming reply previews the rows scrollback does not hold yet — its
     // last row for ordinary prose, every wrapped row of a withheld source
-    // line, the whole forming table, or **none at all** when the frontier just
-    // committed clean (a closing ``` renders no rows of its own). Only the
+    // line, the whole forming table — padded with blank rows to the height
+    // it had a token ago, less what committed since, so a closing ``` or a
+    // re-laid-out table never drops rows and bounces the box
+    // (docs/slow-stream.md). Only the
     // boundary's `StreamRender` knows that height, so it injects the count each
     // frame via [`App::set_stream_preview_rows`] (the `set_status_times`
     // pattern; docs/table-streaming.md) and this reports it verbatim — a floor
