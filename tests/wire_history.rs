@@ -525,3 +525,123 @@ fn live_openrouter_a_rebuilt_backend_reads_the_tool_round_back_from_cache() {
         "the rebuilt backend read the tool round back from cache: {usage:?}"
     );
 }
+
+#[test]
+#[ignore = "hits the network; needs CHATGPT_CODEX_REFRESH_TOKEN + ALTER_ZERO_LIVE_TOKEN_STORE + ALTER_ZERO_LIVE_CHATGPT_MODEL"]
+fn live_chatgpt_a_rebuilt_backend_reads_the_tool_round_back_from_cache() {
+    // The Responses wire's durable half on OpenAI's cache: a real `bash`
+    // turn whose result spans several 128-token cache blocks, folded into
+    // the `App`, then a fresh backend — no retained request — sending the
+    // next turn from the derived context alone. A read that stops at the
+    // system prompt and the first user message would be a mismatch at the
+    // tool round; a read through the tool result is the record replaying
+    // what the provider cached (docs/prompt-caching.md). OpenAI's cache is
+    // best-effort, so the assertion is the floor and the ratio is printed.
+    use alter_zero::llm::{ProvidersFile, Selection};
+    alter_zero::llm::chatgpt::set_store_path(
+        std::env::var_os("ALTER_ZERO_LIVE_TOKEN_STORE")
+            .map(std::path::PathBuf::from)
+            .expect("set ALTER_ZERO_LIVE_TOKEN_STORE to a file the rotated refresh token can be written to"),
+    );
+    let refresh = std::env::var("CHATGPT_CODEX_REFRESH_TOKEN")
+        .expect("set CHATGPT_CODEX_REFRESH_TOKEN to run this live test");
+    let model = std::env::var("ALTER_ZERO_LIVE_CHATGPT_MODEL")
+        .expect("set ALTER_ZERO_LIVE_CHATGPT_MODEL to a model available to your account");
+    let salt = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    let corpus: String = (0..420)
+        .map(|i| format!("Calibration sentence {i} of the standing corpus, run {salt}. "))
+        .collect();
+    let system =
+        format!("You are a terse assistant. Answer in as few words as possible.\n{corpus}");
+    let configure = || {
+        let cfg = ProvidersFile::builtin()
+            .model_config(&Selection {
+                provider_id: "chatgpt_codex".to_string(),
+                model: model.clone(),
+                api_key: Some(refresh.clone()),
+                temperature: None,
+                thinking: None,
+                vision: None,
+                context: None,
+                api_base: None,
+                cache_key: Some(format!("alter-zero-wire-history-{salt}")),
+                service_tier: None,
+            })
+            .expect("chatgpt_codex is a built-in provider");
+        LlmBackend::configure(cfg, Some(system.clone()), true)
+    };
+    let usages = |events: &[StreamEvent]| -> Vec<alter_zero::stream::TokenUsage> {
+        events
+            .iter()
+            .filter_map(|event| match event {
+                StreamEvent::Usage(usage) => Some(*usage),
+                _ => None,
+            })
+            .collect()
+    };
+
+    let first = configure();
+    let mut app = App::new();
+    let prompt = format!(
+        "Use the bash tool to run `seq 1 800` (one call), then reply with exactly DONE. Run {salt}."
+    );
+    app.record_user_message(&prompt);
+    app.begin_stream();
+    let events = turn(&first, &prompt, context_messages(&app.history));
+    let lead: String = events
+        .iter()
+        .take_while(|event| !matches!(event, StreamEvent::ToolStart { .. }))
+        .filter_map(|event| match event {
+            StreamEvent::Chunk(text) => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
+    println!("text before the first call: {lead:?}");
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, StreamEvent::ToolStart { .. })),
+        "the model made a tool call: {events:?}"
+    );
+    for usage in usages(&events) {
+        println!("tool turn usage: {usage:?}");
+    }
+    fold(&mut app, events);
+    let tool = app
+        .history
+        .iter()
+        .find_map(|item| match item {
+            HistoryItem::Tool(tool) => Some(tool),
+            _ => None,
+        })
+        .expect("the tool call was recorded");
+    println!(
+        "recorded call id: {:?}, batch: {:?}, position: {:?}",
+        tool.call_id, tool.batch, tool.position
+    );
+    assert!(
+        tool.call_id.is_some(),
+        "the record carries the provider's id"
+    );
+
+    let rebuilt = configure();
+    let prompt = "Now reply with exactly AGAIN.";
+    app.record_user_message(prompt);
+    app.begin_stream();
+    let events = turn(&rebuilt, prompt, context_messages(&app.history));
+    let usage = usages(&events)
+        .first()
+        .copied()
+        .expect("the next turn reported usage");
+    println!(
+        "rebuilt backend usage: {usage:?} (cached {}% of the input)",
+        usage.cached * 100 / usage.input.max(1)
+    );
+    fold(&mut app, events);
+    assert!(
+        usage.cached > 1_000,
+        "the rebuilt backend read the prefix back from cache: {usage:?}"
+    );
+}

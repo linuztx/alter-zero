@@ -178,7 +178,12 @@ the prefix. Its `#[ignore]`d live twin measures that half on a real cache
 OpenRouter's Anthropic routing): a real `bash` turn folded into the `App`,
 then a fresh backend's first request reading 9,540 of its 9,561 input tokens
 back — the tool round, under the provider's own `toolu_…` id, from the
-record alone (measured 2026-09-21).
+record alone (measured 2026-09-21). Its Responses-wire twin
+(`live_chatgpt_a_rebuilt_backend_reads_the_tool_round_back_from_cache`,
+an 800-line `seq` result so the round spans several of OpenAI's 128-token
+blocks) read 8,704 of 9,067 back on `codex-auto-review` — past the system
+prompt and through the tool result, the model having emitted no blank
+lead that run; the blank-lead shape stays the retained request's alone.
 
 ## Cache affinity: what each backend routes on
 
