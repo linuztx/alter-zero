@@ -143,10 +143,15 @@ Four details are load-bearing and none of them is guessable:
 
 **Refresh tokens rotate.** The same fix `docs/chatgpt.md` describes applies:
 `claude::persist_refresh` writes the new value straight back into the `.env`
-store through a path `tui::models` hands the module once at startup, and an
-in-memory rotation map keeps the live `ModelConfig` — which still holds the
-token the session started with — refreshing successfully. Skipping either is
-not a crash but a forced re-login at the next launch.
+store through a path `tui::models` hands the module once at startup — only
+while the store still holds this session's own chain, never over a token a
+newer sign-in stored meanwhile — and an in-memory rotation map keeps the
+live `ModelConfig` — which still holds the token the session started with —
+refreshing successfully. Skipping either is not a crash but a forced
+re-login at the next launch. And a fresh sign-in's `claude::forget` clears
+the cache without waiting behind a refresh in flight, whose bearer is then
+dropped rather than cached under the replaced credential, exactly as the
+ChatGPT module does.
 
 The token's cached life comes from `expires_in` (a *duration*, so a skewed
 clock cannot make a token look already dead) minus a five-minute skew. For

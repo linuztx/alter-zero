@@ -701,9 +701,6 @@ impl ReplySource for LlmBackend {
                 &context,
                 crate::images::attachment_data_url,
             );
-            if let Ok(mut previous) = wire_history.lock() {
-                previous.restore(&mut messages);
-            }
             // The turn's opening hooks (docs/hooks.md): the SessionStart
             // drain, then UserPromptSubmit — here on the backend thread, the
             // codex placement, so nothing ever blocks the loop or the first
@@ -726,6 +723,14 @@ impl ReplySource for LlmBackend {
                     let _ = tx.send(StreamEvent::PromptBlocked { reason });
                 }
                 return;
+            }
+            // The retained prefix (docs/prompt-caching.md), spliced in only
+            // once the turn is going out: a blocked prompt sends nothing, and
+            // taking the prefix for it would cost the next real turn the
+            // provider's cached copy. The hook notes above sit past the
+            // prefix, at the frontier, whichever way the splice goes.
+            if let Ok(mut previous) = wire_history.lock() {
+                previous.restore(&mut messages);
             }
             let mut executor = RealToolExecutor::new().with_vision(vision);
             let notices = background.clone();
@@ -1205,6 +1210,23 @@ struct LaunchedAgent {
     spec: AgentSpec,
 }
 
+/// The launch announcement for one `agent` call: the registry id it runs
+/// under, what the model asked for, and the call it answers — the provider's
+/// own id and the model's verbatim arguments, which the group's record
+/// carries so the next request replays the launch as the provider saw it
+/// (`docs/prompt-caching.md`).
+fn agent_spec(id: &str, call: &ToolCallRequest, args: &AgentArgs) -> AgentSpec {
+    AgentSpec {
+        id: id.to_string(),
+        description: args.description.clone(),
+        agent_type: args.agent_type().to_string(),
+        prompt: args.prompt.clone(),
+        background: args.background(),
+        call_id: Some(call.id.clone()),
+        arguments: Some(call.arguments.clone()),
+    }
+}
+
 /// Run one round's `agent` tool calls (`docs/agent-tool.md`): parse each
 /// call, spawn every subagent **concurrently**, announce the background and
 /// foreground groups (`StreamEvent::AgentBatch`), resolve the background
@@ -1246,13 +1268,7 @@ fn run_agent_calls(
             continue;
         }
         let (id, agent_cancel) = registry.register(args.agent_type());
-        let spec = AgentSpec {
-            id: id.clone(),
-            description: args.description.clone(),
-            agent_type: args.agent_type().to_string(),
-            prompt: args.prompt.clone(),
-            background: args.background(),
-        };
+        let spec = agent_spec(&id, call, &args);
         // A subagent conversation starts fresh: the (augmented) system
         // prompt, the briefing, then the task as the first user message.
         //
@@ -2063,6 +2079,23 @@ mod tests {
                 "explore".to_string()
             ]
         );
+    }
+
+    #[test]
+    fn an_agent_launch_spec_carries_the_call_it_answers() {
+        let call = ToolCallRequest {
+            id: "call_provider_7".to_string(),
+            name: tools::AGENT_TOOL_NAME.to_string(),
+            arguments: r#"{"description":"Fetch","prompt":"p","subagent_type":"explore"}"#
+                .to_string(),
+        };
+        let args: AgentArgs = tools::parse_args(&call.arguments).expect("valid arguments");
+        let spec = agent_spec("a1", &call, &args);
+        assert_eq!(spec.id, "a1");
+        assert_eq!(spec.description, "Fetch");
+        assert_eq!(spec.agent_type, "explore");
+        assert_eq!(spec.call_id.as_deref(), Some("call_provider_7"));
+        assert_eq!(spec.arguments.as_deref(), Some(call.arguments.as_str()));
     }
 
     #[test]

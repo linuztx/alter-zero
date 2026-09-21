@@ -415,6 +415,22 @@ fn exchange_gate() -> &'static Mutex<()> {
     &GATE
 }
 
+/// The OAuth tokens [`forget`] dropped since an exchange last settled. An
+/// exchange drains it under the cache lock before keeping its bearer, and
+/// its own token there means a sign-in replaced the credential while the
+/// request was out: the bearer is not cached, and the next request
+/// exchanges afresh. This is what lets `forget` skip the gate — it runs on
+/// the TUI loop when a sign-in lands, and an exchange in flight can hold
+/// the gate for the whole request timeout — without a sign-in on one
+/// account costing another account's exchange its bearer. Draining the
+/// whole list is safe: the gate serializes exchanges, so the one settling
+/// is the only one that was in flight, and an exchange still waiting on
+/// the gate re-reads the cleared cache before it starts.
+fn forgotten() -> &'static Mutex<Vec<String>> {
+    static FORGOTTEN: Mutex<Vec<String>> = Mutex::new(Vec::new());
+    &FORGOTTEN
+}
+
 /// What a request to a Copilot-backed config actually sends.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CopilotAuth {
@@ -465,6 +481,17 @@ fn authorize_with(
         plan: exchanged.plan_note(),
     };
     if let Ok(mut map) = cache.lock() {
+        // A `forget` of this token while the exchange was out: a sign-in
+        // has replaced the credential, so the bearer is not kept.
+        let replaced = forgotten()
+            .lock()
+            .map(|mut list| std::mem::take(&mut *list))
+            .unwrap_or_default()
+            .iter()
+            .any(|token| token == oauth_token);
+        if replaced {
+            return Ok(auth);
+        }
         map.insert(
             oauth_token.to_string(),
             CachedBearer {
@@ -481,7 +508,13 @@ fn authorize_with(
 /// Forget a stored token's cached bearer — what a fresh sign-in owes, so the
 /// next request exchanges rather than reusing the previous account's.
 pub fn forget(oauth_token: &str) {
-    let _exchange = exchange_gate().lock().unwrap_or_else(|e| e.into_inner());
+    // Never behind the gate — an exchange in flight holds it for as long as
+    // its request takes. On record *before* the removal: an exchange that
+    // inserts between the two finds its token named under the cache lock
+    // and drops its bearer instead.
+    if let Ok(mut list) = forgotten().lock() {
+        list.push(oauth_token.to_string());
+    }
     if let Some(cache) = BEARERS.get()
         && let Ok(mut map) = cache.lock()
     {
@@ -825,6 +858,50 @@ fn nap(total: Duration, cancel: &CancelToken) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn auth_cache_regression_forget_does_not_wait_for_a_refresh_in_flight() {
+        // `forget` runs on the TUI loop when a sign-in lands. A refresh in
+        // flight on a backend thread can hold the gate for the whole request
+        // timeout, and the loop must never wait behind it — while the
+        // refresh that was in flight must not leave its bearer behind under
+        // the forgotten key: the next request exchanges afresh.
+        use std::sync::Barrier;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let key = "copilot-forget-inflight";
+        let started = Barrier::new(2);
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                authorize_with(key, |_| {
+                    started.wait();
+                    std::thread::sleep(Duration::from_millis(1500));
+                    ExchangedToken::parse(r#"{"token":"bearer-1","refresh_in":1500}"#)
+                })
+                .unwrap();
+            });
+            started.wait();
+            let asked = std::time::Instant::now();
+            forget(key);
+            assert!(
+                asked.elapsed() < Duration::from_millis(700),
+                "forget waited on the refresh: {:?}",
+                asked.elapsed()
+            );
+        });
+        let exchanges = AtomicUsize::new(0);
+        authorize_with(key, |_| {
+            exchanges.fetch_add(1, Ordering::SeqCst);
+            ExchangedToken::parse(r#"{"token":"bearer-2","refresh_in":1500}"#)
+        })
+        .unwrap();
+        assert_eq!(
+            exchanges.load(Ordering::SeqCst),
+            1,
+            "the forgotten account exchanges afresh"
+        );
+        forget(key);
+    }
 
     #[test]
     fn auth_cache_regression_concurrent_misses_exchange_once() {

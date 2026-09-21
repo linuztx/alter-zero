@@ -35,6 +35,15 @@ pub struct TaskCallRecord {
     pub output: String,
     /// Whether the op succeeded (an unknown id, a bad value → red in Ctrl+O).
     pub ok: bool,
+    /// The provider's own id for the call, as on [`ToolCall::call_id`]
+    /// (`docs/prompt-caching.md`).
+    ///
+    /// [`ToolCall::call_id`]: crate::app::ToolCall::call_id
+    pub call_id: Option<String>,
+    /// The round's batch id (`ToolCall::batch`'s twin): a task call made in
+    /// the same round as other calls replays inside the same assistant
+    /// message, the way the model made it.
+    pub batch: Option<u64>,
     /// Wall-clock stamp of when the call resolved (the [`ToolCall`] rule:
     /// recorded, never displayed).
     pub timestamp: String,
@@ -64,6 +73,7 @@ impl TaskCallRecord {
             arguments: None,
             approval_note: None,
             batch: None,
+            call_id: None,
         }
     }
 }
@@ -87,6 +97,16 @@ impl App {
             turn.tokens += count_tokens(output);
             turn.arrow = TokenArrow::Up;
         }
+        // The round's identity (docs/prompt-caching.md): the batch every
+        // record of the round shares, and the provider's id of the next
+        // task call the round announced.
+        let (call_id, batch) = match self.round.as_mut() {
+            Some(round) => {
+                let batch = Some(round.batch);
+                (round.take_task_call().map(|call| call.id.clone()), batch)
+            }
+            None => (None, None),
+        };
         self.history.push(HistoryItem::TaskCall(TaskCallRecord {
             name: name.to_string(),
             args: args.to_string(),
@@ -95,6 +115,8 @@ impl App {
             ok,
             timestamp: self.now_stamp(),
             tasks: tasks.clone(),
+            call_id,
+            batch,
         }));
         self.tasks = tasks;
     }

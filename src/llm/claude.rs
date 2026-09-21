@@ -388,6 +388,22 @@ fn refresh_gate() -> &'static Mutex<()> {
     &GATE
 }
 
+/// The refresh tokens [`forget`] dropped since a refresh last settled. A
+/// refresh drains it under the cache lock before keeping what it minted,
+/// and a name from its own chain there means a sign-in replaced the
+/// credential while the request was out: the bearer is not cached, and the
+/// next request refreshes afresh. This is what lets `forget` skip the gate
+/// — it runs on the TUI loop when a sign-in lands, and a refresh in flight
+/// can hold the gate for the whole request timeout — without a sign-in on
+/// one account costing another account's refresh its bearer. Draining the
+/// whole list is safe: the gate serializes refreshes, so the one settling
+/// is the only one that was in flight, and a refresh still waiting on the
+/// gate re-reads the cleared cache before it starts.
+fn forgotten() -> &'static Mutex<Vec<String>> {
+    static FORGOTTEN: Mutex<Vec<String>> = Mutex::new(Vec::new());
+    &FORGOTTEN
+}
+
 /// Resolve aliases before the lookup: another config may have refreshed the
 /// same account while this config still holds an older refresh token.
 fn cached_access(refresh_token: &str) -> Option<Access> {
@@ -456,7 +472,8 @@ pub fn set_store_path(path: impl Into<PathBuf>) {
 /// is how a user recovers from a token the server has stopped honouring, so
 /// the cached one must not outlive the sign-in that replaced it.
 pub fn forget(refresh_token: &str) {
-    let _refresh = refresh_gate().lock().unwrap_or_else(|e| e.into_inner());
+    // Never behind the gate — a refresh in flight holds it for as long as
+    // its request takes.
     let current = live_refresh_token(refresh_token);
     let mut aliases = vec![refresh_token.to_string(), current.clone()];
     if let Ok(mut map) = rotations().lock() {
@@ -468,6 +485,13 @@ pub fn forget(refresh_token: &str) {
                 true
             }
         });
+    }
+    // On record *before* the clear: a refresh that inserts between the two
+    // finds its chain named under the cache lock and drops its bearer
+    // instead, so nothing minted before this sign-in survives under the
+    // forgotten key.
+    if let Ok(mut list) = forgotten().lock() {
+        list.extend(aliases.iter().cloned());
     }
     if let Ok(mut map) = cache().lock() {
         for alias in aliases {
@@ -748,7 +772,7 @@ fn authorize_with(
         .refresh_token
         .filter(|t| !t.is_empty() && *t != presented)
     {
-        persist_refresh(&rotated);
+        persist_refresh(&rotated, &[refresh_token, &presented]);
         note_rotation(refresh_token, &presented, &rotated);
         rotated
     } else {
@@ -758,7 +782,19 @@ fn authorize_with(
         map.remove(&presented);
         let now = Instant::now();
         map.retain(|_, entry| entry.until > now);
-        if let Some(until) = refresh_started.checked_add(lifetime)
+        // A `forget` of this chain while the refresh was out: a sign-in has
+        // replaced the credential, so the bearer is not kept (the rotation
+        // above stands — the token presented is retired either way, and an
+        // old config must still find its way to the live one).
+        let forgotten = forgotten()
+            .lock()
+            .map(|mut list| std::mem::take(&mut *list))
+            .unwrap_or_default();
+        let replaced = forgotten
+            .iter()
+            .any(|token| token == refresh_token || *token == presented || *token == cache_key);
+        if !replaced
+            && let Some(until) = refresh_started.checked_add(lifetime)
             && until > now
         {
             map.insert(
@@ -792,15 +828,31 @@ fn exchange_refresh(presented: &str) -> Result<TokenSet> {
     TokenSet::parse(&text)
 }
 
-/// Write a rotated refresh token back into the `.env` key store, in place.
-/// Best-effort: a store we cannot write still leaves a working session, and
-/// the failure surfaces as a re-login at the next launch rather than a
-/// mid-turn error the user can do nothing about.
-fn persist_refresh(refresh_token: &str) {
+/// Write a rotated refresh token back into the `.env` key store, in place
+/// — [`persist_refresh_to`] at the store the boundary named. Best-effort: a
+/// store we cannot write still leaves a working session, and the failure
+/// surfaces as a re-login at the next launch rather than a mid-turn error
+/// the user can do nothing about.
+fn persist_refresh(rotated: &str, chain: &[&str]) {
     let Some(path) = store_path().lock().ok().and_then(|p| p.clone()) else {
         return;
     };
-    let _ = super::EnvFile::update(&path, REFRESH_ENV_VAR, refresh_token);
+    persist_refresh_to(&path, rotated, chain);
+}
+
+/// Write `rotated` under [`REFRESH_ENV_VAR`] in the store at `path`, but
+/// only while the store still holds this session's own `chain` — the token
+/// it started with and the one it actually presented — or no token at all
+/// (a credential from the process environment, or a store not created
+/// yet). A sign-in that landed while the refresh was in flight wrote its
+/// own token there, and a rotation of the chain that sign-in replaced must
+/// not overwrite it: the next launch would present a retired token and
+/// force the re-login the sign-in had just done. Returns whether it wrote.
+fn persist_refresh_to(path: &std::path::Path, rotated: &str, chain: &[&str]) -> bool {
+    super::EnvFile::update_if(path, REFRESH_ENV_VAR, rotated, |current| {
+        current.is_none_or(|held| held.is_empty() || chain.contains(&held))
+    })
+    .is_ok_and(|written| written.is_some())
 }
 
 /// What the sign-in confirmation names beside the provider: the organisation
@@ -957,6 +1009,105 @@ mod tests {
             expires_in: Some(3600),
             ..TokenSet::default()
         }
+    }
+
+    #[test]
+    fn auth_cache_regression_forget_does_not_wait_for_a_refresh_in_flight() {
+        // `forget` runs on the TUI loop when a sign-in lands. A refresh in
+        // flight on a backend thread can hold the gate for the whole request
+        // timeout, and the loop must never wait behind it — while the
+        // refresh that was in flight must not leave its bearer behind under
+        // the forgotten key: the next request exchanges afresh.
+        use std::sync::Barrier;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let key = "claude-forget-inflight";
+        let started = Barrier::new(2);
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                authorize_with(key, |_| {
+                    started.wait();
+                    std::thread::sleep(Duration::from_millis(1500));
+                    Ok(cache_test_tokens("claude-forget-inflight-rotated"))
+                })
+                .unwrap();
+            });
+            started.wait();
+            let asked = Instant::now();
+            forget(key);
+            assert!(
+                asked.elapsed() < Duration::from_millis(700),
+                "forget waited on the refresh: {:?}",
+                asked.elapsed()
+            );
+        });
+        let exchanges = AtomicUsize::new(0);
+        authorize_with(key, |_| {
+            exchanges.fetch_add(1, Ordering::SeqCst);
+            Ok(cache_test_tokens("claude-forget-inflight-again"))
+        })
+        .unwrap();
+        assert_eq!(
+            exchanges.load(Ordering::SeqCst),
+            1,
+            "the forgotten account exchanges afresh"
+        );
+        forget(key);
+    }
+
+    #[test]
+    fn auth_cache_regression_a_rotation_never_overwrites_a_newer_sign_in() {
+        // The rotated token is written back only while the store still holds
+        // this session's own chain — the token it started with, or what that
+        // was last rotated into. A sign-in that landed while the refresh was
+        // in flight wrote its own token there, and overwriting it would make
+        // the next launch present a retired token: the forced re-login the
+        // sign-in had just done.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".env");
+        let stored = |path: &std::path::Path| {
+            crate::llm::EnvFile::parse(&std::fs::read_to_string(path).unwrap())
+                .get(REFRESH_ENV_VAR)
+                .map(str::to_string)
+        };
+        std::fs::write(&path, format!("{REFRESH_ENV_VAR}=original\nOTHER=keep\n")).unwrap();
+        assert!(persist_refresh_to(
+            &path,
+            "rotated-1",
+            &["original", "original"]
+        ));
+        assert_eq!(stored(&path).as_deref(), Some("rotated-1"));
+        // The next refresh presented the rotated token, and the store holds it.
+        assert!(persist_refresh_to(
+            &path,
+            "rotated-2",
+            &["original", "rotated-1"]
+        ));
+        assert_eq!(stored(&path).as_deref(), Some("rotated-2"));
+        // A sign-in landed meanwhile: the in-flight rotation keeps its hands off.
+        std::fs::write(&path, format!("{REFRESH_ENV_VAR}=newer-sign-in\n")).unwrap();
+        assert!(!persist_refresh_to(
+            &path,
+            "rotated-3",
+            &["original", "rotated-2"]
+        ));
+        assert_eq!(stored(&path).as_deref(), Some("newer-sign-in"));
+        // No token in the store (a credential from the process environment) or
+        // no store at all: written, as it always was.
+        std::fs::write(&path, "OTHER=keep\n").unwrap();
+        assert!(persist_refresh_to(
+            &path,
+            "rotated-4",
+            &["original", "original"]
+        ));
+        assert_eq!(stored(&path).as_deref(), Some("rotated-4"));
+        let fresh = dir.path().join("fresh").join(".env");
+        assert!(persist_refresh_to(
+            &fresh,
+            "rotated-5",
+            &["original", "original"]
+        ));
+        assert_eq!(stored(&fresh).as_deref(), Some("rotated-5"));
     }
 
     #[test]

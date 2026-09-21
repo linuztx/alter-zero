@@ -106,6 +106,18 @@ wait for unrelated refreshes. Every retired alias resolves to the newest token
 before the cache lookup, including after several rotations through rebuilt
 configs; old bearer entries are removed when a token rotates.
 
+A fresh sign-in's `chatgpt::forget` never waits behind that gate: it runs on
+the TUI loop, and a refresh in flight holds the gate for as long as its
+request takes — a whole request timeout, on a bad day, during which the
+screen would freeze. It clears the cache and the alias chain at once and
+leaves the tokens it dropped on record (`forgotten()`), where the refresh
+that was in flight finds them under the cache lock and drops the bearer it
+minted rather than caching it under a credential the sign-in has replaced —
+the next request refreshes afresh. Only a name from the refresh's own chain
+counts, so a sign-in on one account never costs another account's refresh
+its bearer; and the rotation the refresh brought back still stands, since
+the token it presented is retired either way.
+
 Two things make this different from Copilot's exchange:
 
 **The refresh token rotates, and a reused one is terminal.** OpenAI may hand
@@ -116,9 +128,18 @@ So the rotation is written straight back to the `.env` store via
 have (it runs on a backend thread, several layers below the boundary), so
 `tui::models` calls `chatgpt::set_store_path` once at startup. Skipping that
 call is not a crash — it is a forced re-login at the next launch, which is
-exactly the kind of failure that reads as a different bug.
+exactly the kind of failure that reads as a different bug. And the write
+goes ahead **only while the store still holds this session's own chain** —
+the token it started with, or the one it actually presented — or no token
+at all, the credential having come from the process environment
+(`persist_refresh_to`, over `EnvFile::update_if`, one serialized
+read-modify-write): a sign-in that landed while the refresh was in flight
+stored its own token there, and a rotation of the chain that sign-in
+replaced overwriting it would turn the next launch into the forced re-login
+the sign-in had just done.
 
-Login and both rotating providers share `EnvFile::update`: its read, update
+Login and both rotating providers share `EnvFile::update` (the rotations
+through its conditional twin `EnvFile::update_if`): its read, update
 and atomic replacement are serialized within the process. A private temporary
 file prevents partially written credentials and concurrent writes losing other
 provider keys. Read errors are propagated rather than treating an unreadable

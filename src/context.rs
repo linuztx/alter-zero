@@ -523,192 +523,330 @@ fn derive_history_into(out: &mut Vec<ContextMessage>, history: &[HistoryItem]) {
 }
 
 /// Derive `history` (a compaction-free run of items) into `out` — the
-/// per-item mapping documented on [`context_messages`].
+/// per-item mapping documented on [`context_messages`], with the call-bearing
+/// items walked **a round at a time**: the records of one tool round (a
+/// backend tool, a task call, an agent group — whatever shares the round's
+/// `batch` id) replay as the wire carried them, one assistant message holding
+/// every call under the provider's own ids, then every result, so the request
+/// re-sends the prefix the provider cached rather than one call per message
+/// under synthesized ids (`docs/prompt-caching.md`). A record with no batch
+/// is a round of its own, exactly as before the ids were recorded.
 fn derive_into(out: &mut Vec<ContextMessage>, history: &[HistoryItem]) {
-    let mut tool_seq = 0usize;
-    for (position, item) in history.iter().enumerate() {
+    let mut ids = CallIds::default();
+    let mut position = 0;
+    while position < history.len() {
+        if let Some(round) = round_at(history, position) {
+            derive_round(out, &round, &mut ids);
+            position = round.end;
+            continue;
+        }
+        derive_item(out, history, position);
+        position += 1;
+    }
+}
+
+/// The call ids a derivation hands out: a record's own **recorded** id
+/// (the provider's, `ToolCall::call_id`) when it is still free, else a
+/// synthesized `call_N` — dense from `call_0` for a history recorded before
+/// the ids were, so an old rollout replays exactly as it always did — and
+/// never one already used, since a provider pairs results by id.
+#[derive(Default)]
+struct CallIds {
+    used: std::collections::HashSet<String>,
+    next: usize,
+}
+
+impl CallIds {
+    fn claim(&mut self, recorded: Option<&str>) -> String {
+        if let Some(id) = recorded.filter(|id| !id.is_empty() && !self.used.contains(*id)) {
+            self.used.insert(id.to_string());
+            return id.to_string();
+        }
+        loop {
+            let candidate = format!("call_{}", self.next);
+            self.next += 1;
+            if self.used.insert(candidate.clone()) {
+                return candidate;
+            }
+        }
+    }
+}
+
+/// One tool round's records — the consecutive call-bearing items sharing a
+/// `batch` id — plus the completion notices that committed *between* them
+/// (a tool resolution is a safe boundary for a background cell,
+/// `docs/background.md`), which the model actually read at the next round's
+/// top and so replay after the round. `end` is the index past the round.
+struct Round<'a> {
+    calls: Vec<&'a HistoryItem>,
+    deferred: Vec<&'a HistoryItem>,
+    end: usize,
+}
+
+/// The batch id a call-bearing item carries; `None` for anything else — and
+/// for a call recorded before the ids were, which is then a round of its own.
+fn batch_of(item: &HistoryItem) -> Option<u64> {
+    match item {
+        HistoryItem::Tool(tool) if !tool.shell => tool.batch,
+        HistoryItem::TaskCall(record) => record.batch,
+        HistoryItem::AgentGroup(group) => group.batch,
+        _ => None,
+    }
+}
+
+fn is_call_bearing(item: &HistoryItem) -> bool {
+    matches!(
+        item,
+        HistoryItem::Tool(tool) if !tool.shell
+    ) || matches!(item, HistoryItem::TaskCall(_) | HistoryItem::AgentGroup(_))
+}
+
+fn is_deferrable_notice(item: &HistoryItem) -> bool {
+    matches!(
+        item,
+        HistoryItem::Background(_) | HistoryItem::AgentNotice(_)
+    )
+}
+
+/// The round starting at `position`, when the item there bears calls.
+fn round_at(history: &[HistoryItem], position: usize) -> Option<Round<'_>> {
+    let first = history.get(position)?;
+    if !is_call_bearing(first) {
+        return None;
+    }
+    let mut round = Round {
+        calls: vec![first],
+        deferred: Vec::new(),
+        end: position + 1,
+    };
+    let Some(batch) = batch_of(first) else {
+        return Some(round);
+    };
+    loop {
+        let mut next = round.end;
+        while history.get(next).is_some_and(is_deferrable_notice) {
+            next += 1;
+        }
+        match history.get(next) {
+            Some(item) if is_call_bearing(item) && batch_of(item) == Some(batch) => {
+                round.deferred.extend(&history[round.end..next]);
+                round.calls.push(item);
+                round.end = next + 1;
+            }
+            _ => return Some(round),
+        }
+    }
+}
+
+/// Replay one round the way the wire carried it: its calls on one assistant
+/// message (folded onto the open assistant text segment when there is one,
+/// else a fresh assistant message with empty content), every result in call
+/// order, the image reads' attachment notes after the results — the live loop
+/// appends them after a round's results too (`docs/tools.md`) — and last the
+/// notices that committed inside the round.
+fn derive_round(out: &mut Vec<ContextMessage>, round: &Round<'_>, ids: &mut CallIds) {
+    let mut calls = Vec::new();
+    let mut results = Vec::new();
+    let mut attachments = Vec::new();
+    for item in &round.calls {
+        record_calls(item, ids, &mut calls, &mut results, &mut attachments);
+    }
+    if !calls.is_empty() {
+        match out.last_mut() {
+            Some(last) if last.role == ContextRole::Assistant && last.tool_call_id.is_none() => {
+                last.tool_calls.extend(calls);
+            }
+            _ => out.push(ContextMessage::assistant_tool_calls("", calls)),
+        }
+        out.extend(results);
+    }
+    for (note, path) in attachments {
+        push_text(out, ContextRole::User, note, vec![path]);
+    }
+    for item in &round.deferred {
         match item {
-            // Hook-injected conversation text (docs/hooks.md): the model read
-            // it as a user message mid-turn, so every later turn replays it
-            // verbatim in place.
-            HistoryItem::HookNote(note) => {
-                push_text(out, ContextRole::User, note.text.clone(), vec![]);
-            }
-            HistoryItem::Message(message) => match message.role {
-                // A pasted picture's placeholder names the file it was saved
-                // at *here*, not in the request builder: the derived context
-                // is what the model reads, so annotating any lower would
-                // leave Ctrl+D showing text the wire never carried
-                // (`docs/image-paste.md`). Per message, before the merge, so
-                // each draft's `[Image #1]` names its own picture.
-                Role::User => push_text(
-                    out,
-                    ContextRole::User,
-                    crate::paste::annotate_image_placeholders(&message.text, &message.images),
-                    message.images.clone(),
-                ),
-                Role::Assistant => {
-                    push_text(out, ContextRole::Assistant, message.text.clone(), vec![]);
-                }
-                Role::Error => push_text(
-                    out,
-                    ContextRole::User,
-                    format!("[error] {}", message.text),
-                    vec![],
-                ),
-                Role::System => push_text(
-                    out,
-                    ContextRole::User,
-                    format!("[system] {}", message.text),
-                    vec![],
-                ),
-                Role::Shell => {
-                    // Its tool cell (recorded when the command resolves)
-                    // carries the command + output — except for a *dangling*
-                    // header: the app quit mid-command, so no tool ever
-                    // landed (docs/resume.md). Emit the bare command then, or
-                    // the run would vanish from the derived context while the
-                    // transcript still shows it.
-                    let resolved = matches!(
-                        history.get(position + 1),
-                        Some(HistoryItem::Tool(tool)) if tool.shell
-                    );
-                    if !resolved {
-                        push_text(
-                            out,
-                            ContextRole::User,
-                            format!("$ {}", message.text),
-                            vec![],
-                        );
-                    }
-                }
-            },
-            HistoryItem::Tool(tool) if tool.shell => {
-                // The user's local `!` command: a natural shell transcript under
-                // the user role (no native `tool` message — the model didn't
-                // call it).
-                let mut text = format!("$ {}", tool.name);
-                if !tool.output.is_empty() {
-                    text.push('\n');
-                    text.push_str(&tool.output);
-                }
-                push_text(out, ContextRole::User, text, vec![]);
-            }
-            HistoryItem::Tool(tool) => {
-                let id = format!("call_{tool_seq}");
-                tool_seq += 1;
-                let call = ContextToolCall::new(
-                    id.clone(),
-                    wire_tool_name(&tool.name),
-                    reconstruct_arguments(tool),
-                );
-                // Fold onto the open assistant text segment when there is one,
-                // else start a fresh assistant message (empty content is fine).
-                match out.last_mut() {
-                    Some(last) if last.role == ContextRole::Assistant => {
-                        last.tool_calls.push(call);
-                    }
-                    _ => out.push(ContextMessage::assistant_tool_calls("", vec![call])),
-                }
-                // The **model-facing** result, not the cell text: a permission
-                // rejection's display is a one-liner while the model read the
-                // full stop-and-wait instruction — with Tab's amend feedback
-                // appended. Replaying the display would drop what the user
-                // asked for from every later turn (`docs/permissions.md`).
-                out.push(ContextMessage::tool_result(id, tool.context_text()));
-                // An image `read` (docs/tools.md): the live agent loop
-                // attached the pixels as a follow-up user message; replay the
-                // same shape so later turns keep seeing them. The stored args
-                // are the path — the backend re-encodes it each request (a
-                // gone file becomes an `[image unavailable]` note there).
-                if tool.name == "Read" && is_image_read_output(&tool.output) {
-                    push_text(
-                        out,
-                        ContextRole::User,
-                        image_attachment_note(&tool.args),
-                        vec![PathBuf::from(&tool.args)],
-                    );
-                }
-            }
-            // A task tool call (`docs/task-tools.md`): invisible inline, but
-            // the model made the call and read the result — replay the same
-            // native pair every other tool gets, so later turns keep its
-            // memory of the plan — carrying the model's own arguments, the
-            // same way an ordinary tool record now does.
-            HistoryItem::TaskCall(record) => {
-                let id = format!("call_{tool_seq}");
-                tool_seq += 1;
-                // The arguments the model actually sent, so its own plan
-                // stays in the conversation rather than only in the result
-                // line (docs/task-tools.md). A record written before the
-                // field existed — or one whose arguments didn't parse —
-                // replays as `{}`, which is what it always did.
-                let arguments = Some(record.arguments.trim())
-                    .filter(|a| serde_json::from_str::<serde_json::Value>(a).is_ok())
-                    .unwrap_or("{}");
-                let call =
-                    ContextToolCall::new(id.clone(), wire_tool_name(&record.name), arguments);
-                match out.last_mut() {
-                    Some(last) if last.role == ContextRole::Assistant => {
-                        last.tool_calls.push(call);
-                    }
-                    _ => out.push(ContextMessage::assistant_tool_calls("", vec![call])),
-                }
-                out.push(ContextMessage::tool_result(id, record.output.clone()));
-            }
-            HistoryItem::Summary(_) => {} // TUI chrome, not conversation
-            // Unreachable through `context_messages` (it splits at the last
-            // marker), but the mapping stays total: a marker inside a plain
-            // run contributes nothing itself.
-            HistoryItem::Compaction(_) => {}
-            // A background shell's completion: a bracketed user-role note
-            // carrying the outcome AND the output tail — the model reads the
-            // result here (the rendered cell shows only the one-line headline).
-            // User-role like the other notices: strict providers reject
-            // mid-conversation system messages. See docs/background.md.
             HistoryItem::Background(notice) => {
                 push_text(out, ContextRole::User, notice.context_text(), vec![]);
             }
-            // A resolved subagent group (`docs/agent-tool.md`): the parent
-            // made one `agent` call per entry and received one result — the
-            // native tool-call pair replays exactly that: every call folded
-            // onto the assistant entry, then the results in call order, each
-            // carrying the **immutable** model-facing `output` (the framed
-            // response / launch acknowledgement / stopped note the model
-            // actually read — never the display fields a later completion
-            // updates).
-            HistoryItem::AgentGroup(group) => {
-                let mut ids = Vec::with_capacity(group.agents.len());
-                for entry in &group.agents {
-                    let id = format!("call_{tool_seq}");
-                    tool_seq += 1;
-                    let call =
-                        ContextToolCall::new(id.clone(), "agent", agent_arguments(entry, group));
-                    match out.last_mut() {
-                        Some(last) if last.role == ContextRole::Assistant => {
-                            last.tool_calls.push(call);
-                        }
-                        _ => out.push(ContextMessage::assistant_tool_calls("", vec![call])),
-                    }
-                    ids.push(id);
-                }
-                for (id, entry) in ids.into_iter().zip(&group.agents) {
-                    out.push(ContextMessage::tool_result(id, entry.output.clone()));
-                }
-            }
-            // A background agent's completion: the bracketed user-role note
-            // carrying the outcome and the final response, exactly like a
-            // background shell's (docs/agent-tool.md).
             HistoryItem::AgentNotice(notice) => {
                 push_text(out, ContextRole::User, notice.context_text(), vec![]);
             }
-            // A settled thinking phase is **not** conversation: Chat
-            // Completions has nowhere to put a previous round's raw
-            // chain-of-thought, and re-sending it would burn context for
-            // nothing. The Ctrl+D view showing no trace of it is the truth
-            // about what the model receives (docs/thinking-stream.md).
-            HistoryItem::Reasoning(_) => {}
+            _ => {}
         }
+    }
+}
+
+/// One record's calls and results, in the order the model made them.
+fn record_calls(
+    item: &HistoryItem,
+    ids: &mut CallIds,
+    calls: &mut Vec<ContextToolCall>,
+    results: &mut Vec<ContextMessage>,
+    attachments: &mut Vec<(String, PathBuf)>,
+) {
+    match item {
+        HistoryItem::Tool(tool) => {
+            let id = ids.claim(tool.call_id.as_deref());
+            calls.push(ContextToolCall::new(
+                id.clone(),
+                wire_tool_name(&tool.name),
+                reconstruct_arguments(tool),
+            ));
+            // The **model-facing** result, not the cell text: a permission
+            // rejection's display is a one-liner while the model read the
+            // full stop-and-wait instruction — with Tab's amend feedback
+            // appended. Replaying the display would drop what the user
+            // asked for from every later turn (`docs/permissions.md`).
+            results.push(ContextMessage::tool_result(id, tool.context_text()));
+            // An image `read` (docs/tools.md): the live agent loop attached
+            // the pixels as a follow-up user message; replay the same shape
+            // so later turns keep seeing them. The stored args are the path
+            // — the backend re-encodes it each request (a gone file becomes
+            // an `[image unavailable]` note there).
+            if tool.name == "Read" && is_image_read_output(&tool.output) {
+                attachments.push((image_attachment_note(&tool.args), PathBuf::from(&tool.args)));
+            }
+        }
+        // A task tool call (`docs/task-tools.md`): invisible inline, but the
+        // model made the call and read the result — replay the same native
+        // pair every other tool gets, so later turns keep its memory of the
+        // plan — carrying the model's own arguments, the same way an
+        // ordinary tool record now does. A record written before the field
+        // existed — or one whose arguments didn't parse — replays as `{}`,
+        // which is what it always did.
+        HistoryItem::TaskCall(record) => {
+            let id = ids.claim(record.call_id.as_deref());
+            let arguments = Some(record.arguments.trim())
+                .filter(|a| serde_json::from_str::<serde_json::Value>(a).is_ok())
+                .unwrap_or("{}");
+            calls.push(ContextToolCall::new(
+                id.clone(),
+                wire_tool_name(&record.name),
+                arguments,
+            ));
+            results.push(ContextMessage::tool_result(id, record.output.clone()));
+        }
+        // A resolved subagent group (`docs/agent-tool.md`): the parent made
+        // one `agent` call per entry and received one result — the native
+        // tool-call pair replays exactly that, each result carrying the
+        // **immutable** model-facing `output` (the framed response / launch
+        // acknowledgement / stopped note the model actually read — never
+        // the display fields a later completion updates).
+        HistoryItem::AgentGroup(group) => {
+            for entry in &group.agents {
+                let id = ids.claim(entry.call_id.as_deref());
+                calls.push(ContextToolCall::new(
+                    id.clone(),
+                    "agent",
+                    agent_arguments(entry, group),
+                ));
+                results.push(ContextMessage::tool_result(id, entry.output.clone()));
+            }
+        }
+        _ => {}
+    }
+}
+
+/// The per-item mapping for everything that bears no calls (see
+/// [`context_messages`]); `position` is the item's index, which the
+/// `Role::Shell` header needs to see whether its tool cell follows.
+fn derive_item(out: &mut Vec<ContextMessage>, history: &[HistoryItem], position: usize) {
+    match &history[position] {
+        // Hook-injected conversation text (docs/hooks.md): the model read
+        // it as a user message mid-turn, so every later turn replays it
+        // verbatim in place.
+        HistoryItem::HookNote(note) => {
+            push_text(out, ContextRole::User, note.text.clone(), vec![]);
+        }
+        HistoryItem::Message(message) => match message.role {
+            // A pasted picture's placeholder names the file it was saved
+            // at *here*, not in the request builder: the derived context
+            // is what the model reads, so annotating any lower would
+            // leave Ctrl+D showing text the wire never carried
+            // (`docs/image-paste.md`). Per message, before the merge, so
+            // each draft's `[Image #1]` names its own picture.
+            Role::User => push_text(
+                out,
+                ContextRole::User,
+                crate::paste::annotate_image_placeholders(&message.text, &message.images),
+                message.images.clone(),
+            ),
+            Role::Assistant => {
+                push_text(out, ContextRole::Assistant, message.text.clone(), vec![]);
+            }
+            Role::Error => push_text(
+                out,
+                ContextRole::User,
+                format!("[error] {}", message.text),
+                vec![],
+            ),
+            Role::System => push_text(
+                out,
+                ContextRole::User,
+                format!("[system] {}", message.text),
+                vec![],
+            ),
+            Role::Shell => {
+                // Its tool cell (recorded when the command resolves)
+                // carries the command + output — except for a *dangling*
+                // header: the app quit mid-command, so no tool ever
+                // landed (docs/resume.md). Emit the bare command then, or
+                // the run would vanish from the derived context while the
+                // transcript still shows it.
+                let resolved = matches!(
+                    history.get(position + 1),
+                    Some(HistoryItem::Tool(tool)) if tool.shell
+                );
+                if !resolved {
+                    push_text(
+                        out,
+                        ContextRole::User,
+                        format!("$ {}", message.text),
+                        vec![],
+                    );
+                }
+            }
+        },
+        // The user's local `!` command: a natural shell transcript under
+        // the user role (no native `tool` message — the model didn't
+        // call it). A backend tool never reaches here: `round_at` takes
+        // every call-bearing item.
+        HistoryItem::Tool(tool) => {
+            let mut text = format!("$ {}", tool.name);
+            if !tool.output.is_empty() {
+                text.push('\n');
+                text.push_str(&tool.output);
+            }
+            push_text(out, ContextRole::User, text, vec![]);
+        }
+        HistoryItem::TaskCall(_) | HistoryItem::AgentGroup(_) => {
+            unreachable!("call-bearing items are derived a round at a time")
+        }
+        HistoryItem::Summary(_) => {} // TUI chrome, not conversation
+        // Unreachable through `context_messages` (it splits at the last
+        // marker), but the mapping stays total: a marker inside a plain
+        // run contributes nothing itself.
+        HistoryItem::Compaction(_) => {}
+        // A background shell's completion: a bracketed user-role note
+        // carrying the outcome AND the output tail — the model reads the
+        // result here (the rendered cell shows only the one-line headline).
+        // User-role like the other notices: strict providers reject
+        // mid-conversation system messages. See docs/background.md.
+        HistoryItem::Background(notice) => {
+            push_text(out, ContextRole::User, notice.context_text(), vec![]);
+        }
+        // A background agent's completion: the bracketed user-role note
+        // carrying the outcome and the final response, exactly like a
+        // background shell's (docs/agent-tool.md).
+        HistoryItem::AgentNotice(notice) => {
+            push_text(out, ContextRole::User, notice.context_text(), vec![]);
+        }
+        // A settled thinking phase is **not** conversation: Chat
+        // Completions has nowhere to put a previous round's raw
+        // chain-of-thought, and re-sending it would burn context for
+        // nothing. The Ctrl+D view showing no trace of it is the truth
+        // about what the model receives (docs/thinking-stream.md).
+        HistoryItem::Reasoning(_) => {}
     }
 }
 
@@ -716,6 +854,16 @@ fn derive_into(out: &mut Vec<ContextMessage>, history: &[HistoryItem]) {
 /// entry — the [`reconstruct_arguments`] twin for subagents (history keeps the
 /// typed fields, not the raw argument JSON).
 fn agent_arguments(entry: &crate::app::AgentGroupEntry, group: &crate::app::AgentGroup) -> String {
+    // The model's own arguments when the launch recorded them (the round
+    // announced its calls), so the replay is what the provider saw byte for
+    // byte; the rebuilt object below is what a record made before the field
+    // existed replays as. Guarded on parsing as an object, like every other
+    // recorded argument string.
+    if let Some(arguments) = &entry.arguments
+        && serde_json::from_str::<serde_json::Value>(arguments.trim()).is_ok_and(|v| v.is_object())
+    {
+        return arguments.trim().to_string();
+    }
     serde_json::json!({
         "description": entry.description,
         "prompt": entry.prompt,
@@ -752,6 +900,7 @@ mod tests {
             arguments: None,
             approval_note: None,
             batch: None,
+            call_id: None,
         })
     }
 
@@ -770,6 +919,7 @@ mod tests {
             arguments: None,
             approval_note: None,
             batch: None,
+            call_id: None,
         })
     }
 
@@ -964,6 +1114,8 @@ mod tests {
                 ok: true,
                 timestamp: String::new(),
                 tasks: store,
+                call_id: None,
+                batch: None,
             }),
         ];
         let ctx = context_messages(&history);
@@ -1056,6 +1208,197 @@ mod tests {
                 ContextMessage::tool_result("call_0", "L1"),
             ]
         );
+    }
+
+    /// A finished backend tool stamped with the wire identity its round
+    /// announced — the provider's call id and the round's batch
+    /// (`docs/prompt-caching.md`).
+    fn batched(name: &str, args: &str, output: &str, batch: u64, call_id: &str) -> HistoryItem {
+        let HistoryItem::Tool(mut call) = tool(name, args, output, ToolStatus::Ok, false) else {
+            unreachable!("tool() builds a tool item");
+        };
+        call.batch = Some(batch);
+        call.call_id = Some(call_id.to_string());
+        HistoryItem::Tool(call)
+    }
+
+    #[test]
+    fn a_batch_replays_as_one_assistant_message_carrying_its_recorded_ids() {
+        // A parallel batch is one assistant message on the wire, its calls
+        // under the provider's own ids; the records carry both, so the
+        // derived context sends the provider the prefix it already cached
+        // rather than one call per message under `call_N` ids.
+        let history = vec![
+            message(Role::User, "read both"),
+            message(Role::Assistant, "Reading both."),
+            batched("Read", "a.rs", "source A", 1, "call_provider_a"),
+            batched("Read", "b.rs", "source B", 1, "call_provider_b"),
+            message(Role::Assistant, "Both fine."),
+        ];
+        let ctx = context_messages(&history);
+        assert_eq!(ctx.len(), 5, "{ctx:?}");
+        assert_eq!(ctx[1].role, ContextRole::Assistant);
+        assert_eq!(ctx[1].text, "Reading both.");
+        assert_eq!(
+            ctx[1].tool_calls,
+            vec![
+                ContextToolCall::new("call_provider_a", "read", r#"{"path":"a.rs"}"#),
+                ContextToolCall::new("call_provider_b", "read", r#"{"path":"b.rs"}"#),
+            ]
+        );
+        assert_eq!(
+            ctx[2],
+            ContextMessage::tool_result("call_provider_a", "source A")
+        );
+        assert_eq!(
+            ctx[3],
+            ContextMessage::tool_result("call_provider_b", "source B")
+        );
+        assert_eq!(ctx[4].text, "Both fine.");
+    }
+
+    #[test]
+    fn records_from_different_batches_stay_separate_rounds() {
+        let history = vec![
+            message(Role::User, "go"),
+            batched("Bash", "ls", "a", 1, "call_first"),
+            batched("Bash", "pwd", "/x", 2, "call_second"),
+        ];
+        let ctx = context_messages(&history);
+        assert_eq!(ctx.len(), 5, "{ctx:?}");
+        assert_eq!(ctx[1].tool_calls.len(), 1);
+        assert_eq!(ctx[1].tool_calls[0].id, "call_first");
+        assert_eq!(ctx[2], ContextMessage::tool_result("call_first", "a"));
+        assert_eq!(ctx[3].tool_calls.len(), 1);
+        assert_eq!(ctx[3].tool_calls[0].id, "call_second");
+        assert_eq!(ctx[4], ContextMessage::tool_result("call_second", "/x"));
+    }
+
+    #[test]
+    fn a_task_call_in_the_batch_rides_the_same_assistant_message() {
+        let arguments = r#"{"taskId":"1","status":"completed"}"#;
+        let history = vec![
+            message(Role::User, "go"),
+            batched("Bash", "cargo test", "ok", 1, "call_bash"),
+            HistoryItem::TaskCall(crate::app::TaskCallRecord {
+                name: "TaskUpdate".to_string(),
+                args: "#1 → completed".to_string(),
+                arguments: arguments.to_string(),
+                output: "Updated task #1 status".to_string(),
+                ok: true,
+                timestamp: String::new(),
+                tasks: crate::tasks::TaskStore::new(),
+                call_id: Some("call_task".to_string()),
+                batch: Some(1),
+            }),
+        ];
+        let ctx = context_messages(&history);
+        assert_eq!(ctx.len(), 4, "{ctx:?}");
+        assert_eq!(
+            ctx[1].tool_calls,
+            vec![
+                ContextToolCall::new("call_bash", "bash", r#"{"command":"cargo test"}"#),
+                ContextToolCall::new("call_task", "taskupdate", arguments),
+            ]
+        );
+        assert_eq!(ctx[2], ContextMessage::tool_result("call_bash", "ok"));
+        assert_eq!(
+            ctx[3],
+            ContextMessage::tool_result("call_task", "Updated task #1 status")
+        );
+    }
+
+    #[test]
+    fn an_agent_group_in_the_batch_replays_its_verbatim_arguments_and_id() {
+        // The launch's own arguments replay as the model sent them (a
+        // rebuilt object never matches the wire byte for byte), under the
+        // provider's id, inside the round's one assistant message.
+        let arguments = r#"{"description":"Fetch","prompt":"p","subagent_type":"explore"}"#;
+        let history = vec![
+            message(Role::User, "go"),
+            HistoryItem::AgentGroup(crate::app::AgentGroup {
+                background: false,
+                agents: vec![crate::app::AgentGroupEntry {
+                    id: "a1".into(),
+                    description: "Fetch".into(),
+                    agent_type: "explore".into(),
+                    prompt: "p".into(),
+                    status: crate::agents::AgentStatus::Done,
+                    tool_uses: 0,
+                    tokens: 0,
+                    secs: 0,
+                    result: String::new(),
+                    tool_headers: Vec::new(),
+                    output: "framed response".into(),
+                    call_id: Some("call_agent".into()),
+                    arguments: Some(arguments.into()),
+                }],
+                timestamp: String::new(),
+                batch: Some(1),
+            }),
+            batched("Bash", "ls", "files", 1, "call_bash"),
+        ];
+        let ctx = context_messages(&history);
+        assert_eq!(ctx.len(), 4, "{ctx:?}");
+        assert_eq!(
+            ctx[1].tool_calls,
+            vec![
+                ContextToolCall::new("call_agent", "agent", arguments),
+                ContextToolCall::new("call_bash", "bash", r#"{"command":"ls"}"#),
+            ]
+        );
+        assert_eq!(
+            ctx[2],
+            ContextMessage::tool_result("call_agent", "framed response")
+        );
+        assert_eq!(ctx[3], ContextMessage::tool_result("call_bash", "files"));
+    }
+
+    #[test]
+    fn a_notice_committed_inside_a_batch_replays_after_it() {
+        // A completion cell can commit between two cells of one batch (a
+        // tool resolution is a safe boundary, docs/background.md), but the
+        // model read that note at the next round's top — after every result
+        // — so the replay keeps the batch whole and the note behind it.
+        let history = vec![
+            message(Role::User, "go"),
+            batched("Bash", "ls", "a", 1, "call_a"),
+            HistoryItem::AgentNotice(crate::app::AgentNotice {
+                id: "a1".into(),
+                description: "Fetch Warsaw".into(),
+                status: crate::agents::AgentStatus::Done,
+                secs: 35,
+                result: "19°C".into(),
+                timestamp: String::new(),
+            }),
+            batched("Bash", "pwd", "/x", 1, "call_b"),
+        ];
+        let ctx = context_messages(&history);
+        assert_eq!(ctx.len(), 5, "{ctx:?}");
+        assert_eq!(ctx[1].tool_calls.len(), 2);
+        assert_eq!(ctx[2], ContextMessage::tool_result("call_a", "a"));
+        assert_eq!(ctx[3], ContextMessage::tool_result("call_b", "/x"));
+        assert_eq!(ctx[4].role, ContextRole::User);
+        assert!(ctx[4].text.contains("19°C"), "{ctx:?}");
+    }
+
+    #[test]
+    fn a_recorded_id_already_used_is_replaced_by_a_synthetic_one() {
+        // Two records claiming one id cannot both keep it — a provider pairs
+        // results by id — so the second falls back to a synthesized id that
+        // no other call in the derivation carries.
+        let history = vec![
+            message(Role::User, "go"),
+            batched("Bash", "ls", "a", 1, "call_0"),
+            batched("Bash", "pwd", "/x", 2, "call_0"),
+        ];
+        let ctx = context_messages(&history);
+        let first = ctx[1].tool_calls[0].id.clone();
+        let second = ctx[3].tool_calls[0].id.clone();
+        assert_eq!(first, "call_0");
+        assert_ne!(second, first);
+        assert_eq!(ctx[2].tool_call_id.as_deref(), Some(first.as_str()));
+        assert_eq!(ctx[4].tool_call_id.as_deref(), Some(second.as_str()));
     }
 
     #[test]
@@ -1372,6 +1715,8 @@ mod tests {
             result: "19°C".to_string(),
             tool_headers: Vec::new(),
             output: "19°C".to_string(),
+            call_id: None,
+            arguments: None,
         };
         let cases: Vec<(&str, Vec<HistoryItem>)> = vec![
             ("empty history", Vec::new()),
@@ -1439,6 +1784,7 @@ mod tests {
                     background: false,
                     agents: vec![agent_entry()],
                     timestamp: String::new(),
+                    batch: None,
                 })],
             ),
             (
@@ -1447,6 +1793,7 @@ mod tests {
                     background: false,
                     agents: Vec::new(),
                     timestamp: String::new(),
+                    batch: None,
                 })],
             ),
             (
@@ -1474,6 +1821,8 @@ mod tests {
                         ok: true,
                         timestamp: String::new(),
                         tasks: store,
+                        call_id: None,
+                        batch: None,
                     })
                 }],
             ),
@@ -2072,6 +2421,8 @@ mod tests {
             result: "later display update".to_string(),
             tool_headers: vec![],
             output: output.to_string(),
+            call_id: None,
+            arguments: None,
         };
         let history = vec![
             HistoryItem::Message(Message {
@@ -2084,6 +2435,7 @@ mod tests {
                 background: false,
                 agents: vec![entry("a1", "Warsaw", "19°C"), entry("a2", "Manila", "28°C")],
                 timestamp: String::new(),
+                batch: None,
             }),
         ];
         let messages = context_messages(&history);

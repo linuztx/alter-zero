@@ -114,6 +114,8 @@ pub(in crate::stream) fn agent_stream_turn(stage: &AgentStage<'_>) {
             agent_type: GENERAL_PURPOSE.to_string(),
             prompt: DEMO_PROMPT.to_string(),
             background: true,
+            call_id: None,
+            arguments: None,
         }],
     });
     if announced.is_err() {
@@ -345,6 +347,8 @@ pub(in crate::stream) fn agent_permission_turn(stage: &AgentStage<'_>) {
             agent_type: GENERAL_PURPOSE.to_string(),
             prompt: GATED_PROMPT.to_string(),
             background: false,
+            call_id: None,
+            arguments: None,
         }],
     });
     if announced.is_err() {

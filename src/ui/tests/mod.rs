@@ -121,6 +121,7 @@ pub(super) fn stamped_history() -> Vec<HistoryItem> {
             arguments: None,
             approval_note: None,
             batch: None,
+            call_id: None,
         }),
         HistoryItem::Message(Message {
             role: Role::Assistant,
@@ -182,6 +183,7 @@ pub(super) fn tool(name: &str, args: &str, status: ToolStatus, output: &str) -> 
         arguments: None,
         approval_note: None,
         batch: None,
+        call_id: None,
     }
 }
 
@@ -439,5 +441,7 @@ pub(super) fn spec(id: &str, desc: &str, background: bool) -> crate::stream::Age
         agent_type: "general-purpose".into(),
         prompt: "task?".into(),
         background,
+        call_id: None,
+        arguments: None,
     }
 }

@@ -13,7 +13,8 @@ use std::net::{TcpListener, TcpStream};
 use std::sync::{Arc, Mutex};
 
 use alter_zero::app::{App, HistoryItem};
-use alter_zero::context::{ContextMessage, context_messages};
+use alter_zero::context::{ContextMessage, ContextRole, context_messages};
+use alter_zero::llm::hooks::{HookSink, PromptVerdict};
 use alter_zero::llm::{LlmBackend, ModelConfig, WireApi};
 use alter_zero::stream::{CancelToken, ReplySource, StreamEvent};
 
@@ -25,6 +26,18 @@ const ARGUMENTS: &str = r#"{"path":"/nonexistent/alter-zero-wire-history"}"#;
 const CHAT_TOOL_ROUND: &str = concat!(
     "data: {\"choices\":[{\"delta\":{\"content\":\"\\n\\n\"}}]}\n\n",
     r#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_from_the_provider","type":"function","function":{"name":"read","arguments":"{\"path\":\"/nonexistent/alter-zero-wire-history\"}"}}]}}]}"#,
+    "\n\n",
+    r#"data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}"#,
+    "\n\n",
+    "data: [DONE]\n\n",
+);
+
+/// A Chat Completions round with a **parallel batch** of two reads, the
+/// shape one assistant message carries on the wire.
+const CHAT_BATCH_ROUND: &str = concat!(
+    r#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_provider_a","type":"function","function":{"name":"read","arguments":"{\"path\":\"/nonexistent/alter-zero-a\"}"}}]}}]}"#,
+    "\n\n",
+    r#"data: {"choices":[{"delta":{"tool_calls":[{"index":1,"id":"call_provider_b","type":"function","function":{"name":"read","arguments":"{\"path\":\"/nonexistent/alter-zero-b\"}"}}]}}]}"#,
     "\n\n",
     r#"data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}"#,
     "\n\n",
@@ -120,7 +133,10 @@ fn turn(backend: &LlmBackend, prompt: &str, context: Vec<ContextMessage>) -> Vec
     let handle = backend.spawn(prompt.to_string(), vec![], context, tx, CancelToken::new());
     let mut events = Vec::new();
     while let Some(event) = rx.blocking_recv() {
-        let terminal = matches!(event, StreamEvent::StreamDone | StreamEvent::Error(_));
+        let terminal = matches!(
+            event,
+            StreamEvent::StreamDone | StreamEvent::Error(_) | StreamEvent::PromptBlocked { .. }
+        );
         events.push(event);
         if terminal {
             break;
@@ -134,11 +150,13 @@ fn turn(backend: &LlmBackend, prompt: &str, context: Vec<ContextMessage>) -> Vec
 /// a tool turn produces: the text before a call finalised as its own segment
 /// (a whitespace-only run recording nothing), the batch announced, each call
 /// resolved into a history record carrying the model's verbatim arguments,
-/// the closing reply recorded on `StreamDone`.
+/// the closing reply recorded on `StreamDone`, the round's announced call
+/// ids opened ahead of its cells.
 fn fold(app: &mut App, events: Vec<StreamEvent>) {
     for event in events {
         match event {
             StreamEvent::Chunk(text) => app.push_chunk(&text),
+            StreamEvent::RoundCalls(calls) => app.open_round(calls),
             StreamEvent::ToolBatch(items) => app.start_tool_batch(&items),
             StreamEvent::ToolStart {
                 name,
@@ -172,6 +190,29 @@ fn fold(app: &mut App, events: Vec<StreamEvent>) {
     }
 }
 
+/// A backend on `wire` pointed at the stand-in at `base`, tools on, no
+/// retries (a misbehaving stand-in should fail fast, not back off).
+fn backend_on(wire: WireApi, base: &str) -> LlmBackend {
+    let mut cfg = ModelConfig::fallback();
+    cfg.api_base = base.to_string();
+    cfg.api_key = Some("stand-in".to_string());
+    cfg.wire_api = wire;
+    LlmBackend::configure(cfg, Some("be terse".to_string()), true).with_max_retries(0)
+}
+
+/// A `UserPromptSubmit` hook that refuses one exact prompt (`docs/hooks.md`).
+#[derive(Debug)]
+struct BlockPrompt(&'static str);
+
+impl HookSink for BlockPrompt {
+    fn user_prompt_submit(&self, prompt: &str, _cancel: &CancelToken) -> PromptVerdict {
+        PromptVerdict {
+            blocked: (prompt == self.0).then(|| "not now".to_string()),
+            contexts: Vec::new(),
+        }
+    }
+}
+
 /// Two human turns on `wire` — the first a tool round then a reply, the
 /// second a reply — returning the request that closed the first turn and
 /// the request that opened the second.
@@ -180,12 +221,7 @@ fn two_turns(
     rounds: &'static [&'static str],
 ) -> (serde_json::Value, serde_json::Value) {
     let (base, requests) = stand_in(rounds);
-    let mut cfg = ModelConfig::fallback();
-    cfg.api_base = base;
-    cfg.api_key = Some("stand-in".to_string());
-    cfg.wire_api = wire;
-    let backend =
-        LlmBackend::configure(cfg, Some("be terse".to_string()), true).with_max_retries(0);
+    let backend = backend_on(wire, &base);
 
     let mut app = App::new();
     app.record_user_message("look at the file");
@@ -287,4 +323,96 @@ fn the_next_responses_turn_sends_the_prefix_the_provider_already_saw() {
     );
     assert_eq!(items[4]["content"][0]["text"], "done");
     assert_eq!(items[5]["content"][0]["text"], "and now?");
+}
+
+#[test]
+fn a_rebuilt_backend_sends_the_batch_the_provider_saw() {
+    // No retained prefix at all: the second turn runs on a *fresh* backend
+    // — what a `/model` switch, a settings rebuild or a `/resume` leaves —
+    // and still sends the first turn's parallel batch as the provider saw
+    // it: one assistant message, both calls, the provider's own ids. The
+    // records carry the identity, so the derived context alone reproduces
+    // the wire (docs/prompt-caching.md).
+    let (base, requests) = stand_in(&[CHAT_BATCH_ROUND, CHAT_TEXT_ROUND, CHAT_TEXT_ROUND]);
+    let first = backend_on(WireApi::Chat, &base);
+    let mut app = App::new();
+    app.record_user_message("read both");
+    app.begin_stream();
+    let events = turn(&first, "read both", context_messages(&app.history));
+    fold(&mut app, events);
+    let sent = requests.lock().expect("the request log")[1].clone();
+    let calls = sent["messages"][2]["tool_calls"]
+        .as_array()
+        .expect("the batch rides one assistant message");
+    assert_eq!(calls.len(), 2, "{sent}");
+    assert_eq!(calls[0]["id"], "call_provider_a");
+    assert_eq!(calls[1]["id"], "call_provider_b");
+
+    let rebuilt = backend_on(WireApi::Chat, &base);
+    app.record_user_message("and now?");
+    app.begin_stream();
+    let events = turn(&rebuilt, "and now?", context_messages(&app.history));
+    fold(&mut app, events);
+    let next = requests.lock().expect("the request log")[2].clone();
+    let messages = next["messages"].as_array().expect("a messages array");
+    assert_eq!(
+        messages.len(),
+        7,
+        "system, the prompt, the batch, two results, the reply, the new prompt: {next}"
+    );
+    assert_eq!(messages[2], sent["messages"][2], "the batch, byte for byte");
+    assert_eq!(messages[3], sent["messages"][3], "the first result");
+    assert_eq!(messages[4], sent["messages"][4], "the second result");
+    assert_eq!(messages[5]["content"], "done");
+}
+
+#[test]
+fn a_blocked_prompt_does_not_cost_the_retained_prefix() {
+    // The Responses wire echoes the model's blank lead as a message item the
+    // records cannot reproduce, so only the retained prefix restores it. A
+    // `UserPromptSubmit` block ends a turn before any request goes out; it
+    // must not consume that prefix, or the next real turn re-sends a
+    // different conversation (docs/prompt-caching.md).
+    let (base, requests) = stand_in(&[
+        RESPONSES_TOOL_ROUND,
+        RESPONSES_TEXT_ROUND,
+        RESPONSES_TEXT_ROUND,
+    ]);
+    let backend =
+        backend_on(WireApi::Responses, &base).with_hooks(Arc::new(BlockPrompt("not yet")));
+    let mut app = App::new();
+    app.record_user_message("look at the file");
+    app.begin_stream();
+    let events = turn(&backend, "look at the file", context_messages(&app.history));
+    fold(&mut app, events);
+    let sent = requests.lock().expect("the request log")[1].clone();
+    assert_eq!(sent["input"][1]["content"][0]["text"], "\n\n");
+
+    // The blocked turn: the boundary rolls a blocked submission back out of
+    // the history, so its prompt rides only this one context.
+    let mut blocked = context_messages(&app.history);
+    blocked.push(ContextMessage::new(ContextRole::User, "not yet"));
+    let events = turn(&backend, "not yet", blocked);
+    assert!(
+        matches!(events.last(), Some(StreamEvent::PromptBlocked { .. })),
+        "{events:?}"
+    );
+    assert_eq!(
+        requests.lock().expect("the request log").len(),
+        2,
+        "nothing went out for the blocked prompt"
+    );
+
+    app.record_user_message("and now?");
+    app.begin_stream();
+    let events = turn(&backend, "and now?", context_messages(&app.history));
+    fold(&mut app, events);
+    let next = requests.lock().expect("the request log")[2].clone();
+    let items = next["input"].as_array().expect("an input array");
+    let prefix = sent["input"].as_array().expect("an input array");
+    assert_eq!(
+        &items[..4],
+        &prefix[..4],
+        "the provider's own prefix survives the block"
+    );
 }

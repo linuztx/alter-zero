@@ -470,6 +470,8 @@ pub(super) fn agent_specs(background: bool) -> Vec<AgentSpec> {
         agent_type: crate::agents::GENERAL_PURPOSE.to_string(),
         prompt: prompt.to_string(),
         background,
+        call_id: None,
+        arguments: None,
     };
     vec![
         spec(

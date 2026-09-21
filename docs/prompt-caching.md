@@ -120,27 +120,52 @@ where an empty marked block would reject the request.
 
 ## Keeping the conversation prefix stable
 
-Display history reconstructs tool IDs and splits parallel calls into separate
-assistant/result pairs. Those messages carry equivalent information, but
-changing their wire representation at the next human turn loses prompt-cache
-reuse from that point onward.
+The request a new human turn sends is derived from the display history, and
+it used to differ from the request the provider had cached in two ways that
+cost the whole suffix: the derivation minted fresh `call_0`, `call_1`… ids
+on the wires that carry an id through unrewritten (Responses, Messages,
+Ollama), and it split a parallel batch into one assistant/result pair per
+call. Equivalent information, a different prefix — and a cache read is a
+prefix match.
 
-The active backend retains its last request and restores that exact prefix
-only when the rebuilt history has matching text, images, ordered tool names,
-arguments and results. Generated IDs, batch envelopes and adjacent same-role
-plain-message boundaries may differ — and so may a whitespace-only lead
-before a batch's calls: the Responses and Messages wires echo a model's
+Two layers keep the prefix now. The **durable** one is the record
+(`docs/context.md`): every tool round announces its ids first
+(`StreamEvent::RoundCalls`, in the model's order), the loop stamps them onto
+the records the round's cells resolve into beside a per-round batch number
+(`ToolCall::call_id`/`batch`, `TaskCallRecord`'s pair, an agent group's
+entry with the `call_id` its launch answered and its verbatim `arguments`,
+both carried on the launch's `AgentSpec`), the rollout round-trips all of
+it, and `context::context_messages` folds the records sharing a batch into
+the one `tool_calls` message they arrived in — ordinary calls, task calls
+and subagent launches alike, every result behind it, a notice committed
+mid-batch deferred past it. So the derived request *is* the cached one
+after a `/resume`, a `/settings` or `/model` rebuild of the backend, or a
+restart; a record from a rollout written before the fields gets a synthetic
+id minted clear of the recorded ones, so an old session's later turns still
+pair. The **retained** one is the previous request itself: the active
+backend keeps its last request and restores that exact prefix when the
+rebuilt history has matching text, images, ordered tool names, arguments and
+results — which still covers what no record can, a whitespace-only lead
+before a batch's calls (the Responses and Messages wires echo a model's
 `\n\n` back as the round's content while the app records no segment for
 it, and counting the two as different kept exactly those wires from ever
-matching. `tests/wire_history.rs` drives the Chat Completions and Responses
-wires end to end against a loopback stand-in — a real turn, its events
-folded into the `App`, the next turn's request read back off the wire
-carrying the provider's own call id.
-Any mismatch uses the newly derived history, so edits, rewinds and compaction
-cannot resurrect stale context. Retention is capped at 8 MiB (images share
-their existing allocation); backend rebuilds and process restarts discard it.
-Older rollouts still reconstruct their tool records normally. MCP tool
-definitions use stable name order so discovery order does not change a prompt.
+matching) and adjacent same-role plain-message boundaries. A
+`UserPromptSubmit` hook that blocks the prompt (`docs/hooks.md`) is checked
+before the retained prefix is consulted, so the block costs it nothing and
+the next prompt still matches. Any mismatch uses the newly derived history,
+so edits, rewinds and compaction cannot resurrect stale context. Retention
+is capped at 8 MiB (images share their existing allocation); a backend
+rebuild or a restart discards it and falls back on the record. MCP tool
+definitions use stable name order so discovery order does not change a
+prompt.
+
+`tests/wire_history.rs` drives the Chat Completions and Responses wires end
+to end against a loopback stand-in — a real turn, its events folded into the
+`App` exactly as the loop folds them, the next turn's request read back off
+the wire carrying the provider's own call id — and proves the durable half
+on its own: a backend rebuilt between the turns, its retained request gone,
+sends the batch the provider saw, and a prompt a hook blocks does not cost
+the prefix.
 
 ## Cache affinity: what each backend routes on
 
@@ -320,9 +345,13 @@ interrupted-turn ID collisions, changed history, retained-memory limits, a
 bearer whose `exp` the local clock reads as past, and a symlinked key store.
 `tests/wire_history.rs` adds the end-to-end leg: a real backend turn on the
 Chat Completions wire and on the Responses wire against a loopback stand-in,
-the next turn's request carrying the provider's own call id. The complete
-local gate passed: 4,013 tests, formatting, Clippy with warnings denied and
-the documentation build.
+the next turn's request carrying the provider's own call id — from the
+retained request and, with the backend rebuilt between the turns, from the
+record alone — and a prompt a hook blocks costing no prefix. The auth
+half additionally covers a `forget` landing while a refresh is in flight
+and a rotation racing a newer sign-in for the key store. The complete
+local gate passed: 4,034 tests, formatting, Clippy with warnings
+denied and the documentation build.
 
 Live tests used the production provider configurations and synthetic prompts.
 The identical-request baselines: OpenRouter read 8,004 of 8,007 input tokens,
@@ -382,3 +411,15 @@ and a miss on one does not indict the request.
   number that only settles at round boundaries anyway.
 - OpenRouter's per-request `cost` field is parsed past, not surfaced — the
   tally stays in tokens (Venice bills in a different unit entirely).
+- The **durable prefix** replays what the records can say, and three round
+  shapes still differ from the wire once the retained request is gone (a
+  rebuild, a `/resume`, a restart — the running backend's retained request
+  covers all three until then, and the cost is one re-read of the
+  conversation from that round on, never a malformed request): a round
+  mixing subagent launches with ordinary calls replays the launches first,
+  since the group record commits before the ordinary cells, where the wire
+  had the model's own order; a task or agent call the **Max tool calls**
+  ceiling refused leaves no record at all (it never had a cell), and a
+  launch a `PreToolUse` hook blocked resolves as a lone cell under a
+  synthetic id ahead of the batch; and several image reads in one round
+  replay as one merged user message where the live loop sent one per read.

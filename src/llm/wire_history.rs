@@ -255,6 +255,7 @@ mod tests {
                 arguments: Some(format!(r#"{{"path":"{path}"}}"#)),
                 approval_note: None,
                 batch: Some(0),
+                call_id: None,
             })
         };
         let history = vec![
@@ -432,7 +433,10 @@ mod tests {
         let prior = prior_request();
         let original = replayed_request();
         let mut cases = Vec::new();
-        for index in [0, 1, 3, 5] {
+        // Every index inside the retained prefix: the system prompt, the
+        // prompt, and the two results of the batch (the reply after the
+        // batch is the suffix, free to differ).
+        for index in [0, 1, 3, 4] {
             let mut changed = original.clone();
             changed[index].content = MessageContent::Text("changed".into());
             cases.push(changed);
@@ -533,7 +537,7 @@ mod tests {
         let mut current = replayed_request();
         current[2].tool_calls[0].function.name = "tasklist".into();
         current[2].tool_calls[0].function.arguments = "{}".into();
-        assert_eq!(matching_prefix(&previous, &current), Some(6));
+        assert_eq!(matching_prefix(&previous, &current), Some(5));
         // Agent launches can be recorded in execution order instead of the
         // model's order; reconstructed defaults can change their arguments.
         // Neither is permission to replay different context.

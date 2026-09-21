@@ -279,6 +279,12 @@ pub struct App {
     /// rounds' calls can never be mistaken for one parallel batch by the
     /// renderer that collapses a run of MCP cells. See `docs/mcp.md`.
     next_batch: u64,
+    /// The tool round the backend announced last
+    /// ([`StreamEvent::RoundCalls`] → [`open_round`](App::open_round)): its
+    /// batch id and its calls in the model's order, which is what stamps
+    /// the round's records with the provider's own ids
+    /// (`docs/prompt-caching.md`). Cleared by [`begin_stream`](App::begin_stream).
+    round: Option<tools::OpenRound>,
     /// Every finished message and tool call, oldest first — used to repaint after
     /// a resize or on returning from the tool-output view.
     pub history: Vec<HistoryItem>,

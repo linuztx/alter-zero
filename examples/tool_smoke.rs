@@ -99,6 +99,9 @@ fn main() {
             StreamEvent::ToolBackgrounded { id, output } => {
                 println!("\n\x1b[90m[backgrounded as {id}]\x1b[0m\n{output}");
             }
+            // The round's wire identity (docs/prompt-caching.md): the TUI
+            // stamps its records with it; the harness has none.
+            StreamEvent::RoundCalls(_) => {}
             // A task tool call: cell-less in the TUI; the harness just logs it.
             StreamEvent::TaskCall {
                 name, args, output, ..

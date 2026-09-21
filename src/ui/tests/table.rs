@@ -922,6 +922,7 @@ fn a_rejected_cell_shows_the_amended_instructions_and_never_the_model_text() {
         arguments: None,
         approval_note: None,
         batch: None,
+        call_id: None,
     };
     for lines in [
         tool_lines(&tool, 80, &PathDisplay::VERBATIM),
@@ -971,6 +972,7 @@ fn a_backgrounded_tool_cell_shows_the_fixed_row_not_its_output() {
         arguments: None,
         approval_note: None,
         batch: None,
+        call_id: None,
     };
     for lines in [
         tool_lines(&tool, 60, &PathDisplay::VERBATIM),
@@ -1011,6 +1013,7 @@ fn a_backgrounded_shell_cell_is_the_headerless_fixed_row() {
         arguments: None,
         approval_note: None,
         batch: None,
+        call_id: None,
     };
     let texts: Vec<String> = tool_lines(&tool, 60, &PathDisplay::VERBATIM)
         .iter()

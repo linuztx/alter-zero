@@ -8,6 +8,17 @@ use crate::ask::AskRequest;
 use crate::permission::PermissionRequest;
 use crate::tasks::TaskStore;
 
+/// One call of a tool round as the model made it — the provider's own id and
+/// the wire tool name — announced by [`StreamEvent::RoundCalls`] in the
+/// model's order ahead of the round's cells, so the records those cells
+/// resolve into carry the id the next request replays
+/// (`docs/prompt-caching.md`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RoundCall {
+    pub id: String,
+    pub name: String,
+}
+
 /// One call in a [`StreamEvent::ToolBatch`] announcement: the `name` + short
 /// `args` summary the `● name(args)` header shows — the *same* two strings the
 /// call's own [`StreamEvent::ToolStart`] carries, so a `⎿ Waiting…` cell's header
@@ -30,6 +41,12 @@ pub struct AgentSpec {
     pub agent_type: String,
     pub prompt: String,
     pub background: bool,
+    /// The provider's id for the `agent` call this launch answers, and the
+    /// model's verbatim arguments for it — carried onto the group's record so
+    /// the next request replays the call as the provider saw it
+    /// (`docs/prompt-caching.md`). `None` from a scripted launch.
+    pub call_id: Option<String>,
+    pub arguments: Option<String>,
 }
 
 /// One `agent` tool call's resolution inside a [`StreamEvent::AgentGroupDone`]:
@@ -90,6 +107,16 @@ impl TokenUsage {
 pub enum StreamEvent {
     /// A piece of the reply (typically one word).
     Chunk(String),
+    /// Every call of the tool round the model just made, in its order — the
+    /// wire identity ([`RoundCall`]) the round's records are stamped with:
+    /// the visible calls pair with the [`ToolBatch`](Self::ToolBatch) that
+    /// follows, in order; the task calls with their
+    /// [`TaskCall`](Self::TaskCall) events, in order; the agent launches by
+    /// the id their [`AgentSpec`] carries. Sent before anything else the
+    /// round emits. A backend that never sends it (the offline dummy) leaves
+    /// the records unstamped, which replays exactly as it always did
+    /// (`docs/prompt-caching.md`).
+    RoundCalls(Vec<RoundCall>),
     /// The model requested a **parallel batch** of tool calls this round,
     /// announced up front — *before* the first [`StreamEvent::ToolStart`] — so the
     /// UI can show every requested call at once, the ones not yet executing as

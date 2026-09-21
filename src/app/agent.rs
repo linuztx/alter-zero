@@ -35,6 +35,13 @@ pub struct AgentGroupEntry {
     pub tool_headers: Vec<String>,
     /// The model-facing tool-result text (immutable — see the struct docs).
     pub output: String,
+    /// The provider's own id for the `agent` call this entry answers
+    /// (`ToolCall::call_id`'s twin, `docs/prompt-caching.md`).
+    pub call_id: Option<String>,
+    /// The model's verbatim arguments for that call, replayed as sent; the
+    /// typed fields above rebuild an equivalent object when a record made
+    /// before the field existed carries none.
+    pub arguments: Option<String>,
 }
 
 /// A resolved group of `agent` tool calls from one round, committed as a
@@ -48,6 +55,10 @@ pub struct AgentGroup {
     /// returned launch acknowledgements and the agents keep running).
     pub background: bool,
     pub agents: Vec<AgentGroupEntry>,
+    /// The round's batch id (`ToolCall::batch`'s twin): a group launched in
+    /// the same round as other calls replays inside that round's assistant
+    /// message.
+    pub batch: Option<u64>,
     /// Wall-clock stamp (recorded like every item's; never displayed).
     pub timestamp: String,
 }
@@ -140,6 +151,9 @@ impl AgentNotice {
 pub struct AgentGroupLive {
     pub ids: Vec<String>,
     pub background: bool,
+    /// The batch of the round the group was launched in — what its record
+    /// carries when it resolves (`docs/prompt-caching.md`).
+    pub batch: Option<u64>,
 }
 
 /// What the user's `x` on a roster row did — the two halves of the
@@ -177,6 +191,8 @@ fn agent_entry_of(agent: &AgentRun, output: &str) -> AgentGroupEntry {
         result: agent.result.clone().unwrap_or_default(),
         tool_headers: agent_tool_headers(agent),
         output: output.to_string(),
+        call_id: agent.call_id.clone(),
+        arguments: agent.arguments.clone(),
     }
 }
 
@@ -268,17 +284,21 @@ impl App {
     /// segment first (the ToolBatch dance), so the cell slots after the text.
     pub fn start_agent_group(&mut self, background: bool, specs: &[AgentSpec]) {
         for spec in specs {
-            self.agents.push(AgentRun::new(
-                spec.id.clone(),
-                spec.description.clone(),
-                spec.agent_type.clone(),
-                spec.prompt.clone(),
-                spec.background,
-            ));
+            self.agents.push(
+                AgentRun::new(
+                    spec.id.clone(),
+                    spec.description.clone(),
+                    spec.agent_type.clone(),
+                    spec.prompt.clone(),
+                    spec.background,
+                )
+                .with_call(spec.call_id.clone(), spec.arguments.clone()),
+            );
         }
         self.agent_group = Some(AgentGroupLive {
             ids: specs.iter().map(|spec| spec.id.clone()).collect(),
             background,
+            batch: self.round.as_ref().map(|round| round.batch),
         });
         self.agents_generation += 1;
     }
@@ -394,6 +414,8 @@ impl App {
                         result: String::new(),
                         tool_headers: Vec::new(),
                         output: done.output.clone(),
+                        call_id: None,
+                        arguments: None,
                     },
                 }
             })
@@ -402,6 +424,7 @@ impl App {
             background,
             agents: entries,
             timestamp: self.now_stamp(),
+            batch: self.agent_group.as_ref().and_then(|live| live.batch),
         };
         self.history.push(HistoryItem::AgentGroup(group.clone()));
         self.agent_group = None;
@@ -435,6 +458,7 @@ impl App {
             background: live.background,
             agents: entries,
             timestamp: stamp,
+            batch: live.batch,
         };
         self.history.push(HistoryItem::AgentGroup(group.clone()));
         Some(group)

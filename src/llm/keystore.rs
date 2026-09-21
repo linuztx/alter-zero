@@ -5,7 +5,8 @@
 //! survives across runs; the boundary (`main.rs`) loads the file at startup and
 //! consults it during key resolution (a real process env var still wins). This
 //! parser is pure; [`EnvFile::update`] is the shared atomic file boundary
-//! used by both sign-in and background refreshes.
+//! used by both sign-in and background refreshes — the latter through
+//! [`EnvFile::update_if`], which writes only over a value it recognises.
 //!
 //! The grammar is the common `.env` subset: `KEY=VALUE` lines, `#` comments,
 //! blank lines, an optional `export ` prefix, and optional surrounding quotes
@@ -33,6 +34,31 @@ impl EnvFile {
     /// Returns file-system errors without replacing an unreadable store or
     /// truncating the existing file when writing its replacement fails.
     pub fn update(path: &std::path::Path, key: &str, value: &str) -> std::io::Result<String> {
+        // Unconditional: the predicate accepts every current value, so the
+        // conditional core always writes.
+        Self::update_if(path, key, value, |_| true).map(Option::unwrap_or_default)
+    }
+
+    /// [`update`](Self::update), but only when `replaces` accepts what the
+    /// store holds for `key` right now — its parsed value, or `None` for a
+    /// key (or a store) that does not exist yet. The check and the write are
+    /// one serialized read-modify-write, so a value another writer lands
+    /// between the two cannot be lost. Returns the new file text, or `None`
+    /// when the current value was kept.
+    ///
+    /// This is what a rotated OAuth refresh token is written back with: a
+    /// sign-in that lands while a refresh is in flight stores its own token,
+    /// and the refresh's rotation of the chain that sign-in replaced must not
+    /// overwrite it (`docs/chatgpt.md`).
+    ///
+    /// # Errors
+    /// As [`update`](Self::update).
+    pub fn update_if(
+        path: &std::path::Path,
+        key: &str,
+        value: &str,
+        replaces: impl FnOnce(Option<&str>) -> bool,
+    ) -> std::io::Result<Option<String>> {
         use std::io::{ErrorKind, Write};
 
         static UPDATES: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -42,6 +68,9 @@ impl EnvFile {
             Err(error) if error.kind() == ErrorKind::NotFound => String::new(),
             Err(error) => return Err(error),
         };
+        if !replaces(Self::parse(&current).get(key)) {
+            return Ok(None);
+        }
         let updated = Self::upsert(&current, key, value);
         // Write *through* a link: a store symlinked in from a dotfiles
         // checkout keeps living there — the rename below replaces the file
@@ -67,7 +96,7 @@ impl EnvFile {
         temporary.persist(path).map_err(|error| error.error)?;
         #[cfg(unix)]
         std::fs::File::open(parent)?.sync_all()?;
-        Ok(updated)
+        Ok(Some(updated))
     }
 
     /// Parse `.env` text into its key/value pairs. Malformed lines (no `=`, an
@@ -330,6 +359,52 @@ mod tests {
                 .all(|entry| entry.unwrap().file_name() != "alter-zero.env"),
             "nothing was written beside the link"
         );
+    }
+
+    #[test]
+    fn auth_cache_regression_a_conditional_update_keeps_a_value_it_does_not_recognise() {
+        // A rotation written back from a backend thread must not overwrite a
+        // token a sign-in stored meanwhile: the write goes ahead only when the
+        // predicate accepts what the store holds now — the parsed value, or
+        // `None` for a key (or a store) that does not exist yet.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".env");
+        std::fs::write(&path, "TOKEN='newer sign-in'\nOTHER=keep\n").unwrap();
+        let kept = EnvFile::update_if(&path, "TOKEN", "rotated", |current| {
+            current.is_none_or(|c| c == "old")
+        })
+        .unwrap();
+        assert_eq!(kept, None, "a value outside the chain is kept");
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "TOKEN='newer sign-in'\nOTHER=keep\n",
+            "nothing was written"
+        );
+        let written = EnvFile::update_if(&path, "TOKEN", "rotated", |current| {
+            current == Some("newer sign-in")
+        })
+        .unwrap();
+        assert_eq!(
+            written.as_deref(),
+            Some("TOKEN=rotated\nOTHER=keep\n"),
+            "the predicate sees the parsed value and a match replaces it in place"
+        );
+        let written =
+            EnvFile::update_if(&path, "FRESH", "value", |current| current.is_none()).unwrap();
+        assert_eq!(
+            written.as_deref(),
+            Some("TOKEN=rotated\nOTHER=keep\nFRESH=value\n"),
+            "an absent key reads as None"
+        );
+        let missing = dir.path().join("missing").join(".env");
+        let written =
+            EnvFile::update_if(&missing, "TOKEN", "first", |current| current.is_none()).unwrap();
+        assert_eq!(
+            written.as_deref(),
+            Some("TOKEN=first\n"),
+            "so does a missing store"
+        );
+        assert_eq!(std::fs::read_to_string(&missing).unwrap(), "TOKEN=first\n");
     }
 
     #[test]

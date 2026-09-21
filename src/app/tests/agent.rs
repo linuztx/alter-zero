@@ -1094,3 +1094,46 @@ fn an_agents_command_clock_is_injected_per_agent_and_cleared_per_frame() {
         "the per-frame clear drops every clock"
     );
 }
+
+#[test]
+fn an_agent_launch_carries_the_call_it_answers_into_the_group_record() {
+    // The launch's spec names the provider's id and the model's verbatim
+    // arguments; the group resolving in the announced round carries both,
+    // plus the round's batch, onto its record (docs/prompt-caching.md).
+    let arguments = r#"{"description":"Fetch","prompt":"p","subagent_type":"explore"}"#;
+    let mut app = App::new();
+    app.begin_stream();
+    app.open_round(vec![crate::stream::RoundCall {
+        id: "call_agent".to_string(),
+        name: "agent".to_string(),
+    }]);
+    let batch = app.open_round_batch().expect("a round is open");
+    app.start_agent_group(
+        false,
+        &[AgentSpec {
+            id: "a1".to_string(),
+            description: "Fetch".to_string(),
+            agent_type: "explore".to_string(),
+            prompt: "p".to_string(),
+            background: false,
+            call_id: Some("call_agent".to_string()),
+            arguments: Some(arguments.to_string()),
+        }],
+    );
+    let group = app.finish_agent_group(
+        false,
+        &[AgentCallDone {
+            id: "a1".to_string(),
+            output: "framed".to_string(),
+            ok: true,
+        }],
+    );
+    assert_eq!(group.batch, Some(batch));
+    assert_eq!(group.agents[0].call_id.as_deref(), Some("call_agent"));
+    assert_eq!(group.agents[0].arguments.as_deref(), Some(arguments));
+    assert!(
+        matches!(app.history.last(), Some(HistoryItem::AgentGroup(recorded)) if recorded == &group),
+        "{:?}",
+        app.history
+    );
+}

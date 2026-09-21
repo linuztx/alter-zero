@@ -409,7 +409,11 @@ retired one is terminal, so `chatgpt::persist_refresh` writes the new value
 straight back into the `.env` store (through a path `tui::models` hands the
 module once at startup, since the mint runs several layers below the
 boundary — skipping that call is not a crash but a forced re-login at the next
-launch). The `chatgpt-account-id` the backend routes on is read out of the
+launch) — only while the store still holds the session's own chain, never
+over a token a newer sign-in stored meanwhile (`EnvFile::update_if`), and a
+fresh sign-in's `forget` clears the bearer cache without waiting behind a
+refresh in flight, whose bearer is then dropped rather than cached
+(`docs/chatgpt.md`; the Claude and Copilot modules follow the same rules). The `chatgpt-account-id` the backend routes on is read out of the
 minted access token's own claims, which is what keeps the store to one value
 with nothing to drift; the cached life comes from the token response's own
 `expires_in` — a **duration**, Copilot's `refresh_in` under OAuth's name, so a
@@ -2933,7 +2937,14 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   `stream_options.include_usage` in the payload, and the receipt naming both
   cache halves, `(8k cached · 1.2k written)`; every wire's cached numbers are
   the provider's own, never estimated, and `tests/live_caching.rs` proves each
-  provider on the wire — see `docs/prompt-caching.md`.
+  provider on the wire — see `docs/prompt-caching.md`. The derived context
+  replays every tool round **as the wire carried it**: the provider's own
+  call ids, announced first by `StreamEvent::RoundCalls` and stamped onto
+  the records with a per-round `batch` number, a batch's calls — task calls
+  and subagent launches included — in one `tool_calls` message, so the
+  cached prefix survives a `/resume`, a backend rebuild and a restart, with
+  the backend's retained last request (`llm::wire_history`) covering what
+  no record can.
   **The real `LlmBackend` also drives an agentic tool loop** (`docs/tools.md`):
   it offers the model `bash`/`read`/`write`/`edit` as Chat Completions function
   tools, and `llm::agent::run_agent` streams a round, runs the tools the model

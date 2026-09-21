@@ -45,6 +45,20 @@ release heading when a version is cut.
   cannot make every request re-mint (and rotate) the token.
   (`docs/prompt-caching.md`, `docs/chatgpt.md`, `docs/claude.md`,
   `docs/copilot.md`)
+- **The cached prefix now survives `/resume`, a backend rebuild and a
+  restart.** Every tool round's records keep the provider's own call ids and
+  the batch they arrived in, so the request a later turn derives replays a
+  parallel batch — task calls and subagent launches included — as the one
+  message the provider cached, where the fix above could only reuse what the
+  running backend still held. A prompt a `UserPromptSubmit` hook blocks no
+  longer costs the prefix either. And two sign-in races: signing in again
+  no longer waits behind a token refresh in flight (the screen could freeze
+  for the whole request timeout, and the refresh could then cache a bearer
+  under the credential the sign-in had just replaced), and a refresh that
+  rotates the token writes it back only while the store still holds this
+  session's own token — never over one a newer sign-in stored meanwhile,
+  which used to force the re-login the sign-in had just done at the next
+  launch. (`docs/prompt-caching.md`, `docs/context.md`, `docs/chatgpt.md`)
 
 ## [0.5.0] - 2026-09-20
 

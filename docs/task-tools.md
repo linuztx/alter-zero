@@ -122,9 +122,12 @@ matters:
   `⎿` result gutter) — the debugging surface hides nothing.
 - **Ctrl+D / the model's context: native replay, verbatim.** Each record
   replays as a provider-native `tool_calls` + `tool` result pair
-  (`context::context_messages`) carrying the **raw arguments the model
-  sent** — `TaskCallRecord::arguments`, kept beside the header summary
-  precisely so the replay can. The summary is lossy by design (`#1 →
+  (`context::context_messages`) — under the provider's own call id
+  (`TaskCallRecord::call_id`, taken from the round's announcement in the
+  model's order) and in the round's one `tool_calls` message beside the
+  calls it was made with (`docs/prompt-caching.md`) — carrying the **raw
+  arguments the model sent** — `TaskCallRecord::arguments`, kept beside the
+  header summary precisely so the replay can. The summary is lossy by design (`#1 →
   completed` is a header, not a payload), and replaying *that* would leave a
   later turn reading `taskupdate {}` over a result line, its own subjects,
   descriptions and dependency wiring gone from the conversation. A record

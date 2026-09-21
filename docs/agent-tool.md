@@ -369,10 +369,13 @@ zero new plumbing. The TUI cell is a new `HistoryItem::AgentNotice` —
   channel boundaries (or, in the agent session view, through that view's own
   render). Invariants 1-4 hold unchanged.
 - The parent's tool results replay on later turns via a `context.rs` arm:
-  `HistoryItem::AgentGroup` derives one assistant `tool_calls` entry (one
-  `agent` call per entry, arguments reconstructed) + one `tool` result per
-  agent; `AgentNotice` derives the bracketed user-role note carrying the
-  final response.
+  `HistoryItem::AgentGroup` derives one `agent` call per entry — under the
+  provider's own id the launch answered and with the model's verbatim
+  arguments, both carried on the launch's `AgentSpec` and recorded on the
+  entry (a reconstruction serves an older rollout) — folded into the
+  round's one `tool_calls` message beside the round's other calls, + one
+  `tool` result per agent (`docs/prompt-caching.md`); `AgentNotice` derives
+  the bracketed user-role note carrying the final response.
 - `session.rs` round-trips both new items (`agent_group` / `agent_notice`
   records); old builds skip them (the forward-compatibility contract). The
   roster itself is ephemeral, like background shells.

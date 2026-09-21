@@ -106,6 +106,8 @@ fn a_resumed_or_rewound_finished_plan_stays_retired() {
         ok: true,
         timestamp: String::new(),
         tasks: done,
+        call_id: None,
+        batch: None,
     })]);
     assert!(app.tasks().is_empty(), "a finished plan does not come back");
     assert_eq!(
@@ -122,6 +124,8 @@ fn a_resumed_or_rewound_finished_plan_stays_retired() {
         ok: true,
         timestamp: String::new(),
         tasks: store_of(&["a", "b"]),
+        call_id: None,
+        batch: None,
     })]);
     assert_eq!(app.tasks().tasks().len(), 2);
 }
@@ -181,6 +185,8 @@ fn load_session_restores_the_last_records_snapshot() {
             ok: true,
             timestamp: String::new(),
             tasks: store_of(&["a"]),
+            call_id: None,
+            batch: None,
         }),
         HistoryItem::TaskCall(TaskCallRecord {
             name: "TaskCreate".into(),
@@ -190,6 +196,8 @@ fn load_session_restores_the_last_records_snapshot() {
             ok: true,
             timestamp: String::new(),
             tasks: store_of(&["a", "b"]),
+            call_id: None,
+            batch: None,
         }),
     ];
     app.load_session(items);
