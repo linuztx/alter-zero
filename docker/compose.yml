@@ -5,6 +5,8 @@
 #   ALTER_ZERO_WORKSPACE=~/projects/site docker compose -f docker/compose.yml up -d
 #   docker exec -it -e TERM -e COLORTERM -e TERM_PROGRAM -e KITTY_WINDOW_ID -e TMUX \
 #     alter-zero-kali alter-zero
+# In tmux, enable host allow-passthrough and add
+# -e ALTER_ZERO_IMAGE_PROTOCOL=kitty (or iterm2/sixel); see docker/README.md.
 #
 # `podman compose` reads the same file. `down` keeps the volumes — never add
 # --volumes unless you mean to delete your sign-ins and sessions.

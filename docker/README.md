@@ -207,23 +207,71 @@ Without the flags you get half-blocks. Nothing needs rebuilding: quit and
 reopen with the flags.
 
 <details>
-<summary><strong>Inside tmux or screen, and forcing a protocol</strong></summary>
+<summary><strong>Inside tmux: enable graphics passthrough</strong></summary>
 
-Under a multiplexer Alter Zero deliberately falls back to half-blocks: `TMUX`
-(forwarded above, on purpose) tells it the outer terminal's identity may be
-stale, and tmux drops graphics unless passthrough is on. If yours is set up
-for it (`set -g allow-passthrough on`), say which protocol to use:
+Under a multiplexer Alter Zero deliberately falls back to half-blocks. `TMUX`
+(forwarded above, on purpose) says the outer terminal's identity may be stale
+after a detach and reattach, while tmux itself drops unapproved passthrough
+sequences. Native pictures therefore need the correct `tmux-256color`
+identity plus two explicit opt-ins: permit passthrough in the **host tmux**,
+then tell Alter Zero which protocol that outer terminal supports.
+
+With tmux 3.3 or newer, enable the safer visible-pane-only mode for one pane
+before starting Alter Zero:
 
 ```sh
-docker exec -it \
-  -e TERM -e COLORTERM -e TERM_PROGRAM -e KITTY_WINDOW_ID -e TMUX \
+tmux set-option -p allow-passthrough on
+```
+
+To keep it, put this in the host's `~/.tmux.conf` (not in the container):
+
+```tmux
+set -g default-terminal "tmux-256color"
+set -g allow-passthrough on
+```
+
+Reload the file, then open a new pane or session so its `TERM` is
+`tmux-256color`:
+
+```sh
+tmux source-file ~/.tmux.conf
+```
+
+You can verify the new pane before launching:
+
+```sh
+tmux show-options -gv allow-passthrough
+printf '%s\n' "$TERM"
+```
+
+Those should print `on` and `tmux-256color`.
+
+Finally, start Alter Zero with the protocol override. For example, from
+Kitty or Ghostty through Podman:
+
+```sh
+podman exec -it \
+  -e TERM=tmux-256color \
+  -e COLORTERM -e TERM_PROGRAM -e KITTY_WINDOW_ID -e TMUX \
   -e ALTER_ZERO_IMAGE_PROTOCOL=kitty \
   alter-zero-kali alter-zero
 ```
 
-The values are `kitty`, `iterm2`, `sixel` and `halfblocks`. iTerm2 and WezTerm
-*inside tmux* are recognised by three more variables; add
-`-e LC_TERMINAL -e ITERM_SESSION_ID -e WEZTERM_EXECUTABLE`.
+Use `iterm2` for iTerm2 or WezTerm, and `sixel` only when the outer terminal
+supports sixel. `halfblocks` explicitly selects the portable fallback.
+Detection happens once at startup, so quit and reopen Alter Zero after a
+change.
+
+This is host terminal configuration, not a Docker/Podman capability. The
+renderer already wraps graphics for tmux and sends image bytes directly
+through the PTY; no device, socket mount, extra capability, or image rebuild
+is needed. Installing tmux inside the container would not configure the host
+tmux server. The protocol is deliberately selected per `docker exec`, rather
+than baked into the image, because the same container may be opened from
+different terminals.
+
+GNU screen is also treated conservatively and falls back to half-blocks;
+forcing a protocol there requires passthrough support from screen itself.
 
 </details>
 
@@ -468,7 +516,7 @@ Your own off switches still work, and are yours to use: `/settings` →
 
 | Symptom | Cause and fix |
 | --- | --- |
-| Pictures are coloured blocks | The `-e` flags are missing from `docker exec`, or you are inside tmux. See [Pictures](#pictures-in-your-terminal). |
+| Pictures are coloured blocks | The `-e` flags are missing from `docker exec`, or host tmux passthrough and the per-launch protocol override are not both enabled. See [Pictures](#pictures-in-your-terminal). |
 | `Failed to paste image: no desktop clipboard…` | The container has no display forwarded. Create it with `--clipboard`, or `docker cp` the picture in and ask Alter Zero to read it. |
 | Paste worked yesterday, not today | You logged out and in; the sockets changed. `docker/run.sh --replace --clipboard …` |
 | `a container called alter-zero-kali already exists` | Enter it, or recreate it with `--replace`. Nothing is removed unless you say so. |

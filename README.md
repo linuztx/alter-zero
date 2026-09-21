@@ -94,7 +94,15 @@ docker exec -it -e TERM -e COLORTERM -e TERM_PROGRAM -e KITTY_WINDOW_ID -e TMUX 
   alter-zero-kali alter-zero
 ```
 
-The `-e` flags hand over your terminal's identity, so pictures render as real images rather than half-blocks. The [container guide](docker/README.md) covers workspaces, the published ports, pasting images, and adding tools.
+Outside a multiplexer, the `-e` flags hand over your terminal's identity so
+pictures render as real images rather than half-blocks. The
+[container guide](docker/README.md) covers workspaces, the published ports,
+pasting images, and adding tools.
+
+Inside tmux, enable `allow-passthrough` on the host and explicitly select the
+outer terminal's image protocol for that `docker exec`; the
+[tmux instructions](docker/README.md#pictures-in-your-terminal) include a
+ready-to-run Podman example.
 
 </details>
 

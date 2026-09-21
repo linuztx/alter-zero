@@ -391,6 +391,52 @@ container:
 The third row is the app's multiplexer rule doing its job, not a defect;
 `-e ALTER_ZERO_IMAGE_PROTOCOL=kitty` overrides it.
 
+### tmux passthrough is a host concern
+
+tmux 3.3 and newer gate passthrough behind the `allow-passthrough` pane
+option. For one visible pane, the host can opt in without changing every
+pane:
+
+```sh
+tmux set-option -p allow-passthrough on
+```
+
+The persistent host configuration is:
+
+```tmux
+set -g default-terminal "tmux-256color"
+set -g allow-passthrough on
+```
+
+`tmux-256color` matters to the image path independently of its terminfo
+quality. `ratatui_image` recognises `TERM=tmux*` (or `TERM_PROGRAM=tmux`) and
+then DCS-wraps each graphics-protocol chunk for tmux; the image already ships
+the corresponding terminfo. Alter Zero still refuses to infer the outer
+protocol from possibly stale variables, so the launch also needs the explicit
+per-session choice:
+
+```sh
+podman exec -it \
+  -e TERM=tmux-256color \
+  -e COLORTERM -e TERM_PROGRAM -e KITTY_WINDOW_ID -e TMUX \
+  -e ALTER_ZERO_IMAGE_PROTOCOL=kitty \
+  alter-zero-kali alter-zero
+```
+
+The same path works with Docker. `kitty` is for Kitty/Ghostty, `iterm2` for
+iTerm2/WezTerm, and `sixel` only for a sixel-capable outer terminal. The
+renderer sends direct, chunked image data, so the outer terminal never needs
+access to a container path or shared-memory object: `exec -it` only has to
+relay the bytes through its PTY.
+
+The tmux process and socket belong to the host. A best-effort attempt by a
+library inside the container cannot reach that server, and mounting the
+socket or installing tmux in the image would cross the wrong security
+boundary. Configure passthrough on the host instead. Do not persist
+`ALTER_ZERO_IMAGE_PROTOCOL` in the image or Compose service either: this is
+an idle container that may be entered from terminals with different graphics
+support, which is exactly why protocol selection belongs to each `exec`.
+
 Forwarding `TERM` has a cost: programs in the container now look the user's
 terminal up by name, and the Kali base knows only the xterm/tmux/screen
 families. `kitty-terminfo` (0.1 MB) and `ncurses-term` (4.5 MB) add kitty,

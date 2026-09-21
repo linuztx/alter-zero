@@ -117,7 +117,12 @@ this says "docker". Nothing else changes.
      with its first-run notice. Your off switches still work (/settings, or
      -e ALTER_ZERO_TELEMETRY=0 on docker exec). See TELEMETRY.md.
    - Inside tmux pictures fall back to half-blocks on purpose. Override with
-     -e ALTER_ZERO_IMAGE_PROTOCOL=kitty if your tmux passes graphics through.
+     -e ALTER_ZERO_IMAGE_PROTOCOL=kitty after enabling passthrough in the
+     HOST pane: tmux set-option -p allow-passthrough on. Keep
+     default-terminal "tmux-256color" and allow-passthrough on in the host's
+     ~/.tmux.conf, and pass -e TERM=tmux-256color; use iterm2 or sixel when
+     that is the outer terminal's protocol. No container rebuild, capability
+     or socket mount is needed. See docker/README.md, Pictures in your terminal.
    - Only scan machines you are authorised to test.
 
 
