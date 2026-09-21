@@ -90,6 +90,15 @@ release heading when a version is cut.
   session's own token — never over one a newer sign-in stored meanwhile,
   which used to force the re-login the sign-in had just done at the next
   launch. (`docs/prompt-caching.md`, `docs/context.md`, `docs/chatgpt.md`)
+- **`install.sh` reads the latest release off the redirect with wget too.**
+  On a machine with wget and no curl the installer asked GitHub's API for
+  the newest tag instead — rate-limited per address, and blind to
+  `ALTER_ZERO_INSTALL_BASE_URL`, so a fork, or the release tooling's own
+  stand-in server, was answered with this repository's newest release and
+  then found no such asset where it had been told to look. Both fetchers
+  now read the tag off `/releases/latest`'s final `Location`, as
+  `docker/build.sh` already did, and the selftest drives the installer
+  under a PATH with no curl on it. (`docs/release.md`)
 
 ### Added
 

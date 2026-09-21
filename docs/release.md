@@ -137,9 +137,12 @@ curl -fsSL https://raw.githubusercontent.com/linuztx/alter-zero/main/install.sh 
 It maps `uname` to a target triple (refusing Windows, musl, and a glibc
 older than the 2.35 floor with a message that points at building from
 source), reads the latest tag off github.com's `/releases/latest` redirect
-(no API call, so no rate limit — `ALTER_ZERO_VERSION=vX.Y.Z` or `--version`
-pins one instead), downloads the archive **and** its `.sha256`, refuses to
-go on without the checksum file or with one that does not match, extracts,
+— curl's final URL, or the last `Location:` header wget prints where there
+is no curl; never the API, which is rate-limited per address and knows
+nothing of `ALTER_ZERO_INSTALL_BASE_URL` (`ALTER_ZERO_VERSION=vX.Y.Z` or
+`--version` pins one instead) — downloads the archive **and** the release's
+`SHA256SUMS`, refuses to go on without the checksum file or with one that
+does not list a matching value, extracts,
 copies the binary into `~/.local/bin` (`ALTER_ZERO_INSTALL_DIR` or `--dir`
 for elsewhere) beside any old one and moves it into place so a running
 `alter-zero` keeps its mapped file and the new one appears whole, runs the

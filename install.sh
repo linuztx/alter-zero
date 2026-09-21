@@ -169,14 +169,22 @@ fetch() {
 	fi
 }
 
-# The tag the repository's "latest release" redirect points at.
+# The tag the repository's "latest release" redirect points at — read off the
+# redirect itself with either fetcher, never GitHub's API: the API is
+# rate-limited per address (a shared NAT or a CI runner spends its hour's
+# allowance fast) and knows nothing of ALTER_ZERO_INSTALL_BASE_URL, so a fork
+# asking it would be handed this repository's newest tag.
 latest_tag() {
 	if [ "$fetcher" = curl ]; then
 		final=$(curl -fsSLI -o /dev/null -w '%{url_effective}' "$BASE_URL/releases/latest") || return 1
-		printf '%s\n' "${final##*/}"
 	else
-		wget -qO- "https://api.github.com/repos/$REPO/releases/latest" | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p'
+		# -S prints each hop's headers on stderr; the last Location is where
+		# the chain ended. GitHub sends it absolute and a stand-in may send it
+		# relative, so only the last path component is read, as with curl.
+		final=$(wget -q -S --spider --max-redirect=10 "$BASE_URL/releases/latest" 2>&1 |
+			awk 'tolower($1) == "location:" { url = $2 } END { if (url == "") exit 1; print url }') || return 1
 	fi
+	printf '%s\n' "${final##*/}"
 }
 
 sha256_of() {

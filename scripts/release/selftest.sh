@@ -354,6 +354,23 @@ EOF
 			expect_lacks "…and no colour codes when piped" "$OUT" "$(printf '\033')"
 			if [ -x "$T/home/bin/alter-zero" ]; then pass "…the binary is executable"; else flunk "no executable at $T/home/bin/alter-zero"; fi
 			expect_eq "…and runs" "alter-zero 0.4.2" "$("$T/home/bin/alter-zero" --version 2>&1)"
+			# A minimal Debian server ships wget and no curl. The tag must still
+			# come off the redirect: GitHub's API is rate-limited per address and
+			# knows nothing of ALTER_ZERO_INSTALL_BASE_URL, so a fork — or this
+			# stand-in — would be answered with the real repository's newest tag.
+			# A PATH of links to everything the installer runs, minus curl.
+			mkdir -p "$T/nocurl"
+			for tool in sh uname ldd wget tar gzip sha256sum shasum openssl awk sed mktemp rm wc tr cut paste head cp chmod mv mkdir basename; do
+				tool_path=$(command -v "$tool" 2>/dev/null) && ln -s "$tool_path" "$T/nocurl/$tool"
+			done
+			if [ -x "$T/nocurl/wget" ]; then
+				expect_ok "install.sh resolves and downloads with wget where there is no curl" env PATH="$T/nocurl" ALTER_ZERO_INSTALL_BASE_URL="$base" ALTER_ZERO_INSTALL_DIR="$T/home/bin-wget" sh "$CHECKOUT/install.sh"
+				expect_contains "…reading the tag off the same redirect" "$OUT" "v0.4.2 · latest"
+				expect_contains "…verifying the checksum" "$OUT" "matches the published value"
+				expect_eq "…and installing a binary that runs" "alter-zero 0.4.2" "$("$T/home/bin-wget/alter-zero" --version 2>&1)"
+			else
+				warn "no wget — skipping the curl-less install.sh case"
+			fi
 			stop_release
 			mkdir -p "$T/dist-published"
 			cp "$T/dist"/*.tar.gz "$T/dist"/*.tar.gz.sha256 "$T/dist-published/"
