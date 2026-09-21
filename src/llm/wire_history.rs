@@ -256,6 +256,7 @@ mod tests {
                 approval_note: None,
                 batch: Some(0),
                 call_id: None,
+                position: None,
             })
         };
         let history = vec![

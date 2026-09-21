@@ -278,6 +278,7 @@ fn rendered_cell(prompt: &str, name: &str) -> Vec<ratatui::text::Line<'static>> 
         approval_note: None,
         batch: None,
         call_id: None,
+        position: None,
     };
     crate::ui::tool_lines(&call, 80, &PathDisplay::VERBATIM)
 }

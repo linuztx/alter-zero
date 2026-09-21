@@ -373,7 +373,9 @@ zero new plumbing. The TUI cell is a new `HistoryItem::AgentNotice` —
   provider's own id the launch answered and with the model's verbatim
   arguments, both carried on the launch's `AgentSpec` and recorded on the
   entry (a reconstruction serves an older rollout) — folded into the
-  round's one `tool_calls` message beside the round's other calls, + one
+  round's one `tool_calls` message beside the round's other calls, at the
+  position the model gave the launch (the group's record lands ahead of
+  the ordinary cells, the position restores the wire's order), + one
   `tool` result per agent (`docs/prompt-caching.md`); `AgentNotice` derives
   the bracketed user-role note carrying the final response.
 - `session.rs` round-trips both new items (`agent_group` / `agent_notice`

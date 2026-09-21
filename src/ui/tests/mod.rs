@@ -122,6 +122,7 @@ pub(super) fn stamped_history() -> Vec<HistoryItem> {
             approval_note: None,
             batch: None,
             call_id: None,
+            position: None,
         }),
         HistoryItem::Message(Message {
             role: Role::Assistant,
@@ -184,6 +185,7 @@ pub(super) fn tool(name: &str, args: &str, status: ToolStatus, output: &str) -> 
         approval_note: None,
         batch: None,
         call_id: None,
+        position: None,
     }
 }
 

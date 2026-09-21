@@ -173,6 +173,8 @@ struct TaskToolRecord {
     call_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     batch: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    position: Option<usize>,
 }
 
 /// One task of a snapshot on disk. `status` is the wire name
@@ -241,6 +243,8 @@ struct AgentEntryRecord {
     call_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     arguments: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    position: Option<usize>,
 }
 
 /// An [`AgentNotice`] on disk (`docs/agent-tool.md`).
@@ -380,6 +384,8 @@ struct ToolRecord {
     /// shape.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     batch: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    position: Option<usize>,
 }
 
 /// A [`BackgroundNotice`] on disk — a background shell's completion notice
@@ -541,6 +547,7 @@ pub fn item_line(item: &HistoryItem, stamp: &str) -> String {
             approval_note: tool.approval_note.clone(),
             batch: tool.batch,
             call_id: tool.call_id.clone(),
+            position: tool.position,
         }),
         HistoryItem::Summary(summary) => ItemRecord::Summary(SummaryRecord {
             verb: summary.verb.to_string(),
@@ -596,6 +603,7 @@ pub fn item_line(item: &HistoryItem, stamp: &str) -> String {
                     output: entry.output.clone(),
                     call_id: entry.call_id.clone(),
                     arguments: entry.arguments.clone(),
+                    position: entry.position,
                 })
                 .collect(),
             timestamp: group.timestamp.clone(),
@@ -638,6 +646,7 @@ pub fn item_line(item: &HistoryItem, stamp: &str) -> String {
             next_id: record.tasks.high_water(),
             call_id: record.call_id.clone(),
             batch: record.batch,
+            position: record.position,
         }),
     };
     line(stamp, record)
@@ -728,6 +737,7 @@ pub fn parse_session(text: &str) -> Option<(SessionMeta, Vec<HistoryItem>)> {
                 approval_note: tool.approval_note,
                 batch: tool.batch,
                 call_id: tool.call_id,
+                position: tool.position,
             })),
             ItemRecord::Summary(summary) => items.push(HistoryItem::Summary(TurnSummary {
                 verb: done_verb(&summary.verb),
@@ -771,6 +781,7 @@ pub fn parse_session(text: &str) -> Option<(SessionMeta, Vec<HistoryItem>)> {
                             output: entry.output,
                             call_id: entry.call_id,
                             arguments: entry.arguments,
+                            position: entry.position,
                         })
                         .collect(),
                     timestamp: group.timestamp,
@@ -838,6 +849,7 @@ pub fn parse_session(text: &str) -> Option<(SessionMeta, Vec<HistoryItem>)> {
                     tasks: crate::tasks::TaskStore::from_parts(tasks, record.next_id),
                     call_id: record.call_id,
                     batch: record.batch,
+                    position: record.position,
                 }));
             }
             // Checkpoints ride the same file but aren't transcript items —
@@ -1110,6 +1122,7 @@ mod tests {
             timestamp: "03:20 PM".into(),
             tasks: store,
             call_id: None,
+            position: None,
             batch: None,
         });
         let line = item_line(&item, "t");
@@ -1151,6 +1164,7 @@ mod tests {
             approval_note: None,
             batch: Some(4),
             call_id: Some("call_provider_1".into()),
+            position: Some(2),
         });
         let task = HistoryItem::TaskCall(crate::app::TaskCallRecord {
             name: "TaskUpdate".into(),
@@ -1162,6 +1176,7 @@ mod tests {
             tasks: crate::tasks::TaskStore::new(),
             call_id: Some("call_provider_2".into()),
             batch: Some(4),
+            position: Some(0),
         });
         let group = HistoryItem::AgentGroup(AgentGroup {
             background: false,
@@ -1181,6 +1196,7 @@ mod tests {
                 arguments: Some(
                     r#"{"description":"Fetch","prompt":"p","subagent_type":"explore"}"#.into(),
                 ),
+                position: Some(1),
             }],
             timestamp: "t".into(),
             batch: Some(4),
@@ -1247,6 +1263,7 @@ mod tests {
             timestamp: String::new(),
             tasks: store,
             call_id: None,
+            position: None,
             batch: None,
         });
         let (_, parsed) = parse_session(&file_of(std::slice::from_ref(&item))).expect("parses");
@@ -1455,6 +1472,7 @@ mod tests {
             approval_note: None,
             batch: None,
             call_id: None,
+            position: None,
         });
         let failed_shell = HistoryItem::Tool(ToolCall {
             name: "tree ~/".into(),
@@ -1469,6 +1487,7 @@ mod tests {
             approval_note: None,
             batch: None,
             call_id: None,
+            position: None,
         });
         let (_, parsed) =
             parse_session(&file_of(&[ok_tool.clone(), failed_shell.clone()])).expect("parses");
@@ -1497,6 +1516,7 @@ mod tests {
             approval_note: None,
             batch: None,
             call_id: None,
+            position: None,
         });
         let (_, parsed) = parse_session(&file_of(std::slice::from_ref(&rejected))).expect("parses");
         assert_eq!(parsed, vec![rejected]);
@@ -1522,6 +1542,7 @@ mod tests {
             approval_note: None,
             batch: None,
             call_id: None,
+            position: None,
         });
         let file = file_of(std::slice::from_ref(&tool));
         let (_, parsed) = parse_session(&file).expect("parses");
@@ -1542,6 +1563,7 @@ mod tests {
                 approval_note: None,
                 batch: None,
                 call_id: None,
+                position: None,
             })])
             .contains("arguments"),
             "an empty field is omitted from the record"
@@ -1566,6 +1588,7 @@ mod tests {
             approval_note: Some("Allowed by auto mode classifier".into()),
             batch: None,
             call_id: None,
+            position: None,
         });
         let (_, parsed) = parse_session(&file_of(std::slice::from_ref(&tool))).expect("parses");
         assert_eq!(parsed, vec![tool]);
@@ -1583,6 +1606,7 @@ mod tests {
             approval_note: None,
             batch: None,
             call_id: None,
+            position: None,
         });
         assert!(!item_line(&plain, "t").contains("approval_note"));
     }
@@ -1605,6 +1629,7 @@ mod tests {
             approval_note: None,
             batch: None,
             call_id: None,
+            position: None,
         });
         let line = item_line(&tool, "t");
         assert!(!line.contains("context_output"), "not recorded: {line}");
@@ -1830,6 +1855,7 @@ mod tests {
             approval_note: None,
             batch: None,
             call_id: None,
+            position: None,
         });
         let line = item_line(&tool, "t");
         let value: serde_json::Value = serde_json::from_str(&line).expect("valid JSON");
@@ -1855,6 +1881,7 @@ mod tests {
             approval_note: None,
             batch: None,
             call_id: None,
+            position: None,
         });
         let line = item_line(&tool, "t");
         assert!(
@@ -1998,6 +2025,7 @@ mod tests {
                 tool_headers: vec!["Bash(curl)".into()],
                 output: "launched".into(),
                 call_id: None,
+                position: None,
                 arguments: None,
             }],
             timestamp: "t".into(),

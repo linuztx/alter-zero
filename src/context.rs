@@ -645,11 +645,23 @@ fn round_at(history: &[HistoryItem], position: usize) -> Option<Round<'_>> {
 /// appends them after a round's results too (`docs/tools.md`) — and last the
 /// notices that committed inside the round.
 fn derive_round(out: &mut Vec<ContextMessage>, round: &Round<'_>, ids: &mut CallIds) {
-    let mut calls = Vec::new();
-    let mut results = Vec::new();
-    let mut attachments = Vec::new();
+    let mut entries = Vec::new();
     for item in &round.calls {
-        record_calls(item, ids, &mut calls, &mut results, &mut attachments);
+        record_calls(item, ids, &mut entries);
+    }
+    // The wire's order is the model's, and the records say where each call
+    // sat (`ToolCall::position`); the recorded order stands where they
+    // don't — a batch no round announced, a rollout written before the
+    // field — and a positioned call sorts ahead of one without, which an
+    // announced round never mixes. Stable, so ties keep the recorded order.
+    entries.sort_by_key(|entry| entry.position.map_or((1, 0), |position| (0, position)));
+    let mut calls = Vec::with_capacity(entries.len());
+    let mut results = Vec::with_capacity(entries.len());
+    let mut attachments = Vec::new();
+    for entry in entries {
+        calls.push(entry.call);
+        results.push(entry.result);
+        attachments.extend(entry.attachment);
     }
     if !calls.is_empty() {
         match out.last_mut() {
@@ -676,36 +688,45 @@ fn derive_round(out: &mut Vec<ContextMessage>, round: &Round<'_>, ids: &mut Call
     }
 }
 
-/// One record's calls and results, in the order the model made them.
-fn record_calls(
-    item: &HistoryItem,
-    ids: &mut CallIds,
-    calls: &mut Vec<ContextToolCall>,
-    results: &mut Vec<ContextMessage>,
-    attachments: &mut Vec<(String, PathBuf)>,
-) {
+/// One call of a round as the wire carries it — the call, its result, an
+/// image read's attachment note — with the index the model gave it, when
+/// the record knows it.
+struct RoundEntry {
+    position: Option<usize>,
+    call: ContextToolCall,
+    result: ContextMessage,
+    attachment: Option<(String, PathBuf)>,
+}
+
+/// One record's calls and results, in the order the record holds them.
+fn record_calls(item: &HistoryItem, ids: &mut CallIds, entries: &mut Vec<RoundEntry>) {
     match item {
         HistoryItem::Tool(tool) => {
             let id = ids.claim(tool.call_id.as_deref());
-            calls.push(ContextToolCall::new(
+            let call = ContextToolCall::new(
                 id.clone(),
                 wire_tool_name(&tool.name),
                 reconstruct_arguments(tool),
-            ));
+            );
             // The **model-facing** result, not the cell text: a permission
             // rejection's display is a one-liner while the model read the
             // full stop-and-wait instruction — with Tab's amend feedback
             // appended. Replaying the display would drop what the user
             // asked for from every later turn (`docs/permissions.md`).
-            results.push(ContextMessage::tool_result(id, tool.context_text()));
+            let result = ContextMessage::tool_result(id, tool.context_text());
             // An image `read` (docs/tools.md): the live agent loop attached
             // the pixels as a follow-up user message; replay the same shape
             // so later turns keep seeing them. The stored args are the path
             // — the backend re-encodes it each request (a gone file becomes
             // an `[image unavailable]` note there).
-            if tool.name == "Read" && is_image_read_output(&tool.output) {
-                attachments.push((image_attachment_note(&tool.args), PathBuf::from(&tool.args)));
-            }
+            let attachment = (tool.name == "Read" && is_image_read_output(&tool.output))
+                .then(|| (image_attachment_note(&tool.args), PathBuf::from(&tool.args)));
+            entries.push(RoundEntry {
+                position: tool.position,
+                call,
+                result,
+                attachment,
+            });
         }
         // A task tool call (`docs/task-tools.md`): invisible inline, but the
         // model made the call and read the result — replay the same native
@@ -719,12 +740,12 @@ fn record_calls(
             let arguments = Some(record.arguments.trim())
                 .filter(|a| serde_json::from_str::<serde_json::Value>(a).is_ok())
                 .unwrap_or("{}");
-            calls.push(ContextToolCall::new(
-                id.clone(),
-                wire_tool_name(&record.name),
-                arguments,
-            ));
-            results.push(ContextMessage::tool_result(id, record.output.clone()));
+            entries.push(RoundEntry {
+                position: record.position,
+                call: ContextToolCall::new(id.clone(), wire_tool_name(&record.name), arguments),
+                result: ContextMessage::tool_result(id, record.output.clone()),
+                attachment: None,
+            });
         }
         // A resolved subagent group (`docs/agent-tool.md`): the parent made
         // one `agent` call per entry and received one result — the native
@@ -733,14 +754,14 @@ fn record_calls(
         // acknowledgement / stopped note the model actually read — never
         // the display fields a later completion updates).
         HistoryItem::AgentGroup(group) => {
-            for entry in &group.agents {
-                let id = ids.claim(entry.call_id.as_deref());
-                calls.push(ContextToolCall::new(
-                    id.clone(),
-                    "agent",
-                    agent_arguments(entry, group),
-                ));
-                results.push(ContextMessage::tool_result(id, entry.output.clone()));
+            for agent in &group.agents {
+                let id = ids.claim(agent.call_id.as_deref());
+                entries.push(RoundEntry {
+                    position: agent.position,
+                    call: ContextToolCall::new(id.clone(), "agent", agent_arguments(agent, group)),
+                    result: ContextMessage::tool_result(id, agent.output.clone()),
+                    attachment: None,
+                });
             }
         }
         _ => {}
@@ -901,6 +922,7 @@ mod tests {
             approval_note: None,
             batch: None,
             call_id: None,
+            position: None,
         })
     }
 
@@ -920,6 +942,7 @@ mod tests {
             approval_note: None,
             batch: None,
             call_id: None,
+            position: None,
         })
     }
 
@@ -1115,6 +1138,7 @@ mod tests {
                 timestamp: String::new(),
                 tasks: store,
                 call_id: None,
+                position: None,
                 batch: None,
             }),
         ];
@@ -1289,6 +1313,7 @@ mod tests {
                 timestamp: String::new(),
                 tasks: crate::tasks::TaskStore::new(),
                 call_id: Some("call_task".to_string()),
+                position: None,
                 batch: Some(1),
             }),
         ];
@@ -1331,6 +1356,7 @@ mod tests {
                     tool_headers: Vec::new(),
                     output: "framed response".into(),
                     call_id: Some("call_agent".into()),
+                    position: None,
                     arguments: Some(arguments.into()),
                 }],
                 timestamp: String::new(),
@@ -1352,6 +1378,83 @@ mod tests {
             ContextMessage::tool_result("call_agent", "framed response")
         );
         assert_eq!(ctx[3], ContextMessage::tool_result("call_bash", "files"));
+    }
+
+    #[test]
+    fn a_round_replays_its_calls_in_the_models_order_not_the_records() {
+        // The wire had [bash, agent, read] in one assistant message. The
+        // records land agent-first (a group resolves before the round's
+        // ordinary calls run), so without the position the replay would
+        // send [agent, bash, read] — a different prefix from the one the
+        // provider cached (docs/prompt-caching.md).
+        let arguments = r#"{"description":"Fetch","prompt":"p","subagent_type":"explore"}"#;
+        let mut bash = batched("Bash", "ls", "files", 1, "call_bash");
+        let mut read = batched("Read", "a.rs", "source", 1, "call_read");
+        for (item, position) in [(&mut bash, 0), (&mut read, 2)] {
+            let HistoryItem::Tool(tool) = item else {
+                unreachable!()
+            };
+            tool.position = Some(position);
+        }
+        let history = vec![
+            message(Role::User, "go"),
+            HistoryItem::AgentGroup(crate::app::AgentGroup {
+                background: false,
+                agents: vec![crate::app::AgentGroupEntry {
+                    id: "a1".into(),
+                    description: "Fetch".into(),
+                    agent_type: "explore".into(),
+                    prompt: "p".into(),
+                    status: crate::agents::AgentStatus::Done,
+                    tool_uses: 0,
+                    tokens: 0,
+                    secs: 0,
+                    result: String::new(),
+                    tool_headers: Vec::new(),
+                    output: "framed response".into(),
+                    call_id: Some("call_agent".into()),
+                    arguments: Some(arguments.into()),
+                    position: Some(1),
+                }],
+                timestamp: String::new(),
+                batch: Some(1),
+            }),
+            bash,
+            read,
+        ];
+        let ctx = context_messages(&history);
+        assert_eq!(ctx.len(), 5, "{ctx:?}");
+        let ids: Vec<&str> = ctx[1]
+            .tool_calls
+            .iter()
+            .map(|call| call.id.as_str())
+            .collect();
+        assert_eq!(ids, ["call_bash", "call_agent", "call_read"]);
+        assert_eq!(ctx[2], ContextMessage::tool_result("call_bash", "files"));
+        assert_eq!(
+            ctx[3],
+            ContextMessage::tool_result("call_agent", "framed response")
+        );
+        assert_eq!(ctx[4], ContextMessage::tool_result("call_read", "source"));
+    }
+
+    #[test]
+    fn records_without_a_position_keep_their_recorded_order() {
+        // A batch no round announced (the offline dummy) and every rollout
+        // written before the field: the records say nothing about the
+        // wire's order, so the replay keeps theirs — exactly as before.
+        let history = vec![
+            message(Role::User, "go"),
+            batched("Bash", "ls", "a", 1, "call_first"),
+            batched("Bash", "pwd", "/x", 1, "call_second"),
+        ];
+        let ctx = context_messages(&history);
+        let ids: Vec<&str> = ctx[1]
+            .tool_calls
+            .iter()
+            .map(|call| call.id.as_str())
+            .collect();
+        assert_eq!(ids, ["call_first", "call_second"]);
     }
 
     #[test]
@@ -1716,6 +1819,7 @@ mod tests {
             tool_headers: Vec::new(),
             output: "19°C".to_string(),
             call_id: None,
+            position: None,
             arguments: None,
         };
         let cases: Vec<(&str, Vec<HistoryItem>)> = vec![
@@ -1822,6 +1926,7 @@ mod tests {
                         timestamp: String::new(),
                         tasks: store,
                         call_id: None,
+                        position: None,
                         batch: None,
                     })
                 }],
@@ -2422,6 +2527,7 @@ mod tests {
             tool_headers: vec![],
             output: output.to_string(),
             call_id: None,
+            position: None,
             arguments: None,
         };
         let history = vec![

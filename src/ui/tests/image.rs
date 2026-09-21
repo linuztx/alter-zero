@@ -48,6 +48,7 @@ fn image_read(path: &str, px: (u32, u32)) -> HistoryItem {
         arguments: Some(format!("{{\"path\":\"{path}\"}}")),
         batch: None,
         call_id: None,
+        position: None,
     })
 }
 

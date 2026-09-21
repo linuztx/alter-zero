@@ -566,6 +566,7 @@ fn agent_entry(
         tool_headers: vec!["Bash(curl wttr.in)".to_string()],
         output: "It is 19°C.".to_string(),
         call_id: None,
+        position: None,
         arguments: None,
     }
 }
@@ -1051,6 +1052,7 @@ fn the_transcripts_nested_agent_headers_shorten_their_paths() {
         ],
         output: "Done.".to_string(),
         call_id: None,
+        position: None,
         arguments: None,
     };
     let texts: Vec<String> = agent_cell_lines(

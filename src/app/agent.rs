@@ -42,6 +42,10 @@ pub struct AgentGroupEntry {
     /// typed fields above rebuild an equivalent object when a record made
     /// before the field existed carries none.
     pub arguments: Option<String>,
+    /// The call's index in its round (`ToolCall::position`'s twin): the
+    /// group resolves before the round's ordinary calls run, so its record
+    /// lands first whatever order the model made the calls in.
+    pub position: Option<usize>,
 }
 
 /// A resolved group of `agent` tool calls from one round, committed as a
@@ -193,6 +197,7 @@ fn agent_entry_of(agent: &AgentRun, output: &str) -> AgentGroupEntry {
         output: output.to_string(),
         call_id: agent.call_id.clone(),
         arguments: agent.arguments.clone(),
+        position: agent.position,
     }
 }
 
@@ -284,6 +289,13 @@ impl App {
     /// segment first (the ToolBatch dance), so the cell slots after the text.
     pub fn start_agent_group(&mut self, background: bool, specs: &[AgentSpec]) {
         for spec in specs {
+            // The launch's place in the round the backend announced ahead
+            // of it, found by the call id its spec carries
+            // (docs/prompt-caching.md); a scripted launch has neither.
+            let position = self
+                .round
+                .as_ref()
+                .and_then(|round| spec.call_id.as_deref().and_then(|id| round.position_of(id)));
             self.agents.push(
                 AgentRun::new(
                     spec.id.clone(),
@@ -292,7 +304,7 @@ impl App {
                     spec.prompt.clone(),
                     spec.background,
                 )
-                .with_call(spec.call_id.clone(), spec.arguments.clone()),
+                .with_call(spec.call_id.clone(), spec.arguments.clone(), position),
             );
         }
         self.agent_group = Some(AgentGroupLive {
@@ -415,6 +427,7 @@ impl App {
                         tool_headers: Vec::new(),
                         output: done.output.clone(),
                         call_id: None,
+                        position: None,
                         arguments: None,
                     },
                 }

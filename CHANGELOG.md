@@ -47,10 +47,12 @@ release heading when a version is cut.
   `docs/copilot.md`)
 - **The cached prefix now survives `/resume`, a backend rebuild and a
   restart.** Every tool round's records keep the provider's own call ids and
-  the batch they arrived in, so the request a later turn derives replays a
-  parallel batch — task calls and subagent launches included — as the one
-  message the provider cached, where the fix above could only reuse what the
-  running backend still held. A prompt a `UserPromptSubmit` hook blocks no
+  the batch they arrived in, plus each call's place in that batch, so the
+  request a later turn derives replays a parallel batch — task calls and
+  subagent launches included, in the order the model made them even where
+  a subagent group's record landed ahead of the round's ordinary calls — as
+  the one message the provider cached, where the fix above could only reuse
+  what the running backend still held. A prompt a `UserPromptSubmit` hook blocks no
   longer costs the prefix either. And two sign-in races: signing in again
   no longer waits behind a token refresh in flight (the screen could freeze
   for the whole request timeout, and the refresh could then cache a bearer

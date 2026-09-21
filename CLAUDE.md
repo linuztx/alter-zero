@@ -2940,8 +2940,11 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   provider on the wire — see `docs/prompt-caching.md`. The derived context
   replays every tool round **as the wire carried it**: the provider's own
   call ids, announced first by `StreamEvent::RoundCalls` and stamped onto
-  the records with a per-round `batch` number, a batch's calls — task calls
-  and subagent launches included — in one `tool_calls` message, so the
+  the records with a per-round `batch` number and each call's `position`
+  in the round, a batch's calls — task calls and subagent launches included
+  — in one `tool_calls` message in the model's order (a subagent group's
+  record lands ahead of the round's ordinary cells; the position sorts it
+  back), so the
   cached prefix survives a `/resume`, a backend rebuild and a restart, with
   the backend's retained last request (`llm::wire_history`) covering what
   no record can.

@@ -44,6 +44,8 @@ pub struct TaskCallRecord {
     /// the same round as other calls replays inside the same assistant
     /// message, the way the model made it.
     pub batch: Option<u64>,
+    /// The call's index in that round (`ToolCall::position`'s twin).
+    pub position: Option<usize>,
     /// Wall-clock stamp of when the call resolved (the [`ToolCall`] rule:
     /// recorded, never displayed).
     pub timestamp: String,
@@ -74,6 +76,7 @@ impl TaskCallRecord {
             approval_note: None,
             batch: None,
             call_id: None,
+            position: None,
         }
     }
 }
@@ -100,12 +103,15 @@ impl App {
         // The round's identity (docs/prompt-caching.md): the batch every
         // record of the round shares, and the provider's id of the next
         // task call the round announced.
-        let (call_id, batch) = match self.round.as_mut() {
+        let (call_id, batch, position) = match self.round.as_mut() {
             Some(round) => {
                 let batch = Some(round.batch);
-                (round.take_task_call().map(|call| call.id.clone()), batch)
+                match round.take_task_call() {
+                    Some((position, call)) => (Some(call.id.clone()), batch, Some(position)),
+                    None => (None, batch, None),
+                }
             }
-            None => (None, None),
+            None => (None, None, None),
         };
         self.history.push(HistoryItem::TaskCall(TaskCallRecord {
             name: name.to_string(),
@@ -117,6 +123,7 @@ impl App {
             tasks: tasks.clone(),
             call_id,
             batch,
+            position,
         }));
         self.tasks = tasks;
     }

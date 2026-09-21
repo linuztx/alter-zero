@@ -548,6 +548,7 @@ fn live_a_written_file_is_still_in_context_a_turn_later() {
             approval_note: None,
             batch: None,
             call_id: None,
+            position: None,
         }),
     ];
     let mut context = context_messages(&history);
@@ -622,6 +623,7 @@ fn live_amended_rejection_still_steers_the_model_a_turn_later() {
         approval_note: None,
         batch: None,
         call_id: None,
+        position: None,
     })];
     let mut context = vec![ContextMessage::new(
         ContextRole::User,
@@ -1496,6 +1498,7 @@ fn live_replayed_image_read_is_visible_on_the_next_turn() {
             approval_note: None,
             batch: None,
             call_id: None,
+            position: None,
         }),
         HistoryItem::Message(Message {
             role: Role::Assistant,

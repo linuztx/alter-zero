@@ -89,11 +89,15 @@ message they arrived in**: the agent loop announces every tool round's ids
 first (`StreamEvent::RoundCalls`, in the model's order), the loop stamps
 them onto the records the round's cells resolve into — `ToolCall::call_id`,
 `TaskCallRecord::call_id`, an agent group entry's `call_id` beside its
-verbatim `arguments` — under a per-round `batch` number, the rollout
-round-trips all of it, and the derivation folds the records sharing a batch
-into one `tool_calls` array: a parallel batch, its task calls and its
-subagent launches on one assistant message, every result behind it in the
-same order, an image read's attachment note after the results, and a notice
+verbatim `arguments` — under a per-round `batch` number and each call's
+`position` in the round, the rollout round-trips all of it, and the
+derivation folds the records sharing a batch into one `tool_calls` array
+**in the model's order** (a subagent group resolves before the round's
+ordinary calls run, so its record lands first whatever order the model made
+the calls in; the position puts it back): a parallel batch, its task calls
+and its subagent launches on one assistant message, every result behind it
+in the same order, an image read's attachment note after the results, and a
+notice
 that committed mid-batch (a background shell's completion, a subagent's
 note) deferred past the batch, since a user-role message cannot sit between
 a call and its result. So the request a later turn derives is the one the

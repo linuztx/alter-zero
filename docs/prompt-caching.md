@@ -134,11 +134,19 @@ Two layers keep the prefix now. The **durable** one is the record
 the records the round's cells resolve into beside a per-round batch number
 (`ToolCall::call_id`/`batch`, `TaskCallRecord`'s pair, an agent group's
 entry with the `call_id` its launch answered and its verbatim `arguments`,
-both carried on the launch's `AgentSpec`), the rollout round-trips all of
-it, and `context::context_messages` folds the records sharing a batch into
-the one `tool_calls` message they arrived in — ordinary calls, task calls
-and subagent launches alike, every result behind it, a notice committed
-mid-batch deferred past it. So the derived request *is* the cached one
+both carried on the launch's `AgentSpec`) **and each call's `position` in
+the round** — the index the model gave it, which the batch announcement,
+the task call's turn and the launch's id each recover from the announced
+list — the rollout round-trips all of it, and `context::context_messages`
+folds the records sharing a batch into the one `tool_calls` message they
+arrived in, **sorted back into the model's order**: a subagent group
+resolves before the round's ordinary calls run, so `[bash, agent, read]`
+records as `[agent, bash, read]`, and without the position the replay
+would send the calls, and their results, in that order — a different
+prefix from the one the provider cached, from that round to the end.
+Ordinary calls, task calls and subagent launches alike, every result
+behind the calls in the same order, a notice committed mid-batch deferred
+past it. So the derived request *is* the cached one
 after a `/resume`, a `/settings` or `/model` rebuild of the backend, or a
 restart; a record from a rollout written before the fields gets a synthetic
 id minted clear of the recorded ones, so an old session's later turns still
@@ -355,7 +363,7 @@ retained request and, with the backend rebuilt between the turns, from the
 record alone — and a prompt a hook blocks costing no prefix. The auth
 half additionally covers a `forget` landing while a refresh is in flight
 and a rotation racing a newer sign-in for the key store. The complete
-local gate passed: 4,034 tests, formatting, Clippy with warnings
+local gate passed: 4,037 tests, formatting, Clippy with warnings
 denied and the documentation build.
 
 Live tests used the production provider configurations and synthetic prompts.
@@ -416,15 +424,13 @@ and a miss on one does not indict the request.
   number that only settles at round boundaries anyway.
 - OpenRouter's per-request `cost` field is parsed past, not surfaced — the
   tally stays in tokens (Venice bills in a different unit entirely).
-- The **durable prefix** replays what the records can say, and three round
+- The **durable prefix** replays what the records can say, and two round
   shapes still differ from the wire once the retained request is gone (a
   rebuild, a `/resume`, a restart — the running backend's retained request
-  covers all three until then, and the cost is one re-read of the
-  conversation from that round on, never a malformed request): a round
-  mixing subagent launches with ordinary calls replays the launches first,
-  since the group record commits before the ordinary cells, where the wire
-  had the model's own order; a task or agent call the **Max tool calls**
-  ceiling refused leaves no record at all (it never had a cell), and a
-  launch a `PreToolUse` hook blocked resolves as a lone cell under a
-  synthetic id ahead of the batch; and several image reads in one round
-  replay as one merged user message where the live loop sent one per read.
+  covers both until then, and the cost is one re-read of the conversation
+  from that round on, never a malformed request): a task or agent call the
+  **Max tool calls** ceiling refused leaves no record at all (it never had
+  a cell), and a launch a `PreToolUse` hook blocked resolves as a lone
+  cell under a synthetic id ahead of the batch; and several image reads in
+  one round replay as one merged user message where the live loop sent one
+  per read.

@@ -106,6 +106,9 @@ pub struct AgentRun {
     /// launch.
     pub call_id: Option<String>,
     pub arguments: Option<String>,
+    /// The call's index in its round (`ToolCall::position`'s twin), looked
+    /// up by the loop from the round it announced.
+    pub position: Option<usize>,
     pub status: AgentStatus,
     /// How many tool calls it has started.
     pub tool_uses: usize,
@@ -239,9 +242,15 @@ impl AgentRun {
     /// verbatim arguments the launch's [`AgentSpec`](crate::stream::AgentSpec)
     /// carried.
     #[must_use]
-    pub fn with_call(mut self, call_id: Option<String>, arguments: Option<String>) -> Self {
+    pub fn with_call(
+        mut self,
+        call_id: Option<String>,
+        arguments: Option<String>,
+        position: Option<usize>,
+    ) -> Self {
         self.call_id = call_id;
         self.arguments = arguments;
+        self.position = position;
         self
     }
 
@@ -262,6 +271,7 @@ impl AgentRun {
             prompt: prompt.clone(),
             background,
             call_id: None,
+            position: None,
             arguments: None,
             status: AgentStatus::Pending,
             tool_uses: 0,
@@ -428,6 +438,7 @@ impl AgentRun {
                         // session view keeps a cell per call (`docs/mcp.md`).
                         batch: None,
                         call_id: None,
+                        position: None,
                     });
                 }
             }
@@ -464,6 +475,7 @@ impl AgentRun {
                         approval_note: None,
                         batch: None,
                         call_id: None,
+                        position: None,
                     }),
                 }
             }
@@ -655,6 +667,7 @@ impl AgentRun {
                     approval_note: None,
                     batch: None,
                     call_id: None,
+                    position: None,
                 }));
             }
             // A permission request is the *user's* business, not the roster's:
