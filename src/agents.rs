@@ -99,6 +99,16 @@ pub struct AgentRun {
     pub prompt: String,
     /// Whether it was launched `run_in_background` (the schema default).
     pub background: bool,
+    /// The `agent` call this run answers, as the round announced it: the
+    /// provider's id and the model's verbatim arguments, carried onto the
+    /// group's record so the next request replays the launch as the
+    /// provider saw it (`docs/prompt-caching.md`). `None` for a scripted
+    /// launch.
+    pub call_id: Option<String>,
+    pub arguments: Option<String>,
+    /// The call's index in its round (`ToolCall::position`'s twin), looked
+    /// up by the loop from the round it announced.
+    pub position: Option<usize>,
     pub status: AgentStatus,
     /// How many tool calls it has started.
     pub tool_uses: usize,
@@ -228,6 +238,22 @@ pub struct AgentRun {
 }
 
 impl AgentRun {
+    /// The `agent` call this run answers — the provider's id and the model's
+    /// verbatim arguments the launch's [`AgentSpec`](crate::stream::AgentSpec)
+    /// carried.
+    #[must_use]
+    pub fn with_call(
+        mut self,
+        call_id: Option<String>,
+        arguments: Option<String>,
+        position: Option<usize>,
+    ) -> Self {
+        self.call_id = call_id;
+        self.arguments = arguments;
+        self.position = position;
+        self
+    }
+
     /// A fresh, just-announced agent: transcript seeded with its prompt.
     #[must_use]
     pub fn new(
@@ -244,6 +270,9 @@ impl AgentRun {
             agent_type: agent_type.into(),
             prompt: prompt.clone(),
             background,
+            call_id: None,
+            position: None,
+            arguments: None,
             status: AgentStatus::Pending,
             tool_uses: 0,
             tokens: 0,
@@ -408,6 +437,8 @@ impl AgentRun {
                         // A subagent's parallel calls are not aggregated: its
                         // session view keeps a cell per call (`docs/mcp.md`).
                         batch: None,
+                        call_id: None,
+                        position: None,
                     });
                 }
             }
@@ -443,6 +474,8 @@ impl AgentRun {
                         context_output: None,
                         approval_note: None,
                         batch: None,
+                        call_id: None,
+                        position: None,
                     }),
                 }
             }
@@ -633,6 +666,8 @@ impl AgentRun {
                     arguments: None,
                     approval_note: None,
                     batch: None,
+                    call_id: None,
+                    position: None,
                 }));
             }
             // A permission request is the *user's* business, not the roster's:
@@ -651,7 +686,8 @@ impl AgentRun {
                     max: *max,
                 });
             }
-            StreamEvent::Permission(_)
+            StreamEvent::RoundCalls(_)
+            | StreamEvent::Permission(_)
             | StreamEvent::AskUser(_)
             | StreamEvent::ThinkingStart
             | StreamEvent::ThinkingEnd

@@ -136,6 +136,8 @@ impl App {
         self.streaming = Some(String::new());
         // A fresh turn has been handed nothing yet (docs/queue.md).
         self.steered_this_turn = false;
+        // A round announced in the previous turn stamps nothing in this one.
+        self.round = None;
         // A new real turn re-arms the auto-compact trigger (one attempt per
         // user turn — docs/compact.md).
         self.auto_compact_blocked = false;

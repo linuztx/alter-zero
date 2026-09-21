@@ -18,7 +18,7 @@ use super::tools::{
 };
 use super::{ChatMessage, ContentPart, LlmError};
 use crate::permission::Approval;
-use crate::stream::{CancelToken, StreamEvent, ToolCallSummary};
+use crate::stream::{CancelToken, RoundCall, StreamEvent, ToolCallSummary};
 
 /// The most tool **calls** one turn will run before giving up — a backstop
 /// against a model that loops forever. Generous enough for real multi-step
@@ -298,6 +298,23 @@ pub fn run_agent(
                             && !crate::tasks::is_task_tool(&call.name)
                     })
                     .collect();
+                // The round's wire identity, ahead of anything else it emits
+                // (docs/prompt-caching.md): every call that resolves into a
+                // record — the allowed ones of every kind in the model's
+                // order, then the refused ordinary ones, which still get a
+                // cell — under the provider's own id, so the app stamps the
+                // records those cells become. A refused task or agent call
+                // gets no record and is left out.
+                let _ = tx.send(StreamEvent::RoundCalls(
+                    allowed
+                        .iter()
+                        .chain(refused_rest.iter().copied())
+                        .map(|call| RoundCall {
+                            id: call.id.clone(),
+                            name: call.name.clone(),
+                        })
+                        .collect(),
+                ));
                 let mut results: Vec<(String, String)> = Vec::with_capacity(calls.len());
                 if !agent_calls.is_empty() {
                     // `PreToolUse` gates a subagent launch too — Claude Code
@@ -1413,6 +1430,11 @@ mod tests {
         assert_eq!(
             events,
             vec![
+                // The round's wire identity leads (docs/prompt-caching.md).
+                StreamEvent::RoundCalls(vec![RoundCall {
+                    id: "c1".to_string(),
+                    name: "bash".to_string(),
+                }]),
                 // The batch is announced up front (here a batch of one) so the
                 // UI can show every requested call, the not-yet-run ones as
                 // `⎿ Waiting…`, before they execute in order. See
@@ -1640,20 +1662,25 @@ mod tests {
             &NoHooks,
         );
         let events = drain(&mut rx);
-        // The very first event announces the batch, carrying all three calls in
-        // request order as their header `(name, args)`.
+        // Right after the round's identity (its own test), the batch is
+        // announced, carrying all three calls in request order as their
+        // header `(name, args)`.
         let summary = |cmd: &str| ToolCallSummary {
             name: "Bash".to_string(),
             args: cmd.to_string(),
         };
+        assert!(
+            matches!(events.first(), Some(StreamEvent::RoundCalls(round)) if round.len() == 3),
+            "the round's identity leads: {events:?}"
+        );
         assert_eq!(
-            events.first(),
+            events.get(1),
             Some(&StreamEvent::ToolBatch(vec![
                 summary("ping google.com"),
                 summary("ping facebook.com"),
                 summary("ping x.com"),
             ])),
-            "the batch is announced first, with every call: {events:?}"
+            "the batch is announced next, with every call: {events:?}"
         );
         // Exactly one batch announce, then three Start/End pairs.
         assert_eq!(
@@ -2790,6 +2817,70 @@ mod tests {
             )
         );
         assert!(events.iter().any(|e| matches!(e, StreamEvent::StreamDone)));
+    }
+
+    #[test]
+    fn a_tool_round_announces_every_call_id_first_in_the_models_order() {
+        // Before the batch announcement, the cells, or any result: the
+        // round's calls of every kind — visible, task, refused ordinary —
+        // under the ids the provider gave them, in the model's order
+        // (docs/prompt-caching.md).
+        let (tx, mut rx) = unbounded_channel();
+        let cancel = CancelToken::new();
+        let calls = vec![
+            call("call_bash", "bash", r#"{"command":"ls"}"#),
+            call(
+                "call_task",
+                "taskupdate",
+                r#"{"taskId":"1","status":"completed"}"#,
+            ),
+            call("call_read", "read", r#"{"path":"a.rs"}"#),
+        ];
+        let rounds = RefCell::new(0);
+        run_agent(
+            &tx,
+            &cancel,
+            MAX_TOOL_ITERATIONS,
+            &mut vec![ChatMessage::user("go")],
+            |_msgs| {
+                let mut n = rounds.borrow_mut();
+                *n += 1;
+                if *n == 1 {
+                    RoundOutcome::ToolCalls {
+                        assistant: assistant_with(&calls),
+                        calls: calls.clone(),
+                    }
+                } else {
+                    RoundOutcome::Complete {
+                        text: String::new(),
+                    }
+                }
+            },
+            |c, _sink| {
+                if crate::tasks::is_task_tool(&c.name) {
+                    ToolOutcome::ok("Updated task #1 status")
+                        .with_tasks(crate::tasks::TaskStore::new())
+                } else {
+                    ToolOutcome::ok("fine")
+                }
+            },
+            Vec::new,
+            |_calls| Vec::new(),
+            |_call, _force| Approval::Allow,
+            &NoHooks,
+        );
+        let events = drain(&mut rx);
+        let StreamEvent::RoundCalls(round) = &events[0] else {
+            panic!("the round is announced first: {events:?}");
+        };
+        let ids: Vec<&str> = round.iter().map(|call| call.id.as_str()).collect();
+        assert_eq!(ids, ["call_bash", "call_task", "call_read"]);
+        let names: Vec<&str> = round.iter().map(|call| call.name.as_str()).collect();
+        assert_eq!(names, ["bash", "taskupdate", "read"]);
+        assert!(
+            matches!(events[1], StreamEvent::ToolBatch(_)),
+            "the batch announcement follows: {events:?}"
+        );
     }
 
     #[test]

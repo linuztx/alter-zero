@@ -43,6 +43,53 @@ release heading when a version is cut.
   the rows it had until the next content fills them (the same rule keeps a
   table that re-lays out shorter on a narrow terminal from lifting the box),
   so the box holds still between tokens and only ever moves down.
+- **Prompt caching across turns, and the token refreshes behind it.** The
+  request a new human turn sent used to rebuild every earlier tool call from
+  the display history — a parallel batch split into one call per assistant
+  message, and fresh `call_0`, `call_1`… ids on the wires that carry an id
+  through unrewritten — so the provider saw a different prefix from the one
+  it had cached and re-read the conversation at full price from the first
+  batch on (measured live: a follow-up turn after a parallel batch read 62%
+  of its input from OpenRouter's cache before, 99.9% after). The backend now
+  keeps its last
+  request and reuses that exact prefix whenever the rebuilt conversation
+  matches it — text, images, tool names, arguments and results alike, so a
+  rewind, an edit or a compaction still send what they mean — and a blank
+  line a model emits before its calls no longer counts as a difference,
+  which is what had kept the Claude and ChatGPT wires from ever matching.
+  The explicit cache breakpoints (OpenRouter's Anthropic and Qwen routing)
+  anchor on the previous request's frontier — a tool result, not only the
+  last human message — so a large parallel batch cannot push the previous
+  write out of the provider's lookback. Requests that miss the access-token
+  cache at the same moment (a batch of subagents, the `/model` fetch beside
+  a turn) share one refresh instead of each presenting the same single-use
+  refresh token, which retired it for all of them; a rotation from a rebuilt
+  config repoints every older alias, and a fresh sign-in forgets every
+  cached bearer of the account it replaces. The `.env` key store is written
+  atomically through one serialized updater, sign-in and refresh alike —
+  created private, written through a symlink to the file it names, never
+  replaced with a partial file when the old one cannot be read. And a
+  ChatGPT token's cached life comes from the grant's own `expires_in`
+  duration rather than the bearer's absolute `exp`, so a clock running ahead
+  cannot make every request re-mint (and rotate) the token.
+  (`docs/prompt-caching.md`, `docs/chatgpt.md`, `docs/claude.md`,
+  `docs/copilot.md`)
+- **The cached prefix now survives `/resume`, a backend rebuild and a
+  restart.** Every tool round's records keep the provider's own call ids and
+  the batch they arrived in, plus each call's place in that batch, so the
+  request a later turn derives replays a parallel batch — task calls and
+  subagent launches included, in the order the model made them even where
+  a subagent group's record landed ahead of the round's ordinary calls — as
+  the one message the provider cached, where the fix above could only reuse
+  what the running backend still held. A prompt a `UserPromptSubmit` hook blocks no
+  longer costs the prefix either. And two sign-in races: signing in again
+  no longer waits behind a token refresh in flight (the screen could freeze
+  for the whole request timeout, and the refresh could then cache a bearer
+  under the credential the sign-in had just replaced), and a refresh that
+  rotates the token writes it back only while the store still holds this
+  session's own token — never over one a newer sign-in stored meanwhile,
+  which used to force the re-login the sign-in had just done at the next
+  launch. (`docs/prompt-caching.md`, `docs/context.md`, `docs/chatgpt.md`)
 
 ### Added
 

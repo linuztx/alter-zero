@@ -19,6 +19,7 @@ fn agent_group_lines_render_the_finished_tree() {
             agent_entry("a2", "Fetch Manila", AgentStatus::Done),
         ],
         timestamp: String::new(),
+        batch: None,
     };
     let lines = agent_group_lines(&group, 80);
     let texts: Vec<String> = lines.iter().map(plain).collect();
@@ -46,6 +47,7 @@ fn agent_group_lines_render_the_background_launch() {
             agent_entry("a2", "Fetch Manila", AgentStatus::Running),
         ],
         timestamp: String::new(),
+        batch: None,
     };
     let texts: Vec<String> = agent_group_lines(&group, 80).iter().map(plain).collect();
     assert_eq!(
@@ -160,6 +162,7 @@ fn a_lone_committed_agent_renders_done_with_the_expand_hint() {
             AgentStatus::Done,
         )],
         timestamp: String::new(),
+        batch: None,
     };
     let texts: Vec<String> = agent_group_lines(&group, 80).iter().map(plain).collect();
     assert_eq!(texts[0], "● Agent(Fetch current weather in Warsaw)");
@@ -200,6 +203,7 @@ fn agent_durations_humanize_past_a_minute() {
         background: false,
         agents: vec![entry],
         timestamp: String::new(),
+        batch: None,
     };
     let texts: Vec<String> = agent_group_lines(&group, 80).iter().map(plain).collect();
     assert_eq!(texts[1], "  ⎿  Done (2 tool uses · 16.1k tokens · 6m 2s)");
@@ -307,6 +311,7 @@ fn agent_cell_lines_expand_prompt_response_and_done() {
         background: false,
         agents: vec![agent_entry("a1", "Fetch Warsaw", AgentStatus::Done)],
         timestamp: String::new(),
+        batch: None,
     };
     let texts: Vec<String> = agent_group_full_lines(&group, 100, &PathDisplay::VERBATIM)
         .iter()
@@ -343,6 +348,7 @@ fn the_transcript_expands_agent_groups_and_notices() {
             background: false,
             agents: vec![agent_entry("a1", "Fetch Warsaw", AgentStatus::Done)],
             timestamp: String::new(),
+            batch: None,
         }));
     app.history
         .push(HistoryItem::AgentNotice(crate::app::AgentNotice {
@@ -374,6 +380,8 @@ fn the_footer_roster_lists_main_and_the_agents() {
             agent_type: "general-purpose".into(),
             prompt: "warsaw?".into(),
             background: false,
+            call_id: None,
+            arguments: None,
         }],
     );
     app.set_agent_runtime("a1", Duration::from_secs(48));
@@ -406,6 +414,8 @@ fn the_agent_view_swaps_the_strip_to_the_agents_stream() {
             agent_type: "general-purpose".into(),
             prompt: "warsaw?".into(),
             background: false,
+            call_id: None,
+            arguments: None,
         }],
     );
     app.apply_agent_event(
@@ -555,6 +565,9 @@ fn agent_entry(
         result: "It is 19°C.".to_string(),
         tool_headers: vec!["Bash(curl wttr.in)".to_string()],
         output: "It is 19°C.".to_string(),
+        call_id: None,
+        position: None,
+        arguments: None,
     }
 }
 
@@ -866,6 +879,8 @@ fn a_long_agent_description_is_clipped_so_the_composer_rule_survives() {
             agent_type: "general-purpose".into(),
             prompt: "status?".into(),
             background: false,
+            call_id: None,
+            arguments: None,
         }],
     );
     app.open_agent_view("a1");
@@ -1036,6 +1051,9 @@ fn the_transcripts_nested_agent_headers_shorten_their_paths() {
             "Bash(cat /home/linuztx/Codes/tests/notes.md)".to_string(),
         ],
         output: "Done.".to_string(),
+        call_id: None,
+        position: None,
+        arguments: None,
     };
     let texts: Vec<String> = agent_cell_lines(
         &AgentCellView::of_entry(&entry, false),

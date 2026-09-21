@@ -3,6 +3,7 @@
 //! See `docs/tools.md` and `docs/parallel-tools.md`.
 
 use super::*;
+use crate::stream::RoundCall;
 use std::path::PathBuf;
 
 /// The output recorded on a tool that was still running when the user
@@ -16,7 +17,77 @@ pub const INTERRUPT_TOOL_OUTPUT: &str = "Interrupted by user";
 /// with this explanation ([`INTERRUPT_TOOL_OUTPUT`]'s error-path twin).
 pub const ERROR_TOOL_OUTPUT: &str = "Interrupted by a backend error";
 
+/// A call's wire identity as a batch announcement stamps it — the provider's
+/// id and the call's position in its round — both `None` for a batch no
+/// round announced.
+type Identity = (Option<String>, Option<usize>);
+
+/// A tool round as the backend announced it ([`StreamEvent::RoundCalls`]):
+/// the batch id its records share, and its calls in the model's order with a
+/// cursor per kind — the visible calls pair with the batch announcement in
+/// order, the task calls with their results in order, the agent launches by
+/// the ids their specs carry — so every record the round resolves into is
+/// stamped with the provider's id for *that* call (`docs/prompt-caching.md`).
+#[derive(Debug)]
+pub(crate) struct OpenRound {
+    pub(super) batch: u64,
+    calls: Vec<RoundCall>,
+    batch_announced: bool,
+    tasks_taken: usize,
+}
+
+impl OpenRound {
+    /// The next task call of the round, in the model's order — task calls
+    /// resolve through their own events, one per call, in that order
+    /// (`docs/task-tools.md`) — with its position in the round.
+    pub(super) fn take_task_call(&mut self) -> Option<(usize, &RoundCall)> {
+        let index = self.tasks_taken;
+        self.tasks_taken += 1;
+        self.calls
+            .iter()
+            .enumerate()
+            .filter(|(_, call)| crate::tasks::is_task_tool(&call.name))
+            .nth(index)
+    }
+
+    /// The round's calls that get a cell — everything but a task call (no
+    /// cell anywhere, `docs/task-tools.md`) and an agent launch (its own
+    /// group cell, `docs/agent-tool.md`) — in the model's order, which is
+    /// the order the batch announcement lists them in, each with its
+    /// position in the round.
+    fn visible(&self) -> impl Iterator<Item = (usize, &RoundCall)> {
+        self.calls.iter().enumerate().filter(|(_, call)| {
+            !crate::tasks::is_task_tool(&call.name)
+                && call.name != crate::llm::tools::AGENT_TOOL_NAME
+        })
+    }
+
+    /// Where the call `id` sits in the round — how a subagent launch, which
+    /// carries its call's id on its spec, learns its position.
+    pub(super) fn position_of(&self, id: &str) -> Option<usize> {
+        self.calls.iter().position(|call| call.id == id)
+    }
+}
+
 impl App {
+    /// The backend announced a tool round ([`StreamEvent::RoundCalls`]): open
+    /// it under a fresh batch id so the records its cells resolve into share
+    /// one round and carry the provider's own call ids.
+    pub fn open_round(&mut self, calls: Vec<RoundCall>) {
+        self.next_batch += 1;
+        self.round = Some(OpenRound {
+            batch: self.next_batch,
+            calls,
+            batch_announced: false,
+            tasks_taken: 0,
+        });
+    }
+
+    /// The batch id of the round announced last, while one is open.
+    #[must_use]
+    pub fn open_round_batch(&self) -> Option<u64> {
+        self.round.as_ref().map(|round| round.batch)
+    }
     /// Announce a **parallel batch** of tool calls the model requested this
     /// round (each [`ToolCallSummary`]'s `name`/`args` for the `● name(args)`
     /// header), all queued as [`ToolStatus::Waiting`] so the live region shows
@@ -30,12 +101,35 @@ impl App {
         // One id per announced batch: what tells the renderer a run of MCP
         // cells was **parallel** (one `Called deepwiki 2 times` line) from two
         // sequential single calls that merely landed next to each other in
-        // history (`docs/mcp.md`).
-        self.next_batch += 1;
-        let batch = Some(self.next_batch);
+        // history (`docs/mcp.md`). The round announced ahead of this batch
+        // (docs/prompt-caching.md) names it and, in the model's order, the
+        // provider's id of each visible call — the announcement lists exactly
+        // those, in that order, so the k-th cell is the k-th visible call. A
+        // count that disagrees stamps no ids rather than guessing; a batch no
+        // round announced (the offline dummy, a scripted test) numbers itself.
+        let (batch, ids): (u64, Vec<Identity>) = match self.round.as_mut() {
+            Some(round) if !round.batch_announced => {
+                round.batch_announced = true;
+                let visible: Vec<(usize, &RoundCall)> = round.visible().collect();
+                let ids = if visible.len() == items.len() {
+                    visible
+                        .iter()
+                        .map(|(position, call)| (Some(call.id.clone()), Some(*position)))
+                        .collect()
+                } else {
+                    vec![(None, None); items.len()]
+                };
+                (round.batch, ids)
+            }
+            _ => {
+                self.next_batch += 1;
+                (self.next_batch, vec![(None, None); items.len()])
+            }
+        };
         self.tool_queue = items
             .iter()
-            .map(|item| ToolCall {
+            .zip(ids)
+            .map(|(item, (call_id, position))| ToolCall {
                 name: item.name.clone(),
                 args: item.args.clone(),
                 status: ToolStatus::Waiting,
@@ -49,7 +143,9 @@ impl App {
                 // flips it to `Running` (`start_tool`).
                 arguments: None,
                 approval_note: None,
-                batch,
+                batch: Some(batch),
+                call_id,
+                position,
             })
             .collect();
     }
@@ -94,6 +190,8 @@ impl App {
             approval_note: None,
             // A lone call is nobody's batch sibling.
             batch: None,
+            call_id: None,
+            position: None,
         });
     }
 
@@ -330,6 +428,20 @@ pub struct ToolCall {
     /// collapsing two sequential calls that happen to sit next to each other
     /// in history. Round-trips through the rollout (`docs/mcp.md`).
     pub batch: Option<u64>,
+    /// The provider's own id for this call — the `tool_calls[].id` the
+    /// model's round carried and the wire echoed back with its result — so
+    /// the next request's derived context can send the id the provider
+    /// already cached rather than a synthesized `call_N`
+    /// (`docs/prompt-caching.md`). `None` on a record made before the field
+    /// existed, a `!` shell run, or a call no round announced.
+    pub call_id: Option<String>,
+    /// The call's index in its round as the model made it (0-based) —
+    /// `batch`'s companion, and what lets the derived context replay a
+    /// round in the wire's order when its records landed in another: a
+    /// subagent group resolves before the round's ordinary calls run, so
+    /// `[bash, agent, read]` records as `[agent, bash, read]`
+    /// (`docs/prompt-caching.md`). `None` wherever `call_id` is.
+    pub position: Option<usize>,
 }
 
 impl ToolCall {

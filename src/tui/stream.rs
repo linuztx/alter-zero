@@ -84,6 +84,13 @@ impl Session<'_> {
                 }
                 false
             }
+            StreamEvent::RoundCalls(calls) => {
+                // The round's wire identity (docs/prompt-caching.md): opened
+                // before its cells arrive, so each record they resolve into
+                // is stamped with the provider's id. No paint of its own.
+                self.app.open_round(calls);
+                false
+            }
             StreamEvent::ToolBatch(items) => {
                 // The model requested a batch of tool calls. Finalise the
                 // assistant text before them (so they slot after it in

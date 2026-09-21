@@ -83,10 +83,31 @@ session back restores its history, and therefore its context, in one move.
 A model tool call maps to the **provider-native** Chat Completions shape — the
 exact protocol the live agent loop already streams within a turn (`docs/tools.md`),
 now replayed across turns: an `assistant` message carrying a `tool_calls`
-array, immediately followed by one `tool`-role message per call. Call **ids are
-synthesized per derivation** (`call_0`, `call_1`, …) — the whole context is
-rebuilt each turn, so the pairing only has to be internally consistent within
-one request. The replayed `arguments` are the model's own, **verbatim**:
+array, immediately followed by one `tool`-role message per call. The call
+**ids are the provider's own**, and a round's calls replay **as the one
+message they arrived in**: the agent loop announces every tool round's ids
+first (`StreamEvent::RoundCalls`, in the model's order), the loop stamps
+them onto the records the round's cells resolve into — `ToolCall::call_id`,
+`TaskCallRecord::call_id`, an agent group entry's `call_id` beside its
+verbatim `arguments` — under a per-round `batch` number and each call's
+`position` in the round, the rollout round-trips all of it, and the
+derivation folds the records sharing a batch into one `tool_calls` array
+**in the model's order** (a subagent group resolves before the round's
+ordinary calls run, so its record lands first whatever order the model made
+the calls in; the position puts it back): a parallel batch, its task calls
+and its subagent launches on one assistant message, every result behind it
+in the same order, an image read's attachment note after the results, and a
+notice
+that committed mid-batch (a background shell's completion, a subagent's
+note) deferred past the batch, since a user-role message cannot sit between
+a call and its result. So the request a later turn derives is the one the
+provider cached — after a `/resume`, a backend rebuild (a `/settings` or
+`/model` switch) and a restart alike, which is what keeps the prompt cache
+warm across them (`docs/prompt-caching.md`). A record carrying no id — a
+rollout written before the field, the `!` shell, a lone scripted call —
+gets a synthetic `call_N` minted clear of every recorded id, so the pairing
+stays consistent within the request; it is a round of its own. The replayed
+`arguments` are the model's own, **verbatim**:
 alongside the one-line header summary (`● Write(a.py)`) every call records the
 raw JSON it was made with (`ToolCall::arguments`, carried on
 `StreamEvent::ToolStart`, round-tripped through the rollout), and

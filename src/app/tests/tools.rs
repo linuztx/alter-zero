@@ -154,6 +154,8 @@ fn end_tool_records_a_successful_tool_call_and_clears_the_slot() {
             arguments: None,
             approval_note: None,
             batch: None,
+            call_id: None,
+            position: None,
         }))
     );
 }
@@ -505,4 +507,186 @@ fn the_verbatim_policy_links_only_what_it_can_place() {
         PathDisplay::new("relative", None).file_url("rel/x.py"),
         None
     );
+}
+
+/// The wire identity a backend announces ahead of a round's cells.
+fn round_call(id: &str, name: &str) -> crate::stream::RoundCall {
+    crate::stream::RoundCall {
+        id: id.to_string(),
+        name: name.to_string(),
+    }
+}
+
+fn summary(name: &str, args: &str) -> ToolCallSummary {
+    ToolCallSummary {
+        name: name.to_string(),
+        args: args.to_string(),
+    }
+}
+
+#[test]
+fn an_announced_round_stamps_the_provider_ids_and_one_batch_on_every_record() {
+    // The round the model made: a bash call, a task call, a read — in that
+    // order. The batch announcement lists the two visible calls; the task
+    // call resolves through its own event. Every record ends up carrying
+    // the provider's id for its call and the round's one batch id
+    // (docs/prompt-caching.md).
+    let mut app = App::new();
+    app.begin_stream();
+    app.open_round(vec![
+        round_call("call_x", "bash"),
+        round_call("call_t", "taskupdate"),
+        round_call("call_y", "read"),
+    ]);
+    let batch = app.open_round_batch().expect("a round is open");
+    app.start_tool_batch(&[summary("Bash", "ls"), summary("Read", "a.rs")]);
+    app.start_tool("Bash", "ls", Some(r#"{"command":"ls"}"#));
+    app.end_tool("a", true);
+    app.record_task_call(
+        "TaskUpdate",
+        "#1 → completed",
+        r#"{"taskId":"1","status":"completed"}"#,
+        "Updated task #1 status",
+        true,
+        crate::tasks::TaskStore::new(),
+    );
+    app.start_tool("Read", "a.rs", Some(r#"{"path":"a.rs"}"#));
+    app.end_tool("source", true);
+    let identities: Vec<(Option<String>, Option<u64>)> = app
+        .history
+        .iter()
+        .filter_map(|item| match item {
+            HistoryItem::Tool(tool) => Some((tool.call_id.clone(), tool.batch)),
+            HistoryItem::TaskCall(record) => Some((record.call_id.clone(), record.batch)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        identities,
+        vec![
+            (Some("call_x".to_string()), Some(batch)),
+            (Some("call_t".to_string()), Some(batch)),
+            (Some("call_y".to_string()), Some(batch)),
+        ],
+        "{:?}",
+        app.history
+    );
+}
+
+#[test]
+fn an_announced_round_stamps_each_records_position_in_the_models_order() {
+    // The model's round: [bash, agent, taskupdate, read]. The agent group
+    // resolves first and the task call rides its own event, so the records
+    // land in another order — each carries the index the model gave its
+    // call, which is what lets the replay restore the wire's order
+    // (docs/prompt-caching.md).
+    let mut app = App::new();
+    app.begin_stream();
+    app.open_round(vec![
+        round_call("call_b", "bash"),
+        round_call("call_a", "agent"),
+        round_call("call_t", "taskupdate"),
+        round_call("call_r", "read"),
+    ]);
+    let mut specs = agent_specs(false);
+    specs.truncate(1);
+    specs[0].call_id = Some("call_a".to_string());
+    app.start_agent_group(false, &specs);
+    assert_eq!(
+        app.agents()[0].position,
+        Some(1),
+        "the launch's index in the round"
+    );
+    app.finish_agent_group(
+        false,
+        &[AgentCallDone {
+            id: "a1".into(),
+            output: "done".into(),
+            ok: true,
+        }],
+    );
+    app.start_tool_batch(&[summary("Bash", "ls"), summary("Read", "a.rs")]);
+    app.start_tool("Bash", "ls", Some(r#"{"command":"ls"}"#));
+    app.end_tool("a", true);
+    app.record_task_call(
+        "TaskUpdate",
+        "#1 → completed",
+        r#"{"taskId":"1","status":"completed"}"#,
+        "Updated task #1 status",
+        true,
+        crate::tasks::TaskStore::new(),
+    );
+    app.start_tool("Read", "a.rs", Some(r#"{"path":"a.rs"}"#));
+    app.end_tool("source", true);
+    let positions: Vec<(Option<String>, Option<usize>)> = app
+        .history
+        .iter()
+        .flat_map(|item| match item {
+            HistoryItem::Tool(tool) => vec![(tool.call_id.clone(), tool.position)],
+            HistoryItem::TaskCall(record) => vec![(record.call_id.clone(), record.position)],
+            HistoryItem::AgentGroup(group) => group
+                .agents
+                .iter()
+                .map(|entry| (entry.call_id.clone(), entry.position))
+                .collect(),
+            _ => Vec::new(),
+        })
+        .collect();
+    assert_eq!(
+        positions,
+        vec![
+            (Some("call_a".to_string()), Some(1)),
+            (Some("call_b".to_string()), Some(0)),
+            (Some("call_t".to_string()), Some(2)),
+            (Some("call_r".to_string()), Some(3)),
+        ],
+        "{:?}",
+        app.history
+    );
+}
+
+#[test]
+fn a_batch_announced_without_a_round_carries_no_ids() {
+    // The offline dummy announces batches but never a round: its records
+    // stay unstamped and replay under synthesized ids, as they always did.
+    let mut app = App::new();
+    app.begin_stream();
+    app.start_tool_batch(&[summary("Bash", "ls")]);
+    app.start_tool("Bash", "ls", None);
+    app.end_tool("a", true);
+    let HistoryItem::Tool(tool) = &app.history[0] else {
+        panic!("a tool record: {:?}", app.history);
+    };
+    assert_eq!(tool.call_id, None);
+    assert_eq!(tool.batch, Some(1));
+    assert_eq!(tool.position, None);
+}
+
+#[test]
+fn each_announced_round_is_its_own_batch_and_a_new_turn_forgets_the_last() {
+    let mut app = App::new();
+    app.begin_stream();
+    app.open_round(vec![round_call("call_1", "bash")]);
+    app.start_tool_batch(&[summary("Bash", "ls")]);
+    app.start_tool("Bash", "ls", None);
+    app.end_tool("a", true);
+    app.open_round(vec![round_call("call_2", "bash")]);
+    app.start_tool_batch(&[summary("Bash", "pwd")]);
+    app.start_tool("Bash", "pwd", None);
+    app.end_tool("/x", true);
+    let batches: Vec<Option<u64>> = app
+        .history
+        .iter()
+        .filter_map(|item| match item {
+            HistoryItem::Tool(tool) => Some(tool.batch),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(batches.len(), 2);
+    assert_ne!(
+        batches[0], batches[1],
+        "two rounds, two batches: {batches:?}"
+    );
+    app.begin_stream();
+    assert_eq!(app.open_round_batch(), None, "a new turn opens on no round");
 }

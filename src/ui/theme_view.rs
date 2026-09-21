@@ -132,6 +132,8 @@ fn sample_edit() -> ToolCall {
         arguments: None,
         approval_note: None,
         batch: None,
+        call_id: None,
+        position: None,
     }
 }
 

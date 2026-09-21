@@ -207,6 +207,14 @@ fetch and every subagent's thread need the same bearer, and re-exchanging per
 request would spend a network round trip on each against an endpoint GitHub
 rate-limits.
 
+Concurrent cache misses share an exchange gate and recheck the cache after
+waiting, so parallel subagents do not all exchange the same OAuth token. A
+fresh sign-in's `copilot::forget` does not wait behind that gate — the TUI
+loop calls it, and an exchange in flight holds the gate for as long as
+GitHub takes to answer: it drops the cached bearer at once and leaves the
+token on record, so the exchange that was in flight drops the bearer it
+minted instead of caching it under the credential the sign-in replaced.
+
 **The cached lifetime comes from `refresh_in`, not `expires_at`.** A user whose
 clock runs ahead gets an `expires_at` already in the past, and keying off it
 re-exchanges on *every single request*. `refresh_in` is a duration and immune to

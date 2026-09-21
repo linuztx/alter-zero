@@ -958,6 +958,8 @@ fn the_roster_selection_marks_rows_and_swaps_the_footer_hint() {
             agent_type: "general-purpose".into(),
             prompt: "warsaw?".into(),
             background: false,
+            call_id: None,
+            arguments: None,
         }],
     );
     // ↓ opens the selection on `● main`.

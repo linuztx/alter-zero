@@ -33,6 +33,8 @@ pub use self::dummy::{
     AGENT_DELAY, CHUNK_DELAY, DummyAi, MARKDOWN_TOUR, STARTUP_DELAY, THINK_CHUNK_DELAY,
     TOKEN_MAX_CHARS, TOOL_DELAY, chunks, dummy_response, image_ack, tokens, turn_events,
 };
-pub use self::event::{AgentCallDone, AgentSpec, StreamEvent, TokenUsage, ToolCallSummary};
+pub use self::event::{
+    AgentCallDone, AgentSpec, RoundCall, StreamEvent, TokenUsage, ToolCallSummary,
+};
 pub use self::source::{AgentChatDelivery, ReplySource};
 pub use self::stall::StallAi;

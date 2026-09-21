@@ -1331,15 +1331,8 @@ impl ModelSession {
     /// never enters the process env — `set_var` is `unsafe`, which this crate
     /// forbids. `Err` carries the message the caller shows.
     pub(crate) fn save_api_key(&mut self, env_var: &str, key: &str) -> Result<(), String> {
-        let current = std::fs::read_to_string(&self.env_file_path).unwrap_or_default();
-        let updated = EnvFile::upsert(&current, env_var, key);
-        // The config home (`~/.alter-zero`) may not exist yet — create it
-        // before the first write.
-        if let Some(parent) = self.env_file_path.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        match config::write_key_store(&self.env_file_path, &updated) {
-            Ok(()) => {
+        match EnvFile::update(&self.env_file_path, env_var, key) {
+            Ok(updated) => {
                 self.env_file = EnvFile::parse(&updated);
                 Ok(())
             }

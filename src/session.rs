@@ -169,6 +169,12 @@ struct TaskToolRecord {
     tasks: Vec<TaskEntryRecord>,
     #[serde(default, skip_serializing_if = "is_zero")]
     next_id: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    call_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    batch: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    position: Option<usize>,
 }
 
 /// One task of a snapshot on disk. `status` is the wire name
@@ -211,6 +217,8 @@ struct AgentGroupRecord {
     background: bool,
     agents: Vec<AgentEntryRecord>,
     timestamp: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    batch: Option<u64>,
 }
 
 /// One [`AgentGroupEntry`] on disk. `status` is the lowercase status name; an
@@ -231,6 +239,12 @@ struct AgentEntryRecord {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     tool_headers: Vec<String>,
     output: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    call_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    arguments: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    position: Option<usize>,
 }
 
 /// An [`AgentNotice`] on disk (`docs/agent-tool.md`).
@@ -360,6 +374,8 @@ struct ToolRecord {
     /// Omitted when absent, the `context_output` rule.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     approval_note: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    call_id: Option<String>,
     /// The **parallel batch** this call was announced in
     /// ([`crate::app::ToolCall::batch`]) — what makes a resumed session's run
     /// of MCP cells collapse to the same one `Called deepwiki 2 times` line
@@ -368,6 +384,8 @@ struct ToolRecord {
     /// shape.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     batch: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    position: Option<usize>,
 }
 
 /// A [`BackgroundNotice`] on disk — a background shell's completion notice
@@ -528,6 +546,8 @@ pub fn item_line(item: &HistoryItem, stamp: &str) -> String {
             arguments: tool.arguments.clone(),
             approval_note: tool.approval_note.clone(),
             batch: tool.batch,
+            call_id: tool.call_id.clone(),
+            position: tool.position,
         }),
         HistoryItem::Summary(summary) => ItemRecord::Summary(SummaryRecord {
             verb: summary.verb.to_string(),
@@ -581,9 +601,13 @@ pub fn item_line(item: &HistoryItem, stamp: &str) -> String {
                     result: entry.result.clone(),
                     tool_headers: entry.tool_headers.clone(),
                     output: entry.output.clone(),
+                    call_id: entry.call_id.clone(),
+                    arguments: entry.arguments.clone(),
+                    position: entry.position,
                 })
                 .collect(),
             timestamp: group.timestamp.clone(),
+            batch: group.batch,
         }),
         HistoryItem::AgentNotice(notice) => ItemRecord::AgentNotice(AgentNoticeRecord {
             id: notice.id.clone(),
@@ -620,6 +644,9 @@ pub fn item_line(item: &HistoryItem, stamp: &str) -> String {
                 })
                 .collect(),
             next_id: record.tasks.high_water(),
+            call_id: record.call_id.clone(),
+            batch: record.batch,
+            position: record.position,
         }),
     };
     line(stamp, record)
@@ -709,6 +736,8 @@ pub fn parse_session(text: &str) -> Option<(SessionMeta, Vec<HistoryItem>)> {
                 arguments: tool.arguments,
                 approval_note: tool.approval_note,
                 batch: tool.batch,
+                call_id: tool.call_id,
+                position: tool.position,
             })),
             ItemRecord::Summary(summary) => items.push(HistoryItem::Summary(TurnSummary {
                 verb: done_verb(&summary.verb),
@@ -750,9 +779,13 @@ pub fn parse_session(text: &str) -> Option<(SessionMeta, Vec<HistoryItem>)> {
                             result: entry.result,
                             tool_headers: entry.tool_headers,
                             output: entry.output,
+                            call_id: entry.call_id,
+                            arguments: entry.arguments,
+                            position: entry.position,
                         })
                         .collect(),
                     timestamp: group.timestamp,
+                    batch: group.batch,
                 }));
             }
             ItemRecord::AgentNotice(notice) => {
@@ -814,6 +847,9 @@ pub fn parse_session(text: &str) -> Option<(SessionMeta, Vec<HistoryItem>)> {
                     ok: record.ok,
                     timestamp: record.timestamp,
                     tasks: crate::tasks::TaskStore::from_parts(tasks, record.next_id),
+                    call_id: record.call_id,
+                    batch: record.batch,
+                    position: record.position,
                 }));
             }
             // Checkpoints ride the same file but aren't transcript items —
@@ -1085,6 +1121,9 @@ mod tests {
             ok: true,
             timestamp: "03:20 PM".into(),
             tasks: store,
+            call_id: None,
+            position: None,
+            batch: None,
         });
         let line = item_line(&item, "t");
         let value: serde_json::Value = serde_json::from_str(&line).expect("valid JSON");
@@ -1104,6 +1143,68 @@ mod tests {
         );
         let (_, parsed) = parse_session(&file_of(std::slice::from_ref(&item))).expect("parses");
         assert_eq!(parsed, vec![item]);
+    }
+
+    #[test]
+    fn wire_identity_round_trips_on_every_call_record() {
+        // The provider's call ids, the round's batch and an agent call's
+        // verbatim arguments are what let a resumed session's derived
+        // context match the prefix the provider cached
+        // (docs/prompt-caching.md): every one survives the rollout.
+        let tool = HistoryItem::Tool(ToolCall {
+            name: "Bash".into(),
+            args: "ls".into(),
+            status: ToolStatus::Ok,
+            output: "a".into(),
+            timestamp: "t".into(),
+            shell: false,
+            truncated: false,
+            context_output: None,
+            arguments: Some(r#"{"command":"ls"}"#.into()),
+            approval_note: None,
+            batch: Some(4),
+            call_id: Some("call_provider_1".into()),
+            position: Some(2),
+        });
+        let task = HistoryItem::TaskCall(crate::app::TaskCallRecord {
+            name: "TaskUpdate".into(),
+            args: "#1 → completed".into(),
+            arguments: r#"{"taskId":"1","status":"completed"}"#.into(),
+            output: "Updated task #1 status".into(),
+            ok: true,
+            timestamp: "t".into(),
+            tasks: crate::tasks::TaskStore::new(),
+            call_id: Some("call_provider_2".into()),
+            batch: Some(4),
+            position: Some(0),
+        });
+        let group = HistoryItem::AgentGroup(AgentGroup {
+            background: false,
+            agents: vec![AgentGroupEntry {
+                id: "a1".into(),
+                description: "Fetch".into(),
+                agent_type: "explore".into(),
+                prompt: "p".into(),
+                status: AgentStatus::Done,
+                tool_uses: 1,
+                tokens: 2,
+                secs: 3,
+                result: "r".into(),
+                tool_headers: Vec::new(),
+                output: "framed".into(),
+                call_id: Some("call_provider_3".into()),
+                arguments: Some(
+                    r#"{"description":"Fetch","prompt":"p","subagent_type":"explore"}"#.into(),
+                ),
+                position: Some(1),
+            }],
+            timestamp: "t".into(),
+            batch: Some(4),
+        });
+        for item in [tool, task, group] {
+            let (_, parsed) = parse_session(&file_of(std::slice::from_ref(&item))).expect("parses");
+            assert_eq!(parsed, vec![item]);
+        }
     }
 
     #[test]
@@ -1161,6 +1262,9 @@ mod tests {
             ok: true,
             timestamp: String::new(),
             tasks: store,
+            call_id: None,
+            position: None,
+            batch: None,
         });
         let (_, parsed) = parse_session(&file_of(std::slice::from_ref(&item))).expect("parses");
         let [HistoryItem::TaskCall(record)] = parsed.as_slice() else {
@@ -1367,6 +1471,8 @@ mod tests {
             arguments: None,
             approval_note: None,
             batch: None,
+            call_id: None,
+            position: None,
         });
         let failed_shell = HistoryItem::Tool(ToolCall {
             name: "tree ~/".into(),
@@ -1380,6 +1486,8 @@ mod tests {
             arguments: None,
             approval_note: None,
             batch: None,
+            call_id: None,
+            position: None,
         });
         let (_, parsed) =
             parse_session(&file_of(&[ok_tool.clone(), failed_shell.clone()])).expect("parses");
@@ -1407,6 +1515,8 @@ mod tests {
             arguments: None,
             approval_note: None,
             batch: None,
+            call_id: None,
+            position: None,
         });
         let (_, parsed) = parse_session(&file_of(std::slice::from_ref(&rejected))).expect("parses");
         assert_eq!(parsed, vec![rejected]);
@@ -1431,6 +1541,8 @@ mod tests {
             context_output: Some("File created successfully at: a.py".into()),
             approval_note: None,
             batch: None,
+            call_id: None,
+            position: None,
         });
         let file = file_of(std::slice::from_ref(&tool));
         let (_, parsed) = parse_session(&file).expect("parses");
@@ -1450,6 +1562,8 @@ mod tests {
                 context_output: None,
                 approval_note: None,
                 batch: None,
+                call_id: None,
+                position: None,
             })])
             .contains("arguments"),
             "an empty field is omitted from the record"
@@ -1473,6 +1587,8 @@ mod tests {
             arguments: None,
             approval_note: Some("Allowed by auto mode classifier".into()),
             batch: None,
+            call_id: None,
+            position: None,
         });
         let (_, parsed) = parse_session(&file_of(std::slice::from_ref(&tool))).expect("parses");
         assert_eq!(parsed, vec![tool]);
@@ -1489,6 +1605,8 @@ mod tests {
             arguments: None,
             approval_note: None,
             batch: None,
+            call_id: None,
+            position: None,
         });
         assert!(!item_line(&plain, "t").contains("approval_note"));
     }
@@ -1510,6 +1628,8 @@ mod tests {
             arguments: None,
             approval_note: None,
             batch: None,
+            call_id: None,
+            position: None,
         });
         let line = item_line(&tool, "t");
         assert!(!line.contains("context_output"), "not recorded: {line}");
@@ -1734,6 +1854,8 @@ mod tests {
             arguments: None,
             approval_note: None,
             batch: None,
+            call_id: None,
+            position: None,
         });
         let line = item_line(&tool, "t");
         let value: serde_json::Value = serde_json::from_str(&line).expect("valid JSON");
@@ -1758,6 +1880,8 @@ mod tests {
             arguments: None,
             approval_note: None,
             batch: None,
+            call_id: None,
+            position: None,
         });
         let line = item_line(&tool, "t");
         assert!(
@@ -1900,8 +2024,12 @@ mod tests {
                 result: "19°C".into(),
                 tool_headers: vec!["Bash(curl)".into()],
                 output: "launched".into(),
+                call_id: None,
+                position: None,
+                arguments: None,
             }],
             timestamp: "t".into(),
+            batch: None,
         });
         let notice = HistoryItem::AgentNotice(AgentNotice {
             id: "a1".into(),
@@ -1934,6 +2062,7 @@ mod tests {
                     }
                 }],
                 timestamp: "t".into(),
+                batch: None,
             }),
             "s",
         );

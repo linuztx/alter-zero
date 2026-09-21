@@ -100,17 +100,54 @@ The same split `docs/copilot.md` keeps, with different lifetimes:
 process-global map keyed by the refresh token — a turn's rounds, the `/model`
 fetch and every subagent's thread want the same bearer.
 
+Concurrent cache misses share a refresh gate and check the cache again after
+waiting, so only one caller exchanges a rotating token. Warm cache hits do not
+wait for unrelated refreshes. Every retired alias resolves to the newest token
+before the cache lookup, including after several rotations through rebuilt
+configs; old bearer entries are removed when a token rotates.
+
+A fresh sign-in's `chatgpt::forget` never waits behind that gate: it runs on
+the TUI loop, and a refresh in flight holds the gate for as long as its
+request takes — a whole request timeout, on a bad day, during which the
+screen would freeze. It clears the cache and the alias chain at once and
+leaves the tokens it dropped on record (`forgotten()`), where the refresh
+that was in flight finds them under the cache lock and drops the bearer it
+minted rather than caching it under a credential the sign-in has replaced —
+the next request refreshes afresh. Only a name from the refresh's own chain
+counts, so a sign-in on one account never costs another account's refresh
+its bearer; and the rotation the refresh brought back still stands, since
+the token it presented is retired either way.
+
 Two things make this different from Copilot's exchange:
 
 **The refresh token rotates, and a reused one is terminal.** OpenAI may hand
 back a *new* refresh token with each use, and re-presenting the retired one
 answers `refresh_token_reused` — which is not recoverable, only re-signable.
-So the rotation is written straight back to the `.env` store, in place, via
+So the rotation is written straight back to the `.env` store via
 `chatgpt::persist_refresh`. That write needs a path the minting code does not
 have (it runs on a backend thread, several layers below the boundary), so
 `tui::models` calls `chatgpt::set_store_path` once at startup. Skipping that
 call is not a crash — it is a forced re-login at the next launch, which is
-exactly the kind of failure that reads as a different bug.
+exactly the kind of failure that reads as a different bug. And the write
+goes ahead **only while the store still holds this session's own chain** —
+the token it started with, or the one it actually presented — or no token
+at all, the credential having come from the process environment
+(`persist_refresh_to`, over `EnvFile::update_if`, one serialized
+read-modify-write): a sign-in that landed while the refresh was in flight
+stored its own token there, and a rotation of the chain that sign-in
+replaced overwriting it would turn the next launch into the forced re-login
+the sign-in had just done.
+
+Login and both rotating providers share `EnvFile::update` (the rotations
+through its conditional twin `EnvFile::update_if`): its read, update
+and atomic replacement are serialized within the process. A private temporary
+file prevents partially written credentials and concurrent writes losing other
+provider keys. Read errors are propagated rather than treating an unreadable
+store as an empty one. A store that is a symlink — kept in a dotfiles
+checkout, say — is written through to the file it names, so the link
+survives the replacement. Refresh persistence remains best-effort.
+These locks coordinate threads in one process; they do not coordinate two
+separate running applications sharing the same rotating credential.
 
 The disk write is only half of it. The live `ModelConfig` carries the token the
 session *started* with and nothing reloads it mid-run, so once that token is
@@ -132,11 +169,18 @@ server is going to validate anyway; they grant nothing.
 
 Copilot's exchange publishes a `refresh_in` **duration**, and `docs/copilot.md`
 explains why keying off the absolute `expires_at` instead re-exchanges on
-every request when the user's clock runs ahead. OpenAI publishes only the
-absolute `exp`, so that mitigation isn't available — the guard here is a
-**floor**: `cache_lifetime` subtracts a five-minute skew from the remaining
-life and then clamps to at least sixty seconds. A clock hours ahead costs one
-extra mint a minute instead of one per request.
+every request when the user's clock runs ahead. OpenAI's token response
+publishes the same thing under OAuth's own name — `expires_in`, 864 000
+seconds (ten days) on a refresh measured 2026-09-20, the bearer's own
+`exp - iat` agreeing — so `cache_lifetime` keys off that duration first and
+falls back to the bearer's absolute `exp` only when the response names none.
+Either way a five-minute skew comes off the end and a short life is cached
+for at most half of itself, so a known expiry is never extended. When nothing
+trustworthy says — no duration, and an `exp` this clock reads as already
+past, which a token minted a moment ago cannot be — the sixty-second floor
+applies: one mint a minute at worst. Leaving such a token *uncached* would
+refresh, and so **rotate**, on every single request, which is the failure
+the floor exists to prevent.
 
 ### The seam
 

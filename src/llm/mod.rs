@@ -44,6 +44,7 @@ pub mod subagent;
 pub mod task;
 pub mod thinking;
 pub mod tools;
+mod wire_history;
 
 use std::time::Duration;
 

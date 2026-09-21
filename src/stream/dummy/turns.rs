@@ -745,6 +745,8 @@ pub(in crate::stream) fn agents_turn(cue: &Cue) -> Vec<StreamEvent> {
                 agent_type: "general-purpose".to_string(),
                 prompt: prompt.to_string(),
                 background,
+                call_id: None,
+                arguments: None,
             })
             .collect(),
     });

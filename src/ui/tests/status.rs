@@ -56,6 +56,8 @@ fn transcript_shows_no_stamp_on_assistant_tool_or_summary_items() {
             arguments: None,
             approval_note: None,
             batch: None,
+            call_id: None,
+            position: None,
         }),
         HistoryItem::Summary(TurnSummary {
             verb: "Done",

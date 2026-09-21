@@ -267,8 +267,7 @@ fn blocks_of(messages: &[ChatMessage]) -> (Vec<Block<'_>>, Vec<Message<'_>>) {
     for message in messages {
         match message.role.as_str() {
             "system" | "developer" => {
-                let text = flatten_text(&message.content);
-                if !text.is_empty() {
+                if let Some(text) = non_empty(flatten_text(&message.content)) {
                     system.push(Block::Text {
                         text,
                         cache_control: None,
@@ -1194,6 +1193,73 @@ mod tests {
             "{count} breakpoints placed"
         );
         assert_eq!(count, 3, "system + frontier + the user before it");
+    }
+
+    #[test]
+    fn whitespace_system_blocks_cannot_take_the_cache_breakpoint() {
+        let messages = [
+            text("system", "persona"),
+            text("system", " \n\t "),
+            text("developer", "   "),
+            text("user", "hi"),
+        ];
+        let payload = build_payload(&cfg(), &[], &messages);
+        assert_eq!(payload["system"].as_array().unwrap().len(), 1);
+        assert_eq!(payload["system"][0]["text"], "persona");
+        assert_eq!(
+            payload["system"][0]["cache_control"],
+            json!({"type": "ephemeral"})
+        );
+
+        let blank = build_payload(&cfg(), &[], &[text("system", " \n "), text("user", "hi")]);
+        assert!(blank.get("system").is_none());
+    }
+
+    #[test]
+    fn merged_tool_batches_and_large_image_followups_keep_the_previous_frontier() {
+        let mut messages = vec![text("system", "persona"), text("user", "run it")];
+        for round in 0..32 {
+            let calls: Vec<_> = (0..32)
+                .map(|call| {
+                    super::super::ToolCallSpec::function(format!("r{round}-c{call}"), "bash", "{}")
+                })
+                .collect();
+            messages.push(ChatMessage::assistant_tool_calls("checking", calls.clone()));
+            for call in calls {
+                messages.push(ChatMessage::tool_result(
+                    &call.id,
+                    format!("result {}", call.id),
+                ));
+            }
+            let payload = build_payload(&cfg(), &[], &messages);
+            let wire = payload["messages"].as_array().unwrap();
+            let frontier = wire.last().unwrap()["content"].as_array().unwrap();
+            assert_eq!(
+                frontier.len(),
+                32,
+                "a batch is merged into one user message"
+            );
+            let previous = wire[wire.len() - 3]["content"].as_array().unwrap();
+            assert!(previous.last().unwrap().get("cache_control").is_some());
+            assert!(frontier.last().unwrap().get("cache_control").is_some());
+            assert_eq!(payload.to_string().matches("cache_control").count(), 3);
+        }
+
+        messages.push(text("assistant", "done"));
+        messages.push(ChatMessage::with_parts(
+            "user",
+            (0..32)
+                .map(|_| ContentPart::image("https://example.test/image.png"))
+                .collect(),
+        ));
+        let payload = build_payload(&cfg(), &[], &messages);
+        let wire = payload["messages"].as_array().unwrap();
+        let previous = wire[wire.len() - 3]["content"].as_array().unwrap();
+        assert!(previous.last().unwrap().get("cache_control").is_some());
+        let frontier = wire.last().unwrap()["content"].as_array().unwrap();
+        assert_eq!(frontier.last().unwrap()["type"], "image");
+        assert!(frontier.last().unwrap().get("cache_control").is_some());
+        assert_eq!(payload.to_string().matches("cache_control").count(), 3);
     }
 
     // --- the event stream -------------------------------------------------

@@ -53,16 +53,28 @@ pub fn needs_cache_breakpoints(model: &str) -> bool {
 /// 2. the **last cacheable message** — a moving breakpoint that tracks the
 ///    conversation frontier, so each agentic round caches everything so far
 ///    and the next round (or turn) reads it back;
-/// 3. the last **user** message *before* that — insurance for the provider's
-///    bounded lookback when many blocks land between two requests (a big
-///    parallel tool batch).
+/// 3. the **previous request's frontier** — the last cacheable message before
+///    the newest assistant response. This can be a tool result, not just a
+///    user message: retaining that boundary lets a provider find the previous
+///    write even when the new suffix exceeds its bounded lookback.
 ///
 /// A plain-string content converts to the one-text-part array form (the only
 /// shape that can carry `cache_control`); a parts array gets the marker on its
 /// last non-empty text part (image parts can't carry one, and their shared
 /// bytes are never copied). Messages with empty content are skipped — an
 /// empty marked text block would be rejected.
+/// Existing markers are replaced, so reusing an already prepared copy never
+/// accumulates breakpoints beyond the provider's limit.
 pub fn apply_cache_breakpoints(messages: &mut [ChatMessage]) {
+    for message in messages.iter_mut() {
+        if let MessageContent::Parts(parts) = &mut message.content {
+            for part in parts {
+                if let ContentPart::Text { cache_control, .. } = part {
+                    *cache_control = None;
+                }
+            }
+        }
+    }
     let mut targets: Vec<usize> = Vec::new();
     if let Some(system) = messages
         .iter()
@@ -75,12 +87,19 @@ pub fn apply_cache_breakpoints(messages: &mut [ChatMessage]) {
         if !targets.contains(&last) {
             targets.push(last);
         }
-        if let Some(prev_user) = messages[..last]
+        let previous = messages
             .iter()
-            .rposition(|m| m.role == "user" && markable(m))
-            && !targets.contains(&prev_user)
+            .rposition(|m| m.role == "assistant")
+            .and_then(|assistant| messages[..assistant].iter().rposition(markable))
+            .or_else(|| {
+                messages[..last]
+                    .iter()
+                    .rposition(|m| m.role == "user" && markable(m))
+            });
+        if let Some(previous) = previous
+            && !targets.contains(&previous)
         {
-            targets.push(prev_user);
+            targets.push(previous);
         }
     }
     debug_assert!(targets.len() < MAX_BREAKPOINTS);
@@ -287,6 +306,182 @@ mod tests {
             json!(""),
             "the empty assistant tool-call content is never marked (the provider rejects empty text blocks)"
         );
+    }
+
+    fn breakpoint_positions(messages: &[ChatMessage]) -> Vec<usize> {
+        messages
+            .iter()
+            .enumerate()
+            .flat_map(|(index, message)| match &message.content {
+                MessageContent::Text(_) => Vec::new(),
+                MessageContent::Parts(parts) => parts
+                    .iter()
+                    .filter_map(|part| {
+                        matches!(
+                            part,
+                            ContentPart::Text {
+                                cache_control: Some(_),
+                                ..
+                            }
+                        )
+                        .then_some(index)
+                    })
+                    .collect(),
+            })
+            .collect()
+    }
+
+    /// A deterministic prefix-cache oracle: content blocks are exact cache
+    /// keys, and only marked prefixes are written. A subsequent breakpoint
+    /// can read a previous write at itself or its 19 preceding positions.
+    /// Token thresholds, TTLs and routing are deliberately outside this
+    /// request-shape test; each tool block counts separately (the stricter
+    /// case, without the Claude API's tool-run position collapsing).
+    fn cache_blocks(messages: &[ChatMessage]) -> (Vec<Value>, Vec<usize>) {
+        let mut blocks = Vec::new();
+        let mut writes = Vec::new();
+        for message in messages {
+            let parts = match &message.content {
+                MessageContent::Text(text) => vec![ContentPart::text(text)],
+                MessageContent::Parts(parts) => parts.clone(),
+            };
+            for part in parts {
+                let mut value = serde_json::to_value(part).unwrap();
+                let marked = value
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("cache_control")
+                    .is_some();
+                blocks.push(json!([message.role, message.tool_call_id, value]));
+                if marked {
+                    writes.push(blocks.len());
+                }
+            }
+            for call in &message.tool_calls {
+                blocks.push(json!([message.role, call]));
+            }
+        }
+        (blocks, writes)
+    }
+
+    fn longest_cached_prefix(previous: &[ChatMessage], current: &[ChatMessage]) -> usize {
+        let (written, writes) = cache_blocks(previous);
+        let (requested, lookups) = cache_blocks(current);
+        writes
+            .into_iter()
+            .filter(|&end| {
+                lookups
+                    .iter()
+                    .any(|&lookup| lookup >= end && lookup - end < 20)
+                    && requested.get(..end) == Some(&written[..end])
+            })
+            .max()
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn long_tool_rounds_retain_the_previous_request_frontier() {
+        // Model a provider with a bounded 20-position prefix lookup. The
+        // original user-only anchor missed every intermediate tool round
+        // once the next batch put that round's write outside the window.
+        // Keep the exact previous frontier explicitly marked regardless of
+        // batch size; this also works on providers that collapse tool runs
+        // into one lookup position.
+        for batch_size in [1, 19, 20, 21, 64] {
+            let mut history = vec![ChatMessage::system("persona"), ChatMessage::user("run it")];
+            for round in 0..32 {
+                let previous_frontier = history.len() - 1;
+                let mut prior_request = history.clone();
+                apply_cache_breakpoints(&mut prior_request);
+                assert!(breakpoint_positions(&prior_request).contains(&previous_frontier));
+                let expected_read = cache_blocks(&prior_request).0.len();
+
+                let calls: Vec<_> = (0..batch_size)
+                    .map(|call| ToolCallSpec::function(format!("r{round}-c{call}"), "bash", "{}"))
+                    .collect();
+                history.push(ChatMessage::assistant_tool_calls("checking", calls.clone()));
+                for call in calls {
+                    history.push(ChatMessage::tool_result(
+                        &call.id,
+                        format!("result {}", call.id),
+                    ));
+                }
+                let mut request = history.clone();
+                apply_cache_breakpoints(&mut request);
+                let positions = breakpoint_positions(&request);
+                assert_eq!(
+                    positions,
+                    [0, previous_frontier, history.len() - 1],
+                    "round {round}, batch size {batch_size}: the previous write must remain reachable"
+                );
+                assert_eq!(
+                    content(&prior_request[previous_frontier]),
+                    content(&request[previous_frontier]),
+                    "the anchor still ends at the same text"
+                );
+                assert_eq!(
+                    longest_cached_prefix(&prior_request, &request),
+                    expected_read
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_large_followup_after_tools_keeps_the_last_tool_result_anchor() {
+        let mut messages = vec![
+            ChatMessage::system("persona"),
+            ChatMessage::user("run it"),
+            tool_call_message(),
+            ChatMessage::tool_result("c1", "large result"),
+            ChatMessage::assistant("done"),
+            ChatMessage::with_parts(
+                "user",
+                (0..64)
+                    .map(|index| ContentPart::text(format!("followup part {index}")))
+                    .collect(),
+            ),
+        ];
+        let mut previous = messages[..4].to_vec();
+        apply_cache_breakpoints(&mut previous);
+        let expected_read = cache_blocks(&previous).0.len();
+        apply_cache_breakpoints(&mut messages);
+        // Unlike consecutive tool blocks on the Claude API, these text
+        // blocks each consume a lookback position. The frontier's lookup
+        // cannot reach the previous tool result without its own marker.
+        assert_eq!(breakpoint_positions(&messages), [0, 3, 5]);
+        assert_eq!(longest_cached_prefix(&previous, &messages), expected_read);
+    }
+
+    #[test]
+    fn repeated_preparation_replaces_stale_and_invalid_markers() {
+        let mut messages = vec![ChatMessage::system("persona"), ChatMessage::user("first")];
+        for round in 0..64 {
+            apply_cache_breakpoints(&mut messages);
+            let prepared = messages.clone();
+            apply_cache_breakpoints(&mut messages);
+            assert_eq!(messages, prepared, "retries must be idempotent");
+            assert!(breakpoint_positions(&messages).len() <= 3);
+            messages.push(ChatMessage::assistant(format!("answer {round}")));
+            messages.push(ChatMessage::user(format!("question {round}")));
+        }
+        // A stale mark on an empty text part must not survive merely
+        // because the part is ineligible for placement this time.
+        messages.push(ChatMessage::with_parts(
+            "user",
+            vec![ContentPart::Text {
+                text: " ".to_string(),
+                cache_control: Some(CacheControl::EPHEMERAL),
+            }],
+        ));
+        apply_cache_breakpoints(&mut messages);
+        assert!(breakpoint_positions(&messages).len() <= 3);
+        assert!(
+            content(messages.last().unwrap())[0]
+                .get("cache_control")
+                .is_none()
+        );
+        assert!(content(&messages[1])[0].get("cache_control").is_none());
     }
 
     #[test]

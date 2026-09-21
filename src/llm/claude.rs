@@ -40,7 +40,7 @@
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::net::TcpListener;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -105,10 +105,8 @@ const BODY_MAX_BYTES: u64 = 64 * 1024;
 /// so a request never leaves with a token that expires in flight.
 const REFRESH_SKEW: Duration = Duration::from_secs(300);
 
-/// The floor on a cached token's life. Anthropic reports a *duration*
-/// (`expires_in`) rather than an absolute expiry, so a skewed clock cannot
-/// make a token look already dead — but a server that answers a very short
-/// life would otherwise re-mint on every request.
+/// The fallback cache lifetime when the server omits its expiry. An explicit
+/// short lifetime always wins: caching past it would keep sending a dead bearer.
 const MIN_CACHE: Duration = Duration::from_secs(60);
 
 /// The environment variable the refresh token lives under — the same name
@@ -278,7 +276,8 @@ pub fn scopes_allow_inference(scopes: &[&str]) -> bool {
 }
 
 /// How long an access token with `expires_in` seconds of life may be cached.
-/// `REFRESH_SKEW` comes off the end; `MIN_CACHE` is the floor.
+/// `REFRESH_SKEW` comes off the end. Short-lived tokens retain at most half
+/// their advertised life, so the fallback never extends an explicit expiry.
 #[must_use]
 pub fn cache_lifetime(expires_in: Option<u64>) -> Duration {
     let Some(secs) = expires_in else {
@@ -286,9 +285,10 @@ pub fn cache_lifetime(expires_in: Option<u64>) -> Duration {
         // rather than forever.
         return MIN_CACHE;
     };
-    Duration::from_secs(secs)
+    let lifetime = Duration::from_secs(secs);
+    lifetime
         .saturating_sub(REFRESH_SKEW)
-        .max(MIN_CACHE)
+        .max(MIN_CACHE.min(lifetime / 2))
 }
 
 /// Explain a sign-in, refresh, or request failure in terms the user can act
@@ -380,6 +380,39 @@ fn cache() -> &'static Mutex<HashMap<String, Cached>> {
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+/// Serialize cache misses through refresh, rotation, and persistence. A
+/// refresh token can be single-use, so locking only the map lookup is unsafe.
+/// Warm hits remain independent of an unrelated account's slow refresh.
+fn refresh_gate() -> &'static Mutex<()> {
+    static GATE: Mutex<()> = Mutex::new(());
+    &GATE
+}
+
+/// The refresh tokens [`forget`] dropped since a refresh last settled. A
+/// refresh drains it under the cache lock before keeping what it minted,
+/// and a name from its own chain there means a sign-in replaced the
+/// credential while the request was out: the bearer is not cached, and the
+/// next request refreshes afresh. This is what lets `forget` skip the gate
+/// — it runs on the TUI loop when a sign-in lands, and a refresh in flight
+/// can hold the gate for the whole request timeout — without a sign-in on
+/// one account costing another account's refresh its bearer. Draining the
+/// whole list is safe: the gate serializes refreshes, so the one settling
+/// is the only one that was in flight, and a refresh still waiting on the
+/// gate re-reads the cleared cache before it starts.
+fn forgotten() -> &'static Mutex<Vec<String>> {
+    static FORGOTTEN: Mutex<Vec<String>> = Mutex::new(Vec::new());
+    &FORGOTTEN
+}
+
+/// Resolve aliases before the lookup: another config may have refreshed the
+/// same account while this config still holds an older refresh token.
+fn cached_access(refresh_token: &str) -> Option<Access> {
+    let presented = live_refresh_token(refresh_token);
+    let map = cache().lock().ok()?;
+    let entry = map.get(&presented)?;
+    (entry.until > Instant::now()).then(|| entry.access.clone())
+}
+
 /// The **freshest** refresh token for one the session is still holding.
 ///
 /// Rotation is not only a disk concern: the live `ModelConfig` carries the
@@ -406,6 +439,13 @@ fn live_refresh_token(stored: &str) -> String {
 /// has been superseded by `rotated`.
 fn note_rotation(stored: &str, presented: &str, rotated: &str) {
     if let Ok(mut map) = rotations().lock() {
+        // A rebuilt config may present a newer alias than the original
+        // config. Repoint every alias, keeping the map one hop deep.
+        for target in map.values_mut() {
+            if target == presented {
+                *target = rotated.to_string();
+            }
+        }
         map.insert(stored.to_string(), rotated.to_string());
         if presented != stored {
             map.insert(presented.to_string(), rotated.to_string());
@@ -432,11 +472,31 @@ pub fn set_store_path(path: impl Into<PathBuf>) {
 /// is how a user recovers from a token the server has stopped honouring, so
 /// the cached one must not outlive the sign-in that replaced it.
 pub fn forget(refresh_token: &str) {
-    if let Ok(mut map) = cache().lock() {
-        map.remove(refresh_token);
-    }
+    // Never behind the gate — a refresh in flight holds it for as long as
+    // its request takes.
+    let current = live_refresh_token(refresh_token);
+    let mut aliases = vec![refresh_token.to_string(), current.clone()];
     if let Ok(mut map) = rotations().lock() {
-        map.remove(refresh_token);
+        map.retain(|alias, target| {
+            if alias == refresh_token || target == &current {
+                aliases.push(alias.clone());
+                false
+            } else {
+                true
+            }
+        });
+    }
+    // On record *before* the clear: a refresh that inserts between the two
+    // finds its chain named under the cache lock and drops its bearer
+    // instead, so nothing minted before this sign-in survives under the
+    // forgotten key.
+    if let Ok(mut list) = forgotten().lock() {
+        list.extend(aliases.iter().cloned());
+    }
+    if let Ok(mut map) = cache().lock() {
+        for alias in aliases {
+            map.remove(&alias);
+        }
     }
 }
 
@@ -681,15 +741,75 @@ fn access_from(tokens: &TokenSet) -> Result<Access> {
 /// # Errors
 /// A refresh Anthropic refused, or a transport failure.
 pub fn authorize(refresh_token: &str) -> Result<Access> {
-    if let Ok(map) = cache().lock()
-        && let Some(entry) = map.get(refresh_token)
-        && entry.until > Instant::now()
-    {
-        return Ok(entry.access.clone());
+    authorize_with(refresh_token, exchange_refresh)
+}
+
+/// Keep the refresh transport replaceable so concurrent cache misses can be
+/// exercised deterministically without a live account.
+fn authorize_with(
+    refresh_token: &str,
+    refresh: impl FnOnce(&str) -> Result<TokenSet>,
+) -> Result<Access> {
+    if let Some(access) = cached_access(refresh_token) {
+        return Ok(access);
+    }
+    let _refresh = refresh_gate().lock().unwrap_or_else(|e| e.into_inner());
+    // A worker that was already refreshing may have filled this cache while
+    // we waited. Never present its now-retired refresh token a second time.
+    if let Some(access) = cached_access(refresh_token) {
+        return Ok(access);
     }
     // What to actually present: the stored token, or whatever a previous
     // rotation turned it into. The config still holds the original.
     let presented = live_refresh_token(refresh_token);
+    let refresh_started = Instant::now();
+    let tokens = refresh(&presented)?;
+    let access = access_from(&tokens)?;
+    let lifetime = cache_lifetime(tokens.expires_in);
+    // The alias map keeps old configs working; only the current alias needs
+    // a bearer entry. Keeping one under every retired token leaks old JWTs.
+    let cache_key = if let Some(rotated) = tokens
+        .refresh_token
+        .filter(|t| !t.is_empty() && *t != presented)
+    {
+        persist_refresh(&rotated, &[refresh_token, &presented]);
+        note_rotation(refresh_token, &presented, &rotated);
+        rotated
+    } else {
+        presented.clone()
+    };
+    if let Ok(mut map) = cache().lock() {
+        map.remove(&presented);
+        let now = Instant::now();
+        map.retain(|_, entry| entry.until > now);
+        // A `forget` of this chain while the refresh was out: a sign-in has
+        // replaced the credential, so the bearer is not kept (the rotation
+        // above stands — the token presented is retired either way, and an
+        // old config must still find its way to the live one).
+        let forgotten = forgotten()
+            .lock()
+            .map(|mut list| std::mem::take(&mut *list))
+            .unwrap_or_default();
+        let replaced = forgotten
+            .iter()
+            .any(|token| token == refresh_token || *token == presented || *token == cache_key);
+        if !replaced
+            && let Some(until) = refresh_started.checked_add(lifetime)
+            && until > now
+        {
+            map.insert(
+                cache_key,
+                Cached {
+                    access: access.clone(),
+                    until,
+                },
+            );
+        }
+    }
+    Ok(access)
+}
+
+fn exchange_refresh(presented: &str) -> Result<TokenSet> {
     let client = super::http_client(OP_TIMEOUT)?;
     let resp = client
         .post(TOKEN_URL)
@@ -697,7 +817,7 @@ pub fn authorize(refresh_token: &str) -> Result<Access> {
         .header("accept", "application/json")
         // Required on *this* grant, and only this one — see `refresh_body`.
         .header("anthropic-beta", OAUTH_BETA)
-        .json(&refresh_body(&presented))
+        .json(&refresh_body(presented))
         .send()
         .map_err(|e| LlmError::Http(e.to_string()))?;
     let status = resp.status().as_u16();
@@ -705,63 +825,34 @@ pub fn authorize(refresh_token: &str) -> Result<Access> {
     if !(200..300).contains(&status) {
         return Err(token_failure(status, &text));
     }
-    let tokens = TokenSet::parse(&text)?;
-    let access = access_from(&tokens)?;
-    let lifetime = cache_lifetime(tokens.expires_in);
-    let store = |key: String, access: &Access| {
-        if let Ok(mut map) = cache().lock() {
-            map.insert(
-                key,
-                Cached {
-                    access: access.clone(),
-                    until: Instant::now() + lifetime,
-                },
-            );
-        }
-    };
-    store(refresh_token.to_string(), &access);
-    // Rotation: remember what the retired token became — on disk for the next
-    // launch, and in memory for this session, whose config still holds the
-    // original — and cache the access token under the new key too, so a
-    // config that *has* been rebuilt hits rather than re-minting.
-    if let Some(rotated) = tokens
-        .refresh_token
-        .filter(|t| !t.is_empty() && *t != presented)
-    {
-        persist_refresh(&rotated);
-        note_rotation(refresh_token, &presented, &rotated);
-        store(rotated, &access);
-    }
-    Ok(access)
+    TokenSet::parse(&text)
 }
 
-/// Write a rotated refresh token back into the `.env` key store, in place.
-/// Best-effort: a store we cannot write still leaves a working session, and
-/// the failure surfaces as a re-login at the next launch rather than a
-/// mid-turn error the user can do nothing about.
-fn persist_refresh(refresh_token: &str) {
+/// Write a rotated refresh token back into the `.env` key store, in place
+/// — [`persist_refresh_to`] at the store the boundary named. Best-effort: a
+/// store we cannot write still leaves a working session, and the failure
+/// surfaces as a re-login at the next launch rather than a mid-turn error
+/// the user can do nothing about.
+fn persist_refresh(rotated: &str, chain: &[&str]) {
     let Some(path) = store_path().lock().ok().and_then(|p| p.clone()) else {
         return;
     };
-    let current = std::fs::read_to_string(&path).unwrap_or_default();
-    let updated = super::EnvFile::upsert(&current, REFRESH_ENV_VAR, refresh_token);
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    if std::fs::write(&path, updated).is_ok() {
-        set_owner_only(&path);
-    }
+    persist_refresh_to(&path, rotated, chain);
 }
 
-/// `0600` on the key store — the same guard `/login`'s own write applies.
-fn set_owner_only(path: &Path) {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
-    }
-    #[cfg(not(unix))]
-    let _ = path;
+/// Write `rotated` under [`REFRESH_ENV_VAR`] in the store at `path`, but
+/// only while the store still holds this session's own `chain` — the token
+/// it started with and the one it actually presented — or no token at all
+/// (a credential from the process environment, or a store not created
+/// yet). A sign-in that landed while the refresh was in flight wrote its
+/// own token there, and a rotation of the chain that sign-in replaced must
+/// not overwrite it: the next launch would present a retired token and
+/// force the re-login the sign-in had just done. Returns whether it wrote.
+fn persist_refresh_to(path: &std::path::Path, rotated: &str, chain: &[&str]) -> bool {
+    super::EnvFile::update_if(path, REFRESH_ENV_VAR, rotated, |current| {
+        current.is_none_or(|held| held.is_empty() || chain.contains(&held))
+    })
+    .is_ok_and(|written| written.is_some())
 }
 
 /// What the sign-in confirmation names beside the provider: the organisation
@@ -911,16 +1002,258 @@ mod tests {
         assert_eq!(access_from(&tokens).unwrap().organization, None);
     }
 
+    fn cache_test_tokens(rotated: &str) -> TokenSet {
+        TokenSet {
+            access_token: Some(format!("access-for-{rotated}")),
+            refresh_token: Some(rotated.to_string()),
+            expires_in: Some(3600),
+            ..TokenSet::default()
+        }
+    }
+
     #[test]
-    fn the_cache_lifetime_gives_back_the_skew_and_keeps_a_floor() {
+    fn auth_cache_regression_forget_does_not_wait_for_a_refresh_in_flight() {
+        // `forget` runs on the TUI loop when a sign-in lands. A refresh in
+        // flight on a backend thread can hold the gate for the whole request
+        // timeout, and the loop must never wait behind it — while the
+        // refresh that was in flight must not leave its bearer behind under
+        // the forgotten key: the next request exchanges afresh.
+        use std::sync::Barrier;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let key = "claude-forget-inflight";
+        let started = Barrier::new(2);
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                authorize_with(key, |_| {
+                    started.wait();
+                    std::thread::sleep(Duration::from_millis(1500));
+                    Ok(cache_test_tokens("claude-forget-inflight-rotated"))
+                })
+                .unwrap();
+            });
+            started.wait();
+            let asked = Instant::now();
+            forget(key);
+            assert!(
+                asked.elapsed() < Duration::from_millis(700),
+                "forget waited on the refresh: {:?}",
+                asked.elapsed()
+            );
+        });
+        let exchanges = AtomicUsize::new(0);
+        authorize_with(key, |_| {
+            exchanges.fetch_add(1, Ordering::SeqCst);
+            Ok(cache_test_tokens("claude-forget-inflight-again"))
+        })
+        .unwrap();
+        assert_eq!(
+            exchanges.load(Ordering::SeqCst),
+            1,
+            "the forgotten account exchanges afresh"
+        );
+        forget(key);
+    }
+
+    #[test]
+    fn auth_cache_regression_a_rotation_never_overwrites_a_newer_sign_in() {
+        // The rotated token is written back only while the store still holds
+        // this session's own chain — the token it started with, or what that
+        // was last rotated into. A sign-in that landed while the refresh was
+        // in flight wrote its own token there, and overwriting it would make
+        // the next launch present a retired token: the forced re-login the
+        // sign-in had just done.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".env");
+        let stored = |path: &std::path::Path| {
+            crate::llm::EnvFile::parse(&std::fs::read_to_string(path).unwrap())
+                .get(REFRESH_ENV_VAR)
+                .map(str::to_string)
+        };
+        std::fs::write(&path, format!("{REFRESH_ENV_VAR}=original\nOTHER=keep\n")).unwrap();
+        assert!(persist_refresh_to(
+            &path,
+            "rotated-1",
+            &["original", "original"]
+        ));
+        assert_eq!(stored(&path).as_deref(), Some("rotated-1"));
+        // The next refresh presented the rotated token, and the store holds it.
+        assert!(persist_refresh_to(
+            &path,
+            "rotated-2",
+            &["original", "rotated-1"]
+        ));
+        assert_eq!(stored(&path).as_deref(), Some("rotated-2"));
+        // A sign-in landed meanwhile: the in-flight rotation keeps its hands off.
+        std::fs::write(&path, format!("{REFRESH_ENV_VAR}=newer-sign-in\n")).unwrap();
+        assert!(!persist_refresh_to(
+            &path,
+            "rotated-3",
+            &["original", "rotated-2"]
+        ));
+        assert_eq!(stored(&path).as_deref(), Some("newer-sign-in"));
+        // No token in the store (a credential from the process environment) or
+        // no store at all: written, as it always was.
+        std::fs::write(&path, "OTHER=keep\n").unwrap();
+        assert!(persist_refresh_to(
+            &path,
+            "rotated-4",
+            &["original", "original"]
+        ));
+        assert_eq!(stored(&path).as_deref(), Some("rotated-4"));
+        let fresh = dir.path().join("fresh").join(".env");
+        assert!(persist_refresh_to(
+            &fresh,
+            "rotated-5",
+            &["original", "original"]
+        ));
+        assert_eq!(stored(&fresh).as_deref(), Some("rotated-5"));
+    }
+
+    #[test]
+    fn auth_cache_regression_concurrent_misses_refresh_once() {
+        use std::sync::Barrier;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let key = "claude-concurrent-original";
+        let barrier = Barrier::new(32);
+        let exchanges = AtomicUsize::new(0);
+        std::thread::scope(|scope| {
+            let threads: Vec<_> = (0..32)
+                .map(|_| {
+                    scope.spawn(|| {
+                        barrier.wait();
+                        authorize_with(key, |presented| {
+                            let count = exchanges.fetch_add(1, Ordering::SeqCst);
+                            // Keep the first refresh in flight while the other
+                            // workers look up the same still-empty cache.
+                            std::thread::sleep(Duration::from_millis(25));
+                            if count != 0 || presented != key {
+                                return Err(LlmError::Decode("refresh token reused".to_string()));
+                            }
+                            Ok(cache_test_tokens("claude-concurrent-rotated"))
+                        })
+                    })
+                })
+                .collect();
+            let results: Vec<_> = threads.into_iter().map(|t| t.join().unwrap()).collect();
+            assert_eq!(exchanges.load(Ordering::SeqCst), 1);
+            assert!(results.iter().all(Result::is_ok));
+            assert!(results.windows(2).all(|pair| {
+                pair[0].as_ref().unwrap().bearer == pair[1].as_ref().unwrap().bearer
+            }));
+        });
+        forget(key);
+    }
+
+    #[test]
+    fn auth_cache_regression_old_alias_hits_the_newest_bearer_after_expiry() {
+        let original = "claude-expiry-original";
+        let second = "claude-expiry-second";
+        let third = "claude-expiry-third";
+        authorize_with(original, |_| Ok(cache_test_tokens(second))).unwrap();
+        cache().lock().unwrap().get_mut(second).unwrap().until = Instant::now();
+        let refreshed = authorize_with(second, |presented| {
+            assert_eq!(presented, second);
+            Ok(cache_test_tokens(third))
+        })
+        .unwrap();
+        let from_original = authorize_with(original, |_| {
+            panic!("old aliases must hit the freshly minted bearer")
+        })
+        .unwrap();
+        assert_eq!(from_original.bearer, refreshed.bearer);
+        assert_eq!(live_refresh_token(original), third);
+        forget(original);
+        forget(second);
+        forget(third);
+    }
+
+    #[test]
+    fn auth_cache_regression_forget_clears_every_rotation_alias() {
+        let original = "claude-forget-original";
+        let second = "claude-forget-second";
+        let third = "claude-forget-third";
+        authorize_with(original, |_| Ok(cache_test_tokens(second))).unwrap();
+        cache().lock().unwrap().get_mut(second).unwrap().until = Instant::now();
+        authorize_with(second, |_| Ok(cache_test_tokens(third))).unwrap();
+        forget(original);
+        for key in [original, second, third] {
+            assert_eq!(live_refresh_token(key), key);
+            assert!(!cache().lock().unwrap().contains_key(key));
+        }
+    }
+
+    #[test]
+    fn auth_cache_regression_a_failed_refresh_can_be_retried() {
+        let key = "claude-retry-original";
+        assert!(
+            authorize_with(key, |_| {
+                Err(LlmError::Http("temporary failure".to_string()))
+            })
+            .is_err()
+        );
+        let fresh = authorize_with(key, |presented| {
+            assert_eq!(presented, key);
+            Ok(cache_test_tokens("claude-retry-rotated"))
+        })
+        .unwrap();
+        let hit = authorize_with(key, |_| panic!("successful retry must be cached")).unwrap();
+        assert_eq!(hit.bearer, fresh.bearer);
+        forget(key);
+    }
+
+    #[test]
+    fn auth_cache_regression_rotations_do_not_retain_obsolete_bearers() {
+        let original = "claude-bounded-original";
+        for index in 0..64 {
+            let current = live_refresh_token(original);
+            if let Some(entry) = cache().lock().unwrap().get_mut(&current) {
+                entry.until = Instant::now();
+            }
+            authorize_with(original, |_| {
+                Ok(cache_test_tokens(&format!("claude-bounded-{index}")))
+            })
+            .unwrap();
+        }
+        let entries = cache()
+            .lock()
+            .unwrap()
+            .keys()
+            .filter(|key| key.starts_with("claude-bounded-"))
+            .count();
+        assert_eq!(entries, 1);
+        forget(original);
+    }
+
+    #[test]
+    fn auth_cache_regression_rotation_from_a_reloaded_config_updates_old_configs() {
+        let original = "claude-reloaded-original";
+        let second = "claude-reloaded-second";
+        let third = "claude-reloaded-third";
+        note_rotation(original, original, second);
+        note_rotation(second, second, third);
+        assert_eq!(live_refresh_token(original), third);
+        forget(original);
+        forget(second);
+    }
+
+    #[test]
+    fn auth_cache_regression_short_lived_tokens_are_never_cached_past_expiry() {
+        assert_eq!(cache_lifetime(Some(0)), Duration::ZERO);
+        assert!(cache_lifetime(Some(10)) < Duration::from_secs(10));
+    }
+
+    #[test]
+    fn the_cache_lifetime_gives_back_the_skew_without_extending_expiry() {
         assert_eq!(
             cache_lifetime(Some(3600)),
             Duration::from_secs(3600 - 300),
             "an hour, minus the five-minute skew"
         );
-        // A very short life must not re-mint on every request.
-        assert_eq!(cache_lifetime(Some(60)), MIN_CACHE);
-        assert_eq!(cache_lifetime(Some(0)), MIN_CACHE);
+        // A very short life still caches briefly, always before expiry.
+        assert_eq!(cache_lifetime(Some(60)), Duration::from_secs(30));
+        assert_eq!(cache_lifetime(Some(0)), Duration::ZERO);
         // A token that doesn't say gets a conservative single minute.
         assert_eq!(cache_lifetime(None), MIN_CACHE);
     }

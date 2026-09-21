@@ -85,7 +85,7 @@ that.
 ## Breakpoint placement (≤ 3 of Anthropic's 4)
 
 ```
-[system  ← ①] [user] [assistant] [user ← ③] [assistant+tool_calls] [tool ← ②]
+[system ← ①] … [previous request's final message ← ③] [assistant+tool_calls] [tool ← ②]
 ```
 
 1. **The system message** — the big stable prefix (persona + environment)
@@ -96,9 +96,14 @@ that.
    new results are fresh input; across turns it sits on the newest user
    message. Verified live that OpenRouter's Anthropic routing accepts the
    marker on a `tool`-role message (and a Qwen tool round completes with it).
-3. **The last `user` message before ②** — insurance for the provider's
-   bounded lookback when many blocks land between two requests (a big
-   parallel batch).
+3. **The previous request's frontier** — the last cacheable message before
+   the newest assistant response, including a tool result from the previous
+   round. Pinning only the last human message loses intervening tool context
+   when new content exceeds the provider's lookback. On the native Messages
+   wire, tool results become user blocks, so its previous user message already
+   identifies that boundary. Claude's own API counts consecutive tool-use and
+   tool-result runs as one lookback position; a large batch alone does not
+   exhaust that API's window, but a long text/image suffix can.
 
 Marking converts a plain-string content into the one-text-part array (the only
 shape that can carry `cache_control`); a parts array (a vision message) gets
@@ -108,6 +113,77 @@ text blocks); the frontier walks back past them. Minimum-size rules
 (1k–4k tokens depending on the model) are the provider's own: a small
 conversation's marks are simply ignored until the prefix grows past the
 threshold, so there is nothing to gate app-side.
+
+Reapplying the transform replaces its old markers instead of accumulating
+them. Blank system/developer text is omitted on the native Messages wire,
+where an empty marked block would reject the request.
+
+## Keeping the conversation prefix stable
+
+The request a new human turn sends is derived from the display history, and
+it used to differ from the request the provider had cached in two ways that
+cost the whole suffix: the derivation minted fresh `call_0`, `call_1`… ids
+on the wires that carry an id through unrewritten (Responses, Messages,
+Ollama), and it split a parallel batch into one assistant/result pair per
+call. Equivalent information, a different prefix — and a cache read is a
+prefix match.
+
+Two layers keep the prefix now. The **durable** one is the record
+(`docs/context.md`): every tool round announces its ids first
+(`StreamEvent::RoundCalls`, in the model's order), the loop stamps them onto
+the records the round's cells resolve into beside a per-round batch number
+(`ToolCall::call_id`/`batch`, `TaskCallRecord`'s pair, an agent group's
+entry with the `call_id` its launch answered and its verbatim `arguments`,
+both carried on the launch's `AgentSpec`) **and each call's `position` in
+the round** — the index the model gave it, which the batch announcement,
+the task call's turn and the launch's id each recover from the announced
+list — the rollout round-trips all of it, and `context::context_messages`
+folds the records sharing a batch into the one `tool_calls` message they
+arrived in, **sorted back into the model's order**: a subagent group
+resolves before the round's ordinary calls run, so `[bash, agent, read]`
+records as `[agent, bash, read]`, and without the position the replay
+would send the calls, and their results, in that order — a different
+prefix from the one the provider cached, from that round to the end.
+Ordinary calls, task calls and subagent launches alike, every result
+behind the calls in the same order, a notice committed mid-batch deferred
+past it. So the derived request *is* the cached one
+after a `/resume`, a `/settings` or `/model` rebuild of the backend, or a
+restart; a record from a rollout written before the fields gets a synthetic
+id minted clear of the recorded ones, so an old session's later turns still
+pair. The **retained** one is the previous request itself: the active
+backend keeps its last request and restores that exact prefix when the
+rebuilt history has matching text, images, ordered tool names, arguments and
+results — which still covers what no record can, a whitespace-only lead
+before a batch's calls (the Responses and Messages wires echo a model's
+`\n\n` back as the round's content while the app records no segment for
+it, and counting the two as different kept exactly those wires from ever
+matching) and adjacent same-role plain-message boundaries. A
+`UserPromptSubmit` hook that blocks the prompt (`docs/hooks.md`) is checked
+before the retained prefix is consulted, so the block costs it nothing and
+the next prompt still matches. Any mismatch uses the newly derived history,
+so edits, rewinds and compaction cannot resurrect stale context. Retention
+is capped at 8 MiB (images share their existing allocation); a backend
+rebuild or a restart discards it and falls back on the record. MCP tool
+definitions use stable name order so discovery order does not change a
+prompt.
+
+`tests/wire_history.rs` drives the Chat Completions and Responses wires end
+to end against a loopback stand-in — a real turn, its events folded into the
+`App` exactly as the loop folds them, the next turn's request read back off
+the wire carrying the provider's own call id — and proves the durable half
+on its own: a backend rebuilt between the turns, its retained request gone,
+sends the batch the provider saw, and a prompt a hook blocks does not cost
+the prefix. Its `#[ignore]`d live twin measures that half on a real cache
+(`live_openrouter_a_rebuilt_backend_reads_the_tool_round_back_from_cache`,
+OpenRouter's Anthropic routing): a real `bash` turn folded into the `App`,
+then a fresh backend's first request reading 9,540 of its 9,561 input tokens
+back — the tool round, under the provider's own `toolu_…` id, from the
+record alone (measured 2026-09-21). Its Responses-wire twin
+(`live_chatgpt_a_rebuilt_backend_reads_the_tool_round_back_from_cache`,
+an 800-line `seq` result so the round spans several of OpenAI's 128-token
+blocks) read 8,704 of 9,067 back on `codex-auto-review` — past the system
+prompt and through the tool result, the model having emitted no blank
+lead that run; the blank-lead shape stays the retained request's alone.
 
 ## Cache affinity: what each backend routes on
 
@@ -275,6 +351,60 @@ nearly-empty OpenRouter balance can refuse a big-output model outright; the
 live test sets `max_tokens: 32` through the config's `extra_body` for its
 one-word answers.
 
+## Stress audit (2026-09-20)
+
+The deterministic suite exercises 32 simultaneous authorization callers per
+subscription provider, 64 successive refresh rotations, 32 concurrent
+credential-store writers, 64 human turns with 16 parallel tool calls each,
+and breakpoint placement across 32 rounds at batch sizes 1, 19, 20, 21 and 64.
+It also covers large text/image followups, repeated marker preparation,
+hook-message merging, a whitespace-only lead before a batch's calls,
+interrupted-turn ID collisions, changed history, retained-memory limits, a
+bearer whose `exp` the local clock reads as past, and a symlinked key store.
+`tests/wire_history.rs` adds the end-to-end leg: a real backend turn on the
+Chat Completions wire and on the Responses wire against a loopback stand-in,
+the next turn's request carrying the provider's own call id — from the
+retained request and, with the backend rebuilt between the turns, from the
+record alone — and a prompt a hook blocks costing no prefix. The auth
+half additionally covers a `forget` landing while a refresh is in flight
+and a rotation racing a newer sign-in for the key store. The complete
+local gate passed: 4,037 tests, formatting, Clippy with warnings
+denied and the documentation build.
+
+Live tests used the production provider configurations and synthetic prompts.
+The identical-request baselines: OpenRouter read 8,004 of 8,007 input tokens,
+ChatGPT's `codex-auto-review` read 5,888 of 6,748, and Venice read 6,528 of
+6,749 on one afternoon and nothing at all on another — back to back or eight
+seconds apart — which is the provider's cache and not the request, the
+request being byte-identical both times.
+
+The `live_*_growing_conversation_keeps_cache` tests send six growing turns
+and print every usage frame. What each asserts follows the provider's cache
+(`CacheReads` in the test): explicit breakpoints are deterministic, so every
+warm round must read its prefix back; an implicit cache is best-effort and
+asynchronous, so a run in which no warm round reads is checked against an
+identical re-send of its last request — a provider that reads *that* back
+but none of the growing rounds is a prefix the request moved, one that reads
+neither is not reading today. They are ignored by default, since provider
+availability and cache placement are outside the local test's control.
+Observed:
+
+| Provider/model | Five warm rounds | Result |
+| --- | --- | --- |
+| OpenRouter / `~anthropic/claude-haiku-latest` | 40,250 / 40,360 input tokens reused (99.7%), every round | Passed, deterministic |
+| ChatGPT / `codex-auto-review` | 5 of 5 read 5,888 tokens (86.3%); an earlier run 4 of 5, one round reading nothing | Passed, best-effort |
+| Venice proxy / `openai-gpt-4o-mini-2024-07-18` | 1 of 5 read (6,656 tokens) in two runs, 0 of 5 in two more — one with an eight-second pause between rounds — with the identical-request baseline missing alongside | The provider, not the request |
+
+The flat 5,888 is OpenAI's accounting, not a stalled prefix: it counts whole
+128-token blocks, and a round adds fewer tokens than one block. And
+`live_openrouter_marks_the_previous_tool_result_and_reads_it_back` sends the
+new breakpoint ③ on a tool result in the middle of the conversation: accepted
+by OpenRouter's Anthropic routing, 10,151 tokens written on the tool round and
+read back whole on the next turn. No fabricated cache count or production
+delay was added to conceal any of these results; a provider hit on an
+identical request does not prove reliable hits throughout a growing session,
+and a miss on one does not indict the request.
+
 ## Known limitations
 
 - The per-model **minimum cacheable sizes** and TTLs (5 min – 1 h) are the
@@ -299,3 +429,13 @@ one-word answers.
   number that only settles at round boundaries anyway.
 - OpenRouter's per-request `cost` field is parsed past, not surfaced — the
   tally stays in tokens (Venice bills in a different unit entirely).
+- The **durable prefix** replays what the records can say, and two round
+  shapes still differ from the wire once the retained request is gone (a
+  rebuild, a `/resume`, a restart — the running backend's retained request
+  covers both until then, and the cost is one re-read of the conversation
+  from that round on, never a malformed request): a task or agent call the
+  **Max tool calls** ceiling refused leaves no record at all (it never had
+  a cell), and a launch a `PreToolUse` hook blocked resolves as a lone
+  cell under a synthetic id ahead of the batch; and several image reads in
+  one round replay as one merged user message where the live loop sent one
+  per read.

@@ -732,6 +732,8 @@ fn a_subagents_request_keeps_the_live_agent_tree_above_it() {
                 agent_type: "general-purpose".to_string(),
                 prompt: "p".to_string(),
                 background: false,
+                call_id: None,
+                arguments: None,
             },
             AgentSpec {
                 id: "a2".to_string(),
@@ -739,6 +741,8 @@ fn a_subagents_request_keeps_the_live_agent_tree_above_it() {
                 agent_type: "general-purpose".to_string(),
                 prompt: "p".to_string(),
                 background: false,
+                call_id: None,
+                arguments: None,
             },
         ],
     );

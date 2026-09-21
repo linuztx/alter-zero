@@ -202,7 +202,9 @@ never existed:
   the echo away, and commits a red reason-only notice. `additionalContext`
   injects even on a block — both references' rule. A loop-initiated turn (a
   background completion's follow-up) is marked synthetic and skips the
-  event: its prompt is not the user's.
+  event: its prompt is not the user's. The backend consults its retained
+  request prefix only past this check, so a block costs no prompt-cache
+  prefix (`docs/prompt-caching.md`).
 - **`PreCompact`/`PostCompact`** ride the summarization spawn through the
   `CompactHooks` wrapper: its "prompt" hook is PreCompact (context/stdout →
   extra summarization instructions; **it cannot block — in either
