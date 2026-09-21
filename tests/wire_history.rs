@@ -416,3 +416,112 @@ fn a_blocked_prompt_does_not_cost_the_retained_prefix() {
         "the provider's own prefix survives the block"
     );
 }
+
+#[test]
+#[ignore = "hits the network; needs OPENROUTER_API_KEY; costs about a cent"]
+fn live_openrouter_a_rebuilt_backend_reads_the_tool_round_back_from_cache() {
+    // The durable half on a real cache: a tool turn on OpenRouter's
+    // Anthropic routing (explicit breakpoints, so a read is deterministic),
+    // its events folded into the `App` as the loop folds them, and the next
+    // turn sent by a *fresh* backend — no retained request, what a `/model`
+    // switch, a settings rebuild or a `/resume` leaves — from the derived
+    // context alone. The records carry the provider's own call id and the
+    // round's exact text, so the provider reads the prefix through the tool
+    // result back instead of re-reading it from the call on
+    // (docs/prompt-caching.md). Both backends share the session's affinity
+    // key, as two backends of one process do.
+    use alter_zero::llm::{ProvidersFile, Selection};
+    let key =
+        std::env::var("OPENROUTER_API_KEY").expect("set OPENROUTER_API_KEY to run this live test");
+    let model = std::env::var("ALTER_ZERO_LIVE_OPENROUTER_MODEL")
+        .unwrap_or_else(|_| "~anthropic/claude-haiku-latest".to_string());
+    let salt = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    // Past every provider's minimum cacheable size, salted so the run
+    // starts cold.
+    let corpus: String = (0..420)
+        .map(|i| format!("Calibration sentence {i} of the standing corpus, run {salt}. "))
+        .collect();
+    let system =
+        format!("You are a terse assistant. Answer in as few words as possible.\n{corpus}");
+    let configure = || {
+        let mut cfg = ProvidersFile::builtin()
+            .model_config(&Selection {
+                provider_id: "openrouter".to_string(),
+                model: model.clone(),
+                api_key: Some(key.clone()),
+                temperature: None,
+                thinking: None,
+                vision: None,
+                context: None,
+                api_base: None,
+                cache_key: Some(format!("alter-zero-wire-history-{salt}")),
+                service_tier: None,
+            })
+            .expect("openrouter is a built-in provider");
+        cfg.extra_body
+            .insert("max_tokens".into(), serde_json::json!(64));
+        LlmBackend::configure(cfg, Some(system.clone()), true)
+    };
+    let usages = |events: &[StreamEvent]| -> Vec<alter_zero::stream::TokenUsage> {
+        events
+            .iter()
+            .filter_map(|event| match event {
+                StreamEvent::Usage(usage) => Some(*usage),
+                _ => None,
+            })
+            .collect()
+    };
+
+    let first = configure();
+    let mut app = App::new();
+    let prompt = format!(
+        "Use the bash tool to run `echo run-{salt}` (one call), then reply with exactly DONE."
+    );
+    app.record_user_message(&prompt);
+    app.begin_stream();
+    let events = turn(&first, &prompt, context_messages(&app.history));
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, StreamEvent::ToolStart { .. })),
+        "the model made a tool call: {events:?}"
+    );
+    for usage in usages(&events) {
+        println!("tool turn usage: {usage:?}");
+    }
+    fold(&mut app, events);
+    let tool = app
+        .history
+        .iter()
+        .find_map(|item| match item {
+            HistoryItem::Tool(tool) => Some(tool),
+            _ => None,
+        })
+        .expect("the tool call was recorded");
+    println!(
+        "recorded call id: {:?}, batch: {:?}",
+        tool.call_id, tool.batch
+    );
+    assert!(
+        tool.call_id.is_some(),
+        "the record carries the provider's id"
+    );
+
+    let rebuilt = configure();
+    let prompt = "Now reply with exactly AGAIN.";
+    app.record_user_message(prompt);
+    app.begin_stream();
+    let events = turn(&rebuilt, prompt, context_messages(&app.history));
+    let usage = usages(&events)
+        .first()
+        .copied()
+        .expect("the next turn reported usage");
+    println!("rebuilt backend usage: {usage:?}");
+    fold(&mut app, events);
+    assert!(
+        usage.cached * 10 >= usage.input * 9,
+        "the rebuilt backend read the tool round back from cache: {usage:?}"
+    );
+}

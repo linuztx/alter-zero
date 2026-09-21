@@ -165,7 +165,12 @@ to end against a loopback stand-in — a real turn, its events folded into the
 the wire carrying the provider's own call id — and proves the durable half
 on its own: a backend rebuilt between the turns, its retained request gone,
 sends the batch the provider saw, and a prompt a hook blocks does not cost
-the prefix.
+the prefix. Its `#[ignore]`d live twin measures that half on a real cache
+(`live_openrouter_a_rebuilt_backend_reads_the_tool_round_back_from_cache`,
+OpenRouter's Anthropic routing): a real `bash` turn folded into the `App`,
+then a fresh backend's first request reading 9,540 of its 9,561 input tokens
+back — the tool round, under the provider's own `toolu_…` id, from the
+record alone (measured 2026-09-21).
 
 ## Cache affinity: what each backend routes on
 
