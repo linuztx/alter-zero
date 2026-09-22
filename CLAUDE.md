@@ -550,11 +550,14 @@ names it; the per-model rule is the Modelfile's own `num_ctx` (only
 `OLLAMA_CONTEXT_LENGTH`, else the 32K `DEFAULT_NUM_CTX_CAP`, never past the
 model's maximum, the cloud uncapped, `ALTER_ZERO_CONTEXT_WINDOW` outranking
 all of it. No key is needed (`auth = "optional_key"`, the one scheme
-`is_usable` accepts keyless; a stored `OLLAMA_API_KEY` still rides as a
-bearer for the cloud or a proxy), so the provider is **configured by being
-pointed at** — `OLLAMA_HOST` resolving (`api_base_env`, Ollama's own grammar
-ported as `ollama::host_url`), a key, or `ALTER_ZERO_PROVIDER` — which is
-what keeps every `/model` open from fetching a server most users don't run;
+`is_usable` accepts keyless; a stored `OLLAMA_HOST_API_KEY` still rides as a
+bearer for a proxy in front of that server — its **own** variable, never
+`ollama_cloud`'s `OLLAMA_API_KEY`, since two providers naming one variable
+share one credential and a pasted cloud key then configured the local server
+too), so the provider is **configured by being pointed at** — `OLLAMA_HOST`
+resolving (`api_base_env`, Ollama's own grammar ported as
+`ollama::host_url`), a key, or `ALTER_ZERO_PROVIDER` — which is what keeps
+every `/model` open from fetching a server most users don't run;
 `/login`'s row for it is a **host field** (`KeyKind::Host`: shown as typed,
 an empty Enter saving the default) rather than a masked secret. The catalog
 is `/api/tags` plus one `/api/show` per model, answering all three

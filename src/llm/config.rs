@@ -1049,18 +1049,42 @@ api_base = "http://127.0.0.1:11434"
     }
 
     #[test]
+    fn no_two_shipped_providers_read_the_same_key_variable() {
+        // One provider, one variable. Two that share an `api_key_env` share a
+        // credential store: a key pasted for either marks *both* configured —
+        // the ✓ in `/login` and the set `/model` fetches from — so signing in
+        // to Ollama Cloud used to light the local Ollama row and send every
+        // `/model` open to a server most users don't run. The collision is a
+        // property of the shipped file, so it is pinned here.
+        let file = ProvidersFile::builtin();
+        let mut owner: std::collections::BTreeMap<String, String> =
+            std::collections::BTreeMap::new();
+        for id in file.ids() {
+            let var = file.get(&id).expect("listed").key_env(&id);
+            if let Some(first) = owner.insert(var.clone(), id.clone()) {
+                panic!("{first} and {id} both read {var}");
+            }
+        }
+    }
+
+    #[test]
     fn the_builtin_file_ships_ollama_local_and_cloud() {
         let file = ProvidersFile::builtin();
         let local = file.get("ollama").expect("shipped");
         assert_eq!(local.wire_api, WireApi::Ollama);
         assert_eq!(local.auth, AuthScheme::OptionalKey);
-        assert_eq!(local.key_env("ollama"), "OLLAMA_API_KEY");
+        // The server's *own* key — the one a proxy in front of it may want —
+        // and deliberately not the cloud's `OLLAMA_API_KEY`: sharing that one
+        // made a pasted cloud key configure this provider too.
+        assert_eq!(local.key_env("ollama"), "OLLAMA_HOST_API_KEY");
         assert_eq!(local.api_base_env.as_deref(), Some("OLLAMA_HOST"));
         assert_eq!(local.kwargs.api_base, "http://127.0.0.1:11434");
 
         let cloud = file.get("ollama_cloud").expect("shipped");
         assert_eq!(cloud.wire_api, WireApi::Ollama);
         assert_eq!(cloud.auth, AuthScheme::ApiKey, "the cloud needs its key");
+        // Ollama's own name for the hosted API's key, so a key already
+        // exported for the `ollama` CLI configures this row and nothing else.
         assert_eq!(cloud.key_env("ollama_cloud"), "OLLAMA_API_KEY");
         assert_eq!(cloud.api_base_env, None);
         assert_eq!(cloud.kwargs.api_base, "https://ollama.com");

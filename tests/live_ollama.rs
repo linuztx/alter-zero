@@ -39,7 +39,7 @@ fn config(model: &str, thinking: Option<ThinkingMode>, context: Option<u64>) -> 
         .model_config(&Selection {
             provider_id: "ollama".to_string(),
             model: model.to_string(),
-            api_key: std::env::var("OLLAMA_API_KEY").ok(),
+            api_key: std::env::var("OLLAMA_HOST_API_KEY").ok(),
             temperature: Some(0.0),
             thinking,
             vision: None,

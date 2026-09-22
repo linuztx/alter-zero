@@ -12,6 +12,23 @@ release heading when a version is cut.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Signing in to Ollama Cloud no longer configures the local Ollama
+  provider too.** Both read their key from `OLLAMA_API_KEY`, and a key
+  resolving is one of the things that makes a provider configured, so a key
+  pasted for **Ollama Cloud** marked plain **Ollama** configured in the same
+  keystroke: its row went `✔ configured` in `/login`, the next `/model` open
+  fetched `http://127.0.0.1:11434` beside the cloud's list and painted that
+  server's refusal in red, and the cloud's key rode as the bearer of every
+  request to whatever `OLLAMA_HOST` named. The two providers now read two
+  variables: `ollama_cloud` keeps `OLLAMA_API_KEY` — Ollama's own name for
+  the hosted API's key, so nothing already stored or exported has to move —
+  and the server you run reads `OLLAMA_HOST_API_KEY`, the optional bearer
+  for a proxy in front of it. If you had set `OLLAMA_API_KEY` for your own
+  server rather than for the cloud, rename it; an unauthorized reply now
+  names both variables (`docs/ollama.md`).
+
 ## [0.6.0] - 2026-09-22
 
 ### Added

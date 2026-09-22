@@ -9,7 +9,7 @@ after Chat Completions, Responses and Messages — `docs/chatgpt.md`,
 
 | provider id | reaches | credential |
 | --- | --- | --- |
-| `ollama` | a server you run (`http://127.0.0.1:11434` unless `OLLAMA_HOST` says otherwise) | none — a stored `OLLAMA_API_KEY` rides as a bearer if a proxy wants one |
+| `ollama` | a server you run (`http://127.0.0.1:11434` unless `OLLAMA_HOST` says otherwise) | none — a stored `OLLAMA_HOST_API_KEY` rides as a bearer if a proxy wants one |
 | `ollama_cloud` | `https://ollama.com` | an API key from ollama.com/settings/keys |
 
 A local server signed in with `ollama signin` lists its `-cloud` models under
@@ -56,8 +56,8 @@ the transcript, the rollout and the derived context are untouched.
 name = "Ollama"
 auth = "optional_key"          # ← no key needed; a stored one still rides
 wire_api = "ollama"            # ← the native shape
-api_key_env = "OLLAMA_API_KEY"
-api_base_env = "OLLAMA_HOST"   # ← Ollama's own variable replaces the base
+api_key_env = "OLLAMA_HOST_API_KEY"   # ← this server's own key, not the cloud's
+api_base_env = "OLLAMA_HOST"          # ← Ollama's own variable replaces the base
 
 [providers.ollama.kwargs]
 api_base = "http://127.0.0.1:11434"
@@ -108,6 +108,22 @@ refusal.
 So a host-configured provider is configured when it is **pointed at**:
 `OLLAMA_HOST` resolves (process env or `.env`), or a key resolves, or
 `ALTER_ZERO_PROVIDER` names it. That is what the `/login` row writes.
+
+### One provider, one variable
+
+Which is why the two providers may not share an `api_key_env`. They did —
+both read `OLLAMA_API_KEY` — and a key resolving is half of "pointed at", so
+pasting an **Ollama Cloud** key configured the **local** provider in the same
+keystroke: its row went `✔ configured` in `/login`, the next `/model` open
+fetched `http://127.0.0.1:11434` beside the cloud's list and painted its
+refusal in red, and the cloud's credential rode as the bearer of every
+request to whatever `OLLAMA_HOST` names. A shared variable is one credential
+store, so the fix is two: `ollama_cloud` keeps `OLLAMA_API_KEY` — Ollama's
+own name for the hosted API's key, so one already exported for the `ollama`
+CLI configures that row and nothing else — and the server you run reads
+`OLLAMA_HOST_API_KEY`, the key for the host `OLLAMA_HOST` names.
+`no_two_shipped_providers_read_the_same_key_variable` pins it for the whole
+file, not just this pair.
 
 ### The `/login` host field
 
@@ -318,7 +334,7 @@ that say what to do:
 | 400 `… does not support tools` | turn Tools off in /settings, or pick a model that does |
 | 400 `… does not support thinking` | press ctrl+t to turn it off |
 | 400 `Multimodal data provided, but model does not support …` | the attachment was refused; pick a vision model |
-| 401 / 403 | set `OLLAMA_API_KEY` (a cloud key), or paste one with /login |
+| 401 / 403 | set `OLLAMA_API_KEY` (a cloud key, or paste one with /login), or `OLLAMA_HOST_API_KEY` for a server of your own |
 | 429 | rate-limited; wait |
 | 502 | the cloud model behind a proxy could not be reached |
 
@@ -364,7 +380,8 @@ suite's `/model` phases fetch from a server it doesn't run.
 | variable | effect |
 | --- | --- |
 | `OLLAMA_HOST` | where the `ollama` provider's server is, in Ollama's grammar; setting it (or `/login` writing it) is what makes the provider configured |
-| `OLLAMA_API_KEY` | a bearer — the cloud's key, or a proxy's; optional for a local server |
+| `OLLAMA_API_KEY` | `ollama_cloud`'s key (ollama.com/settings/keys) — and only its own: it never configures the server-you-run provider |
+| `OLLAMA_HOST_API_KEY` | a bearer for the server `OLLAMA_HOST` names, when a proxy in front of it wants one; optional, and what `ollama` reads instead of the cloud's key |
 | `OLLAMA_CONTEXT_LENGTH` | the server's configured default window, mirrored into the window rule |
 | `ALTER_ZERO_CONTEXT_WINDOW` | outranks the rule, and is sent as `num_ctx` |
 | `ALTER_ZERO_PROVIDER=ollama` | also counts as pointing at it |

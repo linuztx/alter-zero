@@ -894,8 +894,9 @@ pub fn advice(status: u16, body: &str, model: &str) -> Option<String> {
             ))
         }
         401 | 403 => Some(
-            "Ollama refused the request as unauthorized — set OLLAMA_API_KEY to a key \
-             from ollama.com/settings/keys (or paste one with /login), then try again."
+            "Ollama refused the request as unauthorized — for Ollama Cloud set \
+             OLLAMA_API_KEY to a key from ollama.com/settings/keys (or paste one with \
+             /login); for a server of your own set OLLAMA_HOST_API_KEY."
                 .to_string(),
         ),
         429 => {
@@ -1631,9 +1632,16 @@ mod tests {
     }
 
     #[test]
-    fn a_cloud_refusal_points_at_the_key() {
+    fn an_unauthorized_refusal_points_at_the_key_of_either_provider() {
+        // The two providers read two variables (`providers.toml`), and a 401
+        // can come from either: the cloud with no key, or a server of one's
+        // own behind a proxy that wants one. Naming only the cloud's sent
+        // half the users who see this to a variable their provider no longer
+        // reads.
         let text = advice(401, r#"{"error":"Unauthorized"}"#, "gpt-oss:120b").unwrap();
         assert!(text.contains("OLLAMA_API_KEY"), "{text}");
+        assert!(text.contains("OLLAMA_HOST_API_KEY"), "{text}");
+        assert!(text.contains("ollama.com/settings/keys"), "{text}");
     }
 
     #[test]

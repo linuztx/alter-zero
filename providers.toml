@@ -117,25 +117,33 @@ api_base = "https://api.githubcopilot.com"
 # No key is needed for a local server (`auth = "optional_key"`): the provider
 # is *pointed at* instead, with `OLLAMA_HOST` — Ollama's own variable, in its
 # own grammar (`localhost:11434`, `0.0.0.0`, `https://host`), which `/login`
-# writes for you — and a stored `OLLAMA_API_KEY` rides as a bearer for a
-# server that wants one. The listing is `/api/tags` + `/api/show`, which is
-# where the context window, vision, tools and thinking come from.
+# writes for you — and a stored `OLLAMA_HOST_API_KEY` rides as a bearer for a
+# server that wants one. That key is deliberately **not** `OLLAMA_API_KEY`,
+# which `ollama_cloud` below reads: two providers naming one variable share
+# one credential, so a key pasted for the cloud used to mark this provider
+# configured too — its ✓ in `/login`, and every `/model` open fetching from a
+# local server most of those users don't run. The listing is `/api/tags` +
+# `/api/show`, which is where the context window, vision, tools and thinking
+# come from.
 [providers.ollama]
 name = "Ollama"
 description = "Open models running locally on your own machine — nothing leaves it, and no key is needed. Point this at the server."
 api_key_url = "https://ollama.com/download"
 auth = "optional_key"
 wire_api = "ollama"
-api_key_env = "OLLAMA_API_KEY"
+api_key_env = "OLLAMA_HOST_API_KEY"
 api_base_env = "OLLAMA_HOST"
 
 [providers.ollama.kwargs]
 api_base = "http://127.0.0.1:11434"
 
 # Ollama's hosted models (ollama.com), reached directly with an API key from
-# ollama.com/settings/keys — the same wire, an ordinary pasted key. A local
-# server signed in with `ollama signin` lists its `-cloud` models under the
-# `ollama` provider above instead.
+# ollama.com/settings/keys — the same wire, an ordinary pasted key. It keeps
+# `OLLAMA_API_KEY`, Ollama's own name for the hosted API's key, so a key
+# already exported for the `ollama` CLI configures this row — and only this
+# row (the server above reads `OLLAMA_HOST_API_KEY`). A local server signed
+# in with `ollama signin` lists its `-cloud` models under the `ollama`
+# provider above instead.
 [providers.ollama_cloud]
 name = "Ollama Cloud"
 description = "Ollama's hosted service: the same open models, run on their datacenter GPUs instead of your machine."

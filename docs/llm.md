@@ -154,7 +154,8 @@ directory's entry being only what a *new* session starts on
 | `ALTER_ZERO_CONFIG_DIR` | the config home (holds `.env` + `config.json`) | `~/.alter-zero` |
 | `ALTER_ZERO_ENV_FILE` | the `.env` key store `/login` reads and writes (and where a rotated ChatGPT refresh token is written back — `docs/chatgpt.md`) | `{config_home}/.env` |
 | `ALTER_ZERO_OPENAI_ISSUER` | the auth server ChatGPT Codex's browser and device-code sign-ins talk to — a fork's own, or the smoke suite's local stub (`docs/chatgpt.md`) | `https://auth.openai.com` |
-| `OLLAMA_HOST` / `OLLAMA_API_KEY` / `OLLAMA_CONTEXT_LENGTH` | the Ollama provider's host (pointing at it is what configures it), optional bearer, and mirrored server default window (`docs/ollama.md`) | unset |
+| `OLLAMA_HOST` / `OLLAMA_HOST_API_KEY` / `OLLAMA_CONTEXT_LENGTH` | the `ollama` provider's host (pointing at it is what configures it), that server's optional bearer, and the mirrored server default window (`docs/ollama.md`) | unset |
+| `OLLAMA_API_KEY` | `ollama_cloud`'s key alone — the two Ollama providers read two variables, so one does not configure the other (`docs/ollama.md`) | unset |
 | `ALTER_ZERO_TEMPERATURE` | sampling temperature | provider/omit |
 | `ALTER_ZERO_TOOLS` | falsy (`0`/`false`/`no`/`off`) disables the `bash`/`read`/`write`/`edit` tools (see `docs/tools.md`) | tools on |
 | `ALTER_ZERO_SYSTEM_PROMPT` | override the "Alter Zero" persona; empty sends no system prompt. Any non-empty prompt still gets the runtime environment context (date/os/cwd, `docs/environment.md`) folded on | persona in `prompts/alter_zero.md` |
