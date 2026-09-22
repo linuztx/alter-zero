@@ -2223,6 +2223,29 @@ pub(super) const AGENT_VIEW_RULE_TAIL: &str = "─";
 /// is cut with [`TOOL_HEADER_ELLIPSIS`] instead (`docs/agent-tool.md`).
 pub(super) const AGENT_VIEW_LABEL_DIVISOR: usize = 2;
 
+/// That label's ground: the agent session view's composer label rides its
+/// top rule as a **lit chip** — the theme's accent under the on-accent ink,
+/// the ↓-focused footer chip's dress ([`footer_focus_bg`]/[`footer_focus_fg`]),
+/// since it answers the same kind of question (*which* thing the keys act
+/// on: here, which conversation the composer feeds). Dim text embedded in a
+/// dim rule was the one row saying the screen was not the main session, and
+/// the eye passed over it (the user-requested fill, `docs/agent-tool.md`).
+/// The label's own padding spaces sit inside the fill, the
+/// [`AGENT_VIEW_RULE_TAIL`] outside it, so the chip reads as a tab set into
+/// the rule rather than a smudge on it.
+pub(super) fn agent_view_label_bg() -> Color {
+    menu_selected_color()
+}
+
+/// The chip's ink — `on_accent`, the pair the ↓-focused footer chip and the
+/// current ask-question chip already stand on: near-black on a dark theme's
+/// accent, black on ANSI's cyan, and Latte's pale `base` on its blue —
+/// Catppuccin's own text-on-accent rule, and the catalog's weakest contrast
+/// at about 2.5:1 — so a theme that reads at the footer chip reads here.
+pub(super) fn agent_view_label_fg() -> Color {
+    palette().on_accent
+}
+
 /// Indent of a Ctrl+O agent cell's section bodies (under the `⎿  ` corner's
 /// label, one level further in) and of its nested tool-header lines.
 pub(super) const AGENT_BODY_INDENT: &str = "       ";

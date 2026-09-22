@@ -54,8 +54,8 @@ chrome paints is one of these or derived from one:
 | `border` | the composer box's rules and every framed view's |
 | `user_fg` / `user_bg` | the `❯ …` user bubble (and a `!` command's header) — muted on purpose |
 | `selection_bg` | the `/resume` picker's selected row |
-| `accent` | what every picker selects with, the system bullet, inline code, the banner hint, a permission prompt's title, the Ctrl+R query, the ↓-focused footer chip's fill — and the gradient's near end |
-| `on_accent` | ink over an `accent` fill (the footer chip, the current ask-question chip) |
+| `accent` | what every picker selects with, the system bullet, inline code, the banner hint, a permission prompt's title, the Ctrl+R query, the ↓-focused footer chip's fill, the agent session view's composer label chip — and the gradient's near end |
+| `on_accent` | ink over an `accent` fill (the footer chip, the current ask-question chip, the agent session view's composer label) |
 | `link` | a link's URL, an ordered list's marker, the context view's user tag — and the gradient's far end |
 | `success` | the finished tool bullet, a diff's `+`, the active model's ✓, a completed task, a background notice that went well |
 | `error` | the error bullet, a failed tool, a diff's `-`, the `!` shell mode, an error toast |
@@ -68,7 +68,9 @@ chrome paints is one of these or derived from one:
 | `code` | the `highlight::CodeTheme` the code blocks and file cells are coloured with |
 
 The **derivations** are the accessor functions in `ui/theme.rs`
-(`tool_ok_color()` is `success`, `menu_selected_color()` is `accent`,
+(`tool_ok_color()` is `success`, `menu_selected_color()` is `accent` — so
+is `agent_view_label_bg()`, the agent session view's composer chip, whose
+`agent_view_label_fg()` is `on_accent`,
 `header_gradient_start()`/`header_gradient_end()` are `accent` → `link`,
 `shimmer_highlight()` is `text`, `tool_pulse_bright()` is `dim`, and so
 on): the roles are what `theme.rs` has always named, the palette is what

@@ -692,12 +692,19 @@ pub fn render_live_with_preview(
         .viewed_agent()
         .and_then(|run| agent_view_rule_label(&run.description, bx.frame.width))
     {
-        // The dim label with a border cell after it, so the rule resumes for
-        // one glyph past the text (`── {description} ─`) and the label reads
-        // as embedded in the frame rather than dangling off its right end.
+        // The label as a lit chip — the theme's accent under the on-accent
+        // ink, its padding spaces inside the fill — with a bare border cell
+        // after it, so the rule resumes for one glyph past the text
+        // (`── {description} ─`) and the chip reads as set into the frame
+        // rather than dangling off its right end.
         block = block.title_top(
             Line::from(vec![
-                Span::styled(label, Style::new().fg(tool_dim_color())),
+                Span::styled(
+                    label,
+                    Style::new()
+                        .fg(agent_view_label_fg())
+                        .bg(agent_view_label_bg()),
+                ),
                 Span::styled(
                     AGENT_VIEW_RULE_TAIL.to_string(),
                     Style::new().fg(border_color()),

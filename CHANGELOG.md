@@ -113,6 +113,16 @@ release heading when a version is cut.
   alter-zero` then `stream some markdown` watches the pipeline hold still at
   a struggling model's pace; `scripts/smoke.sh` Phase 121 proves it does.
 
+### Changed
+
+- **The agent session view's composer label is a lit chip.** The
+  `── {description} ─` label on the top rule of an agent's session view
+  used to be dim text embedded in a dim rule — the one row saying the
+  composer feeds a subagent rather than the main conversation, and the
+  easiest one to pass over. It now rides the rule on the active theme's
+  accent under the on-accent ink, the ↓-focused footer chip's dress, so it
+  follows `/theme` like everything else (`docs/agent-tool.md`).
+
 ## [0.5.0] - 2026-09-20
 
 ### Added
