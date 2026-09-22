@@ -12,6 +12,8 @@ release heading when a version is cut.
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-09-22
+
 ### Fixed
 
 - **`/mcp` no longer parks the cursor on its bottom rule when nothing is
@@ -483,7 +485,8 @@ release heading when a version is cut.
   release whose notes come from this file — driven end to end by
   `scripts/release.sh`, which also rehearses a release locally.
 
-[Unreleased]: https://github.com/linuztx/alter-zero/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/linuztx/alter-zero/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/linuztx/alter-zero/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/linuztx/alter-zero/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/linuztx/alter-zero/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/linuztx/alter-zero/compare/v0.2.0...v0.3.0
