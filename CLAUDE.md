@@ -1104,7 +1104,11 @@ a walk back onto `main` the way to forget one); Enter on an agent opens its **in
 view** — a purge-rebuild showing the agent's own transcript under the banner,
 the composer's top rule labelled with its description **embedded in the
 rule** (`── {description} ─`, the rule resuming for one border cell after
-the text) and **budgeted to half of it** (a `description` is whatever the
+the text), **lit as a chip** in the theme's accent under its on-accent ink
+(`agent_view_label_bg`/`agent_view_label_fg` — the ↓-focused footer chip's
+dress, so the row that says which conversation the composer feeds reads at
+a glance rather than as dim text in a dim rule) and **budgeted to half of
+it** (a `description` is whatever the
 model wrote, and a right-aligned title too long to fit is trimmed from the
 **left**, so an unbudgeted paragraph ate the rule whole and left a sentence
 fragment with a border glyph stuck on its end; `ui::agent`'s

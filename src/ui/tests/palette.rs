@@ -115,6 +115,8 @@ fn one_dark_is_the_original_look_value_for_value() {
         assert_eq!(menu_selected_color(), Color::Rgb(0x56, 0xB6, 0xC2));
         assert_eq!(inline_code_color(), Color::Rgb(0x56, 0xB6, 0xC2));
         assert_eq!(footer_focus_fg(), Color::Rgb(0x1E, 0x1E, 0x1E));
+        assert_eq!(agent_view_label_bg(), Color::Rgb(0x56, 0xB6, 0xC2));
+        assert_eq!(agent_view_label_fg(), Color::Rgb(0x1E, 0x1E, 0x1E));
         assert_eq!(link_url_color(), Color::Rgb(0x61, 0xAF, 0xEF));
         assert_eq!(tool_ok_color(), Color::Rgb(0x3F, 0xB9, 0x50));
         assert_eq!(error_color(), Color::Rgb(0xE0, 0x6C, 0x75));

@@ -947,6 +947,69 @@ fn the_composer_label_keeps_a_short_description_whole_and_gives_up_on_a_narrow_r
     assert_eq!(agent_view_rule_label("x", 8).as_deref(), Some(" x "));
 }
 
+#[test]
+fn the_composer_label_is_a_lit_chip_in_the_themes_accent() {
+    // The user-requested fill: the agent session view's `── Greet user ─`
+    // label rides the top rule as a **chip** — the theme's accent under the
+    // on-accent ink, the ↓-focused footer chip's dress — so the one row that
+    // says *which* conversation the composer feeds reads at a glance rather
+    // than as dim text embedded in a dim rule. The fill covers the label's
+    // own padding spaces and nothing else: the rule before it and the tail
+    // glyph after it keep the border colour and no ground (docs/agent-tool.md).
+    use crate::app::Theme;
+    use crate::ui::palette::{palette_of, with_theme};
+    use crate::ui::theme::{agent_view_label_bg, agent_view_label_fg, border_color};
+    let mut app = App::new();
+    app.set_session_info("dummy_model_name", "~/repo");
+    app.begin_stream();
+    app.start_agent_group(false, &[spec("a1", "Greet user", false)]);
+    app.open_agent_view("a1");
+    let area = Rect::new(0, 0, 76, 24);
+    let render = |buf: &mut Buffer| {
+        render_live(area, buf, &app);
+        let rows: Vec<String> = (0..24).map(|y| row(buf, y, 76)).collect();
+        let prompt = rows
+            .iter()
+            .position(|r| r.starts_with('❯'))
+            .expect("the composer prompt");
+        let y = u16::try_from(prompt - 1).expect("a small row");
+        assert_eq!(
+            rows[usize::from(y)].trim_end(),
+            format!("{} Greet user ─", "─".repeat(63)),
+            "the row's text is what it always was"
+        );
+        y
+    };
+    let mut buf = Buffer::empty(area);
+    let y = render(&mut buf);
+    // 63 rule cells, the 12-column ` Greet user ` label, the tail glyph.
+    for x in 63..75u16 {
+        let cell = &buf[(x, y)];
+        assert_eq!(cell.bg, agent_view_label_bg(), "the fill at {x}: {cell:?}");
+        assert_eq!(cell.fg, agent_view_label_fg(), "the ink at {x}: {cell:?}");
+    }
+    for x in (0..63u16).chain(75..76) {
+        let cell = &buf[(x, y)];
+        assert_eq!(cell.symbol(), "─", "a rule cell at {x}");
+        assert_eq!(cell.fg, border_color(), "the rule's colour at {x}");
+        assert_eq!(cell.bg, Color::Reset, "no fill outside the label at {x}");
+    }
+    // The chip is the *active* theme's: Mocha's sky under its crust, and
+    // Gruvbox's aqua under its bg0 once that theme is active — never a
+    // colour of its own.
+    let mocha = palette_of(Theme::Mocha);
+    assert_eq!(buf[(63, y)].bg, mocha.accent);
+    assert_eq!(buf[(63, y)].fg, mocha.on_accent);
+    with_theme(Theme::Gruvbox, || {
+        let mut buf = Buffer::empty(area);
+        let y = render(&mut buf);
+        let gruvbox = palette_of(Theme::Gruvbox);
+        assert_eq!(buf[(63, y)].bg, gruvbox.accent, "the aqua fill");
+        assert_eq!(buf[(63, y)].fg, gruvbox.on_accent, "the bg0 ink");
+        assert_eq!(buf[(62, y)].bg, Color::Reset, "the rule stays bare");
+    });
+}
+
 // ===== The file tools' path display on the agent surfaces (docs/tools.md) =====
 
 /// The worked example's session policy: launched in `~/Codes/tests`.

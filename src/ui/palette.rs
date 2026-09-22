@@ -51,10 +51,11 @@ pub(super) struct Palette {
     pub selection_bg: Color,
     /// The brand accent: what every picker selects with, the system bullet,
     /// inline code, the banner hint, a permission prompt's title, the Ctrl+R
-    /// query — and the gradient's near end.
+    /// query, the agent session view's composer label chip — and the
+    /// gradient's near end.
     pub accent: Color,
     /// Ink over an `accent` fill (the ↓-focused footer chip, the current
-    /// ask-question chip).
+    /// ask-question chip, the agent session view's composer label).
     pub on_accent: Color,
     /// The secondary accent: a link's URL, an ordered list's marker, the
     /// context view's user tag — and the gradient's far end.

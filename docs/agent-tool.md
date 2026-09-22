@@ -181,7 +181,14 @@ zero new plumbing. The TUI cell is a new `HistoryItem::AgentNotice` —
   description as a right-aligned label **embedded in the rule** — the rule
   resumes for one border cell after the text (`── {description} ─`, the
   `AGENT_VIEW_RULE_TAIL` glyph) so the label reads as part of the frame
-  rather than dangling off its right end, and **clipped to half that rule**
+  rather than dangling off its right end — **lit as a chip** in the active
+  theme's accent under its on-accent ink (`agent_view_label_bg` /
+  `agent_view_label_fg`, the ↓-focused footer chip's dress, `docs/theme.md`),
+  the label's own padding spaces inside the fill and the rule tail outside
+  it, so the one row that says *which* conversation the composer feeds reads
+  at a glance instead of as dim text embedded in a dim rule (the
+  user-requested fill; `the_composer_label_is_a_lit_chip_in_the_themes_accent`)
+  — and **clipped to half that rule**
   (`agent_view_rule_label`, `width / AGENT_VIEW_LABEL_DIVISOR`, the two
   padding spaces and the tail glyph counted in) with the rest of the
   description cut by `TOOL_HEADER_ELLIPSIS`: a `description` is the model's
