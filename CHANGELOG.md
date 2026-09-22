@@ -14,6 +14,31 @@ release heading when a version is cut.
 
 ## [0.6.0] - 2026-09-22
 
+### Added
+
+- **`/export` — the conversation as plain text, to the clipboard or a
+  file.** `/copy`'s sibling over the whole transcript: the command opens a
+  two-row page — `Copy to clipboard` / `Save to file` — and the pick writes
+  the Ctrl+O page as text, top to bottom — the startup banner it opens
+  with, then every message and every tool call's full output — at the
+  terminal's width, either to the system clipboard (`/copy`'s own path,
+  with the OSC 52 fallback for a headless or tmux session) or to a
+  `conversation-YYYY-MM-DD-HHMMSS.txt` in the working directory, never over
+  a file already there. Inside a subagent's session view it exports that
+  agent's transcript; an empty conversation is a `Nothing to export` toast
+  rather than an empty file (`docs/export.md`, `scripts/smoke.sh` Phase
+  122).
+- **A slow-stream stress rig for the offline backend.**
+  `ALTER_ZERO_CHUNK_DELAY_MS` sets the dummy's pause after every streamed
+  piece (the twin of `ALTER_ZERO_STARTUP_DELAY_MS`), and a prompt mentioning
+  *markdown* plays a new demo: every markdown element the renderer knows —
+  headings, inline styles, links, nested and ordered lists, task items, a
+  blockquote, two fenced code blocks, a table, a rule — in one long reply
+  streamed in token-sized pieces that split markers one character at a time,
+  the way a real model's tokens arrive. `ALTER_ZERO_CHUNK_DELAY_MS=400
+  alter-zero` then `stream some markdown` watches the pipeline hold still at
+  a struggling model's pace; `scripts/smoke.sh` Phase 121 proves it does.
+
 ### Fixed
 
 - **`/mcp` no longer parks the cursor on its bottom rule when nothing is
@@ -101,31 +126,6 @@ release heading when a version is cut.
   now read the tag off `/releases/latest`'s final `Location`, as
   `docker/build.sh` already did, and the selftest drives the installer
   under a PATH with no curl on it. (`docs/release.md`)
-
-### Added
-
-- **`/export` — the conversation as plain text, to the clipboard or a
-  file.** `/copy`'s sibling over the whole transcript: the command opens a
-  two-row page — `Copy to clipboard` / `Save to file` — and the pick writes
-  the Ctrl+O page as text, top to bottom — the startup banner it opens
-  with, then every message and every tool call's full output — at the
-  terminal's width, either to the system clipboard (`/copy`'s own path,
-  with the OSC 52 fallback for a headless or tmux session) or to a
-  `conversation-YYYY-MM-DD-HHMMSS.txt` in the working directory, never over
-  a file already there. Inside a subagent's session view it exports that
-  agent's transcript; an empty conversation is a `Nothing to export` toast
-  rather than an empty file (`docs/export.md`, `scripts/smoke.sh` Phase
-  122).
-- **A slow-stream stress rig for the offline backend.**
-  `ALTER_ZERO_CHUNK_DELAY_MS` sets the dummy's pause after every streamed
-  piece (the twin of `ALTER_ZERO_STARTUP_DELAY_MS`), and a prompt mentioning
-  *markdown* plays a new demo: every markdown element the renderer knows —
-  headings, inline styles, links, nested and ordered lists, task items, a
-  blockquote, two fenced code blocks, a table, a rule — in one long reply
-  streamed in token-sized pieces that split markers one character at a time,
-  the way a real model's tokens arrive. `ALTER_ZERO_CHUNK_DELAY_MS=400
-  alter-zero` then `stream some markdown` watches the pipeline hold still at
-  a struggling model's pace; `scripts/smoke.sh` Phase 121 proves it does.
 
 ### Changed
 
