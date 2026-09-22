@@ -2237,9 +2237,11 @@ pub(super) fn agent_view_label_bg() -> Color {
     menu_selected_color()
 }
 
-/// The chip's ink — `on_accent`, the footer chip's rule: near-black on a
-/// dark theme's accent, Latte's pale `base` on its blue, black on ANSI's
-/// cyan, so it reads on the fill in every theme.
+/// The chip's ink — `on_accent`, the pair the ↓-focused footer chip and the
+/// current ask-question chip already stand on: near-black on a dark theme's
+/// accent, black on ANSI's cyan, and Latte's pale `base` on its blue —
+/// Catppuccin's own text-on-accent rule, and the catalog's weakest contrast
+/// at about 2.5:1 — so a theme that reads at the footer chip reads here.
 pub(super) fn agent_view_label_fg() -> Color {
     palette().on_accent
 }

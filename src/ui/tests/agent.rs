@@ -994,20 +994,30 @@ fn the_composer_label_is_a_lit_chip_in_the_themes_accent() {
         assert_eq!(cell.fg, border_color(), "the rule's colour at {x}");
         assert_eq!(cell.bg, Color::Reset, "no fill outside the label at {x}");
     }
-    // The chip is the *active* theme's: Mocha's sky under its crust, and
-    // Gruvbox's aqua under its bg0 once that theme is active — never a
-    // colour of its own.
+    // The chip is the *active* theme's — Mocha's sky under its crust here —
+    // and every theme in the catalog paints it from its own table once it
+    // is active, ANSI's named cyan and black included, with an ink that is
+    // never the fill: a colour of the chip's own would be a colour that
+    // ignores the theme.
     let mocha = palette_of(Theme::Mocha);
     assert_eq!(buf[(63, y)].bg, mocha.accent);
     assert_eq!(buf[(63, y)].fg, mocha.on_accent);
-    with_theme(Theme::Gruvbox, || {
-        let mut buf = Buffer::empty(area);
-        let y = render(&mut buf);
-        let gruvbox = palette_of(Theme::Gruvbox);
-        assert_eq!(buf[(63, y)].bg, gruvbox.accent, "the aqua fill");
-        assert_eq!(buf[(63, y)].fg, gruvbox.on_accent, "the bg0 ink");
-        assert_eq!(buf[(62, y)].bg, Color::Reset, "the rule stays bare");
-    });
+    for theme in Theme::ALL {
+        with_theme(theme, || {
+            let mut buf = Buffer::empty(area);
+            let y = render(&mut buf);
+            let p = palette_of(theme);
+            let cell = &buf[(63, y)];
+            assert_eq!(cell.bg, p.accent, "{theme:?}: the fill is the accent");
+            assert_eq!(cell.fg, p.on_accent, "{theme:?}: the ink is on_accent");
+            assert_ne!(cell.fg, cell.bg, "{theme:?}: the ink must show on the fill");
+            assert_eq!(
+                buf[(62, y)].bg,
+                Color::Reset,
+                "{theme:?}: the rule stays bare"
+            );
+        });
+    }
 }
 
 // ===== The file tools' path display on the agent surfaces (docs/tools.md) =====

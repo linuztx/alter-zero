@@ -97,6 +97,10 @@ fn the_semantic_hues_stay_distinct_within_every_theme() {
             p.user_fg, p.user_bg,
             "{theme:?}: the bubble's ink must show on its ground"
         );
+        assert_ne!(
+            p.accent, p.on_accent,
+            "{theme:?}: a chip's ink must show on its accent fill"
+        );
     }
 }
 

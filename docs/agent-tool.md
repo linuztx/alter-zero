@@ -178,17 +178,18 @@ zero new plumbing. The TUI cell is a new `HistoryItem::AgentNotice` —
 - `App::agent_view: Option<String>` — the **agent session view**: the whole
   inline screen shows that agent's own conversation (banner + its transcript,
   Purge-rebuilt like `/clear`), the input box's top rule carries the agent's
-  description as a right-aligned label **embedded in the rule** — the rule
-  resumes for one border cell after the text (`── {description} ─`, the
-  `AGENT_VIEW_RULE_TAIL` glyph) so the label reads as part of the frame
-  rather than dangling off its right end — **lit as a chip** in the active
-  theme's accent under its on-accent ink (`agent_view_label_bg` /
-  `agent_view_label_fg`, the ↓-focused footer chip's dress, `docs/theme.md`),
-  the label's own padding spaces inside the fill and the rule tail outside
-  it, so the one row that says *which* conversation the composer feeds reads
-  at a glance instead of as dim text embedded in a dim rule (the
-  user-requested fill; `the_composer_label_is_a_lit_chip_in_the_themes_accent`)
-  — and **clipped to half that rule**
+  description as a right-aligned label that is three things at once. It is
+  **embedded in the rule**: the rule resumes for one border cell after the
+  text (`── {description} ─`, the `AGENT_VIEW_RULE_TAIL` glyph) so the label
+  reads as part of the frame rather than dangling off its right end. It is
+  **lit as a chip** in the active theme's accent under its on-accent ink
+  (`agent_view_label_bg` / `agent_view_label_fg`, the ↓-focused footer chip's
+  dress, `docs/theme.md`), the label's own padding spaces inside the fill and
+  the rule tail outside it, so the one row that says *which* conversation
+  the composer feeds reads at a glance instead of as dim text embedded in a
+  dim rule (the user-requested fill;
+  `the_composer_label_is_a_lit_chip_in_the_themes_accent` renders it under
+  every theme in the catalog). And it is **clipped to half that rule**
   (`agent_view_rule_label`, `width / AGENT_VIEW_LABEL_DIVISOR`, the two
   padding spaces and the tail glyph counted in) with the rest of the
   description cut by `TOOL_HEADER_ELLIPSIS`: a `description` is the model's
