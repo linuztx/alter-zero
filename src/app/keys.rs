@@ -71,6 +71,11 @@ impl App {
         if self.view == View::Conversation && self.donate_picker.is_some() {
             return self.on_key_donate_picker(key);
         }
+        // …and the read-only `/export` page, the `/donate` page's sibling.
+        // See `docs/export.md`.
+        if self.view == View::Conversation && self.export_picker.is_some() {
+            return self.on_key_export_picker(key);
+        }
         // …and the inline `/skills` menu. See `docs/skills.md`.
         if self.view == View::Conversation && self.mcp_menu.is_some() {
             return self.on_key_mcp(key);

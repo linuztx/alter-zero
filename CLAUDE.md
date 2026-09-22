@@ -161,19 +161,19 @@ the detached-exec hook, the CLI resolution, the viewport, the loop — over
 **`src/tui/`**, the binary-private tree that drives the codex-style **async
 (tokio) `select!`** loop (`event_loop`, `actions`, `turn`, `stream`, `agent`,
 `background`, `permission`, `view`, `commit`, `models`, `config`, `bootstrap`,
-`startup`, `recorder`, `resume`, `history_store`, `settings`, `telemetry`, `update`, `update_cli`, `shell`, `workers`, `host`, `mascot`, `spinner`, `theme`, `donate`, `mcp`, `trust`, `login`,
+`startup`, `recorder`, `resume`, `history_store`, `settings`, `telemetry`, `update`, `update_cli`, `shell`, `workers`, `host`, `mascot`, `spinner`, `theme`, `donate`, `export`, `mcp`, `trust`, `login`,
 with the **`Session`** struct itself in `mod.rs` — every handler is an `impl
 Session` block in its area module, reaching the private fields the way `app/`'s
 submodules reach `App`'s). The four big ones are **directories
 of per-area modules**, not single files — `src/app/` (`types`, `action`, `keys`,
 `composer`, `commands`, `file_picker`, `input_history`, `queue`, `tools`, `turn`,
-`compact`, `backtrack`, `views`, `resume`, `model_picker`, `login`, `settings`, `look`, `mascot`, `spinner`, `theme`, `donate`, `hooks_menu`, `mcp_menu`, `trust_menu`, `background`,
+`compact`, `backtrack`, `views`, `resume`, `model_picker`, `login`, `settings`, `look`, `mascot`, `spinner`, `theme`, `donate`, `export`, `hooks_menu`, `mcp_menu`, `trust_menu`, `background`,
 `agent`, `status`, `permission`, with the `App` struct itself in `mod.rs` so every submodule and
 the test tree keeps its private-field access), `src/ui/` (`theme`, `wrap`,
 `layout`, `assistant`, `inline`, `table`, `message`, `conversation`, `tool`,
 `file_cell`, `inline_diff`, `status`, `agent`, `menu`, `footer`, `header`, `hooks_view`, `live`, `transcript`,
 `context_view`, `resume_view`, `model_view`, `login_view`, `background_view`,
-`permission_view`, `settings_view`, `mascot_view`, `spinner_view`, `palette`, `theme_view`, `donate_view`, `mcp_view`, `trust_view`, `view_flow`, `stream_render`), and **`src/stream/`** — the backend seam
+`permission_view`, `settings_view`, `mascot_view`, `spinner_view`, `palette`, `theme_view`, `donate_view`, `export_view`, `mcp_view`, `trust_view`, `view_flow`, `stream_render`), and **`src/stream/`** — the backend seam
 kept apart from the offline demo that used to crowd it: `event` (the whole
 `StreamEvent` wire format), `source` (the `ReplySource` trait), `cancel`
 (`CancelToken`), `stall` (`StallAi`), and the self-contained **`dummy/`**
@@ -312,6 +312,26 @@ copies the highlighted address through `/copy`'s clipboard path with a
 `Copied the BTC address to clipboard` toast while the page stays open; the
 catalog is the const `app::DONATION_ADDRESSES`, never a file, and the
 page is still, so it flows signed on its rows) in `docs/donate.md`; the
+**`/export` page** (`docs/export.md`: `/copy`'s sibling over the **whole**
+conversation — the `/donate` page's shape, a read-only composer-replacing
+two-row page, `❯ 1. Copy to clipboard` over `2. Save to file`, the
+highlighted row's dim description under the list (the `/settings` shape:
+the clipboard row says where the text goes, the file row names
+`conversation-YYYY-MM-DD-HHMMSS.txt` and the cwd it lands in), a pick
+**closing** the page since the choice is its whole point; what is exported
+is `ui::export_text` — the Ctrl+O page's own rows top to bottom, the
+startup banner it opens with (mascot, `Alter Zero (v…)`, cwd, the
+`/login   /model   /resume` hint) included, every tool call's full output
+and the live tail mid-turn, the viewed agent's transcript inside its
+session view, at
+the terminal's width so the file lays out as the screen did, styles
+dropped and every row `trim_end`ed, one closing newline — written through
+`/copy`'s clipboard path (`Copied the conversation to clipboard`) or to a
+`create_new` file in the cwd stamped off the local clock and stepping to
+`-2`, `-3` rather than ever overwriting (`app::export_file_name`, the
+toast naming the file written); an empty conversation is a `Nothing to
+export` toast, never an empty file; `smoke.sh` Phase 122) in
+`docs/export.md`; the
 **`/login` sign-in fork** (the
 flow's root now asks *how* you sign in — **Use a subscription** or **Use an
 API key** — because GitHub Copilot is not a key you paste. Below that root the
@@ -2536,7 +2556,7 @@ live in the pure `file_search` module, and the `/resume` primitives
 Typing a bare `/token` opens a **slash-command palette** below the input box (a
 third live-region band): `App::command_menu` holds the highlight, the registry
 `app::COMMANDS` (`SlashCommand { name, description, effect }` — currently `/help`,
-`/clear`, `/copy`, `/init`, `/compact`, `/resume`, `/model`, `/login`, `/settings`, `/theme`, `/mascot`, `/spinner`, `/hooks`, `/skills`, `/mcp`, `/trust`, `/donate`, and `/quit` — plus, right after `/model`, one row per speed tier the active model lists, `/fast`, `/ultrafast`, built from the listing by `App::commands` rather than registered, `docs/fast-mode.md`) is filtered by `matching_commands`, and ↑/↓ scroll / Tab+Enter run
+`/clear`, `/copy`, `/export`, `/init`, `/compact`, `/resume`, `/model`, `/login`, `/settings`, `/theme`, `/mascot`, `/spinner`, `/hooks`, `/skills`, `/mcp`, `/trust`, `/donate`, and `/quit` — plus, right after `/model`, one row per speed tier the active model lists, `/fast`, `/ultrafast`, built from the listing by `App::commands` rather than registered, `docs/fast-mode.md`) is filtered by `matching_commands`, and ↑/↓ scroll / Tab+Enter run
 the highlighted command. Descriptions line up in a column, and the selection is
 shown **by colour** — the whole highlighted row lights up cyan (name *and*
 description the same colour) while the others are dimmed grey, no caret. A command

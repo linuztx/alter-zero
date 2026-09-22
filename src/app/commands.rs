@@ -81,6 +81,13 @@ pub enum CommandEffect {
     /// confirmation surfaces as a toast, not a scrollback message. See
     /// `docs/copy.md` / `docs/toast.md`.
     Copy,
+    /// Open the read-only `/export` page: the whole conversation as plain
+    /// text, copied to the clipboard or saved to a file in the cwd —
+    /// `/copy`'s sibling. Works **mid-turn** like `/donate` (it only
+    /// replaces the composer; the export carries the live tail exactly as
+    /// Ctrl+O shows it) — or, with nothing recorded, rejects with an
+    /// [`EXPORT_EMPTY_NOTICE`] toast. See `docs/export.md`.
+    Export,
     /// Run codex's `/init`: submit the canned [`INIT_PROMPT`] as a regular
     /// user turn asking the model to generate an `AGENTS.md` contributor
     /// guide (`docs/init.md`) — or reject with an [`INIT_BUSY_NOTICE`] toast
@@ -232,6 +239,12 @@ pub const COMMANDS: &[SlashCommand] = &[
         "copy",
         "Copy the last response to the clipboard",
         CommandEffect::Copy,
+    ),
+    // `/copy`'s sibling: the whole conversation, to the clipboard or a file.
+    SlashCommand::builtin(
+        "export",
+        "Copy or save the conversation as plain text",
+        CommandEffect::Export,
     ),
     // Codex says "…with instructions for Codex" — the palette keeps its
     // descriptions concise and product-name-free.
@@ -446,6 +459,19 @@ impl App {
                 }
             }
             CommandEffect::Copy => Action::Copy(self.last_assistant_text()),
+            CommandEffect::Export => {
+                // /export works mid-turn like /donate: a read-only page that
+                // only replaces the composer, over two const rows — nothing
+                // to fetch, so the pure open happens right here. An empty
+                // conversation has nothing to export (the /compact rule):
+                // a toast, never an empty file. docs/export.md.
+                if self.export_available() {
+                    self.open_export_picker();
+                    Action::OpenExportPicker
+                } else {
+                    Action::Toast(EXPORT_EMPTY_NOTICE.to_string())
+                }
+            }
             CommandEffect::Init => {
                 // Codex's /init is submit_user_message(INIT_PROMPT): the canned
                 // prompt rides the normal Submit → start_turn path — echoed as

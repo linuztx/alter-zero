@@ -593,6 +593,14 @@ pub fn render_live_with_preview(
         render_donate_picker(body, buf, app);
         return;
     }
+    // …and the read-only `/export` page, the `/donate` page's sibling. See
+    // `docs/export.md`.
+    if app.export_picker.is_some() {
+        let [strip, body] = view_split(area, super::export_view::export_menu_rows(app, area.width));
+        render_strip_above(strip, buf, app, stream_preview);
+        super::export_view::render_export_picker(body, buf, app);
+        return;
+    }
     // …and the `/trust` review menu, its sibling. See
     // `docs/project-config.md`.
     if app.trust_menu.is_some() {

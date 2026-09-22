@@ -859,6 +859,7 @@ pub fn cursor_visible(app: &App) -> bool {
     if app.hooks_menu.is_some()
         || app.trust_menu.is_some()
         || app.donate_picker.is_some()
+        || app.export_picker.is_some()
         || app.background_view.is_some()
     {
         return false;
@@ -1134,6 +1135,11 @@ pub fn cursor_position(area: Rect, app: &App) -> (u16, u16) {
     // (docs/donate.md).
     if app.donate_picker.is_some() {
         let lines = super::donate_view::donate_view_lines(app, area.width);
+        return menu_marker_seat(&lines, area);
+    }
+    // …and the read-only `/export` page, its sibling (docs/export.md).
+    if app.export_picker.is_some() {
+        let lines = super::export_view::export_view_lines(app, area.width);
         return menu_marker_seat(&lines, area);
     }
     if app.trust_menu.is_some() {

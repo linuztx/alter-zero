@@ -57,6 +57,7 @@ widened for the split.
 | `spinner.rs` | The status spinner-style catalog (with its `Look` impl, the `spinner` key), the `/spinner` picker's state (`docs/spinner.md`). |
 | `theme.rs` | The colour-theme catalog, the `/theme` picker's state, the `theme.json` format (`docs/theme.md`). |
 | `donate.rs` | The donation-address catalog and the read-only `/donate` page's state (`docs/donate.md`). |
+| `export.rs` | The `/export` page's state, its two targets, and the `conversation-YYYY-MM-DD-HHMMSS.txt` file name (`docs/export.md`). |
 | `permission.rs` | The inline tool-permission prompt: the stashed draft, the option/amend key map (`docs/permissions.md`). |
 | `ask.rs` | The inline `AskUserQuestion` modal: the tab/row state, answers under construction, the Other/notes entries, the queue against the permission prompt (`docs/ask.md`). |
 | `background.rs` | Background shells and the ↓ manager band. |
@@ -90,6 +91,7 @@ widened for the split.
 | `palette.rs` | The per-theme colour tables and the ambient active theme every renderer reads (`docs/theme.md`). |
 | `theme_view.rs` | The inline `/theme` picker — swatch rows over a real-cell preview in the highlighted theme (`docs/theme.md`). |
 | `donate_view.rs` | The read-only `/donate` page — a gradient title over each address's labelled rounded box (`docs/donate.md`). |
+| `export_view.rs` | The read-only `/export` page — two target rows over the highlighted one's description — and `export_text`, the transcript as plain text (`docs/export.md`). |
 | `live.rs` | `render_live` — the streaming strip, the box, the band. |
 | `transcript.rs` | The Ctrl+O overlay and `TranscriptCache`. |
 | `classifier_view.rs` | The Ctrl+D view's classifier page body (`docs/permissions.md`). |
@@ -136,6 +138,7 @@ opening the viewport, running the loop — and everything else lives here:
 | `spinner.rs` | Applying a `/spinner` selection: the per-directory `spinner.json` write + toast (`docs/spinner.md`). |
 | `theme.rs` | Applying a `/theme` selection: the `theme.json` write, the palette switch, the recolouring rebuild (`docs/theme.md`). |
 | `donate.rs` | Applying a `/donate` copy: the clipboard write + the toast (`docs/donate.md`). |
+| `export.rs` | Applying an `/export` pick: the clipboard write, or the `conversation-….txt` file write off the local clock, + the toast (`docs/export.md`). |
 | `telemetry.rs` | The once-a-day anonymous usage ping (once more on the day of an update): the install id's mint, the one-time notice under the banner, the detached send, the record of the delivered day and version (`docs/telemetry.md`). |
 | `update.rs` | The once-a-day update check: the detached `HEAD` of the repository's latest release, the `Update available` card under the banner (held back while a turn streams), the attempt's and the notice's day in `update.json` (`docs/update.md`). |
 | `update_cli.rs` | The `alter-zero update` subcommand: the same check, then the one-line installer fetched to a temp file and run over this binary's own directory (`docs/update.md`). |

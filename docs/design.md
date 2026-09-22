@@ -215,7 +215,7 @@ which Ctrl+V reads the clipboard from.
   space/newline — a scrollable command **palette opens below the input box** (a
   third band in the live region). It lists a registry of `SlashCommand`s
   (`app::COMMANDS`: name + description + effect — currently `/help`, `/clear`,
-  `/copy`, `/diff`, `/init`, `/compact`, `/resume`, `/model`, `/login`, `/settings`,
+  `/copy`, `/export`, `/diff`, `/init`, `/compact`, `/resume`, `/model`, `/login`, `/settings`,
   `/theme`, `/mascot`, `/spinner`, `/hooks`, `/skills`, `/mcp`, `/trust`, `/donate`, and `/quit`),
   filtered by name-prefix as you type after the `/`; `/` alone matches everything.
   ↑/↓ move the highlight, and the list shows at most `MENU_MAX_ROWS` (8) rows at a

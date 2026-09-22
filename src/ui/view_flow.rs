@@ -214,6 +214,14 @@ fn flow_page(app: &App, width: u16, term_height: u16) -> Option<FlowPage> {
             term_height,
         ));
     }
+    if app.export_picker.is_some() {
+        // The `/export` page is still too — its sibling's rule
+        // (`docs/export.md`).
+        return Some(FlowPage::framed(
+            super::export_view::export_view_lines(app, width),
+            term_height,
+        ));
+    }
     if app.trust_menu.is_some() {
         return Some(FlowPage::framed(
             super::trust_view::trust_view_lines(app, width),

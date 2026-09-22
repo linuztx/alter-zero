@@ -261,7 +261,14 @@ fn the_palette_lists_the_active_models_speed_tiers_after_model() {
     // own description in the description column and lighting up whole when
     // selected like any other row. A query narrows to them like any other.
     use crate::llm::{ServiceTier, SpeedState};
-    let mut app = palette("/", 8);
+    // The selection is the second tier row — two past /model wherever the
+    // registry puts it, so a built-in added ahead of /model can't move the
+    // selection onto some other row.
+    let model_index = crate::app::COMMANDS
+        .iter()
+        .position(|c| c.name == "model")
+        .expect("/model is registered");
+    let mut app = palette("/", model_index + 2);
     app.set_speed(SpeedState::new(
         vec![
             ServiceTier::new("priority", "Fast", "1.5x speed, increased usage"),
@@ -289,8 +296,8 @@ fn the_palette_lists_the_active_models_speed_tiers_after_model() {
     let col = |t: &str| t.find("1.5x").or_else(|| t.find("The fastest")).unwrap();
     assert_eq!(col(&texts[model + 1]), col(&texts[model + 2]));
     assert_eq!(col(&texts[model + 1]), MENU_DESC_COL);
-    // /ultrafast (the ninth row) is selected and lit, the window having
-    // scrolled to keep it visible.
+    // /ultrafast (the second tier row) is selected and lit, the window
+    // having scrolled to keep it visible.
     let ultra = lines
         .iter()
         .find(|l| plain(l).starts_with("/ultrafast"))

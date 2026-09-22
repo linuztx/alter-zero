@@ -277,6 +277,22 @@ pub enum Action {
     /// system clipboard. The loop does the I/O and raises the toast, like
     /// [`Action::CopyDeviceCode`]; the page stays open. See `docs/donate.md`.
     CopyDonationAddress(DonationAddress),
+    /// `/export`: open the read-only export page — the conversation as
+    /// plain text, to the clipboard or a file. Like `/donate` it works
+    /// mid-turn — it only replaces the composer. The loop has nothing to
+    /// fetch (the rows are a const); it just repaints. See `docs/export.md`.
+    OpenExportPicker,
+    /// The export page was dismissed (Esc, or Ctrl+C):
+    /// [`App::export_picker`] is already cleared; the loop repaints the
+    /// collapsed region.
+    CloseExportPicker,
+    /// Enter or a digit on the export page picked a target: the page is
+    /// already closed, and the loop renders the transcript on screen as
+    /// plain text at the terminal's width and writes it where the target
+    /// says — the clipboard through `/copy`'s path, or a
+    /// `conversation-YYYY-MM-DD-HHMMSS.txt` in the cwd — then raises the
+    /// toast. See `docs/export.md`.
+    Export(ExportTarget),
     /// `/mcp`: open the inline MCP manager. Like `/hooks` it works mid-turn —
     /// it only replaces the composer. The *loop* snapshots the live
     /// [`crate::llm::mcp::McpManager`] and hands it to

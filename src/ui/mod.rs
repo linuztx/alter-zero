@@ -45,6 +45,7 @@ mod context_view;
 mod conversation;
 mod diff_view;
 mod donate_view;
+mod export_view;
 mod file_cell;
 mod footer;
 mod header;
@@ -92,6 +93,9 @@ pub use self::conversation::{
 };
 pub use self::diff_view::{diff_body_rows, render_diff_view};
 pub use self::donate_view::{donate_picker_height, donate_view_lines, render_donate_picker};
+pub use self::export_view::{
+    export_picker_height, export_text, export_view_lines, render_export_picker,
+};
 pub use self::footer::{
     backtrack_hint_line, display_cwd, footer_line, footer_rows, queued_lines, queued_rows,
     search_line, shell_mode_line, toast_line, toast_rows,

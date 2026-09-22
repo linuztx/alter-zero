@@ -252,6 +252,16 @@ impl Session<'_> {
                 // collapses back to the composer on the next draw.
             }
             Action::CopyDonationAddress(address) => self.copy_donation_address(address),
+            Action::OpenExportPicker => {
+                // The pure open already happened (the rows are a const —
+                // nothing to fetch or inject); after_key schedules the frame
+                // (docs/export.md).
+            }
+            Action::CloseExportPicker => {
+                // Esc/Ctrl+C dismissed the page: nothing to reap; the region
+                // collapses back to the composer on the next draw.
+            }
+            Action::Export(target) => self.export_conversation(target),
             Action::OpenHooksMenu => self.open_hooks_menu(),
             Action::OpenSkillsMenu => self.open_skills_menu(),
             Action::CloseSkillsMenu => {
@@ -528,8 +538,10 @@ impl Session<'_> {
             // …nor a theme name (docs/theme.md)…
             View::Conversation if self.app.theme_picker.is_some() => {}
             // …and the read-only `/donate` page has no field at all
-            // (docs/donate.md).
+            // (docs/donate.md)…
             View::Conversation if self.app.donate_picker.is_some() => {}
+            // …nor does the `/export` page, its sibling (docs/export.md).
+            View::Conversation if self.app.export_picker.is_some() => {}
             // The `/mcp` manager: the auth page's `URL >` field takes pastes
             // (the redirect URL is always pasted — that is the field's whole
             // point); every other page swallows them (docs/mcp.md).

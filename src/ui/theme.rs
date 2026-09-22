@@ -1369,6 +1369,34 @@ pub(super) fn donate_caution_color() -> Color {
     ask_warning_color()
 }
 
+// --- the read-only /export page (docs/export.md). The /donate page's frame
+// — the family's indent, its `❯` marker, the dim meta ink — over the two
+// export targets, the highlighted row's description under the list (the
+// /settings shape).
+
+/// The page's title.
+pub(super) const EXPORT_TITLE: &str = "Export conversation";
+
+/// The dim rows under the title: what the export *is*. Wrapped, never cut
+/// (`docs/view-flow.md`).
+pub(super) const EXPORT_BLURB: &str = "The whole transcript as plain text — every message and \
+every tool call's full output, as Ctrl+O shows it.";
+
+/// The clipboard row's description.
+pub(super) const EXPORT_CLIPBOARD_DESC: &str = "Copies the transcript to the system clipboard.";
+
+/// The file row's description: the file's shape, then `into {cwd}.` — the
+/// directory as the footer shows it ([`EXPORT_FILE_DESC_DIR_FALLBACK`] before
+/// the boundary has injected one).
+pub(super) const EXPORT_FILE_DESC_PREFIX: &str = "Writes conversation-YYYY-MM-DD-HHMMSS.txt into ";
+
+/// The directory the file row names when no session info has been injected
+/// yet (the pure core never reads the environment).
+pub(super) const EXPORT_FILE_DESC_DIR_FALLBACK: &str = "the working directory";
+
+/// The dim key hint — the page's whole grammar.
+pub(super) const EXPORT_HINT: &str = "↑↓ navigate  enter select  esc close";
+
 // --- the read-only /hooks menu (docs/hooks-menu.md). It reuses the picker
 // family's accents — model_selected_color() for the selection, model_id_color()
 // for unselected labels, model_meta_color() for everything dim,

@@ -34,6 +34,7 @@ mod compact;
 mod composer;
 mod diff;
 mod donate;
+mod export;
 mod file_picker;
 mod hooks_menu;
 mod input_history;
@@ -78,6 +79,7 @@ pub use self::compact::{COMPACT_VERB, Compaction};
 pub use self::composer::{SHELL_EMPTY_NOTICE, shell_query};
 pub use self::diff::{DiffFilter, DiffFocus, DiffReview};
 pub use self::donate::{DONATION_ADDRESSES, DonatePicker, DonationAddress};
+pub use self::export::{EXPORT_EMPTY_NOTICE, ExportPicker, ExportTarget, export_file_name};
 pub use self::file_picker::FileSearch;
 pub use self::hooks_menu::{HooksLevel, HooksMenu};
 pub use self::input_history::{HistorySearch, InputHistory, SearchState};
@@ -501,6 +503,10 @@ pub struct App {
     /// sibling (no text entry) over the const donation-address catalog.
     /// See `docs/donate.md`.
     pub donate_picker: Option<DonatePicker>,
+    /// The open `/export` page; `None` when closed. The `/donate` page's
+    /// sibling (no text entry) over the two export targets — the clipboard
+    /// or a `conversation-….txt` file in the cwd. See `docs/export.md`.
+    pub export_picker: Option<ExportPicker>,
     /// The session's togglable knobs — what `/settings` shows and what the
     /// boundary reads before it streams thinking, offers tools, snapshots the
     /// tree, or auto-compacts. Seeded at bootstrap from `settings.json` + the

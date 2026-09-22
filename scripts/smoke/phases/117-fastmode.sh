@@ -151,8 +151,26 @@ launch -c "$T_DIR" "$S117B" 100 30 "env NO_PROXY=127.0.0.1 no_proxy=127.0.0.1 AL
 # record's own description. The probe answers in the background, and the
 # open palette re-derives its rows as it lands.
 type_text "$S117B" "/"
-tiers_palette="$(wait_pane 10 "$S117B" -F "1.5x speed, increased usage")"
-dump "the palette with the listed tiers" "$tiers_palette"
+# The palette's window is MENU_MAX_ROWS deep and the registry has outgrown
+# it (docs/design.md), so a bare `/` shows the first eight rows and the tier
+# rows spliced after /model need not be among them — which command sits
+# eighth is an accident of the registry's length, not the thing under test.
+# Walk the selection down until the tiers are in the window instead:
+# `menu_window` pins the selection to the window's bottom edge, so /model
+# rides in directly above /fast and the splice is what the rows below read
+# back. The walk also waits out the background probe (the rows re-derive as
+# its listing lands), and wraps at the end of the list, so it finds the row
+# whenever that happens.
+tiers_palette=""
+for _ in $(seq 1 60); do
+	tiers_palette="$(tmux capture-pane -t "$S117B" -p)"
+	if printf '%s\n' "$tiers_palette" | grep -qE '^/fast +1\.5x speed, increased usage'; then
+		break
+	fi
+	keys "$S117B" Down
+	sleep 0.2
+done
+dump "the palette walked to the listed tiers" "$tiers_palette"
 expect_has "$tiers_palette" -E '^/model +Switch the active model' "the palette lost /model"
 expect_has "$tiers_palette" -E '^/fast +1\.5x speed, increased usage' "/fast is not a row wearing the record's description"
 model_row="$(printf '%s\n' "$tiers_palette" | grep -nE '^/model ' | cut -d: -f1)"
