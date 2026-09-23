@@ -52,6 +52,15 @@
 //! stdin read gets EOF, never blocks), stdout/stderr piped for the caller to
 //! drain.
 //!
+//! The same chain has a **TTY form** for `bash` with `tty`
+//! (`docs/interactive-shell.md`): a command that must *have* a controlling
+//! terminal — a pseudo-terminal of its own, never the user's. [`tty_tiers`]
+//! drops the attached tier (whose `/dev/tty` would be the user's terminal,
+//! this module's very bug), and [`tty_command_for`] asks each remaining tier
+//! for the controlling terminal as well: `setsid -c`, or the helper under
+//! [`DETACH_TTY_ARG`], which adds `TIOCSCTTY` on its stdin (the pty's slave)
+//! after the `setsid()`.
+//!
 //! Boundary code like `term.rs`: the process I/O is exercised by the
 //! real-`sh` tests below (the `llm::exec` pattern), `tests/detached_exec.rs`
 //! (the real built binary via `CARGO_BIN_EXE`), and `scripts/smoke.sh`; the
@@ -140,6 +149,50 @@ pub fn command_for(tier: &DetachTier<'_>, command: &str) -> Command {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     cmd
+}
+
+/// The sentinel first argument of the **TTY** helper mode — [`DETACH_ARG`]'s
+/// twin for an interactive session (`docs/interactive-shell.md`): after the
+/// `setsid`, stdin — the pseudo-terminal the spawner handed the child — is
+/// made the new session's controlling terminal, so a `/dev/tty` prompt
+/// reaches the session instead of failing.
+pub const DETACH_TTY_ARG: &str = "__alter-zero-detached-tty-exec";
+
+/// The spawn order for a **TTY session**: the `setsid` binary, then the
+/// helper when one is installed — and nothing after them. [`tiers`]' last
+/// resort, an attached `sh`, would hand a password prompt the user's own
+/// terminal; a session that finds neither route is refused instead. Empty
+/// off Unix, which has no pseudo-terminals to offer.
+#[must_use]
+pub fn tty_tiers(detach_helper: Option<&Path>) -> Vec<DetachTier<'_>> {
+    tiers(detach_helper)
+        .into_iter()
+        .filter(|tier| *tier != DetachTier::Attached)
+        .collect()
+}
+
+/// The `Command` that starts `command` under `tier` as the leader of a new
+/// session whose controlling terminal is its **stdin** — `setsid -c sh -c
+/// {command}` (util-linux's and BusyBox's `-c`/`--ctty`), or the helper's
+/// [`DETACH_TTY_ARG`] mode. Stdio is the caller's (the terminal's slave
+/// side); `None` for the attached tier, which has no such form.
+#[must_use]
+pub fn tty_command_for(tier: &DetachTier<'_>, command: &str) -> Option<Command> {
+    match tier {
+        DetachTier::SetsidBinary => {
+            // No process_group, for the same reason as `command_for`: a
+            // group leader cannot setsid(2).
+            let mut c = Command::new("setsid");
+            c.arg("-c").arg("sh").arg("-c").arg(command);
+            Some(c)
+        }
+        DetachTier::HelperReexec(helper) => {
+            let mut c = Command::new(helper);
+            c.arg(DETACH_TTY_ARG).arg(command);
+            Some(c)
+        }
+        DetachTier::Attached => None,
+    }
 }
 
 /// Spawn `command` under `sh -c`, detached from the controlling terminal where
@@ -238,9 +291,11 @@ pub fn kill_process_group(child: &mut Child) {
 /// touch stdin/stdout first (invariant 1's cursor query included).
 pub fn run_detached_exec_if_requested() {
     let mut args = std::env::args_os().skip(1);
-    if args.next().as_deref() != Some(std::ffi::OsStr::new(DETACH_ARG)) {
-        return;
-    }
+    let tty = match args.next() {
+        Some(arg) if arg == DETACH_ARG => false,
+        Some(arg) if arg == DETACH_TTY_ARG => true,
+        _ => return,
+    };
     let Some(command) = args.next() else {
         // A malformed helper invocation must never fall through and boot a
         // TUI into the caller's pipes — fail the spawn instead.
@@ -256,6 +311,15 @@ pub fn run_detached_exec_if_requested() {
         // failed setsid would help nobody, and the spawner never makes this
         // process a group leader, so in practice it succeeds.
         let _ = rustix::process::setsid();
+        // The TTY mode (docs/interactive-shell.md): the session gets a
+        // terminal back — the pseudo-terminal the spawner put on stdin — so
+        // `/dev/tty` reaches the session's own screen, never the TUI's. An
+        // ioctl on fd 0 reads nothing from it. Best-effort like the setsid: a
+        // program run without it still has a terminal for its stdio, only no
+        // `/dev/tty`, whose opens then fail fast exactly as detached ones do.
+        if tty {
+            let _ = rustix::process::ioctl_tiocsctty(std::io::stdin());
+        }
         // Become `sh` in place (same pid): the parent's `child.id()` IS the
         // shell — and, post-setsid, the session + process-group leader the
         // group-kill helpers target.
@@ -266,8 +330,10 @@ pub fn run_detached_exec_if_requested() {
     }
     #[cfg(not(unix))]
     {
-        // No controlling terminal to escape; run the command and mirror its
-        // exit so the waiting parent sees the same status.
+        // No controlling terminal to escape (and no TTY sessions off Unix);
+        // run the command and mirror its exit so the waiting parent sees the
+        // same status.
+        let _ = tty;
         match Command::new("sh").arg("-c").arg(&command).status() {
             Ok(status) => std::process::exit(status.code().unwrap_or(1)),
             Err(err) => {
@@ -327,6 +393,47 @@ mod tests {
         ));
         assert_eq!(prog, "/opt/bin/alter-zero");
         assert_eq!(args, [DETACH_ARG, "sudo -v 'a b'"].map(OsString::from));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn tty_tiers_have_no_attached_fallback() {
+        // An attached shell would hand a password prompt the *user's*
+        // terminal — the bug the detach chain exists for — so a TTY session
+        // that finds no detach route is refused rather than attached
+        // (docs/interactive-shell.md).
+        assert_eq!(tty_tiers(None), vec![DetachTier::SetsidBinary]);
+        let helper = Path::new("/opt/bin/alter-zero");
+        assert_eq!(
+            tty_tiers(Some(helper)),
+            vec![DetachTier::SetsidBinary, DetachTier::HelperReexec(helper)]
+        );
+    }
+
+    #[test]
+    fn the_setsid_tty_tier_asks_for_a_controlling_terminal() {
+        let command = tty_command_for(&DetachTier::SetsidBinary, "python3 -q").expect("a tier");
+        let (prog, args) = argv(&command);
+        assert_eq!(prog, "setsid");
+        assert_eq!(args, ["-c", "sh", "-c", "python3 -q"].map(OsString::from));
+    }
+
+    #[test]
+    fn the_helper_tty_tier_is_its_own_reexec_protocol() {
+        // A second sentinel, so the helper knows to take stdin — the
+        // pseudo-terminal — as its controlling terminal after the setsid.
+        let helper = Path::new("/opt/bin/alter-zero");
+        let command =
+            tty_command_for(&DetachTier::HelperReexec(helper), "vim notes.txt").expect("a tier");
+        let (prog, args) = argv(&command);
+        assert_eq!(prog, "/opt/bin/alter-zero");
+        assert_eq!(args, [DETACH_TTY_ARG, "vim notes.txt"].map(OsString::from));
+        assert_ne!(DETACH_TTY_ARG, DETACH_ARG);
+    }
+
+    #[test]
+    fn there_is_no_attached_tty_tier() {
+        assert!(tty_command_for(&DetachTier::Attached, "sh").is_none());
     }
 
     #[test]

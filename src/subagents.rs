@@ -141,13 +141,19 @@ impl AgentTools {
             return true;
         };
         let name = name.trim().to_ascii_lowercase();
-        entries.iter().any(|entry| {
-            let entry = entry.trim().to_ascii_lowercase();
-            match entry.strip_suffix('*') {
-                Some(prefix) => name.starts_with(prefix),
-                None => entry == name,
-            }
-        })
+        let listed = |name: &str| {
+            entries.iter().any(|entry| {
+                let entry = entry.trim().to_ascii_lowercase();
+                match entry.strip_suffix('*') {
+                    Some(prefix) => name.starts_with(prefix),
+                    None => entry == name,
+                }
+            })
+        };
+        // `bash_session` continues what a `bash` call with `tty` started, so a
+        // type that may run commands may finish the interactive ones it
+        // starts (docs/interactive-shell.md).
+        listed(&name) || (name == crate::llm::tools::BASH_SESSION_TOOL_NAME && listed("bash"))
     }
 
     /// How the listing renders this set: `*`, or the allowlist as written.
@@ -547,6 +553,23 @@ mod tests {
     }
 
     // ===== the file =====
+
+    #[test]
+    fn a_bash_grant_brings_its_session_tool_along() {
+        // A `tty` launch leaves a session that only `bash_session` can
+        // continue, so an allowlist granting `Bash` grants that too — a type
+        // that may start an interactive command may finish it
+        // (docs/interactive-shell.md). Without `Bash` there is no session to
+        // continue, so it is not offered alone.
+        let tools = AgentTools::parse("Bash, Read");
+        assert!(tools.allows("bash_session"));
+        assert!(!AgentTools::parse("Read").allows("bash_session"));
+        assert!(
+            AgentTools::parse("bash_session").allows("bash_session"),
+            "naming it is fine too"
+        );
+        assert!(AgentTools::All.allows("bash_session"));
+    }
 
     #[test]
     fn reads_the_name_description_model_and_tools_over_the_body() {

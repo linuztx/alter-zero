@@ -1653,6 +1653,7 @@ fn live_ctrl_b_handoff_tells_the_model_the_user_moved_it() {
                 assert_eq!(started, id);
             }
             Ok(alter_zero::background::BgEvent::Output { chunk, .. }) => streamed.push_str(&chunk),
+            Ok(alter_zero::background::BgEvent::Screen { .. }) => {}
             Ok(alter_zero::background::BgEvent::Exited { code, killed, .. }) => {
                 assert_eq!(code, Some(0));
                 assert!(!killed);
@@ -1708,7 +1709,10 @@ fn live_killed_background_task_is_known_to_the_model_within_the_turn() {
                 alter_zero::background::BgEvent::Output { id, chunk } => {
                     app.bg_output(&id, &chunk);
                 }
-                alter_zero::background::BgEvent::Exited { id, code, killed } => {
+                alter_zero::background::BgEvent::Screen { id, text } => app.bg_screen(&id, &text),
+                alter_zero::background::BgEvent::Exited {
+                    id, code, killed, ..
+                } => {
                     let completion = app.bg_exited(&id, code, killed).expect("a known shell");
                     post_registry.post_notice(completion.context_text(), completion.from_model);
                     posted = Some(completion);
@@ -1880,6 +1884,7 @@ fn live_run_in_background_resolves_and_completes() {
                 assert_eq!(started, id);
             }
             Ok(alter_zero::background::BgEvent::Output { chunk, .. }) => streamed.push_str(&chunk),
+            Ok(alter_zero::background::BgEvent::Screen { .. }) => {}
             Ok(alter_zero::background::BgEvent::Exited { code, killed, .. }) => {
                 assert_eq!(code, Some(0));
                 assert!(!killed);
@@ -2136,6 +2141,7 @@ fn live_subagent_background_bash_stacks_into_the_shared_registry() {
                 origin_seen = true;
             }
             Ok(alter_zero::background::BgEvent::Output { chunk, .. }) => streamed.push_str(&chunk),
+            Ok(alter_zero::background::BgEvent::Screen { .. }) => {}
             Ok(alter_zero::background::BgEvent::Exited { code, killed, .. }) => {
                 assert_eq!(code, Some(0));
                 assert!(!killed);

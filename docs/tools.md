@@ -1,4 +1,4 @@
-# LLM tool calling — `bash` / `read` / `write` / `edit`
+# LLM tool calling — `bash` / `read` / `write` / `edit` / `bash_session`
 
 The real backend can now **call tools**: the model asks to run a shell command,
 read a file, write a file, or edit one; the backend executes it locally, streams
@@ -28,9 +28,9 @@ default shell timeout, byte-capped middle/head-truncated output, `Exit code:` +
 output framing), and its TUI *diff cells* (`• Edited path (+N −M)`, green adds /
 red deletes) are ported.
 
-## The four tools
+## The core tools
 
-All four are declared to the model as
+All five are declared to the model as
 `{"type":"function","function":{"name","description","parameters":<schema>}}`
 entries in the request's `tools` array, with `tool_choice:"auto"`. The pure
 definitions + JSON schemas live in [`llm::tools`](../src/llm/tools.rs)
@@ -38,7 +38,8 @@ definitions + JSON schemas live in [`llm::tools`](../src/llm/tools.rs)
 
 | tool | params | executes |
 | --- | --- | --- |
-| `bash` | `command` (req), `timeout` (opt, ms — default 120 000, cap 600 000; the pre-rename alias `timeout_ms` still parses) | `sh -c command` with **no controlling terminal** (`crate::subprocess` — a `/dev/tty` password prompt fails fast), stdin `/dev/null`, stdout+stderr captured, byte-capped, killed on timeout/cancel |
+| `bash` | `command` (req), `timeout` (opt, ms — default 120 000, cap 600 000; the pre-rename alias `timeout_ms` still parses), `tty` (opt), `run_in_background` (opt), `description` (opt) | `sh -c command` with **no controlling terminal** (`crate::subprocess` — a `/dev/tty` password prompt fails fast), stdin `/dev/null`, stdout+stderr captured, byte-capped, killed on timeout/cancel. With **`tty: true`** it runs in a pseudo-terminal of its own instead and returns once it exits or waits for input — a still-running one reports a session id (`docs/interactive-shell.md`) |
+| `bash_session` | `session_id` (req), `input` (opt — text, a newline presses Enter, `<Enter>`/`<C-c>`/`<Up>`… keys), `timeout` (opt, ms — default 10 000), `kill` (opt) | type into a session `bash` left running, wait on it, or end it; reports the output since the last look — or a full-screen program's screen — under a `Running`/`Stopped` frame, or `Exit code: N` once it exits (`docs/interactive-shell.md`) |
 | `read` | `path` (req — absolute, like the other two), `offset` (opt 1-based line), `limit` (opt, default 2000 lines) | read the file: text returns numbered lines (a dynamic-width gutter); an **image** (png/jpg/jpeg/gif/webp) is attached visually so the model can see it (`offset`/`limit` ignored — see "Image reads" below) |
 | `write` | `path` (req — the schema asks for an **absolute** path), `content` (req) | create parent dirs, write the file; **show** `Wrote {N} lines to {path}` over the numbered contents for a new file, or the numbered diff hunks vs the previous content — the head's path shown cwd-relative (`tools::display_path`, `../` climbs outside the cwd), the `● Write({path})` header by the TUI's own rule ("Path display" below) — while the *model* reads a one-line ack |
 | `edit` | `path` (req — absolute, like `write`'s), `old_string` (req), `new_string` (req), `replace_all` (opt) | exact string replacement; error if `old_string` is absent, or non-unique without `replace_all`; **show** `Updated {path} (+A -D)` over the numbered diff hunks, the path shown cwd-relative like `write`'s — the model again reads the ack |
@@ -258,6 +259,14 @@ hanging, exactly like Claude Code. The mechanism (a `setsid`-binary →
 helper-re-exec → attached tier chain shaped by the crate's `forbid(unsafe)`),
 the preserved `pgid == child.id()` kill contract, and the full test matrix
 live in **`docs/tty-detach.md`**.
+
+`tty: true` is the deliberate opposite, and still never the user's terminal:
+the command gets a **pseudo-terminal of its own** as its controlling terminal
+(the same tier chain, in its TTY form), so the password prompt reaches a
+screen the *model* reads and answers through `bash_session` — or, when it was
+not given the secret, asks the user for (`docs/interactive-shell.md`). A plain
+`bash` call that fails saying it wanted a terminal gets a pointer to `tty`
+appended to the model's text.
 
 ## Image reads (`read` on a png/jpg/jpeg/gif/webp)
 

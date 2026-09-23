@@ -1346,3 +1346,65 @@ fn the_pending_cell_above_the_prompt_shortens_with_its_header() {
         "…and so does the target row: {lines:?}"
     );
 }
+
+// --- session input (docs/interactive-shell.md) ---
+
+#[test]
+fn a_session_prompt_shows_what_is_typed_and_where() {
+    let mut request = request(PermissionKind::Session, "b7x2k9m1q", "print(2 + 2)⏎");
+    request.detail = Some("python3".to_string());
+    let text = rows(&app_with(request), 60, 30);
+    let body = text
+        .iter()
+        .position(|r| r.trim_start().starts_with("print(2 + 2)⏎"))
+        .expect("the input is the body, as the cell will show it");
+    assert_eq!(text[body - 2].trim_end(), " Session input");
+    assert_eq!(text[body], "   print(2 + 2)⏎");
+    assert_eq!(text[body + 1], "   into python3 · session b7x2k9m1q");
+    assert!(
+        !text.iter().any(|r| r.contains('╌')),
+        "a command's shape, no framed body: {text:?}"
+    );
+    assert_eq!(
+        text[body + 3].trim_end(),
+        " Do you want to send this input?"
+    );
+    assert_eq!(text[body + 4].trim_end(), " ❯ 1. Yes");
+    assert_eq!(
+        text[body + 5].trim_end(),
+        "   2. Yes, and don't ask again for this session"
+    );
+    assert_eq!(text[body + 6].trim_end(), "   3. No");
+}
+
+#[test]
+fn a_session_prompts_description_row_is_dim() {
+    let mut request = request(PermissionKind::Session, "b1", "y⏎");
+    request.detail = Some("./install.sh".to_string());
+    let lines = permission_lines(&app_with(request), 60, 30);
+    let detail = lines
+        .iter()
+        .find(|line| plain(line).contains("into ./install.sh"))
+        .expect("the where row");
+    assert_eq!(detail.spans[1].style.fg, Some(permission_detail_color()));
+    assert_eq!(
+        crate::ui::permission_remember_label(
+            &app_with(PermissionRequest {
+                detail: None,
+                ..crate::permission::PermissionRequest {
+                    id: String::new(),
+                    kind: PermissionKind::Session,
+                    target: "b1".to_string(),
+                    body: String::new(),
+                    detail: None,
+                    agent: None,
+                    agent_id: None,
+                }
+            })
+            .permission()
+            .unwrap()
+            .request
+        ),
+        "this session"
+    );
+}

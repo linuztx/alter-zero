@@ -3934,3 +3934,131 @@ fn the_live_cell_and_the_transcript_link_the_header_alike() {
     );
     assert!(linked_spans(&full[1]).is_empty());
 }
+
+// --- interactive sessions (docs/interactive-shell.md) ---
+
+#[test]
+fn a_session_cell_shows_its_output_over_a_dim_state_row() {
+    // The report's frame line is for the model; the cell shows what the
+    // program printed, then — like the classifier's provenance row — a
+    // fresh dim corner saying where the session stands.
+    let cell = tool(
+        "Bash",
+        "./signup.py",
+        ToolStatus::Ok,
+        "Running (session b7x2k9m1q, waiting for input)\nFull name:",
+    );
+    let lines = tool_lines(&cell, 80, &PathDisplay::VERBATIM);
+    let rows: Vec<String> = lines.iter().map(plain).collect();
+    assert_eq!(
+        rows,
+        [
+            "● Bash(./signup.py)",
+            "  ⎿  Full name:",
+            "  ⎿  Waiting for input · session b7x2k9m1q",
+        ]
+    );
+    assert_eq!(
+        lines.last().unwrap().spans.last().unwrap().style.fg,
+        Some(tool_dim_color()),
+        "the state row is meta, so it renders dim"
+    );
+}
+
+#[test]
+fn a_session_still_busy_or_stopped_says_which() {
+    let busy = tool(
+        "BashSession",
+        "b1",
+        ToolStatus::Ok,
+        "Running (session b1)\nCompiling…",
+    );
+    let rows: Vec<String> = tool_lines(&busy, 80, &PathDisplay::VERBATIM)
+        .iter()
+        .map(plain)
+        .collect();
+    assert_eq!(
+        rows,
+        [
+            "● BashSession(b1)",
+            "  ⎿  Compiling…",
+            "  ⎿  Still running · session b1",
+        ]
+    );
+    let stopped = tool(
+        "BashSession",
+        "b1 · kill",
+        ToolStatus::Ok,
+        "Stopped (session b1)\n(no new output)",
+    );
+    let rows: Vec<String> = tool_lines(&stopped, 80, &PathDisplay::VERBATIM)
+        .iter()
+        .map(plain)
+        .collect();
+    assert_eq!(
+        rows,
+        [
+            "● BashSession(b1 · kill)",
+            "  ⎿  (no new output)",
+            "  ⎿  Stopped · session b1",
+        ]
+    );
+}
+
+#[test]
+fn a_session_that_exited_reads_like_a_bash_cell() {
+    let done = tool(
+        "BashSession",
+        "b1 ← y⏎",
+        ToolStatus::Ok,
+        "Exit code: 0\nSure? y\nbye",
+    );
+    let rows: Vec<String> = tool_lines(&done, 80, &PathDisplay::VERBATIM)
+        .iter()
+        .map(plain)
+        .collect();
+    assert_eq!(rows, ["● BashSession(b1 ← y⏎)", "  ⎿  Sure? y", "     bye"]);
+}
+
+#[test]
+fn the_expanded_session_cell_keeps_the_state_row() {
+    let cell = tool(
+        "Bash",
+        "python3",
+        ToolStatus::Ok,
+        "Running (session b1, waiting for input)\nPython 3.12\n>>>",
+    );
+    let rows: Vec<String> = tool_full_lines(&cell, 80, &PathDisplay::VERBATIM)
+        .iter()
+        .map(plain)
+        .collect();
+    assert_eq!(
+        rows,
+        [
+            "● Bash(python3)",
+            "  ⎿  Python 3.12",
+            "     >>>",
+            "  ⎿  Waiting for input · session b1",
+        ]
+    );
+}
+
+#[test]
+fn a_running_session_call_shows_the_wait_it_runs_under() {
+    // `bash_session` waits 10 s by default, not `bash`'s two minutes.
+    let t = tool("BashSession", "b1", ToolStatus::Running, "");
+    let lines: Vec<String> = running_command_lines(
+        &t,
+        Duration::from_secs(3),
+        Duration::ZERO,
+        80,
+        &PathDisplay::VERBATIM,
+    )
+    .iter()
+    .map(plain)
+    .collect();
+    assert_eq!(
+        lines,
+        ["● BashSession(b1)", "  ⎿  Running… (3s · timeout 10s)"]
+    );
+}

@@ -265,6 +265,11 @@ fn wire_tool_name(display: &str) -> String {
         "Read" => "read".to_string(),
         "Write" => "write".to_string(),
         "Edit" => "edit".to_string(),
+        // The one wire name with an underscore, so the lowercase fallback
+        // would miss it (docs/interactive-shell.md).
+        crate::llm::tools::BASH_SESSION_TOOL_DISPLAY => {
+            crate::llm::tools::BASH_SESSION_TOOL_NAME.to_string()
+        }
         other => other.to_ascii_lowercase(),
     }
 }
@@ -2364,6 +2369,26 @@ mod tests {
         let history = vec![tool_with_arguments("Bash", "ls", "not json", "ok")];
         let ctx = context_messages(&history);
         assert_eq!(ctx[0].tool_calls[0].arguments, r#"{"command":"ls"}"#);
+    }
+
+    #[test]
+    fn a_session_call_replays_under_its_own_wire_name_with_its_arguments() {
+        // `BashSession` is not the lowercase of `bash_session` — the replay
+        // must name the tool the model actually called, or a validating
+        // provider rejects the round (docs/interactive-shell.md).
+        let arguments = r#"{"session_id":"b7x2k9m1q","input":"print(1)\n"}"#;
+        let history = vec![tool_with_arguments(
+            crate::llm::tools::BASH_SESSION_TOOL_DISPLAY,
+            "b7x2k9m1q ← print(1)⏎",
+            arguments,
+            "Running (session b7x2k9m1q, waiting for input)\n>>> print(1)\n1\n>>>",
+        )];
+        let ctx = context_messages(&history);
+        assert_eq!(
+            ctx[0].tool_calls[0].name,
+            crate::llm::tools::BASH_SESSION_TOOL_NAME
+        );
+        assert_eq!(ctx[0].tool_calls[0].arguments, arguments);
     }
 
     #[test]

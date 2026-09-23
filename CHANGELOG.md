@@ -12,6 +12,26 @@ release heading when a version is cut.
 
 ## [Unreleased]
 
+### Added
+
+- **Interactive commands.** The agent can now drive programs that need a
+  terminal: prompts (`[Y/n]` questions, setup wizards, password prompts),
+  REPLs (`python3`, `node`, `psql`), full-screen programs (`vim`, `less`,
+  `top`) and arrow-key menus. `bash` gains a `tty` option that runs a command
+  in a pseudo-terminal of its own and returns as soon as the command exits or
+  stops to wait for input; a new `bash_session` tool types into it — text and
+  named keys such as `<Enter>`, `<C-c>` and `<Up>` — waits on it, reads what
+  it printed (or a full-screen program's screen) and ends it. It also reaches
+  `run_in_background` commands, which can now be waited on, interrupted and
+  ended the same way. A session still running shows in the footer's shell
+  count, and the ↓ manager shows its live screen; its cells end on a dim
+  `Waiting for input · session …` row. Typing into a session asks permission
+  like a command does — covered by the "don't ask again" rule of the command
+  that started it, or approved once for the whole session — and auto mode's
+  classifier reviews it; waiting on a session, interrupting it or ending it
+  never asks. The agent never guesses a password it was not given: it asks
+  you (`docs/interactive-shell.md`).
+
 ### Changed
 
 - **Error toasts use a softer red.** A failure toast — `Copy failed: …`,
@@ -27,6 +47,12 @@ release heading when a version is cut.
 
 ### Fixed
 
+- **"Don't ask again" on an MCP tool prompt no longer claims to switch to
+  edit mode.** Choosing it stored the tool's rule as it should, but the
+  footer then read `edit` and a `Mode: edit — file edits run without asking`
+  toast appeared, though file edits still asked. The mode is left alone now,
+  and the toast names the rule: `Won't ask again for mcp__… in this project`
+  (`docs/permissions.md`).
 - **`/copy` with nothing to copy is no longer shown as an error.** `No
   agent response to copy` was red, while `Nothing to export` and `Nothing to
   compact` — the same "nothing to act on yet" case for `/export` and

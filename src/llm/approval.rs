@@ -12,7 +12,7 @@ use tokio::sync::mpsc::UnboundedSender;
 
 use super::hooks::{HookPermissionVerdict, HookSink};
 use super::tools::{
-    self, BashArgs, EditArgs, ToolCallRequest, WriteArgs, render_numbered_content,
+    self, BashArgs, EditArgs, SessionArgs, ToolCallRequest, WriteArgs, render_numbered_content,
     render_numbered_diff,
 };
 use crate::permission::{
@@ -38,11 +38,15 @@ const CANCELLED_DISPLAY: &str = "Interrupted by user";
 /// would default it to `'static`, refusing the backend's stack closures.)
 pub type ClassifyCommand<'a> = dyn Fn(&PermissionRequest) -> Result<ClassifierVerdict, String> + 'a;
 
-/// The MCP tool-description lookup an MCP prompt's body needs
-/// (`docs/mcp.md`): a wire name → the server's own one-line description of
-/// that tool ([`crate::llm::mcp::McpManager::tool_description`]). `None` —
-/// no manager attached, or a tool it doesn't know — simply leaves the dim
-/// description row out of the prompt.
+/// The lookup a prompt's dim description row needs: an MCP wire name → the
+/// server's own one-line description of that tool
+/// ([`crate::llm::mcp::McpManager::tool_description`], `docs/mcp.md`), and a
+/// `bash_session` call's session id → the command that session runs
+/// (`docs/interactive-shell.md` — which its allowlist rule then covers). The
+/// two key spaces never meet: a wire name starts `mcp__`, a session id is
+/// letters and digits. `None` for an MCP tool leaves the row out; for a
+/// session it means nothing answers to that id, so there is nothing to type
+/// into and nothing to approve.
 pub type DescribeTool<'a> = dyn Fn(&str) -> Option<String> + 'a;
 
 /// What the user is being asked to approve for `call`, or `None` when the tool
@@ -110,6 +114,33 @@ pub fn permission_request(
                     .description
                     .map(|d| d.trim().to_string())
                     .filter(|d| !d.is_empty()),
+                agent,
+                agent_id: None,
+            })
+        }
+        // Typing into an interactive session asks like a command does
+        // (`docs/interactive-shell.md`) — what is typed there runs just the
+        // same. A call that types nothing does not: a wait only reads, a kill
+        // ends a command the model started (the ↓ manager's stop asks
+        // nothing either), and a lone Ctrl+C only interrupts.
+        tools::BASH_SESSION_TOOL_NAME => {
+            let args: SessionArgs = tools::parse_args(&call.arguments).ok()?;
+            let input = args.input.as_deref().unwrap_or_default();
+            let parts = crate::pty::keys::parse_input(input);
+            if parts.is_empty() || crate::pty::keys::is_interrupt(&parts) {
+                return None;
+            }
+            let id = args.session_id.trim().to_string();
+            let command = match describe {
+                Some(describe) => Some(describe(&id)?),
+                None => None,
+            };
+            Some(PermissionRequest {
+                id: String::new(),
+                kind: PermissionKind::Session,
+                target: id,
+                body: crate::pty::keys::display_input(input),
+                detail: command,
                 agent,
                 agent_id: None,
             })
@@ -204,7 +235,10 @@ pub fn approve_call(
     // permission dialog.
     if !force_ask
         && gate.mode() == PermissionMode::Auto
-        && matches!(request.kind, PermissionKind::Bash | PermissionKind::Mcp)
+        && matches!(
+            request.kind,
+            PermissionKind::Bash | PermissionKind::Mcp | PermissionKind::Session
+        )
         && let Some(classify) = classify
     {
         match classify(&request) {
@@ -634,6 +668,103 @@ mod tests {
             "User rejected write to hello.py\nInstructions: use pathlib"
         );
         assert!(result.contains("use pathlib"), "got {result}");
+    }
+
+    // ===== interactive-session input (docs/interactive-shell.md) =====
+
+    #[test]
+    fn typing_into_a_session_asks_with_its_command_beside_the_input() {
+        let describe = |key: &str| (key == "b7x2k9m1q").then(|| "python3".to_string());
+        let request = permission_request(
+            &call(
+                "bash_session",
+                r#"{"session_id":"b7x2k9m1q","input":"print(1)\n"}"#,
+            ),
+            Some("general-purpose"),
+            Some(&describe),
+        )
+        .expect("typing asks");
+        assert_eq!(request.kind, PermissionKind::Session);
+        assert_eq!(request.target, "b7x2k9m1q");
+        assert_eq!(request.body, "print(1)⏎", "the input as the cell shows it");
+        assert_eq!(request.detail.as_deref(), Some("python3"));
+        assert_eq!(request.agent.as_deref(), Some("general-purpose"));
+        // Typing, then a kill: the typing still asks.
+        assert!(
+            permission_request(
+                &call(
+                    "bash_session",
+                    r#"{"session_id":"b7x2k9m1q","input":"q","kill":true}"#
+                ),
+                None,
+                Some(&describe),
+            )
+            .is_some()
+        );
+    }
+
+    #[test]
+    fn waiting_ending_and_interrupting_a_session_never_ask() {
+        // Nothing is typed: a wait reads, a kill ends a command the model
+        // started, and a lone Ctrl+C only interrupts it — the ↓ manager's
+        // own stop, which asks nothing either.
+        let describe = |_: &str| Some("python3".to_string());
+        for args in [
+            r#"{"session_id":"b1"}"#,
+            r#"{"session_id":"b1","input":""}"#,
+            r#"{"session_id":"b1","kill":true}"#,
+            r#"{"session_id":"b1","input":"<C-c>"}"#,
+        ] {
+            assert!(
+                permission_request(&call("bash_session", args), None, Some(&describe)).is_none(),
+                "{args}"
+            );
+        }
+        // A session nothing answers to has nothing to type into: the
+        // executor refuses the call, so there is nothing to approve.
+        let nobody = |_: &str| None;
+        assert!(
+            permission_request(
+                &call("bash_session", r#"{"session_id":"bnope","input":"y\n"}"#),
+                None,
+                Some(&nobody),
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn auto_mode_classifies_session_input() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let gate = gate_in(crate::permission::PermissionMode::Auto);
+        let describe = |_: &str| Some("bash -i".to_string());
+        let classify = |request: &PermissionRequest| {
+            assert_eq!(request.kind, PermissionKind::Session);
+            assert_eq!(request.body, "rm -rf ~⏎");
+            Ok(ClassifierVerdict {
+                allow: false,
+                reason: "deletes the home directory".to_string(),
+            })
+        };
+        let approval = approve_call(
+            Some(&gate),
+            Some(&classify),
+            Some(&describe),
+            &NoHooks,
+            false,
+            &tx,
+            &CancelToken::new(),
+            None,
+            &call(
+                "bash_session",
+                r#"{"session_id":"b1","input":"rm -rf ~\n"}"#,
+            ),
+        );
+        assert!(
+            matches!(approval, Approval::Reject { .. }),
+            "typed commands meet the classifier like run ones: {approval:?}"
+        );
+        assert!(rx.try_recv().is_err(), "the user was never asked");
     }
 
     // ===== the auto mode classifier (docs/permissions.md) =====

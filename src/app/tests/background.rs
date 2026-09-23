@@ -111,6 +111,23 @@ fn bg_output_appends_and_caps_the_tail_on_line_boundaries() {
 }
 
 #[test]
+fn bg_screen_replaces_the_shells_output_with_the_screen_as_it_stands() {
+    // A TTY session's screen is sent whole each time (docs/interactive-
+    // shell.md): the details box shows what a terminal would, so each
+    // screen replaces the last rather than appending to it.
+    let mut app = app_with_shells(&["python3 -q"]);
+    app.bg_screen("bash_1", "Python 3.11\n>>>");
+    assert_eq!(app.background()[0].output, "Python 3.11\n>>>");
+    app.bg_screen("bash_1", ">>> 1+1\n2\n>>>");
+    assert_eq!(app.background()[0].output, ">>> 1+1\n2\n>>>");
+    // Its completion notice snapshots the last screen, like any tail.
+    let completion = app.bg_exited("bash_1", Some(0), false).expect("completes");
+    assert_eq!(completion.output_tail, ">>> 1+1\n2\n>>>");
+    // A screen for an unknown id is dropped, not panicking.
+    app.bg_screen("nope", "zzz");
+}
+
+#[test]
 fn bg_exited_removes_the_shell_and_returns_its_completion() {
     let mut app = App::new();
     app.bg_started("bash_1", "ping x.com", Some("Ping x".into()), true, None);
@@ -441,6 +458,17 @@ fn ctrl_b_moves_only_a_running_command_to_the_background() {
     app.start_tool("Read", "src/main.rs", None);
     assert!(!app.can_move_to_background());
     assert_eq!(app.on_key(ctrl('b')), Action::None);
+}
+
+#[test]
+fn ctrl_b_ends_a_session_calls_wait_too() {
+    // A `bash_session` call waiting on its session polls the same latch: the
+    // wait ends and the session keeps running (docs/interactive-shell.md).
+    let mut app = App::new();
+    app.begin_stream();
+    app.start_tool("BashSession", "b7x2k9m1q", None);
+    assert!(app.can_move_to_background());
+    assert_eq!(app.on_key(ctrl('b')), Action::MoveToBackground);
 }
 
 #[test]

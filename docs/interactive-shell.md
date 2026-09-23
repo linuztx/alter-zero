@@ -1,0 +1,410 @@
+# Interactive shells — `bash` with `tty`, and `bash_session`
+
+The `bash` tool used to be **execute-only**: a command ran with stdin on
+`/dev/null` and no terminal, and the call waited for it to exit. That is the
+right default — most commands a coding agent runs want exactly that — but a
+large class of useful programs needs more:
+
+- **prompts** — `npm init`, `apt install` (`[Y/n]`), `git add -p`, `ssh`'s
+  host-key question, a script's `read -p`, a password prompt;
+- **REPLs** — `python3`, `node`, `psql`, `sqlite3`, `gdb`, `pdb`, `irb`,
+  a shell that keeps its `cd` and its virtualenv between commands;
+- **full-screen programs** — `vim`, `less`, `htop`, `top`, a `git rebase -i`
+  editor, a scaffolder's arrow-key menu;
+- **programs that only behave on a terminal** — line-buffered progress, colour,
+  `isatty()` checks that change what a tool does, or refuse to run at all.
+
+`bash` gains a `tty` flag that runs the command in a real **pseudo-terminal**
+and returns while it is still running, and a companion tool, **`bash_session`**,
+types into it, waits for it, reads it, and ends it.
+
+## What the model sees
+
+### `bash` — one new parameter
+
+```json
+{"command": "python3 -q", "tty": true}
+```
+
+`tty: true` runs the command in a pseudo-terminal (120 columns × 40 rows) as
+the controlling terminal of a fresh session. The call returns as soon as the
+command **exits**, **stops to wait for input**, or its `timeout` passes —
+whichever comes first. A command that exited reports exactly what a plain
+`bash` call reports (`Exit code: N` over the output). A command still running
+reports the output so far under a one-line frame naming its session:
+
+```
+Running (session b7x2k9m1q, waiting for input)
+>>>
+```
+
+`tty: false` (the default) is unchanged: stdin on `/dev/null`, no terminal, the
+call waits for the exit and kills the command at `timeout`. Non-TTY stays the
+default deliberately — a terminal changes how programs format output
+(colour, progress bars, `\r` redraws), and a batch command gains nothing from
+one. The `bash` description says when to reach for it in one bullet: prompts
+(`[Y/n]`, passwords), REPLs, full-screen programs — *and retry with it when a
+command says it needs a terminal* — preferring a non-interactive flag (`-y`,
+`--yes`) when one exists.
+
+`tty` also combines with `run_in_background`: the command starts in a terminal
+and the call returns at once with its session id, the completion notice
+following when it exits. Every background launch names its session id now, so
+`bash_session` can take any of them back.
+
+### `bash_session` — the companion tool
+
+```json
+{"session_id": "b7x2k9m1q", "input": "import math; print(math.pi)<Enter>"}
+```
+
+| parameter | meaning |
+| --- | --- |
+| `session_id` | required — the id a `bash` call reported |
+| `input` | what to type; a newline presses Enter, and keys go in angle brackets: `<Enter>`, `<Tab>`, `<Esc>`, `<BS>`, `<Up>`/`<Down>`/`<Left>`/`<Right>`, `<PageUp>`, `<C-c>`, `<C-d>`, `<C-z>`, `<M-x>`, `<F1>`… Omit it to just wait for more output. |
+| `timeout` | the most milliseconds to wait for the command to respond (default 10000, max 600000) |
+| `kill` | `true` ends the command and everything it started — only to abandon it |
+
+The result is **only the output printed since the model last looked**, under
+the same frame: `Running (session …)` while it runs, `Exit code: N` once it has
+exited (after which the session is gone), `Stopped (session …)` after a kill.
+A full-screen program — one on the terminal's alternate screen — returns its
+**current screen** instead of a transcript, since a stream of cursor-addressed
+redraws means nothing as text:
+
+```
+Running (session b7x2k9m1q, waiting for input)
+Screen (40x120, cursor at line 3, column 14):
+inserted line
+line one
+line two
+~
+                                                    1,13          All
+```
+
+`bash_session` works on every shell the registry holds, not only TTY ones: a
+`run_in_background` command (or one the user moved to the background with
+Ctrl+B) can be waited on and ended the same way. Only a TTY session accepts
+typed text — a background command's stdin is `/dev/null` — but a lone `<C-c>`
+still interrupts one, as a `SIGINT` to its process group.
+
+The description the model reads is short and imperative (`src/llm/tools.rs`,
+pinned under 900 characters by a test): the key notation, **answer one prompt
+per call, ending the answer with `<Enter>`, and read what it asks next**, a
+wait needs no input, `kill` is only for abandoning a command (*one that
+finishes exits by itself*), and a password or secret it was not given is never
+guessed — it asks the user. The `input` examples spell Enter as a key
+(`"y<Enter>"`), never `\n` — see *What live models taught the design*.
+
+## Why this shape
+
+**Two tools, not one.** `bash` keeps meaning "run a command"; everything that
+happens *to a running command* goes through `bash_session`. An overloaded
+`bash` (OpenHands' `is_input` flag) serializes the agent onto one terminal and
+makes "is this text a command or keystrokes?" a question the model must answer
+in every call. Two tools with one id between them also make concurrency free:
+several sessions, a subagent's sessions, and background shells all coexist.
+
+**The yield is decided for the model.** Codex's `exec_command`/`write_stdin`
+return after a fixed `yield_time_ms` the model picks, and models pick badly:
+too short and they poll in a loop, too long and every keystroke into a REPL
+waits out the clock. Here the call returns when the command **settles**
+(`pty::settle`, pure and unit-tested):
+
+- it **exited** — at once, once its output is drained;
+- it printed something and went quiet for `PROMPT_QUIET` (0.5 s) while the
+  terminal **awaits keys** — a prompt (`>>> `, `Password: `, `[Y/n] `) left
+  the cursor mid-line, a full-screen program is on the alternate screen, or
+  the program reads the terminal **key by key** (raw mode: a menu, an editor,
+  a readline prompt), which is what `waiting for input` says;
+- it has been silent for `LINE_QUIET` (2 s) since the call's input — a command
+  that answered with whole lines and went quiet;
+- the call's `timeout` passed.
+
+A `bash_session` call with **no input** is a *wait*, and the third rule does
+not apply to it: a build that pauses between lines is still working, so a
+wait returns only on an exit, a prompt, or its timeout. That is what lets the
+model wait for a long command in one call instead of polling it.
+
+**Where the session stands is read at report time.** `waiting for input` is
+not only how the call's wait happened to end: a poll that saw nothing new ends
+on its timeout, yet the program is no less at its prompt, so the frame is
+recomputed from the terminal when the report is composed
+(`SessionIo::waiting`). And a look that found nothing new names the line the
+terminal is still at — `(no new output — still at: Full name:)` — so a model
+that lost track across its polls is told what it is being asked.
+
+**Keys are notation, not escape codes.** Models are unreliable at emitting
+`\u0003` in JSON but fluent in Vim/tmux key notation, so `input` understands
+`<Enter>`, `<C-c>`, `<M-x>`, `<F5>` and friends (case-insensitive; `<lt>` is a
+literal `<`). Anything in angle brackets that is not a key name is typed as
+written, so `a<b` and `<div>` survive. On a TTY a newline is sent as `\r` —
+the byte a terminal sends for Enter, which cooked mode turns back into `\n`
+and raw-mode programs (menus, editors) expect. Arrow keys follow the program's
+cursor-key mode (`ESC O A` under DECCKM, `ESC [ A` otherwise), read off the
+emulated screen. A lone `<Esc>` is followed by a short pause before the rest of
+the input, so Vim does not read `<Esc>:` as Alt+`:`.
+
+**Two views of one byte stream.** Everything the program writes is fed to two
+parsers (`pty::screen` and `pty::transcript`):
+
+- a **screen** — the `vt100` crate's emulator at the pty's size, with no
+  scrollback (≈150 KB a session): what a human would see. It is what a
+  full-screen program returns, what the ↓ manager shows, and where the
+  terminal state lives that input depends on (cursor-key mode). It also
+  **answers terminal queries**: a cursor-position report (`ESC [ 6 n`), device
+  attributes, the colour queries — programs like `vim` and `prompt_toolkit`
+  REPLs ask, and some wait a long time for an answer no pipe ever sends;
+- a **transcript** — the stream as lines of text, built by our own
+  `vte::Perform`: carriage returns and backspaces overwrite (a progress bar
+  collapses to its final state), erase-in-line and column moves apply, colour
+  and every other escape vanish. It is what an ordinary program returns: the
+  model gets the output since its last look, not a 40-row window of it.
+
+The transcript's delivery cursor sits on **the line the cursor was on** at the
+last look, so the prompt the model answered is shown again with its answer
+echoed after it — `>>> import math; print(math.pi)` then `3.14…` then the new
+`>>> ` — exactly what a terminal transcript reads like. A full-screen program's
+screen is shown under whatever the main screen printed before it took over
+(`git commit`'s hints before the editor), so nothing is lost at the switch. A
+delivery keeps the **tail** when it is over `SESSION_OUTPUT_MAX_BYTES` (32 KB),
+since the newest lines and the prompt are what an interactive step is about,
+and says how many lines it left out.
+
+## What live models taught the design
+
+The tool was tuned against real models (`examples/session_probe.rs` drives the
+real agent loop with the real system prompt and prints every model-facing
+result): OpenRouter's `gpt-4.1-mini`, `qwen3-coder`, `gemini-3.6-flash`,
+`kimi-k2.6`, `deepseek-v4-flash` and `glm-5.3-flash`, Ollama Cloud's
+`gpt-oss:120b`, and Venice's `qwen3-coder-480b`, over six scenarios: a signup
+wizard that refuses a pipe, a raw-mode arrow-key menu, a `getpass` password
+prompt (with and without the password in the request), `vim`, a `python3`
+REPL kept open across steps, and a web server started in the background,
+checked with `curl` and ended through `bash_session`. The first round of the
+signup wizard completed in two of eight models; after the changes below,
+seven of eight did (the eighth is a model that emits garbled tool names), and
+every model found the vault code, edited the file in `vim` (or with its
+non-interactive `-c`, which is the better tool) and ended its server. Each
+change answers a failure seen on the wire:
+
+- **A model gave up on "must be run in an interactive terminal".** The `bash`
+  description says to retry with `tty` when a command asks for a terminal,
+  and a failed plain `bash` call whose output says so (`not a tty`,
+  `inappropriate ioctl for device`, `/dev/tty`, … — `tools::tty_hint`) gets a
+  pointer to `tty` appended to the **model's** text only
+  (`ToolOutcome::context`); the cell keeps the command's own words.
+- **`stop` read as "stop waiting".** A model ended a wizard mid-answer. The
+  parameter is `kill` (`stop` still parses), and its bullet says it is only
+  for abandoning a command.
+- **The last answer sent with `kill`.** A model paired what it believed was
+  the final answer with `kill: true`; the program asked one more question and
+  the kill threw the session away. Input with `kill` now types first, waits,
+  and **does not kill a program that answered by asking for more** — the call
+  reports it still waiting, and the model is told why nothing was killed
+  (`pty::report::NOT_KILLED_NOTE`). A program the input ended reports its own
+  exit.
+- **Escaped twice.** A model wrote `"Ada Lovelace\\n"` in its JSON — a
+  backslash and an `n` typed, and no Enter. Input that holds no control
+  character of its own and **ends on an escaped one** (`\n`, `\r`, `\t`, `\e`,
+  `\x03`, `\u0003`) has one level of escaping undone (`pty::keys::parse_input`);
+  a backslash anywhere else — `print("a\nb")`, `C:\\` — is typed as written.
+  The description's examples spell Enter as `<Enter>` too, since a `\n` shown
+  in a description is exactly what that model copied.
+- **Typed but never submitted.** A model typed its answer without Enter, saw
+  it echoed on the screen, and took it as given. When the input ended on typed
+  text and the line is still open, the model is told it is not submitted and
+  to end each answer with `<Enter>` (`UNSUBMITTED_NOTE`). Two signals say the
+  line is open: the terminal is in canonical mode (the program reads whole
+  lines — read off the pty with `tcgetattr`, `pty::spawn::line_mode`), or —
+  for a **line editor** that reads key by key, like Python's readline REPL,
+  where the first signal is silent — the typed text sits echoed on the cursor's
+  line with the cursor right after it (`SessionIo::holds_typed`; never on the
+  alternate screen, where an editor inserts what it is typed). A menu reading
+  key by key already has the keys, echoes nothing, and gets no note. Before
+  the second signal a model polled a REPL three times "waiting for the output
+  to flush" of a line it never submitted; after it, it pressed Enter at once.
+- **Polling a program that waits on it.** A model polled ten times while the
+  program sat at `Full name:`, each report saying only `Running` — the
+  waiting state was recomputed at report time, and the prompt is re-read to
+  the model when nothing is new (see *Where the session stands*).
+- **A menu that never said it was waiting.** An arrow-key menu leaves the
+  cursor at the start of a fresh line, so the cursor rule never called it a
+  prompt, and every launch waited out the 2 s line-quiet fallback. The monitor
+  now reads the terminal's line mode as output arrives: a program reading key
+  by key is waiting when it goes quiet.
+- **Everything at once.** A model sent all four answers in one input. It works
+  — a terminal buffers typeahead — but the echo lands before each prompt and
+  the transcript reads garbled, and a password prompt that flushes its input
+  (`getpass` does) loses what was typed ahead. The description asks for one
+  prompt per call.
+
+Some failures stay with the model, the tool having said what it could. A
+REPL wants a blank line to close a Python block, and a model that sends a
+`def` without one finds its next line swallowed at the `...` prompt — the
+report shows that prompt, and the stronger models read it. A weaker
+deployment (`qwen3-coder-480b` on Venice) ignored the unsubmitted-line note
+three times running and typed three answers onto one line before confirming
+the wrong account; the tool will not press Enter on a model's behalf, since
+`input` is typed as-is and a line split across two calls is legitimate. The
+same model through OpenRouter answered each prompt with `<Enter>` from the
+start.
+
+One failure is not ours: `kimi-k2.6` through OpenRouter is served by several
+upstreams, and one of them (Inceptron) intermittently drops the `input`
+argument from the model's call — its own reasoning says "let me type Ada
+Lovelace" while the call arrives as a bare wait — so the session looks stuck
+at its prompt until another upstream serves a request. Reproduced outside the
+app with a raw request (`provider.order` pinned to each upstream).
+
+## The terminal (`pty::spawn`)
+
+This crate forbids `unsafe`, so the pseudo-terminal is built from `rustix`'s
+safe wrappers (the `pty` feature: `openpt`, `grantpt`, `unlockpt`, `ptsname` —
+Linux opens the peer with `TIOCGPTPEER`). The window size is set with
+`tcsetwinsize` before the child starts, the master is close-on-exec, and our
+copies of the slave are dropped the moment the child holds its own, so the
+master reads `EIO` (end of stream) when the last process lets go of it. The
+master is also where the session reads the program's **line mode**
+(`line_mode` — `ICANON`, `ECHO`): the pair shares one line discipline on Linux
+and the BSDs, so no slave handle is kept.
+
+The child must make the slave its **controlling terminal**, or a `/dev/tty`
+prompt (`sudo`, `ssh`) would find no terminal at all. That needs
+`setsid(2)` + `TIOCSCTTY` in the child before `exec` — the `pre_exec` hook
+this crate cannot use — so the same tier chain `docs/tty-detach.md` built for
+detaching does it (`subprocess::tty_tiers`):
+
+1. **`setsid -c sh -c {command}`** — util-linux's (and BusyBox's) `-c`/
+   `--ctty` makes stdin the controlling terminal after the `setsid`;
+2. **the helper re-exec** — `{exe} __alter-zero-detached-tty-exec {command}`:
+   `main()`'s first statement calls `rustix::process::setsid()` and
+   `ioctl_tiocsctty(stdin)` and `exec`s `sh` in place (macOS and minimal
+   images, where there is no `setsid` binary);
+3. **no third tier.** The detach chain's last resort — an attached `sh` — would
+   hand a password prompt the *user's* terminal, the bug the chain exists to
+   prevent, so a TTY launch that finds neither tier is refused with an error
+   the model can act on (run without `tty`).
+
+Both tiers keep the invariant every kill relies on — `child.id()` is the
+session leader, its process group and its session. Ending a session kills
+that group and every process left in the session (`pkill -s`), so a shell's
+own background jobs go too.
+
+The environment is the parent's plus `TERM=xterm-256color` (the terminal the
+emulator implements) and `PAGER=cat`/`GIT_PAGER=cat`/`MANPAGER=cat`/
+`SYSTEMD_PAGER=cat`, so `git log` or `man` prints instead of opening a pager
+nobody asked for — a program the model runs *as* a pager (`less file`) is
+unaffected. Variables that describe the TUI's *own* terminal (`TMUX`,
+`TERM_PROGRAM`, `KITTY_WINDOW_ID`, `COLUMNS`, …) are removed, since they would
+steer a program toward features the session's emulator does not have.
+
+## The registry (`background.rs`)
+
+A TTY session is a **background shell** — the registry that already owns every
+process outliving its tool call (`docs/background.md`). That buys the ↓
+manager, the footer count, `kill_all` on `/clear` and quit, subagent
+attribution and the completion notice for free; what the registry gains is:
+
+- **input** — each TTY task has a writer thread fed by a channel (a pty write
+  blocks when the program is not reading, and nothing may block while the
+  task's state is locked); the monitor's query replies ride the same channel;
+- **the two views** — the monitor feeds every chunk to the session's screen and
+  transcript under one lock (`pty::session::SessionIo`), refreshes the line
+  mode, and a waiting call blocks on a condvar beside it;
+- **announcement** — a TTY task launched by a foreground call is registered
+  silently and **announced** (`BgEvent::Started`) only if it outlives the
+  call. A `tty` command that finishes inside its own call never appears in the
+  footer or the manager, never posts a notice, and costs nothing but its cell;
+- **observed exits** — when the model *saw* the exit (a result framed
+  `Exit code: N` or `Stopped`), the `Exited` event says so and no completion
+  notice is posted: the model already has the result, and a `[background] …
+  completed` note after it would be noise, or worse, an automatic follow-up
+  turn. Who reports an exit is a small handshake (`SessionIo::finish`/
+  `end_wait`): a call registers as a waiter *before* it acts on the session,
+  so an exit its own input or kill caused is its to report;
+- **the screen for the UI** — for a TTY shell the monitor sends
+  `BgEvent::Screen` (throttled to ten a second) instead of line output, and
+  the ↓ manager's details page shows the rendered screen: the prompt it is
+  sitting at, the menu as drawn;
+- **a cap** — `MAX_TTY_SESSIONS` (16) running sessions; one more is refused
+  with the list of the running ones, rather than letting forgotten REPLs pile
+  up unseen.
+
+The interim-output file (`{tasks}/{id}.output`) of a TTY session holds the
+cleaned transcript, not the raw escape stream, so `read`ing it is useful too.
+
+## Permissions
+
+Launching a TTY command is a `bash` call like any other and asks the same
+question. **Typing into a session asks too** — otherwise approving `bash`
+once would approve every command later typed into it. The request is its own
+kind, `PermissionKind::Session`: the title `Session input`, the input on one
+line as the body (`print(2 + 2)⏎`), a dim `into python3 · session b7x2k9m1q`
+under it, and option 2 `Yes, and don't ask again for this session` —
+remembered on the gate for the session's life, never written to
+`permissions.json`. Three things keep it quiet in practice:
+
+- a session whose **launch command** a standing allowlist rule covers
+  inherits the rule — `python3 *` already allows `python3 -c "anything"`, so
+  typing into `python3` adds nothing it did not grant;
+- `master` mode never asks, and **auto mode's classifier** reviews session
+  input the way it reviews commands, told the program the keys go to
+  (`prompts/classifier.md`: typing `rm -rf ~⏎` into a shell *is* running it);
+- a **wait**, a **kill**, and a lone **`<C-c>`** never ask: they only observe
+  or end what was already approved.
+
+Lifecycle hooks see `bash_session` calls like any other tool; a matcher may
+name it `bash_session` or `BashSession`, the name its cell shows.
+
+## The cells
+
+- A `tty` `bash` call is an ordinary `● Bash(cmd)` cell. When it returns
+  running, the report's frame line — the model's — is stripped, the program's
+  output shows, and the cell closes on a fresh dim corner: `⎿ Waiting for
+  input · session b7x2k9m1q` (or `Still running · …`, or `Stopped · …` after a
+  kill). A command that exited reads exactly like a plain `bash` cell.
+- A `bash_session` call is `● BashSession(b7x2k9m1q ← import math⏎)` — the
+  input on one line (`⏎` for Enter, `<Down>` for keys), `· kill` after a kill,
+  the id alone for a wait — over the same output peek and state row. What the
+  model was additionally told (a note about an unsubmitted line or a kill not
+  carried out) is in its context only; Ctrl+D shows it.
+- Both are command cells (`COMMAND_TOOL_NAMES`): the peek folds at
+  `TOOL_FOLD_ROWS`, Ctrl+O shows everything, and a running call tails the
+  transcript live under its clock row — a `bash_session` call's clock naming
+  its own wait (`timeout 10s`), not `bash`'s two minutes.
+- **Ctrl+B** on a running `tty` launch hands the session to the background
+  (it keeps running, the model is told its id); on a `bash_session` call it
+  ends the *wait* — the session was already in the background — and the model
+  is told the user moved on.
+- The ↓ manager's details page shows a TTY shell's current screen.
+
+## Offline demo and tests
+
+The dummy's `interactive` scenario (cue: `interactive` — the whole word,
+since `tty` hides in "pretty" and `repl` in "reply") plays a setup wizard: a
+`tty` launch stopping at `Project name:`, an answer met by the next question,
+and the last answer ending the program — one call a round, every result the
+real `pty::report::report`, so the offline cells are the live ones.
+`scripts/smoke.sh` Phase 123 drives it in the real binary and pins what only
+the screen shows: the dim state rows, the headers, and that no frame line or
+`Exit code: 0` ever reaches a cell.
+
+The pure cores — key notation, the transcript, the screen, the settle policy,
+the frames — are unit-tested; the pty spawn, the registry's TTY tasks and the
+executor are tested against real processes (`sh`, `stty`, `python3` when
+present); `tests/detached_exec.rs` proves the helper tier gives the session its
+own controlling terminal. `examples/session_probe.rs` is the live harness.
+
+## Limits
+
+- **Unix only** — pseudo-terminals are a Unix facility; elsewhere `tty` is
+  refused with an error the model can act on.
+- **The prompt heuristic** — a program that prints its question, a newline,
+  and then waits in canonical mode looks like one between lines of output: it
+  settles on `LINE_QUIET` and reports `Running` rather than `waiting for
+  input`. The output still shows the question.
+- **Typeahead** — several answers in one input are delivered at once, as a
+  terminal would; a program that flushes pending input before a prompt loses
+  them. The description steers models to one answer per call instead of
+  pacing input line by line.

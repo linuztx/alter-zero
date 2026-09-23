@@ -33,17 +33,24 @@ cross-thread handshake in [`crate::permission::PermissionGate`].
 
 ## The shape
 
-Four kinds, one layout, per `permission::PermissionKind`:
+Five kinds, one layout, per `permission::PermissionKind`:
 
-| kind    | title          | body                              | question                              |
-| ------- | -------------- | --------------------------------- | ------------------------------------- |
-| `Write` | `Create file`  | the numbered new contents         | `Do you want to create {file}?`       |
-| `Edit`  | `Edit file`    | the numbered diff hunks           | `Do you want to make this edit to {file}?` |
-| `Bash`  | `Bash command` | the indented command + description | `Do you want to proceed?`             |
-| `Mcp`   | `Tool use`     | the indented `{server} - {tool}({args}) (MCP)` + the server's description | `Do you want to proceed?` |
+| kind      | title           | body                              | question                              |
+| --------- | --------------- | --------------------------------- | ------------------------------------- |
+| `Write`   | `Create file`   | the numbered new contents         | `Do you want to create {file}?`       |
+| `Edit`    | `Edit file`     | the numbered diff hunks           | `Do you want to make this edit to {file}?` |
+| `Bash`    | `Bash command`  | the indented command + description | `Do you want to proceed?`             |
+| `Mcp`     | `Tool use`      | the indented `{server} - {tool}({args}) (MCP)` + the server's description | `Do you want to proceed?` |
+| `Session` | `Session input` | the input on one line (`print(2 + 2)⏎`) + a dim `into {command} · session {id}` | `Do you want to send this input?` |
 
 The `Mcp` row is the `Bash` row with a different target: it names a call
-rather than a command, so it wears the same shape (`docs/mcp.md`).
+rather than a command, so it wears the same shape (`docs/mcp.md`). So is the
+`Session` row: input typed into an interactive session a `tty` command left
+running (`bash_session`, `docs/interactive-shell.md`) runs just as a command
+does — a line typed into `python3` is Python — so it asks the same way. A
+call that types nothing never asks: a wait only reads, a `kill` ends a command
+the model started (the ↓ manager's stop asks nothing either), and a lone
+`<C-c>` only interrupts.
 
 A `write` whose target **already exists** is an `Edit` — it shows the diff, not
 the whole file, exactly as the resulting `Updated {path} (+A -D)` cell will.
@@ -246,7 +253,10 @@ Every prompt offers three, selected with ↑/↓ + Enter (the steps wrap — ↓
    **Yes, and don't ask again for {server} - {tool} commands in {project}**
    for an MCP call — the tool named the way the user knows it and the
    project the rule is kept for (`App::project_dir`), while the rule stored
-   stays the exact `mcp__…` wire name (`docs/mcp.md`).
+   stays the exact `mcp__…` wire name (`docs/mcp.md`);
+   **Yes, and don't ask again for this session** for session input — the
+   session id, held on the gate for as long as the session runs and never
+   written to `permissions.json` (an id means nothing to the next process).
 3. **No** — reject; the model is told to stop and wait.
 
 A long option **word-wraps** instead of truncating (`option_rows`, the
@@ -318,6 +328,11 @@ remembers the scope, then releases every open/queued request the new rule now
 covers (`App::drain_covered_permissions`, given the gate's own `allows`); one
 that isn't covered still asks.
 
+Session input is also covered by the rule its session's **launch command**
+runs under: `python3 *` already trusts `python3` with any arguments — `-c
+"anything"` included — so typing into a `python3` session adds nothing the
+rule did not grant.
+
 There is no built-in safe-command list. Every `bash`, `write`, and `edit` asks
 until the rules say otherwise — Claude Code's default posture, and
 the only one that can't be wrong about what is safe. `read` is never gated.
@@ -371,8 +386,11 @@ disabled there is no mode: the footer segment is hidden and Shift+Tab raises a
 
 ## Auto mode: the classifier
 
-In auto mode a `bash` command — or an MCP tool call (`docs/mcp.md`) — that
-would have prompted goes to the **auto mode classifier** instead — Claude
+In auto mode a `bash` command — or an MCP tool call (`docs/mcp.md`), or input
+typed into an interactive session (`docs/interactive-shell.md`: the classifier
+is told the program the keys go to, since typing `rm -rf ~⏎` into a shell *is*
+running it) — that would have prompted goes to the **auto mode classifier**
+instead — Claude
 Code's auto-mode reviewer, rebuilt on the session's own provider
 (`llm::classifier::SafetyClassifier`; the reference feeds its MCP calls to
 the same reviewer, `mcpToolInputToAutoClassifierInput`). The approve seam

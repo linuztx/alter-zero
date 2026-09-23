@@ -172,6 +172,7 @@ picked. Same trick `ui::TranscriptCache`'s counters use.
 | `agents` | "agents", not "agents.md" | a two-subagent group, foreground or background (`docs/agent-tool.md`) |
 | `parallel-batch` | "parallel" | three parallel `Bash(ping …)` calls and their `⎿ Waiting…` cells (`docs/parallel-tools.md`) |
 | `files` | "diff"/"edit"/"write", not "agents.md" | a `Write` then an `Edit` of the same file: the numbered file cell and its green/red diff hunk (`docs/tools.md`) |
+| `interactive` | "interactive" | a setup wizard driven through a terminal session: a `tty` launch stopping at a prompt, an answer met by the next question, and the last answer ending the program — one call a round, every result the real `pty::report::report`, so the cells wear their dim `Waiting for input · session …` rows (`docs/interactive-shell.md`, `smoke.sh` Phase 123). The whole word only: `tty` hides in "pretty", `repl` in "reply" |
 | `tools` | anything | the default turn: think, then read `about.py`, `Edit` in the credit it forgot, and run it |
 
 Cue order is registry order, so a narrower cue sits above a broader one that

@@ -55,6 +55,9 @@ pub fn claude_code_alias(tool: &str) -> Option<&'static str> {
         "agent" => Some("Task"),
         "askuserquestion" => Some("AskUserQuestion"),
         "skill" => Some("Skill"),
+        // No reference tool to borrow a spelling from: the name the cell
+        // header shows is the one a user writes (docs/interactive-shell.md).
+        "bash_session" => Some("BashSession"),
         _ => None,
     }
 }

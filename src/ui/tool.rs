@@ -421,6 +421,12 @@ fn split_display_lines(text: &str) -> Vec<String> {
 /// (`context::context_messages`) — this is display-only. Only fires when the
 /// frame is present, so non-`bash` tools and old rollouts are untouched.
 fn command_display_output(output: &str) -> std::borrow::Cow<'_, str> {
+    // A session still alive (`docs/interactive-shell.md`): its frame line is
+    // the model's; the cell shows the body, and says where the session stands
+    // on its own dim row ([`session_state_row`]).
+    if let Some((_, body)) = session_frame(output) {
+        return std::borrow::Cow::Borrowed(body);
+    }
     let Some(rest) = output.strip_prefix("Exit code: ") else {
         return std::borrow::Cow::Borrowed(output);
     };
@@ -444,6 +450,38 @@ fn command_display_output(output: &str) -> std::borrow::Cow<'_, str> {
     } else {
         format!("{head}\n{body}")
     })
+}
+
+/// The session frame opening a command cell's output — `Running (session
+/// …)` or `Stopped (session …)` (`pty::report`) — and the body under it.
+/// `None` for every other output: an exited session reports `Exit code: N`
+/// like a plain `bash` call.
+fn session_frame(output: &str) -> Option<(crate::pty::report::Frame<'_>, &str)> {
+    let (first, body) = output.split_once('\n').unwrap_or((output, ""));
+    crate::pty::report::parse_frame(first).map(|frame| (frame, body))
+}
+
+/// The dim `⎿ Waiting for input · session {id}` corner closing a resolved
+/// command cell whose session is still alive — or `Stopped · session {id}`
+/// for one the call ended (`docs/interactive-shell.md`). A fresh corner, like
+/// the classifier's provenance row: it is about the call, not output.
+fn session_state_row(tool: &ToolCall) -> Option<Line<'static>> {
+    use crate::pty::report::Frame;
+    if !is_command_tool(tool) || matches!(tool.status, ToolStatus::Waiting | ToolStatus::Running) {
+        return None;
+    }
+    let (state, session) = match session_frame(&tool.output)?.0 {
+        Frame::Running {
+            session,
+            waiting: true,
+        } => (SESSION_WAITING_ROW, session),
+        Frame::Running {
+            session,
+            waiting: false,
+        } => (SESSION_RUNNING_ROW, session),
+        Frame::Stopped { session } => (SESSION_STOPPED_ROW, session),
+    };
+    Some(result_row(0, format!("{state}{SESSION_ROW_ID}{session}")))
 }
 
 /// A command-style tool's output as display lines — [`tool_output_lines`] with
@@ -584,10 +622,14 @@ pub(super) fn running_command_lines(
     paths: &PathDisplay,
 ) -> Vec<Line<'static>> {
     let mut lines = tool_header_lines(tool, width, /*collapsed=*/ true, Some(pulse), paths);
-    let clock = command_clock_clause(
-        elapsed,
-        crate::llm::tools::bash_timeout_ms(tool.arguments.as_deref()),
-    );
+    // The limit the call runs under — a `bash_session` call's own wait, not
+    // `bash`'s command timeout (`docs/interactive-shell.md`).
+    let timeout_ms = if tool.name == crate::llm::tools::BASH_SESSION_TOOL_DISPLAY {
+        crate::llm::tools::session_timeout_ms(tool.arguments.as_deref())
+    } else {
+        crate::llm::tools::bash_timeout_ms(tool.arguments.as_deref())
+    };
+    let clock = command_clock_clause(elapsed, timeout_ms);
     let display = command_display_lines(tool);
     if display.is_empty() {
         // Nothing printed yet: the clause rides the `⎿ Running…` row, so a
@@ -713,6 +755,7 @@ fn tool_cell_lines(
     paths: &PathDisplay,
 ) -> Vec<Line<'static>> {
     let mut lines = tool_cell_body(tool, width, pulse, paths);
+    lines.extend(session_state_row(tool));
     let quiet_mcp =
         tool.status == ToolStatus::Ok && crate::mcp::display_server(&tool.name).is_some();
     if !quiet_mcp {
@@ -1353,6 +1396,7 @@ pub(super) fn tool_full_lines(
     paths: &PathDisplay,
 ) -> Vec<Line<'static>> {
     let mut lines = tool_full_body(tool, width, paths);
+    lines.extend(session_state_row(tool));
     // The classifier's provenance row closes the expanded cell too
     // (docs/permissions.md).
     lines.extend(approval_note_row(tool));

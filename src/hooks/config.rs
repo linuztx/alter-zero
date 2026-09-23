@@ -469,6 +469,9 @@ mod tests {
             // that audits which skills a session pulls in is written against
             // it (`docs/skills.md`).
             ("Skill", "skill"),
+            // No reference spelling here — the cell header's name, the one a
+            // user sees, answers for `bash_session` (docs/interactive-shell.md).
+            ("BashSession", "bash_session"),
         ];
         for (matcher, query) in cases {
             let file = parse(&format!(

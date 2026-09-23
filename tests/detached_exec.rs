@@ -127,3 +127,57 @@ fn a_password_prompt_fails_fast_instead_of_hanging() {
         "the prompt path took {elapsed:?} — it must fail fast"
     );
 }
+
+#[cfg(unix)]
+#[test]
+fn the_tty_helper_tier_gives_the_session_its_own_controlling_terminal() {
+    // The interactive-session twin of the test above (docs/interactive-shell.md):
+    // where there is no `setsid` binary, the helper re-exec is the only way a
+    // `tty: true` command gets a controlling terminal. Driven alone against
+    // the real binary, `/dev/tty` must reach the session's own terminal — a
+    // password prompt the model can answer — and never fail.
+    use alter_zero::subprocess::DetachTier;
+    use std::io::{Read, Write};
+    let helper = helper();
+    let mut session = alter_zero::pty::spawn::spawn_in(
+        &[DetachTier::HelperReexec(&helper)],
+        "printf 'pw: ' > /dev/tty; read p < /dev/tty; echo got-$p; tty",
+    )
+    .expect("spawns through the helper tier");
+    let mut reader = session.master.try_clone().expect("clones");
+    let (tx, rx) = std::sync::mpsc::channel::<Vec<u8>>();
+    std::thread::spawn(move || {
+        let mut buf = [0u8; 4096];
+        while let Ok(n) = reader.read(&mut buf) {
+            if n == 0 || tx.send(buf[..n].to_vec()).is_err() {
+                break;
+            }
+        }
+    });
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let mut out = Vec::new();
+    let mut typed = false;
+    while std::time::Instant::now() < deadline {
+        if let Ok(chunk) = rx.recv_timeout(std::time::Duration::from_millis(50)) {
+            out.extend_from_slice(&chunk);
+        }
+        let text = String::from_utf8_lossy(&out);
+        if !typed && text.contains("pw: ") {
+            session.master.write_all(b"secret\r").expect("types");
+            typed = true;
+        }
+        if text.contains("/dev/") && text.contains("got-secret") {
+            break;
+        }
+    }
+    let _ = session.child.wait();
+    let text = String::from_utf8_lossy(&out);
+    assert!(
+        text.contains("got-secret"),
+        "the prompt read our answer: {text:?}"
+    );
+    assert!(
+        !text.contains("not a tty"),
+        "stdin is the terminal: {text:?}"
+    );
+}

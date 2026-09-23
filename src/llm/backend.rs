@@ -880,11 +880,10 @@ impl ReplySource for LlmBackend {
                         classifier.classify(request, &context, &cancel)
                     };
                     // An MCP prompt shows the server's own description of the
-                    // tool under the call (docs/mcp.md).
-                    let describe = |wire: &str| {
-                        mcp.as_ref()
-                            .and_then(|manager| manager.tool_description(wire))
-                    };
+                    // tool under the call (docs/mcp.md); a session's, the
+                    // command it runs (docs/interactive-shell.md).
+                    let describe =
+                        |key: &str| describe_for_prompt(key, mcp.as_ref(), background.as_ref());
                     let approval = approval::approve_call(
                         permissions.as_ref(),
                         Some(&classify),
@@ -1511,7 +1510,7 @@ fn spawn_subagent_run(
         // The shared background registry rides in so the subagent's `bash`
         // can `run_in_background` — every launch attributed to this agent,
         // and the Ctrl+B latch untouched (docs/agent-tool.md).
-        if let Some(bg) = background {
+        if let Some(bg) = background.clone() {
             executor =
                 executor
                     .with_background(bg)
@@ -1601,10 +1600,8 @@ fn spawn_subagent_run(
                         .unwrap_or_default();
                     classifier.classify(request, &context, &cancel)
                 };
-                let describe = |wire: &str| {
-                    mcp.as_ref()
-                        .and_then(|manager| manager.tool_description(wire))
-                };
+                let describe =
+                    |key: &str| describe_for_prompt(key, mcp.as_ref(), background.as_ref());
                 let approval = approval::approve_call(
                     permissions.as_ref(),
                     Some(&classify),
@@ -1777,6 +1774,23 @@ fn to_tool_call_specs(calls: &[ToolCallRequest]) -> Vec<ToolCallSpec> {
         .iter()
         .map(|c| ToolCallSpec::function(&c.id, &c.name, &c.arguments))
         .collect()
+}
+
+/// The approve seam's description lookup ([`approval::DescribeTool`]): an
+/// MCP wire name → the server's description of the tool (`docs/mcp.md`), a
+/// session id → the command that session runs (`docs/interactive-shell.md`).
+fn describe_for_prompt(
+    key: &str,
+    mcp: Option<&super::mcp::McpManager>,
+    background: Option<&crate::background::BackgroundRegistry>,
+) -> Option<String> {
+    if crate::mcp::is_mcp_tool(key) {
+        mcp.and_then(|manager| manager.tool_description(key))
+    } else {
+        background
+            .and_then(|registry| registry.session(key))
+            .map(|session| session.command)
+    }
 }
 
 #[cfg(test)]

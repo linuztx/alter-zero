@@ -26,11 +26,13 @@ told the result in a new turn.
   `description: Option<String>`; the tool schema advertises both.
 - A backgrounded call resolves with `StreamEvent::ToolBackgrounded {id, output}`
   **instead of** `ToolEnd` (`llm::agent` picks by `outcome.background`).
-  `output` is the *model-facing* text — the interim-output file path plus the
-  completion promise, **no task id**: nothing model-facing takes one back
-  (kills go by PID, progress by the file), so naming it would just ask the
-  model to track a token with no use. The cell never shows the text — it
-  renders the fixed `⎿ Running in the background (↓ to manage)` row.
+  `output` is the *model-facing* text — the **session id**, the interim-output
+  file path and the completion promise. The id used to be left out, since
+  nothing model-facing took one back; `bash_session` does now — it waits on
+  a background command, interrupts it with `<C-c>` or ends it with `kill`
+  (`docs/interactive-shell.md`) — so the launch names it. The cell never shows
+  the text — it renders the fixed `⎿ Running in the background (↓ to manage)`
+  row.
 - That text differs by **who** backgrounded the call. A `run_in_background`
   launch gets the plain acknowledgement (`exec::background_launch_text` — the
   model asked, so the interim path + completion promise suffice). A
@@ -331,6 +333,21 @@ backgrounded — the model bash via `ToolBackgrounded` (the agent loop keeps
 going with the **handoff text** as the tool result — the user-moved preamble
 over the launch facts, see Protocol above), the `!` shell via its normal
 `ToolEnd`+`StreamDone` with the cell resolving to the backgrounded row.
+
+### Interactive sessions
+
+A `bash` call with `tty` runs in a pseudo-terminal and is a task of this same
+registry (`launch_tty`, `docs/interactive-shell.md`) — the footer count, the ↓
+manager, `kill_all` and subagent attribution all hold — with four
+differences. It is **announced** (`BgEvent::Started`) only if it outlives its
+launching call, so a command that finishes inside its call never shows up
+here. Its monitor sends `BgEvent::Screen` (the emulated screen, throttled)
+instead of line output, which the details page shows in place of a tail. An
+exit the model *saw* — a `bash_session` result framed `Exit code: N` or
+`Stopped` — arrives as `Exited { observed: true }`, which posts no completion
+notice and starts no follow-up turn. And at most `MAX_TTY_SESSIONS` (16) run
+at once. Ending one kills its process group and everything left in its
+session.
 
 ### Persistence (`session`)
 

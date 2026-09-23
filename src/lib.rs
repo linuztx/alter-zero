@@ -63,6 +63,10 @@
 //!   root→cwd under a 32 KiB cap and rendered, one `Contents of {path}`
 //!   block per file, as the `<system-reminder>`'s instructions section (see
 //!   `docs/project-doc.md`).
+//! - [`pty`]         — the model's interactive shells: the `input` key
+//!   notation, the transcript and screen views of a pseudo-terminal's output,
+//!   and when a waiting call returns (pure; the processes live in
+//!   [`background`] — see `docs/interactive-shell.md`).
 //! - [`reminder`]    — the `<system-reminder>` the derived context leads
 //!   with: the wrapper and its preamble over the sections the project doc,
 //!   the skills and the subagent types each render (pure; see
@@ -147,6 +151,7 @@ pub mod mcp;
 pub mod paste;
 pub mod permission;
 pub mod project_doc;
+pub mod pty;
 pub mod reminder;
 pub mod scratchpad;
 pub mod session;

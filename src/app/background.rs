@@ -321,6 +321,18 @@ impl App {
         }
     }
 
+    /// Replace a TTY session's output with its screen as it now stands (the
+    /// registry's `BgEvent::Screen` — `docs/interactive-shell.md`): a
+    /// terminal is a picture, not a log, so each screen supersedes the last
+    /// and the details box shows what a terminal would. Unknown ids (a screen
+    /// racing its shell's removal) are dropped.
+    pub fn bg_screen(&mut self, id: &str, text: &str) {
+        if let Some(shell) = self.background.iter_mut().find(|shell| shell.id == id) {
+            shell.output.clear();
+            shell.output.push_str(text);
+        }
+    }
+
     /// Inject a background shell's runtime before a draw (the
     /// [`set_status_times`](App::set_status_times) pattern — the started
     /// clocks live at the boundary). Unknown ids are ignored.
@@ -408,7 +420,9 @@ impl App {
     }
 
     /// Can Ctrl+B move the current command to the background? True while the
-    /// front tool is a **running command** — a model `bash` call or a `!`
+    /// front tool is a **running command** — a model `bash` call (a `tty`
+    /// one included), a `bash_session` call waiting on its session (the wait
+    /// ends, the session runs on — `docs/interactive-shell.md`) or a `!`
     /// shell turn — the only runners that poll the registry's background
     /// request — **or while a foreground agent group runs** (its wait loop
     /// polls the same latch and hands the rest of the group over,
@@ -423,7 +437,10 @@ impl App {
             return true;
         }
         self.tool_queue.front().is_some_and(|tool| {
-            tool.status == ToolStatus::Running && (tool.shell || tool.name == "Bash")
+            tool.status == ToolStatus::Running
+                && (tool.shell
+                    || tool.name == "Bash"
+                    || tool.name == crate::llm::tools::BASH_SESSION_TOOL_DISPLAY)
         })
     }
 

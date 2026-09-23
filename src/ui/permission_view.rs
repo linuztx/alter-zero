@@ -221,6 +221,51 @@ fn command_rows(
     (lines, hidden)
 }
 
+/// A session-input prompt's body (`docs/interactive-shell.md`) — the `bash`
+/// body's shape, since it answers the same question (*what exactly is about
+/// to run?*): what will be typed, on one line as the cell will show it
+/// (`print(2 + 2)⏎`), over a dim row naming where it goes — `into {command} ·
+/// session {id}`.
+fn session_rows(
+    request: &PermissionRequest,
+    width: u16,
+    budget: usize,
+) -> (Vec<Line<'static>>, usize) {
+    let indent = PERMISSION_COMMAND_INDENT;
+    let room = width.saturating_sub(cols(indent) as u16).max(1);
+    let mut source: Vec<(String, Color)> = wrap_output(&request.body, room)
+        .into_iter()
+        .map(|row| (row, permission_target_color()))
+        .collect();
+    let program = request
+        .detail
+        .as_deref()
+        .map(str::trim)
+        .filter(|d| !d.is_empty());
+    let place = match program {
+        Some(program) => format!("into {program} · session {}", request.target),
+        None => format!("into session {}", request.target),
+    };
+    source.extend(
+        wrap_output(&place, room)
+            .into_iter()
+            .map(|row| (row, permission_detail_color())),
+    );
+    let hidden = source.len().saturating_sub(budget.max(1));
+    let shown = source.len() - hidden;
+    let lines = source
+        .into_iter()
+        .take(shown)
+        .map(|(text, color)| {
+            Line::from(vec![
+                Span::raw(indent),
+                Span::styled(text, Style::new().fg(color)),
+            ])
+        })
+        .collect();
+    (lines, hidden)
+}
+
 /// The dim one-line description under a `bash` command / an MCP call, wrapped
 /// to `room` — empty when the request carries none.
 fn detail_rows(request: &PermissionRequest, room: u16) -> Vec<(String, Color)> {
@@ -488,7 +533,7 @@ pub fn permission_lines(app: &App, width: u16, term_height: u16) -> Vec<Line<'st
         ));
         below.push(Line::default());
     }
-    if request.kind == PermissionKind::Mcp {
+    if matches!(request.kind, PermissionKind::Mcp | PermissionKind::Session) {
         below.push(Line::default());
     }
     below.push(text_row(&question(request), Color::Reset, width));
@@ -538,6 +583,8 @@ pub fn permission_lines(app: &App, width: u16, term_height: u16) -> Vec<Line<'st
         )
     } else if request.kind == PermissionKind::Mcp {
         mcp_rows(request, width, PERMISSION_BODY_MAX_ROWS)
+    } else if request.kind == PermissionKind::Session {
+        session_rows(request, width, PERMISSION_BODY_MAX_ROWS)
     } else {
         command_rows(request, width, PERMISSION_BODY_MAX_ROWS)
     };
@@ -638,6 +685,9 @@ fn context_is_stable(app: &App) -> bool {
 fn body_reserve(request: &PermissionRequest, file_change: bool) -> usize {
     let natural = if file_change {
         request.body.lines().count()
+    } else if request.kind == PermissionKind::Session {
+        // The input's row(s) and the dim row saying where it goes.
+        request.body.lines().count() + 1
     } else {
         // A command's target is its body; an MCP call's is its one call row
         // (plus the ` (MCP)` marker's, when it doesn't fit beside it).
@@ -680,6 +730,7 @@ pub fn permission_remember_label(request: &PermissionRequest) -> String {
         PermissionKind::Bash => command_scope(&request.target).display(),
         // The MCP rule is the exact wire name (`docs/mcp.md`).
         PermissionKind::Mcp => request.target.clone(),
-        _ => "all edits".to_string(),
+        PermissionKind::Session => "this session".to_string(),
+        PermissionKind::Write | PermissionKind::Edit => "all edits".to_string(),
     }
 }

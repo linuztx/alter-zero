@@ -665,9 +665,23 @@ pub(super) const DIFF_TOOL_NAMES: [&str; 2] = ["Edit", "Write"];
 /// The model tools whose output is **command output** — a shell run, streamed
 /// and framed with an `Exit code: N` line. They render like the `!` shell cell
 /// (a multi-line `⎿` peek, the frame stripped for display) and **tail** their
-/// output live while running (`docs/tool-streaming.md`). Only `bash` today; a
-/// non-command generic tool keeps the single collapsed peek line.
-pub(super) const COMMAND_TOOL_NAMES: [&str; 1] = ["Bash"];
+/// output live while running (`docs/tool-streaming.md`): `bash`, and
+/// `bash_session` — the same command's later steps
+/// (`docs/interactive-shell.md`). A non-command generic tool keeps the single
+/// collapsed peek line.
+pub(super) const COMMAND_TOOL_NAMES: [&str; 2] = ["Bash", "BashSession"];
+
+/// The dim closing row of a command cell whose session is still alive
+/// (`docs/interactive-shell.md`) — `{state} · session {id}`, in place of the
+/// report's frame line, which is the model's: the program sits at a prompt,
+/// is still busy, or was ended by the call.
+pub(super) const SESSION_WAITING_ROW: &str = "Waiting for input";
+/// See [`SESSION_WAITING_ROW`].
+pub(super) const SESSION_RUNNING_ROW: &str = "Still running";
+/// See [`SESSION_WAITING_ROW`].
+pub(super) const SESSION_STOPPED_ROW: &str = "Stopped";
+/// The separator between a session row's state and its id.
+pub(super) const SESSION_ROW_ID: &str = " · session ";
 
 // --- Tool-output view (the Ctrl+O full-screen overlay) — codex's Ctrl+T
 // transcript pager: a slash-tiled dim title row over a scrolling body (the

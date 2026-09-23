@@ -51,7 +51,19 @@ impl Session<'_> {
                     .bg_started(&id, &command, description, from_model, origin);
             }
             BgEvent::Output { id, chunk } => self.app.bg_output(&id, &chunk),
-            BgEvent::Exited { id, code, killed } => {
+            BgEvent::Screen { id, text } => self.app.bg_screen(&id, &text),
+            // An exit the model already read — a `bash_session` call reported
+            // it (docs/interactive-shell.md): the shell leaves the list, and
+            // no notice is owed to anyone.
+            BgEvent::Exited {
+                id, observed: true, ..
+            } => {
+                self.bg_clocks.remove(&id);
+                let _ = self.app.bg_exited(&id, None, false);
+            }
+            BgEvent::Exited {
+                id, code, killed, ..
+            } => {
                 self.bg_clocks.remove(&id);
                 if let Some(completion) = self.app.bg_exited(&id, code, killed) {
                     // A subagent-launched shell reports to its launcher first:

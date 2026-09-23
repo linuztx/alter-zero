@@ -1991,7 +1991,10 @@ mod tests {
         let p = client.build_payload(&[ChatMessage::user("hi")]);
         assert_eq!(p["tool_choice"], json!("auto"));
         assert_eq!(p["tools"][0]["function"]["name"], "bash");
-        assert_eq!(p["tools"].as_array().unwrap().len(), 4);
+        assert_eq!(
+            p["tools"].as_array().unwrap().len(),
+            crate::llm::tools::TOOL_NAMES.len()
+        );
     }
 
     #[test]

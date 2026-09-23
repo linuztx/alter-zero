@@ -88,7 +88,10 @@ impl PermissionStore {
     pub(crate) fn remember(&self, request: &PermissionRequest) {
         if let Some(gate) = self.gate.as_ref() {
             gate.remember(request);
-            self.save(gate);
+            // A session's approval is not a rule — nothing new to save.
+            if request.kind != PermissionKind::Session {
+                self.save(gate);
+            }
         }
     }
 
@@ -163,14 +166,19 @@ impl Session<'_> {
             // rule: it persists, mirrors an edit prompt's mode switch onto the
             // footer segment, and confirms with a toast.
             self.permissions.remember(request);
-            let toast = if request.kind == PermissionKind::Bash {
-                format!(
+            let toast = match request.kind {
+                PermissionKind::Bash | PermissionKind::Mcp => format!(
                     "Won't ask again for {} in this project",
                     ui::permission_remember_label(request)
-                )
-            } else {
-                self.app.set_permission_mode(Some(PermissionMode::Edit));
-                "Mode: edit — file edits run without asking (shift+tab to switch back)".to_string()
+                ),
+                // Held in memory for as long as the session runs, never saved
+                // (docs/interactive-shell.md).
+                PermissionKind::Session => "Won't ask again for input to this session".to_string(),
+                PermissionKind::Write | PermissionKind::Edit => {
+                    self.app.set_permission_mode(Some(PermissionMode::Edit));
+                    "Mode: edit — file edits run without asking (shift+tab to switch back)"
+                        .to_string()
+                }
             };
             self.toast(toast, ToastKind::Info);
         }
