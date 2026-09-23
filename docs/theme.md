@@ -117,7 +117,9 @@ That stepping is the one generalisation the blends needed:
 triples and mix when both ends are `Rgb`, else pick the nearer end
 (`the_gradient_and_the_blends_follow_the_palette`). Every consumer — the
 mascot gradient, the sparkle/blocks/gravity/wave spinners, the tool pulse,
-the status shimmer — is unchanged in shape.
+the status shimmer — is unchanged in shape. The error toast's softened red
+rides the same rule, so under `ansi` it keeps the terminal's own `Red`
+(`docs/toast.md`).
 
 ## The ambient active theme
 
@@ -361,8 +363,8 @@ the saved theme.
   and its panic-safety, `activate_theme`, the chrome/code pairing, distinct
   semantic hues per theme, One Dark value for value, the ANSI theme naming
   no RGB and its stepping blends, the light theme's inverted inks and
-  tints, the gradient/blend derivations, and a rendered cell wearing the
-  active theme.
+  tints, the gradient/blend derivations, the error toast's softened red in
+  every theme, and a rendered cell wearing the active theme.
 - `ui/tests/theme_view.rs` — the framed page (rules, search, rows, counter,
   preview, description, hint), the preview's real cells, every row's own
   swatch, the preview in the highlighted theme against the frame in the

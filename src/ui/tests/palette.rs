@@ -272,6 +272,13 @@ fn an_error_toast_is_its_themes_red_softened_toward_the_dim() {
         let (r, g, b) = rgb_of(color);
         r.max(g).max(b) - r.min(g).min(b)
     };
+    let dist2 = |a: Color, b: Color| {
+        let ((r0, g0, b0), (r1, g1, b1)) = (rgb_of(a), rgb_of(b));
+        [(r0, r1), (g0, g1), (b0, b1)]
+            .into_iter()
+            .map(|(x, y)| u32::from(x.abs_diff(y)).pow(2))
+            .sum::<u32>()
+    };
     for theme in Theme::ALL.into_iter().filter(|t| *t != Theme::Ansi) {
         with_theme(theme, || {
             let soft = toast_error_color();
@@ -282,7 +289,12 @@ fn an_error_toast_is_its_themes_red_softened_toward_the_dim() {
                 "{theme:?}: quieter than the error red: {soft:?} vs {:?}",
                 error_color()
             );
-            assert_ne!(soft, toast_color(), "{theme:?}: not an info toast");
+            // A red channel that still leads is not enough: over a bluish dim
+            // a mostly-grey mix keeps it. The colour must sit nearer the red.
+            assert!(
+                dist2(soft, error_color()) < dist2(soft, toast_color()),
+                "{theme:?}: nearer the red than the dim: {soft:?}"
+            );
         });
     }
     // The default theme, value for value.

@@ -666,6 +666,14 @@ fn an_agent_with_nothing_to_copy_reports_the_empty_case() {
     app.start_agent_group(false, &agent_specs(false));
     app.open_agent_view("a1");
     assert!(app.last_assistant_text().is_none());
+    // …and `/copy` there reports it with the main view's info toast.
+    for c in "/copy".chars() {
+        app.on_key(key(KeyCode::Char(c)));
+    }
+    assert_eq!(
+        app.on_key(key(KeyCode::Enter)),
+        Action::Toast(COPY_EMPTY_NOTICE.to_string())
+    );
 }
 
 #[test]

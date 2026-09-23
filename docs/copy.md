@@ -146,8 +146,9 @@ refactored onto it. The two fixed strings live as `pub const COPY_OK_NOTICE` /
   skipping later user/system/tool items, and is `None` with no assistant message
   (and for an empty one). `/copy` via Enter (and Tab) returns
   `Action::Copy(text)`, consumes the input, closes the palette; with no
-  assistant message it returns `Action::Toast(COPY_EMPTY_NOTICE)`. `/copy`
-  typed mid-turn still dispatches (the palette wins over the queue).
+  assistant message it returns `Action::Toast(COPY_EMPTY_NOTICE)`, in an
+  agent's session view as in the main one. `/copy` typed mid-turn still
+  dispatches (the palette wins over the queue).
 - `clipboard` (unit, pure helpers only): `base64_encode` against known vectors
   (the 0/1/2 trailing-pad cases and empty); `osc52_sequence` frames the base64 as
   `\x1b]52;c;…\x07` and refuses input over `OSC52_MAX_BYTES`.

@@ -21,8 +21,9 @@ release heading when a version is cut.
   It now wears the theme's red mixed a third of the way toward the dim that
   info toasts use: still red at a glance, but quieter than the error bullet
   (`#F38BA8` becomes `#CA89A4` on the default Catppuccin Mocha). The
-  `ansi` theme keeps the terminal's own red, which has nothing to mix
-  (`docs/toast.md`).
+  `ansi` theme keeps the terminal's own red, which has nothing to mix. The
+  `/skills` picker's session-off note uses the same colour, so it is softer
+  too (`docs/toast.md`).
 
 ### Fixed
 
