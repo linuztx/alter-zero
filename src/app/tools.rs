@@ -19,8 +19,15 @@ pub const ERROR_TOOL_OUTPUT: &str = "Interrupted by a backend error";
 
 /// A call's wire identity as a batch announcement stamps it — the provider's
 /// id, the call's position in its round and the model's verbatim arguments —
-/// all `None` for a batch no round announced.
-type Identity = (Option<String>, Option<usize>, Option<String>);
+/// all `None` for a batch no round announced. Named fields rather than a
+/// tuple: the id and the arguments are both `Option<String>`, and a swap
+/// between them would still compile.
+#[derive(Debug, Clone, Default)]
+struct Identity {
+    call_id: Option<String>,
+    position: Option<usize>,
+    arguments: Option<String>,
+}
 
 /// A tool round as the backend announced it ([`StreamEvent::RoundCalls`]):
 /// the batch id its records share, and its calls in the model's order with a
@@ -114,28 +121,26 @@ impl App {
                 let ids = if visible.len() == items.len() {
                     visible
                         .iter()
-                        .map(|(position, call)| {
-                            (
-                                Some(call.id.clone()),
-                                Some(*position),
-                                Some(call.arguments.clone()),
-                            )
+                        .map(|(position, call)| Identity {
+                            call_id: Some(call.id.clone()),
+                            position: Some(*position),
+                            arguments: Some(call.arguments.clone()),
                         })
                         .collect()
                 } else {
-                    vec![(None, None, None); items.len()]
+                    vec![Identity::default(); items.len()]
                 };
                 (round.batch, ids)
             }
             _ => {
                 self.next_batch += 1;
-                (self.next_batch, vec![(None, None, None); items.len()])
+                (self.next_batch, vec![Identity::default(); items.len()])
             }
         };
         self.tool_queue = items
             .iter()
             .zip(ids)
-            .map(|(item, (call_id, position, arguments))| ToolCall {
+            .map(|(item, identity)| ToolCall {
                 name: item.name.clone(),
                 args: item.args.clone(),
                 status: ToolStatus::Waiting,
@@ -150,11 +155,11 @@ impl App {
                 // made it (docs/interrupt.md). The call's own `ToolStart`
                 // replaces them (`start_tool`): a `PreToolUse` hook may have
                 // rewritten what runs.
-                arguments,
+                arguments: identity.arguments,
                 approval_note: None,
                 batch: Some(batch),
-                call_id,
-                position,
+                call_id: identity.call_id,
+                position: identity.position,
             })
             .collect();
     }

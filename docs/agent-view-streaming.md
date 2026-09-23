@@ -203,11 +203,14 @@ The fix is not "add `ToolAnswered` to the list". A hand-kept list of events is
 what drifted, and this view had already fallen behind the main one once (§1).
 `Session::commit_agent_tail` keys on **what `AgentRun::apply` appended to the
 transcript** instead: the boundary snapshots `run.history.len()` before the
-fold, and afterwards commits the newly-recorded last item — a `Tool` through
-`ui::tool_commit_lines` (which still holds an MCP run's members until the run
-ends), a `Summary` through `ui::summary_lines`. That is the same question a
-rebuild answers, which is exactly why the two now agree; a future resolution
-event needs no change here at all.
+fold, and afterwards commits every item recorded past it — a `Tool` through
+`ui::tool_commit_lines` over the history up to it (which still holds an MCP
+run's members until the run ends), a `Summary` through `ui::summary_lines`.
+That is the same question a rebuild answers, which is exactly why the two now
+agree; a future resolution event needs no change here at all. *Every* item,
+not the newest: a settle resolves a whole parallel batch at once — the running
+call and each sibling still `⎿ Waiting…` (`docs/interrupt.md`) — and reading
+only the last one would leave the cells in front of it off the screen.
 
 Everything else that reaches the transcript has its own committer and must not
 land twice — a flushed text segment belongs to `agent_render`, a settled
@@ -218,8 +221,9 @@ after the cell the failure resolved: before this change the `Error` arm
 committed the notice and silently dropped that cell.
 
 The same helper closes the **local** settles, which carry no event at all: the
-roster's `x` resolves the agent's running call through `AgentRun::interrupt`,
-and its `⎿ Interrupted by user` cell had the identical problem.
+roster's `x` resolves the agent's live batch through `AgentRun::interrupt` —
+the running call and every sibling waiting behind it — and its
+`⎿ Interrupted by user` cells had the identical problem.
 
 ### 4. The prompt above the view asks about *this* conversation
 

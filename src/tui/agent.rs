@@ -314,15 +314,15 @@ impl Session<'_> {
     }
 
     /// Commit whatever was just appended to the **viewed** agent's transcript
-    /// past `recorded` — its resolved calls' collapsed cells, or the turn's
+    /// past `recorded` — each resolved call's collapsed cell, or the turn's
     /// summary — reseating the viewport first, since the strip loses the live
     /// cell (or the whole status line) as it lands (invariant 3).
     ///
     /// The one place the session view turns a transcript item into scrollback,
     /// shared by the event fold and the **local** settles that carry no event
-    /// at all (the roster's `x` resolves the running call itself). Keying on
-    /// the recorded item rather than on what triggered it is what stops this
-    /// view falling behind the main one again — see
+    /// at all (the roster's `x` resolves the whole live batch itself). Keying
+    /// on the recorded items rather than on what triggered them is what stops
+    /// this view falling behind the main one again — see
     /// [`Session::commit_agent_view_event`].
     ///
     /// Every other item has its own committer and must **not** land twice: a
@@ -331,55 +331,42 @@ impl Session<'_> {
     /// [`Session::settle_agent_reasoning`], and a hook note is invisible
     /// inline by design (`docs/hooks.md`).
     fn commit_agent_tail(&mut self, recorded: usize, width: u16) {
-        let owed = self
-            .app
-            .viewed_agent()
-            .filter(|run| run.history.len() > recorded)
-            .and_then(|run| {
-                // How many calls the fold resolved: one for an ordinary
-                // resolution; the whole batch for a stop or an error mid-batch,
-                // which fails the running call and every `⎿ Waiting…` sibling
-                // together (`docs/interrupt.md`).
-                let resolved = run.history[recorded..]
-                    .iter()
-                    .filter(|item| matches!(item, HistoryItem::Tool(_)))
-                    .count();
-                match run.history.last() {
-                    // Every call the settle resolved, in the batch's order.
-                    Some(HistoryItem::Tool(_)) if resolved > 1 => {
-                        Some(ui::resolved_tools_commit_lines(
-                            &run.history,
-                            resolved,
-                            width,
-                            self.app.path_display(),
-                        ))
-                    }
-                    // A resolved call — its collapsed cell, through the same
-                    // history-derived builder the rebuild uses, which also
-                    // holds an MCP run's members until the run ends
-                    // (`docs/mcp.md`).
-                    Some(HistoryItem::Tool(_)) => ui::tool_commit_lines(
-                        &run.history,
-                        &run.tool_queue,
-                        width,
-                        self.app.path_display(),
-                    ),
-                    // The turn's `Done for Ns · {n} tokens` receipt
-                    // (`docs/agent-tool.md`).
-                    Some(HistoryItem::Summary(summary)) => Some(ui::summary_lines(summary, width)),
-                    // A message the user queued into this agent, now that its
-                    // loop has read it (`docs/queue.md`) — the bubble lands
-                    // where the agent saw it, not where it was typed.
-                    Some(HistoryItem::Message(message)) if message.role == Role::User => {
-                        Some(ui::message_lines(Role::User, &message.text, width))
-                    }
-                    _ => None,
+        let Some(run) = self.app.viewed_agent() else {
+            return;
+        };
+        let paths = self.app.path_display();
+        // **Every** item past `recorded`, not only the last: a settle resolves
+        // a whole batch at once — the running call and each `⎿ Waiting…`
+        // sibling behind it (`AgentRun::interrupt`, `docs/interrupt.md`) — and
+        // committing only the newest item is how a resolved cell goes missing.
+        let owed: Vec<Vec<Line<'static>>> = (recorded..run.history.len())
+            .filter_map(|index| match &run.history[index] {
+                // A resolved call — its collapsed cell, through the same
+                // history-derived builder the rebuild uses (the history up to
+                // it), which also holds an MCP run's members until the run
+                // ends (`docs/mcp.md`).
+                HistoryItem::Tool(_) => {
+                    ui::tool_commit_lines(&run.history[..=index], &run.tool_queue, width, paths)
                 }
+                // The turn's `Done for Ns · {n} tokens` receipt
+                // (`docs/agent-tool.md`).
+                HistoryItem::Summary(summary) => Some(ui::summary_lines(summary, width)),
+                // A message the user queued into this agent, now that its loop
+                // has read it (`docs/queue.md`) — the bubble lands where the
+                // agent saw it, not where it was typed.
+                HistoryItem::Message(message) if message.role == Role::User => {
+                    Some(ui::message_lines(Role::User, &message.text, width))
+                }
+                _ => None,
             })
-            .filter(|lines| !lines.is_empty());
-        if let Some(lines) = owed {
-            let height = self.live_region_height();
-            self.term.set_view_height(height);
+            .filter(|lines| !lines.is_empty())
+            .collect();
+        if owed.is_empty() {
+            return;
+        }
+        let height = self.live_region_height();
+        self.term.set_view_height(height);
+        for lines in owed {
             self.term.insert_before(lines);
             self.term.insert_before(vec![Line::default()]);
         }

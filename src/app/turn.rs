@@ -320,15 +320,17 @@ impl App {
 
     /// End the in-progress stream because the backend reported an error.
     ///
-    /// Records any non-empty partial reply as an assistant message, resolves a
-    /// still-running tool as [`ToolStatus::Failed`] with [`ERROR_TOOL_OUTPUT`]
-    /// (the contract allows `Error` in place of `StreamDone` with a `ToolEnd`
-    /// still owed — leaving it Running would wedge a phantom in the preview
-    /// strip, the transcript, and a later turn's interrupt record), then
-    /// records the error as a [`Role::Error`] message and clears the streaming
-    /// state. Returns the [`StreamError`] for the event loop to flush to
-    /// scrollback, or `None` if no reply was in progress. The stream-order
-    /// mirror of [`App::interrupt_turn`].
+    /// Records any non-empty partial reply as an assistant message, resolves
+    /// every live tool call — the running one and each batch sibling still
+    /// waiting behind it — as [`ToolStatus::Failed`] with
+    /// [`ERROR_TOOL_OUTPUT`] (the contract allows `Error` in place of
+    /// `StreamDone` with a `ToolEnd` still owed — leaving one live would wedge
+    /// a phantom in the preview strip, the transcript, and a later turn's
+    /// interrupt record, and dropping a sibling would lose a call the model
+    /// made), then records the error as a [`Role::Error`] message and clears
+    /// the streaming state. Returns the [`StreamError`] for the event loop to
+    /// flush to scrollback, or `None` if no reply was in progress. The
+    /// stream-order mirror of [`App::interrupt_turn`].
     pub fn fail_stream(&mut self, error: &str) -> Option<StreamError> {
         let streamed = self.streaming.take()?;
         // A /compact turn's half summary dies with the request — the marker
@@ -369,9 +371,9 @@ impl App {
     /// `None` if no turn was in flight. Two outcomes (see `docs/interrupt.md`):
     ///
     /// - **No output yet** — nothing streamed (no non-empty partial reply, no
-    ///   running tool) and nothing is queued behind this turn: the submission is
-    ///   **undone** rather than interrupted. The turn's just-submitted user
-    ///   message(s) are pulled back into the composer
+    ///   tool call, running or waiting) and nothing is queued behind this turn:
+    ///   the submission is **undone** rather than interrupted. The turn's
+    ///   just-submitted user message(s) are pulled back into the composer
     ///   (`take_trailing_user_messages` + `recall_input`) and dropped from
     ///   history, the status clears, and **no** `Conversation interrupted`
     ///   notice is recorded — there is nothing to keep, so we roll back to the
@@ -379,14 +381,18 @@ impl App {
     ///   non-empty queue opts out: the user wants their follow-ups sent, so the
     ///   keep path runs instead.
     /// - **Something streamed** — keep any non-empty partial reply as an
-    ///   assistant message (codex never retracts streamed text), resolve a
-    ///   still-running tool as [`ToolStatus::Failed`] with
-    ///   [`INTERRUPT_TOOL_OUTPUT`], and record the [`INTERRUPT_NOTICE`] as a
-    ///   [`Role::Error`] message — **except for a `!` shell turn**, whose
-    ///   `⎿ Interrupted by user` cell already says it, so no redundant notice is
-    ///   committed. The live status clears **without** a `Done for Ns` summary
-    ///   (like [`App::fail_stream`], the notice — or the shell cell — is the
-    ///   turn's terminal state).
+    ///   assistant message (codex never retracts streamed text), resolve every
+    ///   live tool call as [`ToolStatus::Failed`] with
+    ///   [`INTERRUPT_TOOL_OUTPUT`] — the running one **and** each parallel
+    ///   batch sibling still `Waiting` behind it, since a call that never
+    ///   started is still one the model made (`docs/interrupt.md`) — and
+    ///   record the [`INTERRUPT_NOTICE`] as a [`Role::Error`] message —
+    ///   **except for a `!` shell turn**, whose `⎿ Interrupted by user` cell
+    ///   already says it, so no redundant notice is committed. The live
+    ///   status clears **without** a `Done for Ns` summary (like
+    ///   [`App::fail_stream`], the notice — or the shell cell — is the turn's
+    ///   terminal state). History gains them in that order: the partial, the
+    ///   calls in the model's order, the interrupted agent group, the notice.
     ///
     pub fn interrupt_turn(&mut self) -> Option<InterruptedTurn> {
         if !self.is_streaming() && !self.turn_active() {
@@ -473,7 +479,7 @@ impl App {
         }
 
         // Keep what streamed, in stream order: the partial (Assistant) before
-        // the tool the interrupt resolves (a ToolStart flushes the buffer, so
+        // the calls the interrupt resolves (a ToolStart flushes the buffer, so
         // the two are never both non-empty — but the order holds regardless).
         if let Some(text) = &partial {
             self.record_message(Role::Assistant, text.clone());
@@ -605,18 +611,19 @@ impl App {
 }
 
 /// What a backend error leaves behind, handed to the event loop to flush to
-/// scrollback. The partial reply (if any), the tool that died mid-run (if one
-/// was), and the error are also recorded in [`App::history`] so a later resize
-/// repaints them.
+/// scrollback. The partial reply (if any), the tool calls the error cut short
+/// (if any were live), and the error are also recorded in [`App::history`] so
+/// a later resize repaints them.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StreamError {
     /// The reply text streamed before the error, if any non-empty text arrived.
     pub partial: Option<String>,
-    /// The tool that was mid-run when the backend died, now resolved as
-    /// [`ToolStatus::Failed`] with [`ERROR_TOOL_OUTPUT`], if one was running —
-    /// the stream contract allows `Error` in place of `StreamDone` at any
-    /// point, `ToolEnd` still owed (the interrupt's [`InterruptedTurn::Kept`]
-    /// twin).
+    /// Every tool call that was live when the backend died — the one mid-run
+    /// and each parallel batch sibling still waiting behind it, in the
+    /// model's order — now resolved as [`ToolStatus::Failed`] with
+    /// [`ERROR_TOOL_OUTPUT`]; empty when none was. The stream contract allows
+    /// `Error` in place of `StreamDone` at any point, `ToolEnd` still owed
+    /// (the interrupt's [`InterruptedTurn::Kept`] twin).
     pub tools: Vec<ToolCall>,
     /// The live agent group the error resolved (its foreground agents marked
     /// interrupted, the [`AgentGroup`] recorded in history) — the loop
@@ -639,24 +646,28 @@ pub struct StreamError {
 // lint guards against costs nothing here.
 #[allow(clippy::large_enum_variant)]
 pub enum InterruptedTurn {
-    /// The turn had produced **no output** (no partial reply, no tool) and
-    /// nothing was queued behind it, so the whole submission is rolled back
-    /// rather than interrupted: [`App::interrupt_turn`] has already pulled the
+    /// The turn had produced **no output** (no partial reply, no tool call —
+    /// running or waiting) and nothing was queued behind it, so the whole
+    /// submission is rolled back rather than interrupted:
+    /// [`App::interrupt_turn`] has already pulled the
     /// turn's user message(s) back into the composer and dropped them from
     /// [`App::history`], recording **no** `Conversation interrupted` notice
     /// (there was nothing to keep). The loop repaints scrollback without the
     /// undone message. The user's "there's no output yet, move it back to the
     /// textarea" case.
     Undone,
-    /// Some output had streamed — a partial reply and/or a running tool — so it
-    /// is **kept** in the transcript (codex never retracts what streamed). Both
-    /// are also recorded in [`App::history`] so a later resize repaints them.
+    /// Some output had streamed — a partial reply and/or tool calls — so it
+    /// is **kept** in the transcript (codex never retracts what streamed).
+    /// All of it is also recorded in [`App::history`] so a later resize
+    /// repaints it.
     Kept {
         /// The reply text streamed before the interrupt, if any non-empty text
         /// arrived since the last flush.
         partial: Option<String>,
-        /// The tool that was mid-run, now resolved as failed with
-        /// [`INTERRUPT_TOOL_OUTPUT`], if one was running.
+        /// Every tool call that was live — the one mid-run and each parallel
+        /// batch sibling still waiting behind it, in the model's order — now
+        /// resolved as failed with [`INTERRUPT_TOOL_OUTPUT`]; empty when none
+        /// was (`docs/interrupt.md`).
         tools: Vec<ToolCall>,
         /// The red terminal notice to commit to scrollback — [`INTERRUPT_NOTICE`]
         /// for a normal turn, or **`None`** for a `!` shell turn, whose

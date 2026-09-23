@@ -218,3 +218,9 @@ than a cell per call — the tree is a roster, not a transcript.
 - A very large batch grows the live region upward; it is clamped to the terminal
   height like the rest of the live region (the box then scrolls internally). No
   per-batch cap / "+N more" collapse yet.
+- An interrupt keeps the calls it can see, which is the live queue. A round's
+  calls that were never announced still leave no record, so the next request
+  does not carry them: the ordinary calls behind a foreground agent group (the
+  batch is announced only once the group finishes, `docs/agent-tool.md`), and
+  a task call the sequential loop had not reached yet (task calls render no
+  cell and are never announced, `docs/task-tools.md`).

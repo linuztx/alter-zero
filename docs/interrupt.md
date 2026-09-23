@@ -129,7 +129,9 @@ Then:
   tool use an abort left without a result). Dropping the siblings, as this
   used to, erased calls the model had made from everything after the Esc:
   the next turn saw the first call alone. See `docs/parallel-tools.md`
-  *Interrupting a batch*.
+  *Interrupting a batch* — and its *Limitations* for the calls a round never
+  announced (behind a foreground agent group, an unreached task call), which
+  still leave no record.
 - Records the notice as a `Role::Error` message —
   `INTERRUPT_NOTICE` = `"Conversation interrupted - tell the model what to do
   differently."` (codex's wording minus its `/feedback` plug) — **unless it is
@@ -285,6 +287,8 @@ segment (lowercase, matching this codebase's hint convention —
   `⎿ Interrupted by user` with **no** `Conversation interrupted` notice.
 - `src/tui/` (smoke, Phase 123 — a parallel batch): Esc while the dummy's
   three-call `Bash(ping …)` batch runs commits all three red
-  `⎿ Interrupted by user` cells, in batch order, above the notice, and Ctrl+D
-  shows all three calls answered. Before the fix the pane showed the notice
-  alone and Ctrl+D the first call alone.
+  `⎿ Interrupted by user` cells, in batch order, above the notice, Ctrl+D
+  shows all three calls answered, and a resize's purge rebuild shows each cell
+  exactly once; Esc on the batch's permission prompt (both cells still
+  `⎿ Waiting…`) resolves both calls, on screen and in Ctrl+D. Before the fix
+  the pane showed the notice alone and Ctrl+D the first call alone.
