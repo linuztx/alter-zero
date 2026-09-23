@@ -27,6 +27,20 @@ release heading when a version is cut.
 
 ### Fixed
 
+- **Esc during parallel tool calls keeps every call — on screen and in the
+  model's context.** When the model ran several tools in one go, an
+  interrupt settled only the call at the front of the batch and threw the
+  ones still `⎿ Waiting…` away: they vanished from the screen and from the
+  conversation, so the next turn's model no longer knew it had asked for
+  them. Every call in the batch now resolves as its own red
+  `⎿ Interrupted by user` cell, in order, above the `Conversation
+  interrupted` notice, and the next request replays the whole round — each
+  call with the arguments the model gave it, each answered `Interrupted by
+  user`. The same goes for a backend error mid-batch and for a subagent
+  stopped mid-batch. This also fixes interrupted cells not reaching the
+  screen at all: after Esc on a running tool the pane showed the notice
+  alone until something redrew it (`docs/interrupt.md`,
+  `docs/parallel-tools.md`).
 - **`/copy` with nothing to copy is no longer shown as an error.** `No
   agent response to copy` was red, while `Nothing to export` and `Nothing to
   compact` — the same "nothing to act on yet" case for `/export` and

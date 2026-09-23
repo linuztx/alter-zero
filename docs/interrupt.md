@@ -75,8 +75,10 @@ pub enum InterruptedTurn {
     Undone,                          // no output + empty queue: rolled back
     Kept {
         partial: Option<String>,     // the kept partial reply, if any text streamed
-        tool: Option<ToolCall>,      // the cancelled tool, resolved Failed, if one ran
+        tools: Vec<ToolCall>,        // every call in flight — the running one and each
+                                     // ⎿ Waiting… sibling — resolved Failed, in order
         notice: Option<&'static str>,// INTERRUPT_NOTICE, or None for a shell turn
+        agents: Option<AgentGroup>,  // the live agent group, resolved interrupted
     },
 }
 ```
@@ -113,10 +115,23 @@ Then:
 
 - Keeps any non-empty partial as a normal `Role::Assistant` history message
   (codex keeps partial output).
-- A **running tool** is resolved as `ToolStatus::Failed` with output
+- **Every call in flight** is resolved as `ToolStatus::Failed` with output
   `INTERRUPT_TOOL_OUTPUT` (`"Interrupted by user"`) via the existing
-  `end_tool` path — it was cancelled mid-run, and the record survives in the
-  Ctrl+O view (codex: aborted tools "may have partially executed").
+  `end_tool` path (`App::fail_live_queue`) — the running call, cancelled
+  mid-run (codex: aborted tools "may have partially executed"), **and** every
+  `⎿ Waiting…` sibling of a parallel batch behind it, in the batch's order
+  (the front may itself still be waiting, on a permission prompt or auto
+  mode's classifier — the approve seam runs before its `ToolStart`). Each is
+  recorded, so each keeps its red cell on screen and in the Ctrl+O view, and
+  the next request's derived context replays the whole round — one
+  assistant message holding every call under its provider id and verbatim
+  arguments, each answered `Interrupted by user` (Claude Code's answer for a
+  tool use an abort left without a result). Dropping the siblings, as this
+  used to, erased calls the model had made from everything after the Esc:
+  the next turn saw the first call alone. See `docs/parallel-tools.md`
+  *Interrupting a batch* — and its *Limitations* for the calls a round never
+  announced (behind a foreground agent group, an unreached task call), which
+  still leave no record.
 - Records the notice as a `Role::Error` message —
   `INTERRUPT_NOTICE` = `"Conversation interrupted - tell the model what to do
   differently."` (codex's wording minus its `/feedback` plug) — **unless it is
@@ -127,10 +142,11 @@ Then:
 
 `None` (recording nothing) when no turn is in flight.
 
-Note the buffer/tool exclusivity: a `ToolStart` flushes the streaming segment
-first, so when a tool is running the buffer is empty — `partial` and `tool`
-are never both `Some` in practice, and history order (partial, tool, notice)
-matches stream order regardless.
+Note the buffer/tool exclusivity: a `ToolStart` (or a batch's `ToolBatch`)
+flushes the streaming segment first, so when a tool is in flight the buffer is
+empty — `partial` is never `Some` beside a non-empty `tools` in practice, and
+history order (partial, tools, agent group, notice) matches stream order
+regardless.
 
 ### The event loop (`main.rs`, `Action::Interrupt` arm)
 
@@ -154,13 +170,19 @@ matches stream order regardless.
      scrollback from the now-truncated history, so the user bubble vanishes and
      the composer shows the restored draft. No commit, and no queue flush (the
      empty queue is the undo's precondition).
-   - **`Kept { partial, tool, notice }`** — commit like `StreamDone` does: reseat
-     the viewport to its idle height first (the streaming strip is gone —
-     invariant 3), then `insert_before` the partial, the cancelled tool
-     (collapsed, red), and the notice (`commit_turn_failure`, each with a blank
-     spacer). `notice` is `None` for a shell turn, so its `⎿ Interrupted by user`
-     cell stands alone. Then flush the front queued batch (`flush_next_queued`)
-     onto the **new** channel — Esc sends the queue right away.
+   - **`Kept { partial, tools, notice, agents }`** — commit like `StreamDone`
+     does: reseat the viewport to its idle height first (the streaming strip is
+     gone — invariant 3), then `insert_before` the partial, every cancelled
+     call (collapsed, red, blank-separated), the agent group, and the notice
+     (`commit_turn_failure`, each with a blank spacer). The calls are read back
+     off the history by count (`ui::resolved_tools_commit_lines`): the notice
+     is already recorded behind them, so `ui::tool_commit_lines` — which
+     commits the one call that just resolved, the last history item — would
+     find a message there and commit nothing, the screen showing the notice
+     with no cell above it at all. `notice` is `None` for a shell turn, so its
+     `⎿ Interrupted by user` cell stands alone. Then flush the front queued
+     batch (`flush_next_queued`) onto the **new** channel — Esc sends the queue
+     right away.
 
 `Action::Interrupt` can only originate in the conversation view (overlay Esc
 returns instead), so the commits never touch the alternate screen.
@@ -230,6 +252,21 @@ segment (lowercase, matching this codebase's hint convention —
 - `app` (the shell notice skip, req 2): interrupting a `!` shell turn resolves
   the command Failed with `"Interrupted by user"` and returns `notice: None` —
   no `Role::Error` `Conversation interrupted` message.
+- `app` (a parallel batch): Esc mid-batch resolves the running call **and**
+  every `⎿ Waiting…` sibling, in order, each recorded ahead of the notice
+  (`interrupt_mid_batch_resolves_the_running_call_and_every_waiting_sibling`);
+  so does Esc while the whole batch still waits on the front call's permission
+  prompt (`interrupt_while_the_whole_batch_still_waits_resolves_every_call`)
+  and a backend error mid-batch (`fail_stream_mid_batch_resolves_every_call_in_the_batch`);
+  an announced round stamps each waiting call with the model's own arguments,
+  and the derived context of an interrupted round is one assistant message
+  carrying every call under its provider id, each answered `Interrupted by
+  user` (`an_interrupted_round_replays_every_call_the_model_made`).
+- `ui`: `resolved_tools_commit_lines` commits every resolved cell in order,
+  blank-separated, matching the rebuild, and flushes an MCP run the
+  interrupted call was holding; `agents`: a subagent stopped (or failing)
+  mid-batch records every call; `llm::agent`: a call a cancel left unexecuted
+  is answered `Interrupted by user` in the stored message list.
 - `ui`: `status_line` ends with the dim `esc to interrupt` hint in every phase.
 - `stream`: `StallAi` (the test double for a wedged backend) ignores the
   cancel for its stall — a caller that `join()`s it pays the full stall — and
@@ -248,3 +285,10 @@ segment (lowercase, matching this codebase's hint convention —
 - `src/tui/` (smoke, Phase 19 — req 2/3): a running `!sleep 9` shows the
   `⎿ Running… (Ns)` preview with **no** status line, and Esc resolves it
   `⎿ Interrupted by user` with **no** `Conversation interrupted` notice.
+- `src/tui/` (smoke, Phase 123 — a parallel batch): Esc while the dummy's
+  three-call `Bash(ping …)` batch runs commits all three red
+  `⎿ Interrupted by user` cells, in batch order, above the notice, Ctrl+D
+  shows all three calls answered, and a resize's purge rebuild shows each cell
+  exactly once; Esc on the batch's permission prompt (both cells still
+  `⎿ Waiting…`) resolves both calls, on screen and in Ctrl+D. Before the fix
+  the pane showed the notice alone and Ctrl+D the first call alone.

@@ -972,16 +972,18 @@ impl AgentRun {
     }
 
     /// Resolve every live tool call as failed with `output` (an interrupt or
-    /// backend error killed the run); drops un-started `Waiting` siblings.
+    /// backend error killed the run): the running — or permission-waiting —
+    /// front call and each `⎿ Waiting…` sibling behind it, in the batch's
+    /// order, each recorded on the agent's transcript. The main session's
+    /// rule (`App::fail_live_queue`, `docs/interrupt.md`): every call the
+    /// agent made keeps its cell in the session view, and its Ctrl+D agrees
+    /// with what a chat continuation resumes from.
     fn resolve_tools(&mut self, output: &str) {
-        if let Some(mut front) = self.tool_queue.pop_front()
-            && front.status == ToolStatus::Running
-        {
-            front.status = ToolStatus::Failed;
-            front.output = output.to_string();
-            self.history.push(HistoryItem::Tool(front));
+        while let Some(mut call) = self.tool_queue.pop_front() {
+            call.status = ToolStatus::Failed;
+            call.output = output.to_string();
+            self.history.push(HistoryItem::Tool(call));
         }
-        self.tool_queue.clear();
     }
 }
 
@@ -2399,6 +2401,84 @@ mod tests {
         ]));
         let queued: Vec<&str> = run.tool_queue.iter().map(|t| t.args.as_str()).collect();
         assert_eq!(queued, ["a.md", "b.md"], "the new batch is the queue");
+    }
+
+    /// A run mid-batch: `args` announced, the first call started — or,
+    /// with `started` false, still waiting on its permission prompt.
+    fn run_mid_batch(args: &[&str], started: bool) -> AgentRun {
+        let mut run = AgentRun::new("a1", "d", GENERAL_PURPOSE, "p", false);
+        run.apply(&StreamEvent::ToolBatch(
+            args.iter()
+                .map(|args| ToolCallSummary {
+                    name: "Bash".to_string(),
+                    args: (*args).to_string(),
+                })
+                .collect(),
+        ));
+        if started {
+            run.apply(&StreamEvent::ToolStart {
+                name: "Bash".to_string(),
+                args: args[0].to_string(),
+                detail: None,
+                arguments: None,
+            });
+        }
+        run
+    }
+
+    /// Every tool record on `run`'s transcript as `(args, status, output)`.
+    fn resolved(run: &AgentRun) -> Vec<(String, ToolStatus, String)> {
+        run.history
+            .iter()
+            .filter_map(|item| match item {
+                HistoryItem::Tool(t) => Some((t.args.clone(), t.status, t.output.clone())),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn stopping_an_agent_mid_batch_resolves_every_call_in_it() {
+        // The main session's rule, one level down (docs/interrupt.md): the
+        // running call AND every `⎿ Waiting…` sibling behind it resolve as
+        // `Interrupted by user` on the agent's own transcript, so its session
+        // view and its Ctrl+D keep a cell per call the agent made.
+        let interrupted = crate::app::INTERRUPT_TOOL_OUTPUT.to_string();
+        for started in [true, false] {
+            let mut run = run_mid_batch(&["ping a", "ls"], started);
+            assert!(run.interrupt());
+            assert_eq!(
+                resolved(&run),
+                vec![
+                    (
+                        "ping a".to_string(),
+                        ToolStatus::Failed,
+                        interrupted.clone()
+                    ),
+                    ("ls".to_string(), ToolStatus::Failed, interrupted.clone()),
+                ],
+                "front started: {started}"
+            );
+            assert!(run.tool_queue.is_empty());
+        }
+    }
+
+    #[test]
+    fn an_agent_error_mid_batch_resolves_every_call_in_it() {
+        let mut run = run_mid_batch(&["ping a", "ls"], true);
+        assert!(run.apply(&StreamEvent::Error("boom".into())));
+        let failed: Vec<(String, ToolStatus)> = resolved(&run)
+            .into_iter()
+            .map(|(args, status, _)| (args, status))
+            .collect();
+        assert_eq!(
+            failed,
+            vec![
+                ("ping a".to_string(), ToolStatus::Failed),
+                ("ls".to_string(), ToolStatus::Failed),
+            ]
+        );
+        assert!(run.tool_queue.is_empty());
     }
 
     #[test]

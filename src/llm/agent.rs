@@ -312,6 +312,7 @@ pub fn run_agent(
                         .map(|call| RoundCall {
                             id: call.id.clone(),
                             name: call.name.clone(),
+                            arguments: call.arguments.clone(),
                         })
                         .collect(),
                 ));
@@ -622,14 +623,17 @@ pub fn run_agent(
                 for call in refused {
                     results.push((call.id.clone(), TOOL_LIMIT_OUTPUT.to_string()));
                 }
-                // Results append in the model's original call order (an
-                // unexecuted call — a cancel landed first — is answered so
-                // the stored list stays well-formed for a continuation).
+                // Results append in the model's original call order. An
+                // unexecuted call — a cancel landed first — is answered so the
+                // stored list stays well-formed for a continuation, and in the
+                // words its cell shows (`Interrupted by user`), so a stopped
+                // subagent's continuation reads what its session view shows
+                // (docs/interrupt.md).
                 for call in &calls {
-                    let output = results
-                        .iter()
-                        .find(|(id, _)| id == &call.id)
-                        .map_or_else(|| "[not executed]".to_string(), |(_, out)| out.clone());
+                    let output = results.iter().find(|(id, _)| id == &call.id).map_or_else(
+                        || crate::app::INTERRUPT_TOOL_OUTPUT.to_string(),
+                        |(_, out)| out.clone(),
+                    );
                     messages.push(ChatMessage::tool_result(&call.id, &output));
                 }
                 messages.append(&mut attachments);
@@ -1430,10 +1434,13 @@ mod tests {
         assert_eq!(
             events,
             vec![
-                // The round's wire identity leads (docs/prompt-caching.md).
+                // The round's wire identity leads (docs/prompt-caching.md),
+                // the model's own arguments with it — what a call that never
+                // reaches its ToolStart is recorded with (docs/interrupt.md).
                 StreamEvent::RoundCalls(vec![RoundCall {
                     id: "c1".to_string(),
                     name: "bash".to_string(),
+                    arguments: r#"{"command":"ls"}"#.to_string(),
                 }]),
                 // The batch is announced up front (here a batch of one) so the
                 // UI can show every requested call, the not-yet-run ones as
@@ -1856,6 +1863,48 @@ mod tests {
                 .any(|e| matches!(e, StreamEvent::ToolStart { .. }))
         );
         assert!(!events.iter().any(|e| matches!(e, StreamEvent::StreamDone)));
+    }
+
+    #[test]
+    fn a_call_the_cancel_left_unexecuted_is_answered_as_interrupted() {
+        // The stored list stays well-formed after a cancel — every call
+        // answered — and a call that never ran is answered the way the
+        // transcript shows it, `Interrupted by user`: a subagent's chat
+        // continuation resumes from this list, so its model reads what its
+        // session view shows (docs/interrupt.md).
+        let (tx, _rx) = unbounded_channel();
+        let cancel = CancelToken::new();
+        let calls = vec![
+            call("c1", "bash", r#"{"command":"a"}"#),
+            call("c2", "bash", r#"{"command":"b"}"#),
+        ];
+        let mut messages = vec![ChatMessage::user("x")];
+        run_agent(
+            &tx,
+            &cancel,
+            MAX_TOOL_ITERATIONS,
+            &mut messages,
+            |_msgs| RoundOutcome::ToolCalls {
+                assistant: assistant_with(&calls),
+                calls: calls.clone(),
+            },
+            |_c, _sink| {
+                cancel.cancel();
+                ToolOutcome::error(crate::app::INTERRUPT_TOOL_OUTPUT)
+            },
+            Vec::new,
+            |_calls| Vec::new(),
+            |_call, _force| Approval::Allow,
+            &NoHooks,
+        );
+        let results: Vec<&ChatMessage> = messages.iter().filter(|m| m.role == "tool").collect();
+        assert_eq!(
+            results,
+            vec![
+                &ChatMessage::tool_result("c1", crate::app::INTERRUPT_TOOL_OUTPUT),
+                &ChatMessage::tool_result("c2", crate::app::INTERRUPT_TOOL_OUTPUT),
+            ]
+        );
     }
 
     #[test]

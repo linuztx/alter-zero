@@ -160,7 +160,9 @@ fn fail_stream_resolves_a_running_tool_as_failed() {
     app.start_tool("Read", "src/app.rs", None);
     let failure = app.fail_stream("network down").expect("was streaming");
     assert!(app.current_tool().is_none(), "no phantom running tool");
-    let tool = failure.tool.expect("the failed tool rides the failure");
+    let [tool] = failure.tools.as_slice() else {
+        panic!("the failed tool rides the failure: {:?}", failure.tools);
+    };
     assert_eq!(tool.status, ToolStatus::Failed);
     assert_eq!(tool.output, ERROR_TOOL_OUTPUT);
     // History order: the failed tool slots before the error notice, the
@@ -183,7 +185,7 @@ fn fail_stream_orders_partial_then_tool_then_notice() {
     app.start_tool("Bash", "ls", None);
     let failure = app.fail_stream("boom").expect("was streaming");
     assert_eq!(failure.partial.as_deref(), Some("half a rep"));
-    assert!(failure.tool.is_some());
+    assert_eq!(failure.tools.len(), 1);
     assert!(matches!(
         (&app.history[0], &app.history[1], &app.history[2]),
         (HistoryItem::Message(p), HistoryItem::Tool(_), HistoryItem::Message(e))
@@ -196,7 +198,7 @@ fn fail_stream_without_a_tool_carries_none() {
     let mut app = App::new();
     app.begin_stream();
     let failure = app.fail_stream("died early").expect("was streaming");
-    assert!(failure.tool.is_none());
+    assert!(failure.tools.is_empty());
 }
 
 // --- Esc interrupts the in-flight turn, codex-style (docs/interrupt.md) ---
@@ -228,7 +230,7 @@ fn interrupt_turn_keeps_the_partial_and_records_the_notice() {
     app.push_chunk("half a rep");
     let InterruptedTurn::Kept {
         partial,
-        tool,
+        tools,
         notice,
         ..
     } = app.interrupt_turn().expect("a turn was active")
@@ -236,7 +238,7 @@ fn interrupt_turn_keeps_the_partial_and_records_the_notice() {
         panic!("a streamed partial is kept, not undone");
     };
     assert_eq!(partial.as_deref(), Some("half a rep"));
-    assert!(tool.is_none(), "no tool was running");
+    assert!(tools.is_empty(), "no tool was running");
     assert_eq!(notice, Some(INTERRUPT_NOTICE), "a normal turn's notice");
     assert!(!app.is_streaming());
     assert!(!app.turn_active(), "the live status cleared");
@@ -374,11 +376,13 @@ fn interrupt_turn_resolves_a_running_tool_as_failed() {
     app.begin_stream();
     app.push_chunk("before the tool ");
     app.start_tool("Bash", "sleep 100", None); // flush happens loop-side; buffer keeps streaming
-    let InterruptedTurn::Kept { tool, .. } = app.interrupt_turn().expect("a turn was active")
+    let InterruptedTurn::Kept { tools, .. } = app.interrupt_turn().expect("a turn was active")
     else {
         panic!("streamed output is kept, not undone");
     };
-    let tool = tool.expect("the running tool was resolved");
+    let [tool] = tools.as_slice() else {
+        panic!("the running tool was resolved: {tools:?}");
+    };
     assert_eq!(tool.status, ToolStatus::Failed);
     assert_eq!(tool.output, INTERRUPT_TOOL_OUTPUT);
     assert!(app.current_tool().is_none(), "no tool left running");
@@ -390,35 +394,130 @@ fn interrupt_turn_resolves_a_running_tool_as_failed() {
     );
 }
 
+/// The tool records in `app`'s history, in order.
+fn recorded_tools(app: &App) -> Vec<&ToolCall> {
+    app.history
+        .iter()
+        .filter_map(|item| match item {
+            HistoryItem::Tool(tool) => Some(tool),
+            _ => None,
+        })
+        .collect()
+}
+
 #[test]
-fn interrupt_mid_batch_keeps_the_running_call_and_drops_waiting_siblings() {
-    // Esc during a parallel batch: the running (front) call resolves Failed
-    // and is recorded; the un-started `Waiting` siblings never ran, so they
-    // are dropped — no cell recorded, the live queue cleared. See
-    // `docs/parallel-tools.md`.
+fn interrupt_mid_batch_resolves_the_running_call_and_every_waiting_sibling() {
+    // Esc during a parallel batch: the running (front) call AND every
+    // `⎿ Waiting…` sibling queued behind it resolve as `Interrupted by user`,
+    // in the batch's order, and each one is recorded — so the transcript keeps
+    // a cell for every call the model asked for, and the next turn's context
+    // replays the whole round (docs/interrupt.md, docs/parallel-tools.md).
+    // Dropping the siblings erased calls the model had made from everything
+    // after the Esc.
     let mut app = App::new();
     app.begin_stream();
     app.start_tool_batch(&ping_batch());
     app.start_tool("Bash", "ping google.com", None); // the front is now Running
-    let InterruptedTurn::Kept { tool, .. } = app.interrupt_turn().expect("a turn was active")
+    let InterruptedTurn::Kept { tools, notice, .. } =
+        app.interrupt_turn().expect("a turn was active")
     else {
         panic!("a running tool means output streamed — kept, not undone");
     };
-    let tool = tool.expect("the running call was resolved");
-    assert_eq!(tool.args, "ping google.com");
-    assert_eq!(tool.status, ToolStatus::Failed);
-    assert!(
-        app.tool_queue().is_empty(),
-        "the waiting siblings were dropped"
+    let resolved: Vec<(&str, ToolStatus, &str)> = tools
+        .iter()
+        .map(|tool| (tool.args.as_str(), tool.status, tool.output.as_str()))
+        .collect();
+    assert_eq!(
+        resolved,
+        vec![
+            ("ping google.com", ToolStatus::Failed, INTERRUPT_TOOL_OUTPUT),
+            (
+                "ping facebook.com",
+                ToolStatus::Failed,
+                INTERRUPT_TOOL_OUTPUT
+            ),
+            ("ping x.com", ToolStatus::Failed, INTERRUPT_TOOL_OUTPUT),
+        ]
     );
-    let recorded_tools = app
+    assert!(app.tool_queue().is_empty(), "nothing is left live");
+    assert_eq!(
+        recorded_tools(&app),
+        tools.iter().collect::<Vec<_>>(),
+        "every call is recorded, in the batch's order"
+    );
+    assert_eq!(notice, Some(INTERRUPT_NOTICE));
+    assert!(
+        matches!(app.history.last(), Some(HistoryItem::Message(m)) if m.role == Role::Error),
+        "the notice closes the turn, after every cell: {:?}",
+        app.history
+    );
+}
+
+#[test]
+fn interrupt_while_the_whole_batch_still_waits_resolves_every_call() {
+    // The approve seam runs before a call's ToolStart, so while the front call
+    // waits on a permission prompt — or auto mode's classifier — every cell of
+    // the batch still reads `⎿ Waiting…` (the reported case). Esc there is an
+    // interrupt like any other: the batch is on screen, so the turn is kept
+    // rather than undone, and every call resolves, the front included.
+    let mut app = App::new();
+    app.record_user_message("ping them all");
+    app.begin_stream();
+    app.start_tool_batch(&ping_batch());
+    let Some(InterruptedTurn::Kept { tools, notice, .. }) = app.interrupt_turn() else {
+        panic!("an announced batch is output — kept, not undone");
+    };
+    assert_eq!(tools.len(), 3, "{tools:?}");
+    assert!(
+        tools
+            .iter()
+            .all(|tool| tool.status == ToolStatus::Failed && tool.output == INTERRUPT_TOOL_OUTPUT),
+        "{tools:?}"
+    );
+    assert_eq!(recorded_tools(&app).len(), 3);
+    assert_eq!(notice, Some(INTERRUPT_NOTICE));
+    assert_eq!(
+        app.input.text(),
+        "",
+        "nothing was pulled back into the composer"
+    );
+}
+
+#[test]
+fn fail_stream_mid_batch_resolves_every_call_in_the_batch() {
+    // The interrupt's error-path twin: a backend that dies mid-batch leaves
+    // the running call and each `⎿ Waiting…` sibling owed a ToolEnd that will
+    // never come. Every one resolves as `Interrupted by a backend error`,
+    // ahead of the red notice, rather than the siblings vanishing.
+    let mut app = App::new();
+    app.begin_stream();
+    app.start_tool_batch(&ping_batch());
+    app.start_tool("Bash", "ping google.com", None);
+    let failure = app.fail_stream("network down").expect("was streaming");
+    let args: Vec<&str> = failure
+        .tools
+        .iter()
+        .map(|tool| tool.args.as_str())
+        .collect();
+    assert_eq!(args, ["ping google.com", "ping facebook.com", "ping x.com"]);
+    assert!(
+        failure
+            .tools
+            .iter()
+            .all(|tool| tool.status == ToolStatus::Failed && tool.output == ERROR_TOOL_OUTPUT),
+        "{:?}",
+        failure.tools
+    );
+    assert!(app.tool_queue().is_empty(), "no phantom waiting cell");
+    let shape: Vec<bool> = app
         .history
         .iter()
-        .filter(|i| matches!(i, HistoryItem::Tool(_)))
-        .count();
+        .map(|item| matches!(item, HistoryItem::Tool(_)))
+        .collect();
     assert_eq!(
-        recorded_tools, 1,
-        "only the running call is recorded; waiting siblings leave no cell"
+        shape,
+        [true, true, true, false],
+        "three cells, then the notice"
     );
 }
 
@@ -1405,12 +1504,14 @@ fn a_shell_turn_ends_without_a_summary_or_phantom_message() {
 fn interrupting_a_shell_turn_resolves_the_command_as_failed() {
     let mut app = App::new();
     app.begin_shell("sleep 5");
-    let InterruptedTurn::Kept { tool, notice, .. } =
+    let InterruptedTurn::Kept { tools, notice, .. } =
         app.interrupt_turn().expect("a turn was in flight")
     else {
         panic!("a shell turn has a running tool, so it is kept, not undone");
     };
-    let tool = tool.expect("the running command is resolved");
+    let [tool] = tools.as_slice() else {
+        panic!("the running command is resolved: {tools:?}");
+    };
     assert_eq!(tool.name, "sleep 5");
     assert_eq!(tool.status, ToolStatus::Failed);
     assert_eq!(tool.output, INTERRUPT_TOOL_OUTPUT);

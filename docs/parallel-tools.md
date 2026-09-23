@@ -87,12 +87,15 @@ are `ToolStatus::Waiting`.
   `history`, and returns it to commit — the next call becomes the front.
 - `current_tool()` returns the front (unchanged call sites keep working).
 - `tool_queue()` exposes the whole batch for rendering.
-- On interrupt / backend error the **front** running call resolves as `Failed`
-  (`Interrupted by user` / `Interrupted by a backend error`) and any remaining
-  `Waiting` siblings are **dropped** — they never ran, so no cell is recorded
-  (they only ever lived in the live region). The undo-the-submission fast path
-  keys off an **empty** queue (`tool_queue.is_empty()`), the old
-  `current_tool.is_none()`.
+- On interrupt / backend error **every** call in the queue resolves as `Failed`
+  (`Interrupted by user` / `Interrupted by a backend error`) — the running (or
+  permission-waiting) front call and each `Waiting` sibling behind it, in the
+  batch's order (`App::fail_live_queue`) — and each one is recorded and
+  committed above the notice. A call that never started is still a call the
+  model made: its cell stays on screen, and its record keeps it in the next
+  request's context (see *Interrupting a batch* below). The
+  undo-the-submission fast path keys off an **empty** queue
+  (`tool_queue.is_empty()`), the old `current_tool.is_none()`.
 
 ### Backend (`llm::agent::run_agent`)
 
@@ -114,6 +117,61 @@ call committing invalidates the cache.
 
 The single-`!`-shell preview (its `⎿ Running… (Ns)` elapsed row) is unchanged: the
 shell is never batched (queue length 1, `shell` flag).
+
+## Interrupting a batch
+
+Esc — or a backend error — mid-batch ends every call the model asked for at
+once, and every one of them keeps its cell, the running call and the
+`⎿ Waiting…` siblings alike:
+
+```
+● Bash(ping google.com -c 10)
+  ⎿  Interrupted by user
+
+● Bash(ls -la)
+  ⎿  Interrupted by user
+
+● Conversation interrupted - tell the model what to do differently.
+```
+
+Three pieces make that hold:
+
+- **The record.** `App::fail_live_queue` resolves the running (or
+  permission-waiting) front call and each `Waiting` sibling, in the batch's
+  order, through the same `end_tool` path a `ToolEnd` takes. The records keep
+  their batch id, provider call id and position, so the next request's derived
+  context (`context::context_messages`) replays the whole round the way the
+  wire carried it — one assistant message holding every call, each answered
+  `Interrupted by user` (Claude Code's own answer for a tool use an abort left
+  without a result), then the `[error]` notice. The siblings used to be
+  dropped: the model's next turn saw the first call and nothing of the rest,
+  so it no longer knew it had asked for them.
+- **The arguments.** A call that never reached its own `ToolStart` knows only
+  the header summary the batch announcement carries. The round announcement
+  ahead of it (`StreamEvent::RoundCalls`) carries each call's verbatim
+  arguments (`RoundCall::arguments`), stamped onto its `Waiting` cell, so the
+  replay is the call the model made — a `bash` call's `timeout`, a `write`'s
+  `content` — rather than one rebuilt from the summary. A call that does start
+  takes its `ToolStart`'s arguments instead, since a `PreToolUse` hook may
+  have rewritten what runs (`docs/hooks.md`). The offline dummy announces no
+  round, so its interrupted siblings replay through the summary
+  reconstruction, as every pre-field record does.
+- **The commit.** The interrupt records its red notice *behind* the cells, so
+  the history no longer ends at a cell and `ui::tool_commit_lines` — built for
+  the one call that just resolved — finds nothing to commit. That used to
+  leave the notice alone on screen, with no cell at all, until something
+  rebuilt the screen from history (closing a permission prompt does, which is
+  why the first cell sometimes appeared). `ui::resolved_tools_commit_lines`
+  commits the last N tool records instead, each exactly as its own resolution
+  would have — the first flushing any parallel MCP run it was holding
+  (`docs/mcp.md`) — which is the rows a rebuild paints from the same history.
+
+A subagent's batch settles the same way (`AgentRun::resolve_tools`, on the
+roster's `x`, an Esc that takes its group down, or its own backend error):
+every call lands on its transcript, its session view commits them all, and its
+stored message list — what a chat continuation resumes from — answers a call
+the cancel left unexecuted `Interrupted by user` as well, where it used to say
+`[not executed]`, so the continuation reads what the view shows.
 
 ## Demo (the dummy backend)
 
@@ -160,3 +218,9 @@ than a cell per call — the tree is a roster, not a transcript.
 - A very large batch grows the live region upward; it is clamped to the terminal
   height like the rest of the live region (the box then scrolls internally). No
   per-batch cap / "+N more" collapse yet.
+- An interrupt keeps the calls it can see, which is the live queue. A round's
+  calls that were never announced still leave no record, so the next request
+  does not carry them: the ordinary calls behind a foreground agent group (the
+  batch is announced only once the group finishes, `docs/agent-tool.md`), and
+  a task call the sequential loop had not reached yet (task calls render no
+  cell and are never announced, `docs/task-tools.md`).

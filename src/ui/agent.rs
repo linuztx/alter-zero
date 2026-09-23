@@ -454,9 +454,10 @@ impl AgentCellView {
         // The **running** call joins them — what the agent is doing right now
         // is part of what it has done. Its not-yet-started `⎿ Waiting…`
         // siblings do not: this cell lists headers with no status of their
-        // own, so a queued call would read as one the agent ran, and an
-        // interrupt drops those siblings without ever recording them
-        // (`docs/parallel-tools.md`). The main transcript can show them
+        // own, so a queued call would read as one the agent ran
+        // (`docs/parallel-tools.md`). Once one resolves it is on the history
+        // walked above — an interrupt records each as `Interrupted by user`
+        // (`docs/interrupt.md`). The main transcript can show them live
         // because `tool_full_lines` carries each call's status row.
         if let Some(running) = run
             .tool_queue

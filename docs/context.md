@@ -86,8 +86,10 @@ now replayed across turns: an `assistant` message carrying a `tool_calls`
 array, immediately followed by one `tool`-role message per call. The call
 **ids are the provider's own**, and a round's calls replay **as the one
 message they arrived in**: the agent loop announces every tool round's ids
-first (`StreamEvent::RoundCalls`, in the model's order), the loop stamps
-them onto the records the round's cells resolve into — `ToolCall::call_id`,
+first (`StreamEvent::RoundCalls`, in the model's order, each with the model's
+verbatim arguments — what a call that never reaches its `ToolStart`, a
+`⎿ Waiting…` sibling an Esc resolves, is recorded with, `docs/interrupt.md`),
+the loop stamps them onto the records the round's cells resolve into — `ToolCall::call_id`,
 `TaskCallRecord::call_id`, an agent group entry's `call_id` beside its
 verbatim `arguments` — under a per-round `batch` number and each call's
 `position` in the round, the rollout round-trips all of it, and the

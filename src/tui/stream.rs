@@ -430,7 +430,7 @@ impl Session<'_> {
                         // shape.
                         self.commit_turn_failure(
                             failure.partial,
-                            failure.tool,
+                            &failure.tools,
                             failure.agents,
                             Some(&failure.error),
                         );

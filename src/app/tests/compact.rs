@@ -134,10 +134,10 @@ fn esc_mid_compact_keeps_the_old_history_and_records_the_interrupt_notice() {
             &outcome,
             InterruptedTurn::Kept {
                 partial: None,
-                tool: None,
+                tools,
                 notice: Some(_),
                 ..
-            }
+            } if tools.is_empty()
         ),
         "{outcome:?}"
     );

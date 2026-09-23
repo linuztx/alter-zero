@@ -378,8 +378,11 @@ which Ctrl+V reads the clipboard from.
   thread's worst case, the interrupt-lag fix; the real backend's blocking
   network ops live on their own detached transport thread so the streaming
   thread acknowledges the cancel within ~50 ms — `docs/llm.md`), keeps the
-  partial reply, resolves a still-running tool as
-  failed (`Interrupted by user`), and commits a red
+  partial reply, resolves every tool call in flight as failed
+  (`Interrupted by user`) — a parallel batch's running call **and** each
+  `⎿ Waiting…` sibling, every one keeping its red cell and its place in the
+  next request's context (`docs/parallel-tools.md` *Interrupting a batch*) —
+  and commits a red
   `Conversation interrupted - tell the model what to do differently.` notice —
   with **no** `Done for Ns` summary (the notice is the turn's terminal state).
   The palette still wins: Esc with the palette open only dismisses it, even
@@ -744,9 +747,10 @@ file-search worker ► tokio mpsc ───┘                           draw ti
   bottom rather than rising and leaving blank rows beneath it (see the
   streaming-strip note under *Known limitations*).
 - On `Error(msg)`: `App::fail_stream` records any non-empty partial reply, flushes
-  it, resolves a still-running tool as failed (`Interrupted by a backend error` —
-  the contract allows an error mid-tool, `ToolEnd` still owed) and flushes it
-  collapsed, then commits a red `Role::Error` notice (and records it all in
+  it, resolves every tool call still in flight as failed (`Interrupted by a
+  backend error` — the contract allows an error mid-tool, `ToolEnd` still owed;
+  a batch's `⎿ Waiting…` siblings included) and flushes them collapsed
+  (`ui::resolved_tools_commit_lines`), then commits a red `Role::Error` notice (and records it all in
   `history` so it repaints on resize); clears streaming state. Like `StreamDone`
   it reseats the viewport height first so the box doesn't rise as the strip
   clears.
@@ -771,7 +775,8 @@ file-search worker ► tokio mpsc ───┘                           draw ti
   dropped receiver and can't reach the next turn — this is both the old join's
   "thread stopped" guarantee and the old drain, in one). Then `App::interrupt_turn`
   and commit like `StreamDone` does: reseat the viewport to its idle height,
-  flush the kept partial, the cancelled tool (collapsed, red), and the red
+  flush the kept partial, every cancelled call (collapsed, red — a batch's
+  running call and each waiting sibling, in order), and the red
   `Conversation interrupted` notice. No `Done for Ns` summary.
 - **In the tool-output view** every reply event still updates `App` (so the view
   shows tools live), and the commit-to-scrollback steps above still run — the
@@ -854,13 +859,16 @@ file-search worker ► tokio mpsc ───┘                           draw ti
   turn-end): an Enter-batched text turn (its Ctrl+V attachments riding along as
   `(placeholder, path)` pairs) dispatched to the model, or a standalone `!`
   command run locally. See `docs/queue.md`.
-- `StreamError { partial: Option<String>, tool: Option<ToolCall>, error: String }`
+- `StreamError { partial: Option<String>, tools: Vec<ToolCall>, agents, error: String }`
   — what `App::fail_stream` hands the loop to flush after a backend failure (the
-  `tool` is one the error killed mid-run, resolved as failed —
-  `InterruptedTurn`'s error-path twin).
-- `InterruptedTurn { partial: Option<String>, tool: Option<ToolCall> }` — what
-  `App::interrupt_turn` hands the loop to flush after an Esc interrupt (the
-  `INTERRUPT_NOTICE` const is the committed notice text).
+  `tools` are every call the error left in flight — the running one and each
+  `⎿ Waiting…` sibling — resolved as failed, `InterruptedTurn`'s error-path
+  twin).
+- `InterruptedTurn { Undone, Kept { partial, tools: Vec<ToolCall>, notice, agents } }`
+  — what `App::interrupt_turn` hands the loop to settle an Esc interrupt: the
+  rolled-back submission, or what was kept (every call in flight resolved
+  `Interrupted by user`; the `INTERRUPT_NOTICE` const is the committed notice
+  text).
 - `StreamEvent { Chunk(String), ToolStart{name,args}, ToolEnd{output,ok,truncated},
   ThinkingStart, ThinkingChunk(String), ThinkingEnd, Error(String), StreamDone }`
   (in `stream/event.rs`) — what a backend sends to the loop (`ThinkingStart`/`ThinkingEnd`
@@ -905,8 +913,9 @@ file-search worker ► tokio mpsc ───┘                           draw ti
   streaming turn untouched; from the tool view it still quits), and the next
   Ctrl+C quits;
   `push_chunk`/`finish_stream` transitions; `fail_stream` records partial + error;
-  `interrupt_turn` keeps the partial, resolves a running tool as failed, records
-  the notice with no summary, and is a no-op when idle.
+  `interrupt_turn` keeps the partial, resolves every call in flight as failed
+  (a batch's running call and each waiting sibling, in order), records the
+  notice with no summary, and is a no-op when idle.
 - `app` (tools & view): `start_tool`/`end_tool` move a tool through running →
   ok/failed and into history; `flush_streaming_segment` records the text before a
   tool and reopens an empty buffer; `finish_stream` records nothing for an empty

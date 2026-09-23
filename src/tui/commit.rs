@@ -139,8 +139,9 @@ impl Session<'_> {
         self.commit_notice(Role::System, App::record_system_message, text);
     }
 
-    /// Commit a dead turn's remains to scrollback — the kept partial reply, the
-    /// tool the death resolved as failed, the agent group it interrupted, then
+    /// Commit a dead turn's remains to scrollback — the kept partial reply,
+    /// every tool call the death resolved as failed (the running one and each
+    /// `⎿ Waiting…` sibling of its batch), the agent group it interrupted, then
     /// the red notice, each with a trailing blank spacer — after reseating the
     /// viewport to its idle height (the `StreamDone` dance, so the box stays
     /// flush at the bottom as the streaming strip clears). The shape shared by
@@ -149,7 +150,7 @@ impl Session<'_> {
     /// conversation view.
     ///
     /// `notice` is `None` for a `!` shell interrupt, whose `⎿ Interrupted by
-    /// user` cell (the `tool`) already says it — committing a second
+    /// user` cell (its one `tools` entry) already says it — committing a second
     /// `Conversation interrupted` line would be redundant (`docs/interrupt.md`,
     /// req 2). A backend error always passes `Some` (the error text is its
     /// terminal notice).
@@ -159,7 +160,7 @@ impl Session<'_> {
     pub(crate) fn commit_turn_failure(
         &mut self,
         partial: Option<String>,
-        tool: Option<ToolCall>,
+        tools: &[ToolCall],
         agents: Option<AgentGroup>,
         notice: Option<&str>,
     ) {
@@ -177,20 +178,21 @@ impl Session<'_> {
             self.term.insert_before(self.render.finish(&partial, width));
             self.term.insert_before(vec![Line::default()]);
         }
-        if tool.is_some() {
-            // The resolved (failed) call — and any MCP siblings whose lines
-            // its run was holding — through the shared commit path
-            // (`docs/mcp.md`). The viewport was reseated just above.
-            if let Some(lines) = ui::tool_commit_lines(
-                &self.app.history,
-                self.app.tool_queue(),
-                width,
-                self.app.path_display(),
-            ) && !lines.is_empty()
-            {
-                self.term.insert_before(lines);
-                self.term.insert_before(vec![Line::default()]);
-            }
+        // Every call the death resolved — the running one and each `⎿
+        // Waiting…` sibling behind it, plus any MCP cells a run was holding —
+        // in the batch's order (`docs/interrupt.md`, `docs/mcp.md`). Read
+        // back off the history by count: the notice is already recorded
+        // behind them, so the history no longer ends at a cell. The viewport
+        // was reseated just above.
+        let lines = ui::resolved_tools_commit_lines(
+            &self.app.history,
+            tools.len(),
+            width,
+            self.app.path_display(),
+        );
+        if !lines.is_empty() {
+            self.term.insert_before(lines);
+            self.term.insert_before(vec![Line::default()]);
         }
         // The agent group the death resolved (its members marked interrupted) —
         // the red tree cell, before the notice (docs/agent-tool.md).

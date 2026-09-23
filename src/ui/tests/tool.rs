@@ -2398,6 +2398,123 @@ fn a_failed_call_still_flushes_the_run_it_ends() {
     assert_eq!(repaint[..texts.len()], texts[..]);
 }
 
+// --- a turn's death resolves its whole batch (docs/interrupt.md) ---
+
+use crate::ui::tool::resolved_tools_commit_lines;
+
+/// Esc on `app`'s turn, returning how many calls the interrupt resolved.
+fn interrupt_count(app: &mut App) -> usize {
+    match app.interrupt_turn() {
+        Some(crate::app::InterruptedTurn::Kept { tools, .. }) => tools.len(),
+        other => panic!("a turn with calls in flight is kept: {other:?}"),
+    }
+}
+
+#[test]
+fn an_interrupted_batch_commits_a_cell_for_every_call_it_resolved() {
+    // Esc mid-batch resolves the running call and every `⎿ Waiting…` sibling
+    // at once, then records the red notice behind them — so the last history
+    // item is the notice, not a cell. The commit writes every resolved cell,
+    // in order and blank-separated, and none of the notice (which has its own
+    // committer). Reading only the last item committed nothing at all.
+    let mut app = App::new();
+    app.begin_stream();
+    app.start_tool_batch(&[
+        crate::stream::ToolCallSummary {
+            name: "Bash".to_string(),
+            args: "ping google.com -c 10".to_string(),
+        },
+        crate::stream::ToolCallSummary {
+            name: "Bash".to_string(),
+            args: "ls -la".to_string(),
+        },
+    ]);
+    app.start_tool("Bash", "ping google.com -c 10", None);
+    let count = interrupt_count(&mut app);
+    let texts: Vec<String> =
+        resolved_tools_commit_lines(&app.history, count, 80, &PathDisplay::VERBATIM)
+            .iter()
+            .map(plain)
+            .collect();
+    assert_eq!(
+        texts,
+        vec![
+            "● Bash(ping google.com -c 10)".to_string(),
+            format!("  ⎿  {}", crate::app::INTERRUPT_TOOL_OUTPUT),
+            String::new(),
+            "● Bash(ls -la)".to_string(),
+            format!("  ⎿  {}", crate::app::INTERRUPT_TOOL_OUTPUT),
+        ]
+    );
+    // A rebuild from history paints the same rows, then the notice.
+    let repaint: Vec<String> =
+        crate::ui::conversation_lines(&app.history, 80, &PathDisplay::VERBATIM)
+            .iter()
+            .map(plain)
+            .collect();
+    assert_eq!(repaint[..texts.len()], texts[..]);
+    assert!(
+        repaint[texts.len()..]
+            .iter()
+            .any(|row| row.contains(crate::app::INTERRUPT_NOTICE)),
+        "{repaint:?}"
+    );
+}
+
+#[test]
+fn an_interrupted_mcp_run_flushes_its_held_line_ahead_of_the_resolved_calls() {
+    // The run's first call succeeded and its line is held (the batch's next
+    // call is MCP too); Esc then resolves the running call and the waiting
+    // one behind it. The held line commits with the run the interrupt ended —
+    // exactly what the rebuild paints — ahead of the two red cells.
+    let mut app = app_calling(&[
+        "deepwiki - ask_question (MCP)",
+        "deepwiki - read_wiki_structure (MCP)",
+        "deepwiki - ask_question (MCP)",
+    ]);
+    app.begin_stream(); // the turn the batch belongs to (it keeps the queue)
+    app.end_tool("{\"answer\":\"…\"}", true);
+    app.start_tool("deepwiki - read_wiki_structure (MCP)", "", None);
+    let count = interrupt_count(&mut app);
+    assert_eq!(count, 2, "the running call and its waiting sibling");
+    let texts: Vec<String> =
+        resolved_tools_commit_lines(&app.history, count, 100, &PathDisplay::VERBATIM)
+            .iter()
+            .map(plain)
+            .collect();
+    assert_eq!(
+        texts[0],
+        format!("{MCP_CALLED_PREFIX}Deepwiki{EXPAND_HINT}"),
+        "{texts:?}"
+    );
+    assert_eq!(
+        texts
+            .iter()
+            .filter(|row| row.contains(crate::app::INTERRUPT_TOOL_OUTPUT))
+            .count(),
+        2,
+        "{texts:?}"
+    );
+    let repaint: Vec<String> =
+        crate::ui::conversation_lines(&app.history, 100, &PathDisplay::VERBATIM)
+            .iter()
+            .map(plain)
+            .collect();
+    assert_eq!(repaint[..texts.len()], texts[..]);
+}
+
+#[test]
+fn resolving_nothing_commits_nothing() {
+    let mut history = vec![HistoryItem::Tool(tool("Bash", "ls", ToolStatus::Ok, "a"))];
+    history.push(HistoryItem::Message(crate::app::Message {
+        role: Role::Error,
+        text: crate::app::INTERRUPT_NOTICE.to_string(),
+        timestamp: String::new(),
+        images: Vec::new(),
+    }));
+    assert!(resolved_tools_commit_lines(&history, 0, 80, &PathDisplay::VERBATIM).is_empty());
+}
+
 #[test]
 fn two_sequential_mcp_calls_are_not_one_parallel_run() {
     // Adjacent in history, but each its own round: they were never parallel,
