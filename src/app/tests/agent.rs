@@ -589,7 +589,7 @@ fn last_assistant_text_follows_the_viewed_agent() {
     }
     assert_eq!(
         app.on_key(key(KeyCode::Enter)),
-        Action::Copy(Some("the agent's answer".to_string()))
+        Action::Copy("the agent's answer".to_string())
     );
 }
 

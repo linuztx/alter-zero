@@ -174,9 +174,15 @@ sed 's/"provider":"deadend","model":"model-a"/"provider":"nowhere","model":"ghos
 expect_has "$(sm_model_lines "$SM_F3")" -F '"model":"ghost"' "the ghost rollout was not rewritten (the phase would test nothing)"
 launch -c "$SM_DIR" "$S118" 100 30 "$APP_SM --resume $SM_F3"
 sm_h="$(wait_pane 4 "$S118" -F "Can't resume on ghost")"
+sm_h_styled="$(pane "$S118" -e)"
 note "--resume of a record naming an unreachable provider"
 printf '%s\n' "$sm_h"
 expect_has "$sm_h" -F "Can't resume on ghost" "no toast said the recorded model could not be restored"
+# An error toast wears the theme's red softened toward the dim (docs/toast.md):
+# on the fixture's default Mocha, #ca89a4 — never the error bullet's #f38ba8.
+sm_h_toast="$(printf '%s\n' "$sm_h_styled" | grep -F "Can't resume on ghost")"
+expect_has "$sm_h_toast" -F '38;2;202;137;164' "the error toast is not in the softened red"
+expect_lacks "$sm_h_toast" -F '38;2;243;139;168' "the error toast is in the full error red"
 expect_has "$sm_h" -F "model-c" "the session did not stay on the launch's own model when the record was unusable"
 sm_quit "$S118"
 expect_has "$(sm_model_lines "$SM_F3")" -F '"model":"ghost"' "an unusable record was overwritten with the fallback model (a forced fallback is not a choice)"

@@ -211,13 +211,15 @@ pub struct SessionInfo {
 }
 
 /// How a [`Toast`] is styled — a neutral confirmation or a failure. Drives the
-/// row's colour in `ui.rs` (dim vs. red). See `docs/toast.md`.
+/// row's colour in `ui::footer` (dim vs. a softened red). See `docs/toast.md`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToastKind {
     /// A neutral confirmation or soft rejection (dim) — `Copied last message to
-    /// clipboard`, `Switched model to …`, `/resume is disabled …`.
+    /// clipboard`, `Switched model to …`, `/resume is disabled …`, `No agent
+    /// response to copy`.
     Info,
-    /// A failure (red) — `No agent response to copy`, `Copy failed: …`.
+    /// A failure (the theme's red softened toward the dim) — `Copy failed: …`,
+    /// `Can't switch to …`, a config file that would not parse.
     Error,
 }
 

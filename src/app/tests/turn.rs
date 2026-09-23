@@ -755,20 +755,25 @@ fn enter_runs_copy_returning_the_last_assistant_text() {
     type_str(&mut app, "/copy");
     assert_eq!(
         app.on_key(key(KeyCode::Enter)),
-        Action::Copy(Some("copy this answer".to_string()))
+        Action::Copy("copy this answer".to_string())
     );
     assert!(app.input.is_empty(), "the command was consumed");
     assert!(app.command_menu.is_none());
 }
 
 #[test]
-fn copy_with_no_assistant_message_returns_copy_none() {
-    // Nothing to copy → Action::Copy(None); the loop turns that into the red
-    // "No agent response to copy" notice (codex's empty case).
+fn copy_with_no_assistant_message_is_a_toast() {
+    // Nothing to copy is the `/export` and `/compact` empty case — a soft
+    // rejection the user needn't keep, so the same plain info toast rather
+    // than a red failure (docs/toast.md).
     let mut app = App::new();
     app.record_user_message("just me");
     type_str(&mut app, "/copy");
-    assert_eq!(app.on_key(key(KeyCode::Enter)), Action::Copy(None));
+    assert_eq!(
+        app.on_key(key(KeyCode::Enter)),
+        Action::Toast(COPY_EMPTY_NOTICE.to_string())
+    );
+    assert!(app.input.is_empty(), "the /copy token was consumed");
 }
 
 #[test]
@@ -785,7 +790,7 @@ fn copy_dispatches_mid_turn_instead_of_queuing() {
     type_str(&mut app, "/copy");
     assert_eq!(
         app.on_key(key(KeyCode::Enter)),
-        Action::Copy(Some("earlier answer".to_string())),
+        Action::Copy("earlier answer".to_string()),
         "the palette runs /copy mid-turn rather than queuing it"
     );
     assert!(app.queued.is_empty(), "nothing was queued");

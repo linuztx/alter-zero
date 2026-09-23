@@ -20,9 +20,7 @@
 
 use ratatui::crossterm::event::{Event, KeyEventKind};
 
-use alter_zero::app::{
-    Action, CHECKPOINT_REWOUND_NOTICE, COPY_EMPTY_NOTICE, COPY_OK_NOTICE, ToastKind, View,
-};
+use alter_zero::app::{Action, CHECKPOINT_REWOUND_NOTICE, COPY_OK_NOTICE, ToastKind, View};
 use alter_zero::checkpoint;
 use alter_zero::clipboard;
 
@@ -298,7 +296,7 @@ impl Session<'_> {
                 // instead of landing in scrollback. See docs/toast.md.
                 self.toast(text, ToastKind::Info);
             }
-            Action::Copy(maybe_text) => self.copy_to_clipboard(maybe_text),
+            Action::Copy(text) => self.copy_to_clipboard(&text),
         }
         Ok(Flow::Continue)
     }
@@ -317,21 +315,19 @@ impl Session<'_> {
     }
 
     /// `/copy`: do the clipboard I/O here at the boundary (`run_selected_command`
-    /// stayed pure). The pure core already decided *what* to copy — `Some(text)`
-    /// or, for an empty conversation, `None`. The result surfaces as a transient
-    /// toast, not a scrollback bullet. See `docs/copy.md` / `docs/toast.md`.
-    fn copy_to_clipboard(&mut self, maybe_text: Option<String>) {
-        match maybe_text {
-            None => self.toast(COPY_EMPTY_NOTICE, ToastKind::Error),
-            Some(text) => match clipboard::copy_to_clipboard(&text) {
-                Ok(lease) => {
-                    // Hold the native selection alive for the app's lifetime
-                    // (Linux); None over OSC 52.
-                    self.clipboard_lease = lease;
-                    self.toast(COPY_OK_NOTICE, ToastKind::Info);
-                }
-                Err(reason) => self.toast(format!("Copy failed: {reason}"), ToastKind::Error),
-            },
+    /// stayed pure). The pure core already decided *what* to copy — and, with
+    /// nothing to copy, answered with its own info toast instead of reaching
+    /// here. The result surfaces as a transient toast, not a scrollback bullet.
+    /// See `docs/copy.md` / `docs/toast.md`.
+    fn copy_to_clipboard(&mut self, text: &str) {
+        match clipboard::copy_to_clipboard(text) {
+            Ok(lease) => {
+                // Hold the native selection alive for the app's lifetime
+                // (Linux); None over OSC 52.
+                self.clipboard_lease = lease;
+                self.toast(COPY_OK_NOTICE, ToastKind::Info);
+            }
+            Err(reason) => self.toast(format!("Copy failed: {reason}"), ToastKind::Error),
         }
     }
 

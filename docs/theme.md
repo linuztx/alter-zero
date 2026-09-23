@@ -58,7 +58,7 @@ chrome paints is one of these or derived from one:
 | `on_accent` | ink over an `accent` fill (the footer chip, the current ask-question chip, the agent session view's composer label) |
 | `link` | a link's URL, an ordered list's marker, the context view's user tag — and the gradient's far end |
 | `success` | the finished tool bullet, a diff's `+`, the active model's ✓, a completed task, a background notice that went well |
-| `error` | the error bullet, a failed tool, a diff's `-`, the `!` shell mode, an error toast |
+| `error` | the error bullet, a failed tool, a diff's `-`, the `!` shell mode — and, mixed a third of the way to `dim`, an error toast |
 | `warning` | the `retrying n/m` clause, the context view's system tag, the ask review's unanswered warning |
 | `purple` | the context view's tool tag, the `/resume` toolbar's focus |
 | `diff_add_bg` / `diff_del_bg` | an added / removed numbered row's ground |
@@ -72,7 +72,9 @@ The **derivations** are the accessor functions in `ui/theme.rs`
 is `agent_view_label_bg()`, the agent session view's composer chip, whose
 `agent_view_label_fg()` is `on_accent`,
 `header_gradient_start()`/`header_gradient_end()` are `accent` → `link`,
-`shimmer_highlight()` is `text`, `tool_pulse_bright()` is `dim`, and so
+`shimmer_highlight()` is `text`, `tool_pulse_bright()` is `dim`,
+`toast_error_color()` is `error` mixed a third of the way to `dim`
+(`docs/toast.md`), and so
 on): the roles are what `theme.rs` has always named, the palette is what
 each theme paints them with, so a new theme is one table of twenty-one
 values and nothing else. The Catppuccin flavours take the flavour's own

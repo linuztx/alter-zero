@@ -396,7 +396,7 @@ pub fn toast_rows(app: &App) -> u16 {
 }
 
 /// The transient toast's single line: the `TOAST_INDENT` then the message,
-/// dim for an info toast (`toast_color()`) or red for a failure
+/// dim for an info toast (`toast_color()`) or a softened red for a failure
 /// (`toast_error_color()`), cut with a trailing `…` when it overflows `width`
 /// (like the footer). Empty when no toast is live. See `docs/toast.md`.
 #[must_use]

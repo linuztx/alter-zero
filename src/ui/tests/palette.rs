@@ -264,6 +264,35 @@ fn the_gradient_and_the_blends_follow_the_palette() {
 }
 
 #[test]
+fn an_error_toast_is_its_themes_red_softened_toward_the_dim() {
+    // A toast is quiet chrome — its info line wears the dim — so its failure
+    // line is the theme's red pulled toward that dim: still a red at a
+    // glance, never as loud as the error bullet (docs/toast.md).
+    let spread = |color: Color| {
+        let (r, g, b) = rgb_of(color);
+        r.max(g).max(b) - r.min(g).min(b)
+    };
+    for theme in Theme::ALL.into_iter().filter(|t| *t != Theme::Ansi) {
+        with_theme(theme, || {
+            let soft = toast_error_color();
+            let (r, g, b) = rgb_of(soft);
+            assert!(r > g && r > b, "{theme:?}: still a red: {soft:?}");
+            assert!(
+                spread(soft) < spread(error_color()),
+                "{theme:?}: quieter than the error red: {soft:?} vs {:?}",
+                error_color()
+            );
+            assert_ne!(soft, toast_color(), "{theme:?}: not an info toast");
+        });
+    }
+    // The default theme, value for value.
+    assert_eq!(toast_error_color(), Color::Rgb(0xCA, 0x89, 0xA4));
+    // A named colour has nothing to mix: the terminal theme keeps the
+    // terminal's own red.
+    with_theme(Theme::Ansi, || assert_eq!(toast_error_color(), Color::Red));
+}
+
+#[test]
 fn a_rendered_cell_wears_the_active_theme() {
     // The point of the ambient palette: the same builder paints the same
     // cell in whichever theme is active, so a purge rebuild after a switch

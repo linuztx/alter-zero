@@ -12,8 +12,26 @@ release heading when a version is cut.
 
 ## [Unreleased]
 
+### Changed
+
+- **Error toasts use a softer red.** A failure toast — `Copy failed: …`,
+  `Can't switch to …`, a config file that would not parse — was painted in
+  the theme's full error red, the ink of the error bullet and a failed tool
+  cell, which made a four-second status line the loudest thing on screen.
+  It now wears the theme's red mixed a third of the way toward the dim that
+  info toasts use: still red at a glance, but quieter than the error bullet
+  (`#F38BA8` becomes `#CA89A4` on the default Catppuccin Mocha). The
+  `ansi` theme keeps the terminal's own red, which has nothing to mix
+  (`docs/toast.md`).
+
 ### Fixed
 
+- **`/copy` with nothing to copy is no longer shown as an error.** `No
+  agent response to copy` was red, while `Nothing to export` and `Nothing to
+  compact` — the same "nothing to act on yet" case for `/export` and
+  `/compact` — were dim. Nothing has failed, so it is now a plain info toast,
+  raised the same way as those two. A clipboard write that really fails is
+  still an error (`docs/toast.md`, `docs/copy.md`).
 - **Signing in to Ollama Cloud no longer configures the local Ollama
   provider too.** Both read their key from `OLLAMA_API_KEY`, and a key
   resolving is one of the things that makes a provider configured, so a key
