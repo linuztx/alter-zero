@@ -21,7 +21,11 @@ release heading when a version is cut.
   in a pseudo-terminal of its own and returns as soon as the command exits or
   stops to wait for input; a new `bash_session` tool types into it — text and
   named keys such as `<Enter>`, `<C-c>` and `<Up>` — waits on it, reads what
-  it printed (or a full-screen program's screen) and ends it. It also reaches
+  it printed (or a full-screen program's screen) and ends it. Each call
+  reports only the lines that are new or changed since the last one, and a
+  progress bar or a command run under `sudo`, `ssh` or `docker run -it` is
+  waited out rather than taken for a prompt — a download under `sudo pacman`
+  is one wait, not a dozen. It also reaches
   `run_in_background` commands, which can now be waited on, interrupted and
   ended the same way. A session still running shows in the footer's shell
   count, and the ↓ manager shows its live screen; its cells end on a dim

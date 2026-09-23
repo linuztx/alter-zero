@@ -1286,10 +1286,14 @@ stream for their own reasons).
   when the overlay opened is re-committed on return a chunk later (no data loss).
 - Interactive sessions (`bash` with `tty`) decide *waiting for input* by
   heuristics — the cursor left mid-line, the alternate screen, or a terminal
-  in raw mode, each after half a second of quiet — so a program that prints
-  its question, a newline, and then waits in line mode reports `Running`
-  rather than `waiting for input`; its output still shows the question. See
-  `docs/interactive-shell.md` *Limits*.
+  read key by key (raw input with output processing still on, which a relay
+  such as sudo's own pty does not leave), each after half a second of quiet
+  (three for a pure wait that saw the line appear), never on a line redrawn
+  in place like a progress bar — so a program that prints its question, a
+  newline, and then waits in line mode reports `Running` rather than
+  `waiting for input` (its output still shows the question), and a busy
+  command that leaves a line open (`Reading package lists... `) can read as
+  a prompt for a moment. See `docs/interactive-shell.md` *Limits*.
 - Tool output shown inline is always collapsed to a one-line peek; the only way to
   read it in full is the Ctrl+O conversation view, which shows the whole transcript
   with every tool expanded (by design — keeps the inline chat compact).

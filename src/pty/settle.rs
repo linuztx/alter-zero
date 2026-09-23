@@ -10,7 +10,10 @@
 //! 1. it **exited**;
 //! 2. it printed something and went quiet for [`PROMPT_QUIET`] with the
 //!    screen **awaiting keys** — a prompt, or a full-screen program done
-//!    drawing ([`crate::pty::screen::Screen::awaiting_keys`]);
+//!    drawing (`pty::session` decides, from the screen, the transcript and
+//!    the terminal's mode); a pure [`WaitKind::Wait`] needs
+//!    [`WAIT_PROMPT_QUIET`], since the model waits because it believes the
+//!    command busy;
 //! 3. it has been silent for [`LINE_QUIET`] — except for a pure
 //!    [`WaitKind::Wait`]: a build that pauses between lines is still working,
 //!    so a wait returns only on an exit, a prompt, or its timeout, which is
@@ -23,6 +26,27 @@ use std::time::Duration;
 /// says it is waiting for input — long enough that output arriving in two
 /// writes is not cut in half, short enough that a REPL answers briskly.
 pub const PROMPT_QUIET: Duration = Duration::from_millis(500);
+
+/// How long a **pure wait** needs a prompt that appeared during it to stay
+/// quiet — longer, since a wait is the model saying the command is busy, and
+/// a line a busy command leaves open while it works (`Reading package
+/// lists... `) looks just like one. A question still ends the wait in
+/// seconds.
+pub const WAIT_PROMPT_QUIET: Duration = Duration::from_secs(3);
+
+/// How long a prompt must stay quiet to settle — or be reported as waiting
+/// at the end of — a call of `kind`, `output` saying whether the program
+/// printed anything since the call began: [`WAIT_PROMPT_QUIET`] for a pure
+/// wait that saw it print, else [`PROMPT_QUIET`] (a wait that saw nothing
+/// new found the program sitting where it was throughout).
+#[must_use]
+pub fn prompt_quiet(kind: WaitKind, output: bool) -> Duration {
+    if kind == WaitKind::Wait && output {
+        WAIT_PROMPT_QUIET
+    } else {
+        PROMPT_QUIET
+    }
+}
 
 /// How long a program that left the cursor at the start of a line must stay
 /// silent before a launch or an input call returns anyway: it may be waiting
@@ -72,7 +96,7 @@ pub fn settle(kind: WaitKind, timeout: Duration, seen: &Observation) -> Option<S
     if seen.exited {
         return Some(Settle::Exited);
     }
-    if seen.output && seen.awaiting_keys && seen.quiet >= PROMPT_QUIET {
+    if seen.output && seen.awaiting_keys && seen.quiet >= prompt_quiet(kind, true) {
         return Some(Settle::Prompt);
     }
     if kind != WaitKind::Wait && seen.quiet >= LINE_QUIET {
@@ -115,8 +139,28 @@ mod tests {
     #[test]
     fn a_quiet_prompt_settles_as_waiting_for_input() {
         let at_prompt = seen(900, PROMPT_QUIET.as_millis() as u64, true, true);
-        for kind in [WaitKind::Launch, WaitKind::Input, WaitKind::Wait] {
+        for kind in [WaitKind::Launch, WaitKind::Input] {
             assert_eq!(settle(kind, TIMEOUT, &at_prompt), Some(Settle::Prompt));
+        }
+    }
+
+    #[test]
+    fn a_pure_wait_needs_a_longer_silence_at_a_prompt() {
+        // A wait is the model saying the command is busy: a line left open
+        // for a moment (`Reading package lists... `) is not enough to end it.
+        let brief = seen(900, PROMPT_QUIET.as_millis() as u64, true, true);
+        assert_eq!(settle(WaitKind::Wait, TIMEOUT, &brief), None);
+        let long = seen(4000, WAIT_PROMPT_QUIET.as_millis() as u64, true, true);
+        assert_eq!(settle(WaitKind::Wait, TIMEOUT, &long), Some(Settle::Prompt));
+        assert_eq!(prompt_quiet(WaitKind::Wait, true), WAIT_PROMPT_QUIET);
+        assert_eq!(
+            prompt_quiet(WaitKind::Wait, false),
+            PROMPT_QUIET,
+            "a wait that saw nothing new: the program sat where it was throughout"
+        );
+        for output in [true, false] {
+            assert_eq!(prompt_quiet(WaitKind::Launch, output), PROMPT_QUIET);
+            assert_eq!(prompt_quiet(WaitKind::Input, output), PROMPT_QUIET);
         }
     }
 

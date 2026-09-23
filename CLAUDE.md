@@ -1188,11 +1188,17 @@ detach chain's TTY form — `setsid -c`, then the helper under
 `__alter-zero-detached-tty-exec` adding `TIOCSCTTY`, and **no attached
 tier**, whose `/dev/tty` would be the user's) and returns once it exits or
 **settles** at a prompt (`pty::settle`: the cursor left mid-line, the
-alternate screen, or a terminal in raw mode — read off the pty with
-`tcgetattr` — each after 0.5 s of quiet), and the new **`bash_session`**
+alternate screen, or a terminal reading key by key — canonical mode off with
+output processing still on, read off the pty with `tcgetattr`, since a relay
+(sudo's own pty, ssh, `docker run -it`) holds it raw with `OPOST` off too —
+each after 0.5 s of quiet, 3 s for a pure wait that saw the line appear, and
+never on a line the transcript saw **redrawn in place** by two bursts since
+the last input: a progress bar or a spinner, not a prompt), and the new
+**`bash_session`**
 tool types into the session (`pty::keys`' `<Enter>`/`<C-c>`/`<Up>`
 notation, a doubly-escaped `"y\\n"` undone), waits on it, reads it and
-`kill`s it — every report the output since the model's last look (the
+`kill`s it — every report the lines **new or changed** since the model's last
+look, nothing unchanged repeated (the
 `vte` transcript) or a full-screen program's screen (the `vt100` emulator,
 which also answers terminal queries) under a `Running (session …, waiting
 for input)`/`Stopped (session …)` frame, `Exit code: N` once it exits, the

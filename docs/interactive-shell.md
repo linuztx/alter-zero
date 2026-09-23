@@ -115,24 +115,58 @@ waits out the clock. Here the call returns when the command **settles**
 - it printed something and went quiet for `PROMPT_QUIET` (0.5 s) while the
   terminal **awaits keys** — a prompt (`>>> `, `Password: `, `[Y/n] `) left
   the cursor mid-line, a full-screen program is on the alternate screen, or
-  the program reads the terminal **key by key** (raw mode: a menu, an editor,
-  a readline prompt), which is what `waiting for input` says;
+  the program reads the terminal **key by key** (a menu, an editor, a
+  readline prompt), which is what `waiting for input` says;
 - it has been silent for `LINE_QUIET` (2 s) since the call's input — a command
   that answered with whole lines and went quiet;
 - the call's `timeout` passed.
 
+Two things look like a prompt and are not (`SessionIo`'s `awaiting_keys`):
+
+- **an animated line.** A progress bar redrawn after a `\r`, a spinner, a
+  counter, dots appended to `Downloading…` — each leaves the cursor exactly
+  where a prompt would, and pauses whenever the download does. The transcript
+  cuts the output into **bursts** (`BURST_SPAN`, 100 ms — the writes of one
+  frame fall inside one) and counts, per line, the bursts that changed the
+  text an earlier burst had left on it — overwritten, erased or extended;
+  a repaint to the same text is no change. A line changed by two bursts since
+  the program was last typed into is **animated**
+  (`Transcript::cursor_line_animated`), and a cursor on it is no prompt,
+  whatever else the terminal says. Typing resets the count — a menu moves its
+  highlight once per key, and that redraw is the answer to the key, not an
+  animation — and so does a fresh line: a question printed after a progress
+  bar is a prompt at once;
+- **a relay's raw mode.** `sudo` (which runs its command in a terminal of its
+  own and relays it, the default since sudo 1.9.14), `ssh` and
+  `docker run -it` hold the session's terminal raw for as long as their
+  command runs. A key-reading program switches off canonical mode but leaves
+  **output processing** (`OPOST`) on — readline, Node, `prompt_toolkit`,
+  `stty -icanon`, `read -n1` all do — while a relay switches that off too,
+  passing through output already processed at the far end. So a terminal
+  counts as read key by key only with `OPOST` still on
+  (`LineMode::reads_keys`); behind a relay the program is judged by its
+  screen alone.
+
 A `bash_session` call with **no input** is a *wait*, and the third rule does
 not apply to it: a build that pauses between lines is still working, so a
 wait returns only on an exit, a prompt, or its timeout. That is what lets the
-model wait for a long command in one call instead of polling it.
+model wait for a long command in one call instead of polling it. A wait also
+asks more of a prompt: one that appears during it must stay quiet for
+`WAIT_PROMPT_QUIET` (3 s), not 0.5 — the model waits because it believes the
+command busy, and a line a busy command leaves open while it works
+(`Reading package lists... `) looks just like a question. A real question
+still ends the wait within seconds.
 
 **Where the session stands is read at report time.** `waiting for input` is
 not only how the call's wait happened to end: a poll that saw nothing new ends
 on its timeout, yet the program is no less at its prompt, so the frame is
 recomputed from the terminal when the report is composed
-(`SessionIo::waiting`). And a look that found nothing new names the line the
-terminal is still at — `(no new output — still at: Full name:)` — so a model
-that lost track across its polls is told what it is being asked.
+(`SessionIo::waiting`), by the same rule as the wait — a pure wait that saw
+new output asks for `WAIT_PROMPT_QUIET`, one that saw nothing found the
+program sitting where it was throughout. And a look that found nothing new
+names the line the terminal is still at — `(no new output — still at: Full
+name:)` — so a model that lost track across its polls is told what it is
+being asked.
 
 **Keys are notation, not escape codes.** Models are unreliable at emitting
 `\u0003` in JSON but fluent in Vim/tmux key notation, so `input` understands
@@ -161,10 +195,16 @@ parsers (`pty::screen` and `pty::transcript`):
   and every other escape vanish. It is what an ordinary program returns: the
   model gets the output since its last look, not a 40-row window of it.
 
-The transcript's delivery cursor sits on **the line the cursor was on** at the
-last look, so the prompt the model answered is shown again with its answer
-echoed after it — `>>> import math; print(math.pi)` then `3.14…` then the new
-`>>> ` — exactly what a terminal transcript reads like. A full-screen program's
+A look delivers **every line that is new or whose text changed** since the
+previous look, in order, and nothing else: each line remembers (hashed) the
+text the model was last handed. The prompt the model answered comes back with
+its answer echoed after it — `>>> import math; print(math.pi)` then `3.14…`
+then the new `>>> ` — because echoing the answer changed that line; a
+progress bar redrawn in place comes back once, as it stands now, even when it
+sits above the line the cursor was on (pacman moves up to redraw a bar), and
+the finished bars around it, unchanged, are not repeated. So the reports and
+the cells built from them append — each call adds what is new, and the
+context never carries the same unchanged line twice. A full-screen program's
 screen is shown under whatever the main screen printed before it took over
 (`git commit`'s hints before the editor), so nothing is lost at the switch. A
 delivery keeps the **tail** when it is over `SESSION_OUTPUT_MAX_BYTES` (32 KB),
@@ -232,7 +272,22 @@ change answers a failure seen on the wire:
   cursor at the start of a fresh line, so the cursor rule never called it a
   prompt, and every launch waited out the 2 s line-quiet fallback. The monitor
   now reads the terminal's line mode as output arrives: a program reading key
-  by key is waiting when it goes quiet.
+  by key is waiting when it goes quiet (a relay holding the terminal raw is
+  not — see the pacman run below).
+- **`sudo pacman -Syy` returned eleven times.** Reported from real use: after
+  typing the sudo password, a model waited on the download with a ten-minute
+  `timeout`, and every wait came back within a second or two, framed `waiting
+  for input`, repeating the same finished `multilib … 100%` bar each time.
+  Two causes. sudo relays with the terminal raw, which read as a program
+  waiting on keys, so any pause in the download settled as a prompt; and a
+  look re-sent every line from the one the cursor had sat on, so pacman's
+  bars — the cursor parked on the one still moving — came back again and
+  again. A relay's raw mode is now told apart by its output processing, an
+  animated line is no prompt, a pure wait gives a prompt that appears during
+  it longer, and a look carries only the lines that changed: the same run is
+  one wait, ending on `Exit code: 0` over the bar that moved
+  (`llm::exec`'s `a_relayed_progress_display_is_waited_out_and_reported_once`
+  replays it).
 - **Everything at once.** A model sent all four answers in one input. It works
   — a terminal buffers typeahead — but the echo lands before each prompt and
   the transcript reads garbled, and a password prompt that flushes its input
@@ -266,8 +321,8 @@ Linux opens the peer with `TIOCGPTPEER`). The window size is set with
 copies of the slave are dropped the moment the child holds its own, so the
 master reads `EIO` (end of stream) when the last process lets go of it. The
 master is also where the session reads the program's **line mode**
-(`line_mode` — `ICANON`, `ECHO`): the pair shares one line discipline on Linux
-and the BSDs, so no slave handle is kept.
+(`line_mode` — `ICANON`, `ECHO`, `OPOST`): the pair shares one line
+discipline on Linux and the BSDs, so no slave handle is kept.
 
 The child must make the slave its **controlling terminal**, or a `/dev/tty`
 prompt (`sudo`, `ssh`) would find no terminal at all. That needs
@@ -403,7 +458,19 @@ own controlling terminal. `examples/session_probe.rs` is the live harness.
 - **The prompt heuristic** — a program that prints its question, a newline,
   and then waits in canonical mode looks like one between lines of output: it
   settles on `LINE_QUIET` and reports `Running` rather than `waiting for
-  input`. The output still shows the question.
+  input`. The output still shows the question. The reverse holds too: a busy
+  command that leaves a line open (`Reading package lists... `) reads as a
+  prompt to a launch or an input call after 0.5 s of quiet, and to a wait
+  after 3 s.
+- **A question drawn over an animation** — a prompt that replaces a spinner on
+  the spinner's own line inherits its redraw count and reads as animated: a
+  launch or input call returns on `LINE_QUIET` reporting `Running`, and a
+  wait rides it out to its timeout. One printed on a fresh line is a prompt at
+  once.
+- **Behind a relay** — under `sudo`, `ssh` or `docker run -it` the terminal's
+  raw mode says nothing, so a program there waiting for a key with its cursor
+  at the start of a line is not recognised as waiting (one with its prompt
+  text before the cursor is).
 - **Typeahead** — several answers in one input are delivered at once, as a
   terminal would; a program that flushes pending input before a prompt loses
   them. The description steers models to one answer per call instead of

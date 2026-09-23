@@ -16,14 +16,25 @@
 //! *noticed* ([`Transcript::screen_addressed`]) so the session can show the
 //! screen instead for that stretch.
 //!
-//! Two readers take from it, each with its own cursor:
+//! Two readers take from it:
 //!
-//! - the **model** — [`Transcript::take_update`]: every line from the one the
-//!   cursor sat on at the previous look, so a prompt the model answered comes
-//!   back with its answer echoed after it;
+//! - the **model** — [`Transcript::take_update`]: every line that is new or
+//!   whose text changed since the previous look, in order — a prompt the
+//!   model answered comes back with its answer echoed after it, and a
+//!   progress bar redrawn in place comes back once, as it stands now, while
+//!   the lines around it that did not change are not repeated;
 //! - the **stream** — [`Transcript::take_committed`]: each line once the
 //!   cursor has left it, for the running cell's tail and the interim-output
 //!   file; [`Transcript::take_rest`] flushes the last line at exit.
+//!
+//! It also tells a **redrawn** line from a written one. The session cuts the
+//! output into bursts ([`Transcript::new_burst`] — output close together in
+//! time); a burst that changes the text an earlier one left on a line —
+//! overwriting it after a `\r`, erasing it, extending it — redraws that
+//! line. A line redrawn by two bursts since the program was last typed into
+//! ([`Transcript::new_input`]) is **animated** — a progress bar, a spinner, a
+//! counter — and never a prompt, whatever the cursor next to it looks like
+//! ([`Transcript::cursor_line_animated`]).
 //!
 //! Bounded: at most [`MAX_RETAINED_LINES`] lines are kept (older unread ones
 //! are counted into the next update's `omitted_lines`), and a line stops
@@ -38,12 +49,13 @@ pub const MAX_RETAINED_LINES: usize = 2000;
 /// megabyte with no newline keeps a bounded line, not a bounded process.
 pub const MAX_LINE_CHARS: usize = 8192;
 
-/// What the model is handed at a look: the lines since its previous one, and
-/// how many unread lines were dropped by the retention cap in between.
+/// What the model is handed at a look: the lines new or changed since its
+/// previous one, and how many unread lines were dropped by the retention cap
+/// in between.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Update {
-    /// The text — lines right-trimmed, trailing blank lines dropped. Empty
-    /// when nothing changed since the previous look.
+    /// The text — lines right-trimmed, blank lines at either end dropped.
+    /// Empty when nothing changed since the previous look.
     pub text: String,
     /// Unread lines the retention cap let go before this look.
     pub omitted_lines: usize,
@@ -83,8 +95,8 @@ impl Transcript {
         self.parser.advance(&mut self.lines, bytes);
     }
 
-    /// The model's look: the lines since the previous look (see the module
-    /// docs), advancing it.
+    /// The model's look: every line that is new or changed since the
+    /// previous look (see the module docs), marking them delivered.
     pub fn take_update(&mut self) -> Update {
         let lines = &mut self.lines;
         // A look consumes the addressing notice whether or not any text
@@ -93,14 +105,25 @@ impl Transcript {
         if !lines.dirty && lines.omitted == 0 {
             return Update::default();
         }
-        let start = lines.look.max(lines.first);
-        let text = lines.render(start, lines.end());
+        let mut changed = Vec::new();
+        let start = lines.look.max(lines.first) - lines.first;
+        for row in lines.rows.iter_mut().skip(start) {
+            if !std::mem::take(&mut row.touched) {
+                continue;
+            }
+            let text = row.text();
+            let hash = hash_of(&text);
+            if row.delivered != Some(hash) {
+                row.delivered = Some(hash);
+                changed.push(text);
+            }
+        }
         lines.look = lines.row;
         lines.dirty = false;
         let omitted_lines = std::mem::take(&mut lines.omitted);
         lines.trim();
         Update {
-            text: trim_trailing_blank_lines(&text),
+            text: trim_blank_lines(&changed.join("\n")),
             omitted_lines,
         }
     }
@@ -137,6 +160,50 @@ impl Transcript {
         text + "\n"
     }
 
+    /// Start a new burst: output from here on that changes a line an
+    /// earlier burst wrote is a redraw of it (see the module docs).
+    pub fn new_burst(&mut self) {
+        self.lines.close_burst();
+        self.lines.burst += 1;
+    }
+
+    /// The program was typed into: what it draws from here on answers the
+    /// keys, so the redraws counted so far no longer say it is animating.
+    pub fn new_input(&mut self) {
+        self.new_burst();
+        self.lines.epoch += 1;
+    }
+
+    /// Is the line under the cursor **animated** — redrawn in place by at
+    /// least [`ANIMATION_REDRAWS`] bursts since the program was last typed
+    /// into? A progress bar or a spinner, never a prompt. Never on the
+    /// alternate screen, which the lines do not follow.
+    #[must_use]
+    pub fn cursor_line_animated(&self) -> bool {
+        let lines = &self.lines;
+        if lines.alt {
+            return false;
+        }
+        let Some(row) = lines
+            .row
+            .checked_sub(lines.first)
+            .and_then(|at| lines.rows.get(at))
+        else {
+            return false;
+        };
+        let counted = if row.epoch == lines.epoch {
+            row.redraws
+        } else {
+            0
+        };
+        let now = hash_of(&row.text());
+        let open = lines
+            .burst_before
+            .iter()
+            .any(|&(index, before)| index == lines.row && before != now);
+        counted + u32::from(open) >= ANIMATION_REDRAWS
+    }
+
     /// Is the program on the alternate screen (a full-screen program's
     /// canvas) right now?
     #[must_use]
@@ -160,6 +227,20 @@ fn trim_trailing_blank_lines(text: &str) -> String {
     text.trim_end_matches(['\n', ' ']).to_string()
 }
 
+/// `text` without blank lines at either end — a look's lines are what
+/// changed, and a blank line opening them says nothing.
+fn trim_blank_lines(text: &str) -> String {
+    trim_trailing_blank_lines(text.trim_start_matches('\n'))
+}
+
+/// A line's text, reduced to what a look compares it by.
+fn hash_of(text: &str) -> u64 {
+    use std::hash::{Hash as _, Hasher as _};
+    let mut hasher = std::hash::DefaultHasher::new();
+    text.hash(&mut hasher);
+    hasher.finish()
+}
+
 /// The right half of a wide character: the column it covers, holding no
 /// character of its own. A NUL can never be printed (it reaches `execute`,
 /// not `print`), so it cannot collide with real content.
@@ -173,12 +254,54 @@ const REACH_BACK_LINES: usize = 64;
 /// A tab stop every this many columns — a terminal's default.
 const TAB_WIDTH: usize = 8;
 
-/// The line model the parser drives: one `char` per column, rows addressed
-/// absolutely (`first` is the absolute index of `rows[0]`), and the two
-/// readers' cursors.
+/// How many bursts must redraw a line, since the program was last typed
+/// into, before it counts as animated: one is a prompt redrawn once (a menu
+/// answering a key, a REPL repainting after a terminal query), two is a
+/// pattern.
+pub const ANIMATION_REDRAWS: u32 = 2;
+
+/// One line: its columns, and what the model and the animation count know
+/// about it.
+#[derive(Default)]
+struct Row {
+    /// One `char` per column ([`WIDE_PAD`] for a wide character's right half).
+    cells: Vec<char>,
+    /// Created or edited since the model's last look — its text may differ
+    /// from what the model was handed.
+    touched: bool,
+    /// The text the model was last handed for this line, hashed — `None`
+    /// until a look delivers it.
+    delivered: Option<u64>,
+    /// The burst that last edited it, so its text from before that burst is
+    /// kept once.
+    edited_in: Option<u64>,
+    /// Bursts that redrew it, counted in the typing epoch `epoch`.
+    redraws: u32,
+    epoch: u64,
+}
+
+impl Row {
+    /// A line the output just reached — news for the next look.
+    fn new_line() -> Self {
+        Self {
+            touched: true,
+            ..Self::default()
+        }
+    }
+
+    /// Its text: wide-character halves dropped, right-trimmed.
+    fn text(&self) -> String {
+        let text: String = self.cells.iter().filter(|&&c| c != WIDE_PAD).collect();
+        text.trim_end().to_string()
+    }
+}
+
+/// The line model the parser drives: rows addressed absolutely (`first` is
+/// the absolute index of `rows[0]`), the two readers' cursors, and the
+/// bursts that tell a redrawn line from a written one.
 #[derive(Default)]
 struct Lines {
-    rows: std::collections::VecDeque<Vec<char>>,
+    rows: std::collections::VecDeque<Row>,
     /// The absolute index of `rows[0]` — how many rows were let go before it.
     first: usize,
     /// The cursor: an absolute row and a column.
@@ -186,7 +309,9 @@ struct Lines {
     col: usize,
     /// A saved cursor (`ESC 7`, `CSI s`, entering the alternate screen).
     saved: Option<(usize, usize)>,
-    /// The model's cursor: the row its next update starts at.
+    /// The model's cursor: no row before it has anything the model has not
+    /// been handed — the cursor's row at the last look, or the first row
+    /// touched since, if that is earlier.
     look: usize,
     /// The stream's cursor: the first row not yet taken.
     commit: usize,
@@ -198,6 +323,13 @@ struct Lines {
     alt: bool,
     /// Absolute addressing seen since the last look.
     addressed: bool,
+    /// The current burst ([`Transcript::new_burst`]).
+    burst: u64,
+    /// The rows the current burst has edited that held text before it, with
+    /// that text hashed — what closing the burst compares against.
+    burst_before: Vec<(usize, u64)>,
+    /// The typing epoch ([`Transcript::new_input`]).
+    epoch: u64,
 }
 
 impl Lines {
@@ -206,17 +338,61 @@ impl Lines {
         (self.first + self.rows.len()).max(self.row + 1)
     }
 
-    /// The cursor's row, created (with any rows before it) when missing.
-    fn current(&mut self) -> &mut Vec<char> {
-        let index = self.row - self.first;
-        while self.rows.len() <= index {
-            self.rows.push_back(Vec::new());
+    /// Make sure row `index` (absolute) exists, creating it — and any rows
+    /// before it — as new lines.
+    fn ensure(&mut self, index: usize) {
+        while self.first + self.rows.len() <= index {
+            self.look = self.look.min(self.first + self.rows.len());
+            self.rows.push_back(Row::new_line());
+            self.dirty = true;
         }
-        &mut self.rows[index]
     }
 
-    /// Rows `start..end` (absolute) as text: wide-character halves dropped,
-    /// each row right-trimmed, joined by newlines.
+    /// The cursor's row, to edit ([`edit_row`](Self::edit_row)).
+    fn edit(&mut self) -> &mut Vec<char> {
+        self.edit_row(self.row)
+    }
+
+    /// Row `index` (absolute), to edit: created when missing, its text from
+    /// before this burst kept the first time the burst edits it, and marked
+    /// for the next look.
+    fn edit_row(&mut self, index: usize) -> &mut Vec<char> {
+        self.ensure(index);
+        self.look = self.look.min(index);
+        self.dirty = true;
+        let row = &mut self.rows[index - self.first];
+        row.touched = true;
+        if row.edited_in != Some(self.burst) {
+            row.edited_in = Some(self.burst);
+            let before = row.text();
+            if !before.is_empty() {
+                self.burst_before.push((index, hash_of(&before)));
+            }
+        }
+        &mut row.cells
+    }
+
+    /// Close the current burst: every line it changed from the text an
+    /// earlier burst left there counts one more redraw.
+    fn close_burst(&mut self) {
+        for (index, before) in std::mem::take(&mut self.burst_before) {
+            let Some(row) = index
+                .checked_sub(self.first)
+                .and_then(|at| self.rows.get_mut(at))
+            else {
+                continue;
+            };
+            if hash_of(&row.text()) != before {
+                if row.epoch != self.epoch {
+                    row.epoch = self.epoch;
+                    row.redraws = 0;
+                }
+                row.redraws += 1;
+            }
+        }
+    }
+
+    /// Rows `start..end` (absolute) as text, joined by newlines.
     fn render(&self, start: usize, end: usize) -> String {
         let mut out = String::new();
         for absolute in start..end {
@@ -227,8 +403,7 @@ impl Lines {
                 .checked_sub(self.first)
                 .and_then(|index| self.rows.get(index))
             {
-                let text: String = row.iter().filter(|&&c| c != WIDE_PAD).collect();
-                out.push_str(text.trim_end());
+                out.push_str(&row.text());
             }
         }
         out
@@ -251,8 +426,7 @@ impl Lines {
     }
 
     fn pop_front(&mut self) {
-        self.rows.pop_front();
-        if self.first >= self.look {
+        if self.rows.pop_front().is_some_and(|row| row.touched) {
             self.omitted += 1;
         }
         self.first += 1;
@@ -273,7 +447,7 @@ impl Lines {
             return;
         }
         let col = self.col;
-        let row = self.current();
+        let row = self.edit();
         if row.len() < col + width {
             row.resize(col + width, ' ');
         }
@@ -291,7 +465,7 @@ impl Lines {
     /// row may have been added, the retention cap applied.
     fn line_feed(&mut self) {
         self.row += 1;
-        let _ = self.current();
+        self.ensure(self.row);
         self.trim();
     }
 
@@ -306,7 +480,7 @@ impl Lines {
     /// Erase in line: 0 cursor→end, 1 start→cursor, 2 the whole line.
     fn erase_in_line(&mut self, mode: u16) {
         let col = self.col;
-        let row = self.current();
+        let row = self.edit();
         match mode {
             0 => {
                 split_wide_at(row, col);
@@ -323,15 +497,18 @@ impl Lines {
     }
 
     /// Erase in display. Only "cursor to the end" is a line edit here (a REPL
-    /// clearing below its redrawn prompt); "start to cursor" blanks the line
-    /// up to the cursor; the rest clear the *screen*, which is the screen
-    /// view's business.
+    /// clearing below its redrawn prompt, a menu about to redraw its
+    /// options) — the lines below go blank, as they do on a screen, so what
+    /// is drawn there again is compared with what was there; "start to
+    /// cursor" blanks the line up to the cursor; the rest clear the
+    /// *screen*, which is the screen view's business.
     fn erase_in_display(&mut self, mode: u16) {
         match mode {
             0 => {
                 self.erase_in_line(0);
-                let keep = self.row + 1 - self.first;
-                self.rows.truncate(keep);
+                for index in self.row + 1..self.first + self.rows.len() {
+                    self.edit_row(index).clear();
+                }
             }
             1 => self.erase_in_line(1),
             _ => self.addressed = true,
@@ -342,7 +519,7 @@ impl Lines {
     /// Delete `n` characters at the cursor, pulling the rest of the line left.
     fn delete_chars(&mut self, n: usize) {
         let col = self.col;
-        let row = self.current();
+        let row = self.edit();
         if col < row.len() {
             split_wide_at(row, col);
             let end = (col + n).min(row.len());
@@ -355,7 +532,7 @@ impl Lines {
     /// Insert `n` blanks at the cursor, pushing the rest of the line right.
     fn insert_blanks(&mut self, n: usize) {
         let col = self.col;
-        let row = self.current();
+        let row = self.edit();
         if col < row.len() {
             split_wide_at(row, col);
             let n = n.min(MAX_LINE_CHARS.saturating_sub(row.len()));
@@ -367,7 +544,7 @@ impl Lines {
     /// Blank `n` characters from the cursor, in place.
     fn erase_chars(&mut self, n: usize) {
         let col = self.col;
-        let row = self.current();
+        let row = self.edit();
         if col < row.len() {
             let end = (col + n).min(row.len());
             split_wide_at(row, col);
@@ -667,6 +844,110 @@ mod tests {
         assert_eq!(t.take_update().text, "one");
         t.feed(b"two\r\n");
         assert_eq!(t.take_update().text, "two");
+    }
+
+    #[test]
+    fn a_look_repeats_no_line_that_did_not_change() {
+        // pacman's download bars: the finished ones stay put while the
+        // cursor parks on the one still moving and redraws it in place.
+        let mut t = fed(b" core     100%\r\n extra      10%\r\n multilib 100%\r\n");
+        assert_eq!(
+            t.take_update().text,
+            " core     100%\n extra      10%\n multilib 100%"
+        );
+        t.feed(b"\x1b[2F extra      50%\r");
+        assert_eq!(
+            t.take_update().text,
+            " extra      50%",
+            "the bar above the previous look's cursor, and only it"
+        );
+        t.feed(b" extra     100%\r");
+        assert_eq!(
+            t.take_update().text,
+            " extra     100%",
+            "not the unchanged bar below the cursor"
+        );
+    }
+
+    #[test]
+    fn a_line_repainted_unchanged_is_not_repeated() {
+        let mut t = fed(b"$ ");
+        assert_eq!(t.take_update().text, "$");
+        t.feed(b"\r\x1b[K$ ");
+        assert_eq!(t.take_update(), Update::default());
+    }
+
+    #[test]
+    fn a_block_redrawn_below_an_erase_repeats_only_what_changed() {
+        // An arrow-key menu answering a key: back up over its options, clear
+        // below, draw them again with the highlight moved.
+        let mut t = fed(b"? Pick one\r\n> Apple\r\n  Banana\r\n  Cherry\r\n");
+        let _ = t.take_update();
+        t.feed(b"\x1b[3F\x1b[J  Apple\r\n> Banana\r\n  Cherry\r\n");
+        assert_eq!(t.take_update().text, "  Apple\n> Banana");
+    }
+
+    #[test]
+    fn blank_lines_between_new_lines_are_kept_but_none_lead_a_look() {
+        assert_eq!(update(b"a\r\n\r\nb\r\n"), "a\n\nb");
+        let mut t = fed(b"one\r\n");
+        let _ = t.take_update();
+        t.feed(b"\r\n\r\ntwo\r\n");
+        assert_eq!(t.take_update().text, "two");
+    }
+
+    #[test]
+    fn a_line_changed_in_place_by_two_later_bursts_is_animated() {
+        let mut t = fed(b" 10% [#---] ");
+        assert!(!t.cursor_line_animated(), "a fresh line");
+        t.new_burst();
+        t.feed(b"\r 20% [##--] ");
+        assert!(!t.cursor_line_animated(), "one redraw is no pattern yet");
+        t.new_burst();
+        t.feed(b"\r 30% [###-] ");
+        assert!(t.cursor_line_animated());
+        t.new_burst();
+        t.feed(b"\r\nContinue? [Y/n] ");
+        assert!(!t.cursor_line_animated(), "a fresh line after it is not");
+    }
+
+    #[test]
+    fn a_line_growing_across_bursts_is_animated() {
+        let mut t = fed(b"Downloading .");
+        for _ in 0..2 {
+            t.new_burst();
+            t.feed(b".");
+        }
+        assert!(t.cursor_line_animated());
+    }
+
+    #[test]
+    fn writes_within_one_burst_or_unchanged_repaints_are_no_animation() {
+        let mut t = Transcript::new();
+        t.feed(b"Na");
+        t.feed(b"me? ");
+        t.feed(b"\rName? ");
+        assert!(!t.cursor_line_animated(), "one burst, however many writes");
+        for _ in 0..3 {
+            t.new_burst();
+            t.feed(b"\r\x1b[KName? ");
+        }
+        assert!(!t.cursor_line_animated(), "repainted, never changed");
+    }
+
+    #[test]
+    fn typing_into_the_program_starts_the_count_again() {
+        // A menu moves its highlight once per key it is sent: only the
+        // redraws nobody asked for make an animation.
+        let mut t = fed(b"? Pick: Apple");
+        for fruit in ["Banana", "Cherry"] {
+            t.new_burst();
+            t.feed(format!("\r? Pick: {fruit}").as_bytes());
+        }
+        assert!(t.cursor_line_animated());
+        t.new_input();
+        t.feed(b"\r? Pick: Durian");
+        assert!(!t.cursor_line_animated(), "one redraw since the key");
     }
 
     #[test]

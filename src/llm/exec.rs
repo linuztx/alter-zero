@@ -518,7 +518,8 @@ fn run_tty(
             ToolOutcome::ok(io.look(
                 &task.id,
                 Status::Running {
-                    waiting: settled == Settle::Prompt || io.waiting(),
+                    waiting: settled == Settle::Prompt
+                        || io.waiting(WaitKind::Launch, io.origin_mark()),
                 },
             ))
         }
@@ -616,7 +617,12 @@ fn run_bash_session(
     // Where the session stands now: at a prompt even when the wait ended on
     // its timeout (a poll that saw nothing new), since the report must keep
     // saying so.
-    let waiting = matches!(end, Some(WaitEnd::Settled(Settle::Prompt))) || io.waiting();
+    let kind = if parts.is_empty() {
+        WaitKind::Wait
+    } else {
+        WaitKind::Input
+    };
+    let waiting = matches!(end, Some(WaitEnd::Settled(Settle::Prompt))) || io.waiting(kind, since);
     // A `kill` sent with an answer the program met by asking for more is
     // not carried out: the program is waiting on the model, not done.
     let typed = !parts.is_empty();
@@ -2183,7 +2189,10 @@ mod tests {
             BASH_SESSION,
             &serde_json::json!({"session_id": id, "input": "<Enter>"}).to_string(),
         );
-        assert_eq!(submitted.output, "Exit code: 0\nName? World\nhi World");
+        assert_eq!(
+            submitted.output, "Exit code: 0\nhi World",
+            "the prompt line, already reported as it stands, is not repeated"
+        );
     }
 
     #[cfg(unix)]
@@ -2438,6 +2447,60 @@ mod tests {
         // A failure that says nothing of terminals gets nothing.
         let plain = exec_with(&executor, "bash", r#"{"command":"exit 3"}"#);
         assert_eq!(plain.context, None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_relayed_progress_display_is_waited_out_and_reported_once() {
+        // `sudo pacman -Syy` as its terminal sees it: sudo relays with the
+        // terminal raw and its output processing off, and pacman redraws its
+        // download bars in place, parking the cursor at the start of a bar
+        // between updates. Neither is a prompt — a wait rides it out to the
+        // exit — and a look carries only the lines that changed since the
+        // previous one, so the finished bars are not repeated.
+        let (registry, _rx) = test_registry();
+        let executor = RealToolExecutor::new().with_background(registry.clone());
+        let script = concat!(
+            r"stty raw -echo; ",
+            r"printf ':: Synchronizing package databases...\r\n core\r\n extra\r\n multilib\r\n'; ",
+            r"printf '\033[3F core     100%%\r\033[2E multilib 100%%\r\033[1F extra      10%%\r'; ",
+            r"sleep 2.5; printf ' extra      50%%\r'; sleep 0.8; ",
+            r"printf ' extra     100%%\r\033[2E'",
+        );
+        let launch = exec_with(
+            &executor,
+            "bash",
+            &serde_json::json!({"command": script, "tty": true}).to_string(),
+        );
+        let first = launch.output.lines().next().unwrap_or_default();
+        let Some(crate::pty::report::Frame::Running { session, waiting }) =
+            crate::pty::report::parse_frame(first)
+        else {
+            panic!("still running at the launch's return: {}", launch.output);
+        };
+        assert!(
+            !waiting,
+            "a relay's raw terminal is no prompt: {}",
+            launch.output
+        );
+        assert!(
+            launch
+                .output
+                .ends_with(" core     100%\n extra      10%\n multilib 100%"),
+            "{}",
+            launch.output
+        );
+        let session = session.to_string();
+        let waited = exec_with(
+            &executor,
+            BASH_SESSION,
+            &serde_json::json!({"session_id": session, "timeout": 10000}).to_string(),
+        );
+        assert_eq!(
+            waited.output, "Exit code: 0\n extra     100%",
+            "one wait to the exit, and only the bar that moved"
+        );
+        registry.kill_all();
     }
 
     #[test]

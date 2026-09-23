@@ -696,21 +696,24 @@ impl BackgroundRegistry {
     /// # Errors
     /// The model-facing reason when the session is gone or has no terminal.
     pub fn send_input(&self, id: &str, chunks: Vec<InputChunk>) -> Result<(), String> {
-        let input = {
+        let (input, io) = {
             let inner = self.inner.lock().expect("registry lock");
             let task = inner
                 .tasks
                 .get(id)
                 .filter(|task| !task.exited)
                 .ok_or_else(|| format!("session {id} is not running"))?;
-            task.input.clone().ok_or_else(|| {
+            let input = task.input.clone().ok_or_else(|| {
                 format!(
                     "session {id} has no terminal to type into — it was not started with \
                      tty: true (its stdin is /dev/null); you can still wait on it, send \
                      <C-c>, or kill it"
                 )
-            })?
+            })?;
+            (input, Arc::clone(&task.io))
         };
+        // What the program draws from here on answers these keys.
+        io.note_input();
         for chunk in chunks {
             let pause = chunk.pause_after;
             input
@@ -1000,10 +1003,11 @@ impl MonitorHandle {
     }
 
     /// Tell the session whether its program is reading the terminal key by
-    /// key (raw mode — a menu, an editor): such a program waits on keys
-    /// wherever its cursor sits (`pty::session`). Read after each chunk of
-    /// output and on every idle poll, so a mode switched without printing
-    /// is seen within [`MONITOR_POLL_INTERVAL`].
+    /// key (a menu, an editor — not a relay holding it raw, see
+    /// `LineMode::reads_keys`): such a program waits on keys wherever its
+    /// cursor sits (`pty::session`). Read after each chunk of output and on
+    /// every idle poll, so a mode switched without printing is seen within
+    /// [`MONITOR_POLL_INTERVAL`].
     fn refresh_line_mode(&self) {
         #[cfg(unix)]
         if let Some(mode) = self
@@ -1011,7 +1015,7 @@ impl MonitorHandle {
             .as_ref()
             .and_then(crate::pty::spawn::line_mode)
         {
-            self.io.set_reading_keys(!mode.canonical);
+            self.io.set_reading_keys(mode.reads_keys());
         }
     }
 
@@ -1831,12 +1835,88 @@ mod tests {
             reg.line_mode(&task.id),
             Some(crate::pty::spawn::LineMode {
                 canonical: true,
-                echo: true
+                echo: true,
+                processed_output: true,
             })
         );
         let pipe = reg.launch("sleep 30", None, true).expect("launches");
         assert_eq!(reg.line_mode(&pipe.id), None, "a pipe has no terminal");
         assert_eq!(reg.line_mode("bnope"), None);
+        reg.kill_all();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_relay_holding_the_terminal_raw_makes_no_pause_a_prompt() {
+        // sudo (ssh, `docker run -it`) holds the terminal raw — output
+        // processing off too — for as long as its command runs: a pause
+        // between two of the command's lines is still just a pause.
+        let (reg, _rx) = registry();
+        let launch = reg
+            .launch_tty(
+                "stty raw -echo; printf 'working\\r\\n'; sleep 0.8; \
+                 printf 'still working\\r\\n'; sleep 0.8; printf 'done\\r\\n'",
+                None,
+                None,
+                false,
+            )
+            .expect("launches");
+        let (task, io) = (launch.task, launch.io);
+        let end = io.wait(
+            WaitKind::Launch,
+            io.origin_mark(),
+            LONG,
+            &never,
+            &never,
+            &mut |_| {},
+        );
+        assert_eq!(end, WaitEnd::Settled(Settle::Exited));
+        if let Some(observed) = io.end_wait() {
+            reg.finalize(&task.id, observed);
+        }
+        reg.kill_all();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn typing_into_a_session_makes_its_next_redraw_an_answer() {
+        // A picker that animated its line before asking reads as animated —
+        // until it is typed into: the redraw that answers the key is its
+        // prompt again.
+        let (reg, _rx) = registry();
+        let launch = reg
+            .launch_tty(
+                "stty -icanon -echo; printf 'Pick: Apple'; sleep 0.2; \
+                 printf '\\rPick: Banana'; sleep 0.2; printf '\\rPick: Cherry'; \
+                 dd bs=1 count=1 >/dev/null 2>&1; printf '\\rPick: Durian'; sleep 30",
+                None,
+                None,
+                false,
+            )
+            .expect("launches");
+        let (task, io) = (launch.task, launch.io);
+        let deadline = std::time::Instant::now() + LONG;
+        while !io.screen_text().unwrap_or_default().contains("Cherry") {
+            assert!(std::time::Instant::now() < deadline, "the picker drew");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        std::thread::sleep(crate::pty::settle::PROMPT_QUIET + Duration::from_millis(100));
+        assert!(
+            !io.waiting(WaitKind::Input, io.origin_mark()),
+            "an animated line is no prompt"
+        );
+        let since = io.begin_wait();
+        type_into(&reg, &task.id, "x");
+        let started = std::time::Instant::now();
+        let end = io.wait(WaitKind::Input, since, LONG, &never, &never, &mut |_| {});
+        assert_eq!(end, WaitEnd::Settled(Settle::Prompt));
+        assert!(
+            started.elapsed() < crate::pty::settle::LINE_QUIET,
+            "{:?}",
+            started.elapsed()
+        );
+        let _ = io.end_wait();
+        let _ = io.end_wait();
         reg.kill_all();
     }
 

@@ -139,7 +139,7 @@ pub fn spawn_in(
     ))
 }
 
-/// How the program at the other end of a terminal is reading it — the two
+/// How the program at the other end of a terminal is reading it — the
 /// termios flags a session report depends on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LineMode {
@@ -149,6 +149,24 @@ pub struct LineMode {
     pub canonical: bool,
     /// `ECHO`: what is typed shows on the screen — off at a password prompt.
     pub echo: bool,
+    /// `OPOST`: the terminal processes output (turns `\n` into `\r\n`).
+    pub processed_output: bool,
+}
+
+impl LineMode {
+    /// Does a program read this terminal **key by key** at a prompt — a
+    /// menu, a line editor, `read -n1`? Canonical mode off says so — unless
+    /// output processing is off too: that is a **relay** holding the
+    /// terminal raw (sudo running its command in a terminal of its own, ssh,
+    /// `docker run -it`), passing through output already processed at the
+    /// far end. Its raw mode lasts the whole command and says nothing of
+    /// whether anything waits on a key; the program behind it is judged by
+    /// its screen alone. A key-reading program leaves output processing on
+    /// (readline, Node, `prompt_toolkit`, `stty -icanon`).
+    #[must_use]
+    pub fn reads_keys(self) -> bool {
+        !self.canonical && self.processed_output
+    }
 }
 
 /// The terminal's [`LineMode`], read through its master — `None` when the
@@ -156,13 +174,15 @@ pub struct LineMode {
 #[cfg(unix)]
 #[must_use]
 pub fn line_mode(master: &std::fs::File) -> Option<LineMode> {
-    use rustix::termios::LocalModes;
+    use rustix::termios::{LocalModes, OutputModes};
     // The master's termios *is* the slave's on Linux and the BSDs — the pair
     // shares one line discipline — so the session needs no slave of its own.
-    let local = rustix::termios::tcgetattr(master).ok()?.local_modes;
+    let termios = rustix::termios::tcgetattr(master).ok()?;
+    let local = termios.local_modes;
     Some(LineMode {
         canonical: local.contains(LocalModes::ICANON),
         echo: local.contains(LocalModes::ECHO),
+        processed_output: termios.output_modes.contains(OutputModes::OPOST),
     })
 }
 
@@ -306,11 +326,13 @@ mod tests {
     #[test]
     fn the_line_mode_is_read_through_the_master() {
         // Whether the program reads whole lines (a `read`, an `input()`) or
-        // key by key (a menu, an editor), and whether it echoes — read off
-        // the master, the only side of the terminal the session keeps.
+        // key by key (a menu, an editor), whether it echoes, and whether the
+        // terminal still processes output — read off the master, the only
+        // side of the terminal the session keeps.
         let mut session = spawn(
             None,
-            "printf 'one? '; read x; stty -icanon -echo; printf 'two> '; read y",
+            "printf 'one? '; read x; stty -icanon -echo; printf 'two> '; read y; \
+             stty raw; printf 'three'; sleep 30",
         )
         .expect("spawns");
         let rx = reader(&session.master);
@@ -319,7 +341,8 @@ mod tests {
             line_mode(&session.master),
             Some(LineMode {
                 canonical: true,
-                echo: true
+                echo: true,
+                processed_output: true,
             }),
             "a fresh terminal is cooked"
         );
@@ -329,10 +352,41 @@ mod tests {
             line_mode(&session.master),
             Some(LineMode {
                 canonical: false,
-                echo: false
-            })
+                echo: false,
+                processed_output: true,
+            }),
+            "a key-reading program leaves output processing alone"
+        );
+        session.master.write_all(b"\r").expect("types");
+        read_until(&rx, "three");
+        assert_eq!(
+            line_mode(&session.master),
+            Some(LineMode {
+                canonical: false,
+                echo: false,
+                processed_output: false,
+            }),
+            "raw through and through, the way a relay holds it"
         );
         crate::subprocess::kill_process_group(&mut session.child);
+    }
+
+    #[test]
+    fn only_a_program_that_keeps_output_processing_reads_keys() {
+        let mode = |canonical, processed_output| LineMode {
+            canonical,
+            echo: false,
+            processed_output,
+        };
+        assert!(
+            mode(false, true).reads_keys(),
+            "readline, a menu, `read -n1`"
+        );
+        assert!(
+            !mode(false, false).reads_keys(),
+            "sudo, ssh or docker relaying another terminal — raw through and through"
+        );
+        assert!(!mode(true, true).reads_keys(), "a line-reading prompt");
     }
 
     #[test]

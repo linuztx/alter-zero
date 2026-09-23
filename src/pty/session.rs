@@ -33,6 +33,12 @@ use super::transcript::Transcript;
 /// hand-off predicates — short enough that Esc and Ctrl+B act at once.
 const WAIT_POLL: Duration = Duration::from_millis(20);
 
+/// The longest a **burst** of output lasts ([`Transcript::new_burst`]): the
+/// writes a program makes for one frame (an erase, a move, the text) land
+/// inside it, and a program redrawing a line — however fast it animates —
+/// changes it again in a later one.
+const BURST_SPAN: Duration = Duration::from_millis(100);
+
 /// The most finished lines held for a waiting call's running cell; a flood
 /// past it keeps its tail (the cell only ever shows the newest rows).
 const LIVE_MAX_BYTES: usize = 64 * 1024;
@@ -75,6 +81,9 @@ struct IoState {
     /// editor, a readline prompt — so it waits on keys wherever its cursor
     /// sits ([`IoState::awaiting_keys`]).
     reading_keys: bool,
+    /// When the current burst of output began ([`BURST_SPAN`]) — `None`
+    /// before any, and after input, whose answer starts a burst of its own.
+    burst_began: Option<Instant>,
 }
 
 /// A point in a session's output history — taken before a call writes its
@@ -137,6 +146,7 @@ impl SessionIo {
                 finalized: false,
                 announced: false,
                 reading_keys: false,
+                burst_began: None,
             }),
             changed: Condvar::new(),
         }
@@ -194,6 +204,14 @@ impl SessionIo {
             .as_mut()
             .map(|screen| screen.feed(bytes))
             .unwrap_or_default();
+        let now = Instant::now();
+        if state
+            .burst_began
+            .is_none_or(|began| now.saturating_duration_since(began) >= BURST_SPAN)
+        {
+            state.transcript.new_burst();
+            state.burst_began = Some(now);
+        }
         state.transcript.feed(bytes);
         let committed = state.transcript.take_committed();
         if state.waiters > 0 && !committed.is_empty() {
@@ -261,15 +279,27 @@ impl SessionIo {
     }
 
     /// Is the session sitting at a prompt **now** — its screen awaiting keys
-    /// and quiet for [`settle::PROMPT_QUIET`], the test a wait settles on?
-    /// What a report says even when the wait that preceded it timed out: a
-    /// poll that saw nothing new ends on its timeout, but the program is no
-    /// less at its prompt for that. Never for a pipe, or once it has exited.
+    /// and quiet for as long as a call of `kind` that began at `since` needs
+    /// ([`settle::prompt_quiet`]), the test a wait settles on? What a report
+    /// says even when the wait that preceded it timed out: a poll that saw
+    /// nothing new ends on its timeout, but the program is no less at its
+    /// prompt for that. Never for a pipe, or once it has exited.
     #[must_use]
-    pub fn waiting(&self) -> bool {
+    pub fn waiting(&self, kind: WaitKind, since: Mark) -> bool {
         let state = self.lock();
         let quiet = state.last_output.map_or(Duration::ZERO, |at| at.elapsed());
-        !state.finished && quiet >= settle::PROMPT_QUIET && state.awaiting_keys()
+        let needed = settle::prompt_quiet(kind, state.seq > since.seq);
+        !state.finished && quiet >= needed && state.awaiting_keys()
+    }
+
+    /// The program is about to be typed into: what it draws next answers
+    /// the keys — a menu moving its highlight, a line editor echoing — so
+    /// the redraws it made on its own until now stop counting towards an
+    /// animation ([`Transcript::new_input`]).
+    pub fn note_input(&self) {
+        let mut state = self.lock();
+        state.transcript.new_input();
+        state.burst_began = None;
     }
 
     /// Record whether the program reads its terminal **key by key** (raw
@@ -419,12 +449,18 @@ impl SessionIo {
 
 impl IoState {
     /// Does the terminal look like it is waiting for keys? A full-screen
-    /// program or a prompt by the cursor ([`Screen::awaiting_keys`]) — or a
-    /// program reading key by key, wherever its cursor is. Never a pipe.
+    /// program always does; otherwise a prompt by the cursor
+    /// ([`Screen::awaiting_keys`]) or a program reading key by key, wherever
+    /// its cursor is — unless the line under the cursor is **animated**
+    /// ([`Transcript::cursor_line_animated`]): a progress bar or a spinner
+    /// leaves the cursor exactly where a prompt would, and pauses. Never a
+    /// pipe.
     fn awaiting_keys(&self) -> bool {
-        self.screen
-            .as_ref()
-            .is_some_and(|screen| self.reading_keys || screen.awaiting_keys())
+        self.screen.as_ref().is_some_and(|screen| {
+            screen.alternate()
+                || (!self.transcript.cursor_line_animated()
+                    && (self.reading_keys || screen.awaiting_keys()))
+        })
     }
 
     /// The transcript's unfinished tail — the last line, never newline-ended.
@@ -664,9 +700,16 @@ mod tests {
         // must keep saying so (a model told only "Running" polls on).
         let io = SessionIo::new(true);
         io.absorb(b"Full name: ");
-        assert!(!io.waiting(), "not while the prompt is still arriving");
+        assert!(
+            !io.waiting(WaitKind::Input, io.origin_mark()),
+            "not while the prompt is still arriving"
+        );
         std::thread::sleep(settle::PROMPT_QUIET + Duration::from_millis(50));
-        assert!(io.waiting());
+        assert!(io.waiting(WaitKind::Input, io.origin_mark()));
+        assert!(
+            !io.waiting(WaitKind::Wait, io.origin_mark()),
+            "a wait that saw the prompt arrive gives it longer"
+        );
         let since = io.begin_wait();
         let end = io.wait(
             WaitKind::Wait,
@@ -677,13 +720,20 @@ mod tests {
             &mut |_| {},
         );
         assert_eq!(end, WaitEnd::Settled(Settle::Timeout));
+        assert!(
+            io.waiting(WaitKind::Wait, since),
+            "a wait that saw nothing new: it sat at its prompt throughout"
+        );
         let _ = io.look("s1", Status::Running { waiting: true });
-        assert!(io.waiting(), "a look does not change where it stands");
+        assert!(
+            io.waiting(WaitKind::Wait, since),
+            "a look does not change where it stands"
+        );
         assert_eq!(
             io.look(
                 "s1",
                 Status::Running {
-                    waiting: io.waiting()
+                    waiting: io.waiting(WaitKind::Wait, since)
                 }
             ),
             "Running (session s1, waiting for input)\n\
@@ -713,10 +763,85 @@ mod tests {
             started.elapsed() < settle::LINE_QUIET,
             "settled as a prompt, not by the line-quiet fallback"
         );
-        assert!(io.waiting());
+        assert!(io.waiting(WaitKind::Input, io.origin_mark()));
         // Back to reading lines: the cursor rule decides again.
         io.set_reading_keys(false);
-        assert!(!io.waiting());
+        assert!(!io.waiting(WaitKind::Input, io.origin_mark()));
+    }
+
+    /// Feed `chunks` from a stand-in monitor thread, a burst apart.
+    fn feed_paced(io: &Arc<SessionIo>, chunks: &'static [&'static [u8]]) {
+        let io = Arc::clone(io);
+        std::thread::spawn(move || {
+            for chunk in chunks {
+                std::thread::sleep(BURST_SPAN + Duration::from_millis(50));
+                io.absorb(chunk);
+            }
+        });
+    }
+
+    #[test]
+    fn a_line_redrawn_in_place_is_no_prompt() {
+        // A progress bar redrawn after a `\r` leaves the cursor after it, as
+        // a prompt does — but a line changed in place by burst after burst
+        // is an animation, however long it pauses.
+        let io = Arc::new(SessionIo::new(true));
+        let since = io.begin_wait();
+        feed_paced(
+            &io,
+            &[b" 10% [#---] ", b"\r 20% [##--] ", b"\r 30% [###-] "],
+        );
+        let end = io.wait(
+            WaitKind::Input,
+            since,
+            Duration::from_millis(1500),
+            &never,
+            &never,
+            &mut |_| {},
+        );
+        assert_eq!(end, WaitEnd::Settled(Settle::Timeout));
+        assert!(!io.waiting(WaitKind::Input, since));
+    }
+
+    #[test]
+    fn a_question_after_a_line_redrawn_in_place_is_a_prompt() {
+        let io = Arc::new(SessionIo::new(true));
+        let since = io.begin_wait();
+        feed_paced(
+            &io,
+            &[b" 10%", b"\r 20%", b"\r 30%", b"\r\nContinue? [Y/n] "],
+        );
+        let started = Instant::now();
+        let end = io.wait(WaitKind::Input, since, LONG, &never, &never, &mut |_| {});
+        assert_eq!(end, WaitEnd::Settled(Settle::Prompt));
+        assert!(started.elapsed() < settle::LINE_QUIET);
+    }
+
+    #[test]
+    fn a_redraw_answering_the_keys_just_typed_is_still_a_prompt() {
+        // A menu moves its highlight once per key; what it drew before the
+        // model typed does not make that one redraw an animation.
+        let io = SessionIo::new(true);
+        for frame in [
+            &b"? Pick: Apple"[..],
+            b"\r? Pick: Banana",
+            b"\r? Pick: Cherry",
+        ] {
+            io.absorb(frame);
+            std::thread::sleep(BURST_SPAN + Duration::from_millis(50));
+        }
+        std::thread::sleep(settle::PROMPT_QUIET);
+        assert!(
+            !io.waiting(WaitKind::Input, io.origin_mark()),
+            "redrawn by nobody's keys"
+        );
+        let since = io.begin_wait();
+        io.note_input();
+        io.absorb(b"\r? Pick: Durian");
+        let started = Instant::now();
+        let end = io.wait(WaitKind::Input, since, LONG, &never, &never, &mut |_| {});
+        assert_eq!(end, WaitEnd::Settled(Settle::Prompt));
+        assert!(started.elapsed() < settle::LINE_QUIET);
     }
 
     #[test]
@@ -743,16 +868,22 @@ mod tests {
         let busy = SessionIo::new(true);
         busy.absorb(b"compiling\r\n");
         std::thread::sleep(settle::PROMPT_QUIET + Duration::from_millis(50));
-        assert!(!busy.waiting(), "a fresh line is no prompt");
+        assert!(
+            !busy.waiting(WaitKind::Input, busy.origin_mark()),
+            "a fresh line is no prompt"
+        );
         let pipe = SessionIo::new(false);
         pipe.absorb(b"prompt? ");
         std::thread::sleep(settle::PROMPT_QUIET + Duration::from_millis(50));
-        assert!(!pipe.waiting(), "nothing can type into a pipe");
+        assert!(
+            !pipe.waiting(WaitKind::Input, pipe.origin_mark()),
+            "nothing can type into a pipe"
+        );
         let gone = SessionIo::new(true);
         gone.absorb(b"bye? ");
         let _ = gone.finish(Some(0));
         std::thread::sleep(settle::PROMPT_QUIET + Duration::from_millis(50));
-        assert!(!gone.waiting());
+        assert!(!gone.waiting(WaitKind::Input, gone.origin_mark()));
     }
 
     #[test]
