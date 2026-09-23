@@ -973,6 +973,51 @@ pub fn tool_commit_lines(
     Some(lines)
 }
 
+/// The scrollback lines for the calls a **settle resolved all at once** — the
+/// last `count` tool records of `history`. An Esc or a backend error resolves
+/// the running call and every `⎿ Waiting…` sibling behind it together
+/// (`docs/interrupt.md`), then records its red notice behind them, so the
+/// history no longer *ends* at a cell and [`tool_commit_lines`] — built for
+/// the one call that just resolved — would find nothing to commit.
+///
+/// Each record commits exactly as its own resolution would have, through
+/// [`tool_commit_lines`] on the history up to it: the first flushes a
+/// parallel MCP run it was holding (`docs/mcp.md`), and a blank row
+/// separates the cells — the rows a rebuild paints from the same history
+/// ([`conversation_lines`]). Nothing is left in the queue to hold for, so
+/// nothing is held back. Empty when `count` is zero.
+#[must_use]
+pub fn resolved_tools_commit_lines(
+    history: &[HistoryItem],
+    count: usize,
+    width: u16,
+    paths: &PathDisplay,
+) -> Vec<Line<'static>> {
+    let mut ends: Vec<usize> = history
+        .iter()
+        .enumerate()
+        .rev()
+        .filter(|(_, item)| matches!(item, HistoryItem::Tool(_)))
+        .map(|(index, _)| index + 1)
+        .take(count)
+        .collect();
+    ends.reverse();
+    let mut lines = Vec::new();
+    for end in ends {
+        let Some(cell) = tool_commit_lines(&history[..end], &VecDeque::new(), width, paths) else {
+            continue;
+        };
+        if cell.is_empty() {
+            continue;
+        }
+        if !lines.is_empty() {
+            lines.push(Line::default()); // the spacer between committed cells
+        }
+        lines.extend(cell);
+    }
+    lines
+}
+
 /// The `● Calling {label}… (ctrl+o to expand)` header row a collapsed MCP
 /// cell (or the aggregated all-MCP batch strip) wears — truncated to the
 /// width, the hint dropped first when the terminal is too narrow for both.

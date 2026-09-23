@@ -816,10 +816,11 @@ fn a_foreground_groups_resolution_settles_its_members_live_calls() {
     // A member the group settles from the call's outcome — its own terminal
     // event never arrived (a killed loop returns without one; the offline
     // dummy scripts none at all) — must settle the way every other settle
-    // does: its running call resolved onto the transcript, its queue cleared.
-    // Flipping the status alone left a *finished* agent still owning live
-    // cells, so its session view previewed a `⎿ Running…` that could never
-    // resolve and the next chat continuation's batch queued behind it.
+    // does: its running call and the `⎿ Waiting…` sibling behind it resolved
+    // onto the transcript (docs/interrupt.md), its queue cleared. Flipping
+    // the status alone left a *finished* agent still owning live cells, so its
+    // session view previewed a `⎿ Running…` that could never resolve and the
+    // next chat continuation's batch queued behind it.
     let mut app = App::new();
     app.begin_stream();
     app.start_agent_group(false, &agent_specs(false));
@@ -866,11 +867,31 @@ fn a_foreground_groups_resolution_settles_its_members_live_calls() {
         "a settled agent owns no live cells: {:?}",
         run.tool_queue
     );
-    assert!(
-        matches!(run.history.last(), Some(HistoryItem::Tool(tool))
-            if tool.name == "Bash" && tool.status == ToolStatus::Failed),
-        "the running call resolved onto its transcript: {:?}",
-        run.history.last()
+    let resolved: Vec<(&str, ToolStatus, &str)> = run
+        .history
+        .iter()
+        .filter_map(|item| match item {
+            HistoryItem::Tool(tool) => {
+                Some((tool.name.as_str(), tool.status, tool.output.as_str()))
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        resolved,
+        vec![
+            (
+                "Bash",
+                ToolStatus::Failed,
+                crate::app::INTERRUPT_TOOL_OUTPUT
+            ),
+            (
+                "Read",
+                ToolStatus::Failed,
+                crate::app::INTERRUPT_TOOL_OUTPUT
+            ),
+        ],
+        "the running call and its waiting sibling resolved onto its transcript"
     );
 }
 
@@ -1114,6 +1135,7 @@ fn an_agent_launch_carries_the_call_it_answers_into_the_group_record() {
     app.open_round(vec![crate::stream::RoundCall {
         id: "call_agent".to_string(),
         name: "agent".to_string(),
+        arguments: arguments.to_string(),
     }]);
     let batch = app.open_round_batch().expect("a round is open");
     app.start_agent_group(

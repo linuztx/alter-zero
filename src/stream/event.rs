@@ -8,15 +8,19 @@ use crate::ask::AskRequest;
 use crate::permission::PermissionRequest;
 use crate::tasks::TaskStore;
 
-/// One call of a tool round as the model made it — the provider's own id and
-/// the wire tool name — announced by [`StreamEvent::RoundCalls`] in the
-/// model's order ahead of the round's cells, so the records those cells
-/// resolve into carry the id the next request replays
-/// (`docs/prompt-caching.md`).
+/// One call of a tool round as the model made it — the provider's own id, the
+/// wire tool name and the model's verbatim JSON arguments — announced by
+/// [`StreamEvent::RoundCalls`] in the model's order ahead of the round's
+/// cells, so the records those cells resolve into carry the id the next
+/// request replays (`docs/prompt-caching.md`). The arguments are what a call
+/// that never reaches its own [`StreamEvent::ToolStart`] is recorded with: a
+/// `⎿ Waiting…` sibling an Esc resolves still replays exactly as the model
+/// asked for it (`docs/interrupt.md`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RoundCall {
     pub id: String,
     pub name: String,
+    pub arguments: String,
 }
 
 /// One call in a [`StreamEvent::ToolBatch`] announcement: the `name` + short

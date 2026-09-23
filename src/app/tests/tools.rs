@@ -20,9 +20,11 @@ fn start_tool_marks_a_running_tool_not_yet_in_history() {
 fn start_tool_records_the_verbatim_arguments_on_the_call() {
     // The header summary is lossy on purpose (`● Write(a.py)`), so the raw
     // arguments ride beside it — that is what the derived context replays
-    // (`docs/context.md`). It must land on a batch sibling too: the batch
-    // announcement carries only the summary, so a queued `Waiting` cell is
-    // filled in when its own ToolStart flips it to `Running`.
+    // (`docs/context.md`). It must land on a batch sibling too: a batch no
+    // round announced (the offline dummy) carries only the summary, so its
+    // queued `Waiting` cell is filled in when its own ToolStart flips it to
+    // `Running` (an announced round fills it in up front — see
+    // `an_announced_round_gives_each_waiting_call_the_models_own_arguments`).
     let arguments = r#"{"path":"a.py","content":"print(1)\n"}"#;
     let mut app = App::new();
     app.start_tool("Write", "a.py", Some(arguments));
@@ -511,9 +513,15 @@ fn the_verbatim_policy_links_only_what_it_can_place() {
 
 /// The wire identity a backend announces ahead of a round's cells.
 fn round_call(id: &str, name: &str) -> crate::stream::RoundCall {
+    round_call_with(id, name, "{}")
+}
+
+/// [`round_call`] naming the model's verbatim arguments for the call.
+fn round_call_with(id: &str, name: &str, arguments: &str) -> crate::stream::RoundCall {
     crate::stream::RoundCall {
         id: id.to_string(),
         name: name.to_string(),
+        arguments: arguments.to_string(),
     }
 }
 
@@ -642,6 +650,84 @@ fn an_announced_round_stamps_each_records_position_in_the_models_order() {
         ],
         "{:?}",
         app.history
+    );
+}
+
+#[test]
+fn an_announced_round_gives_each_waiting_call_the_models_own_arguments() {
+    // The batch announcement carries only the header summaries; the round
+    // ahead of it carries the model's verbatim arguments, so a call that
+    // never reaches its own ToolStart still records exactly what the model
+    // asked for (docs/interrupt.md).
+    let ping = r#"{"command":"ping google.com -c 10","timeout":60000}"#;
+    let ls = r#"{"command":"ls -la","description":"List files"}"#;
+    let mut app = App::new();
+    app.begin_stream();
+    app.open_round(vec![
+        round_call_with("call_ping", "bash", ping),
+        round_call_with("call_ls", "bash", ls),
+    ]);
+    app.start_tool_batch(&[
+        summary("Bash", "ping google.com -c 10"),
+        summary("Bash", "ls -la"),
+    ]);
+    let arguments: Vec<Option<&str>> = app
+        .tool_queue()
+        .iter()
+        .map(|call| call.arguments.as_deref())
+        .collect();
+    assert_eq!(arguments, [Some(ping), Some(ls)]);
+    // A hook's `updatedInput` rewrites what runs: the call's own ToolStart
+    // still has the last word.
+    let rewritten = r#"{"command":"ping google.com -c 3"}"#;
+    app.start_tool("Bash", "ping google.com -c 3", Some(rewritten));
+    assert_eq!(
+        app.current_tool()
+            .and_then(|call| call.arguments.as_deref()),
+        Some(rewritten)
+    );
+}
+
+#[test]
+fn an_interrupted_round_replays_every_call_the_model_made() {
+    // The model's parallel round: two bash calls. The first is running and
+    // the second still `⎿ Waiting…` when Esc lands. The next request must
+    // still carry BOTH calls — one assistant message, under the provider's own
+    // ids and with the model's own arguments — each answered `Interrupted by
+    // user`, then the notice. A call missing from the context is a call the
+    // model no longer knows it made (docs/interrupt.md).
+    let ping = r#"{"command":"ping google.com -c 10","timeout":60000}"#;
+    let ls = r#"{"command":"ls -la","description":"List files"}"#;
+    let mut app = App::new();
+    app.record_user_message("ping google, then list the files");
+    app.begin_stream();
+    app.open_round(vec![
+        round_call_with("call_ping", "bash", ping),
+        round_call_with("call_ls", "bash", ls),
+    ]);
+    app.start_tool_batch(&[
+        summary("Bash", "ping google.com -c 10"),
+        summary("Bash", "ls -la"),
+    ]);
+    app.start_tool("Bash", "ping google.com -c 10", Some(ping));
+    app.interrupt_turn().expect("a turn was active");
+
+    use crate::context::{ContextMessage, ContextRole, ContextToolCall};
+    assert_eq!(
+        crate::context::context_messages(&app.history),
+        vec![
+            ContextMessage::new(ContextRole::User, "ping google, then list the files"),
+            ContextMessage::assistant_tool_calls(
+                "",
+                vec![
+                    ContextToolCall::new("call_ping", "bash", ping),
+                    ContextToolCall::new("call_ls", "bash", ls),
+                ],
+            ),
+            ContextMessage::tool_result("call_ping", INTERRUPT_TOOL_OUTPUT),
+            ContextMessage::tool_result("call_ls", INTERRUPT_TOOL_OUTPUT),
+            ContextMessage::new(ContextRole::User, format!("[error] {INTERRUPT_NOTICE}")),
+        ]
     );
 }
 

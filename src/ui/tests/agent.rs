@@ -822,9 +822,8 @@ fn an_agents_ctrl_o_cell_lists_only_the_calls_it_ran() {
     // The cell's `tool_headers` carry no status of their own
     // (`docs/agent-tool.md`: "the nested tool headers the agent ran"), so a
     // not-yet-started `⎿ Waiting…` sibling listed there reads as a call the
-    // agent made — and an interrupt drops those siblings without ever
-    // recording them. The running call still belongs: what it is doing now is
-    // part of what it has done.
+    // agent ran while it may yet never run. The running call still belongs:
+    // what it is doing now is part of what it has done.
     let mut app = App::new();
     app.begin_stream();
     app.start_agent_group(false, &[spec("a1", "Batch demo", false)]);

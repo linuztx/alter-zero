@@ -2065,8 +2065,10 @@ between dim walls), the verb text
 shimmering with a white sweep ported from
 codex's `shimmer_spans`; on finish a dim `{done verb} for {n}s` summary commits to
 scrollback, while **Esc mid-turn interrupts** instead (codex-style — cancel + reap
-the backend, drain the channel, keep the partial, resolve a running tool as
-failed, commit the red `Conversation interrupted` notice, **no** summary — but
+the backend, drain the channel, keep the partial, resolve every tool call in
+flight as failed — a parallel batch's running call and each `⎿ Waiting…`
+sibling alike, every one keeping its red cell and its place in the next
+request — commit the red `Conversation interrupted` notice, **no** summary — but
 when **nothing had streamed** (no partial, no tool, empty queue) it instead
 **undoes** the submission, the message back in the composer and no notice, and a
 **`!` shell interrupt** commits no notice either (its `⎿ Interrupted by user`
@@ -2361,8 +2363,13 @@ of bug:
    siblings as dim `⎿ Waiting…` cells (`ToolStatus::Waiting`), each committing to
    scrollback as its `ToolEnd` arrives. Execution stays **sequential** (only the
    front of the queue is ever `Running`, so the invariant is "at most one running
-   tool", not "at most one live tool"); an interrupt/error resolves the running
-   call and drops the un-started `Waiting` siblings (`docs/parallel-tools.md`). The
+   tool", not "at most one live tool"); an interrupt/error resolves the **whole
+   queue** — the running call and every un-started `Waiting` sibling, each red
+   `⎿ Interrupted by user` (`… by a backend error`), recorded in batch order and
+   committed above the notice through `ui::resolved_tools_commit_lines`, so the
+   screen keeps a cell per call and the next request replays the whole round
+   with each call's own arguments (`RoundCall::arguments`) — `docs/interrupt.md`,
+   `docs/parallel-tools.md`. The
    Ctrl+O overlay (`ui::render_tool_view` on the alternate
    screen) is codex's **Ctrl+T transcript pager** — a slash-tiled dim
    `/ T R A N S C R I P T` title row, the scrolling transcript body with
@@ -2527,15 +2534,18 @@ output grow the cumulative token tally on `App::status` (`↓` while replying,
 thinking, or generating a tool call, `↑` for the input and right after a tool — never reset); on `StreamDone` `App::end_turn`
 records the `Done for Ns` summary. A backend may send `StreamEvent::Error(msg)` instead of
 `StreamDone` — even mid-tool; the loop turns that into a red `Role::Error` notice via
-`App::fail_stream` (which also resolves a still-running tool as failed —
-`Interrupted by a backend error` — and clears the status). **Esc while the turn is in
+`App::fail_stream` (which also resolves every tool call still in flight as failed —
+`Interrupted by a backend error`, a batch's `⎿ Waiting…` siblings included —
+and clears the status). **Esc while the turn is in
 flight returns `Action::Interrupt`** (palette-dismiss still wins; when idle Esc
 arms the Esc-Esc backtrack instead, is a no-op over a typed draft, and quits
 only with an empty composer and no user message to edit —
 `docs/backtrack.md`): the loop cancels + detaches the backend, **swaps the channel** (a stale
 `ToolStart` would wedge a phantom running tool), and `App::interrupt_turn` returns
-either `Kept` — keep the partial, resolve a running tool as failed
-(`Interrupted by user`), record the red `INTERRUPT_NOTICE` (**`None` for a shell
+either `Kept` — keep the partial, resolve every call in flight as failed
+(`Interrupted by user` — the running one and each `⎿ Waiting…` sibling, all
+recorded, committed and replayed in the next request's context,
+`docs/interrupt.md`), record the red `INTERRUPT_NOTICE` (**`None` for a shell
 turn** — its cell is the record), clear the status with no summary — **or**
 `Undone` when nothing had streamed and nothing is queued: the submission rolls
 back, its message returned to the composer and dropped from history (the loop

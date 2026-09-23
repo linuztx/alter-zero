@@ -344,11 +344,9 @@ impl App {
             self.record_message(Role::Assistant, streamed.clone());
             Some(streamed)
         };
-        let tool = self.end_tool(ERROR_TOOL_OUTPUT, false);
-        // Any un-started `Waiting` batch siblings never ran — drop them (they
-        // only ever lived in the live region, never committed). See
-        // `docs/parallel-tools.md`.
-        self.tool_queue.clear();
+        // The running call and every `⎿ Waiting…` sibling behind it: none of
+        // them will ever get its ToolEnd now (docs/interrupt.md).
+        let tools = self.fail_live_queue(ERROR_TOOL_OUTPUT);
         // A live agent group dies with the turn — resolve it locally (the
         // channel swap drops the backend's own AgentGroupDone); the loop
         // kills its subagents and commits the tree cell. See
@@ -360,7 +358,7 @@ impl App {
         self.status = None;
         Some(StreamError {
             partial,
-            tool,
+            tools,
             agents,
             error: error.to_string(),
         })
@@ -480,11 +478,12 @@ impl App {
         if let Some(text) = &partial {
             self.record_message(Role::Assistant, text.clone());
         }
-        let tool = self.end_tool(INTERRUPT_TOOL_OUTPUT, false);
-        // Any un-started `Waiting` batch siblings never ran — drop them (they
-        // only lived in the live region, never committed). See
-        // `docs/parallel-tools.md`.
-        self.tool_queue.clear();
+        // Every call of the batch in flight — the running (or asked-about)
+        // one and each `⎿ Waiting…` sibling — resolves `Interrupted by user`
+        // and is recorded: the cells stay on screen, and the next request
+        // replays the whole round, so the model keeps every call it made
+        // (docs/interrupt.md).
+        let tools = self.fail_live_queue(INTERRUPT_TOOL_OUTPUT);
         // A live agent group is stopped with the turn: settle its members as
         // interrupted and record the tree cell — the loop kills the
         // subagent threads via the registry (docs/agent-tool.md).
@@ -501,7 +500,7 @@ impl App {
         self.status = None;
         Some(InterruptedTurn::Kept {
             partial,
-            tool,
+            tools,
             notice,
             agents,
         })
@@ -618,7 +617,7 @@ pub struct StreamError {
     /// the stream contract allows `Error` in place of `StreamDone` at any
     /// point, `ToolEnd` still owed (the interrupt's [`InterruptedTurn::Kept`]
     /// twin).
-    pub tool: Option<ToolCall>,
+    pub tools: Vec<ToolCall>,
     /// The live agent group the error resolved (its foreground agents marked
     /// interrupted, the [`AgentGroup`] recorded in history) — the loop
     /// commits its tree cell like the interrupt path. `None` when no group
@@ -658,7 +657,7 @@ pub enum InterruptedTurn {
         partial: Option<String>,
         /// The tool that was mid-run, now resolved as failed with
         /// [`INTERRUPT_TOOL_OUTPUT`], if one was running.
-        tool: Option<ToolCall>,
+        tools: Vec<ToolCall>,
         /// The red terminal notice to commit to scrollback — [`INTERRUPT_NOTICE`]
         /// for a normal turn, or **`None`** for a `!` shell turn, whose
         /// `⎿ Interrupted by user` cell already says it (so a second

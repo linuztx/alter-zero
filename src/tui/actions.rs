@@ -374,7 +374,7 @@ impl Session<'_> {
             }
             Some(alter_zero::app::InterruptedTurn::Kept {
                 partial,
-                tool,
+                tools,
                 notice,
                 agents,
             }) => {
@@ -393,7 +393,7 @@ impl Session<'_> {
                         self.agent_clocks.remove(&entry.id);
                     }
                 }
-                self.commit_turn_failure(partial, tool, agents, notice);
+                self.commit_turn_failure(partial, &tools, agents, notice);
                 self.render.reset();
                 // The user interrupted to send their queued follow-ups right away
                 // (their spec; codex's submit-pending-steers-after-interrupt).

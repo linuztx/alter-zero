@@ -18,9 +18,9 @@ pub const INTERRUPT_TOOL_OUTPUT: &str = "Interrupted by user";
 pub const ERROR_TOOL_OUTPUT: &str = "Interrupted by a backend error";
 
 /// A call's wire identity as a batch announcement stamps it — the provider's
-/// id and the call's position in its round — both `None` for a batch no
-/// round announced.
-type Identity = (Option<String>, Option<usize>);
+/// id, the call's position in its round and the model's verbatim arguments —
+/// all `None` for a batch no round announced.
+type Identity = (Option<String>, Option<usize>, Option<String>);
 
 /// A tool round as the backend announced it ([`StreamEvent::RoundCalls`]):
 /// the batch id its records share, and its calls in the model's order with a
@@ -114,22 +114,28 @@ impl App {
                 let ids = if visible.len() == items.len() {
                     visible
                         .iter()
-                        .map(|(position, call)| (Some(call.id.clone()), Some(*position)))
+                        .map(|(position, call)| {
+                            (
+                                Some(call.id.clone()),
+                                Some(*position),
+                                Some(call.arguments.clone()),
+                            )
+                        })
                         .collect()
                 } else {
-                    vec![(None, None); items.len()]
+                    vec![(None, None, None); items.len()]
                 };
                 (round.batch, ids)
             }
             _ => {
                 self.next_batch += 1;
-                (self.next_batch, vec![(None, None); items.len()])
+                (self.next_batch, vec![(None, None, None); items.len()])
             }
         };
         self.tool_queue = items
             .iter()
             .zip(ids)
-            .map(|(item, (call_id, position))| ToolCall {
+            .map(|(item, (call_id, position, arguments))| ToolCall {
                 name: item.name.clone(),
                 args: item.args.clone(),
                 status: ToolStatus::Waiting,
@@ -138,10 +144,13 @@ impl App {
                 shell: false,
                 truncated: false,
                 context_output: None,
-                // The announcement carries only the header summary; the
-                // verbatim arguments land when this call's own `ToolStart`
-                // flips it to `Running` (`start_tool`).
-                arguments: None,
+                // The model's own arguments, from the round: what a call that
+                // never reaches its `ToolStart` is recorded with — a waiting
+                // sibling an Esc resolves still replays exactly as the model
+                // made it (docs/interrupt.md). The call's own `ToolStart`
+                // replaces them (`start_tool`): a `PreToolUse` hook may have
+                // rewritten what runs.
+                arguments,
                 approval_note: None,
                 batch: Some(batch),
                 call_id,
@@ -156,8 +165,10 @@ impl App {
     /// If the front call is a `Waiting` batch sibling (`start_tool_batch`
     /// announced it), it is flipped to `Running` — the batch's `(name, args)` are
     /// authoritative and equal the ones passed here (both come from the same
-    /// backend summary), so only the status changes, plus the `arguments` the
-    /// batch announcement has no room for. Otherwise (an empty queue —
+    /// backend summary), so only the status changes, plus the `arguments`: the
+    /// ones this call actually runs with, replacing whatever its round
+    /// announced (a `PreToolUse` hook may have rewritten them,
+    /// `docs/hooks.md`). Otherwise (an empty queue —
     /// the `!` shell, the dummy's lone calls) a fresh `Running` call is pushed, so
     /// the single-tool path is unchanged.
     ///
@@ -266,6 +277,24 @@ impl App {
             ToolStatus::Failed
         };
         self.resolve_front_tool(output, None, status)
+    }
+
+    /// Resolve **every** call still in the live queue as
+    /// [`ToolStatus::Failed`] with `output` — the running (or asked-about)
+    /// front call and each `⎿ Waiting…` sibling behind it, in the batch's
+    /// order — recording each one exactly as [`end_tool`](App::end_tool)
+    /// would, and return them for the boundary to commit. What a turn's death
+    /// owes its batch: an Esc ([`INTERRUPT_TOOL_OUTPUT`]) or a backend error
+    /// ([`ERROR_TOOL_OUTPUT`]) ends every call the model asked for at once,
+    /// and a call that never started is still a call the model made — its
+    /// cell stays on screen and its record keeps it in the next request's
+    /// context (`docs/interrupt.md`). Empty when nothing was in flight.
+    pub(super) fn fail_live_queue(&mut self, output: &str) -> Vec<ToolCall> {
+        let mut resolved = Vec::with_capacity(self.tool_queue.len());
+        while let Some(tool) = self.end_tool(output, false) {
+            resolved.push(tool);
+        }
+        resolved
     }
 
     /// Resolve the in-flight call as **refused at the permission prompt**: red
