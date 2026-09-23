@@ -24,8 +24,9 @@ there" and fades it after a few seconds.
 | trigger | toast | kind |
 | --- | --- | --- |
 | `/copy` succeeds | `Copied last message to clipboard` | info |
-| `/copy` with no reply yet | `No agent response to copy` | error |
+| `/copy` with no reply yet | `No agent response to copy` | info |
 | `/copy` clipboard write fails | `Copy failed: {reason}` | error |
+| `/export` with an empty conversation | `Nothing to export` | info |
 | `/model` switch succeeds | `Switched model to {id}` | info |
 | `/model` switch with no key | `Can't switch to {id}: run /login to set {ENV}` | error |
 | `/login` key saved | `Saved {ENV} — run /model to use {provider}` | info |
@@ -93,7 +94,10 @@ nothing lingering.
 
 The slash-command dispatch returns `Action::Toast(String)` for the palette's
 soft rejections — the mid-turn busy notices (`/resume`, `/help`, `/init`,
-`/compact`) and `/compact`'s empty-context `Nothing to compact`; every other
+`/compact`) and the commands that find nothing to act on yet: `/compact`'s
+`Nothing to compact`, `/export`'s `Nothing to export` and `/copy`'s
+`No agent response to copy`. The boundary shows every `Action::Toast` as an
+info toast, so a pure-core rejection can never come out red. Every other
 toast is raised by the boundary directly (it already owns the clipboard /
 backend / `.env` I/O those confirm).
 
@@ -141,4 +145,40 @@ streaming strip and the queue already do (`ui::repin` re-anchors, no box jump).
 
 Styling is centralized in `ui/theme.rs`: `TOAST_INDENT` (the two-space inset shared
 with the footer/queue), `toast_color()` (dim, `tool_dim_color()`) for info, and
-`toast_error_color()` (`error_color()`) for failures.
+`toast_error_color()` for failures — see below.
+
+## Info or error
+
+A toast is quiet chrome: the info kind wears the footer's dim, and the error
+kind stays nearly as quiet while still saying *failure* at a glance.
+
+- **Info**: confirmations, and the soft rejections where nothing failed — a
+  command that is disabled mid-turn or unavailable in this session, or one
+  with nothing to act on yet (`No agent response to copy`, `Nothing to
+  export`, `Nothing to compact`).
+- **Error**: something the user asked for failed, or will not work the way
+  they expect — a clipboard or file write, a key save, a sign-in, a refused
+  model switch or resume, a message an agent cannot take, an image pasted for
+  a model that cannot see it, or a config file that would not parse
+  (`hooks.json`, `trust.json`, `mcp.json`, a `SKILL.md`, an agent file).
+  `docs/hooks.md` and `docs/project-config.md` make the config ones loud on
+  purpose: a guard that silently failed to load reads as a guard that is
+  running.
+
+The error ink is **the theme's own red mixed a third of the way toward the
+dim** (`TOAST_ERROR_DIM_MIX`, 0.35, through `lerp_color`). It keeps the red's
+hue — the red channel still leads in every RGB theme — at roughly two-thirds of
+its saturation, so a failed `/copy` still looks different from a successful
+one without the toast becoming the loudest line on screen. On the default
+Mocha theme `#F38BA8` becomes `#CA89A4`. The `ansi` theme's red is a named
+terminal colour with no components to mix, so it keeps the terminal's own
+`Red` (the normal-intensity one, not `LightRed`). The full red stays with
+the error bullet, failed and rejected tool cells and the other committed
+failures, which outlive a toast's four seconds. The `/skills` picker's
+session-off note borrows the same ink.
+
+Dimming the error kind all the way was considered and refused. A toast is
+gone in four seconds, so its hue is the only at-a-glance difference between
+`Copied last message to clipboard` and `Copy failed: …`, and the startup
+config-parse toasts would blend into the dim chrome around them — the silent
+failure those two docs were written against.

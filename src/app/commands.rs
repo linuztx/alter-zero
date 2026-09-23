@@ -19,14 +19,14 @@ use std::borrow::Cow;
 
 use super::*;
 
-/// The notice committed when `/copy` writes the last response to the clipboard —
-/// codex's info event, verbatim. Recorded as a [`Role::System`] message. See
-/// `docs/copy.md`.
+/// The toast shown when `/copy` writes the last response to the clipboard —
+/// codex's info event, verbatim. See `docs/copy.md`.
 pub const COPY_OK_NOTICE: &str = "Copied last message to clipboard";
 
-/// The notice committed when `/copy` finds no assistant response to copy —
-/// codex's error event, verbatim. Recorded as a [`Role::Error`] message. See
-/// `docs/copy.md`.
+/// The toast shown when `/copy` finds no assistant response to copy — codex's
+/// wording, but not its error kind: nothing failed, so it is the
+/// [`Action::Toast`] `/export` and `/compact` raise when they have nothing to
+/// act on. See `docs/copy.md`, `docs/toast.md`.
 pub const COPY_EMPTY_NOTICE: &str = "No agent response to copy";
 
 /// The transient toast shown when `/resume` is run while a turn is active —
@@ -458,7 +458,12 @@ impl App {
                     Action::Notice(help_text(&self.commands()))
                 }
             }
-            CommandEffect::Copy => Action::Copy(self.last_assistant_text()),
+            CommandEffect::Copy => match self.last_assistant_text() {
+                Some(text) => Action::Copy(text),
+                // Nothing to copy yet is /export's and /compact's empty case —
+                // a soft rejection, never a red failure. docs/toast.md.
+                None => Action::Toast(COPY_EMPTY_NOTICE.to_string()),
+            },
             CommandEffect::Export => {
                 // /export works mid-turn like /donate: a read-only page that
                 // only replaces the composer, over two const rows — nothing

@@ -58,7 +58,7 @@ chrome paints is one of these or derived from one:
 | `on_accent` | ink over an `accent` fill (the footer chip, the current ask-question chip, the agent session view's composer label) |
 | `link` | a link's URL, an ordered list's marker, the context view's user tag — and the gradient's far end |
 | `success` | the finished tool bullet, a diff's `+`, the active model's ✓, a completed task, a background notice that went well |
-| `error` | the error bullet, a failed tool, a diff's `-`, the `!` shell mode, an error toast |
+| `error` | the error bullet, a failed tool, a diff's `-`, the `!` shell mode — and, mixed a third of the way to `dim`, an error toast |
 | `warning` | the `retrying n/m` clause, the context view's system tag, the ask review's unanswered warning |
 | `purple` | the context view's tool tag, the `/resume` toolbar's focus |
 | `diff_add_bg` / `diff_del_bg` | an added / removed numbered row's ground |
@@ -72,7 +72,9 @@ The **derivations** are the accessor functions in `ui/theme.rs`
 is `agent_view_label_bg()`, the agent session view's composer chip, whose
 `agent_view_label_fg()` is `on_accent`,
 `header_gradient_start()`/`header_gradient_end()` are `accent` → `link`,
-`shimmer_highlight()` is `text`, `tool_pulse_bright()` is `dim`, and so
+`shimmer_highlight()` is `text`, `tool_pulse_bright()` is `dim`,
+`toast_error_color()` is `error` mixed a third of the way to `dim`
+(`docs/toast.md`), and so
 on): the roles are what `theme.rs` has always named, the palette is what
 each theme paints them with, so a new theme is one table of twenty-one
 values and nothing else. The Catppuccin flavours take the flavour's own
@@ -115,7 +117,9 @@ That stepping is the one generalisation the blends needed:
 triples and mix when both ends are `Rgb`, else pick the nearer end
 (`the_gradient_and_the_blends_follow_the_palette`). Every consumer — the
 mascot gradient, the sparkle/blocks/gravity/wave spinners, the tool pulse,
-the status shimmer — is unchanged in shape.
+the status shimmer — is unchanged in shape. The error toast's softened red
+rides the same rule, so under `ansi` it keeps the terminal's own `Red`
+(`docs/toast.md`).
 
 ## The ambient active theme
 
@@ -359,8 +363,8 @@ the saved theme.
   and its panic-safety, `activate_theme`, the chrome/code pairing, distinct
   semantic hues per theme, One Dark value for value, the ANSI theme naming
   no RGB and its stepping blends, the light theme's inverted inks and
-  tints, the gradient/blend derivations, and a rendered cell wearing the
-  active theme.
+  tints, the gradient/blend derivations, the error toast's softened red in
+  every theme, and a rendered cell wearing the active theme.
 - `ui/tests/theme_view.rs` — the framed page (rules, search, rows, counter,
   preview, description, hint), the preview's real cells, every row's own
   swatch, the preview in the highlighted theme against the frame in the

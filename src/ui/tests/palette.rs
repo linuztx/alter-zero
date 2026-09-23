@@ -264,6 +264,47 @@ fn the_gradient_and_the_blends_follow_the_palette() {
 }
 
 #[test]
+fn an_error_toast_is_its_themes_red_softened_toward_the_dim() {
+    // A toast is quiet chrome — its info line wears the dim — so its failure
+    // line is the theme's red pulled toward that dim: still a red at a
+    // glance, never as loud as the error bullet (docs/toast.md).
+    let spread = |color: Color| {
+        let (r, g, b) = rgb_of(color);
+        r.max(g).max(b) - r.min(g).min(b)
+    };
+    let dist2 = |a: Color, b: Color| {
+        let ((r0, g0, b0), (r1, g1, b1)) = (rgb_of(a), rgb_of(b));
+        [(r0, r1), (g0, g1), (b0, b1)]
+            .into_iter()
+            .map(|(x, y)| u32::from(x.abs_diff(y)).pow(2))
+            .sum::<u32>()
+    };
+    for theme in Theme::ALL.into_iter().filter(|t| *t != Theme::Ansi) {
+        with_theme(theme, || {
+            let soft = toast_error_color();
+            let (r, g, b) = rgb_of(soft);
+            assert!(r > g && r > b, "{theme:?}: still a red: {soft:?}");
+            assert!(
+                spread(soft) < spread(error_color()),
+                "{theme:?}: quieter than the error red: {soft:?} vs {:?}",
+                error_color()
+            );
+            // A red channel that still leads is not enough: over a bluish dim
+            // a mostly-grey mix keeps it. The colour must sit nearer the red.
+            assert!(
+                dist2(soft, error_color()) < dist2(soft, toast_color()),
+                "{theme:?}: nearer the red than the dim: {soft:?}"
+            );
+        });
+    }
+    // The default theme, value for value.
+    assert_eq!(toast_error_color(), Color::Rgb(0xCA, 0x89, 0xA4));
+    // A named colour has nothing to mix: the terminal theme keeps the
+    // terminal's own red.
+    with_theme(Theme::Ansi, || assert_eq!(toast_error_color(), Color::Red));
+}
+
+#[test]
 fn a_rendered_cell_wears_the_active_theme() {
     // The point of the ambient palette: the same builder paints the same
     // cell in whichever theme is active, so a purge rebuild after a switch

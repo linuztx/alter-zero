@@ -688,6 +688,11 @@ fn toast_line_colors_info_dim_and_error_red() {
         toast_line(&app, 40).spans[1].style.fg,
         Some(toast_error_color())
     );
+    assert_ne!(
+        toast_line(&app, 40).spans[1].style.fg,
+        Some(error_color()),
+        "an error toast is quieter than the error bullet"
+    );
 }
 
 #[test]

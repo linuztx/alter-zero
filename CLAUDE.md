@@ -2567,11 +2567,13 @@ dispatches an `Action`
 (`/clear`→`Clear`, `/help`→`Notice(String)` committed as a `Role::System`
 message — **but mid-turn `/help` is rejected with a `Toast`** (its list would
 interleave with the reply; `docs/toast.md`),
-`/quit`→`Quit`, **`/copy`→`Copy(Option<String>)`** — codex's `/copy`:
+`/quit`→`Quit`, **`/copy`→`Copy(String)`** — codex's `/copy`:
 the pure core picks the last assistant message (`App::last_assistant_text`) and
 the loop writes it to the system clipboard, arboard with an OSC 52 fallback for
 headless/SSH/tmux, then shows a transient `Copied last message to clipboard` toast
-(or a red `No agent response to copy`/`Copy failed` toast) — **a self-clearing
+(or a red `Copy failed` toast; with no response yet the pure core returns
+`Toast(COPY_EMPTY_NOTICE)` instead — the `/export`/`/compact` empty rule — so
+`No agent response to copy` is an info toast) — **a self-clearing
 line above the box, not a scrollback bullet** (`docs/toast.md`); the clipboard write is
 the I/O boundary, the `base64`/OSC 52 framing a tested pure core in `clipboard`;
 see `docs/copy.md`, **and `/resume`→`OpenResumePicker`** — codex's `/resume`:
@@ -2763,8 +2765,10 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   segment (`docs/background.md`); `footer_rows`/`footer_line`,
   ellipsis-truncated at narrow widths, with `display_cwd` formatting the
   `~`-relative path), the transient toast row above the box (`TOAST_*` — the
-  two-space `TOAST_INDENT`, the dim `toast_color()` (info) / red `toast_error_color()`
-  (failure); `toast_rows`/`toast_line`, ellipsis-truncated like the footer — see
+  two-space `TOAST_INDENT`, the dim `toast_color()` (info) / `toast_error_color()`
+  (failure — the theme's red mixed `TOAST_ERROR_DIM_MIX` of the way toward the
+  dim, a softened red that still reads as red); `toast_rows`/`toast_line`,
+  ellipsis-truncated like the footer — see
   `docs/toast.md`), the Ctrl+R search line that takes the footer's slot while
   a search is open (`SEARCH_*` — the dim `SEARCH_PROMPT`, the cyan
   `search_query_color()` shared by the bold accept/cancel hint keys, the red

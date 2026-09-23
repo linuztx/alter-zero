@@ -64,7 +64,7 @@ pub(super) struct Palette {
     /// ✓, a completed task, a background notice that went well.
     pub success: Color,
     /// Failure: the error bullet, a failed tool, a diff's `-`, the `!` shell
-    /// mode's red, an error toast.
+    /// mode's red — and, mixed toward `dim`, an error toast.
     pub error: Color,
     /// Caution: the `retrying n/m` clause, the context view's system tag,
     /// the ask review's unanswered warning.

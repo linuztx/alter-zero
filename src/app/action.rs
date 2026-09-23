@@ -50,12 +50,12 @@ pub enum Action {
     /// A slash command cleared the conversation (`/clear`). [`App::history`] is
     /// already empty; the loop repaints the now-blank inline view.
     Clear,
-    /// `/copy` — write the last assistant response to the system clipboard.
-    /// `Some(text)` is the text to copy ([`App::last_assistant_text`]); `None`
-    /// means there was no response to copy. The decision is pure; the loop does
-    /// the clipboard I/O ([`crate::clipboard::copy_to_clipboard`]) and commits
-    /// the success/empty/failure notice — codex's `/copy`. See `docs/copy.md`.
-    Copy(Option<String>),
+    /// `/copy` — write the last assistant response ([`App::last_assistant_text`])
+    /// to the system clipboard. The decision is pure — with no response to copy
+    /// the command returns [`Action::Toast`] instead — and the loop does the
+    /// clipboard I/O ([`crate::clipboard::copy_to_clipboard`]) and raises the
+    /// success/failure toast — codex's `/copy`. See `docs/copy.md`.
+    Copy(String),
     /// The user pressed Enter on a `!`-prefixed line from an idle composer: run
     /// the carried command (the text after the `!`, trimmed) locally. The loop
     /// echoes `❯ !command`, calls [`App::begin_shell`], and spawns it. See

@@ -7,9 +7,17 @@ Date: 2026-06-20
 A `/copy` slash command that copies the **last assistant response** to the
 system clipboard — a port of openai/codex's `/copy` ("copy last response as
 markdown"). The outcome surfaces as a **transient toast** above the box (an info
-`Copied last message to clipboard`; an error `No agent response to copy` /
+`Copied last message to clipboard` or `No agent response to copy`; an error
 `Copy failed: {e}`), which self-clears after a few seconds instead of committing
 a scrollback bullet. See `docs/toast.md`.
+
+> **Update (2026-09-23):** with no response to copy, `/copy` now returns
+> `Action::Toast(COPY_EMPTY_NOTICE)` from the pure core — the same path
+> `/export`'s `Nothing to export` and `/compact`'s `Nothing to compact` take —
+> so it shows as an info toast, not an error. Nothing failed; there was just
+> nothing to copy yet. Codex's wording is kept, but not its error kind.
+> `Action::Copy` now carries the text itself (`Copy(String)`), since the empty
+> case never reaches the boundary. `Copy failed: {e}` is still an error.
 
 > **Update (2026-07-08):** `/copy`'s confirmation moved from a committed
 > `Role::System` / `Role::Error` message to a transient toast (`present_toast`
@@ -137,8 +145,9 @@ refactored onto it. The two fixed strings live as `pub const COPY_OK_NOTICE` /
 - `app` (unit): `last_assistant_text` returns the last assistant message,
   skipping later user/system/tool items, and is `None` with no assistant message
   (and for an empty one). `/copy` via Enter (and Tab) returns
-  `Action::Copy(Some(text))`, consumes the input, closes the palette; with no
-  assistant message it returns `Action::Copy(None)`. `/copy` typed mid-turn still
+  `Action::Copy(text)`, consumes the input, closes the palette; with no
+  assistant message it returns `Action::Toast(COPY_EMPTY_NOTICE)`, in an
+  agent's session view as in the main one. `/copy` typed mid-turn still
   dispatches (the palette wins over the queue).
 - `clipboard` (unit, pure helpers only): `base64_encode` against known vectors
   (the 0/1/2 trailing-pad cases and empty); `osc52_sequence` frames the base64 as
@@ -148,4 +157,4 @@ refactored onto it. The two fixed strings live as `pub const COPY_OK_NOTICE` /
   the pane shows `Copied last message to clipboard` and (b) `tmux show-buffer`
   holds the tail of the reply (the OSC 52 fallback reached the clipboard, since
   the headless env has no arboard). A `/copy` with no reply yet shows `No agent
-  response to copy`.
+  response to copy` in the dim info-toast colour.

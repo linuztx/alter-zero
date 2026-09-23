@@ -20,6 +20,7 @@
 //! site.
 
 use super::palette::palette;
+use super::wrap::lerp_color;
 use super::*;
 
 // --- Claude-Code-ish styling. Centralised so it's trivial to retheme. ---
@@ -2067,10 +2068,18 @@ pub(super) fn toast_color() -> Color {
     tool_dim_color()
 }
 
-/// An error toast's colour (a failure — a `/copy` error, a bad model switch) —
-/// the error red.
+/// How far an error toast's red is mixed toward the info toast's dim — 0 the
+/// full error red, 1 the dim. A third of the way keeps a failure red at a
+/// glance without the four-second line outshouting the error bullet. See
+/// docs/toast.md.
+pub(super) const TOAST_ERROR_DIM_MIX: f32 = 0.35;
+
+/// An error toast's colour (a failure — a `Copy failed`, a refused model
+/// switch): the theme's error red mixed [`TOAST_ERROR_DIM_MIX`] of the way
+/// toward [`toast_color`], a softer red than the error bullet's. A named
+/// terminal red (the `ansi` theme) has nothing to mix and stays itself.
 pub(super) fn toast_error_color() -> Color {
-    error_color()
+    lerp_color(error_color(), toast_color(), TOAST_ERROR_DIM_MIX)
 }
 
 // --- The Ctrl+R reverse history search line (codex's reverse-i-search footer,

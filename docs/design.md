@@ -240,9 +240,11 @@ which Ctrl+V reads the clipboard from.
   input** and dispatches an `Action`: `/clear` → `Clear` (a full wipe — see
   below), `/help` → `Notice` (lists the commands), `/quit` → `Quit`
   (exits — codex's `/quit`/`/exit`, "exit Codex"), and `/copy` →
-  `Copy(Option<String>)` (codex's `/copy` — the last assistant response to the
-  system clipboard; the loop does the arboard/OSC 52 write at the boundary and
-  commits a system or red error notice, see `docs/copy.md`), and `/resume` →
+  `Copy(String)` (codex's `/copy` — the last assistant response to the
+  system clipboard, the loop doing the arboard/OSC 52 write at the boundary
+  and confirming with a toast; with no response yet the command is
+  `Toast(COPY_EMPTY_NOTICE)` instead, `/compact`'s empty rule — see
+  `docs/copy.md`), and `/resume` →
   `OpenResumePicker` idle or `Toast(RESUME_BUSY_NOTICE)` mid-turn
   (codex blocks it while a task runs — see `docs/resume.md` and the /resume
   bullet below), and `/init` → `Submit(INIT_PROMPT.trim_end())` idle
@@ -784,7 +786,7 @@ file-search worker ► tokio mpsc ───┘                           draw ti
 - `Role { User, Assistant, Error, System }` — drives bullet/colour (errors red,
   system notices cyan).
 - `Action { None, Submit(String), PasteImage, ToggleToolView, Notice(String),
-  Clear, Copy(Option<String>), RunShell(String), Interrupt, Quit }` — returned
+  Clear, Copy(String), RunShell(String), Interrupt, Quit }` — returned
   by `App::on_key` (`PasteImage` sends the loop to the clipboard for a Ctrl+V
   image — `docs/image-paste.md`; `RunShell` carries an idle `!command` to run
   locally — `docs/shell-command.md`).
