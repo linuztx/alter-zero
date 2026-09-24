@@ -648,7 +648,12 @@ change answers a failure seen on the wire:
   process. `qwen3-coder-480b` read mc's key bar `7Mkdir` as the digit `7`,
   which mc typed into its command line, and reported honestly that the
   directory was not made. The description now says a full-screen program
-  takes each key at once, and that a key bar's number is a function key.
+  takes each key at once, and that a key bar's number is a function key:
+  `gpt-oss:120b` then sent its keys bare, `kimi-k2.6` sorted btop by memory
+  with `<Right>`s, filtered it and quit, and did the `mc` task in four calls
+  — `<F7>`, `made-in-mc<Enter>`, `<F10>`, `ls`. `qwen3-coder-480b` on Venice,
+  the deployment that ignored the unsubmitted-line note below, still typed
+  `7` and `10`.
 
 Some failures stay with the model, the tool having said what it could. A
 REPL wants a blank line to close a Python block, and a model that sends a
