@@ -148,7 +148,9 @@ waits out the clock. Here the call returns when the command **settles**
   the program reads the terminal **key by key** (a menu, an editor, a
   readline prompt), which is what `waiting for input` says;
 - it is **drawing a screen that never goes quiet** and has had `SCREEN_BUSY`
-  (2 s) since the call's last key — a full-screen program, or one that
+  (2 s) since the call's last key — or since its first frame, for a screen
+  switched to since and drawn late (*A screen not yet drawn*, below) — a
+  full-screen program, or one that
   repaints the main screen by cursor addressing while the terminal reads key
   by key (`top`), redrawing a clock, a meter or an animation faster than
   every half second. `watch -n 0.1` held a launch for its whole two-minute
@@ -158,7 +160,8 @@ waits out the clock. Here the call returns when the command **settles**
   screen, apt's scroll region, reads no keys and is waited out as before);
 - it has been silent for `LINE_QUIET` (2 s) since the call's input — a command
   that answered with whole lines and went quiet — or, after a password the
-  call submitted, for `CHECK_QUIET` (10 s) until the program answers it;
+  call submitted or on a screen switched to and not yet drawn on, for
+  `CHECK_QUIET` (10 s) until the program answers it or draws;
 - the call's `timeout` passed.
 
 Three things look like a prompt and are not (`SessionIo`'s `awaiting_keys`):
@@ -202,6 +205,17 @@ asks more of a prompt: one that appears during it must stay quiet for
 command busy, and a line a busy command leaves open while it works
 (`Reading package lists... `) looks just like a question. A real question
 still ends the wait within seconds.
+
+**A screen not yet drawn** (`Screen::undrawn`, `Observation::undrawn`). btop
+1.4 switches to the alternate screen, then probes its GPU for seconds before
+it draws a thing, and a launch that took the blank for an answer returned it
+after 2 s — a program asleep is no prompt, but it was a full-screen program
+that "never stopped drawing". A screen switched to with nothing on it now has
+nothing to answer and is no screen being drawn: its silence is not a quiet
+line for up to `CHECK_QUIET`, and the call returns with the first frame. The
+busy-screen watch then counts from that frame (`IoState::drawn_at`), not from
+the call's last key: counted from the key, the first piece of a frame written
+in four settled the call, and the model read a quarter of the screen.
 
 **A wait counts what the model has not seen** (`IoState::printed_since`), not
 only what arrives during it. A command that works quietly past `LINE_QUIET`
@@ -399,6 +413,13 @@ and the transcript alike — and `btop` and a differential check against tmux
   `ranger` sends it whatever the terminal, and `vt100` printed the title at
   the cursor. It is dropped, up to the BEL or the ESC that ends it.
 
+The pre-pass's own parser has to know where it is, too: it passes plain text
+straight through only between sequences, and the ST that ends a link or a
+title (`ESC \`) ends the string on its ESC while the `\` is still to come —
+taken for text, the `\` left the parser inside an escape sequence, and
+`│Disk` after a link (compilers and systemd print them) became a line feed
+and `isk`.
+
 These were found by a **differential check** (`scripts/pty_oracle.sh`,
 `examples/pty_oracle.rs`): a program runs in the session's pseudo-terminal
 with a script of keys, every byte it writes is recorded and shown through the
@@ -414,7 +435,27 @@ sends (DECALN's screen of `E`s, DECSCA's protected characters).
 
 The cursor is named where a person would see it: after a write to the last
 column the emulator holds it one past the edge, waiting to wrap, and the
-screen said `column 121` of 120.
+screen said `column 121` of 120. And its **line is quoted** in the heading,
+with `‸` where the cursor is (`Snapshot::cursor_text`, cut to forty characters
+before it and twenty after): `cursor at line 38, column 31` asks a model to
+count thirty-eight rows down, which it does not do, and nano's save prompt —
+the file's name filled in already — had a model type the name again,
+`sysinfo.shsysinfo.sh`, then loop on `Save file under DIFFERENT NAME?`.
+`— "File Name to Write: sysinfo.sh‸"` says the name is there. A **hidden**
+cursor (`ESC [ ? 25 l` — htop, mc, whiptail) is reported as `cursor hidden`
+rather than wherever the program parked it.
+
+**A screen drawn on the main screen stays a screen** (`IoState::screen_view_now`).
+`top` and `dialog` draw on the main screen with absolute addressing, which the
+lines cannot follow, so a look that sees it shows the screen; but `dialog`,
+once drawn, moves its focus with column moves and colours alone, and the next
+look — no addressing since the last — fell back to the lines: `(no new output
+— still at: <  OK  >    <Cancel>)` after a Tab that had moved the focus to
+Cancel. The screen view now sticks: absolute addressing turns it on, output
+that edits in place — a backspace, a relative or column move, a character
+inserted or deleted (`Transcript::edited_in_place`) — keeps it, and output of
+plain lines turns it off, so `clear` then an ordinary command reads as lines
+again.
 
 **The kernel's word** (`pty::probe`, Linux). The screen can only offer a
 shape; the kernel knows. `/proc/PID/task/TID/syscall` names the system call a

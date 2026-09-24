@@ -32,7 +32,13 @@ release heading when a version is cut.
   draws them. A session gets a UTF-8 locale when your environment names
   none, so `btop` starts in a bare container, and keys reach a program a
   moment apart, as a person's do, so one that reads a key per read — `btop`
-  again — sees every arrow and every letter typed into its filter. A screen
+  again — sees every arrow and every letter typed into its filter. A
+  program that switches screens and takes a moment to draw its first frame
+  (`btop` probing a GPU) is shown once it has drawn it, not as a blank
+  screen; a menu drawn on the main screen (`dialog`) keeps showing its screen
+  as its focus moves; and the screen's heading quotes the line the cursor is
+  on (`"File Name to Write: notes.txt‸"`), so the agent sees a prompt's
+  default rather than typing it again. A screen
   that never stops redrawing (`watch -n 0.1`, `top -d 0.1`) answers within
   two seconds rather than holding the call to its timeout, and keys held
   with modifiers — `<C-Left>`, `<S-Up>`, `<M-F7>` — are sent as a terminal

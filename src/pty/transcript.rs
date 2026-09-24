@@ -117,6 +117,7 @@ impl Transcript {
         // A look consumes the addressing notice whether or not any text
         // changed — the session has shown the screen for that stretch.
         lines.addressed = false;
+        lines.edited = false;
         if !lines.dirty && lines.omitted == 0 {
             return Update::default();
         }
@@ -298,6 +299,19 @@ impl Transcript {
     pub fn screen_addressed(&self) -> bool {
         self.lines.addressed
     }
+
+    /// Has the program **edited what it already wrote** since the previous
+    /// look — moved the cursor back over it or up and down (a backspace, a
+    /// relative or column move, a saved cursor), or inserted and deleted
+    /// characters in it? Writing on, returns, line feeds and tabs, and the
+    /// erases a progress bar redraws with, are plain output. What decides
+    /// whether a program that drew on the main screen still shows its
+    /// screen (`pty::session`): a full-screen program redraws in place, an
+    /// ordinary command writes lines.
+    #[must_use]
+    pub fn edited_in_place(&self) -> bool {
+        self.lines.edited
+    }
 }
 
 /// `text` without the blank lines a trailing newline (or an erased tail)
@@ -412,6 +426,9 @@ struct Lines {
     alt: bool,
     /// Absolute addressing seen since the last look.
     addressed: bool,
+    /// An edit in place seen since the last look
+    /// ([`Transcript::edited_in_place`]).
+    edited: bool,
     /// The current burst ([`Transcript::new_burst`]).
     burst: u64,
     /// The rows the current burst has edited that held text before it, with
@@ -756,7 +773,10 @@ impl vte::Perform for Lines {
         match byte {
             b'\n' | 0x0b | 0x0c => self.line_feed(),
             b'\r' => self.col = 0,
-            0x08 => self.col = self.col.saturating_sub(1),
+            0x08 => {
+                self.col = self.col.saturating_sub(1);
+                self.edited = true;
+            }
             b'\t' => self.col = ((self.col / TAB_WIDTH + 1) * TAB_WIDTH).min(MAX_LINE_CHARS),
             _ => {}
         }
@@ -781,6 +801,12 @@ impl vte::Perform for Lines {
             return;
         }
         let n = usize::from(first_param(params, 1));
+        if matches!(
+            action,
+            'G' | '`' | 'C' | 'a' | 'D' | 'A' | 'B' | 'e' | 'E' | 'F' | 'P' | '@' | 'X' | 's' | 'u'
+        ) {
+            self.edited = true;
+        }
         match action {
             // REP: the last character, `n` times more.
             'b' => {
@@ -844,6 +870,9 @@ impl vte::Perform for Lines {
         }
         if self.alt || !intermediates.is_empty() {
             return;
+        }
+        if matches!(byte, b'7' | b'8' | b'M') {
+            self.edited = true;
         }
         match byte {
             b'7' => self.save_cursor(),
@@ -1236,6 +1265,38 @@ mod tests {
         assert!(
             !t.screen_addressed(),
             "the alternate screen's own addressing is the screen view's business"
+        );
+    }
+
+    #[test]
+    fn edits_in_place_are_noticed_until_the_next_look() {
+        let mut t = fed(b"plain lines\r\n\tand a tab\r\n");
+        assert!(
+            !t.edited_in_place(),
+            "writing, returns and line feeds are plain"
+        );
+        t.feed(b"abc\x08x");
+        assert!(t.edited_in_place(), "a backspace moves back over the text");
+        let _ = t.take_update();
+        assert!(!t.edited_in_place(), "a look resets it");
+        for edit in [
+            &b"\x1b[3D"[..],
+            b"\x1b[2A",
+            b"\x1b[5G",
+            b"\x1b[2P",
+            b"\x1b[4X",
+            b"\x1b[@",
+            b"\x1b7",
+            b"\x1bM",
+        ] {
+            t.feed(edit);
+            assert!(t.edited_in_place(), "{edit:?}");
+            let _ = t.take_update();
+        }
+        t.feed(b"\rDownloading 50%\x1b[K\r\n");
+        assert!(
+            !t.edited_in_place(),
+            "a return and an erase are a progress bar's own"
         );
     }
 

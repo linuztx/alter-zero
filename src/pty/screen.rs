@@ -63,7 +63,25 @@ pub struct Snapshot {
     /// focused button, a table's header — what a curses program shows in
     /// colour alone, which the rows' text cannot say.
     pub highlights: Vec<(u16, String)>,
+    /// The cursor's line with [`CURSOR_MARK`] where the cursor is, cut to
+    /// [`CURSOR_BEFORE`] characters before it and [`CURSOR_AFTER`] after —
+    /// `None` when the cursor is hidden or its line blank. Where typing
+    /// lands, without counting down forty rows to find it: a prompt that
+    /// holds a default (`File Name to Write: notes.txt‸`), the character an
+    /// editor's cursor is on (`alpha ‸beta`).
+    pub cursor_text: Option<String>,
+    /// The program hides the cursor (`ESC [ ? 25 l` — htop, mc, whiptail):
+    /// where it parked it says nothing.
+    pub cursor_hidden: bool,
 }
+
+/// Marks the cursor's place in [`Snapshot::cursor_text`] — the caret
+/// proofreaders use for an insertion point.
+pub const CURSOR_MARK: char = '\u{2038}';
+/// How much of the cursor's line before it [`Snapshot::cursor_text`] keeps.
+pub const CURSOR_BEFORE: usize = 40;
+/// How much of the cursor's line after it [`Snapshot::cursor_text`] keeps.
+pub const CURSOR_AFTER: usize = 20;
 
 /// The most highlights a report names ([`Snapshot::highlights`]).
 pub const MAX_HIGHLIGHTS: usize = 8;
@@ -124,7 +142,59 @@ impl Screen {
             size: (rows, columns),
             alternate: screen.alternate_screen(),
             highlights: highlights(screen),
+            cursor_text: self.cursor_text(),
+            cursor_hidden: screen.hide_cursor(),
         }
+    }
+
+    /// See [`Snapshot::cursor_text`].
+    fn cursor_text(&self) -> Option<String> {
+        let screen = self.parser.screen();
+        if screen.hide_cursor() {
+            return None;
+        }
+        let (row, col) = screen.cursor_position();
+        let (_, columns) = screen.size();
+        let (mut before, mut after) = (Vec::new(), Vec::new());
+        for at in 0..columns {
+            let Some(cell) = screen.cell(row, at) else {
+                continue;
+            };
+            if cell.is_wide_continuation() {
+                continue;
+            }
+            let side = if at < col { &mut before } else { &mut after };
+            match cell.contents() {
+                "" => side.push(' '),
+                text => side.extend(text.chars()),
+            }
+        }
+        while after.last() == Some(&' ') {
+            after.pop();
+        }
+        if after.is_empty() && before.iter().all(|c| c.is_whitespace()) {
+            return None;
+        }
+        // Cut to the window around the cursor; the blanks at a cut say
+        // nothing beside the ellipsis, so they go, and the text between
+        // stays exactly as drawn.
+        let cut = before.len() > CURSOR_BEFORE;
+        let kept: String = before[before.len().saturating_sub(CURSOR_BEFORE)..]
+            .iter()
+            .collect();
+        let before = if cut {
+            format!("\u{2026}{}", kept.trim_start())
+        } else {
+            kept.trim_start().to_string()
+        };
+        let cut = after.len() > CURSOR_AFTER;
+        let kept: String = after[..after.len().min(CURSOR_AFTER)].iter().collect();
+        let after = if cut {
+            format!("{}\u{2026}", kept.trim_end())
+        } else {
+            kept
+        };
+        Some(format!("{before}{CURSOR_MARK}{after}"))
     }
 
     /// The row the cursor is on, right-trimmed — the prompt, when the
@@ -179,6 +249,17 @@ impl Screen {
             bracketed_paste: screen.bracketed_paste(),
             full_screen: screen.alternate_screen(),
         }
+    }
+
+    /// Has the program switched to the alternate screen and drawn nothing on
+    /// it — getting ready (btop gathers its first frame for seconds), or
+    /// between a clear and its frame? There is nothing there to read yet,
+    /// and nothing to answer.
+    #[must_use]
+    pub fn undrawn(&self) -> bool {
+        let screen = self.parser.screen();
+        let (_, columns) = screen.size();
+        screen.alternate_screen() && screen.rows(0, columns).all(|row| row.trim().is_empty())
     }
 
     /// Does the screen look like it is **waiting for keys**? A full-screen
@@ -484,6 +565,12 @@ impl Prepass {
             self.pending.push(byte);
             self.parser
                 .advance(&mut self.state, std::slice::from_ref(&byte));
+            // An ESC leaves the parser in an escape sequence, whatever it
+            // completed: the ST (`ESC \`) that ends a link or a title ends
+            // the string on its ESC, and the `\` is still the parser's.
+            if byte == 0x1b {
+                self.state.ground = false;
+            }
             let whole = match self.state.events.as_slice() {
                 [] => {
                     self.state.ground = false;
@@ -1276,6 +1363,102 @@ mod tests {
         );
     }
 
+    fn wide() -> Screen {
+        Screen::new(5, 60)
+    }
+
+    #[test]
+    fn the_cursor_is_quoted_in_its_line() {
+        // nano's save prompt, its file name filled in already: the caret
+        // says typing goes after it — a model that could not see that typed
+        // the name again and saved `sysinfo.shsysinfo.sh`.
+        let mut s = wide();
+        s.feed(b"\x1b[7mFile Name to Write: sysinfo.sh\x1b[27m");
+        assert_eq!(
+            s.snapshot().cursor_text.as_deref(),
+            Some("File Name to Write: sysinfo.sh\u{2038}")
+        );
+        // vim's normal mode: on a character, the caret sits before it.
+        s.feed(b"\r\nalpha beta\x1b[2;7H");
+        assert_eq!(
+            s.snapshot().cursor_text.as_deref(),
+            Some("alpha \u{2038}beta")
+        );
+    }
+
+    #[test]
+    fn a_long_cursor_line_is_cut_around_the_cursor() {
+        let mut s = Screen::new(5, 120);
+        let line: String = ('a'..='z').cycle().take(110).collect();
+        s.feed(line.as_bytes());
+        s.feed(b"\x1b[1;61H");
+        let text = s.snapshot().cursor_text.expect("a cursor line");
+        let (before, after) = text.split_once('\u{2038}').expect("the caret");
+        assert_eq!(before, format!("\u{2026}{}", &line[20..60]), "forty before");
+        assert_eq!(after, format!("{}\u{2026}", &line[60..80]), "twenty after");
+    }
+
+    #[test]
+    fn a_cut_cursor_line_drops_the_padding_at_its_cuts() {
+        // dialog's buttons, far across a padded row: the cut lands in blank
+        // cells, which say nothing beside the ellipsis.
+        let mut s = Screen::new(5, 120);
+        let row = format!(
+            "{}\u{2502}   <  OK  >      <Cancel>{}\u{2502}",
+            " ".repeat(40),
+            " ".repeat(15)
+        );
+        s.feed(row.as_bytes());
+        s.feed(b"\x1b[1;48H");
+        assert_eq!(
+            s.snapshot().cursor_text.as_deref(),
+            Some("\u{2026}\u{2502}   <  \u{2038}OK  >      <Cancel>\u{2026}")
+        );
+    }
+
+    #[test]
+    fn a_blank_cursor_line_or_a_hidden_cursor_is_not_quoted() {
+        let mut s = wide();
+        s.feed(b"text\r\n   ");
+        assert_eq!(s.snapshot().cursor_text, None, "nothing on the line");
+        s.feed(b"\x1b[1;3H\x1b[?25l");
+        let snap = s.snapshot();
+        assert_eq!(snap.cursor_text, None, "no cursor to show");
+        assert!(snap.cursor_hidden, "htop, mc and whiptail hide theirs");
+    }
+
+    #[test]
+    fn an_alternate_screen_with_nothing_drawn_on_it_is_undrawn() {
+        let mut s = screen();
+        assert!(!s.undrawn(), "the main screen, blank or not");
+        s.feed(b"\x1b[?1049h\x1b[?25l");
+        assert!(s.undrawn(), "switched to, nothing drawn yet");
+        s.feed(b"\x1b[44m\x1b[2J\x1b[5;1H   ");
+        assert!(s.undrawn(), "a coloured blank is nothing to read");
+        s.feed(b"\x1b[1;1HCPU");
+        assert!(!s.undrawn(), "drawn");
+    }
+
+    #[test]
+    fn text_after_a_string_ended_by_esc_backslash_is_text() {
+        // A link (OSC 8), a title or a DCS ended by ST (`ESC \`): the `\`
+        // ends the string, and what follows is text. Read as the start of an
+        // escape sequence, `│D` of `│Disk` became IND — a line feed.
+        fed_in_chunks(
+            5,
+            40,
+            "\x1b]8;;http://x\x1b\\link\x1b]8;;\x1b\\\u{2502}Disk \x1b]0;t\x1b\\\u{e9}t\u{e9} \x1bP1$r0m\x1b\\\u{2502}D"
+                .as_bytes(),
+            |s, size| {
+                assert_eq!(
+                    s.snapshot().rows,
+                    vec!["link\u{2502}Disk \u{e9}t\u{e9} \u{2502}D"],
+                    "chunks of {size}"
+                );
+            },
+        );
+    }
+
     #[test]
     fn a_sequence_a_control_interrupts_is_still_read_whole() {
         // A BEL inside `CSI 4 h`: the sequence goes on after it, and the
@@ -1298,13 +1481,14 @@ mod tests {
         // Differential: whatever the chunking, a stream using none of REP,
         // line drawing or insert mode draws exactly what `vt100` alone draws
         // — a control inside a sequence, strings, split characters included.
-        let streams: [&[u8]; 6] = [
+        let streams: [&[u8]; 7] = [
             b"plain text\r\nand more\r\n",
             b"\x1b[1\n2mX\x1b[m after a control inside a sequence",
             b"\x1bP1$r0m\x1b\\dcs\x1b]0;title\x07osc \x1b]8;;u\x1b\\link\x1b]8;;\x1b\\",
             "\u{2502} wide \u{4e2d}\u{6587} and \u{00e9}\tat\tdefault\ttab stops".as_bytes(),
             b"\x1b[2;5Hmoved\x1b[1;1H\x1b[K\x1b[3@ins\x1b[2Pdel\r\n\x1b[?25l\x1b[?1049hA",
             b"\x1b[5;31;1mdense\x1b[0;4mu\x1b[24m\x1b[38;2;1;2;3mrgb\x1b[38:5:9mcolon",
+            "\x1b]8;;u\x1b\\\u{2502}link\x1b]8;;\x1b\\\u{2502}D\x1bP1$r0m\x1b\\\u{e9}E".as_bytes(),
         ];
         for stream in streams {
             let mut expected = vt100::Parser::new(5, 40, 0);

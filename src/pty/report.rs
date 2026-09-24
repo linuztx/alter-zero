@@ -186,8 +186,13 @@ fn body(view: &View) -> String {
         View::Screen { before, snapshot } => {
             let (rows, columns) = snapshot.size;
             let (line, column) = snapshot.cursor;
-            let head =
-                format!("Screen ({rows}x{columns}, cursor at line {line}, column {column}):");
+            // Where typing lands, quoted — or that nothing shows it.
+            let cursor = match &snapshot.cursor_text {
+                _ if snapshot.cursor_hidden => "cursor hidden".to_string(),
+                Some(text) => format!("cursor at line {line}, column {column} \u{2014} \"{text}\""),
+                None => format!("cursor at line {line}, column {column}"),
+            };
+            let head = format!("Screen ({rows}x{columns}, {cursor}):");
             let mut screen = if snapshot.rows.is_empty() {
                 format!("{head} (blank)")
             } else {
@@ -444,6 +449,8 @@ mod tests {
                 size: (40, 120),
                 alternate: true,
                 highlights: Vec::new(),
+                cursor_text: None,
+                cursor_hidden: false,
             },
         };
         assert_eq!(
@@ -459,6 +466,39 @@ mod tests {
         );
     }
 
+    #[test]
+    fn the_heading_quotes_the_cursors_line_or_says_it_is_hidden() {
+        let screen = |cursor_text: Option<&str>, cursor_hidden| View::Screen {
+            before: String::new(),
+            snapshot: Snapshot {
+                rows: vec!["File Name to Write: notes.txt".to_string()],
+                cursor: (1, 30),
+                size: (40, 120),
+                alternate: true,
+                highlights: Vec::new(),
+                cursor_text: cursor_text.map(str::to_string),
+                cursor_hidden,
+            },
+        };
+        let running = Status::Running {
+            waiting: Waiting::Input,
+        };
+        assert!(
+            report(
+                "s1",
+                running,
+                &screen(Some("File Name to Write: notes.txt\u{2038}"), false)
+            )
+            .contains(
+                "Screen (40x120, cursor at line 1, column 30 \u{2014} \
+                 \"File Name to Write: notes.txt\u{2038}\"):"
+            )
+        );
+        assert!(
+            report("s1", running, &screen(None, true)).contains("Screen (40x120, cursor hidden):")
+        );
+    }
+
     fn menu(highlights: Vec<(u16, String)>) -> View {
         View::Screen {
             before: String::new(),
@@ -468,6 +508,8 @@ mod tests {
                 size: (40, 120),
                 alternate: true,
                 highlights,
+                cursor_text: None,
+                cursor_hidden: false,
             },
         }
     }
@@ -537,6 +579,8 @@ mod tests {
                 size: (40, 120),
                 alternate: true,
                 highlights: Vec::new(),
+                cursor_text: None,
+                cursor_hidden: false,
             },
         };
         assert_eq!(
@@ -564,6 +608,8 @@ mod tests {
                 size: (40, 120),
                 alternate: true,
                 highlights: Vec::new(),
+                cursor_text: None,
+                cursor_hidden: false,
             },
         };
         assert_eq!(

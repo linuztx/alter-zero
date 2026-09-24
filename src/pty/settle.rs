@@ -33,7 +33,9 @@
 //!    so a wait returns only on an exit, a prompt, or its timeout, which is
 //!    what lets the model wait for a long command in one call — and a call
 //!    that submitted a password gives the program [`CHECK_QUIET`] to answer
-//!    it: sudo takes seconds to check one and says nothing meanwhile;
+//!    it: sudo takes seconds to check one and says nothing meanwhile — as
+//!    does a full-screen program that switched screens and has drawn nothing
+//!    yet (btop gathering its first frame);
 //! 6. the call's timeout passed.
 
 use std::time::Duration;
@@ -75,9 +77,11 @@ pub const LINE_QUIET: Duration = Duration::from_secs(2);
 pub const SCREEN_BUSY: Duration = Duration::from_secs(2);
 
 /// How long a program may stay silent after a password the call submitted
-/// before the call returns anyway ([`Observation::answer_pending`]). sudo
-/// takes about two seconds to refuse one and a network login longer, while
-/// a command that runs on silently once let in is just a quiet line.
+/// ([`Observation::answer_pending`]) — or on a screen it switched to and has
+/// not drawn on ([`Observation::undrawn`]) — before the call returns anyway.
+/// sudo takes about two seconds to refuse a password and a network login
+/// longer, and btop seconds to gather its first frame, while a command that
+/// runs on silently once let in is just a quiet line.
 pub const CHECK_QUIET: Duration = Duration::from_secs(10);
 
 /// What the waiting call did before it began to wait.
@@ -119,8 +123,14 @@ pub struct Observation {
     pub typing: bool,
     /// Is a full-screen program up — the alternate screen?
     pub full_screen: bool,
+    /// Has the program switched to the alternate screen and drawn nothing on
+    /// it (`pty::screen::Screen::undrawn`)? It is getting ready: its silence
+    /// is no quiet line for up to [`CHECK_QUIET`], and its blank screen is
+    /// neither a prompt nor a screen being drawn (`pty::session`).
+    pub undrawn: bool,
     /// Since the call's last key was typed — or since it began, when it
-    /// typed none.
+    /// typed none — or since the first frame of a screen switched to
+    /// meanwhile, when that came later (`pty::session`).
     pub since_keys: Duration,
     /// Has the program exited?
     pub exited: bool,
@@ -170,7 +180,7 @@ pub fn settle(kind: WaitKind, timeout: Duration, seen: &Observation) -> Option<S
             Settle::Quiet
         });
     }
-    let line_quiet = if seen.answer_pending {
+    let line_quiet = if seen.answer_pending || seen.undrawn {
         CHECK_QUIET
     } else {
         LINE_QUIET
@@ -200,6 +210,7 @@ mod tests {
             answer_pending: false,
             typing: false,
             full_screen: false,
+            undrawn: false,
             since_keys: ms(elapsed),
             exited: false,
         }
@@ -241,6 +252,26 @@ mod tests {
             ..drawing(5_000)
         };
         assert_eq!(settle(WaitKind::Input, TIMEOUT, &lines), None);
+    }
+
+    #[test]
+    fn a_screen_switched_to_and_not_yet_drawn_on_is_waited_on() {
+        // btop 1.4 switches to the alternate screen, then probes its GPU for
+        // seconds before it draws a thing: its silence is no quiet line
+        // until CHECK_QUIET, so the launch shows the first frame, not a
+        // blank.
+        let undrawn = |quiet| Observation {
+            undrawn: true,
+            ..seen(quiet, quiet, true, false)
+        };
+        for kind in [WaitKind::Launch, WaitKind::Input] {
+            assert_eq!(settle(kind, TIMEOUT, &undrawn(5_000)), None, "{kind:?}");
+            assert_eq!(
+                settle(kind, TIMEOUT, &undrawn(CHECK_QUIET.as_millis() as u64)),
+                Some(Settle::Quiet),
+                "{kind:?}"
+            );
+        }
     }
 
     #[test]
