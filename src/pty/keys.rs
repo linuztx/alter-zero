@@ -408,6 +408,14 @@ pub fn reaches_line_reader(bytes: &[u8]) -> bool {
         .any(|byte| matches!(byte, b'\r' | b'\n' | 0x03 | 0x04 | 0x1a | 0x1c))
 }
 
+/// Do these bytes **submit** the line being edited — an Enter (`\r`, `\n`)
+/// — rather than hold text on it or interrupt the read? What makes a
+/// password typed at a prompt a password handed over (`pty::session`).
+#[must_use]
+pub fn submits_line(bytes: &[u8]) -> bool {
+    bytes.iter().any(|byte| matches!(byte, b'\r' | b'\n'))
+}
+
 /// The text left on the line being edited when the input is done — the last
 /// line typed after its last Enter, trailing spaces trimmed — or `None` when
 /// the input ends on a key or an Enter ([`leaves_line_open`]) or on blanks.
@@ -788,6 +796,21 @@ mod tests {
         assert!(!reaches("pässwörd"));
         assert!(!reaches("abc<BS><Left><Up><M-x>"));
         assert!(!reaches(""));
+    }
+
+    #[test]
+    fn an_enter_submits_the_line_being_edited() {
+        let submits = |input: &str| {
+            encode(&parse_input(input), false)
+                .iter()
+                .any(|chunk| submits_line(&chunk.bytes))
+        };
+        assert!(submits("hunter2\n"));
+        assert!(submits("hunter2<Enter>"));
+        assert!(submits("<C-j>"));
+        assert!(!submits("hunter2"));
+        assert!(!submits("<C-c>"), "an interrupt submits nothing");
+        assert!(!submits(""));
     }
 
     #[test]

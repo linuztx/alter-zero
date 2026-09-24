@@ -1207,7 +1207,16 @@ output processing still on, read off the pty with `tcgetattr`, since a relay
 (sudo's own pty, ssh, `docker run -it`) holds it raw with `OPOST` off too —
 each after 0.5 s of quiet, 3 s for a pure wait that saw the line appear, and
 never on a line the transcript saw **redrawn in place** by two bursts since
-the last input: a progress bar or a spinner, not a prompt); a waiting call
+the last input: a progress bar or a spinner, not a prompt; a pure wait
+counts what was printed **since the model last looked** (`SessionIo::look`
+records it, `IoState::printed_since`), so a question asked while the model
+decided to wait ends the wait instead of letting it sit out its timeout,
+still looking 0.5 s itself first so the probe can veto; and a password the
+call **submitted** (`keys::submits_line` at a password prompt) is waited on
+until the program answers with visible text (`Transcript::answered` — sudo's
+bare line break is none), `CHECK_QUIET` (10 s) replacing the 2 s silence
+rule meanwhile, so a refusal and its next prompt come back in that same
+call); a waiting call
 **streams** its running cell as `ToolProgress::Screen { settled, live }` →
 `StreamEvent::ToolScreen` → `App::push_tool_screen`, `live` rows replacing
 the last ones so a bar redraws in place (`Transcript::take_stream`: rows in

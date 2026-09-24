@@ -240,6 +240,17 @@ impl Transcript {
     pub fn new_input(&mut self) {
         self.new_burst();
         self.lines.epoch += 1;
+        self.lines.drawn = false;
+    }
+
+    /// Has the program printed any **visible** text since it was last typed
+    /// into ([`Transcript::new_input`]) — on either screen? A bare line
+    /// break, spaces and escapes that draw nothing are no answer: sudo
+    /// breaks the line the moment it has read a password, and says whether
+    /// it was right only seconds later (`pty::session`).
+    #[must_use]
+    pub fn answered(&self) -> bool {
+        self.lines.drawn
     }
 
     /// Is the line under the cursor **animated** — redrawn in place by at
@@ -408,6 +419,9 @@ struct Lines {
     burst_before: Vec<(usize, u64)>,
     /// The typing epoch ([`Transcript::new_input`]).
     epoch: u64,
+    /// Visible text was printed since the program was last typed into
+    /// ([`Transcript::answered`]).
+    drawn: bool,
     /// The screen's height: the cursor reaches back no further, so a row
     /// above the last `reach` rows can never change again.
     reach: usize,
@@ -711,6 +725,7 @@ fn first_param(params: &vte::Params, default: u16) -> u16 {
 
 impl vte::Perform for Lines {
     fn print(&mut self, c: char) {
+        self.drawn |= !c.is_whitespace();
         if !self.alt {
             self.put(c);
         }
@@ -821,6 +836,23 @@ mod tests {
 
     fn update(bytes: &[u8]) -> String {
         fed(bytes).take_update().text
+    }
+
+    #[test]
+    fn only_visible_text_after_input_answers_it() {
+        let mut t = fed(b"Password: ");
+        t.new_input();
+        assert!(!t.answered());
+        // sudo's bare line break, and escapes that draw nothing.
+        t.feed(b"\r\n\x1b[0m\x1b[?25h\t ");
+        assert!(!t.answered());
+        t.feed(b"Sorry, try again.\r\n");
+        assert!(t.answered());
+        t.new_input();
+        assert!(!t.answered(), "new keys wait for an answer of their own");
+        // A full-screen program's drawing answers too.
+        t.feed(b"\x1b[?1049hq");
+        assert!(t.answered());
     }
 
     #[test]

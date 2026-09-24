@@ -700,11 +700,11 @@ impl BackgroundRegistry {
             (input, Arc::clone(&task.io))
         };
         // What the program draws from here on answers these keys.
-        io.note_input(
-            chunks
-                .iter()
-                .any(|chunk| crate::pty::keys::reaches_line_reader(&chunk.bytes)),
-        );
+        let typed: Vec<u8> = chunks
+            .iter()
+            .flat_map(|chunk| chunk.bytes.clone())
+            .collect();
+        io.note_input(&typed);
         for chunk in chunks {
             let pause = chunk.pause_after;
             input

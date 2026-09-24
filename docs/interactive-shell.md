@@ -129,7 +129,8 @@ waits out the clock. Here the call returns when the command **settles**
   the program reads the terminal **key by key** (a menu, an editor, a
   readline prompt), which is what `waiting for input` says;
 - it has been silent for `LINE_QUIET` (2 s) since the call's input — a command
-  that answered with whole lines and went quiet;
+  that answered with whole lines and went quiet — or, after a password the
+  call submitted, for `CHECK_QUIET` (10 s) until the program answers it;
 - the call's `timeout` passed.
 
 Three things look like a prompt and are not (`SessionIo`'s `awaiting_keys`):
@@ -173,6 +174,25 @@ asks more of a prompt: one that appears during it must stay quiet for
 command busy, and a line a busy command leaves open while it works
 (`Reading package lists... `) looks just like a question. A real question
 still ends the wait within seconds.
+
+**A wait counts what the model has not seen** (`IoState::printed_since`), not
+only what arrives during it. A command that works quietly past `LINE_QUIET`
+returns its call `Running`, and its question often comes up in the seconds
+the model spends deciding what to do next: by the time the model's wait
+begins, the question is already on the screen and prints nothing more. A
+wait that watched only for output of its own sat out its whole timeout
+there — ten minutes, if the model asked for them — wherever the probe could
+not see the program read (`sudo apt install`'s `[Y/n]`, a REPL waiting in
+`poll`, anything off Linux). So the session remembers where the model last
+looked (`SessionIo::look`), and a wait takes everything printed since then as
+new: a question asked while the model decided is as new to it as one asked
+while it waited, and ends the wait by the same `WAIT_PROMPT_QUIET` rule —
+at once, once the question has sat that long. What the model has already
+seen does not: a wait begun on a prompt its last report showed is the model
+choosing to wait, and it waits. The wait still looks for `PROMPT_QUIET` itself
+before it settles on output older than the call, which is what gives the probe
+its word — the monitor probes within a few milliseconds of a wait beginning,
+and a tree it sees at work is busy whatever its last line looks like.
 
 **Where the session stands is read at report time.** `waiting for input` is
 not only how the call's wait happened to end: a poll that saw nothing new ends
@@ -273,6 +293,23 @@ mode after each chunk of output and on every idle poll (`refresh_line_mode`),
 so a mode switched after the prompt was printed is seen within 20 ms. It is
 detection only: what is typed shows as typed (*Compared with the
 terminal-sessions design*).
+
+**A password handed over is answered in the same call.** sudo breaks the line
+the moment it has read a password, then checks it for a couple of seconds —
+pam's delay on a refusal, longer for a network login — before it says a
+word. The silence rule returned the call mid-check as `(no new output)`, so
+every attempt cost the model a second call to learn the verdict, and a model
+that took the silence for a yes typed its next answer while sudo was still
+checking — with echo back on, into whatever prompt came next. So a call whose
+keys submit a line (`keys::submits_line`, an Enter) at a password prompt
+waits for the program's **answer**: visible text on either screen
+(`Transcript::answered` — the bare line break, spaces and escapes that draw
+nothing are no answer), a fresh prompt, or the exit. A refusal comes back as
+`Sorry, try again.` over the next password prompt; a password let in comes
+back with the command's first words. The silence rule gives it `CHECK_QUIET`
+(10 s) instead of `LINE_QUIET` — room for any real check, while a command
+that runs on silently once let in still returns `Running` rather than
+holding the call to its timeout.
 
 ## Streaming the running cell
 
@@ -608,6 +645,9 @@ Three of this design's choices were kept over it:
   wait after 3 s.
 - **A reader that is not waiting** — a program whose key-listening thread
   sits in `read` while another thread works reads as waiting to the probe.
+- **A command that runs on silently after its password** holds the call that
+  submitted it for `CHECK_QUIET` (10 s) rather than `LINE_QUIET` (2 s) before
+  it returns `Running`.
 - **A password prompt the terminal cannot show** — one that reads key by key
   to echo `*` for each (`sudo`'s `pwfeedback`) reads as `waiting for input`;
   one asked behind a relay (`sudo` inside `ssh`, a `docker run -it` shell)

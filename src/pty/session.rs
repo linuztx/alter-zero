@@ -108,6 +108,13 @@ struct IoState {
     /// [`IoState::seq`] when input was last written: output past it is the
     /// program's answer ([`IoState::password_prompt`]).
     input_seq: u64,
+    /// [`IoState::seq`] at the model's last look ([`SessionIo::look`]):
+    /// output past it is news to the model ([`IoState::printed_since`]).
+    looked_seq: u64,
+    /// The last input submitted a line at a password prompt: until the
+    /// program prints visible text ([`Transcript::answered`]) it is checking
+    /// the password, and its silence ends no call.
+    awaiting_answer: bool,
 }
 
 /// A point in a session's output history — taken before a call writes its
@@ -174,6 +181,8 @@ impl SessionIo {
                 last_input: None,
                 hidden_input: false,
                 input_seq: 0,
+                looked_seq: 0,
+                awaiting_answer: false,
             }),
             changed: Condvar::new(),
         }
@@ -314,7 +323,7 @@ impl SessionIo {
         let needed = if exact {
             settle::PROMPT_QUIET
         } else {
-            settle::prompt_quiet(kind, state.seq > since.seq)
+            settle::prompt_quiet(kind, state.printed_since(kind, since))
         };
         !state.finished && quiet >= needed && (exact || state.awaiting_keys())
     }
@@ -349,10 +358,15 @@ impl SessionIo {
     /// The program is about to be typed into: what it draws next answers
     /// the keys — a menu moving its highlight, a line editor echoing — so
     /// the redraws it made on its own until now stop counting towards an
-    /// animation ([`Transcript::new_input`]). `submits` says whether the keys
-    /// reach a program reading whole lines ([`super::keys::reaches_line_reader`]).
-    pub fn note_input(&self, submits: bool) {
+    /// animation ([`Transcript::new_input`]). `typed` is what was written:
+    /// whether it reaches a program reading whole lines
+    /// ([`super::keys::reaches_line_reader`]) decides if a password prompt
+    /// stands.
+    pub fn note_input(&self, typed: &[u8]) {
         let mut state = self.lock();
+        // A password handed over: the program checks it before it says a
+        // word (sudo takes seconds), so the call waits for its answer.
+        state.awaiting_answer = super::keys::submits_line(typed) && state.password_prompt();
         state.transcript.new_input();
         state.burst_began = None;
         // The read the probe saw is about to take these keys.
@@ -360,7 +374,7 @@ impl SessionIo {
         state.last_input = Some(Instant::now());
         // Keys that reach a line reader answer its prompt; text still on
         // the line being edited has not, so a password prompt stands.
-        if submits {
+        if super::keys::reaches_line_reader(typed) {
             state.input_seq = state.seq;
         }
     }
@@ -439,7 +453,7 @@ impl SessionIo {
                 let mut state = self.lock();
                 let now = Instant::now();
                 let update = streamer.due(now).then(|| state.transcript.take_stream());
-                let output = state.seq > since.seq;
+                let output = state.printed_since(kind, since);
                 let last = if output {
                     state.last_output.unwrap_or(since.at)
                 } else {
@@ -452,6 +466,7 @@ impl SessionIo {
                     awaiting_keys: state.awaiting_keys(),
                     reading: state.probe == Probe::Reading,
                     secret: state.password_prompt(),
+                    answer_pending: state.awaiting_answer && !state.transcript.answered(),
                     exited: state.finished,
                 };
                 (update, seen)
@@ -492,6 +507,7 @@ impl SessionIo {
         let mut state = self.lock();
         let addressed = state.transcript.screen_addressed();
         let update = state.transcript.take_update();
+        state.looked_seq = state.seq;
         let view = match &state.screen {
             // A full-screen program: its screen, under whatever the main
             // screen printed before it took over (`git commit`'s hints before
@@ -613,6 +629,20 @@ impl IoState {
             && self.hidden_input
             && self.seq > self.input_seq
             && self.probe != Probe::Idle
+    }
+
+    /// Has the program printed anything new to a call of `kind` that began
+    /// at `since`? For a launch or an input, anything since the call began —
+    /// the answer to what it did. For a pure wait, anything since the model
+    /// last looked: a question asked while the model was deciding to wait is
+    /// as new to it as one asked during the wait.
+    fn printed_since(&self, kind: WaitKind, since: Mark) -> bool {
+        let from = if kind == WaitKind::Wait {
+            since.seq.min(self.looked_seq)
+        } else {
+            since.seq
+        };
+        self.seq > from
     }
 
     /// The transcript's unfinished tail — the last line, never newline-ended.
@@ -982,6 +1012,8 @@ mod tests {
             !io.waiting(WaitKind::Wait, io.origin_mark()),
             "a wait that saw the prompt arrive gives it longer"
         );
+        // The call that met the prompt reported it; the model polls again.
+        look_at(&io);
         let since = io.begin_wait();
         let end = io.wait(
             WaitKind::Wait,
@@ -1116,7 +1148,7 @@ mod tests {
             "redrawn by nobody's keys"
         );
         let since = io.begin_wait();
-        io.note_input(true);
+        io.note_input(b"\x1b[B");
         io.absorb(b"\r? Pick: Durian");
         let started = Instant::now();
         let end = io.wait(WaitKind::Input, since, LONG, &never, &never, &mut |_, _| {});
@@ -1194,7 +1226,7 @@ mod tests {
     fn input_makes_the_verdict_stale_too() {
         let io = SessionIo::new(true);
         io.set_probe(Probe::Reading);
-        io.note_input(true);
+        io.note_input(b"x\r");
         std::thread::sleep(settle::PROMPT_QUIET + Duration::from_millis(50));
         assert!(
             !io.waiting(WaitKind::Input, io.origin_mark()),
@@ -1209,7 +1241,7 @@ mod tests {
         // begun after all of it saw no output of its own — it still ends,
         // as a password prompt (docs/interactive-shell.md).
         let io = Arc::new(SessionIo::new(true));
-        io.note_input(true);
+        io.note_input(b"hunter2\r");
         io.absorb(b"\r\nSorry, try again.\r\n[sudo] password for u: ");
         io.set_hidden_input(true);
         let since = io.begin_wait();
@@ -1259,10 +1291,132 @@ mod tests {
         io.absorb(b"Password: ");
         io.set_hidden_input(true);
         let since = io.begin_wait();
-        io.note_input(true);
+        io.note_input(b"hunter2\r");
         assert!(!io.password_prompt());
         let end = io.wait(
             WaitKind::Input,
+            since,
+            Duration::from_millis(1000),
+            &never,
+            &never,
+            &mut |_, _| {},
+        );
+        assert_eq!(end, WaitEnd::Settled(Settle::Timeout));
+    }
+
+    /// The model looks at the session, as a call's report does.
+    fn look_at(io: &SessionIo) {
+        let _ = io.look(
+            "s1",
+            Status::Running {
+                waiting: Waiting::No,
+            },
+        );
+    }
+
+    #[test]
+    fn a_question_the_model_has_not_seen_ends_a_wait_begun_after_it() {
+        // Asked after the model's last look and before its wait began — while
+        // it was thinking: new to the model, so the wait ends on it as if it
+        // had watched it arrive.
+        let io = Arc::new(SessionIo::new(true));
+        io.absorb(b"working\r\n");
+        look_at(&io);
+        io.absorb(b"Proceed? [Y/n] ");
+        std::thread::sleep(settle::WAIT_PROMPT_QUIET);
+        let since = io.begin_wait();
+        let started = Instant::now();
+        let end = io.wait(WaitKind::Wait, since, LONG, &never, &never, &mut |_, _| {});
+        assert_eq!(end, WaitEnd::Settled(Settle::Prompt));
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "{:?}",
+            started.elapsed()
+        );
+        assert!(io.waiting(WaitKind::Wait, since));
+    }
+
+    #[test]
+    fn a_submitted_password_is_waited_on_until_the_program_answers() {
+        // sudo checks a password for seconds before it says a word — longer
+        // than LINE_QUIET. The call waits for the verdict, not the silence.
+        let io = Arc::new(SessionIo::new(true));
+        io.absorb(b"[sudo] password for u: ");
+        io.set_hidden_input(true);
+        let since = io.begin_wait();
+        io.note_input(b"letmein\r");
+        // It read the line, turned echo back on, and broke the line.
+        io.set_hidden_input(false);
+        io.absorb(b"\r\n");
+        let verdict = {
+            let io = Arc::clone(&io);
+            std::thread::spawn(move || {
+                std::thread::sleep(settle::LINE_QUIET + Duration::from_millis(500));
+                io.set_hidden_input(true);
+                io.absorb(b"Sorry, try again.\r\n[sudo] password for u: ");
+            })
+        };
+        let end = io.wait(WaitKind::Input, since, LONG, &never, &never, &mut |_, _| {});
+        verdict.join().expect("verdict");
+        assert_eq!(end, WaitEnd::Settled(Settle::Prompt));
+        assert!(io.password_prompt());
+    }
+
+    #[test]
+    fn once_a_password_is_answered_silence_ends_the_call_again() {
+        // Accepted: the command's first words are the answer, and a pause
+        // after them is the usual quiet line.
+        let io = Arc::new(SessionIo::new(true));
+        io.absorb(b"[sudo] password for u: ");
+        io.set_hidden_input(true);
+        let since = io.begin_wait();
+        io.note_input(b"hunter2\r");
+        io.set_hidden_input(false);
+        io.absorb(b"\r\nresolving dependencies...\r\n");
+        let started = Instant::now();
+        let end = io.wait(WaitKind::Input, since, LONG, &never, &never, &mut |_, _| {});
+        assert_eq!(end, WaitEnd::Settled(Settle::Quiet));
+        assert!(started.elapsed() < settle::LINE_QUIET + Duration::from_millis(500));
+    }
+
+    #[test]
+    fn a_wait_on_unseen_output_hears_the_probe_first() {
+        // A prompt-shaped line printed before the wait, over a busy command:
+        // settling on the wait's first look would beat the probe, which —
+        // asked once the wait begins — sees every process at work.
+        let io = Arc::new(SessionIo::new(true));
+        look_at(&io);
+        io.absorb(b"Working... ");
+        std::thread::sleep(settle::WAIT_PROMPT_QUIET);
+        let since = io.begin_wait();
+        let prober = {
+            let io = Arc::clone(&io);
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(50));
+                io.set_probe(Probe::Idle);
+            })
+        };
+        let end = io.wait(
+            WaitKind::Wait,
+            since,
+            Duration::from_millis(1500),
+            &never,
+            &never,
+            &mut |_, _| {},
+        );
+        prober.join().expect("prober");
+        assert_eq!(end, WaitEnd::Settled(Settle::Timeout));
+    }
+
+    #[test]
+    fn a_question_the_model_has_seen_leaves_a_wait_to_its_timeout() {
+        // It was in the last report: the model chose to wait anyway.
+        let io = Arc::new(SessionIo::new(true));
+        io.absorb(b"Proceed? [Y/n] ");
+        look_at(&io);
+        let since = io.begin_wait();
+        let end = io.wait(
+            WaitKind::Wait,
             since,
             Duration::from_millis(1000),
             &never,
@@ -1280,7 +1434,7 @@ mod tests {
         io.absorb(b"[sudo] password for u: ");
         io.set_hidden_input(true);
         let since = io.begin_wait();
-        io.note_input(false);
+        io.note_input(b"hunter2");
         assert!(io.password_prompt());
         let started = Instant::now();
         let end = io.wait(WaitKind::Input, since, LONG, &never, &never, &mut |_, _| {});
@@ -1289,7 +1443,7 @@ mod tests {
             started.elapsed() < settle::LINE_QUIET,
             "not the quiet fallback"
         );
-        io.note_input(true);
+        io.note_input(b"\r");
         assert!(!io.password_prompt(), "the Enter: the answer is on its way");
     }
 

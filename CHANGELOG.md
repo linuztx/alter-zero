@@ -33,7 +33,12 @@ release heading when a version is cut.
   reads it with echo off — under `sudo` too, where the kernel cannot be
   asked — so the agent hears within half a second that a password is wanted,
   and a retry after a wrong one no longer leaves it waiting out its timeout;
-  what it types there still shows as typed. A call's header names the
+  what it types there still shows as typed. A password it types is answered
+  in the same call — a refusal and the next prompt, or the command's first
+  words — rather than with `(no new output)` while sudo is still checking
+  it, and a question that comes up while the agent is deciding to wait ends
+  that wait too, instead of the wait running out its timeout with the
+  question already on screen. A call's header names the
   program it types into (`● BashSession(python3 ← print(1)⏎)`). It also
   reaches `run_in_background` commands, which can now be waited on,
   interrupted and ended the same way. A session still running shows in the

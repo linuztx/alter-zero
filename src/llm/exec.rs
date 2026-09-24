@@ -2478,6 +2478,96 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
+    fn a_prompt_put_up_between_calls_ends_the_next_wait() {
+        // The command works quietly, then asks — after the call that
+        // started it returned, while the model was deciding what to do. The
+        // kernel cannot see the timed read (`pselect6`, blind the way it is
+        // behind sudo), and it is no password: a wait begun after the
+        // question still ends on it, since the model has not seen it
+        // (docs/interactive-shell.md).
+        let (registry, _rx) = test_registry();
+        let executor = RealToolExecutor::new().with_background(registry.clone());
+        let script =
+            r#"bash -c 'echo working; sleep 3; read -t 60 -p "Proceed? [Y/n] " a; echo "got $a"'"#;
+        let out = exec_with(
+            &executor,
+            "bash",
+            &serde_json::json!({"command": script, "tty": true}).to_string(),
+        );
+        let id = session_of(&out.output);
+        assert!(
+            !out.output.contains("Proceed"),
+            "returned before the question: {}",
+            out.output
+        );
+        let io = registry.session(&id).expect("still running").io;
+        let deadline = Instant::now() + std::time::Duration::from_secs(10);
+        while !io.screen_text().unwrap_or_default().contains("Proceed?") {
+            assert!(Instant::now() < deadline, "the question never came up");
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        let started = Instant::now();
+        let waited = exec_with(
+            &executor,
+            BASH_SESSION,
+            &serde_json::json!({"session_id": id, "timeout": 8000}).to_string(),
+        );
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(6),
+            "{:?}: {}",
+            started.elapsed(),
+            waited.output
+        );
+        assert_eq!(
+            waited.output,
+            format!("Running (session {id}, waiting for input)\nProceed? [Y/n]")
+        );
+        let answered = exec_with(
+            &executor,
+            BASH_SESSION,
+            &serde_json::json!({"session_id": id, "input": "y\n"}).to_string(),
+        );
+        assert_eq!(answered.output, "Exit code: 0\nProceed? [Y/n] y\ngot y");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_submitted_password_is_answered_in_the_call_that_typed_it() {
+        // sudo checks a password for seconds before it answers — longer
+        // than a call waits on silence. The call that submitted it waits for
+        // the verdict, a refusal and a fresh prompt or the command itself,
+        // rather than returning "no new output" mid-check.
+        let (registry, _rx) = test_registry();
+        let executor = RealToolExecutor::new().with_background(registry);
+        let script = r#"bash -c 'for i in 1 2; do read -s -t 60 -p "Password: " p; echo; sleep 3; [ "$p" = hunter2 ] && { echo ok; exit 0; }; echo "Sorry, try again."; done; exit 1'"#;
+        let out = exec_with(
+            &executor,
+            "bash",
+            &serde_json::json!({"command": script, "tty": true}).to_string(),
+        );
+        let id = session_of(&out.output);
+        let refused = exec_with(
+            &executor,
+            BASH_SESSION,
+            &serde_json::json!({"session_id": id, "input": "letmein\n"}).to_string(),
+        );
+        assert_eq!(
+            refused.output,
+            format!(
+                "Running (session {id}, waiting for a password — typed input is hidden)\n\
+                 Sorry, try again.\nPassword:"
+            )
+        );
+        let accepted = exec_with(
+            &executor,
+            BASH_SESSION,
+            &serde_json::json!({"session_id": id, "input": "hunter2\n"}).to_string(),
+        );
+        assert_eq!(accepted.output, "Exit code: 0\nok");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
     fn a_launch_that_asks_for_a_password_says_so() {
         let (registry, _rx) = test_registry();
         let executor = RealToolExecutor::new().with_background(registry);
