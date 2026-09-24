@@ -8,17 +8,21 @@
 //! the rule is tested without a process:
 //!
 //! 1. it **exited**;
-//! 2. it printed something and went quiet for [`PROMPT_QUIET`] with the
+//! 2. it has been quiet for [`PROMPT_QUIET`] with a thread **seen reading
+//!    its terminal** — the kernel's word, from Linux's `/proc`
+//!    (`pty::probe`), which needs no prompt and no output: a bare `read x`
+//!    or a `cat` waits too;
+//! 3. it printed something and went quiet for [`PROMPT_QUIET`] with the
 //!    screen **awaiting keys** — a prompt, or a full-screen program done
 //!    drawing (`pty::session` decides, from the screen, the transcript and
 //!    the terminal's mode); a pure [`WaitKind::Wait`] needs
 //!    [`WAIT_PROMPT_QUIET`], since the model waits because it believes the
 //!    command busy;
-//! 3. it has been silent for [`LINE_QUIET`] — except for a pure
+//! 4. it has been silent for [`LINE_QUIET`] — except for a pure
 //!    [`WaitKind::Wait`]: a build that pauses between lines is still working,
 //!    so a wait returns only on an exit, a prompt, or its timeout, which is
 //!    what lets the model wait for a long command in one call;
-//! 4. the call's timeout passed.
+//! 5. the call's timeout passed.
 
 use std::time::Duration;
 
@@ -75,6 +79,9 @@ pub struct Observation {
     pub output: bool,
     /// Does the screen look like it is waiting for keys?
     pub awaiting_keys: bool,
+    /// Did the probe see a thread blocked reading the terminal
+    /// (`pty::probe`)?
+    pub reading: bool,
     /// Has the program exited?
     pub exited: bool,
 }
@@ -95,6 +102,9 @@ pub enum Settle {
 pub fn settle(kind: WaitKind, timeout: Duration, seen: &Observation) -> Option<Settle> {
     if seen.exited {
         return Some(Settle::Exited);
+    }
+    if seen.reading && seen.quiet >= PROMPT_QUIET {
+        return Some(Settle::Prompt);
     }
     if seen.output && seen.awaiting_keys && seen.quiet >= prompt_quiet(kind, true) {
         return Some(Settle::Prompt);
@@ -119,6 +129,7 @@ mod tests {
             quiet: ms(quiet),
             output,
             awaiting_keys,
+            reading: false,
             exited: false,
         }
     }
@@ -134,6 +145,25 @@ mod tests {
         for kind in [WaitKind::Launch, WaitKind::Input, WaitKind::Wait] {
             assert_eq!(settle(kind, TIMEOUT, &exited), Some(Settle::Exited));
         }
+    }
+
+    #[test]
+    fn a_program_seen_reading_its_terminal_settles_as_waiting() {
+        // The probe's word (`pty::probe`): a read blocked on the terminal is
+        // a program waiting for input — with no prompt, no output, in a
+        // pure wait alike, after the ordinary prompt quiet.
+        let reading = Observation {
+            reading: true,
+            ..seen(600, 600, false, false)
+        };
+        for kind in [WaitKind::Launch, WaitKind::Input, WaitKind::Wait] {
+            assert_eq!(settle(kind, TIMEOUT, &reading), Some(Settle::Prompt));
+        }
+        let early = Observation {
+            reading: true,
+            ..seen(300, 300, false, false)
+        };
+        assert_eq!(settle(WaitKind::Launch, TIMEOUT, &early), None);
     }
 
     #[test]

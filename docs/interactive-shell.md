@@ -112,6 +112,9 @@ waits out the clock. Here the call returns when the command **settles**
 (`pty::settle`, pure and unit-tested):
 
 - it **exited** — at once, once its output is drained;
+- the kernel says a thread of it is **blocked reading its terminal** and it
+  has been quiet for `PROMPT_QUIET` (0.5 s) — no prompt and no output needed,
+  so a bare `read x` or a `cat` waits too (*The kernel's word*, below);
 - it printed something and went quiet for `PROMPT_QUIET` (0.5 s) while the
   terminal **awaits keys** — a prompt (`>>> `, `Password: `, `[Y/n] `) left
   the cursor mid-line, a full-screen program is on the alternate screen, or
@@ -121,7 +124,13 @@ waits out the clock. Here the call returns when the command **settles**
   that answered with whole lines and went quiet;
 - the call's `timeout` passed.
 
-Two things look like a prompt and are not (`SessionIo`'s `awaiting_keys`):
+Three things look like a prompt and are not (`SessionIo`'s `awaiting_keys`):
+
+- **a busy program.** `Compiling foo... ` left open while the compiler runs,
+  `Working... ` before a `sleep`, a download stalled mid-bar: the cursor sits
+  after text, as at a prompt. When the kernel sees every process of the
+  session at work — running, sleeping, reading a pipe, waiting on a child —
+  the command is busy whatever its screen shows, and nothing below is asked;
 
 - **an animated line.** A progress bar redrawn after a `\r`, a spinner, a
   counter, dots appended to `Downloading…` — each leaves the cursor exactly
@@ -147,7 +156,7 @@ Two things look like a prompt and are not (`SessionIo`'s `awaiting_keys`):
   (`LineMode::reads_keys`); behind a relay the program is judged by its
   screen alone.
 
-A `bash_session` call with **no input** is a *wait*, and the third rule does
+A `bash_session` call with **no input** is a *wait*, and the silence rule does
 not apply to it: a build that pauses between lines is still working, so a
 wait returns only on an exit, a prompt, or its timeout. That is what lets the
 model wait for a long command in one call instead of polling it. A wait also
@@ -210,6 +219,64 @@ screen is shown under whatever the main screen printed before it took over
 delivery keeps the **tail** when it is over `SESSION_OUTPUT_MAX_BYTES` (32 KB),
 since the newest lines and the prompt are what an interactive step is about,
 and says how many lines it left out.
+
+**The kernel's word** (`pty::probe`, Linux). The screen can only offer a
+shape; the kernel knows. `/proc/PID/task/TID/syscall` names the system call a
+sleeping thread is blocked in, and for a read its first argument is the file
+descriptor, which `/proc/PID/fd/N` resolves to a path. So the monitor walks
+the session's process tree (`/proc/…/children`) and classifies every thread:
+blocked in `read` on the session's terminal — its `/dev/pts/N`, or
+`/dev/tty`, where `ssh` and `git` read a password — is **reading**; in a
+`poll`/`select`/`epoll` wait it **may** be waiting on the terminal (a REPL,
+`vim`, `ssh` and every network client wait that way); anything else is at
+**work**. One reader anywhere is `Probe::Reading`, a tree all at work is
+`Probe::Idle`, and everything else — a possible poll, a process the probe may
+not inspect, no `/proc` — is `Probe::Unknown`, which leaves the screen rules
+in charge. The files are readable only for the user's own processes, so
+`sudo` and everything it runs leave the probe blind: exactly where the relay
+rule above already applies. The monitor probes only a terminal a call is
+waiting on, once it has been quiet `PROBE_QUIET` (0.2 s), at most every
+`PROBE_INTERVAL` (0.2 s) — a handful of file reads — and any output or input
+makes the verdict stale at once. (Ported from the alternative design this one
+was compared against, *Compared with the terminal-sessions design*, below.)
+
+## Streaming the running cell
+
+A waiting call streams what its report will say as it builds up, and the
+cell shows it the way a terminal would: `ToolProgress::Screen { settled, live
+}` from the executor, `StreamEvent::ToolScreen` on the wire, and
+`App::push_tool_screen` — `settled` text appends for good, `live` rows
+**replace** the `live` rows sent last. A progress bar is one row changing in
+place, never a row per frame; the TUI and the model's context both read it
+once.
+
+For a session the split comes from the transcript (`Transcript::take_stream`):
+lines within the screen's height of the end (`ROWS`, 40) can still be
+redrawn — pacman moves up to redraw a bar — so they stream as `live`; a line
+that scrolled out of reach is final and streams once as `settled`. Only what
+the next look would report is streamed, so a cell never shows a line its
+report will not carry. The wait sends at most every `STREAM_INTERVAL` (50 ms),
+only when something changed, `settled` capped at `STREAM_MAX_BYTES` (64 KB) a
+send, and once more as it settles, so the cell ends where the report begins.
+
+**Plain commands fold the same way** (`pty::fold`). Plenty of programs draw on
+a pipe as if it were a terminal — curl's meter, tqdm, ffmpeg and rsync
+redraw with `\r` whether or not anyone watches, `--color=always` wraps words
+in escapes — and kept raw, the model read every frame a bar ever drew, joined
+on one line. `Fold` replays the stream one line at a time: `\r` returns to
+the line's start, backspace and the cursor-column escapes (`CSI G`/`C`/`D`)
+move along it, all overwriting; erase-in-line applies; every other escape
+vanishes. Unlike the transcript it is built for data the model may copy back:
+a tab stays a tab, trailing spaces stay, and a line is kept whole up to the
+output cap rather than a terminal's width. A plain `bash` call streams its
+ended lines as `settled` and the line still being drawn as `live`, paced like
+a session (`PipeOutput`, `PIPE_STREAM_INTERVAL`); its result is the folded
+text. A background shell's event stream — the ↓ manager's view and the
+completion note the model reads — is folded by its monitor, while its
+`.output` file keeps every byte as written; a Ctrl+B handoff replays what the
+foreground runner read, raw, into that same fold, so the line in progress
+finishes as one line. The user's `!` commands fold their output too
+(`docs/shell-command.md`).
 
 ## What live models taught the design
 
@@ -419,9 +486,13 @@ name it `bash_session` or `BashSession`, the name its cell shows.
   output shows, and the cell closes on a fresh dim corner: `⎿ Waiting for
   input · session b7x2k9m1q` (or `Still running · …`, or `Stopped · …` after a
   kill). A command that exited reads exactly like a plain `bash` cell.
-- A `bash_session` call is `● BashSession(b7x2k9m1q ← import math⏎)` — the
-  input on one line (`⏎` for Enter, `<Down>` for keys), `· kill` after a kill,
-  the id alone for a wait — over the same output peek and state row. What the
+- A `bash_session` call is `● BashSession(python3 ← import math⏎)` — the
+  command the session runs (one line, cut at 60 characters), then the input
+  on one line (`⏎` for Enter, `<Down>` for keys), `· kill` after a kill,
+  nothing more for a wait — over the same output peek and state row. Only the
+  executor knows the session, so it sends that header as the call's refined
+  title (`ToolProgress::Title` → `StreamEvent::ToolTitle`); until then the
+  header names the session by its id (`b7x2k9m1q ← import math⏎`). What the
   model was additionally told (a note about an unsubmitted line or a kill not
   carried out) is in its context only; Ctrl+D shows it.
 - Both are command cells (`COMMAND_TOOL_NAMES`): the peek folds at
@@ -451,17 +522,57 @@ executor are tested against real processes (`sh`, `stty`, `python3` when
 present); `tests/detached_exec.rs` proves the helper tier gives the session its
 own controlling terminal. `examples/session_probe.rs` is the live harness.
 
+## Compared with the terminal-sessions design
+
+This design was compared against another built for the same job — a
+codex-style `write_stdin` over numbered sessions, the command itself run in a
+terminal by default (branch `update/optimistic-planck-fiq8pr`). Three of its
+ideas were better and are ported: streaming the running cell as settled text
+plus live rows (*Streaming the running cell*), a header naming the session's
+command (*The cells*), and the `/proc` probe (*The kernel's word*). Plain
+commands folding their `\r` frames goes one step further than it did: it ran
+every `bash` call in a terminal to get that, where here a plain call keeps its
+pipe — no terminal emulation, no changed `isatty` answer, output that is
+data — and folds it instead. One idea was tried and left out: masking what is
+typed at a prompt that reads with echo off. In use it masked ordinary input
+that was no password, hiding exactly what the header and the permission
+prompt are there to show, so typed keys show as typed.
+
+Three of this design's choices were kept over it:
+
+- **Changed lines, not a prefix.** It compared each report with the last by
+  their common prefix and resent everything after the first difference; a
+  bar redrawn above finished lines (pacman) resent those lines too. Here each
+  line remembers what the model was handed, so only new or changed lines
+  go out.
+- **A real terminal.** It gave programs `TERM=dumb`, which keeps them simple
+  but breaks what a terminal is for — `vim`, `less`, `top`, arrow-key menus.
+  Here the program gets `xterm-256color` and a real screen (`vt100`),
+  query replies and all.
+- **`tty` is asked for.** A plain call stays on its pipe, so `git`, `ls` and
+  every tool that changes its output for a terminal behave as in a script,
+  and the model reaches for a terminal only for a program that needs one.
+
 ## Limits
 
 - **Unix only** — pseudo-terminals are a Unix facility; elsewhere `tty` is
   refused with an error the model can act on.
-- **The prompt heuristic** — a program that prints its question, a newline,
-  and then waits in canonical mode looks like one between lines of output: it
-  settles on `LINE_QUIET` and reports `Running` rather than `waiting for
-  input`. The output still shows the question. The reverse holds too: a busy
-  command that leaves a line open (`Reading package lists... `) reads as a
-  prompt to a launch or an input call after 0.5 s of quiet, and to a wait
-  after 3 s.
+- **The prompt heuristic, where the probe is blind** — off Linux, for a
+  process run as another user (`sudo` and what it runs), and behind a
+  `poll`-family wait, the screen decides alone. There a program that prints
+  its question, a newline, and then waits in canonical mode looks like one
+  between lines of output: it settles on `LINE_QUIET` and reports `Running`
+  rather than `waiting for input` (the output still shows the question); and
+  a busy command that leaves a line open (`Reading package lists... `) reads
+  as a prompt to a launch or an input call after 0.5 s of quiet, and to a
+  wait after 3 s.
+- **A reader that is not waiting** — a program whose key-listening thread
+  sits in `read` while another thread works reads as waiting to the probe.
+- **A plain command's fold is one line at a time** — cursor movement between
+  lines (`docker pull`'s multi-line progress drawn with cursor-up) means
+  nothing on a pipe and is dropped; such programs print plain lines when
+  their output is not a terminal, and one that does not can be run with
+  `tty`.
 - **A question drawn over an animation** — a prompt that replaces a spinner on
   the spinner's own line inherits its redraw count and reads as animated: a
   launch or input call returns on `LINE_QUIET` reporting `Running`, and a

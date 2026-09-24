@@ -169,6 +169,17 @@ impl LineMode {
     }
 }
 
+/// The path of the terminal behind `master` (`/dev/pts/N`) — what a process
+/// holding it shows in `/proc/PID/fd`, for the probe
+/// ([`super::probe::probe`]). `None` when the system will not say.
+#[cfg(unix)]
+#[must_use]
+pub fn terminal_path(master: &std::fs::File) -> Option<std::path::PathBuf> {
+    let name = rustix::pty::ptsname(master, Vec::new()).ok()?;
+    let name = name.into_string().ok()?;
+    Some(std::path::PathBuf::from(name))
+}
+
 /// The terminal's [`LineMode`], read through its master — `None` when the
 /// terminal is gone.
 #[cfg(unix)]

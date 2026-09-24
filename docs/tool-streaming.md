@@ -37,51 +37,67 @@ it settles. (It can settle *shorter*: the finished head is the output's first
 keeps its blanks, being what the command just printed, and shows the output
 as printed where the settled cell reshapes a JSON line for display.)
 
-## The protocol — `StreamEvent::ToolOutput`
+## The protocol — `ToolOutput` and `ToolScreen`
 
-A new event carries a chunk of the **currently-running** tool's live output,
-between its `ToolStart` and `ToolEnd`:
+Two events carry the **currently-running** tool's live output, between its
+`ToolStart` and `ToolEnd`:
 
 ```rust
-/// A chunk of the running tool's output, streamed live as it is produced
-/// (one or more complete lines, stdout+stderr merged in arrival order). The
-/// loop appends it to the front running call so the live cell tails it; the
-/// authoritative full output still arrives in `ToolEnd`. Only the real `bash`
-/// executor emits it today.
+/// A chunk of the running tool's output, appended as it is produced.
 ToolOutput(String),
+/// The running tool's output as it builds up: `settled` text appended for
+/// good, `live` rows replacing the `live` rows sent last.
+ToolScreen { settled: String, live: String },
 ```
 
-It targets the **front** of `App::tool_queue` (the only `Running` call —
-execution is sequential even for a parallel batch, so the running call is always
-the front; see `docs/parallel-tools.md`). A backend that never streams simply
-omits it — `ToolStart`/`ToolEnd` still work unchanged.
+`ToolOutput` is the append-only form — the offline dummy's scripted commands
+stream with it. `ToolScreen` is what the real executor sends: a line still
+being drawn (a progress bar redrawn with `\r`, a prompt taking its answer)
+travels as `live` and is **replaced** by the next update instead of stacking
+a row per frame, and a line that is final travels once as `settled`
+(`docs/interactive-shell.md` *Streaming the running cell*). Both target the
+**front** of `App::tool_queue` (the only `Running` call — execution is
+sequential even for a parallel batch, so the running call is always the
+front; see `docs/parallel-tools.md`). A backend that never streams simply
+omits them — `ToolStart`/`ToolEnd` still work unchanged.
 
-## App state — `push_tool_output`
+## App state — `push_tool_output` / `push_tool_screen`
 
-`App::push_tool_output(chunk)` appends `chunk` to the front call's `output`
-**only when it is `Running`** (a no-op otherwise). It does **not** count tokens
-— the tally is charged once, from the authoritative `ToolEnd` output, in
+`App::push_tool_output(chunk)` appends `chunk` to the front call's `output`;
+`App::push_tool_screen(settled, live)` truncates the `live` tail it appended
+last (`App::tool_live_len`), appends `settled`, then the new `live`
+(`app::apply_tool_screen`, which the subagent fold in `agents` shares). Both
+act **only when the front call is `Running`** (a no-op otherwise), and both
+bump `App::tool_revision`, which the Ctrl+O transcript cache signs on — a
+redraw can leave the output the same length. Neither counts tokens — the
+tally is charged once, from the authoritative `ToolEnd` output, in
 `end_tool` (which overwrites `output` with the final framed text). So the live
 tail and the final cell never double-count, and the final cell is always exact
-even if a chunk was dropped.
+even if an update was dropped.
 
-## The executor — `run_bash` streams complete lines
+## The executor — `run_bash` streams folded output
 
-`ToolExecutor::execute` gains an `on_output: &mut dyn FnMut(&str)` sink;
-`run_agent` passes one that sends `ToolOutput`. `run_bash` still drains both
-pipes on reader threads (so a chatty command can't deadlock a full pipe), but
-now **forwards complete lines as they arrive**: each reader sends raw byte
-chunks over an `mpsc` channel; the main poll loop merges them into the capped
-`combined` buffer (arrival order) and forwards every newly-**completed** line
-(`combined[forwarded .. last '\n']`) through the sink, holding a partial trailing
-line until its newline lands (or EOF). Forwarding whole lines from the merged
-buffer keeps a multi-byte UTF-8 char from ever splitting across a chunk boundary
-(a `'\n'` is never inside a char), and the cap bounds the live tail's memory just
-like the final output. `read`/`write`/`edit` ignore the sink (nothing to stream).
+`ToolExecutor::execute` takes an `on_output: &mut dyn FnMut(ToolProgress<'_>)`
+sink; `run_agent` maps `ToolProgress::Screen` onto `ToolScreen` (and
+`ToolProgress::Title`, a `bash_session` call's refined header, onto
+`ToolTitle`). `run_bash` drains both pipes on reader threads (so a chatty
+command can't deadlock a full pipe); each reader sends raw byte chunks over an
+`mpsc` channel, and the main poll loop feeds them in arrival order to a
+`PipeOutput`: a **fold** (`pty::fold`) that replays the stream the way a
+terminal shows it — `\r` and backspace overwrite, colour escapes vanish, tabs
+and trailing spaces stay — keeping each line once it ends, within the output
+cap. It streams the ended lines as `settled` and the line still being drawn as
+`live`, at most every `PIPE_STREAM_INTERVAL` (50 ms, and once more at the
+end), so a burst of progress frames costs one redraw per interval. The parser
+carries a UTF-8 character or an escape split across chunks to the next one,
+so the tail never shows a stray replacement glyph. `read`/`write`/`edit`
+ignore the sink (nothing to stream).
 
-The final `ToolOutcome.output` is unchanged — codex's `Exit code: N` frame over
-the (capped) body — so the model still gets the framed result and `end_tool`
-overwrites the display `output` with it.
+The final `ToolOutcome.output` is codex's `Exit code: N` frame over the
+(capped) **folded** body — a `\r` progress bar reaches the model once, in its
+final state — and `end_tool` overwrites the display `output` with it. A
+Ctrl+B handoff gives the background registry the bytes as they were read, so
+its monitor folds the whole stream itself (`docs/background.md`).
 
 ## Rendering (`ui/tool.rs`)
 

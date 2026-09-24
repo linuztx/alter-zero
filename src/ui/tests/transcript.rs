@@ -182,6 +182,26 @@ fn transcript_cache_rebuilds_as_a_running_bash_streams_output() {
 }
 
 #[test]
+fn transcript_cache_rebuilds_on_a_same_length_screen_redraw() {
+    // A terminal session's progress bar redraws in place (45% → 46%): the
+    // output's length does not move, so the call's revision must — or Ctrl+O
+    // freezes on the first frame (docs/interactive-shell.md).
+    let mut app = App::new();
+    app.begin_stream();
+    app.start_tool("Bash", "sudo pacman -Syy", None);
+    app.push_tool_screen("", " extra  45%");
+    let mut cache = TranscriptCache::new();
+    let _ = cache.lines(&app, 80);
+    app.push_tool_screen("", " extra  46%");
+    let lines = cache.lines(&app, 80).to_vec();
+    let texts: Vec<String> = lines.iter().map(plain).collect();
+    assert!(
+        texts.iter().any(|l| l.contains("46%")) && !texts.iter().any(|l| l.contains("45%")),
+        "the overlay shows the redrawn row, once: {texts:?}"
+    );
+}
+
+#[test]
 fn transcript_cache_appends_new_items_without_rerendering_frozen_ones() {
     // The slow-Ctrl+O fix: the transcript build is O(history) with real
     // grammar highlighting (~hundreds of ms on a resumed session), so the

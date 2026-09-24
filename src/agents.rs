@@ -176,6 +176,10 @@ pub struct AgentRun {
     pub followups: VecDeque<String>,
     /// Its live tool calls, front running — the parallel-batch queue shape.
     pub tool_queue: VecDeque<ToolCall>,
+    /// How many bytes at the end of the running call's output are a terminal
+    /// session's live rows — the main session's `tool_live_len`
+    /// (`docs/interactive-shell.md`).
+    tool_live_len: usize,
     /// The final response text once it settles (what the caller received).
     pub result: Option<String>,
     /// The error message when it failed.
@@ -292,6 +296,7 @@ impl AgentRun {
             queued: Vec::new(),
             followups: VecDeque::new(),
             tool_queue: VecDeque::new(),
+            tool_live_len: 0,
             result: None,
             error: None,
             hidden: false,
@@ -450,6 +455,7 @@ impl AgentRun {
             } => {
                 self.flush_segment();
                 self.tool_uses += 1;
+                self.tool_live_len = 0;
                 self.last_call = Some(AgentCall {
                     name: name.clone(),
                     args: args.clone(),
@@ -495,6 +501,28 @@ impl AgentRun {
                     && front.status == ToolStatus::Running
                 {
                     front.output.push_str(chunk);
+                }
+            }
+            // A terminal session's live output and a refined header, folded
+            // exactly as the main session folds them
+            // (docs/interactive-shell.md).
+            StreamEvent::ToolScreen { settled, live } => {
+                if let Some(front) = self.tool_queue.front_mut()
+                    && front.status == ToolStatus::Running
+                {
+                    self.tool_live_len = crate::app::apply_tool_screen(
+                        &mut front.output,
+                        self.tool_live_len,
+                        settled,
+                        live,
+                    );
+                }
+            }
+            StreamEvent::ToolTitle(title) => {
+                if let Some(front) = self.tool_queue.front_mut()
+                    && front.status == ToolStatus::Running
+                {
+                    front.args.clone_from(title);
                 }
             }
             StreamEvent::ToolEnd {
@@ -2315,6 +2343,14 @@ mod tests {
             ("ToolNote", StreamEvent::ToolNote("noted".to_string())),
             ("ToolOutput", StreamEvent::ToolOutput("out".to_string())),
             (
+                "ToolScreen",
+                StreamEvent::ToolScreen {
+                    settled: "done\n".to_string(),
+                    live: "45%".to_string(),
+                },
+            ),
+            ("ToolTitle", StreamEvent::ToolTitle("sudo x".to_string())),
+            (
                 "ToolEnd",
                 StreamEvent::ToolEnd {
                     output: "out".to_string(),
@@ -2348,6 +2384,54 @@ mod tests {
             ("StreamDone", StreamEvent::StreamDone),
             ("Error", StreamEvent::Error("boom".to_string())),
         ]
+    }
+
+    #[test]
+    fn a_subagents_terminal_screen_redraws_in_place() {
+        // The session view folds a subagent's terminal output exactly as the
+        // main session does (docs/interactive-shell.md): settled text
+        // appends, live rows replace the last ones, a refined header lands.
+        let mut run = AgentRun::new("a1", "d", GENERAL_PURPOSE, "p", false);
+        run.apply(&StreamEvent::ToolStart {
+            name: "Bash".into(),
+            args: "sudo pacman -Syy".into(),
+            detail: None,
+            arguments: None,
+        });
+        run.apply(&StreamEvent::ToolScreen {
+            settled: String::new(),
+            live: " extra  10%".into(),
+        });
+        run.apply(&StreamEvent::ToolScreen {
+            settled: ":: Synchronizing\n".into(),
+            live: " extra  50%".into(),
+        });
+        assert_eq!(
+            run.tool_queue.front().expect("running").output,
+            ":: Synchronizing\n extra  50%"
+        );
+        run.apply(&StreamEvent::ToolTitle("sudo pacman -Syy ← y⏎".into()));
+        assert_eq!(
+            run.tool_queue.front().expect("running").args,
+            "sudo pacman -Syy ← y⏎"
+        );
+        // The next call starts with no live tail of its own.
+        run.apply(&StreamEvent::ToolEnd {
+            output: "Exit code: 0".into(),
+            ok: true,
+            truncated: false,
+        });
+        run.apply(&StreamEvent::ToolStart {
+            name: "Bash".into(),
+            args: "ls".into(),
+            detail: None,
+            arguments: None,
+        });
+        run.apply(&StreamEvent::ToolScreen {
+            settled: String::new(),
+            live: "x".into(),
+        });
+        assert_eq!(run.tool_queue.front().expect("running").output, "x");
     }
 
     #[test]

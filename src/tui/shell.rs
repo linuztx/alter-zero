@@ -153,9 +153,15 @@ pub(crate) fn spawn_shell_command(
             append_capped(&mut combined, &chunk, cap, &mut truncated);
         }
 
-        // Lossy UTF-8: a command may emit non-UTF-8 bytes; the cap may also
-        // cut a multi-byte char (→ one U+FFFD).
-        let mut output = String::from_utf8_lossy(&combined).into_owned();
+        // What a terminal would have shown (`pty::fold`): a `\r` progress bar
+        // once, finished, and no colour escapes — the cell and the model's
+        // context read the text, not the frames that drew it
+        // (docs/shell-command.md). Lossy UTF-8: a command may emit non-UTF-8
+        // bytes; the cap may also cut a multi-byte char (→ one U+FFFD).
+        let mut fold = alter_zero::pty::fold::Fold::with_line_cap(cap);
+        fold.feed(&combined);
+        truncated |= fold.overflowed();
+        let mut output = fold.finish();
         let ok = status.success();
         if !ok {
             let code = status

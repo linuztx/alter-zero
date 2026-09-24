@@ -5,7 +5,8 @@
 //! the model-tool executor ([`crate::llm::exec`]), and the `!` shell runner
 //! (`main.rs`). Launching (or adopting, for Ctrl+B) a command spawns a
 //! **monitor thread** that owns the child: it merges the stdout/stderr pipes
-//! in arrival order, streams completed lines as [`BgEvent::Output`], tees
+//! in arrival order, streams completed lines — folded the way a terminal
+//! would show them ([`crate::pty::fold`]) — as [`BgEvent::Output`], tees
 //! every byte to the task's `{id}.output` file under the session's `tasks`
 //! directory ([`crate::scratchpad::tasks_dir`], so the model can `read` interim
 //! output), and reports [`BgEvent::Exited`] when the child dies.
@@ -62,8 +63,10 @@ pub enum BgEvent {
         /// conversation).
         origin: Option<BgOrigin>,
     },
-    /// A chunk of a running shell's output (completed lines where possible;
-    /// an adopted command's prior output arrives as one leading chunk).
+    /// A running shell's completed lines — folded the way a terminal shows
+    /// them, so a `\r` progress bar arrives once, finished, with no escapes
+    /// (`docs/interactive-shell.md`); the line a command left unfinished
+    /// arrives at its exit.
     Output { id: String, chunk: String },
     /// A **TTY session's** screen as it now stands — the whole of it, not a
     /// delta: the ↓ manager shows what a terminal would
@@ -167,12 +170,6 @@ fn splitmix64(seed: u64) -> u64 {
 /// How often a monitor thread wakes to poll its child / kill flag when no
 /// output is arriving — short enough that exits and kills surface promptly.
 const MONITOR_POLL_INTERVAL: Duration = Duration::from_millis(20);
-
-/// A monitor's line-assembly buffer never holds more than this: a command
-/// that emits an enormous line without a newline is force-flushed as a chunk
-/// so memory stays bounded (the App caps its own display tail; the full
-/// output is on disk anyway).
-const MAX_PARTIAL_LINE_BYTES: usize = 64 * 1024;
 
 /// One registered task, as the shared state sees it (the child itself is
 /// owned by its monitor thread).
@@ -572,19 +569,9 @@ impl BackgroundRegistry {
         if let Some(parent) = output_path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        let mut file = File::create(&output_path).ok();
+        let file = File::create(&output_path).ok();
         if announce {
             self.announce(&id);
-        }
-        if !prior.is_empty() {
-            let _ = io.absorb(&prior);
-            if let Some(f) = file.as_mut() {
-                let _ = f.write_all(&prior);
-            }
-            let _ = self.events.send(BgEvent::Output {
-                id: id.clone(),
-                chunk: String::from_utf8_lossy(&prior).into_owned(),
-            });
         }
         let monitor = MonitorHandle {
             registry: self.clone(),
@@ -593,7 +580,7 @@ impl BackgroundRegistry {
             input,
             terminal: monitor_terminal,
         };
-        std::thread::spawn(move || monitor.run(child, chunk_rx, kill, file));
+        std::thread::spawn(move || monitor.run(child, prior, chunk_rx, kill, file));
         Registered {
             task: LaunchedTask { id, output_path },
             io,
@@ -871,19 +858,26 @@ struct MonitorHandle {
 
 impl MonitorHandle {
     /// Own the child to its end: merge + forward output, poll the kill token,
-    /// and report the exit. See the module docs.
+    /// and report the exit. An adopted command's `prior` output — what the
+    /// foreground runner read before the handoff — goes first, into the same
+    /// fold as the rest. See the module docs.
     fn run(
         self,
         mut child: Child,
+        prior: Vec<u8>,
         chunk_rx: mpsc::Receiver<Vec<u8>>,
         kill: CancelToken,
         mut file: Option<File>,
     ) {
-        let mut partial: Vec<u8> = Vec::new();
+        let mut fold = crate::pty::fold::Fold::new();
         let mut screen = ScreenPacer::default();
+        let mut probe = self.prober(child.id());
+        if !prior.is_empty() {
+            self.absorb(&prior, &mut fold, file.as_mut(), &mut screen);
+        }
         let status = loop {
             while let Ok(chunk) = chunk_rx.try_recv() {
-                self.absorb(&chunk, &mut partial, file.as_mut(), &mut screen);
+                self.absorb(&chunk, &mut fold, file.as_mut(), &mut screen);
             }
             if kill.is_cancelled() {
                 kill_group(child.id());
@@ -891,10 +885,13 @@ impl MonitorHandle {
             match child.try_wait() {
                 Ok(Some(status)) => break Some(status),
                 Ok(None) => match chunk_rx.recv_timeout(MONITOR_POLL_INTERVAL) {
-                    Ok(chunk) => self.absorb(&chunk, &mut partial, file.as_mut(), &mut screen),
+                    Ok(chunk) => self.absorb(&chunk, &mut fold, file.as_mut(), &mut screen),
                     Err(mpsc::RecvTimeoutError::Timeout) => {
                         self.refresh_line_mode();
                         self.send_screen(&mut screen, true);
+                        if let Some(probe) = probe.as_mut() {
+                            probe.refresh(&self.io);
+                        }
                     }
                     Err(mpsc::RecvTimeoutError::Disconnected) => {
                         std::thread::sleep(MONITOR_POLL_INTERVAL);
@@ -904,8 +901,8 @@ impl MonitorHandle {
             }
         };
         // Reap any straggler holding the pipes (the group kill is idempotent),
-        // then flush what the readers still buffered plus the trailing
-        // partial line. A terminal's last output can trail the exit by a
+        // then flush what the readers still buffered plus the line left
+        // unfinished. A terminal's last output can trail the exit by a
         // moment — its reader drains the master after the program closed it —
         // so a TTY session gives it that moment before the exit is recorded.
         kill_group(child.id());
@@ -914,7 +911,7 @@ impl MonitorHandle {
         let settle_until = std::time::Instant::now() + TTY_DRAIN_GRACE;
         loop {
             match chunk_rx.recv_timeout(MONITOR_POLL_INTERVAL) {
-                Ok(chunk) => self.absorb(&chunk, &mut partial, file.as_mut(), &mut screen),
+                Ok(chunk) => self.absorb(&chunk, &mut fold, file.as_mut(), &mut screen),
                 Err(mpsc::RecvTimeoutError::Disconnected) => break,
                 Err(mpsc::RecvTimeoutError::Timeout) => {
                     if self.input.is_none() || std::time::Instant::now() >= settle_until {
@@ -923,10 +920,7 @@ impl MonitorHandle {
                 }
             }
         }
-        if !partial.is_empty() {
-            self.send_output(&partial);
-            partial.clear();
-        }
+        self.send_output(fold.finish());
         let code = status.and_then(|s| s.code());
         let (rest, finish) = self.io.finish(code);
         if self.input.is_some() {
@@ -966,26 +960,20 @@ impl MonitorHandle {
     fn absorb(
         &self,
         chunk: &[u8],
-        partial: &mut Vec<u8>,
+        fold: &mut crate::pty::fold::Fold,
         file: Option<&mut File>,
         screen: &mut ScreenPacer,
     ) {
         let (replies, committed) = self.io.absorb(chunk);
         let Some(input) = &self.input else {
-            // A pipe task: the raw bytes to the file, completed lines to the
-            // event loop — its original stream, unchanged.
+            // A pipe task: the raw bytes to the file (the stream as written,
+            // every byte of it), and to the event loop each line once it
+            // ends, as a terminal would show it.
             if let Some(f) = file {
                 let _ = f.write_all(chunk);
             }
-            partial.extend_from_slice(chunk);
-            if let Some(pos) = partial.iter().rposition(|&b| b == b'\n') {
-                let complete: Vec<u8> = partial.drain(..=pos).collect();
-                self.send_output(&complete);
-            }
-            if partial.len() > MAX_PARTIAL_LINE_BYTES {
-                let overflow = std::mem::take(partial);
-                self.send_output(&overflow);
-            }
+            fold.feed(chunk);
+            self.send_output(fold.take_settled());
             return;
         };
         // A TTY session: the terminal owes the program its query replies,
@@ -1019,6 +1007,25 @@ impl MonitorHandle {
         }
     }
 
+    /// A TTY session's [`Prober`]: its program's process and the path of its
+    /// terminal. `None` for a pipe task, or a terminal with no path to name.
+    fn prober(&self, pid: u32) -> Option<Prober> {
+        #[cfg(unix)]
+        {
+            let terminal = crate::pty::spawn::terminal_path(self.terminal.as_ref()?)?;
+            Some(Prober {
+                pid,
+                terminal,
+                last: None,
+            })
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = pid;
+            None
+        }
+    }
+
     /// Send the session's screen to the event loop — if it changed, the
     /// session is announced, and (unless `now`) the last send was at least
     /// [`SCREEN_EVENT_INTERVAL`] ago.
@@ -1043,14 +1050,46 @@ impl MonitorHandle {
         pacer.sent = Some(std::time::Instant::now());
     }
 
-    fn send_output(&self, bytes: &[u8]) {
-        if !self.io.announced() {
+    fn send_output(&self, chunk: String) {
+        if chunk.is_empty() || !self.io.announced() {
             return;
         }
         let _ = self.registry.events.send(BgEvent::Output {
             id: self.id.clone(),
-            chunk: String::from_utf8_lossy(bytes).into_owned(),
+            chunk,
         });
+    }
+}
+
+/// How often a monitor probes what a quiet session's program is blocked in
+/// while a call waits on it ([`crate::pty::probe`]) — a handful of `/proc`
+/// reads each time.
+const PROBE_INTERVAL: Duration = Duration::from_millis(200);
+
+/// What a TTY session's monitor needs to ask the kernel what its program is
+/// blocked in (`docs/interactive-shell.md`).
+struct Prober {
+    /// The session leader — the root of the process tree walked.
+    pid: u32,
+    /// The terminal's path (`/dev/pts/N`), as its processes hold it.
+    terminal: PathBuf,
+    /// When the last probe ran.
+    last: Option<std::time::Instant>,
+}
+
+impl Prober {
+    /// Probe, if the session wants it ([`SessionIo::wants_probe`]) and the
+    /// last probe is [`PROBE_INTERVAL`] old, and record what it saw.
+    fn refresh(&mut self, io: &SessionIo) {
+        if !io.wants_probe()
+            || self
+                .last
+                .is_some_and(|last| last.elapsed() < PROBE_INTERVAL)
+        {
+            return;
+        }
+        self.last = Some(std::time::Instant::now());
+        io.set_probe(crate::pty::probe::probe(self.pid, &self.terminal));
     }
 }
 
@@ -1493,6 +1532,88 @@ mod tests {
         std::fs::remove_file(&task.output_path).ok();
     }
 
+    /// Every `Output` chunk until the task exits, joined.
+    fn output_until_exit(rx: &mut tokio::sync::mpsc::UnboundedReceiver<BgEvent>) -> String {
+        let mut output = String::new();
+        loop {
+            match next(rx) {
+                BgEvent::Output { chunk, .. } => output.push_str(&chunk),
+                BgEvent::Exited { .. } => return output,
+                _ => {}
+            }
+        }
+    }
+
+    #[test]
+    fn a_pipe_tasks_output_streams_folded_the_way_a_terminal_shows_it() {
+        // curl or pip in the background: a `\r` progress bar reaches the
+        // manager and the completion note once, in its final state, and
+        // colour escapes never — while the tee file keeps the stream as
+        // written (docs/interactive-shell.md).
+        let (reg, mut rx) = registry();
+        let task = reg
+            .launch_from(
+                r"printf 'get\n'; for p in 10 60 100; do printf '\r%3d%%' $p; done; printf '\n\033[1mok\033[0m\n'",
+                None,
+                true,
+                None,
+            )
+            .expect("launches");
+        assert_eq!(output_until_exit(&mut rx), "get\n100%\nok\n");
+        let teed = std::fs::read_to_string(&task.output_path).expect("tee file");
+        assert!(
+            teed.contains("\r 10%"),
+            "the file is the raw stream: {teed:?}"
+        );
+        std::fs::remove_file(&task.output_path).ok();
+    }
+
+    #[test]
+    fn a_pipe_tasks_unfinished_last_line_arrives_at_the_exit() {
+        let (reg, mut rx) = registry();
+        let task = reg
+            .launch_from(r"printf 'a\n 50%%\r 99%%'", None, true, None)
+            .expect("launches");
+        assert_eq!(output_until_exit(&mut rx), "a\n 99%");
+        std::fs::remove_file(&task.output_path).ok();
+    }
+
+    #[test]
+    fn an_adopted_commands_replay_and_the_rest_fold_as_one_stream() {
+        // Ctrl+B mid-bar: the foreground runner read the line up to its
+        // 40% frame, the pipe still carries the rest of it — the background
+        // stream shows the line once, finished.
+        let (reg, mut rx) = registry();
+        let mut cmd = Command::new("sh");
+        cmd.arg("-c")
+            .arg(r"sleep 0.2; printf '\r100%%\n'")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            cmd.process_group(0);
+        }
+        let mut child = cmd.spawn().expect("spawns");
+        let (chunk_tx, chunk_rx) = mpsc::channel::<Vec<u8>>();
+        if let Some(pipe) = child.stdout.take() {
+            let tx = chunk_tx.clone();
+            std::thread::spawn(move || drain_pipe(pipe, &tx));
+        }
+        drop(chunk_tx);
+        let task = reg.adopt(
+            "fetch",
+            None,
+            false,
+            child,
+            chunk_rx,
+            b"get\n 10%\r 40%".to_vec(),
+        );
+        assert_eq!(output_until_exit(&mut rx), "get\n100%\n");
+        std::fs::remove_file(&task.output_path).ok();
+    }
+
     // --- TTY sessions (docs/interactive-shell.md) ---
 
     use crate::pty::keys::{encode, parse_input};
@@ -1546,7 +1667,7 @@ mod tests {
             LONG,
             &never,
             &never,
-            &mut |_| {},
+            &mut |_, _| {},
         );
         assert_eq!(end, WaitEnd::Settled(Settle::Prompt));
         assert_eq!(
@@ -1557,7 +1678,7 @@ mod tests {
 
         let since = io.begin_wait();
         type_into(&reg, &task.id, "World\n");
-        let end = io.wait(WaitKind::Input, since, LONG, &never, &never, &mut |_| {});
+        let end = io.wait(WaitKind::Input, since, LONG, &never, &never, &mut |_, _| {});
         assert_eq!(end, WaitEnd::Settled(Settle::Exited));
         let code = io.exit().expect("finished");
         assert_eq!(
@@ -1593,7 +1714,7 @@ mod tests {
             LONG,
             &never,
             &never,
-            &mut |_| {},
+            &mut |_, _| {},
         );
         let _ = io.end_wait();
         assert!(drain(&mut rx, Duration::from_millis(100)).is_empty());
@@ -1639,7 +1760,7 @@ mod tests {
         let (task, io) = (launch.task, launch.io);
         let since = io.begin_wait();
         type_into(&reg, &task.id, "x\n");
-        let end = io.wait(WaitKind::Input, since, LONG, &never, &never, &mut |_| {});
+        let end = io.wait(WaitKind::Input, since, LONG, &never, &never, &mut |_, _| {});
         assert_eq!(end, WaitEnd::Settled(Settle::Exited));
         let _ = io.look(&task.id, Status::Exited(io.exit().flatten()));
         let observed = io.end_wait().expect("the call finalizes");
@@ -1736,7 +1857,7 @@ mod tests {
             LONG,
             &never,
             &never,
-            &mut |_| {},
+            &mut |_, _| {},
         );
         assert_eq!(end, WaitEnd::Settled(Settle::Exited));
         let look = io.look(&task.id, Status::Exited(io.exit().flatten()));
@@ -1765,7 +1886,7 @@ mod tests {
             LONG,
             &never,
             &never,
-            &mut |_| {},
+            &mut |_, _| {},
         );
         if let Some(observed) = io.end_wait() {
             reg.finalize(&task.id, observed);
@@ -1829,7 +1950,7 @@ mod tests {
             LONG,
             &never,
             &never,
-            &mut |_| {},
+            &mut |_, _| {},
         );
         assert_eq!(
             reg.line_mode(&task.id),
@@ -1868,7 +1989,7 @@ mod tests {
             LONG,
             &never,
             &never,
-            &mut |_| {},
+            &mut |_, _| {},
         );
         assert_eq!(end, WaitEnd::Settled(Settle::Exited));
         if let Some(observed) = io.end_wait() {
@@ -1879,16 +2000,18 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn typing_into_a_session_makes_its_next_redraw_an_answer() {
-        // A picker that animated its line before asking reads as animated —
-        // until it is typed into: the redraw that answers the key is its
-        // prompt again.
+    fn a_picker_reading_its_terminal_waits_however_its_line_animated() {
+        // A picker that animated its line before asking has the screen of a
+        // progress bar — but the kernel sees it blocked reading the
+        // terminal (`pty::probe`), and that is the word that counts; typed
+        // into, it redraws and waits again.
         let (reg, _rx) = registry();
         let launch = reg
             .launch_tty(
                 "stty -icanon -echo; printf 'Pick: Apple'; sleep 0.2; \
                  printf '\\rPick: Banana'; sleep 0.2; printf '\\rPick: Cherry'; \
-                 dd bs=1 count=1 >/dev/null 2>&1; printf '\\rPick: Durian'; sleep 30",
+                 dd bs=1 count=1 >/dev/null 2>&1; printf '\\rPick: Durian'; \
+                 dd bs=1 count=1 >/dev/null 2>&1; sleep 30",
                 None,
                 None,
                 false,
@@ -1900,15 +2023,15 @@ mod tests {
             assert!(std::time::Instant::now() < deadline, "the picker drew");
             std::thread::sleep(Duration::from_millis(20));
         }
-        std::thread::sleep(crate::pty::settle::PROMPT_QUIET + Duration::from_millis(100));
-        assert!(
-            !io.waiting(WaitKind::Input, io.origin_mark()),
-            "an animated line is no prompt"
-        );
         let since = io.begin_wait();
+        std::thread::sleep(crate::pty::settle::PROMPT_QUIET + Duration::from_millis(300));
+        assert!(
+            io.waiting(WaitKind::Input, io.origin_mark()),
+            "a program reading its terminal is waiting, its line animated or not"
+        );
         type_into(&reg, &task.id, "x");
         let started = std::time::Instant::now();
-        let end = io.wait(WaitKind::Input, since, LONG, &never, &never, &mut |_| {});
+        let end = io.wait(WaitKind::Input, since, LONG, &never, &never, &mut |_, _| {});
         assert_eq!(end, WaitEnd::Settled(Settle::Prompt));
         assert!(
             started.elapsed() < crate::pty::settle::LINE_QUIET,
@@ -1925,11 +2048,13 @@ mod tests {
     fn a_menu_in_raw_mode_settles_as_waiting_for_input() {
         // An arrow-key menu leaves the cursor at the start of a fresh line
         // — no prompt by the cursor rule — but it reads key by key, which
-        // the monitor reads off the terminal (`pty::spawn::line_mode`).
+        // the monitor reads off the terminal (`pty::spawn::line_mode`), and
+        // the kernel sees it blocked in that read (`pty::probe`).
         let (reg, _rx) = registry();
         let launch = reg
             .launch_tty(
-                "stty -icanon -echo; printf 'pick one\\r\\n> a\\r\\n  b\\r\\n'; sleep 30",
+                "stty -icanon -echo; printf 'pick one\\r\\n> a\\r\\n  b\\r\\n'; \
+                 dd bs=1 count=1 >/dev/null 2>&1; sleep 30",
                 None,
                 None,
                 false,
@@ -1943,7 +2068,7 @@ mod tests {
             LONG,
             &never,
             &never,
-            &mut |_| {},
+            &mut |_, _| {},
         );
         assert_eq!(end, WaitEnd::Settled(Settle::Prompt));
         assert!(

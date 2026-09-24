@@ -82,6 +82,10 @@ pub const CHUNK_DELAY: Duration = Duration::from_millis(45);
 /// `ToolEnd` — so the blue running state is visible before it resolves.
 pub const TOOL_DELAY: Duration = Duration::from_millis(450);
 
+/// How long each frame of a scripted terminal screen holds before the next
+/// replaces it — slow enough to watch a progress bar move in place.
+pub const SCREEN_FRAME_DELAY: Duration = Duration::from_millis(250);
+
 /// Delay after `ThinkingStart` and after each `ThinkingChunk`, so the
 /// reasoning trickles — visibly, in the live block (`docs/thinking-stream.md`)
 /// — and the token tally ticks while the model "thinks". The phase's total
@@ -383,6 +387,9 @@ fn pace(event: &StreamEvent, chunk_delay: Duration) -> Option<Duration> {
         // Each streamed output line pauses like a word so the live
         // cell visibly tails (docs/tool-streaming.md).
         StreamEvent::ToolOutput(_) => Some(chunk_delay),
+        // A terminal session's frame holds long enough to be seen before
+        // the next replaces it (docs/interactive-shell.md).
+        StreamEvent::ToolScreen { .. } => Some(SCREEN_FRAME_DELAY),
         // Each task-tool call pauses like a running tool so the checklist
         // under the status line visibly grows row by row
         // (docs/task-tools.md).

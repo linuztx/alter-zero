@@ -61,6 +61,18 @@ pub struct Update {
     pub omitted_lines: usize,
 }
 
+/// What a waiting call streams to the running cell
+/// ([`Transcript::take_stream`]): `settled` text to append for good, and the
+/// `live` rows that replace the ones it streamed last.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Stream {
+    /// Lines that scrolled out of the cursor's reach since the last take,
+    /// each ending in `\n`.
+    pub settled: String,
+    /// The lines still in reach, as they stand — no trailing newline.
+    pub live: String,
+}
+
 /// See the module docs.
 pub struct Transcript {
     parser: vte::Parser,
@@ -84,7 +96,10 @@ impl Transcript {
     pub fn new() -> Self {
         Self {
             parser: vte::Parser::new(),
-            lines: Lines::default(),
+            lines: Lines {
+                reach: usize::from(super::screen::ROWS),
+                ..Lines::default()
+            },
         }
     }
 
@@ -119,6 +134,8 @@ impl Transcript {
             }
         }
         lines.look = lines.row;
+        lines.stream_from = lines.reach_top();
+        lines.stream_started = false;
         lines.dirty = false;
         let omitted_lines = std::mem::take(&mut lines.omitted);
         lines.trim();
@@ -158,6 +175,57 @@ impl Transcript {
             return text;
         }
         text + "\n"
+    }
+
+    /// A transcript whose screen is `reach` rows tall — how far back the
+    /// cursor can go to redraw a line, and so how much of the tail stays
+    /// **live** in [`take_stream`](Self::take_stream). [`new`](Self::new)
+    /// uses the session's own screen height.
+    #[must_use]
+    pub fn with_reach(reach: usize) -> Self {
+        let mut transcript = Self::new();
+        transcript.lines.reach = reach.max(1);
+        transcript
+    }
+
+    /// The stream a waiting call shows while the next look builds up (see
+    /// the module docs): the lines that look would carry, split at the
+    /// screen's reach — `settled` the ones that scrolled out of it since the
+    /// previous call, final and never streamed again, and `live` the ones
+    /// still in reach, as they stand now. Taking it changes nothing the look
+    /// will say.
+    pub fn take_stream(&mut self) -> Stream {
+        let lines = &mut self.lines;
+        let end = lines.first + lines.rows.len();
+        let top = lines.reach_top();
+        let mut settled = String::new();
+        let from = lines.stream_from.max(lines.look).max(lines.first);
+        for index in from..top {
+            let Some(text) = lines.rows[index - lines.first].pending_text() else {
+                continue;
+            };
+            if !lines.stream_started && text.is_empty() {
+                continue;
+            }
+            lines.stream_started = true;
+            settled.push_str(&text);
+            settled.push('\n');
+        }
+        lines.stream_from = lines.stream_from.max(top);
+        let mut live: Vec<String> = (top.max(lines.first)..end)
+            .filter_map(|index| lines.rows[index - lines.first].pending_text())
+            .collect();
+        if !lines.stream_started {
+            let blank = live.iter().take_while(|text| text.is_empty()).count();
+            live.drain(..blank);
+        }
+        while live.last().is_some_and(String::is_empty) {
+            live.pop();
+        }
+        Stream {
+            settled,
+            live: live.join("\n"),
+        }
     }
 
     /// Start a new burst: output from here on that changes a line an
@@ -294,6 +362,16 @@ impl Row {
         let text: String = self.cells.iter().filter(|&&c| c != WIDE_PAD).collect();
         text.trim_end().to_string()
     }
+
+    /// Its text if the next look would carry it — new, or changed since the
+    /// model was last handed it.
+    fn pending_text(&self) -> Option<String> {
+        if !self.touched {
+            return None;
+        }
+        let text = self.text();
+        (self.delivered != Some(hash_of(&text))).then_some(text)
+    }
 }
 
 /// The line model the parser drives: rows addressed absolutely (`first` is
@@ -330,12 +408,29 @@ struct Lines {
     burst_before: Vec<(usize, u64)>,
     /// The typing epoch ([`Transcript::new_input`]).
     epoch: u64,
+    /// The screen's height: the cursor reaches back no further, so a row
+    /// above the last `reach` rows can never change again.
+    reach: usize,
+    /// The stream's cursor ([`Transcript::take_stream`]): the first row it
+    /// has not settled yet.
+    stream_from: usize,
+    /// The stream has settled a line since the last look — from then on a
+    /// blank line is part of the text, not a gap leading it.
+    stream_started: bool,
 }
 
 impl Lines {
     /// One past the last retained row (the cursor's row always exists).
     fn end(&self) -> usize {
         (self.first + self.rows.len()).max(self.row + 1)
+    }
+
+    /// The first row still in the cursor's reach — the top of the screen,
+    /// counted back from the last row.
+    fn reach_top(&self) -> usize {
+        (self.first + self.rows.len())
+            .saturating_sub(self.reach)
+            .max(self.first)
     }
 
     /// Make sure row `index` (absolute) exists, creating it — and any rows
@@ -432,6 +527,7 @@ impl Lines {
         self.first += 1;
         self.look = self.look.max(self.first);
         self.commit = self.commit.max(self.first);
+        self.stream_from = self.stream_from.max(self.first);
         self.row = self.row.max(self.first);
         if let Some((row, _)) = &mut self.saved {
             *row = (*row).max(self.first);
@@ -894,6 +990,68 @@ mod tests {
         let _ = t.take_update();
         t.feed(b"\r\n\r\ntwo\r\n");
         assert_eq!(t.take_update().text, "two");
+    }
+
+    fn stream(t: &mut Transcript) -> (String, String) {
+        let Stream { settled, live } = t.take_stream();
+        (settled, live)
+    }
+
+    #[test]
+    fn a_stream_settles_what_scrolled_out_of_reach_and_keeps_the_rest_live() {
+        // A screen three rows tall: the cursor can reach back two rows at
+        // most, so anything further up is final — streamed once, appended —
+        // while what is in reach may still be redrawn and is replaced whole.
+        let mut t = Transcript::with_reach(3);
+        t.feed(b"one\r\ntwo\r\n");
+        assert_eq!(stream(&mut t), (String::new(), "one\ntwo".to_string()));
+        t.feed(b"three\r\nfour\r\n");
+        assert_eq!(
+            stream(&mut t),
+            ("one\ntwo\n".to_string(), "three\nfour".to_string())
+        );
+        // A redraw in reach changes the live rows only.
+        t.feed(b"\x1b[1F four!\r\n");
+        assert_eq!(stream(&mut t), (String::new(), "three\n four!".to_string()));
+        assert_eq!(stream(&mut t), (String::new(), "three\n four!".to_string()));
+    }
+
+    #[test]
+    fn a_stream_carries_only_what_the_next_look_would() {
+        // pacman's bars: the look handed the model all three; afterwards the
+        // stream shows the one that moved, never the unchanged ones.
+        let mut t = fed(b" core     100%\r\n extra      10%\r\n multilib 100%\r\n");
+        let _ = t.take_update();
+        assert_eq!(stream(&mut t), (String::new(), String::new()));
+        t.feed(b"\x1b[2F extra      50%\r");
+        assert_eq!(
+            stream(&mut t),
+            (String::new(), " extra      50%".to_string())
+        );
+        t.feed(b" extra     100%\r");
+        assert_eq!(
+            stream(&mut t),
+            (String::new(), " extra     100%".to_string())
+        );
+        assert_eq!(t.take_update().text, " extra     100%");
+    }
+
+    #[test]
+    fn a_stream_never_repeats_a_settled_line_and_starts_again_after_a_look() {
+        let mut t = Transcript::with_reach(2);
+        t.feed(b"\r\na\r\nb\r\nc\r\n");
+        let (settled, live) = stream(&mut t);
+        assert_eq!(settled, "a\nb\n", "no blank line leads the stream");
+        assert_eq!(live, "c");
+        t.feed(b"d\r\n");
+        assert_eq!(stream(&mut t), ("c\n".to_string(), "d".to_string()));
+        assert_eq!(t.take_update().text, "a\nb\nc\nd");
+        t.feed(b"e\r\n");
+        assert_eq!(
+            stream(&mut t),
+            (String::new(), "e".to_string()),
+            "the look delivered `d`: settling it later streams nothing"
+        );
     }
 
     #[test]

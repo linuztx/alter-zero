@@ -24,6 +24,7 @@
 use std::sync::{Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
+use super::probe::Probe;
 use super::report::{self, Status, View};
 use super::screen::Screen;
 use super::settle::{self, Observation, Settle, WaitKind};
@@ -39,9 +40,22 @@ const WAIT_POLL: Duration = Duration::from_millis(20);
 /// changes it again in a later one.
 const BURST_SPAN: Duration = Duration::from_millis(100);
 
-/// The most finished lines held for a waiting call's running cell; a flood
-/// past it keeps its tail (the cell only ever shows the newest rows).
-const LIVE_MAX_BYTES: usize = 64 * 1024;
+/// How often a waiting call streams the session to its running cell, at
+/// most — a redrawn progress bar reaches the screen at a steady pace instead
+/// of once per write (`docs/interactive-shell.md`).
+const STREAM_INTERVAL: Duration = Duration::from_millis(50);
+
+/// How long a terminal a call waits on must be quiet — no output, no input —
+/// before the monitor probes what its program is blocked in
+/// ([`SessionIo::wants_probe`]): soon enough for the answer to be in by
+/// [`settle::PROMPT_QUIET`], late enough that a program mid-answer is not
+/// caught between its reads.
+pub const PROBE_QUIET: Duration = Duration::from_millis(200);
+
+/// The most settled text one waiting call streams to its running cell; past
+/// it only the live rows keep moving. The cell is replaced by the report
+/// when the call ends, and the report keeps its own tail.
+const STREAM_MAX_BYTES: usize = 64 * 1024;
 
 /// See the module docs.
 pub struct SessionIo {
@@ -69,8 +83,6 @@ struct IoState {
     code: Option<i32>,
     /// Calls blocked in [`SessionIo::wait`] (and not yet through `end_wait`).
     waiters: usize,
-    /// Finished lines for a waiting call's running cell.
-    live: String,
     /// A report composed since the exit said so.
     exit_reported: bool,
     /// The exit has been finalized (by the monitor or a waiter).
@@ -84,6 +96,12 @@ struct IoState {
     /// When the current burst of output began ([`BURST_SPAN`]) — `None`
     /// before any, and after input, whose answer starts a burst of its own.
     burst_began: Option<Instant>,
+    /// What the monitor's probe last saw the program blocked in
+    /// ([`super::probe`]) — [`Probe::Unknown`] again the moment output or
+    /// input moves the session on.
+    probe: Probe,
+    /// When input was last written — quiet counts from it too, for the probe.
+    last_input: Option<Instant>,
 }
 
 /// A point in a session's output history — taken before a call writes its
@@ -141,12 +159,13 @@ impl SessionIo {
                 finished: false,
                 code: None,
                 waiters,
-                live: String::new(),
                 exit_reported: false,
                 finalized: false,
                 announced: false,
                 reading_keys: false,
                 burst_began: None,
+                probe: Probe::Unknown,
+                last_input: None,
             }),
             changed: Condvar::new(),
         }
@@ -214,17 +233,10 @@ impl SessionIo {
         }
         state.transcript.feed(bytes);
         let committed = state.transcript.take_committed();
-        if state.waiters > 0 && !committed.is_empty() {
-            state.live.push_str(&committed);
-            if state.live.len() > LIVE_MAX_BYTES {
-                let cut = state.live.len() - LIVE_MAX_BYTES;
-                let len = state.live.len();
-                let at = state.live[cut..].find('\n').map_or(cut, |n| cut + n + 1);
-                state.live.drain(..at.min(len));
-            }
-        }
         state.seq += 1;
         state.last_output = Some(Instant::now());
+        // Whatever the probe saw, the program has moved on since.
+        state.probe = Probe::Unknown;
         drop(state);
         self.changed.notify_all();
         (replies, committed)
@@ -287,9 +299,41 @@ impl SessionIo {
     #[must_use]
     pub fn waiting(&self, kind: WaitKind, since: Mark) -> bool {
         let state = self.lock();
-        let quiet = state.last_output.map_or(Duration::ZERO, |at| at.elapsed());
-        let needed = settle::prompt_quiet(kind, state.seq > since.seq);
+        let quiet = state.last_output.unwrap_or(state.created).elapsed();
+        // The probe's read is exact: no longer quiet than any prompt.
+        let needed = if state.probe == Probe::Reading {
+            settle::PROMPT_QUIET
+        } else {
+            settle::prompt_quiet(kind, state.seq > since.seq)
+        };
         !state.finished && quiet >= needed && state.awaiting_keys()
+    }
+
+    /// Should the monitor ask the kernel what the program is blocked in
+    /// ([`super::probe`])? For a terminal a call is waiting on, once it has
+    /// been quiet [`PROBE_QUIET`] since the last output or input — never for
+    /// a pipe, or once it has exited.
+    #[must_use]
+    pub fn wants_probe(&self) -> bool {
+        let state = self.lock();
+        let last = [state.last_output, state.last_input]
+            .into_iter()
+            .flatten()
+            .max()
+            .unwrap_or(state.created);
+        state.screen.is_some()
+            && state.waiters > 0
+            && !state.finished
+            && last.elapsed() >= PROBE_QUIET
+    }
+
+    /// Record what the probe saw ([`super::probe::probe`]), waking a waiting
+    /// call when it changed.
+    pub fn set_probe(&self, probe: Probe) {
+        let changed = std::mem::replace(&mut self.lock().probe, probe) != probe;
+        if changed {
+            self.changed.notify_all();
+        }
     }
 
     /// The program is about to be typed into: what it draws next answers
@@ -300,6 +344,9 @@ impl SessionIo {
         let mut state = self.lock();
         state.transcript.new_input();
         state.burst_began = None;
+        // The read the probe saw is about to take these keys.
+        state.probe = Probe::Unknown;
+        state.last_input = Some(Instant::now());
     }
 
     /// Record whether the program reads its terminal **key by key** (raw
@@ -336,8 +383,10 @@ impl SessionIo {
     }
 
     /// Block until the session settles (see [`super::settle`]) — or the
-    /// call's `cancelled` or `handoff` predicate fires — forwarding the lines
-    /// it finishes to `live` as they arrive. The call must already be a
+    /// call's `cancelled` or `handoff` predicate fires — streaming what the
+    /// look will report to `stream(settled, live)` as it builds up
+    /// ([`Transcript::take_stream`]): `settled` text to append, `live` rows
+    /// that replace the ones streamed last. The call must already be a
     /// waiter ([`begin_wait`](Self::begin_wait), or a launch's
     /// [`waited`](Self::waited) session).
     pub fn wait(
@@ -347,13 +396,14 @@ impl SessionIo {
         timeout: Duration,
         cancelled: &dyn Fn() -> bool,
         handoff: &dyn Fn() -> bool,
-        live: &mut dyn FnMut(&str),
+        stream: &mut dyn FnMut(&str, &str),
     ) -> WaitEnd {
+        let mut streamer = Streamer::default();
         loop {
-            let (lines, seen) = {
+            let (update, seen) = {
                 let mut state = self.lock();
-                let lines = std::mem::take(&mut state.live);
                 let now = Instant::now();
+                let update = streamer.due(now).then(|| state.transcript.take_stream());
                 let output = state.seq > since.seq;
                 let last = if output {
                     state.last_output.unwrap_or(since.at)
@@ -365,14 +415,19 @@ impl SessionIo {
                     quiet: now.saturating_duration_since(last),
                     output,
                     awaiting_keys: state.awaiting_keys(),
+                    reading: state.probe == Probe::Reading,
                     exited: state.finished,
                 };
-                (lines, seen)
+                (update, seen)
             };
-            if !lines.is_empty() {
-                live(&lines);
+            if let Some(update) = update {
+                streamer.send(update, stream);
             }
             if let Some(settled) = settle::settle(kind, timeout, &seen) {
+                // One last look, past the pace, so the cell ends where the
+                // report begins.
+                let update = self.lock().transcript.take_stream();
+                streamer.send(update, stream);
                 return WaitEnd::Settled(settled);
             }
             if cancelled() {
@@ -381,10 +436,10 @@ impl SessionIo {
             if handoff() {
                 return WaitEnd::Handoff;
             }
-            // Sleep only when there is nothing to act on — no lines to
-            // forward, and no exit that landed after the observation above.
+            // Sleep only when there is nothing to act on — no exit that
+            // landed after the observation above.
             let state = self.lock();
-            if state.live.is_empty() && (seen.exited || !state.finished) {
+            if seen.exited || !state.finished {
                 let _ = self
                     .changed
                     .wait_timeout(state, WAIT_POLL)
@@ -447,19 +502,66 @@ impl SessionIo {
     }
 }
 
+/// A waiting call's stream to its running cell ([`SessionIo::wait`]): paced
+/// at [`STREAM_INTERVAL`], sent only when something changed, the settled
+/// text capped at [`STREAM_MAX_BYTES`].
+#[derive(Default)]
+struct Streamer {
+    last: Option<Instant>,
+    /// The live rows sent last.
+    shown: String,
+    /// Settled bytes sent so far.
+    settled: usize,
+}
+
+impl Streamer {
+    /// Is a stream update due at `now`? Starts the next interval if so.
+    fn due(&mut self, now: Instant) -> bool {
+        let due = self
+            .last
+            .is_none_or(|last| now.saturating_duration_since(last) >= STREAM_INTERVAL);
+        if due {
+            self.last = Some(now);
+        }
+        due
+    }
+
+    /// Hand `update` to `stream` — unless it changes nothing on screen.
+    fn send(&mut self, update: super::transcript::Stream, stream: &mut dyn FnMut(&str, &str)) {
+        let settled = if self.settled < STREAM_MAX_BYTES {
+            self.settled += update.settled.len();
+            update.settled
+        } else {
+            String::new()
+        };
+        if settled.is_empty() && update.live == self.shown {
+            return;
+        }
+        stream(&settled, &update.live);
+        self.shown = update.live;
+    }
+}
+
 impl IoState {
-    /// Does the terminal look like it is waiting for keys? A full-screen
-    /// program always does; otherwise a prompt by the cursor
-    /// ([`Screen::awaiting_keys`]) or a program reading key by key, wherever
-    /// its cursor is — unless the line under the cursor is **animated**
+    /// Is the program waiting for keys? The probe's word first
+    /// ([`super::probe`]): a thread reading the terminal is waiting wherever
+    /// the cursor sits, and a tree that is all at work is busy whatever the
+    /// screen shows. Without it, the screen: a full-screen program always
+    /// looks it; otherwise a prompt by the cursor ([`Screen::awaiting_keys`])
+    /// or a program reading key by key, wherever its cursor is — unless the
+    /// line under the cursor is **animated**
     /// ([`Transcript::cursor_line_animated`]): a progress bar or a spinner
     /// leaves the cursor exactly where a prompt would, and pauses. Never a
     /// pipe.
     fn awaiting_keys(&self) -> bool {
-        self.screen.as_ref().is_some_and(|screen| {
-            screen.alternate()
-                || (!self.transcript.cursor_line_animated()
-                    && (self.reading_keys || screen.awaiting_keys()))
+        self.screen.as_ref().is_some_and(|screen| match self.probe {
+            Probe::Reading => true,
+            Probe::Idle => false,
+            Probe::Unknown => {
+                screen.alternate()
+                    || (!self.transcript.cursor_line_animated()
+                        && (self.reading_keys || screen.awaiting_keys()))
+            }
         })
     }
 
@@ -503,7 +605,14 @@ mod tests {
         let io = Arc::new(SessionIo::new(true));
         let since = io.begin_wait();
         feed_later(&io, Duration::from_millis(30), &[b"Python 3\r\n", b">>> "]);
-        let end = io.wait(WaitKind::Launch, since, LONG, &never, &never, &mut |_| {});
+        let end = io.wait(
+            WaitKind::Launch,
+            since,
+            LONG,
+            &never,
+            &never,
+            &mut |_, _| {},
+        );
         assert_eq!(end, WaitEnd::Settled(Settle::Prompt));
         assert_eq!(
             io.look("s1", Status::Running { waiting: true }),
@@ -520,7 +629,7 @@ mod tests {
         let since = io.begin_wait();
         io.absorb(b">>> 1+1\r\n2\r\n>>> ");
         let started = Instant::now();
-        let end = io.wait(WaitKind::Input, since, LONG, &never, &never, &mut |_| {});
+        let end = io.wait(WaitKind::Input, since, LONG, &never, &never, &mut |_, _| {});
         assert_eq!(end, WaitEnd::Settled(Settle::Prompt));
         assert!(started.elapsed() < Duration::from_secs(2));
     }
@@ -538,7 +647,7 @@ mod tests {
             LONG,
             &never,
             &never,
-            &mut |_| {},
+            &mut |_, _| {},
         );
         assert_eq!(end, WaitEnd::Settled(Settle::Prompt));
         assert!(
@@ -548,22 +657,85 @@ mod tests {
     }
 
     #[test]
-    fn a_waiting_call_sees_finished_lines_as_they_arrive() {
+    fn a_waiting_call_streams_what_the_look_will_report() {
+        // The running cell shows, as it happens, exactly what the look will
+        // hand the model: lines out of the cursor's reach appended once, the
+        // rows in reach replaced as they redraw (docs/interactive-shell.md).
         let io = Arc::new(SessionIo::new(true));
         let since = io.begin_wait();
-        feed_later(&io, Duration::from_millis(30), &[b"one\r\ntwo\r\n", b"$ "]);
-        let mut streamed = String::new();
+        feed_paced(
+            &io,
+            &[
+                b"Downloading\r\n",
+                b"  10%",
+                b"\r  50%",
+                b"\r 100%\r\ndone\r\n$ ",
+            ],
+        );
+        let mut view = String::new();
+        let mut live_len = 0;
+        let mut frames = Vec::new();
+        let end = io.wait(
+            WaitKind::Launch,
+            since,
+            LONG,
+            &never,
+            &never,
+            &mut |settled, live| {
+                live_len = crate::app::apply_tool_screen(&mut view, live_len, settled, live);
+                frames.push(view.clone());
+            },
+        );
+        assert_eq!(end, WaitEnd::Settled(Settle::Prompt));
+        assert_eq!(view, "Downloading\n 100%\ndone\n$");
+        assert!(
+            frames.iter().any(|frame| frame == "Downloading\n  50%"),
+            "it streamed as the bar moved: {frames:?}"
+        );
+        assert!(
+            frames.iter().all(|frame| frame.matches('%').count() <= 1),
+            "a redrawn frame never lingers beside the next: {frames:?}"
+        );
+        assert_eq!(
+            io.look("s1", Status::Running { waiting: true }),
+            format!("Running (session s1, waiting for input)\n{view}")
+        );
+    }
+
+    #[test]
+    fn lines_out_of_reach_settle_into_the_stream_once() {
+        let io = Arc::new(SessionIo::new(true));
+        let since = io.begin_wait();
+        let lines: String = (1..=60).map(|n| format!("line {n}\r\n")).collect();
+        io.absorb(lines.as_bytes());
+        io.absorb(b"$ ");
+        let mut view = String::new();
+        let mut live_len = 0;
+        let mut settled_all = String::new();
         let _ = io.wait(
             WaitKind::Launch,
             since,
             LONG,
             &never,
             &never,
-            &mut |lines| {
-                streamed.push_str(lines);
+            &mut |settled, live| {
+                settled_all.push_str(settled);
+                live_len = crate::app::apply_tool_screen(&mut view, live_len, settled, live);
             },
         );
-        assert_eq!(streamed, "one\ntwo\n");
+        assert!(
+            settled_all.starts_with("line 1\nline 2\n"),
+            "{settled_all:?}"
+        );
+        assert!(
+            !settled_all.contains("line 60"),
+            "the tail is still in reach"
+        );
+        let report = io.look("s1", Status::Running { waiting: true });
+        assert_eq!(
+            report,
+            format!("Running (session s1, waiting for input)\n{view}")
+        );
     }
 
     #[test]
@@ -588,7 +760,7 @@ mod tests {
                 io.finish(Some(0)).1
             })
         };
-        let end = io.wait(WaitKind::Input, since, LONG, &never, &never, &mut |_| {});
+        let end = io.wait(WaitKind::Input, since, LONG, &never, &never, &mut |_, _| {});
         assert_eq!(end, WaitEnd::Settled(Settle::Exited));
         assert_eq!(monitor.join().unwrap(), Finish::Waiter);
         assert_eq!(io.look("s1", Status::Exited(Some(0))), "Exit code: 0\ndone");
@@ -615,7 +787,7 @@ mod tests {
         let io = SessionIo::new(true);
         let since = io.begin_wait();
         assert_eq!(io.finish(None).1, Finish::Waiter, "left to the call");
-        let end = io.wait(WaitKind::Wait, since, LONG, &never, &never, &mut |_| {});
+        let end = io.wait(WaitKind::Wait, since, LONG, &never, &never, &mut |_, _| {});
         assert_eq!(end, WaitEnd::Settled(Settle::Exited));
         let _ = io.look("s1", Status::Stopped);
         assert_eq!(io.end_wait(), Some(true), "observed");
@@ -629,13 +801,27 @@ mod tests {
         let io = SessionIo::new(true);
         let since = io.begin_wait();
         assert_eq!(
-            io.wait(WaitKind::Wait, since, LONG, &|| true, &never, &mut |_| {}),
+            io.wait(
+                WaitKind::Wait,
+                since,
+                LONG,
+                &|| true,
+                &never,
+                &mut |_, _| {}
+            ),
             WaitEnd::Cancelled
         );
         let _ = io.end_wait();
         let since = io.begin_wait();
         assert_eq!(
-            io.wait(WaitKind::Wait, since, LONG, &never, &|| true, &mut |_| {}),
+            io.wait(
+                WaitKind::Wait,
+                since,
+                LONG,
+                &never,
+                &|| true,
+                &mut |_, _| {}
+            ),
             WaitEnd::Handoff
         );
         let _ = io.end_wait();
@@ -651,7 +837,7 @@ mod tests {
             Duration::from_millis(60),
             &never,
             &never,
-            &mut |_| {},
+            &mut |_, _| {},
         );
         assert_eq!(end, WaitEnd::Settled(Settle::Timeout));
     }
@@ -684,7 +870,7 @@ mod tests {
             Duration::from_millis(900),
             &never,
             &never,
-            &mut |_| {},
+            &mut |_, _| {},
         );
         assert_eq!(end, WaitEnd::Settled(Settle::Timeout), "stdin is /dev/null");
         assert_eq!(
@@ -717,7 +903,7 @@ mod tests {
             Duration::from_millis(60),
             &never,
             &never,
-            &mut |_| {},
+            &mut |_, _| {},
         );
         assert_eq!(end, WaitEnd::Settled(Settle::Timeout));
         assert!(
@@ -756,7 +942,7 @@ mod tests {
             LONG,
             &never,
             &never,
-            &mut |_| {},
+            &mut |_, _| {},
         );
         assert_eq!(end, WaitEnd::Settled(Settle::Prompt));
         assert!(
@@ -797,7 +983,7 @@ mod tests {
             Duration::from_millis(1500),
             &never,
             &never,
-            &mut |_| {},
+            &mut |_, _| {},
         );
         assert_eq!(end, WaitEnd::Settled(Settle::Timeout));
         assert!(!io.waiting(WaitKind::Input, since));
@@ -812,7 +998,7 @@ mod tests {
             &[b" 10%", b"\r 20%", b"\r 30%", b"\r\nContinue? [Y/n] "],
         );
         let started = Instant::now();
-        let end = io.wait(WaitKind::Input, since, LONG, &never, &never, &mut |_| {});
+        let end = io.wait(WaitKind::Input, since, LONG, &never, &never, &mut |_, _| {});
         assert_eq!(end, WaitEnd::Settled(Settle::Prompt));
         assert!(started.elapsed() < settle::LINE_QUIET);
     }
@@ -839,7 +1025,7 @@ mod tests {
         io.note_input();
         io.absorb(b"\r? Pick: Durian");
         let started = Instant::now();
-        let end = io.wait(WaitKind::Input, since, LONG, &never, &never, &mut |_| {});
+        let end = io.wait(WaitKind::Input, since, LONG, &never, &never, &mut |_, _| {});
         assert_eq!(end, WaitEnd::Settled(Settle::Prompt));
         assert!(started.elapsed() < settle::LINE_QUIET);
     }
@@ -861,6 +1047,81 @@ mod tests {
             !SessionIo::new(false).holds_typed("x"),
             "no screen, no prompt"
         );
+    }
+
+    #[test]
+    fn a_program_seen_reading_its_terminal_waits_with_no_prompt_at_all() {
+        // `read x`, `cat`: nothing on screen asks, but the probe saw the read
+        // (`pty::probe`) — the launch settles as waiting, briskly.
+        let io = Arc::new(SessionIo::waited(true));
+        io.set_probe(Probe::Reading);
+        let started = Instant::now();
+        let end = io.wait(
+            WaitKind::Launch,
+            io.origin_mark(),
+            LONG,
+            &never,
+            &never,
+            &mut |_, _| {},
+        );
+        assert_eq!(end, WaitEnd::Settled(Settle::Prompt));
+        assert!(
+            started.elapsed() < settle::LINE_QUIET,
+            "not the quiet fallback"
+        );
+        assert!(io.waiting(WaitKind::Launch, io.origin_mark()));
+    }
+
+    #[test]
+    fn a_program_seen_at_work_is_busy_whatever_its_screen_shows() {
+        // `Working... ` left open over a sleeping command has a prompt's
+        // shape, but every process is at work: no prompt (`pty::probe`).
+        let io = Arc::new(SessionIo::new(true));
+        let since = io.begin_wait();
+        io.absorb(b"Working... ");
+        io.set_probe(Probe::Idle);
+        let end = io.wait(
+            WaitKind::Input,
+            since,
+            Duration::from_millis(1200),
+            &never,
+            &never,
+            &mut |_, _| {},
+        );
+        assert_eq!(end, WaitEnd::Settled(Settle::Timeout));
+        assert!(!io.waiting(WaitKind::Input, since));
+        // New output makes the verdict stale: the screen decides again.
+        io.absorb(b"\r\nContinue? ");
+        std::thread::sleep(settle::PROMPT_QUIET + Duration::from_millis(50));
+        assert!(io.waiting(WaitKind::Input, since));
+    }
+
+    #[test]
+    fn input_makes_the_verdict_stale_too() {
+        let io = SessionIo::new(true);
+        io.set_probe(Probe::Reading);
+        io.note_input();
+        std::thread::sleep(settle::PROMPT_QUIET + Duration::from_millis(50));
+        assert!(
+            !io.waiting(WaitKind::Input, io.origin_mark()),
+            "the read the probe saw has taken the input"
+        );
+    }
+
+    #[test]
+    fn the_monitor_probes_a_quiet_terminal_a_call_waits_on() {
+        let io = SessionIo::new(true);
+        std::thread::sleep(PROBE_QUIET + Duration::from_millis(20));
+        assert!(!io.wants_probe(), "nobody is waiting");
+        let _since = io.begin_wait();
+        assert!(io.wants_probe());
+        io.absorb(b"x");
+        assert!(!io.wants_probe(), "output just arrived");
+        std::thread::sleep(PROBE_QUIET + Duration::from_millis(20));
+        assert!(io.wants_probe());
+        let pipe = SessionIo::waited(false);
+        std::thread::sleep(PROBE_QUIET + Duration::from_millis(20));
+        assert!(!pipe.wants_probe(), "a pipe has no terminal to read");
     }
 
     #[test]

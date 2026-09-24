@@ -252,6 +252,20 @@ impl Session<'_> {
                 self.app.push_tool_output(&chunk);
                 false
             }
+            StreamEvent::ToolScreen { settled, live } => {
+                // A command's output as it builds up: settled text appends,
+                // the live rows replace the last ones — a progress bar
+                // redraws in place (docs/interactive-shell.md). Live-only,
+                // like ToolOutput.
+                self.app.push_tool_screen(&settled, &live);
+                false
+            }
+            StreamEvent::ToolTitle(title) => {
+                // The executor's refined header — a `bash_session` call's
+                // session command beside its keys.
+                self.app.set_tool_title(&title);
+                false
+            }
             StreamEvent::HookNote { label, text } => {
                 // A lifecycle hook injected conversation text mid-turn
                 // (docs/hooks.md): finalise the assistant run before it —

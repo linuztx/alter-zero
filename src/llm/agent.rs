@@ -12,6 +12,7 @@
 
 use tokio::sync::mpsc::UnboundedSender;
 
+use super::exec::ToolProgress;
 use super::hooks::{HookSink, block_texts as hook_block_texts};
 use super::tools::{
     ToolCallRequest, ToolOutcome, display_name, image_attachment_note, summarize_call,
@@ -162,7 +163,7 @@ pub fn run_agent(
     max_tool_calls: usize,
     messages: &mut Vec<ChatMessage>,
     mut round: impl FnMut(&[ChatMessage]) -> RoundOutcome,
-    mut execute: impl FnMut(&ToolCallRequest, &mut dyn FnMut(&str)) -> ToolOutcome,
+    mut execute: impl FnMut(&ToolCallRequest, &mut dyn FnMut(ToolProgress<'_>)) -> ToolOutcome,
     mut pending_inputs: impl FnMut() -> Vec<PendingInput>,
     mut run_agents: impl FnMut(&[ToolCallRequest]) -> Vec<(String, String)>,
     mut approve: impl FnMut(&ToolCallRequest, bool) -> Approval,
@@ -401,7 +402,7 @@ pub fn run_agent(
                     // round's visible calls, in the model's own order. The
                     // result still feeds back like any tool's.
                     if crate::tasks::is_task_tool(&call.name) {
-                        let mut sink = |_: &str| {};
+                        let mut sink = |_: ToolProgress<'_>| {};
                         let outcome = execute(call, &mut sink);
                         let _ = tx.send(StreamEvent::TaskCall {
                             name: display_name(&call.name),
@@ -512,8 +513,17 @@ pub fn run_agent(
                     // so the running cell tails it (docs/tool-streaming.md). The
                     // sink targets the front running call app-side; a tool that
                     // does not stream (read/write/edit) simply never calls it.
-                    let mut on_output = |chunk: &str| {
-                        let _ = tx.send(StreamEvent::ToolOutput(chunk.to_string()));
+                    let mut on_output = |progress: ToolProgress<'_>| {
+                        let event = match progress {
+                            // Settled text appends, live rows replace the
+                            // last ones (docs/interactive-shell.md).
+                            ToolProgress::Screen { settled, live } => StreamEvent::ToolScreen {
+                                settled: settled.to_string(),
+                                live: live.to_string(),
+                            },
+                            ToolProgress::Title(title) => StreamEvent::ToolTitle(title.to_string()),
+                        };
+                        let _ = tx.send(event);
                     };
                     let mut outcome = execute(call, &mut on_output);
                     // `PostToolUse` (docs/hooks.md): the call ran, so there is
@@ -1555,8 +1565,8 @@ mod tests {
     }
 
     #[test]
-    fn a_tool_that_streams_output_emits_tooloutput_between_start_and_end() {
-        // The executor's `on_output` sink surfaces as ToolOutput events strictly
+    fn a_tool_that_streams_output_emits_toolscreen_between_start_and_end() {
+        // The executor's `on_output` sink surfaces as ToolScreen events strictly
         // between the call's ToolStart and ToolEnd, so the running cell tails the
         // output as it is produced. See `docs/tool-streaming.md`.
         let (tx, mut rx) = unbounded_channel();
@@ -1583,8 +1593,14 @@ mod tests {
                 }
             },
             |_c, sink| {
-                sink("a\n");
-                sink("b\n");
+                sink(ToolProgress::Screen {
+                    settled: "a\n",
+                    live: "b",
+                });
+                sink(ToolProgress::Screen {
+                    settled: "b\n",
+                    live: "",
+                });
                 ToolOutcome::ok("Exit code: 0\na\nb")
             },
             Vec::new,
@@ -1601,24 +1617,93 @@ mod tests {
             .iter()
             .position(|e| matches!(e, StreamEvent::ToolEnd { .. }))
             .expect("the tool ended");
-        let outputs: Vec<&str> = events
+        let screens: Vec<(&str, &str)> = events
             .iter()
             .filter_map(|e| match e {
-                StreamEvent::ToolOutput(s) => Some(s.as_str()),
+                StreamEvent::ToolScreen { settled, live } => {
+                    Some((settled.as_str(), live.as_str()))
+                }
                 _ => None,
             })
             .collect();
         assert_eq!(
-            outputs,
-            vec!["a\n", "b\n"],
-            "the sink's chunks stream as ToolOutput: {events:?}"
+            screens,
+            vec![("a\n", "b"), ("b\n", "")],
+            "the sink's updates stream as ToolScreen: {events:?}"
         );
         let all_between = events
             .iter()
             .enumerate()
-            .filter(|(_, e)| matches!(e, StreamEvent::ToolOutput(_)))
+            .filter(|(_, e)| matches!(e, StreamEvent::ToolScreen { .. }))
             .all(|(i, _)| start < i && i < end);
         assert!(all_between, "live output streams between start and end");
+    }
+
+    #[test]
+    fn a_terminal_backed_tool_streams_screen_and_title_events() {
+        // A terminal session's live output and its refined header reach the
+        // UI as ToolScreen and ToolTitle, between the call's start and end
+        // (docs/interactive-shell.md).
+        let (tx, mut rx) = unbounded_channel();
+        let cancel = CancelToken::new();
+        let rounds = RefCell::new(0);
+        let calls = vec![call("c1", "bash_session", r#"{"session_id":"b1"}"#)];
+        run_agent(
+            &tx,
+            &cancel,
+            MAX_TOOL_ITERATIONS,
+            &mut vec![ChatMessage::user("wait on it")],
+            |_msgs| {
+                let mut n = rounds.borrow_mut();
+                *n += 1;
+                if *n == 1 {
+                    RoundOutcome::ToolCalls {
+                        assistant: assistant_with(&calls),
+                        calls: calls.clone(),
+                    }
+                } else {
+                    RoundOutcome::Complete {
+                        text: String::new(),
+                    }
+                }
+            },
+            |_c, sink| {
+                sink(ToolProgress::Title("sudo pacman -Syy"));
+                sink(ToolProgress::Screen {
+                    settled: ":: Synchronizing\n",
+                    live: " extra  45%",
+                });
+                ToolOutcome::ok("Exit code: 0\n extra 100%")
+            },
+            Vec::new,
+            |_calls| Vec::new(),
+            |_call, _force| Approval::Allow,
+            &NoHooks,
+        );
+        let events = drain(&mut rx);
+        let start = events
+            .iter()
+            .position(|e| matches!(e, StreamEvent::ToolStart { .. }))
+            .expect("the tool started");
+        let end = events
+            .iter()
+            .position(|e| matches!(e, StreamEvent::ToolEnd { .. }))
+            .expect("the tool ended");
+        let title = events
+            .iter()
+            .position(|e| matches!(e, StreamEvent::ToolTitle(t) if t == "sudo pacman -Syy"))
+            .expect("the refined header streamed");
+        let screen = events
+            .iter()
+            .position(|e| {
+                matches!(e, StreamEvent::ToolScreen { settled, live }
+                    if settled == ":: Synchronizing\n" && live == " extra  45%")
+            })
+            .expect("the screen streamed");
+        assert!(
+            start < title && title < screen && screen < end,
+            "{events:?}"
+        );
     }
 
     #[test]

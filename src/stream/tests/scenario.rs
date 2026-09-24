@@ -291,6 +291,20 @@ fn the_interactive_demo_answers_prompts_through_a_session() {
     assert_eq!(starts[0].0, "Bash");
     assert!(starts[0].1.contains(r#""tty":true"#), "{}", starts[0].1);
     assert!(starts[1..].iter().all(|(name, _)| *name == "BashSession"));
+    // Each answer's header names the command it goes to, as the real
+    // executor refines it once it knows the session.
+    let titles: Vec<&str> = events
+        .iter()
+        .filter_map(|e| match e {
+            StreamEvent::ToolTitle(title) => Some(title.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        titles,
+        vec!["./configure.sh ← demo⏎", "./configure.sh ← y⏎"],
+        "{events:?}"
+    );
     // One call a round, each announced — the model reads before it answers.
     let batches = events
         .iter()
@@ -326,6 +340,40 @@ fn the_interactive_demo_answers_prompts_through_a_session() {
         )
     );
     assert!(ends[2].starts_with("Exit code: 0\n"), "{}", ends[2]);
+    // The last answer's install bar streams as the live cell's screen: one
+    // row replaced frame by frame, never a frame per row
+    // (docs/interactive-shell.md).
+    let third = events
+        .iter()
+        .enumerate()
+        .filter(|(_, e)| matches!(e, StreamEvent::ToolStart { .. }))
+        .nth(2)
+        .map(|(i, _)| i)
+        .expect("a third call");
+    let frames: Vec<&str> = events[third..]
+        .iter()
+        .take_while(|e| !matches!(e, StreamEvent::ToolEnd { .. }))
+        .filter_map(|e| match e {
+            StreamEvent::ToolScreen { settled, live } => {
+                assert!(settled.is_empty(), "everything stays in reach: {settled:?}");
+                Some(live.as_str())
+            }
+            _ => None,
+        })
+        .collect();
+    assert!(frames.len() >= 3, "the bar moves: {frames:?}");
+    assert!(
+        frames
+            .iter()
+            .all(|live| live.matches("Installing").count() == 1),
+        "one bar row per frame: {frames:?}"
+    );
+    let last = frames.last().expect("frames");
+    assert!(
+        ends[2].contains(last),
+        "the last frame is what the report says: {last:?} in {}",
+        ends[2]
+    );
 }
 
 #[test]

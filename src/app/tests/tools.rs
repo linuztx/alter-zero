@@ -315,6 +315,90 @@ fn push_tool_output_does_not_tail_a_waiting_batch_sibling() {
 }
 
 #[test]
+fn a_screen_update_appends_settled_text_and_replaces_the_live_tail() {
+    // A terminal session streams its screen (docs/interactive-shell.md):
+    // settled text is final and appends, and the live rows replace the ones
+    // the last update sent — a progress bar is one row changing in place.
+    let mut app = App::new();
+    app.start_tool("Bash", "sudo pacman -Syy", None);
+    app.push_tool_screen("", " extra  10%");
+    app.push_tool_screen("", " extra  50%");
+    assert_eq!(app.current_tool().unwrap().output, " extra  50%");
+    app.push_tool_screen(
+        ":: Synchronizing package databases...\n",
+        " extra 100%\n multilib 100%",
+    );
+    assert_eq!(
+        app.current_tool().unwrap().output,
+        ":: Synchronizing package databases...\n extra 100%\n multilib 100%"
+    );
+}
+
+#[test]
+fn a_new_call_starts_with_no_live_tail() {
+    let mut app = App::new();
+    app.start_tool("Bash", "one", None);
+    app.push_tool_screen("", "the first call's screen");
+    app.end_tool("Exit code: 0\nthe first call's screen", true);
+    app.start_tool("Bash", "two", None);
+    app.push_tool_screen("", "x");
+    assert_eq!(
+        app.current_tool().unwrap().output,
+        "x",
+        "the last call's live length cuts nothing from this one"
+    );
+}
+
+#[test]
+fn a_screen_update_only_reaches_a_running_call() {
+    let mut app = App::new();
+    app.push_tool_screen("a\n", "b"); // no call at all: no panic
+    app.start_tool_batch(&ping_batch());
+    app.push_tool_screen("a\n", "b");
+    assert!(
+        app.current_tool().unwrap().output.is_empty(),
+        "a Waiting sibling has not started"
+    );
+}
+
+#[test]
+fn every_change_to_the_running_call_bumps_its_revision() {
+    // A same-length redraw (45% → 46%) changes no length the transcript
+    // cache watches; the revision is what tells it.
+    let mut app = App::new();
+    app.start_tool("Bash", "x", None);
+    let started = app.tool_revision();
+    app.push_tool_screen("", "45%");
+    let first = app.tool_revision();
+    app.push_tool_screen("", "46%");
+    assert!(first > started);
+    assert!(app.tool_revision() > first);
+    app.set_tool_title("y");
+    assert!(app.tool_revision() > first + 1);
+}
+
+#[test]
+fn a_refined_title_replaces_the_running_calls_header() {
+    let mut app = App::new();
+    app.start_tool("BashSession", "b7x2k9m1q ← y⏎", None);
+    app.set_tool_title("sudo pacman -Syy ← y⏎");
+    assert_eq!(app.current_tool().unwrap().args, "sudo pacman -Syy ← y⏎");
+    app.end_tool("Exit code: 0\ndone", true);
+    app.set_tool_title("stray"); // nothing running: no panic, nothing changed
+    assert!(app.current_tool().is_none());
+}
+
+#[test]
+fn apply_tool_screen_swaps_only_the_live_tail() {
+    let mut output = String::from("settled\n");
+    let live = crate::app::apply_tool_screen(&mut output, 0, "", "é live");
+    assert_eq!(output, "settled\né live");
+    let live = crate::app::apply_tool_screen(&mut output, live, "more\n", "next");
+    assert_eq!(output, "settled\nmore\nnext");
+    assert_eq!(live, "next".len());
+}
+
+#[test]
 fn push_tool_output_does_not_charge_the_token_tally() {
     // The tally is charged once, from the authoritative ToolEnd output in
     // end_tool — never from the streamed chunks (which would double-count).

@@ -101,13 +101,18 @@ executor (`llm::exec`), and the `!` shell runner:
   registry also *carries* that helper to the executor and the `!` runner,
   `docs/tools.md`) and a **monitor thread** that merges
   stdout/stderr in arrival order, streams completed lines as
-  `BgEvent::Output`, tees everything to `{tasks_dir}/{id}.output` (so the
-  model can `read` interim output), and sends `BgEvent::Exited {code, killed}`
-  when the child dies. `BgEvent::Started {id, command, description,
+  `BgEvent::Output` — **folded** the way a terminal shows them (`pty::fold`:
+  a `\r` progress bar arrives once, finished, and colour escapes never, so
+  the manager and the completion note read text; the line left unfinished
+  arrives at the exit) — tees every byte, as written, to
+  `{tasks_dir}/{id}.output` (so the model can `read` interim output), and
+  sends `BgEvent::Exited {code, killed}` when the child dies. `BgEvent::Started {id, command, description,
   from_model}` is sent up front.
-- `adopt(child, chunk_rx, combined, forwarded, …)` is the **Ctrl+B transfer**:
-  a foreground `bash` (or `!` shell) run hands its child + pipe channel +
-  already-read output to a fresh monitor thread mid-run.
+- `adopt(child, chunk_rx, prior, …)` is the **Ctrl+B transfer**: a
+  foreground `bash` (or `!` shell) run hands its child + pipe channel +
+  already-read output — the bytes as read — to a fresh monitor thread
+  mid-run, which takes `prior` as its first chunk into the same fold as the
+  rest, so a bar interrupted mid-line finishes as one line.
 - `request_background()` / `take_background_request()` is the Ctrl+B flag: the
   loop sets it when a running `bash`/`!` command is on screen; the runner's
   poll loop consumes it (and clears any stale request when a new command

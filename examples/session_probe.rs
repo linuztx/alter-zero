@@ -134,6 +134,16 @@ fn main() {
             StreamEvent::ToolEnd { output, ok, .. } => {
                 show_result(if ok { "ok" } else { "failed" }, &output);
             }
+            // The header the executor refined, and each update the running
+            // cell took — settled lines appended, the live rows replaced.
+            StreamEvent::ToolTitle(title) => println!("\x1b[36m  ↳ {title}\x1b[0m"),
+            StreamEvent::ToolScreen { settled, live } => {
+                let live = live.lines().last().unwrap_or_default();
+                println!(
+                    "\x1b[2m  ~ +{} settled · live: {live}\x1b[0m",
+                    settled.lines().count()
+                );
+            }
             StreamEvent::ToolAnswered { result, .. } => show_result("ok", &result),
             StreamEvent::ToolRejected { result, .. } => show_result("rejected", &result),
             StreamEvent::ToolBackgrounded { output, .. } => show_result("backgrounded", &output),

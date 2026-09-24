@@ -1187,13 +1187,29 @@ own** as its controlling terminal (rustix's safe `openpt`/`TIOCGPTPEER`, the
 detach chain's TTY form — `setsid -c`, then the helper under
 `__alter-zero-detached-tty-exec` adding `TIOCSCTTY`, and **no attached
 tier**, whose `/dev/tty` would be the user's) and returns once it exits or
-**settles** at a prompt (`pty::settle`: the cursor left mid-line, the
+**settles** at a prompt (`pty::settle`: first the **kernel's word** —
+`pty::probe` walks the session's process tree in Linux's
+`/proc/…/task/…/syscall` from the monitor thread while a call waits on a
+quiet terminal, and a `read` blocked on the session's pts (or `/dev/tty`) is
+a program waiting for input whatever the screen shows, while a tree all at
+work is busy however prompt-shaped its line — then, where it is blind (a
+`sudo`-owned process, a `poll`-family wait, no `/proc`), the screen: the
+cursor left mid-line, the
 alternate screen, or a terminal reading key by key — canonical mode off with
 output processing still on, read off the pty with `tcgetattr`, since a relay
 (sudo's own pty, ssh, `docker run -it`) holds it raw with `OPOST` off too —
 each after 0.5 s of quiet, 3 s for a pure wait that saw the line appear, and
 never on a line the transcript saw **redrawn in place** by two bursts since
-the last input: a progress bar or a spinner, not a prompt), and the new
+the last input: a progress bar or a spinner, not a prompt); a waiting call
+**streams** its running cell as `ToolProgress::Screen { settled, live }` →
+`StreamEvent::ToolScreen` → `App::push_tool_screen`, `live` rows replacing
+the last ones so a bar redraws in place (`Transcript::take_stream`: rows in
+the screen's reach stay live, rows that scrolled out settle once), and a
+**plain** `bash` call — and a background shell's event stream, and a `!`
+command's output — is **folded** the same way (`pty::fold`: `\r`/backspace
+overwrite, escapes vanish, tabs and trailing spaces stay; the `.output` tee
+file stays raw); a `bash_session` header names the session's command once
+the executor knows it (`ToolTitle`); and the new
 **`bash_session`**
 tool types into the session (`pty::keys`' `<Enter>`/`<C-c>`/`<Up>`
 notation, a doubly-escaped `"y\\n"` undone), waits on it, reads it and
@@ -1212,7 +1228,7 @@ a wait the user ended with Ctrl+B); typing into a session is its own
 rule, "don't ask again for this session" held on the gate and never
 persisted, reviewed by auto mode's classifier — while a wait, a kill and a
 lone `<C-c>` never ask; the cells strip the frame for a dim `⎿ Waiting for
-input · session …` row, `BashSession(b7x2k9m1q ← y⏎)` headers; tuned against
+input · session …` row, `BashSession(./configure.sh ← y⏎)` headers; tuned against
 eight live models with `examples/session_probe.rs`, the offline
 `interactive` demo and `smoke.sh` Phase 123); and the **tool
 permission requests** (Claude-Code's ask-before-you-change: the `approve` seam

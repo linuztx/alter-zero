@@ -903,13 +903,27 @@ const INTERACTIVE_REPLY: &str = concat!(
 /// own shape (`b` + eight base-36 characters).
 const DUMMY_SESSION_ID: &str = "b7x2k9m1q";
 
+/// The command the interactive demo's session runs.
+const DUMMY_SESSION_COMMAND: &str = "./configure.sh";
+
+/// The interactive demo's install bar at `pct` percent — ten cells wide.
+fn install_bar(pct: usize) -> String {
+    let filled = pct / 10;
+    format!(
+        "Installing  [{}{}] {pct:>3}%",
+        "#".repeat(filled),
+        " ".repeat(10 - filled)
+    )
+}
+
 /// The **interactive-shell** demo (`docs/interactive-shell.md`): a setup
 /// wizard launched with `tty`, stopping at its first prompt; an answer typed
 /// into the session, met by the next question; and the last answer, which
 /// ends the program. One call a round — the model reads each question before
 /// it answers — and every result the real [`crate::pty::report::report`], so
 /// the offline cells (and the dim `Waiting for input · session …` rows under
-/// them) are the live ones.
+/// them) are the live ones; each answer's header is the executor's own
+/// refinement ([`crate::llm::tools::session_title`]).
 pub(in crate::stream) fn interactive_turn(cue: &Cue) -> Vec<StreamEvent> {
     use crate::pty::report::{Status, View, report};
     let lines = |text: &str| View::Lines {
@@ -922,7 +936,7 @@ pub(in crate::stream) fn interactive_turn(cue: &Cue) -> Vec<StreamEvent> {
         ScriptedCall::step(
             "Bash",
             serde_json::json!({
-                "command": "./configure.sh",
+                "command": DUMMY_SESSION_COMMAND,
                 "tty": true,
                 "description": "Run the setup wizard",
             }),
@@ -943,16 +957,39 @@ pub(in crate::stream) fn interactive_turn(cue: &Cue) -> Vec<StreamEvent> {
             report(
                 DUMMY_SESSION_ID,
                 Status::Exited(Some(0)),
-                &lines("Install into ./demo? [Y/n] y\nCreated ./demo (3 files)."),
+                &lines(&format!(
+                    "Install into ./demo? [Y/n] y\n{}\nCreated ./demo (3 files).",
+                    install_bar(100)
+                )),
             ),
         ),
     ];
+    // What each step types — the launch types nothing.
+    let typed = [None, Some("demo\n"), Some("y\n")];
     let (first, second) = reply_parts(INTERACTIVE_REPLY);
     let mut events = opening(cue);
     events.extend(say(&first));
-    for step in &steps {
+    for (index, step) in steps.iter().enumerate() {
         events.push(StreamEvent::ToolBatch(vec![step.summary()]));
         events.push(step.start());
+        if let Some(input) = typed[index] {
+            events.push(StreamEvent::ToolTitle(crate::llm::tools::session_title(
+                DUMMY_SESSION_COMMAND,
+                Some(input),
+                false,
+            )));
+        }
+        if index == steps.len() - 1 {
+            // The answer starts the install: its bar redraws in place in the
+            // running cell — the live rows replaced frame by frame, as a
+            // session's wait streams them (docs/interactive-shell.md).
+            for pct in [10, 40, 70, 100] {
+                events.push(StreamEvent::ToolScreen {
+                    settled: String::new(),
+                    live: format!("Install into ./demo? [Y/n] y\n{}", install_bar(pct)),
+                });
+            }
+        }
         events.push(step.end());
     }
     events.extend(say(&second));

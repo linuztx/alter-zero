@@ -26,19 +26,35 @@ pub trait ToolExecutor {
     /// panics — every failure becomes a non-ok [`ToolOutcome`] the model reads
     /// and can recover from.
     ///
-    /// `on_output` is a sink for the tool's **live output**: a streaming tool
-    /// (`bash`) calls it with each newly-completed line as the command runs, so
-    /// the TUI can tail the running cell (surfaced as
-    /// [`crate::stream::StreamEvent::ToolOutput`]; see `docs/tool-streaming.md`).
-    /// A tool that produces its result all at once (`read`/`write`/`edit`)
-    /// simply never calls it — the full result still comes back in the returned
-    /// [`ToolOutcome`].
+    /// `on_output` is a sink for the tool's **live output** ([`ToolProgress`]):
+    /// a streaming tool (`bash`, `bash_session`) calls it as the command runs,
+    /// so the TUI can tail the running cell (surfaced as
+    /// [`ToolScreen`](crate::stream::StreamEvent::ToolScreen); see
+    /// `docs/tool-streaming.md`). A tool that produces its result all at once
+    /// (`read`/`write`/`edit`) simply never calls it — the full result still
+    /// comes back in the returned [`ToolOutcome`].
     fn execute(
         &self,
         call: &ToolCallRequest,
         cancel: &CancelToken,
-        on_output: &mut dyn FnMut(&str),
+        on_output: &mut dyn FnMut(ToolProgress<'_>),
     ) -> ToolOutcome;
+}
+
+/// What a running tool reports while it runs — the executor's live sink
+/// ([`ToolExecutor::execute`]'s `on_output`), mapped onto the matching
+/// [`crate::stream::StreamEvent`] by the agent loop.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolProgress<'a> {
+    /// A command's output as it builds up: `settled` text to append for
+    /// good, `live` rows that replace the previous `live` — the line a plain
+    /// command is still drawing, the rows a terminal can still redraw
+    /// ([`crate::stream::StreamEvent::ToolScreen`],
+    /// `docs/interactive-shell.md`).
+    Screen { settled: &'a str, live: &'a str },
+    /// The call's header, refined
+    /// ([`crate::stream::StreamEvent::ToolTitle`]).
+    Title(&'a str),
 }
 
 /// How often the `bash` runner polls a running child for completion, a cancel,
@@ -122,7 +138,7 @@ impl ToolExecutor for RealToolExecutor {
         &self,
         call: &ToolCallRequest,
         cancel: &CancelToken,
-        on_output: &mut dyn FnMut(&str),
+        on_output: &mut dyn FnMut(ToolProgress<'_>),
     ) -> ToolOutcome {
         match call.name.as_str() {
             "bash" => run_bash(
@@ -220,18 +236,19 @@ fn arg_error(err: String) -> ToolOutcome {
 }
 
 /// `bash`: run the command under `sh -c`, capture combined stdout+stderr
-/// (byte-capped, merged in arrival order), enforce the per-call timeout, and
-/// kill on cancel. As output arrives it is **streamed line-by-line** through
-/// `on_output` so the TUI tails the running cell (`docs/tool-streaming.md`); the
-/// full output is still framed as codex does (`Exit code: N` + output) for the
-/// model — a non-zero exit or a timeout resolves the cell red.
+/// (merged in arrival order, **folded** the way a terminal would show it and
+/// byte-capped — [`PipeOutput`]), enforce the per-call timeout, and kill on
+/// cancel. As output arrives it is **streamed** through `on_output` so the TUI
+/// tails the running cell (`docs/tool-streaming.md`); the full output is still
+/// framed as codex does (`Exit code: N` + output) for the model — a non-zero
+/// exit or a timeout resolves the cell red.
 fn run_bash(
     arguments: &str,
     cancel: &CancelToken,
     background: Option<&BackgroundRegistry>,
     origin: Option<&BgOrigin>,
     detach_helper: Option<&Path>,
-    on_output: &mut dyn FnMut(&str),
+    on_output: &mut dyn FnMut(ToolProgress<'_>),
 ) -> ToolOutcome {
     let args: BashArgs = match tools::parse_args(arguments) {
         Ok(a) => a,
@@ -293,8 +310,8 @@ fn run_bash(
 
     // Drain both pipes on their own threads (so a chatty command can't deadlock
     // on a full pipe), forwarding raw chunks over a channel; the poll loop below
-    // merges them into the capped `combined` buffer in arrival order and streams
-    // each newly-completed line out via `on_output`.
+    // folds them in arrival order ([`PipeOutput`]) and streams the running
+    // cell through `on_output`.
     let cap = TOOL_OUTPUT_MAX_BYTES;
     let (chunk_tx, chunk_rx) = mpsc::channel::<Vec<u8>>();
     let out_pipe = child.stdout.take();
@@ -313,22 +330,13 @@ fn run_bash(
     });
     drop(chunk_tx); // only the readers hold senders now, so the channel ends at EOF
 
-    let mut combined: Vec<u8> = Vec::new();
-    let mut forwarded = 0usize; // bytes already streamed out via on_output
-    let mut truncated = false;
+    let mut output = PipeOutput::new(cap);
     let start = Instant::now();
     let mut timed_out = false;
     let status = loop {
-        // Absorb whatever output is available right now, streaming its lines.
+        // Absorb whatever output is available right now.
         while let Ok(chunk) = chunk_rx.try_recv() {
-            absorb_chunk(
-                &chunk,
-                &mut combined,
-                &mut forwarded,
-                cap,
-                &mut truncated,
-                on_output,
-            );
+            output.absorb(&chunk, on_output);
         }
         if cancel.is_cancelled() {
             crate::subprocess::kill_process_group(&mut child);
@@ -338,7 +346,7 @@ fn run_bash(
             return ToolOutcome::error("Interrupted by user");
         }
         // Ctrl+B: hand the run off to the background registry mid-flight — it
-        // replays what we already read (`combined`) and keeps streaming from
+        // replays what we already read (as read) and keeps streaming from
         // our pipe channel; the detached reader threads keep feeding it and
         // exit at EOF on their own. The call resolves as backgrounded, and
         // the agent loop keeps going with the HANDOFF text as the tool result
@@ -358,7 +366,7 @@ fn run_bash(
                 true,
                 child,
                 chunk_rx,
-                combined,
+                output.into_raw(),
             );
             return ToolOutcome::backgrounded(task.id.clone(), background_handoff_text(&task));
         }
@@ -373,18 +381,11 @@ fn run_bash(
             // re-poll the cancel/timeout above; `Disconnected` (both readers done
             // before the child is reaped) just paces the re-poll.
             Ok(None) => match chunk_rx.recv_timeout(BASH_POLL_INTERVAL) {
-                Ok(chunk) => {
-                    absorb_chunk(
-                        &chunk,
-                        &mut combined,
-                        &mut forwarded,
-                        cap,
-                        &mut truncated,
-                        on_output,
-                    );
-                }
-                Err(mpsc::RecvTimeoutError::Timeout) => {}
+                Ok(chunk) => output.absorb(&chunk, on_output),
+                // A quiet moment still delivers what the pacing held back.
+                Err(mpsc::RecvTimeoutError::Timeout) => output.stream(on_output, false),
                 Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    output.stream(on_output, false);
                     std::thread::sleep(BASH_POLL_INTERVAL);
                 }
             },
@@ -399,27 +400,13 @@ fn run_bash(
     crate::subprocess::kill_process_group(&mut child);
     let _ = out_reader.join();
     let _ = err_reader.join();
-    // Drain any output buffered after the last poll, then stream the trailing
-    // partial line (never newline-terminated) so `on_output` has seen it all.
+    // Drain any output buffered after the last poll, then settle the line
+    // still being drawn (never newline-terminated) so `on_output` has seen it
+    // all.
     while let Ok(chunk) = chunk_rx.try_recv() {
-        absorb_chunk(
-            &chunk,
-            &mut combined,
-            &mut forwarded,
-            cap,
-            &mut truncated,
-            on_output,
-        );
+        output.absorb(&chunk, on_output);
     }
-    if forwarded < combined.len() {
-        on_output(&String::from_utf8_lossy(&combined[forwarded..]));
-    }
-
-    let combined = String::from_utf8_lossy(&combined).into_owned();
-    // `combined` is already byte-capped; truncate_output only trims to a clean
-    // char boundary (and re-confirms the flag) so the framed body is valid UTF-8.
-    let (combined, extra_trunc) = tools::truncate_output(combined, cap);
-    let truncated = truncated || extra_trunc;
+    let (combined, truncated) = output.finish(on_output);
 
     if timed_out {
         let body = tools::format_exec_output(None, &combined);
@@ -466,7 +453,7 @@ fn run_tty(
     cancel: &CancelToken,
     registry: &BackgroundRegistry,
     origin: Option<&BgOrigin>,
-    on_output: &mut dyn FnMut(&str),
+    on_output: &mut dyn FnMut(ToolProgress<'_>),
 ) -> ToolOutcome {
     use crate::pty::report::Status;
     use crate::pty::session::WaitEnd;
@@ -488,6 +475,10 @@ fn run_tty(
     // The session was created with this call as its waiter, so even a
     // command that exits before the wait below begins leaves its exit here.
     let handoff = || origin.is_none() && registry.take_background_request();
+    // The running cell shows what the report will say as it builds up —
+    // settled lines appended, the rows in reach redrawn in place.
+    let on_output =
+        &mut |settled: &str, live: &str| on_output(ToolProgress::Screen { settled, live });
     let end = io.wait(
         WaitKind::Launch,
         io.origin_mark(),
@@ -542,7 +533,7 @@ fn run_bash_session(
     cancel: &CancelToken,
     background: Option<&BackgroundRegistry>,
     origin: Option<&BgOrigin>,
-    on_output: &mut dyn FnMut(&str),
+    on_output: &mut dyn FnMut(ToolProgress<'_>),
 ) -> ToolOutcome {
     use crate::pty::keys::{encode, is_interrupt, leaves_line_open, parse_input, typed_tail};
     use crate::pty::report::{NOT_KILLED_NOTE, Status, UNSUBMITTED_NOTE, WAIT_ENDED_NOTE};
@@ -561,6 +552,15 @@ fn run_bash_session(
     };
     let io = session.io;
     let parts = parse_input(args.input.as_deref().unwrap_or_default());
+    // The header names the command the keys go to
+    // (docs/interactive-shell.md).
+    on_output(ToolProgress::Title(&tools::session_title(
+        &session.command,
+        args.input.as_deref(),
+        args.kill,
+    )));
+    let on_output =
+        &mut |settled: &str, live: &str| on_output(ToolProgress::Screen { settled, live });
     if !parts.is_empty() && !io.is_tty() && !is_interrupt(&parts) {
         return ToolOutcome::error(format!(
             "session {id} has no terminal to type into — it was not started with tty: \
@@ -720,34 +720,112 @@ fn drain_pipe(mut pipe: impl Read, tx: &mpsc::Sender<Vec<u8>>) {
     }
 }
 
-/// Append `chunk` to the capped `combined` buffer (in arrival order) and stream
-/// every newly-**completed** line — `combined[forwarded ..= last '\n']` — out
-/// through `on_output`, advancing `forwarded`. Retaining and forwarding are both
-/// bounded by `cap` (setting `truncated` when it bites). Forwarding whole lines
-/// from the merged buffer means a multi-byte UTF-8 char is never split across a
-/// chunk boundary (a `'\n'` is never inside a char), so the tail never shows a
-/// stray replacement glyph.
-fn absorb_chunk(
-    chunk: &[u8],
-    combined: &mut Vec<u8>,
-    forwarded: &mut usize,
+/// How often a plain command's running cell is sent its output while it
+/// flows — every line still arrives, batched; a burst of progress frames
+/// costs one redraw per interval, not one per frame.
+const PIPE_STREAM_INTERVAL: Duration = Duration::from_millis(50);
+
+/// A plain command's output as it arrives (`docs/interactive-shell.md`):
+/// folded the way a terminal would show it ([`Fold`] — a `\r`-redrawn
+/// progress bar is one line in its final state, colour escapes gone), each
+/// line kept once it ends, within the output cap, and streamed to the
+/// running cell as [`ToolProgress::Screen`] — the ended lines appended, the
+/// line still being drawn redrawn in place.
+///
+/// [`Fold`]: crate::pty::fold::Fold
+struct PipeOutput {
+    fold: crate::pty::fold::Fold,
+    /// The lines that ended, within `cap` bytes — what the model reads.
+    text: String,
+    /// Output the cap cut.
+    truncated: bool,
+    /// Ended lines the running cell has not been sent yet.
+    pending: String,
+    /// The line in progress as the running cell last showed it.
+    shown: String,
+    /// When the running cell was last sent anything.
+    sent: Option<Instant>,
+    /// The bytes as they were read, within `cap` — what a Ctrl+B handoff
+    /// replays, so the background shell folds the whole stream itself.
+    raw: Vec<u8>,
     cap: usize,
-    truncated: &mut bool,
-    on_output: &mut dyn FnMut(&str),
-) {
-    if combined.len() < cap {
-        let take = (cap - combined.len()).min(chunk.len());
-        combined.extend_from_slice(&chunk[..take]);
-        if take < chunk.len() {
-            *truncated = true;
+}
+
+impl PipeOutput {
+    fn new(cap: usize) -> Self {
+        Self {
+            fold: crate::pty::fold::Fold::with_line_cap(cap),
+            text: String::new(),
+            truncated: false,
+            pending: String::new(),
+            shown: String::new(),
+            sent: None,
+            raw: Vec::new(),
+            cap,
         }
-    } else if !chunk.is_empty() {
-        *truncated = true;
     }
-    if let Some(rel) = combined[*forwarded..].iter().rposition(|&b| b == b'\n') {
-        let upto = *forwarded + rel + 1;
-        on_output(&String::from_utf8_lossy(&combined[*forwarded..upto]));
-        *forwarded = upto;
+
+    /// Fold a chunk in, streaming the running cell (paced).
+    fn absorb(&mut self, chunk: &[u8], on_output: &mut dyn FnMut(ToolProgress<'_>)) {
+        let room = self.cap.saturating_sub(self.raw.len()).min(chunk.len());
+        self.raw.extend_from_slice(&chunk[..room]);
+        self.fold.feed(chunk);
+        self.truncated |= self.fold.overflowed();
+        let lines = self.fold.take_settled();
+        self.keep(&lines);
+        self.stream(on_output, false);
+    }
+
+    /// Keep ended lines, within the cap.
+    fn keep(&mut self, lines: &str) {
+        let room = self.cap.saturating_sub(self.text.len());
+        let take = lines.floor_char_boundary(room);
+        self.truncated |= take < lines.len();
+        self.text.push_str(&lines[..take]);
+        self.pending.push_str(&lines[..take]);
+    }
+
+    /// Send the running cell what changed since the last send — unless one
+    /// went out within [`PIPE_STREAM_INTERVAL`] and this is not the `last`.
+    fn stream(&mut self, on_output: &mut dyn FnMut(ToolProgress<'_>), last: bool) {
+        if !last
+            && self
+                .sent
+                .is_some_and(|sent| sent.elapsed() < PIPE_STREAM_INTERVAL)
+        {
+            return;
+        }
+        // Past the cap the line in progress can never be kept, so it is not
+        // shown either.
+        let live = if self.text.len() < self.cap {
+            self.fold.current()
+        } else {
+            String::new()
+        };
+        if self.pending.is_empty() && live == self.shown {
+            return;
+        }
+        on_output(ToolProgress::Screen {
+            settled: &self.pending,
+            live: &live,
+        });
+        self.pending.clear();
+        self.shown = live;
+        self.sent = Some(Instant::now());
+    }
+
+    /// What a Ctrl+B handoff replays: the output as it was read.
+    fn into_raw(self) -> Vec<u8> {
+        self.raw
+    }
+
+    /// The command is done: the line still being drawn ends where it stands.
+    /// Returns the output and whether the cap cut it.
+    fn finish(mut self, on_output: &mut dyn FnMut(ToolProgress<'_>)) -> (String, bool) {
+        let rest = std::mem::take(&mut self.fold).finish();
+        self.keep(&rest);
+        self.stream(on_output, true);
+        (self.text, self.truncated)
     }
 }
 
@@ -992,20 +1070,84 @@ mod tests {
         RealToolExecutor::new().execute(&call(name, args), &CancelToken::new(), &mut |_| {})
     }
 
+    /// A running cell as the TUI keeps it: a `ToolScreen`'s settled text
+    /// appended and its live rows replacing the last ones
+    /// (`App::push_tool_screen`), every state it passed through kept as a
+    /// frame.
+    #[derive(Default)]
+    struct LiveCell {
+        view: String,
+        live_len: usize,
+        frames: Vec<String>,
+    }
+
+    impl LiveCell {
+        fn take(&mut self, progress: ToolProgress<'_>) {
+            match progress {
+                ToolProgress::Screen { settled, live } => {
+                    self.live_len =
+                        crate::app::apply_tool_screen(&mut self.view, self.live_len, settled, live);
+                }
+                ToolProgress::Title(_) => return,
+            }
+            self.frames.push(self.view.clone());
+        }
+    }
+
+    #[test]
+    fn a_plain_commands_progress_bar_reaches_the_model_once() {
+        // curl's meter, tqdm, ffmpeg: `\r` frames on a pipe. The model reads
+        // the line as a terminal would show it — its final frame — and the
+        // running cell redraws it in place (docs/interactive-shell.md).
+        let command = r"printf 'fetching\n'; for p in 10 40 70 100; do printf '\r%3d%%' $p; sleep 0.15; done; printf '\n'";
+        let mut cell = LiveCell::default();
+        let out = RealToolExecutor::new().execute(
+            &call(
+                "bash",
+                &serde_json::json!({ "command": command }).to_string(),
+            ),
+            &CancelToken::new(),
+            &mut |progress| cell.take(progress),
+        );
+        assert_eq!(out.output, "Exit code: 0\nfetching\n100%\n");
+        assert!(
+            cell.frames.iter().any(|frame| frame == "fetching\n 40%"),
+            "the bar streamed as it moved: {:?}",
+            cell.frames
+        );
+        assert!(
+            cell.frames
+                .iter()
+                .all(|frame| frame.matches('%').count() <= 1),
+            "one row per bar: {:?}",
+            cell.frames
+        );
+    }
+
+    #[test]
+    fn a_plain_commands_escapes_never_reach_the_model_but_its_tabs_do() {
+        let command = r"printf '\033[1;31merror\033[0m: bad\n\tindented  \n'";
+        let out = exec(
+            "bash",
+            &serde_json::json!({ "command": command }).to_string(),
+        );
+        assert_eq!(out.output, "Exit code: 0\nerror: bad\n\tindented  \n");
+    }
+
     #[test]
     fn bash_streams_its_output_to_the_sink() {
         // The live-output sink receives the command's output as it runs; by the
         // time execute returns it has seen all of it, and the framed final still
         // carries the same body (docs/tool-streaming.md).
-        let mut streamed = String::new();
+        let mut cell = LiveCell::default();
         let out = RealToolExecutor::new().execute(
             &call("bash", r#"{"command":"printf 'a\nb\nc\n'"}"#),
             &CancelToken::new(),
-            &mut |chunk| streamed.push_str(chunk),
+            &mut |progress| cell.take(progress),
         );
         assert!(out.ok, "got {}", out.output);
         assert_eq!(
-            streamed, "a\nb\nc\n",
+            cell.view, "a\nb\nc\n",
             "the sink tails the full output as complete lines"
         );
         assert!(
@@ -1019,14 +1161,17 @@ mod tests {
     fn bash_streams_a_trailing_line_without_a_newline() {
         // A final line with no trailing '\n' is still flushed to the sink once,
         // at the end (before the ToolEnd overwrite), so the sink sees everything.
-        let mut streamed = String::new();
+        let mut cell = LiveCell::default();
         let out = RealToolExecutor::new().execute(
             &call("bash", r#"{"command":"printf 'x\ny'"}"#),
             &CancelToken::new(),
-            &mut |chunk| streamed.push_str(chunk),
+            &mut |progress| cell.take(progress),
         );
         assert!(out.ok, "got {}", out.output);
-        assert_eq!(streamed, "x\ny", "the partial trailing line is flushed too");
+        assert_eq!(
+            cell.view, "x\ny",
+            "the partial trailing line is flushed too"
+        );
     }
 
     #[test]
@@ -1733,14 +1878,14 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(120));
             flag.request_background();
         });
-        let mut streamed = String::new();
+        let mut cell = LiveCell::default();
         let out = executor.execute(
             &call(
                 "bash",
                 r#"{"command":"printf 'early\n'; sleep 3; printf 'late\n'","timeout_ms":30000}"#,
             ),
             &CancelToken::new(),
-            &mut |chunk| streamed.push_str(chunk),
+            &mut |progress| cell.take(progress),
         );
         raiser.join().unwrap();
         assert!(out.ok, "got {}", out.output);
@@ -1767,7 +1912,7 @@ mod tests {
             "the session id and the interim file ride the handoff text: {}",
             out.output
         );
-        assert!(streamed.contains("early"), "the foreground tail ran first");
+        assert!(cell.view.contains("early"), "the foreground tail ran first");
         // The adopted task replays the prior output and finishes on its own.
         let mut replayed = String::new();
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
@@ -2195,6 +2340,110 @@ mod tests {
         );
     }
 
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_command_reading_with_no_prompt_is_seen_waiting() {
+        // `read x` prints nothing: no prompt by the cursor — but the kernel
+        // says it is blocked reading the terminal (`pty::probe`), so the
+        // launch reports it waiting, and soon.
+        let (registry, _rx) = test_registry();
+        let executor = RealToolExecutor::new().with_background(registry.clone());
+        let started = Instant::now();
+        let out = exec_with(
+            &executor,
+            "bash",
+            r#"{"command":"read x; echo \"got $x\"","tty":true}"#,
+        );
+        assert!(
+            out.output.starts_with("Running (session ") && out.output.contains("waiting for input"),
+            "{}",
+            out.output
+        );
+        assert!(
+            started.elapsed() < crate::pty::settle::LINE_QUIET,
+            "settled on the read, not the quiet fallback"
+        );
+        let id = session_of(&out.output);
+        let typed = exec_with(
+            &executor,
+            BASH_SESSION,
+            &serde_json::json!({"session_id": id, "input": "hi\n"}).to_string(),
+        );
+        assert_eq!(typed.output, "Exit code: 0\nhi\ngot hi");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_busy_command_behind_a_prompt_shaped_line_is_not_waiting() {
+        // `Working... ` left open while a sleep runs has a prompt's shape;
+        // the kernel says every process is at work (`pty::probe`), so the
+        // call never claims the command waits for input.
+        let (registry, _rx) = test_registry();
+        let executor = RealToolExecutor::new().with_background(registry.clone());
+        let out = exec_with(
+            &executor,
+            "bash",
+            r#"{"command":"printf 'Working... '; sleep 3; echo done","tty":true}"#,
+        );
+        assert!(
+            out.output.starts_with("Running (session ")
+                && !out.output.contains("waiting for input"),
+            "{}",
+            out.output
+        );
+        let id = session_of(&out.output);
+        let waited = exec_with(
+            &executor,
+            BASH_SESSION,
+            &serde_json::json!({"session_id": id, "timeout": 10000}).to_string(),
+        );
+        assert!(
+            waited.output.starts_with("Exit code: 0"),
+            "{}",
+            waited.output
+        );
+    }
+
+    /// The refined headers a call sent, in order.
+    fn titles_of(
+        executor: &RealToolExecutor,
+        name: &str,
+        args: &str,
+    ) -> (ToolOutcome, Vec<String>) {
+        let mut titles = Vec::new();
+        let out = executor.execute(&call(name, args), &CancelToken::new(), &mut |progress| {
+            if let ToolProgress::Title(title) = progress {
+                titles.push(title.to_string());
+            }
+        });
+        (out, titles)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_session_calls_header_names_its_command_and_shows_the_keys_typed() {
+        // The header says what the keys go to, and shows them as typed — at
+        // a prompt that reads with echo off too: masking there hid ordinary
+        // input as often as a password (docs/interactive-shell.md).
+        let (registry, _rx) = test_registry();
+        let executor = RealToolExecutor::new().with_background(registry.clone());
+        let out = exec_with(
+            &executor,
+            "bash",
+            r#"{"command":"printf 'Code: '; stty -echo; read c; stty echo; echo; echo \"got $c\"","tty":true}"#,
+        );
+        let id = session_of(&out.output);
+        let (typed, titles) = titles_of(
+            &executor,
+            BASH_SESSION,
+            &serde_json::json!({"session_id": id, "input": "1234\n"}).to_string(),
+        );
+        assert_eq!(titles.len(), 1, "{titles:?}");
+        assert!(titles[0].starts_with("printf 'Code: '"), "{titles:?}");
+        assert!(titles[0].ends_with(" ← 1234⏎"), "{titles:?}");
+        assert!(typed.output.contains("got 1234"), "{}", typed.output);
+    }
+
     #[cfg(unix)]
     #[test]
     fn ctrl_b_on_a_session_call_ends_the_wait_and_tells_the_model() {
@@ -2275,7 +2524,7 @@ mod tests {
         let out = exec_with(
             &executor,
             "bash",
-            r#"{"command":"stty -icanon -echo; printf 'key> '; k=$(dd bs=1 count=1 2>/dev/null); printf \"got $k\\nkey> \"; sleep 30","tty":true}"#,
+            r#"{"command":"stty -icanon -echo; printf 'key> '; k=$(dd bs=1 count=1 2>/dev/null); printf \"got $k\\nkey> \"; dd bs=1 count=1 >/dev/null 2>&1; sleep 30","tty":true}"#,
         );
         let id = session_of(&out.output);
         let pressed = exec_with(
@@ -2447,6 +2696,43 @@ mod tests {
         // A failure that says nothing of terminals gets nothing.
         let plain = exec_with(&executor, "bash", r#"{"command":"exit 3"}"#);
         assert_eq!(plain.context, None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_terminal_calls_cell_redraws_a_progress_bar_in_place() {
+        // The running cell streams what the report will say: the bar is one
+        // row replaced as it moves, never its every frame
+        // (docs/interactive-shell.md).
+        let (registry, _rx) = test_registry();
+        let executor = RealToolExecutor::new().with_background(registry.clone());
+        let command = r"printf 'fetching\n'; for p in 10 40 70 100; do printf '\r%3d%%' $p; sleep 0.2; done; printf '\n'";
+        let mut view = String::new();
+        let mut live_len = 0;
+        let mut frames = Vec::new();
+        let out = executor.execute(
+            &call(
+                "bash",
+                &serde_json::json!({"command": command, "tty": true}).to_string(),
+            ),
+            &CancelToken::new(),
+            &mut |progress| {
+                if let ToolProgress::Screen { settled, live } = progress {
+                    live_len = crate::app::apply_tool_screen(&mut view, live_len, settled, live);
+                    frames.push(view.clone());
+                }
+            },
+        );
+        assert_eq!(out.output, "Exit code: 0\nfetching\n100%");
+        assert!(
+            frames.iter().any(|frame| frame == "fetching\n 40%"),
+            "the bar streamed as it moved: {frames:?}"
+        );
+        assert!(
+            frames.iter().all(|frame| frame.matches('%').count() <= 1),
+            "one row per bar, never two frames at once: {frames:?}"
+        );
+        registry.kill_all();
     }
 
     #[cfg(unix)]

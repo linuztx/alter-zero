@@ -22,10 +22,15 @@ release heading when a version is cut.
   stops to wait for input; a new `bash_session` tool types into it — text and
   named keys such as `<Enter>`, `<C-c>` and `<Up>` — waits on it, reads what
   it printed (or a full-screen program's screen) and ends it. Each call
-  reports only the lines that are new or changed since the last one, and a
-  progress bar or a command run under `sudo`, `ssh` or `docker run -it` is
-  waited out rather than taken for a prompt — a download under `sudo pacman`
-  is one wait, not a dozen. It also reaches
+  reports only the lines that are new or changed since the last one, and its
+  cell streams them as they come, a progress bar redrawn in place. A progress
+  bar or a command run under `sudo`, `ssh` or `docker run -it` is waited out
+  rather than taken for a prompt — a download under `sudo pacman` is one
+  wait, not a dozen — and on Linux the kernel is asked what the command is
+  blocked in, so one waiting with no prompt at all (`read`, `cat`) is
+  recognised and a busy one that left `Compiling… ` on screen is not taken
+  for a question. A call's header names the program it types into
+  (`● BashSession(python3 ← print(1)⏎)`). It also reaches
   `run_in_background` commands, which can now be waited on, interrupted and
   ended the same way. A session still running shows in the footer's shell
   count, and the ↓ manager shows its live screen; its cells end on a dim
@@ -38,6 +43,14 @@ release heading when a version is cut.
 
 ### Changed
 
+- **Progress bars in command output read as one line.** A plain `bash`
+  command's output, a background shell's and a `!` command's are now read the
+  way a terminal shows them: a `curl`, `tqdm`, `ffmpeg` or `rsync` progress
+  bar redrawn with `\r` reaches the agent once, in its final state, instead
+  of every frame it drew run together on one line, and colour escapes are
+  gone; tabs and trailing spaces are kept. A running command's cell shows the
+  bar moving in place. A background shell's `.output` file still holds the
+  output exactly as written (`docs/interactive-shell.md`).
 - **Error toasts use a softer red.** A failure toast — `Copy failed: …`,
   `Can't switch to …`, a config file that would not parse — was painted in
   the theme's full error red, the ink of the error bullet and a failed tool

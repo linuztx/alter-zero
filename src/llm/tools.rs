@@ -258,6 +258,10 @@ pub const SESSION_DEFAULT_TIMEOUT_MS: u64 = 10_000;
 /// terminal's echo, in the output below, shows all of it.
 const SESSION_INPUT_SUMMARY_CHARS: usize = 120;
 
+/// The most of a session's command a `bash_session` header shows
+/// ([`session_title`]).
+const SESSION_COMMAND_SUMMARY_CHARS: usize = 60;
+
 /// The wire name of the subagent-launching tool (`docs/agent-tool.md`).
 pub const AGENT_TOOL_NAME: &str = "agent";
 
@@ -1108,28 +1112,13 @@ pub fn summarize_call(name: &str, arguments: &str) -> String {
     }
     // `● BashSession(b7x2k9m1q ← print(1)⏎)` — which session, and what the
     // call did to it: typed (the input on one line, `pty::keys`' display
-    // form), stopped, or — the id alone — waited (docs/interactive-shell.md).
+    // form), stopped, or — the id alone — waited. The executor names the
+    // session's command once it knows it ([`session_title`],
+    // docs/interactive-shell.md).
     if name == BASH_SESSION_TOOL_NAME
         && let Ok(args) = parse_args::<SessionArgs>(arguments)
     {
-        let id = args.session_id.trim();
-        let typed = args
-            .input
-            .as_deref()
-            .filter(|input| !input.is_empty())
-            .map(|input| {
-                let shown = crate::pty::keys::display_input(input);
-                let mut chars = shown.chars();
-                let head: String = chars.by_ref().take(SESSION_INPUT_SUMMARY_CHARS).collect();
-                if chars.next().is_some() {
-                    format!(" ← {head}…")
-                } else {
-                    format!(" ← {head}")
-                }
-            })
-            .unwrap_or_default();
-        let kill = if args.kill { " · kill" } else { "" };
-        return format!("{id}{typed}{kill}");
+        return session_summary(args.session_id.trim(), args.input.as_deref(), args.kill);
     }
     let summary = match name {
         // Handled above; an unparseable call falls back to the flatten below.
@@ -1174,6 +1163,41 @@ pub fn summarize_call(name: &str, arguments: &str) -> String {
     };
     let summary = summary.unwrap_or_else(|| arguments.trim().to_string());
     flatten_one_line(&summary)
+}
+
+/// A `bash_session` call's header once the executor knows the session
+/// (`docs/interactive-shell.md`, sent as the call's refined title): the
+/// command the session runs — one line, cut at 60 characters — then what the
+/// call did.
+#[must_use]
+pub fn session_title(command: &str, input: Option<&str>, kill: bool) -> String {
+    let who = cut_chars(&flatten_one_line(command), SESSION_COMMAND_SUMMARY_CHARS);
+    session_summary(&who, input, kill)
+}
+
+/// `{who} ← {keys}`, `{who} · kill`, both, or `{who}` alone for a wait — the
+/// keys on one line, `pty::keys`' display form.
+fn session_summary(who: &str, input: Option<&str>, kill: bool) -> String {
+    let typed = input
+        .filter(|input| !input.is_empty())
+        .map(|input| {
+            let keys = crate::pty::keys::display_input(input);
+            format!(" ← {}", cut_chars(&keys, SESSION_INPUT_SUMMARY_CHARS))
+        })
+        .unwrap_or_default();
+    let kill = if kill { " · kill" } else { "" };
+    format!("{who}{typed}{kill}")
+}
+
+/// `text` kept to `max` characters, a `…` marking a cut.
+fn cut_chars(text: &str, max: usize) -> String {
+    let mut chars = text.chars();
+    let head: String = chars.by_ref().take(max).collect();
+    if chars.next().is_some() {
+        format!("{head}…")
+    } else {
+        head
+    }
 }
 
 /// Collapse a possibly multi-line string to a single spaced line — the
@@ -2131,6 +2155,27 @@ mod tests {
         );
         assert!(summary.chars().count() <= 130, "{summary}");
         assert!(summary.ends_with('…'), "{summary}");
+    }
+
+    #[test]
+    fn a_session_title_names_the_command_the_keys_go_to() {
+        assert_eq!(
+            session_title("python3", Some("print(1)\n"), false),
+            "python3 ← print(1)⏎"
+        );
+        assert_eq!(
+            session_title("sudo pacman -Syy", Some("y\n"), false),
+            "sudo pacman -Syy ← y⏎"
+        );
+        assert_eq!(session_title("python3", None, false), "python3");
+        assert_eq!(session_title("python3", None, true), "python3 · kill");
+        // A heredoc is a header's one line, cut.
+        let title = session_title(&format!("cat <<EOF\n{}\nEOF", "x".repeat(200)), None, false);
+        assert!(!title.contains('\n'), "{title}");
+        assert!(
+            title.chars().count() <= 61 && title.ends_with('…'),
+            "{title}"
+        );
     }
 
     #[test]

@@ -106,7 +106,7 @@ pub use self::status::{RetryInfo, ThinkingState, TokenArrow, TurnStatus, TurnSum
 pub use self::tasks::TaskCallRecord;
 pub use self::theme::{Theme, ThemePicker, ThemeRow, parse_theme_file, theme_file_json};
 pub use self::tools::{
-    ERROR_TOOL_OUTPUT, INTERRUPT_TOOL_OUTPUT, PathDisplay, ToolCall, ToolStatus,
+    ERROR_TOOL_OUTPUT, INTERRUPT_TOOL_OUTPUT, PathDisplay, ToolCall, ToolStatus, apply_tool_screen,
 };
 pub use self::trust_menu::TrustMenu;
 pub use self::turn::{
@@ -276,6 +276,14 @@ pub struct App {
     /// active call through [`current_tool`](App::current_tool) and the whole
     /// batch through [`tool_queue`](App::tool_queue). See `docs/parallel-tools.md`.
     tool_queue: VecDeque<ToolCall>,
+    /// How many bytes at the end of the running call's `output` are a
+    /// terminal session's **live** rows — what the next
+    /// [`push_tool_screen`](App::push_tool_screen) replaces
+    /// (`docs/interactive-shell.md`). Zero whenever a call starts or resolves.
+    tool_live_len: usize,
+    /// Bumped by every change to the running call's output or header, so the
+    /// transcript cache sees a same-length redraw (`45%` → `46%`).
+    tool_revision: u64,
     /// The id [`start_tool_batch`](App::start_tool_batch) stamps the next
     /// announced batch with ([`ToolCall::batch`]) — a plain counter, so two
     /// rounds' calls can never be mistaken for one parallel batch by the

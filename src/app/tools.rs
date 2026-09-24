@@ -169,6 +169,8 @@ impl App {
     /// silently — the derived context would quietly fall back to the lossy
     /// summary with nothing to notice.
     pub fn start_tool(&mut self, name: &str, args: &str, arguments: Option<&str>) {
+        self.tool_live_len = 0;
+        self.tool_revision += 1;
         let arguments = arguments.map(str::to_string);
         if let Some(front) = self.tool_queue.front_mut()
             && front.status == ToolStatus::Waiting
@@ -235,7 +237,43 @@ impl App {
             && tool.status == ToolStatus::Running
         {
             tool.output.push_str(chunk);
+            self.tool_revision += 1;
         }
+    }
+
+    /// Apply a running command's live update to the call
+    /// ([`crate::stream::StreamEvent::ToolScreen`],
+    /// `docs/interactive-shell.md`): `settled` is final text appended for
+    /// good, `live` the rows that replace the `live` appended last time — so
+    /// a redrawn progress bar is one row changing in place. Like
+    /// [`push_tool_output`](App::push_tool_output) it counts no tokens and is
+    /// a no-op unless the front call is running.
+    pub fn push_tool_screen(&mut self, settled: &str, live: &str) {
+        if let Some(tool) = self.tool_queue.front_mut()
+            && tool.status == ToolStatus::Running
+        {
+            self.tool_live_len =
+                apply_tool_screen(&mut tool.output, self.tool_live_len, settled, live);
+            self.tool_revision += 1;
+        }
+    }
+
+    /// Replace the running call's header summary with the executor's refined
+    /// one ([`crate::stream::StreamEvent::ToolTitle`]) — a `bash_session`
+    /// call's session command beside its typed keys.
+    pub fn set_tool_title(&mut self, title: &str) {
+        if let Some(tool) = self.tool_queue.front_mut()
+            && tool.status == ToolStatus::Running
+        {
+            title.clone_into(&mut tool.args);
+            self.tool_revision += 1;
+        }
+    }
+
+    /// The running call's revision — see the field.
+    #[must_use]
+    pub fn tool_revision(&self) -> u64 {
+        self.tool_revision
     }
 
     /// The tool currently at the front of the live queue — the running (or, in
@@ -318,6 +356,8 @@ impl App {
         status: ToolStatus,
     ) -> Option<ToolCall> {
         let mut tool = self.tool_queue.pop_front()?;
+        self.tool_live_len = 0;
+        self.tool_revision += 1;
         tool.output = output.to_string();
         tool.context_output = context_output;
         tool.status = status;
@@ -329,6 +369,21 @@ impl App {
         self.history.push(HistoryItem::Tool(tool.clone()));
         Some(tool)
     }
+}
+
+/// Fold a running command's live update into its call's
+/// `output` (`docs/interactive-shell.md`): drop the `live_len` bytes of live
+/// rows appended last time, append the `settled` text, then the new `live`
+/// rows — whose length is returned for the next update. Shared by the main
+/// session's [`App::push_tool_screen`] and a subagent's run.
+pub fn apply_tool_screen(output: &mut String, live_len: usize, settled: &str, live: &str) -> usize {
+    let keep = output.len().saturating_sub(live_len);
+    if output.is_char_boundary(keep) {
+        output.truncate(keep);
+    }
+    output.push_str(settled);
+    output.push_str(live);
+    live.len()
 }
 
 /// The lifecycle of a tool call — selects its bullet colour when rendered:
