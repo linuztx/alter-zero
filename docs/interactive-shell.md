@@ -263,25 +263,43 @@ cursor-key mode (`ESC O A` under DECCKM, `ESC [ A` otherwise), read off the
 emulated screen. A lone `<Esc>` is followed by a short pause before the rest of
 the input, so Vim does not read `<Esc>:` as Alt+`:`.
 
-**Keys go a moment apart** (`pty::keys::encode`, `KEY_PAUSE`). A person's key
-presses never arrive together, and some programs take whatever one read
-returns as one key press: `btop` ignored `<Down><Down>` written at once — six
-bytes that name no key it knows — and dropped `bash` typed into its filter
-whole, where a letter at a time it filtered. So every named key is its own
-write, 20 ms after the last (the program has woken and read the first within
-a millisecond or two), and text of up to `TYPED_TEXT_MAX` (64) characters
-typed into a **full-screen** program goes a character at a time — a search, a
-filter, a command line. A paste, text for a shell or a REPL on the main
-screen, and longer text (code typed into an editor, which any program that
-takes that much reads as input, not as a key) still go in one write; a
-character is never split, and `\r\n` is still one Enter. Typing now takes
-time — 100 `<Down>`s take two seconds — so the call records how long
-(`SessionIo::typing_for`, the sum of the pauses) and settles on nothing but
-an exit or its timeout until the last key is written, counting the program's
-quiet from then (`Observation::typing`): a menu that answered the first key
-and went quiet has not answered the rest. The probe waits for the last key
-too — a program between two of them is blocked reading the next, and asked
-then the kernel would say it waits for input before it has had the last.
+**Each key once the program has read the last** (`pty::keys::encode`,
+`Pace`, `background::type_keys`). A person's key presses never arrive
+together, and some programs take whatever one read returns as one key press:
+`btop` ignored `<Down><Down>` written at once — six bytes that name no key it
+knows — and dropped `bash` typed into its filter whole, where a letter at a
+time it filtered; `top` took `Mq` for no key, and neither sorted nor quit. So
+every named key is its own write, and text of up to `TYPED_TEXT_MAX` (64)
+characters typed to a program reading the terminal **key by key** — canonical
+mode off (a menu, `top`, a line editor), or a full-screen program — goes a
+character at a time. Each write waits for the program to have **read** the
+one before: the writer asks the terminal's input queue
+(`pty::spawn::InputQueue` — `FIONREAD` on the slave side, after a
+zero-timeout poll, which waits for Linux's line discipline to take in a write
+it hands over from a worker thread; without it the count missed a key still
+on its way, nearly every time), for up to `KEY_READ_WAIT` (1 s) a write — a
+program that has read nothing in that long is not reading, and the rest go
+as typeahead, `KEY_PAUSE` (20 ms) apart. A fixed 20 ms gap used to stand in
+for the read, and a program that took 50 ms over each key got one key in ten.
+Where the queue cannot answer for the program, each write also waits
+`KEY_PAUSE`: a **relay** (sudo's own terminal, ssh, `docker exec -it`,
+`script`) reads each key the moment it lands and hands it to a program out of
+sight, and pacing by the queue alone sent `sudo btop` its filter back to back
+— none of it arrived. A relay is told by the mode it holds the terminal in,
+raw with output processing off (`LineMode::relays`), asked again before every
+key, since the `sudo` a shell was just typed may start one mid-call. A paste,
+text for a program reading whole lines, and longer text (code typed into an
+editor, which any program that takes that much reads as input, not as a key)
+still go in one write; a character is never split, and `\r\n` is still one
+Enter. How long typing takes is up to the program, so the call records the
+most it could take (`typing_bound`) and the writer says when the last key is
+out (`SessionIo::typed` — once every call's keys are, should one call end
+while its keys are still going): the call settles on nothing but an exit or
+its timeout until then, and counts the program's quiet from then
+(`Observation::typing`) — a menu that answered the first key and went quiet
+has not answered the rest. The probe waits for the last key too — a program
+between two of them is blocked reading the next, and asked then the kernel
+would say it waits for input before it has had the last.
 
 **Code is pasted, not typed** (`pty::keys::encode`). An editor's or a REPL's
 auto-indent adds its own indentation to every line typed after a line break,
@@ -300,6 +318,20 @@ given. Lines parted by `<Enter>` keys count as lines — the same byte on the
 wire, and a model writes code that way too. Text with no indented line is
 typed — Vim's `:%s/a/b/g` then `:wq`, answers to prompts, commands for a shell
 are keys to act on, and a normal-mode paste would insert them instead.
+
+A paste goes only to a program that **inserts** what it is given
+(`keys::Reader`). A shell runs each line it is typed, and a line that starts
+a program leaves the lines after it for that program to read: `python3` and a
+loop for it, sent to an interactive bash in one call, went to bash as one
+paste — python3 started with nothing to read, and the loop ran as shell
+commands. So the session names the terminal's **foreground program** — the
+process at the bottom of its foreground process group
+(`spawn::foreground_program`, `probe::group_program`, Linux's `/proc`); the
+group's leader alone is not enough, since `sh -c 'vim x.py'` keeps vim in the
+shell's group, below the shell that does not exec it — and types to a shell,
+line by line, as a person would. A relay (sudo, ssh, `docker`), or no process
+table to ask, may put anything at the far end: text goes as a paste there only
+on the alternate screen, where it is an editor's to insert.
 
 **Codes a terminal sends to programs are not keys** (`pty::keys::
 strip_output_codes`). A model saved a file in nano with
@@ -681,7 +713,7 @@ change answers a failure seen on the wire:
   locale, then drew its whole screen in its top-left corner (HVP), then
   ignored `<Down><Down>` and a filter typed in one write — a program that
   takes each read as one key press. With the locale, the aliases and paced
-  keys (*Keys go a moment apart*) the same script moves the selection and
+  keys (*Each key once the program has read the last*) the same script moves the selection and
   filters. The models that then drove it read its screen correctly and
   still drove it like a line prompt: `gpt-oss:120b` sent `M<Enter>`,
   `s<Enter>` and `→<Enter>` (the arrow as a character) until it ran out of
@@ -960,6 +992,17 @@ Three of this design's choices were kept over it:
   terminal would; a program that flushes pending input before a prompt loses
   them. The description steers models to one answer per call instead of
   pacing input line by line.
+- **Keys behind a relay go 20 ms apart** — the input queue says only that the
+  relay read a key, not that the program at its far end did, so a program
+  there slower than `KEY_PAUSE` over each key can still see two in one read.
+- **The reader is named on Linux** — elsewhere no process table says whether
+  a shell reads the terminal, and indented text reaches a program in
+  bracketed-paste mode as a paste only on the alternate screen, so IPython or
+  Python 3.13's REPL there gets code typed, and auto-indents it. Text that
+  starts a program and then types into it in one call goes line by line on a
+  shell; the lines after the first go as typed keys, so a Python 3.13 REPL
+  started that way auto-indents a block it would have taken as a paste in a
+  call of its own.
 - **Highlights are a heuristic** — a selection is found by its background
   standing out from the rows above and below, so one spanning two rows or
   more (Vim's visual selection) goes unnamed, as does one in the same colour

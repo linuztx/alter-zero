@@ -20,7 +20,7 @@ use std::io::{BufRead, Read, Write};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use alter_zero::pty::keys::{encode, parse_input};
+use alter_zero::pty::keys::{ESC_PAUSE, KEY_PAUSE, Pace, encode, parse_input};
 use alter_zero::pty::screen::Screen;
 use alter_zero::pty::spawn::spawn;
 use serde_json::Value;
@@ -90,7 +90,13 @@ fn main() {
                 if std::env::var_os("ORACLE_TRACE").is_some() {
                     eprintln!("IN {:?}", String::from_utf8_lossy(&chunk.bytes));
                 }
-                std::thread::sleep(chunk.pause_after);
+                // The session's writer waits for each read; a fixed gap is
+                // enough to record a program's answer to its keys.
+                match chunk.then {
+                    Pace::Last => {}
+                    Pace::Read => std::thread::sleep(KEY_PAUSE),
+                    Pace::Esc => std::thread::sleep(KEY_PAUSE + ESC_PAUSE),
+                }
             }
         }
     }

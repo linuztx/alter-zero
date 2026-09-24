@@ -210,13 +210,22 @@ struct Launch {
     origin: Option<BgOrigin>,
 }
 
-/// One write to a TTY session's terminal: bytes, or a pause before the next
-/// (the pauses between keys — `pty::keys`).
+/// One write to a TTY session's terminal: bytes as they are (the terminal's
+/// query replies), or a call's keys — typed the way a person types them
+/// ([`type_keys`]), the session told once they are out
+/// ([`SessionIo::typed`]).
 #[derive(Debug)]
 enum WriteOp {
     Bytes(Vec<u8>),
-    Pause(Duration),
+    Keys {
+        chunks: Vec<InputChunk>,
+        io: Arc<SessionIo>,
+    },
 }
+
+/// How often the writer asks whether the program has read the key it typed
+/// ([`type_keys`]).
+const KEY_READ_POLL: Duration = Duration::from_micros(250);
 
 /// The most TTY sessions that may run at once. One more is refused with the
 /// list of the running ones, rather than letting forgotten REPLs pile up
@@ -700,17 +709,42 @@ impl BackgroundRegistry {
             .flat_map(|chunk| chunk.bytes.clone())
             .collect();
         io.note_input(&typed);
-        io.typing_for(crate::pty::keys::typing_time(&chunks));
-        for chunk in chunks {
-            let pause = chunk.pause_after;
-            input
-                .send(WriteOp::Bytes(chunk.bytes))
-                .map_err(|_| format!("session {id} is no longer accepting input"))?;
-            if !pause.is_zero() {
-                let _ = input.send(WriteOp::Pause(pause));
-            }
+        io.typing_for(crate::pty::keys::typing_bound(&chunks));
+        let keys = WriteOp::Keys {
+            chunks,
+            io: Arc::clone(&io),
+        };
+        if input.send(keys).is_err() {
+            io.typed();
+            return Err(format!("session {id} is no longer accepting input"));
         }
         Ok(())
+    }
+
+    /// Who reads what is typed into session `id`: its terminal's foreground
+    /// program (`pty::spawn::foreground_program`) — [`Reader::Unknown`]
+    /// for a pipe task, a session gone, or a system that will not say.
+    ///
+    /// [`Reader::Unknown`]: crate::pty::keys::Reader::Unknown
+    #[must_use]
+    pub fn reader(&self, id: &str) -> crate::pty::keys::Reader {
+        #[cfg(unix)]
+        {
+            let inner = self.inner.lock().expect("registry lock");
+            inner
+                .tasks
+                .get(id)
+                .and_then(|task| task.terminal.as_ref())
+                .and_then(crate::pty::spawn::foreground_program)
+                .map_or(crate::pty::keys::Reader::Unknown, |program| {
+                    crate::pty::keys::Reader::of(&program)
+                })
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = id;
+            crate::pty::keys::Reader::Unknown
+        }
     }
 
     /// Interrupt a task as Ctrl+C would — `SIGINT` to its process group. How
@@ -1112,13 +1146,88 @@ const TTY_DRAIN_GRACE: Duration = Duration::from_millis(150);
 /// write (the session is gone).
 fn write_terminal(mut terminal: File, ops: &mpsc::Receiver<WriteOp>) {
     while let Ok(op) = ops.recv() {
-        match op {
-            WriteOp::Bytes(bytes) => {
-                if terminal.write_all(&bytes).is_err() {
-                    break;
-                }
+        let written = match op {
+            WriteOp::Bytes(bytes) => terminal.write_all(&bytes).is_ok(),
+            WriteOp::Keys { chunks, io } => {
+                let typed = type_keys(&mut terminal, &chunks);
+                io.typed();
+                typed
             }
-            WriteOp::Pause(duration) => std::thread::sleep(duration),
+        };
+        if !written {
+            break;
+        }
+    }
+    // Keys that will never be typed are not being typed either.
+    for op in ops.try_iter() {
+        if let WriteOp::Keys { io, .. } = op {
+            io.typed();
+        }
+    }
+}
+
+/// Type `chunks` into `terminal` the way a person types
+/// (`pty::keys::Pace`): each write once the program has read the one before
+/// — asked of the terminal's input queue (`pty::spawn::InputQueue`) — and
+/// at least [`KEY_PAUSE`] after it where the queue cannot answer for the
+/// program: it cannot be asked, or a relay holds the terminal
+/// (`pty::spawn::LineMode::relays`), taking each key the moment it lands
+/// and handing it to a program out of sight. A program that has not read a
+/// write within [`KEY_READ_WAIT`] is not reading: the rest go as typeahead,
+/// [`KEY_PAUSE`] apart. A lone Esc that more keys follow is held
+/// [`ESC_PAUSE`] past its read. `false` when the terminal refused a write —
+/// the session is gone.
+///
+/// [`KEY_PAUSE`]: crate::pty::keys::KEY_PAUSE
+/// [`KEY_READ_WAIT`]: crate::pty::keys::KEY_READ_WAIT
+/// [`ESC_PAUSE`]: crate::pty::keys::ESC_PAUSE
+fn type_keys(terminal: &mut File, chunks: &[InputChunk]) -> bool {
+    use crate::pty::keys::{ESC_PAUSE, KEY_PAUSE, Pace};
+    #[cfg(unix)]
+    let mut queue = crate::pty::spawn::InputQueue::of(terminal);
+    for chunk in chunks {
+        if terminal.write_all(&chunk.bytes).is_err() {
+            return false;
+        }
+        if chunk.then == Pace::Last {
+            continue;
+        }
+        let written = std::time::Instant::now();
+        #[cfg(unix)]
+        let seen = {
+            if queue.as_ref().is_some_and(|queue| !read_in_time(queue)) {
+                queue = None;
+            }
+            queue.is_some()
+                && !crate::pty::spawn::line_mode(terminal)
+                    .is_some_and(crate::pty::spawn::LineMode::relays)
+        };
+        #[cfg(not(unix))]
+        let seen = false;
+        if !seen {
+            std::thread::sleep(KEY_PAUSE.saturating_sub(written.elapsed()));
+        }
+        if chunk.then == Pace::Esc {
+            std::thread::sleep(ESC_PAUSE);
+        }
+    }
+    true
+}
+
+/// Wait until the program has read what was just typed into `queue`'s
+/// terminal — the queue empty again (a key still on its way to it counts as
+/// in it) — `false` when it has not within
+/// [`KEY_READ_WAIT`](crate::pty::keys::KEY_READ_WAIT), or the terminal will
+/// not say.
+#[cfg(unix)]
+fn read_in_time(queue: &crate::pty::spawn::InputQueue) -> bool {
+    let typed = std::time::Instant::now();
+    loop {
+        match queue.pending() {
+            None => return false,
+            Some(0) => return true,
+            Some(_) if typed.elapsed() >= crate::pty::keys::KEY_READ_WAIT => return false,
+            Some(_) => std::thread::sleep(KEY_READ_POLL),
         }
     }
 }
@@ -1971,6 +2080,77 @@ mod tests {
         let pipe = reg.launch("sleep 30", None, true).expect("launches");
         assert_eq!(reg.line_mode(&pipe.id), None, "a pipe has no terminal");
         assert_eq!(reg.line_mode("bnope"), None);
+        reg.kill_all();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn each_key_goes_once_a_slow_program_has_read_the_last() {
+        // Seen with a program taking 50 ms over each key: keys a fixed 20 ms
+        // apart ran two and three into one read, which it took for no key.
+        // Each read here comes 100 ms after the last and must hold one key.
+        use crate::pty::keys::{InputChunk, Pace};
+        let (reg, _rx) = registry();
+        let launch = reg
+            .launch_tty(
+                "stty -icanon -echo; echo ready; for i in 1 2 3 4 5; do \
+                 n=$(dd bs=64 count=1 2>/dev/null | wc -c); printf '%s ' $n; sleep 0.1; \
+                 done; echo done",
+                None,
+                None,
+                false,
+            )
+            .expect("launches");
+        let (task, io) = (launch.task, launch.io);
+        let _ = io.wait(
+            WaitKind::Launch,
+            io.origin_mark(),
+            LONG,
+            &never,
+            &never,
+            &mut |_, _| {},
+        );
+        let since = io.begin_wait();
+        let chunks = ["a", "b", "c", "d", "e"]
+            .iter()
+            .enumerate()
+            .map(|(i, key)| InputChunk {
+                bytes: key.as_bytes().to_vec(),
+                then: if i == 4 { Pace::Last } else { Pace::Read },
+            })
+            .collect();
+        reg.send_input(&task.id, chunks).expect("types");
+        let end = io.wait(WaitKind::Input, since, LONG, &never, &never, &mut |_, _| {});
+        assert_eq!(end, WaitEnd::Settled(Settle::Exited));
+        let report = io.look(&task.id, Status::Exited(io.exit().flatten()));
+        assert!(report.contains("1 1 1 1 1 done"), "{report}");
+        reg.kill_all();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_sessions_reader_is_its_terminals_foreground_program() {
+        use crate::pty::keys::Reader;
+        let (reg, _rx) = registry();
+        let shell = reg
+            .launch_tty("exec bash --norc --noprofile -i", None, None, false)
+            .expect("launches");
+        let program = reg
+            .launch_tty("echo ready; cat", None, None, false)
+            .expect("launches");
+        for launch in [&shell, &program] {
+            let _ = launch.io.wait(
+                WaitKind::Launch,
+                launch.io.origin_mark(),
+                LONG,
+                &never,
+                &never,
+                &mut |_, _| {},
+            );
+        }
+        assert_eq!(reg.reader(&shell.task.id), Reader::Shell);
+        assert_eq!(reg.reader(&program.task.id), Reader::Program);
+        assert_eq!(reg.reader("bnope"), Reader::Unknown);
         reg.kill_all();
     }
 

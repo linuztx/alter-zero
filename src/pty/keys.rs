@@ -14,9 +14,10 @@
 //! person's key presses never arrive together, and some programs take
 //! whatever one read returns as one key press — btop ignored `<Down><Down>`
 //! written at once, and dropped `bash` typed into its filter in one write.
-//! So every named key is its own write, [`KEY_PAUSE`] after the last, and
-//! short text typed into a full-screen program goes a character at a time;
-//! a paste, a line for a shell or a REPL, and long text go whole.
+//! So every named key is its own write, and short text typed to a program
+//! reading key by key goes a character at a time, each write read by the
+//! program before the next goes ([`Pace::Read`]); a paste, a line for a
+//! program reading whole lines, and long text go whole.
 //!
 //! Pure: the terminal state encoding depends on ([`Modes`]) is passed in.
 
@@ -128,35 +129,67 @@ pub enum InputPart {
     Key(Key),
 }
 
-/// Bytes to write in one go, and how long the writer pauses after them
-/// before writing what follows ([`KEY_PAUSE`], [`ESC_PAUSE`]; nothing after
-/// the last).
+/// Bytes to write in one go, and what the writer waits for after them
+/// before it writes what follows.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InputChunk {
     pub bytes: Vec<u8>,
-    pub pause_after: Duration,
+    pub then: Pace,
 }
 
-/// The pause between two writes — long enough for a program to have woken
-/// and read the first (a millisecond or two) before the second arrives, so
-/// each is a key press of its own (see the module docs).
+/// What the writer waits for between one write and the next.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Pace {
+    /// Nothing: no write follows.
+    Last,
+    /// The program has **read** the write — a key press of its own, as a
+    /// person's keys never arrive together. The writer asks the terminal's
+    /// input queue, waiting at most [`KEY_READ_WAIT`]; where the queue
+    /// cannot answer for the program — it cannot be asked, or a relay (sudo,
+    /// ssh, `docker exec -it`) takes each key the moment it lands and hands
+    /// it on to a terminal of its own — at least [`KEY_PAUSE`] passes too.
+    Read,
+    /// A lone `Esc` that more input follows: read, then [`ESC_PAUSE`].
+    Esc,
+}
+
+/// The least time between two writes where the terminal cannot say the
+/// program read the first ([`Pace::Read`]) — long enough for a program to
+/// have woken and read it (a millisecond or two) before the second arrives.
 pub const KEY_PAUSE: Duration = Duration::from_millis(20);
+
+/// The longest the writer waits for the program to read a write before it
+/// sends the next ([`Pace::Read`]). A program may take a while over a key —
+/// btop filters and redraws its process list on each one, a few hundred
+/// milliseconds on a busy machine — but one that has read nothing in this
+/// long is not reading: the rest of the keys go as typeahead, each
+/// [`KEY_PAUSE`] after the last.
+pub const KEY_READ_WAIT: Duration = Duration::from_secs(1);
 
 /// The pause after a lone `Esc` that more input follows — past Vim's
 /// `ttimeoutlen` (100 ms in `defaults.vim`), so `<Esc>:` reads as a key
 /// press and then a colon, not Alt+`:`.
 pub const ESC_PAUSE: Duration = Duration::from_millis(150);
 
-/// The longest text typed a character at a time into a full-screen program
-/// — a search, a filter, a command line. Longer text (code typed into an
+/// The longest text typed a character at a time to a program reading key by
+/// key — a search, a filter, a command line. Longer text (code typed into an
 /// editor) is input rather than a key press to any program that takes that
-/// much, and a character at a time it would cost seconds.
+/// much, and a character at a time it could cost seconds.
 pub const TYPED_TEXT_MAX: usize = 64;
 
-/// How long writing `chunks` takes: the pauses between them.
+/// The most writing `chunks` can take: every wait the writer may make
+/// between them ([`Pace`]). The writer says when it is done, which is
+/// nearly always far sooner.
 #[must_use]
-pub fn typing_time(chunks: &[InputChunk]) -> Duration {
-    chunks.iter().map(|chunk| chunk.pause_after).sum()
+pub fn typing_bound(chunks: &[InputChunk]) -> Duration {
+    chunks
+        .iter()
+        .map(|chunk| match chunk.then {
+            Pace::Last => Duration::ZERO,
+            Pace::Read => KEY_READ_WAIT + KEY_PAUSE,
+            Pace::Esc => KEY_READ_WAIT + KEY_PAUSE + ESC_PAUSE,
+        })
+        .sum()
 }
 
 /// The longest text between angle brackets that can still be a key name —
@@ -520,6 +553,68 @@ pub struct Modes {
     /// The alternate screen: a full-screen program, which may read its keys
     /// a read at a time.
     pub full_screen: bool,
+    /// Canonical mode is off: the program reads the terminal a key at a time
+    /// — a menu, `top`, a line editor — or a relay does, for one.
+    pub key_by_key: bool,
+    /// Who reads what is typed, as far as the session can tell.
+    pub reader: Reader,
+}
+
+/// The program reading the terminal — its foreground program — as far as
+/// it decides how text reaches it ([`encode`]).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Reader {
+    /// No one named it: no process table to ask, or a relay (sudo, ssh,
+    /// `docker exec -it`) whose far end may run anything.
+    #[default]
+    Unknown,
+    /// A shell: it runs each line it is typed, and a line that starts a
+    /// program leaves the lines after it for that program to read.
+    Shell,
+    /// Any other program — an editor, a REPL, a menu.
+    Program,
+}
+
+impl Reader {
+    /// The reader a foreground program's name (`/proc/PID/comm`) makes.
+    #[must_use]
+    pub fn of(program: &str) -> Self {
+        const SHELLS: [&str; 20] = [
+            "sh", "bash", "dash", "zsh", "fish", "ksh", "ksh93", "mksh", "pdksh", "oksh", "yash",
+            "ash", "busybox", "tcsh", "csh", "nu", "elvish", "xonsh", "pwsh", "osh",
+        ];
+        const RELAYS: [&str; 22] = [
+            "sudo",
+            "su",
+            "doas",
+            "run0",
+            "pkexec",
+            "ssh",
+            "mosh-client",
+            "telnet",
+            "docker",
+            "podman",
+            "nerdctl",
+            "kubectl",
+            "oc",
+            "lxc",
+            "incus",
+            "machinectl",
+            "systemd-run",
+            "script",
+            "tmux",
+            "screen",
+            "socat",
+            "expect",
+        ];
+        if program.is_empty() || RELAYS.contains(&program) {
+            Self::Unknown
+        } else if SHELLS.contains(&program) {
+            Self::Shell
+        } else {
+            Self::Program
+        }
+    }
 }
 
 /// The bytes a terminal sends for `parts`, as the writes to send them in
@@ -528,34 +623,42 @@ pub struct Modes {
 /// back into `\n`, and what raw-mode programs (menus, editors) expect.
 /// `modes` are the program's: under cursor-key mode (DECCKM) arrows and
 /// Home/End are `ESC O x`, `ESC [ x` otherwise; under bracketed paste, text
-/// running onto indented lines goes as a paste (`paste_split`); on the
-/// alternate screen, text up to [`TYPED_TEXT_MAX`] goes a character at a
-/// time.
+/// running onto indented lines goes as a paste (`paste_split`) — never to a
+/// shell, and to a reader no one named only on the alternate screen; to a
+/// program reading key by key, or on the alternate screen, text up to
+/// [`TYPED_TEXT_MAX`] goes a character at a time.
 #[must_use]
 pub fn encode(parts: &[InputPart], modes: Modes) -> Vec<InputChunk> {
     let app_cursor = modes.app_cursor;
+    // A paste goes to a program that inserts it: never a shell, which runs
+    // the lines it is typed; and to a reader no one named, only an editor's
+    // full screen.
+    let pastes = modes.bracketed_paste
+        && match modes.reader {
+            Reader::Shell => false,
+            Reader::Program => true,
+            Reader::Unknown => modes.full_screen,
+        };
     // Lines parted by `<Enter>` keys are lines like any other: the same
     // byte, and — to a program that takes pastes — the same paste.
     let merged;
-    let parts = if modes.bracketed_paste {
+    let parts = if pastes {
         merged = enters_as_newlines(parts);
         merged.as_slice()
     } else {
         parts
     };
     let mut chunks = Vec::new();
-    let mut write = |bytes: Vec<u8>, pause_after: Duration| {
+    let mut write = |bytes: Vec<u8>, then: Pace| {
         if !bytes.is_empty() {
-            chunks.push(InputChunk { bytes, pause_after });
+            chunks.push(InputChunk { bytes, then });
         }
     };
     for part in parts {
         match part {
             InputPart::Text(text) => {
                 let mut bytes = Vec::new();
-                if let Some((first, pasted, enter)) =
-                    paste_split(text).filter(|_| modes.bracketed_paste)
-                {
+                if let Some((first, pasted, enter)) = paste_split(text).filter(|_| pastes) {
                     push_text(&mut bytes, first);
                     bytes.extend_from_slice(PASTE_START);
                     // A paste cannot end itself early.
@@ -564,31 +667,33 @@ pub fn encode(parts: &[InputPart], modes: Modes) -> Vec<InputChunk> {
                     if enter {
                         bytes.push(b'\r');
                     }
-                    write(bytes, KEY_PAUSE);
-                } else if modes.full_screen && text.chars().count() <= TYPED_TEXT_MAX {
+                    write(bytes, Pace::Read);
+                } else if (modes.full_screen || modes.key_by_key)
+                    && text.chars().count() <= TYPED_TEXT_MAX
+                {
                     push_text(&mut bytes, text);
                     for c in String::from_utf8_lossy(&bytes).chars() {
                         let mut buf = [0u8; 4];
-                        write(c.encode_utf8(&mut buf).as_bytes().to_vec(), KEY_PAUSE);
+                        write(c.encode_utf8(&mut buf).as_bytes().to_vec(), Pace::Read);
                     }
                 } else {
                     push_text(&mut bytes, text);
-                    write(bytes, KEY_PAUSE);
+                    write(bytes, Pace::Read);
                 }
             }
             InputPart::Key(key) => {
-                let pause = if *key == Key::Esc {
-                    ESC_PAUSE
+                let then = if *key == Key::Esc {
+                    Pace::Esc
                 } else {
-                    KEY_PAUSE
+                    Pace::Read
                 };
-                write(key_bytes(*key, app_cursor), pause);
+                write(key_bytes(*key, app_cursor), then);
             }
         }
     }
     // Nothing follows the last write to keep apart from it.
     if let Some(last) = chunks.last_mut() {
-        last.pause_after = Duration::ZERO;
+        last.then = Pace::Last;
     }
     chunks
 }
@@ -929,26 +1034,31 @@ mod tests {
 
     const CURSOR_KEYS: Modes = Modes {
         app_cursor: true,
-        bracketed_paste: false,
-        full_screen: false,
+        ..NONE
     };
 
     const FULL_SCREEN: Modes = Modes {
-        app_cursor: false,
-        bracketed_paste: false,
         full_screen: true,
+        ..NONE
     };
 
-    /// What the writer does with `chunks`: each write, and the pause after.
-    fn writes(chunks: &[InputChunk]) -> Vec<(Vec<u8>, Duration)> {
-        chunks
-            .iter()
-            .map(|c| (c.bytes.clone(), c.pause_after))
-            .collect()
+    /// No mode set, and a reader no one named.
+    const NONE: Modes = Modes {
+        app_cursor: false,
+        bracketed_paste: false,
+        full_screen: false,
+        key_by_key: false,
+        reader: Reader::Unknown,
+    };
+
+    /// What the writer does with `chunks`: each write, and what it waits
+    /// for after it.
+    fn writes(chunks: &[InputChunk]) -> Vec<(Vec<u8>, Pace)> {
+        chunks.iter().map(|c| (c.bytes.clone(), c.then)).collect()
     }
 
-    fn write(bytes: &[u8], pause: Duration) -> (Vec<u8>, Duration) {
-        (bytes.to_vec(), pause)
+    fn write(bytes: &[u8], then: Pace) -> (Vec<u8>, Pace) {
+        (bytes.to_vec(), then)
     }
 
     fn bytes(chunks: &[InputChunk]) -> Vec<u8> {
@@ -981,10 +1091,11 @@ mod tests {
         }
     }
 
+    /// A program that takes pastes, named and no shell: a REPL.
     const PASTES: Modes = Modes {
-        app_cursor: false,
         bracketed_paste: true,
-        full_screen: false,
+        reader: Reader::Program,
+        ..NONE
     };
 
     #[test]
@@ -1049,6 +1160,96 @@ mod tests {
                 "{input:?}"
             );
         }
+    }
+
+    #[test]
+    fn a_shell_gets_indented_lines_typed_never_pasted() {
+        // Seen driving an interactive bash: `python3` and a loop for it in
+        // one call went to bash as a paste — bash read every line, python3
+        // started with nothing to read, and the loop ran as shell commands.
+        // A shell runs each line it is typed, and a line that starts a
+        // program leaves the lines after it for that program to read.
+        let shell = Modes {
+            reader: Reader::Shell,
+            ..PASTES
+        };
+        let input = "python3\nfor i in range(3):\n    print(i * 7)\n\n";
+        assert_eq!(
+            bytes(&encode(&parse_input(input), shell)),
+            b"python3\rfor i in range(3):\r    print(i * 7)\r\r".to_vec()
+        );
+    }
+
+    #[test]
+    fn a_reader_no_one_named_gets_pastes_only_on_the_full_screen() {
+        // Behind a relay (sudo, ssh), or where no process table says who
+        // reads: an editor's full screen takes code as a paste, and a line
+        // on the main screen may be a shell's — typed.
+        let input = "def f():\n    return 1\n";
+        let main = Modes {
+            bracketed_paste: true,
+            ..NONE
+        };
+        assert_eq!(
+            bytes(&encode(&parse_input(input), main)),
+            b"def f():\r    return 1\r".to_vec()
+        );
+        let full = Modes {
+            full_screen: true,
+            ..main
+        };
+        assert_eq!(
+            bytes(&encode(&parse_input(input), full)),
+            b"def f():\x1b[200~\r    return 1\x1b[201~\r".to_vec()
+        );
+    }
+
+    #[test]
+    fn a_reader_is_named_by_its_program() {
+        for shell in [
+            "bash", "sh", "dash", "zsh", "fish", "ksh", "mksh", "tcsh", "nu",
+        ] {
+            assert_eq!(Reader::of(shell), Reader::Shell, "{shell}");
+        }
+        // A relay passes keys to a program out of sight.
+        for relay in [
+            "sudo", "su", "ssh", "docker", "podman", "kubectl", "script", "tmux",
+        ] {
+            assert_eq!(Reader::of(relay), Reader::Unknown, "{relay}");
+        }
+        for program in [
+            "python3",
+            "python3.13",
+            "ipython",
+            "node",
+            "vim",
+            "nano",
+            "btop",
+        ] {
+            assert_eq!(Reader::of(program), Reader::Program, "{program}");
+        }
+        assert_eq!(Reader::of(""), Reader::Unknown);
+    }
+
+    #[test]
+    fn short_text_is_typed_a_character_at_a_time_to_a_key_by_key_reader() {
+        // Seen driving top: `Mq` written at once was one read, which top
+        // took for no key — it never sorted and never quit. A program in
+        // raw mode reads a key at a time, on the main screen as on the full
+        // one.
+        let key_by_key = Modes {
+            key_by_key: true,
+            ..NONE
+        };
+        assert_eq!(
+            writes(&encode(&parse_input("Mq"), key_by_key)),
+            vec![write(b"M", Pace::Read), write(b"q", Pace::Last)]
+        );
+        assert_eq!(
+            writes(&encode(&parse_input("ls<Enter>"), NONE)),
+            vec![write(b"ls", Pace::Read), write(b"\r", Pace::Last)],
+            "a line read whole goes whole"
+        );
     }
 
     #[test]
@@ -1304,10 +1505,10 @@ mod tests {
         assert_eq!(
             writes(&chunks),
             vec![
-                write(b"ab", KEY_PAUSE),
-                write(b"\x1b[B", KEY_PAUSE),
-                write(b"\x1b[B", KEY_PAUSE),
-                write(b"\r", Duration::ZERO),
+                write(b"ab", Pace::Read),
+                write(b"\x1b[B", Pace::Read),
+                write(b"\x1b[B", Pace::Read),
+                write(b"\r", Pace::Last),
             ]
         );
     }
@@ -1320,11 +1521,11 @@ mod tests {
         assert_eq!(
             writes(&chunks),
             vec![
-                write(b"f", KEY_PAUSE),
-                write(b"b", KEY_PAUSE),
-                write(b"a", KEY_PAUSE),
-                write(b"s", KEY_PAUSE),
-                write(b"h", Duration::ZERO),
+                write(b"f", Pace::Read),
+                write(b"b", Pace::Read),
+                write(b"a", Pace::Read),
+                write(b"s", Pace::Read),
+                write(b"h", Pace::Last),
             ]
         );
         // A character is never split, and CRLF is still one Enter.
@@ -1332,8 +1533,8 @@ mod tests {
         assert_eq!(
             writes(&chunks),
             vec![
-                write("\u{e9}".as_bytes(), KEY_PAUSE),
-                write(b"\r", Duration::ZERO)
+                write("\u{e9}".as_bytes(), Pace::Read),
+                write(b"\r", Pace::Last)
             ]
         );
     }
@@ -1347,10 +1548,7 @@ mod tests {
         assert_eq!(encode(&parse_input(&long), FULL_SCREEN).len(), 1);
         assert_eq!(
             writes(&encode(&parse_input("print(6*7)<Enter>"), Modes::default())),
-            vec![
-                write(b"print(6*7)", KEY_PAUSE),
-                write(b"\r", Duration::ZERO)
-            ]
+            vec![write(b"print(6*7)", Pace::Read), write(b"\r", Pace::Last)]
         );
         // A paste is one write wherever it goes.
         let pastes = Modes {
@@ -1364,10 +1562,16 @@ mod tests {
     }
 
     #[test]
-    fn typing_takes_the_pauses_between_the_writes() {
+    fn typing_is_bounded_by_every_wait_the_writer_may_make() {
+        // Each paced write may wait out the program's read and the gap, an
+        // Esc its pause after that: the most the keys can take, which the
+        // writer cuts short by saying when it is done.
         let chunks = encode(&parse_input("ab<Esc>:q<Enter>"), Modes::default());
-        assert_eq!(typing_time(&chunks), ESC_PAUSE + KEY_PAUSE * 2);
-        assert_eq!(typing_time(&[]), Duration::ZERO);
+        assert_eq!(
+            typing_bound(&chunks),
+            (KEY_READ_WAIT + KEY_PAUSE) * 3 + ESC_PAUSE
+        );
+        assert_eq!(typing_bound(&[]), Duration::ZERO);
     }
 
     #[test]
@@ -1378,17 +1582,17 @@ mod tests {
         assert_eq!(
             writes(&chunks),
             vec![
-                write(b"hello", KEY_PAUSE),
-                write(b"\x1b", ESC_PAUSE),
-                write(b":wq", KEY_PAUSE),
-                write(b"\r", Duration::ZERO),
+                write(b"hello", Pace::Read),
+                write(b"\x1b", Pace::Esc),
+                write(b":wq", Pace::Read),
+                write(b"\r", Pace::Last),
             ]
         );
         // A trailing Esc has nothing to be confused with.
         let chunks = encode(&parse_input("x<Esc>"), Modes::default());
         assert_eq!(
             writes(&chunks),
-            vec![write(b"x", KEY_PAUSE), write(b"\x1b", Duration::ZERO)]
+            vec![write(b"x", Pace::Read), write(b"\x1b", Pace::Last)]
         );
     }
 

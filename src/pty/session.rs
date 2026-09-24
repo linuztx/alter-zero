@@ -104,8 +104,11 @@ struct IoState {
     last_input: Option<Instant>,
     /// When the keys last sent will all have been typed — they go a moment
     /// apart (`pty::keys`); a waiting call looks only after, and counts the
-    /// program's quiet from then.
+    /// program's quiet from then. The most they could take until the writer
+    /// says they are out ([`SessionIo::typed`]).
     typing_until: Option<Instant>,
+    /// Calls whose keys the writer has not yet said are out.
+    typing_calls: usize,
     /// The last look showed the screen, not lines — what a program drawing
     /// on the main screen keeps showing while it edits in place
     /// ([`IoState::screen_view_now`]).
@@ -195,6 +198,7 @@ impl SessionIo {
                 probe: Probe::Unknown,
                 last_input: None,
                 typing_until: None,
+                typing_calls: 0,
                 screen_view: false,
                 awaiting_frame: false,
                 drawn_at: None,
@@ -422,14 +426,39 @@ impl SessionIo {
         }
     }
 
-    /// The keys just sent take `duration` to type — the pauses between their
-    /// writes ([`super::keys::typing_time`]) — so the last of them is the
-    /// input the program's quiet counts from, for the probe too.
-    pub fn typing_for(&self, duration: Duration) {
+    /// The keys just sent may take up to `bound` to type — every wait the
+    /// writer may make between them ([`super::keys::typing_bound`]) — and
+    /// are typing until the writer says they are out ([`typed`](Self::typed)):
+    /// the last of them is the input the program's quiet counts from, for
+    /// the probe too.
+    pub fn typing_for(&self, bound: Duration) {
         let mut state = self.lock();
-        let until = Instant::now() + duration;
-        state.typing_until = Some(until);
-        state.last_input = Some(until);
+        let until = Instant::now() + bound;
+        state.typing_until = Some(state.typing_until.map_or(until, |at| at.max(until)));
+        state.last_input = state.typing_until;
+        state.typing_calls += 1;
+    }
+
+    /// One call's keys are all out (the session's writer): once every
+    /// call's are, typing ended now.
+    pub fn typed(&self) {
+        let mut state = self.lock();
+        state.typing_calls = state.typing_calls.saturating_sub(1);
+        if state.typing_calls == 0 {
+            let now = Instant::now();
+            state.typing_until = Some(now);
+            state.last_input = Some(now);
+        }
+        drop(state);
+        self.changed.notify_all();
+    }
+
+    /// Are keys still being typed?
+    #[cfg(test)]
+    fn typing(&self) -> bool {
+        self.lock()
+            .typing_until
+            .is_some_and(|until| Instant::now() < until)
     }
 
     /// Record whether the terminal reads a line with echo off — a password
@@ -912,6 +941,39 @@ mod tests {
         let look = io.look("s", running);
         assert!(!look.contains("Screen ("), "{look}");
     }
+
+    #[test]
+    fn keys_typed_sooner_than_their_bound_end_the_typing_then() {
+        // The writer paces keys by the program's reads — far sooner than the
+        // most they could take: its word that they are out is where the
+        // call counts the program's quiet from.
+        let io = Arc::new(SessionIo::new(true));
+        io.absorb(b"\x1b[?1049h> apple\r\n  banana");
+        let since = io.begin_wait();
+        io.note_input(b"\x1b[B");
+        io.typing_for(Duration::from_secs(30));
+        io.absorb(b"\x1b[H  apple\r\n> banana");
+        io.typed();
+        let started = Instant::now();
+        let end = io.wait(WaitKind::Input, since, LONG, &never, &never, &mut |_, _| {});
+        assert_eq!(end, WaitEnd::Settled(Settle::Prompt));
+        let took = started.elapsed();
+        assert!(took < Duration::from_secs(5), "{took:?}");
+    }
+
+    #[test]
+    fn typing_is_over_only_once_every_calls_keys_are_out() {
+        // A call that ended mid-typing, and the next call's keys behind it:
+        // the first batch done is not the second.
+        let io = SessionIo::new(true);
+        io.typing_for(Duration::from_secs(30));
+        io.typing_for(Duration::from_secs(30));
+        io.typed();
+        assert!(io.typing(), "the second call's keys are still going");
+        io.typed();
+        assert!(!io.typing());
+    }
+
     #[test]
     fn a_call_waits_for_its_keys_to_be_typed() {
         // Keys go a moment apart (`pty::keys`): a menu that answered the

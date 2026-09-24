@@ -602,7 +602,12 @@ fn run_bash_session(
         })
     } else {
         if io.is_tty() {
-            let chunks = encode(&parts, io.modes());
+            // What the screen shows, and what only the terminal knows: whether
+            // the program reads key by key, and who it is.
+            let mut modes = io.modes();
+            modes.key_by_key = registry.line_mode(id).is_some_and(|mode| !mode.canonical);
+            modes.reader = registry.reader(id);
+            let chunks = encode(&parts, modes);
             if let Err(err) = registry.send_input(id, chunks) {
                 if let Some(observed) = io.end_wait() {
                     registry.finalize(id, observed);
@@ -2907,6 +2912,57 @@ mod tests {
         registry.kill_all();
     }
 
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_program_started_and_typed_into_in_one_call_reads_its_lines() {
+        // Seen driving an interactive bash: `python3` and a loop for it in
+        // one call went to bash as one paste — python3 started with nothing
+        // to read, and the loop ran as shell commands. Typed as a person
+        // types, the lines after the one that starts python3 are its to read.
+        let (registry, _rx) = test_registry();
+        let executor = RealToolExecutor::new().with_background(registry.clone());
+        let out = exec_with(
+            &executor,
+            "bash",
+            r#"{"command":"exec bash --norc --noprofile -i","tty":true}"#,
+        );
+        let id = session_of(&out.output);
+        let typed = exec_with(
+            &executor,
+            BASH_SESSION,
+            &serde_json::json!({
+                "session_id": id,
+                "input": "python3 -q\nfor i in range(3):\n    print(i * 7)\n\n"
+            })
+            .to_string(),
+        );
+        assert!(typed.output.contains("\n14\n"), "{}", typed.output);
+        assert!(!typed.output.contains("syntax error"), "{}", typed.output);
+        registry.kill_all();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn keys_typed_to_a_program_reading_key_by_key_arrive_one_read_each() {
+        // Seen driving top: `Mq` written at once was one read, which top
+        // took for no key — it never sorted and never quit. A program in raw
+        // mode on the main screen gets short text a character at a time.
+        let (registry, _rx) = test_registry();
+        let executor = RealToolExecutor::new().with_background(registry.clone());
+        let out = exec_with(
+            &executor,
+            "bash",
+            r#"{"command":"stty -icanon -echo; printf 'keys> '; while :; do k=$(dd bs=64 count=1 2>/dev/null); [ \"$k\" = q ] && exit 0; printf \"[$k]\"; done","tty":true}"#,
+        );
+        let id = session_of(&out.output);
+        let typed = exec_with(
+            &executor,
+            BASH_SESSION,
+            &serde_json::json!({"session_id": id, "input": "Mq"}).to_string(),
+        );
+        assert_eq!(typed.output, "Exit code: 0\nkeys> [M]");
+        registry.kill_all();
+    }
     #[cfg(unix)]
     #[test]
     fn an_unknown_session_lists_the_running_ones() {

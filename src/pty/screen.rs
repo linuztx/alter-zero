@@ -240,7 +240,9 @@ impl Screen {
     }
 
     /// The modes the program set that change what its keys look like
-    /// ([`super::keys::encode`]): cursor-key mode, bracketed paste.
+    /// ([`super::keys::encode`]): cursor-key mode, bracketed paste, the
+    /// alternate screen — what the screen shows; the terminal's line mode
+    /// and its reader are the session's to add.
     #[must_use]
     pub fn modes(&self) -> super::keys::Modes {
         let screen = self.parser.screen();
@@ -248,6 +250,7 @@ impl Screen {
             app_cursor: screen.application_cursor(),
             bracketed_paste: screen.bracketed_paste(),
             full_screen: screen.alternate_screen(),
+            ..super::keys::Modes::default()
         }
     }
 

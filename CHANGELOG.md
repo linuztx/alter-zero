@@ -30,9 +30,10 @@ release heading when a version is cut.
   `dialog`, `htop` or `mc` menu is selected; `btop`, `ranger`, `tig`, `fzf`,
   `ncdu`, `nvim` and the rest of a 27-program sweep read exactly as tmux
   draws them. A session gets a UTF-8 locale when your environment names
-  none, so `btop` starts in a bare container, and keys reach a program a
-  moment apart, as a person's do, so one that reads a key per read — `btop`
-  again — sees every arrow and every letter typed into its filter. A
+  none, so `btop` starts in a bare container, and keys reach a program one
+  at a time, each once it has read the last, as a person's do, so one that
+  reads a key per read — `btop` again, `top` — sees every arrow and every
+  letter typed into its filter, on a busy machine and behind `sudo` too. A
   program that switches screens and takes a moment to draw its first frame
   (`btop` probing a GPU) is shown once it has drawn it, not as a blank
   screen; a menu drawn on the main screen (`dialog`) keeps showing its screen
@@ -42,11 +43,12 @@ release heading when a version is cut.
   that never stops redrawing (`watch -n 0.1`, `top -d 0.1`) answers within
   two seconds rather than holding the call to its timeout, and keys held
   with modifiers — `<C-Left>`, `<S-Up>`, `<M-F7>` — are sent as a terminal
-  sends them. Code typed into a program that takes pastes (Vim, nano, a
-  shell, a REPL) arrives as a paste, so an editor's auto-indent can no
-  longer turn a function into a staircase; terminal output codes a model
-  slips into its keys are dropped rather than typed, and keys it
-  HTML-escapes (`&lt;Esc&gt;`) are still pressed. A
+  sends them. Code typed into an editor or a REPL that takes pastes (Vim,
+  nano, Python 3.13) arrives as a paste, so its auto-indent can no longer
+  turn a function into a staircase, while a shell is still typed to line by
+  line, so `python3` and the code for it sent in one call reach `python3`;
+  terminal output codes a model slips into its keys are dropped rather than
+  typed, and keys it HTML-escapes (`&lt;Esc&gt;`) are still pressed. A
   progress bar or a command run under `sudo`, `ssh` or `docker run -it` is
   waited out rather than taken for a prompt — a download under `sudo pacman`
   is one wait, not a dozen — and on Linux the kernel is asked what the command is
