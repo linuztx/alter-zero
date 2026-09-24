@@ -211,17 +211,12 @@ struct Launch {
 }
 
 /// One write to a TTY session's terminal: bytes, or a pause before the next
-/// (after a lone `Esc` — `pty::keys`).
+/// (the pauses between keys — `pty::keys`).
 #[derive(Debug)]
 enum WriteOp {
     Bytes(Vec<u8>),
     Pause(Duration),
 }
-
-/// How long the writer pauses after a lone `Esc` that more input follows —
-/// past Vim's `ttimeoutlen` (100 ms in `defaults.vim`), so `<Esc>:` reads as
-/// a key press and then a colon, not Alt+`:`.
-const ESC_PAUSE: Duration = Duration::from_millis(150);
 
 /// The most TTY sessions that may run at once. One more is refused with the
 /// list of the running ones, rather than letting forgotten REPLs pile up
@@ -705,13 +700,14 @@ impl BackgroundRegistry {
             .flat_map(|chunk| chunk.bytes.clone())
             .collect();
         io.note_input(&typed);
+        io.typing_for(crate::pty::keys::typing_time(&chunks));
         for chunk in chunks {
             let pause = chunk.pause_after;
             input
                 .send(WriteOp::Bytes(chunk.bytes))
                 .map_err(|_| format!("session {id} is no longer accepting input"))?;
-            if pause {
-                let _ = input.send(WriteOp::Pause(ESC_PAUSE));
+            if !pause.is_zero() {
+                let _ = input.send(WriteOp::Pause(pause));
             }
         }
         Ok(())

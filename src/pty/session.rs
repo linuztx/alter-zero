@@ -102,6 +102,10 @@ struct IoState {
     probe: Probe,
     /// When input was last written — quiet counts from it too, for the probe.
     last_input: Option<Instant>,
+    /// When the keys last sent will all have been typed — they go a moment
+    /// apart (`pty::keys`); a waiting call looks only after, and counts the
+    /// program's quiet from then.
+    typing_until: Option<Instant>,
     /// The terminal reads a whole line with echo off — a password prompt
     /// (`pty::spawn::LineMode::hides_input`, read by the monitor).
     hidden_input: bool,
@@ -179,6 +183,7 @@ impl SessionIo {
                 burst_began: None,
                 probe: Probe::Unknown,
                 last_input: None,
+                typing_until: None,
                 hidden_input: false,
                 input_seq: 0,
                 looked_seq: 0,
@@ -309,7 +314,9 @@ impl SessionIo {
 
     /// Is the session sitting at a prompt **now** — its screen awaiting keys
     /// and quiet for as long as a call of `kind` that began at `since` needs
-    /// ([`settle::prompt_quiet`]), the test a wait settles on? What a report
+    /// ([`settle::prompt_quiet`]), or a full-screen program that has drawn on
+    /// for [`settle::SCREEN_BUSY`] since the call's keys — the test a wait
+    /// settles on? What a report
     /// says even when the wait that preceded it timed out: a poll that saw
     /// nothing new ends on its timeout, but the program is no less at its
     /// prompt for that. Never for a pipe, or once it has exited.
@@ -325,7 +332,18 @@ impl SessionIo {
         } else {
             settle::prompt_quiet(kind, state.printed_since(kind, since))
         };
-        !state.finished && quiet >= needed && (exact || state.awaiting_keys())
+        // A full-screen program that never stops drawing takes keys all the
+        // while (`settle::SCREEN_BUSY`).
+        let last_key = state
+            .typing_until
+            .filter(|&until| until > since.at)
+            .unwrap_or(since.at);
+        let drawing = state.drawing_screen()
+            && state.printed_since(kind, since)
+            && last_key.elapsed() >= settle::SCREEN_BUSY;
+        !state.finished
+            && ((quiet >= needed && (exact || state.awaiting_keys()))
+                || (drawing && state.awaiting_keys()))
     }
 
     /// Should the monitor ask the kernel what the program is blocked in
@@ -377,6 +395,16 @@ impl SessionIo {
         if super::keys::reaches_line_reader(typed) {
             state.input_seq = state.seq;
         }
+    }
+
+    /// The keys just sent take `duration` to type — the pauses between their
+    /// writes ([`super::keys::typing_time`]) — so the last of them is the
+    /// input the program's quiet counts from, for the probe too.
+    pub fn typing_for(&self, duration: Duration) {
+        let mut state = self.lock();
+        let until = Instant::now() + duration;
+        state.typing_until = Some(until);
+        state.last_input = Some(until);
     }
 
     /// Record whether the terminal reads a line with echo off — a password
@@ -464,6 +492,10 @@ impl SessionIo {
                 } else {
                     since.at
                 };
+                // The call's own keys: typed a moment apart, the last is the
+                // one the screen must have answered.
+                let typing_until = state.typing_until.filter(|&until| until > since.at);
+                let last = typing_until.map_or(last, |until| last.max(until));
                 let seen = Observation {
                     elapsed: now.saturating_duration_since(since.at),
                     quiet: now.saturating_duration_since(last),
@@ -472,6 +504,9 @@ impl SessionIo {
                     reading: state.probe == Probe::Reading,
                     secret: state.password_prompt(),
                     answer_pending: state.awaiting_answer && !state.transcript.answered(),
+                    typing: typing_until.is_some_and(|until| now < until),
+                    full_screen: state.drawing_screen(),
+                    since_keys: now.saturating_duration_since(typing_until.unwrap_or(since.at)),
                     exited: state.finished,
                 };
                 (update, seen)
@@ -603,22 +638,34 @@ impl IoState {
     /// Is the program waiting for keys? The probe's word first
     /// ([`super::probe`]): a thread reading the terminal is waiting wherever
     /// the cursor sits, and a tree that is all at work is busy whatever the
-    /// screen shows. Without it, the screen: a full-screen program always
-    /// looks it; otherwise a prompt by the cursor ([`Screen::awaiting_keys`])
-    /// or a program reading key by key, wherever its cursor is — unless the
-    /// line under the cursor is **animated**
-    /// ([`Transcript::cursor_line_animated`]): a progress bar or a spinner
-    /// leaves the cursor exactly where a prompt would, and pauses. Never a
-    /// pipe.
+    /// screen shows. Without it, the screen: a program drawing a screen
+    /// ([`Self::drawing_screen`]) always looks it; otherwise a prompt by the
+    /// cursor ([`Screen::awaiting_keys`]) or a program reading key by key,
+    /// wherever its cursor is — unless the line under the cursor is
+    /// **animated** ([`Transcript::cursor_line_animated`]): a progress bar or
+    /// a spinner leaves the cursor exactly where a prompt would, and pauses.
+    /// Never a pipe.
     fn awaiting_keys(&self) -> bool {
         self.screen.as_ref().is_some_and(|screen| match self.probe {
             Probe::Reading => true,
             Probe::Idle => false,
             Probe::Unknown => {
-                screen.alternate()
+                self.drawing_screen()
                     || (!self.transcript.cursor_line_animated()
                         && (self.reading_keys || screen.awaiting_keys()))
             }
+        })
+    }
+
+    /// Is a program **drawing a screen** it takes keys on — a full-screen
+    /// one on the alternate screen, or one that repaints the main screen by
+    /// cursor addressing while the terminal reads key by key (`top`)? Such a
+    /// program may never go quiet ([`settle::SCREEN_BUSY`]); a command that
+    /// addresses the screen for a progress bar (apt's scroll region) reads
+    /// whole lines, and is not one.
+    fn drawing_screen(&self) -> bool {
+        self.screen.as_ref().is_some_and(|screen| {
+            screen.alternate() || (self.transcript.screen_addressed() && self.reading_keys)
         })
     }
 
@@ -710,6 +757,98 @@ mod tests {
             "Running (session s1, waiting for input)\nPython 3\n>>>"
         );
         assert_eq!(io.end_wait(), None, "nothing to finalize while it runs");
+    }
+
+    #[test]
+    fn a_call_waits_for_its_keys_to_be_typed() {
+        // Keys go a moment apart (`pty::keys`): a menu that answered the
+        // first and went quiet has not answered the rest, so the call looks
+        // once the last is typed and the screen has been quiet since.
+        let io = Arc::new(SessionIo::new(true));
+        io.absorb(b"\x1b[?1049h> apple\r\n  banana");
+        let since = io.begin_wait();
+        io.note_input(b"\x1b[B");
+        io.typing_for(Duration::from_millis(900));
+        io.absorb(b"\x1b[H  apple\r\n> banana");
+        let started = Instant::now();
+        let end = io.wait(WaitKind::Input, since, LONG, &never, &never, &mut |_, _| {});
+        assert_eq!(end, WaitEnd::Settled(Settle::Prompt));
+        let took = started.elapsed();
+        assert!(took >= Duration::from_millis(1_300), "{took:?}");
+    }
+
+    #[test]
+    fn a_screen_that_keeps_redrawing_is_answered_within_seconds() {
+        // `watch -n 0.1`, a clock, a meter: never quiet, and still a program
+        // that takes keys — the call returns its screen after SCREEN_BUSY.
+        let io = Arc::new(SessionIo::new(true));
+        io.absorb(b"\x1b[?1049h\x1b[H00.0");
+        let since = io.begin_wait();
+        let drawer = {
+            let io = Arc::clone(&io);
+            std::thread::spawn(move || {
+                for n in 1..=40 {
+                    std::thread::sleep(Duration::from_millis(100));
+                    io.absorb(format!("\x1b[H{:02}.{}", n / 10, n % 10).as_bytes());
+                }
+            })
+        };
+        let started = Instant::now();
+        let end = io.wait(WaitKind::Input, since, LONG, &never, &never, &mut |_, _| {});
+        let took = started.elapsed();
+        assert_eq!(end, WaitEnd::Settled(Settle::Prompt));
+        assert!(took >= settle::SCREEN_BUSY, "{took:?}");
+        assert!(
+            took < settle::SCREEN_BUSY + Duration::from_millis(500),
+            "{took:?}"
+        );
+        assert!(
+            io.waiting(WaitKind::Input, since),
+            "the report says it takes keys"
+        );
+        drawer.join().unwrap();
+    }
+
+    #[test]
+    fn a_main_screen_redrawn_for_keys_is_answered_like_a_full_screen() {
+        // `top` repaints the main screen by cursor addressing, reading keys
+        // one at a time: the same program as a full-screen one. A command
+        // that addresses the screen for a progress bar (apt's scroll region)
+        // reads no keys, and is waited out as before.
+        for reading_keys in [true, false] {
+            let io = Arc::new(SessionIo::new(true));
+            io.set_reading_keys(reading_keys);
+            io.absorb(b"\x1b[H\x1b[2Jtop - 00.0");
+            let since = io.begin_wait();
+            let drawer = {
+                let io = Arc::clone(&io);
+                std::thread::spawn(move || {
+                    for n in 1..=30 {
+                        std::thread::sleep(Duration::from_millis(100));
+                        io.absorb(format!("\x1b[Htop - {:02}.{}", n / 10, n % 10).as_bytes());
+                    }
+                })
+            };
+            let end = io.wait(
+                WaitKind::Input,
+                since,
+                Duration::from_millis(2_600),
+                &never,
+                &never,
+                &mut |_, _| {},
+            );
+            let expected = if reading_keys {
+                Settle::Prompt
+            } else {
+                Settle::Timeout
+            };
+            assert_eq!(
+                end,
+                WaitEnd::Settled(expected),
+                "reading keys: {reading_keys}"
+            );
+            drawer.join().unwrap();
+        }
     }
 
     #[test]
@@ -1504,6 +1643,21 @@ mod tests {
         let pipe = SessionIo::waited(false);
         std::thread::sleep(PROBE_QUIET + Duration::from_millis(20));
         assert!(!pipe.wants_probe(), "a pipe has no terminal to read");
+    }
+
+    #[test]
+    fn the_probe_waits_for_the_keys_to_be_typed() {
+        // A program between two of the call's keys is blocked reading them:
+        // asked then, the kernel would say it waits for input when what it
+        // does with the last key is still to come.
+        let io = SessionIo::new(true);
+        let _since = io.begin_wait();
+        io.note_input(b"\x1b[B");
+        io.typing_for(Duration::from_millis(400));
+        std::thread::sleep(PROBE_QUIET + Duration::from_millis(20));
+        assert!(!io.wants_probe(), "keys are still being typed");
+        std::thread::sleep(Duration::from_millis(400));
+        assert!(io.wants_probe(), "quiet since the last key");
     }
 
     #[test]

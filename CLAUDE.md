@@ -23,6 +23,7 @@ scripts/release.sh notes X.Y.Z              # the release notes the workflow pub
 scripts/release.sh selftest                 # the release tooling's own fixture-driven tests
 scripts/release.sh prepare X.Y.Z            # bump the version everywhere, roll [Unreleased] into a dated section, then tag
 cargo run --release --example mem_probe     # /model parse RSS (docs/memory.md)
+cargo build --example pty_oracle && scripts/pty_oracle.sh 'btop' steps.jsonl   # a program's screen in the session emulator vs tmux, cell for cell (docs/interactive-shell.md)
 cargo build --release --timings && scripts/build_timings.py   # where a release build's time goes (docs/build-time.md)
 DISPLAY=:99 cargo test --test clipboard_linux -- --ignored   # the X11 paste read, under Xvfb
 (cd telemetry && node --test)               # the telemetry collector's pure half (docs/telemetry.md)

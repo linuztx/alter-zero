@@ -58,14 +58,63 @@ pub const FOREIGN_TERMINAL_VARS: [&str; 14] = [
     "LINES",
 ];
 
+/// The locale a session's programs are given when the environment names no
+/// UTF-8 one ([`utf8_locale`]).
+#[cfg(target_os = "macos")]
+pub const UTF8_LOCALE: &str = "en_US.UTF-8";
+/// See above.
+#[cfg(not(target_os = "macos"))]
+pub const UTF8_LOCALE: &str = "C.UTF-8";
+
+/// Which locale variable a session sets, and to what, so its programs know
+/// their terminal speaks UTF-8 — `None` when the environment (read through
+/// `var`) already says so.
+///
+/// The session's terminal is the emulator, and it speaks UTF-8 whatever the
+/// TUI's terminal does — the `TERM` rule. Without a UTF-8 locale `btop`
+/// refuses to start ("No UTF-8 locale detected!") and ncurses draws boxes in
+/// the line-drawing set; a container or a CI job that sets no `LANG` is the
+/// common case. The effective setting is `LC_ALL`, else `LC_CTYPE`, else
+/// `LANG`: with nothing set, `LANG` is given one; with `LANG` naming another
+/// locale, only `LC_CTYPE` — the encoding, leaving its messages and sorting;
+/// `LC_ALL` only when it is the one saying otherwise, since it outranks
+/// every other.
+pub fn utf8_locale(var: impl Fn(&str) -> Option<String>) -> Option<(&'static str, &'static str)> {
+    let set = |name: &str| var(name).filter(|value| !value.is_empty());
+    let effective = set("LC_ALL")
+        .or_else(|| set("LC_CTYPE"))
+        .or_else(|| set("LANG"));
+    if effective.as_deref().is_some_and(names_utf8) {
+        return None;
+    }
+    let name = if set("LC_ALL").is_some() {
+        "LC_ALL"
+    } else if set("LC_CTYPE").is_some() || set("LANG").is_some() {
+        "LC_CTYPE"
+    } else {
+        "LANG"
+    };
+    Some((name, UTF8_LOCALE))
+}
+
+/// Does a locale name say UTF-8 (`en_US.UTF-8`, `C.utf8`)?
+fn names_utf8(locale: &str) -> bool {
+    let lower = locale.to_ascii_lowercase();
+    lower.contains("utf-8") || lower.contains("utf8")
+}
+
 /// Apply the session environment to `command`: [`TERMINAL_ENV`] set,
-/// [`FOREIGN_TERMINAL_VARS`] removed.
+/// [`FOREIGN_TERMINAL_VARS`] removed, and a UTF-8 locale given where the
+/// environment names none ([`utf8_locale`]).
 #[cfg(unix)]
 pub fn apply_terminal_env(command: &mut Command) {
     for name in FOREIGN_TERMINAL_VARS {
         command.env_remove(name);
     }
     for (name, value) in TERMINAL_ENV {
+        command.env(name, value);
+    }
+    if let Some((name, value)) = utf8_locale(|name| std::env::var(name).ok()) {
         command.env(name, value);
     }
 }
@@ -482,6 +531,52 @@ mod tests {
         assert_eq!(value("GIT_PAGER"), Some(Some("cat".to_string())));
         assert_eq!(value("TMUX"), Some(None), "removed, not inherited");
         assert_eq!(value("COLUMNS"), Some(None), "a stale size is removed");
+    }
+
+    /// An environment of `pairs` for [`utf8_locale`].
+    fn env(pairs: &'static [(&'static str, &'static str)]) -> impl Fn(&str) -> Option<String> {
+        move |name| {
+            pairs
+                .iter()
+                .find(|(key, _)| *key == name)
+                .map(|(_, value)| (*value).to_string())
+        }
+    }
+
+    #[test]
+    fn a_session_with_no_utf8_locale_is_given_one() {
+        // btop refuses to start without one ("No UTF-8 locale detected!"),
+        // and ncurses falls back to line-drawing letters — yet the session's
+        // terminal, the emulator, speaks UTF-8 whatever the TUI's does.
+        assert_eq!(utf8_locale(env(&[])), Some(("LANG", UTF8_LOCALE)));
+        assert_eq!(
+            utf8_locale(env(&[("LANG", "")])),
+            Some(("LANG", UTF8_LOCALE)),
+            "empty is unset"
+        );
+        assert_eq!(
+            utf8_locale(env(&[("LANG", "en_US")])),
+            Some(("LC_CTYPE", UTF8_LOCALE)),
+            "the encoding alone: LANG keeps its messages and its sorting"
+        );
+        assert_eq!(
+            utf8_locale(env(&[("LC_ALL", "C"), ("LANG", "en_US.UTF-8")])),
+            Some(("LC_ALL", UTF8_LOCALE)),
+            "LC_ALL outranks the rest — the one variable that would take"
+        );
+    }
+
+    #[test]
+    fn a_utf8_locale_the_environment_names_is_left_alone() {
+        for pairs in [
+            &[("LANG", "en_US.UTF-8")][..],
+            &[("LANG", "de_DE.utf8")],
+            &[("LC_CTYPE", "C.UTF-8"), ("LANG", "C")],
+            &[("LC_ALL", "fr_FR.UTF-8"), ("LANG", "C")],
+        ] {
+            let pairs: &'static [(&str, &str)] = pairs;
+            assert_eq!(utf8_locale(env(pairs)), None, "{pairs:?}");
+        }
     }
 
     #[test]

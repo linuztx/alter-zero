@@ -666,14 +666,16 @@ fn bash_spec() -> Value {
 fn bash_session_spec() -> Value {
     function_spec(
         BASH_SESSION_TOOL_NAME,
-        "Continue a command `bash` left running — a `tty` session or a \
-         `run_in_background` command — by its session_id.\n\
+        "Continue a command `bash` left running (a `tty` session or a \
+         `run_in_background` command) by its session_id.\n\
          - `input` is typed as-is; a newline presses Enter. Name other keys in \
          angle brackets: <Enter> <Tab> <Esc> <BS> <Up> <Down> <Left> <Right> \
          <PageUp> <C-c> <C-d> <C-z> <M-x> <F1>…\n\
-         - Answer one prompt per call, ending the answer with <Enter>, and \
-         read what it asks next.\n\
-         - Without `input` the call just waits for new output.\n\
+         - Answer one prompt per call, ending it with <Enter>, and read what \
+         it asks next.\n\
+         - In a full-screen program each key acts at once: send `q`, <Down> \
+         or <F7> alone, not `q<Enter>`, and read a key bar's `7Mkdir` as <F7>.\n\
+         - Without `input` it waits for new output.\n\
          - `kill: true` ends the command and everything it started — only to \
          abandon it; a command that finishes exits by itself.\n\
          Returns what the command printed since your last call — or a \
@@ -2051,6 +2053,12 @@ mod tests {
         // then asks something they did not expect), and pairing the last
         // answer with `kill` — a command that finishes exits by itself.
         assert!(desc.contains("one prompt per call"), "got {desc}");
+        // Caught live: models drove full-screen programs like line prompts —
+        // `M<Enter>` into btop, `<Left><Enter>` to sort it, where btop's
+        // Enter opens a process — and one read mc's key bar `7Mkdir` as the
+        // digit 7, which mc typed into its command line.
+        assert!(desc.contains("not `q<Enter>`"), "got {desc}");
+        assert!(desc.contains("`7Mkdir` as <F7>"), "got {desc}");
         assert!(desc.contains("abandon"), "what kill is for: {desc}");
         assert!(
             !desc.contains("after typing"),

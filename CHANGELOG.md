@@ -27,11 +27,20 @@ release heading when a version is cut.
   full-screen program's screen reads as you would see it — boxes drawn as
   boxes even with no UTF-8 locale, columns and indentation intact — and says
   what it highlights, so the agent can tell which item of a `whiptail`,
-  `dialog`, `htop` or `mc` menu is selected. Code typed into a program that
-  takes pastes (Vim, nano, a shell, a REPL) arrives as a paste, so an
-  editor's auto-indent can no longer turn a function into a staircase;
-  terminal output codes a model slips into its keys are dropped rather than
-  typed, and keys it HTML-escapes (`&lt;Esc&gt;`) are still pressed. A
+  `dialog`, `htop` or `mc` menu is selected; `btop`, `ranger`, `tig`, `fzf`,
+  `ncdu`, `nvim` and the rest of a 27-program sweep read exactly as tmux
+  draws them. A session gets a UTF-8 locale when your environment names
+  none, so `btop` starts in a bare container, and keys reach a program a
+  moment apart, as a person's do, so one that reads a key per read — `btop`
+  again — sees every arrow and every letter typed into its filter. A screen
+  that never stops redrawing (`watch -n 0.1`, `top -d 0.1`) answers within
+  two seconds rather than holding the call to its timeout, and keys held
+  with modifiers — `<C-Left>`, `<S-Up>`, `<M-F7>` — are sent as a terminal
+  sends them. Code typed into a program that takes pastes (Vim, nano, a
+  shell, a REPL) arrives as a paste, so an editor's auto-indent can no
+  longer turn a function into a staircase; terminal output codes a model
+  slips into its keys are dropped rather than typed, and keys it
+  HTML-escapes (`&lt;Esc&gt;`) are still pressed. A
   progress bar or a command run under `sudo`, `ssh` or `docker run -it` is
   waited out rather than taken for a prompt — a download under `sudo pacman`
   is one wait, not a dozen — and on Linux the kernel is asked what the command is

@@ -17,12 +17,18 @@
 //! write to the program — computed at the moment each query arrives, so a
 //! cursor report names the cursor as it was *then*.
 //!
-//! Three things full-screen programs rely on that `vt100` leaves out are
-//! done **in front of it** (`Prepass`): the DEC line-drawing set
-//! ([`super::charset`]) a box is drawn in without a UTF-8 locale, REP
-//! (`CSI n b`) — ncurses repeats a character that way for any run of it, so
-//! without it indentation and the spaces between columns vanished and the
-//! rest of the row slid left — and insert mode (`CSI 4 h`).
+//! What full-screen programs rely on that `vt100` leaves out is done **in
+//! front of it** (`Prepass`): the DEC line-drawing set ([`super::charset`])
+//! a box is drawn in without a UTF-8 locale; REP (`CSI n b`) — ncurses
+//! repeats a character that way for any run of it, so without it
+//! indentation and the spaces between columns vanished and the rest of the
+//! row slid left; insert mode (`CSI 4 h`); autowrap off (`CSI ? 7 l`), a
+//! line that stops at the margin instead of running onto the next; the tab
+//! stops a program sets and the tabs that move by them (CBT, CHT); the other
+//! names cursor moves go by (HVP, HPA, HPR, VPR, IND, NEL, SCOSC); and the
+//! screen/tmux window title (`ESC k`), which is not text. The differential
+//! check against tmux over a sweep of programs — `scripts/pty_oracle.sh`,
+//! `docs/interactive-shell.md` — is how the list was found.
 
 use unicode_width::UnicodeWidthChar as _;
 
@@ -93,8 +99,7 @@ impl Screen {
     /// Fold a chunk of output in; returns what the terminal owes the program
     /// back (query replies), in the order the queries arrived.
     pub fn feed(&mut self, bytes: &[u8]) -> Vec<u8> {
-        let bytes = self.prepass.rewrite(bytes);
-        self.parser.process(&bytes);
+        self.prepass.rewrite(bytes, &mut self.parser);
         std::mem::take(&mut self.parser.callbacks_mut().pending)
     }
 
@@ -172,6 +177,7 @@ impl Screen {
         super::keys::Modes {
             app_cursor: screen.application_cursor(),
             bracketed_paste: screen.bracketed_paste(),
+            full_screen: screen.alternate_screen(),
         }
     }
 
@@ -317,14 +323,17 @@ fn run_text(screen: &vt100::Screen, row: u16, start: u16, end: u16) -> String {
 }
 
 /// What `vt100` leaves out that full-screen programs use, applied to the
-/// byte stream on its way in (see the module docs): the line-drawing set,
-/// REP, and insert mode. Everything else passes through byte for byte.
+/// byte stream on its way in (see the module docs). Everything else passes
+/// through byte for byte.
 ///
 /// It follows the stream with a `vte` parser of its own, a byte at a time,
 /// so it knows which bytes make up each character: a character read whole is
 /// written anew (translated, repeated, or made room for), and every other
 /// byte — sequences, controls, text too malformed to be sure of — is handed
 /// on exactly as it came, for the emulator to make of it what it always did.
+/// Where the right bytes depend on where the cursor is — a tab, a line
+/// reaching the margin with autowrap off — it hands the emulator what it has
+/// so far and asks ([`Out::cursor`]).
 struct Prepass {
     parser: vte::Parser,
     state: PrepassState,
@@ -344,6 +353,8 @@ struct PrepassState {
     last: Option<char>,
     /// What the byte just read completed.
     events: Vec<Event>,
+    /// The sequence an [`Event::Alias`] is written as.
+    alias: Vec<u8>,
     /// The parser is known to be between characters and sequences: a
     /// character or a sequence was the last thing completed, and nothing
     /// has been read since that completed nothing. Only then is printable
@@ -351,6 +362,16 @@ struct PrepassState {
     /// control executed inside a sequence (`CSI 4 BEL h`) completes an
     /// event without ending it.
     ground: bool,
+    /// Autowrap (DECAWM) is off: a character past the right margin takes
+    /// the last column instead of starting the next row.
+    autowrap_off: bool,
+    /// The tab stops, as 0-based columns, once the program has set or
+    /// cleared one; until then every eighth column, which the emulator
+    /// keeps itself.
+    tabs: Option<std::collections::BTreeSet<usize>>,
+    /// Inside a screen/tmux window title (`ESC k`): everything up to the
+    /// BEL or the ESC that ends it is dropped.
+    title: bool,
 }
 
 /// One thing the parser completed.
@@ -359,8 +380,50 @@ enum Event {
     Print(char),
     /// REP: the last character, this many times more.
     Repeat(usize),
+    /// A sequence `vt100` knows under another name: written as
+    /// [`PrepassState::alias`] in its place.
+    Alias,
+    /// A tab the stops decide — HT once the program has stops of its own,
+    /// CHT, CBT — this many stops on (or back, negative).
+    Tab(isize),
+    /// HTS (true) or TBC (false): a stop set or cleared at the cursor.
+    Stop(bool),
     /// Any other control or sequence.
     Other,
+}
+
+/// The [`Prepass`]'s output on its way to the emulator.
+struct Out<'p> {
+    bytes: Vec<u8>,
+    emulator: &'p mut vt100::Parser<Replies>,
+}
+
+impl Out<'_> {
+    /// Hand the emulator what is written so far.
+    fn flush(&mut self) {
+        if !self.bytes.is_empty() {
+            self.emulator.process(&self.bytes);
+            self.bytes.clear();
+        }
+    }
+
+    /// Where the cursor is once the emulator has taken what is written so
+    /// far: `(column, columns)`, 0-based — past the last column when a
+    /// character there left it waiting to wrap.
+    fn cursor(&mut self) -> (usize, usize) {
+        self.flush();
+        let screen = self.emulator.screen();
+        (
+            usize::from(screen.cursor_position().1),
+            usize::from(screen.size().1),
+        )
+    }
+
+    /// CHA: the cursor to `column`, 0-based.
+    fn column(&mut self, column: usize) {
+        self.bytes
+            .extend_from_slice(format!("\x1b[{}G", column + 1).as_bytes());
+    }
 }
 
 impl Prepass {
@@ -376,21 +439,41 @@ impl Prepass {
         }
     }
 
-    /// `bytes` as the emulator should see them.
-    fn rewrite(&mut self, bytes: &[u8]) -> Vec<u8> {
-        let mut out = Vec::with_capacity(bytes.len());
+    /// Hand `bytes` to `emulator` as it should see them.
+    fn rewrite(&mut self, bytes: &[u8], emulator: &mut vt100::Parser<Replies>) {
+        let mut out = Out {
+            bytes: Vec::with_capacity(bytes.len()),
+            emulator,
+        };
         let mut at = 0;
         while at < bytes.len() {
+            // A window title is for a multiplexer's status line, not the
+            // screen: dropped up to the BEL that ends it (taken with it) or
+            // the ESC (read on — it starts the ST, or whatever comes next).
+            if self.state.title {
+                match bytes[at..].iter().position(|&b| b == 0x07 || b == 0x1b) {
+                    Some(end) => {
+                        self.state.title = false;
+                        at += end + usize::from(bytes[at + end] == 0x07);
+                    }
+                    None => at = bytes.len(),
+                }
+                continue;
+            }
             // Plain text between sequences, with nothing to translate or make
             // room for, goes through as it is: the parser would print each
             // byte and stay where it is.
-            if self.state.ground && !self.state.insert && !self.state.charsets.translates() {
+            if self.state.ground
+                && !self.state.insert
+                && !self.state.autowrap_off
+                && !self.state.charsets.translates()
+            {
                 let run = bytes[at..]
                     .iter()
                     .take_while(|&&b| (0x20..0x7f).contains(&b))
                     .count();
                 if run > 0 {
-                    out.extend_from_slice(&bytes[at..at + run]);
+                    out.bytes.extend_from_slice(&bytes[at..at + run]);
                     self.state.last = Some(char::from(bytes[at + run - 1]));
                     at += run;
                     continue;
@@ -408,9 +491,42 @@ impl Prepass {
                 }
                 &[Event::Print(c)] if encodes(c, &self.pending) => Some(Event::Print(c)),
                 &[Event::Repeat(n)] => Some(Event::Repeat(n)),
+                &[Event::Alias] => Some(Event::Alias),
+                // Not a tab executed inside another sequence (`CSI 1 HT 2 m`):
+                // that one goes on as it came.
+                &[event @ (Event::Tab(_) | Event::Stop(_))] if self.state.ground => Some(event),
                 _ => None,
             };
             match whole {
+                Some(Event::Alias) => {
+                    // The sequence under the name the emulator knows; a
+                    // sequence a control interrupted went on already, and
+                    // the one written here cuts it short.
+                    self.pending.clear();
+                    out.bytes.append(&mut self.state.alias);
+                }
+                Some(Event::Tab(stops)) => {
+                    self.pending.clear();
+                    let (column, columns) = out.cursor();
+                    let to = self.tab(column, columns, stops);
+                    out.column(to);
+                }
+                Some(Event::Stop(set)) => {
+                    // The emulator makes nothing of HTS or TBC; they go on
+                    // as they came.
+                    out.bytes.append(&mut self.pending);
+                    let (column, columns) = out.cursor();
+                    let column = column.min(columns.saturating_sub(1));
+                    let stops = self
+                        .state
+                        .tabs
+                        .get_or_insert_with(|| (8..columns).step_by(8).collect());
+                    if set {
+                        stops.insert(column);
+                    } else {
+                        stops.remove(&column);
+                    }
+                }
                 Some(Event::Print(c)) => {
                     let shown = self.state.charsets.map(c);
                     self.state.last = Some(shown);
@@ -420,7 +536,7 @@ impl Prepass {
                 Some(Event::Repeat(n)) => {
                     // The REP itself is nothing to the emulator; what it
                     // stands for is written after it.
-                    out.append(&mut self.pending);
+                    out.bytes.append(&mut self.pending);
                     if let Some(c) = self.state.last {
                         for _ in 0..n.min(self.max_repeat) {
                             self.write_char(&mut out, c);
@@ -440,23 +556,66 @@ impl Prepass {
                     {
                         self.state.last = Some(c);
                     }
-                    out.append(&mut self.pending);
+                    out.bytes.append(&mut self.pending);
                 }
             }
             self.state.events.clear();
         }
-        out
+        out.flush();
     }
 
     /// Write `c` — in insert mode after making room for it, as the terminal
-    /// would (ICH, which the emulator implements).
-    fn write_char(&self, out: &mut Vec<u8>, c: char) {
+    /// would (ICH, which the emulator implements); with autowrap off, never
+    /// past the margin: a narrow character with no room takes the last
+    /// column, a wide one is dropped (tmux's rule), and the cursor stays on
+    /// the last column rather than waiting to wrap, so what comes next —
+    /// an erase, a report — finds it there.
+    fn write_char(&self, out: &mut Out<'_>, c: char) {
         let width = c.width().unwrap_or(0);
+        let mut at = None;
+        if self.state.autowrap_off && width > 0 {
+            let (column, columns) = out.cursor();
+            if column + width > columns {
+                if width > 1 || columns == 0 {
+                    return;
+                }
+                out.column(columns - 1);
+                at = Some((columns - 1, columns));
+            } else {
+                at = Some((column, columns));
+            }
+        }
         if self.state.insert && width > 0 {
-            out.extend_from_slice(format!("\x1b[{width}@").as_bytes());
+            out.bytes
+                .extend_from_slice(format!("\x1b[{width}@").as_bytes());
         }
         let mut buf = [0u8; 4];
-        out.extend_from_slice(c.encode_utf8(&mut buf).as_bytes());
+        out.bytes
+            .extend_from_slice(c.encode_utf8(&mut buf).as_bytes());
+        if let Some((column, columns)) = at
+            && column + width >= columns
+        {
+            out.column(columns - 1);
+        }
+    }
+
+    /// The column `stops` tab stops on from `column` (back, when negative):
+    /// past the last stop, the last column; before the first, the first.
+    fn tab(&self, column: usize, columns: usize, stops: isize) -> usize {
+        let last = columns.saturating_sub(1);
+        let is_stop = |c: usize| match &self.state.tabs {
+            Some(set) => set.contains(&c),
+            None => c.is_multiple_of(8),
+        };
+        let mut to = column.min(last);
+        for _ in 0..stops.unsigned_abs().min(columns) {
+            to = if stops > 0 {
+                ((to + 1)..=last).find(|&c| is_stop(c)).unwrap_or(last)
+            } else {
+                (0..to).rev().find(|&c| is_stop(c)).unwrap_or(0)
+            };
+        }
+        to
     }
 }
 
@@ -467,6 +626,32 @@ fn encodes(c: char, bytes: &[u8]) -> bool {
     c.encode_utf8(&mut buf).as_bytes() == bytes
 }
 
+impl PrepassState {
+    /// The sequence just read is written as `known` instead.
+    fn aliased(&mut self, known: Vec<u8>) {
+        self.alias = known;
+        self.events.push(Event::Alias);
+    }
+}
+
+/// `CSI {params} {action}` — a sequence rebuilt with another final byte.
+fn csi(params: &vte::Params, action: char) -> Vec<u8> {
+    let mut out = String::from("\x1b[");
+    for (index, param) in params.iter().enumerate() {
+        if index > 0 {
+            out.push(';');
+        }
+        for (sub, value) in param.iter().enumerate() {
+            if sub > 0 {
+                out.push(':');
+            }
+            out.push_str(&value.to_string());
+        }
+    }
+    out.push(action);
+    out.into_bytes()
+}
+
 impl vte::Perform for PrepassState {
     fn print(&mut self, c: char) {
         self.ground = true;
@@ -475,7 +660,11 @@ impl vte::Perform for PrepassState {
 
     fn execute(&mut self, byte: u8) {
         self.charsets.execute(byte);
-        self.events.push(Event::Other);
+        self.events.push(if byte == b'\t' && self.tabs.is_some() {
+            Event::Tab(1)
+        } else {
+            Event::Other
+        });
     }
 
     fn csi_dispatch(
@@ -501,7 +690,68 @@ impl vte::Perform for PrepassState {
                 'h' | 'l' if params.iter().any(|p| p.first() == Some(&4)) => {
                     self.insert = action == 'h';
                 }
+                // CHT and CBT: tabs forward and back.
+                'I' | 'Z' => {
+                    let count = params
+                        .iter()
+                        .next()
+                        .and_then(|p| p.first().copied())
+                        .unwrap_or(1)
+                        .max(1);
+                    let count = isize::from(i16::try_from(count).unwrap_or(i16::MAX));
+                    self.events
+                        .push(Event::Tab(if action == 'I' { count } else { -count }));
+                    return;
+                }
+                // TBC: the stop at the cursor, or (3) every stop.
+                'g' => match params.iter().next().and_then(|p| p.first().copied()) {
+                    None | Some(0) => {
+                        self.events.push(Event::Stop(false));
+                        return;
+                    }
+                    Some(3) => self.tabs = Some(std::collections::BTreeSet::new()),
+                    Some(_) => {}
+                },
+                // Cursor moves under their other names: HVP is CUP, HPA is
+                // CHA, HPR is CUF, VPR is CUD.
+                'f' | '`' | 'a' | 'e' => {
+                    let known = match action {
+                        'f' => 'H',
+                        '`' => 'G',
+                        'a' => 'C',
+                        _ => 'B',
+                    };
+                    return self.aliased(csi(params, known));
+                }
+                // SCOSC and SCORC: DECSC and DECRC — with no parameters
+                // (the parser hands on a lone default zero).
+                's' | 'u' if params.iter().all(|p| p == [0]) => {
+                    let known: &[u8] = if action == 's' { b"\x1b7" } else { b"\x1b8" };
+                    return self.aliased(known.to_vec());
+                }
                 _ => {}
+            }
+        }
+        // The alternate screen and the saved cursor, set one at a time.
+        if intermediates == [b'?'] && matches!(action, 'h' | 'l') {
+            let set = action == 'h';
+            if params.iter().any(|p| p == [7]) {
+                self.autowrap_off = !set;
+            }
+            let only = |mode: u16| params.len() == 1 && params.iter().next() == Some(&[mode][..]);
+            if only(1047) {
+                return self.aliased(if set {
+                    b"\x1b[?47h".to_vec()
+                } else {
+                    b"\x1b[?47l".to_vec()
+                });
+            }
+            if only(1048) {
+                return self.aliased(if set {
+                    b"\x1b7".to_vec()
+                } else {
+                    b"\x1b8".to_vec()
+                });
             }
         }
         self.events.push(Event::Other);
@@ -517,7 +767,22 @@ impl vte::Perform for PrepassState {
             [] if byte == b'c' => {
                 self.charsets = Charsets::default();
                 self.insert = false;
+                self.autowrap_off = false;
+                self.tabs = None;
             }
+            // HTS: a tab stop at the cursor.
+            [] if byte == b'H' => {
+                self.events.push(Event::Stop(true));
+                return;
+            }
+            // A screen/tmux window title follows; not the emulator's.
+            [] if byte == b'k' => {
+                self.title = true;
+                return self.aliased(Vec::new());
+            }
+            // IND and NEL: a line feed, and a new line.
+            [] if byte == b'D' => return self.aliased(b"\n".to_vec()),
+            [] if byte == b'E' => return self.aliased(b"\r\n".to_vec()),
             _ => {}
         }
         self.events.push(Event::Other);
@@ -855,6 +1120,163 @@ mod tests {
     }
 
     #[test]
+    fn a_cursor_placed_with_hvp_lands_where_cup_would_put_it() {
+        // btop places every piece of text with HVP (`CSI row;col f`), never
+        // CUP (`CSI row;col H`): the same command under another name, which
+        // `vt100` ignores — btop's panels ran together across rows.
+        let mut s = screen();
+        s.feed(b"\x1b[2;4fbtop\x1b[1;1fcpu");
+        assert_eq!(s.snapshot().rows, vec!["cpu", "   btop"]);
+        assert_eq!(s.snapshot().cursor, (1, 4));
+        let mut s = screen();
+        s.feed(b"x\x1b[3fy");
+        assert_eq!(s.snapshot().rows, vec!["x", "", "y"], "the column defaults");
+    }
+
+    #[test]
+    fn every_other_name_for_a_cursor_move_moves_it() {
+        // HPA, HPR, VPR, SCOSC/SCORC, IND, NEL: what `vt100` knows as CHA,
+        // CUF, CUD, DECSC/DECRC, a line feed, a new line.
+        let cases: [(&[u8], &[&str]); 6] = [
+            (b"abc\x1b[6`X", &["abc  X"]),
+            (b"a\x1b[3aX", &["a   X"]),
+            (b"ab\x1b[2eX", &["ab", "", "  X"]),
+            (b"ab\x1b[s\r\ncd\x1b[uX", &["abX", "cd"]),
+            (b"ab\x1bDX", &["ab", "  X"]),
+            (b"ab\x1bEX", &["ab", "X"]),
+        ];
+        for (bytes, rows) in cases {
+            let mut s = screen();
+            s.feed(bytes);
+            assert_eq!(s.snapshot().rows, rows.to_vec(), "{bytes:?}");
+        }
+    }
+
+    #[test]
+    fn the_alternate_screen_by_its_other_numbers_is_the_alternate_screen() {
+        // Modes 1047 (the alternate screen) and 1048 (the saved cursor),
+        // which some programs switch one at a time instead of 1049.
+        let mut s = screen();
+        s.feed(b"shell$ \x1b[?1048h\x1b[?1047h\x1b[Hfull screen");
+        assert!(s.snapshot().alternate);
+        s.feed(b"\x1b[?1047l\x1b[?1048lX");
+        let snap = s.snapshot();
+        assert!(!snap.alternate);
+        assert_eq!(snap.rows, vec!["shell$ X"], "the cursor restored");
+    }
+
+    /// `stream` fed to a fresh `rows` × `columns` screen in chunks of each
+    /// size in turn, every result checked by `check`.
+    fn fed_in_chunks(rows: u16, columns: u16, stream: &[u8], check: impl Fn(&Screen, usize)) {
+        for size in [1, 2, 3, 7, stream.len()] {
+            let mut s = Screen::new(rows, columns);
+            for chunk in stream.chunks(size) {
+                s.feed(chunk);
+            }
+            check(&s, size);
+        }
+    }
+
+    #[test]
+    fn with_autowrap_off_a_line_stops_at_the_last_column() {
+        // DECAWM off: what runs past the right margin overwrites the last
+        // column instead of wrapping onto the next row, and the cursor
+        // stays on that column — so the erase after it takes the `m`.
+        // ranger writes the screen's bottom-right cell this way.
+        let stream = b"\x1b[?7labcdefghijklm\x1b[K\r\nnext\x1b[?7h\r\n0123456789wrap";
+        fed_in_chunks(4, 10, stream, |s, size| {
+            assert_eq!(
+                s.snapshot().rows,
+                vec!["abcdefghi", "next", "0123456789", "wrap"],
+                "chunks of {size}"
+            );
+        });
+    }
+
+    #[test]
+    fn with_autowrap_off_repeats_and_wide_characters_stay_on_the_row() {
+        // A repeat runs up to the margin and no further; a wide character
+        // with no room left is dropped, and a narrow one after it takes the
+        // last column — over the right half of the wide one before it.
+        fed_in_chunks(3, 10, b"\x1b[?7lab\x1b[20bZ\r\n", |s, size| {
+            assert_eq!(s.snapshot().rows, vec!["abbbbbbbbZ"], "chunks of {size}");
+        });
+        fed_in_chunks(3, 10, "\x1b[?7labcdefgh中文X".as_bytes(), |s, size| {
+            assert_eq!(s.snapshot().rows, vec!["abcdefgh X"], "chunks of {size}");
+        });
+    }
+
+    #[test]
+    fn tabs_move_to_the_stops_the_program_set() {
+        // HTS sets a stop at the cursor, TBC clears the one there (`CSI g`)
+        // or all of them (`CSI 3 g`); past the last stop a tab goes to the
+        // last column.
+        let stream = b"\x1b[3g\x1b[1;5H\x1bH\x1b[1;20H\x1bH\r\tA\tB\tC";
+        fed_in_chunks(3, 40, stream, |s, size| {
+            assert_eq!(
+                s.snapshot().rows,
+                vec![format!("{:4}A{:14}B{:19}C", "", "", "")],
+                "chunks of {size}"
+            );
+        });
+        fed_in_chunks(3, 40, b"\x1b[1;9H\x1b[g\r\tX\tY", |s, size| {
+            assert_eq!(
+                s.snapshot().rows,
+                vec![format!("{:16}X{:7}Y", "", "")],
+                "chunks of {size}"
+            );
+        });
+    }
+
+    #[test]
+    fn back_and_forward_tabs_move_by_tab_stops() {
+        // CBT (`CSI n Z`) and CHT (`CSI n I`): two stops back from past
+        // the `B` lands on the `A`, three on from there on column 33.
+        fed_in_chunks(3, 40, b"\tA\tB\x1b[2ZC\x1b[3ID\x1b[9ZE", |s, size| {
+            assert_eq!(
+                s.snapshot().rows,
+                vec![format!("E{:7}C{:7}B{:15}D", "", "", "")],
+                "chunks of {size}"
+            );
+        });
+    }
+
+    #[test]
+    fn a_full_reset_restores_autowrap_and_the_tab_stops() {
+        fed_in_chunks(
+            3,
+            20,
+            b"\x1b[3g\x1b[?7l\x1bc\tX\r\n0123456789012345678901",
+            |s, size| {
+                assert_eq!(
+                    s.snapshot().rows,
+                    vec![
+                        format!("{:8}X", ""),
+                        "01234567890123456789".to_string(),
+                        "01".to_string()
+                    ],
+                    "chunks of {size}"
+                );
+            },
+        );
+    }
+
+    #[test]
+    fn a_window_title_for_screen_or_tmux_is_not_text() {
+        // `ESC k … ESC \` (or BEL) names a screen/tmux window. A program
+        // that thinks it runs under one sends it — ranger does regardless —
+        // and read as text the title landed at the cursor.
+        fed_in_chunks(
+            5,
+            20,
+            b"before\x1bkranger\x1b\\after\x1bkx\x07!",
+            |s, size| {
+                assert_eq!(s.snapshot().rows, vec!["beforeafter!"], "chunks of {size}");
+            },
+        );
+    }
+
+    #[test]
     fn a_sequence_a_control_interrupts_is_still_read_whole() {
         // A BEL inside `CSI 4 h`: the sequence goes on after it, and the
         // `h` that ends it is no printed letter — insert mode goes on.
@@ -880,7 +1302,7 @@ mod tests {
             b"plain text\r\nand more\r\n",
             b"\x1b[1\n2mX\x1b[m after a control inside a sequence",
             b"\x1bP1$r0m\x1b\\dcs\x1b]0;title\x07osc \x1b]8;;u\x1b\\link\x1b]8;;\x1b\\",
-            "\u{2502} wide \u{4e2d}\u{6587} and \u{00e9}".as_bytes(),
+            "\u{2502} wide \u{4e2d}\u{6587} and \u{00e9}\tat\tdefault\ttab stops".as_bytes(),
             b"\x1b[2;5Hmoved\x1b[1;1H\x1b[K\x1b[3@ins\x1b[2Pdel\r\n\x1b[?25l\x1b[?1049hA",
             b"\x1b[5;31;1mdense\x1b[0;4mu\x1b[24m\x1b[38;2;1;2;3mrgb\x1b[38:5:9mcolon",
         ];
