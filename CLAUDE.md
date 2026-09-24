@@ -1192,7 +1192,14 @@ tier**, whose `/dev/tty` would be the user's) and returns once it exits or
 `/proc/…/task/…/syscall` from the monitor thread while a call waits on a
 quiet terminal, and a `read` blocked on the session's pts (or `/dev/tty`) is
 a program waiting for input whatever the screen shows, while a tree all at
-work is busy however prompt-shaped its line — then, where it is blind (a
+work is busy however prompt-shaped its line — then the terminal's own
+**password tell**, a line read with echo off (`LineMode::hides_input`, read
+off the pty with `tcgetattr` where the probe is blind to a root `sudo`),
+counted once the program has replied to the last line submitted (text still
+awaiting its Enter leaves the prompt standing) and never over a tree
+the probe sees at work, settling in 0.5 s even for a wait begun after the
+prompt came up — the `waiting for a password — typed input is hidden` frame,
+detection only, nothing masked — then, where the probe is blind (a
 `sudo`-owned process, a `poll`-family wait, no `/proc`), the screen: the
 cursor left mid-line, the
 alternate screen, or a terminal reading key by key — canonical mode off with
@@ -1228,7 +1235,8 @@ a wait the user ended with Ctrl+B); typing into a session is its own
 rule, "don't ask again for this session" held on the gate and never
 persisted, reviewed by auto mode's classifier — while a wait, a kill and a
 lone `<C-c>` never ask; the cells strip the frame for a dim `⎿ Waiting for
-input · session …` row, `BashSession(./configure.sh ← y⏎)` headers; tuned against
+input · session …` row (`Waiting for a password · …` at a password prompt),
+`BashSession(./configure.sh ← y⏎)` headers; tuned against
 eight live models with `examples/session_probe.rs`, the offline
 `interactive` demo and `smoke.sh` Phase 123); and the **tool
 permission requests** (Claude-Code's ask-before-you-change: the `approve` seam

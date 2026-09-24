@@ -700,7 +700,11 @@ impl BackgroundRegistry {
             (input, Arc::clone(&task.io))
         };
         // What the program draws from here on answers these keys.
-        io.note_input();
+        io.note_input(
+            chunks
+                .iter()
+                .any(|chunk| crate::pty::keys::reaches_line_reader(&chunk.bytes)),
+        );
         for chunk in chunks {
             let pause = chunk.pause_after;
             input
@@ -990,12 +994,14 @@ impl MonitorHandle {
         self.send_screen(screen, false);
     }
 
-    /// Tell the session whether its program is reading the terminal key by
-    /// key (a menu, an editor — not a relay holding it raw, see
-    /// `LineMode::reads_keys`): such a program waits on keys wherever its
-    /// cursor sits (`pty::session`). Read after each chunk of output and on
-    /// every idle poll, so a mode switched without printing is seen within
-    /// [`MONITOR_POLL_INTERVAL`].
+    /// Tell the session how its program is reading the terminal: key by key
+    /// (a menu, an editor — not a relay holding it raw, see
+    /// `LineMode::reads_keys`), which waits on keys wherever its cursor
+    /// sits, or a line with echo off (`LineMode::hides_input`), a password
+    /// prompt — readable here even when the program runs as root and the
+    /// probe is blind (`pty::session`). Read after each chunk of output and
+    /// on every idle poll, so a mode switched without printing is seen
+    /// within [`MONITOR_POLL_INTERVAL`].
     fn refresh_line_mode(&self) {
         #[cfg(unix)]
         if let Some(mode) = self
@@ -1004,6 +1010,7 @@ impl MonitorHandle {
             .and_then(crate::pty::spawn::line_mode)
         {
             self.io.set_reading_keys(mode.reads_keys());
+            self.io.set_hidden_input(mode.hides_input());
         }
     }
 
@@ -1617,7 +1624,7 @@ mod tests {
     // --- TTY sessions (docs/interactive-shell.md) ---
 
     use crate::pty::keys::{encode, parse_input};
-    use crate::pty::report::Status;
+    use crate::pty::report::{Status, Waiting};
     use crate::pty::session::WaitEnd;
     use crate::pty::settle::{Settle, WaitKind};
 
@@ -1671,7 +1678,12 @@ mod tests {
         );
         assert_eq!(end, WaitEnd::Settled(Settle::Prompt));
         assert_eq!(
-            io.look(&task.id, Status::Running { waiting: true }),
+            io.look(
+                &task.id,
+                Status::Running {
+                    waiting: Waiting::Input
+                }
+            ),
             format!("Running (session {}, waiting for input)\nName?", task.id)
         );
         assert_eq!(io.end_wait(), None);

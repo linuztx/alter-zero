@@ -3966,6 +3966,32 @@ fn a_session_cell_shows_its_output_over_a_dim_state_row() {
 }
 
 #[test]
+fn a_session_at_a_password_prompt_says_so() {
+    // sudo asking again after a rejected password: the frame line is the
+    // model's, the dim corner tells the user what the command waits for.
+    let cell = tool(
+        "BashSession",
+        "sudo pacman -Syy",
+        ToolStatus::Ok,
+        "Running (session b1, waiting for a password — typed input is hidden)\n\
+         Sorry, try again.\n[sudo] password for u:",
+    );
+    let rows: Vec<String> = tool_lines(&cell, 80, &PathDisplay::VERBATIM)
+        .iter()
+        .map(plain)
+        .collect();
+    assert_eq!(
+        rows,
+        [
+            "● BashSession(sudo pacman -Syy)",
+            "  ⎿  Sorry, try again.",
+            "     [sudo] password for u:",
+            "  ⎿  Waiting for a password · session b1",
+        ]
+    );
+}
+
+#[test]
 fn a_session_still_busy_or_stopped_says_which() {
     let busy = tool(
         "BashSession",

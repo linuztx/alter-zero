@@ -674,8 +674,10 @@ pub(super) const COMMAND_TOOL_NAMES: [&str; 2] = ["Bash", "BashSession"];
 /// The dim closing row of a command cell whose session is still alive
 /// (`docs/interactive-shell.md`) — `{state} · session {id}`, in place of the
 /// report's frame line, which is the model's: the program sits at a prompt,
-/// is still busy, or was ended by the call.
+/// sits at a password prompt, is still busy, or was ended by the call.
 pub(super) const SESSION_WAITING_ROW: &str = "Waiting for input";
+/// See [`SESSION_WAITING_ROW`] — a prompt reading a line with echo off.
+pub(super) const SESSION_PASSWORD_ROW: &str = "Waiting for a password";
 /// See [`SESSION_WAITING_ROW`].
 pub(super) const SESSION_RUNNING_ROW: &str = "Still running";
 /// See [`SESSION_WAITING_ROW`].

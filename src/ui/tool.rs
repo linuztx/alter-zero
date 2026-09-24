@@ -462,22 +462,27 @@ fn session_frame(output: &str) -> Option<(crate::pty::report::Frame<'_>, &str)> 
 }
 
 /// The dim `⎿ Waiting for input · session {id}` corner closing a resolved
-/// command cell whose session is still alive — or `Stopped · session {id}`
-/// for one the call ended (`docs/interactive-shell.md`). A fresh corner, like
+/// command cell whose session is still alive — `Waiting for a password` at a
+/// prompt that hides what it reads, or `Stopped · session {id}` for one the
+/// call ended (`docs/interactive-shell.md`). A fresh corner, like
 /// the classifier's provenance row: it is about the call, not output.
 fn session_state_row(tool: &ToolCall) -> Option<Line<'static>> {
-    use crate::pty::report::Frame;
+    use crate::pty::report::{Frame, Waiting};
     if !is_command_tool(tool) || matches!(tool.status, ToolStatus::Waiting | ToolStatus::Running) {
         return None;
     }
     let (state, session) = match session_frame(&tool.output)?.0 {
         Frame::Running {
             session,
-            waiting: true,
+            waiting: Waiting::Input,
         } => (SESSION_WAITING_ROW, session),
         Frame::Running {
             session,
-            waiting: false,
+            waiting: Waiting::Password,
+        } => (SESSION_PASSWORD_ROW, session),
+        Frame::Running {
+            session,
+            waiting: Waiting::No,
         } => (SESSION_RUNNING_ROW, session),
         Frame::Stopped { session } => (SESSION_STOPPED_ROW, session),
     };

@@ -29,14 +29,19 @@ release heading when a version is cut.
   wait, not a dozen — and on Linux the kernel is asked what the command is
   blocked in, so one waiting with no prompt at all (`read`, `cat`) is
   recognised and a busy one that left `Compiling… ` on screen is not taken
-  for a question. A call's header names the program it types into
-  (`● BashSession(python3 ← print(1)⏎)`). It also reaches
-  `run_in_background` commands, which can now be waited on, interrupted and
-  ended the same way. A session still running shows in the footer's shell
-  count, and the ↓ manager shows its live screen; its cells end on a dim
-  `Waiting for input · session …` row. Typing into a session asks permission
-  like a command does — covered by the "don't ask again" rule of the command
-  that started it, or approved once for the whole session — and auto mode's
+  for a question. A password prompt is told by the terminal itself, which
+  reads it with echo off — under `sudo` too, where the kernel cannot be
+  asked — so the agent hears within half a second that a password is wanted,
+  and a retry after a wrong one no longer leaves it waiting out its timeout;
+  what it types there still shows as typed. A call's header names the
+  program it types into (`● BashSession(python3 ← print(1)⏎)`). It also
+  reaches `run_in_background` commands, which can now be waited on,
+  interrupted and ended the same way. A session still running shows in the
+  footer's shell count, and the ↓ manager shows its live screen; its cells
+  end on a dim `Waiting for input · session …` row (`Waiting for a password
+  · …` at a password prompt). Typing into a session asks permission like a
+  command does — covered by the "don't ask again" rule of the command that
+  started it, or approved once for the whole session — and auto mode's
   classifier reviews it; waiting on a session, interrupting it or ending it
   never asks. The agent never guesses a password it was not given: it asks
   you (`docs/interactive-shell.md`).

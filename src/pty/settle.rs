@@ -11,7 +11,9 @@
 //! 2. it has been quiet for [`PROMPT_QUIET`] with a thread **seen reading
 //!    its terminal** — the kernel's word, from Linux's `/proc`
 //!    (`pty::probe`), which needs no prompt and no output: a bare `read x`
-//!    or a `cat` waits too;
+//!    or a `cat` waits too — or with the terminal **reading a line with echo
+//!    off**, a password prompt, told by the terminal's own mode even where
+//!    `/proc` is blind (sudo runs as root);
 //! 3. it printed something and went quiet for [`PROMPT_QUIET`] with the
 //!    screen **awaiting keys** — a prompt, or a full-screen program done
 //!    drawing (`pty::session` decides, from the screen, the transcript and
@@ -82,6 +84,10 @@ pub struct Observation {
     /// Did the probe see a thread blocked reading the terminal
     /// (`pty::probe`)?
     pub reading: bool,
+    /// Is the terminal reading a line with echo off — a password prompt —
+    /// that the program put up since it was last typed into
+    /// (`pty::session`)?
+    pub secret: bool,
     /// Has the program exited?
     pub exited: bool,
 }
@@ -90,7 +96,8 @@ pub struct Observation {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Settle {
     Exited,
-    /// Quiet at a prompt — the frame says `waiting for input`.
+    /// Quiet at a prompt — the frame says `waiting for input`, or `waiting
+    /// for a password` at one that reads with echo off.
     Prompt,
     /// Silent for [`LINE_QUIET`].
     Quiet,
@@ -103,7 +110,7 @@ pub fn settle(kind: WaitKind, timeout: Duration, seen: &Observation) -> Option<S
     if seen.exited {
         return Some(Settle::Exited);
     }
-    if seen.reading && seen.quiet >= PROMPT_QUIET {
+    if (seen.reading || seen.secret) && seen.quiet >= PROMPT_QUIET {
         return Some(Settle::Prompt);
     }
     if seen.output && seen.awaiting_keys && seen.quiet >= prompt_quiet(kind, true) {
@@ -130,6 +137,7 @@ mod tests {
             output,
             awaiting_keys,
             reading: false,
+            secret: false,
             exited: false,
         }
     }
@@ -164,6 +172,26 @@ mod tests {
             ..seen(300, 300, false, false)
         };
         assert_eq!(settle(WaitKind::Launch, TIMEOUT, &early), None);
+    }
+
+    #[test]
+    fn a_password_prompt_settles_as_waiting_whatever_the_call_saw() {
+        // The terminal reading a hidden line — sudo, ssh, getpass: waiting,
+        // in a pure wait too whose output all came before it began (sudo's
+        // `Sorry, try again.` landing between two calls), and whatever the
+        // screen looks like.
+        let secret = Observation {
+            secret: true,
+            ..seen(600, 600, false, false)
+        };
+        for kind in [WaitKind::Launch, WaitKind::Input, WaitKind::Wait] {
+            assert_eq!(settle(kind, TIMEOUT, &secret), Some(Settle::Prompt));
+        }
+        let early = Observation {
+            secret: true,
+            ..seen(300, 300, false, false)
+        };
+        assert_eq!(settle(WaitKind::Wait, TIMEOUT, &early), None);
     }
 
     #[test]

@@ -455,7 +455,7 @@ fn run_tty(
     origin: Option<&BgOrigin>,
     on_output: &mut dyn FnMut(ToolProgress<'_>),
 ) -> ToolOutcome {
-    use crate::pty::report::Status;
+    use crate::pty::report::{Status, Waiting};
     use crate::pty::session::WaitEnd;
     use crate::pty::settle::{Settle, WaitKind};
     let background = args.run_in_background;
@@ -506,11 +506,12 @@ fn run_tty(
         }
         WaitEnd::Settled(settled) => {
             registry.announce(&task.id);
+            let at_prompt =
+                settled == Settle::Prompt || io.waiting(WaitKind::Launch, io.origin_mark());
             ToolOutcome::ok(io.look(
                 &task.id,
                 Status::Running {
-                    waiting: settled == Settle::Prompt
-                        || io.waiting(WaitKind::Launch, io.origin_mark()),
+                    waiting: Waiting::of(at_prompt, io.password_prompt()),
                 },
             ))
         }
@@ -536,7 +537,7 @@ fn run_bash_session(
     on_output: &mut dyn FnMut(ToolProgress<'_>),
 ) -> ToolOutcome {
     use crate::pty::keys::{encode, is_interrupt, leaves_line_open, parse_input, typed_tail};
-    use crate::pty::report::{NOT_KILLED_NOTE, Status, UNSUBMITTED_NOTE, WAIT_ENDED_NOTE};
+    use crate::pty::report::{NOT_KILLED_NOTE, Status, UNSUBMITTED_NOTE, WAIT_ENDED_NOTE, Waiting};
     use crate::pty::session::WaitEnd;
     use crate::pty::settle::{Settle, WaitKind};
     let args: super::tools::SessionArgs = match tools::parse_args(arguments) {
@@ -622,11 +623,13 @@ fn run_bash_session(
     } else {
         WaitKind::Input
     };
-    let waiting = matches!(end, Some(WaitEnd::Settled(Settle::Prompt))) || io.waiting(kind, since);
+    let at_prompt =
+        matches!(end, Some(WaitEnd::Settled(Settle::Prompt))) || io.waiting(kind, since);
+    let waiting = Waiting::of(at_prompt, io.password_prompt());
     // A `kill` sent with an answer the program met by asking for more is
     // not carried out: the program is waiting on the model, not done.
     let typed = !parts.is_empty();
-    let spare = args.kill && typed && waiting;
+    let spare = args.kill && typed && at_prompt;
     let status = match end {
         Some(WaitEnd::Cancelled) => {
             if let Some(observed) = io.end_wait() {
@@ -2404,6 +2407,156 @@ mod tests {
         );
     }
 
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_password_prompt_put_up_between_calls_ends_the_next_wait() {
+        // sudo after a wrong password: `Sorry, try again.` and a fresh
+        // prompt come up after the call that typed the password returned.
+        // The kernel cannot see into sudo — a timed `read -s` waits in
+        // `pselect6`, blind the same way — and a wait begun after the prompt
+        // sees no output of its own: only the terminal's mode, a line read
+        // with echo off, says it asks (docs/interactive-shell.md).
+        let (registry, _rx) = test_registry();
+        let executor = RealToolExecutor::new().with_background(registry.clone());
+        let script = r#"bash -c 'read -p "Continue? " a; sleep 3; read -s -t 60 -p "Password: " p; echo; echo "got ${#p}"'"#;
+        let out = exec_with(
+            &executor,
+            "bash",
+            &serde_json::json!({"command": script, "tty": true}).to_string(),
+        );
+        let id = session_of(&out.output);
+        let typed = exec_with(
+            &executor,
+            BASH_SESSION,
+            &serde_json::json!({"session_id": id, "input": "y\n"}).to_string(),
+        );
+        assert!(
+            !typed.output.contains("Password"),
+            "returned before the prompt: {}",
+            typed.output
+        );
+        let io = registry.session(&id).expect("still running").io;
+        let deadline = Instant::now() + std::time::Duration::from_secs(10);
+        while !(registry
+            .line_mode(&id)
+            .is_some_and(crate::pty::spawn::LineMode::hides_input)
+            && io.screen_text().unwrap_or_default().contains("Password:"))
+        {
+            assert!(
+                Instant::now() < deadline,
+                "the prompt never came up: {:?} {:?}",
+                registry.line_mode(&id),
+                io.screen_text()
+            );
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        let started = Instant::now();
+        let waited = exec_with(
+            &executor,
+            BASH_SESSION,
+            &serde_json::json!({"session_id": id, "timeout": 8000}).to_string(),
+        );
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(3),
+            "{:?}: {}",
+            started.elapsed(),
+            waited.output
+        );
+        assert_eq!(
+            waited.output,
+            format!(
+                "Running (session {id}, waiting for a password — typed input is hidden)\nPassword:"
+            )
+        );
+        let answered = exec_with(
+            &executor,
+            BASH_SESSION,
+            &serde_json::json!({"session_id": id, "input": "hunter2\n"}).to_string(),
+        );
+        assert_eq!(answered.output, "Exit code: 0\ngot 7");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_launch_that_asks_for_a_password_says_so() {
+        let (registry, _rx) = test_registry();
+        let executor = RealToolExecutor::new().with_background(registry);
+        let script = r#"bash -c 'read -s -t 60 -p "Password: " p; echo; echo "got ${#p}"'"#;
+        let started = Instant::now();
+        let out = exec_with(
+            &executor,
+            "bash",
+            &serde_json::json!({"command": script, "tty": true}).to_string(),
+        );
+        assert!(
+            started.elapsed() < crate::pty::settle::LINE_QUIET,
+            "{:?}",
+            started.elapsed()
+        );
+        let id = session_of(&out.output);
+        assert_eq!(
+            out.output,
+            format!(
+                "Running (session {id}, waiting for a password — typed input is hidden)\nPassword:"
+            )
+        );
+        let answered = exec_with(
+            &executor,
+            BASH_SESSION,
+            &serde_json::json!({"session_id": id, "input": "hunter2\n"}).to_string(),
+        );
+        assert_eq!(answered.output, "Exit code: 0\ngot 7");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_password_typed_without_its_enter_leaves_the_prompt_asking() {
+        // The terminal holds the line until Enter: nothing has reached the
+        // program, which still asks — said at once, not on the quiet
+        // fallback, beside the model's note about the missing Enter.
+        let (registry, _rx) = test_registry();
+        let executor = RealToolExecutor::new().with_background(registry);
+        let script = r#"bash -c 'read -s -t 60 -p "Password: " p; echo; echo "got ${#p}"'"#;
+        let out = exec_with(
+            &executor,
+            "bash",
+            &serde_json::json!({"command": script, "tty": true}).to_string(),
+        );
+        let id = session_of(&out.output);
+        let started = Instant::now();
+        let typed = exec_with(
+            &executor,
+            BASH_SESSION,
+            &serde_json::json!({"session_id": id, "input": "hunter2"}).to_string(),
+        );
+        assert!(
+            started.elapsed() < crate::pty::settle::LINE_QUIET,
+            "{:?}",
+            started.elapsed()
+        );
+        assert!(
+            typed.output.starts_with(&format!(
+                "Running (session {id}, waiting for a password — typed input is hidden)\n"
+            )),
+            "{}",
+            typed.output
+        );
+        assert!(
+            typed
+                .context
+                .as_deref()
+                .is_some_and(|context| context.ends_with(crate::pty::report::UNSUBMITTED_NOTE)),
+            "{:?}",
+            typed.context
+        );
+        let answered = exec_with(
+            &executor,
+            BASH_SESSION,
+            &serde_json::json!({"session_id": id, "input": "<Enter>"}).to_string(),
+        );
+        assert_eq!(answered.output, "Exit code: 0\ngot 7");
+    }
+
     /// The refined headers a call sent, in order.
     fn titles_of(
         executor: &RealToolExecutor,
@@ -2764,8 +2917,9 @@ mod tests {
         else {
             panic!("still running at the launch's return: {}", launch.output);
         };
-        assert!(
-            !waiting,
+        assert_eq!(
+            waiting,
+            crate::pty::report::Waiting::No,
             "a relay's raw terminal is no prompt: {}",
             launch.output
         );

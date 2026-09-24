@@ -269,7 +269,7 @@ fn the_interactive_demo_answers_prompts_through_a_session() {
     // answers typed one per round, and an exit the last answer causes — each
     // result the real report formatter's, so the offline cells are the live
     // ones (the dummy-backend rule, docs/dummy-backend.md).
-    use crate::pty::report::{Status, View, report};
+    use crate::pty::report::{Status, View, Waiting, report};
     let scenario = SCENARIOS
         .iter()
         .find(|s| s.name == "interactive")
@@ -326,7 +326,9 @@ fn the_interactive_demo_answers_prompts_through_a_session() {
         omitted: 0,
         at: String::new(),
     };
-    let waiting = Status::Running { waiting: true };
+    let waiting = Status::Running {
+        waiting: Waiting::Input,
+    };
     assert_eq!(
         ends[0],
         report("b7x2k9m1q", waiting, &lines("Project name:"))

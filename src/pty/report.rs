@@ -10,6 +10,10 @@
 //! >>>
 //! ```
 //!
+//! At a password prompt — the terminal reading a line with echo off — the
+//! frame says so instead (`waiting for a password — typed input is hidden`),
+//! telling the model what is asked and why its answer will not show.
+//!
 //! An exited session reports exactly what a plain `bash` call does
 //! (`Exit code: N` over the output — [`crate::llm::tools::format_exec_output`]),
 //! so the two read alike and the cell renders both the same way; a session the
@@ -27,12 +31,37 @@ pub const SESSION_OUTPUT_MAX_BYTES: usize = 32 * 1024;
 /// Where the session stands at the end of the call.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Status {
-    /// Still running; `waiting` when it sits at a prompt — the terminal awaiting keys, quiet.
-    Running { waiting: bool },
+    /// Still running; `waiting` says what for, when it sits at a prompt.
+    Running { waiting: Waiting },
     /// Exited by itself — `None` when a signal ended it.
     Exited(Option<i32>),
     /// Ended by the call's own `kill`.
     Stopped,
+}
+
+/// What a running session waits for at the end of a call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Waiting {
+    /// Nothing: it is at work, or quiet between lines.
+    No,
+    /// Input, at a prompt — the terminal awaiting keys, quiet.
+    Input,
+    /// A password: the terminal reads a line with echo off, so what is typed
+    /// there does not show (`pty::spawn::LineMode::hides_input`).
+    Password,
+}
+
+impl Waiting {
+    /// What a session waits for when it sits at a prompt (`at_prompt`) —
+    /// a password when its terminal hides what it reads (`password`).
+    #[must_use]
+    pub fn of(at_prompt: bool, password: bool) -> Self {
+        match (at_prompt, password) {
+            (false, _) => Self::No,
+            (true, false) => Self::Input,
+            (true, true) => Self::Password,
+        }
+    }
 }
 
 /// What the session showed since the previous look.
@@ -55,7 +84,7 @@ pub enum View {
 /// A parsed frame line — what the cell's display reframe needs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Frame<'a> {
-    Running { session: &'a str, waiting: bool },
+    Running { session: &'a str, waiting: Waiting },
     Stopped { session: &'a str },
 }
 
@@ -65,6 +94,9 @@ const RUNNING_PREFIX: &str = "Running (session ";
 const STOPPED_PREFIX: &str = "Stopped (session ";
 /// The clause a settled prompt adds to the running frame.
 const WAITING_CLAUSE: &str = ", waiting for input";
+/// The clause a password prompt adds instead: what is asked for, and that
+/// the answer will not show when typed.
+const PASSWORD_CLAUSE: &str = ", waiting for a password — typed input is hidden";
 
 /// Appended to a report when the call typed text a line-reading prompt has
 /// not received — no Enter after it (`pty::keys::leaves_line_open`).
@@ -89,7 +121,11 @@ pub fn report(session: &str, status: Status, view: &View) -> String {
     match status {
         Status::Exited(code) => crate::llm::tools::format_exec_output(code, &body),
         Status::Running { waiting } => {
-            let clause = if waiting { WAITING_CLAUSE } else { "" };
+            let clause = match waiting {
+                Waiting::No => "",
+                Waiting::Input => WAITING_CLAUSE,
+                Waiting::Password => PASSWORD_CLAUSE,
+            };
             format!(
                 "{RUNNING_PREFIX}{session}{clause})\n{}",
                 or_nothing_new(body, view)
@@ -173,9 +209,12 @@ fn keep_tail(text: &str, max_bytes: usize) -> (&str, usize) {
 pub fn parse_frame(line: &str) -> Option<Frame<'_>> {
     if let Some(rest) = line.strip_prefix(RUNNING_PREFIX) {
         let inner = rest.strip_suffix(')')?;
-        let (session, waiting) = match inner.strip_suffix(WAITING_CLAUSE) {
-            Some(session) => (session, true),
-            None => (inner, false),
+        let (session, waiting) = if let Some(session) = inner.strip_suffix(WAITING_CLAUSE) {
+            (session, Waiting::Input)
+        } else if let Some(session) = inner.strip_suffix(PASSWORD_CLAUSE) {
+            (session, Waiting::Password)
+        } else {
+            (inner, Waiting::No)
         };
         return is_session_id(session).then_some(Frame::Running { session, waiting });
     }
@@ -207,7 +246,9 @@ mod tests {
         assert_eq!(
             report(
                 "b7x2k9m1q",
-                Status::Running { waiting: true },
+                Status::Running {
+                    waiting: Waiting::Input
+                },
                 &lines(">>>")
             ),
             "Running (session b7x2k9m1q, waiting for input)\n>>>"
@@ -219,7 +260,9 @@ mod tests {
         assert_eq!(
             report(
                 "b7x2k9m1q",
-                Status::Running { waiting: false },
+                Status::Running {
+                    waiting: Waiting::No
+                },
                 &lines("Compiling…")
             ),
             "Running (session b7x2k9m1q)\nCompiling…"
@@ -229,7 +272,13 @@ mod tests {
     #[test]
     fn nothing_new_is_said_out_loud() {
         assert_eq!(
-            report("s1", Status::Running { waiting: false }, &lines("")),
+            report(
+                "s1",
+                Status::Running {
+                    waiting: Waiting::No
+                },
+                &lines("")
+            ),
             "Running (session s1)\n(no new output)"
         );
     }
@@ -244,7 +293,13 @@ mod tests {
             at: "Full name: ".to_string(),
         };
         assert_eq!(
-            report("s1", Status::Running { waiting: true }, &view),
+            report(
+                "s1",
+                Status::Running {
+                    waiting: Waiting::Input
+                },
+                &view
+            ),
             "Running (session s1, waiting for input)\n(no new output — still at: Full name:)"
         );
         // New output needs no reminder.
@@ -254,7 +309,13 @@ mod tests {
             at: "Age: ".to_string(),
         };
         assert_eq!(
-            report("s1", Status::Running { waiting: true }, &view),
+            report(
+                "s1",
+                Status::Running {
+                    waiting: Waiting::Input
+                },
+                &view
+            ),
             "Running (session s1, waiting for input)\nAge: "
         );
     }
@@ -295,7 +356,13 @@ mod tests {
             at: String::new(),
         };
         assert_eq!(
-            report("s1", Status::Running { waiting: false }, &view),
+            report(
+                "s1",
+                Status::Running {
+                    waiting: Waiting::No
+                },
+                &view
+            ),
             "Running (session s1)\n[… 1500 earlier lines not shown]\ntail"
         );
     }
@@ -305,7 +372,9 @@ mod tests {
         let text: String = (0..20_000).map(|i| format!("line {i}\n")).collect();
         let out = report(
             "s1",
-            Status::Running { waiting: true },
+            Status::Running {
+                waiting: Waiting::Input,
+            },
             &lines(text.trim_end()),
         );
         assert!(out.len() <= SESSION_OUTPUT_MAX_BYTES + 200, "{}", out.len());
@@ -338,7 +407,13 @@ mod tests {
             },
         };
         assert_eq!(
-            report("s1", Status::Running { waiting: true }, &view),
+            report(
+                "s1",
+                Status::Running {
+                    waiting: Waiting::Input
+                },
+                &view
+            ),
             "Running (session s1, waiting for input)\n\
              Screen (40x120, cursor at line 1, column 5):\n~\n\n-- INSERT --"
         );
@@ -356,7 +431,13 @@ mod tests {
             },
         };
         assert_eq!(
-            report("s1", Status::Running { waiting: true }, &view),
+            report(
+                "s1",
+                Status::Running {
+                    waiting: Waiting::Input
+                },
+                &view
+            ),
             "Running (session s1, waiting for input)\n\
              Screen (40x120, cursor at line 1, column 1): (blank)"
         );
@@ -376,11 +457,50 @@ mod tests {
             },
         };
         assert_eq!(
-            report("s1", Status::Running { waiting: true }, &view),
+            report(
+                "s1",
+                Status::Running {
+                    waiting: Waiting::Input
+                },
+                &view
+            ),
             "Running (session s1, waiting for input)\n\
              hint: Waiting for your editor to close the file...\n\
              Screen (40x120, cursor at line 1, column 1):\n~"
         );
+    }
+
+    #[test]
+    fn a_password_prompt_is_named_as_one() {
+        // What the model is asked for, and that its answer will not show
+        // when typed — so it asks the user, never guesses, and does not take
+        // a silent terminal for a lost keystroke (docs/interactive-shell.md).
+        let out = report(
+            "s1",
+            Status::Running {
+                waiting: Waiting::Password,
+            },
+            &lines("Sorry, try again.\n[sudo] password for u:"),
+        );
+        assert_eq!(
+            out,
+            "Running (session s1, waiting for a password — typed input is hidden)\n\
+             Sorry, try again.\n[sudo] password for u:"
+        );
+        assert_eq!(
+            parse_frame(out.lines().next().unwrap()),
+            Some(Frame::Running {
+                session: "s1",
+                waiting: Waiting::Password
+            })
+        );
+    }
+
+    #[test]
+    fn a_prompt_waits_for_a_password_when_its_terminal_hides_what_it_reads() {
+        assert_eq!(Waiting::of(false, true), Waiting::No, "not at a prompt yet");
+        assert_eq!(Waiting::of(true, false), Waiting::Input);
+        assert_eq!(Waiting::of(true, true), Waiting::Password);
     }
 
     #[test]
@@ -389,14 +509,14 @@ mod tests {
             parse_frame("Running (session b7x2k9m1q, waiting for input)"),
             Some(Frame::Running {
                 session: "b7x2k9m1q",
-                waiting: true
+                waiting: Waiting::Input
             })
         );
         assert_eq!(
             parse_frame("Running (session s1)"),
             Some(Frame::Running {
                 session: "s1",
-                waiting: false
+                waiting: Waiting::No
             })
         );
         assert_eq!(
@@ -411,8 +531,15 @@ mod tests {
     #[test]
     fn every_report_frame_round_trips() {
         for status in [
-            Status::Running { waiting: true },
-            Status::Running { waiting: false },
+            Status::Running {
+                waiting: Waiting::Input,
+            },
+            Status::Running {
+                waiting: Waiting::Password,
+            },
+            Status::Running {
+                waiting: Waiting::No,
+            },
             Status::Stopped,
         ] {
             let out = report("b7x2k9m1q", status, &lines("x"));

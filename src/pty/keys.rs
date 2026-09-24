@@ -396,6 +396,18 @@ pub fn leaves_line_open(parts: &[InputPart]) -> bool {
     matches!(parts.last(), Some(InputPart::Text(text)) if !text.ends_with(['\n', '\r']))
 }
 
+/// Do these bytes reach a program reading **whole lines**? In canonical mode
+/// the terminal holds the line being edited until an Enter (`\r`, `\n`)
+/// submits it, and acts at once only on its signal keys (`^C`, `^Z`, `^\`)
+/// and end-of-file (`^D`); text, Backspace and arrows stay on the line. So a
+/// password typed without its Enter has not reached `sudo` yet.
+#[must_use]
+pub fn reaches_line_reader(bytes: &[u8]) -> bool {
+    bytes
+        .iter()
+        .any(|byte| matches!(byte, b'\r' | b'\n' | 0x03 | 0x04 | 0x1a | 0x1c))
+}
+
 /// The text left on the line being edited when the input is done — the last
 /// line typed after its last Enter, trailing spaces trimmed — or `None` when
 /// the input ends on a key or an Enter ([`leaves_line_open`]) or on blanks.
@@ -756,6 +768,26 @@ mod tests {
         assert!(!leaves_line_open(&parse_input("<Down>")));
         assert!(!leaves_line_open(&parse_input("abc<C-d>")));
         assert!(!leaves_line_open(&parse_input("")));
+    }
+
+    #[test]
+    fn only_an_enter_or_a_signal_key_reaches_a_program_reading_a_line() {
+        let reaches = |input: &str| {
+            encode(&parse_input(input), false)
+                .iter()
+                .any(|chunk| reaches_line_reader(&chunk.bytes))
+        };
+        assert!(reaches("hunter2\n"));
+        assert!(reaches("hunter2<Enter>"));
+        assert!(reaches("<C-j>"), "a bare line feed");
+        for key in ["<C-c>", "<C-d>", "<C-z>", r"<C-\>"] {
+            assert!(reaches(key), "{key} acts at once");
+        }
+        // The line being edited holds everything else until Enter.
+        assert!(!reaches("hunter2"));
+        assert!(!reaches("pässwörd"));
+        assert!(!reaches("abc<BS><Left><Up><M-x>"));
+        assert!(!reaches(""));
     }
 
     #[test]

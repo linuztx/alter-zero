@@ -167,6 +167,16 @@ impl LineMode {
     pub fn reads_keys(self) -> bool {
         !self.canonical && self.processed_output
     }
+
+    /// Is the program reading a whole line with echo off — a password
+    /// prompt (sudo, ssh, `read -s`, getpass)? Readable off the terminal
+    /// even when the program runs as another user, whose /proc files the
+    /// probe cannot read (`docs/interactive-shell.md`). A key-reading
+    /// program turns echo off too, to draw what it reads itself: not this.
+    #[must_use]
+    pub fn hides_input(self) -> bool {
+        self.canonical && !self.echo
+    }
 }
 
 /// The path of the terminal behind `master` (`/dev/pts/N`) — what a process
@@ -398,6 +408,24 @@ mod tests {
             "sudo, ssh or docker relaying another terminal — raw through and through"
         );
         assert!(!mode(true, true).reads_keys(), "a line-reading prompt");
+    }
+
+    #[test]
+    fn a_line_read_with_echo_off_hides_its_input() {
+        // sudo, ssh, `read -s`, getpass: a password prompt, told by the
+        // terminal itself — which a program running as another user cannot
+        // hide the way it hides its /proc files (docs/interactive-shell.md).
+        let mode = |canonical, echo| LineMode {
+            canonical,
+            echo,
+            processed_output: true,
+        };
+        assert!(mode(true, false).hides_input());
+        assert!(!mode(true, true).hides_input(), "an ordinary prompt");
+        assert!(
+            !mode(false, false).hides_input(),
+            "an editor or a menu turns echo off to draw what it reads itself"
+        );
     }
 
     #[test]

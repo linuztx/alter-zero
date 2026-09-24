@@ -925,13 +925,15 @@ fn install_bar(pct: usize) -> String {
 /// them) are the live ones; each answer's header is the executor's own
 /// refinement ([`crate::llm::tools::session_title`]).
 pub(in crate::stream) fn interactive_turn(cue: &Cue) -> Vec<StreamEvent> {
-    use crate::pty::report::{Status, View, report};
+    use crate::pty::report::{Status, View, Waiting, report};
     let lines = |text: &str| View::Lines {
         text: text.to_string(),
         omitted: 0,
         at: String::new(),
     };
-    let waiting = Status::Running { waiting: true };
+    let waiting = Status::Running {
+        waiting: Waiting::Input,
+    };
     let steps = [
         ScriptedCall::step(
             "Bash",

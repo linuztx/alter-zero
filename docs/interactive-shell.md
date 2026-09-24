@@ -68,6 +68,10 @@ following when it exits. Every background launch names its session id now, so
 The result is **only the output printed since the model last looked**, under
 the same frame: `Running (session …)` while it runs, `Exit code: N` once it has
 exited (after which the session is gone), `Stopped (session …)` after a kill.
+At a password prompt the frame says so — `Running (session …, waiting for a
+password — typed input is hidden)` — which also tells the model why the
+password it types will not show in its next look (*A password prompt says so
+itself*, below).
 A full-screen program — one on the terminal's alternate screen — returns its
 **current screen** instead of a transcript, since a stream of cursor-addressed
 redraws means nothing as text:
@@ -112,9 +116,13 @@ waits out the clock. Here the call returns when the command **settles**
 (`pty::settle`, pure and unit-tested):
 
 - it **exited** — at once, once its output is drained;
-- the kernel says a thread of it is **blocked reading its terminal** and it
-  has been quiet for `PROMPT_QUIET` (0.5 s) — no prompt and no output needed,
-  so a bare `read x` or a `cat` waits too (*The kernel's word*, below);
+- the kernel says a thread of it is **blocked reading its terminal**, or the
+  terminal is **reading a line with echo off** — a password prompt, told by
+  the terminal itself where the kernel cannot see — and it has been quiet for
+  `PROMPT_QUIET` (0.5 s): no prompt and no output of the call's own needed,
+  so a bare `read x` or a `cat` waits too, and so does a wait begun after the
+  prompt came up (*The kernel's word* and *A password prompt says so itself*,
+  below);
 - it printed something and went quiet for `PROMPT_QUIET` (0.5 s) while the
   terminal **awaits keys** — a prompt (`>>> `, `Password: `, `[Y/n] `) left
   the cursor mid-line, a full-screen program is on the alternate screen, or
@@ -239,6 +247,32 @@ waiting on, once it has been quiet `PROBE_QUIET` (0.2 s), at most every
 `PROBE_INTERVAL` (0.2 s) — a handful of file reads — and any output or input
 makes the verdict stale at once. (Ported from the alternative design this one
 was compared against, *Compared with the terminal-sessions design*, below.)
+
+**A password prompt says so itself** (`LineMode::hides_input`). A program
+asking for a password turns the terminal's echo off and reads a whole line —
+`sudo`, `ssh`, `git`'s credential prompt, `getpass`, `read -s` — and that
+mode belongs to the terminal, read through its master, where the probe needs
+the program's own `/proc` files. So it holds exactly where the probe is
+blind: `sudo` runs as root. That blindness once kept a model waiting ten
+minutes. After a wrong password `sudo` checks it, says `Sorry, try again.`
+and asks again — seconds later, after the call that typed the password had
+returned on `LINE_QUIET` — and the model's next call, a wait, saw no output
+of its own to settle on, so it rode out its whole timeout. Now a line read
+with echo off ends any call once the terminal has been quiet `PROMPT_QUIET`
+(0.5 s), as the kernel's read does, and the frame names it:
+`Running (session …, waiting for a password — typed input is hidden)`. Two
+guards keep the signal honest (`IoState::password_prompt`). An answer —
+keys that end the line, an Enter or a signal key (`keys::reaches_line_reader`)
+— reaches a program still in its mode, so the mode counts only once the
+program has replied with output, which is also what makes `sudo`'s retry a
+new prompt; text typed without its Enter has not reached it at all, and the
+prompt stands, with the report's note about the missing Enter. And when the
+probe sees the whole tree at work, the mode asks nothing: a script that turns
+echo off to swallow type-ahead while it works is busy. The monitor reads the
+mode after each chunk of output and on every idle poll (`refresh_line_mode`),
+so a mode switched after the prompt was printed is seen within 20 ms. It is
+detection only: what is typed shows as typed (*Compared with the
+terminal-sessions design*).
 
 ## Streaming the running cell
 
@@ -484,7 +518,8 @@ name it `bash_session` or `BashSession`, the name its cell shows.
 - A `tty` `bash` call is an ordinary `● Bash(cmd)` cell. When it returns
   running, the report's frame line — the model's — is stripped, the program's
   output shows, and the cell closes on a fresh dim corner: `⎿ Waiting for
-  input · session b7x2k9m1q` (or `Still running · …`, or `Stopped · …` after a
+  input · session b7x2k9m1q` (or `Waiting for a password · …` at a prompt
+  that reads with echo off, `Still running · …`, or `Stopped · …` after a
   kill). A command that exited reads exactly like a plain `bash` cell.
 - A `bash_session` call is `● BashSession(python3 ← import math⏎)` — the
   command the session runs (one line, cut at 60 characters), then the input
@@ -536,7 +571,11 @@ pipe — no terminal emulation, no changed `isatty` answer, output that is
 data — and folds it instead. One idea was tried and left out: masking what is
 typed at a prompt that reads with echo off. In use it masked ordinary input
 that was no password, hiding exactly what the header and the permission
-prompt are there to show, so typed keys show as typed.
+prompt are there to show (a header has no terminal to ask until the executor
+runs, so it masked by default), so typed keys show as typed. What it detected
+is kept for what it can say without hiding anything: a wait ends on a
+password prompt, and the frame names one (*A password prompt says so
+itself*).
 
 Three of this design's choices were kept over it:
 
@@ -559,7 +598,8 @@ Three of this design's choices were kept over it:
   refused with an error the model can act on.
 - **The prompt heuristic, where the probe is blind** — off Linux, for a
   process run as another user (`sudo` and what it runs), and behind a
-  `poll`-family wait, the screen decides alone. There a program that prints
+  `poll`-family wait, the screen decides alone, a password prompt aside
+  (the terminal's mode names that one). There a program that prints
   its question, a newline, and then waits in canonical mode looks like one
   between lines of output: it settles on `LINE_QUIET` and reports `Running`
   rather than `waiting for input` (the output still shows the question); and
@@ -568,6 +608,14 @@ Three of this design's choices were kept over it:
   wait after 3 s.
 - **A reader that is not waiting** — a program whose key-listening thread
   sits in `read` while another thread works reads as waiting to the probe.
+- **A password prompt the terminal cannot show** — one that reads key by key
+  to echo `*` for each (`sudo`'s `pwfeedback`) reads as `waiting for input`;
+  one asked behind a relay (`sudo` inside `ssh`, a `docker run -it` shell)
+  sits on the relay's far terminal and is judged by the screen; one that
+  prints nothing before reading is a plain read to the probe; and a program
+  run as another user that turns echo off to swallow type-ahead, then goes
+  quiet, reads as asking for a password — the probe that would veto it is
+  blind there.
 - **A plain command's fold is one line at a time** — cursor movement between
   lines (`docker pull`'s multi-line progress drawn with cursor-up) means
   nothing on a pipe and is dropped; such programs print plain lines when
