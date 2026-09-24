@@ -411,24 +411,29 @@ impl SessionIo {
         }
     }
 
-    /// Does the line under the cursor end with `typed` — text the call typed
-    /// and a line editor echoed, still waiting for its Enter? Never on the
+    /// Does the line under the cursor end with `typed`, the cursor right
+    /// after it — text the call typed and a line editor echoed, still
+    /// waiting for its Enter ([`Screen::holds_at_cursor`])? Never on the
     /// alternate screen, where a full-screen program inserts what it is
     /// typed rather than holding a line.
     #[must_use]
     pub fn holds_typed(&self, typed: &str) -> bool {
-        self.lock().screen.as_ref().is_some_and(|screen| {
-            !screen.alternate() && !typed.is_empty() && screen.cursor_line().ends_with(typed)
-        })
-    }
-
-    /// The program's cursor-key mode — how typed arrows are encoded.
-    #[must_use]
-    pub fn application_cursor(&self) -> bool {
         self.lock()
             .screen
             .as_ref()
-            .is_some_and(Screen::application_cursor)
+            .is_some_and(|screen| !screen.alternate() && screen.holds_at_cursor(typed))
+    }
+
+    /// The modes the program set that change what its keys look like —
+    /// cursor-key mode, bracketed paste ([`super::keys::encode`]). A pipe
+    /// has none.
+    #[must_use]
+    pub fn modes(&self) -> super::keys::Modes {
+        self.lock()
+            .screen
+            .as_ref()
+            .map(Screen::modes)
+            .unwrap_or_default()
     }
 
     /// Block until the session settles (see [`super::settle`]) — or the
@@ -1173,6 +1178,19 @@ mod tests {
             !SessionIo::new(false).holds_typed("x"),
             "no screen, no prompt"
         );
+    }
+
+    #[test]
+    fn a_row_that_merely_ends_like_the_key_holds_nothing() {
+        // `1` typed into top: its last row happens to end in `1`, but the
+        // cursor is parked at the screen's edge, nowhere near it — the key
+        // went to the program, not onto a line waiting for Enter.
+        let io = SessionIo::new(true);
+        io.absorb(b"   21 root   rt   0 S  0.0  0:00.27 migration/1\x1b[1;120H");
+        assert!(!io.holds_typed("1"));
+        let io = SessionIo::new(true);
+        io.absorb(b">>> x = 1");
+        assert!(io.holds_typed("x = 1"), "right after it, it is held");
     }
 
     #[test]

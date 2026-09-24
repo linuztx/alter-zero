@@ -23,10 +23,18 @@ release heading when a version is cut.
   named keys such as `<Enter>`, `<C-c>` and `<Up>` — waits on it, reads what
   it printed (or a full-screen program's screen) and ends it. Each call
   reports only the lines that are new or changed since the last one, and its
-  cell streams them as they come, a progress bar redrawn in place. A progress
-  bar or a command run under `sudo`, `ssh` or `docker run -it` is waited out
-  rather than taken for a prompt — a download under `sudo pacman` is one
-  wait, not a dozen — and on Linux the kernel is asked what the command is
+  cell streams them as they come, a progress bar redrawn in place. A
+  full-screen program's screen reads as you would see it — boxes drawn as
+  boxes even with no UTF-8 locale, columns and indentation intact — and says
+  what it highlights, so the agent can tell which item of a `whiptail`,
+  `dialog`, `htop` or `mc` menu is selected. Code typed into a program that
+  takes pastes (Vim, nano, a shell, a REPL) arrives as a paste, so an
+  editor's auto-indent can no longer turn a function into a staircase;
+  terminal output codes a model slips into its keys are dropped rather than
+  typed, and keys it HTML-escapes (`&lt;Esc&gt;`) are still pressed. A
+  progress bar or a command run under `sudo`, `ssh` or `docker run -it` is
+  waited out rather than taken for a prompt — a download under `sudo pacman`
+  is one wait, not a dozen — and on Linux the kernel is asked what the command is
   blocked in, so one waiting with no prompt at all (`read`, `cat`) is
   recognised and a busy one that left `Compiling… ` on screen is not taken
   for a question. A password prompt is told by the terminal itself, which

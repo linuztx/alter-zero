@@ -536,8 +536,14 @@ fn run_bash_session(
     origin: Option<&BgOrigin>,
     on_output: &mut dyn FnMut(ToolProgress<'_>),
 ) -> ToolOutcome {
-    use crate::pty::keys::{encode, is_interrupt, leaves_line_open, parse_input, typed_tail};
-    use crate::pty::report::{NOT_KILLED_NOTE, Status, UNSUBMITTED_NOTE, WAIT_ENDED_NOTE, Waiting};
+    use crate::pty::keys::{
+        encode, html_escaped, is_interrupt, leaves_line_open, parse_input, strip_output_codes,
+        typed_tail,
+    };
+    use crate::pty::report::{
+        HTML_ESCAPED_NOTE, NOT_KILLED_NOTE, Status, UNSUBMITTED_NOTE, WAIT_ENDED_NOTE, Waiting,
+        dropped_codes_note,
+    };
     use crate::pty::session::WaitEnd;
     use crate::pty::settle::{Settle, WaitKind};
     let args: super::tools::SessionArgs = match tools::parse_args(arguments) {
@@ -552,7 +558,10 @@ fn run_bash_session(
         return ToolOutcome::error(unknown_session_text(id, &registry.sessions()));
     };
     let io = session.io;
-    let parts = parse_input(args.input.as_deref().unwrap_or_default());
+    let mut parts = parse_input(args.input.as_deref().unwrap_or_default());
+    // Codes a terminal writes to programs are no keys: a program would take
+    // them as typing (docs/interactive-shell.md).
+    let dropped = strip_output_codes(&mut parts);
     // The header names the command the keys go to
     // (docs/interactive-shell.md).
     on_output(ToolProgress::Title(&tools::session_title(
@@ -593,7 +602,7 @@ fn run_bash_session(
         })
     } else {
         if io.is_tty() {
-            let chunks = encode(&parts, io.application_cursor());
+            let chunks = encode(&parts, io.modes());
             if let Err(err) = registry.send_input(id, chunks) {
                 if let Some(observed) = io.end_wait() {
                     registry.finalize(id, observed);
@@ -672,12 +681,19 @@ fn run_bash_session(
         }
         _ => None,
     };
+    let escaped = html_escaped(args.input.as_deref().unwrap_or_default());
+    let notes: Vec<String> = escaped
+        .then(|| HTML_ESCAPED_NOTE.to_string())
+        .into_iter()
+        .chain((!dropped.is_empty()).then(|| dropped_codes_note(&dropped)))
+        .chain(note.map(str::to_string))
+        .collect();
     if let Some(observed) = io.end_wait() {
         registry.finalize(id, observed);
     }
     ToolOutcome {
         ok: !matches!(status, Status::Exited(code) if code != Some(0)),
-        context: note.map(|note| format!("{report}\n{note}")),
+        context: (!notes.is_empty()).then(|| format!("{report}\n{}", notes.join("\n"))),
         ..ToolOutcome::ok(report)
     }
 }
@@ -2117,6 +2133,113 @@ mod tests {
                 .iter()
                 .any(|e| matches!(e, crate::background::BgEvent::Exited { observed: true, .. })),
             "the model saw the exit, so no notice is owed: {ended:?}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn codes_a_terminal_sends_programs_are_not_typed_and_the_model_hears_why() {
+        // A model appended `\u001b[?25h` ("show the cursor") to its keys and
+        // the program took it as typing (docs/interactive-shell.md).
+        let (registry, _rx) = test_registry();
+        let executor = RealToolExecutor::new().with_background(registry);
+        let out = exec_with(
+            &executor,
+            "bash",
+            r#"{"command":"printf 'Name? '; read n; echo \"hi [$n]\"","tty":true}"#,
+        );
+        let id = session_of(&out.output);
+        let answered = exec_with(
+            &executor,
+            BASH_SESSION,
+            &serde_json::json!({
+                "session_id": id,
+                "input": "World\u{1b}[0m<Enter>\u{1b}[?25h",
+            })
+            .to_string(),
+        );
+        assert_eq!(answered.output, "Exit code: 0\nName? World\nhi [World]");
+        let context = answered
+            .context
+            .expect("the model is told what was dropped");
+        assert!(
+            context.starts_with(&answered.output)
+                && context.contains("\\e[0m")
+                && context.contains("\\e[?25h"),
+            "{context}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn html_escaped_keys_are_pressed_and_the_model_is_told() {
+        // Seen live: `&lt;Esc&gt;` for `<Esc>`, typed into vim as text.
+        let (registry, _rx) = test_registry();
+        let executor = RealToolExecutor::new().with_background(registry);
+        let out = exec_with(
+            &executor,
+            "bash",
+            r#"{"command":"printf 'Name? '; read n; echo \"hi [$n]\"","tty":true}"#,
+        );
+        let id = session_of(&out.output);
+        let answered = exec_with(
+            &executor,
+            BASH_SESSION,
+            &serde_json::json!({"session_id": id, "input": "a &amp; b&lt;Enter&gt;"}).to_string(),
+        );
+        assert_eq!(answered.output, "Exit code: 0\nName? a & b\nhi [a & b]");
+        let context = answered.context.expect("the model is told");
+        assert!(context.contains("HTML-escaped"), "{context}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn indented_lines_reach_a_program_that_takes_pastes_as_one_paste() {
+        // vim, bash, Python 3.13: a program in bracketed-paste mode is sent
+        // typed code the way a person pastes it, so its auto-indent leaves
+        // the indentation alone (docs/interactive-shell.md). This one turns
+        // the mode on and shows exactly what reached it.
+        if std::process::Command::new("python3")
+            .arg("--version")
+            .output()
+            .is_err()
+        {
+            return;
+        }
+        let script = std::env::temp_dir().join(format!("paste-probe-{}.py", std::process::id()));
+        std::fs::write(
+            &script,
+            "import os, tty\n\
+             tty.setraw(0)\n\
+             os.write(1, b'\\x1b[?2004h> ')\n\
+             got = b''\n\
+             while not got.endswith(b'\\x1b[201~'):\n\
+             \x20   got += os.read(0, 1)\n\
+             os.write(1, b'\\x1b[?2004l\\r\\n' + repr(got).encode() + b'\\r\\n')\n",
+        )
+        .expect("writes the probe");
+        let (registry, _rx) = test_registry();
+        let executor = RealToolExecutor::new().with_background(registry);
+        let out = exec_with(
+            &executor,
+            "bash",
+            &serde_json::json!({"command": format!("python3 {}", script.display()), "tty": true})
+                .to_string(),
+        );
+        let id = session_of(&out.output);
+        let typed = exec_with(
+            &executor,
+            BASH_SESSION,
+            &serde_json::json!({"session_id": id, "input": "def f():\n    return 1\nEND"})
+                .to_string(),
+        );
+        std::fs::remove_file(&script).ok();
+        assert!(
+            typed
+                .output
+                .contains(r"b'def f():\x1b[200~\r    return 1\rEND\x1b[201~'"),
+            "the first line typed, the rest one paste: {}",
+            typed.output
         );
     }
 

@@ -431,6 +431,13 @@ struct Lines {
     /// The stream has settled a line since the last look — from then on a
     /// blank line is part of the text, not a gap leading it.
     stream_started: bool,
+    /// The character sets — a box drawn in DEC line drawing reads as one
+    /// ([`super::charset`]).
+    charsets: super::charset::Charsets,
+    /// Insert mode (IRM): a character pushes the rest of the line right.
+    insert: bool,
+    /// The last character printed — what REP (`CSI n b`) writes again.
+    last: Option<char>,
 }
 
 impl Lines {
@@ -569,6 +576,15 @@ impl Lines {
         }
         self.col += width;
         self.dirty = true;
+    }
+
+    /// Write `c` at the cursor — in insert mode after making room for it.
+    fn write(&mut self, c: char) {
+        use unicode_width::UnicodeWidthChar as _;
+        if self.insert {
+            self.insert_blanks(c.width().unwrap_or(0));
+        }
+        self.put(c);
     }
 
     /// A line feed: down one row, creating it at the end — and, now that a
@@ -725,14 +741,16 @@ fn first_param(params: &vte::Params, default: u16) -> u16 {
 
 impl vte::Perform for Lines {
     fn print(&mut self, c: char) {
+        let c = self.charsets.map(c);
+        self.last = Some(c);
         self.drawn |= !c.is_whitespace();
         if !self.alt {
-            self.put(c);
+            self.write(c);
         }
     }
 
     fn execute(&mut self, byte: u8) {
-        if self.alt {
+        if self.charsets.execute(byte) || self.alt {
             return;
         }
         match byte {
@@ -764,6 +782,19 @@ impl vte::Perform for Lines {
         }
         let n = usize::from(first_param(params, 1));
         match action {
+            // REP: the last character, `n` times more.
+            'b' => {
+                if let Some(c) = self.last {
+                    self.drawn |= !c.is_whitespace();
+                    for _ in 0..n.min(MAX_LINE_CHARS) {
+                        self.write(c);
+                    }
+                }
+            }
+            // Insert mode (IRM, mode 4) on or off.
+            'h' | 'l' if params.iter().any(|p| p.first() == Some(&4)) => {
+                self.insert = action == 'h';
+            }
             'K' => self.erase_in_line(first_param(params, 0)),
             'J' => self.erase_in_display(first_param(params, 0)),
             'G' | '`' => self.col = n - 1,
@@ -802,6 +833,15 @@ impl vte::Perform for Lines {
     }
 
     fn esc_dispatch(&mut self, intermediates: &[u8], _ignore: bool, byte: u8) {
+        if let [slot] = intermediates
+            && self.charsets.designate(*slot, byte)
+        {
+            return;
+        }
+        if byte == b'c' && intermediates.is_empty() {
+            self.charsets = super::charset::Charsets::default();
+            self.insert = false;
+        }
         if self.alt || !intermediates.is_empty() {
             return;
         }
@@ -908,6 +948,35 @@ mod tests {
         assert_eq!(update(b"abcdef\x1b[1G\x1b[2P\r\n"), "cdef", "DCH");
         assert_eq!(update(b"abc\x1b[1G\x1b[2@\r\n"), "  abc", "ICH");
         assert_eq!(update(b"abcdef\x1b[2G\x1b[3X\r\n"), "a   ef", "ECH");
+    }
+
+    #[test]
+    fn line_drawing_reads_as_the_box_characters_it_stands_for() {
+        // `pstree`, `dialog` on the main screen: the DEC line-drawing set,
+        // G0 designated or G1 shifted in.
+        assert_eq!(
+            update(b"\x1b(0tqq\x1b(B init\r\n\x1b(0mqq\x1b(B sh\r\n"),
+            "├── init\n└── sh"
+        );
+        assert_eq!(update(b"\x1b)0a\x0eqq\x0fb\r\n"), "a──b");
+    }
+
+    #[test]
+    fn a_repeat_writes_the_last_character_again() {
+        // REP, ncurses' way to write a run of one character.
+        assert_eq!(update(b"ab\x1b[3bc\r\n"), "abbbbc");
+        assert_eq!(update(b"\x1b(0q\x1b[4b\x1b(B\r\n"), "─────");
+        assert_eq!(update(b"x\x1b[b\r\n"), "xx", "a count of one by default");
+    }
+
+    #[test]
+    fn insert_mode_pushes_the_line_right() {
+        assert_eq!(update(b"world\r\x1b[4hhello \x1b[4l\r\n"), "hello world");
+        assert_eq!(
+            update(b"world\r\x1b[4hX\x1b[4lY\r\n"),
+            "XYorld",
+            "insert mode off: Y overwrites"
+        );
     }
 
     #[test]

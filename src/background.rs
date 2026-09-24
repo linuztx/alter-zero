@@ -1637,7 +1637,7 @@ mod tests {
     /// Type `input` (the `bash_session` notation) into session `id`.
     fn type_into(reg: &BackgroundRegistry, id: &str, input: &str) {
         let io = reg.session(id).expect("a running session").io;
-        let chunks = encode(&parse_input(input), io.application_cursor());
+        let chunks = encode(&parse_input(input), io.modes());
         reg.send_input(id, chunks).expect("types");
     }
 
@@ -1817,7 +1817,7 @@ mod tests {
         let (reg, mut rx) = registry();
         let task = reg.launch("sleep 30", None, true).expect("launches");
         let err = reg
-            .send_input(&task.id, encode(&parse_input("y\n"), false))
+            .send_input(&task.id, encode(&parse_input("y\n"), Default::default()))
             .unwrap_err();
         assert!(err.contains("tty: true"), "{err}");
         // Give the child its `setsid` first: until it leads its own group, a
