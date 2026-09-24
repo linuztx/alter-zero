@@ -906,6 +906,15 @@ impl ReplySource for LlmBackend {
                     approval
                 },
                 hooks.as_ref(),
+                // A session's command, for a `bash_session` call's header —
+                // the lookup its permission prompt makes
+                // (docs/interactive-shell.md).
+                &|id: &str| {
+                    background
+                        .as_ref()
+                        .and_then(|registry| registry.session(id))
+                        .map(|session| session.command)
+                },
             );
         })
     }
@@ -1622,6 +1631,12 @@ fn spawn_subagent_run(
                 approval
             },
             hooks.as_ref(),
+            &|id: &str| {
+                background
+                    .as_ref()
+                    .and_then(|registry| registry.session(id))
+                    .map(|session| session.command)
+            },
         );
         drop(tx2);
         let (final_text, outcome) = forwarder.join().unwrap_or_default();

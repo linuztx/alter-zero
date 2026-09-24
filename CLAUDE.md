@@ -1224,8 +1224,11 @@ the screen's reach stay live, rows that scrolled out settle once), and a
 **plain** `bash` call — and a background shell's event stream, and a `!`
 command's output — is **folded** the same way (`pty::fold`: `\r`/backspace
 overwrite, escapes vanish, tabs and trailing spaces stay; the `.output` tee
-file stays raw); a `bash_session` header names the session's command once
-the executor knows it (`ToolTitle`); and the new
+file stays raw); a `bash_session` header names the session's command from
+the moment the call is announced (`summarize_call_naming` over the registry
+lookup the permission prompt makes, handed to `run_agent` as
+`session_command`), so the header over the prompt and a refused cell name the
+program, never the id; and the new
 **`bash_session`**
 tool types into the session (`pty::keys`' `<Enter>`/`<C-c>`/`<Up>`
 notation, a doubly-escaped `"y\\n"` undone), waits on it, reads it and

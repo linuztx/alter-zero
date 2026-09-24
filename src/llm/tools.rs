@@ -1112,9 +1112,9 @@ pub fn summarize_call(name: &str, arguments: &str) -> String {
     }
     // `● BashSession(b7x2k9m1q ← print(1)⏎)` — which session, and what the
     // call did to it: typed (the input on one line, `pty::keys`' display
-    // form), stopped, or — the id alone — waited. The executor names the
-    // session's command once it knows it ([`session_title`],
-    // docs/interactive-shell.md).
+    // form), stopped, or — the id alone — waited. With the registry at
+    // hand the session is named by its command instead
+    // ([`summarize_call_naming`], docs/interactive-shell.md).
     if name == BASH_SESSION_TOOL_NAME
         && let Ok(args) = parse_args::<SessionArgs>(arguments)
     {
@@ -1163,6 +1163,28 @@ pub fn summarize_call(name: &str, arguments: &str) -> String {
     };
     let summary = summary.unwrap_or_else(|| arguments.trim().to_string());
     flatten_one_line(&summary)
+}
+
+/// [`summarize_call`], with a `bash_session` call's session named by the
+/// command it runs when `session_command` knows its id — [`session_title`],
+/// what the executor refines the header to. So the header names the program
+/// the keys go to from the moment the call is announced: above its
+/// permission prompt, and on a cell the user refused, which never reaches
+/// the executor (`docs/interactive-shell.md`). An id nothing answers to is
+/// kept.
+#[must_use]
+pub fn summarize_call_naming(
+    name: &str,
+    arguments: &str,
+    session_command: &dyn Fn(&str) -> Option<String>,
+) -> String {
+    if name == BASH_SESSION_TOOL_NAME
+        && let Ok(args) = parse_args::<SessionArgs>(arguments)
+        && let Some(command) = session_command(args.session_id.trim())
+    {
+        return session_title(&command, args.input.as_deref(), args.kill);
+    }
+    summarize_call(name, arguments)
 }
 
 /// A `bash_session` call's header once the executor knows the session
@@ -2155,6 +2177,43 @@ mod tests {
         );
         assert!(summary.chars().count() <= 130, "{summary}");
         assert!(summary.ends_with('…'), "{summary}");
+    }
+
+    #[test]
+    fn a_session_call_is_summarized_by_the_command_its_session_runs() {
+        // The header the permission prompt sits under, and a refused cell
+        // keeps, names the program — not the id, which says nothing to a
+        // person (docs/interactive-shell.md).
+        let known = |id: &str| (id == "b5xg4o2w0").then(|| "sudo pacman -Syy".to_string());
+        let summarize = |arguments: serde_json::Value| {
+            summarize_call_naming(BASH_SESSION_TOOL_NAME, &arguments.to_string(), &known)
+        };
+        assert_eq!(
+            summarize(json!({"session_id": "b5xg4o2w0", "input": "password123\n"})),
+            "sudo pacman -Syy ← password123⏎"
+        );
+        assert_eq!(
+            summarize(json!({"session_id": "b5xg4o2w0", "input": "y\n"})),
+            session_title("sudo pacman -Syy", Some("y\n"), false),
+            "the header the executor refines to, so nothing changes when it runs"
+        );
+        assert_eq!(
+            summarize(json!({"session_id": "b5xg4o2w0"})),
+            "sudo pacman -Syy"
+        );
+        assert_eq!(
+            summarize(json!({"session_id": "b5xg4o2w0", "kill": true})),
+            "sudo pacman -Syy · kill"
+        );
+        assert_eq!(
+            summarize(json!({"session_id": "bnope", "input": "y\n"})),
+            "bnope ← y⏎",
+            "a session nothing answers to keeps its id"
+        );
+        assert_eq!(
+            summarize_call_naming("bash", r#"{"command":"ls -la"}"#, &known),
+            "ls -la"
+        );
     }
 
     #[test]

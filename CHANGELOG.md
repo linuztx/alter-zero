@@ -39,7 +39,8 @@ release heading when a version is cut.
   it, and a question that comes up while the agent is deciding to wait ends
   that wait too, instead of the wait running out its timeout with the
   question already on screen. A call's header names the
-  program it types into (`● BashSession(python3 ← print(1)⏎)`). It also
+  program it types into (`● BashSession(python3 ← print(1)⏎)`), above its
+  permission prompt too and on a call you refused. It also
   reaches `run_in_background` commands, which can now be waited on,
   interrupted and ended the same way. A session still running shows in the
   footer's shell count, and the ↓ manager shows its live screen; its cells

@@ -561,12 +561,17 @@ name it `bash_session` or `BashSession`, the name its cell shows.
 - A `bash_session` call is `● BashSession(python3 ← import math⏎)` — the
   command the session runs (one line, cut at 60 characters), then the input
   on one line (`⏎` for Enter, `<Down>` for keys), `· kill` after a kill,
-  nothing more for a wait — over the same output peek and state row. Only the
-  executor knows the session, so it sends that header as the call's refined
-  title (`ToolProgress::Title` → `StreamEvent::ToolTitle`); until then the
-  header names the session by its id (`b7x2k9m1q ← import math⏎`). What the
-  model was additionally told (a note about an unsubmitted line or a kill not
-  carried out) is in its context only; Ctrl+D shows it.
+  nothing more for a wait — over the same output peek and state row. The
+  command is named from the moment the call is announced: the loop asks the
+  registry what the session runs (`summarize_call_naming`), the lookup the
+  permission prompt makes for its `into {command} · session {id}` row, so
+  the header over that prompt names the program the keys go to, and a call
+  the user refused — which never reaches the executor — keeps it too. An id
+  shown to a person says nothing. The executor sends the same header as the
+  call's refined title (`ToolProgress::Title` → `StreamEvent::ToolTitle`);
+  only a session nothing answers to is named by its id (`bnope ← y⏎`). What
+  the model was additionally told (a note about an unsubmitted line or a kill
+  not carried out) is in its context only; Ctrl+D shows it.
 - Both are command cells (`COMMAND_TOOL_NAMES`): the peek folds at
   `TOOL_FOLD_ROWS`, Ctrl+O shows everything, and a running call tails the
   transcript live under its clock row — a `bash_session` call's clock naming
