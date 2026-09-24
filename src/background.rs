@@ -5,7 +5,8 @@
 //! the model-tool executor ([`crate::llm::exec`]), and the `!` shell runner
 //! (`main.rs`). Launching (or adopting, for Ctrl+B) a command spawns a
 //! **monitor thread** that owns the child: it merges the stdout/stderr pipes
-//! in arrival order, streams completed lines as [`BgEvent::Output`], tees
+//! in arrival order, streams completed lines — folded the way a terminal
+//! would show them ([`crate::pty::fold`]) — as [`BgEvent::Output`], tees
 //! every byte to the task's `{id}.output` file under the session's `tasks`
 //! directory ([`crate::scratchpad::tasks_dir`], so the model can `read` interim
 //! output), and reports [`BgEvent::Exited`] when the child dies.
@@ -28,6 +29,8 @@ use std::time::Duration;
 
 use tokio::sync::mpsc::UnboundedSender;
 
+use crate::pty::keys::InputChunk;
+use crate::pty::session::{Finish, SessionIo};
 use crate::stream::CancelToken;
 
 /// Where a background shell was launched from, when not the main
@@ -60,15 +63,26 @@ pub enum BgEvent {
         /// conversation).
         origin: Option<BgOrigin>,
     },
-    /// A chunk of a running shell's output (completed lines where possible;
-    /// an adopted command's prior output arrives as one leading chunk).
+    /// A running shell's completed lines — folded the way a terminal shows
+    /// them, so a `\r` progress bar arrives once, finished, with no escapes
+    /// (`docs/interactive-shell.md`); the line a command left unfinished
+    /// arrives at its exit.
     Output { id: String, chunk: String },
-    /// The shell exited: its `code` (`None` when a signal killed it) and
-    /// whether the registry's own [`BackgroundRegistry::kill`] did it.
+    /// A **TTY session's** screen as it now stands — the whole of it, not a
+    /// delta: the ↓ manager shows what a terminal would
+    /// (`docs/interactive-shell.md`). Sent throttled while output flows, and
+    /// once more when it goes quiet.
+    Screen { id: String, text: String },
+    /// The shell exited: its `code` (`None` when a signal killed it),
+    /// whether the registry's own [`BackgroundRegistry::kill`] did it, and
+    /// whether the model already **observed** the exit — a `bash_session`
+    /// call reported it — in which case no completion notice is owed
+    /// (`docs/interactive-shell.md`).
     Exited {
         id: String,
         code: Option<i32>,
         killed: bool,
+        observed: bool,
     },
 }
 
@@ -80,6 +94,21 @@ pub struct LaunchedTask {
     pub id: String,
     /// Where the interim output streams — the model can `read` it mid-run.
     pub output_path: PathBuf,
+}
+
+/// A launched TTY session: the task, and the session state its launching
+/// call waits on — handed over directly, so the call never has to find it in
+/// the registry (where a command that already exited may be gone).
+#[derive(Debug)]
+pub struct TtyLaunch {
+    pub task: LaunchedTask,
+    pub io: Arc<SessionIo>,
+}
+
+/// [`BackgroundRegistry::register`]'s result — the task and its session state.
+struct Registered {
+    task: LaunchedTask,
+    io: Arc<SessionIo>,
 }
 
 /// A completed shell's model-facing note on the registry's notice board,
@@ -142,12 +171,6 @@ fn splitmix64(seed: u64) -> u64 {
 /// output is arriving — short enough that exits and kills surface promptly.
 const MONITOR_POLL_INTERVAL: Duration = Duration::from_millis(20);
 
-/// A monitor's line-assembly buffer never holds more than this: a command
-/// that emits an enormous line without a newline is force-flushed as a chunk
-/// so memory stays bounded (the App caps its own display tail; the full
-/// output is on disk anyway).
-const MAX_PARTIAL_LINE_BYTES: usize = 64 * 1024;
-
 /// One registered task, as the shared state sees it (the child itself is
 /// owned by its monitor thread).
 struct Task {
@@ -160,6 +183,72 @@ struct Task {
     /// Set by [`BackgroundRegistry::kill`] before the process dies, so the
     /// monitor reports `killed: true` (a user stop, not a failure).
     killed: bool,
+    /// The process has exited — its exit waiting to be finalized by a
+    /// `bash_session` call — so no kill may target the (reusable) group id.
+    exited: bool,
+    /// What the monitor and the model's calls share: both views of the
+    /// output, and the exit handshake (`pty::session`).
+    io: Arc<SessionIo>,
+    /// A TTY session's writer — the only way input reaches its terminal.
+    /// `None` for a pipe task, whose stdin is `/dev/null`.
+    input: Option<mpsc::Sender<WriteOp>>,
+    /// A TTY session's terminal (a handle on its master), kept to read the
+    /// program's [`LineMode`](crate::pty::spawn::LineMode) — whether what the
+    /// model typed has reached it yet.
+    terminal: Option<File>,
+    /// The launch facts, kept for an announcement made later (a `tty` call
+    /// announces its session only once it outlives the call).
+    launch: Launch,
+}
+
+/// What a [`BgEvent::Started`] says about a task.
+#[derive(Clone)]
+struct Launch {
+    command: String,
+    description: Option<String>,
+    from_model: bool,
+    origin: Option<BgOrigin>,
+}
+
+/// One write to a TTY session's terminal: bytes, or a pause before the next
+/// (after a lone `Esc` — `pty::keys`).
+#[derive(Debug)]
+enum WriteOp {
+    Bytes(Vec<u8>),
+    Pause(Duration),
+}
+
+/// How long the writer pauses after a lone `Esc` that more input follows —
+/// past Vim's `ttimeoutlen` (100 ms in `defaults.vim`), so `<Esc>:` reads as
+/// a key press and then a colon, not Alt+`:`.
+const ESC_PAUSE: Duration = Duration::from_millis(150);
+
+/// The most TTY sessions that may run at once. One more is refused with the
+/// list of the running ones, rather than letting forgotten REPLs pile up
+/// unseen (`docs/interactive-shell.md`).
+pub const MAX_TTY_SESSIONS: usize = 16;
+
+/// How often, at most, a TTY session's screen is sent to the ↓ manager while
+/// output flows — it is re-sent whole each time, so a flood costs ten a
+/// second, not one per chunk.
+const SCREEN_EVENT_INTERVAL: Duration = Duration::from_millis(100);
+
+/// A running session as the model-tool executor reaches it
+/// ([`BackgroundRegistry::session`]).
+#[derive(Clone)]
+pub struct SessionHandle {
+    /// The shared output views and exit handshake.
+    pub io: Arc<SessionIo>,
+    /// The command it runs — what a permission prompt and an error name.
+    pub command: String,
+}
+
+impl std::fmt::Debug for SessionHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SessionHandle")
+            .field("command", &self.command)
+            .finish_non_exhaustive()
+    }
 }
 
 struct Inner {
@@ -285,15 +374,104 @@ impl BackgroundRegistry {
         }
         drop(chunk_tx);
 
-        Ok(self.register(
-            command,
-            description,
-            from_model,
-            origin,
-            child,
-            chunk_rx,
-            Vec::new(),
-        ))
+        Ok(self
+            .register(
+                Launch {
+                    command: command.to_string(),
+                    description,
+                    from_model,
+                    origin,
+                },
+                child,
+                chunk_rx,
+                Vec::new(),
+                Terminal::Pipe,
+                true,
+            )
+            .task)
+    }
+
+    /// Start `command` in a **pseudo-terminal of its own** — an interactive
+    /// session the model types into with `bash_session`
+    /// (`docs/interactive-shell.md`). The session is registered at once but
+    /// **announced** (`Started`) only when `announce` says so: a `tty` call
+    /// waiting in the foreground announces it only if it outlives the call
+    /// ([`announce`](Self::announce)), so a command that finishes inside its
+    /// own call never shows up in the footer or the manager at all.
+    ///
+    /// # Errors
+    /// The model-facing reason: too many sessions already running (listed),
+    /// or no terminal could be given to the command here.
+    pub fn launch_tty(
+        &self,
+        command: &str,
+        description: Option<String>,
+        origin: Option<BgOrigin>,
+        announce: bool,
+    ) -> Result<TtyLaunch, String> {
+        let running = self.running_ttys();
+        if running.len() >= MAX_TTY_SESSIONS {
+            let list: Vec<String> = running
+                .iter()
+                .map(|(id, command)| format!("{id} ({command})"))
+                .collect();
+            return Err(format!(
+                "{MAX_TTY_SESSIONS} interactive sessions are already running — end one \
+                 with bash_session (kill: true) first: {}",
+                list.join(", ")
+            ));
+        }
+        #[cfg(unix)]
+        {
+            let session = crate::pty::spawn::spawn(self.detach.as_deref(), command)
+                .map_err(|err| format!("failed to start the command in a terminal: {err}"))?;
+            let reader = session
+                .master
+                .try_clone()
+                .map_err(|err| format!("failed to start the command in a terminal: {err}"))?;
+            // The terminal's output: one stream (stdout and stderr share the
+            // terminal), read until the session lets go of it (`EIO`).
+            let (chunk_tx, chunk_rx) = mpsc::channel::<Vec<u8>>();
+            std::thread::spawn(move || drain_pipe(reader, &chunk_tx));
+            // Its input: a writer thread, since a terminal write blocks while
+            // the program is not reading, and no call may block holding state.
+            let (input_tx, input_rx) = mpsc::channel::<WriteOp>();
+            let probe = session
+                .master
+                .try_clone()
+                .map_err(|err| format!("failed to start the command in a terminal: {err}"))?;
+            let writer = session.master;
+            std::thread::spawn(move || write_terminal(writer, &input_rx));
+            let registered = self.register(
+                Launch {
+                    command: command.to_string(),
+                    description,
+                    from_model: true,
+                    origin,
+                },
+                session.child,
+                chunk_rx,
+                Vec::new(),
+                Terminal::Tty {
+                    input: input_tx,
+                    terminal: probe,
+                },
+                announce,
+            );
+            Ok(TtyLaunch {
+                task: registered.task,
+                io: registered.io,
+            })
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = (command, description, origin, announce);
+            Err(
+                "interactive sessions need a Unix pseudo-terminal — run the command \
+                 without tty"
+                    .to_string(),
+            )
+        }
     }
 
     /// Adopt a **running** foreground command (the Ctrl+B transfer): take
@@ -313,34 +491,53 @@ impl BackgroundRegistry {
         prior: Vec<u8>,
     ) -> LaunchedTask {
         self.register(
-            command,
-            description,
-            from_model,
-            None,
+            Launch {
+                command: command.to_string(),
+                description,
+                from_model,
+                origin: None,
+            },
             child,
             chunk_rx,
             prior,
+            Terminal::Pipe,
+            true,
         )
+        .task
     }
 
-    /// The shared tail of [`launch_from`]/[`adopt`]: allocate the id, open
-    /// the interim-output file, record the task, announce it, and hand the
-    /// child to its monitor thread.
+    /// The shared tail of [`launch_from`]/[`launch_tty`]/[`adopt`]: allocate
+    /// the id, open the interim-output file, record the task, announce it
+    /// (when asked to), and hand the child to its monitor thread.
     ///
     /// [`launch_from`]: BackgroundRegistry::launch_from
+    /// [`launch_tty`]: BackgroundRegistry::launch_tty
     /// [`adopt`]: BackgroundRegistry::adopt
-    #[allow(clippy::too_many_arguments)] // the launch facts, bundled once
     fn register(
         &self,
-        command: &str,
-        description: Option<String>,
-        from_model: bool,
-        origin: Option<BgOrigin>,
+        launch: Launch,
         child: Child,
         chunk_rx: mpsc::Receiver<Vec<u8>>,
         prior: Vec<u8>,
-    ) -> LaunchedTask {
+        terminal: Terminal,
+        announce: bool,
+    ) -> Registered {
         let kill = CancelToken::new();
+        let (input, terminal, tty) = match terminal {
+            Terminal::Pipe => (None, None, false),
+            Terminal::Tty { input, terminal } => (Some(input), Some(terminal), true),
+        };
+        // The monitor reads the terminal's line mode as output arrives; a
+        // handle of its own, so it never takes the registry lock to do it.
+        let monitor_terminal = terminal.as_ref().and_then(|t| t.try_clone().ok());
+        // A TTY session its launching call waits on is a waiter from birth,
+        // so an exit before the call reaches its wait is still the call's to
+        // report (`pty::session`).
+        let io = Arc::new(if tty && !announce {
+            SessionIo::waited(tty)
+        } else {
+            SessionIo::new(tty)
+        });
         let (id, output_path) = {
             let mut inner = self.inner.lock().expect("registry lock");
             // Roll a fresh Claude-Code-style id, re-rolling the (vanishingly
@@ -359,6 +556,11 @@ impl BackgroundRegistry {
                     pgid: child.id(),
                     kill: kill.clone(),
                     killed: false,
+                    exited: false,
+                    io: Arc::clone(&io),
+                    input: input.clone(),
+                    terminal,
+                    launch: launch.clone(),
                 },
             );
             (id, path)
@@ -367,65 +569,228 @@ impl BackgroundRegistry {
         if let Some(parent) = output_path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        let mut file = File::create(&output_path).ok();
-        let _ = self.events.send(BgEvent::Started {
-            id: id.clone(),
-            command: command.to_string(),
-            description,
-            from_model,
-            origin,
-        });
-        if !prior.is_empty() {
-            if let Some(f) = file.as_mut() {
-                let _ = f.write_all(&prior);
-            }
-            let _ = self.events.send(BgEvent::Output {
-                id: id.clone(),
-                chunk: String::from_utf8_lossy(&prior).into_owned(),
-            });
+        let file = File::create(&output_path).ok();
+        if announce {
+            self.announce(&id);
         }
         let monitor = MonitorHandle {
-            inner: Arc::clone(&self.inner),
-            events: self.events.clone(),
+            registry: self.clone(),
             id: id.clone(),
+            io: Arc::clone(&io),
+            input,
+            terminal: monitor_terminal,
         };
-        std::thread::spawn(move || monitor.run(child, chunk_rx, kill, file));
-        LaunchedTask { id, output_path }
+        std::thread::spawn(move || monitor.run(child, prior, chunk_rx, kill, file));
+        Registered {
+            task: LaunchedTask { id, output_path },
+            io,
+        }
+    }
+
+    /// Tell the event loop about a task registered without announcement (a
+    /// `tty` session that outlived its call): `Started`, then — for a TTY
+    /// session — its screen as it stands. A task already announced, or
+    /// already gone, sends nothing.
+    pub fn announce(&self, id: &str) {
+        let Some((io, launch)) = self
+            .inner
+            .lock()
+            .expect("registry lock")
+            .tasks
+            .get(id)
+            .map(|task| (Arc::clone(&task.io), task.launch.clone()))
+        else {
+            return;
+        };
+        if !io.announce() {
+            return;
+        }
+        let _ = self.events.send(BgEvent::Started {
+            id: id.to_string(),
+            command: launch.command,
+            description: launch.description,
+            from_model: launch.from_model,
+            origin: launch.origin,
+        });
+        if let Some(text) = io.screen_text() {
+            let _ = self.events.send(BgEvent::Screen {
+                id: id.to_string(),
+                text,
+            });
+        }
+    }
+
+    /// A running session, for the model-tool executor's `bash_session` —
+    /// `None` when no task has this id (it ended, or never existed).
+    #[must_use]
+    pub fn session(&self, id: &str) -> Option<SessionHandle> {
+        let inner = self.inner.lock().expect("registry lock");
+        inner.tasks.get(id).map(|task| SessionHandle {
+            io: Arc::clone(&task.io),
+            command: task.launch.command.clone(),
+        })
+    }
+
+    /// How a TTY session's program is reading its terminal
+    /// (`pty::spawn::line_mode`) — `None` for a pipe task, or a session gone.
+    #[must_use]
+    pub fn line_mode(&self, id: &str) -> Option<crate::pty::spawn::LineMode> {
+        #[cfg(unix)]
+        {
+            let inner = self.inner.lock().expect("registry lock");
+            let terminal = inner.tasks.get(id)?.terminal.as_ref()?;
+            crate::pty::spawn::line_mode(terminal)
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = id;
+            None
+        }
+    }
+
+    /// Every running task as `(id, command)`, oldest id first — what an
+    /// unknown-session error lists so the model can find the right one.
+    #[must_use]
+    pub fn sessions(&self) -> Vec<(String, String)> {
+        let inner = self.inner.lock().expect("registry lock");
+        let mut list: Vec<(String, String)> = inner
+            .tasks
+            .iter()
+            .filter(|(_, task)| !task.exited)
+            .map(|(id, task)| (id.clone(), task.launch.command.clone()))
+            .collect();
+        list.sort();
+        list
+    }
+
+    /// The running TTY sessions as `(id, command)` — what the session cap
+    /// counts and lists.
+    fn running_ttys(&self) -> Vec<(String, String)> {
+        let inner = self.inner.lock().expect("registry lock");
+        let mut list: Vec<(String, String)> = inner
+            .tasks
+            .iter()
+            .filter(|(_, task)| !task.exited && task.input.is_some())
+            .map(|(id, task)| (id.clone(), task.launch.command.clone()))
+            .collect();
+        list.sort();
+        list
+    }
+
+    /// Type into a TTY session: `chunks` in order, pausing where a chunk asks
+    /// to (`pty::keys`).
+    ///
+    /// # Errors
+    /// The model-facing reason when the session is gone or has no terminal.
+    pub fn send_input(&self, id: &str, chunks: Vec<InputChunk>) -> Result<(), String> {
+        let (input, io) = {
+            let inner = self.inner.lock().expect("registry lock");
+            let task = inner
+                .tasks
+                .get(id)
+                .filter(|task| !task.exited)
+                .ok_or_else(|| format!("session {id} is not running"))?;
+            let input = task.input.clone().ok_or_else(|| {
+                format!(
+                    "session {id} has no terminal to type into — it was not started with \
+                     tty: true (its stdin is /dev/null); you can still wait on it, send \
+                     <C-c>, or kill it"
+                )
+            })?;
+            (input, Arc::clone(&task.io))
+        };
+        // What the program draws from here on answers these keys.
+        let typed: Vec<u8> = chunks
+            .iter()
+            .flat_map(|chunk| chunk.bytes.clone())
+            .collect();
+        io.note_input(&typed);
+        for chunk in chunks {
+            let pause = chunk.pause_after;
+            input
+                .send(WriteOp::Bytes(chunk.bytes))
+                .map_err(|_| format!("session {id} is no longer accepting input"))?;
+            if pause {
+                let _ = input.send(WriteOp::Pause(ESC_PAUSE));
+            }
+        }
+        Ok(())
+    }
+
+    /// Interrupt a task as Ctrl+C would — `SIGINT` to its process group. How
+    /// `<C-c>` reaches a pipe task, which has no terminal to type it into.
+    pub fn interrupt(&self, id: &str) {
+        let pgid = {
+            let inner = self.inner.lock().expect("registry lock");
+            match inner.tasks.get(id).filter(|task| !task.exited) {
+                Some(task) => task.pgid,
+                None => return,
+            }
+        };
+        signal_group(pgid, "INT");
+    }
+
+    /// Finalize an exit a waiting call was left to report
+    /// (`pty::session::SessionIo::end_wait`): drop the task and — if the
+    /// event loop knew of it — send its `Exited`, `observed` saying whether
+    /// the model already read it.
+    pub fn finalize(&self, id: &str, observed: bool) {
+        let Some(task) = self.inner.lock().expect("registry lock").tasks.remove(id) else {
+            return;
+        };
+        if task.io.announced() {
+            let _ = self.events.send(BgEvent::Exited {
+                id: id.to_string(),
+                code: task.io.exit().flatten(),
+                killed: task.killed,
+                observed,
+            });
+        }
     }
 
     /// Stop a background task: mark it user-killed and SIGKILL its whole
     /// process group (synchronously — plus the monitor's kill token as the
     /// portable backstop). The monitor then reports `Exited {killed: true}`.
     pub fn kill(&self, id: &str) {
-        let pgid = {
+        let (pgid, tty) = {
             let mut inner = self.inner.lock().expect("registry lock");
             let Some(task) = inner.tasks.get_mut(id) else {
                 return;
             };
+            if task.exited {
+                return;
+            }
             task.killed = true;
             task.kill.cancel();
-            task.pgid
+            (task.pgid, task.input.is_some())
         };
         kill_group(pgid);
+        if tty {
+            kill_session(pgid);
+        }
     }
 
     /// Stop every running task — the quit and `/clear` sweep. Synchronous
     /// (direct group kills), so the quit path can't orphan a `ping`.
     pub fn kill_all(&self) {
-        let pgids: Vec<u32> = {
+        let groups: Vec<(u32, bool)> = {
             let mut inner = self.inner.lock().expect("registry lock");
             inner
                 .tasks
                 .values_mut()
+                .filter(|task| !task.exited)
                 .map(|task| {
                     task.killed = true;
                     task.kill.cancel();
-                    task.pgid
+                    (task.pgid, task.input.is_some())
                 })
                 .collect()
         };
-        for pgid in pgids {
+        for (pgid, tty) in groups {
             kill_group(pgid);
+            if tty {
+                kill_session(pgid);
+            }
         }
     }
 
@@ -473,27 +838,50 @@ impl BackgroundRegistry {
     }
 }
 
+/// How a task's process is wired: pipes (stdout/stderr, stdin on
+/// `/dev/null`), or a terminal of its own with a writer for its input.
+enum Terminal {
+    Pipe,
+    Tty {
+        input: mpsc::Sender<WriteOp>,
+        terminal: File,
+    },
+}
+
 /// The monitor thread's registry access, bundled.
 struct MonitorHandle {
-    inner: Arc<Mutex<Inner>>,
-    events: UnboundedSender<BgEvent>,
+    registry: BackgroundRegistry,
     id: String,
+    io: Arc<SessionIo>,
+    /// A TTY session's writer — where the terminal's query replies go.
+    input: Option<mpsc::Sender<WriteOp>>,
+    /// A TTY session's terminal, to read how the program is reading it
+    /// ([`MonitorHandle::refresh_line_mode`]).
+    terminal: Option<File>,
 }
 
 impl MonitorHandle {
     /// Own the child to its end: merge + forward output, poll the kill token,
-    /// and report the exit. See the module docs.
+    /// and report the exit. An adopted command's `prior` output — what the
+    /// foreground runner read before the handoff — goes first, into the same
+    /// fold as the rest. See the module docs.
     fn run(
         self,
         mut child: Child,
+        prior: Vec<u8>,
         chunk_rx: mpsc::Receiver<Vec<u8>>,
         kill: CancelToken,
         mut file: Option<File>,
     ) {
-        let mut partial: Vec<u8> = Vec::new();
+        let mut fold = crate::pty::fold::Fold::new();
+        let mut screen = ScreenPacer::default();
+        let mut probe = self.prober(child.id());
+        if !prior.is_empty() {
+            self.absorb(&prior, &mut fold, file.as_mut(), &mut screen);
+        }
         let status = loop {
             while let Ok(chunk) = chunk_rx.try_recv() {
-                self.absorb(&chunk, &mut partial, file.as_mut());
+                self.absorb(&chunk, &mut fold, file.as_mut(), &mut screen);
             }
             if kill.is_cancelled() {
                 kill_group(child.id());
@@ -501,8 +889,14 @@ impl MonitorHandle {
             match child.try_wait() {
                 Ok(Some(status)) => break Some(status),
                 Ok(None) => match chunk_rx.recv_timeout(MONITOR_POLL_INTERVAL) {
-                    Ok(chunk) => self.absorb(&chunk, &mut partial, file.as_mut()),
-                    Err(mpsc::RecvTimeoutError::Timeout) => {}
+                    Ok(chunk) => self.absorb(&chunk, &mut fold, file.as_mut(), &mut screen),
+                    Err(mpsc::RecvTimeoutError::Timeout) => {
+                        self.refresh_line_mode();
+                        self.send_screen(&mut screen, true);
+                        if let Some(probe) = probe.as_mut() {
+                            probe.refresh(&self.io);
+                        }
+                    }
                     Err(mpsc::RecvTimeoutError::Disconnected) => {
                         std::thread::sleep(MONITOR_POLL_INTERVAL);
                     }
@@ -511,51 +905,225 @@ impl MonitorHandle {
             }
         };
         // Reap any straggler holding the pipes (the group kill is idempotent),
-        // then flush what the readers still buffered plus the trailing
-        // partial line.
+        // then flush what the readers still buffered plus the line left
+        // unfinished. A terminal's last output can trail the exit by a
+        // moment — its reader drains the master after the program closed it —
+        // so a TTY session gives it that moment before the exit is recorded.
         kill_group(child.id());
         let _ = child.kill();
         let _ = child.wait();
-        while let Ok(chunk) = chunk_rx.try_recv() {
-            self.absorb(&chunk, &mut partial, file.as_mut());
+        let settle_until = std::time::Instant::now() + TTY_DRAIN_GRACE;
+        loop {
+            match chunk_rx.recv_timeout(MONITOR_POLL_INTERVAL) {
+                Ok(chunk) => self.absorb(&chunk, &mut fold, file.as_mut(), &mut screen),
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    if self.input.is_none() || std::time::Instant::now() >= settle_until {
+                        break;
+                    }
+                }
+            }
         }
-        if !partial.is_empty() {
-            self.send_output(&partial);
-            partial.clear();
+        self.send_output(fold.finish());
+        let code = status.and_then(|s| s.code());
+        let (rest, finish) = self.io.finish(code);
+        if self.input.is_some() {
+            if let Some(f) = file.as_mut() {
+                let _ = f.write_all(rest.as_bytes());
+            }
+            self.send_screen(&mut screen, true);
         }
-        let killed = {
-            let mut inner = self.inner.lock().expect("registry lock");
-            inner.tasks.remove(&self.id).is_some_and(|task| task.killed)
+        let mut inner = self.registry.inner.lock().expect("registry lock");
+        match finish {
+            // Nobody is waiting on the exit: report it now, unobserved.
+            Finish::Now => {
+                let killed = inner.tasks.remove(&self.id).is_some_and(|task| task.killed);
+                drop(inner);
+                if self.io.announced() {
+                    let _ = self.registry.events.send(BgEvent::Exited {
+                        id: self.id,
+                        code,
+                        killed,
+                        observed: false,
+                    });
+                }
+            }
+            // A `bash_session` call is waiting: it reports the exit and
+            // finalizes it (`BackgroundRegistry::finalize`). Until then no
+            // kill may reach the group id, which the system may reuse.
+            Finish::Waiter => {
+                if let Some(task) = inner.tasks.get_mut(&self.id) {
+                    task.exited = true;
+                }
+            }
+        }
+    }
+
+    /// Fold one chunk in: both views (answering the terminal's queries on a
+    /// TTY), the tee file, and the event loop's stream.
+    fn absorb(
+        &self,
+        chunk: &[u8],
+        fold: &mut crate::pty::fold::Fold,
+        file: Option<&mut File>,
+        screen: &mut ScreenPacer,
+    ) {
+        let (replies, committed) = self.io.absorb(chunk);
+        let Some(input) = &self.input else {
+            // A pipe task: the raw bytes to the file (the stream as written,
+            // every byte of it), and to the event loop each line once it
+            // ends, as a terminal would show it.
+            if let Some(f) = file {
+                let _ = f.write_all(chunk);
+            }
+            fold.feed(chunk);
+            self.send_output(fold.take_settled());
+            return;
         };
-        let _ = self.events.send(BgEvent::Exited {
-            id: self.id,
-            code: status.and_then(|s| s.code()),
-            killed,
-        });
-    }
-
-    /// Tee `chunk` to the output file and forward every newly-completed line
-    /// (bounding the partial-line buffer at [`MAX_PARTIAL_LINE_BYTES`]).
-    fn absorb(&self, chunk: &[u8], partial: &mut Vec<u8>, file: Option<&mut File>) {
+        // A TTY session: the terminal owes the program its query replies,
+        // the file gets the transcript's finished lines (readable text, not
+        // escape soup), and the event loop the screen.
+        if !replies.is_empty() {
+            let _ = input.send(WriteOp::Bytes(replies));
+        }
         if let Some(f) = file {
-            let _ = f.write_all(chunk);
+            let _ = f.write_all(committed.as_bytes());
         }
-        partial.extend_from_slice(chunk);
-        if let Some(pos) = partial.iter().rposition(|&b| b == b'\n') {
-            let complete: Vec<u8> = partial.drain(..=pos).collect();
-            self.send_output(&complete);
-        }
-        if partial.len() > MAX_PARTIAL_LINE_BYTES {
-            let overflow = std::mem::take(partial);
-            self.send_output(&overflow);
+        self.refresh_line_mode();
+        screen.dirty = true;
+        self.send_screen(screen, false);
+    }
+
+    /// Tell the session how its program is reading the terminal: key by key
+    /// (a menu, an editor — not a relay holding it raw, see
+    /// `LineMode::reads_keys`), which waits on keys wherever its cursor
+    /// sits, or a line with echo off (`LineMode::hides_input`), a password
+    /// prompt — readable here even when the program runs as root and the
+    /// probe is blind (`pty::session`). Read after each chunk of output and
+    /// on every idle poll, so a mode switched without printing is seen
+    /// within [`MONITOR_POLL_INTERVAL`].
+    fn refresh_line_mode(&self) {
+        #[cfg(unix)]
+        if let Some(mode) = self
+            .terminal
+            .as_ref()
+            .and_then(crate::pty::spawn::line_mode)
+        {
+            self.io.set_reading_keys(mode.reads_keys());
+            self.io.set_hidden_input(mode.hides_input());
         }
     }
 
-    fn send_output(&self, bytes: &[u8]) {
-        let _ = self.events.send(BgEvent::Output {
+    /// A TTY session's [`Prober`]: its program's process and the path of its
+    /// terminal. `None` for a pipe task, or a terminal with no path to name.
+    fn prober(&self, pid: u32) -> Option<Prober> {
+        #[cfg(unix)]
+        {
+            let terminal = crate::pty::spawn::terminal_path(self.terminal.as_ref()?)?;
+            Some(Prober {
+                pid,
+                terminal,
+                last: None,
+            })
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = pid;
+            None
+        }
+    }
+
+    /// Send the session's screen to the event loop — if it changed, the
+    /// session is announced, and (unless `now`) the last send was at least
+    /// [`SCREEN_EVENT_INTERVAL`] ago.
+    fn send_screen(&self, pacer: &mut ScreenPacer, now: bool) {
+        if !pacer.dirty || self.input.is_none() || !self.io.announced() {
+            return;
+        }
+        if !now
+            && pacer
+                .sent
+                .is_some_and(|sent| sent.elapsed() < SCREEN_EVENT_INTERVAL)
+        {
+            return;
+        }
+        if let Some(text) = self.io.screen_text() {
+            let _ = self.registry.events.send(BgEvent::Screen {
+                id: self.id.clone(),
+                text,
+            });
+        }
+        pacer.dirty = false;
+        pacer.sent = Some(std::time::Instant::now());
+    }
+
+    fn send_output(&self, chunk: String) {
+        if chunk.is_empty() || !self.io.announced() {
+            return;
+        }
+        let _ = self.registry.events.send(BgEvent::Output {
             id: self.id.clone(),
-            chunk: String::from_utf8_lossy(bytes).into_owned(),
+            chunk,
         });
+    }
+}
+
+/// How often a monitor probes what a quiet session's program is blocked in
+/// while a call waits on it ([`crate::pty::probe`]) — a handful of `/proc`
+/// reads each time.
+const PROBE_INTERVAL: Duration = Duration::from_millis(200);
+
+/// What a TTY session's monitor needs to ask the kernel what its program is
+/// blocked in (`docs/interactive-shell.md`).
+struct Prober {
+    /// The session leader — the root of the process tree walked.
+    pid: u32,
+    /// The terminal's path (`/dev/pts/N`), as its processes hold it.
+    terminal: PathBuf,
+    /// When the last probe ran.
+    last: Option<std::time::Instant>,
+}
+
+impl Prober {
+    /// Probe, if the session wants it ([`SessionIo::wants_probe`]) and the
+    /// last probe is [`PROBE_INTERVAL`] old, and record what it saw.
+    fn refresh(&mut self, io: &SessionIo) {
+        if !io.wants_probe()
+            || self
+                .last
+                .is_some_and(|last| last.elapsed() < PROBE_INTERVAL)
+        {
+            return;
+        }
+        self.last = Some(std::time::Instant::now());
+        io.set_probe(crate::pty::probe::probe(self.pid, &self.terminal));
+    }
+}
+
+/// When a TTY session's screen was last sent, and whether it changed since.
+#[derive(Default)]
+struct ScreenPacer {
+    sent: Option<std::time::Instant>,
+    dirty: bool,
+}
+
+/// How long a TTY session's monitor keeps reading after the exit for output
+/// still in the terminal — the master drains after the program has gone.
+const TTY_DRAIN_GRACE: Duration = Duration::from_millis(150);
+
+/// A TTY session's writer thread: every [`WriteOp`] in order, until the
+/// session's task is dropped (the channel closes) or the terminal refuses a
+/// write (the session is gone).
+fn write_terminal(mut terminal: File, ops: &mpsc::Receiver<WriteOp>) {
+    while let Ok(op) = ops.recv() {
+        match op {
+            WriteOp::Bytes(bytes) => {
+                if terminal.write_all(&bytes).is_err() {
+                    break;
+                }
+            }
+            WriteOp::Pause(duration) => std::thread::sleep(duration),
+        }
     }
 }
 
@@ -582,9 +1150,27 @@ fn drain_pipe(mut pipe: impl Read, tx: &mpsc::Sender<Vec<u8>>) {
 /// helper `sh` starts in its own group and never signals itself). Best-effort.
 #[cfg(unix)]
 fn kill_group(pgid: u32) {
+    signal_group(pgid, "KILL");
+}
+
+/// Send `signal` (a name `kill -s` accepts: `INT`, `KILL`) to the whole
+/// process group `pgid`. Best-effort.
+#[cfg(unix)]
+fn signal_group(pgid: u32, signal: &str) {
     let _ = Command::new("sh")
         .arg("-c")
-        .arg(format!("kill -KILL -{pgid} 2>/dev/null"))
+        .arg(format!("kill -{signal} -{pgid} 2>/dev/null"))
+        .status();
+}
+
+/// SIGKILL everything in the **session** `sid` — a TTY session's jobs, which
+/// an interactive shell puts in process groups of their own, where the group
+/// kill cannot reach them. Best-effort: `pkill -s` where there is one.
+#[cfg(unix)]
+fn kill_session(sid: u32) {
+    let _ = Command::new("sh")
+        .arg("-c")
+        .arg(format!("pkill -KILL -s {sid} 2>/dev/null"))
         .status();
 }
 
@@ -592,6 +1178,14 @@ fn kill_group(pgid: u32) {
 /// (via the kill token) reaps the direct child.
 #[cfg(not(unix))]
 fn kill_group(_pgid: u32) {}
+
+/// Non-unix fallback: no process groups to signal.
+#[cfg(not(unix))]
+fn signal_group(_pgid: u32, _signal: &str) {}
+
+/// Non-unix fallback: no sessions to sweep.
+#[cfg(not(unix))]
+fn kill_session(_sid: u32) {}
 
 #[cfg(test)]
 mod tests {
@@ -696,10 +1290,16 @@ mod tests {
                     assert_eq!(id, task.id);
                     output.push_str(&chunk);
                 }
-                BgEvent::Exited { id, code, killed } => {
+                BgEvent::Exited {
+                    id,
+                    code,
+                    killed,
+                    observed,
+                } => {
                     assert_eq!(id, task.id);
                     assert_eq!(code, Some(0));
                     assert!(!killed);
+                    assert!(!observed, "nobody was waiting on it");
                     break;
                 }
                 other => panic!("unexpected event {other:?}"),
@@ -937,5 +1537,560 @@ mod tests {
         let teed = std::fs::read_to_string(&task.output_path).expect("tee file");
         assert_eq!(teed, "earlier\nlater\n");
         std::fs::remove_file(&task.output_path).ok();
+    }
+
+    /// Every `Output` chunk until the task exits, joined.
+    fn output_until_exit(rx: &mut tokio::sync::mpsc::UnboundedReceiver<BgEvent>) -> String {
+        let mut output = String::new();
+        loop {
+            match next(rx) {
+                BgEvent::Output { chunk, .. } => output.push_str(&chunk),
+                BgEvent::Exited { .. } => return output,
+                _ => {}
+            }
+        }
+    }
+
+    #[test]
+    fn a_pipe_tasks_output_streams_folded_the_way_a_terminal_shows_it() {
+        // curl or pip in the background: a `\r` progress bar reaches the
+        // manager and the completion note once, in its final state, and
+        // colour escapes never — while the tee file keeps the stream as
+        // written (docs/interactive-shell.md).
+        let (reg, mut rx) = registry();
+        let task = reg
+            .launch_from(
+                r"printf 'get\n'; for p in 10 60 100; do printf '\r%3d%%' $p; done; printf '\n\033[1mok\033[0m\n'",
+                None,
+                true,
+                None,
+            )
+            .expect("launches");
+        assert_eq!(output_until_exit(&mut rx), "get\n100%\nok\n");
+        let teed = std::fs::read_to_string(&task.output_path).expect("tee file");
+        assert!(
+            teed.contains("\r 10%"),
+            "the file is the raw stream: {teed:?}"
+        );
+        std::fs::remove_file(&task.output_path).ok();
+    }
+
+    #[test]
+    fn a_pipe_tasks_unfinished_last_line_arrives_at_the_exit() {
+        let (reg, mut rx) = registry();
+        let task = reg
+            .launch_from(r"printf 'a\n 50%%\r 99%%'", None, true, None)
+            .expect("launches");
+        assert_eq!(output_until_exit(&mut rx), "a\n 99%");
+        std::fs::remove_file(&task.output_path).ok();
+    }
+
+    #[test]
+    fn an_adopted_commands_replay_and_the_rest_fold_as_one_stream() {
+        // Ctrl+B mid-bar: the foreground runner read the line up to its
+        // 40% frame, the pipe still carries the rest of it — the background
+        // stream shows the line once, finished.
+        let (reg, mut rx) = registry();
+        let mut cmd = Command::new("sh");
+        cmd.arg("-c")
+            .arg(r"sleep 0.2; printf '\r100%%\n'")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            cmd.process_group(0);
+        }
+        let mut child = cmd.spawn().expect("spawns");
+        let (chunk_tx, chunk_rx) = mpsc::channel::<Vec<u8>>();
+        if let Some(pipe) = child.stdout.take() {
+            let tx = chunk_tx.clone();
+            std::thread::spawn(move || drain_pipe(pipe, &tx));
+        }
+        drop(chunk_tx);
+        let task = reg.adopt(
+            "fetch",
+            None,
+            false,
+            child,
+            chunk_rx,
+            b"get\n 10%\r 40%".to_vec(),
+        );
+        assert_eq!(output_until_exit(&mut rx), "get\n100%\n");
+        std::fs::remove_file(&task.output_path).ok();
+    }
+
+    // --- TTY sessions (docs/interactive-shell.md) ---
+
+    use crate::pty::keys::{encode, parse_input};
+    use crate::pty::report::{Status, Waiting};
+    use crate::pty::session::WaitEnd;
+    use crate::pty::settle::{Settle, WaitKind};
+
+    const LONG: Duration = Duration::from_secs(10);
+
+    fn never() -> bool {
+        false
+    }
+
+    /// Type `input` (the `bash_session` notation) into session `id`.
+    fn type_into(reg: &BackgroundRegistry, id: &str, input: &str) {
+        let io = reg.session(id).expect("a running session").io;
+        let chunks = encode(&parse_input(input), io.application_cursor());
+        reg.send_input(id, chunks).expect("types");
+    }
+
+    /// Drain every event that arrives within `window`.
+    fn drain(
+        rx: &mut tokio::sync::mpsc::UnboundedReceiver<BgEvent>,
+        window: Duration,
+    ) -> Vec<BgEvent> {
+        let deadline = std::time::Instant::now() + window;
+        let mut events = Vec::new();
+        while std::time::Instant::now() < deadline {
+            match rx.try_recv() {
+                Ok(event) => events.push(event),
+                Err(_) => std::thread::sleep(Duration::from_millis(10)),
+            }
+        }
+        events
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_tty_session_answered_and_finished_inside_its_calls_is_never_announced() {
+        // The whole life of a prompt, the way `bash` + `bash_session` drive
+        // it: launch, settle at the prompt, type the answer, see the exit.
+        // Nothing outlived a call, so the event loop never hears of it.
+        let (reg, mut rx) = registry();
+        let launch = reg
+            .launch_tty("printf 'Name? '; read n; echo \"hi $n\"", None, None, false)
+            .expect("launches");
+        let (task, io) = (launch.task, launch.io);
+        let end = io.wait(
+            WaitKind::Launch,
+            io.origin_mark(),
+            LONG,
+            &never,
+            &never,
+            &mut |_, _| {},
+        );
+        assert_eq!(end, WaitEnd::Settled(Settle::Prompt));
+        assert_eq!(
+            io.look(
+                &task.id,
+                Status::Running {
+                    waiting: Waiting::Input
+                }
+            ),
+            format!("Running (session {}, waiting for input)\nName?", task.id)
+        );
+        assert_eq!(io.end_wait(), None);
+
+        let since = io.begin_wait();
+        type_into(&reg, &task.id, "World\n");
+        let end = io.wait(WaitKind::Input, since, LONG, &never, &never, &mut |_, _| {});
+        assert_eq!(end, WaitEnd::Settled(Settle::Exited));
+        let code = io.exit().expect("finished");
+        assert_eq!(
+            io.look(&task.id, Status::Exited(code)),
+            "Exit code: 0\nName? World\nhi World"
+        );
+        let observed = io.end_wait().expect("this call finalizes");
+        assert!(observed);
+        reg.finalize(&task.id, observed);
+        assert!(reg.session(&task.id).is_none(), "the task is gone");
+        assert!(
+            drain(&mut rx, Duration::from_millis(200)).is_empty(),
+            "never announced, so never reported"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn announcing_a_session_that_outlived_its_call_lists_it_with_its_screen() {
+        let (reg, mut rx) = registry();
+        let launch = reg
+            .launch_tty(
+                "printf 'ready> '; sleep 30",
+                Some("wait".into()),
+                None,
+                false,
+            )
+            .expect("launches");
+        let (task, io) = (launch.task, launch.io);
+        let _ = io.wait(
+            WaitKind::Launch,
+            io.origin_mark(),
+            LONG,
+            &never,
+            &never,
+            &mut |_, _| {},
+        );
+        let _ = io.end_wait();
+        assert!(drain(&mut rx, Duration::from_millis(100)).is_empty());
+        reg.announce(&task.id);
+        let events = drain(&mut rx, Duration::from_millis(200));
+        assert!(
+            matches!(&events[0], BgEvent::Started { id, from_model: true, .. } if *id == task.id),
+            "{events:?}"
+        );
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, BgEvent::Screen { text, .. } if text == "ready>")),
+            "the screen as it stands: {events:?}"
+        );
+        reg.announce(&task.id);
+        assert!(
+            drain(&mut rx, Duration::from_millis(100)).is_empty(),
+            "announced once"
+        );
+        reg.kill(&task.id);
+        let events = drain(&mut rx, Duration::from_secs(2));
+        assert!(
+            events.iter().any(|e| matches!(
+                e,
+                BgEvent::Exited {
+                    killed: true,
+                    observed: false,
+                    ..
+                }
+            )),
+            "{events:?}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_exit_a_waiting_call_reports_is_announced_as_observed() {
+        let (reg, mut rx) = registry();
+        let launch = reg
+            .launch_tty("read line; echo got-$line", None, None, true)
+            .expect("launches");
+        let (task, io) = (launch.task, launch.io);
+        let since = io.begin_wait();
+        type_into(&reg, &task.id, "x\n");
+        let end = io.wait(WaitKind::Input, since, LONG, &never, &never, &mut |_, _| {});
+        assert_eq!(end, WaitEnd::Settled(Settle::Exited));
+        let _ = io.look(&task.id, Status::Exited(io.exit().flatten()));
+        let observed = io.end_wait().expect("the call finalizes");
+        reg.finalize(&task.id, observed);
+        let events = drain(&mut rx, Duration::from_millis(300));
+        assert!(
+            events.iter().any(|e| matches!(
+                e,
+                BgEvent::Exited {
+                    observed: true,
+                    code: Some(0),
+                    ..
+                }
+            )),
+            "{events:?}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_session_nobody_waits_on_reports_its_exit_unobserved() {
+        let (reg, mut rx) = registry();
+        reg.launch_tty("sleep 0.2; echo done", None, None, true)
+            .expect("launches");
+        let events = drain(&mut rx, Duration::from_secs(2));
+        assert!(
+            events.iter().any(|e| matches!(
+                e,
+                BgEvent::Exited {
+                    observed: false,
+                    code: Some(0),
+                    ..
+                }
+            )),
+            "{events:?}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_pipe_task_takes_no_typing_but_does_take_ctrl_c() {
+        let (reg, mut rx) = registry();
+        let task = reg.launch("sleep 30", None, true).expect("launches");
+        let err = reg
+            .send_input(&task.id, encode(&parse_input("y\n"), false))
+            .unwrap_err();
+        assert!(err.contains("tty: true"), "{err}");
+        // Give the child its `setsid` first: until it leads its own group, a
+        // group signal has no group to reach (the model's `<C-c>` comes long
+        // after a launch; a test's comes at once).
+        std::thread::sleep(Duration::from_millis(300));
+        let start = std::time::Instant::now();
+        reg.interrupt(&task.id);
+        let events = drain(&mut rx, Duration::from_secs(2));
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, BgEvent::Exited { killed: false, .. })),
+            "SIGINT ends it without counting as a user stop: {events:?}"
+        );
+        assert!(start.elapsed() < Duration::from_secs(5));
+        std::fs::remove_file(&task.output_path).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_session_answers_the_terminal_queries_its_program_sends() {
+        // A raw-mode program asks where the cursor is and waits for the
+        // answer — which only a terminal (here, the session's screen) gives.
+        if std::process::Command::new("python3")
+            .arg("--version")
+            .output()
+            .is_err()
+        {
+            return;
+        }
+        let (reg, _rx) = registry();
+        let launch = reg
+            .launch_tty(
+                "python3 -c 'import os,sys,tty,termios\n\
+                 fd=sys.stdin.fileno(); old=termios.tcgetattr(fd); tty.setraw(fd)\n\
+                 os.write(1,b\"ab\\x1b[6n\"); r=b\"\"\n\
+                 while not r.endswith(b\"R\"): r+=os.read(fd,1)\n\
+                 termios.tcsetattr(fd,termios.TCSADRAIN,old); print(\"\\nreply\", r[2:].decode())'",
+                None,
+                None,
+                false,
+            )
+            .expect("launches");
+        let (task, io) = (launch.task, launch.io);
+        let end = io.wait(
+            WaitKind::Launch,
+            io.origin_mark(),
+            LONG,
+            &never,
+            &never,
+            &mut |_, _| {},
+        );
+        assert_eq!(end, WaitEnd::Settled(Settle::Exited));
+        let look = io.look(&task.id, Status::Exited(io.exit().flatten()));
+        assert!(look.contains("reply 1;3R"), "{look}");
+        if let Some(observed) = io.end_wait() {
+            reg.finalize(&task.id, observed);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_tty_sessions_interim_file_holds_readable_text() {
+        let (reg, _rx) = registry();
+        let launch = reg
+            .launch_tty(
+                "printf '\\033[31mred\\033[0m 10%%\\r100%%\\r\\ndone\\r\\n'",
+                None,
+                None,
+                false,
+            )
+            .expect("launches");
+        let (task, io) = (launch.task, launch.io);
+        let _ = io.wait(
+            WaitKind::Launch,
+            io.origin_mark(),
+            LONG,
+            &never,
+            &never,
+            &mut |_, _| {},
+        );
+        if let Some(observed) = io.end_wait() {
+            reg.finalize(&task.id, observed);
+        }
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let text = std::fs::read_to_string(&task.output_path).unwrap_or_default();
+            if text.contains("done") {
+                // `red 10%` overwritten from column 1 by `100%` reads `100%10%` —
+                // the colour codes gone, the carriage return applied.
+                assert_eq!(text, "100%10%\ndone\n");
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the file fills: {text:?}"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        std::fs::remove_file(&task.output_path).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_tty_session_cap_refuses_one_more_and_names_the_running_ones() {
+        let (reg, _rx) = registry();
+        for _ in 0..MAX_TTY_SESSIONS {
+            reg.launch_tty("sleep 30", None, None, true)
+                .expect("launches");
+        }
+        let err = reg
+            .launch_tty("sleep 30", None, None, true)
+            .expect_err("one too many");
+        assert!(err.contains("already running"), "{err}");
+        assert!(
+            err.contains("(sleep 30)"),
+            "the running ones are listed: {err}"
+        );
+        assert!(
+            err.contains("kill: true"),
+            "the parameter's own name, so the model can act on it: {err}"
+        );
+        assert!(
+            reg.launch("sleep 0", None, true).is_ok(),
+            "a background pipe task is not a session and is not capped"
+        );
+        reg.kill_all();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_tty_sessions_line_mode_is_read_off_its_terminal() {
+        let (reg, _rx) = registry();
+        let launch = reg
+            .launch_tty("printf 'x? '; read x", None, None, true)
+            .expect("launches");
+        let (task, io) = (launch.task, launch.io);
+        let _ = io.wait(
+            WaitKind::Launch,
+            io.origin_mark(),
+            LONG,
+            &never,
+            &never,
+            &mut |_, _| {},
+        );
+        assert_eq!(
+            reg.line_mode(&task.id),
+            Some(crate::pty::spawn::LineMode {
+                canonical: true,
+                echo: true,
+                processed_output: true,
+            })
+        );
+        let pipe = reg.launch("sleep 30", None, true).expect("launches");
+        assert_eq!(reg.line_mode(&pipe.id), None, "a pipe has no terminal");
+        assert_eq!(reg.line_mode("bnope"), None);
+        reg.kill_all();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_relay_holding_the_terminal_raw_makes_no_pause_a_prompt() {
+        // sudo (ssh, `docker run -it`) holds the terminal raw — output
+        // processing off too — for as long as its command runs: a pause
+        // between two of the command's lines is still just a pause.
+        let (reg, _rx) = registry();
+        let launch = reg
+            .launch_tty(
+                "stty raw -echo; printf 'working\\r\\n'; sleep 0.8; \
+                 printf 'still working\\r\\n'; sleep 0.8; printf 'done\\r\\n'",
+                None,
+                None,
+                false,
+            )
+            .expect("launches");
+        let (task, io) = (launch.task, launch.io);
+        let end = io.wait(
+            WaitKind::Launch,
+            io.origin_mark(),
+            LONG,
+            &never,
+            &never,
+            &mut |_, _| {},
+        );
+        assert_eq!(end, WaitEnd::Settled(Settle::Exited));
+        if let Some(observed) = io.end_wait() {
+            reg.finalize(&task.id, observed);
+        }
+        reg.kill_all();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_picker_reading_its_terminal_waits_however_its_line_animated() {
+        // A picker that animated its line before asking has the screen of a
+        // progress bar — but the kernel sees it blocked reading the
+        // terminal (`pty::probe`), and that is the word that counts; typed
+        // into, it redraws and waits again.
+        let (reg, _rx) = registry();
+        let launch = reg
+            .launch_tty(
+                "stty -icanon -echo; printf 'Pick: Apple'; sleep 0.2; \
+                 printf '\\rPick: Banana'; sleep 0.2; printf '\\rPick: Cherry'; \
+                 dd bs=1 count=1 >/dev/null 2>&1; printf '\\rPick: Durian'; \
+                 dd bs=1 count=1 >/dev/null 2>&1; sleep 30",
+                None,
+                None,
+                false,
+            )
+            .expect("launches");
+        let (task, io) = (launch.task, launch.io);
+        let deadline = std::time::Instant::now() + LONG;
+        while !io.screen_text().unwrap_or_default().contains("Cherry") {
+            assert!(std::time::Instant::now() < deadline, "the picker drew");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let since = io.begin_wait();
+        std::thread::sleep(crate::pty::settle::PROMPT_QUIET + Duration::from_millis(300));
+        assert!(
+            io.waiting(WaitKind::Input, io.origin_mark()),
+            "a program reading its terminal is waiting, its line animated or not"
+        );
+        type_into(&reg, &task.id, "x");
+        let started = std::time::Instant::now();
+        let end = io.wait(WaitKind::Input, since, LONG, &never, &never, &mut |_, _| {});
+        assert_eq!(end, WaitEnd::Settled(Settle::Prompt));
+        assert!(
+            started.elapsed() < crate::pty::settle::LINE_QUIET,
+            "{:?}",
+            started.elapsed()
+        );
+        let _ = io.end_wait();
+        let _ = io.end_wait();
+        reg.kill_all();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_menu_in_raw_mode_settles_as_waiting_for_input() {
+        // An arrow-key menu leaves the cursor at the start of a fresh line
+        // — no prompt by the cursor rule — but it reads key by key, which
+        // the monitor reads off the terminal (`pty::spawn::line_mode`), and
+        // the kernel sees it blocked in that read (`pty::probe`).
+        let (reg, _rx) = registry();
+        let launch = reg
+            .launch_tty(
+                "stty -icanon -echo; printf 'pick one\\r\\n> a\\r\\n  b\\r\\n'; \
+                 dd bs=1 count=1 >/dev/null 2>&1; sleep 30",
+                None,
+                None,
+                false,
+            )
+            .expect("launches");
+        let (task, io) = (launch.task, launch.io);
+        let started = std::time::Instant::now();
+        let end = io.wait(
+            WaitKind::Launch,
+            io.origin_mark(),
+            LONG,
+            &never,
+            &never,
+            &mut |_, _| {},
+        );
+        assert_eq!(end, WaitEnd::Settled(Settle::Prompt));
+        assert!(
+            started.elapsed() < crate::pty::settle::LINE_QUIET,
+            "a prompt, not the line-quiet fallback: {:?}",
+            started.elapsed()
+        );
+        if let Some(observed) = io.end_wait() {
+            reg.finalize(&task.id, observed);
+        }
+        reg.kill_all();
     }
 }

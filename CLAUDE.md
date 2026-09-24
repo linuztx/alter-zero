@@ -156,7 +156,7 @@ pays for and why (`moxcms` under `image`, the sixel quantiser under
 ## Architecture
 
 A **library** (`src/lib.rs` → `app`, `stream`, `ui`, `term`, `frame`, `paste`,
-`session`, `subprocess`, `history`, `textarea`, `file_search`, `clipboard`, `context`, `background`, `scratchpad`, `agents`, `subagents`, `frontmatter`, `ask`, `tasks`, `skills`, `steer`, `mcp`, `trust`, `checkpoint`, `project_doc`, `reminder`, `permission`, `settings`, `telemetry`, `update`, `cli`, `links`, `images`) holds the logic; **`src/main.rs`** is a 77-line shell —
+`session`, `subprocess`, `pty`, `history`, `textarea`, `file_search`, `clipboard`, `context`, `background`, `scratchpad`, `agents`, `subagents`, `frontmatter`, `ask`, `tasks`, `skills`, `steer`, `mcp`, `trust`, `checkpoint`, `project_doc`, `reminder`, `permission`, `settings`, `telemetry`, `update`, `cli`, `links`, `images`) holds the logic; **`src/main.rs`** is a 77-line shell —
 the detached-exec hook, the CLI resolution, the viewport, the loop — over
 **`src/tui/`**, the binary-private tree that drives the codex-style **async
 (tokio) `select!`** loop (`event_loop`, `actions`, `turn`, `stream`, `agent`,
@@ -1180,7 +1180,77 @@ model `bash`, `!`, background — spawned into a fresh session with no
 controlling terminal via `subprocess::spawn_detached_shell`'s
 setsid-binary → helper-re-exec → attached tier chain, so a `/dev/tty`
 password prompt like `sudo`'s fails fast in a captured error instead of
-hijacking the TUI and hanging) in `docs/tty-detach.md`; and the **tool
+hijacking the TUI and hanging) in `docs/tty-detach.md`; and the
+**interactive shells** (`docs/interactive-shell.md`: the opposite on
+purpose — `bash`'s `tty` flag runs a command in a **pseudo-terminal of its
+own** as its controlling terminal (rustix's safe `openpt`/`TIOCGPTPEER`, the
+detach chain's TTY form — `setsid -c`, then the helper under
+`__alter-zero-detached-tty-exec` adding `TIOCSCTTY`, and **no attached
+tier**, whose `/dev/tty` would be the user's) and returns once it exits or
+**settles** at a prompt (`pty::settle`: first the **kernel's word** —
+`pty::probe` walks the session's process tree in Linux's
+`/proc/…/task/…/syscall` from the monitor thread while a call waits on a
+quiet terminal, and a `read` blocked on the session's pts (or `/dev/tty`) is
+a program waiting for input whatever the screen shows, while a tree all at
+work is busy however prompt-shaped its line — then the terminal's own
+**password tell**, a line read with echo off (`LineMode::hides_input`, read
+off the pty with `tcgetattr` where the probe is blind to a root `sudo`),
+counted once the program has replied to the last line submitted (text still
+awaiting its Enter leaves the prompt standing) and never over a tree
+the probe sees at work, settling in 0.5 s even for a wait begun after the
+prompt came up — the `waiting for a password — typed input is hidden` frame,
+detection only, nothing masked — then, where the probe is blind (a
+`sudo`-owned process, a `poll`-family wait, no `/proc`), the screen: the
+cursor left mid-line, the
+alternate screen, or a terminal reading key by key — canonical mode off with
+output processing still on, read off the pty with `tcgetattr`, since a relay
+(sudo's own pty, ssh, `docker run -it`) holds it raw with `OPOST` off too —
+each after 0.5 s of quiet, 3 s for a pure wait that saw the line appear, and
+never on a line the transcript saw **redrawn in place** by two bursts since
+the last input: a progress bar or a spinner, not a prompt; a pure wait
+counts what was printed **since the model last looked** (`SessionIo::look`
+records it, `IoState::printed_since`), so a question asked while the model
+decided to wait ends the wait instead of letting it sit out its timeout,
+still looking 0.5 s itself first so the probe can veto; and a password the
+call **submitted** (`keys::submits_line` at a password prompt) is waited on
+until the program answers with visible text (`Transcript::answered` — sudo's
+bare line break is none), `CHECK_QUIET` (10 s) replacing the 2 s silence
+rule meanwhile, so a refusal and its next prompt come back in that same
+call); a waiting call
+**streams** its running cell as `ToolProgress::Screen { settled, live }` →
+`StreamEvent::ToolScreen` → `App::push_tool_screen`, `live` rows replacing
+the last ones so a bar redraws in place (`Transcript::take_stream`: rows in
+the screen's reach stay live, rows that scrolled out settle once), and a
+**plain** `bash` call — and a background shell's event stream, and a `!`
+command's output — is **folded** the same way (`pty::fold`: `\r`/backspace
+overwrite, escapes vanish, tabs and trailing spaces stay; the `.output` tee
+file stays raw); a `bash_session` header names the session's command from
+the moment the call is announced (`summarize_call_naming` over the registry
+lookup the permission prompt makes, handed to `run_agent` as
+`session_command`), so the header over the prompt and a refused cell name the
+program, never the id; and the new
+**`bash_session`**
+tool types into the session (`pty::keys`' `<Enter>`/`<C-c>`/`<Up>`
+notation, a doubly-escaped `"y\\n"` undone), waits on it, reads it and
+`kill`s it — every report the lines **new or changed** since the model's last
+look, nothing unchanged repeated (the
+`vte` transcript) or a full-screen program's screen (the `vt100` emulator,
+which also answers terminal queries) under a `Running (session …, waiting
+for input)`/`Stopped (session …)` frame, `Exit code: N` once it exits, the
+prompt re-read to the model when nothing is new; a session is a **background
+registry task** announced only if it outlives its call, its exit
+**observed** (no notice) when a report covered it, capped at 16; the
+model-only notes ride `ToolOutcome::context` (a line typed without Enter into
+a line-reading prompt, a `kill` refused because the program asked for more,
+a wait the user ended with Ctrl+B); typing into a session is its own
+`PermissionKind::Session` — inherited from the launch command's allowlist
+rule, "don't ask again for this session" held on the gate and never
+persisted, reviewed by auto mode's classifier — while a wait, a kill and a
+lone `<C-c>` never ask; the cells strip the frame for a dim `⎿ Waiting for
+input · session …` row (`Waiting for a password · …` at a password prompt),
+`BashSession(./configure.sh ← y⏎)` headers; tuned against
+eight live models with `examples/session_probe.rs`, the offline
+`interactive` demo and `smoke.sh` Phase 124); and the **tool
 permission requests** (Claude-Code's ask-before-you-change: the `approve` seam
 `llm::agent::run_agent` consults before every `write`/`edit`/`bash` call's
 `ToolStart` raises an inline modal — a coloured `Create file`/`Edit file`/`Bash

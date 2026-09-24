@@ -89,6 +89,22 @@ pub fn classifier_request_prompt(request: &PermissionRequest, cwd: &str) -> Stri
                 args = args.unwrap_or("(no arguments)"),
             )
         }
+        // Input typed into a session (`docs/interactive-shell.md`): the
+        // program decides what the keys do, so it is named above them; the
+        // session id is the harness's bookkeeping and stays out.
+        PermissionKind::Session => {
+            let program = request
+                .detail
+                .as_deref()
+                .map(str::trim)
+                .filter(|d| !d.is_empty())
+                .unwrap_or("(unknown)");
+            format!(
+                "Working directory: {cwd}\nInteractive program: {program}\n\
+                 Input typed into it (⏎ is Enter, <…> a named key):\n```\n{}\n```",
+                request.body.trim_end()
+            )
+        }
         _ => classifier_user_prompt(&request.target, request.detail.as_deref(), cwd),
     }
 }
@@ -505,6 +521,60 @@ mod tests {
         assert_eq!(
             classifier_request_prompt(&request, "/p"),
             classifier_user_prompt("ls -la", Some("List files"), "/p")
+        );
+    }
+
+    #[test]
+    fn a_session_request_prompts_with_the_program_and_what_is_typed_into_it() {
+        // Auto mode reviews input typed into an interactive session
+        // (docs/interactive-shell.md): the program it goes to decides what
+        // the keys do, so the classifier reads both.
+        let request = PermissionRequest {
+            id: String::new(),
+            kind: PermissionKind::Session,
+            target: "b7x2k9m1q".to_string(),
+            body: "rm -rf ~⏎".to_string(),
+            detail: Some("bash -i".to_string()),
+            agent: None,
+            agent_id: None,
+        };
+        let prompt = classifier_request_prompt(&request, "/home/user/proj");
+        assert!(
+            prompt.contains("Working directory: /home/user/proj"),
+            "got {prompt}"
+        );
+        assert!(
+            prompt.contains("Interactive program: bash -i"),
+            "got {prompt}"
+        );
+        assert!(prompt.contains("```\nrm -rf ~⏎\n```"), "got {prompt}");
+        assert!(
+            prompt.contains("⏎ is Enter"),
+            "the notation explained: {prompt}"
+        );
+        assert!(
+            !prompt.contains("b7x2k9m1q"),
+            "the session id means nothing to the classifier: {prompt}"
+        );
+        // A program nothing could name still says so.
+        let unknown = classifier_request_prompt(
+            &PermissionRequest {
+                detail: None,
+                ..request
+            },
+            "/p",
+        );
+        assert!(
+            unknown.contains("Interactive program: (unknown)"),
+            "got {unknown}"
+        );
+    }
+
+    #[test]
+    fn the_system_prompt_briefs_the_classifier_on_session_input() {
+        assert!(
+            CLASSIFIER_SYSTEM_PROMPT.contains("## Input typed into an interactive program"),
+            "prompts/classifier.md never mentions session input"
         );
     }
 

@@ -299,6 +299,10 @@ struct TranscriptSig {
     /// queue length and status unchanged and the overlay would go static. See
     /// `docs/parallel-tools.md`.
     pub(super) tool_queue: Option<(usize, ToolStatus, usize)>,
+    /// The running call's revision ([`App::tool_revision`]): a terminal
+    /// session's same-length redraw (`45%` → `46%`) or a refined header
+    /// changes no length above (`docs/interactive-shell.md`).
+    tool_revision: u64,
     /// How many messages are waiting above the box — the follow-up entries
     /// **and** the ones handed to the running turn. Both, because pushing onto
     /// `App::steered` changes no history length and no tool queue, so a
@@ -326,6 +330,7 @@ impl TranscriptSig {
             tool_queue: queue
                 .front()
                 .map(|t| (queue.len(), t.status, t.output.len())),
+            tool_revision: app.tool_revision(),
             queued_len: app.queued.len() + app.steered.len(),
             backtrack_selected: app.backtrack.selected,
             agents_generation: app.agents_generation(),

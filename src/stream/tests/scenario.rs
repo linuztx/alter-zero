@@ -30,6 +30,7 @@ const EXAMPLES: &[&str] = &[
     "demo the todo tool and finish every task",
     "demo the todo tool i want to see how it works",
     "load a skill for me",
+    "run an interactive installer",
     "hello there",
 ];
 
@@ -260,6 +261,121 @@ fn every_user_facing_script_hands_the_user_off_to_a_real_model() {
             scenario.name,
         );
     }
+}
+
+#[test]
+fn the_interactive_demo_answers_prompts_through_a_session() {
+    // docs/interactive-shell.md: a `tty` launch that stops at a prompt, the
+    // answers typed one per round, and an exit the last answer causes — each
+    // result the real report formatter's, so the offline cells are the live
+    // ones (the dummy-backend rule, docs/dummy-backend.md).
+    use crate::pty::report::{Status, View, Waiting, report};
+    let scenario = SCENARIOS
+        .iter()
+        .find(|s| s.name == "interactive")
+        .expect("the interactive demo is registered");
+    let Play::Script(script) = scenario.play else {
+        panic!("the interactive demo is a script");
+    };
+    let events = script(&Cue::new("run an interactive installer", 0));
+    let starts: Vec<(&str, &str)> = events
+        .iter()
+        .filter_map(|e| match e {
+            StreamEvent::ToolStart {
+                name, arguments, ..
+            } => Some((name.as_str(), arguments.as_deref().unwrap_or_default())),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(starts.len(), 3, "a launch and two answers: {starts:?}");
+    assert_eq!(starts[0].0, "Bash");
+    assert!(starts[0].1.contains(r#""tty":true"#), "{}", starts[0].1);
+    assert!(starts[1..].iter().all(|(name, _)| *name == "BashSession"));
+    // Each answer's header names the command it goes to, as the real
+    // executor refines it once it knows the session.
+    let titles: Vec<&str> = events
+        .iter()
+        .filter_map(|e| match e {
+            StreamEvent::ToolTitle(title) => Some(title.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        titles,
+        vec!["./configure.sh ← demo⏎", "./configure.sh ← y⏎"],
+        "{events:?}"
+    );
+    // One call a round, each announced — the model reads before it answers.
+    let batches = events
+        .iter()
+        .filter(|e| matches!(e, StreamEvent::ToolBatch(calls) if calls.len() == 1))
+        .count();
+    assert_eq!(batches, 3);
+    let ends: Vec<&str> = events
+        .iter()
+        .filter_map(|e| match e {
+            StreamEvent::ToolEnd { output, ok, .. } => {
+                assert!(ok, "every step succeeds: {output}");
+                Some(output.as_str())
+            }
+            _ => None,
+        })
+        .collect();
+    let lines = |text: &str| View::Lines {
+        text: text.to_string(),
+        omitted: 0,
+        at: String::new(),
+    };
+    let waiting = Status::Running {
+        waiting: Waiting::Input,
+    };
+    assert_eq!(
+        ends[0],
+        report("b7x2k9m1q", waiting, &lines("Project name:"))
+    );
+    assert_eq!(
+        ends[1],
+        report(
+            "b7x2k9m1q",
+            waiting,
+            &lines("Project name: demo\nInstall into ./demo? [Y/n]")
+        )
+    );
+    assert!(ends[2].starts_with("Exit code: 0\n"), "{}", ends[2]);
+    // The last answer's install bar streams as the live cell's screen: one
+    // row replaced frame by frame, never a frame per row
+    // (docs/interactive-shell.md).
+    let third = events
+        .iter()
+        .enumerate()
+        .filter(|(_, e)| matches!(e, StreamEvent::ToolStart { .. }))
+        .nth(2)
+        .map(|(i, _)| i)
+        .expect("a third call");
+    let frames: Vec<&str> = events[third..]
+        .iter()
+        .take_while(|e| !matches!(e, StreamEvent::ToolEnd { .. }))
+        .filter_map(|e| match e {
+            StreamEvent::ToolScreen { settled, live } => {
+                assert!(settled.is_empty(), "everything stays in reach: {settled:?}");
+                Some(live.as_str())
+            }
+            _ => None,
+        })
+        .collect();
+    assert!(frames.len() >= 3, "the bar moves: {frames:?}");
+    assert!(
+        frames
+            .iter()
+            .all(|live| live.matches("Installing").count() == 1),
+        "one bar row per frame: {frames:?}"
+    );
+    let last = frames.last().expect("frames");
+    assert!(
+        ends[2].contains(last),
+        "the last frame is what the report says: {last:?} in {}",
+        ends[2]
+    );
 }
 
 #[test]

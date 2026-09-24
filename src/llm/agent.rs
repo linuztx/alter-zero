@@ -12,9 +12,11 @@
 
 use tokio::sync::mpsc::UnboundedSender;
 
+use super::exec::ToolProgress;
 use super::hooks::{HookSink, block_texts as hook_block_texts};
 use super::tools::{
     ToolCallRequest, ToolOutcome, display_name, image_attachment_note, summarize_call,
+    summarize_call_naming,
 };
 use super::{ChatMessage, ContentPart, LlmError};
 use crate::permission::Approval;
@@ -155,6 +157,12 @@ pub enum PendingInput {
 /// outcome (so a hook can feed the model something about what just happened).
 /// [`NoHooks`](super::hooks::NoHooks) is the do-nothing default and costs
 /// one vtable dispatch.
+///
+/// `session_command` maps a session id to the command that session runs —
+/// the lookup the permission prompt makes — so a `bash_session` call's
+/// header names the program its keys go to from the moment the call is
+/// announced, above its prompt and on a refused cell alike
+/// (`docs/interactive-shell.md`). One that knows no sessions keeps the id.
 #[allow(clippy::too_many_arguments)] // the loop's full seam set (docs/agent-tool.md)
 pub fn run_agent(
     tx: &UnboundedSender<StreamEvent>,
@@ -162,11 +170,12 @@ pub fn run_agent(
     max_tool_calls: usize,
     messages: &mut Vec<ChatMessage>,
     mut round: impl FnMut(&[ChatMessage]) -> RoundOutcome,
-    mut execute: impl FnMut(&ToolCallRequest, &mut dyn FnMut(&str)) -> ToolOutcome,
+    mut execute: impl FnMut(&ToolCallRequest, &mut dyn FnMut(ToolProgress<'_>)) -> ToolOutcome,
     mut pending_inputs: impl FnMut() -> Vec<PendingInput>,
     mut run_agents: impl FnMut(&[ToolCallRequest]) -> Vec<(String, String)>,
     mut approve: impl FnMut(&ToolCallRequest, bool) -> Approval,
     hooks: &dyn HookSink,
+    session_command: &dyn Fn(&str) -> Option<String>,
 ) {
     let mut used_calls = 0usize;
     // True from the first Stop/SubagentStop-forced continuation on — the
@@ -331,7 +340,7 @@ pub fn run_agent(
                         let hook = hooks.pre_tool_use(call, cancel);
                         if let Some(reason) = &hook.blocked {
                             let (display, result) = hook_block_texts(reason);
-                            let _ = tx.send(tool_start_event(call));
+                            let _ = tx.send(tool_start_event(call, session_command));
                             let _ = tx.send(StreamEvent::ToolRejected {
                                 display,
                                 result: result.clone(),
@@ -373,7 +382,11 @@ pub fn run_agent(
                             .iter()
                             .map(|call| ToolCallSummary {
                                 name: display_name(&call.name),
-                                args: summarize_call(&call.name, &call.arguments),
+                                args: summarize_call_naming(
+                                    &call.name,
+                                    &call.arguments,
+                                    session_command,
+                                ),
                             })
                             .collect(),
                     ));
@@ -402,7 +415,7 @@ pub fn run_agent(
                     // round's visible calls, in the model's own order. The
                     // result still feeds back like any tool's.
                     if crate::tasks::is_task_tool(&call.name) {
-                        let mut sink = |_: &str| {};
+                        let mut sink = |_: ToolProgress<'_>| {};
                         let outcome = execute(call, &mut sink);
                         let _ = tx.send(StreamEvent::TaskCall {
                             name: display_name(&call.name),
@@ -423,7 +436,7 @@ pub fn run_agent(
                     let hook = hooks.pre_tool_use(call, cancel);
                     if let Some(reason) = &hook.blocked {
                         let (display, result) = hook_block_texts(reason);
-                        let _ = tx.send(tool_start_event(call));
+                        let _ = tx.send(tool_start_event(call, session_command));
                         // The permission gate's own rejection event, reused
                         // whole: red cell, model-facing text on
                         // `context_output`, and a `/resume` that replays both.
@@ -473,7 +486,7 @@ pub fn run_agent(
                         approve(call, hook.force_ask)
                     };
                     if let Approval::Reject { display, result } = approval {
-                        let _ = tx.send(tool_start_event(call));
+                        let _ = tx.send(tool_start_event(call, session_command));
                         // ToolRejected, not ToolEnd: it carries BOTH texts, so
                         // the recorded call keeps the model-facing `result`
                         // beside the short cell line and later turns replay
@@ -487,7 +500,7 @@ pub fn run_agent(
                         results.push((call.id.clone(), result));
                         continue;
                     }
-                    let _ = tx.send(tool_start_event(call));
+                    let _ = tx.send(tool_start_event(call, session_command));
                     // A noted approval (the auto mode classifier's allow)
                     // rides its own event so the resolved cell can append the
                     // provenance row (docs/permissions.md).
@@ -513,8 +526,17 @@ pub fn run_agent(
                     // so the running cell tails it (docs/tool-streaming.md). The
                     // sink targets the front running call app-side; a tool that
                     // does not stream (read/write/edit) simply never calls it.
-                    let mut on_output = |chunk: &str| {
-                        let _ = tx.send(StreamEvent::ToolOutput(chunk.to_string()));
+                    let mut on_output = |progress: ToolProgress<'_>| {
+                        let event = match progress {
+                            // Settled text appends, live rows replace the
+                            // last ones (docs/interactive-shell.md).
+                            ToolProgress::Screen { settled, live } => StreamEvent::ToolScreen {
+                                settled: settled.to_string(),
+                                live: live.to_string(),
+                            },
+                            ToolProgress::Title(title) => StreamEvent::ToolTitle(title.to_string()),
+                        };
+                        let _ = tx.send(event);
                     };
                     let mut outcome = execute(call, &mut on_output);
                     // `PostToolUse` (docs/hooks.md): the call ran, so there is
@@ -608,7 +630,7 @@ pub fn run_agent(
                 // with the same text the model reads, so the stored message
                 // list stays well-formed for a `/resume` or a continuation.
                 for call in &refused_rest {
-                    let _ = tx.send(tool_start_event(call));
+                    let _ = tx.send(tool_start_event(call, session_command));
                     // A plain ToolEnd: the cell text and the tool result are
                     // the same one line, so there is no second text for
                     // `ToolRejected` to carry (docs/settings.md).
@@ -659,10 +681,13 @@ pub fn run_agent(
 /// **verbatim arguments**, which is what lets the recorded call replay
 /// losslessly next turn instead of being rebuilt from the summary
 /// (`docs/context.md`).
-fn tool_start_event(call: &ToolCallRequest) -> StreamEvent {
+fn tool_start_event(
+    call: &ToolCallRequest,
+    session_command: &dyn Fn(&str) -> Option<String>,
+) -> StreamEvent {
     StreamEvent::ToolStart {
         name: display_name(&call.name),
-        args: summarize_call(&call.name, &call.arguments),
+        args: summarize_call_naming(&call.name, &call.arguments, session_command),
         detail: super::tools::call_description(&call.name, &call.arguments),
         arguments: Some(call.arguments.clone()),
     }
@@ -675,6 +700,12 @@ mod tests {
     use crate::llm::ToolCallSpec;
     use std::cell::RefCell;
     use tokio::sync::mpsc::unbounded_channel;
+
+    /// The session lookup of a loop that knows no sessions: every
+    /// `bash_session` header keeps its id.
+    fn no_sessions(_: &str) -> Option<String> {
+        None
+    }
 
     fn call(id: &str, name: &str, args: &str) -> ToolCallRequest {
         ToolCallRequest {
@@ -720,6 +751,7 @@ mod tests {
             |_calls| Vec::new(),
             |_call, _force| Approval::Allow,
             &NoHooks,
+            &no_sessions,
         );
         assert_eq!(drain(&mut rx), vec![StreamEvent::StreamDone]);
     }
@@ -835,6 +867,7 @@ mod tests {
             |_calls| Vec::new(),
             |_call, _force| Approval::Allow,
             hooks,
+            &no_sessions,
         );
         let result = messages
             .iter()
@@ -884,6 +917,7 @@ mod tests {
             |_calls| Vec::new(),
             |_call, _force| approval.clone(),
             hooks,
+            &no_sessions,
         );
         let result = messages
             .iter()
@@ -942,6 +976,7 @@ mod tests {
             |_calls| panic!("a blocked launch must never reach the launcher"),
             |_call, _force| Approval::Allow,
             &hooks,
+            &no_sessions,
         );
         let events = drain(&mut rx);
         assert!(
@@ -994,6 +1029,7 @@ mod tests {
             |_calls| Vec::new(),
             |_call, _force| Approval::Allow,
             &hooks,
+            &no_sessions,
         );
         assert_eq!(
             *rounds.borrow(),
@@ -1079,6 +1115,7 @@ mod tests {
                 |_calls| Vec::new(),
                 |_call, _force| Approval::Allow,
                 &hooks,
+                &no_sessions,
             );
             assert_eq!(hooks.stop_seen(), Vec::<(bool, String)>::new());
         }
@@ -1359,6 +1396,7 @@ mod tests {
                 |_calls| Vec::new(),
                 |_call, _force| Approval::Allow,
                 &hooks,
+                &no_sessions,
             );
             let events = drain(&mut rx);
             let truncated = events.iter().find_map(|e| match e {
@@ -1429,6 +1467,7 @@ mod tests {
             |_calls| Vec::new(),
             |_call, _force| Approval::Allow,
             &NoHooks,
+            &no_sessions,
         );
         let events = drain(&mut rx);
         assert_eq!(
@@ -1535,6 +1574,7 @@ mod tests {
                 |_calls| Vec::new(),
                 |_call, _force| Approval::Allow,
                 &NoHooks,
+                &no_sessions,
             );
             let events = drain(&mut rx);
             assert!(
@@ -1562,8 +1602,8 @@ mod tests {
     }
 
     #[test]
-    fn a_tool_that_streams_output_emits_tooloutput_between_start_and_end() {
-        // The executor's `on_output` sink surfaces as ToolOutput events strictly
+    fn a_tool_that_streams_output_emits_toolscreen_between_start_and_end() {
+        // The executor's `on_output` sink surfaces as ToolScreen events strictly
         // between the call's ToolStart and ToolEnd, so the running cell tails the
         // output as it is produced. See `docs/tool-streaming.md`.
         let (tx, mut rx) = unbounded_channel();
@@ -1590,14 +1630,21 @@ mod tests {
                 }
             },
             |_c, sink| {
-                sink("a\n");
-                sink("b\n");
+                sink(ToolProgress::Screen {
+                    settled: "a\n",
+                    live: "b",
+                });
+                sink(ToolProgress::Screen {
+                    settled: "b\n",
+                    live: "",
+                });
                 ToolOutcome::ok("Exit code: 0\na\nb")
             },
             Vec::new,
             |_calls| Vec::new(),
             |_call, _force| Approval::Allow,
             &NoHooks,
+            &no_sessions,
         );
         let events = drain(&mut rx);
         let start = events
@@ -1608,24 +1655,94 @@ mod tests {
             .iter()
             .position(|e| matches!(e, StreamEvent::ToolEnd { .. }))
             .expect("the tool ended");
-        let outputs: Vec<&str> = events
+        let screens: Vec<(&str, &str)> = events
             .iter()
             .filter_map(|e| match e {
-                StreamEvent::ToolOutput(s) => Some(s.as_str()),
+                StreamEvent::ToolScreen { settled, live } => {
+                    Some((settled.as_str(), live.as_str()))
+                }
                 _ => None,
             })
             .collect();
         assert_eq!(
-            outputs,
-            vec!["a\n", "b\n"],
-            "the sink's chunks stream as ToolOutput: {events:?}"
+            screens,
+            vec![("a\n", "b"), ("b\n", "")],
+            "the sink's updates stream as ToolScreen: {events:?}"
         );
         let all_between = events
             .iter()
             .enumerate()
-            .filter(|(_, e)| matches!(e, StreamEvent::ToolOutput(_)))
+            .filter(|(_, e)| matches!(e, StreamEvent::ToolScreen { .. }))
             .all(|(i, _)| start < i && i < end);
         assert!(all_between, "live output streams between start and end");
+    }
+
+    #[test]
+    fn a_terminal_backed_tool_streams_screen_and_title_events() {
+        // A terminal session's live output and its refined header reach the
+        // UI as ToolScreen and ToolTitle, between the call's start and end
+        // (docs/interactive-shell.md).
+        let (tx, mut rx) = unbounded_channel();
+        let cancel = CancelToken::new();
+        let rounds = RefCell::new(0);
+        let calls = vec![call("c1", "bash_session", r#"{"session_id":"b1"}"#)];
+        run_agent(
+            &tx,
+            &cancel,
+            MAX_TOOL_ITERATIONS,
+            &mut vec![ChatMessage::user("wait on it")],
+            |_msgs| {
+                let mut n = rounds.borrow_mut();
+                *n += 1;
+                if *n == 1 {
+                    RoundOutcome::ToolCalls {
+                        assistant: assistant_with(&calls),
+                        calls: calls.clone(),
+                    }
+                } else {
+                    RoundOutcome::Complete {
+                        text: String::new(),
+                    }
+                }
+            },
+            |_c, sink| {
+                sink(ToolProgress::Title("sudo pacman -Syy"));
+                sink(ToolProgress::Screen {
+                    settled: ":: Synchronizing\n",
+                    live: " extra  45%",
+                });
+                ToolOutcome::ok("Exit code: 0\n extra 100%")
+            },
+            Vec::new,
+            |_calls| Vec::new(),
+            |_call, _force| Approval::Allow,
+            &NoHooks,
+            &no_sessions,
+        );
+        let events = drain(&mut rx);
+        let start = events
+            .iter()
+            .position(|e| matches!(e, StreamEvent::ToolStart { .. }))
+            .expect("the tool started");
+        let end = events
+            .iter()
+            .position(|e| matches!(e, StreamEvent::ToolEnd { .. }))
+            .expect("the tool ended");
+        let title = events
+            .iter()
+            .position(|e| matches!(e, StreamEvent::ToolTitle(t) if t == "sudo pacman -Syy"))
+            .expect("the refined header streamed");
+        let screen = events
+            .iter()
+            .position(|e| {
+                matches!(e, StreamEvent::ToolScreen { settled, live }
+                    if settled == ":: Synchronizing\n" && live == " extra  45%")
+            })
+            .expect("the screen streamed");
+        assert!(
+            start < title && title < screen && screen < end,
+            "{events:?}"
+        );
     }
 
     #[test]
@@ -1667,6 +1784,7 @@ mod tests {
             |_calls| Vec::new(),
             |_call, _force| Approval::Allow,
             &NoHooks,
+            &no_sessions,
         );
         let events = drain(&mut rx);
         // Right after the round's identity (its own test), the batch is
@@ -1755,6 +1873,7 @@ mod tests {
             |_calls| Vec::new(),
             |_call, _force| Approval::Allow,
             &NoHooks,
+            &no_sessions,
         );
         drain(&mut rx);
         // Round 1 saw [user]; round 2 saw [user, assistant(tool_calls), tool].
@@ -1776,6 +1895,7 @@ mod tests {
             |_calls| Vec::new(),
             |_call, _force| Approval::Allow,
             &NoHooks,
+            &no_sessions,
         );
         let events = drain(&mut rx);
         assert_eq!(events.len(), 1);
@@ -1797,6 +1917,7 @@ mod tests {
             |_calls| Vec::new(),
             |_call, _force| Approval::Allow,
             &NoHooks,
+            &no_sessions,
         );
         assert!(drain(&mut rx).is_empty(), "a cancel is a silent stop");
     }
@@ -1817,6 +1938,7 @@ mod tests {
             |_calls| Vec::new(),
             |_call, _force| Approval::Allow,
             &NoHooks,
+            &no_sessions,
         );
         assert!(drain(&mut rx).is_empty());
     }
@@ -1849,6 +1971,7 @@ mod tests {
             |_calls| Vec::new(),
             |_call, _force| Approval::Allow,
             &NoHooks,
+            &no_sessions,
         );
         assert_eq!(
             *ran.borrow(),
@@ -1896,6 +2019,7 @@ mod tests {
             |_calls| Vec::new(),
             |_call, _force| Approval::Allow,
             &NoHooks,
+            &no_sessions,
         );
         let results: Vec<&ChatMessage> = messages.iter().filter(|m| m.role == "tool").collect();
         assert_eq!(
@@ -1927,6 +2051,7 @@ mod tests {
             |_calls| Vec::new(),
             |_call, _force| Approval::Allow,
             &NoHooks,
+            &no_sessions,
         );
         let events = drain(&mut rx);
         let errors: Vec<_> = events
@@ -2014,6 +2139,7 @@ mod tests {
             |_calls| Vec::new(),
             |_call, _force| Approval::Allow,
             &NoHooks,
+            &no_sessions,
         );
         let events = drain(&mut rx);
         let ran = events
@@ -2080,6 +2206,7 @@ mod tests {
             |_calls| Vec::new(),
             |_call, _force| Approval::Allow,
             &NoHooks,
+            &no_sessions,
         );
         let events = drain(&mut rx);
         assert!(
@@ -2131,6 +2258,7 @@ mod tests {
             |_calls| Vec::new(),
             |_call, _force| Approval::Allow,
             &NoHooks,
+            &no_sessions,
         );
         let events = drain(&mut rx);
         assert!(
@@ -2201,6 +2329,7 @@ mod tests {
             |_calls| Vec::new(),
             |_call, _force| Approval::Allow,
             &NoHooks,
+            &no_sessions,
         );
         drain(&mut rx);
         let seen = seen_round2.borrow();
@@ -2251,6 +2380,7 @@ mod tests {
             |_calls| Vec::new(),
             |_call, _force| Approval::Allow,
             &NoHooks,
+            &no_sessions,
         );
         drain(&mut rx);
         assert_eq!(
@@ -2308,6 +2438,7 @@ mod tests {
             |_calls| Vec::new(),
             |_call, _force| Approval::Allow,
             &NoHooks,
+            &no_sessions,
         );
         let seen = seen_round2.borrow();
         assert_eq!(
@@ -2360,6 +2491,7 @@ mod tests {
             |_calls| Vec::new(),
             |_call, _force| Approval::Allow,
             &NoHooks,
+            &no_sessions,
         );
         assert_eq!(
             *seen.borrow(),
@@ -2404,6 +2536,7 @@ mod tests {
             |_calls| Vec::new(),
             |_call, _force| Approval::Allow,
             &NoHooks,
+            &no_sessions,
         );
         assert!(drain(&mut rx).is_empty());
     }
@@ -2461,6 +2594,7 @@ mod tests {
             |_calls| Vec::new(),
             |_call, _force| Approval::Allow,
             &NoHooks,
+            &no_sessions,
         );
         drain(&mut rx);
         let seen = seen_round2.borrow();
@@ -2526,6 +2660,7 @@ mod tests {
             |_calls| Vec::new(),
             |_call, _force| Approval::Allow,
             &NoHooks,
+            &no_sessions,
         );
         drain(&mut rx);
         let roles: Vec<String> = seen_round2
@@ -2576,6 +2711,7 @@ mod tests {
             |_calls| Vec::new(),
             |_call, _force| Approval::Allow,
             &NoHooks,
+            &no_sessions,
         );
         let events = drain(&mut rx);
         assert!(
@@ -2634,6 +2770,7 @@ mod tests {
                 result: "The user doesn't want to proceed…".to_string(),
             },
             &NoHooks,
+            &no_sessions,
         );
         let events = drain(&mut rx);
         assert!(
@@ -2674,6 +2811,67 @@ mod tests {
     }
 
     #[test]
+    fn a_session_calls_header_names_its_command_before_it_is_approved() {
+        // The permission prompt names the program the keys go to; the cell
+        // it sits under — announced before the prompt opens, and committed
+        // red when the user says no, which never reaches the executor —
+        // names it too, from the same lookup (docs/interactive-shell.md).
+        let (tx, mut rx) = unbounded_channel();
+        let cancel = CancelToken::new();
+        let rounds = RefCell::new(0);
+        let calls = vec![call(
+            "c1",
+            crate::llm::tools::BASH_SESSION_TOOL_NAME,
+            r#"{"session_id":"b5xg4o2w0","input":"password123\n"}"#,
+        )];
+        let mut messages = vec![ChatMessage::user("try password123")];
+        run_agent(
+            &tx,
+            &cancel,
+            MAX_TOOL_ITERATIONS,
+            &mut messages,
+            |_msgs| {
+                let mut n = rounds.borrow_mut();
+                *n += 1;
+                if *n == 1 {
+                    RoundOutcome::ToolCalls {
+                        assistant: assistant_with(&calls),
+                        calls: calls.clone(),
+                    }
+                } else {
+                    RoundOutcome::Complete {
+                        text: String::new(),
+                    }
+                }
+            },
+            |_c, _sink| panic!("a rejected call must never execute"),
+            Vec::new,
+            |_calls| Vec::new(),
+            |_call, _force| Approval::Reject {
+                display: "User rejected input".to_string(),
+                result: "The user doesn't want to proceed…".to_string(),
+            },
+            &NoHooks,
+            &|id: &str| (id == "b5xg4o2w0").then(|| "sudo pacman -Syy".to_string()),
+        );
+        let events = drain(&mut rx);
+        let header = "sudo pacman -Syy ← password123⏎";
+        assert!(
+            events.iter().any(|e| matches!(
+                e,
+                StreamEvent::ToolBatch(items) if items.len() == 1 && items[0].args == header
+            )),
+            "announced by its command: {events:?}"
+        );
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, StreamEvent::ToolStart { args, .. } if args == header)),
+            "…and started so, refused or not: {events:?}"
+        );
+    }
+
+    #[test]
     fn a_noted_approval_emits_the_note_after_start_and_still_runs_the_call() {
         // The auto mode classifier's allow (docs/permissions.md): the call
         // runs exactly like a plain Allow, with one extra ToolNote event
@@ -2709,6 +2907,7 @@ mod tests {
                 note: "Allowed by auto mode classifier".to_string(),
             },
             &NoHooks,
+            &no_sessions,
         );
         let events = drain(&mut rx);
         let start = events
@@ -2768,6 +2967,7 @@ mod tests {
                 Approval::Allow
             },
             &NoHooks,
+            &no_sessions,
         );
         drain(&mut rx);
         assert_eq!(*log.borrow(), vec!["approve", "execute"]);
@@ -2816,6 +3016,7 @@ mod tests {
             |_calls| Vec::new(),
             |_call, _force| panic!("task calls never consult the permission gate"),
             &NoHooks,
+            &no_sessions,
         );
         let events = drain(&mut rx);
         assert!(
@@ -2917,6 +3118,7 @@ mod tests {
             |_calls| Vec::new(),
             |_call, _force| Approval::Allow,
             &NoHooks,
+            &no_sessions,
         );
         let events = drain(&mut rx);
         let StreamEvent::RoundCalls(round) = &events[0] else {
@@ -2976,6 +3178,7 @@ mod tests {
             |_calls| Vec::new(),
             |_call, _force| Approval::Allow,
             &NoHooks,
+            &no_sessions,
         );
         let events = drain(&mut rx);
         let batch = events
@@ -3037,6 +3240,7 @@ mod tests {
             |_calls| Vec::new(),
             |_call, _force| Approval::Allow,
             &NoHooks,
+            &no_sessions,
         );
         let events = drain(&mut rx);
         assert_eq!(
@@ -3104,6 +3308,7 @@ mod tests {
             },
             |_call, _force| Approval::Allow,
             &NoHooks,
+            &no_sessions,
         );
         let events = drain(&mut rx);
         // The ordinary batch announces only the bash call.

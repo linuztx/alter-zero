@@ -241,9 +241,25 @@ pub enum StreamEvent {
     /// Claude-Code's running-command look (see `docs/tool-streaming.md`). The
     /// authoritative full output still arrives in `ToolEnd`, which overwrites
     /// the tailed partial, so a dropped chunk never corrupts the final cell.
-    /// Only the real `bash` executor emits this today; a backend that never
-    /// streams simply omits it.
+    /// The append-only form — the offline dummy's scripted commands stream
+    /// with it, the real executor with [`ToolScreen`](Self::ToolScreen); a
+    /// backend that never streams simply omits both.
     ToolOutput(String),
+    /// A running command's live output as it builds up — a plain `bash`
+    /// call's folded lines, a terminal session's rows
+    /// (`docs/interactive-shell.md`): `settled` is text that just became
+    /// final — appended to the running call's output — and `live` is what is
+    /// still on screen and may yet change, which **replaces** the `live` this
+    /// call last received. A progress bar is therefore one row that changes
+    /// in place, never a hundred rows; the authoritative output still
+    /// arrives in the resolving event. Live-only, like
+    /// [`ToolOutput`](Self::ToolOutput).
+    ToolScreen { settled: String, live: String },
+    /// The running call's header, refined by the executor once it knows more
+    /// than the arguments say — a `bash_session` call's session command
+    /// beside its typed keys (`docs/interactive-shell.md`). Replaces the
+    /// call's `args` summary.
+    ToolTitle(String),
     /// One **task tool** call resolved (`taskcreate`/`taskget`/`tasklist`/
     /// `taskupdate` — `docs/task-tools.md`), carried whole in a single event
     /// **instead of** the `ToolBatch`/`ToolStart`/`ToolEnd` trio: a task call

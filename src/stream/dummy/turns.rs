@@ -156,6 +156,29 @@ impl ScriptedCall {
         }
     }
 
+    /// One step of an interactive session (`docs/interactive-shell.md`): a
+    /// `tty` launch or a `bash_session` call, named by its display `name`,
+    /// with its verbatim `arguments` and the session report it resolves with
+    /// — already framed (`Running (session …)`, or `Exit code: N` once the
+    /// program ends), so it is carried as it is.
+    fn step(name: &'static str, arguments: serde_json::Value, report: String) -> Self {
+        let wire = if name == crate::llm::tools::BASH_SESSION_TOOL_DISPLAY {
+            crate::llm::tools::BASH_SESSION_TOOL_NAME
+        } else {
+            "bash"
+        };
+        let arguments = arguments.to_string();
+        Self {
+            name,
+            args: crate::llm::tools::summarize_call(wire, &arguments),
+            arguments,
+            ack: None,
+            output: report,
+            exit: None,
+            streams: false,
+        }
+    }
+
     /// A `write` creating `path` with `content` — resolving with the real
     /// executor's report (`llm::exec::describe_change` calls the same
     /// [`crate::llm::tools::write_report`]; the demo's paths are already
@@ -855,6 +878,121 @@ fn tool_turn(
             events.extend(tool_output_events(&call.output));
         }
         events.push(call.end());
+    }
+    events.extend(say(&second));
+    events.push(StreamEvent::StreamDone);
+    events
+}
+
+/// The **interactive-shell** demo's narration (`docs/interactive-shell.md`):
+/// why the command needs a terminal, and what else the same tool drives.
+const INTERACTIVE_REPLY: &str = concat!(
+    "That installer only runs in a real terminal — it refuses a pipe — so I'll \
+     start it with `tty` and answer its questions one at a time, reading each \
+     before I reply.\n\n",
+    "Done: each answer went in with Enter, and the script exited on its own \
+     after the last one. The same session drives a REPL (`python3`, `psql`), \
+     a full-screen program like `vim` or `less` — I read its screen — and a \
+     password prompt, which I never guess: I ask you. A session still running \
+     when I stop is in the footer's shell count, and **↓** opens the manager to \
+     end it.\n\n",
+    handoff!()
+);
+
+/// The session the interactive demo's calls run in — an id in the registry's
+/// own shape (`b` + eight base-36 characters).
+const DUMMY_SESSION_ID: &str = "b7x2k9m1q";
+
+/// The command the interactive demo's session runs.
+const DUMMY_SESSION_COMMAND: &str = "./configure.sh";
+
+/// The interactive demo's install bar at `pct` percent — ten cells wide.
+fn install_bar(pct: usize) -> String {
+    let filled = pct / 10;
+    format!(
+        "Installing  [{}{}] {pct:>3}%",
+        "#".repeat(filled),
+        " ".repeat(10 - filled)
+    )
+}
+
+/// The **interactive-shell** demo (`docs/interactive-shell.md`): a setup
+/// wizard launched with `tty`, stopping at its first prompt; an answer typed
+/// into the session, met by the next question; and the last answer, which
+/// ends the program. One call a round — the model reads each question before
+/// it answers — and every result the real [`crate::pty::report::report`], so
+/// the offline cells (and the dim `Waiting for input · session …` rows under
+/// them) are the live ones; each answer's header is the executor's own
+/// refinement ([`crate::llm::tools::session_title`]).
+pub(in crate::stream) fn interactive_turn(cue: &Cue) -> Vec<StreamEvent> {
+    use crate::pty::report::{Status, View, Waiting, report};
+    let lines = |text: &str| View::Lines {
+        text: text.to_string(),
+        omitted: 0,
+        at: String::new(),
+    };
+    let waiting = Status::Running {
+        waiting: Waiting::Input,
+    };
+    let steps = [
+        ScriptedCall::step(
+            "Bash",
+            serde_json::json!({
+                "command": DUMMY_SESSION_COMMAND,
+                "tty": true,
+                "description": "Run the setup wizard",
+            }),
+            report(DUMMY_SESSION_ID, waiting, &lines("Project name:")),
+        ),
+        ScriptedCall::step(
+            crate::llm::tools::BASH_SESSION_TOOL_DISPLAY,
+            serde_json::json!({ "session_id": DUMMY_SESSION_ID, "input": "demo\n" }),
+            report(
+                DUMMY_SESSION_ID,
+                waiting,
+                &lines("Project name: demo\nInstall into ./demo? [Y/n]"),
+            ),
+        ),
+        ScriptedCall::step(
+            crate::llm::tools::BASH_SESSION_TOOL_DISPLAY,
+            serde_json::json!({ "session_id": DUMMY_SESSION_ID, "input": "y\n" }),
+            report(
+                DUMMY_SESSION_ID,
+                Status::Exited(Some(0)),
+                &lines(&format!(
+                    "Install into ./demo? [Y/n] y\n{}\nCreated ./demo (3 files).",
+                    install_bar(100)
+                )),
+            ),
+        ),
+    ];
+    // What each step types — the launch types nothing.
+    let typed = [None, Some("demo\n"), Some("y\n")];
+    let (first, second) = reply_parts(INTERACTIVE_REPLY);
+    let mut events = opening(cue);
+    events.extend(say(&first));
+    for (index, step) in steps.iter().enumerate() {
+        events.push(StreamEvent::ToolBatch(vec![step.summary()]));
+        events.push(step.start());
+        if let Some(input) = typed[index] {
+            events.push(StreamEvent::ToolTitle(crate::llm::tools::session_title(
+                DUMMY_SESSION_COMMAND,
+                Some(input),
+                false,
+            )));
+        }
+        if index == steps.len() - 1 {
+            // The answer starts the install: its bar redraws in place in the
+            // running cell — the live rows replaced frame by frame, as a
+            // session's wait streams them (docs/interactive-shell.md).
+            for pct in [10, 40, 70, 100] {
+                events.push(StreamEvent::ToolScreen {
+                    settled: String::new(),
+                    live: format!("Install into ./demo? [Y/n] y\n{}", install_bar(pct)),
+                });
+            }
+        }
+        events.push(step.end());
     }
     events.extend(say(&second));
     events.push(StreamEvent::StreamDone);

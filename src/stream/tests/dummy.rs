@@ -96,6 +96,9 @@ fn dummy_ai_emits_all_chunks_and_tool_calls_then_done() {
             StreamEvent::ToolStart { .. } => tool_starts += 1,
             StreamEvent::ToolEnd { .. } => tool_ends += 1,
             StreamEvent::ToolOutput(_) => tool_output_chunks += 1,
+            StreamEvent::ToolScreen { .. } | StreamEvent::ToolTitle(_) => {
+                panic!("the default demo runs no terminal session")
+            }
             StreamEvent::AgentBatch { .. } | StreamEvent::AgentGroupDone { .. } => {}
             StreamEvent::RoundCalls(_) => {}
             StreamEvent::HookNote { .. } | StreamEvent::PromptBlocked { .. } => {}

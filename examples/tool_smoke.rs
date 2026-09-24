@@ -176,6 +176,16 @@ fn main() {
                 use std::io::Write;
                 let _ = std::io::stdout().flush();
             }
+            StreamEvent::ToolScreen { settled, .. } => {
+                // A terminal-backed command: print what settled; the live rows
+                // are the TUI's to redraw in place (docs/interactive-shell.md).
+                print!("\x1b[90m{settled}\x1b[0m");
+                use std::io::Write;
+                let _ = std::io::stdout().flush();
+            }
+            StreamEvent::ToolTitle(title) => {
+                println!("\x1b[34m  ↳ {title}\x1b[0m");
+            }
             StreamEvent::ToolEnd {
                 output,
                 ok,

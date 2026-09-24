@@ -271,6 +271,23 @@ The per-feature docs under `docs/` name the boundary as `main.rs` in prose —
 name lands in the right module; where a doc says `main.rs` on its own, read it
 as "the boundary", and the table above says which module holds it.
 
+### `src/pty/` — interactive terminal sessions
+
+Not a split: born as a directory, since an interactive session
+(`docs/interactive-shell.md`) is several pure cores around one boundary. The
+cores carry no process and are unit-tested alone; `spawn` is the I/O.
+
+| Module | Holds |
+|--------|-------|
+| `mod.rs` | The module list. |
+| `keys.rs` | The `input` notation — `<Enter>`, `<C-c>`, `<Up>` — parsed, encoded to terminal bytes, shown on one line; the double-escape undo. |
+| `transcript.rs` | The output as lines of text (`vte::Perform`): what an ordinary program reports. |
+| `screen.rs` | The output as a screen (`vt100`): what a full-screen program reports, and the terminal-query replies. |
+| `settle.rs` | When a waiting call returns — exit, prompt, line quiet, timeout. |
+| `report.rs` | What the model reads: the `Running`/`Stopped` frames over the output or the screen, and the model-only notes. |
+| `session.rs` | `SessionIo` — the two views, the wait, the look, and the exit handshake the monitor and the calls share. |
+| `spawn.rs` | The boundary: the pseudo-terminal, the controlling-terminal tiers, the session environment, the line mode. |
+
 ## The conventions the split had to preserve
 
 **Styling stays centralised.** Every `const` from `ui.rs` moved into `ui/theme.rs`

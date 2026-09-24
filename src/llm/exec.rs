@@ -26,19 +26,35 @@ pub trait ToolExecutor {
     /// panics — every failure becomes a non-ok [`ToolOutcome`] the model reads
     /// and can recover from.
     ///
-    /// `on_output` is a sink for the tool's **live output**: a streaming tool
-    /// (`bash`) calls it with each newly-completed line as the command runs, so
-    /// the TUI can tail the running cell (surfaced as
-    /// [`crate::stream::StreamEvent::ToolOutput`]; see `docs/tool-streaming.md`).
-    /// A tool that produces its result all at once (`read`/`write`/`edit`)
-    /// simply never calls it — the full result still comes back in the returned
-    /// [`ToolOutcome`].
+    /// `on_output` is a sink for the tool's **live output** ([`ToolProgress`]):
+    /// a streaming tool (`bash`, `bash_session`) calls it as the command runs,
+    /// so the TUI can tail the running cell (surfaced as
+    /// [`ToolScreen`](crate::stream::StreamEvent::ToolScreen); see
+    /// `docs/tool-streaming.md`). A tool that produces its result all at once
+    /// (`read`/`write`/`edit`) simply never calls it — the full result still
+    /// comes back in the returned [`ToolOutcome`].
     fn execute(
         &self,
         call: &ToolCallRequest,
         cancel: &CancelToken,
-        on_output: &mut dyn FnMut(&str),
+        on_output: &mut dyn FnMut(ToolProgress<'_>),
     ) -> ToolOutcome;
+}
+
+/// What a running tool reports while it runs — the executor's live sink
+/// ([`ToolExecutor::execute`]'s `on_output`), mapped onto the matching
+/// [`crate::stream::StreamEvent`] by the agent loop.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolProgress<'a> {
+    /// A command's output as it builds up: `settled` text to append for
+    /// good, `live` rows that replace the previous `live` — the line a plain
+    /// command is still drawing, the rows a terminal can still redraw
+    /// ([`crate::stream::StreamEvent::ToolScreen`],
+    /// `docs/interactive-shell.md`).
+    Screen { settled: &'a str, live: &'a str },
+    /// The call's header, refined
+    /// ([`crate::stream::StreamEvent::ToolTitle`]).
+    Title(&'a str),
 }
 
 /// How often the `bash` runner polls a running child for completion, a cancel,
@@ -122,7 +138,7 @@ impl ToolExecutor for RealToolExecutor {
         &self,
         call: &ToolCallRequest,
         cancel: &CancelToken,
-        on_output: &mut dyn FnMut(&str),
+        on_output: &mut dyn FnMut(ToolProgress<'_>),
     ) -> ToolOutcome {
         match call.name.as_str() {
             "bash" => run_bash(
@@ -131,6 +147,13 @@ impl ToolExecutor for RealToolExecutor {
                 self.background.as_ref(),
                 self.bg_origin.as_ref(),
                 self.detach_helper.as_deref(),
+                on_output,
+            ),
+            super::tools::BASH_SESSION_TOOL_NAME => run_bash_session(
+                &call.arguments,
+                cancel,
+                self.background.as_ref(),
+                self.bg_origin.as_ref(),
                 on_output,
             ),
             "read" => run_read(&call.arguments, self.vision),
@@ -143,17 +166,44 @@ impl ToolExecutor for RealToolExecutor {
 
 /// The model-facing result of a backgrounded `bash` call — what the tool
 /// result says (the cell shows the fixed backgrounded row instead): the
-/// interim-output file to `read` mid-run and the promise of the final
-/// output. No task id — nothing model-facing takes one back (kills go by
-/// PID, progress by the file), so naming it would just ask the model to
-/// track a token with no use. See `docs/background.md`.
+/// session id `bash_session` takes back (to wait on it, interrupt it, or end
+/// it — `docs/interactive-shell.md`), the interim-output file to `read`
+/// mid-run, and the promise of the final output. See `docs/background.md`.
 #[must_use]
 pub fn background_launch_text(task: &crate::background::LaunchedTask) -> String {
     format!(
-        "Command running in the background. Output is streaming to {} — \
-         read that file to check progress.\n\
+        "Command running in the background as session {}. Output is streaming \
+         to {} — check on it with bash_session, or read that file.\n\
          You will be notified with the final output when it finishes.",
+        task.id,
         task.output_path.display(),
+    )
+}
+
+/// The model-facing result of a `tty` + `run_in_background` launch: a
+/// terminal the model can come back to, by its session id
+/// (`docs/interactive-shell.md`).
+#[must_use]
+pub fn tty_background_launch_text(task: &crate::background::LaunchedTask) -> String {
+    format!(
+        "Command started in a terminal in the background as session {}. Use \
+         bash_session with this session_id to type into it, read what it \
+         printed, or kill it once you no longer need it.\n\
+         You will be notified with its final output when it exits.",
+        task.id,
+    )
+}
+
+/// The model-facing result of a **Ctrl+B handoff** of a `tty` command that
+/// had not yet settled: the user moved it on, the session keeps running,
+/// and the model can come back to it (`docs/interactive-shell.md`).
+#[must_use]
+pub fn tty_handoff_text(session: &str) -> String {
+    format!(
+        "The user moved this command to the background while it was running — \
+         it has not failed and keeps running as session {session}. Use \
+         bash_session with this session_id to see its output, type into it, \
+         or kill it once you no longer need it. Do not run the command again."
     )
 }
 
@@ -186,18 +236,19 @@ fn arg_error(err: String) -> ToolOutcome {
 }
 
 /// `bash`: run the command under `sh -c`, capture combined stdout+stderr
-/// (byte-capped, merged in arrival order), enforce the per-call timeout, and
-/// kill on cancel. As output arrives it is **streamed line-by-line** through
-/// `on_output` so the TUI tails the running cell (`docs/tool-streaming.md`); the
-/// full output is still framed as codex does (`Exit code: N` + output) for the
-/// model — a non-zero exit or a timeout resolves the cell red.
+/// (merged in arrival order, **folded** the way a terminal would show it and
+/// byte-capped — [`PipeOutput`]), enforce the per-call timeout, and kill on
+/// cancel. As output arrives it is **streamed** through `on_output` so the TUI
+/// tails the running cell (`docs/tool-streaming.md`); the full output is still
+/// framed as codex does (`Exit code: N` + output) for the model — a non-zero
+/// exit or a timeout resolves the cell red.
 fn run_bash(
     arguments: &str,
     cancel: &CancelToken,
     background: Option<&BackgroundRegistry>,
     origin: Option<&BgOrigin>,
     detach_helper: Option<&Path>,
-    on_output: &mut dyn FnMut(&str),
+    on_output: &mut dyn FnMut(ToolProgress<'_>),
 ) -> ToolOutcome {
     let args: BashArgs = match tools::parse_args(arguments) {
         Ok(a) => a,
@@ -216,6 +267,16 @@ fn run_bash(
     // launch text at once — the model gets the interim-output path, and the
     // completion notification follows when the command exits. A subagent's
     // launch is attributed via `origin` (docs/agent-tool.md).
+    // `tty`: the command gets a terminal of its own and the call returns
+    // once it exits or waits for input (docs/interactive-shell.md).
+    if args.tty {
+        let Some(registry) = background else {
+            return ToolOutcome::error(
+                "interactive sessions are not available here — run the command without tty",
+            );
+        };
+        return run_tty(&args, cancel, registry, origin, on_output);
+    }
     if args.run_in_background {
         let Some(registry) = background else {
             return ToolOutcome::error(
@@ -249,8 +310,8 @@ fn run_bash(
 
     // Drain both pipes on their own threads (so a chatty command can't deadlock
     // on a full pipe), forwarding raw chunks over a channel; the poll loop below
-    // merges them into the capped `combined` buffer in arrival order and streams
-    // each newly-completed line out via `on_output`.
+    // folds them in arrival order ([`PipeOutput`]) and streams the running
+    // cell through `on_output`.
     let cap = TOOL_OUTPUT_MAX_BYTES;
     let (chunk_tx, chunk_rx) = mpsc::channel::<Vec<u8>>();
     let out_pipe = child.stdout.take();
@@ -269,22 +330,13 @@ fn run_bash(
     });
     drop(chunk_tx); // only the readers hold senders now, so the channel ends at EOF
 
-    let mut combined: Vec<u8> = Vec::new();
-    let mut forwarded = 0usize; // bytes already streamed out via on_output
-    let mut truncated = false;
+    let mut output = PipeOutput::new(cap);
     let start = Instant::now();
     let mut timed_out = false;
     let status = loop {
-        // Absorb whatever output is available right now, streaming its lines.
+        // Absorb whatever output is available right now.
         while let Ok(chunk) = chunk_rx.try_recv() {
-            absorb_chunk(
-                &chunk,
-                &mut combined,
-                &mut forwarded,
-                cap,
-                &mut truncated,
-                on_output,
-            );
+            output.absorb(&chunk, on_output);
         }
         if cancel.is_cancelled() {
             crate::subprocess::kill_process_group(&mut child);
@@ -294,7 +346,7 @@ fn run_bash(
             return ToolOutcome::error("Interrupted by user");
         }
         // Ctrl+B: hand the run off to the background registry mid-flight — it
-        // replays what we already read (`combined`) and keeps streaming from
+        // replays what we already read (as read) and keeps streaming from
         // our pipe channel; the detached reader threads keep feeding it and
         // exit at EOF on their own. The call resolves as backgrounded, and
         // the agent loop keeps going with the HANDOFF text as the tool result
@@ -314,7 +366,7 @@ fn run_bash(
                 true,
                 child,
                 chunk_rx,
-                combined,
+                output.into_raw(),
             );
             return ToolOutcome::backgrounded(task.id.clone(), background_handoff_text(&task));
         }
@@ -329,18 +381,11 @@ fn run_bash(
             // re-poll the cancel/timeout above; `Disconnected` (both readers done
             // before the child is reaped) just paces the re-poll.
             Ok(None) => match chunk_rx.recv_timeout(BASH_POLL_INTERVAL) {
-                Ok(chunk) => {
-                    absorb_chunk(
-                        &chunk,
-                        &mut combined,
-                        &mut forwarded,
-                        cap,
-                        &mut truncated,
-                        on_output,
-                    );
-                }
-                Err(mpsc::RecvTimeoutError::Timeout) => {}
+                Ok(chunk) => output.absorb(&chunk, on_output),
+                // A quiet moment still delivers what the pacing held back.
+                Err(mpsc::RecvTimeoutError::Timeout) => output.stream(on_output, false),
                 Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    output.stream(on_output, false);
                     std::thread::sleep(BASH_POLL_INTERVAL);
                 }
             },
@@ -355,27 +400,13 @@ fn run_bash(
     crate::subprocess::kill_process_group(&mut child);
     let _ = out_reader.join();
     let _ = err_reader.join();
-    // Drain any output buffered after the last poll, then stream the trailing
-    // partial line (never newline-terminated) so `on_output` has seen it all.
+    // Drain any output buffered after the last poll, then settle the line
+    // still being drawn (never newline-terminated) so `on_output` has seen it
+    // all.
     while let Ok(chunk) = chunk_rx.try_recv() {
-        absorb_chunk(
-            &chunk,
-            &mut combined,
-            &mut forwarded,
-            cap,
-            &mut truncated,
-            on_output,
-        );
+        output.absorb(&chunk, on_output);
     }
-    if forwarded < combined.len() {
-        on_output(&String::from_utf8_lossy(&combined[forwarded..]));
-    }
-
-    let combined = String::from_utf8_lossy(&combined).into_owned();
-    // `combined` is already byte-capped; truncate_output only trims to a clean
-    // char boundary (and re-confirms the flag) so the framed body is valid UTF-8.
-    let (combined, extra_trunc) = tools::truncate_output(combined, cap);
-    let truncated = truncated || extra_trunc;
+    let (combined, truncated) = output.finish(on_output);
 
     if timed_out {
         let body = tools::format_exec_output(None, &combined);
@@ -390,6 +421,14 @@ fn run_bash(
         .as_ref()
         .is_some_and(std::process::ExitStatus::success);
     let output = tools::format_exec_output(exit_code, &combined);
+    // A command that failed saying it wanted a terminal: the model reads a
+    // pointer to `tty` beside the output, where it decides what to do next —
+    // the cell keeps the command's own words (docs/interactive-shell.md).
+    // Only with a registry, the one place a `tty` session can live.
+    let context = (!ok && background.is_some())
+        .then(|| tools::tty_hint(&output))
+        .flatten()
+        .map(|hint| format!("{}\n\n{hint}", output.trim_end()));
     ToolOutcome {
         output,
         ok,
@@ -397,8 +436,271 @@ fn run_bash(
         background: None,
         image: None,
         tasks: None,
-        context: None,
+        context,
     }
+}
+
+/// `bash` with `tty` (`docs/interactive-shell.md`): start the command in a
+/// terminal of its own and wait for it to **settle** — exit, stop at a
+/// prompt, go quiet, or reach `timeout`. A command that finished reports
+/// exactly as a plain `bash` call would; one still running is announced to
+/// the event loop (the footer, the ↓ manager) and reported under its
+/// session's frame, for `bash_session` to continue. Esc takes the session
+/// down with the call — it never outlived it; Ctrl+B (the main turn's alone)
+/// hands it to the background as it stands.
+fn run_tty(
+    args: &BashArgs,
+    cancel: &CancelToken,
+    registry: &BackgroundRegistry,
+    origin: Option<&BgOrigin>,
+    on_output: &mut dyn FnMut(ToolProgress<'_>),
+) -> ToolOutcome {
+    use crate::pty::report::{Status, Waiting};
+    use crate::pty::session::WaitEnd;
+    use crate::pty::settle::{Settle, WaitKind};
+    let background = args.run_in_background;
+    let launch = match registry.launch_tty(
+        &args.command,
+        args.description.clone(),
+        origin.cloned(),
+        background,
+    ) {
+        Ok(launch) => launch,
+        Err(err) => return ToolOutcome::error(err),
+    };
+    let (task, io) = (launch.task, launch.io);
+    if background {
+        return ToolOutcome::backgrounded(task.id.clone(), tty_background_launch_text(&task));
+    }
+    // The session was created with this call as its waiter, so even a
+    // command that exits before the wait below begins leaves its exit here.
+    let handoff = || origin.is_none() && registry.take_background_request();
+    // The running cell shows what the report will say as it builds up —
+    // settled lines appended, the rows in reach redrawn in place.
+    let on_output =
+        &mut |settled: &str, live: &str| on_output(ToolProgress::Screen { settled, live });
+    let end = io.wait(
+        WaitKind::Launch,
+        io.origin_mark(),
+        Duration::from_millis(args.timeout_ms()),
+        &|| cancel.is_cancelled(),
+        &handoff,
+        on_output,
+    );
+    let outcome = match end {
+        WaitEnd::Cancelled => {
+            registry.kill(&task.id);
+            ToolOutcome::error("Interrupted by user")
+        }
+        WaitEnd::Handoff => {
+            registry.announce(&task.id);
+            ToolOutcome::backgrounded(task.id.clone(), tty_handoff_text(&task.id))
+        }
+        WaitEnd::Settled(Settle::Exited) => {
+            let code = io.exit().flatten();
+            let report = io.look(&task.id, Status::Exited(code));
+            ToolOutcome {
+                ok: code == Some(0),
+                ..ToolOutcome::ok(report)
+            }
+        }
+        WaitEnd::Settled(settled) => {
+            registry.announce(&task.id);
+            let at_prompt =
+                settled == Settle::Prompt || io.waiting(WaitKind::Launch, io.origin_mark());
+            ToolOutcome::ok(io.look(
+                &task.id,
+                Status::Running {
+                    waiting: Waiting::of(at_prompt, io.password_prompt()),
+                },
+            ))
+        }
+    };
+    if let Some(observed) = io.end_wait() {
+        registry.finalize(&task.id, observed);
+    }
+    outcome
+}
+
+/// `bash_session` (`docs/interactive-shell.md`): type into a session, wait
+/// on it, or kill it — then report what it printed since the model's last
+/// look, under the frame saying where it stands. Works on every shell the
+/// registry holds: a TTY session takes typed input, a background pipe
+/// command only a `<C-c>` (as `SIGINT`). Esc stops the *waiting*, never the
+/// session — it outlived its launch, and the ↓ manager is where the user
+/// stops it.
+fn run_bash_session(
+    arguments: &str,
+    cancel: &CancelToken,
+    background: Option<&BackgroundRegistry>,
+    origin: Option<&BgOrigin>,
+    on_output: &mut dyn FnMut(ToolProgress<'_>),
+) -> ToolOutcome {
+    use crate::pty::keys::{encode, is_interrupt, leaves_line_open, parse_input, typed_tail};
+    use crate::pty::report::{NOT_KILLED_NOTE, Status, UNSUBMITTED_NOTE, WAIT_ENDED_NOTE, Waiting};
+    use crate::pty::session::WaitEnd;
+    use crate::pty::settle::{Settle, WaitKind};
+    let args: super::tools::SessionArgs = match tools::parse_args(arguments) {
+        Ok(a) => a,
+        Err(e) => return arg_error(e),
+    };
+    let Some(registry) = background else {
+        return ToolOutcome::error("there are no sessions here — bash with tty is not available");
+    };
+    let id = args.session_id.trim();
+    let Some(session) = registry.session(id) else {
+        return ToolOutcome::error(unknown_session_text(id, &registry.sessions()));
+    };
+    let io = session.io;
+    let parts = parse_input(args.input.as_deref().unwrap_or_default());
+    // The header names the command the keys go to
+    // (docs/interactive-shell.md).
+    on_output(ToolProgress::Title(&tools::session_title(
+        &session.command,
+        args.input.as_deref(),
+        args.kill,
+    )));
+    let on_output =
+        &mut |settled: &str, live: &str| on_output(ToolProgress::Screen { settled, live });
+    if !parts.is_empty() && !io.is_tty() && !is_interrupt(&parts) {
+        return ToolOutcome::error(format!(
+            "session {id} has no terminal to type into — it was not started with tty: \
+             true (its stdin is /dev/null); you can still wait on it, send <C-c>, or kill it"
+        ));
+    }
+    // A waiter before anything is done to the session, so an exit the call
+    // causes — typing `exit`, a kill — is this call's to report
+    // (`pty::session`).
+    let since = io.begin_wait();
+    let cancelled = || cancel.is_cancelled();
+    // Ctrl+B on a waiting call just ends the wait — the session is already
+    // in the background; only the main turn's call answers the latch.
+    if origin.is_none() {
+        registry.clear_background_request();
+    }
+    let handoff = || origin.is_none() && registry.take_background_request();
+    let end = if parts.is_empty() {
+        // A bare kill has nothing to wait for before it; a bare wait waits.
+        (!args.kill).then(|| {
+            io.wait(
+                WaitKind::Wait,
+                since,
+                Duration::from_millis(args.timeout_ms()),
+                &cancelled,
+                &handoff,
+                on_output,
+            )
+        })
+    } else {
+        if io.is_tty() {
+            let chunks = encode(&parts, io.application_cursor());
+            if let Err(err) = registry.send_input(id, chunks) {
+                if let Some(observed) = io.end_wait() {
+                    registry.finalize(id, observed);
+                }
+                return ToolOutcome::error(err);
+            }
+        } else {
+            registry.interrupt(id);
+        }
+        // Input then `kill` means "type this, then end it": the answer is
+        // given its chance to land before the kill — and a command it ends by
+        // itself reports its own exit.
+        Some(io.wait(
+            WaitKind::Input,
+            since,
+            Duration::from_millis(args.timeout_ms()),
+            &cancelled,
+            &handoff,
+            on_output,
+        ))
+    };
+    // Where the session stands now: at a prompt even when the wait ended on
+    // its timeout (a poll that saw nothing new), since the report must keep
+    // saying so.
+    let kind = if parts.is_empty() {
+        WaitKind::Wait
+    } else {
+        WaitKind::Input
+    };
+    let at_prompt =
+        matches!(end, Some(WaitEnd::Settled(Settle::Prompt))) || io.waiting(kind, since);
+    let waiting = Waiting::of(at_prompt, io.password_prompt());
+    // A `kill` sent with an answer the program met by asking for more is
+    // not carried out: the program is waiting on the model, not done.
+    let typed = !parts.is_empty();
+    let spare = args.kill && typed && at_prompt;
+    let status = match end {
+        Some(WaitEnd::Cancelled) => {
+            if let Some(observed) = io.end_wait() {
+                registry.finalize(id, observed);
+            }
+            return ToolOutcome::error("Interrupted by user");
+        }
+        Some(WaitEnd::Settled(Settle::Exited)) => Status::Exited(io.exit().flatten()),
+        _ if args.kill && !spare => {
+            registry.kill(id);
+            let never = || false;
+            let _ = io.wait(
+                WaitKind::Wait,
+                io.mark(),
+                SESSION_STOP_WAIT,
+                &cancelled,
+                &never,
+                on_output,
+            );
+            Status::Stopped
+        }
+        _ => Status::Running { waiting },
+    };
+    let report = io.look(id, status);
+    // What the model is told beyond the report — never the cell, which shows
+    // what happened (its state row says where the session stands).
+    let note = match status {
+        Status::Running { .. } if spare => Some(NOT_KILLED_NOTE),
+        Status::Running { .. } if matches!(end, Some(WaitEnd::Handoff)) => Some(WAIT_ENDED_NOTE),
+        // Typed text without its Enter, still sitting on the line being
+        // edited: a terminal in line mode holds it for the program, and a
+        // line editor (a REPL's readline, in raw mode) shows it echoed at its
+        // prompt with the cursor right after it.
+        Status::Running { .. }
+            if leaves_line_open(&parts)
+                && (registry.line_mode(id).is_some_and(|mode| mode.canonical)
+                    || typed_tail(&parts).is_some_and(|tail| io.holds_typed(tail))) =>
+        {
+            Some(UNSUBMITTED_NOTE)
+        }
+        _ => None,
+    };
+    if let Some(observed) = io.end_wait() {
+        registry.finalize(id, observed);
+    }
+    ToolOutcome {
+        ok: !matches!(status, Status::Exited(code) if code != Some(0)),
+        context: note.map(|note| format!("{report}\n{note}")),
+        ..ToolOutcome::ok(report)
+    }
+}
+
+/// How long a `kill` waits for the killed command's last output and exit.
+const SESSION_STOP_WAIT: Duration = Duration::from_secs(3);
+
+/// The model-facing error for a session id nothing answers to — naming the
+/// ones that are running, so a model that lost track (after a `/compact`, a
+/// `/resume`) can find its way back rather than guess.
+fn unknown_session_text(id: &str, running: &[(String, String)]) -> String {
+    let head = format!(
+        "No running session {id} — it has exited (its final output was already reported) \
+         or never existed."
+    );
+    if running.is_empty() {
+        return format!("{head} No sessions are running.");
+    }
+    let list: Vec<String> = running
+        .iter()
+        .map(|(id, command)| format!("{id} ({command})"))
+        .collect();
+    format!("{head} Running sessions: {}.", list.join(", "))
 }
 
 /// Read `pipe` to EOF in chunks, forwarding each raw chunk over `tx` so the
@@ -421,34 +723,112 @@ fn drain_pipe(mut pipe: impl Read, tx: &mpsc::Sender<Vec<u8>>) {
     }
 }
 
-/// Append `chunk` to the capped `combined` buffer (in arrival order) and stream
-/// every newly-**completed** line — `combined[forwarded ..= last '\n']` — out
-/// through `on_output`, advancing `forwarded`. Retaining and forwarding are both
-/// bounded by `cap` (setting `truncated` when it bites). Forwarding whole lines
-/// from the merged buffer means a multi-byte UTF-8 char is never split across a
-/// chunk boundary (a `'\n'` is never inside a char), so the tail never shows a
-/// stray replacement glyph.
-fn absorb_chunk(
-    chunk: &[u8],
-    combined: &mut Vec<u8>,
-    forwarded: &mut usize,
+/// How often a plain command's running cell is sent its output while it
+/// flows — every line still arrives, batched; a burst of progress frames
+/// costs one redraw per interval, not one per frame.
+const PIPE_STREAM_INTERVAL: Duration = Duration::from_millis(50);
+
+/// A plain command's output as it arrives (`docs/interactive-shell.md`):
+/// folded the way a terminal would show it ([`Fold`] — a `\r`-redrawn
+/// progress bar is one line in its final state, colour escapes gone), each
+/// line kept once it ends, within the output cap, and streamed to the
+/// running cell as [`ToolProgress::Screen`] — the ended lines appended, the
+/// line still being drawn redrawn in place.
+///
+/// [`Fold`]: crate::pty::fold::Fold
+struct PipeOutput {
+    fold: crate::pty::fold::Fold,
+    /// The lines that ended, within `cap` bytes — what the model reads.
+    text: String,
+    /// Output the cap cut.
+    truncated: bool,
+    /// Ended lines the running cell has not been sent yet.
+    pending: String,
+    /// The line in progress as the running cell last showed it.
+    shown: String,
+    /// When the running cell was last sent anything.
+    sent: Option<Instant>,
+    /// The bytes as they were read, within `cap` — what a Ctrl+B handoff
+    /// replays, so the background shell folds the whole stream itself.
+    raw: Vec<u8>,
     cap: usize,
-    truncated: &mut bool,
-    on_output: &mut dyn FnMut(&str),
-) {
-    if combined.len() < cap {
-        let take = (cap - combined.len()).min(chunk.len());
-        combined.extend_from_slice(&chunk[..take]);
-        if take < chunk.len() {
-            *truncated = true;
+}
+
+impl PipeOutput {
+    fn new(cap: usize) -> Self {
+        Self {
+            fold: crate::pty::fold::Fold::with_line_cap(cap),
+            text: String::new(),
+            truncated: false,
+            pending: String::new(),
+            shown: String::new(),
+            sent: None,
+            raw: Vec::new(),
+            cap,
         }
-    } else if !chunk.is_empty() {
-        *truncated = true;
     }
-    if let Some(rel) = combined[*forwarded..].iter().rposition(|&b| b == b'\n') {
-        let upto = *forwarded + rel + 1;
-        on_output(&String::from_utf8_lossy(&combined[*forwarded..upto]));
-        *forwarded = upto;
+
+    /// Fold a chunk in, streaming the running cell (paced).
+    fn absorb(&mut self, chunk: &[u8], on_output: &mut dyn FnMut(ToolProgress<'_>)) {
+        let room = self.cap.saturating_sub(self.raw.len()).min(chunk.len());
+        self.raw.extend_from_slice(&chunk[..room]);
+        self.fold.feed(chunk);
+        self.truncated |= self.fold.overflowed();
+        let lines = self.fold.take_settled();
+        self.keep(&lines);
+        self.stream(on_output, false);
+    }
+
+    /// Keep ended lines, within the cap.
+    fn keep(&mut self, lines: &str) {
+        let room = self.cap.saturating_sub(self.text.len());
+        let take = lines.floor_char_boundary(room);
+        self.truncated |= take < lines.len();
+        self.text.push_str(&lines[..take]);
+        self.pending.push_str(&lines[..take]);
+    }
+
+    /// Send the running cell what changed since the last send — unless one
+    /// went out within [`PIPE_STREAM_INTERVAL`] and this is not the `last`.
+    fn stream(&mut self, on_output: &mut dyn FnMut(ToolProgress<'_>), last: bool) {
+        if !last
+            && self
+                .sent
+                .is_some_and(|sent| sent.elapsed() < PIPE_STREAM_INTERVAL)
+        {
+            return;
+        }
+        // Past the cap the line in progress can never be kept, so it is not
+        // shown either.
+        let live = if self.text.len() < self.cap {
+            self.fold.current()
+        } else {
+            String::new()
+        };
+        if self.pending.is_empty() && live == self.shown {
+            return;
+        }
+        on_output(ToolProgress::Screen {
+            settled: &self.pending,
+            live: &live,
+        });
+        self.pending.clear();
+        self.shown = live;
+        self.sent = Some(Instant::now());
+    }
+
+    /// What a Ctrl+B handoff replays: the output as it was read.
+    fn into_raw(self) -> Vec<u8> {
+        self.raw
+    }
+
+    /// The command is done: the line still being drawn ends where it stands.
+    /// Returns the output and whether the cap cut it.
+    fn finish(mut self, on_output: &mut dyn FnMut(ToolProgress<'_>)) -> (String, bool) {
+        let rest = std::mem::take(&mut self.fold).finish();
+        self.keep(&rest);
+        self.stream(on_output, true);
+        (self.text, self.truncated)
     }
 }
 
@@ -693,20 +1073,84 @@ mod tests {
         RealToolExecutor::new().execute(&call(name, args), &CancelToken::new(), &mut |_| {})
     }
 
+    /// A running cell as the TUI keeps it: a `ToolScreen`'s settled text
+    /// appended and its live rows replacing the last ones
+    /// (`App::push_tool_screen`), every state it passed through kept as a
+    /// frame.
+    #[derive(Default)]
+    struct LiveCell {
+        view: String,
+        live_len: usize,
+        frames: Vec<String>,
+    }
+
+    impl LiveCell {
+        fn take(&mut self, progress: ToolProgress<'_>) {
+            match progress {
+                ToolProgress::Screen { settled, live } => {
+                    self.live_len =
+                        crate::app::apply_tool_screen(&mut self.view, self.live_len, settled, live);
+                }
+                ToolProgress::Title(_) => return,
+            }
+            self.frames.push(self.view.clone());
+        }
+    }
+
+    #[test]
+    fn a_plain_commands_progress_bar_reaches_the_model_once() {
+        // curl's meter, tqdm, ffmpeg: `\r` frames on a pipe. The model reads
+        // the line as a terminal would show it — its final frame — and the
+        // running cell redraws it in place (docs/interactive-shell.md).
+        let command = r"printf 'fetching\n'; for p in 10 40 70 100; do printf '\r%3d%%' $p; sleep 0.15; done; printf '\n'";
+        let mut cell = LiveCell::default();
+        let out = RealToolExecutor::new().execute(
+            &call(
+                "bash",
+                &serde_json::json!({ "command": command }).to_string(),
+            ),
+            &CancelToken::new(),
+            &mut |progress| cell.take(progress),
+        );
+        assert_eq!(out.output, "Exit code: 0\nfetching\n100%\n");
+        assert!(
+            cell.frames.iter().any(|frame| frame == "fetching\n 40%"),
+            "the bar streamed as it moved: {:?}",
+            cell.frames
+        );
+        assert!(
+            cell.frames
+                .iter()
+                .all(|frame| frame.matches('%').count() <= 1),
+            "one row per bar: {:?}",
+            cell.frames
+        );
+    }
+
+    #[test]
+    fn a_plain_commands_escapes_never_reach_the_model_but_its_tabs_do() {
+        let command = r"printf '\033[1;31merror\033[0m: bad\n\tindented  \n'";
+        let out = exec(
+            "bash",
+            &serde_json::json!({ "command": command }).to_string(),
+        );
+        assert_eq!(out.output, "Exit code: 0\nerror: bad\n\tindented  \n");
+    }
+
     #[test]
     fn bash_streams_its_output_to_the_sink() {
         // The live-output sink receives the command's output as it runs; by the
         // time execute returns it has seen all of it, and the framed final still
         // carries the same body (docs/tool-streaming.md).
-        let mut streamed = String::new();
+        let mut cell = LiveCell::default();
         let out = RealToolExecutor::new().execute(
             &call("bash", r#"{"command":"printf 'a\nb\nc\n'"}"#),
             &CancelToken::new(),
-            &mut |chunk| streamed.push_str(chunk),
+            &mut |progress| cell.take(progress),
         );
         assert!(out.ok, "got {}", out.output);
         assert_eq!(
-            streamed, "a\nb\nc\n",
+            cell.view, "a\nb\nc\n",
             "the sink tails the full output as complete lines"
         );
         assert!(
@@ -720,14 +1164,17 @@ mod tests {
     fn bash_streams_a_trailing_line_without_a_newline() {
         // A final line with no trailing '\n' is still flushed to the sink once,
         // at the end (before the ToolEnd overwrite), so the sink sees everything.
-        let mut streamed = String::new();
+        let mut cell = LiveCell::default();
         let out = RealToolExecutor::new().execute(
             &call("bash", r#"{"command":"printf 'x\ny'"}"#),
             &CancelToken::new(),
-            &mut |chunk| streamed.push_str(chunk),
+            &mut |progress| cell.take(progress),
         );
         assert!(out.ok, "got {}", out.output);
-        assert_eq!(streamed, "x\ny", "the partial trailing line is flushed too");
+        assert_eq!(
+            cell.view, "x\ny",
+            "the partial trailing line is flushed too"
+        );
     }
 
     #[test]
@@ -1257,22 +1704,22 @@ mod tests {
     // ===== background (docs/background.md) =====
 
     #[test]
-    fn background_launch_text_names_the_shell_by_its_interim_file_alone() {
-        // No task-id label rides the text: nothing model-facing takes one
-        // back (kills go by PID, progress by the interim file), so naming it
-        // just asks the model to track a token with no use. The id cannot be
-        // scrubbed outright — the interim file is named after it — so the
-        // pin is that it appears exactly once, as that basename: any
-        // reintroduced `ID: {id}` label makes it two.
+    fn background_launch_text_names_the_session_bash_session_takes_back() {
+        // The id is model-facing now: `bash_session` takes it back to check
+        // on the command, read what it printed, or end it
+        // (docs/interactive-shell.md). It appears as the session id and as
+        // the interim file's basename — twice, never as a separate label.
         let task = crate::background::LaunchedTask {
             id: "bvyo7tkbe".to_string(),
             output_path: std::path::PathBuf::from("/tmp/alter-zero-0/s1/bvyo7tkbe.output"),
         };
         let text = background_launch_text(&task);
+        assert!(text.contains("as session bvyo7tkbe"), "{text}");
+        assert!(text.contains("bash_session"), "{text}");
         assert_eq!(
             text.matches("bvyo7tkbe").count(),
-            1,
-            "the id appears only as the interim file's basename: {text}"
+            2,
+            "the session id, and the interim file's basename: {text}"
         );
         assert!(
             text.contains("/tmp/alter-zero-0/s1/bvyo7tkbe.output"),
@@ -1367,8 +1814,8 @@ mod tests {
             "a claude-code-style id: {task_id}"
         );
         assert!(
-            out.output.matches(task_id.as_str()).count() == 1 && out.output.contains(".output"),
-            "the id appears only as the interim file's basename: {}",
+            out.output.contains(&format!("session {task_id}")) && out.output.contains(".output"),
+            "the session id bash_session takes back, and the interim file: {}",
             out.output
         );
         assert!(
@@ -1398,7 +1845,8 @@ mod tests {
                     saw_exit = true;
                     break;
                 }
-                Ok(crate::background::BgEvent::Output { .. }) => {}
+                Ok(crate::background::BgEvent::Output { .. })
+                | Ok(crate::background::BgEvent::Screen { .. }) => {}
                 Err(_) => std::thread::sleep(std::time::Duration::from_millis(10)),
             }
         }
@@ -1433,14 +1881,14 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(120));
             flag.request_background();
         });
-        let mut streamed = String::new();
+        let mut cell = LiveCell::default();
         let out = executor.execute(
             &call(
                 "bash",
                 r#"{"command":"printf 'early\n'; sleep 3; printf 'late\n'","timeout_ms":30000}"#,
             ),
             &CancelToken::new(),
-            &mut |chunk| streamed.push_str(chunk),
+            &mut |progress| cell.take(progress),
         );
         raiser.join().unwrap();
         assert!(out.ok, "got {}", out.output);
@@ -1463,11 +1911,11 @@ mod tests {
             out.output
         );
         assert!(
-            out.output.matches(task_id.as_str()).count() == 1 && out.output.contains(".output"),
-            "the interim file (and no id label) rides the handoff text: {}",
+            out.output.contains(&format!("session {task_id}")) && out.output.contains(".output"),
+            "the session id and the interim file ride the handoff text: {}",
             out.output
         );
-        assert!(streamed.contains("early"), "the foreground tail ran first");
+        assert!(cell.view.contains("early"), "the foreground tail ran first");
         // The adopted task replays the prior output and finishes on its own.
         let mut replayed = String::new();
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
@@ -1478,7 +1926,8 @@ mod tests {
                     assert_eq!(code, Some(0));
                     break;
                 }
-                Ok(crate::background::BgEvent::Started { .. }) => {}
+                Ok(crate::background::BgEvent::Started { .. })
+                | Ok(crate::background::BgEvent::Screen { .. }) => {}
                 Err(_) => {
                     assert!(
                         std::time::Instant::now() < deadline,
@@ -1579,4 +2028,1019 @@ mod tests {
             "…and the latch is still raised for the main turn's runner"
         );
     }
+
+    // --- interactive shells: `bash` with `tty`, and `bash_session`
+    // (docs/interactive-shell.md) ---
+
+    fn exec_with(executor: &RealToolExecutor, name: &str, args: &str) -> ToolOutcome {
+        executor.execute(&call(name, args), &CancelToken::new(), &mut |_| {})
+    }
+
+    /// The session id a running report names on its frame line.
+    fn session_of(output: &str) -> String {
+        let first = output.lines().next().unwrap_or_default();
+        match crate::pty::report::parse_frame(first) {
+            Some(crate::pty::report::Frame::Running { session, .. }) => session.to_string(),
+            other => panic!("not a running frame ({other:?}): {output}"),
+        }
+    }
+
+    /// Every registry event that arrives within `window`.
+    fn events_within(
+        rx: &mut tokio::sync::mpsc::UnboundedReceiver<crate::background::BgEvent>,
+        window: std::time::Duration,
+    ) -> Vec<crate::background::BgEvent> {
+        let deadline = std::time::Instant::now() + window;
+        let mut events = Vec::new();
+        while std::time::Instant::now() < deadline {
+            match rx.try_recv() {
+                Ok(event) => events.push(event),
+                Err(_) => std::thread::sleep(std::time::Duration::from_millis(10)),
+            }
+        }
+        events
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_tty_command_that_finishes_in_its_call_reports_like_bash() {
+        let (registry, mut rx) = test_registry();
+        let executor = RealToolExecutor::new().with_background(registry);
+        let out = exec_with(
+            &executor,
+            "bash",
+            r#"{"command":"tty >/dev/null && echo on-a-terminal; exit 3","tty":true}"#,
+        );
+        assert!(!out.ok, "exit 3 is a failure: {}", out.output);
+        assert_eq!(out.output, "Exit code: 3\non-a-terminal");
+        assert!(out.background.is_none());
+        assert!(
+            events_within(&mut rx, std::time::Duration::from_millis(200)).is_empty(),
+            "a command that finished inside its call is never listed"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_prompt_returns_a_session_the_next_call_answers() {
+        let (registry, mut rx) = test_registry();
+        let executor = RealToolExecutor::new().with_background(registry);
+        let out = exec_with(
+            &executor,
+            "bash",
+            r#"{"command":"printf 'Name? '; read n; echo \"hi $n\"","tty":true}"#,
+        );
+        assert!(out.ok, "{}", out.output);
+        let id = session_of(&out.output);
+        assert_eq!(
+            out.output,
+            format!("Running (session {id}, waiting for input)\nName?")
+        );
+        let started = events_within(&mut rx, std::time::Duration::from_millis(200));
+        assert!(
+            started.iter().any(|e| matches!(
+                e,
+                crate::background::BgEvent::Started { id: started, .. } if *started == id
+            )),
+            "a session that outlived its call is listed: {started:?}"
+        );
+        let answered = exec_with(
+            &executor,
+            BASH_SESSION,
+            &serde_json::json!({"session_id": id, "input": "World\n"}).to_string(),
+        );
+        assert!(answered.ok, "{}", answered.output);
+        assert_eq!(answered.output, "Exit code: 0\nName? World\nhi World");
+        let ended = events_within(&mut rx, std::time::Duration::from_millis(300));
+        assert!(
+            ended
+                .iter()
+                .any(|e| matches!(e, crate::background::BgEvent::Exited { observed: true, .. })),
+            "the model saw the exit, so no notice is owed: {ended:?}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_wait_rides_out_a_silence_until_the_command_finishes() {
+        let (registry, _rx) = test_registry();
+        let executor = RealToolExecutor::new().with_background(registry);
+        let out = exec_with(
+            &executor,
+            "bash",
+            r#"{"command":"sleep 3; echo done","tty":true}"#,
+        );
+        let id = session_of(&out.output);
+        assert!(out.output.ends_with("(no new output)"), "{}", out.output);
+        let waited = exec_with(
+            &executor,
+            BASH_SESSION,
+            &serde_json::json!({"session_id": id, "timeout": 10_000}).to_string(),
+        );
+        assert_eq!(waited.output, "Exit code: 0\ndone");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn kill_ends_a_session_and_says_so() {
+        let (registry, mut rx) = test_registry();
+        let executor = RealToolExecutor::new().with_background(registry.clone());
+        let out = exec_with(
+            &executor,
+            "bash",
+            r#"{"command":"printf 'ready> '; sleep 60","tty":true}"#,
+        );
+        let id = session_of(&out.output);
+        let stopped = exec_with(
+            &executor,
+            BASH_SESSION,
+            &serde_json::json!({"session_id": id, "kill": true}).to_string(),
+        );
+        assert!(stopped.ok, "a stop the model asked for is not a failure");
+        assert!(
+            stopped
+                .output
+                .starts_with(&format!("Stopped (session {id})")),
+            "{}",
+            stopped.output
+        );
+        assert!(registry.session(&id).is_none(), "the session is gone");
+        let events = events_within(&mut rx, std::time::Duration::from_millis(300));
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, crate::background::BgEvent::Exited { observed: true, .. })),
+            "{events:?}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn input_with_kill_is_typed_first_and_the_kill_comes_after() {
+        // Caught live: a model answered the last prompt and asked to stop in
+        // the same call — and the stop used to win, so the answer was never
+        // typed. "Type this, then end it" is what the pair means.
+        let dir = tempfile::tempdir().unwrap();
+        let out_file = dir.path().join("got.txt");
+        let (registry, _rx) = test_registry();
+        let executor = RealToolExecutor::new().with_background(registry.clone());
+        let command = format!(
+            "printf 'Sure? '; read x; echo \"got-$x\" > {}; sleep 60",
+            out_file.display()
+        );
+        let out = exec_with(
+            &executor,
+            "bash",
+            &serde_json::json!({"command": command, "tty": true}).to_string(),
+        );
+        let id = session_of(&out.output);
+        let stopped = exec_with(
+            &executor,
+            BASH_SESSION,
+            &serde_json::json!({"session_id": id, "input": "y\n", "kill": true}).to_string(),
+        );
+        assert_eq!(
+            std::fs::read_to_string(&out_file).unwrap_or_default(),
+            "got-y\n",
+            "the input reached the program before the kill"
+        );
+        assert!(
+            stopped
+                .output
+                .starts_with(&format!("Stopped (session {id})")),
+            "{}",
+            stopped.output
+        );
+        assert!(registry.session(&id).is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn input_with_kill_reports_an_exit_the_input_caused_as_an_exit() {
+        let (registry, _rx) = test_registry();
+        let executor = RealToolExecutor::new().with_background(registry);
+        let out = exec_with(
+            &executor,
+            "bash",
+            r#"{"command":"printf 'Sure? '; read x; echo bye","tty":true}"#,
+        );
+        let id = session_of(&out.output);
+        let ended = exec_with(
+            &executor,
+            BASH_SESSION,
+            &serde_json::json!({"session_id": id, "input": "y\n", "kill": true}).to_string(),
+        );
+        assert_eq!(ended.output, "Exit code: 0\nSure? y\nbye");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_poll_that_sees_nothing_new_still_names_the_prompt_it_waits_at() {
+        // Caught live: a model polled a waiting program ten times, each
+        // report saying only "Running" — the "waiting for input" of the
+        // launch had gone, and nothing reminded it what was asked.
+        let (registry, _rx) = test_registry();
+        let executor = RealToolExecutor::new().with_background(registry.clone());
+        let out = exec_with(
+            &executor,
+            "bash",
+            r#"{"command":"printf 'Full name: '; read n","tty":true}"#,
+        );
+        let id = session_of(&out.output);
+        let polled = exec_with(
+            &executor,
+            BASH_SESSION,
+            &serde_json::json!({"session_id": id, "timeout": 300}).to_string(),
+        );
+        assert_eq!(
+            polled.output,
+            format!(
+                "Running (session {id}, waiting for input)\n\
+                 (no new output — still at: Full name:)"
+            )
+        );
+        registry.kill_all();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn input_with_kill_leaves_a_program_that_asks_for_more_running() {
+        // Caught live: a model sent what it thought was the last answer with
+        // `kill`, the program asked one more question, and the kill threw
+        // the whole session away. A program waiting on the model is not done.
+        let dir = tempfile::tempdir().unwrap();
+        let out_file = dir.path().join("got.txt");
+        let (registry, _rx) = test_registry();
+        let executor = RealToolExecutor::new().with_background(registry.clone());
+        let command = format!(
+            "printf 'A? '; read a; printf 'Sure? '; read b; echo \"$a$b\" > {}",
+            out_file.display()
+        );
+        let out = exec_with(
+            &executor,
+            "bash",
+            &serde_json::json!({"command": command, "tty": true}).to_string(),
+        );
+        let id = session_of(&out.output);
+        let asked = exec_with(
+            &executor,
+            BASH_SESSION,
+            &serde_json::json!({"session_id": id, "input": "1\n", "kill": true}).to_string(),
+        );
+        assert!(asked.ok, "{}", asked.output);
+        let report = format!("Running (session {id}, waiting for input)\nA? 1\nSure?");
+        assert_eq!(asked.output, report, "the cell: what happened");
+        assert_eq!(
+            asked.context,
+            Some(format!("{report}\n{}", crate::pty::report::NOT_KILLED_NOTE)),
+            "the model: why its kill was not carried out"
+        );
+        assert!(registry.session(&id).is_some(), "still running");
+        let done = exec_with(
+            &executor,
+            BASH_SESSION,
+            &serde_json::json!({"session_id": id, "input": "y\n"}).to_string(),
+        );
+        assert_eq!(done.output, "Exit code: 0\nSure? y");
+        assert_eq!(std::fs::read_to_string(&out_file).unwrap(), "1y\n");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn typed_text_a_line_reading_prompt_has_not_received_is_pointed_out() {
+        // Caught live: a model typed its answer without Enter, saw it on the
+        // screen, and took it as given.
+        let (registry, _rx) = test_registry();
+        let executor = RealToolExecutor::new().with_background(registry.clone());
+        let out = exec_with(
+            &executor,
+            "bash",
+            r#"{"command":"printf 'Name? '; read n; echo \"hi $n\"","tty":true}"#,
+        );
+        let id = session_of(&out.output);
+        let typed = exec_with(
+            &executor,
+            BASH_SESSION,
+            &serde_json::json!({"session_id": id, "input": "World", "timeout": 2000}).to_string(),
+        );
+        let report = format!("Running (session {id}, waiting for input)\nName? World");
+        assert_eq!(typed.output, report);
+        assert_eq!(
+            typed.context,
+            Some(format!(
+                "{report}\n{}",
+                crate::pty::report::UNSUBMITTED_NOTE
+            ))
+        );
+        let submitted = exec_with(
+            &executor,
+            BASH_SESSION,
+            &serde_json::json!({"session_id": id, "input": "<Enter>"}).to_string(),
+        );
+        assert_eq!(
+            submitted.output, "Exit code: 0\nhi World",
+            "the prompt line, already reported as it stands, is not repeated"
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_command_reading_with_no_prompt_is_seen_waiting() {
+        // `read x` prints nothing: no prompt by the cursor — but the kernel
+        // says it is blocked reading the terminal (`pty::probe`), so the
+        // launch reports it waiting, and soon.
+        let (registry, _rx) = test_registry();
+        let executor = RealToolExecutor::new().with_background(registry.clone());
+        let started = Instant::now();
+        let out = exec_with(
+            &executor,
+            "bash",
+            r#"{"command":"read x; echo \"got $x\"","tty":true}"#,
+        );
+        assert!(
+            out.output.starts_with("Running (session ") && out.output.contains("waiting for input"),
+            "{}",
+            out.output
+        );
+        assert!(
+            started.elapsed() < crate::pty::settle::LINE_QUIET,
+            "settled on the read, not the quiet fallback"
+        );
+        let id = session_of(&out.output);
+        let typed = exec_with(
+            &executor,
+            BASH_SESSION,
+            &serde_json::json!({"session_id": id, "input": "hi\n"}).to_string(),
+        );
+        assert_eq!(typed.output, "Exit code: 0\nhi\ngot hi");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_busy_command_behind_a_prompt_shaped_line_is_not_waiting() {
+        // `Working... ` left open while a sleep runs has a prompt's shape;
+        // the kernel says every process is at work (`pty::probe`), so the
+        // call never claims the command waits for input.
+        let (registry, _rx) = test_registry();
+        let executor = RealToolExecutor::new().with_background(registry.clone());
+        let out = exec_with(
+            &executor,
+            "bash",
+            r#"{"command":"printf 'Working... '; sleep 3; echo done","tty":true}"#,
+        );
+        assert!(
+            out.output.starts_with("Running (session ")
+                && !out.output.contains("waiting for input"),
+            "{}",
+            out.output
+        );
+        let id = session_of(&out.output);
+        let waited = exec_with(
+            &executor,
+            BASH_SESSION,
+            &serde_json::json!({"session_id": id, "timeout": 10000}).to_string(),
+        );
+        assert!(
+            waited.output.starts_with("Exit code: 0"),
+            "{}",
+            waited.output
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_password_prompt_put_up_between_calls_ends_the_next_wait() {
+        // sudo after a wrong password: `Sorry, try again.` and a fresh
+        // prompt come up after the call that typed the password returned.
+        // The kernel cannot see into sudo — a timed `read -s` waits in
+        // `pselect6`, blind the same way — and a wait begun after the prompt
+        // sees no output of its own: only the terminal's mode, a line read
+        // with echo off, says it asks (docs/interactive-shell.md).
+        let (registry, _rx) = test_registry();
+        let executor = RealToolExecutor::new().with_background(registry.clone());
+        let script = r#"bash -c 'read -p "Continue? " a; sleep 3; read -s -t 60 -p "Password: " p; echo; echo "got ${#p}"'"#;
+        let out = exec_with(
+            &executor,
+            "bash",
+            &serde_json::json!({"command": script, "tty": true}).to_string(),
+        );
+        let id = session_of(&out.output);
+        let typed = exec_with(
+            &executor,
+            BASH_SESSION,
+            &serde_json::json!({"session_id": id, "input": "y\n"}).to_string(),
+        );
+        assert!(
+            !typed.output.contains("Password"),
+            "returned before the prompt: {}",
+            typed.output
+        );
+        let io = registry.session(&id).expect("still running").io;
+        let deadline = Instant::now() + std::time::Duration::from_secs(10);
+        while !(registry
+            .line_mode(&id)
+            .is_some_and(crate::pty::spawn::LineMode::hides_input)
+            && io.screen_text().unwrap_or_default().contains("Password:"))
+        {
+            assert!(
+                Instant::now() < deadline,
+                "the prompt never came up: {:?} {:?}",
+                registry.line_mode(&id),
+                io.screen_text()
+            );
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        let started = Instant::now();
+        let waited = exec_with(
+            &executor,
+            BASH_SESSION,
+            &serde_json::json!({"session_id": id, "timeout": 8000}).to_string(),
+        );
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(3),
+            "{:?}: {}",
+            started.elapsed(),
+            waited.output
+        );
+        assert_eq!(
+            waited.output,
+            format!(
+                "Running (session {id}, waiting for a password — typed input is hidden)\nPassword:"
+            )
+        );
+        let answered = exec_with(
+            &executor,
+            BASH_SESSION,
+            &serde_json::json!({"session_id": id, "input": "hunter2\n"}).to_string(),
+        );
+        assert_eq!(answered.output, "Exit code: 0\ngot 7");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_prompt_put_up_between_calls_ends_the_next_wait() {
+        // The command works quietly, then asks — after the call that
+        // started it returned, while the model was deciding what to do. The
+        // kernel cannot see the timed read (`pselect6`, blind the way it is
+        // behind sudo), and it is no password: a wait begun after the
+        // question still ends on it, since the model has not seen it
+        // (docs/interactive-shell.md).
+        let (registry, _rx) = test_registry();
+        let executor = RealToolExecutor::new().with_background(registry.clone());
+        let script =
+            r#"bash -c 'echo working; sleep 3; read -t 60 -p "Proceed? [Y/n] " a; echo "got $a"'"#;
+        let out = exec_with(
+            &executor,
+            "bash",
+            &serde_json::json!({"command": script, "tty": true}).to_string(),
+        );
+        let id = session_of(&out.output);
+        assert!(
+            !out.output.contains("Proceed"),
+            "returned before the question: {}",
+            out.output
+        );
+        let io = registry.session(&id).expect("still running").io;
+        let deadline = Instant::now() + std::time::Duration::from_secs(10);
+        while !io.screen_text().unwrap_or_default().contains("Proceed?") {
+            assert!(Instant::now() < deadline, "the question never came up");
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        let started = Instant::now();
+        let waited = exec_with(
+            &executor,
+            BASH_SESSION,
+            &serde_json::json!({"session_id": id, "timeout": 8000}).to_string(),
+        );
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(6),
+            "{:?}: {}",
+            started.elapsed(),
+            waited.output
+        );
+        assert_eq!(
+            waited.output,
+            format!("Running (session {id}, waiting for input)\nProceed? [Y/n]")
+        );
+        let answered = exec_with(
+            &executor,
+            BASH_SESSION,
+            &serde_json::json!({"session_id": id, "input": "y\n"}).to_string(),
+        );
+        assert_eq!(answered.output, "Exit code: 0\nProceed? [Y/n] y\ngot y");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_submitted_password_is_answered_in_the_call_that_typed_it() {
+        // sudo checks a password for seconds before it answers — longer
+        // than a call waits on silence. The call that submitted it waits for
+        // the verdict, a refusal and a fresh prompt or the command itself,
+        // rather than returning "no new output" mid-check.
+        let (registry, _rx) = test_registry();
+        let executor = RealToolExecutor::new().with_background(registry);
+        let script = r#"bash -c 'for i in 1 2; do read -s -t 60 -p "Password: " p; echo; sleep 3; [ "$p" = hunter2 ] && { echo ok; exit 0; }; echo "Sorry, try again."; done; exit 1'"#;
+        let out = exec_with(
+            &executor,
+            "bash",
+            &serde_json::json!({"command": script, "tty": true}).to_string(),
+        );
+        let id = session_of(&out.output);
+        let refused = exec_with(
+            &executor,
+            BASH_SESSION,
+            &serde_json::json!({"session_id": id, "input": "letmein\n"}).to_string(),
+        );
+        assert_eq!(
+            refused.output,
+            format!(
+                "Running (session {id}, waiting for a password — typed input is hidden)\n\
+                 Sorry, try again.\nPassword:"
+            )
+        );
+        let accepted = exec_with(
+            &executor,
+            BASH_SESSION,
+            &serde_json::json!({"session_id": id, "input": "hunter2\n"}).to_string(),
+        );
+        assert_eq!(accepted.output, "Exit code: 0\nok");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_launch_that_asks_for_a_password_says_so() {
+        let (registry, _rx) = test_registry();
+        let executor = RealToolExecutor::new().with_background(registry);
+        let script = r#"bash -c 'read -s -t 60 -p "Password: " p; echo; echo "got ${#p}"'"#;
+        let started = Instant::now();
+        let out = exec_with(
+            &executor,
+            "bash",
+            &serde_json::json!({"command": script, "tty": true}).to_string(),
+        );
+        assert!(
+            started.elapsed() < crate::pty::settle::LINE_QUIET,
+            "{:?}",
+            started.elapsed()
+        );
+        let id = session_of(&out.output);
+        assert_eq!(
+            out.output,
+            format!(
+                "Running (session {id}, waiting for a password — typed input is hidden)\nPassword:"
+            )
+        );
+        let answered = exec_with(
+            &executor,
+            BASH_SESSION,
+            &serde_json::json!({"session_id": id, "input": "hunter2\n"}).to_string(),
+        );
+        assert_eq!(answered.output, "Exit code: 0\ngot 7");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_password_typed_without_its_enter_leaves_the_prompt_asking() {
+        // The terminal holds the line until Enter: nothing has reached the
+        // program, which still asks — said at once, not on the quiet
+        // fallback, beside the model's note about the missing Enter.
+        let (registry, _rx) = test_registry();
+        let executor = RealToolExecutor::new().with_background(registry);
+        let script = r#"bash -c 'read -s -t 60 -p "Password: " p; echo; echo "got ${#p}"'"#;
+        let out = exec_with(
+            &executor,
+            "bash",
+            &serde_json::json!({"command": script, "tty": true}).to_string(),
+        );
+        let id = session_of(&out.output);
+        let started = Instant::now();
+        let typed = exec_with(
+            &executor,
+            BASH_SESSION,
+            &serde_json::json!({"session_id": id, "input": "hunter2"}).to_string(),
+        );
+        assert!(
+            started.elapsed() < crate::pty::settle::LINE_QUIET,
+            "{:?}",
+            started.elapsed()
+        );
+        assert!(
+            typed.output.starts_with(&format!(
+                "Running (session {id}, waiting for a password — typed input is hidden)\n"
+            )),
+            "{}",
+            typed.output
+        );
+        assert!(
+            typed
+                .context
+                .as_deref()
+                .is_some_and(|context| context.ends_with(crate::pty::report::UNSUBMITTED_NOTE)),
+            "{:?}",
+            typed.context
+        );
+        let answered = exec_with(
+            &executor,
+            BASH_SESSION,
+            &serde_json::json!({"session_id": id, "input": "<Enter>"}).to_string(),
+        );
+        assert_eq!(answered.output, "Exit code: 0\ngot 7");
+    }
+
+    /// The refined headers a call sent, in order.
+    fn titles_of(
+        executor: &RealToolExecutor,
+        name: &str,
+        args: &str,
+    ) -> (ToolOutcome, Vec<String>) {
+        let mut titles = Vec::new();
+        let out = executor.execute(&call(name, args), &CancelToken::new(), &mut |progress| {
+            if let ToolProgress::Title(title) = progress {
+                titles.push(title.to_string());
+            }
+        });
+        (out, titles)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_session_calls_header_names_its_command_and_shows_the_keys_typed() {
+        // The header says what the keys go to, and shows them as typed — at
+        // a prompt that reads with echo off too: masking there hid ordinary
+        // input as often as a password (docs/interactive-shell.md).
+        let (registry, _rx) = test_registry();
+        let executor = RealToolExecutor::new().with_background(registry.clone());
+        let out = exec_with(
+            &executor,
+            "bash",
+            r#"{"command":"printf 'Code: '; stty -echo; read c; stty echo; echo; echo \"got $c\"","tty":true}"#,
+        );
+        let id = session_of(&out.output);
+        let (typed, titles) = titles_of(
+            &executor,
+            BASH_SESSION,
+            &serde_json::json!({"session_id": id, "input": "1234\n"}).to_string(),
+        );
+        assert_eq!(titles.len(), 1, "{titles:?}");
+        assert!(titles[0].starts_with("printf 'Code: '"), "{titles:?}");
+        assert!(titles[0].ends_with(" ← 1234⏎"), "{titles:?}");
+        assert!(typed.output.contains("got 1234"), "{}", typed.output);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ctrl_b_on_a_session_call_ends_the_wait_and_tells_the_model() {
+        let (registry, _rx) = test_registry();
+        let executor = RealToolExecutor::new().with_background(registry.clone());
+        let out = exec_with(
+            &executor,
+            "bash",
+            r#"{"command":"printf 'working'; sleep 30","tty":true}"#,
+        );
+        let id = session_of(&out.output);
+        let latch = registry.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            latch.request_background();
+        });
+        let started = std::time::Instant::now();
+        let waited = exec_with(
+            &executor,
+            BASH_SESSION,
+            &serde_json::json!({"session_id": id, "timeout": 20_000}).to_string(),
+        );
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(5),
+            "the wait ended at the key"
+        );
+        assert!(waited.ok);
+        assert!(registry.session(&id).is_some(), "the session runs on");
+        assert!(
+            waited
+                .context
+                .as_deref()
+                .is_some_and(|text| text.ends_with(crate::pty::report::WAIT_ENDED_NOTE)),
+            "{:?}",
+            waited.context
+        );
+        registry.kill_all();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn text_a_line_editor_holds_unsubmitted_is_pointed_out_too() {
+        // Caught live: Python's REPL reads key by key (readline), so the
+        // line-mode check never saw its unsubmitted line — the model polled
+        // three times, "waiting for the output to flush". The echo at the
+        // prompt, with the cursor right after it, is what gives it away.
+        let (registry, _rx) = test_registry();
+        let executor = RealToolExecutor::new().with_background(registry.clone());
+        let editor = r#"bash -c 'stty -icanon -echo; printf ">>> "; while IFS= read -r -s -n1 c; do printf "%s" "$c"; done'"#;
+        let out = exec_with(
+            &executor,
+            "bash",
+            &serde_json::json!({"command": editor, "tty": true}).to_string(),
+        );
+        let id = session_of(&out.output);
+        let typed = exec_with(
+            &executor,
+            BASH_SESSION,
+            &serde_json::json!({"session_id": id, "input": "print(1)"}).to_string(),
+        );
+        let report = format!("Running (session {id}, waiting for input)\n>>> print(1)");
+        assert_eq!(typed.output, report);
+        assert_eq!(
+            typed.context,
+            Some(format!(
+                "{report}\n{}",
+                crate::pty::report::UNSUBMITTED_NOTE
+            ))
+        );
+        registry.kill_all();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_program_reading_key_by_key_gets_no_submit_note() {
+        let (registry, _rx) = test_registry();
+        let executor = RealToolExecutor::new().with_background(registry.clone());
+        let out = exec_with(
+            &executor,
+            "bash",
+            r#"{"command":"stty -icanon -echo; printf 'key> '; k=$(dd bs=1 count=1 2>/dev/null); printf \"got $k\\nkey> \"; dd bs=1 count=1 >/dev/null 2>&1; sleep 30","tty":true}"#,
+        );
+        let id = session_of(&out.output);
+        let pressed = exec_with(
+            &executor,
+            BASH_SESSION,
+            &serde_json::json!({"session_id": id, "input": "x"}).to_string(),
+        );
+        assert_eq!(
+            pressed.output,
+            format!("Running (session {id}, waiting for input)\nkey> got x\nkey>"),
+            "the key already reached it"
+        );
+        assert_eq!(pressed.context, None, "nothing to add for the model");
+        registry.kill_all();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_unknown_session_lists_the_running_ones() {
+        let (registry, _rx) = test_registry();
+        let executor = RealToolExecutor::new().with_background(registry.clone());
+        let none = exec_with(&executor, BASH_SESSION, r#"{"session_id":"bnope"}"#);
+        assert!(!none.ok);
+        assert!(none.output.contains("bnope"), "{}", none.output);
+        assert!(
+            none.output.contains("No sessions are running"),
+            "{}",
+            none.output
+        );
+        let task = registry
+            .launch("sleep 30", Some("nap".into()), true)
+            .expect("launches");
+        let listed = exec_with(&executor, BASH_SESSION, r#"{"session_id":"bnope"}"#);
+        assert!(
+            listed.output.contains(&format!("{} (sleep 30)", task.id)),
+            "{}",
+            listed.output
+        );
+        registry.kill_all();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn tty_with_run_in_background_returns_the_session_at_once() {
+        let (registry, _rx) = test_registry();
+        let executor = RealToolExecutor::new().with_background(registry.clone());
+        let out = exec_with(
+            &executor,
+            "bash",
+            r#"{"command":"cat","tty":true,"run_in_background":true}"#,
+        );
+        assert!(out.ok, "{}", out.output);
+        let id = out.background.clone().expect("resolves as backgrounded");
+        assert!(
+            out.output.contains(&format!("session {id}")),
+            "{}",
+            out.output
+        );
+        assert!(out.output.contains("bash_session"), "{}", out.output);
+        let echoed = exec_with(
+            &executor,
+            BASH_SESSION,
+            &serde_json::json!({"session_id": id, "input": "hello\n"}).to_string(),
+        );
+        assert!(
+            echoed.output.ends_with("hello\nhello"),
+            "the terminal's echo, then cat's copy: {}",
+            echoed.output
+        );
+        registry.kill_all();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_background_pipe_command_takes_ctrl_c_but_no_typing() {
+        let (registry, _rx) = test_registry();
+        let executor = RealToolExecutor::new().with_background(registry);
+        let out = exec_with(
+            &executor,
+            "bash",
+            r#"{"command":"sleep 30","run_in_background":true}"#,
+        );
+        let id = out.background.expect("backgrounded");
+        let refused = exec_with(
+            &executor,
+            BASH_SESSION,
+            &serde_json::json!({"session_id": id, "input": "y\n"}).to_string(),
+        );
+        assert!(!refused.ok);
+        assert!(refused.output.contains("tty: true"), "{}", refused.output);
+        // The child needs its moment to lead its own group (see the
+        // registry's own interrupt test).
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        let interrupted = exec_with(
+            &executor,
+            BASH_SESSION,
+            &serde_json::json!({"session_id": id, "input": "<C-c>"}).to_string(),
+        );
+        assert!(
+            interrupted.output.starts_with("Exit code:"),
+            "SIGINT ended it: {}",
+            interrupted.output
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_cancelled_tty_launch_takes_its_session_down() {
+        let (registry, _rx) = test_registry();
+        let executor = RealToolExecutor::new().with_background(registry.clone());
+        let cancel = CancelToken::new();
+        let canceller = cancel.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            canceller.cancel();
+        });
+        let start = std::time::Instant::now();
+        let out = executor.execute(
+            &call("bash", r#"{"command":"sleep 60","tty":true}"#),
+            &cancel,
+            &mut |_| {},
+        );
+        assert!(!out.ok);
+        assert!(start.elapsed() < std::time::Duration::from_secs(3));
+        // The kill is immediate; the monitor lets go of the task a moment
+        // later, once it has reaped the process.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while !registry.sessions().is_empty() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "nothing left running: {:?}",
+                registry.sessions()
+            );
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    }
+
+    #[test]
+    fn a_plain_command_that_wanted_a_terminal_hints_at_tty_for_the_model() {
+        let (registry, _rx) = test_registry();
+        let executor = RealToolExecutor::new().with_background(registry);
+        let out = exec_with(
+            &executor,
+            "bash",
+            r#"{"command":"echo 'error: must be run in an interactive terminal' >&2; exit 2"}"#,
+        );
+        assert!(!out.ok);
+        assert_eq!(
+            out.output, "Exit code: 2\nerror: must be run in an interactive terminal\n",
+            "the cell shows the command's own output"
+        );
+        assert_eq!(
+            out.context.as_deref(),
+            Some(
+                format!(
+                    "Exit code: 2\nerror: must be run in an interactive terminal\n\n{}",
+                    crate::llm::tools::TTY_HINT
+                )
+                .as_str()
+            ),
+            "the model reads the hint beside it"
+        );
+        // Without the registry there is no tty to point at.
+        let bare = exec(
+            "bash",
+            r#"{"command":"echo 'error: must be run in an interactive terminal' >&2; exit 2"}"#,
+        );
+        assert_eq!(bare.context, None);
+        // A failure that says nothing of terminals gets nothing.
+        let plain = exec_with(&executor, "bash", r#"{"command":"exit 3"}"#);
+        assert_eq!(plain.context, None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_terminal_calls_cell_redraws_a_progress_bar_in_place() {
+        // The running cell streams what the report will say: the bar is one
+        // row replaced as it moves, never its every frame
+        // (docs/interactive-shell.md).
+        let (registry, _rx) = test_registry();
+        let executor = RealToolExecutor::new().with_background(registry.clone());
+        let command = r"printf 'fetching\n'; for p in 10 40 70 100; do printf '\r%3d%%' $p; sleep 0.2; done; printf '\n'";
+        let mut view = String::new();
+        let mut live_len = 0;
+        let mut frames = Vec::new();
+        let out = executor.execute(
+            &call(
+                "bash",
+                &serde_json::json!({"command": command, "tty": true}).to_string(),
+            ),
+            &CancelToken::new(),
+            &mut |progress| {
+                if let ToolProgress::Screen { settled, live } = progress {
+                    live_len = crate::app::apply_tool_screen(&mut view, live_len, settled, live);
+                    frames.push(view.clone());
+                }
+            },
+        );
+        assert_eq!(out.output, "Exit code: 0\nfetching\n100%");
+        assert!(
+            frames.iter().any(|frame| frame == "fetching\n 40%"),
+            "the bar streamed as it moved: {frames:?}"
+        );
+        assert!(
+            frames.iter().all(|frame| frame.matches('%').count() <= 1),
+            "one row per bar, never two frames at once: {frames:?}"
+        );
+        registry.kill_all();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_relayed_progress_display_is_waited_out_and_reported_once() {
+        // `sudo pacman -Syy` as its terminal sees it: sudo relays with the
+        // terminal raw and its output processing off, and pacman redraws its
+        // download bars in place, parking the cursor at the start of a bar
+        // between updates. Neither is a prompt — a wait rides it out to the
+        // exit — and a look carries only the lines that changed since the
+        // previous one, so the finished bars are not repeated.
+        let (registry, _rx) = test_registry();
+        let executor = RealToolExecutor::new().with_background(registry.clone());
+        let script = concat!(
+            r"stty raw -echo; ",
+            r"printf ':: Synchronizing package databases...\r\n core\r\n extra\r\n multilib\r\n'; ",
+            r"printf '\033[3F core     100%%\r\033[2E multilib 100%%\r\033[1F extra      10%%\r'; ",
+            r"sleep 2.5; printf ' extra      50%%\r'; sleep 0.8; ",
+            r"printf ' extra     100%%\r\033[2E'",
+        );
+        let launch = exec_with(
+            &executor,
+            "bash",
+            &serde_json::json!({"command": script, "tty": true}).to_string(),
+        );
+        let first = launch.output.lines().next().unwrap_or_default();
+        let Some(crate::pty::report::Frame::Running { session, waiting }) =
+            crate::pty::report::parse_frame(first)
+        else {
+            panic!("still running at the launch's return: {}", launch.output);
+        };
+        assert_eq!(
+            waiting,
+            crate::pty::report::Waiting::No,
+            "a relay's raw terminal is no prompt: {}",
+            launch.output
+        );
+        assert!(
+            launch
+                .output
+                .ends_with(" core     100%\n extra      10%\n multilib 100%"),
+            "{}",
+            launch.output
+        );
+        let session = session.to_string();
+        let waited = exec_with(
+            &executor,
+            BASH_SESSION,
+            &serde_json::json!({"session_id": session, "timeout": 10000}).to_string(),
+        );
+        assert_eq!(
+            waited.output, "Exit code: 0\n extra     100%",
+            "one wait to the exit, and only the bar that moved"
+        );
+        registry.kill_all();
+    }
+
+    #[test]
+    fn tty_and_sessions_need_the_registry() {
+        let out = exec("bash", r#"{"command":"python3","tty":true}"#);
+        assert!(!out.ok);
+        assert!(out.output.contains("without tty"), "{}", out.output);
+        let out = exec(BASH_SESSION, r#"{"session_id":"b1"}"#);
+        assert!(!out.ok);
+    }
+
+    const BASH_SESSION: &str = crate::llm::tools::BASH_SESSION_TOOL_NAME;
 }

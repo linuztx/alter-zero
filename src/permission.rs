@@ -7,7 +7,7 @@
 //! the environment — the boundary builds a [`PermissionRequest`] and the event
 //! loop resolves it.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
@@ -106,6 +106,13 @@ pub enum PermissionKind {
     /// own description of the tool — the `Bash` shape, because it answers the
     /// same question (*what exactly is about to run?*).
     Mcp,
+    /// Input typed into an interactive session a `tty` command left running
+    /// (`bash_session`, `docs/interactive-shell.md`): the target is the
+    /// session id (what "don't ask again for this session" remembers — never
+    /// persisted), the body the input on one line (`print(1)⏎`), the detail
+    /// the command the session runs — whose allowlist rule covers its input
+    /// too, since `python3 *` already trusts that program with anything.
+    Session,
 }
 
 /// One tool call waiting on the user's approval.
@@ -114,17 +121,18 @@ pub struct PermissionRequest {
     /// The gate id this request is resolved by ([`PermissionGate::next_id`]).
     pub id: String,
     pub kind: PermissionKind,
-    /// The file path (`Write`/`Edit`), the whole command (`Bash`), or the
-    /// `mcp__server__tool` wire name (`Mcp` — the rule key).
+    /// The file path (`Write`/`Edit`), the whole command (`Bash`), the
+    /// `mcp__server__tool` wire name (`Mcp` — the rule key), or the session
+    /// id (`Session`).
     pub target: String,
     /// The framed body: the numbered contents / diff for a file change, the
-    /// `key: "value"` arguments for an MCP call, empty for a command (whose
-    /// `target` *is* the body).
+    /// `key: "value"` arguments for an MCP call, the input on one line for a
+    /// session, empty for a command (whose `target` *is* the body).
     pub body: String,
     /// The one-line description shown dim under the target: the model's own
     /// `description` argument for a `bash` call, the server's own description
-    /// of the tool for an MCP one. `None` for a file change (and for either of
-    /// those when none was given).
+    /// of the tool for an MCP one, the command a session runs. `None` for a
+    /// file change (and for any of those when none is known).
     pub detail: Option<String>,
     /// The subagent type that asked (`general-purpose`), so the title can say
     /// `· from the general-purpose agent`. `None` for the main agent.
@@ -187,6 +195,7 @@ pub const fn title(kind: PermissionKind) -> &'static str {
         // Claude Code's own title for a server tool: the user is approving a
         // *use*, and the body names the tool and server (`docs/mcp.md`).
         PermissionKind::Mcp => "Tool use",
+        PermissionKind::Session => "Session input",
     }
 }
 
@@ -212,6 +221,7 @@ pub fn question(request: &PermissionRequest) -> String {
         // so the question asks the one thing left (`docs/mcp.md`) — the `bash`
         // prompt's wording, for the same reason.
         PermissionKind::Bash | PermissionKind::Mcp => "Do you want to proceed?".to_string(),
+        PermissionKind::Session => "Do you want to send this input?".to_string(),
     }
 }
 
@@ -277,7 +287,12 @@ pub fn options(request: &PermissionRequest, project: Option<&str>) -> [String; O
                 None => format!("Yes, and don't ask again for {label} commands"),
             }
         }
-        _ => "Yes, allow all edits during this session (shift+tab)".to_string(),
+        // The session is the scope: its id is remembered in memory for as
+        // long as it runs, never as a rule (docs/interactive-shell.md).
+        PermissionKind::Session => "Yes, and don't ask again for this session".to_string(),
+        PermissionKind::Write | PermissionKind::Edit => {
+            "Yes, allow all edits during this session (shift+tab)".to_string()
+        }
     };
     ["Yes".to_string(), remember, "No".to_string()]
 }
@@ -308,6 +323,7 @@ pub fn denied_display(request: &PermissionRequest, feedback: Option<&str>) -> St
         PermissionKind::Edit => format!("User rejected edit to {}", file_name(&request.target)),
         PermissionKind::Bash => "User rejected command".to_string(),
         PermissionKind::Mcp => format!("User rejected {}", mcp_display(&request.target)),
+        PermissionKind::Session => "User rejected input".to_string(),
     };
     match feedback.map(str::trim).filter(|f| !f.is_empty()) {
         Some(text) => format!("{headline}\n{AMEND_DISPLAY_LABEL}{text}"),
@@ -739,18 +755,33 @@ impl PermissionRules {
                 self.mode,
                 PermissionMode::Edit | PermissionMode::Auto | PermissionMode::Master
             ),
-            PermissionKind::Bash => match command_scope(&request.target) {
-                CommandScope::Prefixes { keys, .. } => {
-                    !keys.is_empty() && keys.iter().all(|k| self.prefixes.contains(k))
-                }
-                CommandScope::Exact(command) => self.exact.contains(&command),
-            },
+            PermissionKind::Bash => self.allows_command(&request.target),
             // An MCP call is covered only by its exact wire-name rule (or
             // master, above): `edit` mode is about file changes, and `auto`'s
             // classifier is the approve seam's per-call consult — never a
             // standing rule — so an uncovered tool still classifies (or, in
             // the asking modes, asks) every time (`docs/mcp.md`).
             PermissionKind::Mcp => self.exact.contains(&request.target),
+            // Input into a session is covered by the rule its command runs
+            // under — `python3 *` trusts python3 with any arguments, the REPL
+            // included — and by nothing else here: the per-session "don't
+            // ask again" lives on the gate, not in the persisted rules
+            // (docs/interactive-shell.md).
+            PermissionKind::Session => request
+                .detail
+                .as_deref()
+                .is_some_and(|command| self.allows_command(command)),
+        }
+    }
+
+    /// Does the command allowlist cover `command` — every segment's prefix
+    /// listed, or the command itself as an exact rule?
+    fn allows_command(&self, command: &str) -> bool {
+        match command_scope(command) {
+            CommandScope::Prefixes { keys, .. } => {
+                !keys.is_empty() && keys.iter().all(|k| self.prefixes.contains(k))
+            }
+            CommandScope::Exact(command) => self.exact.contains(&command),
         }
     }
 
@@ -773,6 +804,10 @@ impl PermissionRules {
             PermissionKind::Mcp => {
                 self.exact.insert(request.target.clone());
             }
+            // Not a rule: a session's approval ends with the session, so the
+            // gate keeps it in memory ([`PermissionGate::remember`]) and
+            // nothing reaches `permissions.json`.
+            PermissionKind::Session => {}
         }
     }
 }
@@ -911,6 +946,10 @@ struct GateInner {
     /// Decisions the loop has posted, keyed by request id — each taken by the
     /// one thread waiting on it.
     decisions: HashMap<String, PermissionDecision>,
+    /// The interactive sessions whose input the user approved for good
+    /// ("don't ask again for this session") — ids, in memory only: a session
+    /// ends with the process, and its id means nothing to the next one.
+    sessions: HashSet<String>,
 }
 
 /// The permission handshake: the tool thread asks, blocks, and is woken by the
@@ -939,7 +978,9 @@ impl PermissionGate {
     /// raised at all)?
     #[must_use]
     pub fn allows(&self, request: &PermissionRequest) -> bool {
-        self.lock().rules.allows(request)
+        let inner = self.lock();
+        inner.rules.allows(request)
+            || (request.kind == PermissionKind::Session && inner.sessions.contains(&request.target))
     }
 
     /// Point the gate at this session's scratchpad directory — the boundary
@@ -969,9 +1010,15 @@ impl PermissionGate {
         })
     }
 
-    /// Record option 2's standing approval.
+    /// Record option 2's standing approval — a rule, or for a session's
+    /// input the session itself, for as long as it runs.
     pub fn remember(&self, request: &PermissionRequest) {
-        self.lock().rules.remember(request);
+        let mut inner = self.lock();
+        if request.kind == PermissionKind::Session {
+            inner.sessions.insert(request.target.clone());
+        } else {
+            inner.rules.remember(request);
+        }
     }
 
     /// The session's [`PermissionMode`] (the footer's right-edge segment).
@@ -1809,5 +1856,87 @@ mod tests {
         assert!(rules.exact.contains("mcp__deepwiki__ask_question"));
         // The rule is exact: a sibling tool still asks.
         assert!(!rules.allows(&request(PermissionKind::Mcp, "mcp__deepwiki__read_wiki")));
+    }
+
+    // --- interactive-session input (docs/interactive-shell.md) ---
+
+    /// Input typed into session `id`, which runs `command`.
+    fn session_request(id: &str, command: &str) -> PermissionRequest {
+        PermissionRequest {
+            body: "print(1)⏎".to_string(),
+            detail: Some(command.to_string()),
+            ..request(PermissionKind::Session, id)
+        }
+    }
+
+    #[test]
+    fn session_input_asks_in_its_own_words() {
+        let req = session_request("b7x2k9m1q", "python3");
+        assert_eq!(title(PermissionKind::Session), "Session input");
+        assert_eq!(question(&req), "Do you want to send this input?");
+        assert_eq!(
+            options(&req, Some("~/proj")),
+            [
+                "Yes".to_string(),
+                "Yes, and don't ask again for this session".to_string(),
+                "No".to_string(),
+            ]
+        );
+        assert_eq!(denied_display(&req, None), "User rejected input");
+        assert!(!hints(&req).iter().any(|(k, _)| *k == "ctrl+e"));
+    }
+
+    #[test]
+    fn session_input_is_covered_by_the_rule_its_command_runs_under() {
+        // Typing into `python3` is what `python3 *` already allowed — the
+        // REPL is the program the rule trusts with any arguments.
+        let mut rules = PermissionRules::default();
+        let req = session_request("b1", "python3");
+        assert!(!rules.allows(&req), "manual asks");
+        rules.mode = PermissionMode::Edit;
+        assert!(!rules.allows(&req), "edit mode is about file changes");
+        rules.mode = PermissionMode::Auto;
+        assert!(!rules.allows(&req), "auto classifies it per call");
+        rules.mode = PermissionMode::Master;
+        assert!(rules.allows(&req));
+        rules.mode = PermissionMode::Manual;
+        rules.prefixes.insert("python3".to_string());
+        assert!(rules.allows(&req));
+        assert!(
+            !rules.allows(&session_request("b2", "node")),
+            "another program still asks"
+        );
+        assert!(
+            !rules.allows(&PermissionRequest {
+                detail: None,
+                ..session_request("b3", "python3")
+            }),
+            "a session whose command is unknown asks"
+        );
+    }
+
+    #[test]
+    fn dont_ask_again_holds_for_that_session_alone_and_is_never_saved() {
+        let gate = PermissionGate::new();
+        let req = session_request("b1", "python3");
+        assert!(!gate.allows(&req));
+        gate.remember(&req);
+        assert!(gate.allows(&req));
+        assert!(
+            gate.allows(&PermissionRequest {
+                body: "<Down><Enter>".to_string(),
+                ..req.clone()
+            }),
+            "any later input into it"
+        );
+        assert!(
+            !gate.allows(&session_request("b2", "python3")),
+            "a new session asks again"
+        );
+        assert_eq!(
+            gate.rules(),
+            PermissionRules::default(),
+            "a session id is not a rule — nothing reaches permissions.json"
+        );
     }
 }

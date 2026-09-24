@@ -217,9 +217,14 @@ the only thing that tells the reader the cap cut it. The dropped bytes are
 **not recoverable**: unlike a paged file there is nothing to expand to; the
 `…` only says "this is where the cap cut it".
 
-Reading goes through `String::from_utf8_lossy`, so non-UTF-8 output no longer
-errors (`read_to_string` did), and a cap that splits a multi-byte char yields a
-single `U+FFFD`.
+The retained bytes are **folded** the way a terminal would have shown them
+(`pty::fold`, `docs/interactive-shell.md`): a `\r`-redrawn progress bar is
+one line in its final state and colour escapes vanish, so the cell — and the
+model's context, which replays it — reads the text rather than every frame
+that drew it; tabs and trailing spaces stay. Non-UTF-8 bytes read as
+`U+FFFD` (what `String::from_utf8_lossy` gave before the fold), so non-UTF-8
+output never errors (`read_to_string` did), and a cap that splits a
+multi-byte char yields a single `U+FFFD`.
 
 ### Footer — the `Shell mode` line (`ui/footer.rs`)
 

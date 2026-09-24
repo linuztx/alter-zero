@@ -188,7 +188,13 @@ impl ToolOutcome {
 /// subset every OpenAI-compatible provider accepts.
 #[must_use]
 pub fn tool_specs() -> Vec<Value> {
-    vec![bash_spec(), read_spec(), write_spec(), edit_spec()]
+    vec![
+        bash_spec(),
+        read_spec(),
+        write_spec(),
+        edit_spec(),
+        bash_session_spec(),
+    ]
 }
 
 /// [`tool_specs`] plus the `agent` tool — the **main** backend's set when a
@@ -232,7 +238,29 @@ pub fn allowed_specs(specs: Vec<Value>, tools: &crate::subagents::AgentTools) ->
 
 /// The tool names offered, in definition order — handy for the system prompt
 /// and tests.
-pub const TOOL_NAMES: [&str; 4] = ["bash", "read", "write", "edit"];
+pub const TOOL_NAMES: [&str; 5] = ["bash", "read", "write", "edit", BASH_SESSION_TOOL_NAME];
+
+/// The wire name of the interactive-session tool — `bash`'s companion for a
+/// command it left running (`docs/interactive-shell.md`).
+pub const BASH_SESSION_TOOL_NAME: &str = "bash_session";
+
+/// The display name a `bash_session` cell's header shows. Not the
+/// lowercase-fallback spelling of the wire name (`bash_session` has an
+/// underscore), so the context replay maps it back explicitly.
+pub const BASH_SESSION_TOOL_DISPLAY: &str = "BashSession";
+
+/// How long a `bash_session` call waits for the command to respond when the
+/// model names no `timeout` — a REPL answers in well under it, and a wait on
+/// a slow command returns early the moment it exits or prompts.
+pub const SESSION_DEFAULT_TIMEOUT_MS: u64 = 10_000;
+
+/// The longest a `bash_session` header shows of the input it typed — the
+/// terminal's echo, in the output below, shows all of it.
+const SESSION_INPUT_SUMMARY_CHARS: usize = 120;
+
+/// The most of a session's command a `bash_session` header shows
+/// ([`session_title`]).
+const SESSION_COMMAND_SUMMARY_CHARS: usize = 60;
 
 /// The wire name of the subagent-launching tool (`docs/agent-tool.md`).
 pub const AGENT_TOOL_NAME: &str = "agent";
@@ -586,6 +614,13 @@ fn bash_spec() -> Value {
          - Prefer the `read` tool over `cat` to inspect files.\n\
          - Long output is truncated; a non-zero exit status is reported.\n\
          - `timeout` is in milliseconds: default 120000, max 600000.\n\
+         - `tty` runs the command in a terminal, for anything interactive: \
+         prompts ([Y/n], passwords), REPLs (python3, node, psql), full-screen \
+         programs (vim, less, top) — and retry with it when a command says it \
+         needs a terminal. The call returns once the command exits or waits \
+         for input; if it is still running you get a session_id to continue \
+         it with `bash_session`. Prefer a non-interactive flag (`-y`, \
+         `--yes`) when one exists.\n\
          - `run_in_background` runs the command detached: the call returns \
          at once, the command keeps running across turns, and you are \
          notified when it finishes. Use it for a long-running command you \
@@ -603,6 +638,11 @@ fn bash_spec() -> Value {
                     "description": "Optional timeout in milliseconds (max \
                         600000). Ignored when run_in_background is true."
                 },
+                "tty": {
+                    "type": "boolean",
+                    "description": "Set to true to run the command in a \
+                        terminal so it can be interactive. Defaults to false."
+                },
                 "run_in_background": {
                     "type": "boolean",
                     "description": "Set to true to run this command in the \
@@ -615,6 +655,55 @@ fn bash_spec() -> Value {
                 }
             },
             "required": ["command"],
+            "additionalProperties": false
+        }),
+    )
+}
+
+/// The `bash_session` tool (`docs/interactive-shell.md`): everything that
+/// happens *to* a command `bash` left running — typing, waiting, stopping —
+/// so `bash` itself keeps meaning "run a command".
+fn bash_session_spec() -> Value {
+    function_spec(
+        BASH_SESSION_TOOL_NAME,
+        "Continue a command `bash` left running — a `tty` session or a \
+         `run_in_background` command — by its session_id.\n\
+         - `input` is typed as-is; a newline presses Enter. Name other keys in \
+         angle brackets: <Enter> <Tab> <Esc> <BS> <Up> <Down> <Left> <Right> \
+         <PageUp> <C-c> <C-d> <C-z> <M-x> <F1>…\n\
+         - Answer one prompt per call, ending the answer with <Enter>, and \
+         read what it asks next.\n\
+         - Without `input` the call just waits for new output.\n\
+         - `kill: true` ends the command and everything it started — only to \
+         abandon it; a command that finishes exits by itself.\n\
+         Returns what the command printed since your last call — or a \
+         full-screen program's current screen — once it exits, waits for \
+         input, or `timeout` passes. Never guess a password or secret you \
+         were not given — ask the user.",
+        json!({
+            "type": "object",
+            "properties": {
+                "session_id": {
+                    "type": "string",
+                    "description": "The session id `bash` reported."
+                },
+                "input": {
+                    "type": "string",
+                    "description": "What to type, e.g. \"y<Enter>\", \
+                        \"print(2 + 2)<Enter>\", \"<Down><Enter>\", \"<C-c>\"."
+                },
+                "timeout": {
+                    "type": "number",
+                    "description": "How long to wait for output, in \
+                        milliseconds: default 10000, max 600000."
+                },
+                "kill": {
+                    "type": "boolean",
+                    "description": "Set to true to end the command for good. \
+                        Defaults to false."
+                }
+            },
+            "required": ["session_id"],
             "additionalProperties": false
         }),
     )
@@ -757,9 +846,80 @@ pub struct BashArgs {
     /// Run the command as a background task (`docs/background.md`).
     #[serde(default)]
     pub run_in_background: bool,
+    /// Run the command in a terminal of its own — an interactive session
+    /// (`docs/interactive-shell.md`).
+    #[serde(default)]
+    pub tty: bool,
     /// A short human description, shown in the UI and completion notices.
     #[serde(default)]
     pub description: Option<String>,
+}
+
+/// What a plain `bash` call's model-facing result gains when the command
+/// failed saying it needs a terminal (see [`tty_hint`]).
+pub const TTY_HINT: &str = "Hint: this command wants a terminal. Run it again with \
+    tty: true, then answer its prompts with bash_session.";
+
+/// The ways a program says it wanted a terminal and did not get one —
+/// matched case-insensitively against a failed plain `bash` call's output.
+const NEEDS_TERMINAL: [&str; 13] = [
+    "not a tty",
+    "not a terminal",
+    "not from a terminal",
+    "a terminal is required",
+    "requires a terminal",
+    "needs a terminal",
+    "need a terminal",
+    "interactive terminal",
+    "run interactively",
+    "inappropriate ioctl for device",
+    "/dev/tty",
+    "no tty present",
+    "pseudo-terminal will not be allocated",
+];
+
+/// The hint for a failed plain `bash` call whose output says it needs a
+/// terminal — `None` otherwise. Delivered with the failure, when the model is
+/// deciding what to do next: a flag in the schema alone did not get a model
+/// from `must be run in an interactive terminal` to `tty: true`
+/// (docs/interactive-shell.md).
+#[must_use]
+pub fn tty_hint(output: &str) -> Option<&'static str> {
+    let lower = output.to_ascii_lowercase();
+    NEEDS_TERMINAL
+        .iter()
+        .any(|phrase| lower.contains(phrase))
+        .then_some(TTY_HINT)
+}
+
+/// Parsed `bash_session` arguments (`docs/interactive-shell.md`).
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct SessionArgs {
+    /// The session `bash` reported. `id` and `shell_id` are accepted too:
+    /// a model reaching for the obvious short name should not be refused a
+    /// call whose intent is plain.
+    #[serde(alias = "id", alias = "shell_id")]
+    pub session_id: String,
+    /// What to type (`pty::keys` notation); absent for a pure wait.
+    #[serde(default)]
+    pub input: Option<String>,
+    /// Milliseconds to wait for the command to respond.
+    #[serde(default, alias = "timeout_ms")]
+    pub timeout: Option<u64>,
+    /// End the command. `stop` is accepted too — but the schema says
+    /// `kill`, because a model read `stop` as "stop waiting" and ended a
+    /// wizard mid-answer (docs/interactive-shell.md).
+    #[serde(default, alias = "stop")]
+    pub kill: bool,
+}
+
+impl SessionArgs {
+    /// The effective wait in milliseconds: the model's own `timeout`, else
+    /// [`SESSION_DEFAULT_TIMEOUT_MS`], clamped to `1..=`[`BASH_MAX_TIMEOUT_MS`].
+    #[must_use]
+    pub fn timeout_ms(&self) -> u64 {
+        effective_session_timeout_ms(self.timeout)
+    }
 }
 
 impl BashArgs {
@@ -806,6 +966,26 @@ pub fn bash_timeout_ms(arguments: Option<&str>) -> u64 {
         .and_then(|args| parse_args::<BashTimeoutArgs>(args).ok())
         .and_then(|args| args.timeout);
     effective_bash_timeout_ms(timeout)
+}
+
+/// [`bash_timeout_ms`]'s twin for a `bash_session` call: the wait it runs
+/// under, [`SessionArgs::timeout_ms`]'s rule read off the verbatim
+/// `arguments`, so the running cell's clock names what the executor waits.
+#[must_use]
+pub fn session_timeout_ms(arguments: Option<&str>) -> u64 {
+    let timeout = arguments
+        .and_then(|args| parse_args::<BashTimeoutArgs>(args).ok())
+        .and_then(|args| args.timeout);
+    effective_session_timeout_ms(timeout)
+}
+
+/// The one rule behind every `bash_session` wait — [`SessionArgs::timeout_ms`]
+/// and [`session_timeout_ms`] alike: the model's own `timeout`, else
+/// [`SESSION_DEFAULT_TIMEOUT_MS`], clamped to `1..=`[`BASH_MAX_TIMEOUT_MS`].
+fn effective_session_timeout_ms(timeout: Option<u64>) -> u64 {
+    timeout
+        .unwrap_or(SESSION_DEFAULT_TIMEOUT_MS)
+        .clamp(1, BASH_MAX_TIMEOUT_MS)
 }
 
 /// Parsed `read` arguments.
@@ -868,6 +1048,7 @@ pub fn display_name(name: &str) -> String {
         AGENT_TOOL_NAME => "Agent".to_string(),
         ASK_TOOL_NAME => ASK_TOOL_DISPLAY.to_string(),
         crate::skills::SKILL_TOOL_NAME => crate::skills::SKILL_TOOL_DISPLAY.to_string(),
+        BASH_SESSION_TOOL_NAME => BASH_SESSION_TOOL_DISPLAY.to_string(),
         other => other.to_string(),
     }
 }
@@ -929,6 +1110,16 @@ pub fn summarize_call(name: &str, arguments: &str) -> String {
     {
         return command.trim().to_string();
     }
+    // `● BashSession(b7x2k9m1q ← print(1)⏎)` — which session, and what the
+    // call did to it: typed (the input on one line, `pty::keys`' display
+    // form), stopped, or — the id alone — waited. With the registry at
+    // hand the session is named by its command instead
+    // ([`summarize_call_naming`], docs/interactive-shell.md).
+    if name == BASH_SESSION_TOOL_NAME
+        && let Ok(args) = parse_args::<SessionArgs>(arguments)
+    {
+        return session_summary(args.session_id.trim(), args.input.as_deref(), args.kill);
+    }
     let summary = match name {
         // Handled above; an unparseable call falls back to the flatten below.
         "bash" => None,
@@ -972,6 +1163,63 @@ pub fn summarize_call(name: &str, arguments: &str) -> String {
     };
     let summary = summary.unwrap_or_else(|| arguments.trim().to_string());
     flatten_one_line(&summary)
+}
+
+/// [`summarize_call`], with a `bash_session` call's session named by the
+/// command it runs when `session_command` knows its id — [`session_title`],
+/// what the executor refines the header to. So the header names the program
+/// the keys go to from the moment the call is announced: above its
+/// permission prompt, and on a cell the user refused, which never reaches
+/// the executor (`docs/interactive-shell.md`). An id nothing answers to is
+/// kept.
+#[must_use]
+pub fn summarize_call_naming(
+    name: &str,
+    arguments: &str,
+    session_command: &dyn Fn(&str) -> Option<String>,
+) -> String {
+    if name == BASH_SESSION_TOOL_NAME
+        && let Ok(args) = parse_args::<SessionArgs>(arguments)
+        && let Some(command) = session_command(args.session_id.trim())
+    {
+        return session_title(&command, args.input.as_deref(), args.kill);
+    }
+    summarize_call(name, arguments)
+}
+
+/// A `bash_session` call's header once the executor knows the session
+/// (`docs/interactive-shell.md`, sent as the call's refined title): the
+/// command the session runs — one line, cut at 60 characters — then what the
+/// call did.
+#[must_use]
+pub fn session_title(command: &str, input: Option<&str>, kill: bool) -> String {
+    let who = cut_chars(&flatten_one_line(command), SESSION_COMMAND_SUMMARY_CHARS);
+    session_summary(&who, input, kill)
+}
+
+/// `{who} ← {keys}`, `{who} · kill`, both, or `{who}` alone for a wait — the
+/// keys on one line, `pty::keys`' display form.
+fn session_summary(who: &str, input: Option<&str>, kill: bool) -> String {
+    let typed = input
+        .filter(|input| !input.is_empty())
+        .map(|input| {
+            let keys = crate::pty::keys::display_input(input);
+            format!(" ← {}", cut_chars(&keys, SESSION_INPUT_SUMMARY_CHARS))
+        })
+        .unwrap_or_default();
+    let kill = if kill { " · kill" } else { "" };
+    format!("{who}{typed}{kill}")
+}
+
+/// `text` kept to `max` characters, a `…` marking a cut.
+fn cut_chars(text: &str, max: usize) -> String {
+    let mut chars = text.chars();
+    let head: String = chars.by_ref().take(max).collect();
+    if chars.next().is_some() {
+        format!("{head}…")
+    } else {
+        head
+    }
 }
 
 /// Collapse a possibly multi-line string to a single spaced line — the
@@ -1735,13 +1983,258 @@ mod tests {
     use super::*;
 
     #[test]
-    fn tool_specs_offers_the_four_named_tools() {
+    fn tool_specs_offers_the_named_tools() {
         let specs = tool_specs();
         let names: Vec<&str> = specs
             .iter()
             .map(|s| s["function"]["name"].as_str().unwrap())
             .collect();
         assert_eq!(names, TOOL_NAMES);
+        assert_eq!(
+            names.last(),
+            Some(&BASH_SESSION_TOOL_NAME),
+            "appended, so every other tool keeps its place in the list"
+        );
+    }
+
+    // --- interactive shells (docs/interactive-shell.md) ---
+
+    #[test]
+    fn bash_offers_a_tty_flag_and_points_at_bash_session() {
+        let specs = tool_specs();
+        let bash = &specs[0]["function"];
+        let props = &bash["parameters"]["properties"];
+        assert_eq!(props["tty"]["type"], "boolean");
+        let desc = bash["description"].as_str().unwrap();
+        assert!(desc.contains("`tty`"), "got {desc}");
+        assert!(desc.contains("`bash_session`"), "got {desc}");
+        assert!(desc.contains("session_id"), "got {desc}");
+        // What it is for, concretely — prompts, REPLs, full-screen programs —
+        // and the one steer that keeps it from being overused.
+        for example in ["[Y/n]", "python3", "vim"] {
+            assert!(desc.contains(example), "`{example}` in: {desc}");
+        }
+        assert!(desc.contains("non-interactive"), "got {desc}");
+    }
+
+    #[test]
+    fn bash_session_takes_an_id_input_timeout_and_kill() {
+        let spec = bash_session_spec();
+        assert_eq!(spec["function"]["name"], BASH_SESSION_TOOL_NAME);
+        let params = &spec["function"]["parameters"];
+        assert_eq!(params["required"], json!(["session_id"]));
+        let props = params["properties"].as_object().unwrap();
+        let mut names: Vec<&str> = props.keys().map(String::as_str).collect();
+        names.sort_unstable();
+        assert_eq!(names, ["input", "kill", "session_id", "timeout"]);
+        assert_eq!(props["kill"]["type"], "boolean");
+        assert_eq!(props["timeout"]["type"], "number");
+    }
+
+    #[test]
+    fn bash_session_description_teaches_the_key_notation_and_the_look() {
+        let desc = bash_session_spec()["function"]["description"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        for key in ["<Enter>", "<C-c>", "<Up>", "<Esc>"] {
+            assert!(desc.contains(key), "`{key}` in: {desc}");
+        }
+        assert!(desc.contains("newline presses Enter"), "got {desc}");
+        assert!(desc.contains("since your last"), "only new output: {desc}");
+        assert!(desc.contains("screen"), "the full-screen case: {desc}");
+        assert!(
+            desc.contains("password"),
+            "the one thing never to guess: {desc}"
+        );
+        // Caught live: models sending every answer at once (the program
+        // then asks something they did not expect), and pairing the last
+        // answer with `kill` — a command that finishes exits by itself.
+        assert!(desc.contains("one prompt per call"), "got {desc}");
+        assert!(desc.contains("abandon"), "what kill is for: {desc}");
+        assert!(
+            !desc.contains("after typing"),
+            "kill is not a way to finish an answer: {desc}"
+        );
+        // Short: it rides every request.
+        assert!(desc.len() < 900, "{} chars: {desc}", desc.len());
+    }
+
+    #[test]
+    fn bash_session_input_examples_press_enter_by_name() {
+        // Caught live: an example shown as `"y\n"` was copied as a
+        // backslash and an `n` — escaped twice in the model's JSON, so the
+        // program never saw an Enter. A named key cannot be copied wrong.
+        let spec = bash_session_spec();
+        let input = spec["function"]["parameters"]["properties"]["input"]["description"]
+            .as_str()
+            .unwrap();
+        assert!(input.contains("y<Enter>"), "got {input}");
+        assert!(!input.contains('\\'), "no escapes to copy: {input}");
+    }
+
+    #[test]
+    fn bash_args_parse_the_tty_flag() {
+        let a: BashArgs = parse_args(r#"{"command":"python3","tty":true}"#).unwrap();
+        assert!(a.tty);
+        let b: BashArgs = parse_args(r#"{"command":"ls"}"#).unwrap();
+        assert!(!b.tty, "off by default");
+    }
+
+    #[test]
+    fn session_args_parse_with_their_defaults() {
+        let a: SessionArgs = parse_args(r#"{"session_id":"b7x2k9m1q"}"#).unwrap();
+        assert_eq!(a.session_id, "b7x2k9m1q");
+        assert_eq!(a.input, None);
+        assert!(!a.kill);
+        assert_eq!(a.timeout_ms(), SESSION_DEFAULT_TIMEOUT_MS);
+        assert_eq!(SESSION_DEFAULT_TIMEOUT_MS, 10_000, "the schema's default");
+        let b: SessionArgs =
+            parse_args(r#"{"session_id":"s","input":"y\n","timeout":999999999,"kill":true}"#)
+                .unwrap();
+        assert_eq!(b.input.as_deref(), Some("y\n"));
+        assert!(b.kill);
+        // The pre-rename spelling still parses.
+        let stop: SessionArgs = parse_args(r#"{"session_id":"s","stop":true}"#).unwrap();
+        assert!(stop.kill);
+        assert_eq!(b.timeout_ms(), BASH_MAX_TIMEOUT_MS, "clamped like bash's");
+        // A model reaching for the obvious short name is not refused.
+        let c: SessionArgs = parse_args(r#"{"id":"s2"}"#).unwrap();
+        assert_eq!(c.session_id, "s2");
+    }
+
+    #[test]
+    fn a_failure_that_says_it_needs_a_terminal_earns_the_tty_hint() {
+        // Caught live: a model met `must be run in an interactive terminal`
+        // and gave up, the `tty` flag in the schema notwithstanding. The hint
+        // arrives exactly when it is needed (docs/interactive-shell.md).
+        for output in [
+            "Exit code: 2\nerror: signup must be run in an interactive terminal",
+            "Exit code: 1\nsudo: a terminal is required to read the password",
+            "Exit code: 1\nthe input device is not a TTY",
+            "Exit code: 1\nstty: 'standard input': Inappropriate ioctl for device",
+            "Exit code: 2\nsh: 1: cannot open /dev/tty: No such device or address",
+            "Exit code: 1\nError: stdin is not a terminal",
+            "Exit code: 1\nPseudo-terminal will not be allocated because stdin is not a terminal.",
+            "Exit code: 1\nThis program needs a terminal to run.",
+            "Exit code: 1\nvim: Warning: Input is not from a terminal",
+        ] {
+            assert_eq!(tty_hint(output), Some(TTY_HINT), "{output}");
+        }
+        for output in [
+            "Exit code: 1\nerror[E0425]: cannot find value `x` in this scope",
+            "Exit code: 2\nls: cannot access 'nope': No such file or directory",
+            "Exit code: 1\n",
+        ] {
+            assert_eq!(tty_hint(output), None, "{output}");
+        }
+        assert!(TTY_HINT.contains("tty: true"), "{TTY_HINT}");
+        assert!(TTY_HINT.contains("bash_session"), "{TTY_HINT}");
+    }
+
+    #[test]
+    fn a_session_call_summarises_as_what_it_did_to_which_session() {
+        assert_eq!(display_name(BASH_SESSION_TOOL_NAME), "BashSession");
+        assert_eq!(
+            summarize_call(
+                BASH_SESSION_TOOL_NAME,
+                r#"{"session_id":"b7x2k9m1q","input":"print(1)\n"}"#
+            ),
+            "b7x2k9m1q ← print(1)⏎"
+        );
+        assert_eq!(
+            summarize_call(
+                BASH_SESSION_TOOL_NAME,
+                r#"{"session_id":"b7x2k9m1q","input":"<Down><enter>"}"#
+            ),
+            "b7x2k9m1q ← <Down>⏎"
+        );
+        assert_eq!(
+            summarize_call(BASH_SESSION_TOOL_NAME, r#"{"session_id":"b7x2k9m1q"}"#),
+            "b7x2k9m1q"
+        );
+        assert_eq!(
+            summarize_call(
+                BASH_SESSION_TOOL_NAME,
+                r#"{"session_id":"b7x2k9m1q","kill":true}"#
+            ),
+            "b7x2k9m1q · kill"
+        );
+        // Both: what was typed, then the kill that follows it.
+        assert_eq!(
+            summarize_call(
+                BASH_SESSION_TOOL_NAME,
+                r#"{"session_id":"b7x2k9m1q","input":"q","kill":true}"#
+            ),
+            "b7x2k9m1q ← q · kill"
+        );
+        // A pasted script stays a header, not a page — the terminal's echo
+        // shows the whole of it in the output below.
+        let long = "x".repeat(500);
+        let summary = summarize_call(
+            BASH_SESSION_TOOL_NAME,
+            &json!({"session_id": "s1", "input": long}).to_string(),
+        );
+        assert!(summary.chars().count() <= 130, "{summary}");
+        assert!(summary.ends_with('…'), "{summary}");
+    }
+
+    #[test]
+    fn a_session_call_is_summarized_by_the_command_its_session_runs() {
+        // The header the permission prompt sits under, and a refused cell
+        // keeps, names the program — not the id, which says nothing to a
+        // person (docs/interactive-shell.md).
+        let known = |id: &str| (id == "b5xg4o2w0").then(|| "sudo pacman -Syy".to_string());
+        let summarize = |arguments: serde_json::Value| {
+            summarize_call_naming(BASH_SESSION_TOOL_NAME, &arguments.to_string(), &known)
+        };
+        assert_eq!(
+            summarize(json!({"session_id": "b5xg4o2w0", "input": "password123\n"})),
+            "sudo pacman -Syy ← password123⏎"
+        );
+        assert_eq!(
+            summarize(json!({"session_id": "b5xg4o2w0", "input": "y\n"})),
+            session_title("sudo pacman -Syy", Some("y\n"), false),
+            "the header the executor refines to, so nothing changes when it runs"
+        );
+        assert_eq!(
+            summarize(json!({"session_id": "b5xg4o2w0"})),
+            "sudo pacman -Syy"
+        );
+        assert_eq!(
+            summarize(json!({"session_id": "b5xg4o2w0", "kill": true})),
+            "sudo pacman -Syy · kill"
+        );
+        assert_eq!(
+            summarize(json!({"session_id": "bnope", "input": "y\n"})),
+            "bnope ← y⏎",
+            "a session nothing answers to keeps its id"
+        );
+        assert_eq!(
+            summarize_call_naming("bash", r#"{"command":"ls -la"}"#, &known),
+            "ls -la"
+        );
+    }
+
+    #[test]
+    fn a_session_title_names_the_command_the_keys_go_to() {
+        assert_eq!(
+            session_title("python3", Some("print(1)\n"), false),
+            "python3 ← print(1)⏎"
+        );
+        assert_eq!(
+            session_title("sudo pacman -Syy", Some("y\n"), false),
+            "sudo pacman -Syy ← y⏎"
+        );
+        assert_eq!(session_title("python3", None, false), "python3");
+        assert_eq!(session_title("python3", None, true), "python3 · kill");
+        // A heredoc is a header's one line, cut.
+        let title = session_title(&format!("cat <<EOF\n{}\nEOF", "x".repeat(200)), None, false);
+        assert!(!title.contains('\n'), "{title}");
+        assert!(
+            title.chars().count() <= 61 && title.ends_with('…'),
+            "{title}"
+        );
     }
 
     #[test]
@@ -1989,6 +2482,22 @@ mod tests {
         // alias (a hook's `updatedInput`, an older fixture).
         let d: BashArgs = parse_args(r#"{"command":"x","timeout_ms":7000}"#).unwrap();
         assert_eq!(d.timeout_ms(), 7000);
+    }
+
+    #[test]
+    fn session_timeout_ms_is_the_session_calls_own_rule() {
+        // `bash_session` waits 10 s unless told otherwise — the running
+        // cell names that, not `bash`'s two minutes.
+        assert_eq!(session_timeout_ms(None), SESSION_DEFAULT_TIMEOUT_MS);
+        assert_eq!(
+            session_timeout_ms(Some(r#"{"session_id":"b1","timeout":30000}"#)),
+            30_000
+        );
+        assert_eq!(
+            session_timeout_ms(Some(r#"{"session_id":"b1","timeout":9999999}"#)),
+            BASH_MAX_TIMEOUT_MS
+        );
+        assert_eq!(session_timeout_ms(Some("nope")), SESSION_DEFAULT_TIMEOUT_MS);
     }
 
     #[test]
@@ -2789,14 +3298,17 @@ mod tests {
             .iter()
             .map(|spec| spec["function"]["name"].as_str().unwrap().to_string())
             .collect();
-        assert_eq!(names, ["bash", "read", "write", "edit", "agent"]);
+        assert_eq!(
+            names,
+            ["bash", "read", "write", "edit", "bash_session", "agent"]
+        );
         let base: Vec<String> = tool_specs()
             .iter()
             .map(|spec| spec["function"]["name"].as_str().unwrap().to_string())
             .collect();
         assert!(!base.contains(&"agent".to_string()));
         // The agent schema: description+prompt required, the optional pair.
-        let spec = &tool_specs_with_agents()[4]["function"]["parameters"];
+        let spec = &agent_spec()["function"]["parameters"];
         assert_eq!(
             spec["required"],
             serde_json::json!(["description", "prompt"])
@@ -2820,7 +3332,7 @@ mod tests {
         // pointer is the tool/listing pairing `docs/subagents.md` rests on: a
         // schema naming types that no longer exist, or a reminder nothing
         // points at, is how a model comes to guess a `subagent_type`.
-        let spec = &tool_specs_with_agents()[4]["function"];
+        let spec = &agent_spec()["function"];
         let described = spec["parameters"]["properties"]["subagent_type"]["description"]
             .as_str()
             .expect("the type param is described");
@@ -2842,13 +3354,14 @@ mod tests {
         // definitions existed.
         assert_eq!(
             spec_names(&subagent_tool_specs(&AgentTools::All)),
-            ["bash", "read", "write", "edit"]
+            ["bash", "read", "write", "edit", "bash_session"]
         );
         // An allowlist filters, in the definition order rather than the
-        // file's, so two types with the same set send the same bytes.
+        // file's, so two types with the same set send the same bytes — and
+        // `Bash` brings `bash_session` with it (docs/interactive-shell.md).
         assert_eq!(
             spec_names(&subagent_tool_specs(&AgentTools::parse("Read, Bash"))),
-            ["bash", "read"]
+            ["bash", "read", "bash_session"]
         );
         assert_eq!(
             spec_names(&subagent_tool_specs(&AgentTools::parse("Edit"))),

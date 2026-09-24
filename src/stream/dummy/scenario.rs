@@ -308,6 +308,16 @@ pub(in crate::stream) const SCENARIOS: &[Scenario] = &[
         selects: |cue| cue.mentions("skill") || cue.mentions("$dataviz"),
         play: Play::Script(turns::skills_turn),
     },
+    // An interactive program driven through a terminal session: a `tty`
+    // launch stopping at a prompt, answers typed with `bash_session`
+    // (docs/interactive-shell.md). Only the whole word — "tty" hides in
+    // "pretty", "repl" in "reply".
+    Scenario {
+        #[cfg(test)]
+        name: "interactive",
+        selects: |cue| cue.mentions("interactive"),
+        play: Play::Script(turns::interactive_turn),
+    },
     // The default turn: think, then a compact `Read`+`Bash` batch.
     Scenario {
         #[cfg(test)]
