@@ -103,6 +103,20 @@ impl Transcript {
         }
     }
 
+    /// A transcript of output written to a **pipe** — a session with no
+    /// terminal (`run_in_background` without `tty`). No terminal turned the
+    /// program's `\n` into `\r\n` on the way (a TTY's `onlcr`), so a line
+    /// feed here also returns to the left edge: VT's new-line mode. Read as
+    /// a terminal's line feed, every line began where the one before it
+    /// ended, and once that passed [`MAX_LINE_CHARS`] the newest lines were
+    /// dropped whole.
+    #[must_use]
+    pub fn for_pipe() -> Self {
+        let mut transcript = Self::new();
+        transcript.lines.new_line = true;
+        transcript
+    }
+
     /// Fold a chunk of the terminal's output in. Chunks may split anywhere —
     /// inside a UTF-8 character or an escape sequence — the parser carries
     /// the partial state to the next call.
@@ -455,6 +469,9 @@ struct Lines {
     insert: bool,
     /// The last character printed — what REP (`CSI n b`) writes again.
     last: Option<char>,
+    /// A line feed also returns to the left edge (new-line mode) — output
+    /// that went through a pipe ([`Transcript::for_pipe`]).
+    new_line: bool,
 }
 
 impl Lines {
@@ -771,7 +788,12 @@ impl vte::Perform for Lines {
             return;
         }
         match byte {
-            b'\n' | 0x0b | 0x0c => self.line_feed(),
+            b'\n' | 0x0b | 0x0c => {
+                if self.new_line {
+                    self.col = 0;
+                }
+                self.line_feed();
+            }
             b'\r' => self.col = 0,
             0x08 => {
                 self.col = self.col.saturating_sub(1);
@@ -927,6 +949,23 @@ mod tests {
     #[test]
     fn plain_lines_read_back_as_lines() {
         assert_eq!(update(b"hello\r\nworld\r\n"), "hello\nworld");
+    }
+
+    #[test]
+    fn a_pipes_line_feed_starts_the_next_line_at_the_left_edge() {
+        // `python3 -m http.server` in the background: no terminal turned its
+        // `\n` into `\r\n`, and read as a terminal's line feed each line
+        // began where the one before it ended.
+        let mut t = Transcript::for_pipe();
+        t.feed(b"\"GET / HTTP/1.1\" 200 -\nServing HTTP ...\n\nexiting.\n");
+        assert_eq!(
+            t.take_update().text,
+            "\"GET / HTTP/1.1\" 200 -\nServing HTTP ...\n\nexiting."
+        );
+        t.feed(b"a\x0bb\x0cc\r\n");
+        assert_eq!(t.take_update().text, "a\nb\nc", "VT and FF feed lines too");
+        // A terminal's line feed keeps the column, as ever.
+        assert_eq!(update(b"ab\ncd\r\n"), "ab\n  cd");
     }
 
     #[test]

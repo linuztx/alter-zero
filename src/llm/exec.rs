@@ -3267,6 +3267,32 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn a_background_pipe_commands_lines_read_back_as_it_wrote_them() {
+        // `python3 -m http.server` in the background, stopped with <C-c>:
+        // the report's second line began where its first one ended.
+        let (registry, _rx) = test_registry();
+        let executor = RealToolExecutor::new().with_background(registry);
+        let out = exec_with(
+            &executor,
+            "bash",
+            r#"{"command":"printf 'GET / 200\\nServing HTTP\\n'; sleep 30","run_in_background":true}"#,
+        );
+        let id = out.background.expect("backgrounded");
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        let stopped = exec_with(
+            &executor,
+            BASH_SESSION,
+            &serde_json::json!({"session_id": id, "input": "<C-c>"}).to_string(),
+        );
+        assert!(
+            stopped.output.contains("\nGET / 200\nServing HTTP"),
+            "{}",
+            stopped.output
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn a_cancelled_tty_launch_takes_its_session_down() {
         let (registry, _rx) = test_registry();
         let executor = RealToolExecutor::new().with_background(registry.clone());

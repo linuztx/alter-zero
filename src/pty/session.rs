@@ -183,7 +183,11 @@ impl SessionIo {
         Self {
             state: Mutex::new(IoState {
                 created: Instant::now(),
-                transcript: Transcript::new(),
+                transcript: if tty {
+                    Transcript::new()
+                } else {
+                    Transcript::for_pipe()
+                },
                 screen: tty.then(Screen::default),
                 seq: 0,
                 last_output: None,
@@ -1352,6 +1356,36 @@ mod tests {
             ),
             "Running (session s1)\nprompt?"
         );
+    }
+
+    #[test]
+    fn a_pipe_sessions_lines_each_start_at_the_left_edge() {
+        // A server's log in the background: read as a terminal's line feed,
+        // a pipe's bare `\n` kept the column, so each line began where the
+        // one before it ended — and once that passed MAX_LINE_CHARS the
+        // newest lines were dropped whole.
+        let io = SessionIo::new(false);
+        let log: String = (1..=400)
+            .map(|n| format!("127.0.0.1 - - \"GET /{n} HTTP/1.1\" 200 -\n"))
+            .collect();
+        io.absorb(log.as_bytes());
+        let look = io.look(
+            "s1",
+            Status::Running {
+                waiting: Waiting::No,
+            },
+        );
+        let mut lines = look.lines();
+        assert_eq!(lines.next(), Some("Running (session s1)"));
+        assert_eq!(
+            lines.next(),
+            Some("127.0.0.1 - - \"GET /1 HTTP/1.1\" 200 -")
+        );
+        assert_eq!(
+            lines.last(),
+            Some("127.0.0.1 - - \"GET /400 HTTP/1.1\" 200 -")
+        );
+        assert!(look.lines().all(|line| !line.starts_with(' ')), "{look}");
     }
 
     #[test]

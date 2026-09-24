@@ -107,7 +107,13 @@ Screen (40x120, cursor at line 17, column 54):
 `run_in_background` command (or one the user moved to the background with
 Ctrl+B) can be waited on and ended the same way. Only a TTY session accepts
 typed text — a background command's stdin is `/dev/null` — but a lone `<C-c>`
-still interrupts one, as a `SIGINT` to its process group.
+still interrupts one, as a `SIGINT` to its process group. Its output comes
+through a pipe, where no terminal turns each `\n` into `\r\n` (a TTY's
+`onlcr`), so its transcript takes a line feed as a new line
+(`Transcript::for_pipe`, VT's new-line mode). Read as a terminal's line feed,
+which keeps the column, each line of a background server's log began where
+the one before it ended, and past a line's 8192-column cap the newest lines
+were dropped whole.
 
 The description the model reads is short and imperative (`src/llm/tools.rs`,
 pinned under 900 characters by a test): the key notation, **answer one prompt
