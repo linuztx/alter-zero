@@ -728,6 +728,59 @@ change answers a failure seen on the wire:
   the deployment that ignored the unsubmitted-line note below, still typed
   `7` and `10`.
 
+A second round of live runs, over Venice and Ollama Cloud models driving
+nano, top, htop and menu installers — and a model left to find what it had
+started in `top` — found more slips the tools refused or mistyped:
+
+- **Numbers written as floats.** `grok-4.5` writes every number as a float
+  (`"timeout": 5000.0`), which the schemas' `number` allows and a strict
+  integer refused — twenty calls in a row on the one error. Counts now take
+  any JSON number, or one in a string, a fraction rounding; flags take
+  `"true"`/`"false"` (`tools::lenient`). Anything else is refused with the
+  reason.
+- **A key copied from a help bar.** `glm-5.3` read nano's `^O Write Out` and
+  sent `"^O"`, which nano inserted as two characters. Input made of nothing
+  but caret names — `^O`, `^X^C`, a lone `^C` — is those keys
+  (`keys::parse_input`): as text it is never what was meant.
+- **Key names without brackets.** `qwen3-coder-480b` drove `htop` with
+  `"F3"`, `"Esc"`, `"F10"` — an `F` and a `3` typed, a search never opened —
+  nineteen times before it decided the process did not exist. To a
+  full-screen program a key name alone can only mean its key, so there it is
+  sent as one (`keys::bare_key`) — but only a name no one types as a word:
+  `F1`–`F12`, `Esc`, the page keys, and `Ctrl+`/`Alt+`/`Shift+` combinations.
+  `end` closing a Ruby block, a `return`, a vim `f3` motion stay text in an
+  editor, and at a line prompt every name is typed.
+- **An Enter spelled twice.** `qwen3-coder-480b` typed its script as
+  `"#!/bin/bash<Enter>\necho …<Enter>\n"` — the newline its JSON's layout,
+  not a second Enter — and nano saved it double-spaced. When every line
+  break in an input opens the text right after an `<Enter>`, one each, they
+  are layout and dropped (`keys::parse_input`); a newline after text is a
+  line of its own, so `"def f():\n    return 1\n<Enter>"` still closes a
+  Python block with its blank line.
+- **An empty `input` meant as Enter.** A model sent `"input": ""` to accept
+  btop's filter, read back a report like any wait's, and carried on as though
+  the key had gone in — its next keys went into the filter rather than to
+  btop. `""` still types nothing (a wait is a wait), but the model is told so,
+  and that Enter is `<Enter>` (`EMPTY_INPUT_NOTE`).
+- **An id run together with the input.** A call arrived as `"session_id":
+  "b…\nparameter=input>\n<Up>"` — the model's `input` leaked into the id
+  somewhere between its tool-call template and the provider's parser — and
+  was answered that no such session was running, while the same reply listed
+  it as running; the model believed the first half and started btop over. An
+  id that is no session but holds exactly one running session's id as a word
+  is now answered with that session, still running, and how to call it.
+  Nothing is typed — keys guessed out of a mangled field could be the wrong
+  ones.
+- **A process started with `&`.** Told that a script started with `&` in a
+  plain call had stopped — the call reaps its process group on the way out —
+  `kimi-k2-6` and `nemotron-3-super` both retried with `run_in_background`
+  and kept the `&`: the task's shell exited at once, and the task's reap
+  stopped the script again. A background launch now drops a lone trailing
+  `&` (`tools::without_trailing_ampersand` — never `&&`, an escaped `\&` or a
+  `>&`), and a plain call that left a process running says it was stopped,
+  pointing at `run_in_background` without the `&` (`tools::REAPED_NOTE`,
+  `subprocess::group_outlives`).
+
 Some failures stay with the model, the tool having said what it could. A
 REPL wants a blank line to close a Python block, and a model that sends a
 `def` without one finds its next line swallowed at the `...` prompt — the

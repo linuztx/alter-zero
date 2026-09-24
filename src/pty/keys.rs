@@ -219,12 +219,117 @@ pub fn parse_input(input: &str) -> Vec<InputPart> {
     };
     let parts = split_keys(input);
     let uses_notation = parts.iter().any(|part| matches!(part, InputPart::Key(_)));
+    if !uses_notation && let Some(keys) = caret_keys(input) {
+        return keys;
+    }
     match (!uses_notation)
         .then(|| undo_double_escape(input))
         .flatten()
     {
         Some(unescaped) => split_keys(&unescaped),
-        None => parts,
+        None => without_layout_newlines(parts),
+    }
+}
+
+/// `parts` without the line breaks a model **laid out** after its
+/// `<Enter>`s — `"line<Enter>\n"` for every line, the newline its JSON's
+/// layout rather than a second Enter, which typed a script into `nano`
+/// double-spaced. Only when *every* line break in the input opens the text
+/// right after an `<Enter>`, one each: a newline after text is a line of its
+/// own (`"def f():\n    return 1\n<Enter>"` closes a Python block with the
+/// `<Enter>`), and then all of them are typed as written.
+fn without_layout_newlines(parts: Vec<InputPart>) -> Vec<InputPart> {
+    fn after_break(text: &str) -> Option<&str> {
+        ["\r\n", "\n", "\r"]
+            .iter()
+            .find_map(|brk| text.strip_prefix(brk))
+    }
+    let after_enter = |i: usize| i > 0 && parts[i - 1] == InputPart::Key(Key::Enter);
+    let mut laid_out = false;
+    for (i, part) in parts.iter().enumerate() {
+        let InputPart::Text(text) = part else {
+            continue;
+        };
+        let rest = match after_break(text) {
+            Some(rest) if after_enter(i) => {
+                laid_out = true;
+                rest
+            }
+            _ => text,
+        };
+        if rest.contains(['\n', '\r']) {
+            return parts;
+        }
+    }
+    if !laid_out {
+        return parts;
+    }
+    let mut out = Vec::with_capacity(parts.len());
+    for (i, part) in parts.iter().enumerate() {
+        match part {
+            InputPart::Text(text) if after_enter(i) => {
+                let rest = after_break(text).unwrap_or(text);
+                if !rest.is_empty() {
+                    out.push(InputPart::Text(rest.to_string()));
+                }
+            }
+            other => out.push(other.clone()),
+        }
+    }
+    out
+}
+
+/// Input made of **nothing but caret names** — `^O`, `^X^C`, the way a
+/// program's own help bar names its keys (nano's `^O Write Out`) — as those
+/// keys. Typed as written it inserts a `^` and a letter, which a model sent
+/// by copying the help bar. `None` for anything else: a caret beside other
+/// text (`^foo$`), a lowercase letter, the notation in use.
+fn caret_keys(input: &str) -> Option<Vec<InputPart>> {
+    let names = input.trim().as_bytes();
+    if names.is_empty() || !names.len().is_multiple_of(2) {
+        return None;
+    }
+    names
+        .chunks(2)
+        .map(|pair| match pair {
+            [b'^', c] if !c.is_ascii_lowercase() => {
+                control_byte(&char::from(*c).to_ascii_lowercase().to_string())
+                    .map(|byte| InputPart::Key(Key::Ctrl(byte)))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// The key `input` names when it is **one key name and nothing else**, its
+/// brackets forgotten — `F3`, `Esc`, `PageDown`, `Ctrl+C` — and no word a
+/// person types: `end`, `return`, `tab`, `up` and the other names that are
+/// words too stay text, as does a lowercase `f3` (a vim motion). `None` for
+/// anything else.
+///
+/// Not applied by [`parse_input`]: at a line prompt even `F3` may be the
+/// answer. A full-screen program reads every keystroke as a command, so the
+/// session applies it there (`llm::exec`) — a model that sent htop `"F3"`
+/// and `"Esc"` typed an `F`, a `3`, an `E`… and searched nineteen times for a
+/// process it never found.
+#[must_use]
+pub fn bare_key(input: &str) -> Option<Key> {
+    const MODIFIERS: [&str; 8] = [
+        "ctrl+", "ctrl-", "alt+", "alt-", "shift+", "shift-", "meta+", "meta-",
+    ];
+    let name = input.trim();
+    let lower = name.to_ascii_lowercase();
+    let unmistakable = matches!(
+        lower.as_str(),
+        "esc" | "escape" | "pageup" | "pagedown" | "pgup" | "pgdn"
+    ) || (name.starts_with('F') && function_number(&lower).is_some())
+        || MODIFIERS.iter().any(|prefix| lower.starts_with(prefix));
+    if !unmistakable {
+        return None;
+    }
+    match lookup(name)? {
+        Named::Key(key) => Some(key),
+        Named::Literal(_) => None,
     }
 }
 
@@ -1418,6 +1523,105 @@ mod tests {
             vec![text("print(\"a\\nb\")\n")]
         );
         assert_eq!(parse_input(r"a\qb\n"), vec![text("a\\qb\n")], "unknown");
+    }
+
+    #[test]
+    fn a_programs_own_caret_names_alone_are_the_keys_they_name() {
+        // nano's help bar lists `^O Write Out`, `^X Exit`: glm-5.3 sent
+        // `"^O"` as its input and nano inserted the two characters. Input
+        // made of nothing but such names is the keys.
+        assert_eq!(parse_input("^O"), vec![key(Key::Ctrl(0x0f))]);
+        assert_eq!(parse_input("^X"), vec![key(Key::Ctrl(0x18))]);
+        assert_eq!(
+            parse_input("^X^C"),
+            vec![key(Key::Ctrl(0x18)), key(Key::Ctrl(0x03))],
+            "emacs' two-key exit"
+        );
+        assert_eq!(
+            parse_input(" ^\\ "),
+            vec![key(Key::Ctrl(0x1c))],
+            "nano's ^\\ Replace"
+        );
+        assert!(is_interrupt(&parse_input("^C")), "a lone ^C interrupts");
+    }
+
+    #[test]
+    fn a_caret_among_other_text_is_typed_as_written() {
+        // A regex, an expression, a lowercase name — text, not keys.
+        assert_eq!(parse_input("^foo$"), vec![text("^foo$")]);
+        assert_eq!(parse_input("2^O"), vec![text("2^O")]);
+        assert_eq!(parse_input("^o"), vec![text("^o")], "a help bar says ^O");
+        assert_eq!(parse_input("^O^"), vec![text("^O^")]);
+        assert_eq!(
+            parse_input("^O<Enter>"),
+            vec![text("^O"), key(Key::Enter)],
+            "the notation in use: the caret is text"
+        );
+    }
+
+    #[test]
+    fn newlines_laid_out_after_each_enter_are_not_enters_of_their_own() {
+        // qwen3-coder typed a script into nano as `line<Enter>\n` per line —
+        // the newline its JSON's layout, not a second Enter — and saved it
+        // double-spaced.
+        assert_eq!(
+            parse_input("#!/bin/bash<Enter>\necho hi<Enter>\n"),
+            vec![
+                text("#!/bin/bash"),
+                key(Key::Enter),
+                text("echo hi"),
+                key(Key::Enter),
+            ]
+        );
+        assert_eq!(
+            parse_input("y<Enter>\r\n"),
+            vec![text("y"), key(Key::Enter)]
+        );
+    }
+
+    #[test]
+    fn newlines_of_their_own_beside_enter_are_kept() {
+        // A Python block closed with a blank line: newlines that follow text
+        // are lines, and the `<Enter>` after them the blank one.
+        assert_eq!(
+            parse_input("def f():\n    return 1\n<Enter>"),
+            vec![text("def f():\n    return 1\n"), key(Key::Enter)]
+        );
+        // One newline that follows text: every newline counts as typed.
+        assert_eq!(
+            parse_input("a<Enter>\nb\nc"),
+            vec![text("a"), key(Key::Enter), text("\nb\nc")]
+        );
+        assert_eq!(
+            parse_input("x<Enter>\n\n"),
+            vec![text("x"), key(Key::Enter), text("\n\n")],
+            "a blank line on purpose"
+        );
+    }
+
+    #[test]
+    fn a_key_name_no_one_types_as_a_word_is_a_bare_key() {
+        // qwen3-coder drove htop with bare `F3`, `Esc` and `F10`, which typed
+        // an `F`, a `3`… and searched nineteen times for a process it never
+        // found (the session honours these on a full screen only).
+        assert_eq!(bare_key("F3"), Some(Key::F(3)));
+        assert_eq!(bare_key("F10"), Some(Key::F(10)));
+        assert_eq!(bare_key(" Esc "), Some(Key::Esc));
+        assert_eq!(bare_key("escape"), Some(Key::Esc));
+        assert_eq!(bare_key("PageDown"), Some(Key::PageDown));
+        assert_eq!(bare_key("Ctrl+C"), Some(Key::Ctrl(0x03)));
+        assert_eq!(bare_key("ctrl-x"), Some(Key::Ctrl(0x18)));
+        // Words an editor on the full screen may be given to type: `end`
+        // closing a Ruby block, a `return`, a vim `f3` motion.
+        for word in [
+            "end", "End", "return", "Enter", "tab", "up", "Down", "home", "insert", "delete",
+            "space", "f3", "c-x", "a-b", "s-x",
+        ] {
+            assert_eq!(bare_key(word), None, "{word:?} is a word");
+        }
+        for text in ["q", "M", "sleep 4242", "F99", "lt", "<Esc>", "Esc Esc", ""] {
+            assert_eq!(bare_key(text), None, "{text:?} is text");
+        }
     }
 
     #[test]

@@ -98,6 +98,12 @@ const WAITING_CLAUSE: &str = ", waiting for input";
 /// the answer will not show when typed.
 const PASSWORD_CLAUSE: &str = ", waiting for a password — typed input is hidden";
 
+/// Appended when a call's `input` was the empty string: nothing was typed,
+/// so the call was a pure wait — which a model that sent `""` to press Enter
+/// cannot tell from a report that looks like any other.
+pub const EMPTY_INPUT_NOTE: &str = "[Nothing was typed: `input` was empty, so this call \
+     only waited. To press Enter, send <Enter>.]";
+
 /// Appended to a report when the call typed text a line-reading prompt has
 /// not received — no Enter after it (`pty::keys::leaves_line_open`).
 pub const UNSUBMITTED_NOTE: &str = "[Typed but not submitted: this prompt reads whole lines. \

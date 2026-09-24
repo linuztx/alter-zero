@@ -48,7 +48,16 @@ release heading when a version is cut.
   turn a function into a staircase, while a shell is still typed to line by
   line, so `python3` and the code for it sent in one call reach `python3`;
   terminal output codes a model slips into its keys are dropped rather than
-  typed, and keys it HTML-escapes (`&lt;Esc&gt;`) are still pressed. A
+  typed, and keys it HTML-escapes (`&lt;Esc&gt;`) are still pressed. Keys it
+  names the way a program's help does — `^O`, or `F3` and `Esc` without
+  their brackets in a full-screen program — are pressed rather than typed as
+  text, a `timeout` written as `5000.0` or `"5000"` is accepted like `5000`,
+  an empty `input` is told that it typed nothing, and a `session_id` with
+  other text run into it is answered with the session it names instead of
+  being reported gone. A plain command that leaves a process running with
+  `&` tells the agent it was stopped, pointing it at `run_in_background`,
+  where a trailing `&` is now dropped instead of stopping the command at
+  once. A
   progress bar or a command run under `sudo`, `ssh` or `docker run -it` is
   waited out rather than taken for a prompt — a download under `sudo pacman`
   is one wait, not a dozen — and on Linux the kernel is asked what the command is

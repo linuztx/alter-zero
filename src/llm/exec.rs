@@ -283,8 +283,10 @@ fn run_bash(
                 "run_in_background is not available here — run the command in the foreground",
             );
         };
+        // A trailing `&` would background it twice: the task's shell would
+        // exit at once and its reap stop what it started.
         return match registry.launch_from(
-            &args.command,
+            tools::without_trailing_ampersand(&args.command),
             args.description.clone(),
             true,
             origin.cloned(),
@@ -397,6 +399,9 @@ fn run_bash(
     };
     // Even on a clean exit, reap any process the command backgrounded — it holds
     // the pipe open, so joining the readers below would otherwise block on it.
+    // The model is told when there was one (`cmd &`): it would otherwise go
+    // looking for what it started (docs/interactive-shell.md).
+    let stranded = !timed_out && crate::subprocess::group_outlives(&child);
     crate::subprocess::kill_process_group(&mut child);
     let _ = out_reader.join();
     let _ = err_reader.join();
@@ -424,11 +429,20 @@ fn run_bash(
     // A command that failed saying it wanted a terminal: the model reads a
     // pointer to `tty` beside the output, where it decides what to do next —
     // the cell keeps the command's own words (docs/interactive-shell.md).
-    // Only with a registry, the one place a `tty` session can live.
-    let context = (!ok && background.is_some())
-        .then(|| tools::tty_hint(&output))
-        .flatten()
-        .map(|hint| format!("{}\n\n{hint}", output.trim_end()));
+    // Only with a registry, the one place a `tty` session can live. And a
+    // process the command left running, stopped by the reap above: the model
+    // is told, pointed at `run_in_background`.
+    let notes: Vec<&str> = [
+        (!ok && background.is_some())
+            .then(|| tools::tty_hint(&output))
+            .flatten(),
+        (stranded && background.is_some()).then_some(tools::REAPED_NOTE),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    let context =
+        (!notes.is_empty()).then(|| format!("{}\n\n{}", output.trim_end(), notes.join("\n\n")));
     ToolOutcome {
         output,
         ok,
@@ -537,12 +551,12 @@ fn run_bash_session(
     on_output: &mut dyn FnMut(ToolProgress<'_>),
 ) -> ToolOutcome {
     use crate::pty::keys::{
-        encode, html_escaped, is_interrupt, leaves_line_open, parse_input, strip_output_codes,
-        typed_tail,
+        bare_key, encode, html_escaped, is_interrupt, leaves_line_open, parse_input,
+        strip_output_codes, typed_tail,
     };
     use crate::pty::report::{
-        HTML_ESCAPED_NOTE, NOT_KILLED_NOTE, Status, UNSUBMITTED_NOTE, WAIT_ENDED_NOTE, Waiting,
-        dropped_codes_note,
+        EMPTY_INPUT_NOTE, HTML_ESCAPED_NOTE, NOT_KILLED_NOTE, Status, UNSUBMITTED_NOTE,
+        WAIT_ENDED_NOTE, Waiting, dropped_codes_note,
     };
     use crate::pty::session::WaitEnd;
     use crate::pty::settle::{Settle, WaitKind};
@@ -559,6 +573,14 @@ fn run_bash_session(
     };
     let io = session.io;
     let mut parts = parse_input(args.input.as_deref().unwrap_or_default());
+    // A key named alone with its brackets forgotten (`F3`, `Esc`) is that
+    // key to a full-screen program, which reads every keystroke as a command
+    // — at a line prompt the name may be the answer (docs/interactive-shell.md).
+    if io.modes().full_screen
+        && let Some(key) = args.input.as_deref().and_then(bare_key)
+    {
+        parts = vec![crate::pty::keys::InputPart::Key(key)];
+    }
     // Codes a terminal writes to programs are no keys: a program would take
     // them as typing (docs/interactive-shell.md).
     let dropped = strip_output_codes(&mut parts);
@@ -673,6 +695,7 @@ fn run_bash_session(
     let note = match status {
         Status::Running { .. } if spare => Some(NOT_KILLED_NOTE),
         Status::Running { .. } if matches!(end, Some(WaitEnd::Handoff)) => Some(WAIT_ENDED_NOTE),
+        Status::Running { .. } if args.input.as_deref() == Some("") => Some(EMPTY_INPUT_NOTE),
         // Typed text without its Enter, still sitting on the line being
         // edited: a terminal in line mode holds it for the program, and a
         // line editor (a REPL's readline, in raw mode) shows it echoed at its
@@ -710,6 +733,20 @@ const SESSION_STOP_WAIT: Duration = Duration::from_secs(3);
 /// ones that are running, so a model that lost track (after a `/compact`, a
 /// `/resume`) can find its way back rather than guess.
 fn unknown_session_text(id: &str, running: &[(String, String)]) -> String {
+    // An id run together with more — a model's other arguments leaking into
+    // the field — still holds the session it names: say so, rather than that
+    // the session is gone (which a model believes, and starts over).
+    let mut held = running.iter().filter(|(session, _)| {
+        id.split(|c: char| !c.is_ascii_alphanumeric())
+            .any(|word| word == session)
+    });
+    if let (Some((session, command)), None) = (held.next(), held.next()) {
+        return format!(
+            "`session_id` takes the id alone, and {id:?} is not one. Session {session} \
+             ({command}) is still running: call again with \"session_id\": \"{session}\", \
+             and what to type in `input`."
+        );
+    }
     let head = format!(
         "No running session {id} — it has exited (its final output was already reported) \
          or never existed."
@@ -2912,6 +2949,52 @@ mod tests {
         registry.kill_all();
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn an_empty_input_is_said_to_have_typed_nothing() {
+        // A model sent `"input": ""` to accept btop's filter, read back a
+        // report like any wait's, and carried on as though the key had gone
+        // in — its next keys went into the filter rather than to btop.
+        let (registry, _rx) = test_registry();
+        let executor = RealToolExecutor::new().with_background(registry.clone());
+        let out = exec_with(
+            &executor,
+            "bash",
+            r#"{"command":"printf 'Name? '; read n; echo \"hi $n\"","tty":true}"#,
+        );
+        let id = session_of(&out.output);
+        let empty = exec_with(
+            &executor,
+            BASH_SESSION,
+            &serde_json::json!({"session_id": id, "input": "", "timeout": 1000}).to_string(),
+        );
+        assert!(
+            empty
+                .output
+                .starts_with(&format!("Running (session {id}, waiting for input)")),
+            "{}",
+            empty.output
+        );
+        assert_eq!(
+            empty.context,
+            Some(format!(
+                "{}\n{}",
+                empty.output,
+                crate::pty::report::EMPTY_INPUT_NOTE
+            ))
+        );
+        let wait = exec_with(
+            &executor,
+            BASH_SESSION,
+            &serde_json::json!({"session_id": id, "timeout": 1000}).to_string(),
+        );
+        assert_eq!(
+            wait.context, None,
+            "no input at all is a wait, said plainly"
+        );
+        registry.kill_all();
+    }
+
     #[cfg(target_os = "linux")]
     #[test]
     fn a_program_started_and_typed_into_in_one_call_reads_its_lines() {
@@ -2963,6 +3046,136 @@ mod tests {
         assert_eq!(typed.output, "Exit code: 0\nkeys> [M]");
         registry.kill_all();
     }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_background_command_with_its_own_ampersand_keeps_running() {
+        // `sleep 30 &` with `run_in_background: true`: the `&` would have the
+        // task's shell exit at once and the task's reap stop the sleep. It
+        // runs in the background as the model meant.
+        let (registry, _rx) = test_registry();
+        let executor = RealToolExecutor::new().with_background(registry.clone());
+        let out = exec_with(
+            &executor,
+            "bash",
+            &serde_json::json!({"command": "sleep 30 &", "run_in_background": true}).to_string(),
+        );
+        let id = out.background.clone().expect("launched in the background");
+        std::thread::sleep(Duration::from_millis(600));
+        assert!(
+            registry.session(&id).is_some(),
+            "the sleep still runs as the task"
+        );
+        registry.kill_all();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_process_left_running_with_an_ampersand_is_named_to_the_model() {
+        // `yes > /dev/null &`, `./burn.sh &`: the call reaps its process
+        // group on the way out, and live models went looking for what they
+        // started in `top`. The model reads that it was stopped, beside the
+        // output; the cell keeps the command's own words.
+        let (registry, _rx) = test_registry();
+        let executor = RealToolExecutor::new().with_background(registry);
+        let out = exec_with(
+            &executor,
+            "bash",
+            &serde_json::json!({"command": "sleep 30 & echo started"}).to_string(),
+        );
+        assert!(out.ok, "{}", out.output);
+        assert_eq!(out.output, "Exit code: 0\nstarted\n");
+        assert_eq!(
+            out.context_text(),
+            format!("Exit code: 0\nstarted\n\n{}", tools::REAPED_NOTE)
+        );
+        // Nothing left behind, nothing said — a pipeline included.
+        for command in ["echo done", "yes | head -n 1", "sleep 0.1"] {
+            let out = exec_with(
+                &executor,
+                "bash",
+                &serde_json::json!({"command": command}).to_string(),
+            );
+            assert_eq!(out.context, None, "{command}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_session_id_run_together_with_more_names_the_session_it_holds() {
+        // Caught live: qwen3-coder's call arrived as `"session_id":
+        // "b…\nparameter=input>\n<Up>"` — its input run into the id — and
+        // was told the session had exited, while the same reply listed it
+        // running. It believed the first half and started btop over.
+        let (registry, _rx) = test_registry();
+        let executor = RealToolExecutor::new().with_background(registry.clone());
+        let task = registry
+            .launch("sleep 30", Some("nap".into()), true)
+            .expect("launches");
+        let mangled = format!("{}\nparameter=input>\n<Up>", task.id);
+        let out = exec_with(
+            &executor,
+            BASH_SESSION,
+            &serde_json::json!({"session_id": mangled}).to_string(),
+        );
+        assert!(!out.ok);
+        assert!(!out.output.contains("exited"), "{}", out.output);
+        assert!(
+            out.output
+                .contains(&format!("Session {} (sleep 30) is still running", task.id)),
+            "{}",
+            out.output
+        );
+        assert!(
+            out.output
+                .contains(&format!("\"session_id\": \"{}\"", task.id)),
+            "{}",
+            out.output
+        );
+        registry.kill_all();
+    }
+
+    /// A program that reads two bytes raw and prints them in hex — on the
+    /// alternate screen when `full_screen`, else at a plain prompt.
+    #[cfg(unix)]
+    fn two_byte_reader(full_screen: bool) -> String {
+        let (enter, leave) = if full_screen {
+            (r"printf '\033[?1049h'; ", r"printf '\033[?1049l'; ")
+        } else {
+            ("", "")
+        };
+        format!(
+            "{enter}stty raw -echo; printf 'keys> '; \
+             k=$(dd bs=1 count=2 2>/dev/null | od -An -tx1); \
+             stty sane; {leave}echo \"got:$k\""
+        )
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_key_name_sent_without_brackets_is_the_key_in_a_full_screen_program() {
+        // htop's search is F3: qwen3-coder sent `"F3"`, which typed an `F`
+        // and a `3`. At a line prompt the same two characters are text.
+        let (registry, _rx) = test_registry();
+        let executor = RealToolExecutor::new().with_background(registry.clone());
+        for (full_screen, got) in [(true, "got: 1b 4f"), (false, "got: 46 33")] {
+            let out = exec_with(
+                &executor,
+                "bash",
+                &serde_json::json!({"command": two_byte_reader(full_screen), "tty": true})
+                    .to_string(),
+            );
+            let id = session_of(&out.output);
+            let pressed = exec_with(
+                &executor,
+                BASH_SESSION,
+                &serde_json::json!({"session_id": id, "input": "F3"}).to_string(),
+            );
+            assert!(pressed.output.contains(got), "{}", pressed.output);
+        }
+        registry.kill_all();
+    }
+
     #[cfg(unix)]
     #[test]
     fn an_unknown_session_lists_the_running_ones() {

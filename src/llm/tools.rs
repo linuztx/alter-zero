@@ -843,18 +843,43 @@ pub struct BashArgs {
     /// alias keeps the pre-rename spelling parseable (a hook's
     /// `updatedInput`, an older fixture — replayed rollouts carry only the
     /// command summary, so they never send either spelling).
-    #[serde(default, alias = "timeout_ms")]
+    #[serde(default, alias = "timeout_ms", deserialize_with = "lenient::count")]
     pub timeout: Option<u64>,
     /// Run the command as a background task (`docs/background.md`).
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient::flag")]
     pub run_in_background: bool,
     /// Run the command in a terminal of its own — an interactive session
     /// (`docs/interactive-shell.md`).
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient::flag")]
     pub tty: bool,
     /// A short human description, shown in the UI and completion notices.
     #[serde(default)]
     pub description: Option<String>,
+}
+
+/// What a plain `bash` call's model-facing result gains when the command
+/// left a process running — `cmd &` — that the call's reap stopped
+/// (docs/interactive-shell.md).
+pub const REAPED_NOTE: &str = "Note: a process this command left running in the \
+    background was stopped when the call returned. To keep it running, run \
+    the command without the `&`, with run_in_background: true.";
+
+/// `command` without a trailing `&` — for a command about to run in the
+/// background anyway (`run_in_background`), where the `&` would background
+/// it a second time: the task's own shell would exit at once and the task's
+/// reap would stop what it started. Only a lone `&` at the very end; `&&`,
+/// an escaped `\&` and a redirection's `>&` are left as they are.
+#[must_use]
+pub fn without_trailing_ampersand(command: &str) -> &str {
+    let trimmed = command.trim_end();
+    let Some(rest) = trimmed.strip_suffix('&') else {
+        return command;
+    };
+    let rest = rest.trim_end();
+    if rest.is_empty() || rest.ends_with(['&', '\\', '>', '<', '|']) {
+        return command;
+    }
+    rest
 }
 
 /// What a plain `bash` call's model-facing result gains when the command
@@ -906,12 +931,12 @@ pub struct SessionArgs {
     #[serde(default)]
     pub input: Option<String>,
     /// Milliseconds to wait for the command to respond.
-    #[serde(default, alias = "timeout_ms")]
+    #[serde(default, alias = "timeout_ms", deserialize_with = "lenient::count")]
     pub timeout: Option<u64>,
     /// End the command. `stop` is accepted too — but the schema says
     /// `kill`, because a model read `stop` as "stop waiting" and ended a
     /// wizard mid-answer (docs/interactive-shell.md).
-    #[serde(default, alias = "stop")]
+    #[serde(default, alias = "stop", deserialize_with = "lenient::flag")]
     pub kill: bool,
 }
 
@@ -950,7 +975,7 @@ fn effective_bash_timeout_ms(timeout: Option<u64>) -> u64 {
 /// command on every animation frame the live cell is drawn.
 #[derive(Deserialize)]
 struct BashTimeoutArgs {
-    #[serde(default, alias = "timeout_ms")]
+    #[serde(default, alias = "timeout_ms", deserialize_with = "lenient::count")]
     timeout: Option<u64>,
 }
 
@@ -994,9 +1019,9 @@ fn effective_session_timeout_ms(timeout: Option<u64>) -> u64 {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct ReadArgs {
     pub path: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient::count_usize")]
     pub offset: Option<usize>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient::count_usize")]
     pub limit: Option<usize>,
 }
 
@@ -1013,8 +1038,62 @@ pub struct EditArgs {
     pub path: String,
     pub old_string: String,
     pub new_string: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient::flag")]
     pub replace_all: bool,
+}
+
+/// Tolerant readers for the argument fields models get *almost* right. The
+/// schemas say `number` and `boolean`, and a model's JSON does not always
+/// say it the way serde's strict types expect: grok-4.5 writes every number
+/// as a float (`"timeout": 5000.0` — a JSON number all the same, which
+/// `number` allows), others quote them (`"2500"`, `"true"`). Refusing those
+/// cost a live run all twenty of its calls on one error it could not fix.
+/// Anything that cannot mean a count or a flag is still refused, with a
+/// reason.
+mod lenient {
+    use serde::Deserialize;
+    use serde::de::{Deserializer, Error};
+    use serde_json::Value;
+
+    /// A count (milliseconds, a line number) written as `5000`, `5000.0` or
+    /// `"5000"`; `null` or absent is none. A fraction rounds.
+    pub fn count<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option<u64>, D::Error> {
+        let number = match Option::<Value>::deserialize(deserializer)? {
+            None => return Ok(None),
+            Some(Value::Number(n)) if n.as_u64().is_some() => return Ok(n.as_u64()),
+            Some(Value::Number(n)) => n.as_f64(),
+            Some(Value::String(text)) => text.trim().parse::<f64>().ok(),
+            Some(_) => None,
+        };
+        match number {
+            // Past u64's range the cast saturates; every count is clamped
+            // far below that anyway.
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            Some(n) if n.is_finite() && n >= 0.0 => Ok(Some(n.round() as u64)),
+            _ => Err(D::Error::custom("expected a non-negative number")),
+        }
+    }
+
+    /// [`count`], as a `usize`.
+    pub fn count_usize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Option<usize>, D::Error> {
+        count(deserializer)?
+            .map(|n| usize::try_from(n).map_err(|_| D::Error::custom("the number is too large")))
+            .transpose()
+    }
+
+    /// A flag written as `true`, `"true"`, `"True"` (or `false` …); `null` or
+    /// absent is false.
+    pub fn flag<'de, D: Deserializer<'de>>(deserializer: D) -> Result<bool, D::Error> {
+        match Option::<Value>::deserialize(deserializer)? {
+            None => Ok(false),
+            Some(Value::Bool(flag)) => Ok(flag),
+            Some(Value::String(text)) if text.trim().eq_ignore_ascii_case("true") => Ok(true),
+            Some(Value::String(text)) if text.trim().eq_ignore_ascii_case("false") => Ok(false),
+            Some(_) => Err(D::Error::custom("expected true or false")),
+        }
+    }
 }
 
 /// Parse a tool's raw JSON `arguments` string into a typed struct, mapping a
@@ -2017,6 +2096,86 @@ mod tests {
             assert!(desc.contains(example), "`{example}` in: {desc}");
         }
         assert!(desc.contains("non-interactive"), "got {desc}");
+    }
+
+    #[test]
+    fn numbers_arrive_as_whatever_json_number_the_model_writes() {
+        // grok-4.5 sends every number as a float — `"timeout": 5000.0` —
+        // which the schemas' `number` allows; refused, a live run spent all
+        // twenty of its calls on the one error, unable to write an integer.
+        let bash: BashArgs =
+            parse_args(r#"{"command":"htop","tty":true,"timeout":5000.0}"#).unwrap();
+        assert_eq!(bash.timeout, Some(5000));
+        let bash: BashArgs = parse_args(r#"{"command":"ls","timeout":"2500"}"#).unwrap();
+        assert_eq!(bash.timeout, Some(2500), "a number in a string");
+        let bash: BashArgs = parse_args(r#"{"command":"ls","timeout":null}"#).unwrap();
+        assert_eq!(bash.timeout, None);
+        let session: SessionArgs = parse_args(r#"{"session_id":"b1","timeout":1500.4}"#).unwrap();
+        assert_eq!(session.timeout, Some(1500));
+        let read: ReadArgs = parse_args(r#"{"path":"a.txt","offset":10.0,"limit":"20"}"#).unwrap();
+        assert_eq!((read.offset, read.limit), (Some(10), Some(20)));
+        assert_eq!(
+            bash_timeout_ms(Some(r#"{"command":"x","timeout":90000.0}"#)),
+            90_000,
+            "the running cell's clock reads the same number"
+        );
+        assert_eq!(
+            session_timeout_ms(Some(r#"{"session_id":"b1","timeout":2000.0}"#)),
+            2000
+        );
+    }
+
+    #[test]
+    fn a_number_that_cannot_be_a_count_is_refused_with_a_reason() {
+        for bad in ["-5", "-0.5", "\"soon\"", "true", "{}"] {
+            let err = parse_args::<BashArgs>(&format!(r#"{{"command":"ls","timeout":{bad}}}"#))
+                .unwrap_err();
+            assert!(err.contains("non-negative number"), "{bad}: {err}");
+        }
+    }
+
+    #[test]
+    fn flags_arrive_as_booleans_or_their_names() {
+        let bash: BashArgs =
+            parse_args(r#"{"command":"python3","tty":"true","run_in_background":"false"}"#)
+                .unwrap();
+        assert!(bash.tty && !bash.run_in_background);
+        let session: SessionArgs = parse_args(r#"{"session_id":"b1","kill":"True"}"#).unwrap();
+        assert!(session.kill);
+        let edit: EditArgs =
+            parse_args(r#"{"path":"a","old_string":"x","new_string":"y","replace_all":null}"#)
+                .unwrap();
+        assert!(!edit.replace_all);
+        let err = parse_args::<BashArgs>(r#"{"command":"ls","tty":"yes"}"#).unwrap_err();
+        assert!(err.contains("true or false"), "{err}");
+    }
+
+    #[test]
+    fn a_trailing_ampersand_is_dropped_for_a_command_already_in_the_background() {
+        // `./burn.sh &` with `run_in_background: true`: the `&` backgrounds
+        // it a second time, the task's shell exits at once, and the task's
+        // reap stops what it started. kimi-k2-6 and nemotron-3-super both
+        // wrote exactly that after being told to use `run_in_background`.
+        assert_eq!(without_trailing_ampersand("./burn.sh &"), "./burn.sh");
+        assert_eq!(
+            without_trailing_ampersand("yes > /dev/null 2>&1 &  "),
+            "yes > /dev/null 2>&1"
+        );
+        assert_eq!(
+            without_trailing_ampersand("python3 -m http.server&"),
+            "python3 -m http.server"
+        );
+        for kept in [
+            "make && make test",
+            "echo \\&",
+            "sleep 1",
+            "&",
+            "a &&",
+            "cmd 2>&",
+            "echo 'a &'",
+        ] {
+            assert_eq!(without_trailing_ampersand(kept), kept, "{kept}");
+        }
     }
 
     #[test]
