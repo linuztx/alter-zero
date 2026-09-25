@@ -24,6 +24,7 @@
 use std::sync::{Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
+use super::fold::{Fold, HeadTail};
 use super::probe::Probe;
 use super::report::{self, Status, View};
 use super::screen::Screen;
@@ -51,6 +52,33 @@ const STREAM_INTERVAL: Duration = Duration::from_millis(50);
 /// [`settle::PROMPT_QUIET`], late enough that a program mid-answer is not
 /// caught between its reads.
 pub const PROBE_QUIET: Duration = Duration::from_millis(200);
+
+/// The most line feeds fed to the transcript before the lines it finished
+/// are taken for the stream ([`SessionIo::absorb`]) — well inside its
+/// retention cap, which a line feed applies.
+const STREAM_SLICE_LINES: usize = super::transcript::MAX_RETAINED_LINES / 2;
+
+/// `bytes` cut after every `lines`-th line feed (a newline, a vertical tab
+/// or a form feed — each moves a terminal's cursor down a row), the last
+/// piece holding whatever follows. The transcript's parser carries a
+/// sequence split between two pieces over.
+fn line_slices(bytes: &[u8], lines: usize) -> impl Iterator<Item = &[u8]> {
+    let mut rest = bytes;
+    std::iter::from_fn(move || {
+        if rest.is_empty() {
+            return None;
+        }
+        let cut = rest
+            .iter()
+            .enumerate()
+            .filter(|(_, byte)| matches!(byte, b'\n' | 0x0b | 0x0c))
+            .nth(lines.max(1) - 1)
+            .map_or(rest.len(), |(at, _)| at + 1);
+        let (piece, tail) = rest.split_at(cut);
+        rest = tail;
+        Some(piece)
+    })
+}
 
 /// The most settled text one waiting call streams to its running cell; past
 /// it only the live rows keep moving. The cell is replaced by the report
@@ -133,6 +161,37 @@ struct IoState {
     /// program prints visible text ([`Transcript::answered`]) it is checking
     /// the password, and its silence ends no call.
     awaiting_answer: bool,
+    /// The output folded a second time as **data** — tabs and trailing
+    /// spaces kept, both ends kept past the cap (`docs/bash-tools.md`) —
+    /// for the report of a command that exits inside its own launch. A TTY
+    /// session's alone: a pipe's transcript already is its data.
+    data: Option<DataView>,
+    /// The file the session's whole output is teed to, which a report that
+    /// cut it names ([`HeadTail::render`]).
+    log: Option<std::path::PathBuf>,
+    /// The model has looked at the session — the data view is for a
+    /// launch's one report of everything, never a report of what is new.
+    looked: bool,
+    /// The program switched to the alternate screen at some point: what it
+    /// drew there is a screen, never lines of data.
+    alternate_used: bool,
+    /// The command exited leaving a process of its own running (`server &
+    /// …`), which stopped with it — what the report tells the model how to
+    /// avoid (`llm::tools::REAPED_NOTE`).
+    stranded: bool,
+    /// [`IoState::seq`] when the model was last told this session sits at a
+    /// prompt nobody is waiting on ([`SessionIo::take_unseen_prompt`]); past
+    /// [`IoState::looked_seq`], the model has not looked since, and is not
+    /// told again.
+    prompt_told_seq: u64,
+}
+
+/// The output as data: the fold a plain command's pipe always had, and what
+/// of it is kept for the model.
+#[derive(Default)]
+struct DataView {
+    fold: Fold,
+    kept: HeadTail,
 }
 
 /// A point in a session's output history — taken before a call writes its
@@ -210,6 +269,12 @@ impl SessionIo {
                 input_seq: 0,
                 looked_seq: 0,
                 awaiting_answer: false,
+                data: tty.then(DataView::default),
+                log: None,
+                looked: false,
+                alternate_used: false,
+                stranded: false,
+                prompt_told_seq: 0,
             }),
             changed: Condvar::new(),
         }
@@ -271,6 +336,7 @@ impl SessionIo {
         let now = Instant::now();
         // A screen switched to: its first frame is watched for.
         if let Some(alternate) = state.screen.as_ref().map(Screen::alternate) {
+            state.alternate_used |= alternate || was_alternate;
             if alternate && !was_alternate {
                 state.awaiting_frame = true;
             }
@@ -290,8 +356,19 @@ impl SessionIo {
             state.transcript.new_burst();
             state.burst_began = Some(now);
         }
-        state.transcript.feed(bytes);
-        let committed = state.transcript.take_committed();
+        // A slice at a time: a line feed trims the transcript to its
+        // retention cap, so a chunk with more lines than that would drop
+        // lines the stream — the session's log — had not taken yet.
+        let mut committed = String::new();
+        for slice in line_slices(bytes, STREAM_SLICE_LINES) {
+            state.transcript.feed(slice);
+            committed.push_str(&state.transcript.take_committed());
+        }
+        if let Some(data) = state.data.as_mut() {
+            data.fold.feed(bytes);
+            let lines = data.fold.take_settled();
+            data.kept.push(&lines);
+        }
         state.seq += 1;
         state.last_output = Some(Instant::now());
         // Whatever the probe saw, the program has moved on since.
@@ -308,6 +385,10 @@ impl SessionIo {
         let mut state = self.lock();
         state.finished = true;
         state.code = code;
+        if let Some(data) = state.data.as_mut() {
+            let rest = std::mem::take(&mut data.fold).finish();
+            data.kept.push(&rest);
+        }
         let rest = state.transcript_rest();
         let finish = if state.waiters == 0 {
             state.finalized = true;
@@ -326,6 +407,47 @@ impl SessionIo {
     pub fn exit(&self) -> Option<Option<i32>> {
         let state = self.lock();
         state.finished.then_some(state.code)
+    }
+
+    /// The file the session's whole output is teed to — what a report that
+    /// had to cut the output names, so the model can read the rest.
+    pub fn set_log(&self, path: std::path::PathBuf) {
+        self.lock().log = Some(path);
+    }
+
+    /// The monitor: the command exited leaving a process of its own running,
+    /// which stops with it (see [`stranded`](Self::stranded)).
+    pub fn set_stranded(&self) {
+        self.lock().stranded = true;
+    }
+
+    /// Did the command exit leaving a process of its own running — a
+    /// `server &` it started — which stopped with it?
+    #[must_use]
+    pub fn stranded(&self) -> bool {
+        self.lock().stranded
+    }
+
+    /// The monitor: has this session — announced, running, nobody waiting on
+    /// it — stopped to ask for input since the model last looked, quiet for
+    /// `min_quiet`? `true` once: a dev server asking `Use another port?
+    /// (Y/n)` in the background would otherwise wait unseen until someone
+    /// looked, and a session told of is not told again until the model has
+    /// looked at it, so a program that keeps asking cannot start turn after
+    /// turn nobody reads (`docs/bash-tools.md`). Only a line shaped like a
+    /// prompt counts (`IoState::unseen_prompt_shape`); the probe, when it
+    /// can see, rules out a program at work.
+    pub fn take_unseen_prompt(&self, min_quiet: std::time::Duration) -> bool {
+        let mut state = self.lock();
+        let quiet = state.last_output.unwrap_or(state.created).elapsed();
+        if !state.unseen_prompt_shape()
+            || quiet < min_quiet
+            || !(state.password_prompt() || state.awaiting_keys())
+        {
+            return false;
+        }
+        state.prompt_told_seq = state.seq;
+        true
     }
 
     /// Mark the session announced to the event loop; `true` when this call
@@ -392,9 +514,9 @@ impl SessionIo {
             .max()
             .unwrap_or(state.created);
         state.screen.is_some()
-            && state.waiters > 0
             && !state.finished
             && last.elapsed() >= PROBE_QUIET
+            && (state.waiters > 0 || state.unseen_prompt_shape())
     }
 
     /// Record what the probe saw ([`super::probe::probe`]), waking a waiting
@@ -567,6 +689,8 @@ impl SessionIo {
                     undrawn: state.screen.as_ref().is_some_and(Screen::undrawn),
                     since_keys: now.saturating_duration_since(state.screen_answer_began(since)),
                     exited: state.finished,
+                    busy: state.probe == Probe::Idle,
+                    key_by_key: state.reading_keys,
                 };
                 (update, seen)
             };
@@ -606,9 +730,28 @@ impl SessionIo {
         let mut state = self.lock();
         let screen_view = state.screen_view_now();
         state.screen_view = screen_view;
+        // A command that exited inside its launch, having only written lines:
+        // its output as data, both ends kept (docs/bash-tools.md). Read
+        // before the transcript's look resets what it noticed.
+        let data = (matches!(status, Status::Exited(_))
+            && !state.looked
+            && !state.alternate_used
+            && !state.transcript.screen_addressed()
+            && !state.transcript.edited_in_place())
+        .then(|| {
+            state
+                .data
+                .as_ref()
+                .map(|data| data.kept.render(state.log.as_deref()))
+        })
+        .flatten();
         let update = state.transcript.take_update();
         state.looked_seq = state.seq;
+        state.looked = true;
         let view = match &state.screen {
+            _ if data.is_some() => View::Data {
+                text: data.unwrap_or_default(),
+            },
             // A full-screen program: its screen, under whatever the main
             // screen printed before it took over (`git commit`'s hints before
             // the editor) — the main screen's lines are not on the alternate
@@ -707,17 +850,42 @@ impl IoState {
     /// a spinner leaves the cursor exactly where a prompt would, and pauses.
     /// Never a pipe.
     fn awaiting_keys(&self) -> bool {
-        self.screen.as_ref().is_some_and(|screen| match self.probe {
-            Probe::Reading => true,
+        match self.probe {
+            Probe::Reading => self.screen.is_some(),
             Probe::Idle => false,
-            // A screen switched to and not drawn on has nothing to answer.
-            Probe::Unknown => {
-                !screen.undrawn()
-                    && (self.drawing_screen()
-                        || (!self.transcript.cursor_line_animated()
-                            && (self.reading_keys || screen.awaiting_keys())))
-            }
+            Probe::Polling | Probe::Unknown => self.screen_awaits_keys(),
+        }
+    }
+
+    /// Does the **screen** say the program waits for keys — the shape
+    /// [`Self::awaiting_keys`] falls back on where the probe leaves the
+    /// answer open?
+    fn screen_awaits_keys(&self) -> bool {
+        // A screen switched to and not drawn on has nothing to answer.
+        self.screen.as_ref().is_some_and(|screen| {
+            !screen.undrawn()
+                && (self.drawing_screen()
+                    || (!self.transcript.cursor_line_animated()
+                        && (self.reading_keys || screen.awaiting_keys())))
         })
+    }
+
+    /// Might this session be asking something nobody has seen — announced,
+    /// running, no call waiting on it, output since the model last looked
+    /// and no notice since then either — by the shape of its screen alone:
+    /// a prompt by the cursor, a program reading key by key, or a line read
+    /// with echo off? The monitor probes such a session
+    /// ([`SessionIo::wants_probe`]) so that [`SessionIo::take_unseen_prompt`]
+    /// can tell a question from a program at work; a line of log output,
+    /// which ends at the start of a line, is never one.
+    fn unseen_prompt_shape(&self) -> bool {
+        self.announced
+            && self.waiters == 0
+            && !self.finished
+            && self.seq > self.looked_seq
+            && self.prompt_told_seq <= self.looked_seq
+            && ((self.screen.is_some() && self.hidden_input && self.seq > self.input_seq)
+                || self.screen_awaits_keys())
     }
 
     /// Does the look show the **screen** of a program drawing on the main
@@ -1222,7 +1390,11 @@ mod tests {
         let end = io.wait(WaitKind::Input, since, LONG, &never, &never, &mut |_, _| {});
         assert_eq!(end, WaitEnd::Settled(Settle::Exited));
         assert_eq!(monitor.join().unwrap(), Finish::Waiter);
-        assert_eq!(io.look("s1", Status::Exited(Some(0))), "Exit code: 0\ndone");
+        // Never looked at before: the whole output, as data.
+        assert_eq!(
+            io.look("s1", Status::Exited(Some(0))),
+            "Exit code: 0\ndone\n"
+        );
         assert_eq!(io.end_wait(), Some(true), "the report covered the exit");
         assert_eq!(io.end_wait(), None, "finalized once");
     }
@@ -1626,6 +1798,217 @@ mod tests {
         io.absorb(b"\r\nContinue? ");
         std::thread::sleep(settle::PROMPT_QUIET + Duration::from_millis(50));
         assert!(io.waiting(WaitKind::Input, since));
+    }
+
+    #[test]
+    fn a_command_that_exits_in_its_launch_reports_its_output_as_data() {
+        // Tabs and trailing spaces are data a model copies back
+        // (docs/bash-tools.md); the transcript is what a person reads, and
+        // expands and trims them.
+        let io = Arc::new(SessionIo::waited(true));
+        io.absorb(b"col1\tcol2   \r\n");
+        let _ = io.finish(Some(0));
+        let end = io.wait(
+            WaitKind::Launch,
+            io.origin_mark(),
+            LONG,
+            &never,
+            &never,
+            &mut |_, _| {},
+        );
+        assert_eq!(end, WaitEnd::Settled(Settle::Exited));
+        assert_eq!(
+            io.look("s1", Status::Exited(Some(0))),
+            "Exit code: 0\ncol1\tcol2   \n"
+        );
+    }
+
+    #[test]
+    fn a_long_launch_output_keeps_both_ends_and_names_its_log() {
+        let io = Arc::new(SessionIo::waited(true));
+        io.set_log(std::path::PathBuf::from("/tmp/t/b1.output"));
+        for n in 1..=20_000 {
+            io.absorb(format!("{n}\r\n").as_bytes());
+        }
+        let _ = io.finish(Some(0));
+        let report = io.look("s1", Status::Exited(Some(0)));
+        assert!(report.starts_with("Exit code: 0\n1\n2\n3\n"), "{report}");
+        assert!(
+            report.contains("lines omitted — the full output is in /tmp/t/b1.output]\n"),
+            "{report}"
+        );
+        assert!(report.ends_with("\n19999\n20000\n"), "{report}");
+    }
+
+    #[test]
+    fn output_that_moves_back_over_its_lines_keeps_the_transcript() {
+        // A multi-line progress display redrawn with cursor-up: the fold,
+        // one line at a time, would repeat every redraw — the transcript
+        // follows it (docs/interactive-shell.md).
+        let io = Arc::new(SessionIo::waited(true));
+        io.absorb(b"a\r\nb\r\n\x1b[2Aa!\r\n");
+        let _ = io.finish(Some(0));
+        assert_eq!(
+            io.look("s1", Status::Exited(Some(0))),
+            "Exit code: 0\na!\nb"
+        );
+    }
+
+    #[test]
+    fn an_exit_after_a_look_reports_only_what_is_new() {
+        // The data view is a launch's one report of everything; a session
+        // the model has looked at reports what came since.
+        let io = Arc::new(SessionIo::waited(true));
+        io.absorb(b"first\r\n");
+        let _ = io.look(
+            "s1",
+            Status::Running {
+                waiting: Waiting::No,
+            },
+        );
+        io.absorb(b"second\r\n");
+        let _ = io.finish(Some(0));
+        assert_eq!(
+            io.look("s1", Status::Exited(Some(0))),
+            "Exit code: 0\nsecond"
+        );
+    }
+
+    #[test]
+    fn a_chunk_longer_than_the_transcript_keeps_every_line_in_the_stream() {
+        // The stream is the session's log, which a long output's cut names
+        // (docs/bash-tools.md): a burst read in one chunk with more lines
+        // than the transcript retains lost lines from the middle of it.
+        let io = SessionIo::new(true);
+        let burst: String = (1..=5000).map(|n| format!("{n}\r\n")).collect();
+        let (_, committed) = io.absorb(burst.as_bytes());
+        let lines: Vec<&str> = committed.lines().collect();
+        assert_eq!(lines.len(), 5000);
+        assert_eq!(lines.first(), Some(&"1"));
+        assert_eq!(lines.last(), Some(&"5000"));
+    }
+
+    #[test]
+    fn a_chunk_is_cut_after_every_so_many_line_feeds() {
+        let pieces: Vec<&[u8]> = line_slices(b"a\nb\x0bc\x0cd\ne", 2).collect();
+        assert_eq!(pieces, [&b"a\nb\x0b"[..], b"c\x0cd\n", b"e"]);
+        assert_eq!(line_slices(b"", 2).count(), 0);
+        assert_eq!(line_slices(b"no feed", 2).collect::<Vec<_>>(), [b"no feed"]);
+    }
+
+    #[test]
+    fn a_background_prompt_nobody_saw_is_told_once() {
+        let io = SessionIo::new(true);
+        io.absorb(b"Port 3000 is in use. Use another? (Y/n) ");
+        assert!(
+            !io.take_unseen_prompt(Duration::ZERO),
+            "a session never announced is its call's to report"
+        );
+        io.announce();
+        assert!(
+            !io.take_unseen_prompt(Duration::from_secs(60)),
+            "not quiet long enough yet"
+        );
+        assert!(io.take_unseen_prompt(Duration::ZERO));
+        assert!(!io.take_unseen_prompt(Duration::ZERO), "once per prompt");
+        // Told and not yet looked at: a program that keeps asking is not
+        // told of again until the model has looked.
+        io.absorb(b"\r\nUse another? (Y/n) ");
+        assert!(!io.take_unseen_prompt(Duration::ZERO));
+        // A prompt the model looked at is not news; the next one is.
+        let _ = io.look(
+            "s1",
+            Status::Running {
+                waiting: Waiting::Input,
+            },
+        );
+        assert!(!io.take_unseen_prompt(Duration::ZERO));
+        io.absorb(b"\r\nready> ");
+        assert!(io.take_unseen_prompt(Duration::ZERO));
+    }
+
+    #[test]
+    fn a_background_line_of_output_is_not_a_prompt() {
+        // A server's log ends at the start of a line: nothing to answer, and
+        // nothing the monitor probes for.
+        let log = SessionIo::new(true);
+        log.announce();
+        log.absorb(b"listening on :3000\r\n");
+        assert!(!log.take_unseen_prompt(Duration::ZERO));
+        // Nor is a prompt-shaped line the kernel sees a program at work
+        // behind: `Compiling... ` left open while the compiler runs.
+        let busy = SessionIo::new(true);
+        busy.announce();
+        busy.absorb(b"Compiling... ");
+        busy.set_probe(Probe::Idle);
+        assert!(!busy.take_unseen_prompt(Duration::ZERO));
+        // A pipe has no prompt to tell of.
+        let pipe = SessionIo::new(false);
+        pipe.announce();
+        pipe.absorb(b"Continue? ");
+        assert!(!pipe.take_unseen_prompt(Duration::ZERO));
+    }
+
+    #[test]
+    fn a_quiet_background_prompt_is_probed_until_it_is_told() {
+        // The probe runs while a call waits; with none waiting it runs only
+        // for a session that may be asking something unseen, so an idle
+        // server printing logs is never walked.
+        let io = SessionIo::new(true);
+        io.announce();
+        io.absorb(b"Overwrite? [y/N] ");
+        std::thread::sleep(PROBE_QUIET);
+        assert!(io.wants_probe());
+        assert!(io.take_unseen_prompt(Duration::ZERO));
+        assert!(!io.wants_probe(), "told: nothing left to find out");
+        let log = SessionIo::new(true);
+        log.announce();
+        log.absorb(b"GET / 200\r\n");
+        std::thread::sleep(PROBE_QUIET);
+        assert!(!log.wants_probe());
+    }
+
+    #[test]
+    fn a_program_seen_at_work_outlasts_the_quiet_line() {
+        // A command that answered with whole lines and went quiet used to
+        // hand its call back after LINE_QUIET whatever it was doing; one the
+        // kernel sees at work is working (docs/bash-tools.md), and runs on to
+        // the call's timeout.
+        let io = Arc::new(SessionIo::new(true));
+        let since = io.begin_wait();
+        io.absorb(b"compiling\r\n");
+        io.set_probe(Probe::Idle);
+        let started = Instant::now();
+        let end = io.wait(
+            WaitKind::Input,
+            since,
+            settle::LINE_QUIET + Duration::from_millis(600),
+            &never,
+            &never,
+            &mut |_, _| {},
+        );
+        assert_eq!(end, WaitEnd::Settled(Settle::Timeout));
+        assert!(started.elapsed() > settle::LINE_QUIET);
+    }
+
+    #[test]
+    fn a_wait_on_a_key_reader_whose_prompt_was_seen_returns_at_once() {
+        // A REPL at the prompt the model's last look already showed: the wait
+        // ends in a moment, not at its budget (docs/bash-tools.md).
+        let io = Arc::new(SessionIo::new(true));
+        io.absorb(b">>> ");
+        io.set_reading_keys(true);
+        let _ = io.look(
+            "s1",
+            Status::Running {
+                waiting: Waiting::Input,
+            },
+        );
+        let since = io.begin_wait();
+        let started = Instant::now();
+        let end = io.wait(WaitKind::Wait, since, LONG, &never, &never, &mut |_, _| {});
+        assert_eq!(end, WaitEnd::Settled(Settle::Prompt));
+        assert!(started.elapsed() < Duration::from_secs(2));
     }
 
     #[test]

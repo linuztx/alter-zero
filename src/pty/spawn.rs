@@ -131,7 +131,8 @@ pub struct PtyProcess {
     pub master: std::fs::File,
 }
 
-/// Start `command` under `sh -c` in a new pseudo-terminal ([`ROWS`] ×
+/// Start `command` under the model's shell ([`crate::subprocess::tool_shell`]
+/// — `bash -c`, else `sh -c`) in a new pseudo-terminal ([`ROWS`] ×
 /// [`COLUMNS`]) as the leader of a session whose controlling terminal it is.
 ///
 /// # Errors
@@ -155,8 +156,9 @@ pub fn spawn_in(
     command: &str,
 ) -> std::io::Result<PtyProcess> {
     let (master, slave) = open_terminal()?;
+    let shell = crate::subprocess::tool_shell();
     for tier in tiers {
-        let Some(mut cmd) = crate::subprocess::tty_command_for(tier, command) else {
+        let Some(mut cmd) = crate::subprocess::tty_command_for(tier, shell, command) else {
             continue;
         };
         cmd.stdin(Stdio::from(slave.try_clone()?))

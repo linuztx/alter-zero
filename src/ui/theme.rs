@@ -225,7 +225,7 @@ pub(super) const TOOL_LINE_ELLIPSIS: &str = "…";
 
 /// The window the **running** command tail shows (`running_command_lines`):
 /// the last four wrapped display **rows** of what the command has printed,
-/// over the `+N lines (Ns · timeout …)` clock row — the unit the user reads
+/// over the `+N lines (Ns · wait …)` clock row — the unit the user reads
 /// the cell in (`docs/long-lines.md`). It is also the ceiling of the
 /// **settled** block,
 /// hint included: [`TOOL_FOLD_ROWS`] rows over the `… +N lines` hint, or
@@ -369,15 +369,16 @@ pub(super) const TOOL_BACKGROUND_HINT: &str = "(ctrl+b to run in background)";
 pub(super) const TOOL_BACKGROUND_HINT_DELAY: Duration = Duration::from_secs(3);
 
 /// The separator inside a running command's clock clause, between the
-/// command's own elapsed and the timeout it runs under:
-/// `(22s · timeout 1m 50s)` — the footer's [`FOOTER_SEPARATOR`], the one
+/// command's own elapsed and how long its call waits for it:
+/// `(22s · wait 1m 50s)` — the footer's [`FOOTER_SEPARATOR`], the one
 /// dot the whole chrome joins facts with (`docs/tool-streaming.md`).
 pub(super) const TOOL_CLOCK_SEPARATOR: &str = " · ";
 
-/// The label in front of the timeout in that clause — `timeout 1m 50s`.
-/// A limit needs naming where an elapsed does not: bare, the two numbers
-/// would read as a range.
-pub(super) const TOOL_TIMEOUT_LABEL: &str = "timeout ";
+/// The label in front of the wait in that clause — `wait 1m 50s`. A limit
+/// needs naming where an elapsed does not: bare, the two numbers would read
+/// as a range. A *wait*, not a timeout: the command is not stopped when it
+/// passes, it goes on as a session (`docs/bash-tools.md`).
+pub(super) const TOOL_TIMEOUT_LABEL: &str = "wait ";
 
 /// The ↓ manager's list title.
 pub(super) const BG_TITLE: &str = "Background";
@@ -440,13 +441,19 @@ pub(super) fn bg_dim_color() -> Color {
     tool_dim_color()
 }
 
-/// The notice bullet colours: green success, red failure/stop.
+/// The notice bullet colours: green success, red failure/stop — and the
+/// caution amber for a session waiting for input (`docs/bash-tools.md`),
+/// which has not ended either way.
 pub(super) fn bg_notice_ok_color() -> Color {
     tool_ok_color()
 }
 
 pub(super) fn bg_notice_fail_color() -> Color {
     tool_fail_color()
+}
+
+pub(super) fn bg_notice_waiting_color() -> Color {
+    palette().warning
 }
 
 /// Placeholder body for a still-executing tool — the `⎿ Running…` row, shown
@@ -665,11 +672,13 @@ pub(super) const DIFF_TOOL_NAMES: [&str; 2] = ["Edit", "Write"];
 /// The model tools whose output is **command output** — a shell run, streamed
 /// and framed with an `Exit code: N` line. They render like the `!` shell cell
 /// (a multi-line `⎿` peek, the frame stripped for display) and **tail** their
-/// output live while running (`docs/tool-streaming.md`): `bash`, and
-/// `bash_session` — the same command's later steps
-/// (`docs/interactive-shell.md`). A non-command generic tool keeps the single
-/// collapsed peek line.
-pub(super) const COMMAND_TOOL_NAMES: [&str; 2] = ["Bash", "BashSession"];
+/// output live while running (`docs/tool-streaming.md`): `bash`, and the
+/// companions that are the same command's later steps — `bashsend`,
+/// `bashwait`, `bashkill` (`docs/bash-tools.md`) — and the legacy
+/// `bash_session`. `bashlist`'s list is no command output: a generic tool
+/// keeps the single collapsed peek line.
+pub(super) const COMMAND_TOOL_NAMES: [&str; 5] =
+    ["Bash", "BashSend", "BashWait", "BashKill", "BashSession"];
 
 /// The dim closing row of a command cell whose session is still alive
 /// (`docs/interactive-shell.md`) — `{state} · session {id}`, in place of the

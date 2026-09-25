@@ -676,7 +676,7 @@ fn an_agent_views_running_command_tails_its_streamed_output() {
     assert!(all.contains("line 9"), "the newest line tails: {all:?}");
     assert!(!all.contains("line 4"), "older lines are hidden: {all:?}");
     assert!(
-        all.contains("+5 lines (9s · timeout 2m)"),
+        all.contains("+5 lines (9s · wait 2m)"),
         "the footer counts the command's own runtime, against its timeout: {all:?}"
     );
     assert_eq!(usize::from(preview_rows(&app, 60)), lines.len());
@@ -812,7 +812,7 @@ fn an_agent_views_running_call_leads_its_waiting_siblings() {
     // The agent's running command carries the same clock clause the main
     // strip's does — zero here, no per-agent command clock injected — over
     // the timeout it runs under (docs/tool-streaming.md).
-    assert_eq!(lines[1], "  ⎿  Running… (0s · timeout 2m)", "{lines:?}");
+    assert_eq!(lines[1], "  ⎿  Running… (0s · wait 2m)", "{lines:?}");
     assert_eq!(lines[3], "● Read(notes.md)");
     assert_eq!(lines[4], "  ⎿  Waiting…", "{lines:?}");
 }

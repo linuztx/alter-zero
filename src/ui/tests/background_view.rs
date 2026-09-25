@@ -29,6 +29,29 @@ fn background_notice_lines_render_the_headline_with_outcome_colours() {
     );
 }
 
+#[test]
+fn a_waiting_notice_wears_the_caution_amber() {
+    // A session that stopped to ask for input has neither succeeded nor
+    // failed: it is waiting on someone (docs/bash-tools.md).
+    let notice = crate::app::BackgroundNotice {
+        waiting: true,
+        ..bg_notice(None, false)
+    };
+    let lines = background_notice_lines(&notice, 80);
+    assert_eq!(
+        plain(&lines[0]),
+        "● Background command \"Ping x.com 200 times\" is waiting for input"
+    );
+    assert_eq!(
+        lines[0].spans[0].style.fg,
+        Some(crate::ui::theme::bg_notice_waiting_color())
+    );
+    assert_ne!(
+        crate::ui::theme::bg_notice_waiting_color(),
+        tool_fail_color()
+    );
+}
+
 /// The empty page is the renderer's defensive fallback, not a page the app
 /// walks to: a live band closes with its last shell (`App::bg_exited`), and
 /// the footer indicator that opens one needs a shell to light. Only the

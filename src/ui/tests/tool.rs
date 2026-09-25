@@ -794,7 +794,7 @@ fn running_command_lines_tails_recent_output_with_the_elapsed() {
     );
     assert_eq!(
         body.last().unwrap().trim(),
-        "+5 lines (9s · timeout 2m)",
+        "+5 lines (9s · wait 2m)",
         "the footer counts hidden lines, the elapsed and the timeout: {body:?}"
     );
 }
@@ -804,7 +804,7 @@ fn the_running_footer_names_the_timeout_the_call_runs_under() {
     // The reported ask: beside the elapsed, the footer says how long the
     // command *may* run — the model's own `timeout`, read off the call's
     // verbatim arguments (`ToolCall::arguments`) and humanized as a limit:
-    // `+18 lines (22s · timeout 1m 50s)` (docs/tool-streaming.md).
+    // `+18 lines (22s · wait 1m 50s)` (docs/tool-streaming.md).
     let command = "for i in $(seq 1 100); do echo $i; sleep 1; done";
     let out = (1..=22)
         .map(|i| i.to_string())
@@ -829,7 +829,7 @@ fn the_running_footer_names_the_timeout_the_call_runs_under() {
             "     20",
             "     21",
             "     22",
-            "     +18 lines (22s · timeout 1m 50s)",
+            "     +18 lines (22s · wait 1m 50s)",
         ],
         "{lines:?}"
     );
@@ -861,7 +861,7 @@ fn a_running_command_with_no_output_counts_on_its_running_row() {
         lines,
         [
             r#"● Bash(python3 -c "import time; time.sleep(100)")"#,
-            "  ⎿  Running… (10s · timeout 2m)",
+            "  ⎿  Running… (10s · wait 2m)",
         ]
     );
 }
@@ -885,7 +885,7 @@ fn running_footers_humanize_the_elapsed_past_a_minute() {
     );
     assert_eq!(
         plain(lines.last().unwrap()).trim(),
-        "+5 lines (2m 3s · timeout 2m)",
+        "+5 lines (2m 3s · wait 2m)",
         "the streaming footer humanizes"
     );
     let row = plain(&crate::ui::tool::shell_running_line(Duration::from_secs(
@@ -900,7 +900,7 @@ fn running_footers_humanize_the_elapsed_past_a_minute() {
 #[test]
 fn running_command_lines_without_overflow_shows_the_clock_row_alone() {
     // Fewer lines than the window: show them all, then the clock row with
-    // no `+N lines` count in front of it — `(1s · timeout 2m)` — so a
+    // no `+N lines` count in front of it — `(1s · wait 2m)` — so a
     // command whose output fits still says how long it has run and how long
     // it may (docs/tool-streaming.md).
     let t = tool("Bash", "echo", ToolStatus::Running, "a\nb");
@@ -917,7 +917,7 @@ fn running_command_lines_without_overflow_shows_the_clock_row_alone() {
         !body.iter().any(|l| l.contains("lines (")),
         "no hidden count when nothing is hidden: {body:?}"
     );
-    assert_eq!(body[2].trim(), "(1s · timeout 2m)", "{body:?}");
+    assert_eq!(body[2].trim(), "(1s · wait 2m)", "{body:?}");
 }
 
 #[test]
@@ -951,7 +951,7 @@ fn running_command_lines_tail_window_counts_display_rows_when_lines_wrap() {
     assert_eq!(body[3].trim(), "x".repeat(35), "…across the window's rows");
     assert_eq!(
         body.last().unwrap().trim(),
-        "+1 lines (7s · timeout 2m)",
+        "+1 lines (7s · wait 2m)",
         "the footer counts the one fully hidden line: {body:?}"
     );
 }
@@ -2749,7 +2749,7 @@ fn the_running_tail_footer_counts_hidden_rows() {
     .collect();
     let footer = lines.last().unwrap();
     assert!(
-        footer.contains("+18 lines (3s · timeout 2m)"),
+        footer.contains("+18 lines (3s · wait 2m)"),
         "the 18 wrapped rows above the window: {lines:?}"
     );
 }
@@ -3694,7 +3694,7 @@ fn the_running_tail_never_reshapes_what_is_still_streaming() {
     .collect();
     assert_eq!(
         lines[1..],
-        ["  ⎿  {\"a\":1,\"b\":2}", "     (1s · timeout 2m)"],
+        ["  ⎿  {\"a\":1,\"b\":2}", "     (1s · wait 2m)"],
         "{lines:?}"
     );
 }
@@ -4202,6 +4202,6 @@ fn a_running_session_call_shows_the_wait_it_runs_under() {
     .collect();
     assert_eq!(
         lines,
-        ["● BashSession(b1)", "  ⎿  Running… (3s · timeout 10s)"]
+        ["● BashSession(b1)", "  ⎿  Running… (3s · wait 10s)"]
     );
 }

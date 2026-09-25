@@ -61,18 +61,81 @@
 //! [`DETACH_TTY_ARG`], which adds `TIOCSCTTY` on its stdin (the pty's slave)
 //! after the `setsid()`.
 //!
+//! Which **shell** a command runs under is the caller's: the model's commands
+//! run under [`tool_shell`] — `bash` where it is installed, since the tool is
+//! called bash and models write bash (`docs/bash-tools.md`) — while the `!`
+//! shell and the hooks runner keep [`DEFAULT_SHELL`], the `sh -c` their
+//! commands were always written for. Every tier takes the shell as given
+//! ([`command_in`], [`tty_command_for`]); the helper hears it as an optional
+//! third argument.
+//!
 //! Boundary code like `term.rs`: the process I/O is exercised by the
 //! real-`sh` tests below (the `llm::exec` pattern), `tests/detached_exec.rs`
 //! (the real built binary via `CARGO_BIN_EXE`), and `scripts/smoke.sh`; the
-//! pure decisions ([`tiers`], [`command_for`]'s argv) are unit-tested.
+//! pure decisions ([`tiers`], [`command_for`]'s argv, [`find_on_path`]) are
+//! unit-tested.
 
+use std::ffi::{OsStr, OsString};
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 
 /// The sentinel first argument that selects the detached-exec helper mode —
 /// obscure enough that no real TUI invocation collides with it.
 pub const DETACH_ARG: &str = "__alter-zero-detached-exec";
+
+/// The shell a command runs under unless its caller names another: the `!`
+/// shell's and the hooks runner's, whose commands were always `sh -c`.
+pub const DEFAULT_SHELL: &str = "sh";
+
+/// The first `program` on `path` — `{entry}/{program}` for an absolute entry
+/// that `installed` says holds it. Relative and empty entries are skipped: to
+/// a POSIX shell an empty entry is the current directory, and a program
+/// planted in a project must never become what every command runs under.
+#[must_use]
+pub fn find_on_path(
+    program: &str,
+    path: Option<&OsStr>,
+    installed: impl Fn(&Path) -> bool,
+) -> Option<PathBuf> {
+    std::env::split_paths(path?)
+        .filter(|dir| dir.is_absolute())
+        .map(|dir| dir.join(program))
+        .find(|candidate| installed(candidate))
+}
+
+/// The shell the model's commands run under (`docs/bash-tools.md`): the first
+/// `bash` on `PATH` — the tool is called bash, and models write bash, which
+/// dash (`/bin/sh` on Debian, Ubuntu and Kali) refuses — else
+/// [`DEFAULT_SHELL`]. Looked up once per process. Run non-login and
+/// non-interactive (`bash -c`), so it reads no profile or rc file: the
+/// environment the TUI was started with is the one every command gets.
+#[must_use]
+pub fn tool_shell() -> &'static Path {
+    static SHELL: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    SHELL.get_or_init(|| {
+        find_on_path(
+            "bash",
+            std::env::var_os("PATH").as_deref(),
+            is_executable_file,
+        )
+        .unwrap_or_else(|| PathBuf::from(DEFAULT_SHELL))
+    })
+}
+
+/// Is `path` a file this process may execute?
+fn is_executable_file(path: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::metadata(path)
+            .is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
+    }
+    #[cfg(not(unix))]
+    {
+        path.is_file()
+    }
+}
 
 /// One way to spawn the shell child, in [`tiers`]' preference order. See the
 /// module docs for the full rationale per tier.
@@ -111,18 +174,24 @@ pub fn tiers(detach_helper: Option<&Path>) -> Vec<DetachTier<'_>> {
     }
 }
 
-/// Build the `Command` for `command` under `tier`, with the shared stdio
-/// (stdin `/dev/null`, stdout/stderr piped) applied. Pure argv/config — the
-/// caller (or [`spawn_detached_shell`]) spawns it.
+/// Build the `Command` for `command` under `tier` and [`DEFAULT_SHELL`], with
+/// the shared stdio (stdin `/dev/null`, stdout/stderr piped) applied. Pure
+/// argv/config — the caller (or [`spawn_detached_shell`]) spawns it.
 #[must_use]
 pub fn command_for(tier: &DetachTier<'_>, command: &str) -> Command {
+    command_in(tier, Path::new(DEFAULT_SHELL), command)
+}
+
+/// [`command_for`] under `shell` — [`tool_shell`] for a model command.
+#[must_use]
+pub fn command_in(tier: &DetachTier<'_>, shell: &Path, command: &str) -> Command {
     let mut cmd = match tier {
         DetachTier::SetsidBinary => {
             // Deliberately NO process_group: a group leader can't setsid(2),
             // which would force the binary to fork instead of exec — breaking
             // pgid == child.id() (see the module docs).
             let mut c = Command::new("setsid");
-            c.arg("sh").arg("-c").arg(command);
+            c.arg(shell).arg("-c").arg(command);
             c
         }
         DetachTier::HelperReexec(helper) => {
@@ -130,10 +199,11 @@ pub fn command_for(tier: &DetachTier<'_>, command: &str) -> Command {
             // spawned as a group leader.
             let mut c = Command::new(helper);
             c.arg(DETACH_ARG).arg(command);
+            push_shell_arg(&mut c, shell);
             c
         }
         DetachTier::Attached => {
-            let mut c = Command::new("sh");
+            let mut c = Command::new(shell);
             c.arg("-c").arg(command);
             // Its own process group (pgid == pid) so the kill helpers can
             // reap the whole tree — the detached tiers get this from setsid.
@@ -171,27 +241,37 @@ pub fn tty_tiers(detach_helper: Option<&Path>) -> Vec<DetachTier<'_>> {
         .collect()
 }
 
-/// The `Command` that starts `command` under `tier` as the leader of a new
-/// session whose controlling terminal is its **stdin** — `setsid -c sh -c
-/// {command}` (util-linux's and BusyBox's `-c`/`--ctty`), or the helper's
-/// [`DETACH_TTY_ARG`] mode. Stdio is the caller's (the terminal's slave
-/// side); `None` for the attached tier, which has no such form.
+/// The `Command` that starts `command` under `tier` and `shell` as the leader
+/// of a new session whose controlling terminal is its **stdin** — `setsid -c
+/// {shell} -c {command}` (util-linux's and BusyBox's `-c`/`--ctty`), or the
+/// helper's [`DETACH_TTY_ARG`] mode. Stdio is the caller's (the terminal's
+/// slave side); `None` for the attached tier, which has no such form.
 #[must_use]
-pub fn tty_command_for(tier: &DetachTier<'_>, command: &str) -> Option<Command> {
+pub fn tty_command_for(tier: &DetachTier<'_>, shell: &Path, command: &str) -> Option<Command> {
     match tier {
         DetachTier::SetsidBinary => {
             // No process_group, for the same reason as `command_for`: a
             // group leader cannot setsid(2).
             let mut c = Command::new("setsid");
-            c.arg("-c").arg("sh").arg("-c").arg(command);
+            c.arg("-c").arg(shell).arg("-c").arg(command);
             Some(c)
         }
         DetachTier::HelperReexec(helper) => {
             let mut c = Command::new(helper);
             c.arg(DETACH_TTY_ARG).arg(command);
+            push_shell_arg(&mut c, shell);
             Some(c)
         }
         DetachTier::Attached => None,
+    }
+}
+
+/// The helper's optional third argument: the shell it becomes, when that is
+/// not the [`DEFAULT_SHELL`] it becomes without one — so a helper invocation
+/// for the `!` shell reads exactly as it always did.
+fn push_shell_arg(cmd: &mut Command, shell: &Path) {
+    if shell != Path::new(DEFAULT_SHELL) {
+        cmd.arg(shell);
     }
 }
 
@@ -209,6 +289,19 @@ pub fn tty_command_for(tier: &DetachTier<'_>, command: &str) -> Option<Command> 
 /// The underlying spawn error when even the last tier can't start.
 pub fn spawn_detached_shell(detach_helper: Option<&Path>, command: &str) -> io::Result<Child> {
     spawn_shell_with(detach_helper, command, |_| {})
+}
+
+/// [`spawn_detached_shell`] under `shell` — [`tool_shell`] for a model
+/// command (`docs/bash-tools.md`).
+///
+/// # Errors
+/// The underlying spawn error when even the last tier can't start.
+pub fn spawn_detached_in(
+    detach_helper: Option<&Path>,
+    shell: &Path,
+    command: &str,
+) -> io::Result<Child> {
+    spawn_tiers(detach_helper, shell, command, |_| {})
 }
 
 /// [`spawn_detached_shell`] with the caller adjusting each tier's `Command`
@@ -233,10 +326,20 @@ pub fn spawn_shell_with(
     command: &str,
     configure: impl Fn(&mut Command),
 ) -> io::Result<Child> {
+    spawn_tiers(detach_helper, Path::new(DEFAULT_SHELL), command, configure)
+}
+
+/// The tier walk every detached spawn shares, under `shell`.
+fn spawn_tiers(
+    detach_helper: Option<&Path>,
+    shell: &Path,
+    command: &str,
+    configure: impl Fn(&mut Command),
+) -> io::Result<Child> {
     let order = tiers(detach_helper);
     let (last, rest) = order.split_last().expect("tiers is never empty");
     let build = |tier: &DetachTier<'_>| {
-        let mut cmd = command_for(tier, command);
+        let mut cmd = command_in(tier, shell, command);
         configure(&mut cmd);
         cmd
     };
@@ -306,10 +409,11 @@ pub fn kill_process_group(child: &mut Child) {
 }
 
 /// The `main()` hook for the helper mode: when the process was invoked as
-/// `{exe} {DETACH_ARG} {command}`, detach from the terminal and become
-/// `sh -c {command}` — never returning. In every other invocation this is a
-/// no-op. It MUST run before any terminal or runtime setup — nothing may
-/// touch stdin/stdout first (invariant 1's cursor query included).
+/// `{exe} {DETACH_ARG} {command} [shell]`, detach from the terminal and
+/// become `{shell} -c {command}` — `sh` when no shell is named — never
+/// returning. In every other invocation this is a no-op. It MUST run before
+/// any terminal or runtime setup — nothing may touch stdin/stdout first
+/// (invariant 1's cursor query included).
 pub fn run_detached_exec_if_requested() {
     let mut args = std::env::args_os().skip(1);
     let tty = match args.next() {
@@ -323,6 +427,7 @@ pub fn run_detached_exec_if_requested() {
         eprintln!("alter-zero: {DETACH_ARG} requires a command");
         std::process::exit(2);
     };
+    let shell = args.next().unwrap_or_else(|| OsString::from(DEFAULT_SHELL));
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
@@ -341,12 +446,15 @@ pub fn run_detached_exec_if_requested() {
         if tty {
             let _ = rustix::process::ioctl_tiocsctty(std::io::stdin());
         }
-        // Become `sh` in place (same pid): the parent's `child.id()` IS the
-        // shell — and, post-setsid, the session + process-group leader the
-        // group-kill helpers target.
-        let err = Command::new("sh").arg("-c").arg(&command).exec();
+        // Become the shell in place (same pid): the parent's `child.id()` IS
+        // the shell — and, post-setsid, the session + process-group leader
+        // the group-kill helpers target.
+        let err = Command::new(&shell).arg("-c").arg(&command).exec();
         // exec only returns on failure.
-        eprintln!("alter-zero: failed to exec sh: {err}");
+        eprintln!(
+            "alter-zero: failed to exec {}: {err}",
+            shell.to_string_lossy()
+        );
         std::process::exit(127);
     }
     #[cfg(not(unix))]
@@ -355,10 +463,13 @@ pub fn run_detached_exec_if_requested() {
         // run the command and mirror its exit so the waiting parent sees the
         // same status.
         let _ = tty;
-        match Command::new("sh").arg("-c").arg(&command).status() {
+        match Command::new(&shell).arg("-c").arg(&command).status() {
             Ok(status) => std::process::exit(status.code().unwrap_or(1)),
             Err(err) => {
-                eprintln!("alter-zero: failed to run sh: {err}");
+                eprintln!(
+                    "alter-zero: failed to run {}: {err}",
+                    shell.to_string_lossy()
+                );
                 std::process::exit(127);
             }
         }
@@ -370,6 +481,7 @@ mod tests {
     use super::*;
     use std::ffi::{OsStr, OsString};
     use std::io::Read;
+    use std::path::PathBuf;
 
     fn argv(cmd: &Command) -> (String, Vec<OsString>) {
         (
@@ -433,7 +545,8 @@ mod tests {
 
     #[test]
     fn the_setsid_tty_tier_asks_for_a_controlling_terminal() {
-        let command = tty_command_for(&DetachTier::SetsidBinary, "python3 -q").expect("a tier");
+        let command = tty_command_for(&DetachTier::SetsidBinary, Path::new("sh"), "python3 -q")
+            .expect("a tier");
         let (prog, args) = argv(&command);
         assert_eq!(prog, "setsid");
         assert_eq!(args, ["-c", "sh", "-c", "python3 -q"].map(OsString::from));
@@ -444,8 +557,12 @@ mod tests {
         // A second sentinel, so the helper knows to take stdin — the
         // pseudo-terminal — as its controlling terminal after the setsid.
         let helper = Path::new("/opt/bin/alter-zero");
-        let command =
-            tty_command_for(&DetachTier::HelperReexec(helper), "vim notes.txt").expect("a tier");
+        let command = tty_command_for(
+            &DetachTier::HelperReexec(helper),
+            Path::new("sh"),
+            "vim notes.txt",
+        )
+        .expect("a tier");
         let (prog, args) = argv(&command);
         assert_eq!(prog, "/opt/bin/alter-zero");
         assert_eq!(args, [DETACH_TTY_ARG, "vim notes.txt"].map(OsString::from));
@@ -454,7 +571,99 @@ mod tests {
 
     #[test]
     fn there_is_no_attached_tty_tier() {
-        assert!(tty_command_for(&DetachTier::Attached, "sh").is_none());
+        assert!(tty_command_for(&DetachTier::Attached, Path::new("sh"), "sh").is_none());
+    }
+
+    #[test]
+    fn the_tool_shell_is_the_first_bash_on_path() {
+        let path = OsString::from("relative:/opt/none::/usr/local/bin:/usr/bin");
+        let installed =
+            |p: &Path| p == Path::new("/usr/local/bin/bash") || p == Path::new("/usr/bin/bash");
+        assert_eq!(
+            find_on_path("bash", Some(&path), installed),
+            Some(PathBuf::from("/usr/local/bin/bash"))
+        );
+        // Only absolute entries are searched: an empty one means the current
+        // directory to a POSIX shell, and a `bash` planted in a project must
+        // never become what every command runs under.
+        let planted = |p: &Path| p == Path::new("relative/bash") || p == Path::new("bash");
+        assert_eq!(find_on_path("bash", Some(&path), planted), None);
+        assert_eq!(find_on_path("bash", None, |_| true), None);
+    }
+
+    #[test]
+    fn a_tier_runs_the_shell_it_is_handed() {
+        let bash = Path::new("/usr/bin/bash");
+        let (prog, args) = argv(&command_in(&DetachTier::SetsidBinary, bash, "echo hi"));
+        assert_eq!(prog, "setsid");
+        assert_eq!(args, ["/usr/bin/bash", "-c", "echo hi"].map(OsString::from));
+        let (prog, args) = argv(&command_in(&DetachTier::Attached, bash, "echo hi"));
+        assert_eq!(prog, "/usr/bin/bash");
+        assert_eq!(args, ["-c", "echo hi"].map(OsString::from));
+        // The helper is told which shell to become — a third argument, which
+        // plain `sh` never needs, so the `!` shell's protocol is unchanged.
+        let helper = Path::new("/opt/bin/alter-zero");
+        let (_, args) = argv(&command_in(
+            &DetachTier::HelperReexec(helper),
+            bash,
+            "echo hi",
+        ));
+        assert_eq!(
+            args,
+            [DETACH_ARG, "echo hi", "/usr/bin/bash"].map(OsString::from)
+        );
+        let (_, args) = argv(&command_in(
+            &DetachTier::HelperReexec(helper),
+            Path::new("sh"),
+            "echo hi",
+        ));
+        assert_eq!(args, [DETACH_ARG, "echo hi"].map(OsString::from));
+    }
+
+    #[test]
+    fn a_tty_tier_runs_the_shell_it_is_handed() {
+        let bash = Path::new("/usr/bin/bash");
+        let command =
+            tty_command_for(&DetachTier::SetsidBinary, bash, "python3 -q").expect("a tier");
+        let (prog, args) = argv(&command);
+        assert_eq!(prog, "setsid");
+        assert_eq!(
+            args,
+            ["-c", "/usr/bin/bash", "-c", "python3 -q"].map(OsString::from)
+        );
+        let helper = Path::new("/opt/bin/alter-zero");
+        let command =
+            tty_command_for(&DetachTier::HelperReexec(helper), bash, "vim").expect("a tier");
+        let (_, args) = argv(&command);
+        assert_eq!(
+            args,
+            [DETACH_TTY_ARG, "vim", "/usr/bin/bash"].map(OsString::from)
+        );
+    }
+
+    #[test]
+    fn bash_syntax_runs_under_the_tool_shell() {
+        // What the tool's name promises (docs/bash-tools.md): `[[ ]]`, brace
+        // expansion and `source` are bash, and dash — `/bin/sh` on Debian,
+        // Ubuntu and Kali — refuses all three.
+        if tool_shell() == Path::new(DEFAULT_SHELL) {
+            return; // no bash on this machine: the fallback is the old shell
+        }
+        let mut child = spawn_detached_in(
+            None,
+            tool_shell(),
+            "[[ 1 == 1 ]] && echo {1..3}; source /dev/null && echo sourced",
+        )
+        .expect("spawns");
+        let mut out = String::new();
+        child
+            .stdout
+            .take()
+            .expect("piped")
+            .read_to_string(&mut out)
+            .expect("reads");
+        let _ = child.wait();
+        assert_eq!(out, "1 2 3\nsourced\n");
     }
 
     #[test]

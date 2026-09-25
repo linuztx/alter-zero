@@ -844,7 +844,7 @@ pub(super) fn agent_view_preview_lines(
             }
             // A live strip like the main one — the agent's running call
             // blinks here too (`docs/tool-pulse.md`) and a running command
-            // tails its streamed output under the `(Ns · timeout …)` clock
+            // tails its streamed output under the `(Ns · wait …)` clock
             // row, on its `⎿ Running…` row before any (`docs/tool-streaming.md`). The
             // elapsed is the **command's** own — boundary-injected per agent
             // like the thinking phase's, `AgentRun::command_elapsed` — never

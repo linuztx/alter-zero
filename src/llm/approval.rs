@@ -118,32 +118,25 @@ pub fn permission_request(
                 agent_id: None,
             })
         }
-        // Typing into an interactive session asks like a command does
-        // (`docs/interactive-shell.md`) — what is typed there runs just the
-        // same. A call that types nothing does not: a wait only reads, a kill
-        // ends a command the model started (the ↓ manager's stop asks
-        // nothing either), and a lone Ctrl+C only interrupts.
+        // Typing into a running session asks like a command does
+        // (`docs/bash-tools.md`) — what is typed there runs just the same.
+        // `bashwait`, `bashkill` and `bashlist` never ask: a wait only reads,
+        // a kill ends a command the model started (the ↓ manager's stop asks
+        // nothing either), a list only names them — so they fall through to
+        // the no-prompt arm below by name.
+        tools::BASH_SEND_TOOL => {
+            let args: tools::SendArgs = tools::parse_args(&call.arguments).ok()?;
+            session_request(&args.session_id, &args.input, agent, describe)
+        }
+        // The legacy tool: only a call that types something asks.
         tools::BASH_SESSION_TOOL_NAME => {
             let args: SessionArgs = tools::parse_args(&call.arguments).ok()?;
-            let input = args.input.as_deref().unwrap_or_default();
-            let parts = crate::pty::keys::parse_input(input);
-            if parts.is_empty() || crate::pty::keys::is_interrupt(&parts) {
-                return None;
-            }
-            let id = args.session_id.trim().to_string();
-            let command = match describe {
-                Some(describe) => Some(describe(&id)?),
-                None => None,
-            };
-            Some(PermissionRequest {
-                id: String::new(),
-                kind: PermissionKind::Session,
-                target: id,
-                body: crate::pty::keys::display_input(input),
-                detail: command,
+            session_request(
+                &args.session_id,
+                args.input.as_deref().unwrap_or_default(),
                 agent,
-                agent_id: None,
-            })
+                describe,
+            )
         }
         // An MCP call asks too (`docs/mcp.md`): the wire name is the target
         // (the rule key option 2 remembers), the arguments the one-line
@@ -164,6 +157,36 @@ pub fn permission_request(
         }),
         _ => None,
     }
+}
+
+/// What typing `input` into session `id` asks the user — `None` when it
+/// types nothing, or only a lone Ctrl+C, which interrupts rather than runs
+/// anything; or when nothing answers to the id (there is nothing to type
+/// into, and so nothing to approve).
+fn session_request(
+    id: &str,
+    input: &str,
+    agent: Option<String>,
+    describe: Option<&DescribeTool<'_>>,
+) -> Option<PermissionRequest> {
+    let parts = crate::pty::keys::parse_input(input);
+    if parts.is_empty() || crate::pty::keys::is_interrupt(&parts) {
+        return None;
+    }
+    let id = id.trim().to_string();
+    let command = match describe {
+        Some(describe) => Some(describe(&id)?),
+        None => None,
+    };
+    Some(PermissionRequest {
+        id: String::new(),
+        kind: PermissionKind::Session,
+        target: id,
+        body: crate::pty::keys::display_input(input),
+        detail: command,
+        agent,
+        agent_id: None,
+    })
 }
 
 /// [`crate::llm::agent::run_agent`]'s `approve` seam: consult the session

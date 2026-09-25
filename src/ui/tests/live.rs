@@ -35,7 +35,7 @@ fn render_live_tails_a_running_bash_tool_with_its_streamed_output() {
     assert!(all.contains("line 9"), "the newest line tails: {all:?}");
     assert!(!all.contains("line 4"), "older lines are hidden: {all:?}");
     assert!(
-        all.contains("+5 lines (9s · timeout 2m)"),
+        all.contains("+5 lines (9s · wait 2m)"),
         "the footer shows: {all:?}"
     );
 }
@@ -44,7 +44,7 @@ fn render_live_tails_a_running_bash_tool_with_its_streamed_output() {
 fn a_silent_running_command_shows_its_clock_and_timeout_live() {
     // The reported ask, third shape: a command that has printed nothing
     // shows how long it has run and how long it may on its Running row —
-    // `⎿ Running… (10s · timeout 2m)` — with the delayed Ctrl+B hint under
+    // `⎿ Running… (10s · wait 2m)` — with the delayed Ctrl+B hint under
     // it, instead of a bare `⎿ Running…` that said nothing for as long as
     // the command took (docs/tool-streaming.md).
     let mut app = App::new();
@@ -61,7 +61,7 @@ fn a_silent_running_command_shows_its_clock_and_timeout_live() {
         preview,
         [
             format!("● Bash({command})"),
-            "  ⎿  Running… (10s · timeout 2m)".to_string(),
+            "  ⎿  Running… (10s · wait 2m)".to_string(),
             "     (ctrl+b to run in background)".to_string(),
         ]
     );
@@ -88,7 +88,7 @@ fn a_running_command_whose_output_fits_shows_the_clock_row_under_it() {
         preview[1..],
         [
             "  ⎿  hello world",
-            "     (10s · timeout 10m)",
+            "     (10s · wait 10m)",
             "     (ctrl+b to run in background)",
         ],
         "{preview:?}"
@@ -128,7 +128,7 @@ fn the_running_tails_footer_counts_from_the_commands_own_start() {
     };
     assert_eq!(
         footer(&app),
-        "+5 lines (9s · timeout 2m)",
+        "+5 lines (9s · wait 2m)",
         "the command's own runtime, never the turn's 60s"
     );
     // A clock to *display*, not the Ctrl+B hint's gate: a composer-replacing
@@ -143,7 +143,7 @@ fn the_running_tails_footer_counts_from_the_commands_own_start() {
     );
     assert_eq!(
         footer(&app),
-        "+5 lines (9s · timeout 2m)",
+        "+5 lines (9s · wait 2m)",
         "the footer still counts under a picker"
     );
 }

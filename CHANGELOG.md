@@ -17,11 +17,12 @@ release heading when a version is cut.
 - **Interactive commands.** The agent can now drive programs that need a
   terminal: prompts (`[Y/n]` questions, setup wizards, password prompts),
   REPLs (`python3`, `node`, `psql`), full-screen programs (`vim`, `less`,
-  `top`) and arrow-key menus. `bash` gains a `tty` option that runs a command
-  in a pseudo-terminal of its own and returns as soon as the command exits or
-  stops to wait for input; a new `bash_session` tool types into it — text and
-  named keys such as `<Enter>`, `<C-c>` and `<Up>` — waits on it, reads what
-  it printed (or a full-screen program's screen) and ends it. Each call
+  `top`) and arrow-key menus. Every command runs in a terminal of its own,
+  and the `bash` call returns as soon as the command exits or stops to wait
+  for input; four new tools work a command still running — `bashsend` types
+  into it, text and named keys such as `<Enter>`, `<C-c>` and `<Up>`;
+  `bashwait` waits on it; `bashkill` ends it; `bashlist` names the ones
+  running — reading what it printed (or a full-screen program's screen). Each call
   reports only the lines that are new or changed since the last one, and its
   cell streams them as they come, a progress bar redrawn in place. A
   full-screen program's screen reads as you would see it — boxes drawn as
@@ -51,12 +52,12 @@ release heading when a version is cut.
   typed, and keys it HTML-escapes (`&lt;Esc&gt;`) are still pressed. Keys it
   names the way a program's help does — `^O`, or `F3` and `Esc` without
   their brackets in a full-screen program — are pressed rather than typed as
-  text, a `timeout` written as `5000.0` or `"5000"` is accepted like `5000`,
+  text, a `wait` written as `30.0` or `"30"` is accepted like `30`,
   an empty `input` is told that it typed nothing, and a `session_id` with
   other text run into it is answered with the session it names instead of
-  being reported gone. A plain command that leaves a process running with
-  `&` tells the agent it was stopped, pointing it at `run_in_background`,
-  where a trailing `&` is now dropped instead of stopping the command at
+  being reported gone. A command that leaves a process running with `&` and
+  exits tells the agent it was stopped, pointing it at `wait: 0`, and a
+  command that ends in `&` starts in the background instead of stopping at
   once. A
   progress bar or a command run under `sudo`, `ssh` or `docker run -it` is
   waited out rather than taken for a prompt — a download under `sudo pacman`
@@ -66,17 +67,19 @@ release heading when a version is cut.
   for a question. A password prompt is told by the terminal itself, which
   reads it with echo off — under `sudo` too, where the kernel cannot be
   asked — so the agent hears within half a second that a password is wanted,
-  and a retry after a wrong one no longer leaves it waiting out its timeout;
+  and a retry after a wrong one no longer leaves it waiting it out;
   what it types there still shows as typed. A password it types is answered
   in the same call — a refusal and the next prompt, or the command's first
   words — rather than with `(no new output)` while sudo is still checking
   it, and a question that comes up while the agent is deciding to wait ends
-  that wait too, instead of the wait running out its timeout with the
-  question already on screen. A call's header names the
-  program it types into (`● BashSession(python3 ← print(1)⏎)`), above its
-  permission prompt too and on a call you refused. It also
-  reaches `run_in_background` commands, which can now be waited on,
-  interrupted and ended the same way. A session still running shows in the
+  that wait too, instead of the wait running out with the question already
+  on screen. A call's header names the program it types into
+  (`● BashSend(python3 ← print(1)⏎)`), above its permission prompt too and
+  on a call you refused. Commands started in the background can be waited
+  on, interrupted and ended the same way, and one that stops to ask a
+  question while nobody is watching says so: an amber `● Background command
+  "…" is waiting for input` line, and a note that lets the agent answer it.
+  A session still running shows in the
   footer's shell count, and the ↓ manager shows its live screen; its cells
   end on a dim `Waiting for input · session …` row (`Waiting for a password
   · …` at a password prompt). Typing into a session asks permission like a
@@ -84,12 +87,31 @@ release heading when a version is cut.
   started it, or approved once for the whole session — and auto mode's
   classifier reviews it; waiting on a session, interrupting it or ending it
   never asks. The agent never guesses a password it was not given: it asks
-  you (`docs/interactive-shell.md`).
+  you (`docs/bash-tools.md`, `docs/interactive-shell.md`).
 
 ### Changed
 
-- **Progress bars in command output read as one line.** A plain `bash`
-  command's output, a background shell's and a `!` command's are now read the
+- **Commands run in a terminal, under `bash`, and are never killed for
+  taking long.** The `bash` tool's `timeout` (milliseconds, after which the
+  command was killed) is now `wait`, in seconds: how long the call waits
+  before it hands the command back still running, as a session the agent
+  can wait on again — a long build is no longer lost to a guess at how long
+  it takes, and `"timeout": 30` meant as seconds no longer kills a command
+  after 30 ms. `wait: 0` replaces `run_in_background`; the old names are
+  still understood. Commands run under `bash` where it is installed rather
+  than `sh`, which is `dash` on Debian, Ubuntu and Kali — `[[ … ]]`,
+  `source` and `{1..3}` work. A quiet command (`sleep`, a link step, a
+  `curl` waiting on the network) runs to its exit instead of coming back
+  after two seconds of silence as though it were waiting for input. What a
+  finished command printed reaches the agent as it was written, tabs and
+  trailing spaces included, and a very long output keeps both its start and
+  its end, with a line naming the log file that holds all of it — before, a
+  plain command kept only its first 64 KB and said nothing of the rest.
+  `bashkill` asks a command to stop (`Ctrl+C`, then `SIGTERM`) before it is
+  killed, so a dev server or `docker compose up` shuts down cleanly
+  (`docs/bash-tools.md`).
+- **Progress bars in command output read as one line.** A `bash` command's
+  output, a background shell's and a `!` command's are now read the
   way a terminal shows them: a `curl`, `tqdm`, `ffmpeg` or `rsync` progress
   bar redrawn with `\r` reaches the agent once, in its final state, instead
   of every frame it drew run together on one line, and colour escapes are

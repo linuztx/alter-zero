@@ -93,19 +93,20 @@ plain path only.
 
 ### The TTY form of the chain
 
-`bash` with `tty: true` (`docs/interactive-shell.md`) needs the **opposite**
+A `bash` call (`docs/bash-tools.md`, `docs/interactive-shell.md`) needs the **opposite**
 of a detach — a controlling terminal — but of a pseudo-terminal of its own,
 never the user's. That is `setsid(2)` *plus* `TIOCSCTTY` on the new session,
 still with no `pre_exec`, so the same chain grows a TTY form
 ([`subprocess::tty_tiers`](../src/subprocess.rs) and `tty_command_for`):
-`setsid -c sh -c "<command>"` (util-linux's `--ctty` makes stdin — the pty's
-slave — the controlling terminal after the `setsid`), then the helper under
-its own sentinel, `__alter-zero-detached-tty-exec`, whose branch in
+`setsid -c bash -c "<command>"` (util-linux's `--ctty` makes stdin — the
+pty's slave — the controlling terminal after the `setsid`), then the helper
+under its own sentinel, `__alter-zero-detached-tty-exec`, whose branch in
 `run_detached_exec_if_requested` adds the safe `ioctl_tiocsctty(stdin)` after
-the `setsid()` before `exec`ing `sh`. There is **no attached tier**: an
-attached shell's `/dev/tty` is the user's terminal — the very bug above — so a
-machine with neither route refuses the launch with an error the model can act
-on (run without `tty`). Both tiers keep `child.id() == pgid == sid`, the
+the `setsid()` before `exec`ing the shell — named by an optional third
+argument when it is not `sh` (`subprocess::tool_shell`: `bash` where one is
+installed). There is **no attached tier**: an attached shell's `/dev/tty` is
+the user's terminal — the very bug above — so on a machine with neither route
+the command runs on a pipe instead, detached by the plain chain above. Both tiers keep `child.id() == pgid == sid`, the
 invariant below; `tests/detached_exec.rs` proves the helper tier's
 `/dev/tty` reaches the session's own terminal.
 

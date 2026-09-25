@@ -265,8 +265,9 @@ fn every_user_facing_script_hands_the_user_off_to_a_real_model() {
 
 #[test]
 fn the_interactive_demo_answers_prompts_through_a_session() {
-    // docs/interactive-shell.md: a `tty` launch that stops at a prompt, the
-    // answers typed one per round, and an exit the last answer causes — each
+    // docs/bash-tools.md: a `bash` launch that stops at a prompt, the
+    // answers typed one per round with `bashsend`, and an exit the last
+    // answer causes — each
     // result the real report formatter's, so the offline cells are the live
     // ones (the dummy-backend rule, docs/dummy-backend.md).
     use crate::pty::report::{Status, View, Waiting, report};
@@ -289,8 +290,16 @@ fn the_interactive_demo_answers_prompts_through_a_session() {
         .collect();
     assert_eq!(starts.len(), 3, "a launch and two answers: {starts:?}");
     assert_eq!(starts[0].0, "Bash");
-    assert!(starts[0].1.contains(r#""tty":true"#), "{}", starts[0].1);
-    assert!(starts[1..].iter().all(|(name, _)| *name == "BashSession"));
+    assert!(
+        !starts[0].1.contains("tty"),
+        "every command has a terminal: {}",
+        starts[0].1
+    );
+    assert!(starts[1..].iter().all(|(name, _)| *name == "BashSend"));
+    assert!(
+        starts[1..].iter().all(|(_, args)| args.contains("<Enter>")),
+        "answers press Enter by name, the way the schema teaches: {starts:?}"
+    );
     // Each answer's header names the command it goes to, as the real
     // executor refines it once it knows the session.
     let titles: Vec<&str> = events

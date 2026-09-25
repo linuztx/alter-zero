@@ -28,15 +28,24 @@
 //!    meter, an animation — and has had [`SCREEN_BUSY`] since the call's
 //!    last key: it never goes quiet, and it takes keys all the while, so what
 //!    is on screen is the answer (a pure wait still waits);
-//! 5. it has been silent for [`LINE_QUIET`] — except for a pure
-//!    [`WaitKind::Wait`]: a build that pauses between lines is still working,
-//!    so a wait returns only on an exit, a prompt, or its timeout, which is
-//!    what lets the model wait for a long command in one call — and a call
-//!    that submitted a password gives the program [`CHECK_QUIET`] to answer
-//!    it: sudo takes seconds to check one and says nothing meanwhile — as
-//!    does a full-screen program that switched screens and has drawn nothing
-//!    yet (btop gathering its first frame);
-//! 6. the call's timeout passed.
+//! 5. it has been silent for [`LINE_QUIET`] after an input, or
+//!    [`LAUNCH_QUIET`] after a launch — and the kernel does not see it **at
+//!    work** ([`Observation::busy`]): every command launches in a terminal
+//!    (`docs/bash-tools.md`), and a quiet command is not a waiting one, so a
+//!    `curl`, a link step or a `sleep` runs on to its exit or the call's
+//!    timeout. Never for a pure [`WaitKind::Wait`] either: a build that
+//!    pauses between lines is still working, so a wait returns only on an
+//!    exit, a prompt, or its timeout, which is what lets the model wait for a
+//!    long command in one call. A call that submitted a password gives the
+//!    program [`CHECK_QUIET`] to answer it: sudo takes seconds to check one
+//!    and says nothing meanwhile — as does a full-screen program that
+//!    switched screens and has drawn nothing yet (btop gathering its first
+//!    frame);
+//! 6. a pure wait on a program already **reading key by key** at a prompt,
+//!    with nothing printed since the model last looked, settles as soon as
+//!    the probe has had its moment ([`PROMPT_QUIET`]): a REPL waits for the
+//!    model, not the other way round;
+//! 7. the call's timeout passed.
 
 use std::time::Duration;
 
@@ -67,9 +76,16 @@ pub fn prompt_quiet(kind: WaitKind, output: bool) -> Duration {
 }
 
 /// How long a program that left the cursor at the start of a line must stay
-/// silent before a launch or an input call returns anyway: it may be waiting
-/// on a line-terminated question, or on nothing it has said.
+/// silent before an input call returns anyway: it may be waiting on a
+/// line-terminated question, or on nothing it has said.
 pub const LINE_QUIET: Duration = Duration::from_secs(2);
+
+/// [`LINE_QUIET`] for a **launch**: every command starts in a terminal
+/// (`docs/bash-tools.md`), and a batch command that is quiet for two seconds
+/// — a download, a link step, a `terraform plan` — is not asking anything.
+/// What the kernel cannot see at work (a network wait, `sudo`, no `/proc`)
+/// returns after this long; what it sees at work never does.
+pub const LAUNCH_QUIET: Duration = Duration::from_secs(10);
 
 /// How long a launch or an input call watches a full-screen program that
 /// keeps redrawing before it returns the screen anyway, counted from the
@@ -134,6 +150,13 @@ pub struct Observation {
     pub since_keys: Duration,
     /// Has the program exited?
     pub exited: bool,
+    /// Did the probe see every thread of the program **at work**
+    /// (`pty::probe::Probe::Idle`)? Its silence then settles nothing: the
+    /// command runs on to its exit or the call's timeout.
+    pub busy: bool,
+    /// Does the program read its terminal **key by key** — a REPL, an
+    /// editor, a menu (`pty::spawn::LineMode::reads_keys`)?
+    pub key_by_key: bool,
 }
 
 /// Why the call returns.
@@ -161,6 +184,16 @@ pub fn settle(kind: WaitKind, timeout: Duration, seen: &Observation) -> Option<S
     if (seen.reading || seen.secret) && seen.quiet >= PROMPT_QUIET {
         return Some(Settle::Prompt);
     }
+    // A program already waiting on keys, and nothing new since the model
+    // last looked: nothing will come until it is typed into.
+    if kind == WaitKind::Wait
+        && !seen.output
+        && seen.awaiting_keys
+        && seen.key_by_key
+        && seen.elapsed >= PROMPT_QUIET
+    {
+        return Some(Settle::Prompt);
+    }
     // Output from before the call — a question asked while the model was
     // deciding to wait — can be quiet long enough the moment the call
     // begins: the call still looks for PROMPT_QUIET first, which is what
@@ -180,12 +213,17 @@ pub fn settle(kind: WaitKind, timeout: Duration, seen: &Observation) -> Option<S
             Settle::Quiet
         });
     }
-    let line_quiet = if seen.answer_pending || seen.undrawn {
-        CHECK_QUIET
+    let line_quiet = if kind == WaitKind::Launch {
+        LAUNCH_QUIET
     } else {
         LINE_QUIET
     };
-    if kind != WaitKind::Wait && seen.quiet >= line_quiet {
+    let line_quiet = if seen.answer_pending || seen.undrawn {
+        line_quiet.max(CHECK_QUIET)
+    } else {
+        line_quiet
+    };
+    if kind != WaitKind::Wait && !seen.busy && seen.quiet >= line_quiet {
         return Some(Settle::Quiet);
     }
     (seen.elapsed >= timeout).then_some(Settle::Timeout)
@@ -213,6 +251,8 @@ mod tests {
             undrawn: false,
             since_keys: ms(elapsed),
             exited: false,
+            busy: false,
+            key_by_key: false,
         }
     }
 
@@ -443,22 +483,97 @@ mod tests {
     }
 
     #[test]
-    fn a_launch_or_input_returns_after_a_silence_at_the_start_of_a_line() {
+    fn an_input_returns_after_a_silence_at_the_start_of_a_line() {
         let silent = seen(2100, LINE_QUIET.as_millis() as u64, true, false);
-        assert_eq!(
-            settle(WaitKind::Launch, TIMEOUT, &silent),
-            Some(Settle::Quiet)
-        );
         assert_eq!(
             settle(WaitKind::Input, TIMEOUT, &silent),
             Some(Settle::Quiet)
         );
         let never_spoke = seen(2100, 2100, false, false);
         assert_eq!(
-            settle(WaitKind::Launch, TIMEOUT, &never_spoke),
+            settle(WaitKind::Input, TIMEOUT, &never_spoke),
             Some(Settle::Quiet),
             "a program waiting silently still hands control back"
         );
+    }
+
+    #[test]
+    fn a_quiet_launch_the_kernel_cannot_see_returns_after_a_longer_silence() {
+        // A quiet command is not a waiting one (docs/bash-tools.md): every
+        // command launches in a terminal now, and two seconds of silence
+        // handed back a `curl`, a link step or a `terraform plan` as
+        // `Running` — then a completion notice nobody asked for.
+        let long = ms(60_000);
+        let silent = |quiet| seen(quiet, quiet, true, false);
+        assert_eq!(
+            settle(
+                WaitKind::Launch,
+                long,
+                &silent(LINE_QUIET.as_millis() as u64)
+            ),
+            None
+        );
+        assert_eq!(
+            settle(
+                WaitKind::Launch,
+                long,
+                &silent(LAUNCH_QUIET.as_millis() as u64)
+            ),
+            Some(Settle::Quiet)
+        );
+        let never_spoke = seen(10_100, 10_100, false, false);
+        assert_eq!(
+            settle(WaitKind::Launch, long, &never_spoke),
+            Some(Settle::Quiet),
+            "a program waiting silently still hands control back"
+        );
+    }
+
+    #[test]
+    fn a_program_the_kernel_sees_at_work_is_never_settled_by_silence() {
+        // `sleep 4; echo done` came back `Running` at 2.02 s and then exited
+        // with nobody watching: the probe saw every thread at work the
+        // whole time (`pty::probe::Probe::Idle`).
+        let working = Observation {
+            busy: true,
+            ..seen(120_000, 120_000, true, false)
+        };
+        for kind in [WaitKind::Launch, WaitKind::Input] {
+            assert_eq!(settle(kind, ms(600_000), &working), None, "{kind:?}");
+            assert_eq!(
+                settle(kind, ms(120_000), &working),
+                Some(Settle::Timeout),
+                "{kind:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_wait_on_a_program_reading_keys_with_nothing_new_returns_at_once() {
+        // A REPL at the prompt the model already saw: nothing comes until it
+        // is typed into, and a wait holding its budget over it only costs
+        // the user the wait (docs/bash-tools.md).
+        let at_prompt = |elapsed| Observation {
+            key_by_key: true,
+            ..seen(elapsed, 5_000, false, true)
+        };
+        let long = ms(120_000);
+        assert_eq!(
+            settle(WaitKind::Wait, long, &at_prompt(300)),
+            None,
+            "the probe gets its moment"
+        );
+        assert_eq!(
+            settle(WaitKind::Wait, long, &at_prompt(600)),
+            Some(Settle::Prompt)
+        );
+        // A line prompt behind a relay, or a busy line shaped like one, is
+        // the model choosing to wait: it still waits.
+        let line_prompt = Observation {
+            key_by_key: false,
+            ..at_prompt(600)
+        };
+        assert_eq!(settle(WaitKind::Wait, long, &line_prompt), None);
     }
 
     #[test]

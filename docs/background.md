@@ -1,4 +1,11 @@
-# Background shells — `run_in_background`, Ctrl+B, and the ↓ manager
+# Background shells — `wait: 0`, a `wait` that passes, Ctrl+B, and the ↓ manager
+
+> Since `docs/bash-tools.md` a `bash` call asks for the background with
+> `wait: 0` (or a trailing `&`) where it used to set `run_in_background`,
+> which still parses; a command still running when its `wait` passes goes on
+> here too rather than being killed, and the companion tools
+> (`bashsend`/`bashwait`/`bashkill`/`bashlist`) take over what
+> `bash_session` did. The mechanism below is unchanged.
 
 Claude-Code-style background command execution: the model can launch a `bash`
 command that keeps running while the conversation continues, the user can move
@@ -28,9 +35,9 @@ told the result in a new turn.
   **instead of** `ToolEnd` (`llm::agent` picks by `outcome.background`).
   `output` is the *model-facing* text — the **session id**, the interim-output
   file path and the completion promise. The id used to be left out, since
-  nothing model-facing took one back; `bash_session` does now — it waits on
-  a background command, interrupts it with `<C-c>` or ends it with `kill`
-  (`docs/interactive-shell.md`) — so the launch names it. The cell never shows
+  nothing model-facing took one back; the companion tools do now — `bashwait`
+  waits on a background command, `bashsend` interrupts it with `<C-c>`,
+  `bashkill` ends it (`docs/bash-tools.md`) — so the launch names it. The cell never shows
   the text — it renders the fixed `⎿ Running in the background (↓ to manage)`
   row.
 - That text differs by **who** backgrounded the call. A `run_in_background`
@@ -341,18 +348,24 @@ over the launch facts, see Protocol above), the `!` shell via its normal
 
 ### Interactive sessions
 
-A `bash` call with `tty` runs in a pseudo-terminal and is a task of this same
-registry (`launch_tty`, `docs/interactive-shell.md`) — the footer count, the ↓
-manager, `kill_all` and subagent attribution all hold — with four
+A `bash` call runs in a pseudo-terminal and is a task of this same registry
+(`launch_tty`, `docs/interactive-shell.md`) — the footer count, the ↓
+manager, `kill_all` and subagent attribution all hold — with five
 differences. It is **announced** (`BgEvent::Started`) only if it outlives its
 launching call, so a command that finishes inside its call never shows up
 here. Its monitor sends `BgEvent::Screen` (the emulated screen, throttled)
 instead of line output, which the details page shows in place of a tail. An
-exit the model *saw* — a `bash_session` result framed `Exit code: N` or
+exit the model *saw* — a companion result framed `Exit code: N` or
 `Stopped` — arrives as `Exited { observed: true }`, which posts no completion
-notice and starts no follow-up turn. And at most `MAX_TTY_SESSIONS` (16) run
-at once. Ending one kills its process group and everything left in its
-session.
+notice and starts no follow-up turn. At most `MAX_TTY_SESSIONS` (16)
+announced sessions run at once. And a session nobody waits on that stops to
+**ask for input** arrives as `BgEvent::Waiting`, which the loop reports the
+way it reports an exit — the note posted for the model (naming the session,
+so `bashsend` can answer it), the amber `● Background command "…" is waiting
+for input` cell settled at the next safe boundary, the idle follow-up turn
+started for a model launch — while the shell keeps its row
+(`docs/bash-tools.md`). Ending one (`bashkill`) sends `SIGINT`, then
+`SIGTERM`, then kills its process group and everything left in its session.
 
 ### Persistence (`session`)
 

@@ -243,7 +243,7 @@ impl App {
     /// [`set_status_times`](App::set_status_times) pattern — the clock lives at
     /// the boundary, started at the call's `ToolStart` / the `!` shell's
     /// launch). `None` when no command is running. Two readers: the running
-    /// cell **displays** it — the `bash` cell's `+N lines (Ns · timeout …)`
+    /// cell **displays** it — the `bash` cell's `+N lines (Ns · wait …)`
     /// clock row, the `!` shell's `⎿ Running… (Ns)` row
     /// ([`command_elapsed`](App::command_elapsed),
     /// `docs/tool-streaming.md`) — and the preview delays the `(ctrl+b to run
@@ -315,7 +315,7 @@ impl App {
     /// [`set_command_elapsed`](App::set_command_elapsed) injected, `None` when
     /// no command is running (the boundary injects `None` at every
     /// resolution). This is what the running cell *displays*: the `bash`
-    /// cell's `+N lines (Ns · timeout …)` clock row — on its `⎿ Running…`
+    /// cell's `+N lines (Ns · wait …)` clock row — on its `⎿ Running…`
     /// row before any output — and the `!` shell's `⎿ Running… (Ns)`
     /// row (`ui::running_command_lines`, `docs/tool-streaming.md`). It is the
     /// command's own clock, never the turn's — a `bash` call that starts a

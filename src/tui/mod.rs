@@ -166,7 +166,7 @@ pub(crate) struct Session<'t> {
     /// When each subagent's **current running command** started — the
     /// per-agent sibling of `StatusClocks::command_start`, injected each
     /// frame as `AgentRun::command_elapsed` so its session view's `bash`
-    /// tail counts its `+N lines (Ns · timeout …)` clock row from the call's own
+    /// tail counts its `+N lines (Ns · wait …)` clock row from the call's own
     /// `ToolStart`, never from the agent's runtime. Inserted at that
     /// `ToolStart`; **pruned by the roster tick** from the run's own queue —
     /// an agent without a running front call loses its entry — rather than

@@ -500,7 +500,9 @@ pub fn background_notice_lines(
     notice: &crate::app::BackgroundNotice,
     width: u16,
 ) -> Vec<Line<'static>> {
-    let color = if notice.ok() {
+    let color = if notice.waiting {
+        bg_notice_waiting_color()
+    } else if notice.ok() {
         bg_notice_ok_color()
     } else {
         bg_notice_fail_color()

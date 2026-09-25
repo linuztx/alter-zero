@@ -56,8 +56,14 @@ pub fn claude_code_alias(tool: &str) -> Option<&'static str> {
         "askuserquestion" => Some("AskUserQuestion"),
         "skill" => Some("Skill"),
         // No reference tool to borrow a spelling from: the name the cell
-        // header shows is the one a user writes (docs/interactive-shell.md).
-        "bash_session" => Some("BashSession"),
+        // header shows is the one a user writes (docs/bash-tools.md).
+        crate::llm::tools::BASH_SEND_TOOL => Some(crate::llm::tools::BASH_SEND_DISPLAY),
+        crate::llm::tools::BASH_WAIT_TOOL => Some(crate::llm::tools::BASH_WAIT_DISPLAY),
+        crate::llm::tools::BASH_KILL_TOOL => Some(crate::llm::tools::BASH_KILL_DISPLAY),
+        crate::llm::tools::BASH_LIST_TOOL => Some(crate::llm::tools::BASH_LIST_DISPLAY),
+        crate::llm::tools::BASH_SESSION_TOOL_NAME => {
+            Some(crate::llm::tools::BASH_SESSION_TOOL_DISPLAY)
+        }
         _ => None,
     }
 }

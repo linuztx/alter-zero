@@ -102,6 +102,28 @@ fn the_helper_reexec_tier_detaches_on_its_own() {
 
 #[cfg(unix)]
 #[test]
+fn the_helper_becomes_the_shell_it_is_named() {
+    // The helper's optional third argument (docs/bash-tools.md): a model
+    // command runs under bash, whose syntax dash — `/bin/sh` on Debian,
+    // Ubuntu and Kali — refuses. Where the machine has no bash the tool shell
+    // is `sh` and there is nothing to prove.
+    use alter_zero::subprocess::{DEFAULT_SHELL, DetachTier, command_in, tool_shell};
+    if tool_shell() == std::path::Path::new(DEFAULT_SHELL) {
+        return;
+    }
+    let helper = helper();
+    let out = command_in(
+        &DetachTier::HelperReexec(&helper),
+        tool_shell(),
+        "[[ 1 == 1 ]] && echo {1..3}",
+    )
+    .output()
+    .expect("runs through the helper tier");
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "1 2 3\n");
+}
+
+#[cfg(unix)]
+#[test]
 fn a_password_prompt_fails_fast_instead_of_hanging() {
     // The user-visible regression, mechanism-for-mechanism: `read x < /dev/tty`
     // is sudo's password read. Attached, it blocks forever (the `Running…`

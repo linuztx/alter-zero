@@ -470,7 +470,11 @@ mod tests {
             // it (`docs/skills.md`).
             ("Skill", "skill"),
             // No reference spelling here — the cell header's name, the one a
-            // user sees, answers for `bash_session` (docs/interactive-shell.md).
+            // user sees, answers for each companion (docs/bash-tools.md).
+            ("BashSend", "bashsend"),
+            ("BashWait", "bashwait"),
+            ("BashKill", "bashkill"),
+            ("BashList", "bashlist"),
             ("BashSession", "bash_session"),
         ];
         for (matcher, query) in cases {
@@ -496,6 +500,12 @@ mod tests {
             file.select(HookEvent::PreToolUse, Some("bashoutput"))
                 .handlers
                 .is_empty()
+        );
+        assert!(
+            file.select(HookEvent::PreToolUse, Some("bashsend"))
+                .handlers
+                .is_empty(),
+            "a guard on `Bash` is a guard on commands, not on every companion"
         );
     }
 

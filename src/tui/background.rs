@@ -1,10 +1,10 @@
 //! Background shells: their events, and when their notices are allowed to
 //! appear (`docs/background.md`).
 //!
-//! A `run_in_background` bash call — or a Ctrl+B hand-off — leaves a process
-//! running past the turn that started it, on its own channel that is never
-//! swapped (unlike the reply channel), so shells survive an interrupt and
-//! `/clear` kills them explicitly.
+//! A `bash` call that outlives its `wait` — or a `wait: 0` launch, or a Ctrl+B
+//! hand-off — leaves a process running past the turn that started it, on its
+//! own channel that is never swapped (unlike the reply channel), so shells
+//! survive an interrupt and `/clear` kills them explicitly.
 //!
 //! A completion has to reach two audiences, and the split is the whole point of
 //! [`Session::on_bg_event`]:
@@ -22,11 +22,16 @@
 //!
 //! With nothing in flight, a model-launched completion no agent read starts the
 //! automatic follow-up turn instead, so the model can report the result.
+//!
+//! A session that stops to **ask for input** with nobody watching reaches
+//! both audiences the same way (`docs/bash-tools.md`) — the amber `● … is
+//! waiting for input` cell, a note naming the session — while it runs on.
 
 use std::time::Instant;
 
 use ratatui::text::Line;
 
+use alter_zero::app::BgCompletion;
 use alter_zero::background::BgEvent;
 use alter_zero::ui;
 
@@ -66,36 +71,49 @@ impl Session<'_> {
             } => {
                 self.bg_clocks.remove(&id);
                 if let Some(completion) = self.app.bg_exited(&id, code, killed) {
-                    // A subagent-launched shell reports to its launcher first:
-                    // the note queues onto that agent's seam and is heard at
-                    // its next round boundary — the same seam a user's chat
-                    // message rides (docs/queue.md). Queueing is **all** this
-                    // does: `StreamEvent::Steered` records the note on the
-                    // agent's transcript when the loop actually takes it, and
-                    // the session view commits it from there. Recording it
-                    // here as well put it on the transcript twice — once
-                    // eagerly, once on the echo — permanently, in history, the
-                    // rollout and every rebuild.
-                    //
-                    // A launcher that already settled can't hear it: the shared
-                    // board takes the note instead, so the main turn (or the
-                    // idle follow-up turn) relays the outcome
-                    // (docs/agent-tool.md).
-                    let note = completion.context_text();
-                    let routed = completion.origin.as_ref().is_some_and(|origin| {
-                        self.agent_registry.queue_input(&origin.agent_id, &note)
-                    });
-                    if !routed {
-                        self.registry.post_notice(note, completion.from_model);
-                    }
-                    self.app.defer_bg_completion(completion);
-                    if !self.app.turn_active() {
-                        self.dispatch_after_turn();
-                    }
+                    self.report_bg_completion(completion);
+                }
+            }
+            // A session nobody waits on stopped to ask for input
+            // (docs/bash-tools.md): reported the way an exit is, while the
+            // shell keeps running and keeps its row.
+            BgEvent::Waiting { id } => {
+                if let Some(waiting) = self.app.bg_waiting(&id) {
+                    self.report_bg_completion(waiting);
                 }
             }
         }
         self.frame.schedule_frame();
+    }
+
+    /// Tell the model what a background shell did — it exited, or stopped to
+    /// ask for input — and hold its notice for the next safe boundary.
+    fn report_bg_completion(&mut self, completion: BgCompletion) {
+        // A subagent-launched shell reports to its launcher first: the note
+        // queues onto that agent's seam and is heard at its next round
+        // boundary — the same seam a user's chat message rides
+        // (docs/queue.md). Queueing is **all** this does:
+        // `StreamEvent::Steered` records the note on the agent's transcript
+        // when the loop actually takes it, and the session view commits it
+        // from there. Recording it here as well put it on the transcript
+        // twice — once eagerly, once on the echo — permanently, in history,
+        // the rollout and every rebuild.
+        //
+        // A launcher that already settled can't hear it: the shared board
+        // takes the note instead, so the main turn (or the idle follow-up
+        // turn) relays the outcome (docs/agent-tool.md).
+        let note = completion.context_text();
+        let routed = completion
+            .origin
+            .as_ref()
+            .is_some_and(|origin| self.agent_registry.queue_input(&origin.agent_id, &note));
+        if !routed {
+            self.registry.post_notice(note, completion.from_model);
+        }
+        self.app.defer_bg_completion(completion);
+        if !self.app.turn_active() {
+            self.dispatch_after_turn();
+        }
     }
 
     /// `x` in the ↓ manager: stop the task. The registry's `Exited` event then

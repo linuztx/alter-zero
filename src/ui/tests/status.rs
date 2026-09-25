@@ -131,7 +131,7 @@ fn format_elapsed_combines_hours_and_minutes_past_an_hour() {
 
 #[test]
 fn format_timeout_drops_the_zero_parts_a_limit_has_no_use_for() {
-    // The running `bash` cell's `(22s · timeout 1m 50s)` clause names the
+    // The running `bash` cell's `(22s · wait 1m 50s)` clause names the
     // command's timeout beside its ticking elapsed (docs/tool-streaming.md).
     // A limit reads whole: `2m` for the tool's 120 000 ms default, never
     // `2m 0s` — the elapsed keeps its seconds because it moves.

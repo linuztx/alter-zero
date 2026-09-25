@@ -1,4 +1,14 @@
-# Interactive shells — `bash` with `tty`, and `bash_session`
+# Interactive shells — the terminal engine behind the bash tools
+
+> **The tool surface moved on** (`docs/bash-tools.md`). Every `bash` command
+> now runs in a terminal — there is no `tty` flag — under `bash` rather than
+> `sh`, and `bash_session`'s four actions are four tools of their own:
+> `bashsend` types, `bashwait` waits, `bashkill` stops, `bashlist` lists.
+> This document keeps the design history of the first shape and describes
+> the engine all of them still run on (`pty/`): read *a `tty` call* as any
+> `bash` call, and *`bash_session`* as the companion that does that action.
+> `bash_session` itself is still executed, for a resumed conversation that
+> holds calls to it, but no longer offered.
 
 The `bash` tool used to be **execute-only**: a command ran with stdin on
 `/dev/null` and no terminal, and the call waited for it to exit. That is the
@@ -823,16 +833,21 @@ prompt (`sudo`, `ssh`) would find no terminal at all. That needs
 this crate cannot use — so the same tier chain `docs/tty-detach.md` built for
 detaching does it (`subprocess::tty_tiers`):
 
-1. **`setsid -c sh -c {command}`** — util-linux's (and BusyBox's) `-c`/
+1. **`setsid -c bash -c {command}`** — util-linux's (and BusyBox's) `-c`/
    `--ctty` makes stdin the controlling terminal after the `setsid`;
-2. **the helper re-exec** — `{exe} __alter-zero-detached-tty-exec {command}`:
-   `main()`'s first statement calls `rustix::process::setsid()` and
-   `ioctl_tiocsctty(stdin)` and `exec`s `sh` in place (macOS and minimal
-   images, where there is no `setsid` binary);
-3. **no third tier.** The detach chain's last resort — an attached `sh` — would
-   hand a password prompt the *user's* terminal, the bug the chain exists to
-   prevent, so a TTY launch that finds neither tier is refused with an error
-   the model can act on (run without `tty`).
+2. **the helper re-exec** — `{exe} __alter-zero-detached-tty-exec {command}
+   [bash]`: `main()`'s first statement calls `rustix::process::setsid()` and
+   `ioctl_tiocsctty(stdin)` and `exec`s the shell it is named in place (macOS
+   and minimal images, where there is no `setsid` binary);
+3. **no third tier.** The detach chain's last resort — an attached shell —
+   would hand a password prompt the *user's* terminal, the bug the chain exists
+   to prevent, so where neither tier works the command runs on a pipe instead
+   (`background::TtyLaunchError::NoTerminal`, `docs/bash-tools.md`).
+
+The shell is `bash` — the first one on an absolute `PATH` entry, resolved once
+per process (`subprocess::tool_shell`) — and `sh` only where no `bash` is
+installed: `sh` is dash on Debian, Ubuntu and Kali, where `[[ … ]]`, `source`
+and `{1..3}` fail.
 
 Both tiers keep the invariant every kill relies on — `child.id()` is the
 session leader, its process group and its session. Ending a session kills
@@ -875,8 +890,9 @@ attribution and the completion notice for free; what the registry gains is:
   mode, and a waiting call blocks on a condvar beside it;
 - **announcement** — a TTY task launched by a foreground call is registered
   silently and **announced** (`BgEvent::Started`) only if it outlives the
-  call. A `tty` command that finishes inside its own call never appears in the
-  footer or the manager, never posts a notice, and costs nothing but its cell;
+  call. A command that finishes inside its own call never appears in the
+  footer or the manager, never posts a notice, and costs nothing but its cell
+  — nor counts against the 16-session cap, which counts announced sessions;
 - **observed exits** — when the model *saw* the exit (a result framed
   `Exit code: N` or `Stopped`), the `Exited` event says so and no completion
   notice is posted: the model already has the result, and a `[background] …
@@ -890,7 +906,14 @@ attribution and the completion notice for free; what the registry gains is:
   sitting at, the menu as drawn;
 - **a cap** — `MAX_TTY_SESSIONS` (16) running sessions; one more is refused
   with the list of the running ones, rather than letting forgotten REPLs pile
-  up unseen.
+  up unseen;
+- **a question nobody saw** — a session no call waits on that stops at a
+  prompt it printed since the model last looked posts `BgEvent::Waiting`
+  once it has been quiet for `WAITING_NOTICE_QUIET` (3 s), and not again
+  until the model looks: the amber `● Background command "…" is waiting for
+  input` cell, and a note naming the session for `bashsend`
+  (`docs/bash-tools.md`). Only a line shaped like a prompt is probed for it,
+  so an idle server's log never is.
 
 The interim-output file (`{tasks}/{id}.output`) of a TTY session holds the
 cleaned transcript, not the raw escape stream, so `read`ing it is useful too.
@@ -915,21 +938,23 @@ remembered on the gate for the session's life, never written to
 - a **wait**, a **kill**, and a lone **`<C-c>`** never ask: they only observe
   or end what was already approved.
 
-Lifecycle hooks see `bash_session` calls like any other tool; a matcher may
-name it `bash_session` or `BashSession`, the name its cell shows.
+Lifecycle hooks see the companion calls like any other tool; a matcher may
+name one by its wire name (`bashsend`) or by the name its cell shows
+(`BashSend`) — and the legacy tool as `bash_session` or `BashSession`.
 
 ## The cells
 
-- A `tty` `bash` call is an ordinary `● Bash(cmd)` cell. When it returns
+- A `bash` call is an ordinary `● Bash(cmd)` cell. When it returns
   running, the report's frame line — the model's — is stripped, the program's
   output shows, and the cell closes on a fresh dim corner: `⎿ Waiting for
   input · session b7x2k9m1q` (or `Waiting for a password · …` at a prompt
   that reads with echo off, `Still running · …`, or `Stopped · …` after a
   kill). A command that exited reads exactly like a plain `bash` cell.
-- A `bash_session` call is `● BashSession(python3 ← import math⏎)` — the
-  command the session runs (one line, cut at 60 characters), then the input
-  on one line (`⏎` for Enter, `<Down>` for keys), `· kill` after a kill,
-  nothing more for a wait — over the same output peek and state row. The
+- A companion call is `● BashSend(python3 ← import math⏎)` — the command
+  the session runs (one line, cut at 60 characters), then the input on one
+  line (`⏎` for Enter, `<Down>` for keys) — or `● BashWait(python3)`,
+  `● BashKill(python3)`, over the same output peek and state row
+  (`bashlist` names no session: `● BashList()`). The
   command is named from the moment the call is announced: the loop asks the
   registry what the session runs (`summarize_call_naming`), the lookup the
   permission prompt makes for its `into {command} · session {id}` row, so
@@ -942,19 +967,21 @@ name it `bash_session` or `BashSession`, the name its cell shows.
   not carried out) is in its context only; Ctrl+D shows it.
 - Both are command cells (`COMMAND_TOOL_NAMES`): the peek folds at
   `TOOL_FOLD_ROWS`, Ctrl+O shows everything, and a running call tails the
-  transcript live under its clock row — a `bash_session` call's clock naming
-  its own wait (`timeout 10s`), not `bash`'s two minutes.
-- **Ctrl+B** on a running `tty` launch hands the session to the background
-  (it keeps running, the model is told its id); on a `bash_session` call it
-  ends the *wait* — the session was already in the background — and the model
-  is told the user moved on.
+  transcript live under its clock row — a `bashsend` call's clock naming its
+  own budget (`wait 10s`), a `bashwait` call's the wait it asked for, not
+  `bash`'s two minutes.
+- **Ctrl+B** on a running `bash` launch hands the session to the background
+  (it keeps running, the model is told its id); on a `bashsend` or
+  `bashwait` call it ends the *wait* — the session was already in the
+  background — and the model is told the user moved on.
 - The ↓ manager's details page shows a TTY shell's current screen.
 
 ## Offline demo and tests
 
 The dummy's `interactive` scenario (cue: `interactive` — the whole word,
 since `tty` hides in "pretty" and `repl` in "reply") plays a setup wizard: a
-`tty` launch stopping at `Project name:`, an answer met by the next question,
+`bash` launch stopping at `Project name:`, `bashsend` answers each met by the
+next question,
 and the last answer ending the program — one call a round, every result the
 real `pty::report::report`, so the offline cells are the live ones.
 `scripts/smoke.sh` Phase 124 drives it in the real binary and pins what only
@@ -1002,14 +1029,19 @@ Three of this design's choices were kept over it:
   but breaks what a terminal is for — `vim`, `less`, `top`, arrow-key menus.
   Here the program gets `xterm-256color` and a real screen (`vt100`),
   query replies and all.
-- **`tty` is asked for.** A plain call stays on its pipe, so `git`, `ls` and
-  every tool that changes its output for a terminal behave as in a script,
-  and the model reaches for a terminal only for a program that needs one.
+- **`tty` is asked for.** A plain call stayed on its pipe, so `git`, `ls` and
+  every tool that changes its output for a terminal behaved as in a script,
+  and the model reached for a terminal only for a program that needed one.
+  This one was later **reversed** (`docs/bash-tools.md`): a mode the model
+  had to pick before the command ran was the flag models got wrong most, and
+  what made the terminal the other design's default — a finished command
+  read back as data, and silence not taken for a question — is now in the
+  engine.
 
 ## Limits
 
-- **Unix only** — pseudo-terminals are a Unix facility; elsewhere `tty` is
-  refused with an error the model can act on.
+- **Unix only** — pseudo-terminals are a Unix facility; elsewhere a command
+  runs on a pipe, as every command once did (`docs/bash-tools.md`).
 - **The prompt heuristic, where the probe is blind** — off Linux, for a
   process run as another user (`sudo` and what it runs), and behind a
   `poll`-family wait, the screen decides alone, a password prompt aside
@@ -1036,8 +1068,8 @@ Three of this design's choices were kept over it:
 - **A plain command's fold is one line at a time** — cursor movement between
   lines (`docker pull`'s multi-line progress drawn with cursor-up) means
   nothing on a pipe and is dropped; such programs print plain lines when
-  their output is not a terminal, and one that does not can be run with
-  `tty`.
+  their output is not a terminal. Only a command no terminal could be given
+  to runs on a pipe now.
 - **A question drawn over an animation** — a prompt that replaces a spinner on
   the spinner's own line inherits its redraw count and reads as animated: a
   launch or input call returns on `LINE_QUIET` reporting `Running`, and a

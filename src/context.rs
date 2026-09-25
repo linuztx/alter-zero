@@ -708,11 +708,17 @@ fn record_calls(item: &HistoryItem, ids: &mut CallIds, entries: &mut Vec<RoundEn
     match item {
         HistoryItem::Tool(tool) => {
             let id = ids.claim(tool.call_id.as_deref());
-            let call = ContextToolCall::new(
-                id.clone(),
-                wire_tool_name(&tool.name),
-                reconstruct_arguments(tool),
-            );
+            // A legacy `bash_session` call replays as the tool that does the
+            // same thing now, so the request names only tools it offers
+            // (`docs/bash-tools.md`).
+            let (name, arguments) = if tool.name == crate::llm::tools::BASH_SESSION_TOOL_DISPLAY {
+                let (name, arguments) =
+                    crate::llm::tools::legacy_session_call(&reconstruct_arguments(tool));
+                (name.to_string(), arguments)
+            } else {
+                (wire_tool_name(&tool.name), reconstruct_arguments(tool))
+            };
+            let call = ContextToolCall::new(id.clone(), name, arguments);
             // The **model-facing** result, not the cell text: a permission
             // rejection's display is a one-liner while the model read the
             // full stop-and-wait instruction — with Tab's amend feedback
@@ -1884,6 +1890,7 @@ mod tests {
                     killed: false,
                     output_tail: "pong".to_string(),
                     origin: None,
+                    waiting: false,
                     timestamp: String::new(),
                 })],
             ),
@@ -1991,6 +1998,7 @@ mod tests {
             killed: false,
             output_tail: "64 bytes from x.com\n200 packets transmitted".to_string(),
             origin: None,
+            waiting: false,
             timestamp: String::new(),
         })];
         let ctx = context_messages(&history);
@@ -2372,23 +2380,56 @@ mod tests {
     }
 
     #[test]
-    fn a_session_call_replays_under_its_own_wire_name_with_its_arguments() {
-        // `BashSession` is not the lowercase of `bash_session` — the replay
-        // must name the tool the model actually called, or a validating
-        // provider rejects the round (docs/interactive-shell.md).
-        let arguments = r#"{"session_id":"b7x2k9m1q","input":"print(1)\n"}"#;
+    fn a_companion_call_replays_under_its_own_wire_name_with_its_arguments() {
+        // `BashSend` lowercases to `bashsend`, the name the model called — the
+        // task tools' convention, so the replay needs no table for it
+        // (docs/bash-tools.md).
+        let arguments = r#"{"session_id":"b7x2k9m1q","input":"print(1)<Enter>"}"#;
         let history = vec![tool_with_arguments(
-            crate::llm::tools::BASH_SESSION_TOOL_DISPLAY,
+            crate::llm::tools::BASH_SEND_DISPLAY,
             "b7x2k9m1q ← print(1)⏎",
             arguments,
             "Running (session b7x2k9m1q, waiting for input)\n>>> print(1)\n1\n>>>",
         )];
         let ctx = context_messages(&history);
-        assert_eq!(
-            ctx[0].tool_calls[0].name,
-            crate::llm::tools::BASH_SESSION_TOOL_NAME
-        );
+        assert_eq!(ctx[0].tool_calls[0].name, crate::llm::tools::BASH_SEND_TOOL);
         assert_eq!(ctx[0].tool_calls[0].arguments, arguments);
+    }
+
+    #[test]
+    fn a_legacy_session_call_replays_as_the_tool_that_does_it_now() {
+        // `bash_session` is executed but no longer offered: a resumed
+        // conversation's request must name only tools it offers, or a
+        // validating provider rejects the round (docs/bash-tools.md).
+        let replayed = |arguments: &str| {
+            let history = vec![tool_with_arguments(
+                crate::llm::tools::BASH_SESSION_TOOL_DISPLAY,
+                "b1",
+                arguments,
+                "Running (session b1)\n(no new output)",
+            )];
+            let ctx = context_messages(&history);
+            let call = &ctx[0].tool_calls[0];
+            (call.name.clone(), call.arguments.clone())
+        };
+        assert_eq!(
+            replayed(r#"{"session_id":"b1","input":"print(1)\n"}"#),
+            (
+                "bashsend".to_string(),
+                r#"{"session_id":"b1","input":"print(1)\n"}"#.to_string()
+            )
+        );
+        assert_eq!(
+            replayed(r#"{"session_id":"b1","timeout":30000}"#),
+            (
+                "bashwait".to_string(),
+                r#"{"session_id":"b1","wait":30}"#.to_string()
+            )
+        );
+        assert_eq!(
+            replayed(r#"{"session_id":"b1","input":"q","kill":true}"#),
+            ("bashkill".to_string(), r#"{"session_id":"b1"}"#.to_string())
+        );
     }
 
     #[test]
