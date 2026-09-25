@@ -58,14 +58,63 @@ pub const FOREIGN_TERMINAL_VARS: [&str; 14] = [
     "LINES",
 ];
 
+/// The locale a session's programs are given when the environment names no
+/// UTF-8 one ([`utf8_locale`]).
+#[cfg(target_os = "macos")]
+pub const UTF8_LOCALE: &str = "en_US.UTF-8";
+/// See above.
+#[cfg(not(target_os = "macos"))]
+pub const UTF8_LOCALE: &str = "C.UTF-8";
+
+/// Which locale variable a session sets, and to what, so its programs know
+/// their terminal speaks UTF-8 — `None` when the environment (read through
+/// `var`) already says so.
+///
+/// The session's terminal is the emulator, and it speaks UTF-8 whatever the
+/// TUI's terminal does — the `TERM` rule. Without a UTF-8 locale `btop`
+/// refuses to start ("No UTF-8 locale detected!") and ncurses draws boxes in
+/// the line-drawing set; a container or a CI job that sets no `LANG` is the
+/// common case. The effective setting is `LC_ALL`, else `LC_CTYPE`, else
+/// `LANG`: with nothing set, `LANG` is given one; with `LANG` naming another
+/// locale, only `LC_CTYPE` — the encoding, leaving its messages and sorting;
+/// `LC_ALL` only when it is the one saying otherwise, since it outranks
+/// every other.
+pub fn utf8_locale(var: impl Fn(&str) -> Option<String>) -> Option<(&'static str, &'static str)> {
+    let set = |name: &str| var(name).filter(|value| !value.is_empty());
+    let effective = set("LC_ALL")
+        .or_else(|| set("LC_CTYPE"))
+        .or_else(|| set("LANG"));
+    if effective.as_deref().is_some_and(names_utf8) {
+        return None;
+    }
+    let name = if set("LC_ALL").is_some() {
+        "LC_ALL"
+    } else if set("LC_CTYPE").is_some() || set("LANG").is_some() {
+        "LC_CTYPE"
+    } else {
+        "LANG"
+    };
+    Some((name, UTF8_LOCALE))
+}
+
+/// Does a locale name say UTF-8 (`en_US.UTF-8`, `C.utf8`)?
+fn names_utf8(locale: &str) -> bool {
+    let lower = locale.to_ascii_lowercase();
+    lower.contains("utf-8") || lower.contains("utf8")
+}
+
 /// Apply the session environment to `command`: [`TERMINAL_ENV`] set,
-/// [`FOREIGN_TERMINAL_VARS`] removed.
+/// [`FOREIGN_TERMINAL_VARS`] removed, and a UTF-8 locale given where the
+/// environment names none ([`utf8_locale`]).
 #[cfg(unix)]
 pub fn apply_terminal_env(command: &mut Command) {
     for name in FOREIGN_TERMINAL_VARS {
         command.env_remove(name);
     }
     for (name, value) in TERMINAL_ENV {
+        command.env(name, value);
+    }
+    if let Some((name, value)) = utf8_locale(|name| std::env::var(name).ok()) {
         command.env(name, value);
     }
 }
@@ -168,6 +217,17 @@ impl LineMode {
         !self.canonical && self.processed_output
     }
 
+    /// Is the terminal held raw with output processing off — a **relay's**
+    /// mode (sudo running its command in a terminal of its own, ssh,
+    /// `docker exec -it`, `script`)? A relay reads each key the moment it
+    /// lands and hands it on, so the terminal's input queue says nothing of
+    /// whether the program at the far end has read it
+    /// (`crate::background`'s typing).
+    #[must_use]
+    pub fn relays(self) -> bool {
+        !self.canonical && !self.processed_output
+    }
+
     /// Is the program reading a whole line with echo off — a password
     /// prompt (sudo, ssh, `read -s`, getpass)? Readable off the terminal
     /// even when the program runs as another user, whose /proc files the
@@ -188,6 +248,70 @@ pub fn terminal_path(master: &std::fs::File) -> Option<std::path::PathBuf> {
     let name = rustix::pty::ptsname(master, Vec::new()).ok()?;
     let name = name.into_string().ok()?;
     Some(std::path::PathBuf::from(name))
+}
+
+/// A terminal's **input queue** — what has been typed into it and not yet
+/// read — asked of its slave side, opened for the question alone: a slave
+/// kept open would keep the master from reading end-of-stream when the
+/// session's processes let go of it. What paces typed keys at the rate the
+/// program reads them (`crate::background`).
+#[cfg(unix)]
+#[derive(Debug)]
+pub struct InputQueue(rustix::fd::OwnedFd);
+
+#[cfg(unix)]
+impl InputQueue {
+    /// The input queue of the terminal behind `master` — `None` when the
+    /// terminal cannot be opened (it is gone, or the system will not say).
+    #[must_use]
+    pub fn of(master: &std::fs::File) -> Option<Self> {
+        use rustix::fs::{Mode, OFlags};
+        let path = terminal_path(master)?;
+        let flags = OFlags::RDONLY | OFlags::NOCTTY | OFlags::NONBLOCK | OFlags::CLOEXEC;
+        rustix::fs::open(path, flags, Mode::empty()).ok().map(Self)
+    }
+
+    /// The bytes typed and not yet read — `None` when the terminal will not
+    /// say. A program reading whole lines has an unfinished line counted as
+    /// none: it cannot read it before its Enter.
+    ///
+    /// Linux hands a write on the master to the line discipline a moment
+    /// later, from a worker thread, and the count alone would miss a key
+    /// still on its way — nearly every time, right after the write. A poll
+    /// that finds nothing to read waits for that hand-over first
+    /// (`n_tty_poll`), so the count after it includes every key written
+    /// before. What the poll answers is not needed, only that it ran.
+    #[must_use]
+    pub fn pending(&self) -> Option<u64> {
+        use rustix::event::{PollFd, PollFlags, Timespec, poll};
+        let now = Timespec {
+            tv_sec: 0,
+            tv_nsec: 0,
+        };
+        let _ = poll(&mut [PollFd::new(&self.0, PollFlags::IN)], Some(&now));
+        rustix::io::ioctl_fionread(&self.0).ok()
+    }
+}
+
+/// The name of the terminal's **foreground program** — the program at the
+/// bottom of its foreground process group ([`super::probe::group_program`]):
+/// a shell at its prompt, the job it started, or the command a shell runs.
+/// `None` where no process table says (off Linux), or the terminal is gone.
+/// What decides how text reaches the program (`super::keys::Reader`).
+#[cfg(unix)]
+#[must_use]
+pub fn foreground_program(master: &std::fs::File) -> Option<String> {
+    #[cfg(target_os = "linux")]
+    {
+        let group = rustix::termios::tcgetpgrp(master).ok()?;
+        let group = u32::try_from(group.as_raw_nonzero().get()).ok()?;
+        super::probe::group_program(group)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = master;
+        None
+    }
 }
 
 /// The terminal's [`LineMode`], read through its master — `None` when the
@@ -393,6 +517,66 @@ mod tests {
     }
 
     #[test]
+    fn a_terminal_held_raw_with_output_processing_off_is_a_relays() {
+        let mode = |canonical, processed_output| LineMode {
+            canonical,
+            echo: false,
+            processed_output,
+        };
+        assert!(mode(false, false).relays(), "sudo, ssh, docker, script");
+        assert!(!mode(false, true).relays(), "readline, a menu, btop");
+        assert!(!mode(true, true).relays(), "a line-reading prompt");
+    }
+
+    #[test]
+    fn the_input_queue_counts_what_was_typed_and_not_yet_read() {
+        use rustix::fs::{Mode, OFlags};
+        let mut session = spawn(None, "stty raw -echo; echo ready; sleep 5").expect("spawns");
+        let rx = reader(&session.master);
+        assert!(read_until(&rx, "ready").contains("ready"));
+        let queue = InputQueue::of(&session.master).expect("the terminal opens");
+        assert_eq!(queue.pending(), Some(0));
+        // The program's side of the terminal, read here as the program would.
+        let path = terminal_path(&session.master).expect("named");
+        let flags = OFlags::RDONLY | OFlags::NOCTTY | OFlags::NONBLOCK | OFlags::CLOEXEC;
+        let mut program =
+            std::fs::File::from(rustix::fs::open(path, flags, Mode::empty()).expect("opens"));
+        // Linux hands a write to the line discipline a moment later, from a
+        // worker thread: a key still on its way is counted all the same, or
+        // typing paced by the count runs two keys into one read under load.
+        for _ in 0..50 {
+            (&session.master).write_all(b"k").expect("types");
+            assert_eq!(queue.pending(), Some(1), "typed, not yet read");
+            let mut key = [0u8; 8];
+            assert_eq!(program.read(&mut key).expect("reads"), 1);
+            assert_eq!(queue.pending(), Some(0), "read");
+        }
+        crate::subprocess::kill_process_group(&mut session.child);
+        let _ = session.child.wait();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_foreground_program_is_named_by_the_process_table() {
+        // Who reads the terminal: the program at the bottom of its
+        // foreground process group — a shell at its prompt, the job it
+        // started, or what a shell running one command runs (`sh` here does
+        // not exec a lone command, and stays the group's leader).
+        let mut session = spawn(None, "echo ready; sleep 30").expect("spawns");
+        let rx = reader(&session.master);
+        read_until(&rx, "ready");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut named = foreground_program(&session.master);
+        while named.as_deref() != Some("sleep") && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+            named = foreground_program(&session.master);
+        }
+        assert_eq!(named.as_deref(), Some("sleep"));
+        crate::subprocess::kill_process_group(&mut session.child);
+        let _ = session.child.wait();
+    }
+
+    #[test]
     fn only_a_program_that_keeps_output_processing_reads_keys() {
         let mode = |canonical, processed_output| LineMode {
             canonical,
@@ -482,6 +666,52 @@ mod tests {
         assert_eq!(value("GIT_PAGER"), Some(Some("cat".to_string())));
         assert_eq!(value("TMUX"), Some(None), "removed, not inherited");
         assert_eq!(value("COLUMNS"), Some(None), "a stale size is removed");
+    }
+
+    /// An environment of `pairs` for [`utf8_locale`].
+    fn env(pairs: &'static [(&'static str, &'static str)]) -> impl Fn(&str) -> Option<String> {
+        move |name| {
+            pairs
+                .iter()
+                .find(|(key, _)| *key == name)
+                .map(|(_, value)| (*value).to_string())
+        }
+    }
+
+    #[test]
+    fn a_session_with_no_utf8_locale_is_given_one() {
+        // btop refuses to start without one ("No UTF-8 locale detected!"),
+        // and ncurses falls back to line-drawing letters — yet the session's
+        // terminal, the emulator, speaks UTF-8 whatever the TUI's does.
+        assert_eq!(utf8_locale(env(&[])), Some(("LANG", UTF8_LOCALE)));
+        assert_eq!(
+            utf8_locale(env(&[("LANG", "")])),
+            Some(("LANG", UTF8_LOCALE)),
+            "empty is unset"
+        );
+        assert_eq!(
+            utf8_locale(env(&[("LANG", "en_US")])),
+            Some(("LC_CTYPE", UTF8_LOCALE)),
+            "the encoding alone: LANG keeps its messages and its sorting"
+        );
+        assert_eq!(
+            utf8_locale(env(&[("LC_ALL", "C"), ("LANG", "en_US.UTF-8")])),
+            Some(("LC_ALL", UTF8_LOCALE)),
+            "LC_ALL outranks the rest — the one variable that would take"
+        );
+    }
+
+    #[test]
+    fn a_utf8_locale_the_environment_names_is_left_alone() {
+        for pairs in [
+            &[("LANG", "en_US.UTF-8")][..],
+            &[("LANG", "de_DE.utf8")],
+            &[("LC_CTYPE", "C.UTF-8"), ("LANG", "C")],
+            &[("LC_ALL", "fr_FR.UTF-8"), ("LANG", "C")],
+        ] {
+            let pairs: &'static [(&str, &str)] = pairs;
+            assert_eq!(utf8_locale(env(pairs)), None, "{pairs:?}");
+        }
     }
 
     #[test]

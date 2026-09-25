@@ -23,10 +23,44 @@ release heading when a version is cut.
   named keys such as `<Enter>`, `<C-c>` and `<Up>` — waits on it, reads what
   it printed (or a full-screen program's screen) and ends it. Each call
   reports only the lines that are new or changed since the last one, and its
-  cell streams them as they come, a progress bar redrawn in place. A progress
-  bar or a command run under `sudo`, `ssh` or `docker run -it` is waited out
-  rather than taken for a prompt — a download under `sudo pacman` is one
-  wait, not a dozen — and on Linux the kernel is asked what the command is
+  cell streams them as they come, a progress bar redrawn in place. A
+  full-screen program's screen reads as you would see it — boxes drawn as
+  boxes even with no UTF-8 locale, columns and indentation intact — and says
+  what it highlights, so the agent can tell which item of a `whiptail`,
+  `dialog`, `htop` or `mc` menu is selected; `btop`, `ranger`, `tig`, `fzf`,
+  `ncdu`, `nvim` and the rest of a 27-program sweep read exactly as tmux
+  draws them. A session gets a UTF-8 locale when your environment names
+  none, so `btop` starts in a bare container, and keys reach a program one
+  at a time, each once it has read the last, as a person's do, so one that
+  reads a key per read — `btop` again, `top` — sees every arrow and every
+  letter typed into its filter, on a busy machine and behind `sudo` too. A
+  program that switches screens and takes a moment to draw its first frame
+  (`btop` probing a GPU) is shown once it has drawn it, not as a blank
+  screen; a menu drawn on the main screen (`dialog`) keeps showing its screen
+  as its focus moves; and the screen's heading quotes the line the cursor is
+  on (`"File Name to Write: notes.txt‸"`), so the agent sees a prompt's
+  default rather than typing it again. A screen
+  that never stops redrawing (`watch -n 0.1`, `top -d 0.1`) answers within
+  two seconds rather than holding the call to its timeout, and keys held
+  with modifiers — `<C-Left>`, `<S-Up>`, `<M-F7>` — are sent as a terminal
+  sends them. Code typed into an editor or a REPL that takes pastes (Vim,
+  nano, Python 3.13) arrives as a paste, so its auto-indent can no longer
+  turn a function into a staircase, while a shell is still typed to line by
+  line, so `python3` and the code for it sent in one call reach `python3`;
+  terminal output codes a model slips into its keys are dropped rather than
+  typed, and keys it HTML-escapes (`&lt;Esc&gt;`) are still pressed. Keys it
+  names the way a program's help does — `^O`, or `F3` and `Esc` without
+  their brackets in a full-screen program — are pressed rather than typed as
+  text, a `timeout` written as `5000.0` or `"5000"` is accepted like `5000`,
+  an empty `input` is told that it typed nothing, and a `session_id` with
+  other text run into it is answered with the session it names instead of
+  being reported gone. A plain command that leaves a process running with
+  `&` tells the agent it was stopped, pointing it at `run_in_background`,
+  where a trailing `&` is now dropped instead of stopping the command at
+  once. A
+  progress bar or a command run under `sudo`, `ssh` or `docker run -it` is
+  waited out rather than taken for a prompt — a download under `sudo pacman`
+  is one wait, not a dozen — and on Linux the kernel is asked what the command is
   blocked in, so one waiting with no prompt at all (`read`, `cat`) is
   recognised and a busy one that left `Compiling… ` on screen is not taken
   for a question. A password prompt is told by the terminal itself, which

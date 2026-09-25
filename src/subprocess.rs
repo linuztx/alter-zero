@@ -277,6 +277,27 @@ pub fn kill_process_group(child: &mut Child) {
     let _ = child.wait();
 }
 
+/// Does `child`'s process group still hold a process once `child` itself
+/// has exited — one the command started and left running (`sleep 30 &`)?
+/// The group is the command's alone ([`kill_process_group`]), so anything
+/// still in it is what [`kill_process_group`] is about to stop. A probe with
+/// signal 0, which sends nothing.
+#[cfg(unix)]
+#[must_use]
+pub fn group_outlives(child: &Child) -> bool {
+    i32::try_from(child.id())
+        .ok()
+        .and_then(rustix::process::Pid::from_raw)
+        .is_some_and(|pgid| rustix::process::test_kill_process_group(pgid).is_ok())
+}
+
+/// Non-unix fallback: no process groups to outlive the command.
+#[cfg(not(unix))]
+#[must_use]
+pub fn group_outlives(_child: &Child) -> bool {
+    false
+}
+
 /// Non-unix fallback: no process groups — just kill and reap the direct child.
 #[cfg(not(unix))]
 pub fn kill_process_group(child: &mut Child) {

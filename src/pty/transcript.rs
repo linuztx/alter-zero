@@ -103,6 +103,20 @@ impl Transcript {
         }
     }
 
+    /// A transcript of output written to a **pipe** — a session with no
+    /// terminal (`run_in_background` without `tty`). No terminal turned the
+    /// program's `\n` into `\r\n` on the way (a TTY's `onlcr`), so a line
+    /// feed here also returns to the left edge: VT's new-line mode. Read as
+    /// a terminal's line feed, every line began where the one before it
+    /// ended, and once that passed [`MAX_LINE_CHARS`] the newest lines were
+    /// dropped whole.
+    #[must_use]
+    pub fn for_pipe() -> Self {
+        let mut transcript = Self::new();
+        transcript.lines.new_line = true;
+        transcript
+    }
+
     /// Fold a chunk of the terminal's output in. Chunks may split anywhere —
     /// inside a UTF-8 character or an escape sequence — the parser carries
     /// the partial state to the next call.
@@ -117,6 +131,7 @@ impl Transcript {
         // A look consumes the addressing notice whether or not any text
         // changed — the session has shown the screen for that stretch.
         lines.addressed = false;
+        lines.edited = false;
         if !lines.dirty && lines.omitted == 0 {
             return Update::default();
         }
@@ -298,6 +313,19 @@ impl Transcript {
     pub fn screen_addressed(&self) -> bool {
         self.lines.addressed
     }
+
+    /// Has the program **edited what it already wrote** since the previous
+    /// look — moved the cursor back over it or up and down (a backspace, a
+    /// relative or column move, a saved cursor), or inserted and deleted
+    /// characters in it? Writing on, returns, line feeds and tabs, and the
+    /// erases a progress bar redraws with, are plain output. What decides
+    /// whether a program that drew on the main screen still shows its
+    /// screen (`pty::session`): a full-screen program redraws in place, an
+    /// ordinary command writes lines.
+    #[must_use]
+    pub fn edited_in_place(&self) -> bool {
+        self.lines.edited
+    }
 }
 
 /// `text` without the blank lines a trailing newline (or an erased tail)
@@ -412,6 +440,9 @@ struct Lines {
     alt: bool,
     /// Absolute addressing seen since the last look.
     addressed: bool,
+    /// An edit in place seen since the last look
+    /// ([`Transcript::edited_in_place`]).
+    edited: bool,
     /// The current burst ([`Transcript::new_burst`]).
     burst: u64,
     /// The rows the current burst has edited that held text before it, with
@@ -431,6 +462,16 @@ struct Lines {
     /// The stream has settled a line since the last look — from then on a
     /// blank line is part of the text, not a gap leading it.
     stream_started: bool,
+    /// The character sets — a box drawn in DEC line drawing reads as one
+    /// ([`super::charset`]).
+    charsets: super::charset::Charsets,
+    /// Insert mode (IRM): a character pushes the rest of the line right.
+    insert: bool,
+    /// The last character printed — what REP (`CSI n b`) writes again.
+    last: Option<char>,
+    /// A line feed also returns to the left edge (new-line mode) — output
+    /// that went through a pipe ([`Transcript::for_pipe`]).
+    new_line: bool,
 }
 
 impl Lines {
@@ -569,6 +610,15 @@ impl Lines {
         }
         self.col += width;
         self.dirty = true;
+    }
+
+    /// Write `c` at the cursor — in insert mode after making room for it.
+    fn write(&mut self, c: char) {
+        use unicode_width::UnicodeWidthChar as _;
+        if self.insert {
+            self.insert_blanks(c.width().unwrap_or(0));
+        }
+        self.put(c);
     }
 
     /// A line feed: down one row, creating it at the end — and, now that a
@@ -725,20 +775,30 @@ fn first_param(params: &vte::Params, default: u16) -> u16 {
 
 impl vte::Perform for Lines {
     fn print(&mut self, c: char) {
+        let c = self.charsets.map(c);
+        self.last = Some(c);
         self.drawn |= !c.is_whitespace();
         if !self.alt {
-            self.put(c);
+            self.write(c);
         }
     }
 
     fn execute(&mut self, byte: u8) {
-        if self.alt {
+        if self.charsets.execute(byte) || self.alt {
             return;
         }
         match byte {
-            b'\n' | 0x0b | 0x0c => self.line_feed(),
+            b'\n' | 0x0b | 0x0c => {
+                if self.new_line {
+                    self.col = 0;
+                }
+                self.line_feed();
+            }
             b'\r' => self.col = 0,
-            0x08 => self.col = self.col.saturating_sub(1),
+            0x08 => {
+                self.col = self.col.saturating_sub(1);
+                self.edited = true;
+            }
             b'\t' => self.col = ((self.col / TAB_WIDTH + 1) * TAB_WIDTH).min(MAX_LINE_CHARS),
             _ => {}
         }
@@ -763,7 +823,26 @@ impl vte::Perform for Lines {
             return;
         }
         let n = usize::from(first_param(params, 1));
+        if matches!(
+            action,
+            'G' | '`' | 'C' | 'a' | 'D' | 'A' | 'B' | 'e' | 'E' | 'F' | 'P' | '@' | 'X' | 's' | 'u'
+        ) {
+            self.edited = true;
+        }
         match action {
+            // REP: the last character, `n` times more.
+            'b' => {
+                if let Some(c) = self.last {
+                    self.drawn |= !c.is_whitespace();
+                    for _ in 0..n.min(MAX_LINE_CHARS) {
+                        self.write(c);
+                    }
+                }
+            }
+            // Insert mode (IRM, mode 4) on or off.
+            'h' | 'l' if params.iter().any(|p| p.first() == Some(&4)) => {
+                self.insert = action == 'h';
+            }
             'K' => self.erase_in_line(first_param(params, 0)),
             'J' => self.erase_in_display(first_param(params, 0)),
             'G' | '`' => self.col = n - 1,
@@ -802,8 +881,20 @@ impl vte::Perform for Lines {
     }
 
     fn esc_dispatch(&mut self, intermediates: &[u8], _ignore: bool, byte: u8) {
+        if let [slot] = intermediates
+            && self.charsets.designate(*slot, byte)
+        {
+            return;
+        }
+        if byte == b'c' && intermediates.is_empty() {
+            self.charsets = super::charset::Charsets::default();
+            self.insert = false;
+        }
         if self.alt || !intermediates.is_empty() {
             return;
+        }
+        if matches!(byte, b'7' | b'8' | b'M') {
+            self.edited = true;
         }
         match byte {
             b'7' => self.save_cursor(),
@@ -861,6 +952,23 @@ mod tests {
     }
 
     #[test]
+    fn a_pipes_line_feed_starts_the_next_line_at_the_left_edge() {
+        // `python3 -m http.server` in the background: no terminal turned its
+        // `\n` into `\r\n`, and read as a terminal's line feed each line
+        // began where the one before it ended.
+        let mut t = Transcript::for_pipe();
+        t.feed(b"\"GET / HTTP/1.1\" 200 -\nServing HTTP ...\n\nexiting.\n");
+        assert_eq!(
+            t.take_update().text,
+            "\"GET / HTTP/1.1\" 200 -\nServing HTTP ...\n\nexiting."
+        );
+        t.feed(b"a\x0bb\x0cc\r\n");
+        assert_eq!(t.take_update().text, "a\nb\nc", "VT and FF feed lines too");
+        // A terminal's line feed keeps the column, as ever.
+        assert_eq!(update(b"ab\ncd\r\n"), "ab\n  cd");
+    }
+
+    #[test]
     fn a_carriage_return_overwrites_so_a_progress_bar_keeps_its_last_state() {
         assert_eq!(
             update(b"Downloading 10%\rDownloading 50%\rDownloading 100%\r\ndone\r\n"),
@@ -908,6 +1016,35 @@ mod tests {
         assert_eq!(update(b"abcdef\x1b[1G\x1b[2P\r\n"), "cdef", "DCH");
         assert_eq!(update(b"abc\x1b[1G\x1b[2@\r\n"), "  abc", "ICH");
         assert_eq!(update(b"abcdef\x1b[2G\x1b[3X\r\n"), "a   ef", "ECH");
+    }
+
+    #[test]
+    fn line_drawing_reads_as_the_box_characters_it_stands_for() {
+        // `pstree`, `dialog` on the main screen: the DEC line-drawing set,
+        // G0 designated or G1 shifted in.
+        assert_eq!(
+            update(b"\x1b(0tqq\x1b(B init\r\n\x1b(0mqq\x1b(B sh\r\n"),
+            "├── init\n└── sh"
+        );
+        assert_eq!(update(b"\x1b)0a\x0eqq\x0fb\r\n"), "a──b");
+    }
+
+    #[test]
+    fn a_repeat_writes_the_last_character_again() {
+        // REP, ncurses' way to write a run of one character.
+        assert_eq!(update(b"ab\x1b[3bc\r\n"), "abbbbc");
+        assert_eq!(update(b"\x1b(0q\x1b[4b\x1b(B\r\n"), "─────");
+        assert_eq!(update(b"x\x1b[b\r\n"), "xx", "a count of one by default");
+    }
+
+    #[test]
+    fn insert_mode_pushes_the_line_right() {
+        assert_eq!(update(b"world\r\x1b[4hhello \x1b[4l\r\n"), "hello world");
+        assert_eq!(
+            update(b"world\r\x1b[4hX\x1b[4lY\r\n"),
+            "XYorld",
+            "insert mode off: Y overwrites"
+        );
     }
 
     #[test]
@@ -1167,6 +1304,38 @@ mod tests {
         assert!(
             !t.screen_addressed(),
             "the alternate screen's own addressing is the screen view's business"
+        );
+    }
+
+    #[test]
+    fn edits_in_place_are_noticed_until_the_next_look() {
+        let mut t = fed(b"plain lines\r\n\tand a tab\r\n");
+        assert!(
+            !t.edited_in_place(),
+            "writing, returns and line feeds are plain"
+        );
+        t.feed(b"abc\x08x");
+        assert!(t.edited_in_place(), "a backspace moves back over the text");
+        let _ = t.take_update();
+        assert!(!t.edited_in_place(), "a look resets it");
+        for edit in [
+            &b"\x1b[3D"[..],
+            b"\x1b[2A",
+            b"\x1b[5G",
+            b"\x1b[2P",
+            b"\x1b[4X",
+            b"\x1b[@",
+            b"\x1b7",
+            b"\x1bM",
+        ] {
+            t.feed(edit);
+            assert!(t.edited_in_place(), "{edit:?}");
+            let _ = t.take_update();
+        }
+        t.feed(b"\rDownloading 50%\x1b[K\r\n");
+        assert!(
+            !t.edited_in_place(),
+            "a return and an erase are a progress bar's own"
         );
     }
 

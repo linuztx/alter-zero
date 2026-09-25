@@ -21,7 +21,7 @@
 //! (`Stopped (session …)`). The frames are also what the cell's display
 //! reframe parses ([`parse_frame`]), so the wording lives in one place.
 
-use super::screen::Snapshot;
+use super::screen::{MAX_HIGHLIGHTS, Snapshot};
 
 /// The most a session report carries. Past it the **tail** is kept — the
 /// newest lines and the prompt are what an interactive step is about — and
@@ -98,6 +98,12 @@ const WAITING_CLAUSE: &str = ", waiting for input";
 /// the answer will not show when typed.
 const PASSWORD_CLAUSE: &str = ", waiting for a password — typed input is hidden";
 
+/// Appended when a call's `input` was the empty string: nothing was typed,
+/// so the call was a pure wait — which a model that sent `""` to press Enter
+/// cannot tell from a report that looks like any other.
+pub const EMPTY_INPUT_NOTE: &str = "[Nothing was typed: `input` was empty, so this call \
+     only waited. To press Enter, send <Enter>.]";
+
 /// Appended to a report when the call typed text a line-reading prompt has
 /// not received — no Enter after it (`pty::keys::leaves_line_open`).
 pub const UNSUBMITTED_NOTE: &str = "[Typed but not submitted: this prompt reads whole lines. \
@@ -108,6 +114,25 @@ pub const UNSUBMITTED_NOTE: &str = "[Typed but not submitted: this prompt reads 
 /// model rather than done.
 pub const NOT_KILLED_NOTE: &str = "[Not killed: it is waiting for more input. Answer it, or \
      send kill without input to end it anyway.]";
+
+/// Appended when the typed text held codes a terminal writes to a program —
+/// colour, mode switches, erases — which no keyboard sends and which were
+/// left out (`pty::keys::strip_output_codes`): what they were, and how keys
+/// are named instead.
+#[must_use]
+pub fn dropped_codes_note(codes: &[String]) -> String {
+    format!(
+        "[Not typed: {} — codes a terminal sends to a program, not keys. Name keys in \
+         angle brackets: <Enter>, <Esc>, <C-o>.]",
+        codes.join(" ")
+    )
+}
+
+/// Appended when the input was read as **HTML-escaped** — `&lt;Esc&gt;` for
+/// `<Esc>` (`pty::keys::html_escaped`): what it was read as, and how to
+/// write it, since text sent escaped in an earlier call went in as written.
+pub const HTML_ESCAPED_NOTE: &str = "[Read as HTML-escaped: &lt; as <, &gt; as >, &amp; as &. \
+     Write them as themselves — escaped text in other calls was typed as written.]";
 
 /// Appended when the user pressed Ctrl+B on a call waiting on its session:
 /// the wait ended early, the command did not.
@@ -167,13 +192,22 @@ fn body(view: &View) -> String {
         View::Screen { before, snapshot } => {
             let (rows, columns) = snapshot.size;
             let (line, column) = snapshot.cursor;
-            let head =
-                format!("Screen ({rows}x{columns}, cursor at line {line}, column {column}):");
-            let screen = if snapshot.rows.is_empty() {
+            // Where typing lands, quoted — or that nothing shows it.
+            let cursor = match &snapshot.cursor_text {
+                _ if snapshot.cursor_hidden => "cursor hidden".to_string(),
+                Some(text) => format!("cursor at line {line}, column {column} \u{2014} \"{text}\""),
+                None => format!("cursor at line {line}, column {column}"),
+            };
+            let head = format!("Screen ({rows}x{columns}, {cursor}):");
+            let mut screen = if snapshot.rows.is_empty() {
                 format!("{head} (blank)")
             } else {
                 format!("{head}\n{}", snapshot.rows.join("\n"))
             };
+            if !snapshot.highlights.is_empty() {
+                screen.push('\n');
+                screen.push_str(&highlights_note(&snapshot.highlights));
+            }
             let (before, _) = keep_tail(before, SESSION_OUTPUT_MAX_BYTES / 2);
             if before.trim().is_empty() {
                 screen
@@ -182,6 +216,22 @@ fn body(view: &View) -> String {
             }
         }
     }
+}
+
+/// What a screen highlights, under it: `[Highlighted: line 2 "banana"]` —
+/// which item a curses menu has selected, which button has the focus, what
+/// the rows' text cannot say (`pty::screen`). Past [`MAX_HIGHLIGHTS`], an
+/// ellipsis.
+fn highlights_note(highlights: &[(u16, String)]) -> String {
+    let mut named: Vec<String> = highlights
+        .iter()
+        .take(MAX_HIGHLIGHTS)
+        .map(|(line, text)| format!("line {line} \"{text}\""))
+        .collect();
+    if highlights.len() > MAX_HIGHLIGHTS {
+        named.push("…".to_string());
+    }
+    format!("[Highlighted: {}]", named.join("; "))
 }
 
 /// The last whole lines of `text` that fit in `max_bytes`, and how many lines
@@ -404,6 +454,9 @@ mod tests {
                 cursor: (1, 5),
                 size: (40, 120),
                 alternate: true,
+                highlights: Vec::new(),
+                cursor_text: None,
+                cursor_hidden: false,
             },
         };
         assert_eq!(
@@ -420,6 +473,109 @@ mod tests {
     }
 
     #[test]
+    fn the_heading_quotes_the_cursors_line_or_says_it_is_hidden() {
+        let screen = |cursor_text: Option<&str>, cursor_hidden| View::Screen {
+            before: String::new(),
+            snapshot: Snapshot {
+                rows: vec!["File Name to Write: notes.txt".to_string()],
+                cursor: (1, 30),
+                size: (40, 120),
+                alternate: true,
+                highlights: Vec::new(),
+                cursor_text: cursor_text.map(str::to_string),
+                cursor_hidden,
+            },
+        };
+        let running = Status::Running {
+            waiting: Waiting::Input,
+        };
+        assert!(
+            report(
+                "s1",
+                running,
+                &screen(Some("File Name to Write: notes.txt\u{2038}"), false)
+            )
+            .contains(
+                "Screen (40x120, cursor at line 1, column 30 \u{2014} \
+                 \"File Name to Write: notes.txt\u{2038}\"):"
+            )
+        );
+        assert!(
+            report("s1", running, &screen(None, true)).contains("Screen (40x120, cursor hidden):")
+        );
+    }
+
+    fn menu(highlights: Vec<(u16, String)>) -> View {
+        View::Screen {
+            before: String::new(),
+            snapshot: Snapshot {
+                rows: vec!["  apple".into(), "  banana".into(), "  cherry".into()],
+                cursor: (2, 3),
+                size: (40, 120),
+                alternate: true,
+                highlights,
+                cursor_text: None,
+                cursor_hidden: false,
+            },
+        }
+    }
+
+    #[test]
+    fn a_screen_names_what_it_highlights_under_it() {
+        // Which item a curses menu has selected is colour alone: the rows'
+        // text cannot say it, so the report does.
+        let out = report(
+            "s1",
+            Status::Running {
+                waiting: Waiting::Input,
+            },
+            &menu(vec![(2, "banana".into())]),
+        );
+        assert_eq!(
+            out,
+            "Running (session s1, waiting for input)\n\
+             Screen (40x120, cursor at line 2, column 3):\n  apple\n  banana\n  cherry\n\
+             [Highlighted: line 2 \"banana\"]"
+        );
+        let out = report(
+            "s1",
+            Status::Running {
+                waiting: Waiting::Input,
+            },
+            &menu(vec![(1, "PID USER".into()), (3, "68 root".into())]),
+        );
+        assert!(
+            out.ends_with("[Highlighted: line 1 \"PID USER\"; line 3 \"68 root\"]"),
+            "{out}"
+        );
+        let plain = report(
+            "s1",
+            Status::Running {
+                waiting: Waiting::Input,
+            },
+            &menu(Vec::new()),
+        );
+        assert!(!plain.contains("Highlighted"), "{plain}");
+    }
+
+    #[test]
+    fn highlights_past_the_most_are_left_at_an_ellipsis() {
+        let many = (1..=u16::try_from(MAX_HIGHLIGHTS).unwrap() + 1)
+            .map(|line| (line, format!("row {line}")))
+            .collect();
+        let out = report(
+            "s1",
+            Status::Running {
+                waiting: Waiting::Input,
+            },
+            &menu(many),
+        );
+        let note = out.lines().last().unwrap();
+        assert_eq!(note.matches("line ").count(), MAX_HIGHLIGHTS, "{note}");
+        assert!(note.ends_with("; …]"), "{note}");
+    }
+
+    #[test]
     fn an_empty_screen_says_so() {
         let view = View::Screen {
             before: String::new(),
@@ -428,6 +584,9 @@ mod tests {
                 cursor: (1, 1),
                 size: (40, 120),
                 alternate: true,
+                highlights: Vec::new(),
+                cursor_text: None,
+                cursor_hidden: false,
             },
         };
         assert_eq!(
@@ -454,6 +613,9 @@ mod tests {
                 cursor: (1, 1),
                 size: (40, 120),
                 alternate: true,
+                highlights: Vec::new(),
+                cursor_text: None,
+                cursor_hidden: false,
             },
         };
         assert_eq!(

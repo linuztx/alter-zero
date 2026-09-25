@@ -23,6 +23,7 @@ scripts/release.sh notes X.Y.Z              # the release notes the workflow pub
 scripts/release.sh selftest                 # the release tooling's own fixture-driven tests
 scripts/release.sh prepare X.Y.Z            # bump the version everywhere, roll [Unreleased] into a dated section, then tag
 cargo run --release --example mem_probe     # /model parse RSS (docs/memory.md)
+cargo build --example pty_oracle && scripts/pty_oracle.sh 'btop' steps.jsonl   # a program's screen in the session emulator vs tmux, cell for cell (docs/interactive-shell.md)
 cargo build --release --timings && scripts/build_timings.py   # where a release build's time goes (docs/build-time.md)
 DISPLAY=:99 cargo test --test clipboard_linux -- --ignored   # the X11 paste read, under Xvfb
 (cd telemetry && node --test)               # the telemetry collector's pure half (docs/telemetry.md)
@@ -1231,7 +1232,11 @@ lookup the permission prompt makes, handed to `run_agent` as
 program, never the id; and the new
 **`bash_session`**
 tool types into the session (`pty::keys`' `<Enter>`/`<C-c>`/`<Up>`
-notation, a doubly-escaped `"y\\n"` undone), waits on it, reads it and
+notation, a doubly-escaped `"y\\n"` undone; each key its own write once the
+program has **read** the last — `FIONREAD` on the slave, `spawn::InputQueue`,
+a relay's raw mode adding a 20 ms floor — and indented text a bracketed
+paste only to a program that inserts it, never a shell, named off the
+terminal's foreground process group, `spawn::foreground_program`), waits on it, reads it and
 `kill`s it — every report the lines **new or changed** since the model's last
 look, nothing unchanged repeated (the
 `vte` transcript) or a full-screen program's screen (the `vt100` emulator,

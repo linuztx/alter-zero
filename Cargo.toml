@@ -118,8 +118,10 @@ regex = "1"
 # keyboard. Used by the helper re-exec tier (the fallback where the `setsid`
 # binary is absent — macOS, minimal images). This crate forbids `unsafe` (no
 # libc/pre_exec), and rustix is already in the tree via crossterm — `process`
-# just enables its setsid wrapper.
-rustix = { version = "1", features = ["process", "termios", "fs", "pty"] }
+# just enables its setsid wrapper. `termios`, `fs` and `pty` open and read the
+# interactive sessions' terminals; `event` polls one before asking how much
+# typed input is still unread (`pty::spawn::InputQueue`).
+rustix = { version = "1", features = ["process", "termios", "fs", "pty", "event"] }
 # The model's interactive shells (`bash` with `tty`, `bash_session` —
 # docs/interactive-shell.md) read a pseudo-terminal's byte stream two ways.
 # `vt100` is the screen: an emulator at the pty's size (no scrollback, ~150 KB

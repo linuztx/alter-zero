@@ -86,19 +86,44 @@ line two
                                                     1,13          All
 ```
 
+What the screen shows in colour alone — a menu's selected item, a focused
+button — is named under it, since its text cannot say (*What a full-screen
+program looks like*, below):
+
+```
+Running (session b3vqd0sq1, waiting for input)
+Screen (40x120, cursor at line 17, column 54):
+                                        ┌──────────────┤ Fruit ├───────────────┐
+                                        │ Pick a fruit                         │
+                                        │                                      │
+                                        │            apple  Apple              │
+                                        │            banana Banana             │
+                                        │            cherry Cherry             │
+                                        …
+[Highlighted: line 17 "banana Banana"]
+```
+
 `bash_session` works on every shell the registry holds, not only TTY ones: a
 `run_in_background` command (or one the user moved to the background with
 Ctrl+B) can be waited on and ended the same way. Only a TTY session accepts
 typed text — a background command's stdin is `/dev/null` — but a lone `<C-c>`
-still interrupts one, as a `SIGINT` to its process group.
+still interrupts one, as a `SIGINT` to its process group. Its output comes
+through a pipe, where no terminal turns each `\n` into `\r\n` (a TTY's
+`onlcr`), so its transcript takes a line feed as a new line
+(`Transcript::for_pipe`, VT's new-line mode). Read as a terminal's line feed,
+which keeps the column, each line of a background server's log began where
+the one before it ended, and past a line's 8192-column cap the newest lines
+were dropped whole.
 
 The description the model reads is short and imperative (`src/llm/tools.rs`,
 pinned under 900 characters by a test): the key notation, **answer one prompt
-per call, ending the answer with `<Enter>`, and read what it asks next**, a
-wait needs no input, `kill` is only for abandoning a command (*one that
-finishes exits by itself*), and a password or secret it was not given is never
-guessed — it asks the user. The `input` examples spell Enter as a key
-(`"y<Enter>"`), never `\n` — see *What live models taught the design*.
+per call, ending it with `<Enter>`, and read what it asks next**, **in a
+full-screen program each key acts at once** — `q`, `<Down>` or `<F7>` alone,
+not `q<Enter>`, and a key bar's `7Mkdir` read as `<F7>` — a wait needs no
+input, `kill` is only for abandoning a command (*one that finishes exits by
+itself*), and a password or secret it was not given is never guessed — it
+asks the user. The `input` examples spell Enter as a key (`"y<Enter>"`),
+never `\n` — see *What live models taught the design*.
 
 ## Why this shape
 
@@ -128,9 +153,21 @@ waits out the clock. Here the call returns when the command **settles**
   the cursor mid-line, a full-screen program is on the alternate screen, or
   the program reads the terminal **key by key** (a menu, an editor, a
   readline prompt), which is what `waiting for input` says;
+- it is **drawing a screen that never goes quiet** and has had `SCREEN_BUSY`
+  (2 s) since the call's last key — or since its first frame, for a screen
+  switched to since and drawn late (*A screen not yet drawn*, below) — a
+  full-screen program, or one that
+  repaints the main screen by cursor addressing while the terminal reads key
+  by key (`top`), redrawing a clock, a meter or an animation faster than
+  every half second. `watch -n 0.1` held a launch for its whole two-minute
+  timeout, since it takes keys all the while and is never quiet; what is on
+  screen by then is the answer (a pure wait still waits — the model asked to
+  watch it change — and a batch command whose progress bar addresses the
+  screen, apt's scroll region, reads no keys and is waited out as before);
 - it has been silent for `LINE_QUIET` (2 s) since the call's input — a command
   that answered with whole lines and went quiet — or, after a password the
-  call submitted, for `CHECK_QUIET` (10 s) until the program answers it;
+  call submitted or on a screen switched to and not yet drawn on, for
+  `CHECK_QUIET` (10 s) until the program answers it or draws;
 - the call's `timeout` passed.
 
 Three things look like a prompt and are not (`SessionIo`'s `awaiting_keys`):
@@ -175,6 +212,17 @@ command busy, and a line a busy command leaves open while it works
 (`Reading package lists... `) looks just like a question. A real question
 still ends the wait within seconds.
 
+**A screen not yet drawn** (`Screen::undrawn`, `Observation::undrawn`). btop
+1.4 switches to the alternate screen, then probes its GPU for seconds before
+it draws a thing, and a launch that took the blank for an answer returned it
+after 2 s — a program asleep is no prompt, but it was a full-screen program
+that "never stopped drawing". A screen switched to with nothing on it now has
+nothing to answer and is no screen being drawn: its silence is not a quiet
+line for up to `CHECK_QUIET`, and the call returns with the first frame. The
+busy-screen watch then counts from that frame (`IoState::drawn_at`), not from
+the call's last key: counted from the key, the first piece of a frame written
+in four settled the call, and the model read a quarter of the screen.
+
 **A wait counts what the model has not seen** (`IoState::printed_since`), not
 only what arrives during it. A command that works quietly past `LINE_QUIET`
 returns its call `Running`, and its question often comes up in the seconds
@@ -208,13 +256,98 @@ being asked.
 **Keys are notation, not escape codes.** Models are unreliable at emitting
 `\u0003` in JSON but fluent in Vim/tmux key notation, so `input` understands
 `<Enter>`, `<C-c>`, `<M-x>`, `<F5>` and friends (case-insensitive; `<lt>` is a
-literal `<`). Anything in angle brackets that is not a key name is typed as
-written, so `a<b` and `<div>` survive. On a TTY a newline is sent as `\r` —
+literal `<`), and modifiers held on any key, in any order and spelling —
+`<C-Left>`, `<S-Up>`, `<M-F7>`, `<Ctrl+Shift+End>`, `<M-Enter>` — sent the
+way xterm sends them (`ESC [ 1 ; 5 D`, the modifiers a parameter of the key's
+own sequence; an ESC in front of a one-byte key under Alt). A model wrote
+`<M-F7>` into `mc` before there was such a key, and `mc`'s command line got
+the six characters. Anything in angle brackets that is not a key name is
+typed as written, so `a<b` and `<div>` survive. On a TTY a newline is sent as `\r` —
 the byte a terminal sends for Enter, which cooked mode turns back into `\n`
 and raw-mode programs (menus, editors) expect. Arrow keys follow the program's
 cursor-key mode (`ESC O A` under DECCKM, `ESC [ A` otherwise), read off the
 emulated screen. A lone `<Esc>` is followed by a short pause before the rest of
 the input, so Vim does not read `<Esc>:` as Alt+`:`.
+
+**Each key once the program has read the last** (`pty::keys::encode`,
+`Pace`, `background::type_keys`). A person's key presses never arrive
+together, and some programs take whatever one read returns as one key press:
+`btop` ignored `<Down><Down>` written at once — six bytes that name no key it
+knows — and dropped `bash` typed into its filter whole, where a letter at a
+time it filtered; `top` took `Mq` for no key, and neither sorted nor quit. So
+every named key is its own write, and text of up to `TYPED_TEXT_MAX` (64)
+characters typed to a program reading the terminal **key by key** — canonical
+mode off (a menu, `top`, a line editor), or a full-screen program — goes a
+character at a time. Each write waits for the program to have **read** the
+one before: the writer asks the terminal's input queue
+(`pty::spawn::InputQueue` — `FIONREAD` on the slave side, after a
+zero-timeout poll, which waits for Linux's line discipline to take in a write
+it hands over from a worker thread; without it the count missed a key still
+on its way, nearly every time), for up to `KEY_READ_WAIT` (1 s) a write — a
+program that has read nothing in that long is not reading, and the rest go
+as typeahead, `KEY_PAUSE` (20 ms) apart. A fixed 20 ms gap used to stand in
+for the read, and a program that took 50 ms over each key got one key in ten.
+Where the queue cannot answer for the program, each write also waits
+`KEY_PAUSE`: a **relay** (sudo's own terminal, ssh, `docker exec -it`,
+`script`) reads each key the moment it lands and hands it to a program out of
+sight, and pacing by the queue alone sent `sudo btop` its filter back to back
+— none of it arrived. A relay is told by the mode it holds the terminal in,
+raw with output processing off (`LineMode::relays`), asked again before every
+key, since the `sudo` a shell was just typed may start one mid-call. A paste,
+text for a program reading whole lines, and longer text (code typed into an
+editor, which any program that takes that much reads as input, not as a key)
+still go in one write; a character is never split, and `\r\n` is still one
+Enter. How long typing takes is up to the program, so the call records the
+most it could take (`typing_bound`) and the writer says when the last key is
+out (`SessionIo::typed` — once every call's keys are, should one call end
+while its keys are still going): the call settles on nothing but an exit or
+its timeout until then, and counts the program's quiet from then
+(`Observation::typing`) — a menu that answered the first key and went quiet
+has not answered the rest. The probe waits for the last key too — a program
+between two of them is blocked reading the next, and asked then the kernel
+would say it waits for input before it has had the last.
+
+**Code is pasted, not typed** (`pty::keys::encode`). An editor's or a REPL's
+auto-indent adds its own indentation to every line typed after a line break,
+so a Python function typed into Vim came out as a staircase — each line
+indented by its own spaces *plus* the line above's — and the file would not
+parse (*What live models taught the design*). A person gets code in by
+pasting it, and a program that tells pasted text from typed keys says so by
+turning on **bracketed-paste mode** (2004): Vim, nano, bash and zsh's line
+editors, Python 3.13's REPL, IPython. So when the program has that mode on
+and the text runs onto **indented** lines, it arrives as a terminal delivers
+a paste: the first line typed as usual — so a command in front of the text,
+Vim's `i`, is still a command — the lines after it as one paste between
+`ESC [ 200 ~` and `ESC [ 201 ~`, and a line break ending the text sent after
+the paste as the Enter key, so a shell or a REPL still runs what it was
+given. Lines parted by `<Enter>` keys count as lines — the same byte on the
+wire, and a model writes code that way too. Text with no indented line is
+typed — Vim's `:%s/a/b/g` then `:wq`, answers to prompts, commands for a shell
+are keys to act on, and a normal-mode paste would insert them instead.
+
+A paste goes only to a program that **inserts** what it is given
+(`keys::Reader`). A shell runs each line it is typed, and a line that starts
+a program leaves the lines after it for that program to read: `python3` and a
+loop for it, sent to an interactive bash in one call, went to bash as one
+paste — python3 started with nothing to read, and the loop ran as shell
+commands. So the session names the terminal's **foreground program** — the
+process at the bottom of its foreground process group
+(`spawn::foreground_program`, `probe::group_program`, Linux's `/proc`); the
+group's leader alone is not enough, since `sh -c 'vim x.py'` keeps vim in the
+shell's group, below the shell that does not exec it — and types to a shell,
+line by line, as a person would. A relay (sudo, ssh, `docker`), or no process
+table to ask, may put anything at the far end: text goes as a paste there only
+on the alternate screen, where it is an editor's to insert.
+
+**Codes a terminal sends to programs are not keys** (`pty::keys::
+strip_output_codes`). A model saved a file in nano with
+`\u000f<Enter>\u001b[?25h` — Ctrl+O, Enter, and *show the cursor* — and nano
+took the ESC for a key and typed `25h` into the file. Colour (`ESC [ … m`),
+mode switches (`ESC [ ? 25 h`) and erases (`ESC [ 2 J`, `ESC [ K`) never come
+from a keyboard, so they are left out of what is typed, and the model is told
+which ones and how keys are named instead (`[Not typed: \e[?25h — …]`). What
+terminals do send passes: arrows, function keys, and mouse reports, whose `<`
+marks them as input.
 
 **Two views of one byte stream.** Everything the program writes is fed to two
 parsers (`pty::screen` and `pty::transcript`):
@@ -222,10 +355,13 @@ parsers (`pty::screen` and `pty::transcript`):
 - a **screen** — the `vt100` crate's emulator at the pty's size, with no
   scrollback (≈150 KB a session): what a human would see. It is what a
   full-screen program returns, what the ↓ manager shows, and where the
-  terminal state lives that input depends on (cursor-key mode). It also
-  **answers terminal queries**: a cursor-position report (`ESC [ 6 n`), device
-  attributes, the colour queries — programs like `vim` and `prompt_toolkit`
-  REPLs ask, and some wait a long time for an answer no pipe ever sends;
+  terminal state lives that input depends on (cursor-key mode, bracketed
+  paste). It also **answers terminal queries**: a cursor-position report
+  (`ESC [ 6 n`), device attributes, the colour queries — programs like `vim`
+  and `prompt_toolkit` REPLs ask, and some wait a long time for an answer no
+  pipe ever sends. What `vt100` leaves out is done in front of it, by a
+  pre-pass that follows the stream with a parser of its own and hands every
+  other byte on as it came (*What a full-screen program looks like*, below);
 - a **transcript** — the stream as lines of text, built by our own
   `vte::Perform`: carriage returns and backspaces overwrite (a progress bar
   collapses to its final state), erase-in-line and column moves apply, colour
@@ -247,6 +383,117 @@ screen is shown under whatever the main screen printed before it took over
 delivery keeps the **tail** when it is over `SESSION_OUTPUT_MAX_BYTES` (32 KB),
 since the newest lines and the prompt are what an interactive step is about,
 and says how many lines it left out.
+
+**What a full-screen program looks like** (`pty::screen`). Driving `htop`,
+`mc`, `dialog`, `whiptail` and `nano` through the tools showed the screen
+view wrong in three ways, each fixed where the bytes come in, for the screen
+and the transcript alike — and `btop` and a differential check against tmux
+(below) found the rest:
+
+- **Runs of one character vanished.** ncurses writes a run of one character
+  — indentation, the gap between two columns, a rule — as the character and
+  REP (`CSI n b`, *repeat it n times*), which `vt100` does not implement: the
+  run became one character and the rest of the row slid left over it. `htop`
+  read `1 root 20` in one row and `67 root        20` in the next, with
+  leftovers like `--m024 --m` at the ends; `dialog`'s boxes were three
+  characters wide; `nano`'s shortcut bar lost its gaps after a save — and
+  a file's indentation, a run of spaces like any other, was open to the
+  same. The
+  pre-pass writes the character again, as many times as asked, capped at a
+  screenful. It also does **insert mode** (`CSI 4 h`), as the emulator's own
+  character insertion, for the program that uses it instead of ICH.
+- **Boxes were letters.** With no UTF-8 locale — any container, CI job or
+  Docker image that sets no `LANG` — ncurses and S-Lang draw lines in the DEC
+  Special Graphics set (`ESC ( 0`, or G1 and SO/SI): the letters `lqqk`,
+  `x  x`, `mqqj`. `whiptail` read `lqqqu Fruit tqqqk`; `mc`'s panels were
+  columns of `x`. `pty::charset` follows the designations and shows the box
+  as the box — `┌──┤ Fruit ├──┐`, `│`, `└──┘`.
+- **A menu's selection was invisible.** A curses program shows which item is
+  selected, which button has the focus, in colour alone: after `<Down>`,
+  `whiptail`'s three items read exactly as before, and `htop` parks the cursor
+  on its function-key bar, so not even the cursor says which process `F9`
+  would kill. The screen now names what it **highlights** under the rows —
+  `[Highlighted: line 17 "banana Banana"]`. A highlight is a run of one
+  background (or reverse video) that stands out from the row above **and**
+  the row below it — judged over the whole run, by majority, so a tab over
+  the start of a header does not cut the header short — and names something:
+  a letter or a digit in it. The box or the backdrop a menu sits on is no
+  highlight (the rows around it share it); runs that touch, or part by a
+  short blank gap, are one; a row of more than three separate ones is a
+  legend — nano's `^G Help  ^O Write Out`, a function-key bar — and is left
+  out; at most eight are named. `htop` names its header and the selected
+  process, `mc` the selected file and the active panel, `dialog` the focused
+  item and button, `less` its search matches, `nano` its title and status
+  line.
+- **A cursor move under another name went nowhere.** `btop` places every
+  cell with HVP (`CSI r ; c f`), which `vt100` does not know: the whole
+  screen piled up in its top-left corner. The pre-pass writes the moves
+  `vt100` knows under their other names — HVP as CUP, HPA (`` CSI n ` ``) as
+  CHA, HPR (`CSI n a`) as CUF, VPR (`CSI n e`) as CUD, IND/NEL (`ESC D`,
+  `ESC E`) as a line feed and a new line, SCOSC/SCORC (`CSI s`, `CSI u`) as
+  DECSC/DECRC — and modes 1047/1048, the alternate screen and the saved
+  cursor switched one at a time, as 47 and DECSC/DECRC.
+- **A line with autowrap off wrapped anyway.** With DECAWM off (`CSI ? 7 l`)
+  a line stops at the margin: what runs past it overwrites the last column,
+  and the cursor stays there. `vt100` wraps regardless; `ranger` writes the
+  screen's bottom-right cell that way, and a status line wider than the
+  screen ran onto the next row. Where the right bytes depend on the cursor,
+  the pre-pass hands the emulator what it has so far and asks where the
+  cursor is (`Out::cursor`): a narrow character with no room takes the last
+  column, a wide one is dropped (tmux's rule), and the cursor is set back
+  onto the last column rather than left waiting to wrap.
+- **Tabs ignored the program's stops.** `vt100` keeps a tab stop every eight
+  columns and nothing else: HTS (`ESC H`) and TBC (`CSI g`, `CSI 3 g`) did
+  nothing, and neither did CBT and CHT (`CSI n Z`, `CSI n I`), a tab back
+  and forward. The pre-pass keeps the stops once a program changes them and
+  moves each tab to the stop it names, by the same question.
+- **A window title was text.** `ESC k … ESC \` names a screen/tmux window;
+  `ranger` sends it whatever the terminal, and `vt100` printed the title at
+  the cursor. It is dropped, up to the BEL or the ESC that ends it.
+
+The pre-pass's own parser has to know where it is, too: it passes plain text
+straight through only between sequences, and the ST that ends a link or a
+title (`ESC \`) ends the string on its ESC while the `\` is still to come —
+taken for text, the `\` left the parser inside an escape sequence, and
+`│Disk` after a link (compilers and systemd print them) became a line feed
+and `isk`.
+
+These were found by a **differential check** (`scripts/pty_oracle.sh`,
+`examples/pty_oracle.rs`): a program runs in the session's pseudo-terminal
+with a script of keys, every byte it writes is recorded and shown through the
+session's emulator, and the same bytes are replayed into a 120×40 tmux pane —
+a mature emulator — and the two screens and cursors diffed. Over `btop`,
+`htop`, `top`, `nano`, `vim`, `nvim`, `less`, `mc`, `dialog`, `whiptail`,
+`fzf`, `ncdu`, `tig`, `ranger`, `micro`, `nnn`, `w3m`, `vifm`, `calcurse`,
+`glances`, `watch`, `man`, the Python, Node and Ruby REPLs, `gdb` and tmux
+itself, the screens now agree cell for cell. Where the two still differ tmux
+is the one that departs from xterm (it ignores CHT, HPR and VPR, and repeats
+no character but ASCII), or the sequence is one only a terminal test suite
+sends (DECALN's screen of `E`s, DECSCA's protected characters).
+
+The cursor is named where a person would see it: after a write to the last
+column the emulator holds it one past the edge, waiting to wrap, and the
+screen said `column 121` of 120. And its **line is quoted** in the heading,
+with `‸` where the cursor is (`Snapshot::cursor_text`, cut to forty characters
+before it and twenty after): `cursor at line 38, column 31` asks a model to
+count thirty-eight rows down, which it does not do, and nano's save prompt —
+the file's name filled in already — had a model type the name again,
+`sysinfo.shsysinfo.sh`, then loop on `Save file under DIFFERENT NAME?`.
+`— "File Name to Write: sysinfo.sh‸"` says the name is there. A **hidden**
+cursor (`ESC [ ? 25 l` — htop, mc, whiptail) is reported as `cursor hidden`
+rather than wherever the program parked it.
+
+**A screen drawn on the main screen stays a screen** (`IoState::screen_view_now`).
+`top` and `dialog` draw on the main screen with absolute addressing, which the
+lines cannot follow, so a look that sees it shows the screen; but `dialog`,
+once drawn, moves its focus with column moves and colours alone, and the next
+look — no addressing since the last — fell back to the lines: `(no new output
+— still at: <  OK  >    <Cancel>)` after a Tab that had moved the focus to
+Cancel. The screen view now sticks: absolute addressing turns it on, output
+that edits in place — a backspace, a relative or column move, a character
+inserted or deleted (`Transcript::edited_in_place`) — keeps it, and output of
+plain lines turns it off, so `clear` then an ordinary command reads as lines
+again.
 
 **The kernel's word** (`pty::probe`, Linux). The screen can only offer a
 shape; the kernel knows. `/proc/PID/task/TID/syscall` names the system call a
@@ -431,6 +678,114 @@ change answers a failure seen on the wire:
   the transcript reads garbled, and a password prompt that flushes its input
   (`getpass` does) loses what was typed ahead. The description asks for one
   prompt per call.
+- **Code typed into Vim came out as a staircase.** Asked to write a Python
+  file in Vim, Ollama Cloud's `gpt-oss:120b` and Venice's `qwen3-coder-480b`
+  both pressed `i` and typed the function: Vim's auto-indent added every
+  line's indentation to the line above's, the saved file raised
+  `IndentationError`, and neither got out — one retyped it three times and
+  quit, the other rewrote it until it hit the tool-call limit. Neither thought
+  of `:set paste`. Indented text now reaches a program in bracketed-paste
+  mode as a paste (*Code is pasted, not typed*), and the same file comes out
+  as it was sent: GLM-5.2 then wrote it in six calls, and `qwen3-coder-480b`
+  finished it too. In a later run `gpt-oss:120b` parted its lines with
+  `<Enter>` keys rather than newlines — the same bytes, and the same
+  staircase — so those count as line breaks for the paste as well.
+  DeepSeek-V4-Pro, writing its lines that way, then wrote the file in three
+  calls, and `gpt-oss:120b` in one.
+- **Keys sent as HTML.** In one run Venice's `qwen3-coder-480b` HTML-escaped
+  every `<` and `>` in its tool arguments: `&lt;Esc&gt;` was typed into Vim
+  as eleven letters, insert mode never ended, and `:wq` went into the file
+  instead of saving it — twice, before the model gave up on Vim and used
+  `write`. The same model sent real `<Enter>`s in other runs. Input holding
+  an escaped **key name** (`&lt;Esc&gt;`, `&lt;Enter&gt;`) is now read as
+  HTML-escaped (`pty::keys::html_escaped`): one level of entities undone
+  throughout, and the model told, since its escaped text in other calls went
+  in as written. `&lt;div&gt;` alone is typed as written: HTML is what an
+  author typing into an editor may mean.
+- **Show the cursor, typed into a file.** `gpt-oss:120b`, saving in nano, sent
+  `\u000f<Enter>\u001b[?25h`: the save worked, and `25h` landed in the file
+  as its last line, which the model found only when the script failed to
+  run. Output codes are now dropped from the input with a note (*Codes a
+  terminal sends to programs are not keys*).
+- **Driving it by hand** (`examples/pty_drive.rs`, a script of tool calls with
+  no model in the loop) found what no model reported, because no model could
+  see it was wrong: the screen view's missing REP, line drawing and
+  highlights (*What a full-screen program looks like*), and a key typed into
+  `top` — `1`, for the per-CPU view — met with *Typed but not submitted*,
+  because `top`'s last row happened to end in `1`. A line editor holding
+  typed text keeps the cursor right after it, so that is now what the note
+  asks for; `top` parks its cursor at the edge of the screen.
+- **btop, three ways.** Driven by hand, `btop` would not start without a UTF-8
+  locale, then drew its whole screen in its top-left corner (HVP), then
+  ignored `<Down><Down>` and a filter typed in one write — a program that
+  takes each read as one key press. With the locale, the aliases and paced
+  keys (*Each key once the program has read the last*) the same script moves the selection and
+  filters. The models that then drove it read its screen correctly and
+  still drove it like a line prompt: `gpt-oss:120b` sent `M<Enter>`,
+  `s<Enter>` and `→<Enter>` (the arrow as a character) until it ran out of
+  calls, and `kimi-k2.6` sorted with `<Left><Enter>` — btop's Enter opens a
+  process. `qwen3-coder-480b` read mc's key bar `7Mkdir` as the digit `7`,
+  which mc typed into its command line, and reported honestly that the
+  directory was not made. The description now says a full-screen program
+  takes each key at once, and that a key bar's number is a function key:
+  `gpt-oss:120b` then sent its keys bare, `kimi-k2.6` sorted btop by memory
+  with `<Right>`s, filtered it and quit, and did the `mc` task in four calls
+  — `<F7>`, `made-in-mc<Enter>`, `<F10>`, `ls`. `qwen3-coder-480b` on Venice,
+  the deployment that ignored the unsubmitted-line note below, still typed
+  `7` and `10`.
+
+A second round of live runs, over Venice and Ollama Cloud models driving
+nano, top, htop and menu installers — and a model left to find what it had
+started in `top` — found more slips the tools refused or mistyped:
+
+- **Numbers written as floats.** `grok-4.5` writes every number as a float
+  (`"timeout": 5000.0`), which the schemas' `number` allows and a strict
+  integer refused — twenty calls in a row on the one error. Counts now take
+  any JSON number, or one in a string, a fraction rounding; flags take
+  `"true"`/`"false"` (`tools::lenient`). Anything else is refused with the
+  reason.
+- **A key copied from a help bar.** `glm-5.3` read nano's `^O Write Out` and
+  sent `"^O"`, which nano inserted as two characters. Input made of nothing
+  but caret names — `^O`, `^X^C`, a lone `^C` — is those keys
+  (`keys::parse_input`): as text it is never what was meant.
+- **Key names without brackets.** `qwen3-coder-480b` drove `htop` with
+  `"F3"`, `"Esc"`, `"F10"` — an `F` and a `3` typed, a search never opened —
+  nineteen times before it decided the process did not exist. To a
+  full-screen program a key name alone can only mean its key, so there it is
+  sent as one (`keys::bare_key`) — but only a name no one types as a word:
+  `F1`–`F12`, `Esc`, the page keys, and `Ctrl+`/`Alt+`/`Shift+` combinations.
+  `end` closing a Ruby block, a `return`, a vim `f3` motion stay text in an
+  editor, and at a line prompt every name is typed.
+- **An Enter spelled twice.** `qwen3-coder-480b` typed its script as
+  `"#!/bin/bash<Enter>\necho …<Enter>\n"` — the newline its JSON's layout,
+  not a second Enter — and nano saved it double-spaced. When every line
+  break in an input opens the text right after an `<Enter>`, one each, they
+  are layout and dropped (`keys::parse_input`); a newline after text is a
+  line of its own, so `"def f():\n    return 1\n<Enter>"` still closes a
+  Python block with its blank line.
+- **An empty `input` meant as Enter.** A model sent `"input": ""` to accept
+  btop's filter, read back a report like any wait's, and carried on as though
+  the key had gone in — its next keys went into the filter rather than to
+  btop. `""` still types nothing (a wait is a wait), but the model is told so,
+  and that Enter is `<Enter>` (`EMPTY_INPUT_NOTE`).
+- **An id run together with the input.** A call arrived as `"session_id":
+  "b…\nparameter=input>\n<Up>"` — the model's `input` leaked into the id
+  somewhere between its tool-call template and the provider's parser — and
+  was answered that no such session was running, while the same reply listed
+  it as running; the model believed the first half and started btop over. An
+  id that is no session but holds exactly one running session's id as a word
+  is now answered with that session, still running, and how to call it.
+  Nothing is typed — keys guessed out of a mangled field could be the wrong
+  ones.
+- **A process started with `&`.** Told that a script started with `&` in a
+  plain call had stopped — the call reaps its process group on the way out —
+  `kimi-k2-6` and `nemotron-3-super` both retried with `run_in_background`
+  and kept the `&`: the task's shell exited at once, and the task's reap
+  stopped the script again. A background launch now drops a lone trailing
+  `&` (`tools::without_trailing_ampersand` — never `&&`, an escaped `\&` or a
+  `>&`), and a plain call that left a process running says it was stopped,
+  pointing at `run_in_background` without the `&` (`tools::REAPED_NOTE`,
+  `subprocess::group_outlives`).
 
 Some failures stay with the model, the tool having said what it could. A
 REPL wants a blank line to close a Python block, and a model that sends a
@@ -491,6 +846,19 @@ nobody asked for — a program the model runs *as* a pager (`less file`) is
 unaffected. Variables that describe the TUI's *own* terminal (`TMUX`,
 `TERM_PROGRAM`, `KITTY_WINDOW_ID`, `COLUMNS`, …) are removed, since they would
 steer a program toward features the session's emulator does not have.
+
+**A UTF-8 locale where the environment names none** (`spawn::utf8_locale`).
+A container, a CI job or a Docker image often sets no `LANG`, and every
+program in the session then runs in the C locale: ncurses falls back to the
+DEC line-drawing set (read as a box anyway, *What a full-screen program looks
+like*), programs that print UTF-8 print question marks, and `btop` will not
+start at all (`ERROR: No UTF-8 locale detected!`). The emulator is UTF-8
+whatever the host says, so when the variable that decides the character set —
+`LC_ALL`, else `LC_CTYPE`, else `LANG`, the first one set — names no UTF-8
+locale, the session sets one: `C.UTF-8` (`en_US.UTF-8` on macOS, which has
+no `C.UTF-8`), in `LC_ALL` when that is the one set, since it outranks the
+others, else in `LC_CTYPE` (or `LANG` when nothing is set) — so the language
+of messages, dates and sorting stays as the user set it.
 
 ## The registry (`background.rs`)
 
@@ -597,7 +965,11 @@ The pure cores — key notation, the transcript, the screen, the settle policy,
 the frames — are unit-tested; the pty spawn, the registry's TTY tasks and the
 executor are tested against real processes (`sh`, `stty`, `python3` when
 present); `tests/detached_exec.rs` proves the helper tier gives the session its
-own controlling terminal. `examples/session_probe.rs` is the live harness.
+own controlling terminal. `examples/session_probe.rs` is the live harness;
+`examples/pty_drive.rs` drives the same tools from a script of calls with no
+model in the loop (`$S` standing for the session the last report named) and
+prints what a model would read — how `nano`, `top`, `htop`, `mc`, `dialog`
+and `whiptail` were checked.
 
 ## Compared with the terminal-sessions design
 
@@ -679,3 +1051,27 @@ Three of this design's choices were kept over it:
   terminal would; a program that flushes pending input before a prompt loses
   them. The description steers models to one answer per call instead of
   pacing input line by line.
+- **Keys behind a relay go 20 ms apart** — the input queue says only that the
+  relay read a key, not that the program at its far end did, so a program
+  there slower than `KEY_PAUSE` over each key can still see two in one read.
+- **The reader is named on Linux** — elsewhere no process table says whether
+  a shell reads the terminal, and indented text reaches a program in
+  bracketed-paste mode as a paste only on the alternate screen, so IPython or
+  Python 3.13's REPL there gets code typed, and auto-indents it. Text that
+  starts a program and then types into it in one call goes line by line on a
+  shell; the lines after the first go as typed keys, so a Python 3.13 REPL
+  started that way auto-indents a block it would have taken as a paste in a
+  call of its own.
+- **Highlights are a heuristic** — a selection is found by its background
+  standing out from the rows above and below, so one spanning two rows or
+  more (Vim's visual selection) goes unnamed, as does one in the same colour
+  as the row next to it; a selection shown only by bold or underline is not
+  a background, and is not named either.
+- **Pasting is for indented text** — a program in bracketed-paste mode gets
+  text as a paste only when it runs onto indented lines, so an unindented
+  block still meets its auto-indent — a smart indenter (Vim's `cindent`) can
+  indent a line sent with none — and the first line is typed, so it can
+  still be indented twice when typed after an auto-indented line break.
+  Indented lines sent to Vim in normal mode are inserted rather than run as
+  commands — where typed, they would have been run as a string of
+  normal-mode commands.

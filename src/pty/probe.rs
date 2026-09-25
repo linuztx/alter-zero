@@ -186,9 +186,72 @@ pub fn probe(_pid: u32, _terminal: &std::path::Path) -> Probe {
     Probe::Unknown
 }
 
+/// The process group a `/proc/PID/stat` line names — its fifth field,
+/// counted after the parenthesised name, which may hold anything.
+#[must_use]
+pub fn stat_group(stat: &str) -> Option<u32> {
+    let (_, fields) = stat.rsplit_once(')')?;
+    fields.split_whitespace().nth(2)?.parse().ok()
+}
+
+/// The name (`/proc/PID/comm`) of the program at the bottom of process
+/// group `group` — its leader's line of descent within the group: what a
+/// terminal's foreground program is. A shell with job control gives each
+/// job a group of its own, whose leader is the program; a shell running one
+/// command (`sh -c 'vim x.py'`) keeps it in the shell's own group, below
+/// the shell. `None` when the processes cannot be read.
+#[cfg(target_os = "linux")]
+#[must_use]
+pub fn group_program(group: u32) -> Option<String> {
+    let in_group = |pid: u32| {
+        std::fs::read_to_string(format!("/proc/{pid}/stat"))
+            .ok()
+            .and_then(|stat| stat_group(&stat))
+            == Some(group)
+    };
+    let mut pid = group;
+    for _ in 0..PROBE_MAX_DEPTH {
+        let Ok(tasks) = std::fs::read_dir(format!("/proc/{pid}/task")) else {
+            break;
+        };
+        let child = tasks
+            .flatten()
+            .filter_map(|task| std::fs::read_to_string(task.path().join("children")).ok())
+            .flat_map(|children| {
+                children
+                    .split_whitespace()
+                    .filter_map(|child| child.parse::<u32>().ok())
+                    .collect::<Vec<_>>()
+            })
+            .filter(|&child| in_group(child))
+            .last();
+        match child {
+            Some(child) => pid = child,
+            None => break,
+        }
+    }
+    let comm = std::fs::read_to_string(format!("/proc/{pid}/comm")).ok()?;
+    Some(comm.trim_end().to_string())
+}
+
+/// How far down a process group [`group_program`] follows it.
+#[cfg(target_os = "linux")]
+const PROBE_MAX_DEPTH: usize = 64;
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_process_group_is_read_off_its_stat_line() {
+        assert_eq!(
+            stat_group("4242 (python3) S 4200 4242 4200 34816 4242 4194560"),
+            Some(4242)
+        );
+        // A name may hold spaces and parentheses: the fields follow the last.
+        assert_eq!(stat_group("7 (a) b (c)) R 1 99 1 0 -1"), Some(99));
+        assert_eq!(stat_group("garbage"), None);
+    }
 
     #[test]
     fn a_blocked_read_names_its_call_and_descriptor() {

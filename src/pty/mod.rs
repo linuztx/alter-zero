@@ -5,6 +5,8 @@
 //!
 //! - [`keys`] — the `input` notation (`<Enter>`, `<C-c>`, `<Up>`) and the
 //!   bytes a terminal sends for it.
+//! - [`charset`] — the DEC line-drawing set a box is drawn in without a
+//!   UTF-8 locale, shown as the box characters it stands for.
 //! - [`transcript`] — the output as lines of text: carriage returns and
 //!   erases applied, escapes dropped, and the model's "since your last look".
 //! - [`fold`] — a plain (piped) command's output folded the same way, one
@@ -25,6 +27,7 @@
 //! starts the command as the session leader whose controlling terminal it is,
 //! and [`crate::background`]'s TTY tasks keep it running.
 
+pub mod charset;
 pub mod fold;
 pub mod keys;
 pub mod probe;

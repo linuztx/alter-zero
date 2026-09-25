@@ -10,8 +10,18 @@
 //! name is typed as written, so `a<b`, `<div>` and `x < y > z` survive; `<lt>`
 //! is a literal `<` for the one case that would not.
 //!
-//! Pure: the only terminal state encoding depends on — the cursor-key mode —
-//! is passed in.
+//! How the keys are **written** matters as much as which bytes they are: a
+//! person's key presses never arrive together, and some programs take
+//! whatever one read returns as one key press — btop ignored `<Down><Down>`
+//! written at once, and dropped `bash` typed into its filter in one write.
+//! So every named key is its own write, and short text typed to a program
+//! reading key by key goes a character at a time, each write read by the
+//! program before the next goes ([`Pace::Read`]); a paste, a line for a
+//! program reading whole lines, and long text go whole.
+//!
+//! Pure: the terminal state encoding depends on ([`Modes`]) is passed in.
+
+use std::time::Duration;
 
 /// One key the notation names.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -40,6 +50,76 @@ pub enum Key {
     Ctrl(u8),
     /// Alt/Meta + a character: `ESC` followed by it (`<M-x>`).
     Alt(char),
+    /// A special key held with modifiers — xterm's bits, Shift 1, Alt 2,
+    /// Ctrl 4 — sent as the key's sequence with them as a parameter:
+    /// `<C-Left>` is `ESC [ 1 ; 5 D`, `<M-F7>` is `ESC [ 18 ; 3 ~`.
+    Modified(Special, u8),
+}
+
+/// A key that sends a sequence of its own, which a modifier changes
+/// ([`Key::Modified`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Special {
+    Up,
+    Down,
+    Left,
+    Right,
+    Home,
+    End,
+    PageUp,
+    PageDown,
+    Insert,
+    Delete,
+    /// `F1`–`F12`.
+    F(u8),
+}
+
+impl Special {
+    /// The number and the final character of the key's CSI sequence, as
+    /// xterm writes it with modifiers.
+    fn sequence(self) -> (u8, char) {
+        match self {
+            Self::Up => (1, 'A'),
+            Self::Down => (1, 'B'),
+            Self::Right => (1, 'C'),
+            Self::Left => (1, 'D'),
+            Self::Home => (1, 'H'),
+            Self::End => (1, 'F'),
+            Self::Insert => (2, '~'),
+            Self::Delete => (3, '~'),
+            Self::PageUp => (5, '~'),
+            Self::PageDown => (6, '~'),
+            Self::F(n @ 1..=4) => (1, char::from(b'O' + n)),
+            Self::F(n) => (function_code(n), '~'),
+        }
+    }
+
+    /// The key's name in the notation.
+    fn name(self) -> String {
+        match self {
+            Self::Up => "Up".to_string(),
+            Self::Down => "Down".to_string(),
+            Self::Left => "Left".to_string(),
+            Self::Right => "Right".to_string(),
+            Self::Home => "Home".to_string(),
+            Self::End => "End".to_string(),
+            Self::PageUp => "PageUp".to_string(),
+            Self::PageDown => "PageDown".to_string(),
+            Self::Insert => "Insert".to_string(),
+            Self::Delete => "Del".to_string(),
+            Self::F(n) => format!("F{n}"),
+        }
+    }
+}
+
+/// The number in F5–F12's sequences (`ESC [ n ~`): F5 is 15, F6–F10 are
+/// 17–21, F11/F12 are 23/24 — xterm's gaps, kept from the VT220 keyboard.
+fn function_code(n: u8) -> u8 {
+    match n {
+        5 => 15,
+        6..=10 => n + 11,
+        _ => n + 12,
+    }
 }
 
 /// One run of the input: text typed as written, or one named key.
@@ -49,20 +129,73 @@ pub enum InputPart {
     Key(Key),
 }
 
-/// Bytes to write in one go, and whether the writer should pause after them
-/// before writing what follows — true after a lone `Esc` that more input
-/// follows, so a program timing its escape sequences (Vim's `ttimeoutlen`)
-/// reads a key press, not `Alt+`the next character.
+/// Bytes to write in one go, and what the writer waits for after them
+/// before it writes what follows.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InputChunk {
     pub bytes: Vec<u8>,
-    pub pause_after: bool,
+    pub then: Pace,
+}
+
+/// What the writer waits for between one write and the next.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Pace {
+    /// Nothing: no write follows.
+    Last,
+    /// The program has **read** the write — a key press of its own, as a
+    /// person's keys never arrive together. The writer asks the terminal's
+    /// input queue, waiting at most [`KEY_READ_WAIT`]; where the queue
+    /// cannot answer for the program — it cannot be asked, or a relay (sudo,
+    /// ssh, `docker exec -it`) takes each key the moment it lands and hands
+    /// it on to a terminal of its own — at least [`KEY_PAUSE`] passes too.
+    Read,
+    /// A lone `Esc` that more input follows: read, then [`ESC_PAUSE`].
+    Esc,
+}
+
+/// The least time between two writes where the terminal cannot say the
+/// program read the first ([`Pace::Read`]) — long enough for a program to
+/// have woken and read it (a millisecond or two) before the second arrives.
+pub const KEY_PAUSE: Duration = Duration::from_millis(20);
+
+/// The longest the writer waits for the program to read a write before it
+/// sends the next ([`Pace::Read`]). A program may take a while over a key —
+/// btop filters and redraws its process list on each one, a few hundred
+/// milliseconds on a busy machine — but one that has read nothing in this
+/// long is not reading: the rest of the keys go as typeahead, each
+/// [`KEY_PAUSE`] after the last.
+pub const KEY_READ_WAIT: Duration = Duration::from_secs(1);
+
+/// The pause after a lone `Esc` that more input follows — past Vim's
+/// `ttimeoutlen` (100 ms in `defaults.vim`), so `<Esc>:` reads as a key
+/// press and then a colon, not Alt+`:`.
+pub const ESC_PAUSE: Duration = Duration::from_millis(150);
+
+/// The longest text typed a character at a time to a program reading key by
+/// key — a search, a filter, a command line. Longer text (code typed into an
+/// editor) is input rather than a key press to any program that takes that
+/// much, and a character at a time it could cost seconds.
+pub const TYPED_TEXT_MAX: usize = 64;
+
+/// The most writing `chunks` can take: every wait the writer may make
+/// between them ([`Pace`]). The writer says when it is done, which is
+/// nearly always far sooner.
+#[must_use]
+pub fn typing_bound(chunks: &[InputChunk]) -> Duration {
+    chunks
+        .iter()
+        .map(|chunk| match chunk.then {
+            Pace::Last => Duration::ZERO,
+            Pace::Read => KEY_READ_WAIT + KEY_PAUSE,
+            Pace::Esc => KEY_READ_WAIT + KEY_PAUSE + ESC_PAUSE,
+        })
+        .sum()
 }
 
 /// The longest text between angle brackets that can still be a key name —
-/// `<PageDown>`, `<Ctrl+Space>` — so a `<` far from any `>` is settled at a
-/// glance rather than by scanning the rest of the input.
-const MAX_KEY_NAME: usize = 12;
+/// `<PageDown>`, `<Ctrl+Shift+PageDown>` — so a `<` far from any `>` is
+/// settled at a glance rather than by scanning the rest of the input.
+const MAX_KEY_NAME: usize = 24;
 
 /// Split `input` into text runs and named keys (see the module docs).
 ///
@@ -71,17 +204,132 @@ const MAX_KEY_NAME: usize = 12;
 /// slip several models make — has the one level of escaping undone, so the
 /// program gets its answer instead of a backslash and a line never submitted.
 /// Only input that plainly slipped qualifies (see `undo_double_escape`); a
-/// backslash anywhere else is typed as written.
+/// backslash anywhere else is typed as written. So does input **HTML-escaped**
+/// ([`html_escaped`]): `&lt;Esc&gt;` is `<Esc>`, and the rest of that input
+/// is unescaped with it.
 #[must_use]
 pub fn parse_input(input: &str) -> Vec<InputPart> {
+    // Input HTML-escaped whole is read as what it escapes, once.
+    let unescaped;
+    let input = if html_escaped(input) {
+        unescaped = unescape_html(input);
+        unescaped.as_str()
+    } else {
+        input
+    };
     let parts = split_keys(input);
     let uses_notation = parts.iter().any(|part| matches!(part, InputPart::Key(_)));
+    if !uses_notation && let Some(keys) = caret_keys(input) {
+        return keys;
+    }
     match (!uses_notation)
         .then(|| undo_double_escape(input))
         .flatten()
     {
         Some(unescaped) => split_keys(&unescaped),
-        None => parts,
+        None => without_layout_newlines(parts),
+    }
+}
+
+/// `parts` without the line breaks a model **laid out** after its
+/// `<Enter>`s — `"line<Enter>\n"` for every line, the newline its JSON's
+/// layout rather than a second Enter, which typed a script into `nano`
+/// double-spaced. Only when *every* line break in the input opens the text
+/// right after an `<Enter>`, one each: a newline after text is a line of its
+/// own (`"def f():\n    return 1\n<Enter>"` closes a Python block with the
+/// `<Enter>`), and then all of them are typed as written.
+fn without_layout_newlines(parts: Vec<InputPart>) -> Vec<InputPart> {
+    fn after_break(text: &str) -> Option<&str> {
+        ["\r\n", "\n", "\r"]
+            .iter()
+            .find_map(|brk| text.strip_prefix(brk))
+    }
+    let after_enter = |i: usize| i > 0 && parts[i - 1] == InputPart::Key(Key::Enter);
+    let mut laid_out = false;
+    for (i, part) in parts.iter().enumerate() {
+        let InputPart::Text(text) = part else {
+            continue;
+        };
+        let rest = match after_break(text) {
+            Some(rest) if after_enter(i) => {
+                laid_out = true;
+                rest
+            }
+            _ => text,
+        };
+        if rest.contains(['\n', '\r']) {
+            return parts;
+        }
+    }
+    if !laid_out {
+        return parts;
+    }
+    let mut out = Vec::with_capacity(parts.len());
+    for (i, part) in parts.iter().enumerate() {
+        match part {
+            InputPart::Text(text) if after_enter(i) => {
+                let rest = after_break(text).unwrap_or(text);
+                if !rest.is_empty() {
+                    out.push(InputPart::Text(rest.to_string()));
+                }
+            }
+            other => out.push(other.clone()),
+        }
+    }
+    out
+}
+
+/// Input made of **nothing but caret names** — `^O`, `^X^C`, the way a
+/// program's own help bar names its keys (nano's `^O Write Out`) — as those
+/// keys. Typed as written it inserts a `^` and a letter, which a model sent
+/// by copying the help bar. `None` for anything else: a caret beside other
+/// text (`^foo$`), a lowercase letter, the notation in use.
+fn caret_keys(input: &str) -> Option<Vec<InputPart>> {
+    let names = input.trim().as_bytes();
+    if names.is_empty() || !names.len().is_multiple_of(2) {
+        return None;
+    }
+    names
+        .chunks(2)
+        .map(|pair| match pair {
+            [b'^', c] if !c.is_ascii_lowercase() => {
+                control_byte(&char::from(*c).to_ascii_lowercase().to_string())
+                    .map(|byte| InputPart::Key(Key::Ctrl(byte)))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// The key `input` names when it is **one key name and nothing else**, its
+/// brackets forgotten — `F3`, `Esc`, `PageDown`, `Ctrl+C` — and no word a
+/// person types: `end`, `return`, `tab`, `up` and the other names that are
+/// words too stay text, as does a lowercase `f3` (a vim motion). `None` for
+/// anything else.
+///
+/// Not applied by [`parse_input`]: at a line prompt even `F3` may be the
+/// answer. A full-screen program reads every keystroke as a command, so the
+/// session applies it there (`llm::exec`) — a model that sent htop `"F3"`
+/// and `"Esc"` typed an `F`, a `3`, an `E`… and searched nineteen times for a
+/// process it never found.
+#[must_use]
+pub fn bare_key(input: &str) -> Option<Key> {
+    const MODIFIERS: [&str; 8] = [
+        "ctrl+", "ctrl-", "alt+", "alt-", "shift+", "shift-", "meta+", "meta-",
+    ];
+    let name = input.trim();
+    let lower = name.to_ascii_lowercase();
+    let unmistakable = matches!(
+        lower.as_str(),
+        "esc" | "escape" | "pageup" | "pagedown" | "pgup" | "pgdn"
+    ) || (name.starts_with('F') && function_number(&lower).is_some())
+        || MODIFIERS.iter().any(|prefix| lower.starts_with(prefix));
+    if !unmistakable {
+        return None;
+    }
+    match lookup(name)? {
+        Named::Key(key) => Some(key),
+        Named::Literal(_) => None,
     }
 }
 
@@ -148,6 +396,37 @@ fn hex_escape(chars: &mut impl Iterator<Item = char>, digits: usize) -> Option<c
         return None;
     }
     char::from_u32(u32::from_str_radix(&hex, 16).ok()?)
+}
+
+/// Did a model **HTML-escape** its input — `&lt;Esc&gt;` for `<Esc>`, as
+/// one deployment did to every `<` and `>` in its tool arguments? Only an
+/// escaped **key name** says so: `&lt;div&gt;` and `a &lt; b` are what an
+/// author typing HTML into an editor means.
+#[must_use]
+pub fn html_escaped(input: &str) -> bool {
+    let mut rest = input;
+    while let Some(open) = rest.find("&lt;") {
+        let after = &rest[open + "&lt;".len()..];
+        if let Some(close) = after.find("&gt;").filter(|&close| close <= MAX_KEY_NAME)
+            && matches!(lookup(&after[..close]), Some(Named::Key(_)))
+        {
+            return true;
+        }
+        rest = after;
+    }
+    false
+}
+
+/// `input` with one level of HTML escaping undone — `&amp;` last, so
+/// `&amp;lt;` is left `&lt;`.
+fn unescape_html(input: &str) -> String {
+    input
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
+        .replace("&apos;", "'")
+        .replace("&amp;", "&")
 }
 
 /// [`parse_input`]'s notation pass: text runs split around named keys.
@@ -221,28 +500,126 @@ fn lookup(name: &str) -> Option<Named> {
     Some(Named::Key(key))
 }
 
-/// The keys with a modifier or a number in their name: `F1`–`F12`,
-/// `C-x`/`Ctrl-x`/`Ctrl+x`/`^x`, and `M-x`/`Alt-x`/`A-x`/`Meta-x`. `name` is
-/// the original spelling — an Alt key keeps its character's case — and
-/// `lower` its lowercase form, which everything else matches on.
+/// Modifier bits as xterm numbers them in a key's sequence (`1 +` these).
+const SHIFT: u8 = 1;
+const ALT: u8 = 2;
+const CTRL: u8 = 4;
+
+/// How a modifier is written in front of a key name.
+const MODIFIER_PREFIXES: [(&str, u8); 13] = [
+    ("shift+", SHIFT),
+    ("shift-", SHIFT),
+    ("s-", SHIFT),
+    ("ctrl+", CTRL),
+    ("ctrl-", CTRL),
+    ("c-", CTRL),
+    ("^", CTRL),
+    ("meta+", ALT),
+    ("meta-", ALT),
+    ("alt+", ALT),
+    ("alt-", ALT),
+    ("a-", ALT),
+    ("m-", ALT),
+];
+
+/// The keys with a number or modifiers in their name: `F1`–`F12`, and any
+/// key or character behind modifier prefixes — `C-x`/`Ctrl-x`/`Ctrl+x`/`^x`,
+/// `M-x`/`Alt-x`/`A-x`/`Meta-x`, `S-Up`/`Shift+Up`, combined in any order
+/// (`<C-S-Left>`). `name` is the original spelling — an Alt key keeps its
+/// character's case — and `lower` its lowercase form, which everything else
+/// matches on.
 fn modified(name: &str, lower: &str) -> Option<Key> {
-    if let Some(number) = lower.strip_prefix('f') {
-        let n: u8 = number.parse().ok()?;
-        return (1..=12).contains(&n).then_some(Key::F(n));
+    if let Some(n) = function_number(lower) {
+        return Some(Key::F(n));
     }
-    for prefix in ["c-", "ctrl-", "ctrl+", "^"] {
-        if let Some(rest) = lower.strip_prefix(prefix) {
-            return control_byte(rest).map(Key::Ctrl);
+    let mut mods = 0;
+    let mut at = 0;
+    'strip: loop {
+        for (prefix, bit) in MODIFIER_PREFIXES {
+            let rest = &lower[at..];
+            if rest.len() > prefix.len() && rest.starts_with(prefix) {
+                mods |= bit;
+                at += prefix.len();
+                continue 'strip;
+            }
         }
+        break;
     }
-    for prefix in ["m-", "alt-", "alt+", "a-", "meta-"] {
-        if lower.starts_with(prefix) {
-            let mut chars = name[prefix.len()..].chars();
-            let c = chars.next()?;
-            return chars.next().is_none().then_some(Key::Alt(c));
-        }
+    if mods == 0 {
+        return None;
     }
-    None
+    let base = &lower[at..];
+    if let Some(special) = special_key(base) {
+        return Some(Key::Modified(special, mods));
+    }
+    // A key that sends one byte: Alt puts ESC in front of it, and Shift or
+    // Ctrl adds nothing a terminal sends — but Ctrl+Backspace is `^H`,
+    // Ctrl+Space `^@`, and Shift+Tab has a sequence of its own.
+    let byte = match base {
+        "enter" | "return" | "cr" | "ret" => Some('\r'),
+        "tab" => Some('\t'),
+        "bs" | "backspace" | "bspace" => Some(if mods & CTRL == 0 { '\u{7f}' } else { '\u{8}' }),
+        "esc" | "escape" => Some('\u{1b}'),
+        "space" | "spc" => Some(if mods & CTRL == 0 { ' ' } else { '\0' }),
+        _ => None,
+    };
+    if let Some(c) = byte {
+        return Some(match c {
+            _ if mods & ALT != 0 => Key::Alt(c),
+            '\t' if mods & SHIFT != 0 => Key::BackTab,
+            '\r' => Key::Enter,
+            '\t' => Key::Tab,
+            '\u{7f}' => Key::Backspace,
+            '\u{1b}' => Key::Esc,
+            ' ' => Key::Space,
+            other => Key::Ctrl(other as u8),
+        });
+    }
+    // A character: Shift makes it a capital, Ctrl a control byte, and Alt
+    // puts ESC in front — Shift alone is just the character, typed as such.
+    let mut chars = name[at..].chars();
+    let c = chars.next()?;
+    if chars.next().is_some() || mods == SHIFT {
+        return None;
+    }
+    let c = if mods & SHIFT == 0 {
+        c
+    } else {
+        c.to_ascii_uppercase()
+    };
+    let c = if mods & CTRL == 0 {
+        c
+    } else {
+        char::from(control_byte(&c.to_ascii_lowercase().to_string())?)
+    };
+    Some(if mods & ALT != 0 {
+        Key::Alt(c)
+    } else {
+        Key::Ctrl(c as u8)
+    })
+}
+
+/// `F1`–`F12`'s number, from the lowercase name.
+fn function_number(lower: &str) -> Option<u8> {
+    let n: u8 = lower.strip_prefix('f')?.parse().ok()?;
+    (1..=12).contains(&n).then_some(n)
+}
+
+/// The special key a lowercase `name` spells, for a modifier to hold.
+fn special_key(name: &str) -> Option<Special> {
+    Some(match name {
+        "up" => Special::Up,
+        "down" => Special::Down,
+        "left" => Special::Left,
+        "right" => Special::Right,
+        "home" => Special::Home,
+        "end" => Special::End,
+        "pageup" | "pgup" | "ppage" => Special::PageUp,
+        "pagedown" | "pgdn" | "npage" => Special::PageDown,
+        "ins" | "insert" => Special::Insert,
+        "del" | "delete" => Special::Delete,
+        _ => return function_number(name).map(Special::F),
+    })
 }
 
 /// The control byte `Ctrl+{rest}` produces — a letter (either case), one of
@@ -269,37 +646,221 @@ fn control_byte(rest: &str) -> Option<u8> {
     }
 }
 
-/// The bytes a terminal sends for `parts`, grouped into chunks at the points
-/// the writer must pause (after a lone `Esc`). On a terminal Enter is `\r`, so
-/// a newline in typed text is sent as `\r` too (`\r\n` as one `\r`) — what
-/// cooked mode turns back into `\n`, and what raw-mode programs (menus,
-/// editors) expect. `app_cursor` is the program's cursor-key mode (DECCKM):
-/// arrows and Home/End are `ESC O x` under it, `ESC [ x` otherwise.
+/// The terminal modes a program sets that change what its keys look like
+/// ([`encode`]) — read off the emulated screen.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Modes {
+    /// Cursor-key mode (DECCKM): arrows and Home/End as `ESC O x`.
+    pub app_cursor: bool,
+    /// Bracketed paste (mode 2004): the program tells pasted text from
+    /// typed keys.
+    pub bracketed_paste: bool,
+    /// The alternate screen: a full-screen program, which may read its keys
+    /// a read at a time.
+    pub full_screen: bool,
+    /// Canonical mode is off: the program reads the terminal a key at a time
+    /// — a menu, `top`, a line editor — or a relay does, for one.
+    pub key_by_key: bool,
+    /// Who reads what is typed, as far as the session can tell.
+    pub reader: Reader,
+}
+
+/// The program reading the terminal — its foreground program — as far as
+/// it decides how text reaches it ([`encode`]).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Reader {
+    /// No one named it: no process table to ask, or a relay (sudo, ssh,
+    /// `docker exec -it`) whose far end may run anything.
+    #[default]
+    Unknown,
+    /// A shell: it runs each line it is typed, and a line that starts a
+    /// program leaves the lines after it for that program to read.
+    Shell,
+    /// Any other program — an editor, a REPL, a menu.
+    Program,
+}
+
+impl Reader {
+    /// The reader a foreground program's name (`/proc/PID/comm`) makes.
+    #[must_use]
+    pub fn of(program: &str) -> Self {
+        const SHELLS: [&str; 20] = [
+            "sh", "bash", "dash", "zsh", "fish", "ksh", "ksh93", "mksh", "pdksh", "oksh", "yash",
+            "ash", "busybox", "tcsh", "csh", "nu", "elvish", "xonsh", "pwsh", "osh",
+        ];
+        const RELAYS: [&str; 22] = [
+            "sudo",
+            "su",
+            "doas",
+            "run0",
+            "pkexec",
+            "ssh",
+            "mosh-client",
+            "telnet",
+            "docker",
+            "podman",
+            "nerdctl",
+            "kubectl",
+            "oc",
+            "lxc",
+            "incus",
+            "machinectl",
+            "systemd-run",
+            "script",
+            "tmux",
+            "screen",
+            "socat",
+            "expect",
+        ];
+        if program.is_empty() || RELAYS.contains(&program) {
+            Self::Unknown
+        } else if SHELLS.contains(&program) {
+            Self::Shell
+        } else {
+            Self::Program
+        }
+    }
+}
+
+/// The bytes a terminal sends for `parts`, as the writes to send them in
+/// (see the module docs). On a terminal Enter is `\r`, so a newline in typed
+/// text is sent as `\r` too (`\r\n` as one `\r`) — what cooked mode turns
+/// back into `\n`, and what raw-mode programs (menus, editors) expect.
+/// `modes` are the program's: under cursor-key mode (DECCKM) arrows and
+/// Home/End are `ESC O x`, `ESC [ x` otherwise; under bracketed paste, text
+/// running onto indented lines goes as a paste (`paste_split`) — never to a
+/// shell, and to a reader no one named only on the alternate screen; to a
+/// program reading key by key, or on the alternate screen, text up to
+/// [`TYPED_TEXT_MAX`] goes a character at a time.
 #[must_use]
-pub fn encode(parts: &[InputPart], app_cursor: bool) -> Vec<InputChunk> {
+pub fn encode(parts: &[InputPart], modes: Modes) -> Vec<InputChunk> {
+    let app_cursor = modes.app_cursor;
+    // A paste goes to a program that inserts it: never a shell, which runs
+    // the lines it is typed; and to a reader no one named, only an editor's
+    // full screen.
+    let pastes = modes.bracketed_paste
+        && match modes.reader {
+            Reader::Shell => false,
+            Reader::Program => true,
+            Reader::Unknown => modes.full_screen,
+        };
+    // Lines parted by `<Enter>` keys are lines like any other: the same
+    // byte, and — to a program that takes pastes — the same paste.
+    let merged;
+    let parts = if pastes {
+        merged = enters_as_newlines(parts);
+        merged.as_slice()
+    } else {
+        parts
+    };
     let mut chunks = Vec::new();
-    let mut bytes = Vec::new();
-    for (index, part) in parts.iter().enumerate() {
+    let mut write = |bytes: Vec<u8>, then: Pace| {
+        if !bytes.is_empty() {
+            chunks.push(InputChunk { bytes, then });
+        }
+    };
+    for part in parts {
         match part {
-            InputPart::Text(text) => push_text(&mut bytes, text),
-            InputPart::Key(key) => {
-                bytes.extend_from_slice(&key_bytes(*key, app_cursor));
-                if *key == Key::Esc && index + 1 < parts.len() {
-                    chunks.push(InputChunk {
-                        bytes: std::mem::take(&mut bytes),
-                        pause_after: true,
-                    });
+            InputPart::Text(text) => {
+                let mut bytes = Vec::new();
+                if let Some((first, pasted, enter)) = paste_split(text).filter(|_| pastes) {
+                    push_text(&mut bytes, first);
+                    bytes.extend_from_slice(PASTE_START);
+                    // A paste cannot end itself early.
+                    push_text(&mut bytes, &pasted.replace("\u{1b}[201~", ""));
+                    bytes.extend_from_slice(PASTE_END);
+                    if enter {
+                        bytes.push(b'\r');
+                    }
+                    write(bytes, Pace::Read);
+                } else if (modes.full_screen || modes.key_by_key)
+                    && text.chars().count() <= TYPED_TEXT_MAX
+                {
+                    push_text(&mut bytes, text);
+                    for c in String::from_utf8_lossy(&bytes).chars() {
+                        let mut buf = [0u8; 4];
+                        write(c.encode_utf8(&mut buf).as_bytes().to_vec(), Pace::Read);
+                    }
+                } else {
+                    push_text(&mut bytes, text);
+                    write(bytes, Pace::Read);
                 }
+            }
+            InputPart::Key(key) => {
+                let then = if *key == Key::Esc {
+                    Pace::Esc
+                } else {
+                    Pace::Read
+                };
+                write(key_bytes(*key, app_cursor), then);
             }
         }
     }
-    if !bytes.is_empty() {
-        chunks.push(InputChunk {
-            bytes,
-            pause_after: false,
-        });
+    // Nothing follows the last write to keep apart from it.
+    if let Some(last) = chunks.last_mut() {
+        last.then = Pace::Last;
     }
     chunks
+}
+
+/// `parts` with every `<Enter>` folded into the text around it as a newline
+/// — which [`encode`] sends as the same `\r` — so text written as
+/// `def f():<Enter>    return 1<Enter>` is seen as the lines it is.
+fn enters_as_newlines(parts: &[InputPart]) -> Vec<InputPart> {
+    let mut out = Vec::with_capacity(parts.len());
+    let mut text = String::new();
+    for part in parts {
+        match part {
+            InputPart::Text(run) => text.push_str(run),
+            InputPart::Key(Key::Enter) => text.push('\n'),
+            InputPart::Key(key) => {
+                if !text.is_empty() {
+                    out.push(InputPart::Text(std::mem::take(&mut text)));
+                }
+                out.push(InputPart::Key(*key));
+            }
+        }
+    }
+    if !text.is_empty() {
+        out.push(InputPart::Text(text));
+    }
+    out
+}
+
+/// What a terminal sends around pasted text to a program in bracketed-paste
+/// mode (2004).
+const PASTE_START: &[u8] = b"\x1b[200~";
+/// See [`PASTE_START`].
+const PASTE_END: &[u8] = b"\x1b[201~";
+
+/// How text with indented lines reaches a program that takes pastes: the
+/// first line typed, the lines after it as one paste, and whether a line
+/// break ended the text — sent after the paste as the Enter key. `None` for
+/// text to type as it is: one line, or no indented line after the first.
+///
+/// Why a paste: an editor's or a REPL's auto-indent adds its own indent to
+/// every line typed after a line break, so typed code comes out as a
+/// staircase; a paste is inserted as it came, which is how a person gets
+/// code in. The first line is typed so a command in front of the text (vim's
+/// `i`) is still a command; text with no indented line (vim's
+/// `:%s/a/b/\n:wq\n`, answers to prompts, commands for a shell) is keys to
+/// act on, and is typed.
+fn paste_split(text: &str) -> Option<(&str, &str, bool)> {
+    let first_break = text.find(['\n', '\r'])?;
+    let (first, after) = text.split_at(first_break);
+    if !after
+        .split(['\n', '\r'])
+        .any(|line| line.starts_with([' ', '\t']))
+    {
+        return None;
+    }
+    let body = after
+        .strip_suffix("\r\n")
+        .or_else(|| after.strip_suffix(['\n', '\r']));
+    Some(match body {
+        Some(body) => (first, body, true),
+        None => (first, after, false),
+    })
 }
 
 /// Typed text as terminal bytes: every line ending (`\n`, `\r\n`, a lone
@@ -349,28 +910,20 @@ fn key_bytes(key: Key, app_cursor: bool) -> Vec<u8> {
         Key::End => cursor(b'F'),
         Key::PageUp => b"\x1b[5~".to_vec(),
         Key::PageDown => b"\x1b[6~".to_vec(),
-        Key::F(n) => match n {
-            1 => b"\x1bOP".to_vec(),
-            2 => b"\x1bOQ".to_vec(),
-            3 => b"\x1bOR".to_vec(),
-            4 => b"\x1bOS".to_vec(),
-            n => {
-                // F5 is 15; F6–F10 are 17–21; F11/F12 are 23/24 — xterm's
-                // gaps, kept from the VT220 keyboard.
-                let code = match n {
-                    5 => 15,
-                    6..=10 => n + 11,
-                    _ => n + 12,
-                };
-                format!("\x1b[{code}~").into_bytes()
-            }
-        },
+        Key::F(n @ 1..=4) => vec![0x1b, b'O', b'O' + n],
+        Key::F(n) => format!("\x1b[{}~", function_code(n)).into_bytes(),
         Key::Ctrl(byte) => vec![byte],
         Key::Alt(c) => {
             let mut bytes = vec![0x1b];
             let mut buf = [0u8; 4];
             bytes.extend_from_slice(c.encode_utf8(&mut buf).as_bytes());
             bytes
+        }
+        // Held, a key is always the CSI form: cursor-key mode changes only
+        // the bare arrows.
+        Key::Modified(special, mods) => {
+            let (code, last) = special.sequence();
+            format!("\x1b[{code};{}{last}", mods + 1).into_bytes()
         }
     }
 }
@@ -433,6 +986,57 @@ pub fn typed_tail(parts: &[InputPart]) -> Option<&str> {
     (!line.trim_start().is_empty()).then_some(line)
 }
 
+/// Remove from the typed text the codes a terminal **writes to** a program
+/// and no keyboard sends — colour (`ESC [ … m`), mode switches
+/// (`ESC [ ? 25 h`), erases (`ESC [ 2 J`, `ESC [ K`) — returning each as
+/// written (`\e[?25h`), for the report to say it was dropped.
+///
+/// Models copy these from what they have read about terminals, and a
+/// program takes each as keys: the ESC as one, the rest as text typed into
+/// a file or onto a command line. What terminals do send is kept: arrows,
+/// function keys, and mouse reports, whose `<` marks them as input.
+pub fn strip_output_codes(parts: &mut Vec<InputPart>) -> Vec<String> {
+    let mut removed = Vec::new();
+    for part in parts.iter_mut() {
+        if let InputPart::Text(text) = part
+            && text.contains('\u{1b}')
+        {
+            *text = strip_from_text(text, &mut removed);
+        }
+    }
+    parts.retain(|part| !matches!(part, InputPart::Text(text) if text.is_empty()));
+    removed
+}
+
+/// [`strip_output_codes`] over one text run.
+fn strip_from_text(text: &str, removed: &mut Vec<String>) -> String {
+    let mut kept = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(at) = rest.find("\u{1b}[") {
+        kept.push_str(&rest[..at]);
+        let body = &rest[at + 2..];
+        // Parameters (and a private marker), intermediates, a final byte.
+        let params = body
+            .find(|c: char| !('\u{30}'..='\u{3f}').contains(&c))
+            .unwrap_or(body.len());
+        let inter = body[params..]
+            .find(|c: char| !('\u{20}'..='\u{2f}').contains(&c))
+            .map_or(body.len(), |n| params + n);
+        let final_byte = body[inter..].chars().next();
+        let len = 2 + inter + final_byte.map_or(0, char::len_utf8);
+        let output_only =
+            matches!(final_byte, Some('h' | 'l' | 'm' | 'J' | 'K')) && !body.starts_with('<');
+        if output_only {
+            removed.push(format!("\\e{}", &rest[at + 1..at + len]));
+        } else {
+            kept.push_str(&rest[at..at + len]);
+        }
+        rest = &rest[at + len..];
+    }
+    kept.push_str(rest);
+    kept
+}
+
 /// `input` on one line for a cell header or a permission prompt: Enter as
 /// `⏎`, Tab as `⇥`, other control characters as `^X`, and every named key in
 /// its canonical notation (`<Down>`, `<C-c>`, `<M-x>`).
@@ -489,16 +1093,35 @@ fn key_name(key: Key) -> String {
         Key::PageUp => named("PageUp"),
         Key::PageDown => named("PageDown"),
         Key::F(n) => named(&format!("F{n}")),
-        Key::Ctrl(byte) => {
-            let shown = match byte {
-                0x01..=0x1a => ((byte - 1 + b'a') as char).to_string(),
-                0x00 => "@".to_string(),
-                0x7f => "?".to_string(),
-                other => ((other + b'@') as char).to_string(),
-            };
-            named(&format!("C-{shown}"))
+        Key::Ctrl(byte) => named(&format!("C-{}", control_name(byte))),
+        Key::Alt(c) => match c {
+            '\r' => named("M-Enter"),
+            '\t' => named("M-Tab"),
+            '\u{7f}' => named("M-BS"),
+            '\u{1b}' => named("M-Esc"),
+            ' ' => named("M-Space"),
+            c if u32::from(c) < 0x20 => named(&format!("C-M-{}", control_name(c as u8))),
+            c => named(&format!("M-{c}")),
+        },
+        Key::Modified(special, mods) => {
+            let mut held = String::new();
+            for (bit, prefix) in [(CTRL, "C-"), (ALT, "M-"), (SHIFT, "S-")] {
+                if mods & bit != 0 {
+                    held.push_str(prefix);
+                }
+            }
+            named(&format!("{held}{}", special.name()))
         }
-        Key::Alt(c) => named(&format!("M-{c}")),
+    }
+}
+
+/// What a control byte is Ctrl plus — `c` for `0x03`, `@` for `0x00`.
+fn control_name(byte: u8) -> String {
+    match byte {
+        0x01..=0x1a => ((byte - 1 + b'a') as char).to_string(),
+        0x00 => "@".to_string(),
+        0x7f => "?".to_string(),
+        other => ((other + b'@') as char).to_string(),
     }
 }
 
@@ -514,8 +1137,274 @@ mod tests {
         InputPart::Key(k)
     }
 
+    const CURSOR_KEYS: Modes = Modes {
+        app_cursor: true,
+        ..NONE
+    };
+
+    const FULL_SCREEN: Modes = Modes {
+        full_screen: true,
+        ..NONE
+    };
+
+    /// No mode set, and a reader no one named.
+    const NONE: Modes = Modes {
+        app_cursor: false,
+        bracketed_paste: false,
+        full_screen: false,
+        key_by_key: false,
+        reader: Reader::Unknown,
+    };
+
+    /// What the writer does with `chunks`: each write, and what it waits
+    /// for after it.
+    fn writes(chunks: &[InputChunk]) -> Vec<(Vec<u8>, Pace)> {
+        chunks.iter().map(|c| (c.bytes.clone(), c.then)).collect()
+    }
+
+    fn write(bytes: &[u8], then: Pace) -> (Vec<u8>, Pace) {
+        (bytes.to_vec(), then)
+    }
+
     fn bytes(chunks: &[InputChunk]) -> Vec<u8> {
         chunks.iter().flat_map(|c| c.bytes.clone()).collect()
+    }
+
+    #[test]
+    fn input_a_model_html_escaped_is_read_as_the_keys_it_names() {
+        // Seen live: a deployment HTML-escaped every `<` and `>` in its tool
+        // arguments, and `&lt;Esc&gt;` was typed into vim as eleven letters
+        // — insert mode never left, the file never saved.
+        assert!(html_escaped("&lt;Esc&gt;:wq&lt;Enter&gt;"));
+        assert_eq!(
+            parse_input("&lt;Esc&gt;:wq&lt;Enter&gt;"),
+            vec![key(Key::Esc), text(":wq"), key(Key::Enter)]
+        );
+        // The rest of that input was escaped the same way.
+        assert_eq!(
+            parse_input("if n &lt;= 1 &amp;&amp; m &gt; 0: pass&lt;Enter&gt;"),
+            vec![text("if n <= 1 && m > 0: pass"), key(Key::Enter)]
+        );
+    }
+
+    #[test]
+    fn escaped_text_that_names_no_key_is_typed_as_written() {
+        // HTML typed into an editor: `&lt;` is what the author wants there.
+        for input in ["&lt;div&gt;", "a &lt; b", "&amp;lt;Esc&amp;gt;"] {
+            assert!(!html_escaped(input), "{input}");
+            assert_eq!(parse_input(input), vec![text(input)], "{input}");
+        }
+    }
+
+    /// A program that takes pastes, named and no shell: a REPL.
+    const PASTES: Modes = Modes {
+        bracketed_paste: true,
+        reader: Reader::Program,
+        ..NONE
+    };
+
+    #[test]
+    fn indented_lines_reach_a_program_that_takes_pastes_as_a_paste() {
+        // Seen live: two models typed a Python function into vim, whose
+        // auto-indent added each line's indent to the one before it — the
+        // file came out as a staircase, and neither model got out of it. A
+        // person pastes code: the first line is typed (a leading `i` still
+        // enters insert mode), the lines after it arrive as one paste, and
+        // the line break that ends the text is still an Enter.
+        let chunks = encode(&parse_input("def f():\n    return 1\n"), PASTES);
+        assert_eq!(
+            bytes(&chunks),
+            b"def f():\x1b[200~\r    return 1\x1b[201~\r".to_vec()
+        );
+        let chunks = encode(&parse_input("idef f():\n\treturn 1"), PASTES);
+        assert_eq!(
+            bytes(&chunks),
+            b"idef f():\x1b[200~\r\treturn 1\x1b[201~".to_vec(),
+            "no line break at the end, no Enter"
+        );
+    }
+
+    #[test]
+    fn lines_parted_by_enter_keys_are_pasted_like_lines_parted_by_newlines() {
+        // Seen live: `def fib(n):<Enter>    a, b = 0, 1<Enter>…` — the same
+        // bytes as newlines, and the same staircase if typed.
+        let as_keys = "def f():<Enter>    return 1<Enter>";
+        let as_newlines = "def f():\n    return 1\n";
+        assert_eq!(
+            bytes(&encode(&parse_input(as_keys), PASTES)),
+            bytes(&encode(&parse_input(as_newlines), PASTES))
+        );
+        assert_eq!(
+            bytes(&encode(&parse_input(as_keys), Modes::default())),
+            b"def f():\r    return 1\r".to_vec(),
+            "typed, an Enter is an Enter either way"
+        );
+    }
+
+    #[test]
+    fn a_blank_line_in_the_middle_goes_in_the_paste() {
+        let chunks = encode(
+            &parse_input("def f(n):\n    x = n\n\n    return x\n\n"),
+            PASTES,
+        );
+        assert_eq!(
+            bytes(&chunks),
+            b"def f(n):\x1b[200~\r    x = n\r\r    return x\r\x1b[201~\r".to_vec()
+        );
+    }
+
+    #[test]
+    fn text_without_indented_lines_is_typed_even_where_pastes_are_taken() {
+        // `:%s/a/b/g` then `:wq` in vim's normal mode, answers to prompts,
+        // commands for a shell: keys to act on, not text to insert.
+        for input in [":%s/a/b/g\n:wq\n", "y\nn\n", "ls\npwd\n", "    x = 1\n"] {
+            let typed = encode(&parse_input(input), Modes::default());
+            assert_eq!(
+                bytes(&encode(&parse_input(input), PASTES)),
+                bytes(&typed),
+                "{input:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_shell_gets_indented_lines_typed_never_pasted() {
+        // Seen driving an interactive bash: `python3` and a loop for it in
+        // one call went to bash as a paste — bash read every line, python3
+        // started with nothing to read, and the loop ran as shell commands.
+        // A shell runs each line it is typed, and a line that starts a
+        // program leaves the lines after it for that program to read.
+        let shell = Modes {
+            reader: Reader::Shell,
+            ..PASTES
+        };
+        let input = "python3\nfor i in range(3):\n    print(i * 7)\n\n";
+        assert_eq!(
+            bytes(&encode(&parse_input(input), shell)),
+            b"python3\rfor i in range(3):\r    print(i * 7)\r\r".to_vec()
+        );
+    }
+
+    #[test]
+    fn a_reader_no_one_named_gets_pastes_only_on_the_full_screen() {
+        // Behind a relay (sudo, ssh), or where no process table says who
+        // reads: an editor's full screen takes code as a paste, and a line
+        // on the main screen may be a shell's — typed.
+        let input = "def f():\n    return 1\n";
+        let main = Modes {
+            bracketed_paste: true,
+            ..NONE
+        };
+        assert_eq!(
+            bytes(&encode(&parse_input(input), main)),
+            b"def f():\r    return 1\r".to_vec()
+        );
+        let full = Modes {
+            full_screen: true,
+            ..main
+        };
+        assert_eq!(
+            bytes(&encode(&parse_input(input), full)),
+            b"def f():\x1b[200~\r    return 1\x1b[201~\r".to_vec()
+        );
+    }
+
+    #[test]
+    fn a_reader_is_named_by_its_program() {
+        for shell in [
+            "bash", "sh", "dash", "zsh", "fish", "ksh", "mksh", "tcsh", "nu",
+        ] {
+            assert_eq!(Reader::of(shell), Reader::Shell, "{shell}");
+        }
+        // A relay passes keys to a program out of sight.
+        for relay in [
+            "sudo", "su", "ssh", "docker", "podman", "kubectl", "script", "tmux",
+        ] {
+            assert_eq!(Reader::of(relay), Reader::Unknown, "{relay}");
+        }
+        for program in [
+            "python3",
+            "python3.13",
+            "ipython",
+            "node",
+            "vim",
+            "nano",
+            "btop",
+        ] {
+            assert_eq!(Reader::of(program), Reader::Program, "{program}");
+        }
+        assert_eq!(Reader::of(""), Reader::Unknown);
+    }
+
+    #[test]
+    fn short_text_is_typed_a_character_at_a_time_to_a_key_by_key_reader() {
+        // Seen driving top: `Mq` written at once was one read, which top
+        // took for no key — it never sorted and never quit. A program in
+        // raw mode reads a key at a time, on the main screen as on the full
+        // one.
+        let key_by_key = Modes {
+            key_by_key: true,
+            ..NONE
+        };
+        assert_eq!(
+            writes(&encode(&parse_input("Mq"), key_by_key)),
+            vec![write(b"M", Pace::Read), write(b"q", Pace::Last)]
+        );
+        assert_eq!(
+            writes(&encode(&parse_input("ls<Enter>"), NONE)),
+            vec![write(b"ls", Pace::Read), write(b"\r", Pace::Last)],
+            "a line read whole goes whole"
+        );
+    }
+
+    #[test]
+    fn a_program_that_takes_no_pastes_gets_indented_lines_typed() {
+        let input = "def f():\n    return 1\n";
+        assert_eq!(
+            bytes(&encode(&parse_input(input), Modes::default())),
+            b"def f():\r    return 1\r".to_vec()
+        );
+    }
+
+    #[test]
+    fn codes_a_terminal_writes_to_a_program_are_not_typed() {
+        // Seen live: a model saved in nano with `\u000f<Enter>\u001b[?25h`
+        // — Ctrl+O, Enter, and "show the cursor" — and nano took the ESC as
+        // a key and typed `25h` into the file. No keyboard sends that code.
+        let mut parts = parse_input("\u{f}<Enter>\u{1b}[?25h");
+        let removed = strip_output_codes(&mut parts);
+        assert_eq!(parts, vec![text("\u{f}"), key(Key::Enter)]);
+        assert_eq!(removed, vec!["\\e[?25h".to_string()]);
+        // Colour and erases, in the middle of text, go too.
+        let mut parts = vec![text("ls\u{1b}[0m -l\u{1b}[2J\u{1b}[K\r")];
+        let removed = strip_output_codes(&mut parts);
+        assert_eq!(parts, vec![text("ls -l\r")]);
+        assert_eq!(removed, vec!["\\e[0m", "\\e[2J", "\\e[K"]);
+    }
+
+    #[test]
+    fn keys_spelled_as_their_codes_are_kept() {
+        // Arrows, function keys, a mouse report: what terminals do send.
+        for input in [
+            "\u{1b}[A",
+            "\u{1b}OB",
+            "\u{1b}[15~",
+            "\u{1b}[1;5C",
+            "\u{1b}[<0;10;5m",
+            "\u{1b}[H",
+            "plain text",
+        ] {
+            let mut parts = vec![text(input)];
+            assert!(strip_output_codes(&mut parts).is_empty(), "{input:?}");
+            assert_eq!(parts, vec![text(input)], "{input:?}");
+        }
+    }
+
+    #[test]
+    fn input_that_was_only_output_codes_is_left_empty() {
+        let mut parts = vec![text("\u{1b}[?1049h")];
+        assert_eq!(strip_output_codes(&mut parts), vec!["\\e[?1049h"]);
+        assert!(parts.is_empty());
     }
 
     #[test]
@@ -637,6 +1526,105 @@ mod tests {
     }
 
     #[test]
+    fn a_programs_own_caret_names_alone_are_the_keys_they_name() {
+        // nano's help bar lists `^O Write Out`, `^X Exit`: glm-5.3 sent
+        // `"^O"` as its input and nano inserted the two characters. Input
+        // made of nothing but such names is the keys.
+        assert_eq!(parse_input("^O"), vec![key(Key::Ctrl(0x0f))]);
+        assert_eq!(parse_input("^X"), vec![key(Key::Ctrl(0x18))]);
+        assert_eq!(
+            parse_input("^X^C"),
+            vec![key(Key::Ctrl(0x18)), key(Key::Ctrl(0x03))],
+            "emacs' two-key exit"
+        );
+        assert_eq!(
+            parse_input(" ^\\ "),
+            vec![key(Key::Ctrl(0x1c))],
+            "nano's ^\\ Replace"
+        );
+        assert!(is_interrupt(&parse_input("^C")), "a lone ^C interrupts");
+    }
+
+    #[test]
+    fn a_caret_among_other_text_is_typed_as_written() {
+        // A regex, an expression, a lowercase name — text, not keys.
+        assert_eq!(parse_input("^foo$"), vec![text("^foo$")]);
+        assert_eq!(parse_input("2^O"), vec![text("2^O")]);
+        assert_eq!(parse_input("^o"), vec![text("^o")], "a help bar says ^O");
+        assert_eq!(parse_input("^O^"), vec![text("^O^")]);
+        assert_eq!(
+            parse_input("^O<Enter>"),
+            vec![text("^O"), key(Key::Enter)],
+            "the notation in use: the caret is text"
+        );
+    }
+
+    #[test]
+    fn newlines_laid_out_after_each_enter_are_not_enters_of_their_own() {
+        // qwen3-coder typed a script into nano as `line<Enter>\n` per line —
+        // the newline its JSON's layout, not a second Enter — and saved it
+        // double-spaced.
+        assert_eq!(
+            parse_input("#!/bin/bash<Enter>\necho hi<Enter>\n"),
+            vec![
+                text("#!/bin/bash"),
+                key(Key::Enter),
+                text("echo hi"),
+                key(Key::Enter),
+            ]
+        );
+        assert_eq!(
+            parse_input("y<Enter>\r\n"),
+            vec![text("y"), key(Key::Enter)]
+        );
+    }
+
+    #[test]
+    fn newlines_of_their_own_beside_enter_are_kept() {
+        // A Python block closed with a blank line: newlines that follow text
+        // are lines, and the `<Enter>` after them the blank one.
+        assert_eq!(
+            parse_input("def f():\n    return 1\n<Enter>"),
+            vec![text("def f():\n    return 1\n"), key(Key::Enter)]
+        );
+        // One newline that follows text: every newline counts as typed.
+        assert_eq!(
+            parse_input("a<Enter>\nb\nc"),
+            vec![text("a"), key(Key::Enter), text("\nb\nc")]
+        );
+        assert_eq!(
+            parse_input("x<Enter>\n\n"),
+            vec![text("x"), key(Key::Enter), text("\n\n")],
+            "a blank line on purpose"
+        );
+    }
+
+    #[test]
+    fn a_key_name_no_one_types_as_a_word_is_a_bare_key() {
+        // qwen3-coder drove htop with bare `F3`, `Esc` and `F10`, which typed
+        // an `F`, a `3`… and searched nineteen times for a process it never
+        // found (the session honours these on a full screen only).
+        assert_eq!(bare_key("F3"), Some(Key::F(3)));
+        assert_eq!(bare_key("F10"), Some(Key::F(10)));
+        assert_eq!(bare_key(" Esc "), Some(Key::Esc));
+        assert_eq!(bare_key("escape"), Some(Key::Esc));
+        assert_eq!(bare_key("PageDown"), Some(Key::PageDown));
+        assert_eq!(bare_key("Ctrl+C"), Some(Key::Ctrl(0x03)));
+        assert_eq!(bare_key("ctrl-x"), Some(Key::Ctrl(0x18)));
+        // Words an editor on the full screen may be given to type: `end`
+        // closing a Ruby block, a `return`, a vim `f3` motion.
+        for word in [
+            "end", "End", "return", "Enter", "tab", "up", "Down", "home", "insert", "delete",
+            "space", "f3", "c-x", "a-b", "s-x",
+        ] {
+            assert_eq!(bare_key(word), None, "{word:?} is a word");
+        }
+        for text in ["q", "M", "sleep 4242", "F99", "lt", "<Esc>", "Esc Esc", ""] {
+            assert_eq!(bare_key(text), None, "{text:?} is text");
+        }
+    }
+
+    #[test]
     fn a_backslash_that_is_not_a_doubled_escape_is_typed_as_written() {
         // Nothing escaped at the end: a backslash the model meant.
         assert_eq!(
@@ -655,10 +1643,10 @@ mod tests {
 
     #[test]
     fn a_newline_in_text_is_sent_as_the_enter_key_byte() {
-        let chunks = encode(&parse_input("print(1)\n"), false);
+        let chunks = encode(&parse_input("print(1)\n"), Modes::default());
         assert_eq!(bytes(&chunks), b"print(1)\r");
         // CRLF is one Enter, not two.
-        let chunks = encode(&parse_input("a\r\nb\n"), false);
+        let chunks = encode(&parse_input("a\r\nb\n"), Modes::default());
         assert_eq!(bytes(&chunks), b"a\rb\r");
     }
 
@@ -688,7 +1676,11 @@ mod tests {
             (Key::Alt('x'), b"\x1bx"),
         ];
         for (k, expected) in cases {
-            assert_eq!(bytes(&encode(&[key(k)], false)), expected, "{k:?}");
+            assert_eq!(
+                bytes(&encode(&[key(k)], Modes::default())),
+                expected,
+                "{k:?}"
+            );
         }
     }
 
@@ -702,56 +1694,115 @@ mod tests {
             (Key::Home, b"\x1bOH"),
             (Key::End, b"\x1bOF"),
         ] {
-            assert_eq!(bytes(&encode(&[key(k)], true)), expected, "{k:?}");
+            assert_eq!(bytes(&encode(&[key(k)], CURSOR_KEYS)), expected, "{k:?}");
         }
         // Everything else is the same in both modes.
-        assert_eq!(bytes(&encode(&[key(Key::Enter)], true)), b"\r");
+        assert_eq!(bytes(&encode(&[key(Key::Enter)], CURSOR_KEYS)), b"\r");
     }
 
     #[test]
-    fn everything_up_to_a_pause_is_written_in_one_chunk() {
-        let chunks = encode(&parse_input("ab<Down><Down><Enter>"), false);
+    fn every_key_is_written_on_its_own_a_moment_after_the_last() {
+        // Seen driving btop: a program that takes whatever one read returns
+        // as one key press ignored `<Down><Down>` written together — no key
+        // it knows — where a person's two presses never arrive at once.
+        let chunks = encode(&parse_input("ab<Down><Down><Enter>"), Modes::default());
         assert_eq!(
-            chunks,
-            vec![InputChunk {
-                bytes: b"ab\x1b[B\x1b[B\r".to_vec(),
-                pause_after: false,
-            }]
+            writes(&chunks),
+            vec![
+                write(b"ab", Pace::Read),
+                write(b"\x1b[B", Pace::Read),
+                write(b"\x1b[B", Pace::Read),
+                write(b"\r", Pace::Last),
+            ]
         );
+    }
+
+    #[test]
+    fn short_text_is_typed_a_character_at_a_time_into_a_full_screen_program() {
+        // btop's filter took `bash` written at once as one unknown key and
+        // dropped it; typed a letter at a time, it filtered.
+        let chunks = encode(&parse_input("fbash"), FULL_SCREEN);
+        assert_eq!(
+            writes(&chunks),
+            vec![
+                write(b"f", Pace::Read),
+                write(b"b", Pace::Read),
+                write(b"a", Pace::Read),
+                write(b"s", Pace::Read),
+                write(b"h", Pace::Last),
+            ]
+        );
+        // A character is never split, and CRLF is still one Enter.
+        let chunks = encode(&parse_input("\u{e9}\r\n"), FULL_SCREEN);
+        assert_eq!(
+            writes(&chunks),
+            vec![
+                write("\u{e9}".as_bytes(), Pace::Read),
+                write(b"\r", Pace::Last)
+            ]
+        );
+    }
+
+    #[test]
+    fn long_text_and_text_at_a_line_prompt_go_in_one_write() {
+        // Code typed into an editor is input, not a key press, and pacing
+        // it would cost seconds; a shell or a REPL reads a line however it
+        // arrives.
+        let long = "x".repeat(TYPED_TEXT_MAX + 1);
+        assert_eq!(encode(&parse_input(&long), FULL_SCREEN).len(), 1);
+        assert_eq!(
+            writes(&encode(&parse_input("print(6*7)<Enter>"), Modes::default())),
+            vec![write(b"print(6*7)", Pace::Read), write(b"\r", Pace::Last)]
+        );
+        // A paste is one write wherever it goes.
+        let pastes = Modes {
+            full_screen: true,
+            ..PASTES
+        };
+        assert_eq!(
+            encode(&parse_input("def f():\n    return 1\n"), pastes).len(),
+            1
+        );
+    }
+
+    #[test]
+    fn typing_is_bounded_by_every_wait_the_writer_may_make() {
+        // Each paced write may wait out the program's read and the gap, an
+        // Esc its pause after that: the most the keys can take, which the
+        // writer cuts short by saying when it is done.
+        let chunks = encode(&parse_input("ab<Esc>:q<Enter>"), Modes::default());
+        assert_eq!(
+            typing_bound(&chunks),
+            (KEY_READ_WAIT + KEY_PAUSE) * 3 + ESC_PAUSE
+        );
+        assert_eq!(typing_bound(&[]), Duration::ZERO);
     }
 
     #[test]
     fn a_lone_esc_followed_by_more_input_pauses_after_itself() {
         // Vim reads `ESC :` inside its timeout as Alt+: — the pause makes it
         // a key press followed by a command-line colon.
-        let chunks = encode(&parse_input("hello<Esc>:wq<Enter>"), false);
+        let chunks = encode(&parse_input("hello<Esc>:wq<Enter>"), Modes::default());
         assert_eq!(
-            chunks,
+            writes(&chunks),
             vec![
-                InputChunk {
-                    bytes: b"hello\x1b".to_vec(),
-                    pause_after: true,
-                },
-                InputChunk {
-                    bytes: b":wq\r".to_vec(),
-                    pause_after: false,
-                },
+                write(b"hello", Pace::Read),
+                write(b"\x1b", Pace::Esc),
+                write(b":wq", Pace::Read),
+                write(b"\r", Pace::Last),
             ]
         );
         // A trailing Esc has nothing to be confused with.
-        let chunks = encode(&parse_input("x<Esc>"), false);
+        let chunks = encode(&parse_input("x<Esc>"), Modes::default());
         assert_eq!(
-            chunks,
-            vec![InputChunk {
-                bytes: b"x\x1b".to_vec(),
-                pause_after: false,
-            }]
+            writes(&chunks),
+            vec![write(b"x", Pace::Read), write(b"\x1b", Pace::Last)]
         );
     }
 
     #[test]
     fn empty_input_encodes_to_nothing() {
-        assert!(encode(&[], false).is_empty());
+        assert!(encode(&[], Modes::default()).is_empty());
     }
 
     #[test]
@@ -781,7 +1832,7 @@ mod tests {
     #[test]
     fn only_an_enter_or_a_signal_key_reaches_a_program_reading_a_line() {
         let reaches = |input: &str| {
-            encode(&parse_input(input), false)
+            encode(&parse_input(input), Modes::default())
                 .iter()
                 .any(|chunk| reaches_line_reader(&chunk.bytes))
         };
@@ -801,7 +1852,7 @@ mod tests {
     #[test]
     fn an_enter_submits_the_line_being_edited() {
         let submits = |input: &str| {
-            encode(&parse_input(input), false)
+            encode(&parse_input(input), Modes::default())
                 .iter()
                 .any(|chunk| submits_line(&chunk.bytes))
         };
@@ -828,6 +1879,53 @@ mod tests {
     }
 
     #[test]
+    fn keys_held_with_modifiers_send_what_xterm_sends() {
+        // Seen live: `<M-F7>` — Alt+F7 — was no key the notation knew, so
+        // mc's command line got the six characters `<M-F7>`.
+        let cases: Vec<(&str, &[u8])> = vec![
+            ("<C-Left>", b"\x1b[1;5D"),
+            ("<S-Up>", b"\x1b[1;2A"),
+            ("<M-F7>", b"\x1b[18;3~"),
+            ("<Alt+F4>", b"\x1b[1;3S"),
+            ("<C-S-End>", b"\x1b[1;6F"),
+            ("<Ctrl+Shift+Right>", b"\x1b[1;6C"),
+            ("<S-Delete>", b"\x1b[3;2~"),
+            ("<C-PageDown>", b"\x1b[6;5~"),
+            ("<M-C-Home>", b"\x1b[1;7H"),
+            ("<S-F12>", b"\x1b[24;2~"),
+            ("<M-Enter>", b"\x1b\r"),
+            ("<M-BS>", b"\x1b\x7f"),
+            ("<C-M-x>", b"\x1b\x18"),
+            ("<M-S-a>", b"\x1bA"),
+            // What a terminal sends for these: the modifier has no byte.
+            ("<S-Enter>", b"\r"),
+            ("<C-Tab>", b"\t"),
+            ("<C-BS>", b"\x08"),
+        ];
+        for (input, expected) in cases {
+            let parts = parse_input(input);
+            assert!(
+                matches!(parts.as_slice(), [InputPart::Key(_)]),
+                "{input}: {parts:?}"
+            );
+            assert_eq!(
+                bytes(&encode(&parts, Modes::default())),
+                expected,
+                "{input}"
+            );
+        }
+        // Cursor-key mode changes the bare arrows only.
+        assert_eq!(
+            bytes(&encode(&parse_input("<C-Left>"), CURSOR_KEYS)),
+            b"\x1b[1;5D"
+        );
+        // Nothing a modifier can hold, or no modifier at all: text.
+        for input in ["<S-foo>", "<C-Left-x>", "<X-Up>", "<S-a>"] {
+            assert_eq!(parse_input(input), vec![text(input)], "{input}");
+        }
+    }
+
+    #[test]
     fn display_puts_the_input_on_one_readable_line() {
         assert_eq!(display_input("print(1)\n"), "print(1)⏎");
         assert_eq!(display_input("a\tb"), "a⇥b");
@@ -839,5 +1937,9 @@ mod tests {
         assert_eq!(display_input("<S-Tab><F5><PgDn>"), "<S-Tab><F5><PageDown>");
         assert_eq!(display_input("a<b"), "a<b");
         assert_eq!(display_input("<lt>x>"), "<x>");
+        assert_eq!(
+            display_input("<ctrl+shift+left><Alt+F7><M-Enter>"),
+            "<C-S-Left><M-F7><M-Enter>"
+        );
     }
 }
