@@ -195,7 +195,7 @@ keys "$S120" q
 diff_stream_return="$(wait_pane 3 "$S120" -S -80 -- -F "$SETTLED_REPLY")"
 dump "conversation restored after a turn finished under /diff" "$diff_stream_return"
 expect_has "$diff_stream_return" -F "$SETTLED_REPLY" "the completed reply was not restored after closing /diff"
-expect_has "$diff_stream_return" -F "$SUMMARY_TURN1" "the completed turn's summary was not restored after closing /diff"
+expect_has "$diff_stream_return" -E "$SUMMARY_RE" "the completed turn's summary was not restored after closing /diff"
 expect_lacks "$diff_stream_return" -F "esc to interrupt" "closing /diff left a stale streaming status"
 tmux kill-session -t "$S120" 2>/dev/null
 

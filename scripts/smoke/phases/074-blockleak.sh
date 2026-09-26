@@ -22,7 +22,7 @@ sleep 0.5
 # every prompt was blocked holds none — the leak only ever mattered on a
 # session with something in it.
 submit "$S74" "$USER_MSG"
-wait_for 20.1 "$S74" -S -40 -- -F "$SUMMARY_TURN1"
+wait_for 20.1 "$S74" -S -40 -- -E "$SUMMARY_RE"
 submit "$S74" "hook demo: block my prompt"
 wait_for 10 "$S74" -S -200 -- -F "blocked the prompt"
 # The block restored the draft to the composer: Ctrl+C once clears it, again quits.

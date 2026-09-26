@@ -36,10 +36,10 @@ sleep 2.5
 cleared_later="$(tmux capture-pane -t "$S13" -p)"
 echo "==== captured visible screen (2.5s after /clear — must still be blank) ===="
 printf '%s\n' "$cleared_later"
-# The loop survives the kill: a fresh turn streams and finishes
-# ($SUMMARY_TURN2 — turn 2's summary, as in the Esc-interrupt phase).
+# The loop survives the kill: a fresh turn streams and finishes (its summary
+# is the only one on the cleared screen, as in the Esc-interrupt phase).
 submit "$S13" "again please"
-after_clear="$(wait_pane 20.1 "$S13" -S -30 -- -F "$SUMMARY_TURN2")" # up to ~20s: wait for the fresh turn's summary
+after_clear="$(wait_pane 20.1 "$S13" -S -30 -- -E "$SUMMARY_RE")" # up to ~20s: wait for the fresh turn's summary
 echo "==== captured pane (fresh turn after the /clear kill) ===="
 printf '%s\n' "$after_clear"
 tmux kill-session -t "$S13" 2>/dev/null
@@ -58,7 +58,7 @@ expect_has "$cleared_now" -F "dummy_model_name ·" "the idle input box + footer 
 for leak in "Happy" "⎿" "esc to interrupt"; do
 	expect_lacks "$cleared_later" -F "$leak" "the backend kept streaming after a mid-turn /clear ('$leak' appeared on the cleared screen)"
 done
-expect_lacks "$cleared_later" -E "$SUMMARY_ANY_RE" "the backend kept streaming after a mid-turn /clear (a turn summary appeared on the cleared screen)"
+expect_lacks "$cleared_later" -E "$SUMMARY_RE" "the backend kept streaming after a mid-turn /clear (a turn summary appeared on the cleared screen)"
 # … and the loop survived the kill: the fresh turn streamed to completion.
 expect_has "$after_clear" -F "❯ again please" "the message sent after a mid-turn /clear was not echoed"
-expect_has "$after_clear" -F "$SUMMARY_TURN2" "the turn after a mid-turn /clear did not finish (no '$SUMMARY_TURN2 …' summary)"
+expect_has "$after_clear" -E "$SUMMARY_RE" "the turn after a mid-turn /clear did not finish (no turn summary)"

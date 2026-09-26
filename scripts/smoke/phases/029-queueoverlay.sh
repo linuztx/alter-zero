@@ -9,8 +9,8 @@ smoke_begin
 # inline strip's inset "  ❯ world" row; when the turn reaches its next round
 # boundary UNDER the overlay it takes the message right there (the loop keeps
 # draining reply events with the overlay up — invariant 4): the overlay gains
-# the real column-0 "❯ world" user entry and the turn runs on to its summary
-# summary, all without leaving the overlay. The Ctrl+O return then repaints the
+# the real column-0 "❯ world" user entry and the turn runs on to its summary,
+# all without leaving the overlay. The Ctrl+O return then repaints the
 # inline conversation with the whole turn.
 S29="${S}_queueoverlay"
 tmux new-session -d -s "$S29" -x 80 -y 60 "$APP" # 60 rows: two demo turns
@@ -33,7 +33,7 @@ printf '%s\n' "$queued_overlay"
 # The turn reaches its round boundary under the overlay → it takes "world"
 # right there, which becomes a real transcript user entry, and runs to its
 # summary.
-overlay_advanced="$(wait_pane 45 "$S29" -E "$SUMMARY_ANY_RE")" # up to ~45s: the turn reads it, then finishes
+overlay_advanced="$(wait_pane 45 "$S29" -E "$SUMMARY_RE")" # up to ~45s: the turn reads it, then finishes
 echo "==== captured overlay (queued message taken under the overlay) ===="
 printf '%s\n' "$overlay_advanced"
 # The view is pinned to the bottom, so the dispatched "❯ world" user entry has
@@ -65,6 +65,6 @@ tmux kill-session -t "$S29" 2>/dev/null
 expect_has "$queued_overlay" -F "  ❯ world" "the queued message row ('  ❯ world') was missing from the Ctrl+O transcript view"
 expect_has "$overlay_advanced" -F "T R A N S C R I P T" "the overlay was not still open when the running turn took the queued message"
 expect_has "$overlay_world" -E '^❯ world' "the queued message was never taken into the turn under the overlay (no column-0 '❯ world' user entry found via Home/PageDown)"
-expect_has "$overlay_advanced" -E "$SUMMARY_ANY_RE" "the turn that read the queued message never ran to its summary under the overlay"
+expect_has "$overlay_advanced" -E "$SUMMARY_RE" "the turn that read the queued message never ran to its summary under the overlay"
 expect_has "$queue_overlay_returned" -E '^❯ world' "after returning from the overlay the taken 'world' message is missing from the inline view"
-expect_has "$queue_overlay_returned" -E "$SUMMARY_ANY_RE" "after returning from the overlay the turn's summary is missing from the inline view"
+expect_has "$queue_overlay_returned" -E "$SUMMARY_RE" "after returning from the overlay the turn's summary is missing from the inline view"

@@ -43,7 +43,8 @@ tmux resize-window -t "$S14" -x 80 -y 24
 sleep 0.6
 # A height shrink MID-STREAM must recover the same way: the repaint resets the
 # committed count, so the in-flight reply re-commits itself at the new size as
-# the remaining chunks flow ($SUMMARY_TURN2 is turn 2's summary).
+# the remaining chunks flow ($SUMMARY_TURN2 is turn 2's summary: each turn
+# stays under 30s, so it ends on the verb it opened on).
 submit "$S14" "again please"
 sleep 0.7 # mid-stream: the first text segment is flowing
 tmux resize-window -t "$S14" -x 80 -y 14

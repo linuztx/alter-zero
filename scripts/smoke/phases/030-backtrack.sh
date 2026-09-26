@@ -12,7 +12,8 @@ smoke_begin
 # Enter REWINDS: back inline, the conversation truncated from that message on
 # (here: everything — it was the first), its text back in the composer to
 # edit. Resubmitting it must stream a fresh turn to its summary
-# ($SUMMARY_TURN3 — turn 3's), proving the loop survived the rewind.
+# ($SUMMARY_TURN3 — turn 3's, each turn staying under 30s and so ending on the
+# verb it opened on), proving the loop survived the rewind.
 S30="${S}_backtrack"
 launch "$S30" 80 24
 submit "$S30" "alpha question"

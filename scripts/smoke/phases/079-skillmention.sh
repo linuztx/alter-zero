@@ -59,7 +59,7 @@ expect_has "$mention_done" -F "dummy_model_name" "the footer did not come back a
 # Submitting the mention plays the skill load — the dummy's skills demo
 # answers it (the cell, never the body), like a live model calling `skill`.
 submit "$S79" "load it please"
-wait_for 24 "$S79" -S -80 -- -F "$SUMMARY_TURN1"
+wait_for 24 "$S79" -S -80 -- -E "$SUMMARY_RE"
 mention_turn="$(tmux capture-pane -t "$S79" -p -S -80)"
 echo "==== Phase 79: the submitted mention's turn ===="
 printf '%s\n' "$mention_turn"

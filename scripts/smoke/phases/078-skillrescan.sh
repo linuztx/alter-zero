@@ -40,7 +40,7 @@ Late body.
 SKILL
 # One turn re-walks the roots at its start.
 submit "$S78" "hello there"
-wait_for 24 "$S78" -S -80 -- -F "$SUMMARY_TURN1"
+wait_for 24 "$S78" -S -80 -- -E "$SUMMARY_RE"
 # Ctrl+D: the listing must name it in THIS turn's context, not the next one's.
 # The view opens tail-following, and the listing is a LEADING fragment, so jump
 # to the top before reading it.

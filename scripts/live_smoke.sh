@@ -44,6 +44,10 @@ if [ ! -x "$BIN" ]; then
 fi
 MODEL="${ALTER_ZERO_LIVE_MODEL:-openai/gpt-4o-mini}"
 S="alterzero_live_$$"
+# A committed turn summary, whichever verb the turn ended on: a live turn can
+# run past 30s and end on a later one (the same line as scripts/smoke/lib.sh;
+# `app::tests::turn` pins every copy to `STATUS_VERBS`).
+SUMMARY_RE='(Worked|Generated|Pondered|Cooked|Brewed|Crunched|Conjured|Churned|Computed|Synthesized) for [0-9]'
 
 # Isolated config home so the run can't touch (or be steered by) the real
 # ~/.alter-zero; checkpoints/history/project-config off for hermeticity, the
@@ -89,18 +93,13 @@ wait_for() {
 	return 1
 }
 
-# A turn's committed summary opens with the past tense of the verb its status
-# line wore (`Worked for 12s`, `Brewed for 3m 2s` — docs/status-indicator.md),
-# and a live turn can run long enough to rotate that verb, so a summary is
-# matched by its shape rather than a word.
-SUMMARY_RE='^[A-Z][a-z]+ed for [0-9]'
-
-# wait_summaries SESSION COUNT [SECS] — wait until COUNT turn summaries show.
-wait_summaries() {
+# Poll the pane (with scrollback) until $2 turns have settled — that many
+# summary rows — up to $3 seconds.
+wait_for_summaries() {
 	local sess="$1" count="$2" secs="${3:-90}" pane=""
 	for _ in $(seq 1 $((secs * 2))); do
 		pane="$(tmux capture-pane -t "$sess" -p -S -400 2>/dev/null)"
-		if [ "$(printf '%s\n' "$pane" | grep -cE "$SUMMARY_RE")" -ge "$count" ]; then
+		if [ "$(printf '%s\n' "$pane" | grep -cE "^$SUMMARY_RE")" -ge "$count" ]; then
 			printf '%s' "$pane"
 			return 0
 		fi
@@ -125,7 +124,7 @@ tmux send-keys -t "$S" -l "$PROMPT_L1"
 sleep 0.3
 tmux send-keys -t "$S" Enter
 
-pane="$(wait_summaries "$S" 1 120)" || fail "L1: the turn never settled" "$pane"
+pane="$(wait_for_summaries "$S" 1 120)" || fail "L1: the turn never settled" "$pane"
 no_panic "$pane" "L1"
 printf '%s' "$pane" | grep -qF "❯ Reply with exactly" || fail "L1: the user echo committed" "$pane"
 # The streamed markdown really rendered: the table became a grid and the
@@ -173,7 +172,7 @@ pane="$(wait_for "$S_RS" "river" 60)" || fail "L3: the stream never started" "$p
 tmux resize-window -t "$S_RS" -x 60 -y 24 2>/dev/null || tmux set-option -t "$S_RS" -g default-size 60x24
 sleep 1
 tmux resize-window -t "$S_RS" -x 100 -y 30 2>/dev/null
-pane="$(wait_summaries "$S_RS" 1 120)" || fail "L3: the turn never settled after resizes" "$pane"
+pane="$(wait_for_summaries "$S_RS" 1 120)" || fail "L3: the turn never settled after resizes" "$pane"
 no_panic "$pane" "L3"
 echo "PASS: L3 mid-stream resizes reflowed and the turn settled"
 tmux kill-session -t "$S_RS" 2>/dev/null
@@ -188,7 +187,7 @@ L4_SESSIONS="$CFG/sessions-l4"
 APP_L4="$APP"
 APP_L4="${APP_L4/ $BIN/ ALTER_ZERO_SESSIONS_DIR=$L4_SESSIONS $BIN}"
 tmux new-session -d -s "$S_P" -x 100 -y 30 "$APP_L4 \"Reply with exactly the single word PROMPTOK and nothing else.\"; echo LIVE_APP_EXITED; sleep 60"
-pane="$(wait_summaries "$S_P" 1 120)" || fail "L4: the command-line prompt's turn never settled" "$pane"
+pane="$(wait_for_summaries "$S_P" 1 120)" || fail "L4: the command-line prompt's turn never settled" "$pane"
 no_panic "$pane" "L4"
 printf '%s' "$pane" | grep -qF "❯ Reply with exactly the single word PROMPTOK" || fail "L4: the prompt was not committed as the user bubble" "$pane"
 printf '%s' "$pane" | grep -q "PROMPTOK" || fail "L4: the reply to the command-line prompt never streamed" "$pane"
@@ -204,7 +203,7 @@ no_panic "$pane" "L4"
 printf '%s' "$pane" | grep -qF "❯ Reply with exactly the single word PROMPTOK" || fail "L4: --resume {id} did not reload the first turn above the new one" "$pane"
 # The reloaded transcript already carries the first turn's summary, so the
 # settle of the NEW turn is the second summary — count, don't match.
-pane="$(wait_summaries "$S_P" 2 120)" || fail "L4: the resumed prompt turn never settled (the reloaded summary and the new one should both show)" "$pane"
+pane="$(wait_for_summaries "$S_P" 2 120)" || fail "L4: the resumed prompt turn never settled (the reloaded summary and the new one should both show)" "$pane"
 [ "$(find "$L4_SESSIONS" -type f -name 'rollout-*.jsonl' | wc -l | tr -d ' ')" = "1" ] || fail "L4: the prompt turns should append to ONE rollout file"
 echo "PASS: L4 the command-line prompt ran live and --resume {id} continued it"
 tmux kill-session -t "$S_P" 2>/dev/null

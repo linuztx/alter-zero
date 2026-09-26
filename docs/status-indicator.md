@@ -298,8 +298,9 @@ Generated for 52s                                                    (the verb i
   brightest text on the line. And 30 s is a whole number of shimmer sweeps
   (2 s each), so a swap always lands at the start of a sweep, with the band
   still off the text — the word changes under a quiet line, never mid-crest
-  (`a_rotated_verb_arrives_with_the_shimmer_band_off_the_text`, which checks
-  the frame on the boundary and one re-arm late).
+  (`every_verb_swap_happens_with_the_shimmer_band_off_the_word`, which
+  checks the outgoing verb's last frame, the swap frame and the next one, at
+  every swap down the table).
 - **The summary names the verb the user saw.** The rotation happens in
   `App::set_status_times`, which moves `verb` and `done_verb` together, and
   the boundary calls it once per draw and nowhere else — so the verb it set
@@ -468,8 +469,10 @@ same events straight from its streamed `tool_calls` deltas
   (the tail whipping around behind it), and loops after a full cycle; the verb
   per-char greyscale-white bold spans, the metrics
   dim; the wave's crest is brighter than off-band chars and moves as `elapsed`
-  advances; a rotated verb arrives with the band off the text (the rotation
-  is a whole number of sweeps); the `/spinner` preview walks the verbs like a
+  advances; every verb swap happens with the band off the word — the
+  outgoing verb's last frame, the swap and the next frame, at every swap down
+  the table (the rotation is a whole number of sweeps); the `/spinner`
+  preview walks the verbs like a
   first turn; `summary_lines` is one dim line; the strip stacks preview / gap /
   status / gap above the box; `conversation` / `transcript` render a `Summary`.
 - `stream`: `turn_events` emits a paired `ThinkingStart`/`ThinkingEnd` with
@@ -480,10 +483,13 @@ same events straight from its streamed `tool_calls` deltas
   (`Finished`, `Wrapped up`, …) loads as recorded; an unknown one as `Done`.
 - `src/tui/` (smoke): the live line shows `tokens` while streaming with a blank
   gap row between it and the box, and a committed summary after the turn
-  settles. The phases settle on `scripts/smoke/lib.sh`'s per-turn summary
-  markers (`$SUMMARY_TURN1` = `Worked for`, …: a run of turns shorter than the
-  rotation walks the table one entry per turn) or on `$SUMMARY_ANY_RE`, any
-  summary at all, for a turn whose length isn't pinned. Phase 20 (longer startup delay): mid-pause the status shows
+  settles. A phase that waits for *a* turn to settle matches
+  `scripts/smoke/lib.sh`'s `SUMMARY_RE` — every past tense in the table — or
+  counts summaries (`wait_summaries`/`count_summaries`), whatever verbs they
+  wear, since a turn past 30 s ends on a later verb than it opened on; only
+  the phases that tell turns apart on one screen name a turn's own verb
+  (`SUMMARY_TURN1`…`3`). `the_smoke_scripts_summary_patterns_follow_the_verb_table`
+  pins all of them to `STATUS_VERBS` (`docs/smoke.md`). Phase 20 (longer startup delay): mid-pause the status shows
   `↑ N tokens` with no reply text, then the reply streams with the arrow `↓`.
 
 ## …and on a terminal too short for it

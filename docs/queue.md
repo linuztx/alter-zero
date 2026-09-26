@@ -550,8 +550,8 @@ The `tab to queue next turn` binding is listed in the `?` shortcuts band
 - `scripts/smoke.sh` Phase 21 (Tab follow-up): submit `hello`, queue `world`
   with **Enter** then `later` with **Tab** mid-stream (a blank divides them);
   `world` is read by the running turn and `later` runs as a **separate** turn
-  after it (turn 2's summary, `Generated for`) — the extra turn the all-Enter
-  Phase 12 never produces.
+  after it (a second turn summary) — the extra turn the all-Enter Phase 12
+  never produces.
 - `scripts/smoke.sh` Phase 24 (mid-turn shell queue): submit `hello there`, queue
   `world` (Enter) and `!echo smoke_queue_ok` (Enter in shell mode) mid-stream —
   both show inset (`  ❯ world`, `  ! echo smoke_queue_ok`); then the running turn

@@ -19,7 +19,7 @@ S108="${S}_cliprompt"
 CLIP_DIR="$(mktemp -d "$SMOKE_TMP/cliprompt.XXXXXX")"
 CLIPAPP="env $CFG_ENV_NOHIST ALTER_ZERO_SESSIONS_DIR=$CLIP_DIR ALTER_ZERO_STARTUP_DELAY_MS=$SMOKE_STARTUP_MS $BIN"
 tmux new-session -d -s "$S108" -x 80 -y 24 "$CLIPAPP \"$USER_MSG\"; echo CLI_APP_EXITED; sleep 60"
-clip_first_pane="$(wait_pane 20.1 "$S108" -S -60 -- -F "$SUMMARY_TURN1")" # the shortcut's turn settled, no key pressed
+clip_first_pane="$(wait_summaries 20.1 "$S108" 1 -S -60)" # the shortcut's turn settles, no key pressed
 echo "==== Phase 108: alter-zero \"$USER_MSG\" — the turn ran from the command line ===="
 printf '%s\n' "$clip_first_pane"
 tmux send-keys -t "$S108" C-c # quit (empty composer)
@@ -29,28 +29,15 @@ clip_hint_id="$(printf '%s\n' "$clip_quit_pane" | sed -n 's/.*--resume \([a-f0-9
 tmux kill-session -t "$S108" 2>/dev/null
 # --resume {id} "prompt": the transcript reloads and the prompt runs next.
 tmux new-session -d -s "$S108" -x 80 -y 24 "$CLIPAPP --resume $clip_hint_id \"again please\"; echo CLI_APP_EXITED; sleep 60"
-clip_resume_pane=""
-for _ in $(seq 1 134); do # the loaded turn's summary + the new turn's → 2× $SUMMARY_TURN1
-	clip_resume_pane="$(tmux capture-pane -t "$S108" -p -S -100)"
-	if [ "$(printf '%s' "$clip_resume_pane" | grep -cF "$SUMMARY_TURN1")" -ge 2 ]; then
-		break
-	fi
-	sleep 0.15
-done
+# The loaded turn's summary plus the new turn's make two.
+clip_resume_pane="$(wait_summaries 20.1 "$S108" 2 -S -100)"
 sleep 0.3
 echo "==== Phase 108: --resume {id} \"again please\" (reloaded, then the prompt's turn) ===="
 printf '%s\n' "$clip_resume_pane"
 tmux kill-session -t "$S108" 2>/dev/null
 # -c "prompt": the newest session here, plus a third turn.
 tmux new-session -d -s "$S108" -x 80 -y 24 "$CLIPAPP -c \"and once more\"; echo CLI_APP_EXITED; sleep 60"
-clip_continue_pane=""
-for _ in $(seq 1 134); do
-	clip_continue_pane="$(tmux capture-pane -t "$S108" -p -S -140)"
-	if [ "$(printf '%s' "$clip_continue_pane" | grep -cF "$SUMMARY_TURN1")" -ge 3 ]; then
-		break
-	fi
-	sleep 0.15
-done
+clip_continue_pane="$(wait_summaries 20.1 "$S108" 3 -S -140)"
 sleep 0.3
 clip_files="$(find "$CLIP_DIR" -type f -name 'rollout-*.jsonl' | wc -l | tr -d ' ')"
 echo "==== Phase 108: -c \"and once more\" (rollout files: $clip_files) ===="
@@ -90,14 +77,14 @@ rm -rf "$CLIP_DIR" 2>/dev/null
 # Phase 108: the [PROMPT] shortcut and the --help page.
 expect_has "$clip_first_pane" -F "❯ $USER_MSG" "the command-line prompt was not committed as the user bubble"
 expect_has "$clip_first_pane" -F "$EXPECT_REPLY" "the command-line prompt's turn never streamed its reply"
-expect_has "$clip_first_pane" -F "$SUMMARY_TURN1" "the command-line prompt's turn never settled"
+expect_has "$clip_first_pane" -E "^$SUMMARY_RE" "the command-line prompt's turn never settled"
 expect_has "$clip_quit_pane" -F "Resume this session with:" "quitting the shortcut's session printed no resume hint"
 if [ -z "$clip_hint_id" ]; then
 	fail "no '--resume {id}' line under the hint"
 fi
 expect_has "$clip_resume_pane" -F "❯ $USER_MSG" "--resume {id} \"prompt\" did not reload the first turn"
 expect_has "$clip_resume_pane" -F "❯ again please" "--resume {id} \"prompt\" did not run the prompt as the next turn"
-if [ "$(printf '%s' "$clip_resume_pane" | grep -cF "$SUMMARY_TURN1")" -lt 2 ]; then
+if [ "$(count_summaries "$clip_resume_pane")" -lt 2 ]; then
 	fail "the resumed session's prompt turn never settled"
 fi
 expect_has "$clip_continue_pane" -F "❯ and once more" "-c \"prompt\" did not run the prompt as the next turn"

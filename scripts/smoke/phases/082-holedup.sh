@@ -28,7 +28,7 @@ sleep 0.4
 tmux send-keys -t "$S82" C-o # …so this return purge-rebuilds
 sleep 0.5
 for _ in $(seq 1 100); do
-	if tmux capture-pane -t "$S82" -p -S - | grep -qF "$SUMMARY_TURN1"; then
+	if tmux capture-pane -t "$S82" -p -S - | grep -qE "$SUMMARY_RE"; then
 		break
 	fi
 	sleep 0.15
@@ -37,10 +37,14 @@ sleep 0.5
 dedup="$(tmux capture-pane -t "$S82" -p -S -)"
 echo "==== Phase 82: after three mid-stream round-trips + a resize under the overlay ===="
 printf '%s\n' "$dedup" | tail -40
-for marker in "❯ $USER_MSG" "$EXPECT_REPLY" "Read(about.py)" "Edit(about.py)" "Bash(python3 about.py)" "$SETTLED_REPLY" "$SUMMARY_TURN1"; do
+for marker in "❯ $USER_MSG" "$EXPECT_REPLY" "Read(about.py)" "Edit(about.py)" "Bash(python3 about.py)" "$SETTLED_REPLY"; do
 	count=$(printf '%s\n' "$dedup" | grep -cF "$marker")
 	if [ "$count" -ne 1 ]; then
 		fail "'$marker' appears $count times after overlay round-trips (expected exactly 1)"
 	fi
 done
+count=$(count_summaries "$dedup")
+if [ "$count" -ne 1 ]; then
+	fail "the turn summary appears $count times after overlay round-trips (expected exactly 1)"
+fi
 tmux kill-session -t "$S82" 2>/dev/null

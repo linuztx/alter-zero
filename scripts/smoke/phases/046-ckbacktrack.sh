@@ -23,7 +23,7 @@ printf 'pristine\n' >"$WORK46/file.txt"
 CKAPP="env $CFG_ENV ALTER_ZERO_CHECKPOINTS=1 ALTER_ZERO_CHECKPOINTS_DIR=$CK_DIR ALTER_ZERO_SESSIONS_DIR=$CK_SESS ALTER_ZERO_STARTUP_DELAY_MS=$SMOKE_STARTUP_MS $BIN_ABS"
 launch -c "$WORK46" "$S46" 80 24 "$CKAPP"
 submit "$S46" "$USER_MSG"
-wait_for 20.1 "$S46" -S -40 -- -F "$SUMMARY_TURN1" # text turn 1 (checkpoint {pristine})
+wait_for 20.1 "$S46" -S -40 -- -E "$SUMMARY_RE" # text turn 1 settles (checkpoint {pristine})
 submit "$S46" "!echo mutated > file.txt" # a `!` shell turn mutates the file
 ckb_mutated="?"
 for _ in $(seq 1 80); do # wait for the shell TURN to END (file written AND Running gone)

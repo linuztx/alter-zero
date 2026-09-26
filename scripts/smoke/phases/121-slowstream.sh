@@ -170,7 +170,7 @@ while :; do
 		fi
 	fi
 	prev_dupes="$dupes"
-	if printf '%s' "$vis" | grep -qE "$SUMMARY_ANY_RE"; then
+	if printf '%s' "$vis" | grep -qE "^$SUMMARY_RE"; then
 		break
 	fi
 	if [ "$samples" -gt 2400 ]; then
@@ -221,7 +221,7 @@ case "$sync_clears" in
 *clears=0\ *) ;;
 *) fail "a commit blanked the live region before repainting it ($sync_clears): a terminal without mode 2026 can present the boxless state — the region must be repainted in place" ;;
 esac
-expect_has "$final_vis" -E "$SUMMARY_ANY_RE" "the slow turn never settled"
+expect_has "$final_vis" -E "^$SUMMARY_RE" "the slow turn never settled"
 # Every phrase exactly once, in document order, in the settled transcript.
 last_at=0
 for m in "${SLOW_MARKERS[@]}"; do
@@ -255,10 +255,10 @@ if [ "$(printf '%s' "$grid_widths" | wc -w)" -ne 1 ]; then
 fi
 
 # ---- the narrow session -----------------------------------------------------
-narrow="$(wait_pane 120 "$S121N" -S - -- -E "$SUMMARY_ANY_RE")"
+narrow="$(wait_pane 120 "$S121N" -S - -- -E "^$SUMMARY_RE")"
 narrow_vis="$(tmux capture-pane -t "$S121N" -p)"
 dump "the settled narrow session (visible screen)" "$narrow_vis"
-expect_has "$narrow_vis" -E "$SUMMARY_ANY_RE" "the narrow turn never settled"
+expect_has "$narrow_vis" -E "^$SUMMARY_RE" "the narrow turn never settled"
 for m in "A markdown tour" "def fibonacci" "fn very_long_function_name" "Two commands away"; do
 	c=$(printf '%s\n' "$narrow" | grep -cF -- "$m")
 	if [ "$c" -ne 1 ]; then

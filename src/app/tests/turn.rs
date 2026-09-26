@@ -919,8 +919,17 @@ fn idle_has_no_status_and_begin_stream_starts_one() {
 fn every_status_verb_pairs_with_its_own_past_tense() {
     // The summary reads the entry the line wore, so an entry's two forms
     // must be one verb — a table edit can never leave `Brewing…` settling
-    // as `Cooked for 12s` — and no verb repeats, or a rotation could show
-    // the same word twice running (docs/status-indicator.md).
+    // as `Cooked for 12s` — and no verb repeats in either form, or a
+    // rotation could show the same word twice running
+    // (docs/status-indicator.md). The table opens on the neutral `Working`
+    // a session's first turn, an agent's and the /spinner preview start on.
+    assert_eq!(
+        STATUS_VERBS[0],
+        StatusVerb {
+            working: "Working",
+            done: "Worked",
+        }
+    );
     for (i, verb) in STATUS_VERBS.iter().enumerate() {
         let stem = verb.working.strip_suffix("ing").expect("a live -ing form");
         assert!(
@@ -930,8 +939,43 @@ fn every_status_verb_pairs_with_its_own_past_tense() {
         assert!(
             STATUS_VERBS[i + 1..]
                 .iter()
-                .all(|other| other.working != verb.working),
+                .all(|other| other.working != verb.working && other.done != verb.done),
             "{verb:?} appears once"
+        );
+    }
+}
+
+#[test]
+fn the_smoke_scripts_summary_patterns_follow_the_verb_table() {
+    // The smoke scripts wait for "a turn settled" on one pattern naming every
+    // past tense — a turn that runs past 30 s ends on a later verb than it
+    // opened on — and the phases that tell turns apart on one screen name
+    // each turn's own verb. A verb added, dropped or reordered here but not
+    // there would time a phase out, or settle it on the wrong turn, so every
+    // copy is pinned to the table.
+    let past: Vec<&str> = STATUS_VERBS.iter().map(|verb| verb.done).collect();
+    let pattern = format!("SUMMARY_RE='({}) for [0-9]'", past.join("|"));
+    let mut required: Vec<(&str, String)> = [
+        "scripts/smoke/lib.sh",
+        "scripts/live_smoke.sh",
+        "scripts/cursor_hide_check.sh",
+        "scripts/paste_mem.sh",
+    ]
+    .into_iter()
+    .map(|script| (script, pattern.clone()))
+    .collect();
+    for (turn, done) in past.iter().take(3).enumerate() {
+        required.push((
+            "scripts/smoke/lib.sh",
+            format!("SUMMARY_TURN{}=\"{done} for\"", turn + 1),
+        ));
+    }
+    for (script, line) in required {
+        let path = format!("{}/{script}", env!("CARGO_MANIFEST_DIR"));
+        let text = std::fs::read_to_string(&path).expect("the script exists");
+        assert!(
+            text.lines().any(|candidate| candidate.trim_start() == line),
+            "{script} must define {line}"
         );
     }
 }
@@ -939,14 +983,17 @@ fn every_status_verb_pairs_with_its_own_past_tense() {
 #[test]
 fn the_summary_is_the_past_tense_of_the_verb_the_line_wore() {
     // Consistency, not a second roll of the dice: a line that said
-    // `Working…` settles as `Worked for …` (docs/status-indicator.md).
+    // `Working…` settles as `Worked for …`, and so on down the table, one
+    // short turn per verb (docs/status-indicator.md).
     let mut app = App::new();
-    app.begin_stream();
-    assert_eq!(app.status().unwrap().verb, "Working");
-    app.push_chunk("a reply");
-    app.finish_stream();
-    let summary = app.end_turn(12).expect("a turn was active");
-    assert_eq!(summary.verb, "Worked", "the past tense of `Working`");
+    for verb in STATUS_VERBS {
+        app.begin_stream();
+        assert_eq!(app.status().unwrap().verb, verb.working);
+        app.push_chunk("a reply");
+        app.finish_stream();
+        let summary = app.end_turn(12).expect("a turn was active");
+        assert_eq!(summary.verb, verb.done, "the past tense of {verb:?}");
+    }
 }
 
 #[test]

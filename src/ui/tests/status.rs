@@ -513,26 +513,37 @@ fn status_line_has_a_white_comet_fading_tail_shimmering_verb_and_dim_metrics() {
 }
 
 #[test]
-fn a_rotated_verb_arrives_with_the_shimmer_band_off_the_text() {
-    // The rotation is a whole number of sweeps, so the first frame to wear
-    // the next verb — on the boundary, or a frame's re-arm late — catches the
-    // band before it reaches the word: the swap never cuts a crest in half
-    // (docs/status-indicator.md).
+fn every_verb_swap_happens_with_the_shimmer_band_off_the_word() {
+    // The rotation is a whole number of sweeps, so each swap lands at the top
+    // of one: the outgoing verb's last frame (a re-arm before the boundary),
+    // the swap frame and the incoming verb's next frame all draw every char
+    // at rest — at every swap down the table, so the word never changes under
+    // the crest (docs/status-indicator.md).
     assert_eq!(VERB_ROTATION.as_millis() % SHIMMER_SWEEP.as_millis(), 0);
+    let frame = Duration::from_millis(32);
     let mut app = App::new();
     app.begin_stream();
-    for late_ms in [0, 32] {
-        app.set_status_times(VERB_ROTATION + Duration::from_millis(late_ms), None);
-        let status = app.status().expect("a turn in flight");
-        assert_eq!(status.verb, STATUS_VERBS[1].working, "the swap frame");
-        let line = styled_status_line(status, None, Spinner::Comet, 200);
-        let verb_cells = status.verb.chars().count() + 1; // + the `…`
-        for span in &line.spans[VERB_START..VERB_START + verb_cells] {
-            assert_eq!(
-                span.style.fg,
-                Some(shimmer_base()),
-                "no crest on the fresh verb {late_ms} ms in: {span:?}"
-            );
+    for step in 1..=STATUS_VERBS.len() {
+        let swap = VERB_ROTATION * u32::try_from(step).expect("a short table");
+        let incoming = STATUS_VERBS[step % STATUS_VERBS.len()];
+        for (elapsed, expected) in [
+            (swap - frame, STATUS_VERBS[step - 1]),
+            (swap, incoming),
+            (swap + frame, incoming),
+        ] {
+            app.set_status_times(elapsed, None);
+            let status = app.status().expect("a turn in flight");
+            assert_eq!(status.verb, expected.working, "the verb at {elapsed:?}");
+            let line = styled_status_line(status, None, Spinner::Comet, 200);
+            let verb_cells = status.verb.chars().count() + 1; // + the `…`
+            for span in &line.spans[VERB_START..VERB_START + verb_cells] {
+                assert_eq!(
+                    span.style.fg,
+                    Some(shimmer_base()),
+                    "{:?} lit at {elapsed:?}: {span:?}",
+                    status.verb
+                );
+            }
         }
     }
 }

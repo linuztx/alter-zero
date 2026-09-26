@@ -18,7 +18,7 @@ RAW15="$(mktemp)"
 launch "$S12" 80 24
 tmux pipe-pane -t "$S12" -o "cat > $RAW15"
 submit "$S12" "hello there"
-wait_for 20.1 "$S12" -S -60 -- -F "$SUMMARY_TURN1" # up to ~20s: the whole turn (text + thinking + tools)
+wait_for 20.1 "$S12" -S -60 -- -E "$SUMMARY_RE" # up to ~20s: the whole turn (text + thinking + tools)
 tmux pipe-pane -t "$S12" # close the recording before quitting
 sleep 0.2
 tmux send-keys -t "$S12" C-c # quit (idle Esc would arm the backtrack instead)

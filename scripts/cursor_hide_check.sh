@@ -21,6 +21,9 @@ if [ ! -x "$BIN" ]; then
 fi
 
 S="curhide_$$"
+# A committed turn summary, whichever verb the turn ended on (the same line as
+# scripts/smoke/lib.sh; `app::tests::turn` pins every copy to `STATUS_VERBS`).
+SUMMARY_RE='(Worked|Generated|Pondered|Cooked|Brewed|Crunched|Conjured|Churned|Computed|Synthesized) for [0-9]'
 CFG="$(mktemp -d)"
 RAW="$(mktemp)"
 cleanup() {
@@ -42,7 +45,7 @@ sleep 0.2
 tmux send-keys -t "$S" Enter
 done_seen=0
 for _ in $(seq 1 80); do # up to ~8s for the committed summary
-	if tmux capture-pane -t "$S" -p | grep -qE "^[A-Z][a-z]+ed for [0-9]+s"; then
+	if tmux capture-pane -t "$S" -p | grep -qE "^$SUMMARY_RE"; then
 		done_seen=1
 		break
 	fi

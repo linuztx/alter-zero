@@ -30,10 +30,10 @@ launch "$S65" 80 24 "$APP_CD"
 compact_dummy_footer="$(tmux capture-pane -t "$S65" -p)"
 # One real turn, settled (every dummy reply ends on the hand-off paragraph).
 submit "$S65" "hello there"
-# Waits for the committed SUMMARY, not for the reply text: the
+# Waits for the committed turn SUMMARY, not for the reply text: the
 # hand-off paragraph starts a second before the stream ends, and /compact is
 # rejected with a toast while a turn is still in flight.
-wait_for 20 "$S65" -S -40 -- -E "^$SUMMARY_TURN1 [0-9]+s" # up to ~20s
+wait_for 20 "$S65" -S -40 -- -E "^$SUMMARY_RE" # up to ~20s
 tmux send-keys -t "$S65" -l "/compact"
 sleep 0.3
 tmux send-keys -t "$S65" Enter
