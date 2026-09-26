@@ -23,10 +23,11 @@ release heading when a version is cut.
   background notice said it was asking a question, and a model that believed
   it killed a command doing exactly what it had been asked to do. Programs
   that take keys on the full screen switch the terminal out of line mode
-  first, so a display that leaves it in line mode is now treated as a
-  command at work: a `bash` call rides it out to its exit or its `wait`, a
-  `bashwait` waits for the run to finish, and neither the report, `bashlist`
-  nor a background notice says it waits. On Linux the agent also asks the
+  first, so a display that leaves it in line mode is now treated like any
+  other command at work: a `bashwait` waits for the run to finish instead of
+  returning at once, a `bash` call hands it back as running rather than
+  waiting, and neither the report, `bashlist` nor a background notice says
+  it is waiting for input. On Linux the agent also asks the
   kernel what an event loop is waiting on — every Go, Node and Python
   asyncio program idles the same way — so one waiting on the network, even
   with a prompt-shaped `Fetching... ` left on screen, is no longer taken for
