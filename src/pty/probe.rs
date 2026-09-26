@@ -445,7 +445,15 @@ pub fn probe(pid: u32, terminal: &Path) -> Probe {
             }
             let dir = task.path();
             match std::fs::read_to_string(dir.join("syscall")) {
-                Ok(line) => threads.push(classify_task(&dir, &line, &terminal)),
+                // Taken as read, though the thread may leave the wait while
+                // its descriptors are looked at: the next probe sees where it
+                // went. Doubting a wait that moved would make a busy event
+                // loop, in and out of its wait all the time, a possible
+                // prompt again and again.
+                Ok(line) => {
+                    let fds = TaskDescriptors { dir: &dir };
+                    threads.push(classify(Arch::HOST, &line, &fds, &terminal));
+                }
                 // Another user's process — `sudo` and what it runs.
                 Err(err) if err.kind() == std::io::ErrorKind::PermissionDenied => blind = true,
                 Err(_) => continue, // exited, or a zombie: waiting on nothing
@@ -463,20 +471,6 @@ pub fn probe(pid: u32, terminal: &Path) -> Probe {
         }
     }
     combine(&threads, blind)
-}
-
-/// Classify the thread at `dir`, blocked in `line`. A wait its descriptors
-/// place elsewhere holds only while the thread is still in the call they
-/// were read for: one that moved on meanwhile is left open.
-#[cfg(target_os = "linux")]
-fn classify_task(dir: &Path, line: &str, terminal: &Terminal) -> Thread {
-    let thread = classify(Arch::HOST, line, &TaskDescriptors { dir }, terminal);
-    if thread == Thread::Elsewhere
-        && std::fs::read_to_string(dir.join("syscall")).ok().as_deref() != Some(line)
-    {
-        return Thread::Maybe;
-    }
-    thread
 }
 
 /// A thread's descriptors, read off its `/proc/PID/task/TID` directory.
@@ -1178,6 +1172,51 @@ mod tests {
             }
             assert_eq!(probe_until(command, want), want, "{command}");
         }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_live_event_loop_waking_every_millisecond_never_polls() {
+        // A busy event loop — a download landing, a timer firing — leaves
+        // its wait and comes back hundreds of times a second, with a new
+        // timeout each time. Wherever a probe catches it, it is at work or
+        // waiting on its own set, never on the terminal: a possible prompt
+        // (`Probe::Polling`) here is what read a silent download behind an
+        // open line as waiting for input.
+        use crate::pty::spawn::{spawn, terminal_path};
+        use std::time::{Duration, Instant};
+        if !on_path("python3") {
+            eprintln!("skipped, no python3");
+            return;
+        }
+        let mut session = spawn(
+            None,
+            "python3 -c 'import asyncio\nasync def tick():\n    while True:\n        \
+             await asyncio.sleep(0.001)\nasyncio.run(tick())'",
+        )
+        .expect("spawns");
+        let path = terminal_path(&session.master).expect("the terminal has a path");
+        let pid = session.child.id();
+        let started = Instant::now();
+        let mut verdicts = Vec::new();
+        while started.elapsed() < Duration::from_secs(5) && !verdicts.contains(&Probe::Elsewhere) {
+            verdicts.push(probe(pid, &path));
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let looping = Instant::now();
+        while looping.elapsed() < Duration::from_secs(2) {
+            verdicts.push(probe(pid, &path));
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        crate::subprocess::kill_process_group(&mut session.child);
+        assert!(verdicts.contains(&Probe::Elsewhere), "never seen waiting");
+        let polls = verdicts.iter().filter(|&&v| v == Probe::Polling).count();
+        assert_eq!(
+            polls,
+            0,
+            "{polls} of {} probes said Polling",
+            verdicts.len()
+        );
     }
 
     #[cfg(target_os = "linux")]

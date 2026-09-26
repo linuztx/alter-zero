@@ -548,10 +548,14 @@ which asks nothing (no prompt, no password), yet is not at work the way
 `Idle` is, since a network wait lasts as long as a server idles and its
 silence still ends a launch after `LAUNCH_QUIET`. A process the probe may not
 inspect, or no `/proc` at all, is `Probe::Unknown`, which leaves the screen
-rules in charge, as `Polling` does. An answer read off the descriptors holds
-only if the thread is still in the call it was read for, which the probe
-checks by reading the call again. The files are readable only for the
-user's own processes, so
+rules in charge, as `Polling` does. An answer read off the descriptors is
+taken as read, though the thread may leave its wait while they are looked
+at: the next probe sees where it went. Doubting a wait that moved on — the
+probe once re-read the call and fell back to *may* when it had changed —
+made a busy event loop, in and out of its wait with a new timeout hundreds
+of times a second, a possible prompt again and again: a silent download
+behind `Downloading... ` read as waiting for input in three runs of nine.
+The files are readable only for the user's own processes, so
 `sudo` and everything it runs leave the probe blind: exactly where the relay
 rule above already applies. The monitor probes only a terminal a call is
 waiting on, once it has been quiet `PROBE_QUIET` (0.2 s), at most every
