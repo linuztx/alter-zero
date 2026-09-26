@@ -1,4 +1,4 @@
-# LLM tool calling — `bash` / `read` / `write` / `edit` / `bash_session`
+# LLM tool calling — `bash` and its companions / `read` / `write` / `edit`
 
 The real backend can now **call tools**: the model asks to run a shell command,
 read a file, write a file, or edit one; the backend executes it locally, streams
@@ -30,7 +30,7 @@ red deletes) are ported.
 
 ## The core tools
 
-All five are declared to the model as
+All eight are declared to the model as
 `{"type":"function","function":{"name","description","parameters":<schema>}}`
 entries in the request's `tools` array, with `tool_choice:"auto"`. The pure
 definitions + JSON schemas live in [`llm::tools`](../src/llm/tools.rs)
@@ -38,8 +38,11 @@ definitions + JSON schemas live in [`llm::tools`](../src/llm/tools.rs)
 
 | tool | params | executes |
 | --- | --- | --- |
-| `bash` | `command` (req), `timeout` (opt, ms — default 120 000, cap 600 000; the pre-rename alias `timeout_ms` still parses), `tty` (opt), `run_in_background` (opt), `description` (opt) | `sh -c command` with **no controlling terminal** (`crate::subprocess` — a `/dev/tty` password prompt fails fast), stdin `/dev/null`, stdout+stderr captured, byte-capped, killed on timeout/cancel. With **`tty: true`** it runs in a pseudo-terminal of its own instead and returns once it exits or waits for input — a still-running one reports a session id (`docs/interactive-shell.md`) |
-| `bash_session` | `session_id` (req), `input` (opt — text, a newline presses Enter, `<Enter>`/`<C-c>`/`<Up>`… keys), `timeout` (opt, ms — default 10 000), `kill` (opt) | type into a session `bash` left running, wait on it, or end it; reports the lines new or changed since the last look — or a full-screen program's screen — under a `Running`/`Stopped` frame, or `Exit code: N` once it exits (`docs/interactive-shell.md`) |
+| `bash` | `command` (req), `wait` (opt, **seconds** — default 120, cap 600; `0` starts it in the background), `description` (opt) | `bash -c command` (`sh` where no `bash` is installed) in a **pseudo-terminal of its own**; returns when it exits (`Exit code: N` over its output, as data — `docs/bash-tools.md`), stops to wait for input, or `wait` passes — a still-running command is **not stopped**: it reports its session id and runs on. Where no terminal can be had it runs on a pipe with no controlling terminal (`crate::subprocess`). The old `timeout`/`timeout_ms` (ms), `run_in_background` and `tty` still parse |
+| `bashsend` | `session_id` (req), `input` (req — text, a newline presses Enter, `<Enter>`/`<C-c>`/`<Up>`… keys) | type into a running command and return its answer, within a fixed 10 s (`docs/bash-tools.md`) |
+| `bashwait` | `session_id` (req), `wait` (opt, seconds — default 120) | wait for new output, the exit or a question; `wait: 0` just checks |
+| `bashkill` | `session_id` (req) | stop a command and everything it started — `SIGINT`, `SIGTERM`, then `SIGKILL` |
+| `bashlist` | — | the running sessions: id, command, runtime, whether each waits for input |
 | `read` | `path` (req — absolute, like the other two), `offset` (opt 1-based line), `limit` (opt, default 2000 lines) | read the file: text returns numbered lines (a dynamic-width gutter); an **image** (png/jpg/jpeg/gif/webp) is attached visually so the model can see it (`offset`/`limit` ignored — see "Image reads" below) |
 | `write` | `path` (req — the schema asks for an **absolute** path), `content` (req) | create parent dirs, write the file; **show** `Wrote {N} lines to {path}` over the numbered contents for a new file, or the numbered diff hunks vs the previous content — the head's path shown cwd-relative (`tools::display_path`, `../` climbs outside the cwd), the `● Write({path})` header by the TUI's own rule ("Path display" below) — while the *model* reads a one-line ack |
 | `edit` | `path` (req — absolute, like `write`'s), `old_string` (req), `new_string` (req), `replace_all` (opt) | exact string replacement; error if `old_string` is absent, or non-unique without `replace_all`; **show** `Updated {path} (+A -D)` over the numbered diff hunks, the path shown cwd-relative like `write`'s — the model again reads the ack |
@@ -165,14 +168,19 @@ this in-turn protocol — see `docs/context.md`) all work unchanged.
 Boundary code (file + process I/O), verified by hand / smoke, wrapping the pure
 cores in `llm::tools`:
 
-- **`bash`** — `sh -c` via [`crate::subprocess::spawn_detached_shell`]
-  (detached from the terminal — see below), stdin `/dev/null`, stdout+stderr
-  drained on reader threads (a chatty command can't deadlock a full pipe),
-  retained up to `TOOL_OUTPUT_MAX_BYTES` (64 KiB) via a capped read, killed on
-  the per-call timeout *or* a cancel. Output framed for the model as codex
-  does: `Exit code: N` + the (truncated) output; a non-zero exit resolves the
-  cell red (and the display reframes the frame line as `Error: Exit code N` —
-  `docs/tool-streaming.md`).
+- **`bash`** — `bash -c` in a pseudo-terminal of its own
+  (`background::BackgroundRegistry::launch_tty`, `docs/bash-tools.md`), the
+  call waiting on the session until the command exits, stops to ask, or its
+  `wait` passes; where no terminal can be had, on a pipe via
+  [`crate::subprocess::spawn_detached_shell`] (detached from the terminal —
+  see below), stdin `/dev/null`, stdout+stderr drained on reader threads (a
+  chatty command can't deadlock a full pipe). Either way a finished command's
+  output keeps its first 16 KiB and last 48 KiB (`pty::fold::HeadTail`, the
+  cut naming the session's log), a `wait` that passes hands the command to
+  the background registry instead of killing it, and a cancel stops it. Output framed for
+  the model as codex does: `Exit code: N` + the output; a non-zero exit
+  resolves the cell red (and the display reframes the frame line as
+  `Error: Exit code N` — `docs/tool-streaming.md`).
 - **`read`** — reads the file; a text file applies `offset`/`limit`, formats
   numbered lines (`format_read`, pure), byte-caps the result; an image file
   takes the image branch below.
@@ -245,6 +253,10 @@ can recover, exactly like codex's `RespondToModel`.
 
 ### No controlling terminal — the sudo-prompt fix (`crate::subprocess`)
 
+This is what a command gets where no terminal of its own can be had — the
+`!` shell, a `bash` call's pipe fallback (`docs/bash-tools.md`) — and what
+every model command got before commands ran in a terminal.
+
 `stdin(Stdio::null())` does **not** make a command non-interactive: a password
 prompt (`sudo`, `ssh`, git's credential helper) opens **`/dev/tty`** — the
 controlling terminal, inherited through the process *session*, not through any
@@ -260,13 +272,12 @@ helper-re-exec → attached tier chain shaped by the crate's `forbid(unsafe)`),
 the preserved `pgid == child.id()` kill contract, and the full test matrix
 live in **`docs/tty-detach.md`**.
 
-`tty: true` is the deliberate opposite, and still never the user's terminal:
-the command gets a **pseudo-terminal of its own** as its controlling terminal
-(the same tier chain, in its TTY form), so the password prompt reaches a
-screen the *model* reads and answers through `bash_session` — or, when it was
-not given the secret, asks the user for (`docs/interactive-shell.md`). A plain
-`bash` call that fails saying it wanted a terminal gets a pointer to `tty`
-appended to the model's text.
+A `bash` call's terminal is the deliberate opposite, and still never the
+user's terminal: the command gets a **pseudo-terminal of its own** as its
+controlling terminal (the same tier chain, in its TTY form), so the password
+prompt reaches a screen the *model* reads and answers through `bashsend` —
+or, when it was not given the secret, asks the user for
+(`docs/interactive-shell.md`, `docs/bash-tools.md`).
 
 ## Image reads (`read` on a png/jpg/jpeg/gif/webp)
 
@@ -407,9 +418,9 @@ is reshaped for display** with two-space indentation (`ui::exec_display_lines`,
 Claude Code's tool result does the same), so a `curl` of an API reads `{` /
 `"batchcomplete": "",` / `"query": {` instead of a wall of braces — the record
 stays byte-exact. **While it runs the cell streams and tails its output** — the
-header, the last lines, and a `+N lines (22s · timeout 1m 50s)` footer naming
-the command's own clock and the timeout it runs under (a bare `(10s · timeout
-10m)` row when nothing is hidden, `⎿ Running… (10s · timeout 2m)` before any
+header, the last lines, and a `+N lines (22s · wait 1m 50s)` footer naming
+the command's own clock and the wait its call runs under (a bare `(10s · wait
+10m)` row when nothing is hidden, `⎿ Running… (10s · wait 2m)` before any
 output) — see `docs/tool-streaming.md`.
 
 **The whole cell reads like a normal reply — Claude-Code's noticeable look.**
@@ -419,7 +430,7 @@ and the **output** under the `⎿` gutter is the same white (`tool_output_color(
 so a `bash` command and its output are as legible as a normal message rather than
 the old muted grey. Only the structural bits stay dim ([`tool_dim_color()`]): the
 `⎿` corner glyph, the `Running…`/`Waiting…`/`(no output)` placeholders and the
-`… +N lines` / `+N lines (Ns · timeout …)` hints. The `●` bullet keeps its lifecycle colour
+`… +N lines` / `+N lines (Ns · wait …)` hints. The `●` bullet keeps its lifecycle colour
 (blinking grey while it runs — `docs/tool-pulse.md` — vivid green ok · red
 fail). This is uniform across **every** tool
 — `bash`/`read`/`write`/`edit` and any future tool — because the header goes
@@ -527,9 +538,9 @@ identically — but only the inline peek (and the live preview) cuts the command
 **A running backend tool previews its whole cell.** While the model's tool runs,
 the streaming strip's preview slot shows the *full* live cell — the wrapped
 header **plus** its output. Before any output a `bash` cell shows
-`⎿ Running… (10s · timeout 2m)` — the command's own clock beside the timeout
-it runs under; once output streams it **tails** — the last `TOOL_PEEK_ROWS`
-rows and a `+N lines (22s · timeout 1m 50s)` footer, or the bare clock row
+`⎿ Running… (10s · wait 2m)` — the command's own clock beside the wait its
+call runs under; once output streams it **tails** — the last `TOOL_PEEK_ROWS`
+rows and a `+N lines (22s · wait 1m 50s)` footer, or the bare clock row
 when nothing is hidden (`ui::running_command_lines`; see
 `docs/tool-streaming.md`) — so the running state is visible and a long command
 still isn't clipped mid-run. The preview slot is sized by `ui::preview_rows`

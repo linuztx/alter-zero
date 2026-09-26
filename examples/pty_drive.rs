@@ -1,5 +1,6 @@
-//! Scripted driver for the interactive shell tools — `bash` with `tty` and
-//! `bash_session` (docs/interactive-shell.md) — with **no model**: each line
+//! Scripted driver for the bash tools — `bash` and its companions `bashsend`,
+//! `bashwait`, `bashkill` and `bashlist` (docs/bash-tools.md, over
+//! docs/interactive-shell.md's engine) — with **no model**: each line
 //! of the script is one tool call, run through the real executor with a
 //! background registry attached, and the model-facing result is printed
 //! with how long the call took. NOT run by `cargo test`.
@@ -8,7 +9,7 @@
 //! cargo run --example pty_drive -- steps.jsonl
 //! ```
 //!
-//! A step is `{"tool": "bash" | "bash_session", "args": {…}}`, one per line
+//! A step is `{"tool": "bash" | "bashsend" | …, "args": {…}}`, one per line
 //! (`#` lines and blank lines are skipped). `$S` anywhere in the args is
 //! replaced by the session id the last running report named, so a script can
 //! launch a program and type into it without knowing the id in advance.
@@ -49,6 +50,9 @@ fn main() {
                     "\x1b[36m  [registry] {id} exited code={code:?} killed={killed} \
                      observed={observed}\x1b[0m"
                 ),
+                BgEvent::Waiting { id } => {
+                    println!("\x1b[36m  [registry] {id} waiting for input\x1b[0m");
+                }
                 BgEvent::Output { .. } | BgEvent::Screen { .. } => {}
             }
         }

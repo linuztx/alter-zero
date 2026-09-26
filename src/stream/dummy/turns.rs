@@ -156,21 +156,18 @@ impl ScriptedCall {
         }
     }
 
-    /// One step of an interactive session (`docs/interactive-shell.md`): a
-    /// `tty` launch or a `bash_session` call, named by its display `name`,
-    /// with its verbatim `arguments` and the session report it resolves with
-    /// — already framed (`Running (session …)`, or `Exit code: N` once the
-    /// program ends), so it is carried as it is.
+    /// One step of an interactive session (`docs/bash-tools.md`): a `bash`
+    /// launch or a companion call, named by its display `name` — which
+    /// lowercases to the wire name, the task tools' convention — with its
+    /// verbatim `arguments` and the session report it resolves with, already
+    /// framed (`Running (session …)`, or `Exit code: N` once the program
+    /// ends), so it is carried as it is.
     fn step(name: &'static str, arguments: serde_json::Value, report: String) -> Self {
-        let wire = if name == crate::llm::tools::BASH_SESSION_TOOL_DISPLAY {
-            crate::llm::tools::BASH_SESSION_TOOL_NAME
-        } else {
-            "bash"
-        };
+        let wire = name.to_ascii_lowercase();
         let arguments = arguments.to_string();
         Self {
             name,
-            args: crate::llm::tools::summarize_call(wire, &arguments),
+            args: crate::llm::tools::summarize_call(&wire, &arguments),
             arguments,
             ack: None,
             output: report,
@@ -884,14 +881,14 @@ fn tool_turn(
     events
 }
 
-/// The **interactive-shell** demo's narration (`docs/interactive-shell.md`):
-/// why the command needs a terminal, and what else the same tool drives.
+/// The **interactive-shell** demo's narration (`docs/bash-tools.md`): the
+/// terminal every command runs in, and what else the same tools drive.
 const INTERACTIVE_REPLY: &str = concat!(
-    "That installer only runs in a real terminal — it refuses a pipe — so I'll \
-     start it with `tty` and answer its questions one at a time, reading each \
+    "That installer only runs in a real terminal — which every command gets — \
+     so I'll start it and answer its questions one at a time, reading each \
      before I reply.\n\n",
     "Done: each answer went in with Enter, and the script exited on its own \
-     after the last one. The same session drives a REPL (`python3`, `psql`), \
+     after the last one. The same tools drive a REPL (`python3`, `psql`), \
      a full-screen program like `vim` or `less` — I read its screen — and a \
      password prompt, which I never guess: I ask you. A session still running \
      when I stop is in the footer's shell count, and **↓** opens the manager to \
@@ -916,9 +913,9 @@ fn install_bar(pct: usize) -> String {
     )
 }
 
-/// The **interactive-shell** demo (`docs/interactive-shell.md`): a setup
-/// wizard launched with `tty`, stopping at its first prompt; an answer typed
-/// into the session, met by the next question; and the last answer, which
+/// The **interactive-shell** demo (`docs/bash-tools.md`): a setup wizard
+/// launched with `bash`, stopping at its first prompt; an answer typed in
+/// with `bashsend`, met by the next question; and the last answer, which
 /// ends the program. One call a round — the model reads each question before
 /// it answers — and every result the real [`crate::pty::report::report`], so
 /// the offline cells (and the dim `Waiting for input · session …` rows under
@@ -939,14 +936,13 @@ pub(in crate::stream) fn interactive_turn(cue: &Cue) -> Vec<StreamEvent> {
             "Bash",
             serde_json::json!({
                 "command": DUMMY_SESSION_COMMAND,
-                "tty": true,
                 "description": "Run the setup wizard",
             }),
             report(DUMMY_SESSION_ID, waiting, &lines("Project name:")),
         ),
         ScriptedCall::step(
-            crate::llm::tools::BASH_SESSION_TOOL_DISPLAY,
-            serde_json::json!({ "session_id": DUMMY_SESSION_ID, "input": "demo\n" }),
+            crate::llm::tools::BASH_SEND_DISPLAY,
+            serde_json::json!({ "session_id": DUMMY_SESSION_ID, "input": "demo<Enter>" }),
             report(
                 DUMMY_SESSION_ID,
                 waiting,
@@ -954,8 +950,8 @@ pub(in crate::stream) fn interactive_turn(cue: &Cue) -> Vec<StreamEvent> {
             ),
         ),
         ScriptedCall::step(
-            crate::llm::tools::BASH_SESSION_TOOL_DISPLAY,
-            serde_json::json!({ "session_id": DUMMY_SESSION_ID, "input": "y\n" }),
+            crate::llm::tools::BASH_SEND_DISPLAY,
+            serde_json::json!({ "session_id": DUMMY_SESSION_ID, "input": "y<Enter>" }),
             report(
                 DUMMY_SESSION_ID,
                 Status::Exited(Some(0)),
@@ -967,7 +963,7 @@ pub(in crate::stream) fn interactive_turn(cue: &Cue) -> Vec<StreamEvent> {
         ),
     ];
     // What each step types — the launch types nothing.
-    let typed = [None, Some("demo\n"), Some("y\n")];
+    let typed = [None, Some("demo<Enter>"), Some("y<Enter>")];
     let (first, second) = reply_parts(INTERACTIVE_REPLY);
     let mut events = opening(cue);
     events.extend(say(&first));

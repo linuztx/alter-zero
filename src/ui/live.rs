@@ -155,7 +155,7 @@ fn trim_preview(mut lines: Vec<Line<'static>>, rows: usize, tail: bool) -> Vec<L
 /// One live call's strip rows: a `!` shell run's single `⎿ Running… (Ns)`
 /// row, a running backend command tool (`bash`) **tailing its streamed
 /// output** (`running_command_lines` — the header + last lines + a
-/// `+N lines (Ns · timeout …)` clock row, or `⎿ Running… (Ns · timeout …)`
+/// `+N lines (Ns · wait …)` clock row, or `⎿ Running… (Ns · wait …)`
 /// before any output, `docs/tool-streaming.md`), else the plain live
 /// cell whose running bullet pulses (`docs/tool-pulse.md`).
 ///
@@ -189,9 +189,9 @@ pub(super) fn live_call_lines(
 /// scrollback (the running call live, each not-yet-started sibling a dim
 /// `⎿ Waiting…` cell — `docs/parallel-tools.md`). A running backend `bash` cell
 /// that has streamed output **tails** it — the header + last lines + a
-/// `+N lines (Ns · timeout …)` clock row (`running_command_lines`; the mock,
+/// `+N lines (Ns · wait …)` clock row (`running_command_lines`; the mock,
 /// `docs/tool-streaming.md`) — before any output arrives it is the
-/// `⎿ Running… (Ns · timeout …)` row, the same clock on the corner row. A
+/// `⎿ Running… (Ns · wait …)` row, the same clock on the corner row. A
 /// lone `!` shell run collapses to its single
 /// `⎿ Running… (Ns)` row (the elapsed rides the preview since a shell turn hides
 /// the status line); the shell is never batched, so it is always the only call.

@@ -1,6 +1,7 @@
-//! Live probe of the interactive shell tools — `bash` with `tty` and
-//! `bash_session` (docs/interactive-shell.md) — against a real model. NOT run
-//! by `cargo test` (it needs the network and an API key).
+//! Live probe of the bash tools — `bash` and its companions `bashsend`,
+//! `bashwait`, `bashkill` and `bashlist` (docs/bash-tools.md) — against a
+//! real model. NOT run by `cargo test` (it needs the network and an API
+//! key).
 //!
 //! It drives the real agent loop exactly as the TUI does, with the real
 //! system prompt and a background registry attached (sessions live there), in
@@ -93,6 +94,9 @@ fn main() {
                     "\x1b[36m  [registry] session {id} exited code={code:?} killed={killed} \
                      observed={observed}\x1b[0m"
                 ),
+                BgEvent::Waiting { id } => {
+                    println!("\x1b[36m  [registry] session {id} waiting for input\x1b[0m");
+                }
                 BgEvent::Output { .. } | BgEvent::Screen { .. } => {}
             }
         }

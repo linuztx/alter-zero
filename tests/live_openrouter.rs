@@ -1590,7 +1590,7 @@ fn live_ctrl_b_handoff_tells_the_model_the_user_moved_it() {
     // FOREGROUND bash command (it expects the full output); the user moves it
     // to the background mid-run (the registry latch, raised here when the
     // ToolStart arrives). The tool result the model reads must lead with the
-    // user-moved handoff text — not the run_in_background launch
+    // user-moved handoff text — not the `wait: 0` launch
     // acknowledgement — so the model knows why the output stopped arriving
     // and does not re-run the command or poll for it.
     let (bg_tx, mut bg_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -1599,7 +1599,7 @@ fn live_ctrl_b_handoff_tells_the_model_the_user_moved_it() {
     let backend = backend().with_background(registry.clone());
 
     let prompt = "Use the bash tool exactly once to run this command in the foreground \
-                  (do NOT set run_in_background): sh -c 'echo started; sleep 8; echo finished'. \
+                  (do NOT set wait): sh -c 'echo started; sleep 8; echo finished'. \
                   After the tool result arrives, reply with just the output file path it reported.";
     let context = vec![ContextMessage::new(ContextRole::User, prompt)];
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
@@ -1653,7 +1653,10 @@ fn live_ctrl_b_handoff_tells_the_model_the_user_moved_it() {
                 assert_eq!(started, id);
             }
             Ok(alter_zero::background::BgEvent::Output { chunk, .. }) => streamed.push_str(&chunk),
-            Ok(alter_zero::background::BgEvent::Screen { .. }) => {}
+            // A command runs in a terminal (docs/bash-tools.md): its output
+            // arrives as the screen, whole each time.
+            Ok(alter_zero::background::BgEvent::Screen { text, .. }) => streamed.push_str(&text),
+            Ok(alter_zero::background::BgEvent::Waiting { .. }) => {}
             Ok(alter_zero::background::BgEvent::Exited { code, killed, .. }) => {
                 assert_eq!(code, Some(0));
                 assert!(!killed);
@@ -1710,6 +1713,7 @@ fn live_killed_background_task_is_known_to_the_model_within_the_turn() {
                     app.bg_output(&id, &chunk);
                 }
                 alter_zero::background::BgEvent::Screen { id, text } => app.bg_screen(&id, &text),
+                alter_zero::background::BgEvent::Waiting { .. } => {}
                 alter_zero::background::BgEvent::Exited {
                     id, code, killed, ..
                 } => {
@@ -1728,7 +1732,7 @@ fn live_killed_background_task_is_known_to_the_model_within_the_turn() {
     // sleep holds the tool open long enough for the Exited event to land and
     // post, exactly like the user's real `kill …; sleep 1; …` pattern.
     let prompt = "Do exactly this, step by step. \
-                  1) Use the bash tool with run_in_background set to true, description \
+                  1) Use the bash tool with wait set to 0, description \
                   'Heartbeat loop', to run: while true; do echo mark_ABC; sleep 0.2; done \
                   2) After its result arrives, use the bash tool again (foreground) to run \
                   exactly: pkill -f 'do echo mark_[A]BC'; sleep 2 \
@@ -1836,19 +1840,19 @@ fn live_sudo_style_tty_prompt_fails_fast() {
 
 #[test]
 #[ignore = "hits the network; needs OPENROUTER_API_KEY"]
-fn live_run_in_background_resolves_and_completes() {
+fn live_background_launch_resolves_and_completes() {
     // The full production background path (docs/background.md): the model is
-    // told to run a command with run_in_background — the agent loop resolves
+    // told to run a command with `wait: 0` — the agent loop resolves
     // the call via ToolBackgrounded (the launch text as the tool result, the
     // turn finishing while the process runs), and the shared registry reports
-    // Started → Output → Exited on its own channel.
+    // Started → Screen → Exited on its own channel.
     let (bg_tx, mut bg_rx) = tokio::sync::mpsc::unbounded_channel();
     let dir = std::env::temp_dir().join(format!("alter-zero-live-bg-{}", std::process::id()));
     let registry = alter_zero::background::BackgroundRegistry::new(bg_tx, dir);
     let backend = backend().with_background(registry);
 
     let prompt = "Use the bash tool exactly once to run this command in the background \
-                  (set run_in_background to true): sh -c 'echo live_bg_marker; sleep 1; echo done'. \
+                  (set wait to 0): sh -c 'echo live_bg_marker; sleep 1; echo done'. \
                   After the tool result arrives, reply with just the output file path it reported.";
     let context = vec![ContextMessage::new(ContextRole::User, prompt)];
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
@@ -1884,7 +1888,10 @@ fn live_run_in_background_resolves_and_completes() {
                 assert_eq!(started, id);
             }
             Ok(alter_zero::background::BgEvent::Output { chunk, .. }) => streamed.push_str(&chunk),
-            Ok(alter_zero::background::BgEvent::Screen { .. }) => {}
+            // A command runs in a terminal (docs/bash-tools.md): its output
+            // arrives as the screen, whole each time.
+            Ok(alter_zero::background::BgEvent::Screen { text, .. }) => streamed.push_str(&text),
+            Ok(alter_zero::background::BgEvent::Waiting { .. }) => {}
             Ok(alter_zero::background::BgEvent::Exited { code, killed, .. }) => {
                 assert_eq!(code, Some(0));
                 assert!(!killed);
@@ -2074,7 +2081,7 @@ fn live_a_subagents_classifier_context_is_its_own_not_the_leads() {
 #[ignore = "hits the network; needs OPENROUTER_API_KEY; costs a few cents"]
 fn live_subagent_background_bash_stacks_into_the_shared_registry() {
     // The subagent background path (docs/agent-tool.md): a foreground agent
-    // whose bash call sets run_in_background — the shell must join the SHARED
+    // whose bash call sets `wait: 0` — the shell must join the SHARED
     // registry attributed to its launcher (`BgOrigin`), the subagent's call
     // resolving as ToolBackgrounded on the agent channel, and the process
     // completing on the registry's own channel.
@@ -2090,7 +2097,7 @@ fn live_subagent_background_bash_stacks_into_the_shared_registry() {
     let prompt = "Use the agent tool exactly once: description \"Launch marker shell\", \
                   subagent_type \"general-purpose\", run_in_background false, and this exact \
                   prompt: \"Use the bash tool exactly once to run this command with \
-                  run_in_background set to true: sh -c 'echo live_subagent_bg_marker; sleep 1'. \
+                  wait set to 0: sh -c 'echo live_subagent_bg_marker; sleep 1'. \
                   After the tool result arrives, reply with just the output file path it reported.\" \
                   When the agent returns, reply with one word: done.";
     let context = vec![ContextMessage::new(ContextRole::User, prompt)];
@@ -2141,7 +2148,10 @@ fn live_subagent_background_bash_stacks_into_the_shared_registry() {
                 origin_seen = true;
             }
             Ok(alter_zero::background::BgEvent::Output { chunk, .. }) => streamed.push_str(&chunk),
-            Ok(alter_zero::background::BgEvent::Screen { .. }) => {}
+            // A command runs in a terminal (docs/bash-tools.md): its output
+            // arrives as the screen, whole each time.
+            Ok(alter_zero::background::BgEvent::Screen { text, .. }) => streamed.push_str(&text),
+            Ok(alter_zero::background::BgEvent::Waiting { .. }) => {}
             Ok(alter_zero::background::BgEvent::Exited { code, killed, .. }) => {
                 assert_eq!(code, Some(0));
                 assert!(!killed);

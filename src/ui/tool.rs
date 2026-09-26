@@ -575,34 +575,35 @@ fn pretty_json_line(line: &str) -> Option<String> {
 }
 
 /// The clock clause every shape of the running command cell carries —
-/// `(22s · timeout 1m 50s)`: the command's own `elapsed`
-/// ([`format_elapsed`]-humanized, ticking) beside the timeout it runs under
-/// (`timeout_ms`, [`format_timeout`]-humanized as a whole limit), so the user
-/// can see how much of the budget is left (`docs/tool-streaming.md`, *The
-/// clock row is always there*).
-fn command_clock_clause(elapsed: Duration, timeout_ms: u64) -> String {
+/// `(22s · wait 1m 50s)`: the command's own `elapsed`
+/// ([`format_elapsed`]-humanized, ticking) beside how long its call waits for
+/// it (`wait_ms`, [`format_timeout`]-humanized as a whole limit) — a wait, not
+/// a deadline: the command goes on as a session when it passes
+/// (`docs/bash-tools.md`, `docs/tool-streaming.md` *The clock row is always
+/// there*).
+fn command_clock_clause(elapsed: Duration, wait_ms: u64) -> String {
     format!(
         "({}{TOOL_CLOCK_SEPARATOR}{TOOL_TIMEOUT_LABEL}{})",
         format_elapsed(elapsed.as_secs()),
-        format_timeout(timeout_ms)
+        format_timeout(wait_ms)
     )
 }
 
 /// The live preview for a **running** command-style backend tool (`bash`): the
 /// coloured `● name(args)` header, the **last** [`TOOL_PEEK_ROWS`] display
 /// **rows** of its output under the `⎿` gutter (the *tail* — what just
-/// streamed), then the **clock row** — `+{hidden} lines ({elapsed} · timeout
+/// streamed), then the **clock row** — `+{hidden} lines ({elapsed} · wait
 /// {limit})` when any display rows are fully hidden above the window, the
-/// bare `({elapsed} · timeout {limit})` when none are, and for a command that
+/// bare `({elapsed} · wait {limit})` when none are, and for a command that
 /// has printed nothing yet the clause rides the corner row itself:
-/// `⎿ Running… ({elapsed} · timeout {limit})`. The clause is on the cell in
+/// `⎿ Running… ({elapsed} · wait {limit})`. The clause is on the cell in
 /// **every** shape, so a silent `sleep 100` no longer sits on a bare
 /// `Running…` for as long as it takes, and the limit is the model's own
-/// `timeout` read off the call's verbatim arguments
-/// ([`bash_timeout_ms`](crate::llm::tools::bash_timeout_ms) — the executor's
-/// default-and-clamp rule, so the cell names exactly what is enforced). This
-/// is Claude-Code's running-command look (the mock; `docs/tool-streaming.md`)
-/// with the timeout beside the clock — the asymmetric twin of the finished
+/// `wait` read off the call's verbatim arguments
+/// ([`bash_wait_ms`](crate::llm::tools::bash_wait_ms) — the executor's
+/// default-and-clamp rule, so the cell names exactly what the call waits).
+/// This is Claude-Code's running-command look (the mock;
+/// `docs/tool-streaming.md`) with the wait beside the clock — the asymmetric twin of the finished
 /// head peek in [`tool_lines`]. The `elapsed` is boundary-supplied (like the
 /// shell running row and the status timer), so this is drawn from
 /// [`preview_tool_lines`] where `App` is in hand.
@@ -627,14 +628,18 @@ pub(super) fn running_command_lines(
     paths: &PathDisplay,
 ) -> Vec<Line<'static>> {
     let mut lines = tool_header_lines(tool, width, /*collapsed=*/ true, Some(pulse), paths);
-    // The limit the call runs under — a `bash_session` call's own wait, not
-    // `bash`'s command timeout (`docs/interactive-shell.md`).
-    let timeout_ms = if tool.name == crate::llm::tools::BASH_SESSION_TOOL_DISPLAY {
-        crate::llm::tools::session_timeout_ms(tool.arguments.as_deref())
-    } else {
-        crate::llm::tools::bash_timeout_ms(tool.arguments.as_deref())
+    // The wait the call runs under — a session call's own, not `bash`'s
+    // (`docs/bash-tools.md`). A companion's display name lowercases to its
+    // wire name; the legacy tool's has an underscore to put back.
+    let arguments = tool.arguments.as_deref();
+    let wait_ms = match tool.name.as_str() {
+        "Bash" => crate::llm::tools::bash_wait_ms(arguments),
+        crate::llm::tools::BASH_SESSION_TOOL_DISPLAY => {
+            crate::llm::tools::session_wait_ms(crate::llm::tools::BASH_SESSION_TOOL_NAME, arguments)
+        }
+        other => crate::llm::tools::session_wait_ms(&other.to_ascii_lowercase(), arguments),
     };
-    let clock = command_clock_clause(elapsed, timeout_ms);
+    let clock = command_clock_clause(elapsed, wait_ms);
     let display = command_display_lines(tool);
     if display.is_empty() {
         // Nothing printed yet: the clause rides the `⎿ Running…` row, so a

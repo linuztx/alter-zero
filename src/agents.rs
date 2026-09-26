@@ -229,7 +229,7 @@ pub struct AgentRun {
     /// boundary-injected each frame from `Session::agent_command_clocks`, the
     /// [`thinking`](Self::thinking) pattern (cleared, then re-injected for the
     /// running ones), so the session view's `bash` tail counts its `+N lines
-    /// (Ns · timeout …)` clock row from the call's own `ToolStart` — never
+    /// (Ns · wait …)` clock row from the call's own `ToolStart` — never
     /// from the agent's whole [`runtime`](Self::runtime), which its status
     /// line shows
     /// (`docs/agent-view-streaming.md`). `None` when no command is running.
@@ -955,7 +955,7 @@ impl AgentRun {
     /// Inject the running command's elapsed (the boundary's per-agent
     /// command clock, the [`set_thinking`](Self::set_thinking) pattern) —
     /// what the session view's running `bash` cell counts its `+N lines
-    /// (Ns · timeout …)` clock row with. `None` when no command is running.
+    /// (Ns · wait …)` clock row with. `None` when no command is running.
     pub fn set_command_elapsed(&mut self, elapsed: Option<Duration>) {
         self.command_elapsed = elapsed;
     }

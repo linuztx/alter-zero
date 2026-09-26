@@ -9,7 +9,7 @@
 //! cargo run --example pty_oracle -- 'btop' steps.jsonl raw.bin > ours.txt
 //! ```
 //!
-//! A step is `{"keys": "<Down>q"}` (the `bash_session` notation, written
+//! A step is `{"keys": "<Down>q"}` (the `bashsend` notation, written
 //! the way the session writes it) or `{"sleep": ms}`, one per line; with no
 //! steps file the program runs for two seconds. The program is left to exit
 //! on its own for a second after the last step, then killed.

@@ -117,9 +117,11 @@ spelling as a **second exact name** (`Bash`, `Read`, `Write`, `Edit`, and
 `permissionRuleParser.ts`). So `"matcher": "Bash"` — the single most common
 hook config in the wild — and `^Bash$` both select `bash` here, while
 `bashoutput` still matches neither: an alias is a second exact name, never a
-prefix or case-folding rule. `bash_session` (`docs/interactive-shell.md`) has
-no reference spelling to borrow, so its second name is the one its cell shows,
-`BashSession`. Agent types (`SubagentStart`/`SubagentStop`)
+prefix or case-folding rule. The bash companions (`docs/bash-tools.md`) have
+no reference spelling to borrow, so each one's second name is the one its cell
+shows — `bashsend` answers to `BashSend`, likewise `BashWait`, `BashKill`,
+`BashList`, and the legacy `bash_session` to `BashSession` — and `Bash` never
+selects them: it is an exact name. Agent types (`SubagentStart`/`SubagentStop`)
 and the other non-tool queries are never aliased.
 
 ## Where each event attaches

@@ -15,7 +15,7 @@ Running (live, in the strip above the box):        Finished (committed to scroll
      64 bytes from … icmp_seq=7 … time=247 ms             64 bytes from … icmp_seq=1 … time=32.1 ms
      64 bytes from … icmp_seq=8 … time=332 ms             64 bytes from … icmp_seq=2 … time=71.1 ms
      64 bytes from … icmp_seq=9 … time=144 ms             … +11 lines (ctrl+o to expand)
-     +5 lines (9s · timeout 2m)
+     +5 lines (9s · wait 2m)
      (ctrl+b to run in background)
 
 ● Bash(ping -c 10 facebook.com)                     (a parallel batch's not-yet-run
@@ -23,8 +23,8 @@ Running (live, in the strip above the box):        Finished (committed to scroll
                                                       each one's turn — docs/parallel-tools.md)
 ```
 
-The footer's clause is the **command's own clock beside the timeout it
-runs under** — `(9s · timeout 2m)` — and it is on the live cell whatever
+The footer's clause is the **command's own clock beside the wait its call
+runs under** — `(9s · wait 2m)` — and it is on the live cell whatever
 the output's shape (*The clock row is always there*, below).
 
 The two states are deliberately asymmetric — while **running** you want the
@@ -79,7 +79,7 @@ even if an update was dropped.
 
 `ToolExecutor::execute` takes an `on_output: &mut dyn FnMut(ToolProgress<'_>)`
 sink; `run_agent` maps `ToolProgress::Screen` onto `ToolScreen` (and
-`ToolProgress::Title`, a `bash_session` call's refined header, onto
+`ToolProgress::Title`, a companion call's refined header, onto
 `ToolTitle`). `run_bash` drains both pipes on reader threads (so a chatty
 command can't deadlock a full pipe); each reader sends raw byte chunks over an
 `mpsc` channel, and the main poll loop feeds them in arrival order to a
@@ -131,12 +131,12 @@ A **command-style** tool (a non-shell backend tool that is not a `read`/`write`/
 - **Running** (`running_command_lines`, drawn only in the live strip's preview
   where the boundary-supplied `elapsed` is available): the header, the **last**
   `TOOL_PEEK_ROWS` display **rows** of output, then the **clock row** —
-  `+{hidden} lines ({elapsed} · timeout {limit})` when any rows are fully
-  hidden above the window, the bare `({elapsed} · timeout {limit})` when
-  none are. No output yet → `⎿ Running… ({elapsed} · timeout {limit})`, the
+  `+{hidden} lines ({elapsed} · wait {limit})` when any rows are fully
+  hidden above the window, the bare `({elapsed} · wait {limit})` when
+  none are. No output yet → `⎿ Running… ({elapsed} · wait {limit})`, the
   clause on the corner row itself. The `{elapsed}` is the **command's own**
   runtime, never the turn's — *Whose clock the footer shows*, below — and
-  the `{limit}` is the timeout the call runs under — *The clock row is
+  the `{limit}` is the wait the call runs under — *The clock row is
   always there*, below. Long lines **word-wrap** the same way (`wrap_output`)
   instead of clipping at the terminal edge; the window is counted in wrapped
   rows, so a single long line tail-follows its own newest rows without
@@ -154,7 +154,7 @@ A **command-style** tool (a non-shell backend tool that is not a `read`/`write`/
 
 ### Whose clock the footer shows
 
-The `+N lines (Ns · timeout …)` footer — and the `!` shell's `⎿ Running… (Ns)`
+The `+N lines (Ns · wait …)` footer — and the `!` shell's `⎿ Running… (Ns)`
 row — count from the moment the **command** started, never from the turn's start.
 `preview_tool_lines` used to hand the status indicator's clock (the turn's
 `elapsed`) down to `running_command_lines`, so a `bash` call that began a
@@ -201,7 +201,7 @@ long it might go on. The status line carries the *turn's* timer, which is
 the wrong number (the reported "footer counts the turn" bug, above), and the
 timeout the model chose was known only to the executor.
 
-The live cell now shows the command's clock **beside the timeout it runs
+The live cell now shows the command's clock **beside the wait its call runs
 under**, in every shape the running cell takes:
 
 ```
@@ -210,25 +210,29 @@ under**, in every shape the running cell takes:
      20
      21
      22
-     +18 lines (22s · timeout 1m 50s)          ← rows hidden above the window
+     +18 lines (22s · wait 1m 50s)             ← rows hidden above the window
      (ctrl+b to run in background)
 
 ● Bash(python3 -u -c "
       import time…)
   ⎿  hello world
-     (10s · timeout 10m)                       ← output that fits: the clause alone
+     (10s · wait 10m)                          ← output that fits: the clause alone
      (ctrl+b to run in background)
 
 ● Bash(python3 -c "import time; time.sleep(100)")
-  ⎿  Running… (10s · timeout 2m)              ← nothing printed yet
+  ⎿  Running… (10s · wait 2m)                 ← nothing printed yet
      (ctrl+b to run in background)
 ```
 
-The timeout is the model's own: `llm::tools::bash_timeout_ms` reads the
-`timeout` (or the pre-rename `timeout_ms`) off the call's verbatim
-`ToolCall::arguments` and applies `BashArgs::timeout_ms`'s rule — the
-120 000 ms default when the call names none, clamped to the 600 000 ms cap
-— so the cell names exactly the limit the executor enforces. A call with no
+The wait is the model's own: `llm::tools::bash_wait_ms` reads the `wait`
+(seconds — or the old `timeout`/`timeout_ms`, milliseconds) off the call's
+verbatim `ToolCall::arguments` and applies `BashArgs::wait_ms`'s rule — two
+minutes when the call names none, clamped to the ten-minute cap — so the cell
+names exactly the wait the executor applies; a companion call's clock names
+its own (`session_wait_ms`: `bashsend`'s fixed 10 s, `bashwait`'s `wait`).
+It was labelled `timeout` while the limit killed the command; a `wait` that
+passes now leaves it running as a session (`docs/bash-tools.md`), and the
+label says so. A call with no
 argument record (the dummy backend's scripted calls) shows the default, which
 is what such a call would run under. Reading the one field off the arguments
 per animation frame is deliberate: a `bash` call's `command` can be a
@@ -312,7 +316,7 @@ OPENROUTER_API_KEY=sk-... ALTER_ZERO_CA_FILE=/root/.ccr/ca-bundle.crt \
 ## A short terminal freezes the cell instead of trimming it
 
 The live tail is the region's elastic content, so a terminal without room for
-the whole cell used to drop its rows — the `+N lines (Ns · timeout …)` footer
+the whole cell used to drop its rows — the `+N lines (Ns · wait …)` footer
 first, then the output rows, then the header — into no buffer at all. The strip
 bottom-anchors now and commits the rows it cannot paint into the terminal's own
 scrollback, frozen: the cell **scrolls**, keeping its newest rows and its

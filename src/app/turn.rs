@@ -62,7 +62,7 @@ pub fn format_elapsed(secs: u64) -> String {
 }
 
 /// Humanize a **timeout** — a limit, not a measurement — for the running
-/// `bash` cell's `(22s · timeout 1m 50s)` clock row (`docs/tool-streaming.md`):
+/// `bash` cell's `(22s · wait 1m 50s)` clock row (`docs/tool-streaming.md`):
 /// [`format_elapsed`]'s units with every zero part dropped, since a limit
 /// reads whole (`2m` for the tool's 120 000 ms default, never `2m 0s`, where
 /// the elapsed beside it keeps its seconds because it moves): `10m`,

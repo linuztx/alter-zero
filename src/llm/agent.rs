@@ -2815,14 +2815,14 @@ mod tests {
         // The permission prompt names the program the keys go to; the cell
         // it sits under — announced before the prompt opens, and committed
         // red when the user says no, which never reaches the executor —
-        // names it too, from the same lookup (docs/interactive-shell.md).
+        // names it too, from the same lookup (docs/bash-tools.md).
         let (tx, mut rx) = unbounded_channel();
         let cancel = CancelToken::new();
         let rounds = RefCell::new(0);
         let calls = vec![call(
             "c1",
-            crate::llm::tools::BASH_SESSION_TOOL_NAME,
-            r#"{"session_id":"b5xg4o2w0","input":"password123\n"}"#,
+            crate::llm::tools::BASH_SEND_TOOL,
+            r#"{"session_id":"b5xg4o2w0","input":"password123<Enter>"}"#,
         )];
         let mut messages = vec![ChatMessage::user("try password123")];
         run_agent(

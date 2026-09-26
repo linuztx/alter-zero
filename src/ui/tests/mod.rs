@@ -433,6 +433,7 @@ pub(super) fn bg_notice(code: Option<i32>, killed: bool) -> crate::app::Backgrou
         killed,
         output_tail: "tail".to_string(),
         origin: None,
+        waiting: false,
         timestamp: String::new(),
     }
 }

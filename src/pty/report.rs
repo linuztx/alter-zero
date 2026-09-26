@@ -11,8 +11,10 @@
 //! ```
 //!
 //! At a password prompt — the terminal reading a line with echo off — the
-//! frame says so instead (`waiting for a password — typed input is hidden`),
-//! telling the model what is asked and why its answer will not show.
+//! frame says so instead (`waiting for a password — only bashsend can type
+//! it`), telling the model what is asked and that only it can answer: the
+//! user has no way into the session, so a password the model was not given
+//! is one to ask the user for.
 //!
 //! An exited session reports exactly what a plain `bash` call does
 //! (`Exit code: N` over the output — [`crate::llm::tools::format_exec_output`]),
@@ -79,6 +81,11 @@ pub enum View {
     /// A full-screen program's current screen, under the lines printed
     /// before it took over (`before` — empty when there were none).
     Screen { before: String, snapshot: Snapshot },
+    /// A command's whole output **as data** — tabs and trailing spaces as
+    /// written, both ends kept past the cap (`pty::fold::HeadTail`,
+    /// `docs/bash-tools.md`): what a command that exits inside its own launch
+    /// reports, exactly what a plain call's pipe returned.
+    Data { text: String },
 }
 
 /// A parsed frame line — what the cell's display reframe needs.
@@ -94,9 +101,15 @@ const RUNNING_PREFIX: &str = "Running (session ";
 const STOPPED_PREFIX: &str = "Stopped (session ";
 /// The clause a settled prompt adds to the running frame.
 const WAITING_CLAUSE: &str = ", waiting for input";
-/// The clause a password prompt adds instead: what is asked for, and that
-/// the answer will not show when typed.
-const PASSWORD_CLAUSE: &str = ", waiting for a password — typed input is hidden";
+/// The clause a password prompt adds instead: what is asked for, and who can
+/// answer it — only the model, through `bashsend`. The user has no way into
+/// the session, so a password the model was not given is one to ask for in
+/// chat; told only that typed input is hidden, a model sent the user to
+/// "enter it in the terminal prompt" (`docs/bash-tools.md`).
+const PASSWORD_CLAUSE: &str = ", waiting for a password — only bashsend can type it";
+/// The password clause before it said who can type — still read back, so a
+/// session recorded with it keeps its state row after a `/resume`.
+const OLD_PASSWORD_CLAUSE: &str = ", waiting for a password — typed input is hidden";
 
 /// Appended when a call's `input` was the empty string: nothing was typed,
 /// so the call was a pure wait — which a model that sent `""` to press Enter
@@ -139,6 +152,82 @@ pub const HTML_ESCAPED_NOTE: &str = "[Read as HTML-escaped: &lt; as <, &gt; as >
 pub const WAIT_ENDED_NOTE: &str = "[The user ended this wait early; the command keeps \
      running. Carry on, and check on it later.]";
 
+/// What the model is told the first time a command outlives the `bash` call
+/// that started it (`docs/bash-tools.md`): where the session goes next — in
+/// its text only, since the cell's state row says it for the user.
+#[must_use]
+pub fn continued_note(session: &str) -> String {
+    format!(
+        "[Still running as session {session}: bashsend types into it, bashwait waits for \
+         more, bashkill stops it.]"
+    )
+}
+
+/// One running session, as `bashlist` names it (`docs/bash-tools.md`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Listed {
+    pub id: String,
+    pub command: String,
+    pub running_for: std::time::Duration,
+    pub waiting: Waiting,
+}
+
+/// The longest a `bashlist` row shows of a command — one line, cut.
+const LISTED_COMMAND_CHARS: usize = 80;
+
+/// `bashlist`'s report: every running session — id, command, how long it has
+/// run, and whether it waits for input — oldest first.
+#[must_use]
+pub fn list(sessions: &[Listed]) -> String {
+    if sessions.is_empty() {
+        return "No sessions are running.".to_string();
+    }
+    let rows: Vec<String> = sessions
+        .iter()
+        .map(|session| {
+            let command: String = session
+                .command
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ");
+            let command = match command.char_indices().nth(LISTED_COMMAND_CHARS) {
+                Some((cut, _)) => format!("{}…", &command[..cut]),
+                None => command,
+            };
+            // The frame's own clauses: a password prompt learned of from
+            // the list says who can type it, as the report does.
+            let waiting = match session.waiting {
+                Waiting::No => "",
+                Waiting::Input => WAITING_CLAUSE,
+                Waiting::Password => PASSWORD_CLAUSE,
+            };
+            format!(
+                "- {}: {command} — running {}{waiting}",
+                session.id,
+                elapsed(session.running_for)
+            )
+        })
+        .collect();
+    let head = match sessions.len() {
+        1 => "1 session running:".to_string(),
+        n => format!("{n} sessions running:"),
+    };
+    format!("{head}\n{}", rows.join("\n"))
+}
+
+/// `4m 12s`, `58s`, `1h 3m` — how long a session has run.
+fn elapsed(duration: std::time::Duration) -> String {
+    let secs = duration.as_secs();
+    let (hours, minutes, seconds) = (secs / 3600, secs / 60 % 60, secs % 60);
+    if hours > 0 {
+        format!("{hours}h {minutes}m")
+    } else if minutes > 0 {
+        format!("{minutes}m {seconds}s")
+    } else {
+        format!("{seconds}s")
+    }
+}
+
 /// The model-facing result of a session call (see the module docs).
 #[must_use]
 pub fn report(session: &str, status: Status, view: &View) -> String {
@@ -180,6 +269,7 @@ fn or_nothing_new(body: String, view: &View) -> String {
 /// counted on a marker line at the top) or the screen.
 fn body(view: &View) -> String {
     match view {
+        View::Data { text } => text.clone(),
         View::Lines { text, omitted, .. } => {
             let (kept, dropped) = keep_tail(text, SESSION_OUTPUT_MAX_BYTES);
             let omitted = omitted + dropped;
@@ -261,7 +351,10 @@ pub fn parse_frame(line: &str) -> Option<Frame<'_>> {
         let inner = rest.strip_suffix(')')?;
         let (session, waiting) = if let Some(session) = inner.strip_suffix(WAITING_CLAUSE) {
             (session, Waiting::Input)
-        } else if let Some(session) = inner.strip_suffix(PASSWORD_CLAUSE) {
+        } else if let Some(session) = inner
+            .strip_suffix(PASSWORD_CLAUSE)
+            .or_else(|| inner.strip_suffix(OLD_PASSWORD_CLAUSE))
+        {
             (session, Waiting::Password)
         } else {
             (inner, Waiting::No)
@@ -288,6 +381,55 @@ mod tests {
             text: text.to_string(),
             omitted: 0,
             at: String::new(),
+        }
+    }
+
+    #[test]
+    fn the_list_names_every_running_session_and_what_it_waits_for() {
+        use std::time::Duration;
+        assert_eq!(list(&[]), "No sessions are running.");
+        let sessions = [
+            Listed {
+                id: "b7x2k9m1q".to_string(),
+                command: "npm run dev".to_string(),
+                running_for: Duration::from_secs(252),
+                waiting: Waiting::No,
+            },
+            Listed {
+                id: "b3vqd0sq1".to_string(),
+                command: "python3\n  -q".to_string(),
+                running_for: Duration::from_secs(63),
+                waiting: Waiting::Input,
+            },
+            Listed {
+                id: "b9".to_string(),
+                command: "sudo apt update".to_string(),
+                running_for: Duration::from_secs(3700),
+                waiting: Waiting::Password,
+            },
+        ];
+        assert_eq!(
+            list(&sessions),
+            "3 sessions running:\n\
+             - b7x2k9m1q: npm run dev — running 4m 12s\n\
+             - b3vqd0sq1: python3 -q — running 1m 3s, waiting for input\n\
+             - b9: sudo apt update — running 1h 1m, waiting for a password — only bashsend \
+             can type it"
+        );
+        let long = Listed {
+            command: "x".repeat(200),
+            ..sessions[0].clone()
+        };
+        let row = list(std::slice::from_ref(&long));
+        assert!(row.starts_with("1 session running:\n"), "{row}");
+        assert!(row.contains(&format!("{}…", "x".repeat(80))), "{row}");
+    }
+
+    #[test]
+    fn the_continued_note_names_the_three_companions() {
+        let note = continued_note("b7x2k9m1q");
+        for tool in ["bashsend", "bashwait", "bashkill", "b7x2k9m1q"] {
+            assert!(note.contains(tool), "{tool}: {note}");
         }
     }
 
@@ -634,9 +776,11 @@ mod tests {
 
     #[test]
     fn a_password_prompt_is_named_as_one() {
-        // What the model is asked for, and that its answer will not show
-        // when typed — so it asks the user, never guesses, and does not take
-        // a silent terminal for a lost keystroke (docs/interactive-shell.md).
+        // What the model is asked for, and who can answer it: only the model,
+        // through bashsend — the user has no way into the session, so a
+        // password it was not given is one to ask the user for in chat.
+        // Told only that typed input is hidden, a model sent the user to
+        // "enter it in the terminal prompt" (docs/bash-tools.md).
         let out = report(
             "s1",
             Status::Running {
@@ -646,13 +790,26 @@ mod tests {
         );
         assert_eq!(
             out,
-            "Running (session s1, waiting for a password — typed input is hidden)\n\
+            "Running (session s1, waiting for a password — only bashsend can type it)\n\
              Sorry, try again.\n[sudo] password for u:"
         );
         assert_eq!(
             parse_frame(out.lines().next().unwrap()),
             Some(Frame::Running {
                 session: "s1",
+                waiting: Waiting::Password
+            })
+        );
+    }
+
+    #[test]
+    fn a_password_frame_in_the_older_wording_still_parses() {
+        // A session recorded before the clause said who can type still shows
+        // its state row after a `/resume`.
+        assert_eq!(
+            parse_frame("Running (session b1, waiting for a password — typed input is hidden)"),
+            Some(Frame::Running {
+                session: "b1",
                 waiting: Waiting::Password
             })
         );

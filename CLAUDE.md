@@ -935,16 +935,18 @@ calls in one round announced up front so the running one shows live while the
 not-yet-run ones show `⎿ Waiting…`, executed sequentially) in
 `docs/parallel-tools.md`; the **live-streaming `bash` tool** (a running command
 tails its output — the last rows, long lines word-wrapped to the width with
-spaces preserved, + a `+N lines (22s · timeout 1m 50s)` footer whose `22s`
+spaces preserved, + a `+N lines (22s · wait 1m 50s)` footer whose `22s`
 is the **command's own** runtime — `App::command_elapsed`, the boundary's
 per-command clock started at the call's `ToolStart`, the masked
 `background_hint_elapsed` being the Ctrl+B hint's gate over the same value —
-and whose `timeout` is the limit the call runs under, the model's own
-`timeout` read off the recorded `ToolCall::arguments`
-(`llm::tools::bash_timeout_ms`, the executor's default-and-clamp rule,
-humanized whole by `app::format_timeout` — `2m`, never `2m 0s`); the clock
-clause is **always** on the live cell — a bare `(10s · timeout 10m)` row
-under output that fits the window, and `⎿ Running… (10s · timeout 2m)` on
+and whose `wait` is how long the call waits before it hands the command back
+running, the model's own `wait` (seconds; the old `timeout` in ms still
+read) off the recorded `ToolCall::arguments` (`llm::tools::bash_wait_ms`,
+the executor's default-and-clamp rule — a companion call's own via
+`session_wait_ms` — humanized whole by `app::format_timeout` — `2m`, never
+`2m 0s`); the clock clause is **always** on the live cell — a bare
+`(10s · wait 10m)` row under output that fits the window, and
+`⎿ Running… (10s · wait 2m)` on
 the corner row of a command that has printed nothing, which used to sit on
 a bare `⎿ Running…` for as long as it took —
 never the turn's elapsed the status line counts (a call started a minute
@@ -1028,8 +1030,10 @@ and **visibly**, resolving as `Approval::AllowNoted` with the classifier
 note's sibling `SCRATCHPAD_ALLOWED_NOTE` (`⎿ Allowed in the session
 scratchpad`); gated by `ALTER_ZERO_SCRATCHPAD`, relocated by
 `ALTER_ZERO_SCRATCHPAD_DIR`) in `docs/scratchpad.md`; and the **background
-shells** (the `bash` tool's
-`run_in_background` arg — the call resolves at once with the interim-output
+shells** (a `bash` call's `wait: 0` — or a trailing `&`, or the old
+`run_in_background` — resolves at once with the session id and the
+interim-output path, and a call whose `wait` passes hands its command here
+still running rather than killing it, `docs/bash-tools.md`; the output
 path — `{session}/tasks/{id}.output` — while a `BackgroundRegistry` process streams on its own channel; **Ctrl+B** moves a
 running model-`bash`/`!` command to the background mid-run (the live cell hints
 it with a dim `(ctrl+b to run in background)` row that waits a few seconds —
@@ -1176,18 +1180,33 @@ transcript expands each agent as `● Agent({description})` with `⎿ Prompt:`,
 the nested tool headers, `⎿ Response:`, and `⎿ Done ({n} tool uses ·
 {tokens} tokens · {s}s)`; the parent's calls replay as native `agent`
 tool_calls + results (`context.rs`), the records round-trip (`session.rs`),
-and subagents never get the `agent` tool — no nesting); and the **tty detach** (every shell child —
-model `bash`, `!`, background — spawned into a fresh session with no
+and subagents never get the `agent` tool — no nesting); and the **tty detach** (every shell child
+that runs on a pipe — `!`, a `bash` call where no terminal can be had, a
+hook — spawned into a fresh session with no
 controlling terminal via `subprocess::spawn_detached_shell`'s
 setsid-binary → helper-re-exec → attached tier chain, so a `/dev/tty`
 password prompt like `sudo`'s fails fast in a captured error instead of
 hijacking the TUI and hanging) in `docs/tty-detach.md`; and the
-**interactive shells** (`docs/interactive-shell.md`: the opposite on
-purpose — `bash`'s `tty` flag runs a command in a **pseudo-terminal of its
-own** as its controlling terminal (rustix's safe `openpt`/`TIOCGPTPEER`, the
-detach chain's TTY form — `setsid -c`, then the helper under
-`__alter-zero-detached-tty-exec` adding `TIOCSCTTY`, and **no attached
-tier**, whose `/dev/tty` would be the user's) and returns once it exits or
+**bash tools** (`docs/bash-tools.md` — five tools, one action each: `bash
+{command, wait?, description?}`, `bashsend {session_id, input}`, `bashwait
+{session_id, wait?}`, `bashkill {session_id}`, `bashlist {}`, the companions
+one lowercase word like the task tools, each cell's display name lowercasing
+to its wire name — over `docs/interactive-shell.md`'s engine: the opposite of
+the detach on purpose — **every** `bash` call runs `bash -c` (the first
+`bash` on an absolute `PATH` entry, `subprocess::tool_shell`, `sh` only where
+none is installed — dash broke `[[ … ]]`, `source`, `{1..3}`) in a
+**pseudo-terminal of its own** as its controlling terminal (rustix's safe
+`openpt`/`TIOCGPTPEER`, the detach chain's TTY form — `setsid -c`, then the
+helper under `__alter-zero-detached-tty-exec` adding `TIOCSCTTY` and
+`exec`ing the shell its optional third argument names, and **no attached
+tier**, whose `/dev/tty` would be the user's: where neither tier works the
+command runs on a pipe instead, `TtyLaunchError::NoTerminal`) and returns once
+it exits — reporting the output **as data** when it drew no screen (the
+transcript's twin `pty::fold`, tabs and trailing spaces kept, a long output's
+first 16 KiB and last 48 KiB around a line naming the session's log,
+`pty::fold::HeadTail`) — or its `wait` (seconds, default 120, cap 600; `0`
+starts it in the background, as does a trailing `&`) passes, leaving it
+running as a session, never killed, or it
 **settles** at a prompt (`pty::settle`: first the **kernel's word** —
 `pty::probe` walks the session's process tree in Linux's
 `/proc/…/task/…/syscall` from the monitor thread while a call waits on a
@@ -1199,8 +1218,11 @@ off the pty with `tcgetattr` where the probe is blind to a root `sudo`),
 counted once the program has replied to the last line submitted (text still
 awaiting its Enter leaves the prompt standing) and never over a tree
 the probe sees at work, settling in 0.5 s even for a wait begun after the
-prompt came up — the `waiting for a password — typed input is hidden` frame,
-detection only, nothing masked — then, where the probe is blind (a
+prompt came up — the `waiting for a password — only bashsend can type it`
+frame, naming the one way in since the user has none (told only that input
+was hidden, a model sent the user to "enter it in the terminal prompt"; the
+old clause still parses for recorded sessions), detection only, nothing
+masked — then, where the probe is blind (a
 `sudo`-owned process, a `poll`-family wait, no `/proc`), the screen: the
 cursor left mid-line, the
 alternate screen, or a terminal reading key by key — canonical mode off with
@@ -1211,49 +1233,65 @@ never on a line the transcript saw **redrawn in place** by two bursts since
 the last input: a progress bar or a spinner, not a prompt; a pure wait
 counts what was printed **since the model last looked** (`SessionIo::look`
 records it, `IoState::printed_since`), so a question asked while the model
-decided to wait ends the wait instead of letting it sit out its timeout,
+decided to wait ends the wait instead of letting it sit out its budget,
 still looking 0.5 s itself first so the probe can veto; and a password the
 call **submitted** (`keys::submits_line` at a password prompt) is waited on
 until the program answers with visible text (`Transcript::answered` — sudo's
 bare line break is none), `CHECK_QUIET` (10 s) replacing the 2 s silence
 rule meanwhile, so a refusal and its next prompt come back in that same
-call); a waiting call
+call — and silence **alone** never ends a call on a program the probe sees
+at work (`Observation::busy`): a quiet `sleep 4; echo done` runs to its exit
+instead of coming back `Running` at 2 s, a launch the probe cannot account
+for (`Probe::Polling`, a blind probe) returns after `LAUNCH_QUIET` (10 s), an
+input after 2 s, and a pure wait on a program reading keys whose prompt the
+model has already seen returns at once); a waiting call
 **streams** its running cell as `ToolProgress::Screen { settled, live }` →
 `StreamEvent::ToolScreen` → `App::push_tool_screen`, `live` rows replacing
 the last ones so a bar redraws in place (`Transcript::take_stream`: rows in
 the screen's reach stay live, rows that scrolled out settle once), and a
-**plain** `bash` call — and a background shell's event stream, and a `!`
+`bash` call on a pipe — and a background shell's event stream, and a `!`
 command's output — is **folded** the same way (`pty::fold`: `\r`/backspace
 overwrite, escapes vanish, tabs and trailing spaces stay; the `.output` tee
-file stays raw); a `bash_session` header names the session's command from
+file stays raw); a companion's header names the session's command from
 the moment the call is announced (`summarize_call_naming` over the registry
 lookup the permission prompt makes, handed to `run_agent` as
 `session_command`), so the header over the prompt and a refused cell name the
-program, never the id; and the new
-**`bash_session`**
-tool types into the session (`pty::keys`' `<Enter>`/`<C-c>`/`<Up>`
+program, never the id; and the companions work the session —
+**`bashsend`** types into it (`pty::keys`' `<Enter>`/`<C-c>`/`<Up>`
 notation, a doubly-escaped `"y\\n"` undone; each key its own write once the
 program has **read** the last — `FIONREAD` on the slave, `spawn::InputQueue`,
 a relay's raw mode adding a 20 ms floor — and indented text a bracketed
 paste only to a program that inserts it, never a shell, named off the
-terminal's foreground process group, `spawn::foreground_program`), waits on it, reads it and
-`kill`s it — every report the lines **new or changed** since the model's last
+terminal's foreground process group, `spawn::foreground_program`) and
+returns its answer within a fixed 10 s, **`bashwait`** waits on it (its own
+`wait`, `0` just checking), **`bashkill`** stops it — `SIGINT`, `SIGTERM`,
+then `SIGKILL` of the whole session, `KILL_GRACE` (2 s) apart — and
+**`bashlist`** names the running ones (`pty::report::list`) — every report
+the lines **new or changed** since the model's last
 look, nothing unchanged repeated (the
 `vte` transcript) or a full-screen program's screen (the `vt100` emulator,
 which also answers terminal queries) under a `Running (session …, waiting
 for input)`/`Stopped (session …)` frame, `Exit code: N` once it exits, the
 prompt re-read to the model when nothing is new; a session is a **background
 registry task** announced only if it outlives its call, its exit
-**observed** (no notice) when a report covered it, capped at 16; the
+**observed** (no notice) when a report covered it, capped at 16 announced
+sessions, and one no call waits on that stops at a prompt the model has not
+seen posts `BgEvent::Waiting` after 3 s — the amber `● Background command
+"…" is waiting for input` notice, its note naming the session for
+`bashsend`, reported like an exit and once until the model looks
+(`SessionIo::take_unseen_prompt`); the legacy `bash_session` is still
+executed, never offered, and replays as the companion that does its action
+(`tools::legacy_session_call`); the
 model-only notes ride `ToolOutcome::context` (a line typed without Enter into
 a line-reading prompt, a `kill` refused because the program asked for more,
 a wait the user ended with Ctrl+B); typing into a session is its own
 `PermissionKind::Session` — inherited from the launch command's allowlist
 rule, "don't ask again for this session" held on the gate and never
-persisted, reviewed by auto mode's classifier — while a wait, a kill and a
-lone `<C-c>` never ask; the cells strip the frame for a dim `⎿ Waiting for
-input · session …` row (`Waiting for a password · …` at a password prompt),
-`BashSession(./configure.sh ← y⏎)` headers; tuned against
+persisted, reviewed by auto mode's classifier — while `bashwait`,
+`bashkill`, `bashlist` and a lone `<C-c>` never ask, a `Bash` grant in a
+subagent's `tools:` covering the whole family; the cells strip the frame for
+a dim `⎿ Waiting for input · session …` row (`Waiting for a password · …` at
+a password prompt), `BashSend(./configure.sh ← y⏎)` headers; tuned against
 eight live models with `examples/session_probe.rs`, the offline
 `interactive` demo and `smoke.sh` Phase 124); and the **tool
 permission requests** (Claude-Code's ask-before-you-change: the `approve` seam
@@ -2086,16 +2124,16 @@ plus, *while a turn is in flight*, a strip above it — a streaming preview row 
 preview shows a running tool's cell when one is executing — its bullet a
 **blinking grey**, `docs/tool-pulse.md` — a backend tool's
 **whole** collapsed cell, the wrapped `● name(args)` header *plus* its output;
-before any output a `⎿ Running… (10s · timeout 2m)` row — the command's
-own clock and the timeout it runs under, so a silent command still shows
+before any output a `⎿ Running… (10s · wait 2m)` row — the command's
+own clock and the wait its call runs under, so a silent command still shows
 it is alive — and once a `bash` command **streams** it
 **tails** its output — the last `TOOL_PEEK_ROWS` display **rows**, long lines
 word-wrapped like the Ctrl+O view (`ui::wrap_output` — never clipped at the
 width, spaces preserved), + a
-`+N lines (22s · timeout 1m 50s)` footer counting the fully hidden display
-rows (a bare `(10s · timeout 10m)` row when none are), its elapsed
+`+N lines (22s · wait 1m 50s)` footer counting the fully hidden display
+rows (a bare `(10s · wait 10m)` row when none are), its elapsed
 the command's own runtime (`App::command_elapsed`, never the turn's) and
-its timeout the model's own `timeout` off the call's verbatim arguments
+its wait the model's own `wait` off the call's verbatim arguments
 (`ui::running_command_lines`, `docs/tool-streaming.md`) — so a long
 command isn't clipped and the running state shows; a **parallel
 batch** previews the *whole* `tool_queue` — the running call over each dim
@@ -3141,7 +3179,7 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   round-tripped through the rollout) and
   `context::reconstruct_arguments` replays them whenever they parse as an
   object — so a `write`'s `content`, an `edit`'s two strings and a `bash`
-  call's `timeout` all ride the *call* now instead of being rebuilt from
+  call's `wait` all ride the *call* now instead of being rebuilt from
   `{"path": …}`, with the old per-tool reconstruction left as the fallback
   for pre-field rollouts and the `!` shell. Both file schemas close with the
   matching sentence (*do not read the file back to check it*), since a model

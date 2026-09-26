@@ -405,6 +405,11 @@ struct BackgroundRecord {
     /// keep their shape and still parse.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     origin: Option<String>,
+    /// The session stopped to ask for input rather than ending
+    /// (`docs/bash-tools.md`) — omitted when false, so a completion's record
+    /// keeps its shape.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    waiting: bool,
     timestamp: String,
 }
 
@@ -564,6 +569,7 @@ pub fn item_line(item: &HistoryItem, stamp: &str) -> String {
             killed: notice.killed,
             output_tail: notice.output_tail.clone(),
             origin: notice.origin.clone(),
+            waiting: notice.waiting,
             timestamp: notice.timestamp.clone(),
         }),
         HistoryItem::HookNote(note) => ItemRecord::HookNote(HookNoteRecord {
@@ -758,6 +764,7 @@ pub fn parse_session(text: &str) -> Option<(SessionMeta, Vec<HistoryItem>)> {
                     killed: notice.killed,
                     output_tail: notice.output_tail,
                     origin: notice.origin,
+                    waiting: notice.waiting,
                     timestamp: notice.timestamp,
                 }));
             }
@@ -1903,6 +1910,7 @@ mod tests {
             killed: false,
             output_tail: "64 bytes from x.com\n200 packets transmitted".into(),
             origin: None,
+            waiting: false,
             timestamp: "03:21 PM".into(),
         });
         let line = item_line(&notice, "t");
@@ -1928,6 +1936,7 @@ mod tests {
             killed: false,
             output_tail: "100".into(),
             origin: Some("general-purpose".into()),
+            waiting: false,
             timestamp: String::new(),
         });
         let line = item_line(&notice, "t");
@@ -1946,10 +1955,40 @@ mod tests {
             killed: true,
             output_tail: String::new(),
             origin: None,
+            waiting: false,
             timestamp: String::new(),
         });
         let (_, parsed) = parse_session(&file_of(std::slice::from_ref(&notice))).expect("parses");
         assert_eq!(parsed, vec![notice]);
+    }
+
+    #[test]
+    fn a_waiting_notice_round_trips_and_an_ending_one_keeps_its_shape() {
+        // A session that stopped to ask for input (docs/bash-tools.md) keeps
+        // saying so after a `/resume`; a completion's record stays as it was.
+        let waiting = HistoryItem::Background(crate::app::BackgroundNotice {
+            description: "npm create vite".into(),
+            id: "b1".into(),
+            code: None,
+            killed: false,
+            output_tail: "Ok to proceed? (y)".into(),
+            origin: None,
+            waiting: true,
+            timestamp: String::new(),
+        });
+        let (_, parsed) = parse_session(&file_of(std::slice::from_ref(&waiting))).expect("parses");
+        assert_eq!(parsed, vec![waiting]);
+        let ended = HistoryItem::Background(crate::app::BackgroundNotice {
+            description: "sleep 1".into(),
+            id: "b2".into(),
+            code: Some(0),
+            killed: false,
+            output_tail: String::new(),
+            origin: None,
+            waiting: false,
+            timestamp: String::new(),
+        });
+        assert!(!item_line(&ended, "t").contains("waiting"));
     }
 
     #[test]

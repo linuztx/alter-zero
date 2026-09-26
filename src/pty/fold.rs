@@ -115,6 +115,132 @@ impl Default for Fold {
     }
 }
 
+/// How much of a command's output [`HeadTail`] keeps from its **start** — a
+/// quarter of the whole cap ([`crate::llm::tools::TOOL_OUTPUT_MAX_BYTES`]):
+/// room for what a command said first, a build's first error.
+pub const HEAD_BYTES: usize = crate::llm::tools::TOOL_OUTPUT_MAX_BYTES / 4;
+
+/// How much [`HeadTail`] keeps from its **end** — the rest of the cap: where
+/// a test run's summary and a failing command's last words are.
+pub const TAIL_BYTES: usize = crate::llm::tools::TOOL_OUTPUT_MAX_BYTES - HEAD_BYTES;
+
+/// A command's output kept for the model with **both ends**
+/// (`docs/bash-tools.md`): its first lines up to a head cap, then a window
+/// over its last lines up to a tail cap — whole lines, a character never
+/// split — and a count of the lines that fell between, which
+/// [`render`](Self::render) marks on a line of its own. A line longer than
+/// the whole tail keeps its end, and counts as one of those left out.
+#[derive(Debug, Clone)]
+pub struct HeadTail {
+    head: String,
+    /// The head has turned a line away: everything after goes to the tail.
+    head_closed: bool,
+    /// The last lines, each marked when it was cut to fit (and so already
+    /// counted among the omitted).
+    tail: std::collections::VecDeque<(String, bool)>,
+    tail_bytes: usize,
+    omitted: usize,
+    head_cap: usize,
+    tail_cap: usize,
+}
+
+impl Default for HeadTail {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl HeadTail {
+    /// Output kept within [`HEAD_BYTES`] and [`TAIL_BYTES`].
+    #[must_use]
+    pub fn new() -> Self {
+        Self::with_caps(HEAD_BYTES, TAIL_BYTES)
+    }
+
+    /// Output kept within `head` bytes from its start and `tail` from its end.
+    #[must_use]
+    pub fn with_caps(head: usize, tail: usize) -> Self {
+        Self {
+            head: String::new(),
+            head_closed: false,
+            tail: std::collections::VecDeque::new(),
+            tail_bytes: 0,
+            omitted: 0,
+            head_cap: head,
+            tail_cap: tail,
+        }
+    }
+
+    /// Take in `text`: lines each ending in `\n`, the last possibly unfinished
+    /// — what [`Fold::take_settled`] hands out, then [`Fold::finish`].
+    pub fn push(&mut self, text: &str) {
+        for line in text.split_inclusive('\n') {
+            self.push_line(line);
+        }
+    }
+
+    fn push_line(&mut self, line: &str) {
+        if !self.head_closed {
+            if self.head.len() + line.len() <= self.head_cap {
+                self.head.push_str(line);
+                return;
+            }
+            self.head_closed = true;
+        }
+        let (line, cut) = if line.len() > self.tail_cap {
+            let mut start = line.len() - self.tail_cap;
+            while !line.is_char_boundary(start) {
+                start += 1;
+            }
+            self.omitted += 1;
+            (&line[start..], true)
+        } else {
+            (line, false)
+        };
+        self.tail_bytes += line.len();
+        self.tail.push_back((line.to_string(), cut));
+        while self.tail_bytes > self.tail_cap && self.tail.len() > 1 {
+            let Some((old, cut)) = self.tail.pop_front() else {
+                break;
+            };
+            self.tail_bytes -= old.len();
+            if !cut {
+                self.omitted += 1;
+            }
+        }
+    }
+
+    /// How many lines fell between the two ends so far.
+    #[must_use]
+    pub fn omitted(&self) -> usize {
+        self.omitted
+    }
+
+    /// The kept output: the head, the cut on a line of its own — naming
+    /// `log`, the file that holds all of it, when there is one — then the
+    /// tail.
+    #[must_use]
+    pub fn render(&self, log: Option<&std::path::Path>) -> String {
+        let mut out = self.head.clone();
+        if self.omitted > 0 {
+            let lines = if self.omitted == 1 { "line" } else { "lines" };
+            let marker = match log {
+                Some(path) => format!(
+                    "[… {} {lines} omitted — the full output is in {}]\n",
+                    self.omitted,
+                    path.display()
+                ),
+                None => format!("[… {} {lines} omitted]\n", self.omitted),
+            };
+            out.push_str(&marker);
+        }
+        for (line, _) in &self.tail {
+            out.push_str(line);
+        }
+        out
+    }
+}
+
 impl Line {
     /// Put `c` at the cursor — over what is there, or past the end with the
     /// gap padded — the way a terminal does.
@@ -299,5 +425,61 @@ mod tests {
         assert_eq!(fold.current(), "xxxxxxxx");
         assert!(fold.overflowed());
         assert!(!Fold::new().overflowed());
+    }
+
+    #[test]
+    fn output_within_the_caps_is_kept_as_it_came() {
+        let mut kept = HeadTail::with_caps(16, 16);
+        kept.push("a\n\tb  \n");
+        kept.push("c");
+        assert_eq!(kept.render(None), "a\n\tb  \nc");
+        assert_eq!(kept.omitted(), 0);
+    }
+
+    #[test]
+    fn long_output_keeps_both_ends_and_marks_the_cut() {
+        // A build's first error and its summary line are at opposite ends:
+        // keeping one end — the head a plain call kept, the tail a terminal
+        // session kept — lost the other (docs/bash-tools.md).
+        let mut kept = HeadTail::with_caps(6, 6);
+        for n in 1..=10 {
+            kept.push(&format!("{n}\n"));
+        }
+        assert_eq!(kept.omitted(), 5);
+        assert_eq!(kept.render(None), "1\n2\n3\n[… 5 lines omitted]\n9\n10\n");
+    }
+
+    #[test]
+    fn the_cut_names_the_log_that_holds_everything() {
+        let mut kept = HeadTail::with_caps(2, 2);
+        kept.push("a\nb\nc\n");
+        assert_eq!(
+            kept.render(Some(std::path::Path::new("/tmp/t/b1.output"))),
+            "a\n[… 1 line omitted — the full output is in /tmp/t/b1.output]\nc\n"
+        );
+    }
+
+    #[test]
+    fn a_line_longer_than_the_tail_keeps_its_end() {
+        let mut kept = HeadTail::with_caps(0, 4);
+        kept.push("abcdefgh\n");
+        assert_eq!(kept.render(None), "[… 1 line omitted]\nfgh\n");
+    }
+
+    #[test]
+    fn a_character_is_never_split_by_a_cut() {
+        let mut kept = HeadTail::with_caps(0, 4);
+        kept.push("xx日本\n");
+        assert_eq!(kept.render(None), "[… 1 line omitted]\n本\n");
+    }
+
+    #[test]
+    fn the_two_ends_share_the_whole_output_cap() {
+        assert_eq!(
+            HEAD_BYTES + TAIL_BYTES,
+            crate::llm::tools::TOOL_OUTPUT_MAX_BYTES
+        );
+        // A summary line is at the end: the tail is the larger share.
+        const { assert!(TAIL_BYTES > HEAD_BYTES) };
     }
 }

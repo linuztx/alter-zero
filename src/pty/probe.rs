@@ -16,6 +16,11 @@
 //! like a prompt ([`Probe::Idle`]): `Compiling foo... ` left open while the
 //! compiler runs, `Working... ` before a `sleep`.
 //!
+//! A tree with a thread in such a wait and no reader is [`Probe::Polling`]:
+//! it may be at a prompt, or waiting on the network — which is why, since
+//! every command runs in a terminal (`docs/bash-tools.md`), its silence ends
+//! a launch only after a long quiet, where [`Probe::Idle`]'s never does.
+//!
 //! The files are readable only for the user's own processes, so a
 //! `sudo`-elevated program leaves the probe blind — its prompts are judged
 //! by the screen and the terminal's mode, as before
@@ -34,9 +39,12 @@ pub enum Probe {
     /// Every thread was seen and none is reading the terminal, or waiting on
     /// anything that could be it: the program is busy.
     Idle,
-    /// Nothing certain — not probed since the session last changed, a thread
-    /// in a `poll`-family wait, a process the probe may not inspect, or no
-    /// `/proc` to ask.
+    /// Every thread was seen, none reads the terminal, and one waits in a
+    /// `poll`-family call — on the terminal (a REPL, `vim`), or on anything
+    /// else (a network client, an idle server).
+    Polling,
+    /// Nothing certain — not probed since the session last changed, a
+    /// process the probe may not inspect, or no `/proc` to ask.
     #[default]
     Unknown,
 }
@@ -105,16 +113,18 @@ pub fn classify(line: &str, is_terminal: impl Fn(u64) -> bool) -> Thread {
 }
 
 /// The verdict over every thread inspected: a reader anywhere is
-/// [`Probe::Reading`]; otherwise a thread that may be waiting, or one the
-/// probe could not inspect at all (`blind`), leaves it [`Probe::Unknown`] —
-/// as does having seen nothing — and only threads that are all busy make it
-/// [`Probe::Idle`].
+/// [`Probe::Reading`]; otherwise one the probe could not inspect at all
+/// (`blind`) leaves it [`Probe::Unknown`] — as does having seen nothing — a
+/// thread that may be waiting makes it [`Probe::Polling`], and only threads
+/// that are all busy make it [`Probe::Idle`].
 #[must_use]
 pub fn combine(threads: &[Thread], blind: bool) -> Probe {
     if threads.contains(&Thread::Reading) {
         Probe::Reading
-    } else if blind || threads.is_empty() || threads.contains(&Thread::Maybe) {
+    } else if blind || threads.is_empty() {
         Probe::Unknown
+    } else if threads.contains(&Thread::Maybe) {
+        Probe::Polling
     } else {
         Probe::Idle
     }
@@ -299,8 +309,8 @@ mod tests {
         assert_eq!(combine(&[Thread::Busy, Thread::Busy], false), Probe::Idle);
         assert_eq!(
             combine(&[Thread::Busy, Thread::Maybe], false),
-            Probe::Unknown,
-            "a poll may be on the terminal"
+            Probe::Polling,
+            "a poll may be on the terminal, or on a socket"
         );
         assert_eq!(
             combine(&[Thread::Busy], true),

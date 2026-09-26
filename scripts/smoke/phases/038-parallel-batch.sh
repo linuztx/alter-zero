@@ -58,14 +58,14 @@ fi
 # Phase 39 failure, which reproduces on any machine and is a fixture race, not
 # a regression. `pipe-pane` has no cadence — it records every byte tmux wrote
 # — so the footer's arrival is caught whatever it costs the app to paint it,
-# and the assertion below still reads the real `+N lines (Ns · timeout 2m)`
+# and the assertion below still reads the real `+N lines (Ns · wait 2m)`
 # row — the elapsed beside the timeout the call runs under, the tool's 2m
 # default here since the demo's scripted call names none
 # (docs/tool-streaming.md).
 batch_tail=""
 for _ in $(seq 1 200); do # up to ~20s — the tail streams as each ping runs
-	if grep -qaE '\+[0-9]+ lines \([0-9]+s · timeout 2m\)' "$RAW39"; then
-		batch_tail="$(grep -aoE '\+[0-9]+ lines \([0-9]+s · timeout 2m\)' "$RAW39" | head -4)"
+	if grep -qaE '\+[0-9]+ lines \([0-9]+s · wait 2m\)' "$RAW39"; then
+		batch_tail="$(grep -aoE '\+[0-9]+ lines \([0-9]+s · wait 2m\)' "$RAW39" | head -4)"
 		break
 	fi
 	sleep 0.1
@@ -79,6 +79,6 @@ rm -f "$RAW39"
 tmux kill-session -t "$S_BATCH" 2>/dev/null
 
 # Phase 39: a running Bash(ping) cell TAILS its live output — the last lines plus
-# a `+N lines (Ns · timeout 2m)` footer, Claude-Code's running-command look
+# a `+N lines (Ns · wait 2m)` footer, Claude-Code's running-command look
 # with the call's timeout beside the elapsed (docs/tool-streaming.md).
-expect_has "$batch_tail" -E '\+[0-9]+ lines \([0-9]+s · timeout 2m\)' "a running Bash(ping) cell did not tail its streamed output (no '+N lines (Ns · timeout 2m)' footer)"
+expect_has "$batch_tail" -E '\+[0-9]+ lines \([0-9]+s · wait 2m\)' "a running Bash(ping) cell did not tail its streamed output (no '+N lines (Ns · wait 2m)' footer)"

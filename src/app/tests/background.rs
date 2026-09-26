@@ -156,6 +156,7 @@ fn completion_notice_headline_covers_every_outcome() {
         killed: false,
         output_tail: String::new(),
         origin: None,
+        waiting: false,
         timestamp: String::new(),
     };
     assert!(notice.ok());
@@ -191,6 +192,7 @@ fn completion_notice_context_text_carries_the_tail() {
         killed: false,
         output_tail: "line1\nline2".into(),
         origin: None,
+        waiting: false,
         timestamp: String::new(),
     };
     assert_eq!(
@@ -203,6 +205,39 @@ fn completion_notice_context_text_carries_the_tail() {
         ..notice
     };
     assert!(silent.context_text().ends_with("(no output)"));
+}
+
+#[test]
+fn a_session_waiting_for_input_is_noticed_and_stays_listed() {
+    // A background session that stopped to ask something (docs/bash-tools.md)
+    // is still running: the notice names its session so the model can answer
+    // it, and the shell keeps its row in the manager.
+    let mut app = App::new();
+    app.bg_started("b1", "npm create vite", Some("Scaffold".into()), true, None);
+    app.bg_screen("b1", "Need to install create-vite. Ok to proceed? (y)");
+    let waiting = app.bg_waiting("b1").expect("a running shell");
+    assert!(waiting.waiting);
+    assert!(waiting.from_model);
+    assert_eq!(app.background().len(), 1, "it is still running");
+    assert_eq!(
+        waiting.context_text(),
+        "[background] Background command \"Scaffold\" is waiting for input \
+         (session b1).\nScreen (tail):\n\
+         Need to install create-vite. Ok to proceed? (y)\n\
+         Answer it with bashsend, or stop it with bashkill."
+    );
+    let notice = app.record_background_notice(&waiting);
+    assert!(notice.waiting);
+    assert!(!notice.ok());
+    assert_eq!(
+        notice.headline(),
+        "Background command \"Scaffold\" is waiting for input"
+    );
+    assert_eq!(notice.context_text(), waiting.context_text());
+    assert!(
+        app.bg_waiting("gone").is_none(),
+        "an unknown id owes nothing"
+    );
 }
 
 #[test]

@@ -30,6 +30,11 @@ pub struct BackgroundNotice {
     /// agent` suffix and the context note's attribution
     /// (`docs/agent-tool.md`). `None` = the main conversation.
     pub origin: Option<String>,
+    /// The session did not end: it **stopped to ask for input** nobody was
+    /// there to see (`docs/bash-tools.md`). Still running, so the note names
+    /// its session for `bashsend`/`bashkill`, and `output_tail` is its
+    /// screen; `code` and `killed` say nothing.
+    pub waiting: bool,
     /// Wall-clock stamp of when the completion was recorded. Recorded but not
     /// displayed, like tool stamps. See `docs/timestamps.md`.
     pub timestamp: String,
@@ -37,10 +42,11 @@ pub struct BackgroundNotice {
 
 impl BackgroundNotice {
     /// Did the command succeed (exit code 0, not stopped by the user)? Picks
-    /// the notice bullet colour: green for success, red otherwise.
+    /// the notice bullet colour: green for success, red otherwise — amber for
+    /// a session [`waiting`](Self::waiting) for input, which has not ended.
     #[must_use]
     pub fn ok(&self) -> bool {
-        !self.killed && self.code == Some(0)
+        !self.waiting && !self.killed && self.code == Some(0)
     }
 
     /// The rendered one-liner: `Background command "{description}" {outcome}`
@@ -59,6 +65,9 @@ impl BackgroundNotice {
     /// The outcome clause of the headline / context note.
     #[must_use]
     pub fn outcome_phrase(&self) -> String {
+        if self.waiting {
+            return "is waiting for input".to_string();
+        }
         if self.killed {
             return "was stopped by the user".to_string();
         }
@@ -74,6 +83,10 @@ impl BackgroundNotice {
     /// automatic follow-up turn's prompt text. A subagent-launched shell is
     /// attributed (`launched by the {type} agent`) so the reader knows whose
     /// task it belonged to.
+    ///
+    /// A session [`waiting`](Self::waiting) for input is still running, so its
+    /// note names the session — the id `bashsend` and `bashkill` take — and
+    /// shows its screen rather than a final output.
     #[must_use]
     pub fn context_text(&self) -> String {
         let tail = if self.output_tail.trim().is_empty() {
@@ -86,6 +99,16 @@ impl BackgroundNotice {
             .as_ref()
             .map(|agent| format!(" (launched by the {agent} agent)"))
             .unwrap_or_default();
+        if self.waiting {
+            return format!(
+                "[background] Background command \"{}\"{origin} {} (session {}).\n\
+                 Screen (tail):\n{tail}\n\
+                 Answer it with bashsend, or stop it with bashkill.",
+                self.description,
+                self.outcome_phrase(),
+                self.id,
+            );
+        }
         format!(
             "[background] Background command \"{}\"{origin} {}.\nFinal output (tail):\n{tail}",
             self.description,
@@ -160,8 +183,12 @@ pub struct BgCompletion {
     pub code: Option<i32>,
     /// Whether the user stopped it (`x` in the manager, or a kill sweep).
     pub killed: bool,
-    /// The output tail at exit (already capped for the notice).
+    /// The output tail at exit (already capped for the notice) — or, for a
+    /// session [`waiting`](Self::waiting), its screen as it asks.
     pub output_tail: String,
+    /// Not an exit: the session stopped to ask for input nobody saw
+    /// ([`App::bg_waiting`], `docs/bash-tools.md`), and runs on.
+    pub waiting: bool,
 }
 
 impl BgCompletion {
@@ -186,6 +213,7 @@ impl BgCompletion {
             killed: self.killed,
             output_tail: self.output_tail.clone(),
             origin: self.origin_label(),
+            waiting: self.waiting,
             timestamp: String::new(),
         }
         .context_text()
@@ -385,6 +413,28 @@ impl App {
             code,
             killed,
             output_tail: notice_tail(&shell.output),
+            waiting: false,
+        })
+    }
+
+    /// A background session stopped to ask for input nobody saw (the
+    /// registry's `BgEvent::Waiting`, `docs/bash-tools.md`): its notice, for
+    /// the loop to settle like a completion's — posted for the model, and
+    /// recorded at the next safe boundary — while the shell **stays** in the
+    /// list, still running. `None` for an unknown id.
+    #[must_use]
+    pub fn bg_waiting(&self, id: &str) -> Option<BgCompletion> {
+        let shell = self.background_shell(id)?;
+        Some(BgCompletion {
+            id: shell.id.clone(),
+            command: shell.command.clone(),
+            description: shell.description.clone(),
+            from_model: shell.from_model,
+            origin: shell.origin.clone(),
+            code: None,
+            killed: false,
+            output_tail: notice_tail(&shell.output),
+            waiting: true,
         })
     }
 
@@ -413,6 +463,7 @@ impl App {
             killed: completion.killed,
             output_tail: completion.output_tail.clone(),
             origin: completion.origin_label(),
+            waiting: completion.waiting,
             timestamp: self.now_stamp(),
         };
         self.history.push(HistoryItem::Background(notice.clone()));
@@ -439,8 +490,13 @@ impl App {
         self.tool_queue.front().is_some_and(|tool| {
             tool.status == ToolStatus::Running
                 && (tool.shell
-                    || tool.name == "Bash"
-                    || tool.name == crate::llm::tools::BASH_SESSION_TOOL_DISPLAY)
+                    || matches!(
+                        tool.name.as_str(),
+                        "Bash"
+                            | crate::llm::tools::BASH_SEND_DISPLAY
+                            | crate::llm::tools::BASH_WAIT_DISPLAY
+                            | crate::llm::tools::BASH_SESSION_TOOL_DISPLAY
+                    ))
         })
     }
 

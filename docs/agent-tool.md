@@ -53,7 +53,8 @@ first user message. Its **tool set** and its **model** come from the same
 definition (`docs/subagents.md`). It runs
 `llm::agent::run_agent` with its own executor and its own cancel token, on its
 own thread. The executor carries the **shared background registry** too, so a
-subagent's `bash` can `run_in_background` like the main turn's — the shell
+subagent's `bash` can run in the background like the main turn's (`wait: 0`,
+or a `wait` that passes — `docs/bash-tools.md`) — the shell
 joins the same list (stacking into the footer's `· N shells` count in every
 session view) attributed to its launcher via `BgOrigin { agent_id,
 agent_type }`: the ↓ manager's details page gains a `From: {type} agent`
