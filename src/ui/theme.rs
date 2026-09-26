@@ -1281,11 +1281,6 @@ pub(super) const SPINNER_MENU_MAX_ROWS: u16 = SETTINGS_MENU_MAX_ROWS;
 /// the live spinners line up down the list.
 pub(super) const SPINNER_MENU_GAP: usize = 3;
 
-/// The verbs the picker's sample status line wears — the turn verbs' first
-/// pair, so the preview reads like a first turn's line.
-pub(super) const SPINNER_PREVIEW_VERB: &str = "Working";
-pub(super) const SPINNER_PREVIEW_DONE_VERB: &str = "Done";
-
 // --- The inline `/theme` picker (docs/theme.md). The `/spinner` picker's
 // frame — its search line, its `→` marker, its counter, description and hint
 // — over one row per colour theme, each wearing a swatch of its own accents,

@@ -2176,8 +2176,9 @@ braille track, and before the catalog always the comet: a
 Larson-scanner sweep, a white head dragging a fading grey tail back and forth
 between dim walls), the verb text
 shimmering with a white sweep ported from
-codex's `shimmer_spans`; on finish a dim `{done verb} for {n}s` summary commits to
-scrollback, while **Esc mid-turn interrupts** instead (codex-style — cancel + reap
+codex's `shimmer_spans` and moving on to the next verb every 30 s; on finish a dim
+`{done verb} for {n}s` summary — the past tense of the verb the line wore last,
+`Working…` → `Worked for 12s` — commits to scrollback, while **Esc mid-turn interrupts** instead (codex-style — cancel + reap
 the backend, drain the channel, keep the partial, resolve every tool call in
 flight as failed — a parallel batch's running call and each `⎿ Waiting…`
 sibling alike, every one keeping its red cell and its place in the next
@@ -2845,8 +2846,11 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   closing clause), the dim committed-summary colour, and `STATUS_ROWS`/`STATUS_GAP_ROWS`;
   the verb's white shimmer wave is the `SHIMMER_*` consts — base/highlight
   colours, sweep period, padding, band half-width, max blend — a port of codex's
-  `shimmer_spans`; the verbs themselves are `WORKING_VERBS`/`DONE_VERBS` in
-  `app/turn.rs`, picked per-turn), the
+  `shimmer_spans`; the verbs themselves are `STATUS_VERBS` in `app/turn.rs` —
+  each a `StatusVerb` pairing the live form with its past tense, rotated every
+  `VERB_ROTATION` (30 s) by `App::set_status_times` and walked on across turns,
+  the summary reading the past tense of the verb the line last wore;
+  `docs/status-indicator.md`), the
   slash-command palette (`MENU_*` — the `MENU_DESC_COL`
   description column, the cyan/dimmed colours that light up the whole selected row
   — name and description alike — and the `MENU_MAX_ROWS` cap), the `@` file

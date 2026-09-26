@@ -688,6 +688,95 @@ fn an_agent_views_running_command_tails_its_streamed_output() {
     );
 }
 
+/// The verb pair the agent session view's status line wears for `id`.
+fn agent_view_verbs(app: &App, id: &str) -> (&'static str, &'static str) {
+    let status = agent_view_status(app.agent(id).expect("listed"));
+    (status.verb, status.done_verb)
+}
+
+/// The summary the agent's last settle recorded on its own transcript.
+fn agent_summary(app: &App, id: &str) -> crate::app::TurnSummary {
+    match app.agent(id).expect("listed").history.last() {
+        Some(HistoryItem::Summary(summary)) => summary.clone(),
+        other => panic!("the settle records a summary: {other:?}"),
+    }
+}
+
+#[test]
+fn an_agent_views_status_verb_rotates_with_its_runtime() {
+    // The session view's line walks the status verbs on the agent's own
+    // clock — the main line's rule (docs/status-indicator.md).
+    let mut app = App::new();
+    app.begin_stream();
+    app.start_agent_group(false, &[spec("a1", "Rotate", false)]);
+    assert_eq!(
+        agent_view_verbs(&app, "a1"),
+        ("Working", "Worked"),
+        "an agent opens on the first verb"
+    );
+    app.set_agent_runtime("a1", Duration::from_millis(29_999));
+    assert_eq!(agent_view_verbs(&app, "a1").0, "Working");
+    app.set_agent_runtime("a1", Duration::from_secs(30));
+    assert_eq!(agent_view_verbs(&app, "a1"), ("Generating", "Generated"));
+}
+
+#[test]
+fn an_agent_turns_summary_names_the_verb_its_view_wore() {
+    use crate::stream::StreamEvent;
+    let mut app = App::new();
+    app.begin_stream();
+    app.start_agent_group(false, &[spec("a1", "Rotate", false)]);
+    app.set_agent_runtime("a1", Duration::from_secs(45)); // `Generating…`
+    app.apply_agent_event("a1", &StreamEvent::Chunk("It is 19°C.".into()));
+    app.apply_agent_event("a1", &StreamEvent::StreamDone);
+    let summary = agent_summary(&app, "a1");
+    assert_eq!(
+        summary.verb, "Generated",
+        "the line last said `Generating…`"
+    );
+    assert_eq!(summary.secs, 45);
+}
+
+#[test]
+fn an_events_runtime_freeze_never_moves_the_agents_verb() {
+    // The boundary pins the runtime as each event lands, so a settle records
+    // its exact elapsed — but only a drawn frame moves the verb: a turn that
+    // ends a few milliseconds past a rotation no frame drew still names the
+    // verb its view showed.
+    use crate::stream::StreamEvent;
+    let mut app = App::new();
+    app.begin_stream();
+    app.start_agent_group(false, &[spec("a1", "Rotate", false)]);
+    app.set_agent_runtime("a1", Duration::from_millis(29_990)); // the last frame
+    app.freeze_agent_runtime("a1", Duration::from_millis(30_010)); // StreamDone lands
+    app.apply_agent_event("a1", &StreamEvent::StreamDone);
+    let summary = agent_summary(&app, "a1");
+    assert_eq!(
+        summary.verb, "Worked",
+        "the view never showed `Generating…`"
+    );
+    assert_eq!(
+        summary.secs, 30,
+        "the settle still records its exact elapsed"
+    );
+}
+
+#[test]
+fn an_agents_chat_continuation_opens_on_the_verb_after_the_last_one_shown() {
+    use crate::stream::StreamEvent;
+    let mut app = App::new();
+    app.begin_stream();
+    app.start_agent_group(false, &[spec("a1", "Rotate", false)]);
+    app.set_agent_runtime("a1", Duration::from_secs(45));
+    app.apply_agent_event("a1", &StreamEvent::StreamDone);
+    app.agent_chat("a1", "and in Manila?");
+    assert_eq!(
+        agent_view_verbs(&app, "a1").0,
+        "Pondering",
+        "never the verb the summary above it just named"
+    );
+}
+
 #[test]
 fn an_agent_views_strip_previews_its_thinking_block() {
     // A reasoning subagent shows the same live `● Thinking…` block the main

@@ -906,13 +906,47 @@ fn idle_has_no_status_and_begin_stream_starts_one() {
     assert!(app.turn_active(), "a turn is in flight while streaming");
     let status = app.status().expect("a status once streaming");
     assert!(
-        WORKING_VERBS.contains(&status.verb),
+        STATUS_VERBS.iter().any(|verb| verb.working == status.verb),
         "a working verb is chosen: {:?}",
         status.verb
     );
     assert_eq!(status.tokens, 0, "no tokens counted yet (the '0s' state)");
     assert_eq!(status.arrow, TokenArrow::Down);
     assert_eq!(status.thinking, None, "not thinking yet");
+}
+
+#[test]
+fn every_status_verb_pairs_with_its_own_past_tense() {
+    // The summary reads the entry the line wore, so an entry's two forms
+    // must be one verb — a table edit can never leave `Brewing…` settling
+    // as `Cooked for 12s` — and no verb repeats, or a rotation could show
+    // the same word twice running (docs/status-indicator.md).
+    for (i, verb) in STATUS_VERBS.iter().enumerate() {
+        let stem = verb.working.strip_suffix("ing").expect("a live -ing form");
+        assert!(
+            verb.done.starts_with(stem) && verb.done.ends_with("ed"),
+            "{verb:?} pairs one verb with its own past tense"
+        );
+        assert!(
+            STATUS_VERBS[i + 1..]
+                .iter()
+                .all(|other| other.working != verb.working),
+            "{verb:?} appears once"
+        );
+    }
+}
+
+#[test]
+fn the_summary_is_the_past_tense_of_the_verb_the_line_wore() {
+    // Consistency, not a second roll of the dice: a line that said
+    // `Working…` settles as `Worked for …` (docs/status-indicator.md).
+    let mut app = App::new();
+    app.begin_stream();
+    assert_eq!(app.status().unwrap().verb, "Working");
+    app.push_chunk("a reply");
+    app.finish_stream();
+    let summary = app.end_turn(12).expect("a turn was active");
+    assert_eq!(summary.verb, "Worked", "the past tense of `Working`");
 }
 
 #[test]
@@ -927,8 +961,124 @@ fn the_per_turn_verb_changes_from_one_turn_to_the_next() {
     app.begin_stream();
     let second = app.status().unwrap().verb;
     assert_ne!(first, second, "the next turn picks a different verb");
-    assert_eq!(first, WORKING_VERBS[0]);
-    assert_eq!(second, WORKING_VERBS[1]);
+    assert_eq!(first, STATUS_VERBS[0].working);
+    assert_eq!(second, STATUS_VERBS[1].working);
+}
+
+/// Inject `elapsed` the way the boundary does before every draw, and read the
+/// verb pair the line then wears.
+fn verbs_at(app: &mut App, elapsed: Duration) -> (&'static str, &'static str) {
+    app.set_status_times(elapsed, None);
+    let status = app.status().expect("a turn in flight");
+    (status.verb, status.done_verb)
+}
+
+#[test]
+fn the_status_verb_moves_on_every_thirty_seconds() {
+    // The turn's own clock rotates the line: a quick turn keeps one verb, a
+    // long one gets a fresh word each half minute (docs/status-indicator.md).
+    let mut app = App::new();
+    app.begin_stream();
+    assert_eq!(
+        verbs_at(&mut app, Duration::from_millis(29_999)),
+        ("Working", "Worked"),
+        "the opening verb holds for the whole first half minute"
+    );
+    assert_eq!(
+        verbs_at(&mut app, Duration::from_secs(30)),
+        ("Generating", "Generated")
+    );
+    assert_eq!(
+        verbs_at(&mut app, Duration::from_secs(65)),
+        ("Pondering", "Pondered")
+    );
+}
+
+#[test]
+fn the_rotation_wraps_around_the_table() {
+    let mut app = App::new();
+    app.begin_stream();
+    let lap = VERB_ROTATION * u32::try_from(STATUS_VERBS.len()).expect("a short table");
+    assert_eq!(verbs_at(&mut app, lap).0, STATUS_VERBS[0].working);
+    assert_eq!(
+        verbs_at(&mut app, lap + VERB_ROTATION).0,
+        STATUS_VERBS[1].working
+    );
+}
+
+#[test]
+fn the_summary_follows_the_verb_the_line_rotated_to() {
+    let mut app = App::new();
+    app.begin_stream();
+    verbs_at(&mut app, Duration::from_secs(45));
+    app.finish_stream();
+    let summary = app.end_turn(45).expect("a turn was active");
+    assert_eq!(
+        summary.verb, "Generated",
+        "the line last said `Generating…`"
+    );
+}
+
+#[test]
+fn the_summary_names_the_verb_the_last_frame_drew() {
+    // The boundary's end-of-turn clock can pass a rotation that no frame
+    // drew; the summary still names what was on screen.
+    let mut app = App::new();
+    app.begin_stream();
+    verbs_at(&mut app, Duration::from_millis(29_990));
+    app.finish_stream();
+    let summary = app.end_turn(30).expect("a turn was active");
+    assert_eq!(
+        summary.verb, "Worked",
+        "the line never showed `Generating…`"
+    );
+    assert_eq!(summary.secs, 30, "the time is still the turn's own");
+}
+
+#[test]
+fn the_next_turn_opens_on_the_verb_after_the_last_one_shown() {
+    // A turn that rotated to `Generating…` hands the next one `Pondering…` —
+    // never the verb the summary above it just named.
+    let mut app = App::new();
+    app.begin_stream();
+    verbs_at(&mut app, Duration::from_secs(45));
+    app.finish_stream();
+    app.end_turn(45);
+    app.begin_stream();
+    assert_eq!(app.status().unwrap().verb, "Pondering");
+}
+
+#[test]
+fn an_interrupted_turn_hands_on_its_last_verb_too() {
+    // The walk moves when the line does, not at whichever turn end runs.
+    let mut app = App::new();
+    app.begin_stream();
+    app.push_chunk("partial");
+    verbs_at(&mut app, Duration::from_secs(31));
+    assert!(matches!(
+        app.interrupt_turn(),
+        Some(InterruptedTurn::Kept { .. })
+    ));
+    app.begin_stream();
+    assert_eq!(app.status().unwrap().verb, "Pondering");
+}
+
+#[test]
+fn fixed_verb_turns_never_rotate_nor_move_the_walk() {
+    // `Running…` and `Compacting…` name an operation, not a mood: the clock
+    // never moves them on, and they leave the walk where the last AI turn
+    // left it.
+    let mut app = App::new();
+    app.begin_shell("sleep 95");
+    assert_eq!(verbs_at(&mut app, Duration::from_secs(95)).0, SHELL_VERB);
+    app.end_tool("", true);
+    app.finish_stream();
+    app.end_turn(95);
+    app.begin_compact(false);
+    assert_eq!(verbs_at(&mut app, Duration::from_secs(95)).0, COMPACT_VERB);
+    app.finish_compact(95);
+    app.begin_stream();
+    assert_eq!(app.status().unwrap().verb, STATUS_VERBS[0].working);
 }
 
 #[test]
@@ -1399,7 +1549,7 @@ fn a_full_turn_records_user_assistant_then_a_summary_in_order() {
         ] => {
             assert_eq!(u.role, Role::User);
             assert_eq!(a.role, Role::Assistant);
-            assert!(DONE_VERBS.contains(&s.verb));
+            assert_eq!(s.verb, STATUS_VERBS[0].done);
         }
         other => panic!("unexpected history: {other:?}"),
     }

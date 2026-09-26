@@ -67,7 +67,7 @@ fn begin_compact_starts_a_fixed_verb_turn_without_advancing_the_cycle() {
     // The cycled per-turn verbs are unaffected: the next real turn still
     // picks the first (the verb-sequence contract).
     app.begin_stream();
-    assert_eq!(app.status().unwrap().verb, WORKING_VERBS[0]);
+    assert_eq!(app.status().unwrap().verb, STATUS_VERBS[0].working);
 }
 
 #[test]

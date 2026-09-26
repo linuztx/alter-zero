@@ -91,8 +91,8 @@ The loop's `Compact` arm is a sibling of `start_background_turn` — a turn with
 no new user bubble:
 
 - `App::begin_compact()` opens the status with **fixed** verbs
-  (`COMPACT_VERB` "Compacting"; `turn_count` does not advance, so the cycled
-  per-turn verbs are unaffected) plus an empty streaming buffer and an empty
+  (`COMPACT_VERB` "Compacting", which never rotates; the verb cursor does not
+  move, so the walk through the status verbs is unaffected) plus an empty streaming buffer and an empty
   **`compact_buffer`** — the flag *and* the accumulator;
 - the context is derived as usual and codex's verbatim summarization prompt
   (`prompts/compact_prompt.md`, "You are performing a CONTEXT CHECKPOINT

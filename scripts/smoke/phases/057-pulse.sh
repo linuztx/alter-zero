@@ -81,7 +81,7 @@ echo "==== Phase 57: frames with the running bullet hidden: $pulse_hidden · eve
 pulse_done=""
 for _ in $(seq 1 400); do
 	cap="$(tmux capture-pane -t "$S57" -p -e 2>/dev/null)"
-	if printf '%s' "$cap" | grep -qF "Done for"; then
+	if printf '%s' "$cap" | grep -qF "$SUMMARY_TURN1"; then
 		pulse_done="$cap"
 		break
 	fi

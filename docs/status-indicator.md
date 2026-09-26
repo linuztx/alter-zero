@@ -15,15 +15,22 @@ modelled on the spinner line in openai/codex and Claude Code.
 ─────────────────────────────────────
 ```
 
-On finish the status line is replaced by a dim summary committed to scrollback:
+On finish the status line is replaced by a dim summary committed to scrollback,
+opening with the **past tense of the verb the line wore** — `Working…` ends as
+`Worked for …`:
 
 ```
 > Hi
 ● Happy to help! …                 (the finished reply)
-Done for 20s                       (NEW: committed turn summary)
+Worked for 20s                     (NEW: committed turn summary)
 
-> Thanks                           (the next turn — "Done for 20s" stays put)
+> Thanks                           (the next turn — "Worked for 20s" stays put)
 ```
+
+The rest of the docs call that cell "the `Done for Ns` summary" — its name
+from before the verbs were paired. What it says now is the past tense of the
+turn's own status verb (see *The verb: rotation and the summary*); `Done`
+survives only as the verb old rollouts recorded.
 
 ## What shows, and when
 
@@ -40,7 +47,7 @@ below), so a short turn reads `3s` and a long one `1m 30s` / `1h 5m`:
 | generating a tool call | `( ·•●  ) Working… (3s · ↓ 170 tokens · esc to interrupt)` (count ticks as the call streams) |
 | after a tool result  | `( ·•●  ) Working… (4s · ↑ 200 tokens · esc to interrupt)`                     |
 | retrying a failure   | `( ·•●  ) Working… (5s · ↑ 42 tokens · retrying 2/3 · esc to interrupt)`       |
-| finished (committed) | `Done for 20s`                                                                 |
+| finished (committed) | `Worked for 20s` — the past tense of the verb the line wore last                |
 | interrupted (Esc)    | *no summary* — the red `Conversation interrupted` notice (see `docs/interrupt.md`) |
 
 The turn opens with a **pre-stream pause** (the backend waits `STARTUP_DELAY`,
@@ -64,11 +71,15 @@ real backend's own latency plays the same role.
   wasted); all **ten** fixed-width frames, so nothing after it jitters). Like
   the shimmer, `ui::spinner_spans` is pure — the frame index derives from the
   boundary-supplied `elapsed`.
-- **verb** — a whimsical word (`Working`, `Cooking`, …) chosen *once per turn*, and
-  a matching **done verb** (`Done`, `Finished`, …) for the summary. Picked by a
-  per-turn counter (`App::turn_count`) so it varies across turns yet stays
-  deterministic — no RNG, testable like `dummy_response`. The white verb text
-  carries a white **shimmer wave** (below).
+- **verb** — a whimsical word (`Working`, `Cooking`, …) from `STATUS_VERBS`,
+  where each entry is one verb in both its forms (`StatusVerb { working, done
+  }` — `Working`/`Worked`, `Brewing`/`Brewed`). A turn's line opens on the
+  entry after the last one a line wore and **moves on to the next every
+  `VERB_ROTATION` (30 s)** of the turn's elapsed; the committed summary opens
+  with the past tense of whichever verb the line wore last. Deterministic — no
+  RNG, testable like `dummy_response`. See *The verb: rotation and the
+  summary* below. The white verb text carries a white **shimmer wave**
+  (below).
 - **elapsed** — time since the turn was submitted, **humanized** by the pure
   `ui::format_elapsed(secs)`: bare seconds under a minute (`0s`, `45s` — the
   live seconds keep ticking so a running timer never looks frozen), `{m}m {s}s`
@@ -149,24 +160,31 @@ Time is impure, so — exactly like `docs/timestamps.md` — it stays in `main.r
 - before each draw the loop writes the computed `elapsed` / `thinking`
   `Duration`s onto the live status via `App::set_status_times`.
 
-The pure `App` owns only what *isn't* time: the chosen verbs, the token tally, and
-the `↓`/`↑` arrow. `ui::status_line(&TurnStatus)` is a pure formatter that reads the
+The pure `App` owns only what *isn't* time: the verb walk (which verb the line
+wears is a pure function of the cursor and the injected `elapsed`), the token
+tally, and the `↓`/`↑` arrow. `ui::status_line(&TurnStatus)` is a pure formatter that reads the
 struct (with the boundary-supplied durations) — unit-tested with explicit values.
 
 ## State (App)
 
 - `TokenArrow { Down, Up }`.
 - `RetryInfo { attempt, max }` — a live retry indicator (see `docs/llm.md`).
-- `TurnStatus { verb, done_verb, tokens, arrow, elapsed, thinking, shell, retry }`
-  (`elapsed: Duration` / `thinking: Option<Duration>` are written by the boundary
+- `TurnStatus { verb, done_verb, rotates_from, tokens, arrow, elapsed, thinking,
+  shell, retry }` (`verb`/`done_verb` are one `StatusVerb`'s two forms, moved
+  together; `rotates_from: Option<usize>` is the `STATUS_VERBS` index the line
+  opened on when its verb rotates, `None` when it is fixed as given.
+  `elapsed: Duration` / `thinking: Option<Duration>` are written by the boundary
   each frame; `thinking` is `Some` only while thinking. A `Duration` rather than
-  whole seconds so one value drives both the displayed seconds and the shimmer's
-  sub-second phase. `retry: Option<RetryInfo>` is `Some` only while a failed
-  request is being retried).
+  whole seconds so one value drives the displayed seconds, the shimmer's
+  sub-second phase and the verb rotation. `retry: Option<RetryInfo>` is `Some`
+  only while a failed request is being retried).
 - `App.status: Option<TurnStatus>` — `Some` from `begin_stream` to turn end
   (`turn_active()` == `status.is_some()`).
-- `App.turn_count: usize` — drives verb selection.
-- `begin_stream` creates the status (picks verbs, increments the counter);
+- `App.verb_cursor: usize` — the `STATUS_VERBS` index the next turn's line
+  opens on: one past the last verb a line wore.
+- `begin_stream` creates the status (opens on the cursor's verb and advances
+  it); `set_status_times(elapsed, thinking)` writes the boundary's times and
+  rotates the verb pair with them, moving the cursor along;
   `count_user_input(text)` adds the user message's tokens (`↑`) right after, so
   the pre-stream pause shows the input count uploaded; `push_chunk` adds tokens
   (`↓`, and clears any `retry`); `push_thinking` adds tokens (`↓`, the reply
@@ -186,9 +204,12 @@ struct (with the boundary-supplied durations) — unit-tested with explicit valu
 A new ordered history entry so it survives a resize and lists in the Ctrl+O
 transcript (stamp-free there — only user messages display a timestamp):
 
-- `TurnSummary { verb, secs, timestamp }`, `HistoryItem::Summary(TurnSummary)`.
+- `TurnSummary { verb, secs, timestamp }`, `HistoryItem::Summary(TurnSummary)` —
+  `verb` is the status's `done_verb`, the past tense of the verb the line last
+  wore.
 - `ui::summary_lines` renders a single dim, bullet-less `"{verb} for {elapsed}"`
-  (the seconds humanized by `format_elapsed` — `Done for 20s`, `Done for 1m 30s`).
+  (the seconds humanized by `format_elapsed` — `Worked for 20s`,
+  `Generated for 1m 30s`).
 - `App::end_turn(elapsed_secs)` (called by the loop on `StreamDone`) pushes it and
   returns it for the loop to commit to scrollback. On `StreamDone` the loop
   reseats the viewport to the idle box height first (the strip is gone) — same
@@ -254,6 +275,66 @@ squeezes the strip, never the view the user is typing into — and
 `render_strip_above` paints exactly what the composer path paints. Anything
 opened *beside* a running turn must not hide it: that was the reported bug in
 all four (the band first, then the pickers).
+
+## The verb: rotation and the summary
+
+One verb for a whole turn was fine for a ten-second answer and monotonous for a
+five-minute agentic one, and the summary drew its verb from a list of its own,
+so a line that said `Brewing…` could settle as `Wrapped up for 3m 2s`. Now
+**one table pairs every verb with its own past tense** (`STATUS_VERBS`, pinned
+by `every_status_verb_pairs_with_its_own_past_tense`), the line walks it as the
+turn runs, and the summary names the verb the line wore:
+
+```
+⣤⣀⣀⣀⣀⣀⣀⣀ Working… (12s · ↓ 850 tokens · esc to interrupt)
+⣤⣀⣀⣀⣀⣀⣀⣀ Generating… (41s · ↓ 3.2k tokens · esc to interrupt)     (30 s in: the next verb)
+Generated for 52s                                                    (the verb it wore last)
+```
+
+- **Every 30 seconds** (`VERB_ROTATION`). A quick answer keeps a single verb,
+  so its summary names the one the user watched; a long agentic turn gets a
+  fresh word every half minute, enough to say it is still going without
+  pulling the eye off the reply streaming above it — the verb is the
+  brightest text on the line. And 30 s is a whole number of shimmer sweeps
+  (2 s each), so a swap always lands at the start of a sweep, with the band
+  still off the text — the word changes under a quiet line, never mid-crest
+  (`a_rotated_verb_arrives_with_the_shimmer_band_off_the_text`, which checks
+  the frame on the boundary and one re-arm late).
+- **The summary names the verb the user saw.** The rotation happens in
+  `App::set_status_times`, which moves `verb` and `done_verb` together, and
+  the boundary calls it once per draw and nowhere else — so the verb it set
+  *is* the verb on screen. The summary reads `done_verb`, while its seconds
+  come from the boundary's own end-of-turn clock: a turn that ends a few
+  milliseconds past a rotation no frame drew still settles on the verb the
+  last frame wore (`the_summary_names_the_verb_the_last_frame_drew`).
+- **The walk continues across turns.** `App::verb_cursor` is always one past
+  the last verb a line wore — `begin_stream` and every rotation move it — so
+  the next turn opens on a fresh verb, never the one the summary above it just
+  named, whichever way the turn ended (an interrupt or an error included,
+  since the cursor moves with the line, not at a turn-end site).
+- **Fixed verbs stay fixed.** A `!` shell's `Running…` (whose status line is
+  hidden anyway) and a `/compact`'s `Compacting…` name an operation rather
+  than a mood: their status carries `rotates_from: None`, so the clock never
+  moves them on and they leave the walk where the last AI turn left it.
+- **A task in progress** dresses the line in its `activeForm`
+  (`docs/task-tools.md`) — a phrase with no past tense the app could derive —
+  so the summary keeps the turn's own verb, which rotates underneath and is
+  back on the line the moment the task completes.
+- **The agent session view** walks the same table on the agent's own clock
+  (`ui::agent_view_status` reads `AgentRun::status_verb`). Its rotation rides
+  the per-frame runtime injection (`App::set_agent_runtime` →
+  `AgentRun::rotate_verb`), never the freeze the boundary applies as each
+  agent event lands (`App::freeze_agent_runtime`, which pins the exact elapsed
+  a settle records): only a drawn frame moves the verb, so the agent's
+  `{verb} for Ns` summary names the verb its view showed. A chat continuation
+  opens one verb past the last, like a new main turn.
+- **The `/spinner` picker's sample line** is a first turn's line, so it opens
+  on the first verb and walks the table the same way while the user browses
+  (`docs/spinner.md`).
+- **Old rollouts read as they were recorded.** Summaries written before the
+  pairing (`Done`, `Finished`, `Completed`, `Wrapped up`, `Ready`) still load
+  as their own statics (`session::LEGACY_DONE_VERBS`); a verb this build
+  doesn't know at all loads as `Done`.
 
 ## The shimmer wave (ported from openai/codex)
 
@@ -360,7 +441,15 @@ same events straight from its streamed `tool_calls` deltas
 
 ## Testing
 
-- `app`: verbs cycle per turn; `count_user_input` adds the input tokens with
+- `app`: every status verb pairs with its own past tense and appears once; the
+  summary is the past tense of the verb the line wore; the verb moves on every
+  30 s and wraps the table; the summary names the verb the last frame drew,
+  even past a rotation no frame drew; the next turn opens one verb past the
+  last shown, an interrupted one's included; fixed-verb turns (`!` shell,
+  `/compact`) never rotate nor move the walk; an agent session view's verb
+  rotates with the agent's runtime, its summary names the verb its view wore,
+  an event's runtime freeze never moves it, and a chat continuation opens one
+  verb on; `count_user_input` adds the input tokens with
   `↑` (no-op when idle) and the first chunk flips the arrow back to `↓`; tokens
   accumulate (`↓`) and survive a tool (`↑`, not reset); thinking chunks grow the
   tally (`↓`) without touching the reply buffer; `end_turn` records the summary
@@ -379,15 +468,22 @@ same events straight from its streamed `tool_calls` deltas
   (the tail whipping around behind it), and loops after a full cycle; the verb
   per-char greyscale-white bold spans, the metrics
   dim; the wave's crest is brighter than off-band chars and moves as `elapsed`
-  advances; `summary_lines` is one dim line; the strip stacks preview / gap /
+  advances; a rotated verb arrives with the band off the text (the rotation
+  is a whole number of sweeps); the `/spinner` preview walks the verbs like a
+  first turn; `summary_lines` is one dim line; the strip stacks preview / gap /
   status / gap above the box; `conversation` / `transcript` render a `Summary`.
 - `stream`: `turn_events` emits a paired `ThinkingStart`/`ThinkingEnd` with
   `ThinkingChunk`s strictly inside the pair; chunks still reconstruct the reply;
   `DummyAi` waits the startup delay before the first chunk (a short delay in the
   test), and a cancel during the wait streams nothing.
+- `session`: every status verb's past tense round-trips; a legacy summary verb
+  (`Finished`, `Wrapped up`, …) loads as recorded; an unknown one as `Done`.
 - `src/tui/` (smoke): the live line shows `tokens` while streaming with a blank
-  gap row between it and the box, and a committed `Done for Ns` after the turn
-  settles. Phase 20 (longer startup delay): mid-pause the status shows
+  gap row between it and the box, and a committed summary after the turn
+  settles. The phases settle on `scripts/smoke/lib.sh`'s per-turn summary
+  markers (`$SUMMARY_TURN1` = `Worked for`, …: a run of turns shorter than the
+  rotation walks the table one entry per turn) or on `$SUMMARY_ANY_RE`, any
+  summary at all, for a turn whose length isn't pinned. Phase 20 (longer startup delay): mid-pause the status shows
   `↑ N tokens` with no reply text, then the reply streams with the arrow `↓`.
 
 ## …and on a terminal too short for it

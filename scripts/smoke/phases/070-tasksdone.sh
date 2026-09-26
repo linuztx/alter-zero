@@ -28,7 +28,7 @@ done
 tasks_fin_rest=""
 for _ in $(seq 1 300); do # up to ~30s
 	cap="$(tmux capture-pane -t "$S70" -p)"
-	if printf '%s' "$cap" | grep -qE "Done for [0-9]" &&
+	if printf '%s' "$cap" | grep -qE "$SUMMARY_ANY_RE" &&
 		! printf '%s' "$cap" | grep -qF "esc to interrupt"; then
 		tasks_fin_rest="$cap"
 		break

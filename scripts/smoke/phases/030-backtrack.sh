@@ -11,14 +11,14 @@ smoke_begin
 # quit hint), a further Esc steps the highlight to the OLDER user message, and
 # Enter REWINDS: back inline, the conversation truncated from that message on
 # (here: everything — it was the first), its text back in the composer to
-# edit. Resubmitting it must stream a fresh turn to its summary ("Completed
-# for" — turn 3's done verb), proving the loop survived the rewind.
+# edit. Resubmitting it must stream a fresh turn to its summary
+# ($SUMMARY_TURN3 — turn 3's), proving the loop survived the rewind.
 S30="${S}_backtrack"
 launch "$S30" 80 24
 submit "$S30" "alpha question"
-wait_for 20.1 "$S30" -S -40 -- -F "Done for" # up to ~20s: turn 1 runs to its "Done for" summary
+wait_for 20.1 "$S30" -S -40 -- -F "$SUMMARY_TURN1" # up to ~20s: turn 1 runs to its summary
 submit "$S30" "beta question"
-wait_for 20.1 "$S30" -S -40 -- -F "Finished for" # turn 2 → "Finished for"
+wait_for 20.1 "$S30" -S -40 -- -F "$SUMMARY_TURN2" # turn 2 → its summary
 tmux send-keys -t "$S30" Escape # arm the gesture
 sleep 0.3
 backtrack_armed="$(tmux capture-pane -t "$S30" -p)"
@@ -43,7 +43,7 @@ printf '%s\n' "$backtrack_rewound"
 # "alpha question", so "beta question" must appear zero times anywhere.
 backtrack_rewound_scroll="$(tmux capture-pane -t "$S30" -p -S -120)"
 tmux send-keys -t "$S30" Enter # resubmit the recalled draft
-backtrack_resent="$(wait_pane 30 "$S30" -S -40 -- -F "Completed for")" # up to ~30s: turn 3 → "Completed for"
+backtrack_resent="$(wait_pane 30 "$S30" -S -40 -- -F "$SUMMARY_TURN3")" # up to ~30s: turn 3 → its summary
 echo "==== captured pane (rewound message resubmitted — a fresh turn streamed) ===="
 printf '%s\n' "$backtrack_resent"
 tmux kill-session -t "$S30" 2>/dev/null
@@ -59,4 +59,4 @@ expect_lacks "$backtrack_rewound" -F "beta question" "the second exchange surviv
 # resize (the duplication bug). A Purge-rebuild clears scrollback, so nothing
 # should scroll back to "beta question" (the composer holds "alpha question").
 expect_lacks "$backtrack_rewound_scroll" -F "beta question" "the rewound exchange lingered in scrollback (backtrack must Purge-rebuild, not overwrite in place)"
-expect_has "$backtrack_resent" -F "Completed for" "resubmitting the rewound message never streamed to turn 3's 'Completed for' summary"
+expect_has "$backtrack_resent" -F "$SUMMARY_TURN3" "resubmitting the rewound message never streamed to turn 3's '$SUMMARY_TURN3 …' summary"

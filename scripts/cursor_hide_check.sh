@@ -42,7 +42,7 @@ sleep 0.2
 tmux send-keys -t "$S" Enter
 done_seen=0
 for _ in $(seq 1 80); do # up to ~8s for the committed summary
-	if tmux capture-pane -t "$S" -p | grep -qE "^Done for [0-9]+s"; then
+	if tmux capture-pane -t "$S" -p | grep -qE "^[A-Z][a-z]+ed for [0-9]+s"; then
 		done_seen=1
 		break
 	fi

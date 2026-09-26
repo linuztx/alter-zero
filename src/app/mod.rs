@@ -110,8 +110,8 @@ pub use self::tools::{
 };
 pub use self::trust_menu::TrustMenu;
 pub use self::turn::{
-    DONE_VERBS, INTERRUPT_NOTICE, InterruptedTurn, SHELL_VERB, StreamError, WORKING_VERBS,
-    format_elapsed, format_timeout,
+    INTERRUPT_NOTICE, InterruptedTurn, SHELL_VERB, STATUS_VERBS, StatusVerb, StreamError,
+    VERB_ROTATION, format_elapsed, format_timeout,
 };
 pub(crate) use self::types::count_tokens;
 pub use self::types::{
@@ -529,11 +529,15 @@ pub struct App {
     /// [`begin_stream`]: App::begin_stream
     /// Private: read through [`status`](App::status).
     status: Option<TurnStatus>,
-    /// How many turns have started — drives the deterministic per-turn verb pick
-    /// ([`WORKING_VERBS`]/[`DONE_VERBS`]). Incremented by [`begin_stream`].
+    /// The [`STATUS_VERBS`] index the next turn's status line opens on — one
+    /// past the last verb a line wore, so the walk never repeats the verb the
+    /// previous summary just named. Advanced by [`begin_stream`] and by every
+    /// verb rotation ([`set_status_times`]); a fixed-verb turn (`!` shell,
+    /// `/compact`) leaves it alone.
     ///
     /// [`begin_stream`]: App::begin_stream
-    turn_count: usize,
+    /// [`set_status_times`]: App::set_status_times
+    verb_cursor: usize,
     /// The turn's accumulated **real** usage — billed tokens summed over the
     /// provider's per-round usage frames ([`App::apply_usage`]), which the
     /// live tally snaps to (replacing the estimate ticked so far) and the

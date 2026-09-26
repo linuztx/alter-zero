@@ -19,7 +19,7 @@ printf 'pristine\n' >"$WORK47/file.txt"
 CKAPP2="env $CFG_ENV ALTER_ZERO_CHECKPOINTS=1 ALTER_ZERO_CHECKPOINTS_DIR=$CK_DIR ALTER_ZERO_SESSIONS_DIR=$CK_SESS ALTER_ZERO_STARTUP_DELAY_MS=$SMOKE_STARTUP_MS $BIN_ABS"
 launch -c "$WORK47" "$S47" 80 24 "$CKAPP2"
 submit "$S47" "$USER_MSG" # a user message so the session lists in the picker
-wait_for 20.1 "$S47" -S -40 -- -F "Done for"
+wait_for 20.1 "$S47" -S -40 -- -F "$SUMMARY_TURN1"
 submit "$S47" "!echo v1 > file.txt" # the session's final code state
 for _ in $(seq 1 80); do # wait for the shell TURN to END so its {v1} checkpoint records
 	if [ "$(cat "$WORK47/file.txt" 2>/dev/null)" = "v1" ] &&

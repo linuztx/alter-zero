@@ -52,7 +52,7 @@ printf '%s\n' "$header_returned"
 tmux resize-window -t "$S_HEADER" -x 80 -y 45
 sleep 0.6
 submit "$S_HEADER" "hello there"
-wait_for 20.1 "$S_HEADER" -F "Done for" # up to ~20s — the full dummy turn, tools included
+wait_for 20.1 "$S_HEADER" -F "$SUMMARY_TURN1" # up to ~20s — the full dummy turn, tools included
 tmux send-keys -t "$S_HEADER" C-o
 sleep 0.5
 tmux send-keys -t "$S_HEADER" Home # the pager opens at the bottom; the banner is at the top

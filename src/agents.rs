@@ -17,7 +17,7 @@ use std::time::Duration;
 
 use tokio::sync::mpsc::UnboundedSender;
 
-use crate::app::{HistoryItem, Message, Role, ToolCall, ToolStatus, TurnSummary};
+use crate::app::{HistoryItem, Message, Role, StatusVerb, ToolCall, ToolStatus, TurnSummary};
 use crate::llm::ChatMessage;
 use crate::llm::classifier::ClassifierContext;
 use crate::stream::{CancelToken, StreamEvent};
@@ -147,6 +147,17 @@ pub struct AgentRun {
     /// ([`crate::app::App::set_agent_runtime`], the `set_status_times`
     /// pattern). Frozen at its final value once the agent settles.
     pub runtime: Duration,
+    /// The [`crate::app::STATUS_VERBS`] index this turn's session-view
+    /// status line opened on: the table's first verb for the agent's first
+    /// turn, one past the last verb a turn wore for each continuation
+    /// ([`reopen`](Self::reopen)) — the main session's walk, per agent.
+    verb_start: usize,
+    /// The index of the verb that line wears now — moved on every
+    /// [`crate::app::VERB_ROTATION`] of runtime by the per-frame injection
+    /// ([`rotate_verb`](Self::rotate_verb)), never by an event's runtime
+    /// freeze, so the turn's summary names the verb the view last drew
+    /// (`docs/status-indicator.md`).
+    verb_index: usize,
     /// Its own conversation: the prompt as a user message, its replies, its
     /// finished tool calls — everything the agent session view renders and
     /// the Ctrl+O agent cell expands.
@@ -286,6 +297,8 @@ impl AgentRun {
             turn_usage_cache_write: 0,
             context_used: 0,
             runtime: Duration::ZERO,
+            verb_start: 0,
+            verb_index: 0,
             history: vec![HistoryItem::Message(Message {
                 role: Role::User,
                 text: prompt,
@@ -622,7 +635,8 @@ impl AgentRun {
                 // (`tui::agent`), so it is the turn's elapsed; a failure or
                 // interrupt records none, main parity.
                 self.history.push(HistoryItem::Summary(TurnSummary {
-                    verb: "Done",
+                    // The past tense of the verb the view's line last wore.
+                    verb: self.status_verb().done,
                     secs: self.runtime.as_secs(),
                     timestamp: String::new(),
                     shells: 0,
@@ -853,11 +867,32 @@ impl AgentRun {
         self.followups.pop_back()
     }
 
+    /// The status verb its session view's line wears now — the synthesized
+    /// status line shows it and the turn's summary records its past tense.
+    #[must_use]
+    pub fn status_verb(&self) -> StatusVerb {
+        StatusVerb::at(self.verb_index)
+    }
+
+    /// Move the status verb on to where the current
+    /// [`runtime`](Self::runtime) puts it — one verb further every
+    /// [`crate::app::VERB_ROTATION`]. The per-frame half of the runtime
+    /// injection ([`crate::app::App::set_agent_runtime`]); an event's runtime
+    /// freeze never calls it, so a turn that settles just past a rotation no
+    /// frame drew still names the verb the view showed.
+    pub fn rotate_verb(&mut self) {
+        self.verb_index = StatusVerb::rotated(self.verb_start, self.runtime);
+    }
+
     /// A follow-up chat turn began (a continuation run): reopen a settled
     /// agent so new events fold in again. The turn-scoped usage counters
     /// reset — the next settle's `Done for Ns · {n} tokens` receipt is the
-    /// continuation's own — while the cumulative roster tally stands.
+    /// continuation's own — while the cumulative roster tally stands, and the
+    /// status verb walks on one past the last verb the finished turn wore,
+    /// as a new main turn's does.
     pub fn reopen(&mut self) {
+        self.verb_start = self.verb_index + 1;
+        self.verb_index = self.verb_start;
         self.status = AgentStatus::Running;
         self.stopped_by_user = false;
         self.result = None;
@@ -1685,7 +1720,10 @@ mod tests {
         let Some(HistoryItem::Summary(summary)) = run.history.last() else {
             panic!("the settle records the summary: {:?}", run.history.last());
         };
-        assert_eq!(summary.verb, "Done", "the view's synthesized done verb");
+        assert_eq!(
+            summary.verb, "Worked",
+            "the past tense of the verb the view wore (nothing rotated it)"
+        );
         assert_eq!(summary.secs, 59);
         assert_eq!(summary.tokens, 6100);
         assert_eq!(summary.cached, 2800);

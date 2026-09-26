@@ -2298,7 +2298,7 @@ fn live_a_lone_subagents_running_tool_renders_one_dim_clipped_row() {
         }
     }
 
-    // …and the replayed settle recorded the turn's `Done for Ns · {n} tokens`
+    // …and the replayed settle recorded the turn's `{verb} for Ns · {n} tokens`
     // receipt on the agent's own transcript — the summary the session view
     // commits — with the provider's real billed usage (docs/agent-tool.md).
     let run = app
@@ -2315,14 +2315,18 @@ fn live_a_lone_subagents_running_tool_renders_one_dim_clipped_row() {
             run.history.last()
         );
     };
-    assert_eq!(summary.verb, "Done");
+    assert_eq!(
+        summary.verb,
+        run.status_verb().done,
+        "the past tense of the verb the session view's line wore"
+    );
     assert!(
         summary.tokens > 0,
         "the provider's real usage reaches the receipt: {summary:?}"
     );
     println!(
-        "agent summary: Done for {}s · {} tokens ({} cached)",
-        summary.secs, summary.tokens, summary.cached
+        "agent summary: {} for {}s · {} tokens ({} cached)",
+        summary.verb, summary.secs, summary.tokens, summary.cached
     );
 }
 

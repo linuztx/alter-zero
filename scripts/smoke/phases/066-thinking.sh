@@ -55,7 +55,7 @@ echo "==== Phase 66: captured pane + scrollback (the collapsed thought) ===="
 printf '%s\n' "$think_done"
 expect_has "$think_done" -E "^Thought for [0-9]+s · [0-9]+ tokens \(ctrl\+o to expand\)" "the phase never collapsed into a bullet-less 'Thought for Ns · N tokens (ctrl+o to expand)' line"
 # …bullet-less: a settled thought is turn meta, so nothing may prefix it.
-expect_lacks "$think_done" -E "^[^[:space:]]+ Thought for " "the settled line carries a bullet; it must read like 'Done for Ns'"
+expect_lacks "$think_done" -E "^[^[:space:]]+ Thought for " "the settled line carries a bullet; it must read like the turn's '$SUMMARY_TURN1 Ns'"
 expect_lacks "$think_done" -F "Then edit it and run it." "the chain-of-thought reached scrollback; only the collapsed cell may commit"
 # Invariant 4: a phase that ends MID-REPLY must finalise the assistant text
 # before it (the ToolStart dance), so the cell is its own block rather than a
@@ -84,9 +84,9 @@ S66B="${S}_nothinking"
 APP_NOTHINK="env $CFG_ENV_NOHIST ALTER_ZERO_SHOW_THINKING=0 ALTER_ZERO_STARTUP_DELAY_MS=$SMOKE_STARTUP_MS $BIN"
 launch "$S66B" 80 24 "$APP_NOTHINK"
 submit "$S66B" "$USER_MSG"
-nothink="$(wait_pane 25 "$S66B" -S -80 -- -E "^Done for [0-9]+s")" # up to ~25s
+nothink="$(wait_pane 25 "$S66B" -S -80 -- -E "^$SUMMARY_TURN1 [0-9]+s")" # up to ~25s
 echo "==== Phase 66: captured pane (ALTER_ZERO_SHOW_THINKING=0) ===="
 printf '%s\n' "$nothink"
-expect_has "$nothink" -E "^Done for [0-9]+s" "the turn never settled with the thinking display off"
+expect_has "$nothink" -E "^$SUMMARY_TURN1 [0-9]+s" "the turn never settled with the thinking display off"
 expect_lacks "$nothink" -E "Thinking…|Thought for" "ALTER_ZERO_SHOW_THINKING=0 still showed the model's thinking"
 tmux kill-session -t "$S66B" 2>/dev/null

@@ -40,6 +40,20 @@ EXPECT_REPLY="Happy to help"
 SETTLED_REPLY="Two commands away"
 # The startup banner's tier-independent title word (docs/header.md).
 HEADER_MARK="Alter Zero"
+# A turn's committed summary opens with the past tense of the verb its status
+# line wore (`STATUS_VERBS` in src/app/turn.rs, docs/status-indicator.md). A
+# launch walks that table one verb per turn — and one more for every 30 s a
+# turn runs, which no dummy turn here lasts — so the Nth turn of a launch
+# settles on the Nth verb. Named here so the table can change in one place.
+SUMMARY_TURN1="Worked for"
+SUMMARY_TURN2="Generated for"
+SUMMARY_TURN3="Pondered for"
+# Any summary at all, whatever its verb (an ERE, for `grep -E`): every past
+# tense in the table ends in -ed (pinned by the unit test
+# `every_status_verb_pairs_with_its_own_past_tense`), and nothing else a pane
+# shows opens a line that way — `Thought for Ns` included. For a turn whose
+# length isn't pinned, and for asserting that NO summary landed.
+SUMMARY_ANY_RE='^[A-Z][a-z]+ed for [0-9]'
 # The dummy AI pauses before streaming (so the status indicator shows first) —
 # 3s by default. Every phase runs with a SHORT delay so the turns stream
 # promptly; the phases that want a visible pause set their own.

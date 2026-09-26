@@ -28,7 +28,7 @@ sleep 0.8
 hole_free="$(tmux capture-pane -t "$S81" -p -S -)"
 echo "==== Phase 81: returned after the turn finished under the overlay ===="
 printf '%s\n' "$hole_free" | tail -60
-for marker in "❯ $USER_MSG" "$EXPECT_REPLY" "Read(about.py)" "Edit(about.py)" "Bash(python3 about.py)" "$SETTLED_REPLY" "Done for"; do
+for marker in "❯ $USER_MSG" "$EXPECT_REPLY" "Read(about.py)" "Edit(about.py)" "Bash(python3 about.py)" "$SETTLED_REPLY" "$SUMMARY_TURN1"; do
 	expect_has "$hole_free" -F "$marker" "'$marker' never reached the terminal after the overlay return (the scrollback hole)"
 done
 hole_screen="$(tmux capture-pane -t "$S81" -p)"

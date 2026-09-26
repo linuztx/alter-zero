@@ -30,8 +30,9 @@ impl App {
     ///   the visible reply stays empty: chunks divert into the summary buffer
     ///   via [`push_chunk`](App::push_chunk), so the summary is never rendered
     ///   (codex parity) while the tally ticks;
-    /// - a fixed-verb status ([`COMPACT_VERB`] → `Compacting…`) that does
-    ///   **not** advance the cycled per-turn verbs (`turn_count` untouched).
+    /// - a fixed-verb status ([`COMPACT_VERB`] → `Compacting…`) that never
+    ///   rotates and does **not** advance the walk through the status verbs
+    ///   (the verb cursor is untouched).
     ///
     /// The boundary spawns the summarize request; [`finish_compact`] lands the
     /// marker at `StreamDone`, while an interrupt/error/`/clear` drops the
@@ -58,6 +59,8 @@ impl App {
             // Never rendered: a compact turn ends without a summary (the
             // `● Context compacted` cell is its record).
             done_verb: COMPACT_VERB,
+            // It names the operation, so the clock never moves it on.
+            rotates_from: None,
             tokens: 0,
             arrow: TokenArrow::Down,
             elapsed: Duration::ZERO,

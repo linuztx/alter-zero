@@ -3,12 +3,13 @@
 
 use super::*;
 use crate::app::Spinner;
+use crate::app::{STATUS_VERBS, VERB_ROTATION};
 use crate::ui::message::compaction_full_lines;
 use crate::ui::theme::{
-    INDENT, SPINNER_SPAN_COUNT, ai_color, header_gradient_end, header_gradient_start, shimmer_base,
-    shimmer_highlight, spinner_bars_high, spinner_pulse_bright, spinner_tail_color, status_color,
-    status_detail_color, status_done_color, status_retry_color, tool_diff_add_color,
-    tool_diff_del_color, tool_dim_color, tool_pulse_dim,
+    INDENT, SHIMMER_SWEEP, SPINNER_SPAN_COUNT, ai_color, header_gradient_end,
+    header_gradient_start, shimmer_base, shimmer_highlight, spinner_bars_high,
+    spinner_pulse_bright, spinner_tail_color, status_color, status_detail_color, status_done_color,
+    status_retry_color, tool_diff_add_color, tool_diff_del_color, tool_dim_color, tool_pulse_dim,
 };
 
 #[test]
@@ -509,6 +510,31 @@ fn status_line_has_a_white_comet_fading_tail_shimmering_verb_and_dim_metrics() {
         Some(status_detail_color()),
         "dim metrics"
     );
+}
+
+#[test]
+fn a_rotated_verb_arrives_with_the_shimmer_band_off_the_text() {
+    // The rotation is a whole number of sweeps, so the first frame to wear
+    // the next verb — on the boundary, or a frame's re-arm late — catches the
+    // band before it reaches the word: the swap never cuts a crest in half
+    // (docs/status-indicator.md).
+    assert_eq!(VERB_ROTATION.as_millis() % SHIMMER_SWEEP.as_millis(), 0);
+    let mut app = App::new();
+    app.begin_stream();
+    for late_ms in [0, 32] {
+        app.set_status_times(VERB_ROTATION + Duration::from_millis(late_ms), None);
+        let status = app.status().expect("a turn in flight");
+        assert_eq!(status.verb, STATUS_VERBS[1].working, "the swap frame");
+        let line = styled_status_line(status, None, Spinner::Comet, 200);
+        let verb_cells = status.verb.chars().count() + 1; // + the `…`
+        for span in &line.spans[VERB_START..VERB_START + verb_cells] {
+            assert_eq!(
+                span.style.fg,
+                Some(shimmer_base()),
+                "no crest on the fresh verb {late_ms} ms in: {span:?}"
+            );
+        }
+    }
 }
 
 #[test]

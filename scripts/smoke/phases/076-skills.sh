@@ -15,7 +15,7 @@ S76="${S}_skills"
 tmux new-session -d -s "$S76" -x 100 -y 30 "$APP; echo CLI_APP_EXITED; sleep 60"
 sleep 0.5
 submit "$S76" "load a skill for me"
-wait_for 24 "$S76" -S -80 -- -F "Done for"
+wait_for 24 "$S76" -S -80 -- -F "$SUMMARY_TURN1"
 skills_pane="$(tmux capture-pane -t "$S76" -p -S -80)"
 echo "==== Phase 76: the skill cell ===="
 printf '%s\n' "$skills_pane"

@@ -30,10 +30,21 @@ pub enum TokenArrow {
 /// core except as these already-computed values (mirrors the timestamp clock).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TurnStatus {
-    /// The whimsical working verb shown live (e.g. `Working`), fixed for the turn.
+    /// The whimsical working verb the line wears right now (e.g. `Working`) —
+    /// moved on every [`VERB_ROTATION`] by [`App::set_status_times`] when the
+    /// turn [rotates](Self::rotates_from).
     pub verb: &'static str,
-    /// The matching done verb for the committed summary (e.g. `Done`).
+    /// The past tense of [`verb`](Self::verb) (e.g. `Worked`), which the
+    /// committed summary opens with. Always rotated together with it, so the
+    /// summary names the verb the line last wore.
     pub done_verb: &'static str,
+    /// The [`STATUS_VERBS`] index this turn's line opened on, when
+    /// [`App::set_status_times`] rotates its verb with the turn's clock.
+    /// `None` leaves the verb exactly as given: a fixed-verb turn — a `!`
+    /// shell's `Running`, a `/compact`'s `Compacting` — whose verb names the
+    /// operation rather than a mood, or a copy whose owner does the rotating
+    /// (the agent session view's per-draw status, `ui::agent_view_status`).
+    pub rotates_from: Option<usize>,
     /// Cumulative token estimate for the whole turn (text **and** tool output);
     /// never reset mid-turn. Shown only when > 0.
     pub tokens: usize,
@@ -76,7 +87,10 @@ pub struct RetryInfo {
 /// in the Ctrl+O transcript (with a timestamp, like every other item).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TurnSummary {
-    /// The done verb chosen for the turn (e.g. `Done`, `Finished`).
+    /// The past tense of the verb the turn's status line wore last (e.g.
+    /// `Worked` after `Working…`) — [`TurnStatus::done_verb`] at turn end. A
+    /// resumed older rollout may carry a verb from before the pairing
+    /// (`Done`, `Finished`, …).
     pub verb: &'static str,
     /// The turn's total wall-clock duration in whole seconds.
     pub secs: u64,
@@ -233,10 +247,26 @@ impl App {
     /// phase), and the current thinking-phase duration (`Some` while thinking,
     /// `None` otherwise). No-op when no turn is in flight. Time is impure, so it
     /// only ever reaches the status this way.
+    ///
+    /// A rotating verb moves on with the clock here too: every
+    /// [`VERB_ROTATION`] of `elapsed` the line wears the next [`STATUS_VERBS`]
+    /// entry, its past tense riding along as the summary's verb, and the walk's
+    /// cursor follows so the next turn opens one verb further on. The boundary
+    /// calls this once per draw and nowhere else, so the verb it sets *is* the
+    /// verb on screen — a turn that ends a few milliseconds past a rotation no
+    /// frame drew still settles on the verb the user saw
+    /// (`docs/status-indicator.md`).
     pub fn set_status_times(&mut self, elapsed: Duration, thinking: Option<Duration>) {
         if let Some(status) = self.status.as_mut() {
             status.elapsed = elapsed;
             status.thinking = thinking;
+            if let Some(start) = status.rotates_from {
+                let index = StatusVerb::rotated(start, elapsed);
+                let verb = StatusVerb::at(index);
+                status.verb = verb.working;
+                status.done_verb = verb.done;
+                self.verb_cursor = index + 1;
+            }
         }
     }
     /// Inject the current running command's elapsed each frame (the

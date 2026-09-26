@@ -17,7 +17,7 @@ smoke_begin
 S14="${S}_resize"
 launch "$S14" 80 24
 submit "$S14" "hello there"
-wait_for 20 "$S14" -E "^Done for [0-9]+s" # up to ~20s: wait for the turn's committed summary
+wait_for 20 "$S14" -E "^$SUMMARY_TURN1 [0-9]+s" # up to ~20s: wait for the turn's committed summary
 tmux resize-window -t "$S14" -x 80 -y 12
 sleep 0.6
 resize_shrunk="$(tmux capture-pane -t "$S14" -p)"
@@ -43,11 +43,11 @@ tmux resize-window -t "$S14" -x 80 -y 24
 sleep 0.6
 # A height shrink MID-STREAM must recover the same way: the repaint resets the
 # committed count, so the in-flight reply re-commits itself at the new size as
-# the remaining chunks flow ("Finished for" is turn 2's done verb).
+# the remaining chunks flow ($SUMMARY_TURN2 is turn 2's summary).
 submit "$S14" "again please"
 sleep 0.7 # mid-stream: the first text segment is flowing
 tmux resize-window -t "$S14" -x 80 -y 14
-resize_mid="$(wait_pane 20.1 "$S14" -E "^Finished for [0-9]+s")" # up to ~20s: wait for the resized turn's summary
+resize_mid="$(wait_pane 20.1 "$S14" -E "^$SUMMARY_TURN2 [0-9]+s")" # up to ~20s: wait for the resized turn's summary
 echo "==== captured visible screen (height shrunk mid-stream, turn finished at 80x14) ===="
 printf '%s\n' "$resize_mid"
 tmux kill-session -t "$S14" 2>/dev/null
@@ -62,17 +62,17 @@ for step in shrunk regrown mid; do
 	shrunk)
 		cap="$resize_shrunk"
 		label="height-only shrink to 80x12"
-		tail_marker="Done for"
+		tail_marker="$SUMMARY_TURN1"
 		;;
 	regrown)
 		cap="$resize_regrown"
 		label="height grow back to 80x24"
-		tail_marker="Done for"
+		tail_marker="$SUMMARY_TURN1"
 		;;
 	mid)
 		cap="$resize_mid"
 		label="mid-stream height shrink to 80x14"
-		tail_marker="Finished for"
+		tail_marker="$SUMMARY_TURN2"
 		;;
 	esac
 	prompts="$(count_bare_prompts "$cap")"

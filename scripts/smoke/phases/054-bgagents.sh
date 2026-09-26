@@ -22,7 +22,7 @@ bg_launched=""
 for _ in $(seq 1 400); do
 	cap="$(tmux capture-pane -t "$S54" -p)"
 	if printf '%s' "$cap" | grep -qF "2 background agents launched (↓ to manage · ctrl+o to expand)" &&
-		printf '%s' "$cap" | grep -qF "Done for"; then
+		printf '%s' "$cap" | grep -qF "$SUMMARY_TURN1"; then
 		bg_launched="$cap"
 		break
 	fi

@@ -78,7 +78,8 @@ for i in $(seq 1 "$N"); do
 		tmux send-keys -t "$S" -l " describe"
 		tmux send-keys -t "$S" Enter
 		for _ in $(seq 1 100); do
-			if [ "$(tmux capture-pane -t "$S" -p -S -400 | grep -c "Done for")" -ge "$i" ]; then break; fi
+			# Turn i's summary, whatever its verb (docs/status-indicator.md).
+			if [ "$(tmux capture-pane -t "$S" -p -S -400 | grep -cE '^[A-Z][a-z]+ed for [0-9]')" -ge "$i" ]; then break; fi
 			sleep 0.1
 		done
 		sleep 0.5

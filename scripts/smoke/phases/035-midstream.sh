@@ -34,7 +34,7 @@ echo "==== Phase 35: returned from Ctrl+O mid-stream (thinking pause still open)
 printf '%s\n' "$midstream_returned"
 # Let the turn finish, then check the reply committed exactly ONCE — the return's
 # catch-up must not re-insert rows the screen already holds.
-midstream_done="$(wait_pane 20 "$S35" -S -80 -- -E "^Done for [0-9]+s")" # up to ~20s
+midstream_done="$(wait_pane 20 "$S35" -S -80 -- -E "^$SUMMARY_TURN1 [0-9]+s")" # up to ~20s
 midstream_dupes=$(printf '%s\n' "$midstream_done" | grep -cF "Happy to help")
 tmux kill-session -t "$S35" 2>/dev/null
 

@@ -64,7 +64,7 @@ if [ "$sf_heads" != "1" ]; then
 fi
 # The turn ends: the flow clears, the frozen rows are purged, and the three
 # cells commit — once each — with nothing of the strip left behind.
-sf_done="$(wait_pane 30 "$S106" -S -120 -- -E 'Done for [0-9]+s')"
+sf_done="$(wait_pane 30 "$S106" -S -120 -- -E "$SUMMARY_ANY_RE")"
 echo "==== Phase 106: the turn resolved, the frozen rows purged ===="
 printf '%s\n' "$sf_done" | tail -16
 expect_lacks "$sf_done" -F "esc to interrupt" "the frozen status line survived the turn (the purge should have wiped the strip)"

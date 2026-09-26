@@ -50,7 +50,7 @@ echo "==== Phase 43: mid-turn stop notice while the status line still runs ===="
 printf '%s\n' "$bgkill_live_pane"
 # And once the turn ends, the notice sits ABOVE its Done summary in scrollback
 # (the old behaviour settled it after, below the summary).
-bgkill_done_pane="$(wait_pane 30 "$S43" -S -60 -- -E "Done for [0-9]+s")"
+bgkill_done_pane="$(wait_pane 30 "$S43" -S -60 -- -E "$SUMMARY_ANY_RE")"
 echo "==== Phase 43: pane after the turn ended ===="
 printf '%s\n' "$bgkill_done_pane"
 tmux kill-session -t "$S43" 2>/dev/null
@@ -63,7 +63,7 @@ if ! printf '%s' "$bgkill_live_pane" | grep -qF "was stopped by the user" \
 	fail "the mid-turn kill's notice never showed while the turn was still streaming (turn-end-only settle?)"
 fi
 bgkill_notice_row="$(printf '%s\n' "$bgkill_done_pane" | grep -nF "was stopped by the user" | head -1 | cut -d: -f1)"
-bgkill_done_row="$(printf '%s\n' "$bgkill_done_pane" | grep -nE "Done for [0-9]+s" | head -1 | cut -d: -f1)"
+bgkill_done_row="$(printf '%s\n' "$bgkill_done_pane" | grep -nE "$SUMMARY_ANY_RE" | head -1 | cut -d: -f1)"
 if [ -z "$bgkill_notice_row" ] || [ -z "$bgkill_done_row" ] \
 	|| [ "$bgkill_notice_row" -ge "$bgkill_done_row" ]; then
 	fail "the kill notice (row ${bgkill_notice_row:-none}) does not precede the Done summary (row ${bgkill_done_row:-none})"

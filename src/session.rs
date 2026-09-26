@@ -22,7 +22,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::agents::AgentStatus;
 use crate::app::{
-    AgentGroup, AgentGroupEntry, AgentNotice, DONE_VERBS, HistoryItem, Message, Role, ToolCall,
+    AgentGroup, AgentGroupEntry, AgentNotice, HistoryItem, Message, Role, STATUS_VERBS, ToolCall,
     ToolStatus, TurnSummary,
 };
 use crate::checkpoint::Checkpoint;
@@ -421,9 +421,10 @@ struct CheckpointRecord {
     after: usize,
 }
 
-/// A [`TurnSummary`] on disk. `verb` maps back to its [`DONE_VERBS`] static on
-/// load (falling back to `Done` for a verb this build doesn't know) because
-/// `TurnSummary::verb` is `&'static str`. The real usage (`tokens`/`cached`,
+/// A [`TurnSummary`] on disk. `verb` maps back to its static on load — a
+/// [`STATUS_VERBS`] past tense or a [`LEGACY_DONE_VERBS`] entry, `Done` for a
+/// verb this build doesn't know — because `TurnSummary::verb` is
+/// `&'static str`. The real usage (`tokens`/`cached`,
 /// `docs/prompt-caching.md`) is persisted — a fact of the turn, unlike the
 /// transient `shells` count — and `serde(default)`ed so rollouts recorded
 /// before the fields existed still parse.
@@ -475,14 +476,24 @@ fn role_from(name: &str) -> Option<Role> {
     }
 }
 
-/// The [`DONE_VERBS`] static matching a recorded verb, or `Done` (the first)
-/// for one this build doesn't know — [`TurnSummary::verb`] is `&'static str`.
+/// The summary verbs older builds recorded, when the summary drew its verb
+/// from a list of its own rather than the past tense of the verb the line
+/// wore (`docs/status-indicator.md`) — still mapped back by value, so a
+/// resumed old conversation's `Finished for 12s` reads exactly as it was
+/// recorded. `Done`, the first, doubles as the fallback for a verb this build
+/// doesn't know at all.
+const LEGACY_DONE_VERBS: &[&str] = &["Done", "Finished", "Completed", "Wrapped up", "Ready"];
+
+/// The static matching a recorded summary verb — a [`STATUS_VERBS`] past
+/// tense or a [`LEGACY_DONE_VERBS`] entry — or `Done` for one this build
+/// doesn't know: [`TurnSummary::verb`] is `&'static str`.
 fn done_verb(name: &str) -> &'static str {
-    DONE_VERBS
+    STATUS_VERBS
         .iter()
-        .copied()
+        .map(|verb| verb.done)
+        .chain(LEGACY_DONE_VERBS.iter().copied())
         .find(|verb| *verb == name)
-        .unwrap_or(DONE_VERBS[0])
+        .unwrap_or(LEGACY_DONE_VERBS[0])
 }
 
 /// Serialize the `session_meta` line (the first line of a new rollout file).
@@ -1643,24 +1654,46 @@ mod tests {
     }
 
     #[test]
-    fn summary_verb_maps_back_to_the_done_verbs_static() {
-        let summary = HistoryItem::Summary(TurnSummary {
-            verb: DONE_VERBS[2],
-            secs: 7,
-            timestamp: "03:22 PM".into(),
-            shells: 0,
-            tokens: 0,
-            cached: 0,
-            cache_write: 0,
-        });
-        let (_, parsed) = parse_session(&file_of(std::slice::from_ref(&summary))).expect("parses");
-        assert_eq!(parsed, vec![summary]);
-        // The parsed verb is one of the known statics, restored by value
-        // (DONE_VERBS is a `const`, so pointer identity can't be asserted).
-        let HistoryItem::Summary(s) = &parsed[0] else {
-            panic!("expected a summary");
-        };
-        assert!(DONE_VERBS.contains(&s.verb));
+    fn every_status_verbs_past_tense_survives_a_round_trip() {
+        // The summary names the past tense of the verb the line wore
+        // (`Worked for 12s`), and a resumed transcript must say the same —
+        // restored by value to its static (STATUS_VERBS is a `const`, so
+        // pointer identity can't be asserted).
+        for verb in STATUS_VERBS {
+            let summary = HistoryItem::Summary(TurnSummary {
+                verb: verb.done,
+                secs: 7,
+                timestamp: "03:22 PM".into(),
+                shells: 0,
+                tokens: 0,
+                cached: 0,
+                cache_write: 0,
+            });
+            let (_, parsed) =
+                parse_session(&file_of(std::slice::from_ref(&summary))).expect("parses");
+            assert_eq!(parsed, vec![summary]);
+        }
+    }
+
+    #[test]
+    fn a_legacy_summary_verb_still_loads_as_recorded() {
+        // Rollouts written before the verbs were paired recorded `Finished`,
+        // `Wrapped up`, … — a resumed old conversation keeps reading exactly
+        // as it did.
+        for verb in ["Done", "Finished", "Completed", "Wrapped up", "Ready"] {
+            let file = format!(
+                "{}\n{}\n",
+                meta_line(&meta(), "t0"),
+                format_args!(
+                    r#"{{"timestamp":"t","type":"summary","payload":{{"verb":"{verb}","secs":3,"timestamp":""}}}}"#
+                ),
+            );
+            let (_, parsed) = parse_session(&file).expect("parses");
+            let HistoryItem::Summary(s) = &parsed[0] else {
+                panic!("expected a summary");
+            };
+            assert_eq!(s.verb, verb);
+        }
     }
 
     #[test]
@@ -1996,7 +2029,7 @@ mod tests {
         // A resumed session's shells are gone — the parsed summary must not
         // claim they still run.
         let summary = HistoryItem::Summary(TurnSummary {
-            verb: DONE_VERBS[0],
+            verb: STATUS_VERBS[0].done,
             secs: 22,
             timestamp: String::new(),
             shells: 3,
@@ -2019,7 +2052,7 @@ mod tests {
         // shells count) — a resumed transcript keeps them
         // (docs/prompt-caching.md).
         let summary = HistoryItem::Summary(TurnSummary {
-            verb: DONE_VERBS[1],
+            verb: STATUS_VERBS[1].done,
             secs: 9,
             timestamp: String::new(),
             shells: 0,
