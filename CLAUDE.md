@@ -1039,7 +1039,9 @@ running model-`bash`/`!` command to the background mid-run (the live cell hints
 it with a dim `(ctrl+b to run in background)` row that waits a few seconds —
 `ui::TOOL_BACKGROUND_HINT_DELAY`, gated on the command's own boundary-injected
 `App::background_hint_elapsed` — so a fast command never flashes it, Claude-Code-style;
-Ctrl+B itself works the whole time); the cell resolves `⎿ Running in the
+Ctrl+B itself works the whole time; a `bashwait`/`bashsend` cell's row reads
+`(ctrl+b to stop waiting)` instead, its session already running there, and a
+`bashkill`'s none — `ui::tool::ctrl_b_hint`); the cell resolves `⎿ Running in the
 background (↓ to manage)`, the footer
 counts `· N shells` — and that count is the band's **entry point**: **↓ from an
 empty composer lights the indicator on cyan** (`App::background_focus`, the

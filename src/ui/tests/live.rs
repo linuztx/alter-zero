@@ -840,6 +840,30 @@ fn a_running_shell_only_hints_ctrl_b_after_the_delay() {
 }
 
 #[test]
+fn a_wait_on_a_session_hints_that_ctrl_b_stops_waiting() {
+    // Ctrl+B on `bashwait` or `bashsend` ends the wait, not the command:
+    // the session already runs in the background, so the hint says what the
+    // key does there. `bashkill` does not answer the key at all, so it hints
+    // nothing (docs/background.md).
+    let hints = |name: &str| {
+        let mut app = App::new();
+        app.begin_stream();
+        app.start_tool(name, "gh run watch 36209800650", None);
+        app.set_command_elapsed(Some(TOOL_BACKGROUND_HINT_DELAY));
+        preview_tool_lines(&app, 60)
+            .iter()
+            .map(plain)
+            .filter(|l| l.contains("ctrl+b"))
+            .map(|l| l.trim().to_string())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(hints("Bash"), ["(ctrl+b to run in background)"]);
+    assert_eq!(hints("BashWait"), ["(ctrl+b to stop waiting)"]);
+    assert_eq!(hints("BashSend"), ["(ctrl+b to stop waiting)"]);
+    assert_eq!(hints("BashKill"), Vec::<String>::new());
+}
+
+#[test]
 fn a_waiting_batch_sibling_gets_no_ctrl_b_hint() {
     let mut app = App::new();
     app.begin_stream();

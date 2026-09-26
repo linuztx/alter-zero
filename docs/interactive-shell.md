@@ -1018,7 +1018,10 @@ name one by its wire name (`bashsend`) or by the name its cell shows
 - **Ctrl+B** on a running `bash` launch hands the session to the background
   (it keeps running, the model is told its id); on a `bashsend` or
   `bashwait` call it ends the *wait* — the session was already in the
-  background — and the model is told the user moved on.
+  background — and the model is told the user moved on. The cell's hint says
+  which: `(ctrl+b to run in background)` under a launch,
+  `(ctrl+b to stop waiting)` under a wait, and nothing under a `bashkill`,
+  which the key does not reach.
 - The ↓ manager's details page shows a TTY shell's current screen.
 
 ## Offline demo and tests

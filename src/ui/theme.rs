@@ -361,6 +361,11 @@ pub(super) const TOOL_BACKGROUNDED: &str = "Running in the background (↓ to ma
 /// moves it to the background. Never committed to scrollback.
 pub(super) const TOOL_BACKGROUND_HINT: &str = "(ctrl+b to run in background)";
 
+/// The same hint under a running `bashwait` or `bashsend`, whose session
+/// already runs in the background: there Ctrl+B ends the wait, not the
+/// command.
+pub(super) const TOOL_STOP_WAITING_HINT: &str = "(ctrl+b to stop waiting)";
+
 /// How long a command must have been running before its preview shows the
 /// `(ctrl+b to run in background)` hint — Claude-Code-style, so a command that
 /// finishes right away never flashes it (Ctrl+B itself still works the whole

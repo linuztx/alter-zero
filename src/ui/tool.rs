@@ -346,6 +346,24 @@ pub(super) fn is_command_tool(tool: &ToolCall) -> bool {
     !tool.shell && COMMAND_TOOL_NAMES.contains(&tool.name.as_str())
 }
 
+/// The live hint that says what Ctrl+B does to this running call: a `bash`
+/// launch or a `!` command moves to the background, a call waiting on a
+/// session that already runs there — `bashwait`, `bashsend`, the legacy
+/// tool — stops waiting, and `bashkill`, which never answers the key,
+/// hints nothing (`docs/background.md`).
+pub(super) fn ctrl_b_hint(tool: &ToolCall) -> Option<&'static str> {
+    if tool.shell {
+        return Some(TOOL_BACKGROUND_HINT);
+    }
+    match tool.name.as_str() {
+        "Bash" => Some(TOOL_BACKGROUND_HINT),
+        crate::llm::tools::BASH_WAIT_DISPLAY
+        | crate::llm::tools::BASH_SEND_DISPLAY
+        | crate::llm::tools::BASH_SESSION_TOOL_DISPLAY => Some(TOOL_STOP_WAITING_HINT),
+        _ => None,
+    }
+}
+
 /// A call's `args` summary as the screen shows it: a file tool's path
 /// through the session's [`PathDisplay`] rule (`docs/tools.md` *Path
 /// display*), every other tool's — a `bash` command, an agent's prose, an

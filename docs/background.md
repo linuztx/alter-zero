@@ -319,7 +319,11 @@ inside the band.
 
 The running `bash` cell's live preview appends a dim
 `(ctrl+b to run in background)` row (live-only — never committed); the
-running `!` shell cell gets the same row. The hint is **delayed**,
+running `!` shell cell gets the same row. A running `bashwait` or `bashsend`
+cell gets `(ctrl+b to stop waiting)` instead: its session already runs in the
+background, so there the key ends the wait and the command keeps going. A
+`bashkill` gets no row at all, since the key does nothing to a kill
+(`ui::tool::ctrl_b_hint` picks which). The hint is **delayed**,
 Claude-Code-style: it appears only once the command has been running for
 `ui::TOOL_BACKGROUND_HINT_DELAY` (3s), so a command that finishes right away
 never flashes it (it isn't needed for a fast command). The gate is the

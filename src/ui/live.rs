@@ -15,7 +15,8 @@ use super::layout::{
 use super::reasoning::live_reasoning_lines;
 use super::theme::*;
 use super::tool::{
-    is_command_tool, live_tool_lines, result_row, running_command_lines, shell_running_line,
+    ctrl_b_hint, is_command_tool, live_tool_lines, result_row, running_command_lines,
+    shell_running_line,
 };
 use super::*;
 
@@ -238,21 +239,23 @@ pub(super) fn preview_tool_lines(app: &App, width: u16) -> Vec<Line<'static>> {
             app.path_display(),
         ));
         // A running command (a model `bash` call or the `!` shell) can be
-        // moved to the background with Ctrl+B — hint it under the live cell,
-        // but only once the command has been running a few seconds
-        // (`TOOL_BACKGROUND_HINT_DELAY`), Claude-Code-style: a command that
-        // finishes right away never flashes the hint (Ctrl+B still works the
-        // whole time — only the hint waits). The command's own elapsed is
-        // boundary-injected each frame (`App::command_elapsed`). Live-only by
-        // construction: this renderer never feeds scrollback commits, so the
-        // hint is never committed (docs/background.md).
+        // moved to the background with Ctrl+B, and a wait on a session that
+        // already runs there ended — hint what the key does under the live
+        // cell (`ctrl_b_hint`), but only once the command has been running a
+        // few seconds (`TOOL_BACKGROUND_HINT_DELAY`), Claude-Code-style: a
+        // command that finishes right away never flashes the hint (Ctrl+B
+        // still works the whole time — only the hint waits). The command's
+        // own elapsed is boundary-injected each frame
+        // (`App::command_elapsed`). Live-only by construction: this renderer
+        // never feeds scrollback commits, so the hint is never committed
+        // (docs/background.md).
         if tool.status == ToolStatus::Running
-            && (tool.shell || is_command_tool(tool))
+            && let Some(hint) = ctrl_b_hint(tool)
             && app
                 .background_hint_elapsed()
                 .is_some_and(|elapsed| elapsed >= TOOL_BACKGROUND_HINT_DELAY)
         {
-            lines.push(result_row(1, TOOL_BACKGROUND_HINT.to_string()));
+            lines.push(result_row(1, hint.to_string()));
         }
     }
     lines

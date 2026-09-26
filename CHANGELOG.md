@@ -46,6 +46,11 @@ release heading when a version is cut.
   asyncio program idles the same way — so one waiting on the network, even
   with a prompt-shaped `Fetching... ` left on screen, is no longer taken for
   a question either (`docs/interactive-shell.md`).
+- **The Ctrl+B hint under a `bashwait` says what the key does there.** A
+  `bashwait` or `bashsend` cell offered `(ctrl+b to run in background)` for
+  a command already running in the background; pressing the key only ends
+  the wait, so the hint now reads `(ctrl+b to stop waiting)`. A `bashkill`,
+  which the key does not affect, shows no hint (`docs/background.md`).
 
 ## [0.7.0] - 2026-09-26
 
