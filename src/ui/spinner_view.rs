@@ -18,17 +18,21 @@ use super::theme::*;
 use super::wrap::cols;
 use super::*;
 
-use crate::app::{Spinner, SpinnerRow};
+use crate::app::{Spinner, SpinnerRow, StatusVerb};
 
-/// The sample the preview renders: a just-submitted turn's status — the
-/// working verb, no tokens yet — at `elapsed` since the picker opened, so the
-/// line reads `0s` when the page appears and counts up while the user
-/// browses. The comet's sweep and the verb's shimmer take their phase from
-/// the same value, exactly as a real turn's do.
+/// The sample the preview renders: a just-submitted **first** turn's status
+/// — the first status verb, no tokens yet — at `elapsed` since the picker
+/// opened, so the line reads `0s` when the page appears and counts up while
+/// the user browses, moving on to the next verb every
+/// [`VERB_ROTATION`](crate::app::VERB_ROTATION) as a real turn's line does.
+/// The comet's sweep and the verb's shimmer take their phase from the same
+/// value, exactly as a real turn's do.
 fn sample_status(elapsed: Duration) -> TurnStatus {
+    let verb = StatusVerb::at(StatusVerb::rotated(0, elapsed));
     TurnStatus {
-        verb: SPINNER_PREVIEW_VERB,
-        done_verb: SPINNER_PREVIEW_DONE_VERB,
+        verb: verb.working,
+        done_verb: verb.done,
+        rotates_from: Some(0),
         tokens: 0,
         arrow: TokenArrow::Down,
         elapsed,

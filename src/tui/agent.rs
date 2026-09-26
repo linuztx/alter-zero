@@ -62,9 +62,12 @@ impl Session<'_> {
         // history, exactly like the view's own returns.
         let viewing = self.viewing_agent(id);
         // Freeze the entry's runtime at its live value before a settling event
-        // (the per-frame injection stops once the status is final).
+        // (the per-frame injection stops once the status is final) — the
+        // runtime alone: the status verb moves only with a drawn frame, so a
+        // settling turn's summary names the verb its view last showed
+        // (docs/status-indicator.md).
         if let Some(elapsed) = self.agent_clocks.get(id).map(Instant::elapsed) {
-            self.app.set_agent_runtime(id, elapsed);
+            self.app.freeze_agent_runtime(id, elapsed);
         }
         // A thinking phase opens: start its clock, and — with the display on
         // (`/settings` **Hide thinking**, read per phase like the main

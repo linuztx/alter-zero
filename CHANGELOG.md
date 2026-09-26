@@ -12,6 +12,20 @@ release heading when a version is cut.
 
 ## [Unreleased]
 
+### Changed
+
+- **The status line's verb changes as a turn runs, and the summary matches
+  it.** A turn's `Working…` moves on to the next verb every 30 seconds —
+  `Generating…`, `Pondering…`, `Cooking…` — so a long agentic turn gets a
+  fresh word each half minute while a quick answer keeps a single one, and
+  the next turn picks up where the last left off. When the turn ends, the
+  summary is the past tense of the verb the line was showing: `Working…`
+  settles as `Worked for 12s`, `Brewing…` as `Brewed for 3m 2s`, instead of
+  an unrelated `Done`, `Finished` or `Wrapped up` picked on its own. A
+  subagent's session view follows the same rule, and the `/spinner`
+  picker's preview line walks the verbs the same way. Resumed conversations
+  keep the summaries they were recorded with (`docs/status-indicator.md`).
+
 ### Fixed
 
 - **`gh run watch` and other live displays are no longer reported as

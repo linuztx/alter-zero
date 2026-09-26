@@ -28,9 +28,10 @@ sleep 0.8
 hole_free="$(tmux capture-pane -t "$S81" -p -S -)"
 echo "==== Phase 81: returned after the turn finished under the overlay ===="
 printf '%s\n' "$hole_free" | tail -60
-for marker in "❯ $USER_MSG" "$EXPECT_REPLY" "Read(about.py)" "Edit(about.py)" "Bash(python3 about.py)" "$SETTLED_REPLY" "Done for"; do
+for marker in "❯ $USER_MSG" "$EXPECT_REPLY" "Read(about.py)" "Edit(about.py)" "Bash(python3 about.py)" "$SETTLED_REPLY"; do
 	expect_has "$hole_free" -F "$marker" "'$marker' never reached the terminal after the overlay return (the scrollback hole)"
 done
+expect_has "$hole_free" -E "$SUMMARY_RE" "the turn summary never reached the terminal after the overlay return (the scrollback hole)"
 hole_screen="$(tmux capture-pane -t "$S81" -p)"
 expect_has "$hole_screen" "^❯" "the composer is missing from the returned screen"
 expect_has "$hole_screen" -E "dummy_model_name · .*manual$" "the session footer is missing from the returned screen"

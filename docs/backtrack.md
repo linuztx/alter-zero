@@ -192,4 +192,5 @@ the scroll-into-view decision, the footer hint line and its `footer_rows`
 slot, and the three-way shortcuts entry. `scripts/smoke.sh`'s backtrack phase
 drives the real binary end-to-end: two exchanges, Esc-Esc, a step older,
 Enter, then asserts the composer holds the first message, the second exchange
-left the repainted screen, and a resubmitted turn still streams to "Done".
+left the repainted screen, and a resubmitted turn still streams to its
+summary (`Pondered for …`, the third turn's).

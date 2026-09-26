@@ -4,28 +4,75 @@
 
 use super::*;
 
-/// The whimsical working verbs, one chosen per turn (by `App::turn_count`) for
-/// the live status line. Cycled deterministically so the demo varies yet stays
-/// testable — no RNG (mirrors how [`dummy_response`](crate::stream::dummy_response)
+/// A status verb in both of its forms: the live one the spinner line
+/// shimmers while a turn runs (`Working…`) and its past tense, which the
+/// committed summary opens with (`Worked for 12s`). One entry is one verb, so
+/// a summary can never name a different verb than the line wore. See
+/// `docs/status-indicator.md`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StatusVerb {
+    /// The live form, drawn with a trailing `…` (`Working`).
+    pub working: &'static str,
+    /// Its past tense, the summary's first word (`Worked`).
+    pub done: &'static str,
+}
+
+impl StatusVerb {
+    /// One [`STATUS_VERBS`] row — a constructor so the table reads one verb
+    /// per line.
+    const fn new(working: &'static str, done: &'static str) -> Self {
+        Self { working, done }
+    }
+
+    /// The verb at `index` in the walk through [`STATUS_VERBS`], wrapping.
+    #[must_use]
+    pub fn at(index: usize) -> Self {
+        STATUS_VERBS[index % STATUS_VERBS.len()]
+    }
+
+    /// The walk index a rotating line has reached `elapsed` into a turn that
+    /// opened on `start`: one entry further per whole [`VERB_ROTATION`],
+    /// wrapped into the table.
+    #[must_use]
+    pub fn rotated(start: usize, elapsed: Duration) -> usize {
+        let len = STATUS_VERBS.len();
+        let steps = elapsed.as_millis() / VERB_ROTATION.as_millis() % len as u128;
+        // `steps < len`, so the narrowing is exact.
+        (start % len + steps as usize) % len
+    }
+}
+
+/// How long a turn's status line wears one verb before moving on to the
+/// next [`STATUS_VERBS`] entry. Thirty seconds: a quick answer keeps a single
+/// verb, so its summary names the one the user watched, while a long agentic
+/// turn gets a fresh word every half minute — enough to show it is still
+/// going without pulling the eye off the reply streaming above it. It is a
+/// whole number of the verb's shimmer sweeps (two seconds each), so a swap
+/// always lands at the start of a sweep, while the band is still off the
+/// text. See `docs/status-indicator.md`.
+pub const VERB_ROTATION: Duration = Duration::from_secs(30);
+
+/// The whimsical status verbs, walked in order: a turn's line opens on the
+/// entry after the last one a line wore ([`App`]'s verb cursor) and moves to
+/// the next every [`VERB_ROTATION`], and its summary reads the past tense of
+/// whichever it wore last. Deterministic so the demo varies yet stays testable
+/// — no RNG (mirrors how [`dummy_response`](crate::stream::dummy_response)
 /// picks a reply).
-pub const WORKING_VERBS: &[&str] = &[
-    "Working",
-    "Generating",
-    "Pondering",
-    "Cooking",
-    "Brewing",
-    "Crunching",
-    "Conjuring",
-    "Churning",
-    "Computing",
-    "Synthesizing",
+pub const STATUS_VERBS: &[StatusVerb] = &[
+    StatusVerb::new("Working", "Worked"),
+    StatusVerb::new("Generating", "Generated"),
+    StatusVerb::new("Pondering", "Pondered"),
+    StatusVerb::new("Cooking", "Cooked"),
+    StatusVerb::new("Brewing", "Brewed"),
+    StatusVerb::new("Crunching", "Crunched"),
+    StatusVerb::new("Conjuring", "Conjured"),
+    StatusVerb::new("Churning", "Churned"),
+    StatusVerb::new("Computing", "Computed"),
+    StatusVerb::new("Synthesizing", "Synthesized"),
 ];
 
-/// The done verbs, one chosen per turn for the committed `"{verb} for Ns"` summary.
-pub const DONE_VERBS: &[&str] = &["Done", "Finished", "Completed", "Wrapped up", "Ready"];
-
 /// The live-status verb for a `!` shell command (fixed, not cycled like the AI
-/// [`WORKING_VERBS`]): the status line reads `Running…`. It doubles as the
+/// [`STATUS_VERBS`]): the status line reads `Running…`. It doubles as the
 /// status's (never rendered) done verb — a shell turn ends **without** a
 /// summary, [`App::end_turn`] returning `None` for it. See
 /// `docs/shell-command.md`.
@@ -131,7 +178,8 @@ impl App {
 
     /// Begin a reply: open an empty streaming buffer so the live region can
     /// show the assistant is responding even before the first chunk arrives, and
-    /// start the live turn status (pick this turn's verbs, reset the tally).
+    /// start the live turn status (open on the next status verb, reset the
+    /// tally).
     pub fn begin_stream(&mut self) {
         self.streaming = Some(String::new());
         // A fresh turn has been handed nothing yet (docs/queue.md).
@@ -152,12 +200,15 @@ impl App {
         // buffer would otherwise preview under the new turn's status
         // (docs/thinking-stream.md).
         self.drop_reasoning();
-        let verb = WORKING_VERBS[self.turn_count % WORKING_VERBS.len()];
-        let done_verb = DONE_VERBS[self.turn_count % DONE_VERBS.len()];
-        self.turn_count = self.turn_count.wrapping_add(1);
+        // The walk picks up one past the last verb a line wore, and
+        // `set_status_times` moves it on from here (docs/status-indicator.md).
+        let start = self.verb_cursor;
+        let verb = StatusVerb::at(start);
+        self.verb_cursor = start.wrapping_add(1);
         self.status = Some(TurnStatus {
-            verb,
-            done_verb,
+            verb: verb.working,
+            done_verb: verb.done,
+            rotates_from: Some(start),
             tokens: 0,
             arrow: TokenArrow::Down,
             elapsed: Duration::ZERO,
@@ -203,6 +254,8 @@ impl App {
             // Never rendered: a shell turn ends without a summary (end_turn
             // returns None for it), so no dedicated done verb exists.
             done_verb: SHELL_VERB,
+            // It names the operation, so the clock never moves it on.
+            rotates_from: None,
             tokens: 0,
             arrow: TokenArrow::Down,
             elapsed: Duration::ZERO,

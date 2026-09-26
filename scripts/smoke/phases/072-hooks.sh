@@ -17,7 +17,7 @@ smoke_begin
 S72="${S}_hooks"
 launch "$S72" 100 30
 submit "$S72" "show me the hooks demo"
-hooks_pane="$(wait_pane 20 "$S72" -S -200 -- -F "Done for")" # up to ~20s
+hooks_pane="$(wait_pane 20 "$S72" -S -200 -- -E "$SUMMARY_RE")" # up to ~20s
 echo "==== Phase 72: captured pane + scrollback (lifecycle hooks) ===="
 printf '%s\n' "$hooks_pane"
 expect_has "$hooks_pane" -F "Blocked by hook: no destructive deletes outside ./tmp" "the PreToolUse block never rendered its refusal cell"

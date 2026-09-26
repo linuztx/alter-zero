@@ -15,7 +15,7 @@ smoke_begin
 S15="${S}_search"
 launch "$S15" 80 24
 submit "$S15" "alpha bravo"
-wait_for 20 "$S15" -E "^Done for [0-9]+s" # up to ~20s: the turn must finish first
+wait_for 20 "$S15" -E "^$SUMMARY_RE" # up to ~20s: the turn must finish first
 tmux send-keys -t "$S15" -l "charlie alpha"
 sleep 0.2
 tmux send-keys -t "$S15" C-c

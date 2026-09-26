@@ -45,6 +45,10 @@ fi
 
 CFG="$(mktemp -d)"
 S="paste_mem_$$"
+# A committed turn summary, whichever verb the turn ended on: turn i is the
+# i-th summary row, not the i-th of one verb (the same line as
+# scripts/smoke/lib.sh; `app::tests::turn` pins every copy to `STATUS_VERBS`).
+SUMMARY_RE='(Worked|Generated|Pondered|Cooked|Brewed|Crunched|Conjured|Churned|Computed|Synthesized) for [0-9]'
 cleanup() {
 	tmux kill-session -t "$S" 2>/dev/null
 	[ -n "${OWNER_PID:-}" ] && kill "$OWNER_PID" 2>/dev/null
@@ -78,7 +82,7 @@ for i in $(seq 1 "$N"); do
 		tmux send-keys -t "$S" -l " describe"
 		tmux send-keys -t "$S" Enter
 		for _ in $(seq 1 100); do
-			if [ "$(tmux capture-pane -t "$S" -p -S -400 | grep -c "Done for")" -ge "$i" ]; then break; fi
+			if [ "$(tmux capture-pane -t "$S" -p -S -400 | grep -cE "^$SUMMARY_RE")" -ge "$i" ]; then break; fi
 			sleep 0.1
 		done
 		sleep 0.5

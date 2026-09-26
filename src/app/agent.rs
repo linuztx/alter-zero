@@ -525,9 +525,28 @@ impl App {
     }
 
     /// Inject one agent's runtime before a draw (the
-    /// [`set_status_times`](App::set_status_times) pattern). Frozen once the
-    /// agent settles (the tree keeps its final elapsed).
+    /// [`set_status_times`](App::set_status_times) pattern) — and, like it,
+    /// move the agent's status verb on with the clock
+    /// ([`AgentRun::rotate_verb`](crate::agents::AgentRun::rotate_verb)), so
+    /// its session view's line walks the verbs every
+    /// [`VERB_ROTATION`]. Frozen once the agent settles (the tree keeps its
+    /// final elapsed).
     pub fn set_agent_runtime(&mut self, id: &str, runtime: Duration) {
+        if let Some(agent) = self.agents.iter_mut().find(|agent| agent.id == id)
+            && !agent.status.is_final()
+        {
+            agent.runtime = runtime;
+            agent.rotate_verb();
+        }
+    }
+
+    /// Pin one agent's runtime to the instant an event arrives — the
+    /// boundary's freeze before each agent event, so a settling turn records
+    /// its exact elapsed. The runtime **alone**: only a drawn frame moves the
+    /// status verb ([`set_agent_runtime`](App::set_agent_runtime)), so a turn
+    /// that ends a few milliseconds past a rotation no frame drew still names
+    /// the verb its view showed (`docs/status-indicator.md`).
+    pub fn freeze_agent_runtime(&mut self, id: &str, runtime: Duration) {
         if let Some(agent) = self.agents.iter_mut().find(|agent| agent.id == id)
             && !agent.status.is_final()
         {

@@ -9,9 +9,9 @@ smoke_begin
 # two-space inset) *above* the box, and the turn takes them at its next round
 # boundary — the dummy's tool boundary — where each becomes a real user bubble
 # at column 0 ("❯ world", "❯ again") **while the turn is still running** (the
-# status line is still up). So exactly ONE turn runs: turn 1's "Done for"
-# summary appears and turn 2's "Finished for" must NOT — a backlog that waited
-# for the turn to end would produce it, which is the behaviour this replaced.
+# status line is still up). So exactly ONE turn runs: one turn summary appears
+# and a second must NOT — a backlog that waited for the turn to end would
+# produce it, which is the behaviour this replaced.
 S9="${S}_queue"
 launch "$S9" 80 24
 submit "$S9" "hello there"
@@ -49,7 +49,7 @@ for _ in $(seq 1 400); do # up to ~60s: the turn reaches its first tool boundary
 done
 echo "==== captured pane (both queued messages taken INTO the running turn) ===="
 printf '%s\n' "$queue_midturn"
-queue_done="$(wait_pane 45 "$S9" -S -80 -- -F "Done for")" # up to ~45s: the one turn finishes
+queue_done="$(wait_summaries 45 "$S9" 1 -S -80)" # up to ~45s: the one turn finishes
 # …and give a would-be second turn time to start before asserting there is none.
 sleep 2
 queue_done="$(tmux capture-pane -t "$S9" -p -S -80)"
@@ -71,5 +71,9 @@ if ! printf '%s' "$queue_done" | grep -qF "❯ world" ||
 	! printf '%s' "$queue_done" | grep -qF "❯ again"; then
 	fail "the queued messages were never sent — '❯ world' and '❯ again' did not both reach scrollback"
 fi
-expect_has "$queue_done" -F "Done for" "the turn that read the queued messages never finished — no 'Done for' summary"
-expect_lacks "$queue_done" -F "Finished for" "a SECOND turn ran ('Finished for') — the queued messages must be read by the turn already running, not dispatched after it"
+queue_summaries="$(count_summaries "$queue_done")"
+if [ "$queue_summaries" -lt 1 ]; then
+	fail "the turn that read the queued messages never finished — no turn summary"
+elif [ "$queue_summaries" -gt 1 ]; then
+	fail "a SECOND turn ran ($queue_summaries turn summaries) — the queued messages must be read by the turn already running, not dispatched after it"
+fi

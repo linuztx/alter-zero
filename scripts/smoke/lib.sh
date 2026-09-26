@@ -40,6 +40,22 @@ EXPECT_REPLY="Happy to help"
 SETTLED_REPLY="Two commands away"
 # The startup banner's tier-independent title word (docs/header.md).
 HEADER_MARK="Alter Zero"
+# A committed turn summary (an ERE; anchor it with ^ where it must start a
+# row): the past tense of the status verb the turn ended on, then " for {n}"
+# (`app::STATUS_VERBS`, docs/status-indicator.md). Wait on this wherever any
+# settle will do. A turn that runs past 30s ends on a later verb than it
+# opened on, so no single verb is safe there. A phase that tells turns apart
+# names that turn's verb instead (SUMMARY_TURN1…3, below). The same line lives
+# in `scripts/live_smoke.sh`, `cursor_hide_check.sh` and `paste_mem.sh`;
+# `app::tests::turn` pins all four copies to the table.
+SUMMARY_RE='(Worked|Generated|Pondered|Cooked|Brewed|Crunched|Conjured|Churned|Computed|Synthesized) for [0-9]'
+# The summary each of a launch's first three turns ends on, for the phases
+# that must tell turns apart on one screen: a launch walks the table one verb
+# per turn while each turn stays under 30s. Pinned to the table by the same
+# `app::tests::turn` test.
+SUMMARY_TURN1="Worked for"
+SUMMARY_TURN2="Generated for"
+SUMMARY_TURN3="Pondered for"
 # The dummy AI pauses before streaming (so the status indicator shows first) —
 # 3s by default. Every phase runs with a SHORT delay so the turns stream
 # promptly; the phases that want a visible pause set their own.
@@ -424,6 +440,25 @@ wait_pane() {
 	printf '%s\n' "$last"
 	return 1
 }
+# wait_summaries SECONDS SESSION COUNT [capture opts] — wait until the pane
+# holds COUNT committed turn summaries (rows opening with SUMMARY_RE), printing
+# the last capture taken: "the COUNTth turn settled", whichever verbs the
+# turns ended on. Returns 1 on timeout.
+wait_summaries() {
+	local secs="$1" sess="$2" count="$3" last="" n i
+	shift 3
+	n="$(smoke_ticks "$secs")"
+	for ((i = 0; i < n; i++)); do
+		last="$(tmux capture-pane -t "$sess" -p "$@")"
+		if [ "$(printf '%s\n' "$last" | grep -cE "^$SUMMARY_RE")" -ge "$count" ]; then
+			printf '%s\n' "$last"
+			return 0
+		fi
+		sleep "$SMOKE_POLL_INTERVAL"
+	done
+	printf '%s\n' "$last"
+	return 1
+}
 # wait_settled SECONDS SESSION [capture opts --] [grep opts] PATTERN — wait
 # until the pane matches AND has stopped changing (two identical samples 0.2s
 # apart), printing it: the settled layout after a reply, not a mid-stream
@@ -509,3 +544,5 @@ count_bare_prompts() { printf '%s\n' "$1" | grep -cE '^❯[[:space:]]*$'; }
 count_rules() { printf '%s\n' "$1" | grep -cE '^(─)+$'; }
 count_footers() { printf '%s\n' "$1" | grep -cF 'dummy_model_name ·'; }
 count_msg_lines() { printf '%s\n' "$1" | grep -cF "❯ $2"; }
+# The committed turn summaries in a capture, whatever verbs they wear.
+count_summaries() { printf '%s\n' "$1" | grep -cE "^$SUMMARY_RE"; }

@@ -36,10 +36,10 @@ sleep 2.5
 cleared_later="$(tmux capture-pane -t "$S13" -p)"
 echo "==== captured visible screen (2.5s after /clear — must still be blank) ===="
 printf '%s\n' "$cleared_later"
-# The loop survives the kill: a fresh turn streams and finishes ("Finished
-# for" — turn 2's done verb, as in the Esc-interrupt phase).
+# The loop survives the kill: a fresh turn streams and finishes (its summary
+# is the only one on the cleared screen, as in the Esc-interrupt phase).
 submit "$S13" "again please"
-after_clear="$(wait_pane 20.1 "$S13" -S -30 -- -F "Finished for")" # up to ~20s: wait for the fresh turn's summary
+after_clear="$(wait_pane 20.1 "$S13" -S -30 -- -E "$SUMMARY_RE")" # up to ~20s: wait for the fresh turn's summary
 echo "==== captured pane (fresh turn after the /clear kill) ===="
 printf '%s\n' "$after_clear"
 tmux kill-session -t "$S13" 2>/dev/null
@@ -55,9 +55,10 @@ expect_lacks "$cleared_now" -F "Conversation interrupted" "/clear recorded the i
 expect_has "$cleared_now" -F "dummy_model_name ·" "the idle input box + footer did not reseat after a mid-turn /clear"
 # … and the backend is dead: nothing recommitted while the remainder of the
 # turn's schedule played out (reply text, tool peeks, a summary).
-for leak in "Happy" "⎿" "Done for" "esc to interrupt"; do
+for leak in "Happy" "⎿" "esc to interrupt"; do
 	expect_lacks "$cleared_later" -F "$leak" "the backend kept streaming after a mid-turn /clear ('$leak' appeared on the cleared screen)"
 done
+expect_lacks "$cleared_later" -E "$SUMMARY_RE" "the backend kept streaming after a mid-turn /clear (a turn summary appeared on the cleared screen)"
 # … and the loop survived the kill: the fresh turn streamed to completion.
 expect_has "$after_clear" -F "❯ again please" "the message sent after a mid-turn /clear was not echoed"
-expect_has "$after_clear" -F "Finished for" "the turn after a mid-turn /clear did not finish (no 'Finished for' summary)"
+expect_has "$after_clear" -E "$SUMMARY_RE" "the turn after a mid-turn /clear did not finish (no turn summary)"

@@ -18,7 +18,7 @@ RESUME_DIR="$(mktemp -d "$SMOKE_TMP/sessions.XXXXXX")"
 RAPP="env $CFG_ENV ALTER_ZERO_SESSIONS_DIR=$RESUME_DIR ALTER_ZERO_STARTUP_DELAY_MS=$SMOKE_STARTUP_MS $BIN"
 launch "$S31" 80 24 "$RAPP"
 submit "$S31" "$USER_MSG"
-wait_for 20.1 "$S31" -S -40 -- -F "Done for" # instance 1, turn 1 → "Done for"
+wait_summaries 20.1 "$S31" 1 -S -40 >/dev/null # instance 1, turn 1 settles
 tmux send-keys -t "$S31" C-c # quit instance 1 (empty composer)
 sleep 0.4
 tmux kill-session -t "$S31" 2>/dev/null
@@ -41,14 +41,8 @@ resume_loaded="$(tmux capture-pane -t "$S31" -p -S -60)"
 echo "==== captured pane (Enter — the saved conversation repainted inline) ===="
 printf '%s\n' "$resume_loaded"
 submit "$S31" "again please"
-resume_appended=""
-for _ in $(seq 1 134); do # the follow-up turn (this process's turn 1 → "Done for" #2)
-	resume_appended="$(tmux capture-pane -t "$S31" -p -S -200)"
-	if [ "$(printf '%s' "$resume_appended" | grep -cF "Done for")" -ge 2 ]; then
-		break
-	fi
-	sleep 0.15
-done
+# The follow-up turn: the loaded summary plus its own make two.
+resume_appended="$(wait_summaries 20.1 "$S31" 2 -S -200)"
 echo "==== captured pane (follow-up turn on the resumed session) ===="
 printf '%s\n' "$resume_appended"
 resume_files_after_append="$(find "$RESUME_DIR" -type f -name 'rollout-*.jsonl' | wc -l | tr -d ' ')"
@@ -60,7 +54,7 @@ sleep 0.3
 tmux send-keys -t "$S31" Enter
 sleep 0.4
 submit "$S31" "fresh session"
-wait_for 20.1 "$S31" -S -40 -- -F "Finished for" # post-/clear turn (this process's turn 2 → "Finished for")
+wait_for 20.1 "$S31" -S -40 -- -E "^$SUMMARY_RE" # the post-/clear turn (the only summary on the cleared screen)
 sleep 0.3
 resume_files_after_clear="$(find "$RESUME_DIR" -type f -name 'rollout-*.jsonl' | wc -l | tr -d ' ')"
 tmux kill-session -t "$S31" 2>/dev/null

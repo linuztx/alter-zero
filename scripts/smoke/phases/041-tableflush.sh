@@ -18,7 +18,7 @@ tableflush_pane=""
 for _ in $(seq 1 200); do # ~20s cap; the table reply streams in about eight
 	tableflush_pane="$(tmux capture-pane -t "$S41" -p)"
 	if printf '%s' "$tableflush_pane" | grep -qF "properly in Markdown." \
-		&& printf '%s' "$tableflush_pane" | grep -qE "^Done for [0-9]+s"; then
+		&& printf '%s' "$tableflush_pane" | grep -qE "^$SUMMARY_RE"; then
 		break
 	fi
 	sleep 0.1

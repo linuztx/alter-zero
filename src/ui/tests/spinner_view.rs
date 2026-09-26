@@ -1,7 +1,7 @@
 //! The inline `/spinner` picker view (`docs/spinner.md`).
 
 use super::*;
-use crate::app::Spinner;
+use crate::app::{Spinner, VERB_ROTATION};
 use crate::ui::spinner_view::{spinner_menu_rows, spinner_view_lines};
 
 /// An app with session info and the picker open (the ordinary shape).
@@ -101,6 +101,20 @@ fn every_row_carries_its_own_live_glyph() {
     assert!(row_for(&texts, "pulse").contains('●'), "{texts:?}");
     assert!(row_for(&texts, "bars").contains('▁'), "{texts:?}");
     assert!(row_for(&texts, "line").contains('|'), "{texts:?}");
+}
+
+#[test]
+fn the_preview_walks_the_verbs_like_a_first_turn() {
+    // The sample is a first turn's line, so it moves on to the next verb on
+    // the clock a real turn does (docs/status-indicator.md) — browse for
+    // half a minute and it shows what a long turn would.
+    let mut app = open_app();
+    app.set_pulse(VERB_ROTATION + Duration::from_millis(120));
+    let texts = texts(&app, 80);
+    assert!(
+        texts.iter().any(|t| t.contains("Generating… (30s ·")),
+        "the preview moved on to the second verb: {texts:?}"
+    );
 }
 
 #[test]

@@ -15,7 +15,7 @@ smoke_begin
 S36="${S}_ctxdebug"
 launch "$S36" 80 24
 submit "$S36" "hello there"
-wait_for 20 "$S36" -E "^Done for [0-9]+s" # let the turn finish so the tools are in history
+wait_for 20 "$S36" -E "^$SUMMARY_RE" # let the turn finish so the tools are in history
 tmux send-keys -t "$S36" C-d
 sleep 0.4
 tmux send-keys -t "$S36" Home # the view opens at the bottom; jump to the top
@@ -45,4 +45,4 @@ expect_has "$ctxdebug_pages" -E "^tool:" "the context view is missing the tool-r
 expect_lacks "$ctxdebug_pages" -F "[tool " "the context view still shows the old bracketed tool record"
 expect_has "$ctxdebug_pane" -F "q/esc/ctrl+d to quit" "the context view's key-hint row is missing"
 expect_lacks "$ctxdebug_returned" -F "C O N T E X T" "q did not close the context-debug view"
-expect_has "$ctxdebug_returned" -F "Done for" "the conversation did not repaint after closing the context-debug view"
+expect_has "$ctxdebug_returned" -E "$SUMMARY_RE" "the conversation did not repaint after closing the context-debug view"

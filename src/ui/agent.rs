@@ -796,12 +796,20 @@ pub fn agent_hint_line(app: &App) -> Line<'static> {
 /// interrupt)` shape, without the interrupt hint's meaning changing: Esc
 /// leaves the view). Built per draw from the roster entry, the agent's open
 /// thinking phase included (`Thinking for Ns`, boundary-injected like the
-/// runtime — `docs/agent-view-streaming.md`).
+/// runtime — `docs/agent-view-streaming.md`), its verb the one the agent
+/// walked to on its own clock
+/// ([`AgentRun::status_verb`](crate::agents::AgentRun::status_verb)) — the
+/// main line's rotation, whose past tense the agent's turn summary records
+/// (`docs/status-indicator.md`).
 #[must_use]
 pub fn agent_view_status(run: &crate::agents::AgentRun) -> crate::app::TurnStatus {
+    // The verb the run walked to on its own clock (`AgentRun::rotate_verb`);
+    // this per-draw copy is never ticked, so it carries no rotation of its own.
+    let verb = run.status_verb();
     crate::app::TurnStatus {
-        verb: "Working",
-        done_verb: "Done",
+        verb: verb.working,
+        done_verb: verb.done,
+        rotates_from: None,
         tokens: usize::try_from(run.tokens).unwrap_or(usize::MAX),
         arrow: crate::app::TokenArrow::Down,
         elapsed: run.runtime,

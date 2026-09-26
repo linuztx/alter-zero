@@ -8,13 +8,13 @@ smoke_begin
 # newest clears it, and ↑ + Enter RESUBMITS it (docs/input-history.md). The
 # committed user line and the input prompt share the "❯ " glyph, so the
 # assertions count occurrences: recall adds one (box + scrollback), the ↓ clear
-# removes it, and the resubmit commits a second scrollback copy plus turn 2's
-# "Finished for" summary.
+# removes it, and the resubmit commits a second scrollback copy plus a second
+# turn summary.
 S7="${S}_recall"
 RECALL_MSG="history one"
 launch "$S7" 80 24
 submit "$S7" "$RECALL_MSG"
-wait_for 20.1 "$S7" -F "Done for" # up to ~20s: wait for turn 1 to finish ("Done for")
+wait_summaries 20.1 "$S7" 1 >/dev/null # up to ~20s: wait for turn 1 to finish
 tmux send-keys -t "$S7" Up
 sleep 0.4
 recalled="$(tmux capture-pane -t "$S7" -p -S -200)"
@@ -27,7 +27,7 @@ recall_down_count=$(tmux capture-pane -t "$S7" -p -S -200 | grep -cF "❯ $RECAL
 tmux send-keys -t "$S7" Up # recall again …
 sleep 0.3
 tmux send-keys -t "$S7" Enter # … and resubmit it
-resubmitted="$(wait_pane 20.1 "$S7" -S -200 -- -F "Finished for")" # up to ~20s: wait for turn 2's summary
+resubmitted="$(wait_summaries 20.1 "$S7" 2 -S -200)" # up to ~20s: wait for turn 2's summary
 echo "==== captured pane (recalled message resubmitted) ===="
 printf '%s\n' "$resubmitted"
 recall_resubmit_count=$(printf '%s\n' "$resubmitted" | grep -cF "❯ $RECALL_MSG")
@@ -43,7 +43,9 @@ fi
 if [ "${recall_down_count:-99}" -ge "${recall_up_count:-0}" ]; then
 	fail "Down past the newest entry did not clear the recalled draft (still $recall_down_count '❯ $RECALL_MSG' lines)"
 fi
-expect_has "$resubmitted" -F "Finished for" "resubmitting the recalled message (Up + Enter) never finished a second turn"
+if [ "$(count_summaries "$resubmitted")" -lt 2 ]; then
+	fail "resubmitting the recalled message (Up + Enter) never finished a second turn"
+fi
 if [ "${recall_resubmit_count:-0}" -lt 2 ]; then
 	fail "the recalled message was not resubmitted — expected a second committed '❯ $RECALL_MSG' line (saw $recall_resubmit_count)"
 fi

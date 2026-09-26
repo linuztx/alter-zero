@@ -539,8 +539,8 @@ The `tab to queue next turn` binding is listed in the `?` shortcuts band
 - `scripts/smoke.sh` Phase 12 (mid-turn delivery): submit `hello there`, queue
   `world` and `again` mid-stream **with Enter** (both inset rows show), then
   both commit at column 0 **while the status line is still up** and the turn
-  ends with its own `Done for` summary — a second turn (`Finished for`) must
-  **not** run.
+  ends with its own summary — exactly **one** summary line: a second turn
+  must **not** run.
 - `scripts/smoke.sh` Phase 13 (interrupt-send): submit `hello`, queue `world`,
   press Esc — `Conversation interrupted` commits and what the turn never read is
   sent right away.
@@ -550,8 +550,8 @@ The `tab to queue next turn` binding is listed in the `?` shortcuts band
 - `scripts/smoke.sh` Phase 21 (Tab follow-up): submit `hello`, queue `world`
   with **Enter** then `later` with **Tab** mid-stream (a blank divides them);
   `world` is read by the running turn and `later` runs as a **separate** turn
-  after it (`Finished for`) — the extra turn the all-Enter Phase 12 never
-  produces.
+  after it (a second turn summary) — the extra turn the all-Enter Phase 12
+  never produces.
 - `scripts/smoke.sh` Phase 24 (mid-turn shell queue): submit `hello there`, queue
   `world` (Enter) and `!echo smoke_queue_ok` (Enter in shell mode) mid-stream —
   both show inset (`  ❯ world`, `  ! echo smoke_queue_ok`); then the running turn

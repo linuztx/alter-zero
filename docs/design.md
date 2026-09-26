@@ -80,6 +80,8 @@ which Ctrl+V reads the clipboard from.
   cadence), so the spinner runs, the shimmer waves, and the timer moves even
   with no events. On
   finish the line is replaced by a dim, committed **`{done verb} for Ns`** summary
+  — the past tense of the verb the line wore last (`Worked for 12s`), the verb
+  moving on every 30 s of a turn (`docs/status-indicator.md`) —
   that flows into scrollback (a `HistoryItem::Summary`, so it survives a resize
   and lists in the Ctrl+O transcript — stamp-free, like every non-user item).
   Time is impure, so — like
@@ -845,8 +847,10 @@ file-search worker ► tokio mpsc ───┘                           draw ti
   dim `⎿` row the resolved cell appends, recorded so a `/resume` keeps it
   (`docs/permissions.md`; the quiet resolved MCP cell leaves the row to its
   expanded Ctrl+O form — `docs/mcp.md`).
-- `TokenArrow { Down, Up }` + `TurnStatus { verb, done_verb, tokens, arrow,
-  elapsed, thinking }` — the live status of the turn in flight (`App::status`);
+- `TokenArrow { Down, Up }` + `TurnStatus { verb, done_verb, rotates_from,
+  tokens, arrow, elapsed, thinking }` — the live status of the turn in flight
+  (`App::status`; `verb`/`done_verb` are one `StatusVerb`'s two forms, rotated
+  together by `set_status_times`);
   the `Duration`s are written by the boundary each frame (one value drives the
   displayed seconds *and* the verb's shimmer phase). See
   `docs/status-indicator.md`.
@@ -929,8 +933,10 @@ file-search worker ► tokio mpsc ───┘                           draw ti
   to the bottom and `settle_tool_scroll` tail-follows (scrolling up disengages,
   reaching the bottom re-engages). With an injected stub clock (`set_clock`), every recorded
   message/tool is stamped with the clock's value; with no clock the stamp is empty.
-- `app` (status): `begin_stream` opens a `TurnStatus` (a per-turn verb, 0 tokens,
-  `↓`); the verb differs turn-to-turn; `push_chunk` grows the tally (`↓`); a tool
+- `app` (status): `begin_stream` opens a `TurnStatus` (the next status verb, 0
+  tokens, `↓`); the verb moves on every 30 s, the next turn opens one past the
+  last verb shown, and the summary is the past tense of the verb the last frame
+  drew; `push_chunk` grows the tally (`↓`); a tool
   *adds* its output to the tally and flips the arrow `↑` without resetting, and
   resuming text flips it back `↓`; `set_status_times` writes the boundary
   durations (no-op when idle); `end_turn` records a `Summary` and clears the status;
@@ -1084,7 +1090,8 @@ file-search worker ► tokio mpsc ───┘                           draw ti
   safely under a mid-stream resize.
 - `session` (`/resume`): every role/tool/summary round-trips through
   `parse_session` (multiline + quoted + unicode text; the summary verb
-  restored to its `DONE_VERBS` static, unknown verbs falling back to `Done`);
+  restored to its `STATUS_VERBS` past tense or legacy static, unknown verbs
+  falling back to `Done`);
   malformed, blank, unknown-type, and unknown-role lines skip without failing
   the file; no meta line parses to `None`; `preview_of` finds the first
   user/shell message (flattened, `! ` for shell) and `None` without one;
@@ -1333,8 +1340,9 @@ stream for their own reasons).
   `docs/timestamps.md`.
 - The status indicator's token counts are an app-side **estimate** (≈ chars/4), not
   real model usage — the dummy has no tokenizer; a real `ReplySource` could report
-  exact counts later. The working/done verbs cycle deterministically (a turn
-  counter), not at random. See `docs/status-indicator.md`.
+  exact counts later. The status verbs walk deterministically (a cursor moved
+  every 30 s of a turn and at each turn start), not at random, and the summary
+  is the past tense of the verb the line wore. See `docs/status-indicator.md`.
 - `!` shell commands (`docs/shell-command.md`) run under `sh -c` with **no
   sandbox** and no timeout (codex caps at 1 hour); stdout and stderr are
   concatenated, not interleaved; the interrupt notice is the shared
