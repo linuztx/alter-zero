@@ -67,6 +67,7 @@ impl App {
             thinking: None,
             shell: false,
             retry: None,
+            tip: None,
         });
     }
 

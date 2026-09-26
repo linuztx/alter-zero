@@ -606,6 +606,19 @@ pub(super) const TASK_IDLE_INDENT: &str = "  ";
 /// what is actionable — see `ui::tasks`).
 pub(super) const TASK_MAX_ROWS: usize = 10;
 
+// ===== The spinner tip (docs/tips.md) =====
+
+/// The label opening the tip row, after the `⎿` gutter
+/// ([`TOOL_RESULT_PREFIX`]) — Claude Code's `Tip: `.
+pub(super) const TIP_LABEL: &str = "Tip: ";
+
+/// Dim grey — the whole tip row, gutter, label and text alike: Claude Code
+/// dims it throughout, a hint beside the work rather than a line that
+/// competes with it.
+pub(super) fn tip_color() -> Color {
+    tool_dim_color()
+}
+
 /// Green — an added (`+`) line in an `edit`/`write` diff cell (codex's diff
 /// look, adapted to the `⎿` gutter; see `docs/tools.md`).
 pub(super) fn tool_diff_add_color() -> Color {

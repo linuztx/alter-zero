@@ -157,7 +157,7 @@ pays for and why (`moxcms` under `image`, the sixel quantiser under
 ## Architecture
 
 A **library** (`src/lib.rs` → `app`, `stream`, `ui`, `term`, `frame`, `paste`,
-`session`, `subprocess`, `pty`, `history`, `textarea`, `file_search`, `clipboard`, `context`, `background`, `scratchpad`, `agents`, `subagents`, `frontmatter`, `ask`, `tasks`, `skills`, `steer`, `mcp`, `trust`, `checkpoint`, `project_doc`, `reminder`, `permission`, `settings`, `telemetry`, `update`, `cli`, `links`, `images`) holds the logic; **`src/main.rs`** is a 77-line shell —
+`session`, `subprocess`, `pty`, `history`, `textarea`, `file_search`, `clipboard`, `context`, `background`, `scratchpad`, `agents`, `subagents`, `frontmatter`, `ask`, `tasks`, `skills`, `steer`, `mcp`, `trust`, `checkpoint`, `project_doc`, `reminder`, `permission`, `settings`, `telemetry`, `update`, `tips`, `cli`, `links`, `images`) holds the logic; **`src/main.rs`** is a 77-line shell —
 the detached-exec hook, the CLI resolution, the viewport, the loop — over
 **`src/tui/`**, the binary-private tree that drives the codex-style **async
 (tokio) `select!`** loop (`event_loop`, `actions`, `turn`, `stream`, `agent`,
@@ -169,10 +169,10 @@ submodules reach `App`'s). The four big ones are **directories
 of per-area modules**, not single files — `src/app/` (`types`, `action`, `keys`,
 `composer`, `commands`, `file_picker`, `input_history`, `queue`, `tools`, `turn`,
 `compact`, `backtrack`, `views`, `resume`, `model_picker`, `login`, `settings`, `look`, `mascot`, `spinner`, `theme`, `donate`, `export`, `hooks_menu`, `mcp_menu`, `trust_menu`, `background`,
-`agent`, `status`, `permission`, with the `App` struct itself in `mod.rs` so every submodule and
+`agent`, `status`, `tips`, `permission`, with the `App` struct itself in `mod.rs` so every submodule and
 the test tree keeps its private-field access), `src/ui/` (`theme`, `wrap`,
 `layout`, `assistant`, `inline`, `table`, `message`, `conversation`, `tool`,
-`file_cell`, `inline_diff`, `status`, `agent`, `menu`, `footer`, `header`, `hooks_view`, `live`, `transcript`,
+`file_cell`, `inline_diff`, `status`, `tips`, `agent`, `menu`, `footer`, `header`, `hooks_view`, `live`, `transcript`,
 `context_view`, `resume_view`, `model_view`, `login_view`, `background_view`,
 `permission_view`, `settings_view`, `mascot_view`, `spinner_view`, `palette`, `theme_view`, `donate_view`, `export_view`, `mcp_view`, `trust_view`, `view_flow`, `stream_render`), and **`src/stream/`** — the backend seam
 kept apart from the offline demo that used to crowd it: `event` (the whole
@@ -263,7 +263,22 @@ rules in `ui/theme.rs` — `sparkle`/`blocks` wearing the banner gradient,
 `pulse` a raised-cosine breath at the tool bullet's cadence, the two tracks drawn procedurally on a
 braille canvas from whole-millisecond ping-pong/hop curves rather than
 tabled — and the switch needing no rebuild, the status line being
-live-only) in `docs/spinner.md`, and the **`/theme` picker** that switches
+live-only) in `docs/spinner.md`; the **spinner tip** (Claude Code's dim
+`  ⎿  Tip: …` row hanging off the status line — not at once but once the
+turn has run `tips::TIP_DELAY` (3 s), so a quick answer never flashes one;
+the next entry of the `tips::TIPS` catalog each turn and a fresh one every
+`TIP_ROTATION` (3 minutes) of a long turn; drawn in `App::set_status_times`
+on the injected clock, one tip per rotation slot the first frame it is on
+screen, so the cursor moves only when a tip is actually seen; live only,
+never committed; giving way to the task checklist, which takes the same
+slot — `ui::hang_rows` is the one sum the strip geometry sizes by — and
+hidden on a `!` turn, in an agent session view, and while a modal or an
+overlay keeps the strip off screen; the cursor `None` until
+the boundary seeds it from the per-user `tips.json` (`App::seed_tips`, the
+unit-test default being no tips), written back at the loop bottom whenever
+it moved, beside the `/settings` **Show tips** switch; `ALTER_ZERO_TIPS`
+seeding the row for a run, and the smoke suite exporting it `0`) in
+`docs/tips.md`, and the **`/theme` picker** that switches
 the whole **colour theme** (`docs/theme.md`: every colour the chrome paints
 — the accent the pickers select with, the success/error/warning hues, the
 dim, the user bubble, the diff tints, the banner gradient — plus the
@@ -1970,7 +1985,7 @@ the **`/settings` menu** (`docs/settings.md`: the knobs that were only ever
 a hard-coded `agent::MAX_TOOL_ITERATIONS`, and an always-on auto-compaction —
 made *visible and changeable mid-session*
 in the `/model` picker's inline frame, the third composer-replacing picker:
-sixteen rows (**Hide thinking**, **Show images**, **Image width**,
+seventeen rows (**Hide thinking**, **Show images**, **Image width**,
 **Auto-resize images** — the three from `docs/images.md` — **Error retry**,
 **Tools**, **Permission
 mode**, **Checkpoints**, **Auto compact**, **Project docs**, **Hooks**,
@@ -1979,7 +1994,9 @@ mode**, **Checkpoints**, **Auto compact**, **Project docs**, **Hooks**,
 trips mid-task abandons the work half-done and Esc is already the stop
 button; it counts the **calls**, not the rounds, because a round can be a
 whole parallel batch, and a round the budget can only partly afford is
-clamped rather than refused whole; **Update check** — the once-a-day
+clamped rather than refused whole; **Show tips** — the spinner tip,
+`docs/tips.md`, persisted **per user** in `tips.json` beside the walk's
+position rather than in `settings.json`; **Update check** — the once-a-day
 newer-release check, `docs/update.md`: one `HEAD` of the repository's
 `/releases/latest` per UTC day, the tag read off the redirect it lands on (no
 API, no body, no install id — the `alter-zero/{version}` user agent and
@@ -2201,7 +2218,9 @@ the conversation to the highlighted one, its text back in the composer
 (`App::backtrack`, codex's `BacktrackState`; see `docs/backtrack.md`) — Esc
 quits only with an empty composer and no user message to backtrack to, a
 typed draft making it a codex-style no-op) — see `docs/status-indicator.md`),
-then another blank gap row so the
+the rows hanging off it (the task checklist, else — once the turn has run
+three seconds — the dim `⎿  Tip: …` spinner tip, `docs/tips.md`; one
+`ui::hang_rows` count), then another blank gap row so the
 status clears the box's top rule — plus a
 scrollable **slash-command palette** band *below* the box when the input is a bare
 `/token` (the same slot shows a **`?` shortcuts band** — codex's footer shortcut

@@ -63,6 +63,7 @@ widened for the split.
 | `background.rs` | Background shells and the ↓ manager band. |
 | `agent.rs` | The `Agent` tool's roster, groups, and notices. |
 | `reasoning.rs` | The thinking stream: the live reasoning buffer, the `Reasoning` cell it settles into, and the provider's reasoning-token snap (`docs/thinking-stream.md`). |
+| `tips.rs` | The spinner tip's walk: the cursor the boundary seeds from `tips.json`, the draw `set_status_times` runs, and what hides the row (`docs/tips.md`). The catalog and the file format are the top-level `crate::tips`. |
 
 ### `src/ui/` — pure rendering
 
@@ -82,6 +83,7 @@ widened for the split.
 | `inline_diff.rs` | Character-level refinement of a diff cell's `-`/`+` pairs — which bytes of a line actually changed (`docs/inline-diff.md`). |
 | `image.rs` | The rows a picture reserves under a cell — the pure half of the inline images (`docs/images.md`). |
 | `status.rs` | The status line (spinner, shimmer, tally) and the `Done for Ns` summary. |
+| `tips.rs` | The spinner tip's `⎿  Tip: …` row under the status line (`docs/tips.md`); `layout.rs`'s `hang_rows` sums it with the checklist's. |
 | `agent.rs` | Subagent trees, cells, and the footer roster. |
 | `menu.rs` | The palette / `@` picker / `?` shortcuts bands. |
 | `footer.rs` | The footer row, the toast, the queued rows, and what displaces the footer. |
@@ -128,7 +130,7 @@ opening the viewport, running the loop — and everything else lives here:
 | `commit.rs` | Scrollback commits — the one place invariant 4 is enforced — and the toast. |
 | `models.rs` | `ModelSession`: the backend and every knob that selects it, plus the `/model`, Ctrl+T and probe arms (`docs/llm.md`). |
 | `login.rs` | The `/login` flow's boundary half: opening it, running a subscription's sign-in — a device code or a browser PKCE flow, per provider — and persisting what it mints (`docs/copilot.md`, `docs/chatgpt.md`). |
-| `config.rs` | Reading the environment: providers, keys, the per-directory `/model` selections and `/settings` knobs (`docs/per-directory-state.md`), permission rules, the per-user `telemetry.json` (`docs/telemetry.md`) and `update.json` (`docs/update.md`), paths. |
+| `config.rs` | Reading the environment: providers, keys, the per-directory `/model` selections and `/settings` knobs (`docs/per-directory-state.md`), permission rules, the per-user `telemetry.json` (`docs/telemetry.md`), `update.json` (`docs/update.md`) and `tips.json` (`docs/tips.md`), paths. |
 | `bootstrap.rs` | `Session::bootstrap` / `shutdown` / `after_iteration` — assembly, teardown, loop-bottom work. |
 | `startup.rs` | The `--continue`/`--resume`/`[PROMPT]` argument resolution, the styled `--help` / usage-error printing, and the `mcp` / `update` subcommand dispatch (`docs/cli.md`). |
 | `recorder.rs` | `SessionRecorder`: mirroring history to a rollout file (`docs/resume.md`). |

@@ -100,6 +100,11 @@ smoke_sanitize_env() {
 	export ALTER_ZERO_TELEMETRY=0
 	# …nor may one ask github.com for a newer release (docs/update.md).
 	export ALTER_ZERO_UPDATE_CHECK=0
+	# The spinner tip (docs/tips.md) hangs a row under the status line once a
+	# turn has run three seconds — a row every phase that holds a turn that
+	# long would find in the strip it asserts on. Off for the suite; the
+	# tips phase (125) turns them back on for its own launches.
+	export ALTER_ZERO_TIPS=0
 }
 
 # ---------------------------------------------------------------------------
@@ -198,8 +203,9 @@ smoke_begin() {
 	# Filesystem checkpoints are OFF for every launch in the repo's cwd: a
 	# checkpoint restore does `git reset --hard` + `git clean` on the working
 	# directory. Only phases that run in a throwaway cwd re-enable them.
-	# Lifecycle hooks and the project config layer are off for hermeticity too.
-	CFG_ENV="ALTER_ZERO_CONFIG_DIR=$SMOKE_CFG ALTER_ZERO_SESSIONS_DIR=$SMOKE_SESSIONS ALTER_ZERO_CHECKPOINTS=0 ALTER_ZERO_SKILLS_DIR=$SMOKE_SKILLS ALTER_ZERO_AGENTS_DIR=$SMOKE_AGENTS ALTER_ZERO_PROJECT_CONFIG=0 ALTER_ZERO_TELEMETRY=0 ALTER_ZERO_UPDATE_CHECK=0"
+	# Lifecycle hooks, the project config layer and the spinner tips are off
+	# for hermeticity too.
+	CFG_ENV="ALTER_ZERO_CONFIG_DIR=$SMOKE_CFG ALTER_ZERO_SESSIONS_DIR=$SMOKE_SESSIONS ALTER_ZERO_CHECKPOINTS=0 ALTER_ZERO_SKILLS_DIR=$SMOKE_SKILLS ALTER_ZERO_AGENTS_DIR=$SMOKE_AGENTS ALTER_ZERO_PROJECT_CONFIG=0 ALTER_ZERO_TELEMETRY=0 ALTER_ZERO_UPDATE_CHECK=0 ALTER_ZERO_TIPS=0"
 	# Persistence seeds the input history from a file on startup; /dev/null
 	# gives every launch an EMPTY history so the ↑/↓ and Ctrl+R assertions are
 	# unaffected by earlier submissions.

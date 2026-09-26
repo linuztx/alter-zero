@@ -276,14 +276,16 @@ fn checkpoints_are_active_only_when_both_the_knob_and_the_host_agree() {
 
 #[test]
 fn json_round_trips_every_changed_value() {
-    // Every knob settings.json owns. Telemetry is the one that lives
-    // elsewhere (telemetry.json, docs/telemetry.md) — its own test pins that
-    // it never reaches this file.
+    // Every knob settings.json owns. The per-user rows live elsewhere
+    // (telemetry.json, update.json, tips.json — docs/per-directory-state.md)
+    // and their own tests pin that they never reach this file.
     let mut s = SessionSettings::default();
-    for key in SettingKey::ALL
-        .iter()
-        .filter(|k| **k != SettingKey::Telemetry && **k != SettingKey::UpdateCheck)
-    {
+    for key in SettingKey::ALL.iter().filter(|k| {
+        !matches!(
+            k,
+            SettingKey::Telemetry | SettingKey::UpdateCheck | SettingKey::Tips
+        )
+    }) {
         s.cycle(*key);
     }
     let restored = SessionSettings::parse(&s.to_json());
@@ -648,5 +650,65 @@ fn the_update_check_never_reaches_settings_json() {
     let mut file = SessionSettings::default();
     file.copy_value(SettingKey::UpdateCheck, &off);
     assert!(file.update_check, "not this file's to record");
+    assert_eq!(file, SessionSettings::default());
+}
+
+// ===== the Show tips row (docs/tips.md) =====
+
+#[test]
+fn the_show_tips_row_is_on_by_default_and_cycles_anywhere() {
+    // Claude Code's `spinnerTipsEnabled`: on until turned off. It needs
+    // nothing from the host — no config home, no gate — so it is never
+    // unavailable (without a config home the choice simply isn't saved).
+    let mut s = SessionSettings::default();
+    assert!(s.tips, "on by default");
+    assert_eq!(SettingKey::Tips.label(), "Show tips");
+    assert!(
+        SettingKey::Tips.description().contains("tip"),
+        "the description says what the row shows"
+    );
+    assert!(s.is_available(SettingKey::Tips, MANUAL));
+    assert!(s.is_available(SettingKey::Tips, None), "with no gate too");
+    assert_eq!(s.value_text(SettingKey::Tips, MANUAL), "true");
+    assert!(s.cycle(SettingKey::Tips));
+    assert!(!s.tips);
+    assert_eq!(s.value_text(SettingKey::Tips, MANUAL), "false");
+    assert!(s.cycle(SettingKey::Tips));
+    assert!(s.tips, "a boolean: back on");
+}
+
+#[test]
+fn the_show_tips_row_joins_the_per_user_rows_at_the_foot_of_the_menu() {
+    // The rows that persist per user sit together, the two that were there
+    // first unmoved beneath it.
+    let all = SettingKey::ALL;
+    assert_eq!(
+        &all[all.len() - 3..],
+        &[
+            SettingKey::Tips,
+            SettingKey::UpdateCheck,
+            SettingKey::Telemetry
+        ]
+    );
+}
+
+#[test]
+fn show_tips_never_reaches_settings_json() {
+    // Whether you want tips is yours, not a project's: the switch lives in
+    // tips.json beside the walk's position. So the blob never serializes
+    // it, a settings.json that names it is ignored, and `copy_value` never
+    // moves it — the Telemetry pattern.
+    let off = SessionSettings {
+        tips: false,
+        ..SessionSettings::default()
+    };
+    assert_eq!(off.to_json().trim(), "{}", "not written");
+    assert!(
+        SessionSettings::parse(r#"{"tips": false}"#).tips,
+        "not read"
+    );
+    let mut file = SessionSettings::default();
+    file.copy_value(SettingKey::Tips, &off);
+    assert!(file.tips, "not this file's to record");
     assert_eq!(file, SessionSettings::default());
 }

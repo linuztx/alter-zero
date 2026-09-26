@@ -816,6 +816,8 @@ pub fn agent_view_status(run: &crate::agents::AgentRun) -> crate::app::TurnStatu
         thinking: run.thinking,
         shell: false,
         retry: run.retry,
+        // A subagent's line hangs no tip (docs/tips.md).
+        tip: None,
     }
 }
 

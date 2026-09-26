@@ -215,6 +215,7 @@ impl App {
             thinking: None,
             shell: false,
             retry: None,
+            tip: None,
         });
     }
 
@@ -262,6 +263,7 @@ impl App {
             thinking: None,
             shell: true,
             retry: None,
+            tip: None,
         });
         self.start_tool(command, "", None);
         if let Some(tool) = self.tool_queue.front_mut() {

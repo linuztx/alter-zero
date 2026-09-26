@@ -55,6 +55,7 @@ mod spinner;
 mod status;
 mod tasks;
 mod theme;
+mod tips;
 mod tools;
 mod trust_menu;
 mod turn;
@@ -105,6 +106,7 @@ pub use self::spinner::{Spinner, SpinnerPicker, SpinnerRow};
 pub use self::status::{RetryInfo, ThinkingState, TokenArrow, TurnStatus, TurnSummary};
 pub use self::tasks::TaskCallRecord;
 pub use self::theme::{Theme, ThemePicker, ThemeRow, parse_theme_file, theme_file_json};
+pub use self::tips::ShownTip;
 pub use self::tools::{
     ERROR_TOOL_OUTPUT, INTERRUPT_TOOL_OUTPUT, PathDisplay, ToolCall, ToolStatus, apply_tool_screen,
 };
@@ -538,6 +540,13 @@ pub struct App {
     /// [`begin_stream`]: App::begin_stream
     /// [`set_status_times`]: App::set_status_times
     verb_cursor: usize,
+    /// The spinner tip walk's position — the [`crate::tips::TIPS`] index the
+    /// next tip shown opens on — or `None` while the boundary has not seeded
+    /// one ([`seed_tips`](App::seed_tips), from `tips.json`), which is the
+    /// unit-test default and shows no tip at all. Moved on by each tip a turn
+    /// draws in [`set_status_times`](App::set_status_times) and read back by
+    /// the boundary to persist. See `docs/tips.md`.
+    tip_cursor: Option<usize>,
     /// The turn's accumulated **real** usage — billed tokens summed over the
     /// provider's per-round usage frames ([`App::apply_usage`]), which the
     /// live tally snaps to (replacing the estimate ticked so far) and the

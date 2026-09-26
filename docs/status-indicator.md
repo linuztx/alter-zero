@@ -132,6 +132,13 @@ real backend's own latency plays the same role.
   the committed `Conversation interrupted` notice is its terminal state, like a
   backend error.
 
+Under the line, once the turn has run **three seconds**, hangs Claude Code's
+dim **spinner tip** — `  ⎿  Tip: Press ctrl+o to see the whole transcript and
+every tool's output` — a key or command worth knowing, the next one in the
+catalog each turn and a fresh one every three minutes of a long one; it goes
+with the turn, never commits, gives way to the task checklist, and turns off
+in `/settings` → **Show tips** (`docs/tips.md`).
+
 ## Width: the live line clamps, the summary wraps
 
 The two ends of a turn degrade differently at a narrow terminal, each by what
@@ -161,8 +168,9 @@ Time is impure, so — exactly like `docs/timestamps.md` — it stays in `main.r
   `Duration`s onto the live status via `App::set_status_times`.
 
 The pure `App` owns only what *isn't* time: the verb walk (which verb the line
-wears is a pure function of the cursor and the injected `elapsed`), the token
-tally, and the `↓`/`↑` arrow. `ui::status_line(&TurnStatus)` is a pure formatter that reads the
+wears is a pure function of the cursor and the injected `elapsed`), the tip
+walk under it (which tip shows is drawn from the tip cursor on the same
+injected clock — `docs/tips.md`), the token tally, and the `↓`/`↑` arrow. `ui::status_line(&TurnStatus)` is a pure formatter that reads the
 struct (with the boundary-supplied durations) — unit-tested with explicit values.
 
 ## State (App)
@@ -233,13 +241,19 @@ bottom-pane only reserves a blank *separator* when the status is visible, never 
 empty content/preview row; `bottom_pane/mod.rs`):
 
 ```
-strip = (preview_rows > 0 ? preview (N) + gap (1) : 0) + (has_status ? status (1) + gap (1) : 0)
+strip = (preview_rows > 0 ? preview (N) + gap (1) : 0) + (has_status ? status (1) + hang (H) + gap (1) : 0)
       = preview(1) + gap + status + gap   streaming a reply
       = preview(N) + gap + status + gap   running a backend tool (N = header + `⎿ Running…`)
       = status + gap only                 during the pre-stream pause
       = preview(1) + gap only             during a `!` shell run (status hidden)
       = 0                                 idle
 ```
+
+`H` is the rows **hanging off the status line** (`ui::hang_rows`): the task
+checklist (`docs/task-tools.md`), else — once the turn has run three seconds —
+the spinner tip (`docs/tips.md`), else none. The two share the one slot and
+never show together, so `live_height`/`live_layout`/`input_box` take their
+sum as one `hang_rows` argument.
 
 `render_live` draws `status_line` below the preview slot (`preview_rows + gap`, 0
 when there is no preview, so the status is the strip's top row) *only when*

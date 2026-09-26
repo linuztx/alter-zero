@@ -107,6 +107,9 @@
 //! - [`term`]        — the custom inline viewport (dynamic-height live region;
 //!   I/O).
 //! - [`textarea`]    — the grapheme-aware editable composer.
+//! - [`tips`]        — the spinner tips: the catalog, when a turn's tip
+//!   appears and moves on, and the per-user `tips.json` holding the **Show
+//!   tips** switch and where the walk left off (pure; see `docs/tips.md`).
 //! - [`tokenizer`]   — accurate token counting for the status tally (tiktoken
 //!   `o200k_base`, ranks embedded; the count seam behind `app::count_tokens`).
 //! - [`trust`]       — per-project trust for the `.alter-zero` project config
@@ -165,6 +168,7 @@ pub mod tasks;
 pub mod telemetry;
 pub mod term;
 pub mod textarea;
+pub mod tips;
 pub mod tokenizer;
 pub mod trust;
 pub mod ui;

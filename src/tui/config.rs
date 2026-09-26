@@ -975,6 +975,44 @@ pub(crate) fn update_check_forbidden_by_env() -> bool {
     alter_zero::update::enabled_by_env(value.as_deref()) == Some(false)
 }
 
+/// The spinner-tips file — `{config_home}/tips.json`, its own per-user file
+/// like `update.json`: the **Show tips** switch and where the walk through
+/// the catalog left off (`docs/tips.md`).
+pub(crate) fn tips_json_path() -> Option<PathBuf> {
+    config_home().map(|dir| dir.join(alter_zero::tips::TIPS_FILE_NAME))
+}
+
+/// Read `tips.json`. Best-effort like [`load_update_file`]: an absent,
+/// unreadable or corrupt file reads as the defaults (on, from the first tip).
+pub(crate) fn load_tips_file(path: Option<&Path>) -> alter_zero::tips::TipsFile {
+    path.and_then(|p| std::fs::read_to_string(p).ok())
+        .map(|text| alter_zero::tips::TipsFile::parse(&text))
+        .unwrap_or_default()
+}
+
+/// Change `tips.json` through `edit`, as a **read-modify-write** over the
+/// file itself — [`update_update_file`]'s twin — so the loop's cursor write
+/// never clobbers a switch another session just flipped, and the other way
+/// round. A failed write is swallowed (a read-only home must never kill the
+/// TUI), an unchanged file is not rewritten, and a `None` path edits nothing.
+pub(crate) fn update_tips_file(
+    path: Option<&Path>,
+    edit: impl FnOnce(&mut alter_zero::tips::TipsFile),
+) -> alter_zero::tips::TipsFile {
+    let before = load_tips_file(path);
+    let mut file = before.clone();
+    edit(&mut file);
+    if let Some(path) = path
+        && file != before
+    {
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let _ = std::fs::write(path, file.to_json());
+    }
+    file
+}
+
 /// Read the saved theme. Best-effort like [`load_spinner`] — an absent,
 /// unreadable, or corrupt file reads as `None` and the session keeps the
 /// default theme rather than failing startup.
@@ -1082,6 +1120,12 @@ pub(crate) fn apply_setting_overrides(mut settings: SessionSettings) -> SessionS
     // (`docs/telemetry.md`).
     if let Some(on) = telemetry_env_override() {
         settings.telemetry = on;
+    }
+    // The Show tips row: `ALTER_ZERO_TIPS` seeds it for the run over the
+    // value `tips.json` supplied, the `ALTER_ZERO_TOOLS` grammar — not a
+    // privacy switch, so it never withdraws the row (`docs/tips.md`).
+    if let Some(on) = env_flag_set(alter_zero::tips::TIPS_ENV) {
+        settings.tips = on;
     }
     settings
 }

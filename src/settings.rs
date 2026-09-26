@@ -75,6 +75,9 @@ pub enum SettingKey {
     Temperature,
     /// How many rounds of tool calls one turn may run (`0` = no limit).
     MaxToolCalls,
+    /// Hang a tip off the status line while a turn runs (`docs/tips.md`).
+    /// Persists **per user** (`tips.json`), beside the walk's position.
+    Tips,
     /// Ask the repository once a day whether a newer release is out and say
     /// so under the banner (`docs/update.md`). Persists **per user**
     /// (`update.json`), like its neighbour.
@@ -101,6 +104,7 @@ impl SettingKey {
         Self::Skills,
         Self::Temperature,
         Self::MaxToolCalls,
+        Self::Tips,
         Self::UpdateCheck,
         Self::Telemetry,
     ];
@@ -123,6 +127,7 @@ impl SettingKey {
             Self::Skills => "Skills",
             Self::Temperature => "Temperature",
             Self::MaxToolCalls => "Max tool calls",
+            Self::Tips => "Show tips",
             Self::UpdateCheck => "Update check",
             Self::Telemetry => "Telemetry",
         }
@@ -165,6 +170,9 @@ impl SettingKey {
             Self::Temperature => "The sampling temperature sent with every request",
             Self::MaxToolCalls => {
                 "How many rounds of tool calls one turn may run before it gives up — 0 is no limit"
+            }
+            Self::Tips => {
+                "Show a tip under the spinner once a turn has run a few seconds — a key or command worth knowing"
             }
             Self::UpdateCheck => {
                 "Ask GitHub once a day whether a newer release is out and say so under the banner — one request that carries nothing about you"
@@ -304,6 +312,13 @@ pub struct SessionSettings {
     /// check, seeded from there by the boundary.
     #[serde(skip, default = "on")]
     pub update_check: bool,
+    /// Hang a tip off the status line while a turn runs (default `true` —
+    /// Claude Code's `spinnerTipsEnabled`, `docs/tips.md`). **Never in
+    /// `settings.json`**: whether you want tips is yours, not a project's,
+    /// so the switch lives in `tips.json` beside the walk's position and the
+    /// boundary seeds it from there (the `telemetry` pattern).
+    #[serde(skip, default = "on")]
+    pub tips: bool,
     /// What this host can actually run — never persisted, never cycled.
     #[serde(skip)]
     pub availability: SettingAvailability,
@@ -327,6 +342,7 @@ impl Default for SessionSettings {
             max_tool_calls: 0,
             telemetry: true,
             update_check: true,
+            tips: true,
             availability: SettingAvailability::default(),
         }
     }
@@ -447,6 +463,7 @@ impl SessionSettings {
             SettingKey::Skills => bool_text(self.skills_active()),
             SettingKey::Temperature => temperature_text(self.temperature),
             SettingKey::MaxToolCalls => self.max_tool_calls.to_string(),
+            SettingKey::Tips => bool_text(self.tips),
             SettingKey::UpdateCheck => bool_text(self.update_check_active()),
             SettingKey::Telemetry => bool_text(self.telemetry_active()),
         };
@@ -486,6 +503,7 @@ impl SessionSettings {
             SettingKey::MaxToolCalls => {
                 self.max_tool_calls = next_in(TOOL_CALL_CHOICES, &self.max_tool_calls);
             }
+            SettingKey::Tips => self.tips = !self.tips,
             SettingKey::UpdateCheck => self.update_check = !self.update_check,
             SettingKey::Telemetry => self.telemetry = !self.telemetry,
         }
@@ -523,6 +541,8 @@ impl SessionSettings {
             SettingKey::Telemetry => {}
             // Nor this one — update.json (`docs/update.md`).
             SettingKey::UpdateCheck => {}
+            // …nor this one — tips.json (`docs/tips.md`).
+            SettingKey::Tips => {}
         }
     }
 
