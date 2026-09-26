@@ -29,28 +29,30 @@ use super::*;
 /// So a normal streaming turn is preview + gap + status + gap; the pre-stream
 /// pause is status + gap only (no empty preview line, codex parity); a shell run
 /// is one preview row + gap only (no status); and idle it collapses to nothing.
-/// The **task checklist** (`task_rows` — `docs/task-tools.md`) sits inside the
+/// The **hanging rows** (`hang_rows` — [`hang_rows`]: the task checklist,
+/// `docs/task-tools.md`, else the spinner tip, `docs/tips.md`) sit inside the
 /// status slot, directly under the status line and above its trailing gap, so
-/// its `⎿` rows visually hang off the spinner the way tool output hangs off
-/// its header (0 when no turn is active or the list is empty — [`task_rows`]
+/// their `⎿` rows visually hang off the spinner the way tool output hangs off
+/// its header (0 when no turn is active and no list is left — the checklist
 /// gates on the same `has_status`). The **queued messages** (`queued_rows`)
 /// stack below all of this, between the strip and the box's top rule — added
 /// separately by [`live_height`]/[`live_layout`] since their height depends on
 /// the queue.
-pub(super) const fn strip_rows(has_status: bool, preview_rows: u16, task_rows: u16) -> u16 {
+pub(super) const fn strip_rows(has_status: bool, preview_rows: u16, hang_rows: u16) -> u16 {
     let preview = if preview_rows > 0 {
         preview_rows + GAP_ROWS
     } else {
         0
     };
-    // The status slot carries the checklist under the spinner; with no
-    // status line the same slot holds the **idle** block alone (its count
-    // line + rows), keeping its trailing gap so the box never sits flush
-    // against it. Both collapse to nothing when there is neither.
+    // The status slot carries the checklist — or the tip — under the
+    // spinner; with no status line the same slot holds the **idle** task
+    // block alone (its count line + rows), keeping its trailing gap so the
+    // box never sits flush against it. Both collapse to nothing when there
+    // is neither.
     let status = if has_status {
-        STATUS_ROWS + task_rows + STATUS_GAP_ROWS
-    } else if task_rows > 0 {
-        task_rows + STATUS_GAP_ROWS
+        STATUS_ROWS + hang_rows + STATUS_GAP_ROWS
+    } else if hang_rows > 0 {
+        hang_rows + STATUS_GAP_ROWS
     } else {
         0
     };
@@ -148,7 +150,7 @@ pub fn preview_budget(app: &App, width: u16, height: u16) -> u16 {
 }
 
 /// Every row the conversation view's live region owes **besides** the preview
-/// slot: the status line and its checklist with their gap, the queued
+/// slot: the status line and its hanging rows with their gap, the queued
 /// messages, the toast, the composer's two rules and its wrapped rows, the
 /// band below it, the footer, and the agent roster. What [`live_height`] adds
 /// the preview slot to, spelled once so the budget cannot drift from the sum
@@ -176,17 +178,14 @@ fn non_preview_rows(app: &App, width: u16) -> u16 {
 }
 
 /// The strip's own rows **besides** the preview slot: the status line and its
-/// task checklist with their trailing gap, the queued messages, and the toast.
-/// [`strip_above_rows`] is this plus the preview slot; `render_strip_above`
-/// subtracts it from the rows [`view_split`] left the strip.
+/// hanging rows (the checklist, else the tip) with their trailing gap, the
+/// queued messages, and the toast. [`strip_above_rows`] is this plus the
+/// preview slot; `render_strip_above` subtracts it from the rows
+/// [`view_split`] left the strip.
 pub(super) fn strip_other_rows(app: &App, width: u16) -> u16 {
-    strip_rows(
-        strip_has_status(app),
-        0,
-        super::tasks::task_rows(app, width),
-    )
-    .saturating_add(queued_rows(app, width))
-    .saturating_add(toast_rows(app))
+    strip_rows(strip_has_status(app), 0, hang_rows(app, width))
+        .saturating_add(queued_rows(app, width))
+        .saturating_add(toast_rows(app))
 }
 
 /// Rows left for the preview slot inside `height` once `other` — every row
@@ -245,6 +244,22 @@ pub fn strip_has_status(app: &App) -> bool {
     app.status().is_some_and(|status| !status.shell)
 }
 
+/// The rows **hanging off the status line**, inside its slot and above its
+/// trailing gap: the task checklist (`docs/task-tools.md`) — or, with no list
+/// to show, the spinner tip (`docs/tips.md`). The two share one slot, so they
+/// share this one count, and every caller hands it to `strip_rows` /
+/// [`live_height`] / `live_layout` / `input_box` where the checklist's
+/// alone used to go — the sum spelled once, so the rows the region reserves
+/// and the rows `strip_lines` paints cannot disagree.
+///
+/// A plain sum is exact because the two never show together: a tip hides
+/// while any task is listed (`App::tip`), and at rest — where the checklist
+/// becomes the standalone block — there is no turn to draw a tip.
+#[must_use]
+pub fn hang_rows(app: &App, width: u16) -> u16 {
+    super::tasks::task_rows(app, width).saturating_add(super::tips::tip_rows(app, width))
+}
+
 /// Columns the input field's text occupies: the box spans the full width (no side
 /// borders) minus the prompt/indent that prefixes every text row, minus the
 /// caret's own column ([`text_field_width`]).
@@ -267,8 +282,9 @@ pub(super) fn text_field_width(cells: u16) -> u16 {
 }
 
 /// Height of the bottom live region for the current `input` at this terminal
-/// size: the streaming strip (the status and/or preview slots — see
-/// `strip_rows` for how `has_status`/`has_preview` size it) plus the
+/// size: the streaming strip (the status and/or preview slots, and the
+/// `hang_rows` under the status line — see `strip_rows` for how they size
+/// it) plus the
 /// `queued_rows` queued-message lines stacked under it (the strip's
 /// [`queued_rows`]), the `toast_rows` transient toast row just above the box
 /// ([`toast_rows`], 0 or 1), two framing rules, one row per wrapped input line —
@@ -288,7 +304,7 @@ pub fn live_height(
     term_height: u16,
     has_status: bool,
     preview_rows: u16,
-    task_rows: u16,
+    hang_rows: u16,
     queued_rows: u16,
     toast_rows: u16,
     band_rows: u16,
@@ -300,7 +316,7 @@ pub fn live_height(
     // is deliberately uncapped), so a u16 sum can overflow-panic long before
     // the clamp. The result is ≤ term_height, so the final cast is exact.
     let rows = input.row_count(field_width(width));
-    (usize::from(strip_rows(has_status, preview_rows, task_rows))
+    (usize::from(strip_rows(has_status, preview_rows, hang_rows))
         + usize::from(queued_rows)
         + usize::from(toast_rows)
         + usize::from(INPUT_CHROME_ROWS)
@@ -319,7 +335,7 @@ pub fn live_height(
 pub(super) struct LiveRows {
     pub(super) has_status: bool,
     pub(super) preview: u16,
-    pub(super) tasks: u16,
+    pub(super) hang: u16,
     pub(super) queued: u16,
     pub(super) toast: u16,
     pub(super) band: u16,
@@ -334,7 +350,7 @@ pub(super) fn live_rows(app: &App, width: u16, height: u16) -> LiveRows {
     LiveRows {
         has_status: strip_has_status(app),
         preview: fitted_preview_rows(app, width, height),
-        tasks: super::tasks::task_rows(app, width),
+        hang: hang_rows(app, width),
         queued: queued_rows(app, width),
         toast: toast_rows(app),
         band,
@@ -356,7 +372,7 @@ pub(super) fn live_height_for(
         term_height,
         rows.has_status,
         rows.preview,
-        rows.tasks,
+        rows.hang,
         rows.queued,
         rows.toast,
         rows.band,
@@ -371,7 +387,7 @@ pub(super) fn live_layout_for(area: Rect, rows: &LiveRows) -> [Rect; 5] {
         area,
         rows.has_status,
         rows.preview,
-        rows.tasks,
+        rows.hang,
         rows.queued,
         rows.toast,
         rows.band,
@@ -405,8 +421,8 @@ pub fn strip_paint_rows(app: &App, width: u16, term_height: u16) -> u16 {
 }
 
 /// The rows a **composer-replacing inline view** keeps *above* itself: the
-/// streaming strip ([`strip_rows`] — the preview, the status line and the task
-/// checklist with their gaps), the queued messages, and the toast row.
+/// streaming strip ([`strip_rows`] — the preview, the status line and its
+/// hanging rows with their gaps), the queued messages, and the toast row.
 ///
 /// The `/model` picker, the `/login` flow, the `/settings` menu and the ↓
 /// background manager band all replace the **composer** — never the running
@@ -423,7 +439,7 @@ pub(super) fn strip_above_rows(app: &App, width: u16) -> u16 {
     strip_rows(
         strip_has_status(app),
         preview_rows(app, width),
-        super::tasks::task_rows(app, width),
+        hang_rows(app, width),
     )
     .saturating_add(queued_rows(app, width))
     .saturating_add(toast_rows(app))
@@ -696,7 +712,7 @@ pub(super) fn live_layout(
     area: Rect,
     has_status: bool,
     preview_rows: u16,
-    task_rows: u16,
+    hang_rows: u16,
     queued_rows: u16,
     toast_rows: u16,
     band_rows: u16,
@@ -730,7 +746,7 @@ pub(super) fn live_layout(
     let agent = take(agent_rows);
     // Saturating: `queued_rows` is uncapped, and `take` is what bounds it.
     let strip = take(
-        strip_rows(has_status, preview_rows, task_rows)
+        strip_rows(has_status, preview_rows, hang_rows)
             .saturating_add(queued_rows)
             .saturating_add(toast_rows),
     );
@@ -777,7 +793,7 @@ pub(super) fn input_box(
     input: &TextArea,
     has_status: bool,
     preview_rows: u16,
-    task_rows: u16,
+    hang_rows: u16,
     queued_rows: u16,
     toast_rows: u16,
     band_rows: u16,
@@ -788,7 +804,7 @@ pub(super) fn input_box(
         area,
         has_status,
         preview_rows,
-        task_rows,
+        hang_rows,
         queued_rows,
         toast_rows,
         band_rows,
@@ -1221,7 +1237,7 @@ pub fn cursor_position(area: Rect, app: &App) -> (u16, u16) {
     let preview = fitted_preview_rows(app, area.width, area.height);
     let has_status = strip_has_status(app);
     let toast = toast_rows(app);
-    let tasks = super::tasks::task_rows(app, area.width);
+    let hang = hang_rows(app, area.width);
     // While a Ctrl+R search is open the hardware cursor tracks the end of the
     // *footer query*, not the textarea preview — the shell reverse-i-search
     // feel (codex's history_search_cursor_pos), clamped inside the row.
@@ -1231,7 +1247,7 @@ pub fn cursor_position(area: Rect, app: &App) -> (u16, u16) {
             area,
             has_status,
             preview,
-            tasks,
+            hang,
             queued_rows(app, area.width),
             toast,
             band,
@@ -1249,7 +1265,7 @@ pub fn cursor_position(area: Rect, app: &App) -> (u16, u16) {
         &app.input,
         has_status,
         preview,
-        tasks,
+        hang,
         queued_rows(app, area.width),
         toast,
         band,

@@ -23,7 +23,7 @@ per change.
   Permission mode         manual
   ...
   Max tool calls          0
-  (1/16)
+  (1/17)
 
   Hide the model's chain-of-thought…
 
@@ -34,7 +34,7 @@ per change.
 
 ## The settings
 
-Sixteen rows, each one a knob the running session actually reads. Every value
+Seventeen rows, each one a knob the running session actually reads. Every value
 **cycles** — there is no free-text field anywhere, so Enter and Space mean the
 same thing on every row and the menu never needs an edit mode.
 
@@ -54,6 +54,7 @@ same thing on every row and the menu never needs an edit mode.
 | **Skills** | `true` / `false` | Whether the `skill` tool is offered and the `<system-reminder>` listing rides the context (`docs/skills.md`). Seeded from `ALTER_ZERO_SKILLS`; **unavailable** when no `SKILL.md` loaded — there is nothing to turn on. |
 | **Temperature** | `default` / `0.0` / `0.3` / `0.5` / `0.7` / `1.0` | The sampling temperature every request carries; `default` sends none and leaves it to the provider. Seeded from `ALTER_ZERO_TEMPERATURE`. |
 | **Max tool calls** | **`0`** / `5` / `10` / `20` / `50` / `100` | How many tool **calls** one turn may run before it gives up (`llm::agent::run_agent`'s cap). **`0` is no limit, and the default** — see below. |
+| **Show tips** | `true` / `false` | Whether a dim `⎿  Tip: …` row hangs off the status line once a turn has run three seconds — a key or command worth knowing, the next in the catalog each turn (`docs/tips.md`; Claude Code's `spinnerTipsEnabled`). **Per user, not per directory**: persisted in `tips.json` beside the walk's position, never in `settings.json`. Seeded from `ALTER_ZERO_TIPS`, which — not being a privacy switch — never withdraws the row. Needs nothing from the host, so it is never unavailable. |
 | **Update check** | `true` / `false` | Whether the app asks the repository once a day whether a newer release is out and says so under the banner (`docs/update.md`: one `HEAD` of `/releases/latest`, answered by a redirect whose tag is the version — no body, no install id, nothing about you; the card names the release, `alter-zero update` and the off switch, once a day, never mid-reply). **Per user, not per directory**: persisted in `update.json`, never in `settings.json`. Seeded from `ALTER_ZERO_UPDATE_CHECK`; **unavailable** without a config home (nowhere to remember the day) **and whenever the variable forbids it** — the Telemetry rule, an environment that says no withdraws the row. `alter-zero update` on the command line is the user's own request and runs regardless. |
 | **Telemetry** | `true` / `false` | Whether the anonymous daily usage ping is sent (`docs/telemetry.md`: five fields — a payload version, a random install id, the app version, the OS and the architecture — never a prompt, path, model or key; the collector notes the country, never the address). **Per user, not per directory**: persisted in `telemetry.json`, never in `settings.json`. Seeded from `ALTER_ZERO_TELEMETRY`, outranked by `DO_NOT_TRACK=1`; **unavailable** without a config home (nowhere to keep the install id) **and whenever either variable forbids it** — alone among the rows, an environment that says no withdraws the row rather than merely seeding it, since an opt-out a keystroke could undo is not one (`docs/telemetry.md`). |
 
@@ -214,6 +215,10 @@ docs`.
   - **Hide thinking** and **Auto compact** need nothing beyond the pure flag:
     `tui::stream` consults `App::settings().show_thinking()` per phase and
     `App::should_auto_compact` gates on the flag.
+  - **Show tips** writes its own file — `tips.json`, beside the walk's
+    position (`docs/tips.md`) — and needs nothing else: `App::tip` reads the
+    row every frame, so the row under the status line goes (or comes) at the
+    next draw, mid-turn included.
   - **Update check** writes its own file too — `update.json` — and turning
     it on takes today's step at once: a newer release the file already knows
     of is announced, and the day's request is sent when none has run
@@ -271,13 +276,14 @@ An entry is a whole blob, never a layer over the seed (the diff format cannot
 tell a `true` left at its default from one deliberately chosen), and it is
 kept even once it equals the defaults — dropping it would let the seed back in.
 
-**Telemetry** and **Update check** are the two rows that are not in this
-file at all. An opt-out that applied only to the directory you happened to be
-in would be a surprise, so their values live in `telemetry.json` and
-`update.json` (`docs/telemetry.md`, `docs/update.md`) — each field is
-`#[serde(skip)]` on `SessionSettings`, `copy_value` never moves it (the
-`PermissionMode` pattern), and `apply_setting` skips the `settings.json`
-write for it.
+**Telemetry**, **Update check** and **Show tips** are the three rows that
+are not in this file at all. An opt-out that applied only to the directory you
+happened to be in would be a surprise, so their values live in
+`telemetry.json`, `update.json` and `tips.json` (`docs/telemetry.md`,
+`docs/update.md`, `docs/tips.md`) — each field is `#[serde(skip)]` on
+`SessionSettings` and `copy_value` never moves it (the `PermissionMode`
+pattern); `apply_setting` writes each to its own file, and none of them
+ever moves into this directory's entry.
 
 Precedence at startup is the same rule the rest of the app follows — **the
 environment wins**: an explicitly set `ALTER_ZERO_*` variable overrides the saved

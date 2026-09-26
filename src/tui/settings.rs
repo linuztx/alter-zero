@@ -305,15 +305,22 @@ impl Session<'_> {
             // Its twin: update.json, and turning it on runs today's check if
             // none has (docs/update.md).
             SettingKey::UpdateCheck => self.apply_update_setting(),
+            // Per user too: tips.json, beside the walk's position. Nothing to
+            // redraw by hand — the next frame reads the row (docs/tips.md).
+            SettingKey::Tips => {
+                config::update_tips_file(config::tips_json_path().as_deref(), |file| {
+                    file.enabled = settings.tips;
+                });
+            }
         }
         // Persist this directory's entry as a read-modify-write over the file
         // itself, moving across only the key the user cycled — so an
         // `ALTER_ZERO_*` override merged in at startup never sticks, and two
         // sessions in two directories never clobber each other
         // (`docs/settings.md`, `docs/per-directory-state.md`). The Telemetry
-        // row was written above, to its own file: a user's choice, not a
-        // directory's.
-        if key != SettingKey::Telemetry {
+        // and Show tips rows were written above, to their own files: a
+        // user's choice, not a directory's.
+        if !matches!(key, SettingKey::Telemetry | SettingKey::Tips) {
             config::save_setting(
                 self.settings_path.as_deref(),
                 &self.cwd.display().to_string(),

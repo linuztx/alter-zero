@@ -48,6 +48,7 @@ mod stream_stress;
 mod table;
 mod tasks;
 mod theme_view;
+mod tips;
 mod tool;
 mod transcript;
 mod trust_view;
@@ -153,6 +154,7 @@ pub(super) fn status(
         thinking: thinking.map(Duration::from_secs),
         shell: false,
         retry: None,
+        tip: None,
     }
 }
 

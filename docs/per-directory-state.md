@@ -234,6 +234,12 @@ Two consequences at the boundary:
 - **`update.json`** — the once-a-day update check's switch and record
   (`docs/update.md`): the same per-*user* rule for the same reason, with
   `SessionSettings::update_check` `#[serde(skip)]` beside `telemetry`.
+- **`tips.json`** — the spinner tip's **Show tips** switch and where the walk
+  through the catalog left off (`docs/tips.md`): per *user* too — a switch
+  turned off in one directory and back on in the next would read as the
+  setting not working, and the walk should carry on wherever the next
+  session starts — with `SessionSettings::tips` `#[serde(skip)]` beside the
+  other two.
 - The **project-level `.alter-zero/`** layer (`docs/project-config.md`) is
   a different axis: files *inside* the project, behind `/trust`. Both files
   here live in the user's config home, keyed by directory, and need no trust

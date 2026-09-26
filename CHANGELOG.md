@@ -12,6 +12,19 @@ release heading when a version is cut.
 
 ## [Unreleased]
 
+### Added
+
+- **Tips under the spinner.** Once a turn has run three seconds, a dim
+  `⎿  Tip: …` row appears under the status line with a key or command worth
+  knowing — `Press ctrl+o to see the whole transcript and every tool's
+  output`, `Type @ to insert a file path from this directory` — the way
+  Claude Code's spinner offers one. A quick answer never flashes one; each
+  turn shows the next tip, a long turn gets a fresh one every three minutes,
+  and the walk carries on across sessions, so every tip comes round before
+  any repeats. The row never lands in scrollback and gives way to the task
+  checklist. Turn it off with `/settings` → **Show tips** (remembered per
+  user, in `tips.json`) or `ALTER_ZERO_TIPS=0` for a run (`docs/tips.md`).
+
 ### Changed
 
 - **The status line's verb changes as a turn runs, and the summary matches

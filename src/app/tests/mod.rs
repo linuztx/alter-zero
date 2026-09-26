@@ -39,6 +39,7 @@ mod skills_menu;
 mod spinner;
 mod tasks;
 mod theme;
+mod tips;
 mod tools;
 mod trust_menu;
 mod turn;

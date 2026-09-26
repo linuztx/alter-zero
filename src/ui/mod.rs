@@ -74,6 +74,7 @@ mod table;
 mod tasks;
 mod theme;
 mod theme_view;
+mod tips;
 mod tool;
 mod transcript;
 mod trust_view;
@@ -107,7 +108,7 @@ pub use self::header::{
 pub use self::hooks_view::{hooks_menu_height, hooks_view_lines, render_hooks_menu};
 pub use self::image::{image_block_lines, image_lines, item_images};
 pub use self::layout::{
-    Repin, background_view_height, cursor_position, cursor_visible, fitted_preview_rows,
+    Repin, background_view_height, cursor_position, cursor_visible, fitted_preview_rows, hang_rows,
     key_onboarding_height, live_height, modal_needs_rebuild, model_picker_height,
     overlay_cursor_seat, permission_height, preview_budget, preview_rows, region_is_modal, repin,
     restore_cursor_row, stream_preview_max_rows, strip_has_status,
@@ -137,6 +138,7 @@ pub use self::stream_render::StreamRender;
 pub use self::tasks::{checklist_lines, idle_task_lines, task_rows};
 pub use self::theme::{COMPACTED_NOTICE, LIVE_MIN_HEIGHT};
 pub use self::theme_view::{render_theme_picker, theme_picker_height};
+pub use self::tips::{tip_lines, tip_rows};
 pub use self::tool::{held_run_len, resolved_tools_commit_lines, tool_commit_lines, tool_lines};
 pub use self::transcript::{
     TranscriptCache, agent_transcript_lines, backtrack_scroll, backtrack_scroll_for,

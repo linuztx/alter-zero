@@ -262,11 +262,12 @@ pub(super) fn preview_tool_lines(app: &App, width: u16) -> Vec<Line<'static>> {
 }
 
 /// Every row of the streaming strip for `app` at `width`, in paint order:
-/// the preview slot and its trailing gap, the status line with the task
-/// checklist hanging off it and its trailing gap, the queued messages, and
-/// the toast on the last row. Exactly `strip_rows(has_status, preview_n,
-/// task_rows) + queued_rows + toast_rows` lines, so the rows `live_height` /
-/// `live_layout` reserve and the rows this draws agree by construction.
+/// the preview slot and its trailing gap, the status line with its hanging
+/// rows — the task checklist, else the spinner tip (`docs/tips.md`) — and its
+/// trailing gap, the queued messages, and the toast on the last row. Exactly
+/// `strip_rows(has_status, preview_n, hang_rows) + queued_rows + toast_rows`
+/// lines, so the rows `live_height` / `live_layout` reserve and the rows this
+/// draws agree by construction.
 ///
 /// `preview_n` is the preview slot's size — `render_live` passes the content's
 /// **full ask**, so a squeezed region's strip is taller than its rect and the
@@ -287,8 +288,8 @@ pub(super) fn strip_lines(
     }
     // The task checklist directly under the status line (inside the status
     // slot, above its trailing gap — docs/task-tools.md). Built from the same
-    // (app, width) as `task_rows`, so the reserved rows and the painted ones
-    // agree by construction.
+    // (app, width) as `task_rows` — the checklist's half of `hang_rows` — so
+    // the reserved rows and the painted ones agree by construction.
     let tasks = super::tasks::task_lines(app, width);
     let has_status = strip_has_status(app);
     if has_status {
@@ -315,8 +316,11 @@ pub(super) fn strip_lines(
         };
         lines.push(line.unwrap_or_default());
         // The checklist's `⎿` rows hang directly off the status line —
-        // Claude Code's live task list (docs/task-tools.md).
+        // Claude Code's live task list (docs/task-tools.md) — or, with no
+        // list, the tip, once the turn has run a few seconds (docs/tips.md).
+        // The two never show together, so `hang_rows` is their plain sum.
         lines.extend(tasks);
+        lines.extend(super::tips::status_tip_lines(app, width));
         lines.push(Line::default()); // STATUS_GAP_ROWS
     } else if !tasks.is_empty() {
         // No status line to hang from (the turn is over, or a `!` shell run
@@ -406,7 +410,7 @@ pub(super) fn strip_content_rows(app: &App, width: u16, preview_n: u16) -> u16 {
     super::layout::strip_rows(
         strip_has_status(app),
         preview_n,
-        super::tasks::task_rows(app, width),
+        super::layout::hang_rows(app, width),
     )
     .saturating_add(queued_rows(app, width))
     .saturating_add(toast_rows(app))
@@ -668,9 +672,9 @@ pub fn render_live_with_preview(
         "fitted_preview_rows() must equal the drawn preview_lines()"
     );
     let has_status = strip_has_status(app);
-    let tasks_n = super::tasks::task_rows(app, area.width);
+    let hang_n = super::layout::hang_rows(app, area.width);
     let [strip, _, band_area, footer_area, agent_area] = live_layout(
-        area, has_status, preview_n, tasks_n, queued, toast, band, footer, agent_rows,
+        area, has_status, preview_n, hang_n, queued, toast, band, footer, agent_rows,
     );
     // The strip's *content* is built at the preview's full ask, not the rows
     // the region reserved: a squeezed strip then bottom-anchors, keeping its
@@ -690,7 +694,7 @@ pub fn render_live_with_preview(
     // agent session view carries the agent's description as a right-aligned
     // label on the top rule (docs/agent-tool.md).
     let bx = input_box(
-        area, &app.input, has_status, preview_n, tasks_n, queued, toast, band, footer, agent_rows,
+        area, &app.input, has_status, preview_n, hang_n, queued, toast, band, footer, agent_rows,
     );
     let mut block = Block::new()
         .borders(Borders::TOP | Borders::BOTTOM)

@@ -612,6 +612,14 @@ which Ctrl+V reads the clipboard from.
   the next one starts fresh. Ctrl+O keeps the full per-call record, and the
   list survives `/resume`, the Esc-Esc backtrack, and `/clear` via
   per-record snapshots.
+- **Spinner tips** (`docs/tips.md`): Claude Code's dim `⎿  Tip: …` row under
+  the status line — not at once but once the turn has run three seconds, so a
+  quick answer never flashes one; the next tip in a fixed catalog each turn
+  and a fresh one every three minutes of a long turn; live only, never
+  committed; giving way to the task checklist, which takes the same slot. The
+  walk's cursor moves only when a tip is actually seen and persists per user
+  in `tips.json` beside the `/settings` **Show tips** switch, so every tip
+  comes round before any repeats, across sessions.
 - **Lifecycle hooks** (`docs/hooks.md`): Claude Code's `hooks.json` contract —
   the user's own shell commands wedged into the agent's lifecycle, fed their
   event as `snake_case` JSON on stdin and answering with `camelCase` JSON on
@@ -1235,7 +1243,11 @@ a phase run on its own is as hermetic as one run by the suite):
 
 - **The variables.** The script unsets every `*_API_KEY`, every `ALTER_ZERO_*`
   knob, `OLLAMA_HOST`, `NO_COLOR`, and `DISPLAY`/`WAYLAND_DISPLAY`/`XAUTHORITY`
-  before its first launch, then spells out per launch the ones it wants. Each
+  before its first launch, then spells out per launch the ones it wants —
+  exporting three switches off for every phase besides (`ALTER_ZERO_TELEMETRY`,
+  `ALTER_ZERO_UPDATE_CHECK`, and `ALTER_ZERO_TIPS`, whose row under a turn's
+  status line would otherwise land in every strip a phase holds past three
+  seconds; the phases that test each feature turn it back on for themselves). Each
   is load-bearing: a resolvable key reaches a live provider instead of the
   dummy; `NO_COLOR` makes crossterm emit no SGR at all, so every colour
   assertion (the `/theme` banner accent, the focused shell indicator, the

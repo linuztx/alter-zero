@@ -70,6 +70,11 @@ pub struct TurnStatus {
     /// / [`App::push_thinking`]). Set by [`App::set_retry`] from the backend's
     /// [`crate::stream::StreamEvent::Retrying`]. See `docs/llm.md`.
     pub retry: Option<RetryInfo>,
+    /// The tip this turn's line is showing — or last drew, while something
+    /// hides it — once the turn has run [`crate::tips::TIP_DELAY`]; drawn by
+    /// [`App::set_status_times`] (`docs/tips.md`). `None` until then, and
+    /// for every status built with no turn behind it (a preview, a copy).
+    pub tip: Option<ShownTip>,
 }
 
 /// A live retry indicator for the status line: the 1-based retry number and the
@@ -255,7 +260,8 @@ impl App {
     /// calls this once per draw and nowhere else, so the verb it sets *is* the
     /// verb on screen — a turn that ends a few milliseconds past a rotation no
     /// frame drew still settles on the verb the user saw
-    /// (`docs/status-indicator.md`).
+    /// (`docs/status-indicator.md`). The spinner tip draws here too, for the
+    /// same reason (`docs/tips.md`).
     pub fn set_status_times(&mut self, elapsed: Duration, thinking: Option<Duration>) {
         if let Some(status) = self.status.as_mut() {
             status.elapsed = elapsed;
@@ -268,6 +274,10 @@ impl App {
                 self.verb_cursor = index + 1;
             }
         }
+        // The tip under the line moves on the same clock — drawn the first
+        // frame its slot is on screen, so the cursor moves only when a tip
+        // is actually seen (docs/tips.md).
+        self.draw_tip(elapsed);
     }
     /// Inject the current running command's elapsed each frame (the
     /// [`set_status_times`](App::set_status_times) pattern — the clock lives at

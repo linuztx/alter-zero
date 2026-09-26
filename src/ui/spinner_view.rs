@@ -39,6 +39,7 @@ fn sample_status(elapsed: Duration) -> TurnStatus {
         thinking: None,
         shell: false,
         retry: None,
+        tip: None,
     }
 }
 

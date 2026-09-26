@@ -293,6 +293,12 @@ impl<'t> Session<'t> {
         // Likewise the Update check row's: update.json's (docs/update.md).
         settings.update_check =
             config::load_update_file(config::update_json_path().as_deref()).enabled;
+        // …and the Show tips row's, with the walk's position beside it
+        // (docs/tips.md): tips.json's, per user. The cursor seeds `App` here,
+        // so the session's first tip is the one after the last shown anywhere.
+        let tips_file = config::load_tips_file(config::tips_json_path().as_deref());
+        settings.tips = tips_file.enabled;
+        app.seed_tips(tips_file.next);
         let settings = config::apply_setting_overrides(settings);
 
         // The user's lifecycle hooks (docs/hooks.md): `~/.alter-zero/hooks.json`
@@ -520,6 +526,7 @@ impl<'t> Session<'t> {
             hist_store,
             checkpoints,
             settings_path,
+            tips_saved: Some(tips_file.next),
             inflight: None,
             reaping: Vec::new(),
             clipboard_lease: None,
@@ -857,6 +864,9 @@ impl<'t> Session<'t> {
         self.models.fire_session_end("prompt_input_exit");
         let inputs = self.app.take_unpersisted_inputs();
         self.hist_store.append(&inputs);
+        // …and the tip walk's position, for a quit that drew a tip on its way
+        // out (docs/tips.md).
+        self.sync_tip_cursor();
         // Stop any in-flight reply on the way out, but don't `join()` it: joining
         // would couple the terminal restore to the backend's worst case (the
         // interrupt-lag freeze, on the quit path). The process exits right after
@@ -906,7 +916,8 @@ impl<'t> Session<'t> {
     }
 
     /// The loop-bottom bookkeeping, run after every event: the auto-compact check,
-    /// the abandoned-permission release, the two on-disk mirrors, the transcript
+    /// the abandoned-permission release, the three on-disk mirrors (the
+    /// rollout, the input history, the tip walk's position), the transcript
     /// pre-render, and the detached-thread sweep.
     pub(crate) fn after_iteration(&mut self) {
         // Auto-compact (docs/compact.md): past codex's 90%-of-window threshold,
@@ -949,6 +960,9 @@ impl<'t> Session<'t> {
         // recorded nothing, so streaming ticks cost no I/O.
         let inputs = self.app.take_unpersisted_inputs();
         self.hist_store.append(&inputs);
+        // The spinner tip walk's position (docs/tips.md) — likewise nothing
+        // on the iterations that drew no tip.
+        self.sync_tip_cursor();
         // Pre-render whatever this iteration committed into the Ctrl+O transcript
         // cache (docs/tool-view-performance.md) — a few integer compares when
         // nothing did, one grammar-highlight per new item when something did, the
@@ -962,5 +976,23 @@ impl<'t> Session<'t> {
         // loop; a thread still parked in its final network read is left until it
         // exits on its own. See `Session::abandon_inflight` / docs/interrupt.md.
         self.reaping.retain(|handle| !handle.is_finished());
+    }
+
+    /// Write the spinner tip walk's position back to the per-user
+    /// `tips.json` when a turn's tip has moved it (`docs/tips.md`), so the
+    /// next session — in any directory — opens on the tip after the last one
+    /// shown. An integer compare and no I/O whenever it hasn't; the write is
+    /// a read-modify-write, so a switch another session flipped survives.
+    fn sync_tip_cursor(&mut self) {
+        let cursor = self.app.tip_cursor();
+        if cursor == self.tips_saved {
+            return;
+        }
+        if let Some(next) = cursor {
+            config::update_tips_file(config::tips_json_path().as_deref(), |file| {
+                file.next = next;
+            });
+        }
+        self.tips_saved = cursor;
     }
 }

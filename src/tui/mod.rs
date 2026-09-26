@@ -340,6 +340,11 @@ pub(crate) struct Session<'t> {
     /// key the user cycled, so an `ALTER_ZERO_*` override merged in at startup
     /// never becomes the saved default.
     settings_path: Option<PathBuf>,
+    /// The spinner tip walk's position as `tips.json` last recorded it
+    /// (`docs/tips.md`): the loop bottom writes the file back only when
+    /// `App::tip_cursor` has moved off it, so an ordinary iteration costs an
+    /// integer compare and no I/O.
+    tips_saved: Option<usize>,
 
     // ----- the in-flight turn -----
     /// The streaming reply's cancel token + thread handle; `None` when idle.
