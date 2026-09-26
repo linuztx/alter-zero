@@ -170,9 +170,11 @@ struct (with the boundary-supplied durations) — unit-tested with explicit valu
 - `TokenArrow { Down, Up }`.
 - `RetryInfo { attempt, max }` — a live retry indicator (see `docs/llm.md`).
 - `TurnStatus { verb, done_verb, rotates_from, tokens, arrow, elapsed, thinking,
-  shell, retry }` (`verb`/`done_verb` are one `StatusVerb`'s two forms, moved
-  together; `rotates_from: Option<usize>` is the `STATUS_VERBS` index the line
-  opened on when its verb rotates, `None` when it is fixed as given.
+  shell, retry, tips_from, tip }` (`verb`/`done_verb` are one `StatusVerb`'s
+  two forms, moved together; `rotates_from: Option<usize>` is the
+  `STATUS_VERBS` index the line opened on when its verb rotates, `None` when
+  it is fixed as given; `tips_from`/`tip` are the usage tip's walk, the same
+  shape over `TIPS` — `docs/tips.md`.
   `elapsed: Duration` / `thinking: Option<Duration>` are written by the boundary
   each frame; `thinking` is `Some` only while thinking. A `Duration` rather than
   whole seconds so one value drives the displayed seconds, the shimmer's
@@ -247,6 +249,14 @@ when there is no preview, so the status is the strip's top row) *only when*
 `live_layout`/`input_box` take a `has_status: bool` and a `preview_rows: u16`
 (the preview content-row count), fed by `strip_has_status`/`preview_rows` from the
 `App`-having callers (`render_live`, `cursor_position`, `main.rs`).
+
+The status slot also holds the task checklist's rows between the line and
+its gap while a plan is up (`task_rows`, `docs/task-tools.md`), and the
+usage tip a few seconds into the turn (`docs/tips.md`) — which adds **no**
+row: it is drawn on the gap row itself, because the collapse below refills
+the strip row for row and a row the commit does not refill would strand the
+box above a blank band. Those pages own the rows; the geometry here only
+reserves them.
 
 The `N` above is **budgeted**, not just measured. The preview is the only row
 count in the region that can give way — the status line, the box, the band and

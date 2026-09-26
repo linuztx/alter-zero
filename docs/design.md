@@ -78,7 +78,10 @@ which Ctrl+V reads the clipboard from.
   `↓`. While a
   turn is active the draw branch re-arms an animation frame every 32 ms (codex's
   cadence), so the spinner runs, the shimmer waves, and the timer moves even
-  with no events. On
+  with no events. A few seconds in, a dim `⎿  Tip: …` row hangs off the line
+  — Claude Code's spinner tip over this app's own keys and commands, the
+  next every three minutes, the walk continuing across turns and launches
+  (`docs/tips.md`). On
   finish the line is replaced by a dim, committed **`{done verb} for Ns`** summary
   — the past tense of the verb the line wore last (`Worked for 12s`), the verb
   moving on every 30 s of a turn (`docs/status-indicator.md`) —
@@ -612,6 +615,14 @@ which Ctrl+V reads the clipboard from.
   the next one starts fresh. Ctrl+O keeps the full per-call record, and the
   list survives `/resume`, the Esc-Esc backtrack, and `/clear` via
   per-record snapshots.
+- **Usage tips** (`docs/tips.md`): Claude Code's spinner tip — a few
+  seconds into a turn a dim `⎿  Tip: …` row hangs off the status line naming
+  one of this app's own keys or commands, a quick answer never shows one, a
+  long turn moves on to the next tip every three minutes, and the walk
+  through the catalog continues across turns (the status verbs' rule) and
+  across launches (`tips.json`, per user), stepping over a tip whose
+  feature the session lacks. The task checklist takes its place while a plan
+  is up; the `/settings` **Tips** row (`ALTER_ZERO_TIPS`) turns it off.
 - **Lifecycle hooks** (`docs/hooks.md`): Claude Code's `hooks.json` contract —
   the user's own shell commands wedged into the agent's lifecycle, fed their
   event as `snake_case` JSON on stdin and answering with `camelCase` JSON on
@@ -848,9 +859,10 @@ file-search worker ► tokio mpsc ───┘                           draw ti
   (`docs/permissions.md`; the quiet resolved MCP cell leaves the row to its
   expanded Ctrl+O form — `docs/mcp.md`).
 - `TokenArrow { Down, Up }` + `TurnStatus { verb, done_verb, rotates_from,
-  tokens, arrow, elapsed, thinking }` — the live status of the turn in flight
-  (`App::status`; `verb`/`done_verb` are one `StatusVerb`'s two forms, rotated
-  together by `set_status_times`);
+  tokens, arrow, elapsed, thinking, tips_from, tip }` — the live status of
+  the turn in flight (`App::status`; `verb`/`done_verb` are one `StatusVerb`'s
+  two forms, rotated together by `set_status_times`, which also walks the
+  usage tip — `docs/tips.md`);
   the `Duration`s are written by the boundary each frame (one value drives the
   displayed seconds *and* the verb's shimmer phase). See
   `docs/status-indicator.md`.

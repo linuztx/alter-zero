@@ -67,6 +67,9 @@ impl App {
             thinking: None,
             shell: false,
             retry: None,
+            // A summarization is a wait like any other turn (docs/tips.md).
+            tips_from: Some(self.tip_cursor),
+            tip: None,
         });
     }
 

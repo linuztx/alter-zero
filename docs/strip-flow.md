@@ -77,8 +77,9 @@ all at the 32 ms cadence an active turn re-arms. Signing the flow on its rows
 would purge-rebuild the whole screen thirty times a second, so it takes the ↓
 manager's `FlowSign::Frozen` (`docs/view-flow.md`) over
 `ui::live::strip_flow_key`: which conversation is on screen, whether a status
-line is up, each queued call's name/arguments/status, the live agent group's
-members, and whether a thinking phase is open. A new call, a resolution, a new
+line is up and which usage tip hangs off it (`docs/tips.md`), each queued
+call's name/arguments/status, the live agent group's members, and whether a
+thinking phase is open. A new call, a resolution, a new
 round or the turn ending re-signs it; a streamed line does not. The width and
 the flowed row count are hashed by the caller, so a resize re-signs too.
 

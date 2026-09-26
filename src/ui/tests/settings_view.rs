@@ -120,7 +120,7 @@ fn every_row_shows_its_label_and_value_and_the_first_is_marked() {
     assert!(first.starts_with("→ Hide thinking"), "{first:?}");
     assert!(first.contains("false"), "{first:?}");
     let second = row(&buf, 5, 78);
-    assert!(second.starts_with("  Show images"), "{second:?}");
+    assert!(second.starts_with("  Tips"), "{second:?}");
     assert!(second.contains("true"), "{second:?}");
     // The selected row's marker takes the picker family's cyan accent.
     assert_eq!(buf[(0, 4)].fg, model_selected_color());
@@ -183,7 +183,7 @@ fn the_counter_and_description_track_the_selection() {
     // description = counter + gap + 1.
     let description = row(&buf, 4 + rows + 2, 78);
     assert!(
-        description.contains(SettingKey::ShowImages.description()),
+        description.contains(SettingKey::Tips.description()),
         "{description:?}"
     );
 }

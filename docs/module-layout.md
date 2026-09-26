@@ -37,6 +37,7 @@ widened for the split.
 | `mod.rs` | The `App` struct, its core message/toast/clock methods, and the facade (`mod` + `pub use`). |
 | `types.rs` | `Role`, `Message`, `HistoryItem`, `View`, `Toast`, `SessionInfo` — the shared vocabulary. Types that belong to one feature live with it instead: `ToolCall` in `tools.rs`, `Compaction` in `compact.rs`, `StreamError`/`InterruptedTurn` in `turn.rs`. |
 | `status.rs` | `TurnStatus`, `TurnSummary`, `TokenArrow`, `RetryInfo` and the token tally the spinner line renders. |
+| `tips.rs` | The usage-tip catalog, the walk through it and its timing, and the `tips.json` format (`docs/tips.md`). |
 | `action.rs` | `Action`: what a key press asks the loop to do. |
 | `keys.rs` | `on_key` (dispatch by `View`) and the conversation view's key map. |
 | `composer.rs` | Paste placeholders, Ctrl+V image attachments, the `!` shell mode. |
@@ -82,6 +83,7 @@ widened for the split.
 | `inline_diff.rs` | Character-level refinement of a diff cell's `-`/`+` pairs — which bytes of a line actually changed (`docs/inline-diff.md`). |
 | `image.rs` | The rows a picture reserves under a cell — the pure half of the inline images (`docs/images.md`). |
 | `status.rs` | The status line (spinner, shimmer, tally) and the `Done for Ns` summary. |
+| `tips.rs` | The `⎿  Tip: …` row under the status line (`docs/tips.md`). |
 | `agent.rs` | Subagent trees, cells, and the footer roster. |
 | `menu.rs` | The palette / `@` picker / `?` shortcuts bands. |
 | `footer.rs` | The footer row, the toast, the queued rows, and what displaces the footer. |

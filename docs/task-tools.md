@@ -71,6 +71,9 @@ matters:
 - **The strip: the checklist.** While a turn is active (`strip_has_status`)
   and the list is non-empty, the rows render directly **under the status
   line**, above its trailing gap: `⎿ {glyph} {subject}` in the tool gutter.
+  They take the place of the usage tip (`docs/tips.md`), which hangs off the
+  same line when no plan does — Claude Code shows its task list instead of
+  the tip too.
   `◻` pending (dim), `◼` in progress (the glyph in the system cyan, the
   subject bright), `✔` completed (green glyph, dim struck-through subject),
   and a dim `› blocked by #1, #2` suffix naming a blocked task's **open**

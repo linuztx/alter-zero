@@ -263,9 +263,10 @@ pub(super) fn preview_tool_lines(app: &App, width: u16) -> Vec<Line<'static>> {
 
 /// Every row of the streaming strip for `app` at `width`, in paint order:
 /// the preview slot and its trailing gap, the status line with the task
-/// checklist hanging off it and its trailing gap, the queued messages, and
-/// the toast on the last row. Exactly `strip_rows(has_status, preview_n,
-/// task_rows) + queued_rows + toast_rows` lines, so the rows `live_height` /
+/// checklist hanging off it and its trailing gap (the usage tip's row when
+/// one is up, `docs/tips.md`), the queued messages, and the toast on the
+/// last row. Exactly `strip_rows(has_status, preview_n, task_rows) +
+/// queued_rows + toast_rows` lines, so the rows `live_height` /
 /// `live_layout` reserve and the rows this draws agree by construction.
 ///
 /// `preview_n` is the preview slot's size — `render_live` passes the content's
@@ -317,7 +318,14 @@ pub(super) fn strip_lines(
         // The checklist's `⎿` rows hang directly off the status line —
         // Claude Code's live task list (docs/task-tools.md).
         lines.extend(tasks);
-        lines.push(Line::default()); // STATUS_GAP_ROWS
+        // STATUS_GAP_ROWS — the blank row between the slot and the box, or
+        // the usage tip's `⎿  Tip: …` row in its place (docs/tips.md): on
+        // the gap's own row, never one more, so the strip is no taller with
+        // a tip than without and the turn-end commit still refills exactly
+        // the rows it collapses (the box stays flush at the bottom,
+        // `smoke.sh` Phase 5). `tip_line` is `None` while the checklist
+        // shows, so the list keeps its blank gap.
+        lines.push(super::tips::tip_line(app, width).unwrap_or_default());
     } else if !tasks.is_empty() {
         // No status line to hang from (the turn is over, or a `!` shell run
         // owns the strip): the standalone block — its count line over the
@@ -420,9 +428,9 @@ pub(super) fn strip_content_rows(app: &App, width: u16, preview_n: u16) -> u16 {
 /// streams into the running cell, the elapsed and the token tally advance,
 /// the bullet blinks — so signing its rows would purge-rebuild the screen
 /// thirty times a second. This hashes only what a **structural** change moves:
-/// which conversation is on screen, whether a turn's status line is up, each
-/// queued call's name/arguments/status, the live agent group's members, and
-/// whether a thinking phase is open. A new call, a
+/// which conversation is on screen, whether a turn's status line is up and
+/// which tip hangs off it, each queued call's name/arguments/status, the live
+/// agent group's members, and whether a thinking phase is open. A new call, a
 /// resolution, a new round or the turn ending re-signs it; a streamed line
 /// does not, so the flowed rows freeze where they were committed. (The width
 /// and the flowed row count are hashed by the caller, so a resize — and any
@@ -432,6 +440,10 @@ pub(super) fn strip_flow_key(app: &App) -> u64 {
     let mut hasher = DefaultHasher::new();
     app.agent_view.hash(&mut hasher);
     strip_has_status(app).hash(&mut hasher);
+    // The tip on the status slot's gap row comes up and moves on at the
+    // walk's own pace (docs/tips.md) — a structural change, so a flowed
+    // strip re-signs rather than freezing a stale tip row in scrollback.
+    app.tip().map(|tip| tip.id).hash(&mut hasher);
     app.reasoning().is_some().hash(&mut hasher);
     app.streaming_text().is_some().hash(&mut hasher);
     let queue = app

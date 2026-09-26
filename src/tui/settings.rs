@@ -295,8 +295,9 @@ impl Session<'_> {
             // Read by the `read` executor per call — nothing to redraw, since
             // this row is about the request and not the screen.
             SettingKey::AutoResizeImages => self.sync_image_policy(),
-            // Read where they are used — nothing to rebuild.
-            SettingKey::HideThinking | SettingKey::AutoCompact => {}
+            // Read where they are used — nothing to rebuild. (The tip row
+            // is built per frame off the switch — docs/tips.md.)
+            SettingKey::HideThinking | SettingKey::Tips | SettingKey::AutoCompact => {}
             // Shift+Tab's path owns this one; the menu never routes it here.
             SettingKey::PermissionMode => {}
             // The one per-user row: its file is telemetry.json, and turning

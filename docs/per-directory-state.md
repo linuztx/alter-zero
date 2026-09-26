@@ -234,6 +234,10 @@ Two consequences at the boundary:
 - **`update.json`** — the once-a-day update check's switch and record
   (`docs/update.md`): the same per-*user* rule for the same reason, with
   `SessionSettings::update_check` `#[serde(skip)]` beside `telemetry`.
+- **`tips.json`** — the last usage tip shown under the status line
+  (`docs/tips.md`), per *user* because a tip is about the app rather than a
+  project: a new checkout would otherwise open on the same first tip every
+  time. The **Tips** switch itself is an ordinary per-directory row.
 - The **project-level `.alter-zero/`** layer (`docs/project-config.md`) is
   a different axis: files *inside* the project, behind `/trust`. Both files
   here live in the user's config home, keyed by directory, and need no trust

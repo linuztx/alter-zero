@@ -107,6 +107,14 @@ impl<'t> Session<'t> {
         {
             app.set_spinner(spinner);
         }
+        // The usage tips' walk (docs/tips.md): open on the tip after the last
+        // one any session showed, so a relaunch never repeats it. Per user
+        // (`tips.json`), not per directory — a tip is about the app.
+        app.seed_tips(
+            config::load_tips_file(config::tips_json_path().as_deref())
+                .last
+                .as_deref(),
+        );
         // The colour theme (docs/theme.md): the saved `/theme` choice, seeded
         // — and made the palette every renderer reads — before the banner is
         // built, so the first frame already wears it. An absent or corrupt

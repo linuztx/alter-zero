@@ -816,6 +816,10 @@ pub fn agent_view_status(run: &crate::agents::AgentRun) -> crate::app::TurnStatu
         thinking: run.thinking,
         shell: false,
         retry: run.retry,
+        // A usage tip is the main session's; an agent's view shows none
+        // (docs/tips.md).
+        tips_from: None,
+        tip: None,
     }
 }
 

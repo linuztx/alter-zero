@@ -918,6 +918,38 @@ fn telemetry_env_override() -> Option<bool> {
     alter_zero::telemetry::enabled_by_env(telemetry.as_deref(), dnt.as_deref())
 }
 
+/// The usage tips' file — `{config_home}/tips.json`, its own per-user file
+/// like `telemetry.json` (`docs/tips.md`): a tip is about the app, not the
+/// directory, so the walk's position is the user's.
+pub(crate) fn tips_json_path() -> Option<PathBuf> {
+    config_home().map(|dir| dir.join(alter_zero::app::TIPS_FILE_NAME))
+}
+
+/// Read `tips.json`. Best-effort like [`load_telemetry_file`]: an absent,
+/// unreadable or corrupt file reads as nothing known, and the walk opens on
+/// the catalog's first tip.
+pub(crate) fn load_tips_file(path: Option<&Path>) -> alter_zero::app::TipsFile {
+    path.and_then(|p| std::fs::read_to_string(p).ok())
+        .map(|text| alter_zero::app::TipsFile::parse(&text))
+        .unwrap_or_default()
+}
+
+/// Remember `id` as the last tip shown — written whole, since the file holds
+/// nothing else. A failed write is swallowed (the next launch merely opens on
+/// the first tip), and a `None` path writes nothing.
+pub(crate) fn record_tip(path: Option<&Path>, id: &str) {
+    let Some(path) = path else {
+        return;
+    };
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let file = alter_zero::app::TipsFile {
+        last: Some(id.to_string()),
+    };
+    let _ = std::fs::write(path, file.to_json());
+}
+
 /// The update-check file — `{config_home}/update.json`, its own per-user
 /// file like `telemetry.json` (`docs/update.md`).
 pub(crate) fn update_json_path() -> Option<PathBuf> {
@@ -1049,6 +1081,11 @@ pub(crate) fn apply_setting_overrides(mut settings: SessionSettings) -> SessionS
     }
     if let Some(on) = env_flag_set("ALTER_ZERO_TOOLS") {
         settings.tools = on;
+    }
+    // `ALTER_ZERO_TIPS` seeds the **Tips** row — the usage tip under the
+    // status line (docs/tips.md) — for this run, never saved.
+    if let Some(on) = env_flag_set("ALTER_ZERO_TIPS") {
+        settings.tips = on;
     }
     // `ALTER_ZERO_HOOKS` seeds the **Hooks** row the way `ALTER_ZERO_TOOLS`
     // seeds Tools — an override for this run, never saved (docs/hooks.md).

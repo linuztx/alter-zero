@@ -81,6 +81,7 @@ fn hooks_and_checkpoints_are_off_until_a_directory_turns_them_on() {
 fn booleans_cycle_between_true_and_false() {
     for key in [
         SettingKey::HideThinking,
+        SettingKey::Tips,
         SettingKey::Tools,
         SettingKey::Checkpoints,
         SettingKey::AutoCompact,

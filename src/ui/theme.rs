@@ -606,6 +606,16 @@ pub(super) const TASK_IDLE_INDENT: &str = "  ";
 /// what is actionable — see `ui::tasks`).
 pub(super) const TASK_MAX_ROWS: usize = 10;
 
+// ===== The usage tip under the status line (docs/tips.md) =====
+
+/// The label opening the tip row after the `⎿` corner — Claude Code's
+/// `Tip: ` — dim like the sentence after it ([`tool_dim_color`]). The row
+/// takes the checklist's gutter ([`TOOL_RESULT_PREFIX`]), so the two hang
+/// off the spinner the same way, and it is drawn on the status slot's gap
+/// row ([`STATUS_GAP_ROWS`]) rather than on a row of its own, clipped to
+/// the width — `ui::tips` says why.
+pub(super) const TIP_PREFIX: &str = "Tip: ";
+
 /// Green — an added (`+`) line in an `edit`/`write` diff cell (codex's diff
 /// look, adapted to the `⎿` gutter; see `docs/tools.md`).
 pub(super) fn tool_diff_add_color() -> Color {

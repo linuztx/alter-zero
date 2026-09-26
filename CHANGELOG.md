@@ -12,6 +12,21 @@ release heading when a version is cut.
 
 ## [Unreleased]
 
+### Added
+
+- **A usage tip under the status line.** A few seconds into a turn a dim
+  `⎿  Tip: …` row hangs off the spinner line — Claude Code's spinner tip —
+  naming one of Alter Zero's own keys or commands: Enter into the running
+  turn, Esc-Esc to rewind, Ctrl+O, `@` and `$`, `/compact`, `/resume` and
+  the rest. A quick answer never shows one; a long turn moves on to the
+  next tip every three minutes; the next turn picks up where the last left
+  off, and so does the next launch (`tips.json` in the config home), so no
+  tip repeats before the whole catalog has come round. A tip about a feature
+  the session doesn't have — Shift+Tab with permissions off, Ctrl+T on a
+  model that doesn't reason — is skipped, and the task checklist takes the
+  row's place while a plan is up. Off with the new `/settings` **Tips** row
+  or `ALTER_ZERO_TIPS=0` (`docs/tips.md`).
+
 ### Changed
 
 - **The status line's verb changes as a turn runs, and the summary matches

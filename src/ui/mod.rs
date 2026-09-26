@@ -74,6 +74,7 @@ mod table;
 mod tasks;
 mod theme;
 mod theme_view;
+mod tips;
 mod tool;
 mod transcript;
 mod trust_view;
@@ -137,6 +138,7 @@ pub use self::stream_render::StreamRender;
 pub use self::tasks::{checklist_lines, idle_task_lines, task_rows};
 pub use self::theme::{COMPACTED_NOTICE, LIVE_MIN_HEIGHT};
 pub use self::theme_view::{render_theme_picker, theme_picker_height};
+pub use self::tips::tip_text_line;
 pub use self::tool::{held_run_len, resolved_tools_commit_lines, tool_commit_lines, tool_lines};
 pub use self::transcript::{
     TranscriptCache, agent_transcript_lines, backtrack_scroll, backtrack_scroll_for,

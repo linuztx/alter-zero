@@ -70,6 +70,18 @@ pub struct TurnStatus {
     /// / [`App::push_thinking`]). Set by [`App::set_retry`] from the backend's
     /// [`crate::stream::StreamEvent::Retrying`]. See `docs/llm.md`.
     pub retry: Option<RetryInfo>,
+    /// The [`TIPS`] index this turn's usage-tip walk opens on
+    /// (`docs/tips.md`), when the turn shows tips at all — `None` for a `!`
+    /// shell turn, whose status line is hidden anyway, and for a per-draw
+    /// copy that walks nothing (the agent session view's, the `/spinner`
+    /// picker's sample). The [`rotates_from`](Self::rotates_from) rule over
+    /// the tips.
+    pub tips_from: Option<usize>,
+    /// The [`TIPS`] index the strip shows under the status line right now —
+    /// `None` until the turn is [`TIP_DELAY`] old, then walked on every
+    /// [`TIP_ROTATION`] by [`App::set_status_times`] like the verb. Read
+    /// through [`App::tip`], which also applies the **Tips** switch.
+    pub tip: Option<usize>,
 }
 
 /// A live retry indicator for the status line: the 1-based retry number and the
@@ -268,6 +280,10 @@ impl App {
                 self.verb_cursor = index + 1;
             }
         }
+        // The usage tip under the line walks on the same clock: nothing
+        // until the turn is a few seconds old, then the next tip every few
+        // minutes (docs/tips.md).
+        self.walk_tip(elapsed);
     }
     /// Inject the current running command's elapsed each frame (the
     /// [`set_status_times`](App::set_status_times) pattern — the clock lives at

@@ -33,7 +33,11 @@ use super::*;
 /// status slot, directly under the status line and above its trailing gap, so
 /// its `⎿` rows visually hang off the spinner the way tool output hangs off
 /// its header (0 when no turn is active or the list is empty — [`task_rows`]
-/// gates on the same `has_status`). The **queued messages** (`queued_rows`)
+/// gates on the same `has_status`). The usage tip (`docs/tips.md`) adds no
+/// row of its own: it is drawn **on the status slot's gap row**, so the strip
+/// is exactly as tall with a tip as without — which is what lets the
+/// turn-end commit refill the collapsing strip row for row and keep the box
+/// flush at the bottom. The **queued messages** (`queued_rows`)
 /// stack below all of this, between the strip and the box's top rule — added
 /// separately by [`live_height`]/[`live_layout`] since their height depends on
 /// the queue.

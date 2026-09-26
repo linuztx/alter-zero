@@ -169,10 +169,10 @@ submodules reach `App`'s). The four big ones are **directories
 of per-area modules**, not single files — `src/app/` (`types`, `action`, `keys`,
 `composer`, `commands`, `file_picker`, `input_history`, `queue`, `tools`, `turn`,
 `compact`, `backtrack`, `views`, `resume`, `model_picker`, `login`, `settings`, `look`, `mascot`, `spinner`, `theme`, `donate`, `export`, `hooks_menu`, `mcp_menu`, `trust_menu`, `background`,
-`agent`, `status`, `permission`, with the `App` struct itself in `mod.rs` so every submodule and
+`agent`, `status`, `tips`, `permission`, with the `App` struct itself in `mod.rs` so every submodule and
 the test tree keeps its private-field access), `src/ui/` (`theme`, `wrap`,
 `layout`, `assistant`, `inline`, `table`, `message`, `conversation`, `tool`,
-`file_cell`, `inline_diff`, `status`, `agent`, `menu`, `footer`, `header`, `hooks_view`, `live`, `transcript`,
+`file_cell`, `inline_diff`, `status`, `tips`, `agent`, `menu`, `footer`, `header`, `hooks_view`, `live`, `transcript`,
 `context_view`, `resume_view`, `model_view`, `login_view`, `background_view`,
 `permission_view`, `settings_view`, `mascot_view`, `spinner_view`, `palette`, `theme_view`, `donate_view`, `export_view`, `mcp_view`, `trust_view`, `view_flow`, `stream_render`), and **`src/stream/`** — the backend seam
 kept apart from the offline demo that used to crowd it: `event` (the whole
@@ -1970,7 +1970,7 @@ the **`/settings` menu** (`docs/settings.md`: the knobs that were only ever
 a hard-coded `agent::MAX_TOOL_ITERATIONS`, and an always-on auto-compaction —
 made *visible and changeable mid-session*
 in the `/model` picker's inline frame, the third composer-replacing picker:
-sixteen rows (**Hide thinking**, **Show images**, **Image width**,
+seventeen rows (**Hide thinking**, **Tips**, **Show images**, **Image width**,
 **Auto-resize images** — the three from `docs/images.md` — **Error retry**,
 **Tools**, **Permission
 mode**, **Checkpoints**, **Auto compact**, **Project docs**, **Hooks**,
@@ -2184,7 +2184,21 @@ braille track, and before the catalog always the comet: a
 Larson-scanner sweep, a white head dragging a fading grey tail back and forth
 between dim walls), the verb text
 shimmering with a white sweep ported from
-codex's `shimmer_spans` and moving on to the next verb every 30 s; on finish a dim
+codex's `shimmer_spans` and moving on to the next verb every 30 s, and — a few
+seconds into the turn — **a dim `⎿  Tip: …` row hanging off the line**,
+Claude Code's spinner tip (`docs/tips.md`: a walk through a catalog of this
+app's own keys and commands, `app::TIPS`, nothing under `TIP_DELAY` (5 s) so a
+quick answer shows none, the next tip every `TIP_ROTATION` (3 min), the walk
+continuing across turns like the verbs' and across launches through the
+per-user `tips.json` (`App::seed_tips` / `take_tip_record`), a tip whose
+feature the session lacks — the Shift+Tab tip with no gate, Ctrl+T on a
+model that doesn't reason, `$` with no skills — stepped over, the row built
+by `ui::tips::tip_line` in the checklist's gutter **on the status slot's gap
+row** — one clipped row, never a row of its own, since the turn-end commit
+refills the collapsing strip row for row and a row it does not refill leaves
+the box above a blank band (`smoke.sh` Phase 5) — displaced by the
+checklist, never in history or the transcript, off with the `/settings` **Tips** row or
+`ALTER_ZERO_TIPS=0`, which also holds the walk still); on finish a dim
 `{done verb} for {n}s` summary — the past tense of the verb the line wore last,
 `Working…` → `Worked for 12s` — commits to scrollback, while **Esc mid-turn interrupts** instead (codex-style — cancel + reap
 the backend, drain the channel, keep the partial, resolve every tool call in

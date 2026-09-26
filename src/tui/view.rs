@@ -711,6 +711,12 @@ impl Session<'_> {
     /// itself on the first draw after the turn ends.
     pub(crate) fn on_draw_tick(&mut self) -> io::Result<()> {
         self.update_status_times();
+        // A tip that just came up under the status line is remembered per
+        // user (docs/tips.md), so the next launch opens the walk after it —
+        // once per tip shown, which is once every few minutes at most.
+        if let Some(id) = self.app.take_tip_record() {
+            super::config::record_tip(super::config::tips_json_path().as_deref(), id);
+        }
         // Inject each background shell's runtime (the boundary owns the started
         // clocks — docs/background.md), so the manager's details view ticks.
         for (id, started) in &self.bg_clocks {

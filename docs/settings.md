@@ -15,6 +15,7 @@ per change.
   ❯
 
 → Hide thinking           false
+  Tips                    true
   Show images             true
   Image width             120
   Auto-resize images      true
@@ -23,7 +24,7 @@ per change.
   Permission mode         manual
   ...
   Max tool calls          0
-  (1/16)
+  (1/17)
 
   Hide the model's chain-of-thought…
 
@@ -34,13 +35,14 @@ per change.
 
 ## The settings
 
-Sixteen rows, each one a knob the running session actually reads. Every value
+Seventeen rows, each one a knob the running session actually reads. Every value
 **cycles** — there is no free-text field anywhere, so Enter and Space mean the
 same thing on every row and the menu never needs an edit mode.
 
 | Setting | Values | What it changes |
 |---|---|---|
 | **Hide thinking** | `false` / `true` | Whether the model's chain-of-thought streams in the live `● Thinking…` cell and collapses into a `Thought for …` line (`docs/thinking-stream.md`). `true` restores the counted-and-dropped behaviour. Seeded from `ALTER_ZERO_SHOW_THINKING`. |
+| **Tips** | `true` / `false` | Whether a usage tip hangs off the status line a few seconds into a turn (`docs/tips.md`) — Claude Code's spinner tip, the next one every three minutes, the walk continuing across turns and launches. Seeded from `ALTER_ZERO_TIPS`. Off, the walk stands still, so turning it back on resumes where it was. |
 | **Show images** | `true` / `false` | Whether a pasted screenshot and the `read` tool's image reads are drawn as pictures in the conversation (`docs/images.md`). `false (unavailable)` when the terminal can't draw one. Cycling it purge-rebuilds, so committed pictures appear or vanish at once. |
 | **Image width** | `60` / `80` / `120` | An inline picture's width **cap**, in columns — clamped to the terminal, and never used to blow a small picture up. Cycling it purge-rebuilds like **Show images**. |
 | **Auto-resize images** | `true` / `false` | Whether a large picture is downscaled to 2000×2000 before it is **sent to the model** (`docs/images.md`). Nothing to do with the display, so the row stays available even on a terminal that can't draw. |

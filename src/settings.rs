@@ -48,6 +48,9 @@ pub const PERMISSIONS_DISABLED_LABEL: &str = "disabled";
 pub enum SettingKey {
     /// Hide the model's streamed chain-of-thought (`docs/thinking-stream.md`).
     HideThinking,
+    /// Show a usage tip under the status line a few seconds into a turn
+    /// (`docs/tips.md`).
+    Tips,
     /// Draw pictures inline in the conversation (`docs/images.md`).
     ShowImages,
     /// How wide, in columns, an inline picture may be (`docs/images.md`).
@@ -88,6 +91,7 @@ impl SettingKey {
     /// Every setting, in menu order.
     pub const ALL: &'static [Self] = &[
         Self::HideThinking,
+        Self::Tips,
         Self::ShowImages,
         Self::ImageWidth,
         Self::AutoResizeImages,
@@ -110,6 +114,7 @@ impl SettingKey {
     pub const fn label(self) -> &'static str {
         match self {
             Self::HideThinking => "Hide thinking",
+            Self::Tips => "Tips",
             Self::ShowImages => "Show images",
             Self::ImageWidth => "Image width",
             Self::AutoResizeImages => "Auto-resize images",
@@ -135,6 +140,7 @@ impl SettingKey {
             Self::HideThinking => {
                 "Hide the model's chain-of-thought instead of streaming it above the composer"
             }
+            Self::Tips => "Show a usage tip under the status line a few seconds into a turn",
             Self::ShowImages => {
                 "Render pasted screenshots and image reads as pictures in the terminal"
             }
@@ -245,6 +251,10 @@ pub struct SessionSettings {
     /// Hide the streamed chain-of-thought (default `false` — it shows).
     #[serde(skip_serializing_if = "is_false")]
     pub hide_thinking: bool,
+    /// Show a usage tip under the status line a few seconds into a turn
+    /// (default `true`, `docs/tips.md`).
+    #[serde(skip_serializing_if = "is_true")]
+    pub tips: bool,
     /// Draw pictures inline (default `true` — a terminal that can't draw one
     /// reports the row unavailable anyway).
     #[serde(skip_serializing_if = "is_true")]
@@ -313,6 +323,7 @@ impl Default for SessionSettings {
     fn default() -> Self {
         Self {
             hide_thinking: false,
+            tips: true,
             show_images: true,
             image_width: DEFAULT_IMAGE_WIDTH,
             auto_resize_images: true,
@@ -431,6 +442,7 @@ impl SessionSettings {
     pub fn value_text(&self, key: SettingKey, mode: Mode) -> String {
         let text = match key {
             SettingKey::HideThinking => bool_text(self.hide_thinking),
+            SettingKey::Tips => bool_text(self.tips),
             SettingKey::ShowImages => bool_text(self.images_active()),
             SettingKey::ImageWidth => self.image_width.to_string(),
             SettingKey::AutoResizeImages => bool_text(self.auto_resize_images),
@@ -467,6 +479,7 @@ impl SessionSettings {
         }
         match key {
             SettingKey::HideThinking => self.hide_thinking = !self.hide_thinking,
+            SettingKey::Tips => self.tips = !self.tips,
             SettingKey::ShowImages => self.show_images = !self.show_images,
             SettingKey::ImageWidth => {
                 self.image_width = next_in(IMAGE_WIDTH_CHOICES, &self.image_width);
@@ -504,6 +517,7 @@ impl SessionSettings {
     pub fn copy_value(&mut self, key: SettingKey, live: &Self) {
         match key {
             SettingKey::HideThinking => self.hide_thinking = live.hide_thinking,
+            SettingKey::Tips => self.tips = live.tips,
             SettingKey::ShowImages => self.show_images = live.show_images,
             SettingKey::ImageWidth => self.image_width = live.image_width,
             SettingKey::AutoResizeImages => self.auto_resize_images = live.auto_resize_images,

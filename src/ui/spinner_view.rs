@@ -39,6 +39,9 @@ fn sample_status(elapsed: Duration) -> TurnStatus {
         thinking: None,
         shell: false,
         retry: None,
+        // The sample is the line alone — no tip walks under it.
+        tips_from: None,
+        tip: None,
     }
 }
 

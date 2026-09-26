@@ -55,6 +55,7 @@ mod spinner;
 mod status;
 mod tasks;
 mod theme;
+mod tips;
 mod tools;
 mod trust_menu;
 mod turn;
@@ -105,6 +106,9 @@ pub use self::spinner::{Spinner, SpinnerPicker, SpinnerRow};
 pub use self::status::{RetryInfo, ThinkingState, TokenArrow, TurnStatus, TurnSummary};
 pub use self::tasks::TaskCallRecord;
 pub use self::theme::{Theme, ThemePicker, ThemeRow, parse_theme_file, theme_file_json};
+pub use self::tips::{
+    TIP_DELAY, TIP_ROTATION, TIPS, TIPS_FILE_NAME, Tip, TipFeature, TipsFile, tip_at,
+};
 pub use self::tools::{
     ERROR_TOOL_OUTPUT, INTERRUPT_TOOL_OUTPUT, PathDisplay, ToolCall, ToolStatus, apply_tool_screen,
 };
@@ -538,6 +542,17 @@ pub struct App {
     /// [`begin_stream`]: App::begin_stream
     /// [`set_status_times`]: App::set_status_times
     verb_cursor: usize,
+    /// The [`TIPS`] index the next turn's tip walk opens on — one past the
+    /// last tip a status line showed, the [`verb_cursor`](Self::verb_cursor)
+    /// rule over the usage tips (`docs/tips.md`). Seeded at the boundary
+    /// from `tips.json` ([`seed_tips`](Self::seed_tips)) so a relaunch opens
+    /// after the tip the previous session ended on; moved by every tip the
+    /// walk shows ([`set_status_times`](Self::set_status_times)).
+    tip_cursor: usize,
+    /// A tip that came up since the boundary last asked
+    /// ([`take_tip_record`](Self::take_tip_record)) — what it writes to
+    /// `tips.json`. `None` once taken, or while nothing new has shown.
+    tip_record: Option<&'static str>,
     /// The turn's accumulated **real** usage — billed tokens summed over the
     /// provider's per-round usage frames ([`App::apply_usage`]), which the
     /// live tally snaps to (replacing the estimate ticked so far) and the

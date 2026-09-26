@@ -177,7 +177,7 @@ pub enum Action {
     /// value. The loop **applies** it (`tui::settings`): rebuild the backend
     /// for `Tools`/`ErrorRetry`/`Temperature`, flip the checkpoint store,
     /// reload the project doc, then persist `settings.json` and toast the new
-    /// value. The two knobs that need nothing — `HideThinking` and
+    /// value. The three knobs that need nothing — `HideThinking`, `Tips` and
     /// `AutoCompact` — are read straight off `App` where they are used. See
     /// `docs/settings.md`.
     SettingChanged(crate::settings::SettingKey),

@@ -215,6 +215,10 @@ impl App {
             thinking: None,
             shell: false,
             retry: None,
+            // The tip walk opens where the last shown tip left it, and shows
+            // nothing until the turn is a few seconds old (docs/tips.md).
+            tips_from: Some(self.tip_cursor),
+            tip: None,
         });
     }
 
@@ -262,6 +266,9 @@ impl App {
             thinking: None,
             shell: true,
             retry: None,
+            // No status line, so nothing to hang a tip from (docs/tips.md).
+            tips_from: None,
+            tip: None,
         });
         self.start_tool(command, "", None);
         if let Some(tool) = self.tool_queue.front_mut() {
