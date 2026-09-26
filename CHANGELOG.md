@@ -12,6 +12,8 @@ release heading when a version is cut.
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-09-26
+
 ### Added
 
 - **Interactive commands.** The agent can now drive programs that need a
@@ -647,7 +649,8 @@ release heading when a version is cut.
   release whose notes come from this file — driven end to end by
   `scripts/release.sh`, which also rehearses a release locally.
 
-[Unreleased]: https://github.com/linuztx/alter-zero/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/linuztx/alter-zero/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/linuztx/alter-zero/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/linuztx/alter-zero/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/linuztx/alter-zero/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/linuztx/alter-zero/compare/v0.3.0...v0.4.0
