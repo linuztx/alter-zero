@@ -1218,8 +1218,11 @@ off the pty with `tcgetattr` where the probe is blind to a root `sudo`),
 counted once the program has replied to the last line submitted (text still
 awaiting its Enter leaves the prompt standing) and never over a tree
 the probe sees at work, settling in 0.5 s even for a wait begun after the
-prompt came up — the `waiting for a password — typed input is hidden` frame,
-detection only, nothing masked — then, where the probe is blind (a
+prompt came up — the `waiting for a password — only bashsend can type it`
+frame, naming the one way in since the user has none (told only that input
+was hidden, a model sent the user to "enter it in the terminal prompt"; the
+old clause still parses for recorded sessions), detection only, nothing
+masked — then, where the probe is blind (a
 `sudo`-owned process, a `poll`-family wait, no `/proc`), the screen: the
 cursor left mid-line, the
 alternate screen, or a terminal reading key by key — canonical mode off with

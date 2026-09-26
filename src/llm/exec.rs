@@ -3062,7 +3062,7 @@ mod tests {
         assert_eq!(
             waited.output,
             format!(
-                "Running (session {id}, waiting for a password — typed input is hidden)\nPassword:"
+                "Running (session {id}, waiting for a password — only bashsend can type it)\nPassword:"
             )
         );
         let answered = exec_with(
@@ -3184,7 +3184,7 @@ mod tests {
         assert_eq!(
             refused.output,
             format!(
-                "Running (session {id}, waiting for a password — typed input is hidden)\n\
+                "Running (session {id}, waiting for a password — only bashsend can type it)\n\
                  Sorry, try again.\nPassword:"
             )
         );
@@ -3217,7 +3217,7 @@ mod tests {
         assert_eq!(
             out.output,
             format!(
-                "Running (session {id}, waiting for a password — typed input is hidden)\nPassword:"
+                "Running (session {id}, waiting for a password — only bashsend can type it)\nPassword:"
             )
         );
         let answered = exec_with(
@@ -3256,7 +3256,7 @@ mod tests {
         );
         assert!(
             typed.output.starts_with(&format!(
-                "Running (session {id}, waiting for a password — typed input is hidden)\n"
+                "Running (session {id}, waiting for a password — only bashsend can type it)\n"
             )),
             "{}",
             typed.output

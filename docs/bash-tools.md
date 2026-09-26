@@ -60,8 +60,8 @@ directory. The call returns when the first of these happens:
 - **the command exits** — `Exit code: N` over its output, exactly the frame a
   plain call always had;
 - **it waits for input** — `Running (session {id}, waiting for input)` over
-  what it printed (`waiting for a password — typed input is hidden` at a
-  password prompt), the command still running;
+  what it printed (`waiting for a password — only bashsend can type it` at
+  a password prompt), the command still running;
 - **`wait` seconds pass** — `Running (session {id})` over the output so far.
   **The command is not stopped**: it keeps running as a session, the model
   continues it with `bashsend`/`bashwait`/`bashkill`, and it is told when
@@ -189,7 +189,11 @@ happened each time, so none of them is silent:
   returns `Running (session …, waiting for input)` in half a second instead of
   `Exit code: 1`; `< /dev/null` gives it end-of-file.
 - **`sudo` asks for a password** instead of failing: the frame says `waiting
-  for a password`, and the model is told never to type one it was not given.
+  for a password — only bashsend can type it`, and the model is told never to
+  type one it was not given. The clause names the one way in because the
+  user has none: told only that typed input was hidden, a model asked the
+  user to "enter it in the terminal prompt", a terminal they cannot reach —
+  now it asks for the password in chat.
 - **Output streams.** A program that line-buffers only on a terminal
   (Python, most CLIs) shows its output as it goes.
 

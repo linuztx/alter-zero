@@ -79,9 +79,8 @@ The result is **only the output printed since the model last looked**, under
 the same frame: `Running (session …)` while it runs, `Exit code: N` once it has
 exited (after which the session is gone), `Stopped (session …)` after a kill.
 At a password prompt the frame says so — `Running (session …, waiting for a
-password — typed input is hidden)` — which also tells the model why the
-password it types will not show in its next look (*A password prompt says so
-itself*, below).
+password — only bashsend can type it)` — which also tells the model that no
+one else can answer it (*A password prompt says so itself*, below).
 A full-screen program — one on the terminal's alternate screen — returns its
 **current screen** instead of a transcript, since a stream of cursor-addressed
 redraws means nothing as text:
@@ -537,7 +536,14 @@ returned on `LINE_QUIET` — and the model's next call, a wait, saw no output
 of its own to settle on, so it rode out its whole timeout. Now a line read
 with echo off ends any call once the terminal has been quiet `PROMPT_QUIET`
 (0.5 s), as the kernel's read does, and the frame names it:
-`Running (session …, waiting for a password — typed input is hidden)`. Two
+`Running (session …, waiting for a password — only bashsend can type it)`.
+The clause used to read `typed input is hidden`, which told the model why its
+answer would not echo but not who could give it one: a model that had no
+password told the user to "enter it in the terminal prompt" — a terminal the
+user cannot reach, since the session is the agent's alone. It now names the
+one way in, so a password the model was not given is one it asks for in chat
+(`docs/bash-tools.md`); the old clause still parses, so a recorded session
+keeps its state row. Two
 guards keep the signal honest (`IoState::password_prompt`). An answer —
 keys that end the line, an Enter or a signal key (`keys::reaches_line_reader`)
 — reaches a program still in its mode, so the mode counts only once the

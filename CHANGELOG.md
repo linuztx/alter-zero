@@ -67,7 +67,9 @@ release heading when a version is cut.
   for a question. A password prompt is told by the terminal itself, which
   reads it with echo off — under `sudo` too, where the kernel cannot be
   asked — so the agent hears within half a second that a password is wanted,
-  and a retry after a wrong one no longer leaves it waiting it out;
+  and that only it can type there, so it asks you for one it was not given
+  instead of sending you to a terminal you cannot reach; a retry after a
+  wrong one no longer leaves it waiting it out;
   what it types there still shows as typed. A password it types is answered
   in the same call — a refusal and the next prompt, or the command's first
   words — rather than with `(no new output)` while sudo is still checking

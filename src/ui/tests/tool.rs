@@ -4085,27 +4085,37 @@ fn a_session_cell_shows_its_output_over_a_dim_state_row() {
 #[test]
 fn a_session_at_a_password_prompt_says_so() {
     // sudo asking again after a rejected password: the frame line is the
-    // model's, the dim corner tells the user what the command waits for.
-    let cell = tool(
-        "BashSession",
-        "sudo pacman -Syy",
-        ToolStatus::Ok,
-        "Running (session b1, waiting for a password — typed input is hidden)\n\
-         Sorry, try again.\n[sudo] password for u:",
-    );
-    let rows: Vec<String> = tool_lines(&cell, 80, &PathDisplay::VERBATIM)
-        .iter()
-        .map(plain)
-        .collect();
-    assert_eq!(
-        rows,
-        [
-            "● BashSession(sudo pacman -Syy)",
-            "  ⎿  Sorry, try again.",
-            "     [sudo] password for u:",
-            "  ⎿  Waiting for a password · session b1",
-        ]
-    );
+    // model's, the dim corner tells the user what the command waits for —
+    // in the frame's wording today, and in the one a session recorded
+    // before it said who can type (a `/resume` of an older rollout).
+    for (name, clause) in [
+        ("BashSend", "only bashsend can type it"),
+        ("BashSession", "typed input is hidden"),
+    ] {
+        let cell = tool(
+            name,
+            "sudo pacman -Syy",
+            ToolStatus::Ok,
+            &format!(
+                "Running (session b1, waiting for a password — {clause})\n\
+                 Sorry, try again.\n[sudo] password for u:"
+            ),
+        );
+        let rows: Vec<String> = tool_lines(&cell, 80, &PathDisplay::VERBATIM)
+            .iter()
+            .map(plain)
+            .collect();
+        assert_eq!(
+            rows,
+            [
+                format!("● {name}(sudo pacman -Syy)"),
+                "  ⎿  Sorry, try again.".to_string(),
+                "     [sudo] password for u:".to_string(),
+                "  ⎿  Waiting for a password · session b1".to_string(),
+            ],
+            "{clause}"
+        );
+    }
 }
 
 #[test]

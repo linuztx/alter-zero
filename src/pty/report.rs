@@ -11,8 +11,10 @@
 //! ```
 //!
 //! At a password prompt — the terminal reading a line with echo off — the
-//! frame says so instead (`waiting for a password — typed input is hidden`),
-//! telling the model what is asked and why its answer will not show.
+//! frame says so instead (`waiting for a password — only bashsend can type
+//! it`), telling the model what is asked and that only it can answer: the
+//! user has no way into the session, so a password the model was not given
+//! is one to ask the user for.
 //!
 //! An exited session reports exactly what a plain `bash` call does
 //! (`Exit code: N` over the output — [`crate::llm::tools::format_exec_output`]),
@@ -99,9 +101,15 @@ const RUNNING_PREFIX: &str = "Running (session ";
 const STOPPED_PREFIX: &str = "Stopped (session ";
 /// The clause a settled prompt adds to the running frame.
 const WAITING_CLAUSE: &str = ", waiting for input";
-/// The clause a password prompt adds instead: what is asked for, and that
-/// the answer will not show when typed.
-const PASSWORD_CLAUSE: &str = ", waiting for a password — typed input is hidden";
+/// The clause a password prompt adds instead: what is asked for, and who can
+/// answer it — only the model, through `bashsend`. The user has no way into
+/// the session, so a password the model was not given is one to ask for in
+/// chat; told only that typed input is hidden, a model sent the user to
+/// "enter it in the terminal prompt" (`docs/bash-tools.md`).
+const PASSWORD_CLAUSE: &str = ", waiting for a password — only bashsend can type it";
+/// The password clause before it said who can type — still read back, so a
+/// session recorded with it keeps its state row after a `/resume`.
+const OLD_PASSWORD_CLAUSE: &str = ", waiting for a password — typed input is hidden";
 
 /// Appended when a call's `input` was the empty string: nothing was typed,
 /// so the call was a pure wait — which a model that sent `""` to press Enter
@@ -341,7 +349,10 @@ pub fn parse_frame(line: &str) -> Option<Frame<'_>> {
         let inner = rest.strip_suffix(')')?;
         let (session, waiting) = if let Some(session) = inner.strip_suffix(WAITING_CLAUSE) {
             (session, Waiting::Input)
-        } else if let Some(session) = inner.strip_suffix(PASSWORD_CLAUSE) {
+        } else if let Some(session) = inner
+            .strip_suffix(PASSWORD_CLAUSE)
+            .or_else(|| inner.strip_suffix(OLD_PASSWORD_CLAUSE))
+        {
             (session, Waiting::Password)
         } else {
             (inner, Waiting::No)
@@ -762,9 +773,11 @@ mod tests {
 
     #[test]
     fn a_password_prompt_is_named_as_one() {
-        // What the model is asked for, and that its answer will not show
-        // when typed — so it asks the user, never guesses, and does not take
-        // a silent terminal for a lost keystroke (docs/interactive-shell.md).
+        // What the model is asked for, and who can answer it: only the model,
+        // through bashsend — the user has no way into the session, so a
+        // password it was not given is one to ask the user for in chat.
+        // Told only that typed input is hidden, a model sent the user to
+        // "enter it in the terminal prompt" (docs/bash-tools.md).
         let out = report(
             "s1",
             Status::Running {
@@ -774,13 +787,26 @@ mod tests {
         );
         assert_eq!(
             out,
-            "Running (session s1, waiting for a password — typed input is hidden)\n\
+            "Running (session s1, waiting for a password — only bashsend can type it)\n\
              Sorry, try again.\n[sudo] password for u:"
         );
         assert_eq!(
             parse_frame(out.lines().next().unwrap()),
             Some(Frame::Running {
                 session: "s1",
+                waiting: Waiting::Password
+            })
+        );
+    }
+
+    #[test]
+    fn a_password_frame_in_the_older_wording_still_parses() {
+        // A session recorded before the clause said who can type still shows
+        // its state row after a `/resume`.
+        assert_eq!(
+            parse_frame("Running (session b1, waiting for a password — typed input is hidden)"),
+            Some(Frame::Running {
+                session: "b1",
                 waiting: Waiting::Password
             })
         );
