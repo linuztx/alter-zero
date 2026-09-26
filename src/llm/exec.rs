@@ -3540,15 +3540,18 @@ mod tests {
         // `server & curl …`: the command's process stops with it, and live
         // models went looking for what they started in `top`. The model reads
         // that it was stopped, beside the output; the cell keeps the
-        // command's own words. (A job ignoring the terminal's hangup, so the
-        // test does not race it.)
+        // command's own words. The job ignores the terminal's hangup from the
+        // moment it is forked (`trap '' HUP` ahead of the `&`, inherited), so
+        // it is still there when the command exits. `nohup` ignores it only
+        // once it has started, and bash can exit first: the kernel hangs the
+        // half-started job up, and where orphans are reaped at once (a CI
+        // runner's systemd) it is gone before the check.
         let (registry, _rx) = test_registry();
         let executor = RealToolExecutor::new().with_background(registry);
         let out = exec_with(
             &executor,
             "bash",
-            &serde_json::json!({"command": "nohup sleep 30 >/dev/null 2>&1 & echo started"})
-                .to_string(),
+            &serde_json::json!({"command": "trap '' HUP; sleep 30 & echo started"}).to_string(),
         );
         assert!(out.ok, "{}", out.output);
         assert_eq!(out.output, "Exit code: 0\nstarted\n");

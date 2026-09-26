@@ -194,10 +194,12 @@ pub fn list(sessions: &[Listed]) -> String {
                 Some((cut, _)) => format!("{}…", &command[..cut]),
                 None => command,
             };
+            // The frame's own clauses: a password prompt learned of from
+            // the list says who can type it, as the report does.
             let waiting = match session.waiting {
                 Waiting::No => "",
-                Waiting::Input => ", waiting for input",
-                Waiting::Password => ", waiting for a password",
+                Waiting::Input => WAITING_CLAUSE,
+                Waiting::Password => PASSWORD_CLAUSE,
             };
             format!(
                 "- {}: {command} — running {}{waiting}",
@@ -411,7 +413,8 @@ mod tests {
             "3 sessions running:\n\
              - b7x2k9m1q: npm run dev — running 4m 12s\n\
              - b3vqd0sq1: python3 -q — running 1m 3s, waiting for input\n\
-             - b9: sudo apt update — running 1h 1m, waiting for a password"
+             - b9: sudo apt update — running 1h 1m, waiting for a password — only bashsend \
+             can type it"
         );
         let long = Listed {
             command: "x".repeat(200),

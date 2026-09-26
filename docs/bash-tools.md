@@ -104,7 +104,10 @@ simply no longer offers them.
   leaves its containers running.
 - `bashlist` names every running session — its id, its command, how long it
   has run, and whether it waits for input — so a model that lost an id to a
-  `/compact` or a `/resume` finds it without guessing.
+  `/compact` or a `/resume` finds it without guessing. A session at a password
+  prompt is listed with the report's own clause (`waiting for a password —
+  only bashsend can type it`), so a model that learns of the prompt from the
+  list is told the same thing a report would tell it.
 
 Every result is the same small grammar: `Exit code: N`, `Running (session …)`
 with or without `waiting for input`, `Stopped (session …)`, and the output
@@ -196,6 +199,15 @@ happened each time, so none of them is silent:
   now it asks for the password in chat.
 - **Output streams.** A program that line-buffers only on a terminal
   (Python, most CLIs) shows its output as it goes.
+- **A job left behind is not always named.** `server & curl …` stops
+  `server` when the command exits, and the report says so
+  (`tools::REAPED_NOTE`) when the monitor finds the job still in the
+  command's process group. The terminal hangs that group up in the same
+  instant (the job is in its foreground process group), so a job that does
+  not ignore the hangup can already be gone when the monitor looks — on a
+  machine whose init reaps orphans at once, a plain `sleep 30 &` went
+  unnamed in 4 runs of 20. It is stopped either way; only the note is
+  missing. On a pipe nothing hung the job up, so the note was exact there.
 
 The emulation's cost measured nothing on a trivial command: `echo hi` took
 0.00 s either way through the executor.
