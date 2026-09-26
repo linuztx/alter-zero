@@ -239,10 +239,6 @@ const EPOLL_LINK: &str = "anon_inode:[eventpoll]";
 /// The most epoll instances inside epoll instances the probe follows.
 const EPOLL_MAX_DEPTH: usize = 4;
 
-/// The most files of one interest list the probe weighs; past it the wait
-/// is left open.
-const EPOLL_MAX_TARGETS: usize = 4096;
-
 /// What the probe asks about a process's descriptors — `/proc` in [`probe`],
 /// a table in the tests.
 pub trait Descriptors {
@@ -343,12 +339,12 @@ fn epoll_watch(fds: &impl Descriptors, terminal: &Terminal, epfd: u64, depth: us
     let Some(anonymous) = fds.file(epfd) else {
         return Watch::Unknown;
     };
+    // Every file is weighed, however long the list: a line naming a file of
+    // its own is settled without a call, and only an anonymous file, or a
+    // line from a kernel too old to name one, asks its descriptor.
     let Some(targets) = fds.fdinfo(epfd).and_then(|info| epoll_targets(&info)) else {
         return Watch::Unknown;
     };
-    if targets.len() > EPOLL_MAX_TARGETS {
-        return Watch::Unknown;
-    }
     let mut watch = Watch::Elsewhere;
     for target in targets.iter().filter(|target| target.reads()) {
         watch = watch.max(match target.file {
@@ -929,6 +925,32 @@ mod tests {
             &["tfd:        6 events:       19 data:               6  pos:0 ino:303c sdev:9"],
         );
         assert_eq!(classify_x86(&epoll_wait_on(10), &deep), Thread::Maybe);
+    }
+
+    #[test]
+    fn every_file_of_a_large_interest_list_is_weighed() {
+        // A server holding thousands of connections: each line names its
+        // file, so weighing them all costs no call of its own. A list too
+        // long to weigh was left open, and a prompt-shaped line over it read
+        // as waiting for input.
+        let sockets: Vec<String> = (10..6010u64)
+            .map(|fd| {
+                format!(
+                    "tfd: {fd:8} events: 8000201d data: {fd:16x}  pos:0 ino:{:x} sdev:9",
+                    0x10_0000 + fd
+                )
+            })
+            .collect();
+        let mut lines: Vec<&str> = sockets.iter().map(String::as_str).collect();
+        let server = process().epoll(3, &lines);
+        assert_eq!(classify_x86(&epoll_wait_on(3), &server), Thread::Elsewhere);
+        lines.push("tfd:        0 events:       19 data:               0  pos:0 ino:3 sdev:1b");
+        let terminal_last = process().epoll(3, &lines);
+        assert_eq!(
+            classify_x86(&epoll_wait_on(3), &terminal_last),
+            Thread::Maybe,
+            "the terminal, last of them all"
+        );
     }
 
     #[test]
