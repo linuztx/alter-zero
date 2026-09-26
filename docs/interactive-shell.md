@@ -159,13 +159,14 @@ waits out the clock. Here the call returns when the command **settles**
   below);
 - it printed something and went quiet for `PROMPT_QUIET` (0.5 s) while the
   terminal **awaits keys** — a prompt (`>>> `, `Password: `, `[Y/n] `) left
-  the cursor mid-line, a full-screen program is on the alternate screen, or
-  the program reads the terminal **key by key** (a menu, an editor, a
-  readline prompt), which is what `waiting for input` says;
+  the cursor mid-line, a full-screen program is on the alternate screen with
+  the terminal out of line mode (*a display*, below, is not one), or the
+  program reads the terminal **key by key** (a menu, an editor, a readline
+  prompt), which is what `waiting for input` says;
 - it is **drawing a screen that never goes quiet** and has had `SCREEN_BUSY`
   (2 s) since the call's last key — or since its first frame, for a screen
   switched to since and drawn late (*A screen not yet drawn*, below) — a
-  full-screen program, or one that
+  full-screen program that takes keys, or one that
   repaints the main screen by cursor addressing while the terminal reads key
   by key (`top`), redrawing a clock, a meter or an animation faster than
   every half second. `watch -n 0.1` held a launch for its whole two-minute
@@ -179,13 +180,30 @@ waits out the clock. Here the call returns when the command **settles**
   `CHECK_QUIET` (10 s) until the program answers it or draws;
 - the call's `timeout` passed.
 
-Three things look like a prompt and are not (`SessionIo`'s `awaiting_keys`):
+Four things look like a prompt and are not (`SessionIo`'s `awaiting_keys`):
 
 - **a busy program.** `Compiling foo... ` left open while the compiler runs,
   `Working... ` before a `sleep`, a download stalled mid-bar: the cursor sits
   after text, as at a prompt. When the kernel sees every process of the
   session at work — running, sleeping, reading a pipe, waiting on a child —
   the command is busy whatever its screen shows, and nothing below is asked;
+  so too when it sees the only waits on things other than the terminal —
+  an event loop's socket or timer, `Fetching... ` left open while a Go,
+  Node or asyncio program waits on the network (*The kernel's word*, below);
+- **a display.** `gh run watch` switches to the alternate screen, redraws its
+  status every few seconds and sleeps in between, reading no key — and a
+  quiet alternate screen used to be the surest prompt there was: a wait on it
+  ended after 3 s as `waiting for input`, and a model believed it and killed
+  a command doing exactly what it had asked. Every program that takes keys on
+  the alternate screen turns the terminal's **line mode** (canonical mode) off
+  first — vim, less, nano, htop, btop, mc, whiptail, dialog, fzf, ranger, tig,
+  ncdu, top, watch, the REPLs, measured one by one — since no single key
+  reaches a program in line mode. So the alternate screen counts as a screen
+  that takes keys only with line mode off (or a relay holding the terminal
+  raw for a program behind it, or the mode not read yet); a display left in
+  line mode is judged like the main screen — a prompt by the cursor still
+  asks — and waited out like any command printing as it works
+  (`IoState::drawing_screen`, `SessionIo::set_line_mode`);
 
 - **an animated line.** A progress bar redrawn after a `\r`, a spinner, a
   counter, dots appended to `Downloading…` — each leaves the cursor exactly
@@ -511,12 +529,29 @@ descriptor, which `/proc/PID/fd/N` resolves to a path. So the monitor walks
 the session's process tree (`/proc/…/children`) and classifies every thread:
 blocked in `read` on the session's terminal — its `/dev/pts/N`, or
 `/dev/tty`, where `ssh` and `git` read a password — is **reading**; in a
-`poll`/`select`/`epoll` wait it **may** be waiting on the terminal (a REPL,
-`vim`, `ssh` and every network client wait that way); anything else is at
-**work**. One reader anywhere is `Probe::Reading`, a tree all at work is
-`Probe::Idle`, and everything else — a possible poll, a process the probe may
-not inspect, no `/proc` — is `Probe::Unknown`, which leaves the screen rules
-in charge. The files are readable only for the user's own processes, so
+`poll`/`select` wait over descriptors it **may** be waiting on the terminal
+(a REPL, `vim`, `top`, `ssh`); anything else is at **work**. An **epoll**
+wait says which: the instance's interest list, `/proc/PID/fdinfo/N`, names
+every file it watches — by inode and filesystem, which stays true when the
+descriptor number is closed or reused (seen in a set a child shares with its
+parent), converted from the kernel's device encoding to `stat`'s — so a wait
+watching the terminal for input **may** be waiting on it, one watching
+nothing that is the terminal waits **elsewhere**, an epoll instance inside it
+is followed, and anything the probe cannot tell apart stays a may. That is
+how every Go, Node, libuv, asyncio and tokio program idles: `gh run watch`
+between redraws is six threads parked in futexes and one in `epoll_pwait` on
+the runtime's own eventfd. A `poll` or `select` over no descriptors is a
+sleep. One reader anywhere is `Probe::Reading`; a tree all at work is
+`Probe::Idle`; a tree whose waits may be on the terminal is
+`Probe::Polling`, and one whose waits are all elsewhere `Probe::Elsewhere` —
+which asks nothing (no prompt, no password), yet is not at work the way
+`Idle` is, since a network wait lasts as long as a server idles and its
+silence still ends a launch after `LAUNCH_QUIET`. A process the probe may not
+inspect, or no `/proc` at all, is `Probe::Unknown`, which leaves the screen
+rules in charge, as `Polling` does. An answer read off the descriptors holds
+only if the thread is still in the call it was read for, which the probe
+checks by reading the call again. The files are readable only for the
+user's own processes, so
 `sudo` and everything it runs leave the probe blind: exactly where the relay
 rule above already applies. The monitor probes only a terminal a call is
 waiting on, once it has been quiet `PROBE_QUIET` (0.2 s), at most every
@@ -1049,11 +1084,14 @@ Three of this design's choices were kept over it:
 - **Unix only** — pseudo-terminals are a Unix facility; elsewhere a command
   runs on a pipe, as every command once did (`docs/bash-tools.md`).
 - **The prompt heuristic, where the probe is blind** — off Linux, for a
-  process run as another user (`sudo` and what it runs), and behind a
-  `poll`-family wait, the screen decides alone, a password prompt aside
-  (the terminal's mode names that one). There a program that prints
+  process run as another user (`sudo` and what it runs), and behind a `poll`
+  or `select` wait over descriptors (whose list lives in the program's own
+  memory, where an epoll instance's is the kernel's to show), the screen
+  decides alone, a password prompt aside (the terminal's mode names that
+  one). There a program that prints
   its question, a newline, and then waits in canonical mode looks like one
-  between lines of output: it settles on `LINE_QUIET` and reports `Running`
+  between lines of output — on the alternate screen too, where a program in
+  line mode is judged like the main screen: it settles on `LINE_QUIET` and reports `Running`
   rather than `waiting for input` (the output still shows the question); and
   a busy command that leaves a line open (`Reading package lists... `) reads
   as a prompt to a launch or an input call after 0.5 s of quiet, and to a
@@ -1085,6 +1123,18 @@ Three of this design's choices were kept over it:
   raw mode says nothing, so a program there waiting for a key with its cursor
   at the start of a line is not recognised as waiting (one with its prompt
   text before the cursor is).
+- **A display behind a relay** — `ssh host gh run watch`, or `gh run watch`
+  under a `sudo` that relays: the relay holds the terminal raw, so the line
+  mode says nothing of the display behind it, and the relay's own wait on the
+  terminal (for keys to pass on) is one the probe cannot tell from a
+  prompt. Such a display still reads as `waiting for input` once it goes
+  quiet.
+- **A terminal watched but never read** — a Go program whose terminal
+  descriptor was already non-blocking when it started registers the terminal
+  with its runtime's epoll instance for good, read or not, so its waits stay
+  ones that may be on the terminal and the screen decides, as before. A
+  session opens its terminal blocking, so this takes a program earlier in the
+  same session that left it non-blocking.
 - **Typeahead** — several answers in one input are delivered at once, as a
   terminal would; a program that flushes pending input before a prompt loses
   them. The description steers models to one answer per call instead of

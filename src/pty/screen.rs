@@ -265,14 +265,14 @@ impl Screen {
         screen.alternate_screen() && screen.rows(0, columns).all(|row| row.trim().is_empty())
     }
 
-    /// Does the screen look like it is **waiting for keys**? A full-screen
-    /// program always is when it goes quiet; otherwise a cursor left past
-    /// column 1 is a prompt (`>>> `, `Password: `, `[Y/n] `) — a program
-    /// between lines of output leaves it at the start of a fresh line.
+    /// Is the cursor left **past column 1** — where a prompt leaves it
+    /// (`>>> `, `Password: `, `[Y/n] `)? A program between lines of output
+    /// leaves it at the start of a fresh line. On the alternate screen too:
+    /// whether a full-screen program takes keys wherever its cursor is, the
+    /// terminal's line mode says (`pty::session`), not the screen.
     #[must_use]
-    pub fn awaiting_keys(&self) -> bool {
-        let screen = self.parser.screen();
-        screen.alternate_screen() || screen.cursor_position().1 > 0
+    pub fn cursor_mid_line(&self) -> bool {
+        self.parser.screen().cursor_position().1 > 0
     }
 }
 
@@ -1529,14 +1529,19 @@ mod tests {
     }
 
     #[test]
-    fn a_cursor_past_the_first_column_or_a_full_screen_program_awaits_keys() {
+    fn a_cursor_past_the_first_column_is_where_a_prompt_leaves_it() {
         let mut s = screen();
-        assert!(!s.awaiting_keys(), "a blank screen with the cursor home");
+        assert!(!s.cursor_mid_line(), "a blank screen with the cursor home");
         s.feed(b">>> ");
-        assert!(s.awaiting_keys(), "a prompt");
+        assert!(s.cursor_mid_line(), "a prompt");
         s.feed(b"\r\n");
-        assert!(!s.awaiting_keys(), "the start of a fresh line");
-        s.feed(b"\x1b[?1049h\x1b[H");
-        assert!(s.awaiting_keys(), "a full-screen program, cursor anywhere");
+        assert!(!s.cursor_mid_line(), "the start of a fresh line");
+        // On the alternate screen too: whether a full-screen program takes
+        // keys is the terminal's line mode to say (`pty::session`), not the
+        // screen's — `gh run watch` draws one and reads none.
+        s.feed(b"\x1b[?1049h\x1b[HRefreshing run status\r\n");
+        assert!(!s.cursor_mid_line(), "a display, the cursor under its text");
+        s.feed(b"Name: ");
+        assert!(s.cursor_mid_line(), "a prompt on the alternate screen");
     }
 }

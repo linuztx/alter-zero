@@ -27,7 +27,9 @@
 //! 4. it is a **full-screen program that never stops drawing** — a clock, a
 //!    meter, an animation — and has had [`SCREEN_BUSY`] since the call's
 //!    last key: it never goes quiet, and it takes keys all the while, so what
-//!    is on screen is the answer (a pure wait still waits);
+//!    is on screen is the answer (a pure wait still waits; a display that
+//!    leaves the terminal reading whole lines takes no keys, and is not one —
+//!    `pty::session`);
 //! 5. it has been silent for [`LINE_QUIET`] after an input, or
 //!    [`LAUNCH_QUIET`] after a launch — and the kernel does not see it **at
 //!    work** ([`Observation::busy`]): every command launches in a terminal
@@ -137,7 +139,8 @@ pub struct Observation {
     /// Are keys the call sent still being typed — written a moment apart
     /// (`pty::keys`)? Until the last is, the screen answers only some.
     pub typing: bool,
-    /// Is a full-screen program up — the alternate screen?
+    /// Is a full-screen program that takes keys up — the alternate screen,
+    /// the terminal out of line mode (`pty::session`)?
     pub full_screen: bool,
     /// Has the program switched to the alternate screen and drawn nothing on
     /// it (`pty::screen::Screen::undrawn`)? It is getting ready: its silence

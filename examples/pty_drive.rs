@@ -11,8 +11,9 @@
 //!
 //! A step is `{"tool": "bash" | "bashsend" | …, "args": {…}}`, one per line
 //! (`#` lines and blank lines are skipped). `$S` anywhere in the args is
-//! replaced by the session id the last running report named, so a script can
-//! launch a program and type into it without knowing the id in advance.
+//! replaced by the session id the last running report named — or a launch
+//! started in the background (`wait: 0`) returned — so a script can launch a
+//! program and type into it without knowing the id in advance.
 //! `{"sleep": ms}` pauses between steps (the model thinking).
 
 use std::io::BufRead;
@@ -105,6 +106,8 @@ fn main() {
             text.lines().next().and_then(parse_frame)
         {
             session = id.to_string();
+        } else if let Some(id) = &outcome.background {
+            session = id.clone();
         }
     }
     registry.kill_all();

@@ -12,6 +12,26 @@ release heading when a version is cut.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`gh run watch` and other live displays are no longer reported as
+  waiting for input.** A program that switches to the full screen, redraws
+  its status every few seconds and reads no key — `gh run watch`,
+  `gh pr checks --watch`, a `tput smcup` loop — looked, whenever it went
+  quiet between redraws, exactly like a program waiting at a prompt: a
+  `bashwait` on it came back within seconds as `waiting for input`, the
+  background notice said it was asking a question, and a model that believed
+  it killed a command doing exactly what it had been asked to do. Programs
+  that take keys on the full screen switch the terminal out of line mode
+  first, so a display that leaves it in line mode is now treated as a
+  command at work: a `bash` call rides it out to its exit or its `wait`, a
+  `bashwait` waits for the run to finish, and neither the report, `bashlist`
+  nor a background notice says it waits. On Linux the agent also asks the
+  kernel what an event loop is waiting on — every Go, Node and Python
+  asyncio program idles the same way — so one waiting on the network, even
+  with a prompt-shaped `Fetching... ` left on screen, is no longer taken for
+  a question either (`docs/interactive-shell.md`).
+
 ## [0.7.0] - 2026-09-26
 
 ### Added
