@@ -22,7 +22,7 @@ launch "$S93" 90 24
 submit "$S93" "hello"
 cg_done=""
 for _ in $(seq 1 120); do # up to ~12s
-	if tmux capture-pane -t "$S93" -p | grep -qE "Done for [0-9]+"; then
+	if tmux capture-pane -t "$S93" -p | grep -qE "$SUMMARY_RE"; then
 		cg_done=1
 		break
 	fi

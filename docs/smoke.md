@@ -124,6 +124,7 @@ was not a safe transformation until each carried its own.
 | `wait_for SECS SESSION [capture opts --] [grep opts] PATTERN` | poll until the pane matches; 1 on timeout |
 | `wait_pane SECS SESSION … PATTERN` | the same wait, **printing the last capture** so the phase can assert on — and log — the frame that satisfied it |
 | `wait_settled SECS SESSION … PATTERN` | matches AND two identical samples 0.2s apart: the settled layout after a reply, not a mid-stream frame |
+| `wait_summaries SECS SESSION COUNT [capture opts]` / `count_summaries CONTENT` | "the COUNTth turn settled": the committed turn summaries on screen, **whatever verbs they wear** (`SUMMARY_RE`, below) |
 | `poll SECS COMMAND ARGS…` | the generic form for a compound condition |
 | `wait_file` / `wait_gone` | a file that matches; a session whose app exited |
 | `has CONTENT … PATTERN` / `lacks` / `pane_has SESSION …` | the predicates the waits are built on |
@@ -133,6 +134,18 @@ was not a safe transformation until each carried its own.
 | `work_dir [NAME]` | a short working directory under the phase's isolated HOME, so the footer renders the cwd as `~/{NAME}`. A phase asserting the footer's **tail** (the `· N shells` count, the context gauge) must launch in one, with `$APP_ABS`/`$BIN_ABS` |
 | `smoke_on_exit CMD…` | run at teardown — a stub server to kill |
 | `count_bare_prompts` / `count_rules` / `count_footers` / `count_msg_lines` | the "exactly one input box on screen" counters the resize phases share |
+
+A turn's summary wears the past tense of the status verb it ended on
+(`Worked for 3s`, `Generated for 1m 5s` — `docs/status-indicator.md`), and a
+turn that runs past 30s ends on a later verb than it opened on. So a phase
+that waits for *a* turn to settle matches `SUMMARY_RE`, the lib's pattern
+naming every past tense (`-E "^$SUMMARY_RE"`, or `wait_summaries` to count
+them), and only a phase that must tell turns apart on one screen names a
+turn's own verb — `SUMMARY_TURN1`…`3`, since a launch's turns end `Worked`,
+`Generated`, `Pondered`, … in order while each stays under 30s.
+`app::tests::turn` pins the pattern, its copies in the standalone scripts and
+the per-turn names to the verb table, so a verb added, dropped or reordered
+fails `cargo test` rather than a smoke run.
 
 Every timeout is a **cap**: a wait returns the moment the state holds, so
 the suite runs at the app's speed on a fast machine and still passes on a

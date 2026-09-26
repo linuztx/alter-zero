@@ -108,9 +108,10 @@ overlay machinery.
     timestamp}` (the display stamp the item already carries),
   - `"tool"` → `{name, args, ok: bool, output, timestamp, shell, truncated}`
     (a running tool is never in `history`, so only finished statuses exist),
-  - `"summary"` → `{verb, secs, timestamp}` (`verb` maps back to the
-    `DONE_VERBS` static on load, falling back to `"Done"` — `TurnSummary.verb`
-    is `&'static str`),
+  - `"summary"` → `{verb, secs, timestamp}` (`verb` maps back to its static
+    on load — a `STATUS_VERBS` past tense, or a verb older builds recorded
+    (`Finished`, `Wrapped up`, …) — falling back to `"Done"`:
+    `TurnSummary.verb` is `&'static str`),
   - `"reasoning"` → `{text, timestamp, secs, tokens}` — one settled thinking
     phase, so a resumed session keeps its `Thought for …` cells *and* the
     chain-of-thought their Ctrl+O expansion shows (`docs/thinking-stream.md`);
@@ -346,7 +347,8 @@ highlight back up the rows already on screen without scrolling at all.
 
 - `session`: meta/item lines round-trip through `parse_session` (multiline +
   quote + unicode text, every role, ok/failed/truncated tools, summary verb
-  restored to the `DONE_VERBS` static — unknown verb falls back to `Done`);
+  restored to its `STATUS_VERBS` past tense or legacy static — unknown verb
+  falls back to `Done`);
   malformed and unknown lines are skipped; a file without a meta line (or
   empty) parses to `None`; `preview_of` finds the first non-blank user/shell
   message (flattening whitespace, `! ` for shell, whitespace-only messages

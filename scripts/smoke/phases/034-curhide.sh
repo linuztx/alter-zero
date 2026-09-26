@@ -21,7 +21,7 @@ launch "$S34" 80 24
 submit "$S34" "hello there"
 curhide_done=0
 for _ in $(seq 1 200); do # up to ~20s for the committed summary (a seated box)
-	if tmux capture-pane -t "$S34" -p | grep -qE "^Done for [0-9]+s"; then
+	if tmux capture-pane -t "$S34" -p | grep -qE "^$SUMMARY_RE"; then
 		curhide_done=1
 		break
 	fi

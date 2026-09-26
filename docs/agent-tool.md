@@ -244,8 +244,9 @@ zero new plumbing. The TUI cell is a new `HistoryItem::AgentNotice` —
   a forming table or a fenced code block streams there exactly as it does in
   the main view, its live `● Thinking…` block included
   (`docs/agent-view-streaming.md`) — and its turns **end the way the main session's do**: the
-  settle records a dim `Done for 59s · 6.1k tokens (2.8k cached)` summary on
-  the agent's own transcript (`AgentRun::apply`'s StreamDone arm pushes the
+  settle records a dim `Generated for 59s · 6.1k tokens (2.8k cached)` summary on
+  the agent's own transcript (its verb the past tense of the one the view's
+  line wore, rotated on the agent's own clock — `docs/status-indicator.md`) (`AgentRun::apply`'s StreamDone arm pushes the
   `HistoryItem::Summary`, its `tokens`/`cached` the **turn's** billed usage —
   `AgentRun::turn_usage_*`, reset by `reopen()` so each chat continuation
   gets its own receipt while the roster tally stays cumulative; the runtime

@@ -20,7 +20,7 @@ CLIAPP="env $CFG_ENV_NOHIST ALTER_ZERO_SESSIONS_DIR=$CLIR_DIR ALTER_ZERO_STARTUP
 tmux new-session -d -s "$S61" -x 80 -y 24 "$CLIAPP; echo CLI_APP_EXITED; sleep 60"
 sleep 0.4
 submit "$S61" "$USER_MSG"
-wait_for 20.1 "$S61" -S -40 -- -F "Done for" # instance 1, turn 1 → "Done for"
+wait_summaries 20.1 "$S61" 1 -S -40 >/dev/null # instance 1, turn 1 settles
 tmux send-keys -t "$S61" C-c # quit instance 1 (empty composer)
 wait_for 4 "$S61" -F "CLI_APP_EXITED"
 cli_quit_pane="$(tmux capture-pane -t "$S61" -p -S -80)"
@@ -36,14 +36,8 @@ cli_continue_pane="$(wait_pane 3 "$S61" -S -80 -- -F "$EXPECT_REPLY")" # the loa
 echo "==== Phase 61: --continue relaunch (old conversation repainted, no picker) ===="
 printf '%s\n' "$cli_continue_pane"
 submit "$S61" "again please"
-cli_continue_appended=""
-for _ in $(seq 1 134); do # the follow-up (this process's turn 1 → "Done for" #2)
-	cli_continue_appended="$(tmux capture-pane -t "$S61" -p -S -60)"
-	if [ "$(printf '%s' "$cli_continue_appended" | grep -cF "Done for")" -ge 2 ]; then
-		break
-	fi
-	sleep 0.15
-done
+# The follow-up: the loaded summary plus its own make two.
+cli_continue_appended="$(wait_summaries 20.1 "$S61" 2 -S -60)"
 sleep 0.3
 cli_files_after_continue="$(find "$CLIR_DIR" -type f -name 'rollout-*.jsonl' | wc -l | tr -d ' ')"
 tmux kill-session -t "$S61" 2>/dev/null

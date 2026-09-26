@@ -145,7 +145,8 @@ pub(super) fn status(
 ) -> TurnStatus {
     TurnStatus {
         verb: "Working",
-        done_verb: "Done",
+        done_verb: "Worked",
+        rotates_from: None,
         tokens,
         arrow,
         elapsed: Duration::from_secs(elapsed),

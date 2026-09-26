@@ -39,8 +39,8 @@ if ! printf '%s' "$settled_cur" | grep -qF "$SETTLED_REPLY"; then
 	fail "the reply never finished on the short terminal (Phase 5 could not settle)"
 else
 	# When the turn ends the live status line is replaced by a committed
-	# "{done verb} for Ns" summary (a fresh session → turn 0 → the verb "Done").
-	expect_has "$settled_cur" -F "Done for" "the committed 'Done for Ns' turn summary was not shown after the reply finished"
+	# summary: the past tense of the verb the line wore ("Worked for Ns").
+	expect_has "$settled_cur" -E "^$SUMMARY_RE" "the committed turn summary ('Worked for Ns') was not shown after the reply finished"
 	if [ "${trailing_blanks:-99}" -ne 0 ]; then
 		fail "$trailing_blanks blank row(s) left below the input box after the reply settled — the box should stay flush at the bottom"
 	fi
