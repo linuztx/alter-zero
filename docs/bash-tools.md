@@ -136,10 +136,14 @@ also have broken quiet commands. What came with the flip:
    plan`. Now silence ends a launch or an input only when the kernel cannot
    see the program at work: a tree the probe sees **all at work**
    (`Probe::Idle`) runs on to its exit or its `wait`; a tree waiting on
-   descriptors (`Probe::Polling` — a network client, an idle server) or one
-   the probe cannot see (`sudo`, macOS) must be silent for [`LAUNCH_QUIET`]
-   (10 s) before a launch returns. A prompt still ends a call in half a
-   second, as before.
+   descriptors (`Probe::Polling` — a network client, an idle server, or
+   `Probe::Elsewhere` when its epoll instances say the terminal is none of
+   them) or one the probe cannot see (`sudo`, macOS) must be silent for
+   [`LAUNCH_QUIET`] (10 s) before a launch returns. A prompt still ends a
+   call in half a second, as before — but a tree waiting only elsewhere, or a
+   display on the alternate screen that left the terminal in line mode
+   (`gh run watch`), is no prompt, and a wait on it rides it out
+   (`docs/interactive-shell.md`).
 2. **Finished output is data** (`pty::session`'s data view). The terminal's
    transcript is what a person reads — tabs expanded to stops, trailing
    spaces trimmed — so `printf 'a\tb   \n'` came back as `a       b`. The

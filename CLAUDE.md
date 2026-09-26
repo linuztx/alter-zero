@@ -1212,7 +1212,11 @@ running as a session, never killed, or it
 `/proc/…/task/…/syscall` from the monitor thread while a call waits on a
 quiet terminal, and a `read` blocked on the session's pts (or `/dev/tty`) is
 a program waiting for input whatever the screen shows, while a tree all at
-work is busy however prompt-shaped its line — then the terminal's own
+work is busy however prompt-shaped its line, and one whose waits are all
+epoll instances watching no terminal (the `/proc/…/fdinfo` interest list,
+matched by inode — an event loop between network calls, `gh run watch`
+between redraws) is `Probe::Elsewhere`, asking nothing yet not busy — then
+the terminal's own
 **password tell**, a line read with echo off (`LineMode::hides_input`, read
 off the pty with `tcgetattr` where the probe is blind to a root `sudo`),
 counted once the program has replied to the last line submitted (text still
@@ -1223,9 +1227,11 @@ frame, naming the one way in since the user has none (told only that input
 was hidden, a model sent the user to "enter it in the terminal prompt"; the
 old clause still parses for recorded sessions), detection only, nothing
 masked — then, where the probe is blind (a
-`sudo`-owned process, a `poll`-family wait, no `/proc`), the screen: the
-cursor left mid-line, the
-alternate screen, or a terminal reading key by key — canonical mode off with
+`sudo`-owned process, a `poll` or `select` over descriptors, no `/proc`), the
+screen: the cursor left mid-line, the alternate screen with the terminal out
+of line mode (a display left in canonical mode, `gh run watch`, takes no key
+and is judged like the main screen — `IoState::drawing_screen`, fed the
+whole mode by `SessionIo::set_line_mode`), or a terminal reading key by key — canonical mode off with
 output processing still on, read off the pty with `tcgetattr`, since a relay
 (sudo's own pty, ssh, `docker run -it`) holds it raw with `OPOST` off too —
 each after 0.5 s of quiet, 3 s for a pure wait that saw the line appear, and

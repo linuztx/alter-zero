@@ -29,6 +29,7 @@ use super::probe::Probe;
 use super::report::{self, Status, View};
 use super::screen::Screen;
 use super::settle::{self, Observation, Settle, WaitKind};
+use super::spawn::LineMode;
 use super::transcript::Transcript;
 
 /// How often a waiting call wakes, with nothing new, to re-ask its cancel and
@@ -121,6 +122,11 @@ struct IoState {
     /// editor, a readline prompt — so it waits on keys wherever its cursor
     /// sits ([`IoState::awaiting_keys`]).
     reading_keys: bool,
+    /// The terminal reads whole lines (canonical mode) — `None` until the
+    /// monitor has read its mode ([`SessionIo::set_line_mode`]). No single
+    /// key reaches a program in line mode, so a screen it draws is a display
+    /// rather than one it takes keys on ([`IoState::drawing_screen`]).
+    canonical: Option<bool>,
     /// When the current burst of output began ([`BURST_SPAN`]) — `None`
     /// before any, and after input, whose answer starts a burst of its own.
     burst_began: Option<Instant>,
@@ -257,6 +263,7 @@ impl SessionIo {
                 finalized: false,
                 announced: false,
                 reading_keys: false,
+                canonical: None,
                 burst_began: None,
                 probe: Probe::Unknown,
                 last_input: None,
@@ -588,9 +595,10 @@ impl SessionIo {
     }
 
     /// Record whether the terminal reads a line with echo off — a password
-    /// prompt (`pty::spawn::LineMode::hides_input`); the monitor reads it off
-    /// the terminal as output arrives and on every idle poll.
-    pub fn set_hidden_input(&self, hidden: bool) {
+    /// prompt (`pty::spawn::LineMode::hides_input`) — alone: the tests' seam
+    /// for one part of what [`set_line_mode`](Self::set_line_mode) records.
+    #[cfg(test)]
+    fn set_hidden_input(&self, hidden: bool) {
         let changed = std::mem::replace(&mut self.lock().hidden_input, hidden) != hidden;
         if changed {
             self.changed.notify_all();
@@ -607,12 +615,33 @@ impl SessionIo {
     }
 
     /// Record whether the program reads its terminal **key by key** (raw
-    /// mode, not canonical) — the monitor reads it off the terminal as output
-    /// arrives (`pty::spawn::line_mode`).
-    pub fn set_reading_keys(&self, reading_keys: bool) {
+    /// mode, not canonical) alone: the tests' seam for one part of what
+    /// [`set_line_mode`](Self::set_line_mode) records.
+    #[cfg(test)]
+    fn set_reading_keys(&self, reading_keys: bool) {
         let changed = {
             let mut state = self.lock();
             std::mem::replace(&mut state.reading_keys, reading_keys) != reading_keys
+        };
+        if changed {
+            self.changed.notify_all();
+        }
+    }
+
+    /// Record how the program reads its terminal — the monitor reads the
+    /// mode off it as output arrives and on every idle poll
+    /// (`pty::spawn::line_mode`): key by key ([`LineMode::reads_keys`]), a
+    /// line with echo off ([`LineMode::hides_input`]), or whole lines at all
+    /// (canonical mode, which no single key gets through). All at once, so a
+    /// waiting call never judges the screen by half a mode.
+    pub fn set_line_mode(&self, mode: LineMode) {
+        let changed = {
+            let mut state = self.lock();
+            let before = (state.reading_keys, state.hidden_input, state.canonical);
+            state.reading_keys = mode.reads_keys();
+            state.hidden_input = mode.hides_input();
+            state.canonical = Some(mode.canonical);
+            before != (state.reading_keys, state.hidden_input, state.canonical)
         };
         if changed {
             self.changed.notify_all();
@@ -842,9 +871,10 @@ impl IoState {
     /// Is the program waiting for keys? The probe's word first
     /// ([`super::probe`]): a thread reading the terminal is waiting wherever
     /// the cursor sits, and a tree that is all at work is busy whatever the
-    /// screen shows. Without it, the screen: a program drawing a screen
-    /// ([`Self::drawing_screen`]) always looks it; otherwise a prompt by the
-    /// cursor ([`Screen::awaiting_keys`]) or a program reading key by key,
+    /// screen shows. Without it, the screen: a program drawing a screen it
+    /// takes keys on ([`Self::drawing_screen`] — not a display left reading
+    /// whole lines) always looks it; otherwise a prompt by the cursor
+    /// ([`Screen::cursor_mid_line`]) or a program reading key by key,
     /// wherever its cursor is — unless the line under the cursor is
     /// **animated** ([`Transcript::cursor_line_animated`]): a progress bar or
     /// a spinner leaves the cursor exactly where a prompt would, and pauses.
@@ -852,7 +882,7 @@ impl IoState {
     fn awaiting_keys(&self) -> bool {
         match self.probe {
             Probe::Reading => self.screen.is_some(),
-            Probe::Idle => false,
+            Probe::Idle | Probe::Elsewhere => false,
             Probe::Polling | Probe::Unknown => self.screen_awaits_keys(),
         }
     }
@@ -866,7 +896,7 @@ impl IoState {
             !screen.undrawn()
                 && (self.drawing_screen()
                     || (!self.transcript.cursor_line_animated()
-                        && (self.reading_keys || screen.awaiting_keys())))
+                        && (self.reading_keys || screen.cursor_mid_line())))
         })
     }
 
@@ -924,26 +954,37 @@ impl IoState {
     /// cursor addressing while the terminal reads key by key (`top`)? Such a
     /// program may never go quiet ([`settle::SCREEN_BUSY`]); a command that
     /// addresses the screen for a progress bar (apt's scroll region) reads
-    /// whole lines, and is not one.
+    /// whole lines, and is not one — nor is a **display** on the alternate
+    /// screen that leaves the terminal reading whole lines (`gh run watch`,
+    /// a `tput smcup` loop), since every program that takes keys there turns
+    /// line mode off first. A relay holds the terminal raw, so what it
+    /// carries still counts; a mode not read yet counts too.
     fn drawing_screen(&self) -> bool {
         self.screen.as_ref().is_some_and(|screen| {
             !screen.undrawn()
-                && (screen.alternate() || (self.transcript.screen_addressed() && self.reading_keys))
+                && ((screen.alternate() && !self.reads_lines())
+                    || (self.transcript.screen_addressed() && self.reading_keys))
         })
+    }
+
+    /// Does the terminal read whole lines — canonical mode, as the monitor
+    /// last read it? `false` while the mode is unknown.
+    fn reads_lines(&self) -> bool {
+        self.canonical == Some(true)
     }
 
     /// Is the terminal reading a line with echo off — a password prompt —
     /// that the program put up since it was last typed into? Keys just typed
     /// at a prompt reach a program still in its mode: until it answers, that
     /// is the answer on its way, not a second prompt. And the probe's word
-    /// comes first, as for [`Self::awaiting_keys`]: a tree seen all at work
-    /// left echo off for its own reasons (swallowing type-ahead) and asks
-    /// nothing. Never a pipe.
+    /// comes first, as for [`Self::awaiting_keys`]: a tree seen all at work,
+    /// or waiting on nothing that is the terminal, left echo off for its own
+    /// reasons (swallowing type-ahead) and asks nothing. Never a pipe.
     fn password_prompt(&self) -> bool {
         self.screen.is_some()
             && self.hidden_input
             && self.seq > self.input_seq
-            && self.probe != Probe::Idle
+            && !matches!(self.probe, Probe::Idle | Probe::Elsewhere)
     }
 
     /// Has the program printed anything new to a call of `kind` that began
@@ -1236,6 +1277,215 @@ mod tests {
             );
             drawer.join().unwrap();
         }
+    }
+
+    /// The terminal's modes as the monitor reads them off it
+    /// (`pty::spawn::line_mode`): a program reading whole lines, one reading
+    /// key by key, a relay holding the terminal raw, a password prompt.
+    const LINE_MODE: LineMode = LineMode {
+        canonical: true,
+        echo: true,
+        processed_output: true,
+    };
+    const KEY_BY_KEY: LineMode = LineMode {
+        canonical: false,
+        echo: false,
+        processed_output: true,
+    };
+    const RELAY: LineMode = LineMode {
+        canonical: false,
+        echo: false,
+        processed_output: false,
+    };
+    const HIDDEN_LINE: LineMode = LineMode {
+        canonical: true,
+        echo: false,
+        processed_output: true,
+    };
+
+    /// `gh run watch`'s frame as it draws it: the alternate screen cleared
+    /// from home, the status block, the cursor at the start of the line under
+    /// it — and nothing that reads a key.
+    const GH_FRAME: &[u8] = b"\x1b[?1049h\x1b[0;0H\x1b[JRefreshing run status every 30 seconds. \
+        Press Ctrl+C to quit.\r\n\r\n* v0.7.0 Release \xc2\xb7 36209800650\r\n\r\nJOBS\r\n\
+        * build (ID 108313779167)\r\n";
+
+    #[test]
+    fn a_display_on_the_alternate_screen_that_reads_whole_lines_asks_nothing() {
+        // `gh run watch`: the alternate screen, redrawn every few seconds,
+        // and the terminal left in line mode, where no single key reaches the
+        // program. A full-screen program that takes keys turns line mode off
+        // first; one that leaves it on is a display, and its quiet screen is
+        // no prompt, whichever call looks.
+        let io = SessionIo::waited(true);
+        io.set_line_mode(LINE_MODE);
+        io.absorb(GH_FRAME);
+        std::thread::sleep(settle::PROMPT_QUIET + Duration::from_millis(50));
+        for kind in [WaitKind::Launch, WaitKind::Input, WaitKind::Wait] {
+            assert!(!io.waiting(kind, io.origin_mark()), "{kind:?}");
+        }
+    }
+
+    #[test]
+    fn a_wait_on_a_display_that_reads_whole_lines_rides_it_out() {
+        // The reported case: `gh run watch` started in the background, then
+        // waited on. Its first frame — never looked at, quiet between
+        // redraws — ended the wait within seconds as "waiting for input", and
+        // the model killed a command doing exactly what it had asked of it.
+        let io = Arc::new(SessionIo::new(true));
+        io.set_line_mode(LINE_MODE);
+        io.absorb(GH_FRAME);
+        std::thread::sleep(settle::WAIT_PROMPT_QUIET);
+        let since = io.begin_wait();
+        let end = io.wait(
+            WaitKind::Wait,
+            since,
+            Duration::from_millis(1_500),
+            &never,
+            &never,
+            &mut |_, _| {},
+        );
+        assert_eq!(end, WaitEnd::Settled(Settle::Timeout));
+        let waiting = report::Waiting::of(io.waiting(WaitKind::Wait, since), io.password_prompt());
+        let look = io.look("s1", Status::Running { waiting });
+        assert!(look.starts_with("Running (session s1)\nScreen ("), "{look}");
+    }
+
+    #[test]
+    fn a_display_that_reads_whole_lines_is_waited_out_like_a_batch_command() {
+        // A full-screen program that never stops drawing takes keys all the
+        // while, so a launch returns its screen after SCREEN_BUSY; a display
+        // in line mode takes none, and runs on like any command printing as
+        // it works. The line mode alone tells the two apart: a key reader, a
+        // relay holding the terminal raw, or a mode not read yet all keep the
+        // screen answer.
+        for (mode, expected) in [
+            (Some(LINE_MODE), Settle::Timeout),
+            (Some(KEY_BY_KEY), Settle::Prompt),
+            (Some(RELAY), Settle::Prompt),
+            (None, Settle::Prompt),
+        ] {
+            let io = Arc::new(SessionIo::waited(true));
+            if let Some(mode) = mode {
+                io.set_line_mode(mode);
+            }
+            io.absorb(b"\x1b[?1049h\x1b[H00.0");
+            let drawer = {
+                let io = Arc::clone(&io);
+                std::thread::spawn(move || {
+                    for n in 1..=30 {
+                        std::thread::sleep(Duration::from_millis(100));
+                        io.absorb(format!("\x1b[H{:02}.{}", n / 10, n % 10).as_bytes());
+                    }
+                })
+            };
+            let end = io.wait(
+                WaitKind::Launch,
+                io.origin_mark(),
+                Duration::from_millis(2_600),
+                &never,
+                &never,
+                &mut |_, _| {},
+            );
+            assert_eq!(end, WaitEnd::Settled(expected), "{mode:?}");
+            drawer.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn the_alternate_screen_still_asks_whenever_a_key_could_reach_it() {
+        // Line mode rules out only a key: a program reading key by key, a
+        // relay holding the terminal raw for a program behind it, or a mode
+        // not read yet still wait on keys wherever the cursor is; and in line
+        // mode a prompt by the cursor, a read the kernel saw, or a line read
+        // with echo off are questions still.
+        let quiet = |mode: Option<LineMode>, text: &[u8], probe: Option<Probe>| {
+            let io = SessionIo::new(true);
+            if let Some(mode) = mode {
+                io.set_line_mode(mode);
+            }
+            io.absorb(text);
+            if let Some(probe) = probe {
+                io.set_probe(probe);
+            }
+            std::thread::sleep(settle::PROMPT_QUIET + Duration::from_millis(50));
+            io
+        };
+        for mode in [Some(KEY_BY_KEY), Some(RELAY), None] {
+            let io = quiet(mode, GH_FRAME, None);
+            assert!(io.waiting(WaitKind::Launch, io.origin_mark()), "{mode:?}");
+        }
+        let prompt = quiet(Some(LINE_MODE), b"\x1b[?1049h\x1b[HName: ", None);
+        assert!(
+            prompt.waiting(WaitKind::Launch, prompt.origin_mark()),
+            "a prompt by the cursor"
+        );
+        let read = quiet(Some(LINE_MODE), GH_FRAME, Some(Probe::Reading));
+        assert!(
+            read.waiting(WaitKind::Launch, read.origin_mark()),
+            "a read the kernel saw"
+        );
+        let secret = quiet(Some(HIDDEN_LINE), GH_FRAME, None);
+        assert!(secret.password_prompt(), "a line read with echo off");
+        assert!(secret.waiting(WaitKind::Launch, secret.origin_mark()));
+    }
+
+    #[test]
+    fn a_background_display_that_reads_whole_lines_asks_nothing() {
+        // Nobody waits on it, and its screen changed since the model looked:
+        // the monitor tells the model of a question it has not seen — but a
+        // display in line mode poses none, and is not even probed for one.
+        let io = SessionIo::new(true);
+        io.announce();
+        io.set_line_mode(LINE_MODE);
+        io.absorb(GH_FRAME);
+        std::thread::sleep(PROBE_QUIET + Duration::from_millis(20));
+        assert!(!io.wants_probe(), "nothing shaped like a question");
+        assert!(!io.take_unseen_prompt(Duration::ZERO));
+        // The same screen over a key reader is still one to tell of.
+        let menu = SessionIo::new(true);
+        menu.announce();
+        menu.set_line_mode(KEY_BY_KEY);
+        menu.absorb(GH_FRAME);
+        assert!(menu.take_unseen_prompt(Duration::ZERO));
+    }
+
+    #[test]
+    fn a_program_waiting_elsewhere_asks_nothing_and_is_not_at_work_either() {
+        // An event loop between network calls with `Fetching... ` left open:
+        // the kernel sees it wait on a socket, not the terminal
+        // (`pty::probe::Probe::Elsewhere`). No prompt — but no busy tree
+        // either, so the quiet line still hands an input's call back.
+        let io = Arc::new(SessionIo::new(true));
+        let since = io.begin_wait();
+        io.absorb(b"Fetching... ");
+        io.set_probe(Probe::Elsewhere);
+        let end = io.wait(WaitKind::Input, since, LONG, &never, &never, &mut |_, _| {});
+        assert_eq!(end, WaitEnd::Settled(Settle::Quiet));
+        assert!(!io.waiting(WaitKind::Input, since));
+    }
+
+    #[test]
+    fn a_program_waiting_elsewhere_poses_no_question_at_all() {
+        // Echo left off, a question-shaped line in the background, a screen
+        // over a terminal in raw mode: none of it is asked by a program the
+        // kernel sees waiting on something other than the terminal.
+        let hidden = SessionIo::new(true);
+        hidden.absorb(b"Password: ");
+        hidden.set_hidden_input(true);
+        hidden.set_probe(Probe::Elsewhere);
+        assert!(!hidden.password_prompt());
+        let background = SessionIo::new(true);
+        background.announce();
+        background.absorb(b"Continue? ");
+        background.set_probe(Probe::Elsewhere);
+        assert!(!background.take_unseen_prompt(Duration::ZERO));
+        let display = SessionIo::new(true);
+        display.set_line_mode(KEY_BY_KEY);
+        display.absorb(GH_FRAME);
+        display.set_probe(Probe::Elsewhere);
+        std::thread::sleep(settle::PROMPT_QUIET + Duration::from_millis(50));
+        assert!(!display.waiting(WaitKind::Launch, display.origin_mark()));
     }
 
     #[test]

@@ -2985,6 +2985,72 @@ mod tests {
         assert_eq!(typed.output, "Exit code: 0\nhi\ngot hi");
     }
 
+    /// A stand-in for `gh run watch`: the alternate screen, redrawn after
+    /// each long wait, the terminal left reading whole lines, no key read.
+    /// Its wait — a timed read of a pipe — blocks in `pselect6`, where the
+    /// kernel probe cannot tell it from a wait on the terminal.
+    #[cfg(unix)]
+    const DISPLAY_LOOP: &str = "printf '\\033[?1049h'; while :; do \
+        printf '\\033[H\\033[JRefreshing run status every 30 seconds. Press Ctrl+C to quit.\\n\\n\
+        * v0.7.0 Release\\n'; read -t 30 -u 3 _ 3< <(sleep 60); done";
+
+    #[cfg(unix)]
+    #[test]
+    fn a_display_that_reads_whole_lines_is_never_said_to_wait_for_input() {
+        // The reported case (docs/interactive-shell.md): `gh run watch`
+        // started in the background and waited on — its screen, quiet between
+        // redraws, ended the wait at once as "waiting for input", and the
+        // model killed it. Nothing reads a key there: the wait rides it out,
+        // and neither the list nor a launch says it waits.
+        let (registry, _rx) = test_registry();
+        let executor = RealToolExecutor::new().with_background(registry.clone());
+        let out = exec_with(
+            &executor,
+            "bash",
+            &serde_json::json!({"command": DISPLAY_LOOP, "wait": 0}).to_string(),
+        );
+        let id = out.background.clone().expect("backgrounded");
+        std::thread::sleep(crate::pty::settle::WAIT_PROMPT_QUIET + Duration::from_millis(300));
+        let started = Instant::now();
+        let waited = exec_with(
+            &executor,
+            BASH_WAIT,
+            &serde_json::json!({"session_id": id, "wait": 2}).to_string(),
+        );
+        assert!(
+            started.elapsed() >= Duration::from_secs(2),
+            "the wait ran its course: {:?}",
+            started.elapsed()
+        );
+        assert!(
+            waited
+                .output
+                .starts_with(&format!("Running (session {id})\nScreen (")),
+            "{}",
+            waited.output
+        );
+        assert!(waited.output.contains("Refreshing run status"));
+        let listed = exec_with(&executor, BASH_LIST, "{}");
+        assert!(
+            listed.output.contains(&format!("- {id}: ")) && !listed.output.contains("waiting"),
+            "{}",
+            listed.output
+        );
+        // In the foreground it is a command at work, not a question.
+        let launched = exec_with(
+            &executor,
+            "bash",
+            &serde_json::json!({"command": DISPLAY_LOOP, "wait": 3}).to_string(),
+        );
+        let frame = launched.output.lines().next().unwrap_or_default();
+        assert!(
+            frame.starts_with("Running (session ") && !frame.contains("waiting"),
+            "{}",
+            launched.output
+        );
+        registry.kill_all();
+    }
+
     #[cfg(target_os = "linux")]
     #[test]
     fn a_busy_command_behind_a_prompt_shaped_line_is_not_waiting() {
@@ -2999,6 +3065,35 @@ mod tests {
             r#"{"command":"printf 'Working... '; sleep 3; echo done"}"#,
         );
         assert_eq!(out.output, "Exit code: 0\nWorking... done\n");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn an_event_loop_between_calls_behind_a_prompt_shaped_line_is_not_waiting() {
+        // `Fetching... ` left open while an event loop waits on its own
+        // socket — the way every Go, Node and asyncio program waits on the
+        // network: the kernel sees an epoll wait on nothing that is the
+        // terminal (`pty::probe::Probe::Elsewhere`), so the call waits the
+        // command out instead of reporting a prompt half a second in.
+        let python = std::env::var_os("PATH").is_some_and(|path| {
+            std::env::split_paths(&path).any(|dir| dir.join("python3").is_file())
+        });
+        if !python {
+            eprintln!("skipped: no python3");
+            return;
+        }
+        let (registry, _rx) = test_registry();
+        let executor = RealToolExecutor::new().with_background(registry.clone());
+        let out = exec_with(
+            &executor,
+            "bash",
+            &serde_json::json!({
+                "command": "python3 -c \"import asyncio; print('Fetching... ', end='', flush=True); \
+                    asyncio.run(asyncio.sleep(3)); print('done')\""
+            })
+            .to_string(),
+        );
+        assert_eq!(out.output, "Exit code: 0\nFetching... done\n");
     }
 
     #[cfg(target_os = "linux")]

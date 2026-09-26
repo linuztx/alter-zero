@@ -16,7 +16,8 @@
 //!   terminal queries programs send.
 //! - [`probe`] — what the session's processes are blocked in, from
 //!   Linux's `/proc`: a read on the terminal is a program waiting for
-//!   input, a tree that is all at work is busy whatever its screen shows.
+//!   input, a tree that is all at work is busy whatever its screen shows,
+//!   and an event loop whose epoll instances watch no terminal asks nothing.
 //! - [`settle`] — when a call waiting on a session returns.
 //! - [`report`] — what a session call tells the model: the frame line over
 //!   the new output or the screen.

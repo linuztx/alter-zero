@@ -1196,11 +1196,13 @@ impl MonitorHandle {
     /// Tell the session how its program is reading the terminal: key by key
     /// (a menu, an editor — not a relay holding it raw, see
     /// `LineMode::reads_keys`), which waits on keys wherever its cursor
-    /// sits, or a line with echo off (`LineMode::hides_input`), a password
-    /// prompt — readable here even when the program runs as root and the
-    /// probe is blind (`pty::session`). Read after each chunk of output and
-    /// on every idle poll, so a mode switched without printing is seen
-    /// within [`MONITOR_POLL_INTERVAL`].
+    /// sits; a line with echo off (`LineMode::hides_input`), a password
+    /// prompt; or whole lines at all, which no single key reaches — a
+    /// display drawn on the alternate screen, `gh run watch` (all readable
+    /// here even when the program runs as root and the probe is blind,
+    /// `pty::session`). Read after each chunk of output and on every idle
+    /// poll, so a mode switched without printing is seen within
+    /// [`MONITOR_POLL_INTERVAL`].
     fn refresh_line_mode(&self) {
         #[cfg(unix)]
         if let Some(mode) = self
@@ -1208,8 +1210,7 @@ impl MonitorHandle {
             .as_ref()
             .and_then(crate::pty::spawn::line_mode)
         {
-            self.io.set_reading_keys(mode.reads_keys());
-            self.io.set_hidden_input(mode.hides_input());
+            self.io.set_line_mode(mode);
         }
     }
 
@@ -2019,6 +2020,48 @@ mod tests {
         assert_eq!(waiting, [asking.id.as_str()], "{events:?}");
         reg.kill(&asking.id);
         reg.kill(&logging.id);
+    }
+
+    /// A stand-in for `gh run watch`: the alternate screen, redrawn after
+    /// each long wait, and the terminal left reading whole lines — no key
+    /// read. Its wait, a timed read of a pipe, blocks in `pselect6`, where
+    /// the kernel probe cannot tell it from a wait on the terminal.
+    #[cfg(unix)]
+    const DISPLAY_LOOP: &str = "printf '\\033[?1049h'; while :; do \
+        printf '\\033[H\\033[JRefreshing run status every 30 seconds. Press Ctrl+C to quit.\\n\\n\
+        * v0.7.0 Release\\n'; read -t 30 -u 3 _ 3< <(sleep 60); done";
+
+    #[cfg(unix)]
+    #[test]
+    fn a_background_display_that_reads_whole_lines_is_never_told_of() {
+        // Nothing reads a key on a display left in line mode: the model is
+        // told of no question — while the same screen over a program that
+        // reads key by key is still one to tell of (docs/bash-tools.md).
+        let (reg, mut rx) = registry();
+        let display = reg
+            .launch_tty(DISPLAY_LOOP, None, None, true)
+            .expect("launches")
+            .task;
+        let menu = reg
+            .launch_tty(
+                &format!("stty -icanon -echo; {DISPLAY_LOOP}"),
+                None,
+                None,
+                true,
+            )
+            .expect("launches")
+            .task;
+        let events = drain(&mut rx, WAITING_NOTICE_QUIET + Duration::from_secs(2));
+        let waiting: Vec<&str> = events
+            .iter()
+            .filter_map(|event| match event {
+                BgEvent::Waiting { id } => Some(id.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(waiting, [menu.id.as_str()], "{events:?}");
+        assert_ne!(display.id, menu.id);
+        reg.kill_all();
     }
 
     #[cfg(unix)]
