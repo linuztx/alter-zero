@@ -12,6 +12,8 @@ release heading when a version is cut.
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-09-27
+
 ### Added
 
 - **Tips under the spinner.** Once a turn has run three seconds, a dim
@@ -706,7 +708,8 @@ release heading when a version is cut.
   release whose notes come from this file — driven end to end by
   `scripts/release.sh`, which also rehearses a release locally.
 
-[Unreleased]: https://github.com/linuztx/alter-zero/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/linuztx/alter-zero/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/linuztx/alter-zero/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/linuztx/alter-zero/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/linuztx/alter-zero/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/linuztx/alter-zero/compare/v0.4.0...v0.5.0
