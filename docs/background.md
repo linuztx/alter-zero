@@ -276,6 +276,9 @@ inside the band.
   `No tasks currently running` page as the defensive fallback for a band
   opened with no shells behind it (`App::open_background_view` is public; the
   app's own entry gate, `background_focusable`, can't reach it).
+- Both pages open on a title in the dress every walked menu headlines its
+  levels with — the palette accent (cyan by default), bold, as `/hooks` and
+  `/mcp` do — since it is the row that answers "where am I?".
 - List: `Background` title, `{n} active shells`, `❯`-marked selectable rows
   (`{command} (running)`), hints
   `↑/↓ to select · Enter to view · x to stop · Esc to close`.

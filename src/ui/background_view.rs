@@ -21,6 +21,20 @@ fn bg_line(text: &str, style: Style, width: u16) -> Line<'static> {
     ])
 }
 
+/// A page title — `Background`, `Shell details` — in the title dress the
+/// other walked menus headline every level with (`/hooks`, `/mcp`): the
+/// palette accent, bold. It is the row that answers "where am I?", so it is
+/// the row the eye should land on first.
+fn bg_title_line(text: &str, width: u16) -> Line<'static> {
+    bg_line(
+        text,
+        Style::new()
+            .fg(bg_selected_color())
+            .add_modifier(Modifier::BOLD),
+        width,
+    )
+}
+
 /// One row of the manager's shell list: `❯ {command} (running)` — the
 /// selected row lights up in the palette accent (marker and text alike), the
 /// others are dim, mirroring the slash-command palette's colour-only
@@ -51,7 +65,7 @@ fn bg_list_lines(app: &App, selected: usize, width: u16) -> Vec<Line<'static>> {
     let mut lines = vec![
         model_rule(width),
         Line::default(),
-        bg_line(BG_TITLE, Style::new().fg(ai_color()), width),
+        bg_title_line(BG_TITLE, width),
     ];
     if shells.is_empty() {
         lines.push(Line::default());
@@ -108,7 +122,7 @@ fn bg_details_lines(shell: &BackgroundShell, width: u16) -> Vec<Line<'static>> {
     let mut lines = vec![
         model_rule(width),
         Line::default(),
-        bg_line(BG_DETAILS_TITLE, Style::new().fg(ai_color()), width),
+        bg_title_line(BG_DETAILS_TITLE, width),
         Line::default(),
         field(BG_FIELD_STATUS, BG_STATUS_RUNNING),
         field(BG_FIELD_RUNTIME, &format_elapsed(shell.runtime.as_secs())),
