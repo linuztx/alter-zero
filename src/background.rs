@@ -1224,6 +1224,7 @@ impl MonitorHandle {
                 pid,
                 terminal,
                 last: None,
+                work: crate::pty::probe::Work::default(),
             })
         }
         #[cfg(not(unix))]
@@ -1282,6 +1283,9 @@ struct Prober {
     terminal: PathBuf,
     /// When the last probe ran.
     last: Option<std::time::Instant>,
+    /// The CPU each process had used at the last probe, which the next one
+    /// measures work against ([`crate::pty::probe::Work`]).
+    work: crate::pty::probe::Work,
 }
 
 impl Prober {
@@ -1296,7 +1300,11 @@ impl Prober {
             return;
         }
         self.last = Some(std::time::Instant::now());
-        io.set_probe(crate::pty::probe::probe(self.pid, &self.terminal));
+        io.set_probe(crate::pty::probe::probe(
+            self.pid,
+            &self.terminal,
+            &mut self.work,
+        ));
     }
 }
 

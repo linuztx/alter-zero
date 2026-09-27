@@ -22,6 +22,13 @@
 //! its screen looks like a prompt ([`Probe::Idle`]): `Compiling foo... ` left
 //! open while the compiler runs, `Working... ` before a `sleep`.
 //!
+//! A wait counts as work, too, in a process with a descendant at work — one
+//! whose CPU grew since the last probe ([`Work`], [`verdict`]): cargo polls
+//! rustc's stdout and stderr while rustc compiles in silence, npm's event
+//! loop waits on webpack's, and neither is at a prompt. Only a process above
+//! the one at work counts; a read on the terminal is a question whatever the
+//! children do.
+//!
 //! A tree with a thread in such a wait and no reader is [`Probe::Polling`]:
 //! it may be at a prompt, or waiting on the network — which is why, since
 //! every command runs in a terminal (`docs/bash-tools.md`), its silence ends
@@ -404,6 +411,122 @@ pub fn combine(threads: &[Thread], blind: bool) -> Probe {
     }
 }
 
+/// When a process started and the CPU it has used, off its `/proc/PID/stat`
+/// line, in clock ticks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProcessClock {
+    /// When it started — what tells a pid taken by a new process since from
+    /// the one that held it.
+    pub start: u64,
+    /// User plus system time.
+    pub cpu: u64,
+}
+
+/// One process of a session's tree as a probe found it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProcessSample {
+    pub pid: u32,
+    /// The process it was found under — `None` for the tree's root.
+    pub parent: Option<u32>,
+    /// Its clock — `None` when its stat line could not be read.
+    pub clock: Option<ProcessClock>,
+    /// What each of its threads is blocked in.
+    pub threads: Vec<Thread>,
+}
+
+/// The CPU each process had used when a probe looked — what the next probe
+/// measures work against ([`verdict`]).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Work {
+    /// CPU used, by pid and start time.
+    cpu: std::collections::HashMap<(u32, u64), u64>,
+}
+
+impl Work {
+    /// What `samples` says each process had used.
+    #[must_use]
+    pub fn of(samples: &[ProcessSample]) -> Self {
+        let cpu = samples
+            .iter()
+            .filter_map(|sample| {
+                let clock = sample.clock?;
+                Some(((sample.pid, clock.start), clock.cpu))
+            })
+            .collect();
+        Self { cpu }
+    }
+
+    /// Has process `pid`, as `clock` finds it now, used the CPU since this
+    /// reading? One the reading did not see — started since, or a pid taken
+    /// by a new process since — has if it has used any, all of which it used
+    /// since: the linker rustc hands its objects to at the end of a build.
+    /// With no reading at all, nothing is new and nothing has grown.
+    fn grew(&self, pid: u32, clock: ProcessClock) -> bool {
+        match self.cpu.get(&(pid, clock.start)) {
+            Some(&then) => clock.cpu > then,
+            None => !self.cpu.is_empty() && clock.cpu > 0,
+        }
+    }
+}
+
+/// The verdict over a whole tree: [`combine`] over every thread, except that
+/// a process with a descendant at work — one that used the CPU since
+/// `before` — counts its waits as work. A parent waiting on the output of a
+/// child that is compiling is part of that work, not a program at a prompt:
+/// cargo polls rustc's pipes, npm's event loop waits on webpack's, and a poll
+/// alone would say "maybe the terminal". Only a process *above* the one at
+/// work counts — a REPL whose own thread works, or one beside a busy
+/// sibling, may still be at its prompt — and a read on the terminal stays a
+/// read, whatever the children do.
+#[must_use]
+pub fn verdict(samples: &[ProcessSample], before: &Work, blind: bool) -> Probe {
+    let parents: std::collections::HashMap<u32, Option<u32>> = samples
+        .iter()
+        .map(|sample| (sample.pid, sample.parent))
+        .collect();
+    let mut watching = std::collections::HashSet::new();
+    for sample in samples {
+        if !sample
+            .clock
+            .is_some_and(|clock| before.grew(sample.pid, clock))
+        {
+            continue;
+        }
+        let mut above = sample.parent;
+        // An ancestor marked already has its own ancestors marked too.
+        while let Some(pid) = above
+            && watching.insert(pid)
+        {
+            above = parents.get(&pid).copied().flatten();
+        }
+    }
+    let threads: Vec<Thread> = samples
+        .iter()
+        .flat_map(|sample| {
+            let watching = watching.contains(&sample.pid);
+            sample.threads.iter().map(move |&thread| match thread {
+                Thread::Maybe | Thread::Elsewhere if watching => Thread::Busy,
+                other => other,
+            })
+        })
+        .collect();
+    combine(&threads, blind)
+}
+
+/// A process's clock off its `/proc/PID/stat` line — fields 14 and 15 (user
+/// and system time) and 22 (the start time), counted after the parenthesised
+/// name, which may hold anything.
+#[must_use]
+pub fn stat_clock(stat: &str) -> Option<ProcessClock> {
+    let (_, fields) = stat.rsplit_once(')')?;
+    let fields: Vec<&str> = fields.split_whitespace().collect();
+    let field = |n: usize| fields.get(n - 3)?.parse::<u64>().ok();
+    Some(ProcessClock {
+        start: field(22)?,
+        cpu: field(14)?.checked_add(field(15)?)?,
+    })
+}
+
 /// Does the descriptor link `target` name the session's terminal — its own
 /// path, or `/dev/tty`, which is the controlling terminal of every process
 /// in the session (where `ssh` and `git` read a password from)?
@@ -418,22 +541,28 @@ pub fn is_session_terminal(target: &Path, terminal: &Path) -> bool {
 const PROBE_MAX_TASKS: usize = 1024;
 
 /// What the processes of the tree rooted at `pid` are blocked in, with
-/// respect to the terminal at `terminal` (its `/dev/pts/N` path).
+/// respect to the terminal at `terminal` (its `/dev/pts/N` path). `work` is
+/// what the last probe read of each process's CPU, which this one measures
+/// against and then replaces ([`verdict`]).
 #[cfg(target_os = "linux")]
 #[must_use]
-pub fn probe(pid: u32, terminal: &Path) -> Probe {
+pub fn probe(pid: u32, terminal: &Path, work: &mut Work) -> Probe {
     if Arch::HOST == Arch::Other {
         return Probe::Unknown;
     }
     let terminal = Terminal::of(terminal);
-    let mut threads = Vec::new();
+    let mut samples = Vec::new();
     let mut blind = false;
-    let mut todo = vec![pid];
+    let mut todo = vec![(pid, None)];
     let mut seen = 0usize;
-    while let Some(pid) = todo.pop() {
+    while let Some((pid, parent)) = todo.pop() {
         let Ok(tasks) = std::fs::read_dir(format!("/proc/{pid}/task")) else {
             continue; // gone since it was listed
         };
+        let clock = std::fs::read_to_string(format!("/proc/{pid}/stat"))
+            .ok()
+            .and_then(|stat| stat_clock(&stat));
+        let mut threads = Vec::new();
         for task in tasks.flatten() {
             seen += 1;
             if seen > PROBE_MAX_TASKS {
@@ -460,13 +589,22 @@ pub fn probe(pid: u32, terminal: &Path) -> Probe {
                 Ok(children) => todo.extend(
                     children
                         .split_whitespace()
-                        .filter_map(|child| child.parse::<u32>().ok()),
+                        .filter_map(|child| child.parse::<u32>().ok())
+                        .map(|child| (child, Some(pid))),
                 ),
                 Err(_) => blind = true,
             }
         }
+        samples.push(ProcessSample {
+            pid,
+            parent,
+            clock,
+            threads,
+        });
     }
-    combine(&threads, blind)
+    let verdict = verdict(&samples, work, blind);
+    *work = Work::of(&samples);
+    verdict
 }
 
 /// A thread's descriptors, read off its `/proc/PID/task/TID` directory.
@@ -496,7 +634,7 @@ impl Descriptors for TaskDescriptors<'_> {
 /// Elsewhere there is no `/proc` to ask: the other tells carry the verdict.
 #[cfg(not(target_os = "linux"))]
 #[must_use]
-pub fn probe(_pid: u32, _terminal: &Path) -> Probe {
+pub fn probe(_pid: u32, _terminal: &Path, _work: &mut Work) -> Probe {
     Probe::Unknown
 }
 
@@ -565,6 +703,181 @@ mod tests {
         // A name may hold spaces and parentheses: the fields follow the last.
         assert_eq!(stat_group("7 (a) b (c)) R 1 99 1 0 -1"), Some(99));
         assert_eq!(stat_group("garbage"), None);
+    }
+
+    /// cargo's stat line, seen live mid-build: 150 ticks of user time and 30
+    /// of system time used, started 8 765 432 ticks after boot.
+    const CARGO_STAT: &str = "397 (cargo) S 396 397 1 34816 397 4194560 12345 0 0 0 150 \
+        30 0 0 20 0 5 0 8765432 123456789 5000 18446744073709551615";
+
+    #[test]
+    fn a_stat_line_gives_the_start_time_and_the_cpu_used() {
+        assert_eq!(
+            stat_clock(CARGO_STAT),
+            Some(ProcessClock {
+                start: 8_765_432,
+                cpu: 180
+            })
+        );
+        let odd = CARGO_STAT.replace("(cargo)", "(a (b) c)");
+        assert_eq!(
+            stat_clock(&odd),
+            stat_clock(CARGO_STAT),
+            "a name may hold spaces and parentheses"
+        );
+        assert_eq!(stat_clock("397 (cargo) S 396 397"), None, "cut short");
+        assert_eq!(stat_clock("garbage"), None);
+    }
+
+    /// A process of a sampled tree: its pid, the one it hangs under, its
+    /// start time and CPU used so far, and what its threads are blocked in.
+    fn sample(pid: u32, parent: Option<u32>, cpu: u64, threads: &[Thread]) -> ProcessSample {
+        ProcessSample {
+            pid,
+            parent,
+            clock: Some(ProcessClock {
+                start: u64::from(pid) * 10,
+                cpu,
+            }),
+            threads: threads.to_vec(),
+        }
+    }
+
+    #[test]
+    fn a_wait_on_a_working_child_is_work() {
+        // `cargo build`, seen live: bash waits for cargo, two of cargo's
+        // threads poll rustc's stdout and stderr, and rustc compiles in
+        // silence. A poll's list lives in the program's memory, so alone it
+        // says "maybe the terminal" — but a child that used the CPU since
+        // the last probe is what the parent waits on.
+        let build = |rustc_cpu| {
+            vec![
+                sample(1, None, 5, &[Thread::Busy]),
+                sample(
+                    2,
+                    Some(1),
+                    300,
+                    &[Thread::Maybe, Thread::Maybe, Thread::Busy],
+                ),
+                sample(3, Some(2), rustc_cpu, &[Thread::Busy, Thread::Busy]),
+            ]
+        };
+        let before = Work::of(&build(900));
+        assert_eq!(verdict(&build(920), &before, false), Probe::Idle);
+        assert_eq!(
+            verdict(&build(900), &before, false),
+            Probe::Polling,
+            "a child alive but idle proves nothing"
+        );
+        assert_eq!(
+            verdict(&build(920), &Work::default(), false),
+            Probe::Polling,
+            "nothing to measure against yet"
+        );
+    }
+
+    #[test]
+    fn an_event_loop_over_a_working_grandchild_is_work() {
+        // `npm run build`: npm's event loop waits on sh's pipes, sh on
+        // webpack, which works.
+        let build = |webpack_cpu| {
+            vec![
+                sample(1, None, 40, &[Thread::Elsewhere, Thread::Busy]),
+                sample(2, Some(1), 1, &[Thread::Busy]),
+                sample(3, Some(2), webpack_cpu, &[Thread::Busy]),
+            ]
+        };
+        let before = Work::of(&build(650));
+        assert_eq!(verdict(&build(700), &before, false), Probe::Idle);
+        assert_eq!(verdict(&build(650), &before, false), Probe::Elsewhere);
+    }
+
+    #[test]
+    fn only_a_process_above_the_working_one_counts_its_waits_as_work() {
+        // A REPL beside a busy sibling, and one whose own thread works:
+        // neither waits on a working child, so each may be at its prompt.
+        let siblings = |cpu| {
+            vec![
+                sample(1, None, 5, &[Thread::Busy]),
+                sample(2, Some(1), 50, &[Thread::Maybe]),
+                sample(3, Some(1), cpu, &[Thread::Busy]),
+            ]
+        };
+        let before = Work::of(&siblings(100));
+        assert_eq!(verdict(&siblings(150), &before, false), Probe::Polling);
+        let alone = |cpu| vec![sample(1, None, cpu, &[Thread::Maybe, Thread::Busy])];
+        assert_eq!(
+            verdict(&alone(150), &Work::of(&alone(100)), false),
+            Probe::Polling,
+            "its own work is no child's"
+        );
+    }
+
+    #[test]
+    fn a_process_new_since_the_last_probe_counts_what_it_has_used() {
+        // rustc hands its objects to the linker, seen live at the end of a
+        // build: rustc waits for cc, cc for ld, and ld — new since the last
+        // probe, so with nothing to compare — does the work. All the CPU it
+        // has used, it used since the last probe.
+        let before = Work::of(&[
+            sample(1, None, 5, &[Thread::Busy]),
+            sample(2, Some(1), 300, &[Thread::Maybe, Thread::Maybe]),
+            sample(3, Some(2), 900, &[Thread::Busy]),
+        ]);
+        let linking = |ld_cpu| {
+            vec![
+                sample(1, None, 5, &[Thread::Busy]),
+                sample(2, Some(1), 300, &[Thread::Maybe, Thread::Maybe]),
+                sample(3, Some(2), 900, &[Thread::Busy]),
+                sample(4, Some(3), 0, &[Thread::Busy]),
+                sample(5, Some(4), ld_cpu, &[Thread::Busy]),
+            ]
+        };
+        assert_eq!(verdict(&linking(30), &before, false), Probe::Idle);
+        assert_eq!(
+            verdict(&linking(0), &before, false),
+            Probe::Polling,
+            "one that has not run yet proves nothing"
+        );
+        assert_eq!(
+            verdict(&linking(30), &Work::default(), false),
+            Probe::Polling,
+            "with no reading at all, nothing is new"
+        );
+        // A pid taken by a new process is a new process: it is measured by
+        // what it has used, never against the old one's CPU.
+        let mut reused = sample(3, Some(2), 700, &[Thread::Busy]);
+        reused.clock = Some(ProcessClock {
+            start: 999,
+            cpu: 700,
+        });
+        let now = [
+            sample(1, None, 5, &[Thread::Busy]),
+            sample(2, Some(1), 300, &[Thread::Maybe]),
+            reused,
+        ];
+        assert_eq!(verdict(&now, &before, false), Probe::Idle);
+    }
+
+    #[test]
+    fn a_reader_stays_a_reader_and_a_blind_probe_blind() {
+        let tree = |first: Thread, cpu| {
+            vec![
+                sample(1, None, 5, &[first]),
+                sample(2, Some(1), cpu, &[Thread::Busy]),
+            ]
+        };
+        let before = Work::of(&tree(Thread::Reading, 50));
+        assert_eq!(
+            verdict(&tree(Thread::Reading, 60), &before, false),
+            Probe::Reading,
+            "a read on the terminal is a question, whatever its children do"
+        );
+        assert_eq!(
+            verdict(&tree(Thread::Maybe, 60), &before, true),
+            Probe::Unknown,
+            "a process the probe could not see may be the one asking"
+        );
     }
 
     #[test]
@@ -1142,7 +1455,7 @@ mod tests {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         let mut last = Probe::Unknown;
         while std::time::Instant::now() < deadline {
-            last = probe(session.child.id(), &path);
+            last = probe(session.child.id(), &path, &mut Work::default());
             if last == want {
                 break;
             }
@@ -1220,14 +1533,15 @@ mod tests {
         let path = terminal_path(&session.master).expect("the terminal has a path");
         let pid = session.child.id();
         let started = Instant::now();
+        let mut work = Work::default();
         let mut verdicts = Vec::new();
         while started.elapsed() < Duration::from_secs(5) && !verdicts.contains(&Probe::Elsewhere) {
-            verdicts.push(probe(pid, &path));
+            verdicts.push(probe(pid, &path, &mut work));
             std::thread::sleep(Duration::from_millis(20));
         }
         let looping = Instant::now();
         while looping.elapsed() < Duration::from_secs(2) {
-            verdicts.push(probe(pid, &path));
+            verdicts.push(probe(pid, &path, &mut work));
             std::thread::sleep(Duration::from_millis(2));
         }
         crate::subprocess::kill_process_group(&mut session.child);
@@ -1238,6 +1552,50 @@ mod tests {
             0,
             "{polls} of {} probes said Polling",
             verdicts.len()
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_live_parent_waiting_on_a_working_child_is_at_work() {
+        // cargo, reduced: a parent polling a child's stdout and stderr — the
+        // way cargo reads rustc's — while the child computes, and the same
+        // parent over a child that only sleeps.
+        use crate::pty::spawn::{spawn, terminal_path};
+        use std::time::{Duration, Instant};
+        if !on_path("python3") {
+            eprintln!("skipped, no python3");
+            return;
+        }
+        let verdicts = |child: &str| {
+            let command = format!(
+                "python3 -c 'import subprocess; subprocess.run([\"python3\", \"-c\", \
+                 \"{child}\"], capture_output=True)'"
+            );
+            let mut session = spawn(None, &command).expect("spawns");
+            let path = terminal_path(&session.master).expect("the terminal has a path");
+            let pid = session.child.id();
+            let mut work = Work::default();
+            // Both interpreters start and the parent reaches its poll.
+            let started = Instant::now();
+            while started.elapsed() < Duration::from_millis(1500) {
+                let _ = probe(pid, &path, &mut work);
+                std::thread::sleep(Duration::from_millis(300));
+            }
+            let seen: Vec<Probe> = (0..5)
+                .map(|_| {
+                    std::thread::sleep(Duration::from_millis(300));
+                    probe(pid, &path, &mut work)
+                })
+                .collect();
+            crate::subprocess::kill_process_group(&mut session.child);
+            seen
+        };
+        assert_eq!(verdicts("while True: pass"), [Probe::Idle; 5]);
+        assert_eq!(
+            verdicts("import time; time.sleep(30)"),
+            [Probe::Polling; 5],
+            "a child alive but asleep proves nothing"
         );
     }
 

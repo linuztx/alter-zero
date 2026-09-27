@@ -1232,7 +1232,11 @@ a program waiting for input whatever the screen shows, while a tree all at
 work is busy however prompt-shaped its line, and one whose waits are all
 epoll instances watching no terminal (the `/proc/…/fdinfo` interest list,
 matched by inode — an event loop between network calls, `gh run watch`
-between redraws) is `Probe::Elsewhere`, asking nothing yet not busy — then
+between redraws) is `Probe::Elsewhere`, asking nothing yet not busy, while a
+wait in a process whose descendant used the CPU since the last probe is work
+(`probe::verdict` over the `probe::Work` reading the monitor keeps — cargo
+polling a compiling rustc's pipes, so a silent build is not handed back at
+`LAUNCH_QUIET`) — then
 the terminal's own
 **password tell**, a line read with echo off (`LineMode::hides_input`, read
 off the pty with `tcgetattr` where the probe is blind to a root `sudo`),

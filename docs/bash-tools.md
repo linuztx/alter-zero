@@ -139,7 +139,10 @@ also have broken quiet commands. What came with the flip:
    descriptors (`Probe::Polling` — a network client, an idle server, or
    `Probe::Elsewhere` when its epoll instances say the terminal is none of
    them) or one the probe cannot see (`sudo`, macOS) must be silent for
-   [`LAUNCH_QUIET`] (10 s) before a launch returns. A prompt still ends a
+   [`LAUNCH_QUIET`] (10 s) before a launch returns — unless the process
+   waiting has a descendant at work, which makes its wait work too: a build
+   whose compiler runs in silence (cargo polling rustc's pipes) runs to its
+   exit or its `wait` instead of coming back `Running`. A prompt still ends a
    call in half a second, as before — but a tree waiting only elsewhere, or a
    display on the alternate screen that left the terminal in line mode
    (`gh run watch`), is no prompt, and a wait on it rides it out

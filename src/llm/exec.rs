@@ -3098,6 +3098,40 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
+    fn a_build_that_compiles_in_silence_is_waited_out() {
+        // `cargo build` on its last crate: cargo polls rustc's stdout and
+        // stderr while rustc compiles and prints nothing for longer than a
+        // launch's silence allowance (`LAUNCH_QUIET`). The call came back
+        // `Running` ten seconds in, though the model had asked to wait for
+        // the build; a parent waiting on a child at work is at work
+        // (`pty::probe::verdict`), so the call runs to the exit.
+        let python = std::env::var_os("PATH").is_some_and(|path| {
+            std::env::split_paths(&path).any(|dir| dir.join("python3").is_file())
+        });
+        if !python {
+            eprintln!("skipped: no python3");
+            return;
+        }
+        let (registry, _rx) = test_registry();
+        let executor = RealToolExecutor::new().with_background(registry.clone());
+        let command = r#"python3 -c 'import subprocess, sys
+print("   Compiling alter-zero", flush=True)
+subprocess.run([sys.executable, "-c", "import time\nt = time.time()\nwhile time.time() - t < 12: pass"], capture_output=True)
+print("    Finished", flush=True)'"#;
+        let out = exec_with(
+            &executor,
+            "bash",
+            &serde_json::json!({"command": command, "wait": 30}).to_string(),
+        );
+        registry.kill_all();
+        assert_eq!(
+            out.output,
+            "Exit code: 0\n   Compiling alter-zero\n    Finished\n"
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
     fn a_password_prompt_put_up_between_calls_ends_the_next_wait() {
         // sudo after a wrong password: `Sorry, try again.` and a fresh
         // prompt come up after the call that typed the password returned.

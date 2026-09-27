@@ -541,7 +541,20 @@ is followed, and anything the probe cannot tell apart stays a may. That is
 how every Go, Node, libuv, asyncio and tokio program idles: `gh run watch`
 between redraws is six threads parked in futexes and one in `epoll_pwait` on
 the runtime's own eventfd. A `poll` or `select` over no descriptors is a
-sleep. One reader anywhere is `Probe::Reading`; a tree all at work is
+sleep. And a wait is **work** in a process with a descendant at work — one
+whose CPU grew since the last probe, read off `/proc/PID/stat` and kept
+between probes by the monitor (`probe::Work`, keyed by pid and start time so
+a pid taken by a new process is a new process): `cargo build` polls rustc's
+stdout and stderr while rustc compiles its last crate in silence, and that
+poll alone said *may*, so a launch the model had given ten minutes came back
+`Running` ten seconds in; npm's event loop waits on webpack's pipes the same
+way. A process the last probe did not see has used all its CPU since, so any
+counts — the linker rustc hands its objects to, which rustc waits on while
+cargo still polls — though with no reading at all nothing is new. Only a
+process *above* the one at work counts — a REPL whose own thread computes, or
+one beside a busy sibling, may still be at its prompt — and a child alive but
+idle proves nothing. One reader anywhere is `Probe::Reading`,
+whatever the children do; a tree all at work is
 `Probe::Idle`; a tree whose waits may be on the terminal is
 `Probe::Polling`, and one whose waits are all elsewhere `Probe::Elsewhere` —
 which asks nothing (no prompt, no password), yet is not at work the way

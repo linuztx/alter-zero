@@ -1317,7 +1317,9 @@ stream for their own reasons).
   `read` on the terminal is waiting, a tree all at work is busy — a `poll` or
   `select` over no descriptors being a sleep — and one waiting only in epoll
   sets that hold nothing on the terminal, a network client or an event loop
-  between timers, asks nothing), then by the terminal's own mode for a
+  between timers, asks nothing, and a process waiting on a descendant whose
+  CPU grew since the last probe is at work — cargo polling a compiling
+  rustc), then by the terminal's own mode for a
   password prompt — a line read with echo off, which `sudo` shows even though
   its root process hides from `/proc`, named in the frame and never used to
   mask what is typed — and where the probe is blind — a process run as

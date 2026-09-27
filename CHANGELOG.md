@@ -12,6 +12,18 @@ release heading when a version is cut.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A build that compiles in silence is no longer handed back halfway.** A
+  `bash` call running `cargo build` came back `Running` about ten seconds
+  into a long compile, however long the agent had asked it to wait: cargo
+  waits on the compiler's output in a way that, on its own, looks like a
+  program that might be waiting for input, so ten quiet seconds ended the
+  call and the agent had to wait again. A program waiting on a child that is
+  using the CPU is now counted as working, so the call waits the build out —
+  for cargo, a Node or Python script driving a compiler, and anything else
+  that waits on a child process doing the work (`docs/interactive-shell.md`).
+
 ## [0.8.0] - 2026-09-27
 
 ### Added
