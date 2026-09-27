@@ -89,3 +89,31 @@ fn details_of_a_vanished_shell_fall_back_to_the_list() {
     assert!(texts.iter().any(|l| l.contains("Background")));
     assert!(!texts.iter().any(|l| l.contains("Shell details")));
 }
+
+#[test]
+fn both_page_titles_wear_the_menus_title_dress() {
+    // The band is a walk like `/hooks` and `/mcp`, whose every level
+    // headlines in the palette accent, bold — the row that answers "where
+    // am I?". `Background` and `Shell details` are this walk's two levels.
+    let mut app = App::new();
+    app.bg_started("bash_1", "ping x.com", None, true, None);
+    app.open_background_view();
+    let list = background_view_lines(&app, 60);
+    app.background_view = Some(BackgroundView::Details {
+        id: "bash_1".to_string(),
+    });
+    let details = background_view_lines(&app, 60);
+    for (lines, title) in [(&list, "Background"), (&details, "Shell details")] {
+        let span = &lines[2].spans[1];
+        assert_eq!(span.content, title);
+        assert_eq!(
+            span.style.fg,
+            Some(crate::ui::theme::hooks_title_color()),
+            "{title} wears the accent the other menus' titles do"
+        );
+        assert!(
+            span.style.add_modifier.contains(Modifier::BOLD),
+            "{title} is bold like them"
+        );
+    }
+}

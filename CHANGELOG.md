@@ -38,6 +38,10 @@ release heading when a version is cut.
   subagent's session view follows the same rule, and the `/spinner`
   picker's preview line walks the verbs the same way. Resumed conversations
   keep the summaries they were recorded with (`docs/status-indicator.md`).
+- **The background manager's page titles match the other menus.** The ↓
+  band's `Background` and `Shell details` titles are now the accent colour
+  (cyan by default), bold, like the titles in `/hooks` and `/mcp`
+  (`docs/background.md`).
 
 ### Fixed
 

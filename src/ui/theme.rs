@@ -437,7 +437,8 @@ pub(super) const BG_OUTPUT_LABEL: &str = "Output:";
 /// manager, so a listed one is always running).
 pub(super) const BG_STATUS_RUNNING: &str = "running";
 
-/// The manager's title/selection accent (the palette accent) and dim text.
+/// The manager's title/selection accent (the palette accent — the cyan the
+/// `/hooks` and `/mcp` titles wear, [`hooks_title_color`]) and dim text.
 pub(super) fn bg_selected_color() -> Color {
     menu_selected_color()
 }
