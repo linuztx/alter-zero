@@ -12,6 +12,28 @@ release heading when a version is cut.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A build that compiles in silence is no longer handed back halfway.** A
+  `bash` call running `cargo build` came back `Running` about ten seconds
+  into a long compile, however long the agent had asked it to wait: cargo
+  waits on the compiler's output in a way that, on its own, looks like a
+  program that might be waiting for input, so ten quiet seconds ended the
+  call and the agent had to wait again. What such a wait is on is now read
+  out of the program's own memory, and a program waiting through pipes on a
+  child that is using the CPU is counted as working, so the call waits the
+  build out — for cargo, make, a Node or Python script driving a compiler, a
+  build run under `script`, and anything else that waits on a child process
+  doing the work. A program waiting on the terminal itself is never counted
+  that way, so a shell or a REPL at its prompt is still seen there while a
+  job it started computes (`docs/interactive-shell.md`).
+- **A line left open over a program waiting on a child is no longer taken
+  for a question.** `Building... ` printed without a newline, then a quiet
+  wait on a child process, came back `waiting for input` half a second in.
+  That wait is now seen to be on the child's pipes, where nothing can be
+  typed, so the call comes back `Running` once the command has been quiet for
+  ten seconds.
+
 ## [0.8.0] - 2026-09-27
 
 ### Added

@@ -1316,8 +1316,13 @@ stream for their own reasons).
   by asking Linux's `/proc` what the session's processes are blocked in (a
   `read` on the terminal is waiting, a tree all at work is busy — a `poll` or
   `select` over no descriptors being a sleep — and one waiting only in epoll
-  sets that hold nothing on the terminal, a network client or an event loop
-  between timers, asks nothing), then by the terminal's own mode for a
+  sets, or `poll` and `select` sets read out of its memory, that hold nothing
+  on the terminal, a network client or an event loop between timers, asks
+  nothing, and a wait on no terminal in a process whose descendant's CPU grew
+  since the last probe is at work — cargo polling a compiling rustc — as is a
+  relay's, while a wait on a terminal never is, so a shell or a REPL at its
+  prompt over a busy child is still at its prompt), then by the terminal's
+  own mode for a
   password prompt — a line read with echo off, which `sudo` shows even though
   its root process hides from `/proc`, named in the frame and never used to
   mask what is typed — and where the probe is blind — a process run as

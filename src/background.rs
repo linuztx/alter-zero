@@ -1224,6 +1224,7 @@ impl MonitorHandle {
                 pid,
                 terminal,
                 last: None,
+                work: crate::pty::probe::Work::default(),
             })
         }
         #[cfg(not(unix))]
@@ -1282,6 +1283,9 @@ struct Prober {
     terminal: PathBuf,
     /// When the last probe ran.
     last: Option<std::time::Instant>,
+    /// The CPU each process had used at the last probe, which the next one
+    /// measures work against ([`crate::pty::probe::Work`]).
+    work: crate::pty::probe::Work,
 }
 
 impl Prober {
@@ -1296,7 +1300,11 @@ impl Prober {
             return;
         }
         self.last = Some(std::time::Instant::now());
-        io.set_probe(crate::pty::probe::probe(self.pid, &self.terminal));
+        io.set_probe(crate::pty::probe::probe(
+            self.pid,
+            &self.terminal,
+            &mut self.work,
+        ));
     }
 }
 
@@ -2031,24 +2039,37 @@ mod tests {
         printf '\\033[H\\033[JRefreshing run status every 30 seconds. Press Ctrl+C to quit.\\n\\n\
         * v0.7.0 Release\\n'; read -t 30 -u 3 _ 3< <(sleep 60); done";
 
+    /// The same screen over a menu: a program waiting on the terminal itself
+    /// for a key, the terminal held key by key.
+    const MENU_LOOP: &str = "stty -icanon -echo; printf '\\033[?1049h'; while :; do \
+        printf '\\033[H\\033[JRefreshing run status every 30 seconds. Press Ctrl+C to quit.\\n\\n\
+        * v0.7.0 Release\\n'; read -s -n 1 -t 30 _; done";
+
     #[cfg(unix)]
     #[test]
     fn a_background_display_that_reads_whole_lines_is_never_told_of() {
         // Nothing reads a key on a display left in line mode: the model is
         // told of no question — while the same screen over a program that
-        // reads key by key is still one to tell of (docs/bash-tools.md).
+        // reads key by key is still one to tell of (docs/bash-tools.md). A
+        // display that holds the terminal key by key but waits on a pipe
+        // asks nothing either: its wait, read off its memory, is on no
+        // terminal (`pty::probe`).
         let (reg, mut rx) = registry();
         let display = reg
             .launch_tty(DISPLAY_LOOP, None, None, true)
             .expect("launches")
             .task;
-        let menu = reg
+        let raw_display = reg
             .launch_tty(
                 &format!("stty -icanon -echo; {DISPLAY_LOOP}"),
                 None,
                 None,
                 true,
             )
+            .expect("launches")
+            .task;
+        let menu = reg
+            .launch_tty(MENU_LOOP, None, None, true)
             .expect("launches")
             .task;
         let events = drain(&mut rx, WAITING_NOTICE_QUIET + Duration::from_secs(2));
@@ -2061,6 +2082,7 @@ mod tests {
             .collect();
         assert_eq!(waiting, [menu.id.as_str()], "{events:?}");
         assert_ne!(display.id, menu.id);
+        assert_ne!(raw_display.id, menu.id);
         reg.kill_all();
     }
 

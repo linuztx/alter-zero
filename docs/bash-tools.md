@@ -136,10 +136,15 @@ also have broken quiet commands. What came with the flip:
    plan`. Now silence ends a launch or an input only when the kernel cannot
    see the program at work: a tree the probe sees **all at work**
    (`Probe::Idle`) runs on to its exit or its `wait`; a tree waiting on
-   descriptors (`Probe::Polling` — a network client, an idle server, or
-   `Probe::Elsewhere` when its epoll instances say the terminal is none of
-   them) or one the probe cannot see (`sudo`, macOS) must be silent for
-   [`LAUNCH_QUIET`] (10 s) before a launch returns. A prompt still ends a
+   descriptors — the terminal (`Probe::Polling`), or none of it
+   (`Probe::Elsewhere`: a network client, an idle server, as its `poll`,
+   `select` or epoll set says) — or one the probe cannot see (`sudo`, macOS)
+   must be silent for [`LAUNCH_QUIET`] (10 s) before a launch returns —
+   unless a process waiting on no terminal has a descendant at work, which
+   makes its wait work too: a build whose compiler runs in silence (cargo
+   polling rustc's pipes) runs to its exit or its `wait` instead of coming
+   back `Running`, while a shell or a REPL at its prompt over a job at work is
+   still seen at its prompt. A prompt still ends a
    call in half a second, as before — but a tree waiting only elsewhere, or a
    display on the alternate screen that left the terminal in line mode
    (`gh run watch`), is no prompt, and a wait on it rides it out
@@ -170,7 +175,9 @@ also have broken quiet commands. What came with the flip:
    reported the way an exit is: an amber `● Background command "…" is
    waiting for input` cell, a note naming the session, the idle follow-up
    turn for a model launch. Only a line shaped like a prompt counts, which
-   the probe then checks is not a program at work, and a session told of is
+   the probe then checks is not a program at work, nor one waiting only on
+   files that are no terminal — a display holding the terminal key by key
+   while it waits on a pipe asks nothing — and a session told of is
    not told of again until the model has looked at it, so a program that
    keeps asking cannot start turn after turn.
 5. **The session cap counts what outlived its call.** The 16-session cap

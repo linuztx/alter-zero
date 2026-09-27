@@ -528,27 +528,70 @@ sleeping thread is blocked in, and for a read its first argument is the file
 descriptor, which `/proc/PID/fd/N` resolves to a path. So the monitor walks
 the session's process tree (`/proc/…/children`) and classifies every thread:
 blocked in `read` on the session's terminal — its `/dev/pts/N`, or
-`/dev/tty`, where `ssh` and `git` read a password — is **reading**; in a
-`poll`/`select` wait over descriptors it **may** be waiting on the terminal
-(a REPL, `vim`, `top`, `ssh`); anything else is at **work**. An **epoll**
-wait says which: the instance's interest list, `/proc/PID/fdinfo/N`, names
-every file it watches — by inode and filesystem, which stays true when the
-descriptor number is closed or reused (seen in a set a child shares with its
-parent), converted from the kernel's device encoding to `stat`'s — so a wait
-watching the terminal for input **may** be waiting on it, one watching
-nothing that is the terminal waits **elsewhere**, an epoll instance inside it
-is followed, and anything the probe cannot tell apart stays a may. That is
-how every Go, Node, libuv, asyncio and tokio program idles: `gh run watch`
-between redraws is six threads parked in futexes and one in `epoll_pwait` on
-the runtime's own eventfd. A `poll` or `select` over no descriptors is a
-sleep. One reader anywhere is `Probe::Reading`; a tree all at work is
-`Probe::Idle`; a tree whose waits may be on the terminal is
-`Probe::Polling`, and one whose waits are all elsewhere `Probe::Elsewhere` —
-which asks nothing (no prompt, no password), yet is not at work the way
-`Idle` is, since a network wait lasts as long as a server idles and its
-silence still ends a launch after `LAUNCH_QUIET`. A process the probe may not
-inspect, or no `/proc` at all, is `Probe::Unknown`, which leaves the screen
-rules in charge, as `Polling` does. An answer read off the descriptors is
+`/dev/tty`, where `ssh` and `git` read a password — is **reading**; one
+waiting in `poll`, `select` or epoll is asked what it waits on; anything
+else is at **work**. A `poll`'s `pollfd` array and a `select`'s read set live
+in the program's own memory, at the address the call's arguments give, and
+`/proc/PID/task/TID/mem` reads them under the very permission check the
+syscall line is read under (`ptrace_may_access` in attach mode) — so wherever
+the probe sees a wait, it sees what the wait is on: measured over twenty-odd
+programs, as root and as an unprivileged user, never one without the other.
+Each descriptor waited on for input is resolved through `/proc/PID/fd/N`: the
+session's terminal, or another terminal's slave side (`/dev/pts/M`, where a
+relay runs its program), is a **terminal**; a terminal's master side
+(`/dev/ptmx`, `/dev/pts/ptmx`) is a relay's other end; an epoll instance is
+followed; anything else — a pipe, a socket, an eventfd — is **elsewhere**. An
+**epoll** wait says the same through its instance's interest list,
+`/proc/PID/fdinfo/N`, which names every file it watches — by inode and
+filesystem, which stays true when the descriptor number is closed or reused
+(seen in a set a child shares with its parent), converted from the kernel's
+device encoding to `stat`'s; a file on the session terminal's `devpts` is
+another terminal, and one the masters' names open as is a master. So a wait on
+a terminal **may** be a prompt (a REPL, `vim`, `top`, bash's readline); one on
+a terminal and a master at once is a **relay** (`script`, `sudo`'s own
+terminal — a master alone is a wait on the program behind it, like a pipe);
+one on no terminal waits **elsewhere**; and one the probe cannot read — an
+address no longer mapped, a descriptor closed since, more than
+`WAIT_LIST_MAX` (1024) descriptors — stays a may. That is how every Go, Node,
+libuv, asyncio and tokio program idles: `gh run watch` between redraws is six
+threads parked in futexes and one in `epoll_pwait` on the runtime's own
+eventfd. A `poll` or `select` over no descriptors is a sleep. And a wait no
+prompt can be in is **work** in a process with a descendant at work — one
+whose CPU grew since the last probe, read off `/proc/PID/stat` and kept
+between probes by the monitor (`probe::Work`, keyed by pid and start time so
+a pid taken by a new process is a new process): `cargo build` polls rustc's
+stdout and stderr while rustc compiles its last crate in silence, and a launch
+the model had given ten minutes came back `Running` ten seconds in; npm's event
+loop waits on webpack's pipes, make on its jobserver pipe, the same way. A
+relay's wait is work too, since the program it passes keys to has a terminal of
+its own, where its prompt is seen: `script` over a silent build rides it out.
+A wait on a terminal never is, whatever the children do: bash at its
+prompt over a job in the background, a REPL over the child it started, a raw
+key reader over its workers — counting those as work held their prompts for
+the call's whole `wait`. The terminal's mode could not have told the two
+apart: Python 3.13's REPL, crossterm and Go's `x/term` clear output processing
+as a relay does, so the descriptors decide. A process the last probe did not
+see was started since — work begun, counted before its first tick: at the end
+of a build rustc polls the linker's pipes while the linker, a few milliseconds
+old, has used none, and counting only what it had used found nothing at work
+in that one probe, which handed a build silent for ten seconds back at its
+link. With no reading at all, though, nothing is new. Only a process *above*
+the one at work counts — a program whose own thread computes, or one beside a
+busy sibling, waits on nothing of theirs — and a child alive but idle proves
+nothing. One case stays
+beyond the kernel: Node's REPL `await`ing a child at work keeps the terminal in
+its wait, raw, exactly as it does at its prompt, so it reads as one, as it did
+before any of this. One reader anywhere is `Probe::Reading`, whatever the
+children do; a tree all at work is `Probe::Idle`; a tree with a wait on a
+terminal, or one the probe could not read, is `Probe::Polling`, and one whose
+waits are all elsewhere `Probe::Elsewhere` — which asks nothing (no prompt, no
+password), yet is not at work the way `Idle` is, since a network wait lasts as
+long as a server idles and its silence still ends a launch after
+`LAUNCH_QUIET`: `Building... ` left open over a child that only sleeps comes
+back `Running` then, where a poll it could not read once made it a question
+half a second in. A process the probe may not inspect, or no `/proc` at all,
+is `Probe::Unknown`, which leaves the screen rules in charge, as `Polling`
+does. An answer read off the descriptors is
 taken as read, though the thread may leave its wait while they are looked
 at: the next probe sees where it went. Doubting a wait that moved on — the
 probe once re-read the call and fell back to *may* when it had changed —
@@ -1090,12 +1133,11 @@ Three of this design's choices were kept over it:
 
 - **Unix only** — pseudo-terminals are a Unix facility; elsewhere a command
   runs on a pipe, as every command once did (`docs/bash-tools.md`).
-- **The prompt heuristic, where the probe is blind** — off Linux, for a
-  process run as another user (`sudo` and what it runs), and behind a `poll`
-  or `select` wait over descriptors (whose list lives in the program's own
-  memory, where an epoll instance's is the kernel's to show), the screen
-  decides alone, a password prompt aside (the terminal's mode names that
-  one). There a program that prints
+- **The prompt heuristic, where the probe cannot decide** — off Linux, for a
+  process run as another user (`sudo` and what it runs), and behind a wait on
+  the terminal itself (a REPL's, a relay's — seen, but a question and a pause
+  look alike from the kernel), the screen decides alone, a password prompt
+  aside (the terminal's mode names that one). There a program that prints
   its question, a newline, and then waits in canonical mode looks like one
   between lines of output — on the alternate screen too, where a program in
   line mode is judged like the main screen: it settles on `LINE_QUIET` and reports `Running`
