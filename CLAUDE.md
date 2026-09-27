@@ -1232,11 +1232,19 @@ a program waiting for input whatever the screen shows, while a tree all at
 work is busy however prompt-shaped its line, and one whose waits are all
 epoll instances watching no terminal (the `/proc/…/fdinfo` interest list,
 matched by inode — an event loop between network calls, `gh run watch`
-between redraws) is `Probe::Elsewhere`, asking nothing yet not busy, while a
-wait in a process whose descendant used the CPU since the last probe is work
-(`probe::verdict` over the `probe::Work` reading the monitor keeps — cargo
-polling a compiling rustc's pipes, so a silent build is not handed back at
-`LAUNCH_QUIET`) — then
+between redraws) is `Probe::Elsewhere`, asking nothing yet not busy — a
+`poll`'s array and a `select`'s read set read out of the program's own
+memory (`/proc/PID/task/TID/mem`, under the syscall line's own permission
+check), so a parent polling a child's pipes waits elsewhere too — while a
+wait on no terminal in a process whose descendant used the CPU since the last
+probe is work (`probe::verdict` over the `probe::Work` reading the monitor
+keeps — cargo polling a compiling rustc's pipes, so a silent build is not
+handed back at `LAUNCH_QUIET`), as is a relay's (the terminal and a
+`/dev/ptmx` master in one wait: `script`, `sudo`'s own terminal), and a
+wait on a terminal never is — bash's readline over a job in the
+background, a REPL over its child, `Probe::Polling` whatever the children do,
+since the terminal's mode cannot tell a REPL from a relay (Python 3.13's
+clears `OPOST` as one does) — then
 the terminal's own
 **password tell**, a line read with echo off (`LineMode::hides_input`, read
 off the pty with `tcgetattr` where the probe is blind to a root `sudo`),
@@ -1247,8 +1255,8 @@ prompt came up — the `waiting for a password — only bashsend can type it`
 frame, naming the one way in since the user has none (told only that input
 was hidden, a model sent the user to "enter it in the terminal prompt"; the
 old clause still parses for recorded sessions), detection only, nothing
-masked — then, where the probe is blind (a
-`sudo`-owned process, a `poll` or `select` over descriptors, no `/proc`), the
+masked — then, where the probe cannot decide (a
+`sudo`-owned process, a wait on the terminal itself, no `/proc`), the
 screen: the cursor left mid-line, the alternate screen with the terminal out
 of line mode (a display left in canonical mode, `gh run watch`, takes no key
 and is judged like the main screen — `IoState::drawing_screen`, fed the

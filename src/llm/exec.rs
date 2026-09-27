@@ -3132,6 +3132,72 @@ print("    Finished", flush=True)'"#;
 
     #[cfg(target_os = "linux")]
     #[test]
+    fn a_prompt_over_a_child_at_work_is_answered_at_once() {
+        // A REPL over the child it started, reduced: the program asks, then
+        // waits in `select` on the terminal while the child computes. Counting
+        // every wait above a working child as work held the question for the
+        // call's whole `wait`; a wait on the terminal is a prompt whatever the
+        // children do (`pty::probe::verdict`).
+        let python = std::env::var_os("PATH").is_some_and(|path| {
+            std::env::split_paths(&path).any(|dir| dir.join("python3").is_file())
+        });
+        if !python {
+            eprintln!("skipped: no python3");
+            return;
+        }
+        let (registry, _rx) = test_registry();
+        let executor = RealToolExecutor::new().with_background(registry.clone());
+        let command = r#"python3 -c 'import select, subprocess, sys
+subprocess.Popen([sys.executable, "-c", "import time\nt = time.time()\nwhile time.time() - t < 20: pass"])
+sys.stdout.write("Continue? ")
+sys.stdout.flush()
+select.select([sys.stdin], [], [])'"#;
+        let started = Instant::now();
+        let out = exec_with(
+            &executor,
+            "bash",
+            &serde_json::json!({"command": command, "wait": 20}).to_string(),
+        );
+        let elapsed = started.elapsed();
+        registry.kill_all();
+        let id = session_of(&out.output);
+        assert_eq!(
+            out.output,
+            format!("Running (session {id}, waiting for input)\nContinue?")
+        );
+        assert!(elapsed < Duration::from_secs(5), "{elapsed:?}");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_line_left_open_over_a_child_that_waits_is_no_prompt() {
+        // `Building... ` left open while the program waits on a child that
+        // only sleeps: its poll, read off its memory, is on the child's pipes
+        // and no terminal, so nothing it waits on can be typed into. The
+        // call comes back `Running` when a launch's quiet runs out, never
+        // `waiting for input` over a line that is no question.
+        let python = std::env::var_os("PATH").is_some_and(|path| {
+            std::env::split_paths(&path).any(|dir| dir.join("python3").is_file())
+        });
+        if !python {
+            eprintln!("skipped: no python3");
+            return;
+        }
+        let (registry, _rx) = test_registry();
+        let executor = RealToolExecutor::new().with_background(registry.clone());
+        let command = r#"printf 'Building... '; python3 -c 'import subprocess; subprocess.run(["sleep", "30"], capture_output=True)'"#;
+        let out = exec_with(
+            &executor,
+            "bash",
+            &serde_json::json!({"command": command, "wait": 25}).to_string(),
+        );
+        registry.kill_all();
+        let id = session_of(&out.output);
+        assert_eq!(out.output, format!("Running (session {id})\nBuilding..."));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
     fn a_password_prompt_put_up_between_calls_ends_the_next_wait() {
         // sudo after a wrong password: `Sorry, try again.` and a fresh
         // prompt come up after the call that typed the password returned.
