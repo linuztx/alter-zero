@@ -1409,6 +1409,86 @@ pub(super) fn donate_caution_color() -> Color {
     ask_warning_color()
 }
 
+// --- the /secrete page (docs/secrets.md). The /donate page's frame — the
+// family's indent, its `❯` marker, the dim meta ink, the banner-gradient
+// title — over the user's secrets, and a three-field form under the same
+// frame. Every value is masked **in the builder**: a flowed row is committed
+// to real scrollback as text, so a mask applied at paint time would come too
+// late. Only the page's own words and geometry live here; its colours are
+// the family's. ---
+
+/// The list page's title.
+pub(super) const SECRETS_TITLE: &str = "Secrets";
+
+/// The dim rows under the list's title: what a secret is for. Wrapped, never
+/// cut (`docs/view-flow.md`).
+pub(super) const SECRETS_BLURB: &str = "Credentials the agent uses by placeholder. The values \
+stay out of the conversation, the screen and the model's context.";
+
+/// The dim row an empty store shows over its add row.
+pub(super) const SECRETS_EMPTY: &str = "No secrets yet. Add one, and the agent can use it as \
+<secrete:NAME> in any command, file or input.";
+
+/// The list's last row: add a secret.
+pub(super) const SECRETS_ADD_ROW: &str = "+ Add a secret";
+
+/// The list's mask — **fixed** at eight dots whatever the value's length,
+/// so the list says a value is there and never how long it is.
+pub(super) const SECRETS_LIST_MASK: &str = "••••••••";
+
+/// Columns between a list row's placeholder, its mask and its context.
+pub(super) const SECRETS_COLUMN_GAP: &str = "  ";
+
+/// The list's dim key hint — its whole grammar — and the add row's.
+pub(super) const SECRETS_LIST_HINT: &str =
+    "↑↓ navigate  enter edit  n new  c copy placeholder  d delete  esc close";
+pub(super) const SECRETS_ADD_HINT: &str = "↑↓ navigate  enter add a secret  esc close";
+
+/// The form's titles: a new secret, or `Edit <secrete:NAME>`.
+pub(super) const SECRETS_NEW_TITLE: &str = "New secret";
+pub(super) const SECRETS_EDIT_TITLE: &str = "Edit ";
+
+/// The dim row under the form's title: who sees what.
+pub(super) const SECRETS_FORM_BLURB: &str =
+    "The agent is told the name and the context, never the value.";
+
+/// The form's field labels, padded to one column ([`SECRETS_LABEL_WIDTH`]).
+pub(super) const SECRETS_NAME_LABEL: &str = "Name";
+pub(super) const SECRETS_VALUE_LABEL: &str = "Value";
+pub(super) const SECRETS_CONTEXT_LABEL: &str = "Context";
+
+/// The label column's width: the longest label and a two-column gap.
+pub(super) const SECRETS_LABEL_WIDTH: usize = 9;
+
+/// The column every field's text starts at — the indent, the focus marker
+/// and the label column. The form's caret is seated from it.
+pub(super) const SECRETS_FIELD_COL: u16 = 2 + 2 + SECRETS_LABEL_WIDTH as u16;
+
+/// What an empty field shows, dim, where its text will go.
+pub(super) const SECRETS_NAME_EMPTY: &str = "e.g. ROOT_PASSWORD";
+pub(super) const SECRETS_VALUE_EMPTY: &str = "type or paste the value";
+pub(super) const SECRETS_VALUE_KEEP: &str = "leave empty to keep the current value";
+pub(super) const SECRETS_CONTEXT_EMPTY: &str = "optional: what it is for, told to the agent";
+
+/// The dim lead-in to the placeholder a typed name makes.
+pub(super) const SECRETS_USE_AS: &str = "Use it as ";
+
+/// The form's dim key hints: on the name and the value, then on the last
+/// field, where Enter saves.
+pub(super) const SECRETS_FORM_HINT_NEXT: &str = "enter next  tab/↑↓ move  esc back";
+pub(super) const SECRETS_FORM_HINT_SAVE: &str = "enter save  tab/↑↓ move  esc back";
+
+/// What leads a refusal's red row.
+pub(super) const SECRETS_ERROR_MARK: &str = "✗ ";
+
+/// The red question a first `d` asks in place of the hint.
+pub(super) fn secrets_delete_question(name: &str) -> String {
+    format!(
+        "Delete {}? Press d again to confirm, any other key keeps it.",
+        crate::secrets::placeholder(name)
+    )
+}
+
 // --- the read-only /export page (docs/export.md). The /donate page's frame
 // — the family's indent, its `❯` marker, the dim meta ink — over the two
 // export targets, the highlighted row's description under the list (the

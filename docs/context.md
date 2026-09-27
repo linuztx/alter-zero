@@ -31,9 +31,11 @@ the context window from `App::history` on demand —
 session's `<system-reminder>` leads it — one block (`reminder::reminder_message`,
 `docs/project-doc.md`) composed *at derivation* from the two sections `App`
 holds: the project's AGENTS.md instructions (`App::user_instructions`,
-`project_doc::instructions_section`), then the skills it can load and the
-subagent types it can launch (`App::listings`, `subagents::listing_sections`,
-`docs/skills.md`, `docs/subagents.md`); `context_messages_with(instructions,
+`project_doc::instructions_section`), then the skills it can load, the
+subagent types it can launch and the secrets its tools can use by placeholder
+(`App::listings`, `subagents::listing_sections` + `secrets::secret_section`,
+`docs/skills.md`, `docs/subagents.md`, `docs/secrets.md`);
+`context_messages_with(instructions,
 &app.history)` is the instructions-only case the tools-free `/compact` turn
 sends, and `context_messages_behind(fragment, &app.history)` takes an
 already-wrapped block verbatim — a viewed subagent's briefing. The two
@@ -48,7 +50,8 @@ matters:
 - a `/resume` load replaces it with the parsed rollout file.
 
 The reminder sits **in front of** history rather than in it, its sections in
-a fixed order (the instructions, then the skills, then the agent types): every
+a fixed order (the instructions, then the skills, then the agent types, then
+the secrets): every
 section is re-rendered per turn, so one that moved position would invalidate
 the prompt cache behind it, and keeping the block out of `history` means a
 backtrack cannot rewind past it and the recorder cannot store it twice. It is

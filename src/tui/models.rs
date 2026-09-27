@@ -1516,6 +1516,12 @@ fn session_backend(
     if let Some(sink) = hooks.and_then(|setup| setup.sink(&model)) {
         backend = backend.with_hooks(sink);
     }
+    // The user's secrets (docs/secrets.md) ride the shell registry every
+    // runner already shares, so every rebuild re-attaches the one store and
+    // a `/secrete` save reaches the next tool call without a rebuild.
+    if let Some(secrets) = registry.secrets() {
+        backend = backend.with_secrets(secrets.clone());
+    }
     backend
 }
 
@@ -1628,7 +1634,19 @@ impl Session<'_> {
         } else {
             String::new()
         };
-        let listings = alter_zero::subagents::listing_sections(&skills, &agents);
+        // The user's secrets (docs/secrets.md), last: they change least
+        // often, and every section behind a changed one re-renders into the
+        // prompt cache. Gated on Tools — a placeholder only ever becomes a
+        // value inside a tool call.
+        let secrets = if self.app.settings().tools {
+            self.secrets.listing()
+        } else {
+            String::new()
+        };
+        let listings = alter_zero::reminder::join_sections(&[
+            &alter_zero::subagents::listing_sections(&skills, &agents),
+            &alter_zero::secrets::secret_section(&secrets),
+        ]);
         self.app
             .set_listings((!listings.is_empty()).then_some(listings));
         self.app.set_skills(if skills_offered {

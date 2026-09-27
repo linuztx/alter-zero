@@ -250,6 +250,16 @@ impl Session<'_> {
                 // collapses back to the composer on the next draw.
             }
             Action::CopyDonationAddress(address) => self.copy_donation_address(address),
+            // The pure open already happened; the boundary reloads the file
+            // so a secret another session saved is listed (docs/secrets.md).
+            Action::OpenSecretsPage => self.open_secrets_page(),
+            Action::CloseSecretsPage => {
+                // Esc/Ctrl+C dismissed the page — and its draft with it; the
+                // region collapses back to the composer on the next draw.
+            }
+            Action::SaveSecret(draft) => self.save_secret(&draft),
+            Action::DeleteSecret(name) => self.delete_secret(&name),
+            Action::CopySecretPlaceholder(name) => self.copy_secret_placeholder(&name),
             Action::OpenExportPicker => {
                 // The pure open already happened (the rows are a const —
                 // nothing to fetch or inject); after_key schedules the frame
@@ -538,6 +548,12 @@ impl Session<'_> {
             View::Conversation if self.app.donate_picker.is_some() => {}
             // …nor does the `/export` page, its sibling (docs/export.md).
             View::Conversation if self.app.export_picker.is_some() => {}
+            // The `/secrete` form takes pastes — a credential is pasted far
+            // more often than typed — into its focused field, never the
+            // composer draft underneath (docs/secrets.md).
+            View::Conversation if self.app.secrets_page.is_some() => {
+                self.app.on_paste(pasted);
+            }
             // The `/mcp` manager: the auth page's `URL >` field takes pastes
             // (the redirect URL is always pasted — that is the field's whole
             // point); every other page swallows them (docs/mcp.md).

@@ -12,6 +12,20 @@ release heading when a version is cut.
 
 ## [Unreleased]
 
+### Added
+
+- **`/secrete` — credentials the agent uses but never sees.** Store a
+  secret — a name, a value and a line of context — on a new page, and the
+  agent uses it by writing its placeholder, `<secrete:ROOT_PASSWORD>`, in a
+  command, a file or typed input: the placeholder becomes the value only
+  inside the tool that runs, and the value becomes the placeholder again in
+  everything the tool reports, the permission prompt's preview and the
+  `/diff` review included. The agent is told the names and the context in
+  its `<system-reminder>`, never the values, so a session can be recorded or
+  shared without showing a password or an API key. The page masks every
+  value, `secrets.json` is written owner-only, and a `!` command expands and
+  redacts the same way (`docs/secrets.md`).
+
 ### Fixed
 
 - **A build that compiles in silence is no longer handed back halfway.** A

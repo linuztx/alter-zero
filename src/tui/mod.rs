@@ -98,6 +98,7 @@ pub(crate) mod models;
 pub(crate) mod permission;
 pub(crate) mod recorder;
 pub(crate) mod resume;
+pub(crate) mod secrets;
 pub(crate) mod settings;
 pub(crate) mod shell;
 pub(crate) mod spinner;
@@ -304,6 +305,11 @@ pub(crate) struct Session<'t> {
     /// type added mid-session — or written by the agent itself — is
     /// launchable on the next turn.
     subagents: alter_zero::subagents::SubagentRegistry,
+    /// The user's secrets (`docs/secrets.md`) — the one store the `/secrete`
+    /// page edits, the reminder lists and every tool call expands and
+    /// redacts with. The same handle the shell registry carries to the
+    /// executor, the `!` runner and every backend build.
+    secrets: alter_zero::secrets::SecretRegistry,
     /// The MCP servers (`docs/mcp.md`): every declared server's live
     /// connection state, the tool specs the backend folds in, and the OAuth
     /// flows. `None` when `ALTER_ZERO_MCP` turned the feature off.

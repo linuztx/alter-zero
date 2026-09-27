@@ -157,6 +157,7 @@ pub mod project_doc;
 pub mod pty;
 pub mod reminder;
 pub mod scratchpad;
+pub mod secrets;
 pub mod session;
 pub mod settings;
 pub mod skills;

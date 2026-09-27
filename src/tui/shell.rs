@@ -59,9 +59,14 @@ pub(crate) fn spawn_shell_command(
         // terminal, so a password prompt (`! sudo …`) fails fast instead of
         // writing over the TUI (the `llm::exec` pattern; see
         // `subprocess`, docs/shell-command.md).
+        // The user's secrets (docs/secrets.md): a placeholder in the command
+        // runs as its value — the one copy that ever holds it — while the
+        // cell, the history and a Ctrl+B hand-off keep the command as typed.
+        let secrets = registry.secrets().cloned();
+        let expanded = secrets.as_ref().map(|secrets| secrets.expand(&command));
         let mut child = match alter_zero::subprocess::spawn_detached_shell(
             registry.detach_helper().as_deref(),
-            &command,
+            expanded.as_deref().unwrap_or(&command),
         ) {
             Ok(child) => child,
             Err(err) => {
@@ -162,6 +167,16 @@ pub(crate) fn spawn_shell_command(
         fold.feed(&combined);
         truncated |= fold.overflowed();
         let mut output = fold.finish();
+        // …and what the command printed is redacted before anything reads
+        // it — as a cut tail when the cap bit, since a cut through a value
+        // leaves its first half behind (docs/secrets.md).
+        if let Some(secrets) = &secrets {
+            output = if truncated {
+                secrets.redact_cut_tail(&output)
+            } else {
+                secrets.redact(&output)
+            };
+        }
         let ok = status.success();
         if !ok {
             let code = status

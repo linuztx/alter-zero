@@ -157,6 +157,33 @@ impl AgentTools {
         listed(&name) || (crate::llm::tools::is_bash_family(&name) && listed("bash"))
     }
 
+    /// Whether this set reaches a tool that expands secret placeholders
+    /// (`crate::secrets::expands_placeholders`) — what decides whether a
+    /// subagent of the type is briefed on the user's secrets
+    /// (`docs/secrets.md`).
+    #[must_use]
+    pub fn reaches_secrets(&self) -> bool {
+        let Self::Only(entries) = self else {
+            return true;
+        };
+        [
+            "bash",
+            crate::llm::tools::BASH_SEND_TOOL,
+            crate::llm::tools::BASH_SESSION_TOOL_NAME,
+            "read",
+            "write",
+            "edit",
+        ]
+        .into_iter()
+        .any(|tool| self.allows(tool))
+            || entries.iter().any(|entry| {
+                entry
+                    .trim()
+                    .to_ascii_lowercase()
+                    .starts_with(crate::mcp::MCP_TOOL_PREFIX)
+            })
+    }
+
     /// How the listing renders this set: `*`, or the allowlist as written.
     #[must_use]
     pub fn summary(&self) -> String {
@@ -579,6 +606,28 @@ mod tests {
         assert!(AgentTools::parse("BashWait").allows("bashwait"));
         assert!(!AgentTools::parse("BashWait").allows("bash"));
         assert!(!tools.allows("bashful"), "a prefix is not the family");
+    }
+
+    #[test]
+    fn a_type_reaches_secrets_through_any_tool_that_expands_them() {
+        // A subagent is briefed on the user's secrets when its tools can use
+        // a placeholder (docs/secrets.md): the shell family, the file tools,
+        // an MCP tool. A type that can only plan or load skills cannot.
+        assert!(AgentTools::All.reaches_secrets());
+        for tools in [
+            "Bash",
+            "Read",
+            "Write",
+            "Edit",
+            "bashsend",
+            "mcp__deepwiki__*",
+            "mcp__gh__issue",
+        ] {
+            assert!(AgentTools::parse(tools).reaches_secrets(), "{tools}");
+        }
+        for tools in ["Skill", "TaskCreate, TaskUpdate", "Agent"] {
+            assert!(!AgentTools::parse(tools).reaches_secrets(), "{tools}");
+        }
     }
 
     #[test]

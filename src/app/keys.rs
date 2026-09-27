@@ -76,6 +76,11 @@ impl App {
         if self.view == View::Conversation && self.export_picker.is_some() {
             return self.on_key_export_picker(key);
         }
+        // …and the `/secrete` page, whose form takes text of its own — never
+        // the composer's. See `docs/secrets.md`.
+        if self.view == View::Conversation && self.secrets_page.is_some() {
+            return self.on_key_secrets_page(key);
+        }
         // …and the inline `/skills` menu. See `docs/skills.md`.
         if self.view == View::Conversation && self.mcp_menu.is_some() {
             return self.on_key_mcp(key);

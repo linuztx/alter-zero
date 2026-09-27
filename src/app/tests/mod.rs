@@ -33,6 +33,7 @@ mod permission;
 mod queue;
 mod reasoning;
 mod resume;
+mod secrets;
 mod settings;
 mod skill_picker;
 mod skills_menu;

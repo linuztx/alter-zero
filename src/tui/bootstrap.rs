@@ -171,8 +171,22 @@ impl<'t> Session<'t> {
         // valid even if a `cargo build` replaces the file mid-session (and the
         // setsid tier doesn't need it at all); a failed `current_exe` (None) just
         // shortens the chain. The registry carries it to all three spawn sites.
+        // The user's secrets (docs/secrets.md), loaded before anything that
+        // runs a tool: the shell registry carries the handle to the executor,
+        // the `!` runner and every backend build, so a command's output is
+        // redacted from the first call. A file that won't parse is a red
+        // toast below and an empty store — never a silent one.
+        let (secrets, secrets_error) = match config::secrets_json_path()
+            .map(|path| alter_zero::llm::keystore::load_secrets_file(&path))
+        {
+            Some(Ok(store)) => (store, None),
+            Some(Err(error)) => (alter_zero::secrets::SecretStore::new(), Some(error)),
+            None => (alter_zero::secrets::SecretStore::new(), None),
+        };
+        let secrets = alter_zero::secrets::SecretRegistry::new(secrets);
         let registry = BackgroundRegistry::new(bg_tx, scratchpad::tasks_dir(&session_tmp))
-            .with_detach_helper(std::env::current_exe().ok());
+            .with_detach_helper(std::env::current_exe().ok())
+            .with_secrets(secrets.clone());
 
         // The subagent registry (docs/agent-tool.md): the model's `agent` tool
         // launches run their own loops on their own threads, reporting on a
@@ -509,6 +523,7 @@ impl<'t> Session<'t> {
             task_registry,
             skill_registry,
             subagents,
+            secrets,
             mcp: mcp_manager,
             project_layer,
             user_hooks_file,
@@ -544,6 +559,7 @@ impl<'t> Session<'t> {
         session.report_agent_errors(&agent_errors);
         session.report_mcp_errors();
         session.report_trust_state(trust_error);
+        session.report_secrets_error(secrets_error);
         let picker = session.apply_startup(startup);
         // The capability probe for whatever model the session ended up on —
         // the directory's entry, or a resumed conversation's own.
@@ -581,6 +597,10 @@ impl<'t> Session<'t> {
         // actually run — so an unavailable row says so from the first frame.
         *self.app.settings_mut() = settings;
         self.sync_setting_availability();
+        // What the `/secrete` page may know of the secrets loaded above —
+        // names and context — before the reminder below names them
+        // (docs/secrets.md).
+        self.app.set_secret_metas(self.secrets.metas());
         // Publish the image policy before the first line is built: the row
         // reservation is pure and reads it, so a picture drawn on the very
         // first frame (a `/resume`d conversation's image read) is already the

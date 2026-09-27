@@ -39,6 +39,7 @@ mod palette;
 mod permission_view;
 mod reasoning;
 mod resume_view;
+mod secrets_view;
 mod settings_view;
 mod skills_view;
 mod spinner_view;

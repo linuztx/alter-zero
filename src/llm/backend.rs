@@ -155,6 +155,14 @@ pub struct LlmBackend {
     /// session without one pays a vtable dispatch and nothing else. Subagents
     /// carry it too — re-tagged with their own id, so a hook can tell.
     hooks: Arc<dyn HookSink>,
+    /// The user's secrets (`docs/secrets.md`), when the boundary attached
+    /// them: every tool call this backend and its subagents run goes through
+    /// `secret_exec::run_with_secrets` — the placeholders in an acting
+    /// tool's arguments expanded for the executor alone, every output
+    /// redacted on its way out — and the permission prompt previews the
+    /// expanded call redacted. Shared by handle, so a `/secrete` save
+    /// reaches the very next call without a rebuild.
+    secrets: Option<crate::secrets::SecretRegistry>,
 }
 
 impl LlmBackend {
@@ -221,6 +229,7 @@ impl LlmBackend {
             max_tool_calls: agent::MAX_TOOL_ITERATIONS,
             steer: SteerQueue::new(),
             hooks: Arc::new(NoHooks),
+            secrets: None,
         }
     }
 
@@ -277,6 +286,16 @@ impl LlmBackend {
     #[must_use]
     pub fn with_permissions(mut self, gate: PermissionGate) -> Self {
         self.permissions = Some(gate);
+        self
+    }
+
+    /// Attach the user's secrets (`docs/secrets.md`): the tool calls run
+    /// with their placeholders expanded and their output redacted. The
+    /// boundary attaches the shared registry to every backend it builds;
+    /// without it a placeholder is ordinary text.
+    #[must_use]
+    pub fn with_secrets(mut self, secrets: crate::secrets::SecretRegistry) -> Self {
+        self.secrets = Some(secrets);
         self
     }
 
@@ -675,6 +694,7 @@ impl ReplySource for LlmBackend {
         let max_retries = self.max_retries;
         let max_tool_calls = self.max_tool_calls;
         let hooks = Arc::clone(&self.hooks);
+        let secrets = self.secrets.clone();
         // The mid-turn queue this turn answers to (docs/queue.md): the loop
         // pushes onto it while the turn runs and the agent loop drains it at
         // every round boundary.
@@ -784,41 +804,55 @@ impl ReplySource for LlmBackend {
                 |call, on_output| {
                     // Every executed call becomes one line of the classifier's
                     // task context — the log a later verdict reads the action
-                    // against (`docs/permissions.md`).
+                    // against (`docs/permissions.md`). Logged before the
+                    // secrets expand, so the reviewer reads placeholders.
                     if let Ok(mut log) = turn_context.lock() {
                         log.record_call(&call.name, &call.arguments);
                     }
-                    if let Some(registry) = task_list
-                        .as_ref()
-                        .filter(|_| crate::tasks::is_task_tool(&call.name))
-                    {
-                        return super::task::run_task_tool(registry, call);
-                    }
-                    // A `skill` call (docs/skills.md): read the named
-                    // `SKILL.md` and hand its body back as the model-facing
-                    // result, the cell keeping its one `Successfully loaded
-                    // skill` row. Nothing runs, so there is no gate to pass.
-                    if let Some(registry) = skills
-                        .as_ref()
-                        .filter(|_| crate::skills::is_skill_tool(&call.name))
-                    {
-                        return super::skill::run_skill_tool(registry, call);
-                    }
-                    // An `mcp__server__tool` call (docs/mcp.md): routed to
-                    // the manager's live connection; without one the call is
-                    // declined recoverably.
-                    if crate::mcp::is_mcp_tool(&call.name) {
-                        return match &mcp {
-                            Some(manager) => manager.call_tool(call, &cancel),
-                            None => tools::ToolOutcome::error("MCP tools are not available here"),
-                        };
-                    }
-                    match (&ask, call.name.as_str()) {
-                        (Some(gate), tools::ASK_TOOL_NAME) => {
-                            super::ask::ask_user(gate, &tx, &cancel, call)
-                        }
-                        _ => executor.execute(call, &cancel, on_output),
-                    }
+                    // The one seam every call runs through (docs/secrets.md):
+                    // an acting tool gets its placeholders expanded, and
+                    // whatever any tool reports comes back redacted.
+                    super::secret_exec::run_with_secrets(
+                        secrets.as_ref(),
+                        call,
+                        on_output,
+                        |call, on_output| {
+                            if let Some(registry) = task_list
+                                .as_ref()
+                                .filter(|_| crate::tasks::is_task_tool(&call.name))
+                            {
+                                return super::task::run_task_tool(registry, call);
+                            }
+                            // A `skill` call (docs/skills.md): read the named
+                            // `SKILL.md` and hand its body back as the
+                            // model-facing result, the cell keeping its one
+                            // `Successfully loaded skill` row. Nothing runs,
+                            // so there is no gate to pass.
+                            if let Some(registry) = skills
+                                .as_ref()
+                                .filter(|_| crate::skills::is_skill_tool(&call.name))
+                            {
+                                return super::skill::run_skill_tool(registry, call);
+                            }
+                            // An `mcp__server__tool` call (docs/mcp.md):
+                            // routed to the manager's live connection; without
+                            // one the call is declined recoverably.
+                            if crate::mcp::is_mcp_tool(&call.name) {
+                                return match &mcp {
+                                    Some(manager) => manager.call_tool(call, &cancel),
+                                    None => tools::ToolOutcome::error(
+                                        "MCP tools are not available here",
+                                    ),
+                                };
+                            }
+                            match (&ask, call.name.as_str()) {
+                                (Some(gate), tools::ASK_TOOL_NAME) => {
+                                    super::ask::ask_user(gate, &tx, &cancel, call)
+                                }
+                                _ => executor.execute(call, &cancel, on_output),
+                            }
+                        },
+                    )
                 },
                 // What the conversation gained since the last request
                 // (docs/queue.md): the background completions the model has
@@ -894,6 +928,7 @@ impl ReplySource for LlmBackend {
                         &cancel,
                         None,
                         call,
+                        secrets.as_ref(),
                     );
                     // A refusal never reaches the executor, so it is logged
                     // here — marked, because an agent re-trying a variant of
@@ -1055,6 +1090,10 @@ struct SubagentConfig {
     /// `agent_type` and a hook can tell a subagent's call from the lead's
     /// (`docs/hooks.md`).
     hooks: Arc<dyn HookSink>,
+    /// The user's secrets, so a subagent's tool calls expand and redact
+    /// them exactly as the lead's do — and its briefing names them
+    /// (`docs/secrets.md`).
+    secrets: Option<crate::secrets::SecretRegistry>,
 }
 
 impl LlmBackend {
@@ -1078,6 +1117,7 @@ impl LlmBackend {
             max_retries: self.max_retries,
             max_tool_calls: self.max_tool_calls,
             hooks: Arc::clone(&self.hooks),
+            secrets: self.secrets.clone(),
         }
     }
 }
@@ -1092,9 +1132,11 @@ impl SubagentConfig {
         self.definitions.find(agent_type)
     }
 
-    /// The **briefing** a subagent of `agent_type` opens on: the skills
-    /// `<system-reminder>` (`docs/skills.md`), or `None` when this session has
-    /// no skills or the type's `tools:` withholds `Skill`.
+    /// The **briefing** a subagent of `agent_type` opens on: the
+    /// `<system-reminder>` naming the skills it can load (`docs/skills.md`)
+    /// and the secrets its tools can use (`docs/secrets.md`) — `None` when
+    /// neither section has anything to say, because this session has none
+    /// or the type's `tools:` withholds every tool that would use them.
     ///
     /// A subagent starts on a fresh context, so the lead's reminder never
     /// reaches it: with the spec but no roster it would have to guess a name
@@ -1111,10 +1153,12 @@ impl SubagentConfig {
         let allowed = self
             .definition(agent_type)
             .map_or(crate::subagents::AgentTools::All, |def| def.tools);
-        allowed
-            .allows(crate::skills::SKILL_TOOL_NAME)
-            .then(|| subagent_skill_reminder(self.skills.as_ref()))
-            .flatten()
+        subagent_briefing(
+            self.skills
+                .as_ref()
+                .filter(|_| allowed.allows(crate::skills::SKILL_TOOL_NAME)),
+            self.secrets.as_ref().filter(|_| allowed.reaches_secrets()),
+        )
     }
 
     /// The model a subagent of `agent_type` runs on when its definition pins
@@ -1140,18 +1184,31 @@ impl SubagentConfig {
     }
 }
 
-/// The `<system-reminder>` naming the session's enabled skills, for a subagent
-/// that is being handed the `skill` tool — `None` when it isn't (no registry,
-/// or every skill turned off).
+/// A subagent's whole briefing — the skills it may load and, behind them,
+/// the secrets its tools can use (the lead's reminder order,
+/// `docs/secrets.md`) — wrapped as one `<system-reminder>`, `None` when
+/// neither has anything to say (no registry, every skill turned off, no
+/// secrets).
 ///
 /// A subagent starts on a **fresh** context, so the lead's listing never
-/// reaches it; without this it would carry a spec whose own description says
-/// the available names are listed in a system-reminder that isn't there. The
-/// budget is the default rather than the model's window: `SubagentConfig`
-/// does not carry one, and a roster is small.
-fn subagent_skill_reminder(skills: Option<&crate::skills::SkillRegistry>) -> Option<String> {
-    let listing = skills?.listing(crate::skills::listing_budget(None));
-    let rendered = crate::skills::listing_message(&listing);
+/// reaches it; without this it would carry a `skill` spec whose own
+/// description says the available names are listed in a system-reminder
+/// that isn't there. The budget is the default rather than the model's
+/// window: `SubagentConfig` does not carry one, and a roster is small.
+fn subagent_briefing(
+    skills: Option<&crate::skills::SkillRegistry>,
+    secrets: Option<&crate::secrets::SecretRegistry>,
+) -> Option<String> {
+    let skills = skills
+        .map(|skills| skills.listing(crate::skills::listing_budget(None)))
+        .unwrap_or_default();
+    let secrets = secrets
+        .map(crate::secrets::SecretRegistry::listing)
+        .unwrap_or_default();
+    let rendered = crate::reminder::reminder_message(&[
+        &crate::skills::skill_section(&skills),
+        &crate::secrets::secret_section(&secrets),
+    ]);
     (!rendered.is_empty()).then_some(rendered)
 }
 
@@ -1404,6 +1461,7 @@ fn spawn_subagent_run(
 ) {
     let skills = config.skills.clone();
     let mcp = config.mcp.clone();
+    let secrets = config.secrets.clone();
     // Kept whole for the settle-window continuation at the very bottom.
     let respawn_config = config.clone();
     // The type's definition (`docs/subagents.md`): its tool allowlist, its
@@ -1550,27 +1608,38 @@ fn spawn_subagent_run(
                     ));
                 }
                 // The classifier's task context, one line per executed call —
-                // the lead's pattern (`docs/permissions.md`).
+                // the lead's pattern (`docs/permissions.md`), placeholders
+                // and all.
                 if let Ok(mut log) = turn_context.lock() {
                     log.record_call(&call.name, &call.arguments);
                 }
-                // A subagent's `skill` call loads the same `SKILL.md` the
-                // lead would (docs/skills.md).
-                if let Some(registry) = skills
-                    .as_ref()
-                    .filter(|_| crate::skills::is_skill_tool(&call.name))
-                {
-                    return super::skill::run_skill_tool(registry, call);
-                }
-                // …and its MCP calls ride the same live connections
-                // (docs/mcp.md).
-                if crate::mcp::is_mcp_tool(&call.name) {
-                    return match &mcp {
-                        Some(manager) => manager.call_tool(call, &cancel),
-                        None => tools::ToolOutcome::error("MCP tools are not available here"),
-                    };
-                }
-                executor.execute(call, &cancel, on_output)
+                // The lead's secrets seam, one level down (docs/secrets.md).
+                super::secret_exec::run_with_secrets(
+                    secrets.as_ref(),
+                    call,
+                    on_output,
+                    |call, on_output| {
+                        // A subagent's `skill` call loads the same `SKILL.md`
+                        // the lead would (docs/skills.md).
+                        if let Some(registry) = skills
+                            .as_ref()
+                            .filter(|_| crate::skills::is_skill_tool(&call.name))
+                        {
+                            return super::skill::run_skill_tool(registry, call);
+                        }
+                        // …and its MCP calls ride the same live connections
+                        // (docs/mcp.md).
+                        if crate::mcp::is_mcp_tool(&call.name) {
+                            return match &mcp {
+                                Some(manager) => manager.call_tool(call, &cancel),
+                                None => {
+                                    tools::ToolOutcome::error("MCP tools are not available here")
+                                }
+                            };
+                        }
+                        executor.execute(call, &cancel, on_output)
+                    },
+                )
             },
             // The chat seam: messages the user queued into this agent's
             // session arrive at its next round boundary — the main session's
@@ -1621,6 +1690,7 @@ fn spawn_subagent_run(
                     &cancel,
                     Some(&agent_type),
                     call,
+                    secrets.as_ref(),
                 );
                 // A refusal never reaches the executor — logged here, marked.
                 if matches!(approval, crate::permission::Approval::Reject { .. })
@@ -2198,6 +2268,49 @@ mod tests {
     }
 
     #[test]
+    fn a_subagent_is_briefed_on_the_secrets_its_tools_can_use() {
+        // A subagent starts on a fresh context, so the lead's reminder never
+        // reaches it: a type that can run a command or write a file is told
+        // the placeholders itself — beside the skills, never the values — and
+        // a type whose tools cannot use one is told nothing (docs/secrets.md).
+        let mut store = crate::secrets::SecretStore::new();
+        store
+            .apply(&crate::secrets::SecretDraft {
+                original: None,
+                name: "TOKEN".into(),
+                value: Some(crate::secrets::SecretValue::new("sk-live-0123456789")),
+                context: "The staging API key".into(),
+            })
+            .unwrap();
+        let defs = crate::subagents::SubagentRegistry::new(vec![
+            crate::subagents::parse_agent(
+                "---\nname: reader\ndescription: d\ntools: Bash, Read\n---\n",
+                "reader",
+            )
+            .expect("parses"),
+            crate::subagents::parse_agent(
+                "---\nname: planner\ndescription: d\ntools: TaskCreate\n---\n",
+                "planner",
+            )
+            .expect("parses"),
+        ]);
+        let backend = LlmBackend::configure(ModelConfig::fallback(), None, true)
+            .with_subagents(defs)
+            .with_secrets(crate::secrets::SecretRegistry::new(store));
+        for agent_type in [crate::agents::GENERAL_PURPOSE, "reader"] {
+            let briefing = ReplySource::agent_system_reminder(&backend, agent_type)
+                .expect("a type that can use a secret is briefed");
+            assert!(briefing.contains("<system-reminder>"), "{briefing}");
+            assert!(
+                briefing.contains("- <secrete:TOKEN>: The staging API key"),
+                "{briefing}"
+            );
+            assert!(!briefing.contains("sk-live"), "{briefing}");
+        }
+        assert!(ReplySource::agent_system_reminder(&backend, "planner").is_none());
+    }
+
+    #[test]
     fn a_promptless_backend_still_hands_subagents_the_note() {
         // An empty ALTER_ZERO_SYSTEM_PROMPT drops the main prompt entirely,
         // but a subagent still needs its framing — the note alone is its
@@ -2294,16 +2407,16 @@ mod tests {
             dir: std::path::PathBuf::from("/s/commit"),
             path: std::path::PathBuf::from("/s/commit/SKILL.md"),
         }]);
-        let reminder = subagent_skill_reminder(Some(&registry)).expect("a reminder");
+        let reminder = subagent_briefing(Some(&registry), None).expect("a reminder");
         assert!(reminder.contains("<system-reminder>"), "{reminder}");
         assert!(
             reminder.contains("commit: Write a commit message"),
             "{reminder}"
         );
         // No registry (or nothing enabled) means no tool, so no reminder.
-        assert!(subagent_skill_reminder(None).is_none());
+        assert!(subagent_briefing(None, None).is_none());
         registry.set_disabled(["commit".to_string()].into_iter().collect());
-        assert!(subagent_skill_reminder(Some(&registry)).is_none());
+        assert!(subagent_briefing(Some(&registry), None).is_none());
     }
 
     #[test]

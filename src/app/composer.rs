@@ -96,6 +96,13 @@ impl App {
             self.edit_search_query(|query| query.push_str(&sanitised));
             return;
         }
+        // The `/secrete` page owns a paste the way it owns every key: into
+        // its focused field, never the draft underneath — a pasted value
+        // must not land in a message (`docs/secrets.md`).
+        if self.view == View::Conversation && self.secrets_page.is_some() {
+            self.paste_into_secrets_page(pasted);
+            return;
+        }
         // An edit may change the active /command, @token or $mention, like
         // the Char arm.
         let had_query = command_query(self.input.text()).is_some();
