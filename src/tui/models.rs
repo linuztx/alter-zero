@@ -1518,7 +1518,7 @@ fn session_backend(
     }
     // The user's secrets (docs/secrets.md) ride the shell registry every
     // runner already shares, so every rebuild re-attaches the one store and
-    // a `/secrete` save reaches the next tool call without a rebuild.
+    // a `/secrets` save reaches the next tool call without a rebuild.
     if let Some(secrets) = registry.secrets() {
         backend = backend.with_secrets(secrets.clone());
     }

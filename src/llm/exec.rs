@@ -2621,7 +2621,7 @@ mod tests {
         let answered = exec_with(
             &executor,
             BASH_SEND,
-            &serde_json::json!({"session_id": id, "input": "<secrete:PW>\\n"}).to_string(),
+            &serde_json::json!({"session_id": id, "input": "<secret:PW>\\n"}).to_string(),
         );
         let reversed: String = value.chars().rev().collect();
         assert!(answered.output.contains(&reversed), "{}", answered.output);
@@ -2652,7 +2652,7 @@ mod tests {
             r#"{"command":"printf 'Password: '; read -r line; echo \"got [$line]\""}"#,
         );
         let id = session_of(&out.output);
-        for input in ["<secrete:PWD>\n", "&lt;secrete:PWD&gt;&lt;Enter&gt;"] {
+        for input in ["<secret:PWD>\n", "&lt;secret:PWD&gt;&lt;Enter&gt;"] {
             let refused = exec_with(
                 &executor,
                 BASH_SEND,
@@ -2662,7 +2662,7 @@ mod tests {
             assert!(
                 refused
                     .output
-                    .starts_with("Not run: <secrete:PWD> is not a stored secret."),
+                    .starts_with("Not run: <secret:PWD> is not a stored secret."),
                 "{input}: {}",
                 refused.output
             );

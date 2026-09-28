@@ -1,7 +1,7 @@
 //! Live tests for stored secrets (`docs/secrets.md`): a real model, the real
 //! executor, and the `<system-reminder>` a session leads with — the only place
 //! the model learns a placeholder exists. What they prove is the part no unit
-//! test can: that a model told about `<secrete:NAME>` actually **uses** it in
+//! test can: that a model told about `<secret:NAME>` actually **uses** it in
 //! its tool calls, that the value reaches the tool, and that neither the
 //! events the screen draws from, the shell reports, nor the model's own
 //! answer ever carry it.
@@ -81,7 +81,7 @@ fn backend(secrets: &SecretRegistry) -> Harness {
     }
 }
 
-/// A registry holding one secret, as the `/secrete` page saves it.
+/// A registry holding one secret, as the `/secrets` page saves it.
 fn one(name: &str, value: &str, context: &str) -> SecretRegistry {
     let mut store = SecretStore::new();
     store
@@ -169,12 +169,10 @@ fn calls(events: &[StreamEvent]) -> Vec<String> {
         .collect()
 }
 
-/// Whether the model wrote `name`'s placeholder in any call, in either
-/// spelling expansion accepts.
+/// Whether the model wrote `name`'s placeholder in any call.
 fn used_placeholder(events: &[StreamEvent], name: &str) -> bool {
-    calls(events).iter().any(|call| {
-        call.contains(&format!("<secrete:{name}>")) || call.contains(&format!("<secret:{name}>"))
-    })
+    let placeholder = format!("<secret:{name}>");
+    calls(events).iter().any(|call| call.contains(&placeholder))
 }
 
 /// Neither the events, the shell reports nor the reply carry `value`.
@@ -253,7 +251,7 @@ fn live_a_file_holding_the_value_reads_back_as_its_placeholder() {
     let (events, reply) = turn(&harness.backend, &secrets, &prompt);
 
     assert!(
-        reply.contains("<secrete:SERVICE_TOKEN>"),
+        reply.contains("<secret:SERVICE_TOKEN>"),
         "the model quotes what it read — the placeholder: {reply}"
     );
     assert_never_seen(&events, &mut harness.reports, &reply, &value);
@@ -326,7 +324,7 @@ fn live_a_misspelled_placeholder_never_reaches_the_file_as_text() {
     let value = unique_value("tok");
     let secrets = one("DEPLOY_TOKEN", &value, "Token for the deploy service");
     let prompt = format!(
-        "Write <secrete:DEPLOY_TOKN> into {} — the file must contain only the token.",
+        "Write <secret:DEPLOY_TOKN> into {} — the file must contain only the token.",
         file.display()
     );
     let mut harness = backend(&secrets);
@@ -341,7 +339,7 @@ fn live_a_misspelled_placeholder_never_reaches_the_file_as_text() {
             "the file holds the value, not the misspelled placeholder"
         ),
         Err(_) => assert!(
-            refused && reply.contains("<secrete:DEPLOY_TOKEN>"),
+            refused && reply.contains("<secret:DEPLOY_TOKEN>"),
             "no file, so the model must have been refused and named the stored secret: {reply}"
         ),
     }

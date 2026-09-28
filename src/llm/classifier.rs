@@ -590,11 +590,11 @@ mod tests {
 
     #[test]
     fn the_system_prompt_briefs_the_classifier_on_stored_secrets() {
-        // An action carrying `<secrete:NAME>` uses a credential the user
+        // An action carrying `<secret:NAME>` uses a credential the user
         // stored for the agent (docs/secrets.md); a rubric that never says so
         // reads a login or an authorization header as credential theft.
         assert!(
-            CLASSIFIER_SYSTEM_PROMPT.contains("<secrete:NAME>"),
+            CLASSIFIER_SYSTEM_PROMPT.contains("<secret:NAME>"),
             "prompts/classifier.md never explains a secret placeholder"
         );
     }

@@ -327,7 +327,7 @@ impl App {
     /// be advertising it (`docs/permissions.md`). Nothing is really *running*
     /// while a call waits on the user, either. The ↓ manager band and **every**
     /// composer-replacing picker (`/model`, `/login`, `/settings`, `/hooks`,
-    /// `/skills`, `/mascot`, `/spinner`, `/theme`, `/donate`, `/secrete`,
+    /// `/skills`, `/mascot`, `/spinner`, `/theme`, `/donate`, `/secrets`,
     /// `/export`) own every key the same way, so the running cell they keep
     /// visible above themselves stays hintless while one is open
     /// (`docs/background.md`, `docs/llm.md`, `docs/skills.md`,

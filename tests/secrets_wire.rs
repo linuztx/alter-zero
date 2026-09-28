@@ -21,7 +21,7 @@ use alter_zero::stream::{CancelToken, ReplySource, StreamEvent};
 /// The value the stand-in's model never learns.
 const VALUE: &str = "s3cr3t-demo-value-9";
 
-/// The session's one stored secret, as the `/secrete` page saves it.
+/// The session's one stored secret, as the `/secrets` page saves it.
 fn secrets() -> SecretRegistry {
     let mut store = SecretStore::new();
     store
@@ -218,7 +218,7 @@ fn a_command_gets_the_value_while_the_screen_and_the_model_get_the_placeholder()
     let dir = tempfile::tempdir().expect("a temp dir");
     let file = dir.path().join("token.txt");
     let command = format!(
-        "printf 'token=%s\\n' '<secrete:DEMO_TOKEN>' > '{0}' && cat '{0}'",
+        "printf 'token=%s\\n' '<secret:DEMO_TOKEN>' > '{0}' && cat '{0}'",
         file.display()
     );
     let (base, requests) = stand_in(vec![
@@ -245,7 +245,7 @@ fn a_command_gets_the_value_while_the_screen_and_the_model_get_the_placeholder()
     let (output, ok) = first_tool_end(&events);
     assert!(ok, "{output}");
     assert!(
-        output.contains("token=<secrete:DEMO_TOKEN>"),
+        output.contains("token=<secret:DEMO_TOKEN>"),
         "the output names the placeholder: {output}"
     );
     // The header and the recorded arguments keep what the model wrote.
@@ -253,7 +253,7 @@ fn a_command_gets_the_value_while_the_screen_and_the_model_get_the_placeholder()
         events.iter().any(|event| matches!(
             event,
             StreamEvent::ToolStart { arguments: Some(arguments), .. }
-                if arguments.contains("<secrete:DEMO_TOKEN>")
+                if arguments.contains("<secret:DEMO_TOKEN>")
         )),
         "{shown}"
     );
@@ -264,11 +264,11 @@ fn a_command_gets_the_value_while_the_screen_and_the_model_get_the_placeholder()
     let requests = requests.lock().expect("the request log");
     assert_eq!(requests.len(), 2, "one tool round, then the answer");
     assert!(
-        requests[0].contains("- <secrete:DEMO_TOKEN>: The demo API token"),
+        requests[0].contains("- <secret:DEMO_TOKEN>: The demo API token"),
         "the reminder lists the secret: {}",
         requests[0]
     );
-    assert!(requests[1].contains("token=<secrete:DEMO_TOKEN>"));
+    assert!(requests[1].contains("token=<secret:DEMO_TOKEN>"));
 }
 
 #[test]
@@ -281,7 +281,7 @@ fn a_file_written_through_a_placeholder_reads_back_masked_and_edits_through_it()
         fixed(tool_round(
             "call_w",
             "write",
-            &serde_json::json!({"path": path, "content": "API_KEY=<secrete:DEMO_TOKEN>\nMODE=dev\n"}),
+            &serde_json::json!({"path": path, "content": "API_KEY=<secret:DEMO_TOKEN>\nMODE=dev\n"}),
         )),
         fixed(tool_round(
             "call_r",
@@ -293,8 +293,8 @@ fn a_file_written_through_a_placeholder_reads_back_masked_and_edits_through_it()
             "edit",
             &serde_json::json!({
                 "path": path,
-                "old_string": "API_KEY=<secrete:DEMO_TOKEN>\nMODE=dev",
-                "new_string": "API_KEY=<secrete:DEMO_TOKEN>\nMODE=prod",
+                "old_string": "API_KEY=<secret:DEMO_TOKEN>\nMODE=dev",
+                "new_string": "API_KEY=<secret:DEMO_TOKEN>\nMODE=prod",
             }),
         )),
         fixed(text_round("done")),
@@ -317,7 +317,7 @@ fn a_file_written_through_a_placeholder_reads_back_masked_and_edits_through_it()
     assert_eq!(requests.len(), 4);
     // What the read handed the model is the placeholder, in the file's shape.
     assert!(
-        requests[2].contains("API_KEY=<secrete:DEMO_TOKEN>"),
+        requests[2].contains("API_KEY=<secret:DEMO_TOKEN>"),
         "{}",
         requests[2]
     );
@@ -350,7 +350,7 @@ fn a_password_typed_through_a_placeholder_reaches_the_program_alone() {
                 "bashsend",
                 &serde_json::json!({
                     "session_id": session_named_in(request),
-                    "input": "<secrete:DEMO_TOKEN>\n",
+                    "input": "<secret:DEMO_TOKEN>\n",
                 }),
             )
         }),
@@ -389,8 +389,8 @@ fn a_background_command_is_named_by_its_placeholder() {
             "call_bg",
             "bash",
             &serde_json::json!({
-                "command": "printf 'bg=%s\\n' '<secrete:DEMO_TOKEN>'",
-                "description": "Print <secrete:DEMO_TOKEN>",
+                "command": "printf 'bg=%s\\n' '<secret:DEMO_TOKEN>'",
+                "description": "Print <secret:DEMO_TOKEN>",
                 "wait": 0,
             }),
         )),
@@ -415,14 +415,14 @@ fn a_background_command_is_named_by_its_placeholder() {
             _ => None,
         })
         .expect("the shell was announced");
-    assert_eq!(started.0, "printf 'bg=%s\\n' '<secrete:DEMO_TOKEN>'");
-    assert_eq!(started.1.as_deref(), Some("Print <secrete:DEMO_TOKEN>"));
+    assert_eq!(started.0, "printf 'bg=%s\\n' '<secret:DEMO_TOKEN>'");
+    assert_eq!(started.1.as_deref(), Some("Print <secret:DEMO_TOKEN>"));
     // What it printed — a terminal's screen, or a pipe's lines — shows the
     // placeholder where the value was.
     assert!(
         reports.iter().any(|event| match event {
-            BgEvent::Screen { text, .. } => text.contains("bg=<secrete:DEMO_TOKEN>"),
-            BgEvent::Output { chunk, .. } => chunk.contains("bg=<secrete:DEMO_TOKEN>"),
+            BgEvent::Screen { text, .. } => text.contains("bg=<secret:DEMO_TOKEN>"),
+            BgEvent::Output { chunk, .. } => chunk.contains("bg=<secret:DEMO_TOKEN>"),
             _ => false,
         }),
         "{reports:?}"
@@ -439,7 +439,7 @@ fn a_placeholder_naming_nothing_stored_is_refused_before_anything_runs() {
     let secrets = secrets();
     let dir = tempfile::tempdir().expect("a temp dir");
     let marker = dir.path().join("ran");
-    let command = format!("touch '{}' && echo <secrete:DEMO_TOKN>", marker.display());
+    let command = format!("touch '{}' && echo <secret:DEMO_TOKN>", marker.display());
     let (base, requests) = stand_in(vec![
         fixed(tool_round(
             "call_1",
@@ -453,13 +453,13 @@ fn a_placeholder_naming_nothing_stored_is_refused_before_anything_runs() {
     let (refusal, ok) = first_tool_end(&events);
     assert!(!ok, "{refusal}");
     assert!(
-        refusal.starts_with("Not run: <secrete:DEMO_TOKN> is not a stored secret.")
-            && refusal.contains("Stored: <secrete:DEMO_TOKEN>."),
+        refusal.starts_with("Not run: <secret:DEMO_TOKN> is not a stored secret.")
+            && refusal.contains("Stored: <secret:DEMO_TOKEN>."),
         "{refusal}"
     );
     // The model reads the refusal and can correct itself in one step.
     let requests = requests.lock().expect("the request log");
-    assert!(requests[1].contains("Stored: <secrete:DEMO_TOKEN>."));
+    assert!(requests[1].contains("Stored: <secret:DEMO_TOKEN>."));
 }
 
 #[test]
@@ -470,7 +470,7 @@ fn a_refused_placeholder_never_asks_for_permission() {
     let secrets = secrets();
     let dir = tempfile::tempdir().expect("a temp dir");
     let marker = dir.path().join("ran");
-    let command = format!("touch '{}' && echo <secrete:DEMO_TOKN>", marker.display());
+    let command = format!("touch '{}' && echo <secret:DEMO_TOKN>", marker.display());
     let (base, _requests) = stand_in(vec![
         fixed(tool_round(
             "call_1",
@@ -490,7 +490,7 @@ fn a_refused_placeholder_never_asks_for_permission() {
         })
         .expect("the call was refused");
     assert!(
-        refusal.starts_with("Not run: <secrete:DEMO_TOKN> is not a stored secret."),
+        refusal.starts_with("Not run: <secret:DEMO_TOKN> is not a stored secret."),
         "{refusal}"
     );
 }

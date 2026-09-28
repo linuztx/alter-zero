@@ -1691,14 +1691,8 @@ mod tests {
         else {
             panic!("expected Started first");
         };
-        assert_eq!(
-            command,
-            "printf 'pw=%s\\n' <secrete:ROOT_PASSWORD>; sleep 1"
-        );
-        assert_eq!(
-            description.as_deref(),
-            Some("Print <secrete:ROOT_PASSWORD>")
-        );
+        assert_eq!(command, "printf 'pw=%s\\n' <secret:ROOT_PASSWORD>; sleep 1");
+        assert_eq!(description.as_deref(), Some("Print <secret:ROOT_PASSWORD>"));
         let listed = reg.running();
         assert!(
             listed
@@ -1706,7 +1700,7 @@ mod tests {
                 .all(|shell| !shell.command.contains("hunter22")),
             "{listed:?}"
         );
-        assert_eq!(output_until_exit(&mut rx), "pw=<secrete:ROOT_PASSWORD>\n");
+        assert_eq!(output_until_exit(&mut rx), "pw=<secret:ROOT_PASSWORD>\n");
         std::fs::remove_file(&task.output_path).ok();
     }
 

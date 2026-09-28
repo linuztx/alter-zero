@@ -160,7 +160,7 @@ pub struct LlmBackend {
     /// `secret_exec::run_with_secrets` — the placeholders in an acting
     /// tool's arguments expanded for the executor alone, every output
     /// redacted on its way out — and the permission prompt previews the
-    /// expanded call redacted. Shared by handle, so a `/secrete` save
+    /// expanded call redacted. Shared by handle, so a `/secrets` save
     /// reaches the very next call without a rebuild.
     secrets: Option<crate::secrets::SecretRegistry>,
 }
@@ -2302,7 +2302,7 @@ mod tests {
                 .expect("a type that can use a secret is briefed");
             assert!(briefing.contains("<system-reminder>"), "{briefing}");
             assert!(
-                briefing.contains("- <secrete:TOKEN>: The staging API key"),
+                briefing.contains("- <secret:TOKEN>: The staging API key"),
                 "{briefing}"
             );
             assert!(!briefing.contains("sk-live"), "{briefing}");

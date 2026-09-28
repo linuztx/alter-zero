@@ -1,16 +1,13 @@
-# `/secrete` — credentials the agent uses but never sees
+# `/secrets` — credentials the agent uses but never sees
 
-The **`/secrete`** command opens a page where the user stores **secrets**: a
+The **`/secrets`** command opens a page where the user stores **secrets**: a
 name, a value, and an optional line of context. The agent is told the names
 and the context, and uses a secret by writing its **placeholder** —
-`<secrete:ROOT_PASSWORD>` — in a tool call. The placeholder becomes the real
+`<secret:ROOT_PASSWORD>` — in a tool call. The placeholder becomes the real
 value at the moment the tool runs, and the value becomes the placeholder
 again in everything the tool reports. So the model can log in, call an API or
 write a config file with a credential it has never seen, and a screen
 recording of the session shows placeholders where the values would be.
-
-The command and the placeholder are spelled `secrete` — the user's spelling,
-kept verbatim. Prose, types and files say *secret*.
 
 ## Where a value may exist
 
@@ -41,33 +38,36 @@ and the file writer alone.
 
 ## The placeholder
 
-`<secrete:NAME>`, `NAME` being `[A-Z_][A-Z0-9_]*` — an environment
+`<secret:NAME>`, `NAME` being `[A-Z_][A-Z0-9_]*` — an environment
 variable's shape, at most 64 characters. Expansion also accepts the name in
-lower case and the `<secret:NAME>` spelling, because a model "correcting" the
-spelling would otherwise run a command with the literal text in it; redaction
-always writes the canonical form. An inserted value is never scanned again.
+lower case; redaction always writes it as stored. An inserted value is never
+scanned again.
+
+The feature was built as `/secrete` with `<secrete:NAME>` and renamed before
+it was released: "secrete" is a real word, and the spelling fought the
+model's priors — the code had to accept `<secret:NAME>` as an alias in case a
+model "corrected" it. With the spelling models reach for being the real one,
+there is one opener and no alias.
 
 **A placeholder naming nothing stored refuses the call.** Run as written, a
 misspelled or guessed name reaches the tool as its literal text: a wrong
 password typed at a prompt (an attempt counted against the account), a
-request sent with `Bearer <secrete:TOKN>`, a `.env` line that looks written.
+request sent with `Bearer <secret:TOKN>`, a `.env` line that looks written.
 So a tool that acts, and a `!` command, is refused before anything of it
 runs, with a message naming what it wrote and what is stored
 (`SecretStore::unknown_refusal`):
 
 ```
-Not run: <secrete:DEPLOY_TOKN> is not a stored secret. Stored:
-<secrete:DEPLOY_TOKEN>. The user adds secrets with /secrete.
+Not run: <secret:DEPLOY_TOKN> is not a stored secret. Stored:
+<secret:DEPLOY_TOKEN>. The user adds secrets with /secrets.
 ```
 
 One step corrects a slip, and a secret the user never stored sends the model
-to the page instead of asking for the value in the chat. Two things are not
-refused: the `<secret:NAME>` alias naming nothing (ordinary text more often
-than a slip), and anything at all while no secret is stored — the session
-that never used the feature can write the placeholder syntax as text. The
-price is that, with secrets stored, a tool cannot write the literal text of
-a placeholder naming none of them; writing a known one as text was never
-possible, since it expands.
+to the page instead of asking for the value in the chat. Nothing is refused
+while no secret is stored — the session that never used the feature can
+write the placeholder syntax as text. The price is that, with secrets stored,
+a tool cannot write the literal text of a placeholder naming none of them;
+writing a known one as text was never possible, since it expands.
 
 ## Expansion: only where a tool acts
 
@@ -103,7 +103,7 @@ saved between the answer and the run cannot slip an unasked call through);
 `run_with_secrets`, the authoritative check, for the paths that skip the
 prompt (no gate, a pre-approving hook); `run_session`, over the text a
 `bashsend` input's key notation leaves — so a placeholder escaped as
-`&lt;secrete:X&gt;` is caught too; and `tui::shell`, for a `!` command.
+`&lt;secret:X&gt;` is caught too; and `tui::shell`, for a `!` command.
 
 ## Redaction: every way output leaves a tool
 
@@ -186,8 +186,8 @@ appears, but not an encoded or hashed form, so pass placeholders straight to
 what needs them. Use them whenever a task needs these credentials; the values
 are hidden from you on purpose, so never ask for or try to reveal them.
 
-- <secrete:ROOT_PASSWORD>: Root password for the staging box
-- <secrete:VENICE_API_KEY>
+- <secret:ROOT_PASSWORD>: Root password for the staging box
+- <secret:VENICE_API_KEY>
 ```
 
 The middle sentence is the one limit the model has to know about: masking
@@ -211,8 +211,8 @@ placeholders (`SubagentConfig::briefing_for`).
   Credentials the agent uses by placeholder. The values stay out of
   the conversation, the screen and the model's context.
 
-  ❯ <secrete:ROOT_PASSWORD>    ••••••••  Root password for staging
-    <secrete:VENICE_API_KEY>   ••••••••
+  ❯ <secret:ROOT_PASSWORD>    ••••••••  Root password for staging
+    <secret:VENICE_API_KEY>   ••••••••
     + Add a secret
 
   Enter edit · n new · c copy placeholder · d delete · Esc close
@@ -223,7 +223,7 @@ placeholders (`SubagentConfig::briefing_for`).
 The list shows every secret's placeholder, a **fixed** eight-dot mask — never
 one dot per character, which would put the length on screen — and its
 context. The last row adds one. `d` asks before deleting (the hint row turns
-red: `Delete <secrete:NAME>? d again to confirm`), `c` copies the
+red: `Delete <secret:NAME>? d again to confirm`), `c` copies the
 placeholder to the clipboard to paste into a message.
 
 The form:
@@ -232,7 +232,7 @@ The form:
   New secret
 
   Name     ❯ ROOT_PASSWORD
-             Use it as <secrete:ROOT_PASSWORD>
+             Use it as <secret:ROOT_PASSWORD>
   Value      ••••••••••
   Context    Root password for the staging box
 
@@ -320,7 +320,7 @@ quote a file holding it, log in through a password prompt, survive a
 misspelled name, and make a real authenticated request with the very key the
 test runs on.
 
-`scripts/smoke/phases/126-secrete.sh` drives the page in tmux — add, mask,
+`scripts/smoke/phases/126-secrets.sh` drives the page in tmux — add, mask,
 edit, delete, persistence — and `!` commands that expand a placeholder, have
 their output redacted and refuse an unknown one; then a second launch drives
 the real backend against a stub provider: the secret loaded from the file at

@@ -1,4 +1,4 @@
-//! The `/secrete` page (`docs/secrets.md`): the list and the form, values
+//! The `/secrets` page (`docs/secrets.md`): the list and the form, values
 //! masked in the builder.
 
 use super::*;
@@ -78,11 +78,11 @@ fn the_list_shows_each_placeholder_a_fixed_mask_and_its_context() {
     let texts = texts(&app, 80);
     assert!(is_rule(texts.first().unwrap()), "top rule: {texts:?}");
     assert!(is_rule(texts.last().unwrap()), "bottom rule: {texts:?}");
-    let first = row_with(&texts, "<secrete:ROOT_PASSWORD>");
+    let first = row_with(&texts, "<secret:ROOT_PASSWORD>");
     assert!(first.contains('❯'), "the first row is highlighted: {first}");
     assert!(first.contains(SECRETS_LIST_MASK), "{first}");
     assert!(first.contains("Root password for staging"), "{first}");
-    let second = row_with(&texts, "<secrete:TOKEN>");
+    let second = row_with(&texts, "<secret:TOKEN>");
     assert!(!second.contains('❯'), "{second}");
     // The mask is fixed: it says a value is there, never how long it is.
     for row in [first, second] {
@@ -116,7 +116,7 @@ fn the_delete_question_replaces_the_hint_in_red() {
     let lines = secrets_view_lines(&app, 80);
     let question = lines
         .iter()
-        .find(|line| plain(line).contains("Delete <secrete:TOKEN>?"))
+        .find(|line| plain(line).contains("Delete <secret:TOKEN>?"))
         .expect("the question is asked");
     assert!(
         question
@@ -162,7 +162,7 @@ fn the_name_previews_its_placeholder() {
     type_in(&mut app, "root password");
     let texts = texts(&app, 80);
     row_with(&texts, "ROOT_PASSWORD");
-    row_with(&texts, "Use it as <secrete:ROOT_PASSWORD>");
+    row_with(&texts, "Use it as <secret:ROOT_PASSWORD>");
 }
 
 #[test]
@@ -170,7 +170,7 @@ fn an_edit_names_its_secret_and_invites_keeping_the_value() {
     let mut app = open_with(&[("TOKEN", "The staging key")]);
     press(&mut app, KeyCode::Enter);
     let texts = texts(&app, 80);
-    row_with(&texts, "Edit <secrete:TOKEN>");
+    row_with(&texts, "Edit <secret:TOKEN>");
     row_with(&texts, SECRETS_VALUE_KEEP);
     row_with(&texts, "The staging key");
 }

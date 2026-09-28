@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Phase 126 — the `/secrete` page and placeholder secrets
+# Phase 126 — the `/secrets` page and placeholder secrets
 
 . "$(dirname "${BASH_SOURCE[0]}")/../lib.sh"
 smoke_begin
 
-# the `/secrete` page (docs/secrets.md): the user stores a credential — a
+# the `/secrets` page (docs/secrets.md): the user stores a credential — a
 # name, a value, a line of context — and the agent uses it by placeholder,
-# `<secrete:NAME>`, without the value ever reaching the screen or the model.
+# `<secret:NAME>`, without the value ever reaching the screen or the model.
 # Driven end to end: the palette entry; the empty page; the form (a typed
 # name normalized to ROOT-style and previewing its placeholder, the value
 # PASTED and shown one dot per character, the context); the save — a toast,
@@ -17,7 +17,7 @@ smoke_begin
 # the edit form keeping the value unloaded; and a two-step delete. Through
 # all of it the value itself must never appear on screen, scrollback
 # included.
-S126="${S}_secrete"
+S126="${S}_secrets"
 VALUE="s3cr3t-demo-value-42"
 VALUE_SHA="$(printf '%s' "$VALUE" | sha256sum | cut -c1-16)"
 FILE="$SMOKE_CFG/secrets.json"
@@ -31,10 +31,10 @@ never_shows_value() { # $1 label
 }
 
 launch "$S126" 90 40
-type_text "$S126" "/secrete"
+type_text "$S126" "/secrets"
 palette="$(wait_pane 5 "$S126" -F "Store credentials the agent uses but never sees")" ||
-	fail "/secrete is missing from the slash-command palette"
-dump "the palette filtered to /secrete" "$palette"
+	fail "/secrets is missing from the slash-command palette"
+dump "the palette filtered to /secrets" "$palette"
 keys "$S126" Enter
 empty="$(wait_pane 5 "$S126" -F "+ Add a secret")"
 dump "the page with no secrets" "$empty"
@@ -47,7 +47,7 @@ done
 keys "$S126" Enter
 wait_for 5 "$S126" -F "New secret" || fail "Enter on the add row did not open the form"
 type_text "$S126" "demo token"
-form="$(wait_pane 5 "$S126" -F "Use it as <secrete:DEMO_TOKEN>")" ||
+form="$(wait_pane 5 "$S126" -F "Use it as <secret:DEMO_TOKEN>")" ||
 	fail "the typed name did not normalize and preview its placeholder"
 dump "the form with a name" "$form"
 expect_has "$form" -F "DEMO_TOKEN" "the name did not normalize to DEMO_TOKEN"
@@ -63,10 +63,10 @@ keys "$S126" Enter
 type_text "$S126" "Demo token for the smoke test"
 sleep "$SMOKE_TYPE_SETTLE"
 keys "$S126" Enter
-saved="$(wait_pane 5 "$S126" -F "<secrete:DEMO_TOKEN>  ••••••••  Demo token for the smoke test")" ||
+saved="$(wait_pane 5 "$S126" -F "<secret:DEMO_TOKEN>  ••••••••  Demo token for the smoke test")" ||
 	fail "the saved secret is not listed with its fixed mask and context"
 dump "the list after the save" "$saved"
-expect_has "$saved" -F "Saved <secrete:DEMO_TOKEN>" "no confirming toast"
+expect_has "$saved" -F "Saved <secret:DEMO_TOKEN>" "no confirming toast"
 never_shows_value "the list"
 
 # On disk: owner-only, the value stored (it is the one place it lives).
@@ -84,32 +84,32 @@ sleep 0.3
 keys "$S126" C-c
 wait_gone 5 "$S126" || fail "the app did not quit"
 launch "$S126" 90 40
-type_text "$S126" "/secrete"
+type_text "$S126" "/secrets"
 sleep "$SMOKE_TYPE_SETTLE"
 keys "$S126" Enter
-relisted="$(wait_pane 5 "$S126" -F "<secrete:DEMO_TOKEN>")" || fail "the secret did not survive a relaunch"
+relisted="$(wait_pane 5 "$S126" -F "<secret:DEMO_TOKEN>")" || fail "the secret did not survive a relaunch"
 dump "the list after a relaunch" "$relisted"
 keys "$S126" Escape
 wait_for 5 "$S126" -E '^❯' || fail "Esc did not bring the composer back"
 
 # A `!` command: the placeholder expands for the shell — only the real value
 # hashes to VALUE_SHA — and the echoed value comes back as the placeholder.
-submit "$S126" "!printf '%s' '<secrete:DEMO_TOKEN>' | sha256sum | cut -c1-16"
+submit "$S126" "!printf '%s' '<secret:DEMO_TOKEN>' | sha256sum | cut -c1-16"
 hashed="$(wait_pane 10 "$S126" -F "$VALUE_SHA")" || fail "the placeholder did not expand for the ! command"
 dump "the ! command hashing the expanded value" "$hashed"
-submit "$S126" "!printf 'token=%s\\n' '<secrete:DEMO_TOKEN>'"
-echoed="$(wait_pane 10 "$S126" -F "token=<secrete:DEMO_TOKEN>")" || fail "the echoed value was not redacted"
+submit "$S126" "!printf 'token=%s\\n' '<secret:DEMO_TOKEN>'"
+echoed="$(wait_pane 10 "$S126" -F "token=<secret:DEMO_TOKEN>")" || fail "the echoed value was not redacted"
 dump "the ! command echoing the value" "$echoed"
 never_shows_value "a ! command's output"
 
 # A placeholder naming nothing stored runs nothing — a slip would otherwise
 # reach the command as its literal text — and the cell names the stored ones.
-submit "$S126" "!printf 'ran-%s\\n' '<secrete:DEMO_TOKN>'"
-refused="$(wait_pane 10 "$S126" -F "Not run: <secrete:DEMO_TOKN> is not a stored secret")" ||
+submit "$S126" "!printf 'ran-%s\\n' '<secret:DEMO_TOKN>'"
+refused="$(wait_pane 10 "$S126" -F "Not run: <secret:DEMO_TOKN> is not a stored secret")" ||
 	fail "a ! command naming a secret that is not stored was not refused"
 dump "the ! command naming a secret that is not stored" "$refused"
-expect_has "$refused" -F "Stored: <secrete:DEMO_TOKEN>" "the refusal does not name the stored secret"
-if printf '%s\n' "$refused" | grep -qF "ran-<secrete:DEMO_TOKN>"; then
+expect_has "$refused" -F "Stored: <secret:DEMO_TOKEN>" "the refusal does not name the stored secret"
+if printf '%s\n' "$refused" | grep -qF "ran-<secret:DEMO_TOKN>"; then
 	fail "the refused command ran"
 fi
 
@@ -121,7 +121,7 @@ sleep 0.5
 context="$(pane "$S126")"
 dump "the derived context" "$context"
 expect_has "$context" -F "The user's secrets, as placeholders" "the reminder has no secrets section"
-expect_has "$context" -F "<secrete:DEMO_TOKEN>: Demo token for the smoke test" "the reminder does not list the secret"
+expect_has "$context" -F "<secret:DEMO_TOKEN>: Demo token for the smoke test" "the reminder does not list the secret"
 if printf '%s\n' "$context" | grep -qF "$VALUE"; then
 	fail "the value is in the derived context"
 fi
@@ -149,8 +149,8 @@ import json, sys
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 port, log, out_file, marker = int(sys.argv[1]), sys.argv[2], sys.argv[3], sys.argv[4]
-RIGHT = "printf 'token=%%s\\n' '<secrete:DEMO_TOKEN>' | tee %s" % out_file
-WRONG = "touch %s && echo '<secrete:DEMO_TOKN>'" % marker
+RIGHT = "printf 'token=%%s\\n' '<secret:DEMO_TOKEN>' | tee %s" % out_file
+WRONG = "touch %s && echo '<secret:DEMO_TOKN>'" % marker
 
 def sse(frames):
     body = "".join("data: %s\n\n" % json.dumps(f) for f in frames) + "data: [DONE]\n\n"
@@ -215,31 +215,31 @@ launch -c "$WORK" "$S126B" 100 40 "$REAL_APP"
 submit "$S126B" "use the demo token"
 prompt="$(wait_pane 15 "$S126B" -F "Bash command")" || fail "the stub's call raised no permission prompt"
 dump "the permission prompt" "$prompt"
-expect_has "$prompt" -F "<secrete:DEMO_TOKEN>" "the prompt does not show the placeholder"
+expect_has "$prompt" -F "<secret:DEMO_TOKEN>" "the prompt does not show the placeholder"
 expect_lacks "$prompt" -F "$VALUE" "the prompt showed the value"
 keys "$S126B" Enter
 done_pane="$(wait_settled 20 "$S126B" -F "Done.")" || fail "the stub's turn never settled"
 dump "the turn settled" "$done_pane"
-expect_has "$done_pane" -F "token=<secrete:DEMO_TOKEN>" "the cell does not show the output masked"
+expect_has "$done_pane" -F "token=<secret:DEMO_TOKEN>" "the cell does not show the output masked"
 if ! grep -qx "token=$VALUE" "$OUT_FILE" 2>/dev/null; then
 	fail "the command did not run with the value (got: $(cat "$OUT_FILE" 2>/dev/null))"
 fi
 requests="$(wc -l <"$STUB_LOG" 2>/dev/null || echo 0)"
 [ "$requests" -ge 2 ] || fail "the stub saw $requests request(s), not the tool round and its answer"
-grep -qF 'token=<secrete:DEMO_TOKEN>' "$STUB_LOG" ||
+grep -qF 'token=<secret:DEMO_TOKEN>' "$STUB_LOG" ||
 	fail "the tool result the model read is not masked to the placeholder"
-head -1 "$STUB_LOG" | grep -qF '<secrete:DEMO_TOKEN>: Demo token for the smoke test' ||
+head -1 "$STUB_LOG" | grep -qF '<secret:DEMO_TOKEN>: Demo token for the smoke test' ||
 	fail "the first request's reminder does not name the stored secret"
 
 # A placeholder naming nothing stored: refused before the prompt, so the
 # refusal shows at once — a prompt would have left it waiting for an answer.
 submit "$S126B" "now try the wrong name"
-refused="$(wait_settled 15 "$S126B" -F "Not run: <secrete:DEMO_TOKN> is not a stored secret")" ||
+refused="$(wait_settled 15 "$S126B" -F "Not run: <secret:DEMO_TOKN> is not a stored secret")" ||
 	fail "the call naming a secret that is not stored was not refused"
 dump "the refused call" "$refused"
 expect_lacks "$refused" -F "Bash command" "a refused call raised a permission prompt"
 [ -e "$WRONG_MARKER" ] && fail "the refused command ran"
-grep -qF 'is not a stored secret. Stored: <secrete:DEMO_TOKEN>.' "$STUB_LOG" ||
+grep -qF 'is not a stored secret. Stored: <secret:DEMO_TOKEN>.' "$STUB_LOG" ||
 	fail "the model was not told which secrets are stored"
 if grep -qF "$VALUE" "$STUB_LOG"; then
 	fail "a request carried the value to the provider"
@@ -259,12 +259,12 @@ fi
 tmux kill-session -t "$S126B" 2>/dev/null
 
 # Editing never loads the value back.
-type_text "$S126" "/secrete"
+type_text "$S126" "/secrets"
 sleep "$SMOKE_TYPE_SETTLE"
 keys "$S126" Enter
-wait_for 5 "$S126" -F "<secrete:DEMO_TOKEN>" || fail "the page did not reopen"
+wait_for 5 "$S126" -F "<secret:DEMO_TOKEN>" || fail "the page did not reopen"
 keys "$S126" Enter
-edit="$(wait_pane 5 "$S126" -F "Edit <secrete:DEMO_TOKEN>")" || fail "Enter on the row did not open the edit form"
+edit="$(wait_pane 5 "$S126" -F "Edit <secret:DEMO_TOKEN>")" || fail "Enter on the row did not open the edit form"
 dump "the edit form" "$edit"
 expect_has "$edit" -F "leave empty to keep the current value" "the edit form loaded the value"
 keys "$S126" Escape
@@ -272,12 +272,12 @@ sleep 0.3
 
 # A delete asks first.
 keys "$S126" d
-asked="$(wait_pane 5 "$S126" -F "Delete <secrete:DEMO_TOKEN>?")" || fail "d did not ask before deleting"
+asked="$(wait_pane 5 "$S126" -F "Delete <secret:DEMO_TOKEN>?")" || fail "d did not ask before deleting"
 dump "the delete question" "$asked"
 keys "$S126" d
 gone="$(wait_pane 5 "$S126" -F "No secrets yet")" || fail "the second d did not delete"
 dump "the list after the delete" "$gone"
-expect_has "$gone" -F "Deleted <secrete:DEMO_TOKEN>" "no confirming toast for the delete"
+expect_has "$gone" -F "Deleted <secret:DEMO_TOKEN>" "no confirming toast for the delete"
 if grep -qF "DEMO_TOKEN" "$FILE" 2>/dev/null; then
 	fail "the deleted secret is still in secrets.json"
 fi

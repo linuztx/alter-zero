@@ -233,7 +233,7 @@ The essentials are always one keystroke away: `/` opens commands, and `?` in an 
 | `/mcp` | Manage MCP servers |
 | `/trust` | Review and approve this project's config |
 | `/donate` | Support the project with a crypto donation |
-| `/secrete` | Store credentials the agent uses by placeholder, `<secrete:NAME>`, without ever seeing the value |
+| `/secrets` | Store credentials the agent uses by placeholder, `<secret:NAME>`, without ever seeing the value |
 | `/quit` | Exit the app |
 
 </details>

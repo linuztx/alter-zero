@@ -892,7 +892,7 @@ pub fn cursor_visible(app: &App) -> bool {
     if let Some(menu) = &app.mcp_menu {
         return menu.page == crate::app::McpPage::Auth;
     }
-    // The `/secrete` list is a menu; its form is typed into
+    // The `/secrets` list is a menu; its form is typed into
     // (`docs/secrets.md`).
     if let Some(page) = &app.secrets_page {
         return page.form.is_some();
@@ -1163,7 +1163,7 @@ pub fn cursor_position(area: Rect, app: &App) -> (u16, u16) {
         let lines = super::export_view::export_view_lines(app, area.width);
         return menu_marker_seat(&lines, area);
     }
-    // The `/secrete` page: its list seats on the highlighted `❯` like
+    // The `/secrets` page: its list seats on the highlighted `❯` like
     // `/donate`; its form puts the caret in the focused field, at the seat
     // the builder reports — three fields make "the row with the `❯`" a
     // question the lines alone cannot answer (docs/secrets.md).

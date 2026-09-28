@@ -277,7 +277,7 @@ pub enum Action {
     /// system clipboard. The loop does the I/O and raises the toast, like
     /// [`Action::CopyDeviceCode`]; the page stays open. See `docs/donate.md`.
     CopyDonationAddress(DonationAddress),
-    /// `/secrete`: the page is already open ([`App::secrets_page`]). Like
+    /// `/secrets`: the page is already open ([`App::secrets_page`]). Like
     /// `/skills` it works mid-turn — it only replaces the composer. The loop
     /// reloads `secrets.json`, so a secret another session added is listed,
     /// and injects what the page may know. See `docs/secrets.md`.

@@ -1,4 +1,4 @@
-//! The `/secrete` page at the boundary (`docs/secrets.md`): the file under a
+//! The `/secrets` page at the boundary (`docs/secrets.md`): the file under a
 //! save or a delete, the reload when the page opens, the clipboard copy of a
 //! placeholder, and the sync that keeps the page, the `<system-reminder>`
 //! and the shared store agreeing.
@@ -41,7 +41,7 @@ impl Session<'_> {
         self.sync_listings();
     }
 
-    /// `/secrete` opened (the pure open already happened): reload the file,
+    /// `/secrets` opened (the pure open already happened): reload the file,
     /// so a secret another session saved is listed and usable. A file that
     /// no longer parses keeps the store the session has, loudly.
     pub(crate) fn open_secrets_page(&mut self) {

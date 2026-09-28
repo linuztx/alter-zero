@@ -14,9 +14,9 @@ release heading when a version is cut.
 
 ### Added
 
-- **`/secrete` — credentials the agent uses but never sees.** Store a
+- **`/secrets` — credentials the agent uses but never sees.** Store a
   secret — a name, a value and a line of context — on a new page, and the
-  agent uses it by writing its placeholder, `<secrete:ROOT_PASSWORD>`, in a
+  agent uses it by writing its placeholder, `<secret:ROOT_PASSWORD>`, in a
   command, a file or typed input: the placeholder becomes the value only
   inside the tool that runs, and the value becomes the placeholder again in
   everything the tool reports, the permission prompt's preview and the

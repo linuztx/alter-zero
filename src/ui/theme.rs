@@ -1409,7 +1409,7 @@ pub(super) fn donate_caution_color() -> Color {
     ask_warning_color()
 }
 
-// --- the /secrete page (docs/secrets.md). The /donate page's frame — the
+// --- the /secrets page (docs/secrets.md). The /donate page's frame — the
 // family's indent, its `❯` marker, the dim meta ink, the banner-gradient
 // title — over the user's secrets, and a three-field form under the same
 // frame. Every value is masked **in the builder**: a flowed row is committed
@@ -1427,7 +1427,7 @@ stay out of the conversation, the screen and the model's context.";
 
 /// The dim row an empty store shows over its add row.
 pub(super) const SECRETS_EMPTY: &str = "No secrets yet. Add one, and the agent can use it as \
-<secrete:NAME> in any command, file or input.";
+<secret:NAME> in any command, file or input.";
 
 /// The list's last row: add a secret.
 pub(super) const SECRETS_ADD_ROW: &str = "+ Add a secret";
@@ -1444,7 +1444,7 @@ pub(super) const SECRETS_LIST_HINT: &str =
     "↑↓ navigate  enter edit  n new  c copy placeholder  d delete  esc close";
 pub(super) const SECRETS_ADD_HINT: &str = "↑↓ navigate  enter add a secret  esc close";
 
-/// The form's titles: a new secret, or `Edit <secrete:NAME>`.
+/// The form's titles: a new secret, or `Edit <secret:NAME>`.
 pub(super) const SECRETS_NEW_TITLE: &str = "New secret";
 pub(super) const SECRETS_EDIT_TITLE: &str = "Edit ";
 

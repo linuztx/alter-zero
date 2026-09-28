@@ -1,6 +1,6 @@
 //! Secrets at the tool boundary (`docs/secrets.md`): the seam every model
 //! tool call passes through on its way to the executor — the main turn's
-//! and a subagent's alike — where `<secrete:NAME>` placeholders become
+//! and a subagent's alike — where `<secret:NAME>` placeholders become
 //! values and values become placeholders again.
 //!
 //! [`run_with_secrets`] wraps one call: the arguments of a tool that acts
@@ -202,7 +202,7 @@ mod tests {
             Some(&secrets),
             &call(
                 "bash",
-                r#"{"command":"echo <secrete:ROOT_PASSWORD> | sudo -S id"}"#,
+                r#"{"command":"echo <secret:ROOT_PASSWORD> | sudo -S id"}"#,
             ),
             &mut sink(&mut seen),
             |call, _| {
@@ -221,7 +221,7 @@ mod tests {
     fn a_tool_that_shows_its_arguments_is_never_expanded() {
         let secrets = secrets();
         for name in ["askuserquestion", "agent", "skill", "taskcreate"] {
-            let original = call(name, r#"{"prompt":"use <secrete:TOKEN>"}"#);
+            let original = call(name, r#"{"prompt":"use <secret:TOKEN>"}"#);
             let mut ran = None;
             let mut seen = Seen::default();
             run_with_secrets(
@@ -245,7 +245,7 @@ mod tests {
             Some(&secrets),
             &call(
                 "bashsend",
-                r#"{"session_id":"b1","input":"<secrete:ROOT_PASSWORD>"}"#,
+                r#"{"session_id":"b1","input":"<secret:ROOT_PASSWORD>"}"#,
             ),
             &mut sink(&mut seen),
             |_, on_output| {
@@ -258,18 +258,18 @@ mod tests {
                     .with_context(format!("model reads {TOKEN}"))
             },
         );
-        assert_eq!(seen.titles, ["sudo ← <secrete:ROOT_PASSWORD>⏎"]);
+        assert_eq!(seen.titles, ["sudo ← <secret:ROOT_PASSWORD>⏎"]);
         assert_eq!(
             seen.screens,
             [(
-                "echoed <secrete:ROOT_PASSWORD>\n".to_string(),
-                "token <secrete:TOKEN> $ ".to_string()
+                "echoed <secret:ROOT_PASSWORD>\n".to_string(),
+                "token <secret:TOKEN> $ ".to_string()
             )]
         );
-        assert_eq!(outcome.output, "wrong password <secrete:ROOT_PASSWORD>");
+        assert_eq!(outcome.output, "wrong password <secret:ROOT_PASSWORD>");
         assert_eq!(
             outcome.context.as_deref(),
-            Some("model reads <secrete:TOKEN>")
+            Some("model reads <secret:TOKEN>")
         );
         assert!(!outcome.ok);
     }
@@ -295,7 +295,7 @@ mod tests {
             },
         );
         let settled: String = seen.screens.iter().map(|(s, _)| s.as_str()).collect();
-        assert_eq!(settled, "TOKEN=<secrete:TOKEN>\n");
+        assert_eq!(settled, "TOKEN=<secret:TOKEN>\n");
         for (settled, live) in &seen.screens {
             assert!(!settled.contains("sk-live-01"), "{settled}");
             // The held piece rides the live rows — masked, never shown.
@@ -313,13 +313,13 @@ mod tests {
             &mut sink(&mut seen),
             |_, _| ToolOutcome::ok("…TOKEN=sk-live-012").with_truncated(true),
         );
-        assert_eq!(outcome.output, "…TOKEN=<secrete:TOKEN>");
+        assert_eq!(outcome.output, "…TOKEN=<secret:TOKEN>");
         assert!(outcome.truncated);
     }
 
     #[test]
     fn without_secrets_the_call_passes_straight_through() {
-        let original = call("bash", r#"{"command":"echo <secrete:TOKEN>"}"#);
+        let original = call("bash", r#"{"command":"echo <secret:TOKEN>"}"#);
         for secrets in [None, Some(SecretRegistry::default())] {
             let mut ran = None;
             let mut seen = Seen::default();
@@ -346,7 +346,7 @@ mod tests {
             &secrets,
             &call(
                 "write",
-                r#"{"path":"/x/.env","content":"KEY=<secrete:TOKEN>\n"}"#,
+                r#"{"path":"/x/.env","content":"KEY=<secret:TOKEN>\n"}"#,
             ),
         )
         .unwrap()
@@ -361,7 +361,7 @@ mod tests {
             Ok(None)
         );
         assert_eq!(
-            expand_call(&secrets, &call("agent", r#"{"prompt":"<secrete:TOKEN>"}"#)),
+            expand_call(&secrets, &call("agent", r#"{"prompt":"<secret:TOKEN>"}"#)),
             Ok(None)
         );
         // Typed input is expanded where it is typed — after its key notation
@@ -371,7 +371,7 @@ mod tests {
                 &secrets,
                 &call(
                     "bashsend",
-                    r#"{"session_id":"b1","input":"<secrete:TOKEN><Enter>"}"#
+                    r#"{"session_id":"b1","input":"<secret:TOKEN><Enter>"}"#
                 )
             ),
             Ok(None)
@@ -387,17 +387,17 @@ mod tests {
         for original in [
             call(
                 "bash",
-                r#"{"command":"curl -H 'Authorization: Bearer <secrete:TOKN>' x"}"#,
+                r#"{"command":"curl -H 'Authorization: Bearer <secret:TOKN>' x"}"#,
             ),
             call(
                 "bashsend",
-                r#"{"session_id":"b1","input":"<secrete:ROOT_PASWORD>\n"}"#,
+                r#"{"session_id":"b1","input":"<secret:ROOT_PASWORD>\n"}"#,
             ),
             call(
                 "write",
-                r#"{"path":"/x/.env","content":"KEY=<secrete:API_KEY>\n"}"#,
+                r#"{"path":"/x/.env","content":"KEY=<secret:API_KEY>\n"}"#,
             ),
-            call("mcp__github__create_issue", r#"{"token":"<secrete:GH>"}"#),
+            call("mcp__github__create_issue", r#"{"token":"<secret:GH>"}"#),
         ] {
             let mut ran = false;
             let mut seen = Seen::default();
@@ -409,10 +409,10 @@ mod tests {
             assert!(!ran, "{} ran", original.name);
             assert!(!outcome.ok, "{}", original.name);
             assert!(
-                outcome.output.starts_with("Not run: <secrete:")
+                outcome.output.starts_with("Not run: <secret:")
                     && outcome
                         .output
-                        .contains("Stored: <secrete:ROOT_PASSWORD>, <secrete:TOKEN>."),
+                        .contains("Stored: <secret:ROOT_PASSWORD>, <secret:TOKEN>."),
                 "{}",
                 outcome.output
             );
@@ -425,7 +425,7 @@ mod tests {
         // Its placeholders are text for a person or another model, never a
         // value to fill in — so there is nothing to refuse.
         let secrets = secrets();
-        let original = call("agent", r#"{"prompt":"log in with <secrete:NOT_STORED>"}"#);
+        let original = call("agent", r#"{"prompt":"log in with <secret:NOT_STORED>"}"#);
         let mut ran = None;
         run_with_secrets(Some(&secrets), &original, &mut |_| {}, |call, _| {
             ran = Some(call.clone());
@@ -439,10 +439,7 @@ mod tests {
         let secrets = secrets();
         let expanded = expand_call(
             &secrets,
-            &call(
-                "mcp__github__create_issue",
-                r#"{"token":"<secrete:TOKEN>"}"#,
-            ),
+            &call("mcp__github__create_issue", r#"{"token":"<secret:TOKEN>"}"#),
         )
         .unwrap()
         .unwrap();

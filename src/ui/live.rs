@@ -600,7 +600,7 @@ pub fn render_live_with_preview(
         render_donate_picker(body, buf, app);
         return;
     }
-    // …and the `/secrete` page, the same built-line body — its values
+    // …and the `/secrets` page, the same built-line body — its values
     // masked in the builder. See `docs/secrets.md`.
     if app.secrets_page.is_some() {
         let [strip, body] = view_split(

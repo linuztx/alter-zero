@@ -1,4 +1,4 @@
-//! The `/secrete` page (`docs/secrets.md`): the user's secrets listed by
+//! The `/secrets` page (`docs/secrets.md`): the user's secrets listed by
 //! placeholder, and the form that adds or edits one.
 //!
 //! The `/donate` page's frame — the family's rules and indent, the `❯`
@@ -192,7 +192,7 @@ fn text_rows(
     (rows, (col, row))
 }
 
-/// The form's blocks: the title (`New secret`, or `Edit <secrete:NAME>`)
+/// The form's blocks: the title (`New secret`, or `Edit <secret:NAME>`)
 /// and blurb; the three fields — the name previewing its placeholder, the
 /// value **masked**, the context wrapped — with the caret in the focused
 /// one; the refusal in red when there is one; and the hint.
@@ -354,7 +354,7 @@ pub(super) fn secrets_menu_rows(app: &App, width: u16) -> u16 {
     u16::try_from(secrets_view_lines(app, width).len()).unwrap_or(u16::MAX)
 }
 
-/// The inline live-region height when the `/secrete` page is open, or `None`
+/// The inline live-region height when the `/secrets` page is open, or `None`
 /// when it isn't. Like every sibling it **replaces** the composer — and only
 /// the composer: a running turn's strip keeps its rows above it. Clamped to
 /// the terminal height.
@@ -369,7 +369,7 @@ pub fn secrets_picker_height(app: &App, width: u16, term_height: u16) -> Option<
     ))
 }
 
-/// Render the **inline** `/secrete` page into the live region, in place of
+/// Render the **inline** `/secrets` page into the live region, in place of
 /// the composer — bottom-anchored, so a squeezed area keeps the fields, the
 /// hint and the closing rule on screen while the skipped top flows into
 /// scrollback (`docs/view-flow.md`). Pure — `render_live` paints this.

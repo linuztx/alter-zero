@@ -76,7 +76,7 @@ impl App {
         if self.view == View::Conversation && self.export_picker.is_some() {
             return self.on_key_export_picker(key);
         }
-        // …and the `/secrete` page, whose form takes text of its own — never
+        // …and the `/secrets` page, whose form takes text of its own — never
         // the composer's. See `docs/secrets.md`.
         if self.view == View::Conversation && self.secrets_page.is_some() {
             return self.on_key_secrets_page(key);

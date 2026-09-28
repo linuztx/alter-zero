@@ -215,7 +215,7 @@ fn flow_page(app: &App, width: u16, term_height: u16) -> Option<FlowPage> {
         ));
     }
     if app.secrets_page.is_some() {
-        // The `/secrete` page changes only on a keystroke, so it signs its
+        // The `/secrets` page changes only on a keystroke, so it signs its
         // rows like `/donate` — and its values are masked in those rows
         // before they can flow (`docs/secrets.md`).
         return Some(FlowPage::framed(

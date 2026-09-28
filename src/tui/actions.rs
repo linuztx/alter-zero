@@ -548,7 +548,7 @@ impl Session<'_> {
             View::Conversation if self.app.donate_picker.is_some() => {}
             // …nor does the `/export` page, its sibling (docs/export.md).
             View::Conversation if self.app.export_picker.is_some() => {}
-            // The `/secrete` form takes pastes — a credential is pasted far
+            // The `/secrets` form takes pastes — a credential is pasted far
             // more often than typed — into its focused field, never the
             // composer draft underneath (docs/secrets.md).
             View::Conversation if self.app.secrets_page.is_some() => {

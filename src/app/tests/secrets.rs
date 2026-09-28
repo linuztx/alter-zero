@@ -1,4 +1,4 @@
-//! The `/secrete` page: the list, the add/edit form and its key grammar
+//! The `/secrets` page: the list, the add/edit form and its key grammar
 //! (`docs/secrets.md`).
 
 use super::*;
@@ -36,33 +36,33 @@ fn chars(app: &mut App, text: &str) {
 // ===== the command =====
 
 #[test]
-fn slash_secrete_opens_the_page() {
+fn slash_secrets_opens_the_page() {
     let mut app = App::new();
-    type_chars(&mut app, "/secrete");
+    type_chars(&mut app, "/secrets");
     assert!(app.command_menu.is_some());
     assert_eq!(app.on_key(key(KeyCode::Enter)), Action::OpenSecretsPage);
     assert!(app.secrets_page.is_some(), "the pure open happened");
-    assert!(app.input.is_empty(), "the /secrete token was consumed");
+    assert!(app.input.is_empty(), "the /secrets token was consumed");
     assert!(app.command_menu.is_none(), "the palette closed");
 }
 
 #[test]
-fn the_palette_lists_secrete_before_quit() {
+fn the_palette_lists_secrets_before_quit() {
     let cmd = COMMANDS
         .iter()
-        .find(|c| c.name == "secrete")
-        .expect("/secrete is registered");
+        .find(|c| c.name == "secrets")
+        .expect("/secrets is registered");
     assert_eq!(cmd.effect, CommandEffect::Secrets);
     assert!(cmd.description.len() <= 55, "{}", cmd.description);
     assert_eq!(COMMANDS.last().map(|c| c.name.as_ref()), Some("quit"));
 }
 
 #[test]
-fn slash_secrete_works_mid_turn() {
+fn slash_secrets_works_mid_turn() {
     let mut app = App::new();
     app.begin_stream();
     app.push_chunk("streaming…");
-    type_chars(&mut app, "/secrete");
+    type_chars(&mut app, "/secrets");
     assert_eq!(app.on_key(key(KeyCode::Enter)), Action::OpenSecretsPage);
     assert!(app.secrets_page.is_some());
     assert!(app.is_streaming(), "the turn was not touched");
@@ -219,7 +219,7 @@ fn a_refused_draft_says_why_and_moves_to_the_field_at_fault() {
     assert_eq!(app.on_key(key(KeyCode::Enter)), Action::None);
     assert_eq!(
         form(&app).error.as_deref(),
-        Some("<secrete:TAKEN> already exists.")
+        Some("<secret:TAKEN> already exists.")
     );
     assert_eq!(form(&app).focus, SecretField::Name);
 }

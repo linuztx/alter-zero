@@ -597,7 +597,7 @@ impl<'t> Session<'t> {
         // actually run — so an unavailable row says so from the first frame.
         *self.app.settings_mut() = settings;
         self.sync_setting_availability();
-        // What the `/secrete` page may know of the secrets loaded above —
+        // What the `/secrets` page may know of the secrets loaded above —
         // names and context — before the reminder below names them
         // (docs/secrets.md).
         self.app.set_secret_metas(self.secrets.metas());

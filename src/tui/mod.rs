@@ -305,7 +305,7 @@ pub(crate) struct Session<'t> {
     /// type added mid-session — or written by the agent itself — is
     /// launchable on the next turn.
     subagents: alter_zero::subagents::SubagentRegistry,
-    /// The user's secrets (`docs/secrets.md`) — the one store the `/secrete`
+    /// The user's secrets (`docs/secrets.md`) — the one store the `/secrets`
     /// page edits, the reminder lists and every tool call expands and
     /// redacts with. The same handle the shell registry carries to the
     /// executor, the `!` runner and every backend build.

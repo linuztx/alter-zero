@@ -3,7 +3,7 @@
 //!
 //! A secret is a **name**, a **value** and an optional line of **context**.
 //! The model is told the names and the context in the `<system-reminder>`
-//! ([`secret_section`]) and writes `<secrete:NAME>` wherever a tool call
+//! ([`secret_section`]) and writes `<secret:NAME>` wherever a tool call
 //! needs the credential; the executor swaps the placeholder for the value
 //! just before the tool runs ([`SecretStore::expand`], [`expand_arguments`])
 //! and swaps the value back for the placeholder in everything the tool
@@ -21,14 +21,8 @@ use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
 
-/// A placeholder's opening, up to the name: `<secrete:NAME>`.
-pub const PLACEHOLDER_OPEN: &str = "<secrete:";
-
-/// The spelling a model may "correct" [`PLACEHOLDER_OPEN`] to. Expanded
-/// exactly like it — a silently unexpanded `<secret:NAME>` would run a
-/// command with the literal text in it — but never emitted: redaction
-/// always writes the canonical spelling.
-pub const PLACEHOLDER_OPEN_ALIAS: &str = "<secret:";
+/// A placeholder's opening, up to the name: `<secret:NAME>`.
+pub const PLACEHOLDER_OPEN: &str = "<secret:";
 
 /// A placeholder's closing character.
 pub const PLACEHOLDER_CLOSE: char = '>';
@@ -93,7 +87,7 @@ impl SecretValue {
         self.0.chars().count()
     }
 
-    /// Type one character (the `/secrete` form's value field).
+    /// Type one character (the `/secrets` form's value field).
     pub fn push(&mut self, c: char) {
         self.0.push(c);
     }
@@ -132,7 +126,7 @@ pub struct Secret {
 }
 
 /// What the interface may know about a secret: everything **but** its
-/// value. The `/secrete` page lists these.
+/// value. The `/secrets` page lists these.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SecretMeta {
     /// The secret's name.
@@ -141,7 +135,7 @@ pub struct SecretMeta {
     pub context: String,
 }
 
-/// An add or an edit, as the `/secrete` form submits it.
+/// An add or an edit, as the `/secrets` form submits it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SecretDraft {
     /// The name of the secret being edited — `None` for a new one. A draft
@@ -206,7 +200,7 @@ impl fmt::Display for SecretError {
     }
 }
 
-/// The placeholder for `name`: `<secrete:NAME>`.
+/// The placeholder for `name`: `<secret:NAME>`.
 #[must_use]
 pub fn placeholder(name: &str) -> String {
     format!("{PLACEHOLDER_OPEN}{name}{PLACEHOLDER_CLOSE}")
@@ -308,13 +302,11 @@ pub fn expands_placeholders(tool: &str) -> bool {
         || crate::mcp::is_mcp_tool(tool)
 }
 
-/// A placeholder in some text: its byte range, the name as written, and
-/// whether it used the [`PLACEHOLDER_OPEN_ALIAS`] spelling.
+/// A placeholder in some text: its byte range and the name as written.
 struct Found<'t> {
     start: usize,
     end: usize,
     name: &'t str,
-    alias: bool,
 }
 
 /// Every well-formed placeholder in `text`, left to right — an opener, a
@@ -326,15 +318,10 @@ fn placeholders(text: &str) -> impl Iterator<Item = Found<'_>> {
         while let Some(offset) = text[from..].find('<') {
             let at = from + offset;
             from = at + 1;
-            let rest = &text[at..];
-            let (open, alias) = if rest.starts_with(PLACEHOLDER_OPEN) {
-                (PLACEHOLDER_OPEN.len(), false)
-            } else if rest.starts_with(PLACEHOLDER_OPEN_ALIAS) {
-                (PLACEHOLDER_OPEN_ALIAS.len(), true)
-            } else {
+            if !text[at..].starts_with(PLACEHOLDER_OPEN) {
                 continue;
-            };
-            let start = at + open;
+            }
+            let start = at + PLACEHOLDER_OPEN.len();
             let len = text[start..]
                 .bytes()
                 .take_while(|b| b.is_ascii_alphanumeric() || *b == b'_')
@@ -346,7 +333,6 @@ fn placeholders(text: &str) -> impl Iterator<Item = Found<'_>> {
                     start: at,
                     end: from,
                     name: &text[start..close],
-                    alias,
                 });
             }
         }
@@ -521,14 +507,14 @@ impl SecretStore {
         self.secrets.len() != before
     }
 
-    /// Replace every `<secrete:NAME>` naming a stored secret with its value
-    /// — the name matched case-insensitively, the [`PLACEHOLDER_OPEN_ALIAS`]
-    /// spelling too. A placeholder naming nothing stored is left as it is,
-    /// and an inserted value is never scanned again.
+    /// Replace every `<secret:NAME>` naming a stored secret with its value
+    /// — the name matched case-insensitively. A placeholder naming nothing
+    /// stored is left as it is (the callers that run something refuse it
+    /// first, [`refusal_for`](Self::refusal_for)), and an inserted value is
+    /// never scanned again.
     #[must_use]
     pub fn expand<'a>(&self, text: &'a str) -> Cow<'a, str> {
-        // Both spellings open with `<secret`.
-        if self.secrets.is_empty() || !text.contains("<secret") {
+        if self.secrets.is_empty() || !text.contains(PLACEHOLDER_OPEN) {
             return Cow::Borrowed(text);
         }
         let mut out: Option<String> = None;
@@ -550,10 +536,9 @@ impl SecretStore {
         }
     }
 
-    /// The names in the `<secrete:NAME>` placeholders of `text` that no
-    /// stored secret answers to — each once, as written, in order. The
-    /// alias spelling is not counted (`<secret:x>` is ordinary text more
-    /// often than a slip), and nothing stored is nothing to check.
+    /// The names in the `<secret:NAME>` placeholders of `text` that no
+    /// stored secret answers to — each once, as written, in order. Nothing
+    /// stored is nothing to check.
     #[must_use]
     pub fn unknown_placeholders(&self, text: &str) -> Vec<String> {
         let mut unknown: Vec<String> = Vec::new();
@@ -561,10 +546,7 @@ impl SecretStore {
             return unknown;
         }
         for found in placeholders(text) {
-            if !found.alias
-                && self.lookup(found.name).is_none()
-                && !unknown.iter().any(|name| name == found.name)
-            {
+            if self.lookup(found.name).is_none() && !unknown.iter().any(|name| name == found.name) {
                 unknown.push(found.name.to_string());
             }
         }
@@ -594,7 +576,7 @@ impl SecretStore {
             "are not stored secrets"
         };
         format!(
-            "Not run: {written} {verdict}. Stored: {stored}. The user adds secrets with /secrete."
+            "Not run: {written} {verdict}. Stored: {stored}. The user adds secrets with /secrets."
         )
     }
 
@@ -718,8 +700,8 @@ impl SecretStore {
         }
     }
 
-    /// The reminder's listing: one `- <secrete:NAME>: context` row per
-    /// secret (`- <secrete:NAME>` with no context), the context's whitespace
+    /// The reminder's listing: one `- <secret:NAME>: context` row per
+    /// secret (`- <secret:NAME>` with no context), the context's whitespace
     /// collapsed and capped at [`MAX_SECRET_CONTEXT_CHARS`].
     #[must_use]
     pub fn listing(&self) -> String {
@@ -788,8 +770,8 @@ pub fn secret_section(listing: &str) -> String {
 /// The [`check_arguments`] refusal: a placeholder names a secret that is
 /// not stored, and nothing is expanded.
 pub fn expand_arguments(store: &SecretStore, arguments: &str) -> Result<Option<String>, String> {
-    // Both spellings contain `secret`, escaped `<` or not.
-    if store.is_empty() || !arguments.contains("secret") {
+    // `secret:` survives a JSON-escaped `<` (`\u003c`); the parse decides.
+    if store.is_empty() || !arguments.contains("secret:") {
         return Ok(None);
     }
     let Ok(mut value) = serde_json::from_str::<serde_json::Value>(arguments) else {
@@ -814,7 +796,7 @@ pub fn expand_arguments(store: &SecretStore, arguments: &str) -> Result<Option<S
 /// # Errors
 /// [`SecretStore::unknown_refusal`] for the names nothing answers to.
 pub fn check_arguments(store: &SecretStore, arguments: &str) -> Result<(), String> {
-    if store.is_empty() || !arguments.contains("secrete") {
+    if store.is_empty() || !arguments.contains("secret:") {
         return Ok(());
     }
     let Ok(value) = serde_json::from_str::<serde_json::Value>(arguments) else {
@@ -1107,8 +1089,8 @@ mod tests {
     }
 
     #[test]
-    fn a_placeholder_wraps_the_name_in_the_users_spelling() {
-        assert_eq!(placeholder("ROOT_PASSWORD"), "<secrete:ROOT_PASSWORD>");
+    fn a_placeholder_wraps_the_name() {
+        assert_eq!(placeholder("ROOT_PASSWORD"), "<secret:ROOT_PASSWORD>");
     }
 
     #[test]
@@ -1164,7 +1146,7 @@ mod tests {
             assert!(message.ends_with('.'), "{message}");
         }
         assert!(
-            messages[3].contains("<secrete:ROOT_PASSWORD>"),
+            messages[3].contains("<secret:ROOT_PASSWORD>"),
             "{}",
             messages[3]
         );
@@ -1284,12 +1266,12 @@ mod tests {
     fn expansion_swaps_known_placeholders_for_their_values() {
         let secrets = store(&[("ROOT_PASSWORD", "hunter22"), ("TOKEN", "tok-9876")]);
         assert_eq!(
-            secrets.expand("echo <secrete:ROOT_PASSWORD> | sudo -S true"),
+            secrets.expand("echo <secret:ROOT_PASSWORD> | sudo -S true"),
             "echo hunter22 | sudo -S true"
         );
-        // Several, adjacent, the alias spelling, a lower-cased name.
+        // Several, adjacent, a lower-cased name.
         assert_eq!(
-            secrets.expand("<secrete:ROOT_PASSWORD><secret:TOKEN> <secrete:token>"),
+            secrets.expand("<secret:ROOT_PASSWORD><secret:TOKEN> <secret:token>"),
             "hunter22tok-9876 tok-9876"
         );
     }
@@ -1299,27 +1281,25 @@ mod tests {
         let secrets = store(&[("TOKEN", "tok-9876")]);
         for text in [
             "no placeholders here",
-            "<secrete:UNKNOWN>",
-            "<secrete:TOKEN",
-            "<secrete:>",
-            "<secrete: TOKEN>",
-            "<secrete:TO KEN>",
+            "<secrets:TOKEN>",
+            "<secret:UNKNOWN>",
+            "<secret:TOKEN",
+            "<secret:>",
+            "<secret: TOKEN>",
+            "<secret:TO KEN>",
             "a < b > c",
         ] {
             assert_eq!(secrets.expand(text), text, "{text}");
             assert!(matches!(secrets.expand(text), Cow::Borrowed(_)), "{text}");
         }
         // A near miss before a real one does not swallow it.
-        assert_eq!(
-            secrets.expand("<secrete:<secrete:TOKEN>"),
-            "<secrete:tok-9876"
-        );
+        assert_eq!(secrets.expand("<secret:<secret:TOKEN>"), "<secret:tok-9876");
     }
 
     #[test]
     fn an_inserted_value_is_never_expanded_again() {
-        let secrets = store(&[("A", "<secrete:B>"), ("B", "bbbb")]);
-        assert_eq!(secrets.expand("<secrete:A>"), "<secrete:B>");
+        let secrets = store(&[("A", "<secret:B>"), ("B", "bbbb")]);
+        assert_eq!(secrets.expand("<secret:A>"), "<secret:B>");
     }
 
     #[test]
@@ -1327,7 +1307,7 @@ mod tests {
         let secrets = store(&[("ROOT_PASSWORD", "hunter22"), ("TOKEN", "tok-9876")]);
         assert_eq!(
             secrets.redact("pw=hunter22 token=tok-9876 again hunter22"),
-            "pw=<secrete:ROOT_PASSWORD> token=<secrete:TOKEN> again <secrete:ROOT_PASSWORD>"
+            "pw=<secret:ROOT_PASSWORD> token=<secret:TOKEN> again <secret:ROOT_PASSWORD>"
         );
         let clean = "nothing secret";
         assert!(matches!(secrets.redact(clean), Cow::Borrowed(_)));
@@ -1344,7 +1324,7 @@ mod tests {
             let secrets = store(&pairs);
             assert_eq!(
                 secrets.redact("abcdefgh abcd abcdxyz"),
-                "<secrete:LONG> <secrete:SHORT> <secrete:SHORT>xyz"
+                "<secret:LONG> <secret:SHORT> <secret:SHORT>xyz"
             );
         }
     }
@@ -1354,7 +1334,7 @@ mod tests {
         // A value that is a piece of another secret's placeholder must not
         // rewrite the placeholder that was just emitted.
         let secrets = store(&[("LONGNAME", "value-one"), ("X", "LONGNAME")]);
-        assert_eq!(secrets.redact("value-one"), "<secrete:LONGNAME>");
+        assert_eq!(secrets.redact("value-one"), "<secret:LONGNAME>");
     }
 
     #[test]
@@ -1363,11 +1343,11 @@ mod tests {
         let secrets = store(&[("JWT", jwt)]);
         assert_eq!(
             secrets.redact("token: eyJhbGciOiJI\nUzI1NiJ9.payload done"),
-            "token: <secrete:JWT> done"
+            "token: <secret:JWT> done"
         );
         assert_eq!(
             secrets.redact("eyJhbGciOiJI\r\nUzI1NiJ9.payload"),
-            "<secrete:JWT>"
+            "<secret:JWT>"
         );
         // One break between two characters — not a run of blank lines, and
         // never before the first character.
@@ -1377,7 +1357,7 @@ mod tests {
         );
         assert_eq!(
             secrets.redact("\neyJhbGciOiJIUzI1NiJ9.payload"),
-            "\n<secrete:JWT>"
+            "\n<secret:JWT>"
         );
     }
 
@@ -1386,7 +1366,7 @@ mod tests {
         // `12\n34` is ordinary output, not a wrapped PIN.
         let secrets = store(&[("PIN", "1234")]);
         assert_eq!(secrets.redact("12\n34"), "12\n34");
-        assert_eq!(secrets.redact("pin 1234"), "pin <secrete:PIN>");
+        assert_eq!(secrets.redact("pin 1234"), "pin <secret:PIN>");
     }
 
     #[test]
@@ -1394,13 +1374,13 @@ mod tests {
         let secrets = store(&[("KEY", "sk-live-123456789")]);
         assert_eq!(
             secrets.redact_cut_tail("output sk-live-12"),
-            "output <secrete:KEY>"
+            "output <secret:KEY>"
         );
         // A whole value is redacted as usual; a piece under four characters
         // gives nothing away and is left.
         assert_eq!(
             secrets.redact_cut_tail("full sk-live-123456789"),
-            "full <secrete:KEY>"
+            "full <secret:KEY>"
         );
         assert_eq!(secrets.redact_cut_tail("ends sk-"), "ends sk-");
         assert_eq!(secrets.redact_cut_tail("no secret"), "no secret");
@@ -1409,7 +1389,7 @@ mod tests {
     #[test]
     fn expansion_then_redaction_round_trips() {
         let secrets = store(&[("ROOT_PASSWORD", "hunter22")]);
-        let command = "printf '%s' <secrete:ROOT_PASSWORD>";
+        let command = "printf '%s' <secret:ROOT_PASSWORD>";
         let expanded = secrets.expand(command);
         assert_eq!(expanded, "printf '%s' hunter22");
         assert_eq!(secrets.redact(&expanded), command);
@@ -1418,32 +1398,24 @@ mod tests {
     #[test]
     fn arguments_expand_inside_every_json_string() {
         let secrets = store(&[("PW", "p\"w\\x9")]);
-        let arguments = r#"{"command":"login <secrete:PW>","nested":{"list":["<secrete:PW>",1,true]},"<secrete:PW>":"key stays"}"#;
+        let arguments = r#"{"command":"login <secret:PW>","nested":{"list":["<secret:PW>",1,true]},"<secret:PW>":"key stays"}"#;
         let expanded = expand_arguments(&secrets, arguments).unwrap().unwrap();
         let value: serde_json::Value = serde_json::from_str(&expanded).unwrap();
         assert_eq!(value["command"], "login p\"w\\x9");
         assert_eq!(value["nested"]["list"][0], "p\"w\\x9");
         assert_eq!(value["nested"]["list"][1], 1);
         // Keys are not arguments.
-        assert_eq!(value["<secrete:PW>"], "key stays");
+        assert_eq!(value["<secret:PW>"], "key stays");
     }
 
     #[test]
     fn arguments_with_nothing_to_expand_are_left_to_the_model() {
         let secrets = store(&[("PW", "hunter22")]);
         assert_eq!(expand_arguments(&secrets, r#"{"command":"ls"}"#), Ok(None));
-        assert_eq!(
-            expand_arguments(&secrets, "not json <secrete:PW>"),
-            Ok(None)
-        );
+        assert_eq!(expand_arguments(&secrets, "not json <secret:PW>"), Ok(None));
         // Nothing stored is nothing to check: the text goes through as written.
         assert_eq!(
-            expand_arguments(&SecretStore::new(), r#"{"c":"<secrete:PW>"}"#),
-            Ok(None)
-        );
-        // The alias spelling naming nothing is ordinary text.
-        assert_eq!(
-            expand_arguments(&secrets, r#"{"c":"<secret:NOPE>"}"#),
+            expand_arguments(&SecretStore::new(), r#"{"c":"<secret:PW>"}"#),
             Ok(None)
         );
     }
@@ -1455,21 +1427,21 @@ mod tests {
         // written — so the call is refused before anything runs.
         let secrets = store(&[("PW", "hunter22"), ("TOKEN", "tok-9876")]);
         for arguments in [
-            r#"{"command":"echo <secrete:NOPE>"}"#,
-            r#"{"command":"login <secrete:PW> <secrete:NOPE>"}"#,
-            r#"{"a":{"list":[1,"<secrete:NOPE>"]}}"#,
+            r#"{"command":"echo <secret:NOPE>"}"#,
+            r#"{"command":"login <secret:PW> <secret:NOPE>"}"#,
+            r#"{"a":{"list":[1,"<secret:NOPE>"]}}"#,
         ] {
             let refusal = expand_arguments(&secrets, arguments).unwrap_err();
-            assert!(refusal.contains("<secrete:NOPE>"), "{refusal}");
+            assert!(refusal.contains("<secret:NOPE>"), "{refusal}");
             assert_eq!(check_arguments(&secrets, arguments), Err(refusal));
         }
         assert_eq!(
-            check_arguments(&secrets, r#"{"input":"<secrete:pw>\n"}"#),
+            check_arguments(&secrets, r#"{"input":"<secret:pw>\n"}"#),
             Ok(())
         );
-        assert_eq!(check_arguments(&secrets, "not json <secrete:NOPE>"), Ok(()));
+        assert_eq!(check_arguments(&secrets, "not json <secret:NOPE>"), Ok(()));
         assert_eq!(
-            check_arguments(&SecretStore::new(), r#"{"c":"<secrete:NOPE>"}"#),
+            check_arguments(&SecretStore::new(), r#"{"c":"<secret:NOPE>"}"#),
             Ok(())
         );
     }
@@ -1479,19 +1451,19 @@ mod tests {
         let secrets = store(&[("ROOT_PASSWORD", "hunter22")]);
         assert_eq!(
             secrets.unknown_placeholders(
-                "<secrete:ROOT_PASWORD> <secrete:root_password> <secrete:TOKEN> \
-                 <secrete:TOKEN> <secret:OTHER>"
+                "<secret:ROOT_PASWORD> <secret:root_password> <secret:TOKEN> \
+                 <secret:TOKEN> <secret:OTHER>"
             ),
-            ["ROOT_PASWORD", "TOKEN"]
+            ["ROOT_PASWORD", "TOKEN", "OTHER"]
         );
         assert!(
             secrets
-                .unknown_placeholders("<secrete:ROOT_PASSWORD> <secrete:> <secrete:A B>")
+                .unknown_placeholders("<secret:ROOT_PASSWORD> <secret:> <secret:A B>")
                 .is_empty()
         );
         assert!(
             SecretStore::new()
-                .unknown_placeholders("<secrete:ANY>")
+                .unknown_placeholders("<secret:ANY>")
                 .is_empty()
         );
     }
@@ -1501,22 +1473,22 @@ mod tests {
         let secrets = store(&[("PW", "hunter22"), ("TOKEN", "tok-9876")]);
         assert_eq!(
             secrets.unknown_refusal(&["NOPE".to_string()]),
-            "Not run: <secrete:NOPE> is not a stored secret. Stored: <secrete:PW>, \
-             <secrete:TOKEN>. The user adds secrets with /secrete."
+            "Not run: <secret:NOPE> is not a stored secret. Stored: <secret:PW>, \
+             <secret:TOKEN>. The user adds secrets with /secrets."
         );
         assert_eq!(
             secrets.unknown_refusal(&["A".to_string(), "B".to_string()]),
-            "Not run: <secrete:A>, <secrete:B> are not stored secrets. Stored: \
-             <secrete:PW>, <secrete:TOKEN>. The user adds secrets with /secrete."
+            "Not run: <secret:A>, <secret:B> are not stored secrets. Stored: \
+             <secret:PW>, <secret:TOKEN>. The user adds secrets with /secrets."
         );
     }
 
     #[test]
     fn one_refusal_covers_every_text_of_a_call() {
         let secrets = store(&[("PW", "hunter22")]);
-        assert_eq!(secrets.refusal_for(["<secrete:PW>", "plain"]), None);
+        assert_eq!(secrets.refusal_for(["<secret:PW>", "plain"]), None);
         assert_eq!(
-            secrets.refusal_for(["<secrete:A>", "<secrete:PW> <secrete:A>", "<secrete:B>"]),
+            secrets.refusal_for(["<secret:A>", "<secret:PW> <secret:A>", "<secret:B>"]),
             Some(secrets.unknown_refusal(&["A".to_string(), "B".to_string()]))
         );
     }
@@ -1525,16 +1497,16 @@ mod tests {
     fn a_checked_expansion_refuses_what_a_plain_one_leaves_alone() {
         let secrets = store(&[("PW", "hunter22")]);
         assert_eq!(
-            secrets.expand_checked("echo <secrete:PW>").as_deref(),
+            secrets.expand_checked("echo <secret:PW>").as_deref(),
             Ok("echo hunter22")
         );
-        let refusal = secrets.expand_checked("echo <secrete:NOPE>").unwrap_err();
-        assert!(refusal.contains("<secrete:NOPE>"), "{refusal}");
+        let refusal = secrets.expand_checked("echo <secret:NOPE>").unwrap_err();
+        assert!(refusal.contains("<secret:NOPE>"), "{refusal}");
         assert_eq!(
             SecretStore::new()
-                .expand_checked("<secrete:NOPE>")
+                .expand_checked("<secret:NOPE>")
                 .as_deref(),
-            Ok("<secrete:NOPE>")
+            Ok("<secret:NOPE>")
         );
     }
 
@@ -1578,7 +1550,7 @@ mod tests {
         };
         assert_eq!(
             secrets.listing(),
-            "- <secrete:ROOT_PASSWORD>: Root password for the staging box\n- <secrete:TOKEN>"
+            "- <secret:ROOT_PASSWORD>: Root password for the staging box\n- <secret:TOKEN>"
         );
         assert_eq!(SecretStore::new().listing(), "");
     }
@@ -1590,7 +1562,7 @@ mod tests {
             secrets: vec![secret("KEY", "hunter22", &context)],
         };
         let listing = secrets.listing();
-        let shown = listing.strip_prefix("- <secrete:KEY>: ").unwrap();
+        let shown = listing.strip_prefix("- <secret:KEY>: ").unwrap();
         assert_eq!(shown.chars().count(), MAX_SECRET_CONTEXT_CHARS);
         assert!(shown.ends_with('…'));
     }
@@ -1598,8 +1570,8 @@ mod tests {
     #[test]
     fn the_section_puts_the_header_over_the_listing() {
         assert_eq!(
-            secret_section("- <secrete:KEY>"),
-            format!("{SECRET_LISTING_HEADER}\n\n- <secrete:KEY>")
+            secret_section("- <secret:KEY>"),
+            format!("{SECRET_LISTING_HEADER}\n\n- <secret:KEY>")
         );
         assert_eq!(secret_section(""), "");
         assert_eq!(secret_section(" \n"), "");
@@ -1630,7 +1602,7 @@ mod tests {
         assert_eq!(stream.held(), "sk-li");
         out.push_str(&stream.push(&secrets, "ve-1234 done\n"));
         out.push_str(&stream.finish(&secrets));
-        assert_eq!(out, "token: <secrete:KEY> done\n");
+        assert_eq!(out, "token: <secret:KEY> done\n");
         assert_eq!(stream.held(), "");
     }
 
@@ -1643,7 +1615,7 @@ mod tests {
         let mut out = stream.push(&secrets, "x1234");
         out.push_str(&stream.push(&secrets, " ok"));
         out.push_str(&stream.finish(&secrets));
-        assert_eq!(out, "x<secrete:V> ok");
+        assert_eq!(out, "x<secret:V> ok");
     }
 
     #[test]
@@ -1653,13 +1625,13 @@ mod tests {
         let mut out = stream.push(&secrets, "id 1234");
         out.push_str(&stream.push(&secrets, "567 end"));
         out.push_str(&stream.finish(&secrets));
-        assert_eq!(out, "id <secrete:LONG> end");
+        assert_eq!(out, "id <secret:LONG> end");
         // …and the shorter one when the longer never completes.
         let mut stream = StreamRedactor::default();
         let mut out = stream.push(&secrets, "id 1234");
         out.push_str(&stream.push(&secrets, "5 end"));
         out.push_str(&stream.finish(&secrets));
-        assert_eq!(out, "id <secrete:SHORT>5 end");
+        assert_eq!(out, "id <secret:SHORT>5 end");
     }
 
     #[test]
@@ -1672,7 +1644,7 @@ mod tests {
         ]);
         let text = "zabcdefgh!abcdabcdfgh!abcdefg 01234567\n89abcdef 0123";
         let whole = secrets.redact(text).into_owned();
-        assert!(whole.contains("<secrete:WRAPPED>"), "{whole}");
+        assert!(whole.contains("<secret:WRAPPED>"), "{whole}");
         for split in 0..=text.len() {
             let mut stream = StreamRedactor::default();
             let mut out = stream.push(&secrets, &text[..split]);
@@ -1737,19 +1709,19 @@ mod tests {
         registry.replace(store(&[("KEY", "sk-live-1234")]));
         assert!(!clone.is_empty());
         assert_eq!(clone.metas()[0].name, "KEY");
-        assert_eq!(clone.redact("x sk-live-1234"), "x <secrete:KEY>");
-        assert_eq!(clone.expand("<secrete:KEY>"), "sk-live-1234");
+        assert_eq!(clone.redact("x sk-live-1234"), "x <secret:KEY>");
+        assert_eq!(clone.expand("<secret:KEY>"), "sk-live-1234");
         assert_eq!(
-            clone.expand_arguments(r#"{"c":"<secrete:KEY>"}"#),
+            clone.expand_arguments(r#"{"c":"<secret:KEY>"}"#),
             Ok(Some(r#"{"c":"sk-live-1234"}"#.to_string()))
         );
         assert_eq!(
-            clone.expand_checked("<secrete:KEY>").as_deref(),
+            clone.expand_checked("<secret:KEY>").as_deref(),
             Ok("sk-live-1234")
         );
-        assert!(clone.expand_checked("<secrete:NOPE>").is_err());
-        assert!(clone.check_arguments(r#"{"c":"<secrete:NOPE>"}"#).is_err());
-        assert_eq!(clone.listing(), "- <secrete:KEY>");
+        assert!(clone.expand_checked("<secret:NOPE>").is_err());
+        assert!(clone.check_arguments(r#"{"c":"<secret:NOPE>"}"#).is_err());
+        assert_eq!(clone.listing(), "- <secret:KEY>");
         assert_eq!(clone.snapshot().names(), ["KEY"]);
     }
 }

@@ -163,7 +163,7 @@ pub enum CommandEffect {
     /// addresses, each one copyable. Works **mid-turn** like `/hooks` — it
     /// only replaces the composer. See `docs/donate.md`.
     Donate,
-    /// Open the `/secrete` page: the user's secrets — credentials the agent
+    /// Open the `/secrets` page: the user's secrets — credentials the agent
     /// uses by placeholder without ever seeing the value — to add, edit and
     /// delete. Works **mid-turn** like `/skills`: it only replaces the
     /// composer, and a change reaches the very next tool call. See
@@ -306,10 +306,8 @@ pub const COMMANDS: &[SlashCommand] = &[
         "Support the project with a crypto donation",
         CommandEffect::Donate,
     ),
-    // The command and its placeholder are spelled `secrete` — the user's
-    // own spelling, kept verbatim (docs/secrets.md).
     SlashCommand::builtin(
-        "secrete",
+        "secrets",
         "Store credentials the agent uses but never sees",
         CommandEffect::Secrets,
     ),
@@ -626,7 +624,7 @@ impl App {
                 Action::OpenDonatePicker
             }
             CommandEffect::Secrets => {
-                // /secrete works mid-turn like /skills: the page only
+                // /secrets works mid-turn like /skills: the page only
                 // replaces the composer, and a save reaches the next tool
                 // call through the shared store. The pure open happens here;
                 // the *loop* reloads the file and injects what the page may

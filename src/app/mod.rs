@@ -519,7 +519,7 @@ pub struct App {
     /// sibling (no text entry) over the two export targets — the clipboard
     /// or a `conversation-….txt` file in the cwd. See `docs/export.md`.
     pub export_picker: Option<ExportPicker>,
-    /// The open `/secrete` page; `None` when closed — the list of the user's
+    /// The open `/secrets` page; `None` when closed — the list of the user's
     /// secrets and the form that adds or edits one, values masked
     /// throughout. See `docs/secrets.md`.
     pub secrets_page: Option<SecretsPage>,

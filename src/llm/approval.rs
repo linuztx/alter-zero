@@ -1537,20 +1537,20 @@ mod tests {
         std::fs::write(&path, "HOST=db\nPASSWORD=hunter22\nPORT=5432\n").unwrap();
         let args = serde_json::json!({
             "path": path.to_str().unwrap(),
-            "old_string": "PASSWORD=<secrete:ROOT_PASSWORD>",
-            "new_string": "PASSWORD=<secrete:TOKEN>",
+            "old_string": "PASSWORD=<secret:ROOT_PASSWORD>",
+            "new_string": "PASSWORD=<secret:TOKEN>",
         });
         let (request, approval) =
             ask_with_secrets(call("edit", &args.to_string()), PermissionDecision::Approve);
         assert_eq!(approval, Approval::Allow);
         assert_eq!(request.kind, PermissionKind::Edit);
         assert!(
-            request.body.contains("-PASSWORD=<secrete:ROOT_PASSWORD>"),
+            request.body.contains("-PASSWORD=<secret:ROOT_PASSWORD>"),
             "{}",
             request.body
         );
         assert!(
-            request.body.contains("+PASSWORD=<secrete:TOKEN>"),
+            request.body.contains("+PASSWORD=<secret:TOKEN>"),
             "{}",
             request.body
         );
@@ -1570,14 +1570,14 @@ mod tests {
         std::fs::write(&path, "TOKEN=sk-live-0123456789\n").unwrap();
         let args = serde_json::json!({
             "path": path.to_str().unwrap(),
-            "content": "TOKEN=<secrete:TOKEN>\nDEBUG=1\n",
+            "content": "TOKEN=<secret:TOKEN>\nDEBUG=1\n",
         });
         let (request, _) = ask_with_secrets(
             call("write", &args.to_string()),
             PermissionDecision::Approve,
         );
         assert!(
-            request.body.contains("TOKEN=<secrete:TOKEN>"),
+            request.body.contains("TOKEN=<secret:TOKEN>"),
             "{}",
             request.body
         );
@@ -1598,10 +1598,10 @@ mod tests {
         let cancel = CancelToken::new();
         cancel.cancel();
         for (name, arguments) in [
-            ("bash", r#"{"command":"echo <secrete:TOKN>"}"#),
+            ("bash", r#"{"command":"echo <secret:TOKN>"}"#),
             (
                 "bashsend",
-                r#"{"session_id":"b1","input":"<secrete:TOKN>\n"}"#,
+                r#"{"session_id":"b1","input":"<secret:TOKN>\n"}"#,
             ),
         ] {
             let approval = approve_call(
@@ -1620,7 +1620,7 @@ mod tests {
                 panic!("{name}: {approval:?}");
             };
             assert!(
-                display.starts_with("Not run: <secrete:TOKN> is not a stored secret."),
+                display.starts_with("Not run: <secret:TOKN> is not a stored secret."),
                 "{display}"
             );
             assert_eq!(display, result);
@@ -1630,13 +1630,13 @@ mod tests {
 
     #[test]
     fn a_command_asks_and_is_remembered_by_its_placeholder() {
-        let command = r#"{"command":"curl -H 'Authorization: Bearer <secrete:TOKEN>' https://api.example.com"}"#;
+        let command = r#"{"command":"curl -H 'Authorization: Bearer <secret:TOKEN>' https://api.example.com"}"#;
         let (request, approval) =
             ask_with_secrets(call("bash", command), PermissionDecision::Approve);
         assert_eq!(approval, Approval::Allow);
         assert_eq!(
             request.target,
-            "curl -H 'Authorization: Bearer <secrete:TOKEN>' https://api.example.com"
+            "curl -H 'Authorization: Bearer <secret:TOKEN>' https://api.example.com"
         );
     }
 }

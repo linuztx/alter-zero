@@ -1,4 +1,4 @@
-//! The `/secrete` page: the user's secrets listed by placeholder, their
+//! The `/secrets` page: the user's secrets listed by placeholder, their
 //! values masked, and the form that adds or edits one. See
 //! `docs/secrets.md`.
 //!
@@ -206,7 +206,7 @@ impl App {
         }
     }
 
-    /// Open the `/secrete` page on its first row — the first secret, or the
+    /// Open the `/secrets` page on its first row — the first secret, or the
     /// add row when there is none. Abandons any `?` band / palette / file
     /// picker (they share the composer the page takes over) — every picker's
     /// open rule.
