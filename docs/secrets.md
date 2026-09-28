@@ -179,22 +179,25 @@ section**, after the skills and the agent types (`Session::sync_listings` →
 `App::listings`; `docs/context.md`):
 
 ```
-The user's secrets, as placeholders: write one verbatim in any tool call
-argument (…) and the tool gets the real value, inserted as-is, so quote it in
-shell commands. Output shows the placeholder wherever the exact value
-appears, but not an encoded or hashed form, so pass placeholders straight to
-what needs them. Use them whenever a task needs these credentials; the values
-are hidden from you on purpose, so never ask for or try to reveal them.
+Each <secret:NAME> below is one of the user's credentials. Use it verbatim
+in any tool argument and the tool gets the real value (quote it in shell).
+Output shows the placeholder only where the exact value appears, so never
+encode or hash one. Never ask for or reveal a value.
 
 - <secret:ROOT_PASSWORD>: Root password for the staging box
 - <secret:VENICE_API_KEY>
 ```
 
-The middle sentence is the one limit the model has to know about: masking
-is exact text, so a Basic-auth header `curl -v` prints, or a base64 of the
-value, would show the secret to the model and the screen alike — told so,
-the model hands the placeholder to what needs it instead of transforming it
-itself. The header is pinned under 85 words: it rides every request.
+Four sentences, each a behaviour the live suite relies on: what the
+placeholders are, that one goes into the tool call as written (a command,
+a file's content, typed input — "any tool argument"), quoted for the shell
+since the value is inserted as-is, and that a value is never asked for. The
+third is the one limit the model has to know about: masking is exact text,
+so a Basic-auth header `curl -v` prints, or a base64 of the value, would
+show the secret to the model and the screen alike — told so, the model
+hands the placeholder to what needs it instead of transforming it itself.
+The header rides every request, so it is pinned at 55 words and each of
+those points by a test (`the_header_says_what_the_placeholders_are_for_and_stays_short`).
 
 Last because it changes least often of the three and the reminder is a
 prompt-cache prefix. Gated on **Tools** (`/settings`): without tools a

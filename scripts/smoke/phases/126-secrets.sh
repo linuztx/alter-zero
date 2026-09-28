@@ -120,7 +120,7 @@ keys "$S126" Home
 sleep 0.5
 context="$(pane "$S126")"
 dump "the derived context" "$context"
-expect_has "$context" -F "The user's secrets, as placeholders" "the reminder has no secrets section"
+expect_has "$context" -F "is one of the user's credentials" "the reminder has no secrets section"
 expect_has "$context" -F "<secret:DEMO_TOKEN>: Demo token for the smoke test" "the reminder does not list the secret"
 if printf '%s\n' "$context" | grep -qF "$VALUE"; then
 	fail "the value is in the derived context"

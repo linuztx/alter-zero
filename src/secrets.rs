@@ -54,7 +54,7 @@ pub const SECRETS_FILE_NAME: &str = "secrets.json";
 /// The secrets section's header in the `<system-reminder>` — what the
 /// placeholders are for and how to use them, in as few words as say it. The
 /// listing follows it ([`secret_section`]).
-pub const SECRET_LISTING_HEADER: &str = "The user's secrets, as placeholders: write one verbatim in any tool call argument (a command, file content, typed input) and the tool gets the real value, inserted as-is, so quote it in shell commands. Output shows the placeholder wherever the exact value appears, but not an encoded or hashed form, so pass placeholders straight to what needs them. Use them whenever a task needs these credentials; the values are hidden from you on purpose, so never ask for or try to reveal them.";
+pub const SECRET_LISTING_HEADER: &str = "Each <secret:NAME> below is one of the user's credentials. Use it verbatim in any tool argument and the tool gets the real value (quote it in shell). Output shows the placeholder only where the exact value appears, so never encode or hash one. Never ask for or reveal a value.";
 
 /// A secret's value. Never printed: its `Debug` says `<redacted>`, it has no
 /// `Display`, and the one way to read it is [`expose`](Self::expose), whose
@@ -1579,18 +1579,26 @@ mod tests {
 
     #[test]
     fn the_header_says_what_the_placeholders_are_for_and_stays_short() {
-        assert!(SECRET_LISTING_HEADER.contains("placeholder"));
-        assert!(SECRET_LISTING_HEADER.contains("tool"));
-        // Masking is exact text: a model told only that output shows the
-        // placeholder prints a Basic-auth header or a base64 of the value
-        // believing it hidden.
-        assert!(
-            SECRET_LISTING_HEADER.contains("encoded or hashed"),
-            "{SECRET_LISTING_HEADER}"
-        );
-        // It rides every request.
+        // What the model must take from it, each a behaviour the live suite
+        // relies on: the syntax, that a placeholder goes into the tool call
+        // as written, quoting it for the shell, that masking is exact text
+        // only (a base64 or a hash of a value would show), and that a value
+        // is never asked for.
+        for needle in [
+            "<secret:NAME>",
+            "verbatim",
+            "quote",
+            "encode or hash",
+            "Never ask for or reveal",
+        ] {
+            assert!(
+                SECRET_LISTING_HEADER.contains(needle),
+                "{needle}: {SECRET_LISTING_HEADER}"
+            );
+        }
+        // It rides every request, so every word earns its place.
         let words = SECRET_LISTING_HEADER.split_whitespace().count();
-        assert!(words <= 85, "{words} words");
+        assert!(words <= 55, "{words} words");
     }
 
     #[test]
