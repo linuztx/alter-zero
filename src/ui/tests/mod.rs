@@ -39,6 +39,7 @@ mod palette;
 mod permission_view;
 mod reasoning;
 mod resume_view;
+mod secrets_view;
 mod settings_view;
 mod skills_view;
 mod spinner_view;
@@ -61,6 +62,51 @@ pub(super) fn rgb_of(color: Color) -> (u8, u8, u8) {
         Color::Rgb(r, g, b) => (r, g, b),
         other => panic!("expected an RGB colour, got {other:?}"),
     }
+}
+
+/// Whether `line` is a page title in the pages' one title dress
+/// (`docs/theme.md`): its words washed in the active theme's banner
+/// gradient — opening on the gradient's start, at least two inks across
+/// them — and bold throughout.
+pub(super) fn wears_the_title_dress(line: &Line) -> bool {
+    let words: Vec<&Span> = line
+        .spans
+        .iter()
+        .filter(|span| !span.content.trim().is_empty())
+        .collect();
+    let inks: std::collections::HashSet<(u8, u8, u8)> = words
+        .iter()
+        .filter_map(|span| span.style.fg)
+        .map(rgb_of)
+        .collect();
+    words.first().and_then(|span| span.style.fg) == Some(crate::ui::theme::header_gradient_start())
+        && inks.len() >= 2
+        && words
+            .iter()
+            .all(|span| span.style.add_modifier.contains(Modifier::BOLD))
+}
+
+/// [`wears_the_title_dress`] for a title painted into a buffer: row `y`
+/// from the inset column to its last glyph, read back cell by cell.
+pub(super) fn painted_title_wears_the_dress(buf: &Buffer, y: u16) -> bool {
+    let cells: Vec<&ratatui::buffer::Cell> = (2..buf.area.width).map(|x| &buf[(x, y)]).collect();
+    let end = cells
+        .iter()
+        .rposition(|cell| !cell.symbol().trim().is_empty())
+        .map_or(0, |last| last + 1);
+    let title = &cells[..end];
+    let inks: std::collections::HashSet<(u8, u8, u8)> = title
+        .iter()
+        .filter(|cell| !cell.symbol().trim().is_empty())
+        .map(|cell| rgb_of(cell.fg))
+        .collect();
+    !title.is_empty()
+        && title[0].fg == crate::ui::theme::header_gradient_start()
+        && inks.len() >= 2
+        && title
+            .iter()
+            .filter(|cell| !cell.symbol().trim().is_empty())
+            .all(|cell| cell.modifier.contains(Modifier::BOLD))
 }
 
 /// Concatenate a line's span contents into its plain text.

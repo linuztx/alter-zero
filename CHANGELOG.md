@@ -12,6 +12,32 @@ release heading when a version is cut.
 
 ## [Unreleased]
 
+### Added
+
+- **`/secrets` — credentials the agent uses but never sees.** Store a
+  secret — a name, a value and a line of context — on a new page, and the
+  agent uses it by writing its placeholder, `<secret:ROOT_PASSWORD>`, in a
+  command, a file or typed input: the placeholder becomes the value only
+  inside the tool that runs, and the value becomes the placeholder again in
+  everything the tool reports, the permission prompt's preview and the
+  `/diff` review included. The agent is told the names and the context in
+  its `<system-reminder>`, never the values, so a session can be recorded or
+  shared without showing a password or an API key. A placeholder naming a
+  secret that is not stored is refused before anything runs, with the names
+  that are, so a typo is never typed at a password prompt or written into a
+  config file; and auto mode's reviewer is told what a placeholder is, so
+  using one for its own service is not read as credential theft. The page
+  masks every value, `secrets.json` is written owner-only, and a `!` command
+  expands, refuses and redacts the same way (`docs/secrets.md`).
+
+### Changed
+
+- **Every page's title wears the theme.** The titles of `/hooks`, `/mcp`,
+  `/trust`, `/export`, the ↓ shell manager and the `/login` pages are now
+  bold and washed in the active theme's banner gradient, as `/donate` and
+  `/secrets` already were, instead of one flat colour — so they change with
+  `/theme` the way the banner does (`docs/theme.md`).
+
 ### Fixed
 
 - **A build that compiles in silence is no longer handed back halfway.** A

@@ -748,6 +748,14 @@ pub(crate) fn skills_json_path() -> Option<PathBuf> {
     config_home().map(|dir| dir.join("skills.json"))
 }
 
+/// The secrets file — `{config_home}/secrets.json`, per **user** like the
+/// `.env` key store (a credential belongs to the person, not the directory)
+/// and written owner-only (`docs/secrets.md`). `None` (no config home)
+/// disables persistence: the page still works for the session.
+pub(crate) fn secrets_json_path() -> Option<PathBuf> {
+    config_home().map(|dir| dir.join(alter_zero::secrets::SECRETS_FILE_NAME))
+}
+
 /// The banner-mascot file — `{config_home}/mascot.json`, its own file beside
 /// the rest (one file per feature that owns it, `docs/mascot.md`), keyed by
 /// working directory inside (`docs/per-directory-state.md`). `None` (no

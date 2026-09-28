@@ -312,6 +312,10 @@ pub struct BackgroundRegistry {
     /// (`docs/bash-tools.md`); off, every command runs on a pipe
     /// ([`without_terminals`](BackgroundRegistry::without_terminals)).
     terminals: bool,
+    /// The user's secrets (`docs/secrets.md`), when attached: what a task
+    /// reports is redacted before it leaves the registry
+    /// ([`with_secrets`](BackgroundRegistry::with_secrets)).
+    secrets: Option<crate::secrets::SecretRegistry>,
 }
 
 impl std::fmt::Debug for BackgroundRegistry {
@@ -336,6 +340,34 @@ impl BackgroundRegistry {
             events,
             detach: None,
             terminals: true,
+            secrets: None,
+        }
+    }
+
+    /// Attach the user's secrets (`docs/secrets.md`): a task's command is
+    /// kept redacted — the list, the manager and the notices read the
+    /// placeholder the model wrote — and its output and screen are redacted
+    /// on their way to the event loop.
+    #[must_use]
+    pub fn with_secrets(mut self, secrets: crate::secrets::SecretRegistry) -> Self {
+        self.secrets = Some(secrets);
+        self
+    }
+
+    /// The attached secrets — the shell-infrastructure handle every runner
+    /// already shares carries them the way it carries the detach helper, so
+    /// the executor, the `!` runner and every backend build reach the one
+    /// store (`docs/secrets.md`).
+    #[must_use]
+    pub fn secrets(&self) -> Option<&crate::secrets::SecretRegistry> {
+        self.secrets.as_ref()
+    }
+
+    /// `text` with the attached secrets' values redacted — itself without.
+    fn redact(&self, text: String) -> String {
+        match &self.secrets {
+            Some(secrets) => secrets.redact(&text),
+            None => text,
         }
     }
 
@@ -569,13 +601,20 @@ impl BackgroundRegistry {
     /// [`adopt`]: BackgroundRegistry::adopt
     fn register(
         &self,
-        launch: Launch,
+        mut launch: Launch,
         child: Child,
         chunk_rx: mpsc::Receiver<Vec<u8>>,
         prior: Vec<u8>,
         terminal: Terminal,
         announce: bool,
     ) -> Registered {
+        // The command ran expanded, and so did its description (the executor
+        // expands every string of the call); everything that names them from
+        // here on — the list, the manager, a prompt's detail, the completion
+        // notice and the model's note — reads the placeholder the model wrote
+        // (docs/secrets.md).
+        launch.command = self.redact(launch.command);
+        launch.description = launch.description.map(|text| self.redact(text));
         let kill = CancelToken::new();
         let (input, terminal, tty) = match terminal {
             Terminal::Pipe => (None, None, false),
@@ -632,7 +671,17 @@ impl BackgroundRegistry {
         if let Some(parent) = output_path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        let file = File::create(&output_path).ok();
+        // Owner-only: the log is the output raw, and a command may print a
+        // secret's value into it (docs/secrets.md) — under a temp dir, where
+        // the default mode would let every user read it.
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let file = options.open(&output_path).ok();
         // A report that has to cut the output names the file with all of it
         // (`pty::fold::HeadTail`, docs/bash-tools.md).
         if file.is_some() {
@@ -683,7 +732,7 @@ impl BackgroundRegistry {
         if let Some(text) = io.screen_text() {
             let _ = self.events.send(BgEvent::Screen {
                 id: id.to_string(),
-                text,
+                text: self.redact(text),
             });
         }
     }
@@ -1251,7 +1300,7 @@ impl MonitorHandle {
         if let Some(text) = self.io.screen_text() {
             let _ = self.registry.events.send(BgEvent::Screen {
                 id: self.id.clone(),
-                text,
+                text: self.registry.redact(text),
             });
         }
         pacer.dirty = false;
@@ -1262,9 +1311,11 @@ impl MonitorHandle {
         if chunk.is_empty() || !self.io.announced() {
             return;
         }
+        // Folded output arrives as whole lines, so a value inside one never
+        // straddles two sends (docs/secrets.md).
         let _ = self.registry.events.send(BgEvent::Output {
             id: self.id.clone(),
-            chunk,
+            chunk: self.registry.redact(chunk),
         });
     }
 }
@@ -1600,6 +1651,74 @@ mod tests {
         // The interim file got the full output too.
         let teed = std::fs::read_to_string(&task.output_path).expect("tee file exists");
         assert_eq!(teed, "a\nb\n");
+        std::fs::remove_file(&task.output_path).ok();
+    }
+
+    fn test_secrets() -> crate::secrets::SecretRegistry {
+        let mut store = crate::secrets::SecretStore::new();
+        store
+            .apply(&crate::secrets::SecretDraft {
+                original: None,
+                name: "ROOT_PASSWORD".into(),
+                value: Some(crate::secrets::SecretValue::new("hunter22")),
+                context: String::new(),
+            })
+            .unwrap();
+        crate::secrets::SecretRegistry::new(store)
+    }
+
+    #[test]
+    fn a_registry_with_secrets_never_reports_a_value() {
+        // The command and its description reached the registry already
+        // expanded — the executor expands every string of the call — and its
+        // output prints the value: the ↓ manager, the shell list, the
+        // completion notice and the model's completion note all read the
+        // placeholder (docs/secrets.md).
+        let (reg, mut rx) = registry();
+        let reg = reg.with_secrets(test_secrets());
+        let task = reg
+            .launch(
+                "printf 'pw=%s\\n' hunter22; sleep 1",
+                Some("Print hunter22".into()),
+                true,
+            )
+            .expect("launches");
+        let BgEvent::Started {
+            command,
+            description,
+            ..
+        } = next(&mut rx)
+        else {
+            panic!("expected Started first");
+        };
+        assert_eq!(command, "printf 'pw=%s\\n' <secret:ROOT_PASSWORD>; sleep 1");
+        assert_eq!(description.as_deref(), Some("Print <secret:ROOT_PASSWORD>"));
+        let listed = reg.running();
+        assert!(
+            listed
+                .iter()
+                .all(|shell| !shell.command.contains("hunter22")),
+            "{listed:?}"
+        );
+        assert_eq!(output_until_exit(&mut rx), "pw=<secret:ROOT_PASSWORD>\n");
+        std::fs::remove_file(&task.output_path).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_tasks_output_file_is_owner_only() {
+        // The log holds a command's output raw — a secret's value included,
+        // when a command prints one (docs/secrets.md) — under a temp dir, so
+        // no other user may read it.
+        use std::os::unix::fs::PermissionsExt;
+        let (reg, mut rx) = registry();
+        let task = reg.launch("printf 'x\\n'", None, true).expect("launches");
+        let _ = output_until_exit(&mut rx);
+        let mode = std::fs::metadata(&task.output_path)
+            .expect("the tee file exists")
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600);
         std::fs::remove_file(&task.output_path).ok();
     }
 

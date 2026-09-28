@@ -34,8 +34,21 @@ impl Session<'_> {
         let generation = self.diff_generation;
         let tx = self.diff_tx.clone();
         let cwd = self.cwd.clone();
+        let secrets = self.secrets.clone();
         std::thread::spawn(move || {
-            let result = super::git_diff_loader::load(&cwd);
+            let result = super::git_diff_loader::load(&cwd).map(|mut snapshot| {
+                // A file the agent wrote a credential into holds the value on
+                // disk; the review shows the placeholder, like every other
+                // view of the session (docs/secrets.md).
+                secrets.with(|store| {
+                    for line in snapshot.files.iter_mut().flat_map(|file| &mut file.lines) {
+                        if let std::borrow::Cow::Owned(text) = store.redact(&line.text) {
+                            line.text = text;
+                        }
+                    }
+                });
+                snapshot
+            });
             let _ = tx.send((generation, DiffUpdate::Snapshot(result)));
         });
     }

@@ -277,6 +277,26 @@ pub enum Action {
     /// system clipboard. The loop does the I/O and raises the toast, like
     /// [`Action::CopyDeviceCode`]; the page stays open. See `docs/donate.md`.
     CopyDonationAddress(DonationAddress),
+    /// `/secrets`: the page is already open ([`App::secrets_page`]). Like
+    /// `/skills` it works mid-turn — it only replaces the composer. The loop
+    /// reloads `secrets.json`, so a secret another session added is listed,
+    /// and injects what the page may know. See `docs/secrets.md`.
+    OpenSecretsPage,
+    /// The page was dismissed (Esc from the list, or Ctrl+C):
+    /// [`App::secrets_page`] is already cleared; the loop repaints the
+    /// collapsed region.
+    CloseSecretsPage,
+    /// Enter on the form's last field with a valid draft: the loop applies
+    /// it to `secrets.json` as one read-modify-write, then answers with
+    /// [`App::secret_saved`] (the list, the reminder and the toast follow)
+    /// or [`App::secret_save_failed`]. The draft's value `Debug`-prints as
+    /// `<redacted>`. See `docs/secrets.md`.
+    SaveSecret(crate::secrets::SecretDraft),
+    /// A confirmed `d` on the list: remove this secret from `secrets.json`.
+    DeleteSecret(String),
+    /// `c` on the list: copy this secret's placeholder — never its value —
+    /// to the clipboard, through `/copy`'s path.
+    CopySecretPlaceholder(String),
     /// `/export`: open the read-only export page — the conversation as
     /// plain text, to the clipboard or a file. Like `/donate` it works
     /// mid-turn — it only replaces the composer. The loop has nothing to

@@ -81,6 +81,9 @@ use alter_zero::app::{
     SearchState,
     SessionInfo,
     SettingRow,
+    SecretField,
+    SecretForm,
+    SecretsPage,
     SettingsPicker,
     SkillMenuRow,
     SkillPicker,
@@ -239,6 +242,39 @@ use alter_zero::subagents::{
     withheld_tool_message,
 };
 
+// --- `secrets` — credentials the agent uses by placeholder (docs/secrets.md) ---
+#[rustfmt::skip]
+#[allow(unused_imports)]
+use alter_zero::secrets::{
+    MAX_SECRET_CONTEXT_CHARS,
+    MAX_SECRET_NAME_LEN,
+    MIN_SECRET_VALUE_CHARS,
+    PLACEHOLDER_CLOSE,
+    PLACEHOLDER_OPEN,
+    SECRETS_FILE_NAME,
+    SECRET_LISTING_HEADER,
+    WRAP_MATCH_MIN_CHARS,
+    Secret,
+    SecretDraft,
+    SecretError,
+    SecretMeta,
+    SecretRegistry,
+    SecretStore,
+    SecretValue,
+    StreamRedactor,
+    expand_arguments,
+    expands_placeholders,
+    format_secrets_file,
+    normalize_name,
+    normalize_name_char,
+    parse_secrets_file,
+    placeholder,
+    secret_section,
+    validate_draft,
+    validate_name,
+    validate_value,
+};
+
 // --- `reminder` — the `<system-reminder>` the context leads with (docs/context.md) ---
 #[rustfmt::skip]
 #[allow(unused_imports)]
@@ -380,6 +416,9 @@ use alter_zero::ui::{
     render_background_view,
     render_context_view,
     render_donate_picker,
+    render_secrets_picker,
+    secrets_picker_height,
+    secrets_view_lines,
     render_export_picker,
     render_hooks_menu,
     render_mcp_menu,

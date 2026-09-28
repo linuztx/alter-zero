@@ -215,13 +215,37 @@ pub fn approve_call(
     cancel: &CancelToken,
     agent: Option<&str>,
     call: &ToolCallRequest,
+    secrets: Option<&crate::secrets::SecretRegistry>,
 ) -> Approval {
     let Some(gate) = gate else {
         return Approval::Allow;
     };
-    let Some(mut request) = permission_request(call, agent, describe) else {
+    // The preview is of the call that will actually run: an `edit` whose
+    // `old_string` holds a placeholder only applies once expanded, and one
+    // that could not be previewed would never ask. What the prompt, the
+    // allowlist and the classifier then read is redacted back to the
+    // placeholders — a file the call touches may already hold a value
+    // (docs/secrets.md).
+    let expanded = match secrets.map(|secrets| super::secret_exec::expand_call(secrets, call)) {
+        // A placeholder naming nothing stored: nothing of the call may run,
+        // so there is nothing to ask — and a refusal decided here cannot be
+        // overtaken by a secret saved between the answer and the run.
+        Some(Err(refusal)) => {
+            return Approval::Reject {
+                display: refusal.clone(),
+                result: refusal,
+            };
+        }
+        Some(Ok(expanded)) => expanded,
+        None => None,
+    };
+    let Some(mut request) = permission_request(expanded.as_ref().unwrap_or(call), agent, describe)
+    else {
         return Approval::Allow;
     };
+    if let Some(secrets) = secrets {
+        super::secret_exec::redact_request(secrets, &mut request);
+    }
     // A `PreToolUse` hook's `permissionDecision: "ask"` means *put this to the
     // user* — so the standing allowlist is skipped for this call, which is the
     // whole point of a hook saying it (`docs/hooks.md`).
@@ -457,6 +481,7 @@ mod tests {
             &CancelToken::new(),
             None,
             &call("bash", r#"{"command":"rm -rf /"}"#),
+            None,
         );
         assert_eq!(approval, Approval::Allow);
         assert!(rx.try_recv().is_err(), "and nothing is asked");
@@ -478,7 +503,8 @@ mod tests {
                 &tx,
                 &CancelToken::new(),
                 None,
-                &call
+                &call,
+                None
             ),
             Approval::Allow
         );
@@ -514,7 +540,8 @@ mod tests {
                 &tx,
                 &cancel,
                 None,
-                &call
+                &call,
+                None
             ),
             Approval::AllowNoted {
                 note: SCRATCHPAD_ALLOWED_NOTE.to_string()
@@ -547,6 +574,7 @@ mod tests {
                     &cancel,
                     None,
                     &call,
+                    None,
                 )
             })
         };
@@ -589,6 +617,7 @@ mod tests {
                 "write",
                 &serde_json::json!({"path": path, "content": "scratch"}).to_string(),
             ),
+            None,
         );
         assert!(matches!(approval, Approval::Reject { .. }), "{approval:?}");
         assert!(rx.try_recv().is_ok(), "the prompt was raised");
@@ -613,6 +642,7 @@ mod tests {
                     &cancel,
                     None,
                     &call,
+                    None,
                 )
             })
         };
@@ -640,7 +670,8 @@ mod tests {
                 &tx,
                 &cancel,
                 None,
-                &call
+                &call,
+                None
             ),
             Approval::Allow
         );
@@ -668,6 +699,7 @@ mod tests {
                     &cancel,
                     None,
                     &call,
+                    None,
                 )
             })
         };
@@ -782,6 +814,7 @@ mod tests {
                 "bash_session",
                 r#"{"session_id":"b1","input":"rm -rf ~\n"}"#,
             ),
+            None,
         );
         assert!(
             matches!(approval, Approval::Reject { .. }),
@@ -821,6 +854,7 @@ mod tests {
             &CancelToken::new(),
             None,
             &call("bash", r#"{"command":"ls -la","description":"List files"}"#),
+            None,
         );
         assert_eq!(
             approval,
@@ -851,6 +885,7 @@ mod tests {
             &CancelToken::new(),
             None,
             &call("bash", r#"{"command":"sudo rm -rf /"}"#),
+            None,
         );
         let Approval::Reject { display, result } = approval else {
             panic!("a denied command must not run: {approval:?}");
@@ -892,6 +927,7 @@ mod tests {
                 &CancelToken::new(),
                 None,
                 &call("write", &args.to_string()),
+                None,
             ),
             Approval::Allow
         );
@@ -908,6 +944,7 @@ mod tests {
                 &CancelToken::new(),
                 None,
                 &listed,
+                None,
             ),
             Approval::Allow
         );
@@ -940,6 +977,7 @@ mod tests {
                         &cancel,
                         None,
                         &call("bash", r#"{"command":"python3 x.py"}"#),
+                        None,
                     )
                 })
             };
@@ -981,6 +1019,7 @@ mod tests {
                     &CancelToken::new(),
                     None,
                     &request,
+                    None,
                 ),
                 Approval::Allow
             );
@@ -1013,6 +1052,7 @@ mod tests {
                     &cancel,
                     None,
                     &call("bash", r#"{"command":"ls"}"#),
+                    None,
                 )
             })
         };
@@ -1058,6 +1098,7 @@ mod tests {
                     &cancel,
                     None,
                     &call("bash", r#"{"command":"python3 x.py"}"#),
+                    None,
                 )
             })
         };
@@ -1091,6 +1132,7 @@ mod tests {
             &cancel,
             None,
             &call("bash", r#"{"command":"python3 x.py"}"#),
+            None,
         );
         assert!(
             matches!(approval, Approval::Reject { .. }),
@@ -1119,6 +1161,7 @@ mod tests {
                     &cancel,
                     None,
                     &call("bash", r#"{"command":"python3 x.py"}"#),
+                    None,
                 )
             })
         };
@@ -1151,6 +1194,7 @@ mod tests {
                     &cancel,
                     None,
                     &call,
+                    None,
                 )
             })
         };
@@ -1201,6 +1245,7 @@ mod tests {
                         "mcp__deepwiki__ask_question",
                         r#"{"repoName":"a/b","question":"What?"}"#,
                     ),
+                    None,
                 )
             })
         };
@@ -1262,6 +1307,7 @@ mod tests {
                     &cancel,
                     None,
                     &call("mcp__mail__send_email", r#"{"to":"x@y.z"}"#),
+                    None,
                 )
             })
         };
@@ -1302,6 +1348,7 @@ mod tests {
                     &cancel,
                     None,
                     &call("mcp__s__t", "{}"),
+                    None,
                 )
             })
         };
@@ -1338,6 +1385,7 @@ mod tests {
                 &CancelToken::new(),
                 None,
                 &listed,
+                None,
             ),
             Approval::Allow
         );
@@ -1371,6 +1419,7 @@ mod tests {
                         &cancel,
                         None,
                         &call("mcp__s__t", "{}"),
+                        None,
                     )
                 })
             };
@@ -1412,5 +1461,182 @@ mod tests {
         assert_eq!(bare.detail, None);
         // A non-MCP unknown tool still never asks.
         assert!(permission_request(&call("mystery", "{}"), None, None).is_none());
+    }
+
+    // ===== secrets (docs/secrets.md) =====
+
+    fn secrets() -> crate::secrets::SecretRegistry {
+        let mut store = crate::secrets::SecretStore::new();
+        for (name, value) in [
+            ("ROOT_PASSWORD", "hunter22"),
+            ("TOKEN", "sk-live-0123456789"),
+        ] {
+            store
+                .apply(&crate::secrets::SecretDraft {
+                    original: None,
+                    name: name.into(),
+                    value: Some(crate::secrets::SecretValue::new(value)),
+                    context: String::new(),
+                })
+                .unwrap();
+        }
+        crate::secrets::SecretRegistry::new(store)
+    }
+
+    /// Put `call` to a fresh gate with the session's secrets, on a thread:
+    /// the request the prompt was raised with, and the approval once
+    /// `decision` answers it.
+    fn ask_with_secrets(
+        call: ToolCallRequest,
+        decision: PermissionDecision,
+    ) -> (PermissionRequest, Approval) {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let gate = PermissionGate::new();
+        let cancel = CancelToken::new();
+        let secrets = secrets();
+        let waiter = {
+            let (gate, tx, cancel) = (gate.clone(), tx.clone(), cancel.clone());
+            std::thread::spawn(move || {
+                approve_call(
+                    Some(&gate),
+                    None,
+                    None,
+                    &NoHooks,
+                    false,
+                    &tx,
+                    &cancel,
+                    None,
+                    &call,
+                    Some(&secrets),
+                )
+            })
+        };
+        let started = std::time::Instant::now();
+        let request = loop {
+            if let Ok(StreamEvent::Permission(request)) = rx.try_recv() {
+                break request;
+            }
+            assert!(
+                !waiter.is_finished() && started.elapsed() < std::time::Duration::from_secs(5),
+                "no prompt was raised"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        };
+        gate.resolve(&request.id, decision);
+        (request, waiter.join().unwrap())
+    }
+
+    #[test]
+    fn an_edit_through_a_placeholder_still_asks_with_a_redacted_preview() {
+        // The file holds the value; the model's `old_string` holds the
+        // placeholder. Previewed as the model wrote it, the edit would not
+        // apply — and an edit with no preview is one that never asks, which
+        // the expansion would then have run unprompted.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("server.env");
+        std::fs::write(&path, "HOST=db\nPASSWORD=hunter22\nPORT=5432\n").unwrap();
+        let args = serde_json::json!({
+            "path": path.to_str().unwrap(),
+            "old_string": "PASSWORD=<secret:ROOT_PASSWORD>",
+            "new_string": "PASSWORD=<secret:TOKEN>",
+        });
+        let (request, approval) =
+            ask_with_secrets(call("edit", &args.to_string()), PermissionDecision::Approve);
+        assert_eq!(approval, Approval::Allow);
+        assert_eq!(request.kind, PermissionKind::Edit);
+        assert!(
+            request.body.contains("-PASSWORD=<secret:ROOT_PASSWORD>"),
+            "{}",
+            request.body
+        );
+        assert!(
+            request.body.contains("+PASSWORD=<secret:TOKEN>"),
+            "{}",
+            request.body
+        );
+        assert!(!request.body.contains("hunter22"), "{}", request.body);
+        assert!(!request.body.contains("sk-live"), "{}", request.body);
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "HOST=db\nPASSWORD=hunter22\nPORT=5432\n",
+            "asking must not change the file"
+        );
+    }
+
+    #[test]
+    fn a_write_over_a_file_holding_a_value_previews_it_redacted() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".env");
+        std::fs::write(&path, "TOKEN=sk-live-0123456789\n").unwrap();
+        let args = serde_json::json!({
+            "path": path.to_str().unwrap(),
+            "content": "TOKEN=<secret:TOKEN>\nDEBUG=1\n",
+        });
+        let (request, _) = ask_with_secrets(
+            call("write", &args.to_string()),
+            PermissionDecision::Approve,
+        );
+        assert!(
+            request.body.contains("TOKEN=<secret:TOKEN>"),
+            "{}",
+            request.body
+        );
+        assert!(request.body.contains("+DEBUG=1"), "{}", request.body);
+        assert!(!request.body.contains("sk-live"), "{}", request.body);
+    }
+
+    #[test]
+    fn a_call_naming_a_secret_that_is_not_stored_is_refused_without_asking() {
+        // Nothing of it may run, so there is nothing to put to the user — and
+        // a refusal decided here cannot be overtaken by a secret saved between
+        // the answer and the run.
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let gate = PermissionGate::new();
+        let secrets = secrets();
+        // A torn-down turn, so a prompt raised by mistake resolves at once
+        // instead of waiting on nobody.
+        let cancel = CancelToken::new();
+        cancel.cancel();
+        for (name, arguments) in [
+            ("bash", r#"{"command":"echo <secret:TOKN>"}"#),
+            (
+                "bashsend",
+                r#"{"session_id":"b1","input":"<secret:TOKN>\n"}"#,
+            ),
+        ] {
+            let approval = approve_call(
+                Some(&gate),
+                None,
+                None,
+                &NoHooks,
+                false,
+                &tx,
+                &cancel,
+                None,
+                &call(name, arguments),
+                Some(&secrets),
+            );
+            let Approval::Reject { display, result } = approval else {
+                panic!("{name}: {approval:?}");
+            };
+            assert!(
+                display.starts_with("Not run: <secret:TOKN> is not a stored secret."),
+                "{display}"
+            );
+            assert_eq!(display, result);
+        }
+        assert!(rx.try_recv().is_err(), "a prompt was raised");
+    }
+
+    #[test]
+    fn a_command_asks_and_is_remembered_by_its_placeholder() {
+        let command = r#"{"command":"curl -H 'Authorization: Bearer <secret:TOKEN>' https://api.example.com"}"#;
+        let (request, approval) =
+            ask_with_secrets(call("bash", command), PermissionDecision::Approve);
+        assert_eq!(approval, Approval::Allow);
+        assert_eq!(
+            request.target,
+            "curl -H 'Authorization: Bearer <secret:TOKEN>' https://api.example.com"
+        );
     }
 }

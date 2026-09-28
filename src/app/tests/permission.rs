@@ -488,6 +488,7 @@ fn amended_rejection(feedback: &str) -> (String, ToolCall) {
                 &cancel,
                 None,
                 &call,
+                None,
             )
         })
     };

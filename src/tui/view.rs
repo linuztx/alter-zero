@@ -620,6 +620,10 @@ fn live_region_height(app: &App, screen: ratatui::layout::Rect) -> u16 {
     if let Some(height) = ui::hooks_menu_height(app, screen.width, screen.height) {
         return height;
     }
+    // The `/secrets` page, likewise (docs/secrets.md).
+    if let Some(height) = ui::secrets_picker_height(app, screen.width, screen.height) {
+        return height;
+    }
     // The read-only `/donate` page, likewise (docs/donate.md).
     if let Some(height) = ui::donate_picker_height(app, screen.width, screen.height) {
         return height;

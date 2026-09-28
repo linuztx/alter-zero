@@ -437,8 +437,9 @@ pub(super) const BG_OUTPUT_LABEL: &str = "Output:";
 /// manager, so a listed one is always running).
 pub(super) const BG_STATUS_RUNNING: &str = "running";
 
-/// The manager's title/selection accent (the palette accent — the cyan the
-/// `/hooks` and `/mcp` titles wear, [`hooks_title_color`]) and dim text.
+/// The manager's selection accent (the palette accent the whole picker
+/// family selects with) and dim text. Its titles wear the pages' title
+/// dress (`header::page_title_line`).
 pub(super) fn bg_selected_color() -> Color {
     menu_selected_color()
 }
@@ -1011,14 +1012,6 @@ pub(super) const MODEL_ERROR_MAX_ROWS: u16 = 3;
 // (indent, `❯` prompt, cyan selection, dim meta, green ✓, `→` marker) plus the
 // `LOGIN_*` strings/geometry below. ---
 
-/// Every `/login` page title — `Use a subscription`, `Sign in to GitHub
-/// Copilot`, `Enter your Agent Zero API key`. The palette accent the whole
-/// picker family already selects with, so a title reads as *this* flow's own
-/// heading rather than a fourth colour to learn.
-pub(super) fn login_title_color() -> Color {
-    model_selected_color()
-}
-
 /// The separator between a `/login` row's name and its configured status.
 pub(super) const LOGIN_STATUS_SEP: &str = " · ";
 
@@ -1409,6 +1402,86 @@ pub(super) fn donate_caution_color() -> Color {
     ask_warning_color()
 }
 
+// --- the /secrets page (docs/secrets.md). The /donate page's frame — the
+// family's indent, its `❯` marker, the dim meta ink, the banner-gradient
+// title — over the user's secrets, and a three-field form under the same
+// frame. Every value is masked **in the builder**: a flowed row is committed
+// to real scrollback as text, so a mask applied at paint time would come too
+// late. Only the page's own words and geometry live here; its colours are
+// the family's. ---
+
+/// The list page's title.
+pub(super) const SECRETS_TITLE: &str = "Secrets";
+
+/// The dim rows under the list's title: what a secret is for. Wrapped, never
+/// cut (`docs/view-flow.md`).
+pub(super) const SECRETS_BLURB: &str = "Credentials the agent uses by placeholder. The values \
+stay out of the conversation, the screen and the model's context.";
+
+/// The dim row an empty store shows over its add row.
+pub(super) const SECRETS_EMPTY: &str = "No secrets yet. Add one, and the agent can use it as \
+<secret:NAME> in any command, file or input.";
+
+/// The list's last row: add a secret.
+pub(super) const SECRETS_ADD_ROW: &str = "+ Add a secret";
+
+/// The list's mask — **fixed** at eight dots whatever the value's length,
+/// so the list says a value is there and never how long it is.
+pub(super) const SECRETS_LIST_MASK: &str = "••••••••";
+
+/// Columns between a list row's placeholder, its mask and its context.
+pub(super) const SECRETS_COLUMN_GAP: &str = "  ";
+
+/// The list's dim key hint — its whole grammar — and the add row's.
+pub(super) const SECRETS_LIST_HINT: &str =
+    "↑↓ navigate  enter edit  n new  c copy placeholder  d delete  esc close";
+pub(super) const SECRETS_ADD_HINT: &str = "↑↓ navigate  enter add a secret  esc close";
+
+/// The form's titles: a new secret, or `Edit <secret:NAME>`.
+pub(super) const SECRETS_NEW_TITLE: &str = "New secret";
+pub(super) const SECRETS_EDIT_TITLE: &str = "Edit ";
+
+/// The dim row under the form's title: who sees what.
+pub(super) const SECRETS_FORM_BLURB: &str =
+    "The agent is told the name and the context, never the value.";
+
+/// The form's field labels, padded to one column ([`SECRETS_LABEL_WIDTH`]).
+pub(super) const SECRETS_NAME_LABEL: &str = "Name";
+pub(super) const SECRETS_VALUE_LABEL: &str = "Value";
+pub(super) const SECRETS_CONTEXT_LABEL: &str = "Context";
+
+/// The label column's width: the longest label and a two-column gap.
+pub(super) const SECRETS_LABEL_WIDTH: usize = 9;
+
+/// The column every field's text starts at — the indent, the focus marker
+/// and the label column. The form's caret is seated from it.
+pub(super) const SECRETS_FIELD_COL: u16 = 2 + 2 + SECRETS_LABEL_WIDTH as u16;
+
+/// What an empty field shows, dim, where its text will go.
+pub(super) const SECRETS_NAME_EMPTY: &str = "e.g. ROOT_PASSWORD";
+pub(super) const SECRETS_VALUE_EMPTY: &str = "type or paste the value";
+pub(super) const SECRETS_VALUE_KEEP: &str = "leave empty to keep the current value";
+pub(super) const SECRETS_CONTEXT_EMPTY: &str = "optional: what it is for, told to the agent";
+
+/// The dim lead-in to the placeholder a typed name makes.
+pub(super) const SECRETS_USE_AS: &str = "Use it as ";
+
+/// The form's dim key hints: on the name and the value, then on the last
+/// field, where Enter saves.
+pub(super) const SECRETS_FORM_HINT_NEXT: &str = "enter next  tab/↑↓ move  esc back";
+pub(super) const SECRETS_FORM_HINT_SAVE: &str = "enter save  tab/↑↓ move  esc back";
+
+/// What leads a refusal's red row.
+pub(super) const SECRETS_ERROR_MARK: &str = "✗ ";
+
+/// The red question a first `d` asks in place of the hint.
+pub(super) fn secrets_delete_question(name: &str) -> String {
+    format!(
+        "Delete {}? Press d again to confirm, any other key keeps it.",
+        crate::secrets::placeholder(name)
+    )
+}
+
 // --- the read-only /export page (docs/export.md). The /donate page's frame
 // — the family's indent, its `❯` marker, the dim meta ink — over the two
 // export targets, the highlighted row's description under the list (the
@@ -1440,16 +1513,8 @@ pub(super) const EXPORT_HINT: &str = "↑↓ navigate  enter select  esc close";
 // --- the read-only /hooks menu (docs/hooks-menu.md). It reuses the picker
 // family's accents — model_selected_color() for the selection, model_id_color()
 // for unselected labels, model_meta_color() for everything dim,
-// hooks_title_color() for the titles, border_color() for the frame and the
-// detail page's command box. ---
-
-/// Every level's title colour — the **cyan** its `/mcp` twin wears
-/// ([`mcp_title_color`]). The headline is the row that answers "where am I?"
-/// in a menu you walk several levels deep, so both menus land the eye the
-/// same way.
-pub(super) fn hooks_title_color() -> Color {
-    model_selected_color()
-}
+// the pages' title dress (`header::page_title_line`) for the titles,
+// border_color() for the frame and the detail page's command box. ---
 
 /// The events-level title.
 pub(super) const HOOKS_TITLE: &str = "Hooks";
@@ -1559,14 +1624,6 @@ pub(super) const MCP_SERVER_HINT: &str = "↑/↓ to navigate · Enter to select
 pub(super) const MCP_NONE_FOUND: &str = "No MCP servers configured. Add one at:";
 /// The detail page's field column (`Config location:  ` is the widest).
 pub(super) const MCP_FIELD_COL: usize = 18;
-
-/// Every page's headline — **cyan**, shared with its `/hooks` twin
-/// ([`hooks_title_color`]). This is a *walk* four pages deep, and the
-/// headline is the only row that answers "where am I?", so it is the row the
-/// eye must land on first (`docs/mcp.md`).
-pub(super) fn mcp_title_color() -> Color {
-    model_selected_color()
-}
 
 /// The separator between a server row's name, status and tool count. It is
 /// **chrome, not status**, so it stays [`model_meta_color`] dim at every

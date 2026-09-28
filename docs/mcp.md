@@ -637,8 +637,9 @@ top-down, while this is a *walk* four pages deep, so the headline is the one
 row that answers "where am I?" — and it has to be the row the eye lands on
 first. Three rules, all of them `MCP_*` consts in `ui/theme.rs`:
 
-- **Every page's headline is cyan** (`mcp_title_color()`, the picker family's
-  selection accent) and bold — `Manage MCP servers`, `Deepwiki MCP Server`,
+- **Every page's headline wears the pages' one title dress** — bold, washed
+  in the active theme's banner gradient (`ui::header::page_title_line`,
+  `docs/theme.md`) — `Manage MCP servers`, `Deepwiki MCP Server`,
   `Tools for deepwiki`, `ask_question`, `Authenticating with deepwiki…`.
 - **A headline capitalises the name** — `deepwiki` → `Deepwiki MCP Server`
   (`mcp::capitalize_server`, the one spelling of the helper). A config key
@@ -660,10 +661,10 @@ first. Three rules, all of them `MCP_*` consts in `ui/theme.rs`:
   parameter's type and `(required)` — all quiet.
 
 Two exceptions, one per page, and both are the same rule: *the value that is
-itself the answer keeps the light*. The page **headline** is cyan, shared
-with the `/hooks` browser (`hooks_title_color()` = `mcp_title_color()`): both
-menus are walks several levels deep, and the headline is the row that
-answers "where am I?".
+itself the answer keeps the light*. The page **headline** wears the title
+dress every page shares, the `/hooks` browser's included: both menus are
+walks several levels deep, and the headline is the row that answers "where
+am I?".
 
 - On the **server page** (`mcp_detail_state_color()`) that is `Status:`,
   `Auth:` and `Capabilities:` — "is this working, and what can it do?" —

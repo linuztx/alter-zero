@@ -27,16 +27,11 @@ fn dim_line(text: &str, width: u16) -> Line<'static> {
     mcp_line(text, Style::new().fg(model_meta_color()), width)
 }
 
-/// The page's headline — cyan, the row that says which of the four pages
-/// this is (`docs/mcp.md`).
+/// The page's headline — the row that says which of the four pages this is
+/// (`docs/mcp.md`), in the pages' title dress
+/// ([`page_title_line`](super::header::page_title_line)).
 fn title_line(text: &str, width: u16) -> Line<'static> {
-    mcp_line(
-        text,
-        Style::new()
-            .fg(mcp_title_color())
-            .add_modifier(Modifier::BOLD),
-        width,
-    )
+    super::header::page_title_line(text, width)
 }
 
 /// `text` word-wrapped to inset rows in `style`.

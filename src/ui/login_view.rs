@@ -22,11 +22,12 @@ fn login_prompt_line(text: Line<'static>) -> Line<'static> {
     Line::from(out)
 }
 
-/// A `/login` page title — `Use a subscription`, `Sign in to GitHub Copilot`,
-/// `Enter your Agent Zero API key`. Cyan on every page, so the flow's headings
-/// read as one.
+/// A `/login` page title — `Sign in to GitHub Copilot`, `Enter your Agent
+/// Zero API key` — in the pages' title dress
+/// ([`page_title_line`](super::header::page_title_line)), so the flow's
+/// headings read as one with every other page's.
 fn login_title(text: &str, width: u16) -> Line<'static> {
-    model_placeholder_row(text, login_title_color(), width)
+    super::header::page_title_line(text, width)
 }
 
 /// One list row shared by the three `/login` lists:

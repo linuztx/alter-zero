@@ -41,6 +41,28 @@ pub(super) fn gradient_spans(text: &str, total: usize) -> Vec<Span<'static>> {
     spans
 }
 
+/// A page title's spans — the one title dress every composer-replacing page
+/// shares (`/hooks`, `/mcp`, `/trust`, `/export`, the ↓ manager, `/login`'s
+/// pages, `/donate`, `/secrets`): bold and washed in the active theme's
+/// banner gradient across the title's own width, so a headline follows
+/// `/theme` the way the banner does (`docs/theme.md`).
+pub(super) fn page_title_spans(text: &str) -> Vec<Span<'static>> {
+    gradient_spans(text, cols(text))
+        .into_iter()
+        .map(|span| Span::styled(span.content, span.style.add_modifier(Modifier::BOLD)))
+        .collect()
+}
+
+/// A page's title row: [`page_title_spans`] at the pages' inset, `…`-cut to
+/// a width that cannot seat it.
+pub(super) fn page_title_line(text: &str, width: u16) -> Line<'static> {
+    let room = (width as usize).saturating_sub(cols(MODEL_INDENT)).max(1);
+    let shown = super::wrap::ellipsize(text, room);
+    let mut spans = vec![Span::raw(MODEL_INDENT)];
+    spans.extend(page_title_spans(&shown));
+    Line::from(spans)
+}
+
 /// The metadata column beside the mascot, one span-row each: the bold name +
 /// dim `(v…)` version, the dim cwd (only with session info), and the cyan
 /// command hint.

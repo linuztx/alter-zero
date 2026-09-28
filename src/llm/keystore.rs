@@ -59,7 +59,7 @@ impl EnvFile {
         value: &str,
         replaces: impl FnOnce(Option<&str>) -> bool,
     ) -> std::io::Result<Option<String>> {
-        use std::io::{ErrorKind, Write};
+        use std::io::ErrorKind;
 
         static UPDATES: std::sync::Mutex<()> = std::sync::Mutex::new(());
         let _update = UPDATES.lock().unwrap_or_else(|error| error.into_inner());
@@ -72,30 +72,7 @@ impl EnvFile {
             return Ok(None);
         }
         let updated = Self::upsert(&current, key, value);
-        // Write *through* a link: a store symlinked in from a dotfiles
-        // checkout keeps living there — the rename below replaces the file
-        // the link names, never the link, which the old in-place write
-        // never touched either. A store that does not exist yet is created
-        // where it is named.
-        let target = match std::fs::canonicalize(path) {
-            Ok(target) => target,
-            Err(error) if error.kind() == ErrorKind::NotFound => path.to_path_buf(),
-            Err(error) => return Err(error),
-        };
-        let path = target.as_path();
-        let parent = path
-            .parent()
-            .filter(|p| !p.as_os_str().is_empty())
-            .unwrap_or_else(|| std::path::Path::new("."));
-        std::fs::create_dir_all(parent)?;
-        // NamedTempFile creates with 0600 on Unix, before any secret bytes
-        // are written. Replacement also tightens an older store's mode.
-        let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
-        temporary.write_all(updated.as_bytes())?;
-        temporary.as_file().sync_all()?;
-        temporary.persist(path).map_err(|error| error.error)?;
-        #[cfg(unix)]
-        std::fs::File::open(parent)?.sync_all()?;
+        persist_private(path, &updated)?;
         Ok(Some(updated))
     }
 
@@ -267,9 +244,164 @@ fn quote(value: &str) -> String {
     format!("\"{escaped}\"")
 }
 
+/// Read the secrets file (`docs/secrets.md`): the store, a missing file
+/// being an empty one.
+///
+/// # Errors
+/// A message naming the file, when it cannot be read or will not parse — a
+/// guard file is loud, never silently empty.
+pub fn load_secrets_file(path: &std::path::Path) -> Result<crate::secrets::SecretStore, String> {
+    let text = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(error) => return Err(format!("Couldn't read {}: {error}", path.display())),
+    };
+    crate::secrets::parse_secrets_file(&text)
+        .map_err(|error| format!("{} won't parse: {error}", path.display()))
+}
+
+/// Change the secrets file (`docs/secrets.md`) as one read-modify-write
+/// under a process-wide lock — two sessions never drop each other's
+/// secrets — written owner-only through a synced temporary file and a
+/// rename, the `.env` store's write. A file that will not parse is
+/// **refused, never overwritten**; `change` refusing (a taken name) writes
+/// nothing. Returns the new store and what `change` returned.
+///
+/// # Errors
+/// The message for the refusal: the file's own error, `change`'s, or the
+/// write's.
+pub fn update_secrets_file<R>(
+    path: &std::path::Path,
+    change: impl FnOnce(&mut crate::secrets::SecretStore) -> Result<R, String>,
+) -> Result<(crate::secrets::SecretStore, R), String> {
+    static UPDATES: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _update = UPDATES.lock().unwrap_or_else(|error| error.into_inner());
+    let mut store = load_secrets_file(path)
+        .map_err(|error| format!("{error} — fix or move it, then try again"))?;
+    let result = change(&mut store)?;
+    persist_private(path, &crate::secrets::format_secrets_file(&store))
+        .map_err(|error| format!("Couldn't write {}: {error}", path.display()))?;
+    Ok((store, result))
+}
+
+/// Replace the file at `path` with `text`, owner-only: a synced temporary
+/// file beside it, renamed over it — never a truncate-and-write, so a
+/// failure leaves the old file whole. Written *through* a link: a store
+/// symlinked in from a dotfiles checkout keeps living there — the rename
+/// replaces the file the link names, never the link. A file that does not
+/// exist yet is created where it is named.
+fn persist_private(path: &std::path::Path, text: &str) -> std::io::Result<()> {
+    use std::io::{ErrorKind, Write};
+
+    let target = match std::fs::canonicalize(path) {
+        Ok(target) => target,
+        Err(error) if error.kind() == ErrorKind::NotFound => path.to_path_buf(),
+        Err(error) => return Err(error),
+    };
+    let path = target.as_path();
+    let parent = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| std::path::Path::new("."));
+    std::fs::create_dir_all(parent)?;
+    // NamedTempFile creates with 0600 on Unix, before any secret bytes
+    // are written. Replacement also tightens an older store's mode.
+    let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
+    temporary.write_all(text.as_bytes())?;
+    temporary.as_file().sync_all()?;
+    temporary.persist(path).map_err(|error| error.error)?;
+    #[cfg(unix)]
+    std::fs::File::open(parent)?.sync_all()?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ===== the secrets file (docs/secrets.md) =====
+
+    fn add(name: &str, value: &str) -> crate::secrets::SecretDraft {
+        crate::secrets::SecretDraft {
+            original: None,
+            name: name.into(),
+            value: Some(crate::secrets::SecretValue::new(value)),
+            context: String::new(),
+        }
+    }
+
+    #[test]
+    fn a_missing_secrets_file_is_an_empty_store() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = load_secrets_file(&dir.path().join("secrets.json")).unwrap();
+        assert!(store.is_empty());
+    }
+
+    #[test]
+    fn secrets_are_written_owner_only_and_read_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("nested").join("secrets.json");
+        let (store, name) = update_secrets_file(&path, |store| {
+            store
+                .apply(&add("TOKEN", "sk-live-1234"))
+                .map_err(|e| e.to_string())
+        })
+        .unwrap();
+        assert_eq!(name, "TOKEN");
+        assert_eq!(store.names(), ["TOKEN"]);
+        let (store, ()) = update_secrets_file(&path, |store| {
+            store
+                .apply(&add("PW", "hunter22"))
+                .map(drop)
+                .map_err(|e| e.to_string())
+        })
+        .unwrap();
+        assert_eq!(
+            store.names(),
+            ["TOKEN", "PW"],
+            "the second write kept the first"
+        );
+        assert_eq!(load_secrets_file(&path).unwrap(), store);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+    }
+
+    #[test]
+    fn an_unparseable_secrets_file_is_refused_never_overwritten() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("secrets.json");
+        std::fs::write(&path, "{ hand-edited, broken").unwrap();
+        let error = load_secrets_file(&path).unwrap_err();
+        assert!(error.contains("secrets.json"), "{error}");
+        let refused = update_secrets_file(&path, |store| {
+            store
+                .apply(&add("TOKEN", "sk-live-1234"))
+                .map(drop)
+                .map_err(|e| e.to_string())
+        })
+        .unwrap_err();
+        assert!(refused.contains("secrets.json"), "{refused}");
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "{ hand-edited, broken",
+            "the user's file survives"
+        );
+    }
+
+    #[test]
+    fn a_refused_change_writes_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("secrets.json");
+        let refused = update_secrets_file::<()>(&path, |_| Err("taken".to_string())).unwrap_err();
+        assert_eq!(refused, "taken");
+        assert!(!path.exists());
+    }
 
     #[test]
     fn auth_cache_regression_updates_do_not_replace_an_unreadable_store() {

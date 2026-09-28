@@ -13,7 +13,7 @@
 //! address — so the page reads as this app's rather than a form pasted into
 //! it.
 
-use super::header::gradient_spans;
+use super::header::page_title_spans;
 use super::model_view::{model_placeholder_row, model_rule, model_wrapped_rows};
 use super::theme::*;
 use super::wrap::{clamp_spans, cols, ellipsize, wrap_output};
@@ -31,11 +31,7 @@ fn title_line(width: u16) -> Line<'static> {
         Span::raw(MODEL_INDENT),
         Span::styled(DONATE_HEART, Style::new().fg(donate_heart_color())),
     ];
-    spans.extend(
-        gradient_spans(&title, cols(&title))
-            .into_iter()
-            .map(|span| Span::styled(span.content, span.style.add_modifier(Modifier::BOLD))),
-    );
+    spans.extend(page_title_spans(&title));
     clamp_spans(spans, width as usize)
 }
 

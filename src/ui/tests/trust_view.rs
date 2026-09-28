@@ -50,6 +50,16 @@ fn find(texts: &[String], needle: &str) -> usize {
 }
 
 #[test]
+fn the_title_wears_the_title_dress() {
+    let lines = trust_view_lines(&trust_app(), 80);
+    let title = lines
+        .iter()
+        .find(|line| plain(line).contains("Project trust"))
+        .expect("the title row");
+    assert!(wears_the_title_dress(title), "{title:?}");
+}
+
+#[test]
 fn the_review_names_the_root_the_files_and_what_would_run() {
     let app = trust_app();
     let texts = texts(&app, 100);

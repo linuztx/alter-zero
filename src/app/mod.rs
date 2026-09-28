@@ -48,6 +48,7 @@ mod permission;
 mod queue;
 mod reasoning;
 mod resume;
+mod secrets;
 mod settings;
 mod skill_picker;
 mod skills_menu;
@@ -99,6 +100,7 @@ pub use self::reasoning::Reasoning;
 // its own transcript (`docs/agent-view-streaming.md`).
 pub(crate) use self::reasoning::snap_reasoning_tokens;
 pub use self::resume::{ResumeControl, ResumeFilter, ResumePicker, ResumeSort};
+pub use self::secrets::{SecretField, SecretForm, SecretsPage};
 pub use self::settings::{SettingRow, SettingsPicker};
 pub use self::skill_picker::SkillPicker;
 pub use self::skills_menu::{SkillMenuRow, SkillsMenu};
@@ -517,6 +519,14 @@ pub struct App {
     /// sibling (no text entry) over the two export targets — the clipboard
     /// or a `conversation-….txt` file in the cwd. See `docs/export.md`.
     pub export_picker: Option<ExportPicker>,
+    /// The open `/secrets` page; `None` when closed — the list of the user's
+    /// secrets and the form that adds or edits one, values masked
+    /// throughout. See `docs/secrets.md`.
+    pub secrets_page: Option<SecretsPage>,
+    /// The user's secrets as the page may know them — names and context,
+    /// never a value — injected by the boundary at startup and after every
+    /// change ([`App::set_secret_metas`]). See `docs/secrets.md`.
+    secret_metas: Vec<crate::secrets::SecretMeta>,
     /// The session's togglable knobs — what `/settings` shows and what the
     /// boundary reads before it streams thinking, offers tools, snapshots the
     /// tree, or auto-compacts. Seeded at bootstrap from `settings.json` + the

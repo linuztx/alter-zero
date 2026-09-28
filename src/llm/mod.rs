@@ -37,6 +37,7 @@ pub mod openai;
 pub mod reasoning;
 pub mod responses;
 pub mod retry;
+pub mod secret_exec;
 pub mod service_tier;
 pub mod settings;
 pub mod skill;

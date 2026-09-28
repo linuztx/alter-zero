@@ -600,6 +600,17 @@ pub fn render_live_with_preview(
         render_donate_picker(body, buf, app);
         return;
     }
+    // …and the `/secrets` page, the same built-line body — its values
+    // masked in the builder. See `docs/secrets.md`.
+    if app.secrets_page.is_some() {
+        let [strip, body] = view_split(
+            area,
+            super::secrets_view::secrets_menu_rows(app, area.width),
+        );
+        render_strip_above(strip, buf, app, stream_preview);
+        render_secrets_picker(body, buf, app);
+        return;
+    }
     // …and the read-only `/export` page, the `/donate` page's sibling. See
     // `docs/export.md`.
     if app.export_picker.is_some() {

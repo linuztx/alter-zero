@@ -54,7 +54,7 @@ chrome paints is one of these or derived from one:
 | `border` | the composer box's rules and every framed view's |
 | `user_fg` / `user_bg` | the `❯ …` user bubble (and a `!` command's header) — muted on purpose |
 | `selection_bg` | the `/resume` picker's selected row |
-| `accent` | what every picker selects with, the system bullet, inline code, the banner hint, a permission prompt's title, the Ctrl+R query, the ↓-focused footer chip's fill, the agent session view's composer label chip — and the gradient's near end |
+| `accent` | what every picker selects with, the system bullet, inline code, the banner hint, a permission prompt's title, the Ctrl+R query, the ↓-focused footer chip's fill, the agent session view's composer label chip — and the gradient's near end (the banner, every page title) |
 | `on_accent` | ink over an `accent` fill (the footer chip, the current ask-question chip, the agent session view's composer label) |
 | `link` | a link's URL, an ordered list's marker, the context view's user tag — and the gradient's far end |
 | `success` | the finished tool bullet, a diff's `+`, the active model's ✓, a completed task, a background notice that went well |
@@ -326,6 +326,17 @@ the saved theme.
   glyphs, not colours; the theme colours them (the gradient and the pulse
   come from the palette), and `/mascot` and `/spinner` remain the pickers
   for the glyphs.
+- **Why do the page titles wear the banner's gradient?** Every titled
+  composer-replacing page — `/hooks`, `/mcp`, `/trust`, `/export`, the ↓
+  manager, `/login`'s titled pages, `/donate`, `/secrets` — headlines in
+  one dress, bold and washed accent → link across the title's own width
+  (`ui::header::page_title_line`, over `page_title_spans`, which `/donate`
+  uses beside its heart). A flat accent was a colour the pages shared; the
+  gradient is the banner's own look, so a page reads as part of the app
+  it opened in and follows `/theme` the way the banner does. The pickers
+  that open on a `❯` filter (`/model`, `/settings`, `/skills`, `/theme`,
+  `/mascot`, `/spinner`) have no title to dress, and the full-screen views
+  (`/resume`, Ctrl+O, Ctrl+D) keep the pager's slash-tiled header.
 
 ## API
 

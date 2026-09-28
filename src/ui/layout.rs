@@ -892,6 +892,11 @@ pub fn cursor_visible(app: &App) -> bool {
     if let Some(menu) = &app.mcp_menu {
         return menu.page == crate::app::McpPage::Auth;
     }
+    // The `/secrets` list is a menu; its form is typed into
+    // (`docs/secrets.md`).
+    if let Some(page) = &app.secrets_page {
+        return page.form.is_some();
+    }
     true
 }
 
@@ -1157,6 +1162,21 @@ pub fn cursor_position(area: Rect, app: &App) -> (u16, u16) {
     if app.export_picker.is_some() {
         let lines = super::export_view::export_view_lines(app, area.width);
         return menu_marker_seat(&lines, area);
+    }
+    // The `/secrets` page: its list seats on the highlighted `❯` like
+    // `/donate`; its form puts the caret in the focused field, at the seat
+    // the builder reports — three fields make "the row with the `❯`" a
+    // question the lines alone cannot answer (docs/secrets.md).
+    if app.secrets_page.is_some() {
+        let build = super::secrets_view::secrets_build(app, area.width);
+        let Some((col, row)) = build.cursor else {
+            return menu_marker_seat(&build.lines, area);
+        };
+        let rows = u16::try_from(build.lines.len()).unwrap_or(u16::MAX);
+        let [_, body] = view_split(area, rows);
+        let x = area.x + col.min(area.width.saturating_sub(1));
+        let row = anchored_view_row(rows, body, u16::try_from(row).unwrap_or(u16::MAX));
+        return (x, view_cursor_y(area, body, row));
     }
     if app.trust_menu.is_some() {
         let lines = super::trust_view::trust_view_lines(app, area.width);
