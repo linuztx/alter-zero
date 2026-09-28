@@ -226,7 +226,19 @@ pub fn approve_call(
     // allowlist and the classifier then read is redacted back to the
     // placeholders — a file the call touches may already hold a value
     // (docs/secrets.md).
-    let expanded = secrets.and_then(|secrets| super::secret_exec::expand_call(secrets, call));
+    let expanded = match secrets.map(|secrets| super::secret_exec::expand_call(secrets, call)) {
+        // A placeholder naming nothing stored: nothing of the call may run,
+        // so there is nothing to ask — and a refusal decided here cannot be
+        // overtaken by a secret saved between the answer and the run.
+        Some(Err(refusal)) => {
+            return Approval::Reject {
+                display: refusal.clone(),
+                result: refusal,
+            };
+        }
+        Some(Ok(expanded)) => expanded,
+        None => None,
+    };
     let Some(mut request) = permission_request(expanded.as_ref().unwrap_or(call), agent, describe)
     else {
         return Approval::Allow;
@@ -1571,6 +1583,49 @@ mod tests {
         );
         assert!(request.body.contains("+DEBUG=1"), "{}", request.body);
         assert!(!request.body.contains("sk-live"), "{}", request.body);
+    }
+
+    #[test]
+    fn a_call_naming_a_secret_that_is_not_stored_is_refused_without_asking() {
+        // Nothing of it may run, so there is nothing to put to the user — and
+        // a refusal decided here cannot be overtaken by a secret saved between
+        // the answer and the run.
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let gate = PermissionGate::new();
+        let secrets = secrets();
+        // A torn-down turn, so a prompt raised by mistake resolves at once
+        // instead of waiting on nobody.
+        let cancel = CancelToken::new();
+        cancel.cancel();
+        for (name, arguments) in [
+            ("bash", r#"{"command":"echo <secrete:TOKN>"}"#),
+            (
+                "bashsend",
+                r#"{"session_id":"b1","input":"<secrete:TOKN>\n"}"#,
+            ),
+        ] {
+            let approval = approve_call(
+                Some(&gate),
+                None,
+                None,
+                &NoHooks,
+                false,
+                &tx,
+                &cancel,
+                None,
+                &call(name, arguments),
+                Some(&secrets),
+            );
+            let Approval::Reject { display, result } = approval else {
+                panic!("{name}: {approval:?}");
+            };
+            assert!(
+                display.starts_with("Not run: <secrete:TOKN> is not a stored secret."),
+                "{display}"
+            );
+            assert_eq!(display, result);
+        }
+        assert!(rx.try_recv().is_err(), "a prompt was raised");
     }
 
     #[test]

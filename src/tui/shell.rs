@@ -62,8 +62,25 @@ pub(crate) fn spawn_shell_command(
         // The user's secrets (docs/secrets.md): a placeholder in the command
         // runs as its value — the one copy that ever holds it — while the
         // cell, the history and a Ctrl+B hand-off keep the command as typed.
+        // A placeholder naming nothing stored runs nothing: the cell says
+        // which secrets there are.
         let secrets = registry.secrets().cloned();
-        let expanded = secrets.as_ref().map(|secrets| secrets.expand(&command));
+        let expanded = match secrets
+            .as_ref()
+            .map(|secrets| secrets.expand_checked(&command))
+        {
+            Some(Err(refusal)) => {
+                let _ = tx.send(StreamEvent::ToolEnd {
+                    output: refusal,
+                    ok: false,
+                    truncated: false,
+                });
+                let _ = tx.send(StreamEvent::StreamDone);
+                return;
+            }
+            Some(Ok(expanded)) => Some(expanded),
+            None => None,
+        };
         let mut child = match alter_zero::subprocess::spawn_detached_shell(
             registry.detach_helper().as_deref(),
             expanded.as_deref().unwrap_or(&command),

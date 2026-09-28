@@ -22,9 +22,13 @@ release heading when a version is cut.
   everything the tool reports, the permission prompt's preview and the
   `/diff` review included. The agent is told the names and the context in
   its `<system-reminder>`, never the values, so a session can be recorded or
-  shared without showing a password or an API key. The page masks every
-  value, `secrets.json` is written owner-only, and a `!` command expands and
-  redacts the same way (`docs/secrets.md`).
+  shared without showing a password or an API key. A placeholder naming a
+  secret that is not stored is refused before anything runs, with the names
+  that are, so a typo is never typed at a password prompt or written into a
+  config file; and auto mode's reviewer is told what a placeholder is, so
+  using one for its own service is not read as credential theft. The page
+  masks every value, `secrets.json` is written owner-only, and a `!` command
+  expands, refuses and redacts the same way (`docs/secrets.md`).
 
 ### Fixed
 

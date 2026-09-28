@@ -45,8 +45,29 @@ and the file writer alone.
 variable's shape, at most 64 characters. Expansion also accepts the name in
 lower case and the `<secret:NAME>` spelling, because a model "correcting" the
 spelling would otherwise run a command with the literal text in it; redaction
-always writes the canonical form. A placeholder naming nothing stored is left
-exactly as written, and an inserted value is never scanned again.
+always writes the canonical form. An inserted value is never scanned again.
+
+**A placeholder naming nothing stored refuses the call.** Run as written, a
+misspelled or guessed name reaches the tool as its literal text: a wrong
+password typed at a prompt (an attempt counted against the account), a
+request sent with `Bearer <secrete:TOKN>`, a `.env` line that looks written.
+So a tool that acts, and a `!` command, is refused before anything of it
+runs, with a message naming what it wrote and what is stored
+(`SecretStore::unknown_refusal`):
+
+```
+Not run: <secrete:DEPLOY_TOKN> is not a stored secret. Stored:
+<secrete:DEPLOY_TOKEN>. The user adds secrets with /secrete.
+```
+
+One step corrects a slip, and a secret the user never stored sends the model
+to the page instead of asking for the value in the chat. Two things are not
+refused: the `<secret:NAME>` alias naming nothing (ordinary text more often
+than a slip), and anything at all while no secret is stored — the session
+that never used the feature can write the placeholder syntax as text. The
+price is that, with secrets stored, a tool cannot write the literal text of
+a placeholder naming none of them; writing a known one as text was never
+possible, since it expands.
 
 ## Expansion: only where a tool acts
 
@@ -75,6 +96,15 @@ the placeholder, and after `ToolStart`/`RoundCalls` have carried the model's
 own arguments to the transcript and the rollout. The hooks see the
 placeholder too: `PreToolUse` runs before the closure.
 
+The refusal of an unknown placeholder is checked in four places, each
+before anything runs: `approval::approve_call`, so a call that cannot run
+never raises a prompt (resolving as a rejection there also means a secret
+saved between the answer and the run cannot slip an unasked call through);
+`run_with_secrets`, the authoritative check, for the paths that skip the
+prompt (no gate, a pre-approving hook); `run_session`, over the text a
+`bashsend` input's key notation leaves — so a placeholder escaped as
+`&lt;secrete:X&gt;` is caught too; and `tui::shell`, for a `!` command.
+
 ## Redaction: every way output leaves a tool
 
 `SecretStore::redact` replaces each exact occurrence of a value with its
@@ -94,9 +124,9 @@ The paths:
 | a tool's result — `ToolEnd`, `ToolAnswered`, `ToolRejected`, the model's `tool` message, the `PostToolUse` payload | `run_with_secrets`, on `output` and `context` |
 | a running command's live cell (`ToolProgress::Screen`) | `run_with_secrets`: `settled` through a `StreamRedactor`, `live` with the held tail |
 | a refined header (`ToolProgress::Title`) — built from the expanded input | `run_with_secrets` |
-| a background task's output, screen, command | `BackgroundRegistry` (`with_secrets`): `send_output`, `send_screen`, the stored `Launch.command` |
+| a background task's output, screen, command, description | `BackgroundRegistry` (`with_secrets`): `send_output`, `send_screen`, the stored `Launch` — the description too, which the executor expanded with the rest of the call and which the ↓ manager, the completion notice and the model's completion note all name |
 | the permission prompt's preview | `approval::approve_call` (see below) |
-| a `!` command's output | `tui::shell`, before its `ToolEnd` |
+| a `!` command's output | `tui::shell`, before its `ToolEnd` (the command itself expanded with `expand_checked`, so an unknown placeholder runs nothing) |
 | the `/diff` review | `tui::diff`, on the loaded snapshot |
 
 **Streaming.** A value can arrive split across two pieces of a running
@@ -131,7 +161,16 @@ The prompt's preview is built from the **expanded** call and then redacted:
 
 The request's `target`, `body` and `detail` are redacted before anything
 reads them, so the allowlist match, the scratchpad rule and the auto-mode
-classifier all see the placeholder — the same text the user approves.
+classifier all see the placeholder — the same text the user approves. A call
+naming a secret that is not stored is refused before any of this, and asks
+nothing.
+
+The classifier is told what a placeholder is (`prompts/classifier.md`): a
+credential the user stored for the agent, filled in when the action runs,
+its name saying what it is for — so a login or an authorization header for
+its own service reads as ordinary work, and sending one anywhere else as
+exfiltration. Without that sentence the rubric's "reading or sending
+secrets" rule reads every use of the feature as credential theft.
 
 ## The reminder
 
@@ -142,13 +181,20 @@ section**, after the skills and the agent types (`Session::sync_listings` →
 ```
 The user's secrets, as placeholders: write one verbatim in any tool call
 argument (…) and the tool gets the real value, inserted as-is, so quote it in
-shell commands. Tool output shows the placeholder instead of the value. Use
-them whenever a task needs these credentials; the values are hidden from you
-on purpose, so never ask for or try to reveal them.
+shell commands. Output shows the placeholder wherever the exact value
+appears, but not an encoded or hashed form, so pass placeholders straight to
+what needs them. Use them whenever a task needs these credentials; the values
+are hidden from you on purpose, so never ask for or try to reveal them.
 
 - <secrete:ROOT_PASSWORD>: Root password for the staging box
 - <secrete:VENICE_API_KEY>
 ```
+
+The middle sentence is the one limit the model has to know about: masking
+is exact text, so a Basic-auth header `curl -v` prints, or a base64 of the
+value, would show the secret to the model and the screen alike — told so,
+the model hands the placeholder to what needs it instead of transforming it
+itself. The header is pinned under 85 words: it rides every request.
 
 Last because it changes least often of the three and the reminder is a
 prompt-cache prefix. Gated on **Tools** (`/settings`): without tools a
@@ -237,25 +283,48 @@ under four characters or a duplicate name is skipped on load.
 
 ## API
 
-- `secrets` (pure): `SecretStore` (`apply`, `remove`, `expand`, `redact`,
+- `secrets` (pure): `SecretStore` (`apply`, `remove`, `expand`,
+  `expand_checked`, `unknown_placeholders`, `unknown_refusal`, `redact`,
   `redact_cut_tail`, `listing`), `SecretRegistry`, `SecretDraft`,
   `SecretMeta`, `SecretValue`, `StreamRedactor`, `expand_arguments`,
-  `expands_placeholders`, `secret_section`, `parse_secrets_file`,
-  `format_secrets_file`, `normalize_name`, `validate_draft`.
+  `check_arguments`, `expands_placeholders`, `secret_section`,
+  `parse_secrets_file`, `format_secrets_file`, `normalize_name`,
+  `validate_draft`.
 - `llm::secret_exec` — `run_with_secrets`, the executor seam, and
-  `expand_call` for the permission preview.
+  `expand_call` for the permission preview (both refusing an unknown
+  placeholder).
 - `app::secrets` — the page's state and keys; `ui::secrets_view` — its lines.
 - `tui::secrets` — load, save, delete, copy.
 
 ## Tests
 
-The pure module pins the grammar, both directions, the streaming and
-truncation rules, the file format and that nothing `Debug`-prints a value.
-`llm::secret_exec` drives a fake tool through the seam: arguments expanded,
-every output channel redacted, a non-acting tool untouched. The approval
-tests pin the placeholder `edit` still asking and its preview redacted. The
-page's app and ui tests assert the value never reaches a rendered line or the
-composer. `scripts/smoke/phases/126-secrete.sh` drives the page in tmux —
-add, mask, edit, delete, persistence — and a `!` command that expands a
-placeholder and has its output redacted, asserting the value never appears
-in the pane.
+The pure module pins the grammar, both directions, the refusal, the
+streaming and truncation rules, the file format and that nothing
+`Debug`-prints a value. `llm::secret_exec` drives a fake tool through the
+seam: arguments expanded, every output channel redacted, an unknown
+placeholder refused unrun, a non-acting tool untouched. The approval tests
+pin the placeholder `edit` still asking with its preview redacted, and a
+refused call raising no prompt. The page's app and ui tests assert the value
+never reaches a rendered line or the composer.
+
+`tests/secrets_wire.rs` runs real `LlmBackend` turns with the real executor
+against a provider stand-in on the loopback, and reads every request body
+back: a command acting on the value, a `write` → `read` → `edit` round trip
+through the placeholder, a password typed into a real terminal session, a
+background shell named by its placeholder, and an unknown placeholder refused
+with and without the permission gate — the value in no event, no shell report
+and no request, the first request's reminder listing the secret.
+`tests/live_secrets.rs` (`#[ignore]`d, `A0_VENICE_API_KEY`) asks real models
+to use a secret they are told of only by the reminder: write it to a file,
+quote a file holding it, log in through a password prompt, survive a
+misspelled name, and make a real authenticated request with the very key the
+test runs on.
+
+`scripts/smoke/phases/126-secrete.sh` drives the page in tmux — add, mask,
+edit, delete, persistence — and `!` commands that expand a placeholder, have
+their output redacted and refuse an unknown one; then a second launch drives
+the real backend against a stub provider: the secret loaded from the file at
+startup, the reminder in the first request, the permission prompt showing the
+placeholder, the command writing the value, the cell masking it, an unknown
+placeholder refused without a prompt, and the value absent from the pane, the
+Ctrl+O transcript, the rollout and every request the stub logged.

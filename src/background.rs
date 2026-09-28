@@ -608,10 +608,13 @@ impl BackgroundRegistry {
         terminal: Terminal,
         announce: bool,
     ) -> Registered {
-        // The command ran expanded; everything that names it from here on —
-        // the list, the manager, a prompt's detail, a notice — reads the
-        // placeholder the model wrote (docs/secrets.md).
+        // The command ran expanded, and so did its description (the executor
+        // expands every string of the call); everything that names them from
+        // here on — the list, the manager, a prompt's detail, the completion
+        // notice and the model's note — reads the placeholder the model wrote
+        // (docs/secrets.md).
         launch.command = self.redact(launch.command);
+        launch.description = launch.description.map(|text| self.redact(text));
         let kill = CancelToken::new();
         let (input, terminal, tty) = match terminal {
             Terminal::Pipe => (None, None, false),
@@ -1666,20 +1669,35 @@ mod tests {
 
     #[test]
     fn a_registry_with_secrets_never_reports_a_value() {
-        // The command reached the registry already expanded, and its output
-        // prints the value: the ↓ manager, the shell list and the model's
-        // completion notes all read the placeholder (docs/secrets.md).
+        // The command and its description reached the registry already
+        // expanded — the executor expands every string of the call — and its
+        // output prints the value: the ↓ manager, the shell list, the
+        // completion notice and the model's completion note all read the
+        // placeholder (docs/secrets.md).
         let (reg, mut rx) = registry();
         let reg = reg.with_secrets(test_secrets());
         let task = reg
-            .launch("printf 'pw=%s\\n' hunter22; sleep 1", None, true)
+            .launch(
+                "printf 'pw=%s\\n' hunter22; sleep 1",
+                Some("Print hunter22".into()),
+                true,
+            )
             .expect("launches");
-        let BgEvent::Started { command, .. } = next(&mut rx) else {
+        let BgEvent::Started {
+            command,
+            description,
+            ..
+        } = next(&mut rx)
+        else {
             panic!("expected Started first");
         };
         assert_eq!(
             command,
             "printf 'pw=%s\\n' <secrete:ROOT_PASSWORD>; sleep 1"
+        );
+        assert_eq!(
+            description.as_deref(),
+            Some("Print <secrete:ROOT_PASSWORD>")
         );
         let listed = reg.running();
         assert!(

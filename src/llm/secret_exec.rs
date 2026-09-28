@@ -20,24 +20,34 @@ use crate::secrets::{SecretRegistry, StreamRedactor, expands_placeholders};
 /// `call` with its placeholders expanded — `None` when the tool does not
 /// act ([`crate::secrets::expands_placeholders`]) or nothing changed, so the
 /// executor runs the model's own call.
-#[must_use]
-pub fn expand_call(secrets: &SecretRegistry, call: &ToolCallRequest) -> Option<ToolCallRequest> {
+///
+/// # Errors
+/// The refusal ([`crate::secrets::check_arguments`]) when a tool that acts
+/// names a secret that is not stored — typed input included, though it is
+/// expanded later: nothing of the call may run.
+pub fn expand_call(
+    secrets: &SecretRegistry,
+    call: &ToolCallRequest,
+) -> Result<Option<ToolCallRequest>, String> {
     // Keys typed into a session are the one input read for notation —
     // `<Enter>`, `\n`, `&lt;` — so its placeholders are expanded where it is
     // typed, inside the text that notation leaves (`llm::exec`): expanded
     // here, a value holding `\n` or `<Up>` would be read as keys.
-    if !expands_placeholders(&call.name)
-        || call.name == BASH_SEND_TOOL
-        || call.name == BASH_SESSION_TOOL_NAME
-    {
-        return None;
+    if !expands_placeholders(&call.name) {
+        return Ok(None);
     }
-    let arguments = secrets.expand_arguments(&call.arguments)?;
-    Some(ToolCallRequest {
+    if call.name == BASH_SEND_TOOL || call.name == BASH_SESSION_TOOL_NAME {
+        secrets.check_arguments(&call.arguments)?;
+        return Ok(None);
+    }
+    let Some(arguments) = secrets.expand_arguments(&call.arguments)? else {
+        return Ok(None);
+    };
+    Ok(Some(ToolCallRequest {
         id: call.id.clone(),
         name: call.name.clone(),
         arguments,
-    })
+    }))
 }
 
 /// `outcome` with every value in its texts redacted: the displayed `output`
@@ -89,12 +99,13 @@ pub fn redact_request(
     });
 }
 
-/// Run one tool call with the session's secrets: `run` receives the
-/// expanded call and a progress sink that redacts what it is handed —
-/// `settled` text through a [`crate::secrets::StreamRedactor`], so a value
-/// split across two reports is still caught, the `live` rows with the held
-/// tail in front of them, a refined title whole — and the outcome is
-/// redacted on the way back. With no secrets it is `run` itself.
+/// Run one tool call with the session's secrets: a call naming a secret
+/// that is not stored is refused unrun ([`expand_call`]); otherwise `run`
+/// receives the expanded call and a progress sink that redacts what it is
+/// handed — `settled` text through a [`crate::secrets::StreamRedactor`], so
+/// a value split across two reports is still caught, the `live` rows with
+/// the held tail in front of them, a refined title whole — and the outcome
+/// is redacted on the way back. With no secrets it is `run` itself.
 pub fn run_with_secrets(
     secrets: Option<&SecretRegistry>,
     call: &ToolCallRequest,
@@ -104,7 +115,12 @@ pub fn run_with_secrets(
     let Some(secrets) = secrets.filter(|secrets| !secrets.is_empty()) else {
         return run(call, on_output);
     };
-    let expanded = expand_call(secrets, call);
+    // A placeholder naming nothing stored refuses the call before anything
+    // runs; the refusal names the stored ones, so one step corrects a slip.
+    let expanded = match expand_call(secrets, call) {
+        Ok(expanded) => expanded,
+        Err(refusal) => return ToolOutcome::error(refusal),
+    };
     let call = expanded.as_ref().unwrap_or(call);
     let mut stream = StreamRedactor::default();
     let mut redacting = |progress: ToolProgress<'_>| match progress {
@@ -333,6 +349,7 @@ mod tests {
                 r#"{"path":"/x/.env","content":"KEY=<secrete:TOKEN>\n"}"#,
             ),
         )
+        .unwrap()
         .unwrap();
         let args: serde_json::Value = serde_json::from_str(&expanded.arguments).unwrap();
         assert_eq!(args["content"], format!("KEY={TOKEN}\n"));
@@ -341,11 +358,11 @@ mod tests {
                 &secrets,
                 &call("write", r#"{"path":"/x","content":"plain"}"#)
             ),
-            None
+            Ok(None)
         );
         assert_eq!(
             expand_call(&secrets, &call("agent", r#"{"prompt":"<secrete:TOKEN>"}"#)),
-            None
+            Ok(None)
         );
         // Typed input is expanded where it is typed — after its key notation
         // is read — so a value is always text (`llm::exec::run_session`).
@@ -357,8 +374,64 @@ mod tests {
                     r#"{"session_id":"b1","input":"<secrete:TOKEN><Enter>"}"#
                 )
             ),
-            None
+            Ok(None)
         );
+    }
+
+    #[test]
+    fn a_call_naming_a_secret_that_is_not_stored_is_refused_before_it_runs() {
+        // Run as written, a slip reaches the tool as the literal text — typed
+        // at a password prompt, sent as a bearer token, written into a
+        // config file that then looks done (docs/secrets.md).
+        let secrets = secrets();
+        for original in [
+            call(
+                "bash",
+                r#"{"command":"curl -H 'Authorization: Bearer <secrete:TOKN>' x"}"#,
+            ),
+            call(
+                "bashsend",
+                r#"{"session_id":"b1","input":"<secrete:ROOT_PASWORD>\n"}"#,
+            ),
+            call(
+                "write",
+                r#"{"path":"/x/.env","content":"KEY=<secrete:API_KEY>\n"}"#,
+            ),
+            call("mcp__github__create_issue", r#"{"token":"<secrete:GH>"}"#),
+        ] {
+            let mut ran = false;
+            let mut seen = Seen::default();
+            let outcome =
+                run_with_secrets(Some(&secrets), &original, &mut sink(&mut seen), |_, _| {
+                    ran = true;
+                    ToolOutcome::ok("")
+                });
+            assert!(!ran, "{} ran", original.name);
+            assert!(!outcome.ok, "{}", original.name);
+            assert!(
+                outcome.output.starts_with("Not run: <secrete:")
+                    && outcome
+                        .output
+                        .contains("Stored: <secrete:ROOT_PASSWORD>, <secrete:TOKEN>."),
+                "{}",
+                outcome.output
+            );
+            assert_eq!(expand_call(&secrets, &original), Err(outcome.output));
+        }
+    }
+
+    #[test]
+    fn a_tool_that_shows_its_arguments_is_never_refused_either() {
+        // Its placeholders are text for a person or another model, never a
+        // value to fill in — so there is nothing to refuse.
+        let secrets = secrets();
+        let original = call("agent", r#"{"prompt":"log in with <secrete:NOT_STORED>"}"#);
+        let mut ran = None;
+        run_with_secrets(Some(&secrets), &original, &mut |_| {}, |call, _| {
+            ran = Some(call.clone());
+            ToolOutcome::ok("")
+        });
+        assert_eq!(ran.unwrap(), original);
     }
 
     #[test]
@@ -371,6 +444,7 @@ mod tests {
                 r#"{"token":"<secrete:TOKEN>"}"#,
             ),
         )
+        .unwrap()
         .unwrap();
         assert!(expanded.arguments.contains(TOKEN));
     }

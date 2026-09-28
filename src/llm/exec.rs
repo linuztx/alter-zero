@@ -708,9 +708,17 @@ fn run_session(
     // A secret is typed as text, whatever its characters: its placeholder is
     // expanded here, inside the text runs the key notation left — never
     // before it, where a value holding `\n`, `<Up>` or `&lt;` would be read
-    // as keys (docs/secrets.md).
+    // as keys — and a placeholder naming nothing stored refuses the call
+    // before a key is typed (docs/secrets.md).
     if let Some(secrets) = registry.secrets() {
-        secrets.with(|store| {
+        let refused = secrets.with(|store| {
+            let refusal = store.refusal_for(parts.iter().filter_map(|part| match part {
+                crate::pty::keys::InputPart::Text(text) => Some(text.as_str()),
+                crate::pty::keys::InputPart::Key(_) => None,
+            }));
+            if refusal.is_some() {
+                return refusal;
+            }
             for part in &mut parts {
                 if let crate::pty::keys::InputPart::Text(text) = part
                     && let std::borrow::Cow::Owned(expanded) = store.expand(text)
@@ -718,7 +726,11 @@ fn run_session(
                     *text = expanded;
                 }
             }
+            None
         });
+        if let Some(refusal) = refused {
+            return ToolOutcome::error(refusal);
+        }
     }
     // The header names the command the keys go to
     // (docs/interactive-shell.md).
@@ -2613,6 +2625,55 @@ mod tests {
         );
         let reversed: String = value.chars().rev().collect();
         assert!(answered.output.contains(&reversed), "{}", answered.output);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn keys_naming_a_secret_that_is_not_stored_type_nothing() {
+        // Typed as written, a misspelled placeholder is a wrong password at
+        // the prompt — an attempt counted against the account. The check
+        // reads the text the key notation leaves, so a placeholder escaped
+        // as HTML is caught too (docs/secrets.md).
+        let mut store = crate::secrets::SecretStore::new();
+        store
+            .apply(&crate::secrets::SecretDraft {
+                original: None,
+                name: "PW".into(),
+                value: Some(crate::secrets::SecretValue::new("hunter22")),
+                context: String::new(),
+            })
+            .unwrap();
+        let (registry, _rx) = test_registry();
+        let registry = registry.with_secrets(crate::secrets::SecretRegistry::new(store));
+        let executor = RealToolExecutor::new().with_background(registry);
+        let out = exec_with(
+            &executor,
+            "bash",
+            r#"{"command":"printf 'Password: '; read -r line; echo \"got [$line]\""}"#,
+        );
+        let id = session_of(&out.output);
+        for input in ["<secrete:PWD>\n", "&lt;secrete:PWD&gt;&lt;Enter&gt;"] {
+            let refused = exec_with(
+                &executor,
+                BASH_SEND,
+                &serde_json::json!({"session_id": id, "input": input}).to_string(),
+            );
+            assert!(!refused.ok, "{input}: {}", refused.output);
+            assert!(
+                refused
+                    .output
+                    .starts_with("Not run: <secrete:PWD> is not a stored secret."),
+                "{input}: {}",
+                refused.output
+            );
+        }
+        // Nothing reached the program: it still waits for its line.
+        let answered = exec_with(
+            &executor,
+            BASH_SEND,
+            &serde_json::json!({"session_id": id, "input": "ok\n"}).to_string(),
+        );
+        assert!(answered.output.contains("got [ok]"), "{}", answered.output);
     }
 
     #[cfg(unix)]
