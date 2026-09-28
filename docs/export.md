@@ -39,8 +39,9 @@ The frame is the picker family's — the same rules, the same two-column
 inset, the same dim hint row — and what sits inside it follows the two
 siblings it borrows from:
 
-- **The title** is bold in the `/login` pages' title colour: a heading
-  over a question, not a banner.
+- **The title** wears the pages' one title dress — bold, washed in the
+  active theme's banner gradient (`ui::header::page_title_line`,
+  `docs/theme.md`): a heading over a question.
 - **The blurb** under it says what the export *is* — the one thing a
   user hovering over two rows wants to know before picking either. Two dim
   wrapped rows, never cut: the page's height is its own line count

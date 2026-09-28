@@ -35,6 +35,16 @@ fn is_rule(t: &str) -> bool {
 // ===== the page =====
 
 #[test]
+fn the_title_wears_the_title_dress() {
+    let lines = export_view_lines(&open_app(), 80);
+    let title = lines
+        .iter()
+        .find(|line| plain(line).contains("Export conversation"))
+        .expect("the title row");
+    assert!(wears_the_title_dress(title), "{title:?}");
+}
+
+#[test]
 fn closed_builds_nothing() {
     assert!(export_view_lines(&with_session(), 80).is_empty());
     assert_eq!(export_picker_height(&with_session(), 80, 200), None);

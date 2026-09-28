@@ -24,9 +24,10 @@ next launch all keep working with no second mechanism to teach them.
 Six steps, one `KeyOnboarding` (`src/app/login.rs`) — the sixth, the sign-in
 method choice a two-way subscription puts in front of its page, is
 `docs/chatgpt.md`'s — all sharing the `/model`
-picker's frame. **Every title is cyan** (`login_title_color()` = the palette
-accent the whole picker family selects with), so the flow's headings read as
-one rather than as a fourth colour to learn.
+picker's frame. **Every title wears the pages' one title dress** — bold,
+washed in the active theme's banner gradient (`ui::header::page_title_line`,
+`docs/theme.md`) — so the flow's headings read as one with every other
+page's, and follow `/theme` like the banner does.
 
 ### `KeyStep::Method` — the root
 

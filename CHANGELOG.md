@@ -30,6 +30,14 @@ release heading when a version is cut.
   masks every value, `secrets.json` is written owner-only, and a `!` command
   expands, refuses and redacts the same way (`docs/secrets.md`).
 
+### Changed
+
+- **Every page's title wears the theme.** The titles of `/hooks`, `/mcp`,
+  `/trust`, `/export`, the ↓ shell manager and the `/login` pages are now
+  bold and washed in the active theme's banner gradient, as `/donate` and
+  `/secrets` already were, instead of one flat colour — so they change with
+  `/theme` the way the banner does (`docs/theme.md`).
+
 ### Fixed
 
 - **A build that compiles in silence is no longer handed back halfway.** A

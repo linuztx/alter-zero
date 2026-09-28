@@ -4,7 +4,7 @@ use super::*;
 use crate::hooks::{HooksFile, HooksOverview};
 use crate::ui::theme::{
     HOOKS_DETAIL_HINT, HOOKS_DISABLED_NOTE, HOOKS_EMPTY, HOOKS_HINT, HOOKS_MARKER,
-    HOOKS_MENU_MAX_ROWS, hooks_title_color, model_meta_color, model_selected_color,
+    HOOKS_MENU_MAX_ROWS, model_meta_color, model_selected_color,
 };
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
@@ -475,14 +475,30 @@ fn every_built_hooks_row_fits_its_width() {
 }
 
 #[test]
+fn every_level_title_wears_the_title_dress() {
+    // `Hooks`, `PreToolUse - Matchers`, the hook list, `Hook details`: the
+    // walk's headline is the one row that says where you are, and it wears
+    // the theme's gradient like every page title (`docs/theme.md`).
+    let mut app = hooks_app();
+    for level in ["events", "matchers", "hooks", "detail"] {
+        let lines = hooks_view_lines(&app, 78);
+        assert!(
+            wears_the_title_dress(&lines[2]),
+            "{level}: {:?}",
+            plain(&lines[2])
+        );
+        press(&mut app, KeyCode::Enter);
+    }
+}
+
+#[test]
 fn the_selection_and_chrome_wear_the_picker_familys_colours() {
     let app = hooks_app();
     let lines = hooks_view_lines(&app, 78);
     let title = &lines[2];
-    assert_eq!(
-        title.spans[1].style.fg,
-        Some(hooks_title_color()),
-        "the title is cyan, like /mcp's"
+    assert!(
+        wears_the_title_dress(title),
+        "the title wears the theme's gradient, like every page's: {title:?}"
     );
     let selected = lines
         .iter()

@@ -9,7 +9,7 @@ use crate::ui::mcp_view_lines;
 use crate::ui::theme::{
     HOOKS_DETAIL_HINT, MCP_FIELD_COL, MCP_PARAM_BULLET, MCP_PARAM_INDENT, MCP_TOOL_FIELD_GAP,
     mcp_description_color, mcp_detail_label_color, mcp_detail_state_color, mcp_detail_value_color,
-    mcp_title_color, model_meta_color, tool_fail_color, tool_ok_color,
+    model_meta_color, tool_fail_color, tool_ok_color,
 };
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
@@ -217,19 +217,15 @@ fn tool_detail_app() -> App {
 }
 
 #[test]
-fn every_page_headline_is_cyan_and_the_server_one_is_capitalised() {
+fn every_page_headline_wears_the_title_dress_and_the_server_one_is_capitalised() {
     // The manager is a four-page walk, so the headline is the only row that
-    // says where you are — it wears the cyan the frame's white titles were
-    // too quiet to carry (`docs/mcp.md`).
+    // says where you are — it wears the theme's gradient every page title
+    // does (`docs/mcp.md`, `docs/theme.md`).
     let headline = |app: &App| {
         let line = mcp_view_lines(app, 100)
             .into_iter()
-            .find(|line| {
-                line.spans
-                    .iter()
-                    .any(|span| span.style.fg == Some(mcp_title_color()))
-            })
-            .expect("a cyan headline");
+            .find(wears_the_title_dress)
+            .expect("a headline in the title dress");
         plain(&line).trim().to_string()
     };
     let mut app = mcp_app();

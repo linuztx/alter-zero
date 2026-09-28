@@ -437,8 +437,9 @@ pub(super) const BG_OUTPUT_LABEL: &str = "Output:";
 /// manager, so a listed one is always running).
 pub(super) const BG_STATUS_RUNNING: &str = "running";
 
-/// The manager's title/selection accent (the palette accent — the cyan the
-/// `/hooks` and `/mcp` titles wear, [`hooks_title_color`]) and dim text.
+/// The manager's selection accent (the palette accent the whole picker
+/// family selects with) and dim text. Its titles wear the pages' title
+/// dress (`header::page_title_line`).
 pub(super) fn bg_selected_color() -> Color {
     menu_selected_color()
 }
@@ -1011,14 +1012,6 @@ pub(super) const MODEL_ERROR_MAX_ROWS: u16 = 3;
 // (indent, `❯` prompt, cyan selection, dim meta, green ✓, `→` marker) plus the
 // `LOGIN_*` strings/geometry below. ---
 
-/// Every `/login` page title — `Use a subscription`, `Sign in to GitHub
-/// Copilot`, `Enter your Agent Zero API key`. The palette accent the whole
-/// picker family already selects with, so a title reads as *this* flow's own
-/// heading rather than a fourth colour to learn.
-pub(super) fn login_title_color() -> Color {
-    model_selected_color()
-}
-
 /// The separator between a `/login` row's name and its configured status.
 pub(super) const LOGIN_STATUS_SEP: &str = " · ";
 
@@ -1520,16 +1513,8 @@ pub(super) const EXPORT_HINT: &str = "↑↓ navigate  enter select  esc close";
 // --- the read-only /hooks menu (docs/hooks-menu.md). It reuses the picker
 // family's accents — model_selected_color() for the selection, model_id_color()
 // for unselected labels, model_meta_color() for everything dim,
-// hooks_title_color() for the titles, border_color() for the frame and the
-// detail page's command box. ---
-
-/// Every level's title colour — the **cyan** its `/mcp` twin wears
-/// ([`mcp_title_color`]). The headline is the row that answers "where am I?"
-/// in a menu you walk several levels deep, so both menus land the eye the
-/// same way.
-pub(super) fn hooks_title_color() -> Color {
-    model_selected_color()
-}
+// the pages' title dress (`header::page_title_line`) for the titles,
+// border_color() for the frame and the detail page's command box. ---
 
 /// The events-level title.
 pub(super) const HOOKS_TITLE: &str = "Hooks";
@@ -1639,14 +1624,6 @@ pub(super) const MCP_SERVER_HINT: &str = "↑/↓ to navigate · Enter to select
 pub(super) const MCP_NONE_FOUND: &str = "No MCP servers configured. Add one at:";
 /// The detail page's field column (`Config location:  ` is the widest).
 pub(super) const MCP_FIELD_COL: usize = 18;
-
-/// Every page's headline — **cyan**, shared with its `/hooks` twin
-/// ([`hooks_title_color`]). This is a *walk* four pages deep, and the
-/// headline is the only row that answers "where am I?", so it is the row the
-/// eye must land on first (`docs/mcp.md`).
-pub(super) fn mcp_title_color() -> Color {
-    model_selected_color()
-}
 
 /// The separator between a server row's name, status and tool count. It is
 /// **chrome, not status**, so it stays [`model_meta_color`] dim at every

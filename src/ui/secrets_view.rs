@@ -12,7 +12,6 @@
 //! the lines, since three fields make "the row with the `❯`" a question the
 //! lines alone cannot answer.
 
-use super::header::gradient_spans;
 use super::layout::text_field_width;
 use super::model_view::{model_placeholder_row, model_rule, model_wrapped_rows};
 use super::theme::*;
@@ -34,16 +33,10 @@ pub(super) struct SecretsBuild {
 /// `(column, row within the block)`.
 type Block = (Vec<Line<'static>>, Option<(u16, usize)>);
 
-/// A title row: bold, washed in the banner's gradient like the `/donate`
-/// page's, `…`-clamped at a width that cannot seat it.
+/// A title row, in the pages' title dress
+/// ([`page_title_line`](super::header::page_title_line)).
 fn title_line(text: &str, width: u16) -> Line<'static> {
-    let mut spans = vec![Span::raw(MODEL_INDENT)];
-    spans.extend(
-        gradient_spans(text, cols(text))
-            .into_iter()
-            .map(|span| Span::styled(span.content, span.style.add_modifier(Modifier::BOLD))),
-    );
-    clamp_spans(spans, width as usize)
+    super::header::page_title_line(text, width)
 }
 
 /// One secret's row: the `❯` marker when highlighted, the placeholder padded

@@ -119,11 +119,7 @@ pub fn trust_view_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     let mut lines = vec![
         model_rule(width),
         Line::default(),
-        line(
-            &format!("{TRUST_TITLE} — {}", review.root),
-            Style::new().fg(ai_color()).add_modifier(Modifier::BOLD),
-            width,
-        ),
+        super::header::page_title_line(&format!("{TRUST_TITLE} — {}", review.root), width),
     ];
     let (status, status_color) = if review.trusted {
         (TRUST_STATUS_TRUSTED, tool_ok_color())

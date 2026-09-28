@@ -22,22 +22,10 @@ use super::*;
 
 use crate::app::ExportTarget;
 
-/// The title row: `Export conversation`, bold in the `/login` pages' title
-/// colour. Clamped with a trailing `…` at a width that can't seat it.
+/// The title row: `Export conversation`, in the pages' title dress
+/// ([`page_title_line`](super::header::page_title_line)).
 fn title_line(width: u16) -> Line<'static> {
-    let room = (width as usize).saturating_sub(cols(MODEL_INDENT));
-    clamp_spans(
-        vec![
-            Span::raw(MODEL_INDENT),
-            Span::styled(
-                ellipsize(EXPORT_TITLE, room),
-                Style::new()
-                    .fg(login_title_color())
-                    .add_modifier(Modifier::BOLD),
-            ),
-        ],
-        width as usize,
-    )
+    super::header::page_title_line(EXPORT_TITLE, width)
 }
 
 /// One target's row: `{marker}{n}. {label}` — the `❯` marker, number and

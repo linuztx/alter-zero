@@ -21,18 +21,11 @@ fn bg_line(text: &str, style: Style, width: u16) -> Line<'static> {
     ])
 }
 
-/// A page title — `Background`, `Shell details` — in the title dress the
-/// other walked menus headline every level with (`/hooks`, `/mcp`): the
-/// palette accent, bold. It is the row that answers "where am I?", so it is
-/// the row the eye should land on first.
+/// A page title — `Background`, `Shell details` — in the title dress every
+/// page headlines with ([`page_title_line`](super::header::page_title_line)):
+/// the row that answers "where am I?", so the row the eye lands on first.
 fn bg_title_line(text: &str, width: u16) -> Line<'static> {
-    bg_line(
-        text,
-        Style::new()
-            .fg(bg_selected_color())
-            .add_modifier(Modifier::BOLD),
-        width,
-    )
+    super::header::page_title_line(text, width)
 }
 
 /// One row of the manager's shell list: `❯ {command} (running)` — the

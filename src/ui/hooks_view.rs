@@ -30,15 +30,9 @@ fn dim_line(text: &str, width: u16) -> Line<'static> {
 }
 
 /// A level's title — `Hooks`, `PreToolUse - Matchers`, `Hook details` — in
-/// the band-title dress.
+/// the pages' title dress ([`page_title_line`](super::header::page_title_line)).
 fn title_line(text: &str, width: u16) -> Line<'static> {
-    hooks_line(
-        text,
-        Style::new()
-            .fg(hooks_title_color())
-            .add_modifier(Modifier::BOLD),
-        width,
-    )
+    super::header::page_title_line(text, width)
 }
 
 /// `text` word-wrapped to inset rows in `style` — informational text is

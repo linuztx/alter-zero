@@ -18,9 +18,7 @@ const LOGIN_SEARCH_ROW: u16 = 2;
 /// not counted.
 const LOGIN_KEY_INPUT_ROW: u16 = 4;
 use crate::ui::login_view::{login_host_prompt, login_key_prompt};
-use crate::ui::theme::{
-    DEVICE_CURSOR_ROW, error_color, login_title_color, model_meta_color, model_selected_color,
-};
+use crate::ui::theme::{DEVICE_CURSOR_ROW, error_color, model_meta_color, model_selected_color};
 
 /// The row the code box's top border lands on, found by content — the page's
 /// shape changes with what GitHub has answered, so a pinned row number would
@@ -165,7 +163,10 @@ fn render_login_key_step_masks_the_entered_key() {
     render_key_onboarding(buf.area, &mut buf, onboarding);
     // The cyan title (row 2, after the top rule + gap) names the provider.
     assert!(row(&buf, 2, 60).contains("Enter your OpenRouter API key"));
-    assert_eq!(buf[(2, 2)].fg, login_title_color(), "titles are cyan");
+    assert!(
+        painted_title_wears_the_dress(&buf, 2),
+        "titles wear the theme's gradient"
+    );
     // The field is masked: dots, never the plaintext key.
     let field = row(&buf, LOGIN_KEY_INPUT_ROW, 60);
     assert!(field.contains('•'), "masked: {field:?}");
@@ -505,7 +506,10 @@ fn the_device_page_shows_the_url_and_the_code_in_a_box() {
         row(&buf, 2, 72).contains("Sign in to GitHub Copilot"),
         "title"
     );
-    assert_eq!(buf[(2, 2)].fg, login_title_color(), "titles are cyan");
+    assert!(
+        painted_title_wears_the_dress(&buf, 2),
+        "titles wear the theme's gradient"
+    );
     assert!(
         row(&buf, 4, 72).contains("Visit https://github.com/login/device"),
         "{:?}",
@@ -1197,10 +1201,10 @@ fn the_sign_in_method_choice_is_a_titled_two_row_question() {
         !texts.iter().any(|t| t.contains("(1/2)")),
         "no counter: {texts:?}"
     );
-    // The title wears the flow's own heading colour, the highlighted row the
+    // The title wears the pages' title dress, the highlighted row the
     // selection accent, the other row the plain name colour — the root's
     // rows exactly.
-    assert_eq!(span_fg(&lines[2], "Select"), Some(login_title_color()));
+    assert!(wears_the_title_dress(&lines[2]), "{:?}", lines[2]);
     assert_eq!(span_fg(&lines[4], "Browser"), Some(model_selected_color()));
     assert_ne!(span_fg(&lines[5], "Device"), Some(model_selected_color()));
     assert_eq!(span_fg(&lines[7], "navigate"), Some(model_meta_color()));

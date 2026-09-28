@@ -331,3 +331,21 @@ fn the_value_never_reaches_a_painted_cell() {
         assert!(!row(&buf, y, 80).contains(VALUE));
     }
 }
+
+#[test]
+fn both_titles_wear_the_title_dress() {
+    // The list's `Secrets` and the form's `New secret` — the dress every
+    // page title shares (`docs/theme.md`).
+    let mut app = open_with(&[]);
+    let title = secrets_view_lines(&app, 80)
+        .into_iter()
+        .find(|line| plain(line).trim() == "Secrets")
+        .expect("the list title");
+    assert!(wears_the_title_dress(&title), "{title:?}");
+    press(&mut app, KeyCode::Enter);
+    let title = secrets_view_lines(&app, 80)
+        .into_iter()
+        .find(|line| plain(line).trim() == "New secret")
+        .expect("the form title");
+    assert!(wears_the_title_dress(&title), "{title:?}");
+}

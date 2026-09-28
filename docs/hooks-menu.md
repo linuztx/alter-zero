@@ -131,9 +131,10 @@ codes mean different things.
   as `lines.len()`, so multi-line descriptions and the wrapped command box
   need no fixed-slot layout), `hooks_menu_height` seats it under the strip
   via `view_height`, `render_hooks_menu` paints it. Styling is `HOOKS_*` in
-  `ui/theme.rs`, reusing the picker family's accents — including the
-  **cyan** level titles (`hooks_title_color()`, the `/mcp` manager's
-  `mcp_title_color()`): both menus are walks several levels deep, and the
+  `ui/theme.rs`, reusing the picker family's accents; every level's title
+  wears the pages' one title dress — bold, washed in the active theme's
+  banner gradient (`ui::header::page_title_line`, `docs/theme.md`), like
+  the `/mcp` manager's: both menus are walks several levels deep, and the
   headline is the row that answers "where am I?".
 - **`tui`** (boundary): the `Action::OpenHooksMenu` arm derives the overview
   from the live `HookSetup` (the same `Arc<HooksFile>` every backend rebuild

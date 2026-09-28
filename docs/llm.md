@@ -441,10 +441,11 @@ in place; unlike it, it is a **two-step** flow.
   shape now — rule, gap, `❯` filter — and the root never had one: there the
   two rows *are* the question. The method step is also the one list with no
   `(n/total)` counter.
-- **The remaining titles are cyan** (`login_title_color()`, the palette accent
-  the whole picker family selects with) — the sign-in page's `Sign in to
-  {provider}` and the key step's `Enter your {provider} API key` — so the
-  flow's headings read as one rather than as a colour of their own.
+- **The remaining titles wear the pages' one title dress** — bold, washed in
+  the active theme's banner gradient (`ui::header::page_title_line`,
+  `docs/theme.md`) — the sign-in page's `Sign in to {provider}` and the key
+  step's `Enter your {provider} API key`, so the flow's headings read as one
+  with every other page's.
 - **The subscription half** (`KeyStep::Subscription` → `KeyStep::Device`,
   with `KeyStep::SigninMethod` between them for a row that offers two ways
   in) is a provider sign-in rather than a secret to paste — GitHub Copilot's
