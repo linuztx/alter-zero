@@ -8,6 +8,10 @@
 //! a path. A thread blocked in `read` on the session's terminal is waiting for
 //! input ([`Probe::Reading`]): exact, and the only tell for a program that
 //! asks with no prompt at all — a bare `read x`, a `cat`. A thread in
+//! `splice` from the terminal can be waiting for input too (modern `cat`),
+//! or for space in its output pipe: its task's `wchan` distinguishes the
+//! terminal read from the full pipe, leaving unfamiliar channels uncertain.
+//! A thread in
 //! `poll`/`select`/`epoll` may be waiting on the terminal or on anything
 //! else — a REPL, `vim`, `ssh` and every network client wait that way — and
 //! the kernel says which. An epoll instance's interest list
@@ -123,7 +127,7 @@ impl Arch {
     };
 
     /// What `call` waits on, when it is a wait the probe knows: `read`,
-    /// `readv` or `pread64`; `poll` or `ppoll`; `select` or `pselect6`;
+    /// `readv` or `pread64`; `splice`; `poll` or `ppoll`; `select` or `pselect6`;
     /// `epoll_wait` or a `pwait` sibling.
     #[must_use]
     pub fn wait(self, call: Syscall) -> Option<Wait> {
@@ -132,6 +136,7 @@ impl Arch {
             (Self::X86_64, 0 | 17 | 19) | (Self::Aarch64, 63 | 65 | 67) => {
                 Some(Wait::Read { fd: first })
             }
+            (Self::X86_64, 275) | (Self::Aarch64, 76) => Some(Wait::Splice { fd: first }),
             (Self::X86_64, 7 | 271) | (Self::Aarch64, 73) => Some(Wait::Poll {
                 at: first,
                 count: second,
@@ -153,6 +158,8 @@ impl Arch {
 pub enum Wait {
     /// A read of descriptor `fd`.
     Read { fd: u64 },
+    /// A splice from descriptor `fd`: it may wait on its output pipe first.
+    Splice { fd: u64 },
     /// `poll` or `ppoll` over the `count` entries of the `pollfd` array at
     /// address `at` — a sleep, over none.
     Poll { at: u64, count: u64 },
@@ -277,6 +284,11 @@ pub trait Descriptors {
     /// where a `poll` or a `select` keeps the descriptors it waits on —
     /// `None` when fewer can be read.
     fn memory(&self, address: u64, len: usize) -> Option<Vec<u8>>;
+    /// Where this task sleeps (`/proc/PID/task/TID/wchan`), when readable.
+    /// A splice can wait for terminal input or space in its output pipe.
+    fn wait_channel(&self) -> Option<String> {
+        None
+    }
 }
 
 /// How much of a `poll`'s array one entry takes: `int fd; short events;
@@ -401,11 +413,26 @@ pub enum Thread {
 #[must_use]
 pub fn classify(arch: Arch, line: &str, fds: &impl Descriptors, terminal: &Terminal) -> Thread {
     match parse_syscall(line).and_then(|call| arch.wait(call)) {
-        Some(Wait::Read { fd }) => match fds.link(fd) {
-            Some(link) if terminal.leads_here(&link) => Thread::Reading,
-            Some(link) if is_terminal_slave(&link) => Thread::Terminal,
-            _ => Thread::Busy,
-        },
+        Some(wait @ (Wait::Read { fd } | Wait::Splice { fd })) => {
+            let reading = match fds.link(fd) {
+                Some(link) if terminal.leads_here(&link) => Thread::Reading,
+                Some(link) if is_terminal_slave(&link) => Thread::Terminal,
+                _ => Thread::Busy,
+            };
+            match (wait, reading) {
+                (Wait::Splice { .. }, Thread::Reading | Thread::Terminal) => {
+                    // Linux checks the output pipe's capacity before reading
+                    // from the terminal. Only its terminal-read wait proves
+                    // input is wanted; a hidden or unfamiliar channel does not.
+                    match fds.wait_channel().as_deref().map(str::trim) {
+                        Some("wait_woken" | "n_tty_read") => reading,
+                        Some("pipe_wait_writable") => Thread::Busy,
+                        _ => Thread::Maybe,
+                    }
+                }
+                _ => reading,
+            }
+        }
         Some(Wait::Poll { count: 0, .. } | Wait::Select { count: 0, .. }) | None => Thread::Busy,
         Some(Wait::Poll { at, count }) => poll_watch(fds, terminal, at, count).thread(),
         Some(Wait::Select { count, read_set }) => {
@@ -840,6 +867,10 @@ struct TaskDescriptors<'a> {
 
 #[cfg(target_os = "linux")]
 impl Descriptors for TaskDescriptors<'_> {
+    fn wait_channel(&self) -> Option<String> {
+        std::fs::read_to_string(self.dir.join("wchan")).ok()
+    }
+
     fn link(&self, fd: u64) -> Option<String> {
         let target = std::fs::read_link(self.dir.join("fd").join(fd.to_string())).ok()?;
         Some(target.to_string_lossy().into_owned())
@@ -877,6 +908,217 @@ pub fn probe(_pid: u32, _terminal: &Path, _work: &mut Work) -> Probe {
 pub fn stat_group(stat: &str) -> Option<u32> {
     let (_, fields) = stat.rsplit_once(')')?;
     fields.split_whitespace().nth(2)?.parse().ok()
+}
+
+/// Is `argv` **Node's own REPL** — `node` starting no script, or ts-node's
+/// or tsx's, Node's REPL behind a compiler? Of the REPLs measured it is the
+/// one that keeps the terminal raw while a line it was handed runs (a
+/// top-level `await`), so its silence then is work, not a question
+/// (`pty::session`). Read conservatively: anything not plainly a REPL — a
+/// script, an evaluation, an option whose value might be a script — is not.
+#[must_use]
+pub fn node_repl_argv(argv: &[&str]) -> bool {
+    node_repl_argv_with(argv, &|script| Some(PathBuf::from(script)))
+}
+
+/// Only the actual script operand goes through `resolve`: option values,
+/// preload names and evaluated JavaScript are never filesystem paths here.
+fn node_repl_argv_with(argv: &[&str], resolve: &dyn Fn(&str) -> Option<PathBuf>) -> bool {
+    let Some((program, args)) = argv.split_first() else {
+        return false;
+    };
+    let name = program.rsplit('/').next().unwrap_or(program);
+    if !matches!(name, "node" | "nodejs") {
+        return false;
+    }
+    node_repl_args(args.iter().copied(), false, resolve)
+}
+
+/// Recognize only options whose effect on choosing a REPL is known. In
+/// particular, application modes such as `--run` and `--test` are not a REPL.
+fn node_repl_args<'a>(
+    mut args: impl Iterator<Item = &'a str>,
+    compiler: bool,
+    resolve: &dyn Fn(&str) -> Option<PathBuf>,
+) -> bool {
+    let (mut evaluates, mut interactive) = (false, false);
+    while let Some(arg) = args.next() {
+        // Node/V8 accepts underscores in option names too. Never normalize
+        // the operand: a preload path or an evaluation is opaque text.
+        let normalized;
+        let arg = if !compiler && arg.starts_with("--") {
+            let end = arg.find('=').unwrap_or(arg.len());
+            normalized = format!("{}{}", arg[..end].replace('_', "-"), &arg[end..]);
+            normalized.as_str()
+        } else {
+            arg
+        };
+        let (option, attached) = arg
+            .split_once('=')
+            .map_or((arg, None), |(name, value)| (name, Some(value)));
+        if !compiler
+            && matches!(
+                option,
+                "--max-old-space-size"
+                    | "--max-semi-space-size"
+                    | "--initial-old-space-size"
+                    | "--stack-size"
+            )
+        {
+            let Some(value) = attached else {
+                return false;
+            };
+            // V8 requires an attached value. A missing/malformed size must
+            // not turn an invalid invocation into a REPL.
+            if !value.bytes().all(|byte| byte.is_ascii_digit()) || value.parse::<u64>().is_err() {
+                return false;
+            }
+            continue;
+        }
+        match arg {
+            "-i" | "--interactive" => interactive = true,
+            "-e" | "--eval" | "-p" | "--print" => {
+                evaluates = true;
+                if args.next().is_none() {
+                    return false;
+                }
+            }
+            // Options whose value is the next argument.
+            "-r"
+            | "--require"
+            | "--import"
+            | "--loader"
+            | "--experimental-loader"
+            | "-C"
+            | "--conditions" => {
+                if args.next().is_none() {
+                    return false;
+                }
+            }
+            _ if arg.starts_with("--eval=") || arg.starts_with("--print=") => evaluates = true,
+            _ if arg.starts_with("-e") || arg.starts_with("-p") => evaluates = true,
+            "--" => {
+                return match args.next() {
+                    Some(script) => !compiler && !evaluates && compiler_repl(script, args, resolve),
+                    None => !evaluates || interactive,
+                };
+            }
+            "--inspect"
+            | "--inspect-brk"
+            | "--inspect-wait"
+            | "--no-warnings"
+            | "--trace-warnings"
+            | "--no-deprecation"
+            | "--trace-deprecation"
+            | "--enable-source-maps"
+            | "--experimental-repl-await"
+            | "--no-experimental-repl-await"
+            | "--experimental-strip-types"
+            | "--no-experimental-strip-types" => {}
+            "--expose-gc" | "--no-expose-gc" | "--trace-gc" | "--no-trace-gc" | "--jitless"
+            | "--no-jitless"
+                if !compiler => {}
+            "--transpile-only" | "--transpileOnly" | "--esm" | "--swc" if compiler => {}
+            _ if [
+                "--require=",
+                "--import=",
+                "--loader=",
+                "--experimental-loader=",
+                "--conditions=",
+                "--inspect=",
+                "--inspect-brk=",
+                "--inspect-wait=",
+            ]
+            .iter()
+            .any(|prefix| arg.starts_with(prefix)) => {}
+            _ if arg.starts_with('-') => return false,
+            script => return !compiler && !evaluates && compiler_repl(script, args, resolve),
+        }
+    }
+    !evaluates || interactive
+}
+
+/// Is `script`, run by node with `rest` after it, ts-node's or tsx's REPL —
+/// its entry point, handed no script of its own?
+fn compiler_repl<'a>(
+    script: &str,
+    rest: impl Iterator<Item = &'a str>,
+    resolve: &dyn Fn(&str) -> Option<PathBuf>,
+) -> bool {
+    let entry = |script: &str| {
+        [
+            "/node_modules/ts-node/dist/bin.js",
+            "/node_modules/tsx/dist/cli.mjs",
+            "/node_modules/tsx/dist/cli.cjs",
+            "/node_modules/tsx/dist/cli.js",
+        ]
+        .iter()
+        .any(|end| script.ends_with(end))
+    };
+    // A known entry remains evidence if the REPL changed cwd after loading
+    // it. Only an unfamiliar alias needs filesystem resolution.
+    let recognised =
+        entry(script) || resolve(script).is_some_and(|path| path.to_str().is_some_and(entry));
+    recognised && node_repl_args(rest, true, resolve)
+}
+
+/// Resolve a running process's script, including PATH launcher symlinks.
+/// Relative operands belong to its cwd, never the assistant's. An absolute
+/// path can still be resolved when `/proc/PID/cwd` is unreadable.
+#[cfg(target_os = "linux")]
+fn resolve_process_script(pid: u32, script: &str) -> Option<PathBuf> {
+    let script = Path::new(script);
+    let path = if script.is_absolute() {
+        script.to_path_buf()
+    } else {
+        PathBuf::from(format!("/proc/{pid}/cwd")).join(script)
+    };
+    std::fs::canonicalize(path).ok()
+}
+
+/// Does process group `group` run **Node's REPL** ([`node_repl_argv`]) —
+/// its leader or anything below it in the group, a REPL started by a shell
+/// command (`cd app && node`) included? Read off `/proc/PID/cmdline`;
+/// `false` when the processes cannot be read.
+#[cfg(target_os = "linux")]
+#[must_use]
+pub fn group_runs_node_repl(group: u32) -> bool {
+    let in_group = |pid: u32| {
+        std::fs::read_to_string(format!("/proc/{pid}/stat"))
+            .ok()
+            .and_then(|stat| stat_group(&stat))
+            == Some(group)
+    };
+    let mut pending = vec![group];
+    let mut seen = 0;
+    while let Some(pid) = pending.pop() {
+        seen += 1;
+        if seen > PROBE_MAX_TASKS {
+            break;
+        }
+        if std::fs::read(format!("/proc/{pid}/cmdline")).is_ok_and(|cmdline| {
+            let cmdline = String::from_utf8_lossy(&cmdline);
+            let argv: Vec<&str> = cmdline.split_terminator('\0').collect();
+            node_repl_argv_with(&argv, &|script| resolve_process_script(pid, script))
+        }) {
+            return true;
+        }
+        let Ok(tasks) = std::fs::read_dir(format!("/proc/{pid}/task")) else {
+            continue;
+        };
+        for children in tasks
+            .flatten()
+            .filter_map(|task| std::fs::read_to_string(task.path().join("children")).ok())
+        {
+            pending.extend(
+                children
+                    .split_whitespace()
+                    .filter_map(|child| child.parse::<u32>().ok())
+                    .filter(|&child| in_group(child)),
+            );
+        }
+    }
+    false
 }
 
 /// The name (`/proc/PID/comm`) of the program at the bottom of process
@@ -926,6 +1168,241 @@ const PROBE_MAX_DEPTH: usize = 64;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_path_compiler_repl_is_resolved_in_its_process_working_directory() {
+        use std::io::Read;
+        use std::os::unix::{fs::symlink, process::CommandExt};
+        use std::process::{Command, Stdio};
+
+        let dir = tempfile::tempdir().unwrap();
+        let process = |script: &str, rest: &[&str]| {
+            let mut child = Command::new("/bin/sh")
+                .arg0("node")
+                .arg(script)
+                .args(rest)
+                .current_dir(dir.path())
+                .process_group(0)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null())
+                .spawn()
+                .unwrap();
+            // `spawn` can return during exec's /proc transition. A terminal
+            // tool likewise identifies the REPL after its first prompt.
+            let mut ready = [0; 5];
+            child
+                .stdout
+                .as_mut()
+                .unwrap()
+                .read_exact(&mut ready)
+                .unwrap();
+            assert_eq!(&ready, b"ready");
+            let recognised = group_runs_node_repl(child.id());
+            let _ = child.kill();
+            child.wait().unwrap();
+            recognised
+        };
+        for (package, entry) in [("ts-node", "bin.js"), ("tsx", "cli.mjs")] {
+            let target = dir
+                .path()
+                .join(format!("node_modules/{package}/dist/{entry}"));
+            std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+            // A shell fixture supplies controllable argv and cwd through real
+            // /proc files; its builtin read keeps it alive without children.
+            std::fs::write(&target, "printf ready; read answer\n").unwrap();
+            let alias = dir.path().join(package);
+            symlink(&target, &alias).unwrap();
+            for script in [alias.to_str().unwrap(), package] {
+                assert!(
+                    process(script, &[]),
+                    "the process runs its compiler through {script}"
+                );
+                assert!(
+                    !process(script, &["app.ts"]),
+                    "a compiler running a script is no REPL"
+                );
+                assert!(
+                    !node_repl_argv(&["node", script]),
+                    "the public argv matcher does no I/O"
+                );
+            }
+            // An absolute operand does not depend on readable process cwd.
+            assert_eq!(
+                resolve_process_script(u32::MAX, alias.to_str().unwrap()),
+                Some(target.canonicalize().unwrap())
+            );
+            assert_eq!(resolve_process_script(u32::MAX, package), None);
+            std::fs::remove_file(&alias).unwrap();
+            std::fs::write(&alias, "printf ready; read answer\n").unwrap();
+            assert!(
+                !process(package, &[]),
+                "a matching launcher name alone proves nothing"
+            );
+        }
+    }
+
+    #[test]
+    fn compiler_path_resolution_does_not_touch_evaluations_or_preload_operands() {
+        let resolve = |_: &str| -> Option<PathBuf> { panic!("this argument is not a script") };
+        assert!(node_repl_argv_with(
+            &["node", "--require", "./ts-node"],
+            &resolve
+        ));
+        assert!(!node_repl_argv_with(
+            &["node", "--eval", "./ts-node"],
+            &resolve
+        ));
+        assert!(!node_repl_argv_with(
+            &["node", "--eval=./ts-node"],
+            &resolve
+        ));
+        assert!(!node_repl_argv_with(&["node", "--run=./ts-node"], &resolve));
+    }
+
+    #[test]
+    fn known_compiler_entry_paths_survive_an_unavailable_resolver() {
+        // A REPL can change cwd after loading a relative entry point. Its
+        // original known script path remains evidence without filesystem I/O.
+        let unavailable = |_: &str| None;
+        for script in [
+            "./node_modules/ts-node/dist/bin.js",
+            "./node_modules/tsx/dist/cli.mjs",
+            "/app/node_modules/ts-node/dist/bin.js",
+        ] {
+            assert!(
+                node_repl_argv_with(&["node", script], &unavailable),
+                "{script}"
+            );
+            assert!(!node_repl_argv_with(
+                &["node", script, "app.ts"],
+                &unavailable
+            ));
+        }
+    }
+
+    #[test]
+    fn nodes_own_repl_is_told_from_a_script_by_its_arguments() {
+        // Node's REPL keeps the terminal raw while a top-level `await` runs
+        // (`pty::session`): `node` starting no script, options and all…
+        for argv in [
+            &["node"][..],
+            &["/usr/bin/node"],
+            &["nodejs"],
+            &["node", "--inspect", "--no-warnings"],
+            &["node", "-r", "dotenv/config"],
+            &["node", "--require", "x", "--import=tsx"],
+            &["node", "-i"],
+            &["node", "-e", "globalThis.x = 1", "-i"],
+            // …and ts-node's and tsx's, Node's REPL behind a compiler.
+            &["node", "/usr/lib/node_modules/ts-node/dist/bin.js"],
+            &[
+                "node",
+                "/opt/node22/lib/node_modules/ts-node/dist/bin.js",
+                "--transpile-only",
+            ],
+            &["node", "/root/.npm/_npx/9f1/node_modules/tsx/dist/cli.mjs"],
+            &["node", "/app/node_modules/tsx/dist/cli.mjs"],
+        ] {
+            assert!(node_repl_argv(argv), "{argv:?}");
+        }
+        // A script — a readline program asking its own questions — is not,
+        // nor an evaluation, nor any other program.
+        for argv in [
+            &["node", "count.js"][..],
+            &["node", "--", "count.js"],
+            &["node", "-e", "require('readline')"],
+            &["node", "-p", "1 + 1"],
+            &["node", "/opt/node22/bin/ts-node", "app.ts"],
+            &[
+                "node",
+                "/app/node_modules/tsx/dist/cli.mjs",
+                "watch",
+                "src/x.ts",
+            ],
+            &["node", "/tmp/tsx"],
+            &["node", "/tmp/ts-node"],
+            &["node", "/tmp/tsx/dist/cli.mjs"],
+            &["node", "/tmp/ts-node/dist/bin.js"],
+            &["node", "--run=dev"],
+            &["node", "-econsole.log(1)"],
+            &["node", "--mystery-option=value"],
+            &["node", "/app/node_modules/tsx/dist/cli.mjs", "--eval=1"],
+            &["node", "--require"],
+            &["python3"],
+            &["bash", "-c", "node"],
+            &[],
+        ] {
+            assert!(!node_repl_argv(argv), "{argv:?}");
+        }
+    }
+
+    #[test]
+    fn node_runtime_options_keep_the_repl_without_hiding_application_modes() {
+        for argv in [
+            &["node", "--max-old-space-size=4096"][..],
+            &["node", "--max_old_space_size=4096"],
+            &["node", "--max_semi_space_size=16"],
+            &["node", "--initial-old-space-size=0", "--stack-size=984"],
+            &["node", "--expose-gc", "--trace-gc", "--jitless"],
+            &["node", "--no-expose-gc", "--no-trace-gc", "--no-jitless"],
+            &[
+                "node",
+                "--max-old-space-size=4096",
+                "--require",
+                "my_module",
+            ],
+            &["node", "--max-old-space-size=4096", "-i", "-e", "0"],
+        ] {
+            assert!(node_repl_argv(argv), "{argv:?}");
+        }
+        for argv in [
+            &["node", "--max-old-space-size=4096", "app.js"][..],
+            &["node", "--max-old-space-size", "4096"],
+            &["node", "--max_semi_space_size", "16"],
+            &["node", "--stack-size", "984"],
+            &["node", "--max-old-space-size", "4096", "--", "app.js"],
+            &["node", "--max-old-space-size", "--run=dev"],
+            &["node", "--max-old-space-size=4096", "--run=dev"],
+            &["node", "--max-old-space-size=4096", "--test"],
+            &["node", "--max-old-space-size=4096", "--watch"],
+            &["node", "--max-old-space-size=4096", "--check"],
+            &[
+                "node",
+                "--max-old-space-size=4096",
+                "--experimental-sea-config=sea.json",
+            ],
+            &["node", "--max-old-space-size=4096", "--build-snapshot"],
+            &[
+                "node",
+                "--max-old-space-size=4096",
+                "--experimental-config-file=config.json",
+            ],
+            &[
+                "node",
+                "--max-old-space-size=4096",
+                "-e",
+                "process.stdin.resume()",
+            ],
+            &["node", "--max-old-space-size=4096", "--print=1"],
+            &["node", "--max-old-space-size"],
+            &["node", "--max-old-space-size="],
+            &["node", "--max-old-space-size=not-a-number"],
+            &["node", "--stack-size=-1"],
+            &["node", "--max-old-space-size=18446744073709551616"],
+            &["node", "--unrecognized-runtime-option=4096"],
+            &[
+                "node",
+                "--max-old-space-size",
+                "4096",
+                "/app/node_modules/ts-node/dist/bin.js",
+                "app.ts",
+            ],
+        ] {
+            assert!(!node_repl_argv(argv), "{argv:?}");
+        }
+    }
 
     #[test]
     fn a_process_group_is_read_off_its_stat_line() {
@@ -1311,6 +1788,7 @@ mod tests {
         files: std::collections::HashMap<u64, FileId>,
         infos: std::collections::HashMap<u64, String>,
         memory: std::collections::HashMap<u64, Vec<u8>>,
+        wait_channel: Option<String>,
     }
 
     impl Table {
@@ -1339,6 +1817,10 @@ mod tests {
     }
 
     impl Descriptors for Table {
+        fn wait_channel(&self) -> Option<String> {
+            self.wait_channel.clone()
+        }
+
         fn link(&self, fd: u64) -> Option<String> {
             self.links.get(&fd).cloned()
         }
@@ -1904,6 +2386,38 @@ mod tests {
             Thread::Maybe,
             "more descriptors than the probe looks up"
         );
+    }
+
+    #[test]
+    fn a_terminal_splice_waits_for_input_only_on_its_read_side() {
+        // Modern cat splices stdin into an internal pipe before copying it
+        // out. The same syscall can instead block on a full output pipe.
+        let splice = |number, input| {
+            let output = if input == 0 { 4 } else { 0 };
+            format!("{number} {input:#x} 0x0 {output:#x} 0x0 0x80000 0x0 0x7ffd 0x7f2d")
+        };
+        for (arch, number) in [(Arch::X86_64, 275), (Arch::Aarch64, 76)] {
+            for (channel, want) in [
+                (Some("wait_woken"), Thread::Reading),
+                (Some("n_tty_read"), Thread::Reading),
+                (Some("pipe_wait_writable"), Thread::Busy),
+                (Some("0"), Thread::Maybe),
+                (None, Thread::Maybe),
+            ] {
+                let mut fds = process().fd(4, "pipe:[77]", PIPE);
+                fds.wait_channel = channel.map(str::to_string);
+                assert_eq!(
+                    classify(arch, &splice(number, 0), &fds, &terminal()),
+                    want,
+                    "{arch:?}, {channel:?}"
+                );
+                assert_eq!(
+                    classify(arch, &splice(number, 4), &fds, &terminal()),
+                    Thread::Busy,
+                    "a splice from a pipe is not terminal input"
+                );
+            }
+        }
     }
 
     #[test]

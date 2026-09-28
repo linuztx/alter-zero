@@ -1314,7 +1314,10 @@ stream for their own reasons).
   when the overlay opened is re-committed on return a chunk later (no data loss).
 - Terminal sessions (every `bash` call, `docs/bash-tools.md`) decide *waiting for input* first
   by asking Linux's `/proc` what the session's processes are blocked in (a
-  `read` on the terminal is waiting, a tree all at work is busy — a `poll` or
+  `read` on the terminal is waiting, as is a `splice` from it whose wait
+  channel identifies a terminal read; a splice waiting for pipe capacity
+  is work, and a hidden or unrecognised wait channel stays uncertain;
+  a tree all at work is busy — a `poll` or
   `select` over no descriptors being a sleep — and one waiting only in epoll
   sets, or `poll` and `select` sets read out of its memory, that hold nothing
   on the terminal, a network client or an event loop between timers, asks
@@ -1328,22 +1331,53 @@ stream for their own reasons).
   mask what is typed — and where the probe is blind — a process run as
   another user (`sudo` and what it runs), a `poll` or `select` wait over
   descriptors or an epoll set holding the terminal, no `/proc` — by
-  heuristics: the cursor left mid-line, the alternate screen of a program
-  that took the terminal out of line mode (a display that never does,
+  heuristics: a cursor left mid-line, hidden or visible, the alternate screen
+  of a program that took the terminal out of line mode (a display that never does,
   `gh run watch`, takes no keys), or a terminal read key by key (raw input
   with output processing still on, which a relay such as sudo's own pty does
   not leave),
   each after half a second of quiet (three for a pure wait that saw the line
-  appear), never on a line redrawn in place like a progress bar. So, there, a
+  appear), never on a line redrawn in place like a progress bar. A hidden
+  cursor is rejected as a line prompt only with additional display evidence:
+  a rewrite above the end of live output (explicitly erased tails do not
+  extend it), or a numeric percentage at the cursor with a progress bar or
+  transfer cue — including pacman's first 0% frame. Hidden menus and
+  questions can still ask; a menu merely parking its cursor above choices
+  is not a rewrite. The same progress check keeps launches and input calls
+  waiting past their silence cutoff, until exit, another input signal or
+  their budget. A stale display can therefore hold that whole budget.
+  Kernel-observed reads, password mode, key-reading
+  programs and interactive alternate screens remain independent signals.
+  So, there, a
   program that prints its question, a newline, and then waits in line mode
   reports `Running` rather than `waiting for input` (its output still shows
   the question), and a busy command that leaves a line open (`Reading package
-  lists... `) can read as a prompt for a moment; a password prompt that
-  echoes `*` per key, or one behind a relay, is not named as one. A wait
+  lists... `) can read as a prompt for a moment; a
+  password prompt that echoes `*` per key, or one behind a relay, is not
+  named as one. A wait
   counts what the model has not yet seen, so a question asked between two
   calls ends the next wait; and the call that submits a password waits up to
   10 s for the program's answer, so a command that runs on silently once let
-  in holds that call longer than the usual 2 s. See
+  in holds that call longer than the usual 2 s. Line breaks and terminal
+  controls alone do not revive the old prompt or the echo-off password
+  signal while that answer is pending; visible text (even a retry printing
+  the same prompt) or a terminal read seen by the probe does. A supported
+  Node REPL identified in Linux's terminal foreground group also holds one
+  submitted line beyond its own echo and ordinary newline-terminated logs,
+  until a matching prompt, continuation, editor entry or visible screen
+  takeover appears. Raw mode during a top-level `await` does not stand for
+  its next prompt. The explicit runtime-option set includes numeric
+  memory/stack values, GC/JIT booleans and underscore aliases in native
+  option names; operands stay unchanged. Known compiler entry paths retain
+  direct matching. Other `ts-node`/`tsx` launcher aliases resolve through
+  symlinks using the process's cwd for relative paths; a resolution failure
+  declines an alias without disabling direct matching. Relative aliases
+  can lose recognition after a cwd change. Unknown options, application
+  modes and ordinary scripts do not qualify. Unrecognised invocations, unreadable processes and
+  relays retain the ordinary rules; prompt-shaped output remains
+  ambiguous, and a silent asynchronous stdin listener can report `Running`
+  because its kernel-visible wait also fits a pending promise. Visible
+  nested questions and actual terminal reads still count. See
   `docs/interactive-shell.md` *Limits*.
 - Tool output shown inline is always collapsed to a one-line peek; the only way to
   read it in full is the Ctrl+O conversation view, which shows the whole transcript

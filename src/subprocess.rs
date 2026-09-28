@@ -383,15 +383,93 @@ pub fn kill_process_group(child: &mut Child) {
 /// Does `child`'s process group still hold a process once `child` itself
 /// has exited — one the command started and left running (`sleep 30 &`)?
 /// The group is the command's alone ([`kill_process_group`]), so anything
-/// still in it is what [`kill_process_group`] is about to stop. A probe with
-/// signal 0, which sends nothing.
+/// still running in it is what [`kill_process_group`] is about to stop. A
+/// probe with signal 0 sends nothing, but also finds unreaped zombies. On
+/// Linux, check their threads before calling the group live: an exited
+/// helper alone is no background work, while a process whose main thread
+/// called `pthread_exit` can still have workers. Unreadable state retains
+/// the conservative signal-0 result. Cleanup does not depend on this hint.
 #[cfg(unix)]
 #[must_use]
 pub fn group_outlives(child: &Child) -> bool {
     i32::try_from(child.id())
         .ok()
         .and_then(rustix::process::Pid::from_raw)
-        .is_some_and(|pgid| rustix::process::test_kill_process_group(pgid).is_ok())
+        .is_some_and(|pgid| {
+            rustix::process::test_kill_process_group(pgid).is_ok() && group_runs(child.id())
+        })
+}
+
+#[cfg(target_os = "linux")]
+fn group_runs(pgid: u32) -> bool {
+    group_runs_in(Path::new("/proc"), pgid)
+}
+
+/// Only a fully observed group of exited threads can disprove signal 0.
+/// A vanished stat entry is an ordinary exit race; other read failures or
+/// malformed records can hide a live member and keep the warning.
+#[cfg(target_os = "linux")]
+fn group_runs_in(proc_root: &Path, pgid: u32) -> bool {
+    let Ok(mut processes) = std::fs::read_dir(proc_root) else {
+        return true;
+    };
+    processes.any(|entry| {
+        let Ok(entry) = entry else {
+            return true;
+        };
+        if entry
+            .file_name()
+            .to_str()
+            .and_then(|name| name.parse::<u32>().ok())
+            .is_none()
+        {
+            return false;
+        }
+        let stat = match std::fs::read_to_string(entry.path().join("stat")) {
+            Ok(stat) => stat,
+            Err(error) => return error.kind() != io::ErrorKind::NotFound,
+        };
+        match crate::pty::probe::stat_group(&stat) {
+            Some(group) if group != pgid => return false,
+            None => return true,
+            Some(_) => {}
+        }
+        if !thread_exited(&stat) {
+            return true;
+        }
+        let Ok(tasks) = std::fs::read_dir(entry.path().join("task")) else {
+            return true;
+        };
+        let mut saw_exited_thread = false;
+        for task in tasks {
+            let Ok(task) = task else {
+                return true;
+            };
+            match std::fs::read_to_string(task.path().join("stat")) {
+                Ok(stat) if thread_exited(&stat) => saw_exited_thread = true,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                _ => return true,
+            }
+        }
+        // A dead group leader can make its task directory unavailable or
+        // empty even while workers survive. Neither proves the group dead.
+        !saw_exited_thread
+    })
+}
+
+#[cfg(target_os = "linux")]
+fn thread_exited(stat: &str) -> bool {
+    matches!(
+        stat.rsplit_once(')')
+            .and_then(|(_, fields)| fields.split_whitespace().next()),
+        Some("Z" | "X")
+    )
+}
+
+/// Elsewhere no process table confirms the group contains only zombies.
+#[cfg(all(unix, not(target_os = "linux")))]
+fn group_runs(_pgid: u32) -> bool {
+    true
 }
 
 /// Non-unix fallback: no process groups to outlive the command.
@@ -793,6 +871,144 @@ mod tests {
         let status = child.wait().expect("waits");
         assert_eq!(out.trim(), "hi");
         assert_eq!(status.code(), Some(7), "the exit survives the layers");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_group_holding_only_an_unreaped_process_did_not_leave_work_running() {
+        use std::io::{BufRead, BufReader, Write};
+        use std::os::unix::process::CommandExt;
+
+        // Keep the zombie's parent alive outside the original group, so
+        // the test can reap it itself rather than leaving it to init. The
+        // group named by child.id() then holds only the unreaped child.
+        let script = r"import os, sys
+pid = os.fork()
+if pid == 0:
+    os._exit(0)
+os.setpgid(0, os.getpgid(os.getppid()))
+os.waitid(os.P_PID, pid, os.WEXITED | os.WNOWAIT)
+print('ready', flush=True)
+sys.stdin.buffer.read(1)
+os.waitpid(pid, 0)
+";
+        let mut child = match Command::new("python3")
+            .args(["-c", script])
+            .process_group(0)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+        {
+            Ok(child) => child,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return,
+            Err(error) => panic!("python3 fixture did not start: {error}"),
+        };
+        let mut ready = String::new();
+        BufReader::new(child.stdout.take().expect("piped output"))
+            .read_line(&mut ready)
+            .expect("fixture reports readiness");
+        let outlives = group_outlives(&child);
+        child
+            .stdin
+            .take()
+            .expect("piped input")
+            .write_all(b"x")
+            .expect("release the parent to reap its child");
+        let status = child.wait().expect("fixture exits");
+        assert_eq!(ready, "ready\n", "fixture reached zombie-only state");
+        assert!(status.success(), "fixture cleaned up: {status}");
+        assert!(!outlives, "a zombie-only group has no work to stop");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_group_with_a_live_worker_outlives_its_exited_main_thread() {
+        use std::io::{BufRead, BufReader, Write};
+        use std::os::unix::process::CommandExt;
+        use std::time::{Duration, Instant};
+
+        let script = r"import ctypes, os, sys, threading
+def worker():
+    print('ready', flush=True)
+    sys.stdin.buffer.read(1)
+    os._exit(0)
+threading.Thread(target=worker).start()
+ctypes.CDLL(None).pthread_exit(None)
+";
+        let mut child = match Command::new("python3")
+            .args(["-c", script])
+            .process_group(0)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+        {
+            Ok(child) => child,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return,
+            Err(error) => panic!("python3 fixture did not start: {error}"),
+        };
+        let mut ready = String::new();
+        BufReader::new(child.stdout.take().expect("piped output"))
+            .read_line(&mut ready)
+            .expect("fixture reports readiness");
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let main_exited = loop {
+            let stat = std::fs::read_to_string(format!("/proc/{}/stat", child.id()))
+                .expect("fixture remains alive");
+            if thread_exited(&stat) {
+                break true;
+            }
+            if Instant::now() >= deadline {
+                break false;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        let outlives = group_outlives(&child);
+        child
+            .stdin
+            .take()
+            .expect("piped input")
+            .write_all(b"x")
+            .expect("release the worker");
+        let status = child.wait().expect("fixture exits");
+        assert_eq!(ready, "ready\n");
+        assert!(status.success(), "fixture cleaned up: {status}");
+        assert!(main_exited, "main thread reached pthread_exit");
+        assert!(outlives, "an exited main thread does not end its workers");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn unreadable_group_members_and_tasks_remain_possibly_running() {
+        let proc_root = tempfile::tempdir().expect("proc fixture");
+        let process = proc_root.path().join("11");
+        let task = process.join("task/11");
+        std::fs::create_dir_all(&task).expect("task directory");
+        // A comm can contain spaces and closing parentheses.
+        let exited = "11 (helper ) name) Z 1 55 55 0";
+        std::fs::write(process.join("stat"), exited).expect("process stat");
+        std::fs::write(task.join("stat"), exited).expect("task stat");
+        assert!(!group_runs_in(proc_root.path(), 55));
+        assert!(!group_runs_in(proc_root.path(), 66));
+
+        std::fs::write(task.join("stat"), "11 (helper) S 1 55 55 0").expect("live task stat");
+        assert!(group_runs_in(proc_root.path(), 55));
+        std::fs::write(task.join("stat"), "unreadable fields").expect("bad task stat");
+        assert!(group_runs_in(proc_root.path(), 55));
+
+        // A directory in place of a stat file fails to read even as root,
+        // unlike a chmod-based permission fixture.
+        std::fs::remove_file(task.join("stat")).expect("remove task stat");
+        std::fs::create_dir(task.join("stat")).expect("unreadable task stat");
+        assert!(group_runs_in(proc_root.path(), 55));
+        std::fs::remove_dir_all(process.join("task")).expect("hide tasks");
+        assert!(group_runs_in(proc_root.path(), 55));
+        std::fs::create_dir(process.join("task")).expect("empty task directory");
+        assert!(group_runs_in(proc_root.path(), 55));
+
+        std::fs::remove_file(process.join("stat")).expect("remove process stat");
+        std::fs::create_dir(process.join("stat")).expect("unreadable process stat");
+        assert!(group_runs_in(proc_root.path(), 55));
+        assert!(group_runs_in(&proc_root.path().join("missing"), 55));
     }
 
     /// pgid == `child.id()` in the detached tiers too, so `kill -KILL -pgid`

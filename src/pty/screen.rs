@@ -269,10 +269,19 @@ impl Screen {
     /// (`>>> `, `Password: `, `[Y/n] `)? A program between lines of output
     /// leaves it at the start of a fresh line. On the alternate screen too:
     /// whether a full-screen program takes keys wherever its cursor is, the
-    /// terminal's line mode says (`pty::session`), not the screen.
+    /// terminal's line mode says (`pty::session`), not the screen. Hidden
+    /// cursors count too: prompt libraries often draw their own selection.
+    /// The session combines this geometry with evidence of progress output.
     #[must_use]
     pub fn cursor_mid_line(&self) -> bool {
         self.parser.screen().cursor_position().1 > 0
+    }
+
+    /// Has the program hidden the terminal's cursor? This alone does not
+    /// distinguish a progress display from a question drawn by a library.
+    #[must_use]
+    pub fn cursor_hidden(&self) -> bool {
+        self.parser.screen().hide_cursor()
     }
 }
 
@@ -1543,5 +1552,17 @@ mod tests {
         assert!(!s.cursor_mid_line(), "a display, the cursor under its text");
         s.feed(b"Name: ");
         assert!(s.cursor_mid_line(), "a prompt on the alternate screen");
+    }
+
+    #[test]
+    fn a_hidden_cursor_keeps_its_position_evidence() {
+        let mut s = screen();
+        s.feed(b"\x1b[?25l omarchy   0.0 B  0.00 B/s --:-- [Co  o  o]   0%");
+        assert!(s.cursor_mid_line());
+        assert!(s.cursor_hidden());
+        // Progress detection belongs to the session, not cursor geometry.
+        s.feed(b"\r\x1b[KProceed? [Y/n] \x1b[?25h");
+        assert!(s.cursor_mid_line(), "a visible cursor at the next question");
+        assert!(!s.cursor_hidden());
     }
 }

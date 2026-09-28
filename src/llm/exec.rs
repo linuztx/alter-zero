@@ -3068,6 +3068,25 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
+    fn bare_cat_reports_its_terminal_read_and_accepts_text_and_eof() {
+        // Recent coreutils uses splice rather than read for bare cat. It
+        // still asks for input without printing a prompt of its own.
+        let (registry, _rx) = test_registry();
+        let executor = RealToolExecutor::new().with_background(registry.clone());
+        let out = exec_with(&executor, "bash", r#"{"command":"cat","wait":2}"#);
+        let id = session_of(&out.output);
+        let typed = exec_with(
+            &executor,
+            BASH_SEND,
+            &serde_json::json!({"session_id": id, "input": "hello\n<C-d>"}).to_string(),
+        );
+        registry.kill_all();
+        assert!(out.output.contains("waiting for input"), "{}", out.output);
+        assert_eq!(typed.output, "Exit code: 0\nhello\nhello");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
     fn a_command_reading_with_no_prompt_is_seen_waiting() {
         // `read x` prints nothing: no prompt by the cursor — but the kernel
         // says it is blocked reading the terminal (`pty::probe`), so the
@@ -3311,6 +3330,80 @@ select.select([sys.stdin], [], [])'"#;
 
     #[cfg(target_os = "linux")]
     #[test]
+    fn a_node_repl_await_is_waited_for_not_taken_for_a_prompt() {
+        assert_node_repl_await("node");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_node_repl_with_runtime_options_awaits_its_answer() {
+        assert_node_repl_await(
+            "node --max-old-space-size=4096 --max_semi_space_size=16 --expose-gc",
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    fn assert_node_repl_await(invocation: &str) {
+        let node = std::env::var_os("PATH")
+            .is_some_and(|path| std::env::split_paths(&path).any(|dir| dir.join("node").is_file()));
+        if !node {
+            eprintln!("skipped: no node");
+            return;
+        }
+        let (registry, _rx) = test_registry();
+        let executor = RealToolExecutor::new().with_background(registry.clone());
+        let launched = exec_with(
+            &executor,
+            "bash",
+            &serde_json::json!({
+                "command": format!("NODE_REPL_HISTORY= NODE_DISABLE_COLORS=1 {invocation}"),
+                "wait": 20
+            })
+            .to_string(),
+        );
+        let id = session_of(&launched.output);
+        let sent = exec_with(
+            &executor,
+            BASH_SEND,
+            &serde_json::json!({
+                "session_id": id,
+                "input": "await new Promise(r => { console.log('starting'); setTimeout(() => console.log('tick'), 700); setTimeout(() => r(42), 6000); })<Enter>"
+            })
+            .to_string(),
+        );
+        let waited = exec_with(
+            &executor,
+            BASH_WAIT,
+            &serde_json::json!({"session_id": id, "wait": 20}).to_string(),
+        );
+        let answered = exec_with(
+            &executor,
+            BASH_SEND,
+            &serde_json::json!({"session_id": id, "input": "6 * 9<Enter>"}).to_string(),
+        );
+        registry.kill_all();
+        let prompt = format!("Running (session {id}, waiting for input)\n");
+        assert!(launched.output.starts_with(&prompt), "{}", launched.output);
+        assert!(
+            sent.output
+                .starts_with(&format!("Running (session {id})\n")),
+            "{}",
+            sent.output
+        );
+        assert!(
+            waited.output.starts_with(&prompt) && waited.output.contains("42"),
+            "{}",
+            waited.output
+        );
+        assert!(
+            answered.output.starts_with(&prompt) && answered.output.contains("54"),
+            "{}",
+            answered.output
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
     fn a_password_prompt_put_up_between_calls_ends_the_next_wait() {
         // sudo after a wrong password: `Sorry, try again.` and a fresh
         // prompt come up after the call that typed the password returned.
@@ -3502,6 +3595,56 @@ select.select([sys.stdin], [], [])'"#;
             &serde_json::json!({"session_id": id, "input": "hunter2\n"}).to_string(),
         );
         assert_eq!(accepted.output, "Exit code: 0\nok");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_password_submission_waits_past_a_hidden_progress_cursor() {
+        // sudo denies the probe access to its processes, then holds the
+        // terminal raw while pacman prints with its cursor hidden. Its
+        // first progress frame can pause before any redraw: no animation
+        // yet, but no prompt either. A non-dumpable process reproduces the
+        // blind probe without sudo, a real password, or package changes.
+        let python = std::env::var_os("PATH").is_some_and(|path| {
+            std::env::split_paths(&path).any(|dir| dir.join("python3").is_file())
+        });
+        if !python {
+            eprintln!("skipped: no python3");
+            return;
+        }
+        let (registry, _rx) = test_registry();
+        let executor = RealToolExecutor::new().with_background(registry.clone());
+        let command = r#"python3 -c 'import ctypes, getpass, os, time, tty
+assert ctypes.CDLL(None).prctl(4, 0, 0, 0, 0) == 0
+assert getpass.getpass("Password: ") == "fixture"
+tty.setraw(0)
+os.write(1, b"\x1b[?25l:: Synchronizing package databases...\r\n omarchy [----------] 0%")
+time.sleep(1.2)
+os.write(1, b"\r omarchy [##########] 100%\r\nComplete\r\n\x1b[?25h")'"#;
+        let out = exec_with(
+            &executor,
+            "bash",
+            &serde_json::json!({"command": command, "wait": 10}).to_string(),
+        );
+        let id = session_of(&out.output);
+        let answered = exec_with(
+            &executor,
+            BASH_SEND,
+            &serde_json::json!({"session_id": id, "input": "fixture\n"}).to_string(),
+        );
+        registry.kill_all();
+        assert!(
+            out.output.contains("waiting for a password"),
+            "{}",
+            out.output
+        );
+        assert!(
+            answered.output.starts_with("Exit code: 0\n"),
+            "the hidden progress cursor is not another prompt: {}",
+            answered.output
+        );
+        assert!(answered.output.contains("100%"), "{}", answered.output);
+        assert!(answered.output.contains("Complete"), "{}", answered.output);
     }
 
     #[cfg(target_os = "linux")]

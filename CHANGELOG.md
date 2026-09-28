@@ -40,6 +40,55 @@ release heading when a version is cut.
 
 ### Fixed
 
+- **Pacman's progress no longer looks like another question after the
+  sudo password, while hidden-cursor menus can still ask.** The cursor's
+  position is rejected as a prompt only when it is hidden and accompanies
+  a rewrite above the end of live output, or a numeric percentage with a
+  progress bar or transfer cue. Erased menu tails do not count as live
+  output, and a percentage in a question alone is not a progress bar.
+  This covers the paused first 0% frame and rewritten repository status
+  lines without treating every hidden cursor as a running command
+  (`docs/interactive-shell.md`). Those displays also keep a quiet launch
+  or `bashsend` waiting to its exit, next input signal or wait budget.
+- **A submitted line still running in Node's REPL no longer looks like a
+  fresh prompt.** The REPL keeps its terminal ready for keys while a
+  top-level `await` runs. When Linux identifies a supported Node REPL in
+  the terminal's foreground group, one line submitted at its prompt is
+  held for a new prompt or screen takeover; its own echo and ordinary
+  newline-terminated logs are not a new input request. `bashsend` can report
+  `Running` and `bashwait` wait for the answer. This is scoped to recognised
+  REPL invocations, including supported Node/V8 heap, stack, GC and JIT
+  options and `ts-node`/`tsx` launcher aliases resolved through symlinks;
+  known compiler entry paths keep their direct matching. Option
+  names accept underscore aliases, numeric operands must be attached with
+  `=`, and unknown options and application modes remain excluded.
+  A silent asynchronous stdin listener can still report `Running`; visible
+  questions and kernel-observed reads retain their independent signals
+  (`docs/interactive-shell.md`).
+- **A password check no longer looks like another password request.**
+  A line break or terminal control printed after `bashsend` submits a
+  password could revive the old prompt or the terminal's echo-off signal
+  while the program was still checking it. Both now wait for a visible
+  answer; a repeated retry prompt and a terminal read detected by the
+  process probe still report waiting for input.
+- **A session still receiving paced keys no longer reports another input
+  request.** If a long `bashsend` reaches its wait budget before all keys
+  are delivered, its result, `bashlist` and a zero-budget `bashwait` now
+  count quiet from input delivery as well as output. The old prompt is not
+  reported as waiting while the remaining keys are on their way or have
+  only just arrived, and background waiting notices follow the same rule.
+  A process probe sampled before intervening output or input is also
+  discarded rather than restoring an obsolete input state.
+- **Modern GNU `cat` waiting for terminal input is now recognised.**
+  Linux can report its input operation as `splice` rather than `read`.
+  The process probe now checks the input descriptor and kernel wait channel
+  to distinguish a terminal read from a transfer stalled on a full pipe;
+  an unavailable or unfamiliar wait channel remains uncertain.
+- **Exited helpers no longer look like background work that was stopped.**
+  On Linux, an unreaped zombie can keep a command's process group visible
+  after all its work has ended. The leftover-process warning now checks
+  for live threads, preserving the warning when a worker survives its
+  main thread or process details cannot be read. Cleanup is unchanged.
 - **A build that compiles in silence is no longer handed back halfway.** A
   `bash` call running `cargo build` came back `Running` about ten seconds
   into a long compile, however long the agent had asked it to wait: cargo

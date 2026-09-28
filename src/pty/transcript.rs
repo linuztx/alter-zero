@@ -298,6 +298,143 @@ impl Transcript {
         counted + u32::from(open) >= ANIMATION_REDRAWS
     }
 
+    /// The program wrote at the cursor above output it already reached.
+    /// A status display updates earlier rows this way; merely parking the
+    /// cursor above menu choices does not. Explicitly erased rows no longer
+    /// extend the output, but a fresh trailing newline still does.
+    #[must_use]
+    pub fn redrew_above_output(&self) -> bool {
+        let lines = &self.lines;
+        !lines.alt
+            && !lines.addressed
+            && lines.last_written == Some(lines.row)
+            && lines
+                .rows
+                .iter()
+                .skip(lines.row.saturating_sub(lines.first) + 1)
+                .any(|row| row.live_output)
+    }
+
+    /// A first, paused progress frame has not animated yet. A numeric
+    /// percentage together with a bar or transfer rate provides evidence
+    /// without rejecting questions that happen to contain a percentage.
+    /// Only text before the cursor counts: a question may overwrite the
+    /// start of a bar and leave its old suffix on the screen.
+    #[must_use]
+    pub fn cursor_line_progress(&self) -> bool {
+        let lines = &self.lines;
+        if lines.alt || lines.addressed {
+            return false;
+        }
+        let Some(row) = lines
+            .row
+            .checked_sub(lines.first)
+            .and_then(|at| lines.rows.get(at))
+        else {
+            return false;
+        };
+        let text: String = row
+            .cells
+            .iter()
+            .take(lines.col)
+            .filter(|&&c| c != WIDE_PAD)
+            .collect();
+        let Some((prefix, percent)) = text
+            .trim_end()
+            .strip_suffix('%')
+            .and_then(|text| text.rsplit_once(char::is_whitespace))
+        else {
+            return false;
+        };
+        if !percent.chars().all(|c| c.is_ascii_digit() || c == '.')
+            || !percent
+                .parse::<f64>()
+                .is_ok_and(|n| (0.0..=100.0).contains(&n))
+        {
+            return false;
+        }
+        let bar = prefix
+            .trim_end()
+            .strip_suffix(']')
+            .and_then(|text| text.rsplit_once('['))
+            .is_some_and(|(_, bar)| {
+                bar.chars().count() >= 2
+                    && bar
+                        .chars()
+                        .all(|c| c.is_whitespace() || "#=-_><oOCc.|/\\░▒▓█━─".contains(c))
+            });
+        let rate = prefix.split_whitespace().any(|part| {
+            ["B/s", "KiB/s", "MiB/s", "GiB/s", "kB/s", "MB/s", "GB/s"]
+                .iter()
+                .any(|unit| part.ends_with(unit))
+        });
+        bar || rate
+    }
+
+    /// The cursor: an absolute row and a column.
+    #[must_use]
+    pub fn cursor(&self) -> (usize, usize) {
+        (self.lines.row, self.lines.col)
+    }
+
+    /// Hold the cursor's line until its caller recognizes an answer.
+    /// Echo, line breaks and later logs do not answer a submitted REPL
+    /// evaluation. A visible screen takeover does end the hold.
+    pub fn hold_line(&mut self) {
+        self.lines.held = Some(Held {
+            row: self.lines.row,
+            addressed: false,
+        });
+    }
+
+    /// Is a line held by [`Transcript::hold_line`] still waiting for its
+    /// answer?
+    #[must_use]
+    pub fn line_held(&self) -> bool {
+        self.lines.held.is_some()
+    }
+
+    /// The cursor is still on the held line, where typed text echoes.
+    #[must_use]
+    pub fn cursor_on_held_line(&self) -> bool {
+        self.lines
+            .held
+            .is_some_and(|held| held.row == self.lines.row)
+    }
+
+    /// Text before the cursor, preserving the spaces in a prompt.
+    #[must_use]
+    pub fn cursor_prefix(&self) -> String {
+        let lines = &self.lines;
+        lines
+            .row
+            .checked_sub(lines.first)
+            .and_then(|at| lines.rows.get(at))
+            .map(|row| {
+                row.cells
+                    .iter()
+                    .take(lines.col)
+                    .filter(|&&c| c != WIDE_PAD)
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// The retained line immediately above the cursor, without trailing blanks.
+    #[must_use]
+    pub fn previous_line(&self) -> Option<String> {
+        self.lines
+            .row
+            .checked_sub(self.lines.first + 1)
+            .and_then(|at| self.lines.rows.get(at))
+            .map(Row::text)
+    }
+
+    /// The caller recognized an answer to its held line.
+    pub fn release_line(&mut self) {
+        self.lines.held = None;
+    }
+
     /// Is the program on the alternate screen (a full-screen program's
     /// canvas) right now?
     #[must_use]
@@ -373,6 +510,9 @@ pub const ANIMATION_REDRAWS: u32 = 2;
 struct Row {
     /// One `char` per column ([`WIDE_PAD`] for a wide character's right half).
     cells: Vec<char>,
+    /// Reached by printed text or a line feed and not subsequently erased.
+    /// Allocation alone is not output: collapsed menus retain blank rows.
+    live_output: bool,
     /// Created or edited since the model's last look — its text may differ
     /// from what the model was handed.
     touched: bool,
@@ -413,6 +553,16 @@ impl Row {
     }
 }
 
+/// A line held for its answer ([`Transcript::hold_line`]).
+#[derive(Clone, Copy)]
+struct Held {
+    /// Its row (absolute).
+    row: usize,
+    /// Absolute addressing since it was held: what is drawn next answers
+    /// it, wherever the lines put it.
+    addressed: bool,
+}
+
 /// The line model the parser drives: rows addressed absolutely (`first` is
 /// the absolute index of `rows[0]`), the two readers' cursors, and the
 /// bursts that tell a redrawn line from a written one.
@@ -424,6 +574,9 @@ struct Lines {
     /// The cursor: an absolute row and a column.
     row: usize,
     col: usize,
+    /// The row written with visible text since the last vertical move.
+    /// Returning to an old insertion point without writing is not a redraw.
+    last_written: Option<usize>,
     /// A saved cursor (`ESC 7`, `CSI s`, entering the alternate screen).
     saved: Option<(usize, usize)>,
     /// The model's cursor: no row before it has anything the model has not
@@ -453,6 +606,8 @@ struct Lines {
     /// Visible text was printed since the program was last typed into
     /// ([`Transcript::answered`]).
     drawn: bool,
+    /// A line waiting for its answer ([`Transcript::hold_line`]).
+    held: Option<Held>,
     /// The screen's height: the cursor reaches back no further, so a row
     /// above the last `reach` rows can never change again.
     reach: usize,
@@ -609,6 +764,10 @@ impl Lines {
             row[col + 1] = WIDE_PAD;
         }
         self.col += width;
+        if !c.is_whitespace() {
+            self.last_written = Some(self.row);
+            self.rows[self.row - self.first].live_output = true;
+        }
         self.dirty = true;
     }
 
@@ -624,8 +783,10 @@ impl Lines {
     /// A line feed: down one row, creating it at the end — and, now that a
     /// row may have been added, the retention cap applied.
     fn line_feed(&mut self) {
+        self.last_written = None;
         self.row += 1;
         self.ensure(self.row);
+        self.rows[self.row - self.first].live_output = true;
         self.trim();
     }
 
@@ -634,7 +795,11 @@ impl Lines {
     fn move_rows(&mut self, delta: isize) {
         let last = self.end() - 1;
         let target = self.row.saturating_add_signed(delta);
-        self.row = target.clamp(self.first, last);
+        let row = target.clamp(self.first, last);
+        if row != self.row {
+            self.last_written = None;
+        }
+        self.row = row;
     }
 
     /// Erase in line: 0 cursor→end, 1 start→cursor, 2 the whole line.
@@ -653,7 +818,21 @@ impl Lines {
             }
             _ => row.clear(),
         }
+        self.discard_erased_output();
         self.dirty = true;
+    }
+
+    /// An erase can leave a retained row with no output on it. Keep this
+    /// separate from allocation: a fresh newline is still a live boundary.
+    fn discard_erased_output(&mut self) {
+        let row = &mut self.rows[self.row - self.first];
+        if row
+            .cells
+            .iter()
+            .all(|c| c.is_whitespace() || *c == WIDE_PAD)
+        {
+            row.live_output = false;
+        }
     }
 
     /// Erase in display. Only "cursor to the end" is a line edit here (a REPL
@@ -668,6 +847,7 @@ impl Lines {
                 self.erase_in_line(0);
                 for index in self.row + 1..self.first + self.rows.len() {
                     self.edit_row(index).clear();
+                    self.rows[index - self.first].live_output = false;
                 }
             }
             1 => self.erase_in_line(1),
@@ -686,6 +866,7 @@ impl Lines {
             split_wide_at(row, end);
             row.drain(col..end);
             self.dirty = true;
+            self.discard_erased_output();
         }
     }
 
@@ -711,6 +892,7 @@ impl Lines {
             split_wide_at(row, end.saturating_sub(1));
             row[col..end].fill(' ');
             self.dirty = true;
+            self.discard_erased_output();
         }
     }
 
@@ -720,8 +902,31 @@ impl Lines {
 
     fn restore_cursor(&mut self) {
         if let Some((row, col)) = self.saved {
+            if row.max(self.first) != self.row {
+                self.last_written = None;
+            }
             self.row = row.max(self.first);
             self.col = col;
+        }
+    }
+
+    /// Absolute addressing: the screen view's to follow, and — for a held
+    /// line — what is drawn after it answers the line wherever the lines put
+    /// it ([`Transcript::hold_line`]).
+    fn address(&mut self) {
+        self.addressed = true;
+        if let Some(held) = &mut self.held {
+            held.addressed = true;
+        }
+    }
+
+    /// Visible text after a screen takeover ends the hold. Ordinary output
+    /// may be a diagnostic while the same evaluation keeps running.
+    fn drew_visible(&mut self) {
+        if let Some(held) = self.held
+            && (self.alt || held.addressed)
+        {
+            self.held = None;
         }
     }
 
@@ -778,6 +983,9 @@ impl vte::Perform for Lines {
         let c = self.charsets.map(c);
         self.last = Some(c);
         self.drawn |= !c.is_whitespace();
+        if !c.is_whitespace() {
+            self.drew_visible();
+        }
         if !self.alt {
             self.write(c);
         }
@@ -837,6 +1045,9 @@ impl vte::Perform for Lines {
                     for _ in 0..n.min(MAX_LINE_CHARS) {
                         self.write(c);
                     }
+                    if !c.is_whitespace() {
+                        self.drew_visible();
+                    }
                 }
             }
             // Insert mode (IRM, mode 4) on or off.
@@ -868,9 +1079,9 @@ impl vte::Perform for Lines {
                     .filter(|&c| c > 0)
                     .unwrap_or(1);
                 self.col = usize::from(col) - 1;
-                self.addressed = true;
+                self.address();
             }
-            'd' | 'r' | 'S' | 'T' | 'L' | 'M' => self.addressed = true,
+            'd' | 'r' | 'S' | 'T' | 'L' | 'M' => self.address(),
             'P' => self.delete_chars(n),
             '@' => self.insert_blanks(n),
             'X' => self.erase_chars(n),
@@ -906,7 +1117,7 @@ impl vte::Perform for Lines {
                 self.line_feed();
             }
             b'c' => {
-                self.addressed = true;
+                self.address();
                 self.col = 0;
                 self.line_feed();
             }
@@ -1140,6 +1351,60 @@ mod tests {
         assert_eq!(t.take_update().text, "$");
         t.feed(b"\r\x1b[K$ ");
         assert_eq!(t.take_update(), Update::default());
+    }
+
+    #[test]
+    fn a_held_line_keeps_its_echo_and_waits_for_the_caller_to_recognize_an_answer() {
+        // Node's REPL, typed into at its prompt: the line it echoes, grey
+        // hints and all, is the line's own; the bare line break of the Enter
+        // is no answer. Its caller recognizes a result followed by a prompt.
+        let mut t = fed(b"> ");
+        t.hold_line();
+        assert!(t.line_held());
+        t.feed(b"aw\x1b[90mait\x1b[39m\x1b[5G\x1b[0Kait x\r\r\n");
+        assert!(t.line_held(), "the echo and the Enter's line break");
+        t.feed(b"\x1b[J\x1b[0m\t ");
+        assert!(t.line_held(), "escapes and blanks that draw nothing");
+        t.feed(b"\x1b[90mundefined\x1b[39m\r\n> ");
+        assert!(t.line_held());
+        assert!(!t.cursor_on_held_line());
+        assert_eq!(t.cursor_prefix(), "> ");
+        assert_eq!(t.previous_line().as_deref(), Some("         undefined"));
+        t.release_line();
+        assert!(!t.line_held());
+        // Text on the alternate screen answers it — a program that took the
+        // screen over.
+        let mut t = fed(b"> ");
+        t.hold_line();
+        t.feed(b"vim x\r\n\x1b[?1049hx");
+        assert!(!t.line_held());
+        // So does text after absolute addressing, even on the line's own row.
+        let mut t = fed(b"> ");
+        t.hold_line();
+        t.feed(b"ls\r\n\x1b[1A\x1b[1;1H");
+        assert!(t.line_held(), "moved, drew nothing");
+        t.feed(b"x");
+        assert!(!t.line_held());
+    }
+
+    #[test]
+    fn a_held_line_survives_logs_but_not_screen_takeovers() {
+        let mut t = fed(b"> ");
+        t.hold_line();
+        t.feed(b"await x\r\r\nstarting\r\ntick\r\n");
+        assert!(t.line_held(), "ordinary logs do not settle an evaluation");
+    }
+
+    #[test]
+    fn every_absolute_or_scrolling_control_marks_a_held_line_addressed() {
+        for control in [b'd', b'r', b'S', b'T', b'L', b'M'] {
+            let mut t = fed(b"> ");
+            t.hold_line();
+            t.feed(&[0x1b, b'[', b'1', control]);
+            assert!(t.line_held(), "moving alone draws no answer");
+            t.feed(b"screen");
+            assert!(!t.line_held(), "screen takeover after {control}");
+        }
     }
 
     #[test]
