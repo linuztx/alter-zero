@@ -316,6 +316,28 @@ pub fn foreground_program(master: &std::fs::File) -> Option<String> {
     }
 }
 
+/// Is the terminal's foreground program **Node's REPL**
+/// (`super::probe::node_repl_argv`) — whose raw mode says nothing while a
+/// line typed at it runs, so the line is held for its answer
+/// (`super::session::SessionIo::note_repl_input`)? Read off `/proc`, so
+/// `false` elsewhere, where the terminal's mode decides as before.
+#[cfg(unix)]
+#[must_use]
+pub fn foreground_node_repl(master: &std::fs::File) -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        rustix::termios::tcgetpgrp(master)
+            .ok()
+            .and_then(|group| u32::try_from(group.as_raw_nonzero().get()).ok())
+            .is_some_and(super::probe::group_runs_node_repl)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = master;
+        false
+    }
+}
+
 /// The terminal's [`LineMode`], read through its master — `None` when the
 /// terminal is gone.
 #[cfg(unix)]

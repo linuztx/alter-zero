@@ -154,8 +154,9 @@ pub struct Observation {
     /// Has the program exited?
     pub exited: bool,
     /// Did the probe see every thread of the program **at work**
-    /// (`pty::probe::Probe::Idle`)? Its silence then settles nothing: the
-    /// command runs on to its exit or the call's timeout.
+    /// (`pty::probe::Probe::Idle`), or does the screen show recognizable
+    /// progress output (`pty::session`)? Its silence then settles nothing:
+    /// the command runs on to a question, its exit or the call's timeout.
     pub busy: bool,
     /// Does the program read its terminal **key by key** — a REPL, an
     /// editor, a menu (`pty::spawn::LineMode::reads_keys`)?

@@ -159,7 +159,7 @@ waits out the clock. Here the call returns when the command **settles**
   below);
 - it printed something and went quiet for `PROMPT_QUIET` (0.5 s) while the
   terminal **awaits keys** — a prompt (`>>> `, `Password: `, `[Y/n] `) left
-  a visible cursor mid-line, a full-screen program is on the alternate
+  the cursor mid-line, a full-screen program is on the alternate
   screen with the terminal out of line mode (*a display*, below, is not one), or the
   program reads the terminal **key by key** (a menu, an editor, a readline
   prompt), which is what `waiting for input` says;
@@ -177,7 +177,8 @@ waits out the clock. Here the call returns when the command **settles**
 - it has been silent for `LINE_QUIET` (2 s) since the call's input — a command
   that answered with whole lines and went quiet — or, after a password the
   call submitted or on a screen switched to and not yet drawn on, for
-  `CHECK_QUIET` (10 s) until the program answers it or draws;
+  `CHECK_QUIET` (10 s) until the program answers it or draws, provided neither
+  the process probe nor the progress-display check still indicates work;
 - the call's `timeout` passed.
 
 Five things look like a prompt and are not (`SessionIo`'s `awaiting_keys`):
@@ -205,17 +206,27 @@ Five things look like a prompt and are not (`SessionIo`'s `awaiting_keys`):
   asks — and waited out like any command printing as it works
   (`IoState::drawing_screen`, `SessionIo::set_line_mode`);
 
-- **a hidden cursor.** Pacman hides the cursor (`ESC[?25l`) while it
+- **progress under a hidden cursor.** Pacman hides the cursor (`ESC[?25l`) while it
   synchronizes package databases and restores it (`ESC[?25h`) afterwards.
   Its initial 0% bar can sit quiet with the cursor position after the text,
   before any redraw establishes an animation. Under `sudo`, where the probe
   cannot inspect the root processes, that position used to make `bashsend`
   report `waiting for input` just after it submitted the password.
-  `Screen::cursor_mid_line` now requires a visible cursor before its
-  position can indicate a line prompt. This is only a guard on that screen
-  heuristic: a kernel-observed read, a password prompt, a key-reading
-  program and an interactive alternate screen still count as waiting even
-  with a hidden cursor;
+  Hiding the cursor alone proves nothing: prompt libraries also hide it
+  while drawing questions and menus, including behind relays where the
+  screen is the only evidence. The position is rejected only when the
+  hidden cursor follows a numeric percentage with a progress bar or
+  transfer cue, or the program went back up to rewrite earlier output
+  above the end of its live output. The percentage is checked at the
+  cursor, so old progress text left to its right does not hide a new
+  question. A menu merely moving the cursor back to its question is not a
+  rewrite, and rows explicitly erased when a menu collapses do not extend
+  the live output below its next question; a fresh trailing newline still
+  does. The same check also prevents silence from ending a launch or an
+  input call: it waits to an exit, another input signal or the call's
+  budget. Kernel-observed reads, password prompts, key-reading programs and
+  interactive alternate screens keep their independent input signals and
+  can end that wait;
 - **an animated line.** A progress bar redrawn after a `\r`, a spinner, a
   counter, dots appended to `Downloading…` — each leaves the cursor exactly
   where a prompt would, and pauses whenever the download does. The transcript
@@ -294,6 +305,32 @@ wait and the probe. Paced keys can outlast `bashsend`'s budget: its result,
 `bashlist` and a zero-budget `bashwait` must not mistake the old prompt for
 another question while those keys are still being delivered. Their final
 delivery starts the quiet interval afresh.
+
+**A submitted line in Node's REPL is not its next prompt.** Node keeps its
+terminal in key-by-key mode while a top-level `await` runs, and its event
+loop still watches the terminal. Neither signal proves it has finished the
+line. On Linux the session identifies supported Node REPL invocations from
+the terminal foreground process group's command line, then holds one
+complete line submitted at a prompt for its answer. Text typed in separate
+calls and finished with Enter still belongs to that line; a multiline
+submission, or an `.editor` line begun at column zero, starts no new hold.
+The line's own echo, the Enter's whitespace, terminal controls and ordinary
+newline-terminated logs leave it pending. A fresh row matching the remembered
+prompt prefix (including a custom prompt), Node's `... ` / `| ` continuation, or
+its editor-entry banner followed by column zero releases the hold. Visible
+text on the alternate screen or after absolute cursor addressing also
+answers it. Until then raw mode alone does not make it a new question:
+`bashsend` can return `Running`, and `bashwait` can wait for the reply.
+Typeahead or a Ctrl+C the REPL consumes does not itself release the line;
+an actual terminal read seen by the probe remains authoritative, and a
+cursor-shaped nested question can still ask for input.
+
+This is recognition of a foreground REPL, not general tracking of JavaScript
+work. Unrecognised arguments, inaccessible process information, a relay
+hiding the REPL and hosts without Linux's process information retain the
+ordinary rules. Output left mid-line can still resemble a nested question,
+and text shaped exactly like a recognised prompt can release the hold while
+an asynchronous expression is still running.
 
 **Keys are notation, not escape codes.** Models are unreliable at emitting
 `\u0003` in JSON but fluent in Vim/tmux key notation, so `input` understands
@@ -600,10 +637,10 @@ in that one probe, which handed a build silent for ten seconds back at its
 link. With no reading at all, though, nothing is new. Only a process *above*
 the one at work counts — a program whose own thread computes, or one beside a
 busy sibling, waits on nothing of theirs — and a child alive but idle proves
-nothing. One case stays
-beyond the kernel: Node's REPL `await`ing a child at work keeps the terminal in
-its wait, raw, exactly as it does at its prompt, so it reads as one, as it did
-before any of this. One reader anywhere is `Probe::Reading`, whatever the
+nothing. Node's REPL `await`ing a child at work stays beyond that kernel
+distinction: it keeps the terminal in its wait, raw, exactly as it does at
+its prompt. The submitted-line hold described above supplements the probe
+for recognised foreground REPLs. One reader anywhere is `Probe::Reading`, whatever the
 children do; a tree all at work is `Probe::Idle`; a tree with a wait on a
 terminal, or one the probe could not read, is `Probe::Polling`, and one whose
 waits are all elsewhere `Probe::Elsewhere` — which asks nothing (no prompt, no
@@ -625,8 +662,12 @@ The files are readable only for the user's own processes, so
 rule above already applies. The monitor probes only a terminal a call is
 waiting on, once it has been quiet `PROBE_QUIET` (0.2 s), at most every
 `PROBE_INTERVAL` (0.2 s) — a handful of file reads — and any output or input
-makes the verdict stale at once. (Ported from the alternative design this one
-was compared against, *Compared with the terminal-sessions design*, below.)
+makes the verdict stale at once. The monitor records the session's activity
+epoch before reading the process tree and accepts the result only if that
+epoch is unchanged: output or input queued or delivered during the read
+cannot be overwritten by its older observation. (Ported from the alternative
+design this one was compared against, *Compared with the terminal-sessions
+design*, below.)
 
 **A password prompt says so itself** (`LineMode::hides_input`). A program
 asking for a password turns the terminal's echo off and reads a whole line —
@@ -912,7 +953,11 @@ started in `top` — found more slips the tools refused or mistyped:
   `&` (`tools::without_trailing_ampersand` — never `&&`, an escaped `\&` or a
   `>&`), and a plain call that left a process running says it was stopped,
   pointing at `run_in_background` without the `&` (`tools::REAPED_NOTE`,
-  `subprocess::group_outlives`).
+  `subprocess::group_outlives`). On Linux, signal 0 also finds unreaped
+  zombies, so the warning checks `/proc` for live threads: an exited
+  helper alone is no work that was stopped, while workers surviving an
+  exited main thread still count. Unreadable process or task state keeps
+  the conservative warning. The group is cleaned up either way.
 
 Some failures stay with the model, the tool having said what it could. A
 REPL wants a blank line to close a Python block, and a model that sends a
@@ -1115,8 +1160,12 @@ the frames — are unit-tested; the pty spawn, the registry's TTY tasks and the
 executor are tested against real processes (`sh`, `stty`, `python3` when
 present); `tests/detached_exec.rs` proves the helper tier gives the session its
 own controlling terminal. The screen and session tests cover a hidden
-progress cursor, its restored visibility at a later question, and the
-independent evidence that a program takes input. Session tests also cover
+progress cursor, hidden menus and follow-up questions after their old rows
+are erased, and the independent evidence that a program takes input.
+`tests/bash_relay_prompts.rs` exercises those transitions through a real
+`script` relay, including a synchronized pause longer than the input quiet
+cutoff that must complete within the same `bashsend`.
+Session tests also cover
 line breaks, spaces and ANSI-only output during a password check, with
 echo on or off, alongside a visibly repeated retry and a probed read.
 The executor's
@@ -1182,11 +1231,19 @@ Three of this design's choices were kept over it:
   between lines of output — on the alternate screen too, where a program in
   line mode is judged like the main screen: it settles on `LINE_QUIET` and reports `Running`
   rather than `waiting for input` (the output still shows the question); and
-  a busy command that leaves a line open (`Reading package lists... `) with
-  a visible cursor reads as a prompt to a launch or an input call after
-  0.5 s of quiet, and to a wait after 3 s. A hidden cursor removes that
-  evidence, so a real line prompt hidden behind a relay can also go
-  unrecognised when no other input signal is available.
+  a busy command that leaves a line open (`Reading package lists... `) can
+  read as a prompt to a launch or an input call after 0.5 s of quiet, and
+  to a wait after 3 s. Hiding the cursor alone does not change that: a
+  hidden question and a paused status line can look identical. A real
+  question that rewrites earlier output above still-live lower rows, or
+  looks like a percentage progress bar, can also match the display guard
+  when no independent input signal is available. That guard also holds
+  quiet launch and input calls past their ordinary silence cutoffs. A stale
+  progress display can hold the entire requested launch budget, or
+  `bashsend`'s 10 seconds; the screen cannot prove work is still happening.
+  Live relay testing still misses Clack prompts and the initial select from
+  the `prompts` library when their cursor rests at column zero; subsequent
+  `prompts` questions with a cursor on the input line are recognized.
 - **A reader that is not waiting** — a program whose key-listening thread
   sits in `read` while another thread works reads as waiting to the probe.
 - **A splice with no readable wait channel** — a terminal-to-pipe transfer
@@ -1217,7 +1274,7 @@ Three of this design's choices were kept over it:
 - **Behind a relay** — under `sudo`, `ssh` or `docker run -it` the terminal's
   raw mode says nothing, so a program there waiting for a key with its cursor
   at the start of a line is not recognised as waiting (one with its prompt
-  text before a visible cursor is).
+  text before its cursor can be, even when the cursor is hidden).
 - **A display behind a relay** — `ssh host gh run watch`, or `gh run watch`
   under a `sudo` that relays: the relay holds the terminal raw, so the line
   mode says nothing of the display behind it, and the relay's own wait on the

@@ -101,6 +101,10 @@ simply no longer offers them.
   long build. `wait: 0` returns what is new at once. A program already
   waiting on keys the model has seen — a REPL at its prompt, nothing new
   printed — ends the wait at once rather than holding it to its budget.
+  A recognised Node REPL on Linux keeps a submitted line pending beyond
+  its own echo and ordinary newline-terminated logs, so raw terminal mode
+  during a top-level `await` is not mistaken for its next prompt. The scope
+  and limits of that recognition are in `docs/interactive-shell.md`.
 - `bashkill` asks the command to stop — `SIGINT`, then `SIGTERM` — and
   `SIGKILL`s whatever is left after [`KILL_GRACE`] (2 s), the session's whole
   process tree included: a `docker compose up` stopped with `SIGKILL` alone
@@ -151,12 +155,18 @@ also have broken quiet commands. What came with the flip:
    call in half a second, as before — but a tree waiting only elsewhere, or a
    display on the alternate screen that left the terminal in line mode
    (`gh run watch`), is no prompt, and a wait on it rides it out
-   (`docs/interactive-shell.md`). A cursor's position indicates a line prompt
-   only while the cursor is visible: pacman hides it during downloads, so
-   its initial 0% bar does not report `waiting for input` after a password
-   is submitted, even before the bar has redrawn. A kernel-observed read,
-   a password prompt, a key-reading program or a full-screen menu still
-   counts as waiting when it hides its cursor.
+   (`docs/interactive-shell.md`). A hidden cursor can still mark a question
+   or a menu. Its position is rejected only with evidence of a display: a
+   rewrite above the end of live output, excluding erased menu tails, or a
+   numeric percentage at the cursor accompanied by a progress bar or
+   transfer cue. Pacman's initial 0% frame and rewritten repository status
+   lines meet those checks; a percentage in a question alone does not.
+   Those same displays also keep a quiet launch or `bashsend` waiting until
+   exit, another input signal or its wait budget, rather than returning at
+   the usual silence cutoff. A stale progress display can therefore hold
+   the whole budget; it is screen evidence, not proof that work continues.
+   Kernel-observed reads, password prompts, key-reading programs and
+   interactive screens keep their independent input signals.
 2. **Finished output is data** (`pty::session`'s data view). The terminal's
    transcript is what a person reads — tabs expanded to stops, trailing
    spaces trimmed — so `printf 'a\tb   \n'` came back as `a       b`. The
@@ -223,7 +233,10 @@ happened each time, so none of them is silent:
 - **A job left behind is not always named.** `server & curl …` stops
   `server` when the command exits, and the report says so
   (`tools::REAPED_NOTE`) when the monitor finds the job still in the
-  command's process group. The terminal hangs that group up in the same
+  command's process group. On Linux, a group containing only exited,
+  unreaped threads is not named as running work; a live worker still counts
+  even if its main thread exited, and unreadable details stay uncertain.
+  The terminal hangs that group up in the same
   instant (the job is in its foreground process group), so a job that does
   not ignore the hangup can already be gone when the monitor looks — on a
   machine whose init reaps orphans at once, a plain `sleep 30 &` went

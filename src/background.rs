@@ -878,7 +878,7 @@ impl BackgroundRegistry {
     /// # Errors
     /// The model-facing reason when the session is gone or has no terminal.
     pub fn send_input(&self, id: &str, chunks: Vec<InputChunk>) -> Result<(), String> {
-        let (input, io) = {
+        let (input, io, node_repl) = {
             let inner = self.inner.lock().expect("registry lock");
             let task = inner
                 .tasks
@@ -892,14 +892,26 @@ impl BackgroundRegistry {
                      with bashsend, or stop it with bashkill"
                 )
             })?;
-            (input, Arc::clone(&task.io))
+            #[cfg(unix)]
+            let node_repl = task
+                .terminal
+                .as_ref()
+                .is_some_and(crate::pty::spawn::foreground_node_repl);
+            #[cfg(not(unix))]
+            let node_repl = false;
+            (input, Arc::clone(&task.io), node_repl)
         };
-        // What the program draws from here on answers these keys.
+        // Input starts a new redraw epoch. Node's REPL holds a submitted
+        // line until its next prompt (`pty::session`).
         let typed: Vec<u8> = chunks
             .iter()
             .flat_map(|chunk| chunk.bytes.clone())
             .collect();
-        io.note_input(&typed);
+        if node_repl {
+            io.note_repl_input(&typed);
+        } else {
+            io.note_input(&typed);
+        }
         io.typing_for(crate::pty::keys::typing_bound(&chunks));
         let keys = WriteOp::Keys {
             chunks,
@@ -1351,11 +1363,9 @@ impl Prober {
             return;
         }
         self.last = Some(std::time::Instant::now());
-        io.set_probe(crate::pty::probe::probe(
-            self.pid,
-            &self.terminal,
-            &mut self.work,
-        ));
+        let epoch = io.probe_epoch();
+        let probe = crate::pty::probe::probe(self.pid, &self.terminal, &mut self.work);
+        io.set_probe_for(epoch, probe);
     }
 }
 

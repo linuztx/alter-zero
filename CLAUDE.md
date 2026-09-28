@@ -1260,8 +1260,10 @@ was hidden, a model sent the user to "enter it in the terminal prompt"; the
 old clause still parses for recorded sessions), detection only, nothing
 masked — then, where the probe cannot decide (a
 `sudo`-owned process, a wait on the terminal itself, no `/proc`), the
-screen: a **visible** cursor left mid-line (a hidden cursor's position is no
-line prompt — pacman's initial progress bar can pause before it has redrawn),
+screen: a cursor left mid-line, hidden or visible, except a hidden cursor
+on a line rewritten above the end of live output (explicitly erased tails
+do not extend that end), or after a numeric percentage with a progress bar
+or transfer cue — pacman's initial frame can pause before it has redrawn;
 the alternate screen with the terminal out of line mode (a display left in
 canonical mode, `gh run watch`, takes no key
 and is judged like the main screen — `IoState::drawing_screen`, fed the
@@ -1283,11 +1285,22 @@ read; a visibly reprinted retry prompt still answers even with identical
 text. `CHECK_QUIET` (10 s) replaces the 2 s silence
 rule meanwhile, so a refusal and its next prompt come back in that same
 call — and silence **alone** never ends a call on a program the probe sees
-at work (`Observation::busy`): a quiet `sleep 4; echo done` runs to its exit
-instead of coming back `Running` at 2 s, a launch the probe cannot account
+at work, or while the hidden-cursor progress check still matches
+(`Observation::busy`): a quiet `sleep 4; echo done` runs to its exit
+instead of coming back `Running` at 2 s. A progress display can hold a
+launch or input call to exit, another input signal or its whole wait
+budget, even if the display is stale. Otherwise a launch the probe cannot account
 for (`Probe::Polling`, a blind probe) returns after `LAUNCH_QUIET` (10 s), an
 input after 2 s, and a pure wait on a program reading keys whose prompt the
-model has already seen returns at once); a waiting call
+model has already seen returns at once). A recognised Node REPL in Linux's
+terminal foreground group is the exception to trusting key-by-key mode:
+one line submitted at its prompt stays pending through its own echo and
+newline-terminated logs, until a matching prompt, continuation, editor entry
+or visible screen takeover answers it. Thus raw mode during top-level
+`await` is not another input request.
+This does not track arbitrary async scripts or a REPL hidden behind an
+unreadable process or relay; output shaped like a prompt remains ambiguous
+(`docs/interactive-shell.md`). A waiting call
 **streams** its running cell as `ToolProgress::Screen { settled, live }` →
 `StreamEvent::ToolScreen` → `App::push_tool_screen`, `live` rows replacing
 the last ones so a bar redraws in place (`Transcript::take_stream`: rows in

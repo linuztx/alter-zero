@@ -122,6 +122,12 @@ struct IoState {
     /// editor, a readline prompt — so it waits on keys wherever its cursor
     /// sits ([`IoState::awaiting_keys`]).
     reading_keys: bool,
+    /// Where the line being typed began, while no Enter has submitted it
+    /// ([`IoState::hold_typed_line`]).
+    open_line: Option<(usize, usize)>,
+    /// The nonempty primary prompt where a Node REPL line began. A fresh
+    /// occurrence, or its continuation/editor prompt, answers the line.
+    repl_prompt: Option<String>,
     /// The terminal reads whole lines (canonical mode) — `None` until the
     /// monitor has read its mode ([`SessionIo::set_line_mode`]). No single
     /// key reaches a program in line mode, so a screen it draws is a display
@@ -136,6 +142,9 @@ struct IoState {
     probe: Probe,
     /// When input was last written — quiet counts from it too, for the probe.
     last_input: Option<Instant>,
+    /// Changes whenever output or input moves the session on. A probe may
+    /// finish after that movement; its old verdict must then be discarded.
+    probe_epoch: u64,
     /// When the keys last sent will all have been typed — they go a moment
     /// apart (`pty::keys`); a waiting call looks only after, and counts the
     /// program's quiet from then. The most they could take until the writer
@@ -263,10 +272,13 @@ impl SessionIo {
                 finalized: false,
                 announced: false,
                 reading_keys: false,
+                open_line: None,
+                repl_prompt: None,
                 canonical: None,
                 burst_began: None,
                 probe: Probe::Unknown,
                 last_input: None,
+                probe_epoch: 0,
                 typing_until: None,
                 typing_calls: 0,
                 screen_view: false,
@@ -371,12 +383,14 @@ impl SessionIo {
             state.transcript.feed(slice);
             committed.push_str(&state.transcript.take_committed());
         }
+        state.answer_repl_line();
         if let Some(data) = state.data.as_mut() {
             data.fold.feed(bytes);
             let lines = data.fold.take_settled();
             data.kept.push(&lines);
         }
         state.seq += 1;
+        state.probe_epoch += 1;
         state.last_output = Some(Instant::now());
         // Whatever the probe saw, the program has moved on since.
         state.probe = Probe::Unknown;
@@ -533,6 +547,26 @@ impl SessionIo {
         }
     }
 
+    /// Capture the session's activity before walking its processes. Pass
+    /// this to [`Self::set_probe_for`] when the walk completes.
+    #[must_use]
+    pub fn probe_epoch(&self) -> u64 {
+        self.lock().probe_epoch
+    }
+
+    /// Record a probe only if it still describes the same output and input
+    /// as when it began. A late busy/read verdict must not hide a newly
+    /// printed question or resurrect a read that just consumed input.
+    pub fn set_probe_for(&self, epoch: u64, probe: Probe) {
+        let changed = {
+            let mut state = self.lock();
+            state.probe_epoch == epoch && std::mem::replace(&mut state.probe, probe) != probe
+        };
+        if changed {
+            self.changed.notify_all();
+        }
+    }
+
     /// The program is about to be typed into: what it draws next answers
     /// the keys — a menu moving its highlight, a line editor echoing — so
     /// the redraws it made on its own until now stop counting towards an
@@ -541,7 +575,18 @@ impl SessionIo {
     /// ([`super::keys::reaches_line_reader`]) decides if a password prompt
     /// stands.
     pub fn note_input(&self, typed: &[u8]) {
+        self.note(typed, false);
+    }
+
+    /// Keys typed into Node's own REPL, whose terminal stays raw while a
+    /// submitted line is evaluating. Its echo is not a new prompt.
+    pub fn note_repl_input(&self, typed: &[u8]) {
+        self.note(typed, true);
+    }
+
+    fn note(&self, typed: &[u8], node_repl: bool) {
         let mut state = self.lock();
+        state.hold_typed_line(typed, node_repl);
         // A password handed over: the program checks it before it says a
         // word (sudo takes seconds), so the call waits for its answer.
         state.awaiting_answer = super::keys::submits_line(typed) && state.password_prompt();
@@ -549,6 +594,7 @@ impl SessionIo {
         state.burst_began = None;
         // The read the probe saw is about to take these keys.
         state.probe = Probe::Unknown;
+        state.probe_epoch += 1;
         state.last_input = Some(Instant::now());
         // Keys that reach a line reader answer its prompt; text still on
         // the line being edited has not, so a password prompt stands.
@@ -568,6 +614,8 @@ impl SessionIo {
         state.typing_until = Some(state.typing_until.map_or(until, |at| at.max(until)));
         state.last_input = state.typing_until;
         state.typing_calls += 1;
+        state.probe_epoch += 1;
+        state.probe = Probe::Unknown;
     }
 
     /// One call's keys are all out (the session's writer): once every
@@ -575,6 +623,8 @@ impl SessionIo {
     pub fn typed(&self) {
         let mut state = self.lock();
         state.typing_calls = state.typing_calls.saturating_sub(1);
+        state.probe_epoch += 1;
+        state.probe = Probe::Unknown;
         if state.typing_calls == 0 {
             let now = Instant::now();
             state.typing_until = Some(now);
@@ -716,7 +766,7 @@ impl SessionIo {
                     undrawn: state.screen.as_ref().is_some_and(Screen::undrawn),
                     since_keys: now.saturating_duration_since(state.screen_answer_began(since)),
                     exited: state.finished,
-                    busy: state.probe == Probe::Idle,
+                    busy: state.probe == Probe::Idle || state.shows_progress(),
                     key_by_key: state.reading_keys,
                 };
                 (update, seen)
@@ -911,8 +961,71 @@ impl IoState {
             !screen.undrawn()
                 && (self.drawing_screen()
                     || (!self.transcript.cursor_line_animated()
-                        && (self.reading_keys || screen.cursor_mid_line())))
+                        && ((self.reading_keys && !self.transcript.line_held())
+                            || self.prompt_by_cursor(screen))))
         })
+    }
+
+    /// Hiding the cursor is common to both progress displays and prompt
+    /// libraries. Reject it only with evidence of output being updated,
+    /// retaining hidden menus and questions after their old rows are erased.
+    fn prompt_by_cursor(&self, screen: &Screen) -> bool {
+        screen.cursor_mid_line() && !self.shows_progress()
+    }
+
+    /// Positive progress evidence also prevents silence from ending an
+    /// input call early while a command behind a relay keeps working.
+    fn shows_progress(&self) -> bool {
+        self.screen.as_ref().is_some_and(Screen::cursor_hidden)
+            && (self.transcript.redrew_above_output() || self.transcript.cursor_line_progress())
+    }
+
+    /// Hold one submitted line that began at Node's REPL prompt until its
+    /// next prompt, even if the evaluation prints logs. Multiple submitted
+    /// lines and lines begun without a prompt (`.editor`) keep their
+    /// existing input behavior.
+    /// Typeahead and an unhandled Ctrl+C leave an existing hold intact.
+    fn hold_typed_line(&mut self, typed: &[u8], node_repl: bool) {
+        let (row, col) = self.transcript.cursor();
+        let open = self.open_line.filter(|&(open_row, _)| open_row == row);
+        let began = open.unwrap_or((row, col));
+        if node_repl && open.is_none() && col > 0 && !self.transcript.line_held() {
+            let prompt = self.transcript.cursor_prefix();
+            if !matches!(prompt.as_str(), "... " | "| ") {
+                self.repl_prompt = Some(prompt);
+            }
+        }
+        let enters = typed
+            .iter()
+            .filter(|&&b| matches!(b, b'\r' | b'\n'))
+            .count();
+        if enters == 0 {
+            self.open_line = Some(began);
+            return;
+        }
+        self.open_line = None;
+        let one_line = enters == 1 && matches!(typed.last(), Some(b'\r' | b'\n'));
+        if node_repl && one_line && began.1 > 0 && !self.transcript.in_alt_screen() {
+            self.transcript.hold_line();
+        }
+    }
+
+    /// Native Node leaves the terminal raw while top-level await evaluates.
+    /// A newline log is not readiness: wait for a fresh primary/continuation
+    /// prompt, or the editor banner whose next input has no visible prompt.
+    fn answer_repl_line(&mut self) {
+        if !self.transcript.line_held() || self.transcript.cursor_on_held_line() {
+            return;
+        }
+        let prefix = self.transcript.cursor_prefix();
+        let prompt = matches!(prefix.as_str(), "... " | "| ")
+            || self.repl_prompt.as_ref().is_some_and(|p| p == &prefix);
+        let editor = prefix.is_empty()
+            && self.transcript.previous_line().as_deref()
+                == Some("// Entering editor mode (Ctrl+D to finish, Ctrl+C to cancel)");
+        if prompt || editor {
+            self.transcript.release_line();
+        }
     }
 
     /// Might this session be asking something nobody has seen — announced,
@@ -1945,6 +2058,259 @@ mod tests {
         assert!(io.take_unseen_prompt(Duration::from_secs(3)));
     }
 
+    /// Node's REPL after `await sleep(8000)` was typed at its prompt: the
+    /// line echoed, the Enter's bare line break, then nothing until the
+    /// promise settles — the terminal raw all the while, and the event
+    /// loop's wait holding the terminal (`Probe::Polling`). With the mark the
+    /// call typing it began at.
+    fn node_awaiting() -> (Arc<SessionIo>, Mark) {
+        let io = Arc::new(SessionIo::waited(true));
+        io.set_line_mode(KEY_BY_KEY);
+        io.absorb(b"Welcome to Node.js v22.22.2.\r\n> ");
+        let since = io.mark();
+        io.note_repl_input(b"await sleep(8000)\r");
+        io.absorb(b"await sleep(8000)\r\r\n");
+        (io, since)
+    }
+
+    fn quiet_for_a_prompt() {
+        std::thread::sleep(settle::PROMPT_QUIET + Duration::from_millis(100));
+    }
+
+    #[test]
+    fn a_line_nodes_repl_has_not_answered_is_no_prompt() {
+        // Measured: every call into a top-level await came back `waiting for
+        // input` in half a second, and every bashwait after it too — the
+        // model could not wait for one. Kernel, mode and cursor are the
+        // REPL's at its prompt; what differs is that the line typed at the
+        // prompt has had no answer yet.
+        let (io, since) = node_awaiting();
+        quiet_for_a_prompt();
+        assert!(!io.waiting(WaitKind::Input, since), "still evaluating");
+        let end = io.wait(WaitKind::Input, since, LONG, &never, &never, &mut |_, _| {});
+        assert_eq!(end, WaitEnd::Settled(Settle::Quiet), "running, not asking");
+        io.absorb(b"\x1b[90mundefined\x1b[39m\r\n> ");
+        quiet_for_a_prompt();
+        assert!(io.waiting(WaitKind::Input, since), "back at its prompt");
+    }
+
+    #[test]
+    fn a_node_repl_await_keeps_running_after_newline_logs() {
+        let (io, _) = node_awaiting();
+        for log in [b"starting\r\n".as_slice(), b"tick\r\n"] {
+            io.absorb(log);
+            for probe in [Probe::Unknown, Probe::Polling] {
+                io.set_probe(probe);
+                assert!(!io.lock().awaiting_keys(), "a log is no REPL response");
+            }
+        }
+        io.absorb(b"42\r\n> ");
+        assert!(
+            io.lock().awaiting_keys(),
+            "the next prompt answers the line"
+        );
+        io.absorb(b"\r\n");
+        assert!(io.lock().awaiting_keys(), "the prompt released the hold");
+    }
+
+    #[test]
+    fn a_node_repl_hold_allows_editor_continuations_and_nested_questions() {
+        for split in [false, true] {
+            let io = SessionIo::waited(true);
+            io.set_line_mode(KEY_BY_KEY);
+            io.absorb(b"> ");
+            if split {
+                io.note_repl_input(b".edi");
+                io.absorb(b".edi");
+                io.note_repl_input(b"tor\r");
+                io.absorb(b"tor\r\r\n");
+            } else {
+                io.note_repl_input(b".editor\r");
+                io.absorb(b".editor\r\r\n");
+            }
+            io.absorb(b"// Entering editor mode (Ctrl+D to finish, Ctrl+C to cancel)\r\n");
+            assert!(io.lock().awaiting_keys(), "editor reads at column zero");
+            io.note_repl_input(b"const x = 1\r");
+            io.absorb(b"const x = 1\r\n");
+            assert!(io.lock().awaiting_keys(), "editor accepts the next line");
+        }
+        let (io, _) = node_awaiting();
+        io.absorb(b"... ");
+        assert!(io.lock().awaiting_keys(), "incomplete JavaScript continues");
+        io.absorb(b"\r\n");
+        assert!(io.lock().awaiting_keys(), "continuation releases the hold");
+
+        let (io, _) = node_awaiting();
+        io.absorb(b"Name? ");
+        assert!(
+            io.lock().awaiting_keys(),
+            "a nested question has a cursor prompt"
+        );
+        io.absorb(b"\r\n");
+        io.set_probe(Probe::Reading);
+        assert!(io.lock().awaiting_keys(), "a proven terminal read wins");
+    }
+
+    #[test]
+    fn a_node_repl_hold_remembers_a_custom_prompt_across_split_input() {
+        let io = SessionIo::waited(true);
+        io.set_line_mode(KEY_BY_KEY);
+        io.absorb(b"custom> ");
+        io.note_repl_input(b"await ");
+        io.absorb(b"await ");
+        io.note_repl_input(b"x\r");
+        io.absorb(b"x\r\r\ncustom> unrelated log\r\n");
+        assert!(
+            !io.lock().awaiting_keys(),
+            "the prompt prefix inside a log is no answer"
+        );
+        io.absorb(b"42\r\ncustom> ");
+        io.absorb(b"\r\n");
+        assert!(
+            io.lock().awaiting_keys(),
+            "the exact prompt released the hold"
+        );
+    }
+
+    #[test]
+    fn a_node26_continuation_releases_the_hold_and_preserves_the_primary_prompt() {
+        let io = SessionIo::waited(true);
+        io.set_line_mode(KEY_BY_KEY);
+        io.absorb(b"> ");
+        io.note_repl_input(b"if (true) {\r");
+        io.absorb(b"if (true) {\r\r\n| ");
+        assert!(
+            !io.lock().transcript.line_held(),
+            "the continuation is ready"
+        );
+        io.note_repl_input(b"await x; }\r");
+        io.absorb(b"await x; }\r\r\nstarting\r\n");
+        assert!(!io.lock().awaiting_keys(), "the continued evaluation runs");
+        io.absorb(b"42\r\n> ");
+        io.absorb(b"\r\n");
+        assert!(
+            io.lock().awaiting_keys(),
+            "the original prompt released the hold"
+        );
+    }
+
+    #[test]
+    fn a_pure_wait_rides_out_a_line_nodes_repl_has_not_answered() {
+        let (io, _) = node_awaiting();
+        let _ = io.look(
+            "s1",
+            Status::Running {
+                waiting: Waiting::No,
+            },
+        );
+        let since = io.begin_wait();
+        feed_later(
+            &io,
+            Duration::from_millis(1500),
+            &[b"\x1b[90mundefined\x1b[39m\r\n> "],
+        );
+        let started = Instant::now();
+        let end = io.wait(WaitKind::Wait, since, LONG, &never, &never, &mut |_, _| {});
+        assert_eq!(end, WaitEnd::Settled(Settle::Prompt));
+        assert!(
+            started.elapsed() >= Duration::from_millis(1500),
+            "waited for the answer, not the half second a prompt gets"
+        );
+        io.end_wait();
+    }
+
+    #[test]
+    fn only_one_line_typed_at_nodes_repl_prompt_waits_for_its_answer() {
+        let raw = || {
+            let io = SessionIo::waited(true);
+            io.set_line_mode(KEY_BY_KEY);
+            io
+        };
+        // `.editor` mode: lines typed at the start of a line, no prompt — its
+        // silence is it waiting for the next.
+        let io = raw();
+        io.absorb(b"> .editor\r\n// Entering editor mode (Ctrl+D to finish, Ctrl+C to cancel)\r\n");
+        io.note_repl_input(b"function f() {\r");
+        io.absorb(b"function f() {\r\n");
+        quiet_for_a_prompt();
+        assert!(
+            io.waiting(WaitKind::Launch, io.origin_mark()),
+            "typed at no prompt"
+        );
+        // A line typed in two calls began where the first did.
+        let io = raw();
+        io.absorb(b"\r\n");
+        io.note_repl_input(b"function f() {");
+        io.absorb(b"function f() {");
+        io.note_repl_input(b"\r");
+        io.absorb(b"\r\n");
+        quiet_for_a_prompt();
+        assert!(
+            io.waiting(WaitKind::Launch, io.origin_mark()),
+            "began at no prompt"
+        );
+        let io = raw();
+        io.absorb(b"> ");
+        io.note_repl_input(b"await x");
+        io.absorb(b"await x");
+        io.note_repl_input(b"\r");
+        io.absorb(b"\r\r\n");
+        quiet_for_a_prompt();
+        assert!(
+            !io.waiting(WaitKind::Launch, io.origin_mark()),
+            "began at the prompt"
+        );
+        // Several lines at once: which of them still runs, the screen cannot
+        // say.
+        let io = raw();
+        io.absorb(b"> ");
+        io.note_repl_input(b"const x = 1\rawait x\r");
+        io.absorb(b"const x = 1\r\r\n");
+        quiet_for_a_prompt();
+        assert!(
+            io.waiting(WaitKind::Launch, io.origin_mark()),
+            "several lines"
+        );
+        // Any other program: a question answered, then lines read with no
+        // prompt at all (`How many numbers? 3`, then the numbers).
+        let io = raw();
+        io.absorb(b"How many numbers? ");
+        io.note_input(b"3\r");
+        io.absorb(b"3\r\r\n");
+        quiet_for_a_prompt();
+        assert!(
+            io.waiting(WaitKind::Launch, io.origin_mark()),
+            "not Node's REPL"
+        );
+    }
+
+    #[test]
+    fn the_wait_for_an_answer_outlasts_typeahead_and_a_swallowed_ctrl_c() {
+        // Keys typed while an await runs are buffered by the REPL, not
+        // echoed; a Ctrl+C it keeps to itself leaves it evaluating.
+        let (io, since) = node_awaiting();
+        io.note_repl_input(b"1 + 1\r");
+        io.note_repl_input(b"\x03");
+        quiet_for_a_prompt();
+        assert!(!io.waiting(WaitKind::Input, since));
+        io.absorb(b"Uncaught Error: Script execution was interrupted by SIGINT\r\n> ");
+        quiet_for_a_prompt();
+        assert!(io.waiting(WaitKind::Input, since));
+    }
+
+    #[test]
+    fn a_background_repl_still_on_its_line_is_not_told_of() {
+        let io = SessionIo::new(true);
+        io.set_line_mode(KEY_BY_KEY);
+        io.absorb(b"> ");
+        io.note_repl_input(b"await sleep(8000)\r");
+        io.absorb(b"await sleep(8000)\r\r\n");
+        io.announce();
+        assert!(!io.take_unseen_prompt(Duration::ZERO), "still evaluating");
+        io.absorb(b"undefined\r\n> ");
+        assert!(io.take_unseen_prompt(Duration::ZERO), "back at its prompt");
+    }
+
     #[test]
     fn a_program_reading_key_by_key_waits_wherever_its_cursor_is() {
         // A menu drawn on the main screen leaves the cursor at the start of
@@ -2125,6 +2491,47 @@ mod tests {
         io.absorb(b"\r\nContinue? ");
         std::thread::sleep(settle::PROMPT_QUIET + Duration::from_millis(50));
         assert!(io.waiting(WaitKind::Input, since));
+    }
+
+    #[test]
+    fn a_probe_started_before_new_output_cannot_hide_its_question() {
+        let io = SessionIo::new(true);
+        io.absorb(b"Working...\r\n");
+        // The monitor begins walking /proc here. The command asks a
+        // question before that walk finishes reporting its earlier work.
+        let epoch = io.probe_epoch();
+        io.absorb(b"Continue? [y/N] ");
+        io.set_probe_for(epoch, Probe::Idle);
+        assert!(
+            io.lock().awaiting_keys(),
+            "discard the obsolete busy verdict"
+        );
+        io.set_probe_for(io.probe_epoch(), Probe::Idle);
+        assert!(!io.lock().awaiting_keys(), "accept a current verdict");
+    }
+
+    #[test]
+    fn every_input_boundary_invalidates_an_in_flight_probe() {
+        let io = SessionIo::new(true);
+        for change in [
+            SessionIo::note_input as fn(&SessionIo, &[u8]),
+            SessionIo::note_repl_input,
+        ] {
+            let epoch = io.probe_epoch();
+            change(&io, b"answer\r");
+            io.set_probe_for(epoch, Probe::Reading);
+            assert_eq!(io.lock().probe, Probe::Unknown);
+        }
+        let epoch = io.probe_epoch();
+        io.typing_for(Duration::from_secs(1));
+        io.set_probe_for(epoch, Probe::Reading);
+        assert_eq!(io.lock().probe, Probe::Unknown);
+        let epoch = io.probe_epoch();
+        io.typed();
+        io.set_probe_for(epoch, Probe::Reading);
+        assert_eq!(io.lock().probe, Probe::Unknown);
+        io.set_probe_for(io.probe_epoch(), Probe::Reading);
+        assert_eq!(io.lock().probe, Probe::Reading);
     }
 
     #[test]
@@ -2583,7 +2990,7 @@ mod tests {
         };
         for (kind, expected) in [
             (WaitKind::Launch, Settle::Timeout),
-            (WaitKind::Input, Settle::Quiet),
+            (WaitKind::Input, Settle::Timeout),
             (WaitKind::Wait, Settle::Timeout),
         ] {
             assert_eq!(
@@ -2603,6 +3010,94 @@ mod tests {
             io.take_unseen_prompt(Duration::ZERO),
             "a later question still asks"
         );
+    }
+
+    #[test]
+    fn hidden_cursor_questions_remain_prompts_behind_a_relay() {
+        let mut missed = Vec::new();
+        for text in [
+            b"Continue? [y/N] ".as_slice(),
+            b"Continue? \r\n\x1b[1F\x1b[11G",
+            b"Choose:\r\n> alpha\r\n  beta\x1b[2A\x1b[8G",
+            // Collapsed menus leave allocated rows behind, but erase the
+            // output they held. Neither form of erase is output below a
+            // follow-up question.
+            b"Choose:\r\n> alpha\r\n  beta\r\n\x1b[3F\x1b[JSelected alpha\r\nContinue? [y/N] ",
+            b"Choose:\r\n> alpha\r\n  beta\r\n\x1b[K\x1b[1F\x1b[2K\x1b[1F\x1b[2K\x1b[1F\x1b[2KSelected alpha\r\nContinue? [y/N] ",
+            b"Choose:\r\noption\r\x1b[6X\x1b[1FContinue? ",
+            b"Choose:\r\noption\r\x1b[6P\x1b[1FContinue? ",
+            b"Target: 50%",
+            b"CPU quota (%) ",
+            b"Select [25%, 50%, 100%]: 50%",
+            // A new question need not restore the cursor, or erase the
+            // stale bar's suffix to the right of its insertion point.
+            b"download [----------] 100%\rContinue? [y/N] ",
+            b"download [----------] 100%\r\nContinue? [y/N] ",
+        ] {
+            let io = SessionIo::new(true);
+            io.set_line_mode(RELAY);
+            io.absorb(b"\x1b[?25l");
+            io.absorb(text);
+            if !io.lock().awaiting_keys() {
+                missed.push(String::from_utf8_lossy(text).into_owned());
+            }
+        }
+        assert!(missed.is_empty(), "hidden questions missed: {missed:?}");
+    }
+
+    #[test]
+    fn hidden_progress_requires_evidence_beyond_cursor_visibility() {
+        for text in [
+            b"omarchy   0.0 B  0.00 B/s --:-- [Co  o  o]   0%".as_slice(),
+            b"download [----------] 100%",
+            // The last status line is rewritten above a fresh newline,
+            // even though there is no nonblank text below it.
+            b"omarchy\r\n\x1b[1Fomarchy is up to date\x1b[K",
+            b"core\r\nextra\r\n\x1b[2Fcore is up to date\x1b[K",
+        ] {
+            let io = SessionIo::new(true);
+            io.set_line_mode(RELAY);
+            io.absorb(b"\x1b[?25l");
+            io.absorb(text);
+            assert!(!io.lock().awaiting_keys(), "{text:?}");
+            look_at(&io);
+            assert!(
+                !io.lock().awaiting_keys(),
+                "still busy after a look: {text:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_paused_progress_display_waits_past_the_input_quiet_cutoff() {
+        // The root-owned command is invisible to the probe. Recognizing
+        // its progress should also prevent a two-second early return from
+        // bashsend; otherwise a correct label still needs another call.
+        let io = SessionIo::new(true);
+        io.set_line_mode(RELAY);
+        io.note_input(b"y\r");
+        io.absorb(b"\x1b[?25ldownload [----------] 0%");
+        let quiet_since = Instant::now() - settle::LAUNCH_QUIET;
+        {
+            let mut state = io.lock();
+            state.last_output = Some(quiet_since);
+            state.last_input = Some(quiet_since);
+        }
+        let since = Mark {
+            at: quiet_since,
+            seq: 0,
+        };
+        for kind in [WaitKind::Input, WaitKind::Launch] {
+            assert_eq!(
+                io.wait(kind, since, Duration::ZERO, &never, &never, &mut |_, _| {}),
+                WaitEnd::Settled(Settle::Timeout),
+                "only the explicit budget ends this wait: {kind:?}"
+            );
+        }
+        io.absorb(b"\r\nContinue? [y/N] ");
+        assert!(io.lock().awaiting_keys(), "a later question still wins");
+        io.set_probe(Probe::Reading);
+        assert!(io.lock().awaiting_keys(), "an observed terminal read wins");
     }
 
     #[test]

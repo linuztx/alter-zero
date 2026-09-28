@@ -265,17 +265,23 @@ impl Screen {
         screen.alternate_screen() && screen.rows(0, columns).all(|row| row.trim().is_empty())
     }
 
-    /// Is a **visible** cursor left **past column 1** — where a prompt leaves it
+    /// Is the cursor left **past column 1** — where a prompt leaves it
     /// (`>>> `, `Password: `, `[Y/n] `)? A program between lines of output
     /// leaves it at the start of a fresh line. On the alternate screen too:
     /// whether a full-screen program takes keys wherever its cursor is, the
-    /// terminal's line mode says (`pty::session`), not the screen. A hidden
-    /// cursor's position is no evidence of a prompt: pacman hides it while
-    /// drawing progress, including a first frame that has not redrawn yet.
+    /// terminal's line mode says (`pty::session`), not the screen. Hidden
+    /// cursors count too: prompt libraries often draw their own selection.
+    /// The session combines this geometry with evidence of progress output.
     #[must_use]
     pub fn cursor_mid_line(&self) -> bool {
-        let screen = self.parser.screen();
-        !screen.hide_cursor() && screen.cursor_position().1 > 0
+        self.parser.screen().cursor_position().1 > 0
+    }
+
+    /// Has the program hidden the terminal's cursor? This alone does not
+    /// distinguish a progress display from a question drawn by a library.
+    #[must_use]
+    pub fn cursor_hidden(&self) -> bool {
+        self.parser.screen().hide_cursor()
     }
 }
 
@@ -1549,13 +1555,14 @@ mod tests {
     }
 
     #[test]
-    fn a_hidden_cursor_is_no_evidence_of_a_line_prompt() {
+    fn a_hidden_cursor_keeps_its_position_evidence() {
         let mut s = screen();
         s.feed(b"\x1b[?25l omarchy   0.0 B  0.00 B/s --:-- [Co  o  o]   0%");
-        assert!(!s.cursor_mid_line(), "pacman's first, paused frame");
-        // Visibility, not the progress text, decides: a later question can
-        // reuse the same line before any animation was observed.
+        assert!(s.cursor_mid_line());
+        assert!(s.cursor_hidden());
+        // Progress detection belongs to the session, not cursor geometry.
         s.feed(b"\r\x1b[KProceed? [Y/n] \x1b[?25h");
         assert!(s.cursor_mid_line(), "a visible cursor at the next question");
+        assert!(!s.cursor_hidden());
     }
 }

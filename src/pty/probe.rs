@@ -910,6 +910,148 @@ pub fn stat_group(stat: &str) -> Option<u32> {
     fields.split_whitespace().nth(2)?.parse().ok()
 }
 
+/// Is `argv` **Node's own REPL** — `node` starting no script, or ts-node's
+/// or tsx's, Node's REPL behind a compiler? Of the REPLs measured it is the
+/// one that keeps the terminal raw while a line it was handed runs (a
+/// top-level `await`), so its silence then is work, not a question
+/// (`pty::session`). Read conservatively: anything not plainly a REPL — a
+/// script, an evaluation, an option whose value might be a script — is not.
+#[must_use]
+pub fn node_repl_argv(argv: &[&str]) -> bool {
+    let Some((program, args)) = argv.split_first() else {
+        return false;
+    };
+    let name = program.rsplit('/').next().unwrap_or(program);
+    if !matches!(name, "node" | "nodejs") {
+        return false;
+    }
+    node_repl_args(args.iter().copied(), false)
+}
+
+/// Recognize only options whose effect on choosing a REPL is known. In
+/// particular, application modes such as `--run` and `--test` are not a REPL.
+fn node_repl_args<'a>(mut args: impl Iterator<Item = &'a str>, compiler: bool) -> bool {
+    let (mut evaluates, mut interactive) = (false, false);
+    while let Some(arg) = args.next() {
+        match arg {
+            "-i" | "--interactive" => interactive = true,
+            "-e" | "--eval" | "-p" | "--print" => {
+                evaluates = true;
+                if args.next().is_none() {
+                    return false;
+                }
+            }
+            // Options whose value is the next argument.
+            "-r"
+            | "--require"
+            | "--import"
+            | "--loader"
+            | "--experimental-loader"
+            | "-C"
+            | "--conditions" => {
+                if args.next().is_none() {
+                    return false;
+                }
+            }
+            _ if arg.starts_with("--eval=") || arg.starts_with("--print=") => evaluates = true,
+            _ if arg.starts_with("-e") || arg.starts_with("-p") => evaluates = true,
+            "--" => {
+                return match args.next() {
+                    Some(script) => !compiler && !evaluates && compiler_repl(script, args),
+                    None => !evaluates || interactive,
+                };
+            }
+            "--inspect"
+            | "--inspect-brk"
+            | "--inspect-wait"
+            | "--no-warnings"
+            | "--trace-warnings"
+            | "--no-deprecation"
+            | "--trace-deprecation"
+            | "--enable-source-maps"
+            | "--experimental-repl-await"
+            | "--no-experimental-repl-await"
+            | "--experimental-strip-types"
+            | "--no-experimental-strip-types" => {}
+            "--transpile-only" | "--transpileOnly" | "--esm" | "--swc" if compiler => {}
+            _ if [
+                "--require=",
+                "--import=",
+                "--loader=",
+                "--experimental-loader=",
+                "--conditions=",
+                "--inspect=",
+                "--inspect-brk=",
+                "--inspect-wait=",
+            ]
+            .iter()
+            .any(|prefix| arg.starts_with(prefix)) => {}
+            _ if arg.starts_with('-') => return false,
+            script => return !compiler && !evaluates && compiler_repl(script, args),
+        }
+    }
+    !evaluates || interactive
+}
+
+/// Is `script`, run by node with `rest` after it, ts-node's or tsx's REPL —
+/// its entry point, handed no script of its own?
+fn compiler_repl<'a>(script: &str, rest: impl Iterator<Item = &'a str>) -> bool {
+    let entry = [
+        "/node_modules/ts-node/dist/bin.js",
+        "/node_modules/tsx/dist/cli.mjs",
+        "/node_modules/tsx/dist/cli.cjs",
+        "/node_modules/tsx/dist/cli.js",
+    ]
+    .iter()
+    .any(|end| script.ends_with(end));
+    entry && node_repl_args(rest, true)
+}
+
+/// Does process group `group` run **Node's REPL** ([`node_repl_argv`]) —
+/// its leader or anything below it in the group, a REPL started by a shell
+/// command (`cd app && node`) included? Read off `/proc/PID/cmdline`;
+/// `false` when the processes cannot be read.
+#[cfg(target_os = "linux")]
+#[must_use]
+pub fn group_runs_node_repl(group: u32) -> bool {
+    let in_group = |pid: u32| {
+        std::fs::read_to_string(format!("/proc/{pid}/stat"))
+            .ok()
+            .and_then(|stat| stat_group(&stat))
+            == Some(group)
+    };
+    let mut pending = vec![group];
+    let mut seen = 0;
+    while let Some(pid) = pending.pop() {
+        seen += 1;
+        if seen > PROBE_MAX_TASKS {
+            break;
+        }
+        if std::fs::read(format!("/proc/{pid}/cmdline")).is_ok_and(|cmdline| {
+            let cmdline = String::from_utf8_lossy(&cmdline);
+            let argv: Vec<&str> = cmdline.split_terminator('\0').collect();
+            node_repl_argv(&argv)
+        }) {
+            return true;
+        }
+        let Ok(tasks) = std::fs::read_dir(format!("/proc/{pid}/task")) else {
+            continue;
+        };
+        for children in tasks
+            .flatten()
+            .filter_map(|task| std::fs::read_to_string(task.path().join("children")).ok())
+        {
+            pending.extend(
+                children
+                    .split_whitespace()
+                    .filter_map(|child| child.parse::<u32>().ok())
+                    .filter(|&child| in_group(child)),
+            );
+        }
+    }
+    false
+}
+
 /// The name (`/proc/PID/comm`) of the program at the bottom of process
 /// group `group` — its leader's line of descent within the group: what a
 /// terminal's foreground program is. A shell with job control gives each
@@ -957,6 +1099,62 @@ const PROBE_MAX_DEPTH: usize = 64;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn nodes_own_repl_is_told_from_a_script_by_its_arguments() {
+        // Node's REPL keeps the terminal raw while a top-level `await` runs
+        // (`pty::session`): `node` starting no script, options and all…
+        for argv in [
+            &["node"][..],
+            &["/usr/bin/node"],
+            &["nodejs"],
+            &["node", "--inspect", "--no-warnings"],
+            &["node", "-r", "dotenv/config"],
+            &["node", "--require", "x", "--import=tsx"],
+            &["node", "-i"],
+            &["node", "-e", "globalThis.x = 1", "-i"],
+            // …and ts-node's and tsx's, Node's REPL behind a compiler.
+            &["node", "/usr/lib/node_modules/ts-node/dist/bin.js"],
+            &[
+                "node",
+                "/opt/node22/lib/node_modules/ts-node/dist/bin.js",
+                "--transpile-only",
+            ],
+            &["node", "/root/.npm/_npx/9f1/node_modules/tsx/dist/cli.mjs"],
+            &["node", "/app/node_modules/tsx/dist/cli.mjs"],
+        ] {
+            assert!(node_repl_argv(argv), "{argv:?}");
+        }
+        // A script — a readline program asking its own questions — is not,
+        // nor an evaluation, nor any other program.
+        for argv in [
+            &["node", "count.js"][..],
+            &["node", "--", "count.js"],
+            &["node", "-e", "require('readline')"],
+            &["node", "-p", "1 + 1"],
+            &["node", "/opt/node22/bin/ts-node", "app.ts"],
+            &[
+                "node",
+                "/app/node_modules/tsx/dist/cli.mjs",
+                "watch",
+                "src/x.ts",
+            ],
+            &["node", "/tmp/tsx"],
+            &["node", "/tmp/ts-node"],
+            &["node", "/tmp/tsx/dist/cli.mjs"],
+            &["node", "/tmp/ts-node/dist/bin.js"],
+            &["node", "--run=dev"],
+            &["node", "-econsole.log(1)"],
+            &["node", "--mystery-option=value"],
+            &["node", "/app/node_modules/tsx/dist/cli.mjs", "--eval=1"],
+            &["node", "--require"],
+            &["python3"],
+            &["bash", "-c", "node"],
+            &[],
+        ] {
+            assert!(!node_repl_argv(argv), "{argv:?}");
+        }
+    }
 
     #[test]
     fn a_process_group_is_read_off_its_stat_line() {

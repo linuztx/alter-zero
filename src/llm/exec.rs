@@ -3330,6 +3330,63 @@ select.select([sys.stdin], [], [])'"#;
 
     #[cfg(target_os = "linux")]
     #[test]
+    fn a_node_repl_await_is_waited_for_not_taken_for_a_prompt() {
+        let node = std::env::var_os("PATH")
+            .is_some_and(|path| std::env::split_paths(&path).any(|dir| dir.join("node").is_file()));
+        if !node {
+            eprintln!("skipped: no node");
+            return;
+        }
+        let (registry, _rx) = test_registry();
+        let executor = RealToolExecutor::new().with_background(registry.clone());
+        let launched = exec_with(
+            &executor,
+            "bash",
+            r#"{"command":"NODE_REPL_HISTORY= NODE_DISABLE_COLORS=1 node","wait":20}"#,
+        );
+        let id = session_of(&launched.output);
+        let sent = exec_with(
+            &executor,
+            BASH_SEND,
+            &serde_json::json!({
+                "session_id": id,
+                "input": "await new Promise(r => { console.log('starting'); setTimeout(() => console.log('tick'), 700); setTimeout(() => r(42), 6000); })<Enter>"
+            })
+            .to_string(),
+        );
+        let waited = exec_with(
+            &executor,
+            BASH_WAIT,
+            &serde_json::json!({"session_id": id, "wait": 20}).to_string(),
+        );
+        let answered = exec_with(
+            &executor,
+            BASH_SEND,
+            &serde_json::json!({"session_id": id, "input": "6 * 9<Enter>"}).to_string(),
+        );
+        registry.kill_all();
+        let prompt = format!("Running (session {id}, waiting for input)\n");
+        assert!(launched.output.starts_with(&prompt), "{}", launched.output);
+        assert!(
+            sent.output
+                .starts_with(&format!("Running (session {id})\n")),
+            "{}",
+            sent.output
+        );
+        assert!(
+            waited.output.starts_with(&prompt) && waited.output.contains("42"),
+            "{}",
+            waited.output
+        );
+        assert!(
+            answered.output.starts_with(&prompt) && answered.output.contains("54"),
+            "{}",
+            answered.output
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
     fn a_password_prompt_put_up_between_calls_ends_the_next_wait() {
         // sudo after a wrong password: `Sorry, try again.` and a fresh
         // prompt come up after the call that typed the password returned.
