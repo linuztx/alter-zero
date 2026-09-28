@@ -104,7 +104,11 @@ simply no longer offers them.
   A recognised Node REPL on Linux keeps a submitted line pending beyond
   its own echo and ordinary newline-terminated logs, so raw terminal mode
   during a top-level `await` is not mistaken for its next prompt. The scope
-  and limits of that recognition are in `docs/interactive-shell.md`.
+  includes supported Node/V8 runtime flags and `ts-node`/`tsx` launcher
+  symlinks. A silent asynchronous stdin listener can still report `Running`
+  when it prints no question; visible nested questions and kernel-observed
+  reads remain detectable. The full scope and limits are in
+  `docs/interactive-shell.md`.
 - `bashkill` asks the command to stop — `SIGINT`, then `SIGTERM` — and
   `SIGKILL`s whatever is left after [`KILL_GRACE`] (2 s), the session's whole
   process tree included: a `docker compose up` stopped with `SIGKILL` alone

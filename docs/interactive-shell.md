@@ -325,12 +325,35 @@ Typeahead or a Ctrl+C the REPL consumes does not itself release the line;
 an actual terminal read seen by the probe remains authoritative, and a
 cursor-shaped nested question can still ask for input.
 
+Recognition accepts an explicit set of Node/V8 runtime options, including
+`--max-old-space-size`, `--max-semi-space-size`, `--initial-old-space-size`
+and `--stack-size` with decimal operands attached after `=`. Space-separated
+numeric operands do not qualify. The boolean `--expose-gc`, `--trace-gc`,
+`--jitless` and their `--no-…` forms are supported too. Underscores are
+accepted in native option names; their operands are left unchanged. Unknown
+options, application modes such as `--run` and `--test`, and script
+invocations still decline recognition. Evaluation needs explicit
+interactive mode. For `ts-node` and
+`tsx`, a known package entry path is recognised directly, as before.
+Other launcher script operands are resolved through symlinks to such an
+entry point; a relative alias belongs to the running process's working
+directory. A launcher name alone is insufficient. A resolution failure
+declines an alias without disabling direct recognition of a known entry
+path. Option operands, preload names and evaluated JavaScript are not
+resolved as script paths.
+
 This is recognition of a foreground REPL, not general tracking of JavaScript
 work. Unrecognised arguments, inaccessible process information, a relay
 hiding the REPL and hosts without Linux's process information retain the
 ordinary rules. Output left mid-line can still resemble a nested question,
 and text shaped exactly like a recognised prompt can release the hold while
-an asynchronous expression is still running.
+an asynchronous expression is still running. Conversely, an asynchronous
+stdin listener with no visible question can stay `Running`: the same Node
+process was measured with identical terminal descriptors, epoll interests
+and kernel wait state while awaiting stdin and while awaiting a promise
+that never resolves. Releasing the hold on any log line would bring back
+the false prompt during logged awaits. A visible nested question or an
+actual terminal read seen by the probe still provides independent evidence.
 
 **Keys are notation, not escape codes.** Models are unreliable at emitting
 `\u0003` in JSON but fluent in Vim/tmux key notation, so `input` understands
@@ -1153,7 +1176,9 @@ and the last answer ending the program — one call a round, every result the
 real `pty::report::report`, so the offline cells are the live ones.
 `scripts/smoke.sh` Phase 124 drives it in the real binary and pins what only
 the screen shows: the dim state rows, the headers, and that no frame line or
-`Exit code: 0` ever reaches a cell.
+`Exit code: 0` ever reaches a cell. `cargo build` followed by
+`scripts/smoke.sh` runs every phase for the full TUI integration coverage
+described in `docs/smoke.md`.
 
 The pure cores — key notation, the transcript, the screen, the settle policy,
 the frames — are unit-tested; the pty spawn, the registry's TTY tasks and the
@@ -1165,6 +1190,13 @@ are erased, and the independent evidence that a program takes input.
 `tests/bash_relay_prompts.rs` exercises those transitions through a real
 `script` relay, including a synchronized pause longer than the input quiet
 cutoff that must complete within the same `bashsend`.
+The probe's `node_runtime_options_keep_the_repl_without_hiding_application_modes`
+pins option spelling, operand handling and application-mode rejection;
+`a_path_compiler_repl_is_resolved_in_its_process_working_directory` checks
+absolute and relative launcher symlinks through real process metadata.
+The executor's `a_node_repl_await_is_waited_for_not_taken_for_a_prompt`
+checks an actual Node await that logs before answering and then accepts
+another line.
 Session tests also cover
 line breaks, spaces and ANSI-only output during a password check, with
 echo on or off, alongside a visibly repeated retry and a probed read.
@@ -1246,6 +1278,23 @@ Three of this design's choices were kept over it:
   `prompts` questions with a cursor on the input line are recognized.
 - **A reader that is not waiting** — a program whose key-listening thread
   sits in `read` while another thread works reads as waiting to the probe.
+- **A silent asynchronous reader in Node's REPL** — a submitted expression
+  that logs a whole line, then waits for stdin without a prompt or uses an
+  empty `readline.question`, can report `Running`. Its event loop watches the same
+  terminal while a promise is merely pending. Visible nested questions and
+  kernel-observed reads remain detectable; newline logs alone cannot
+  safely distinguish the two cases.
+- **Output that displaces Node's prompt before input** — an asynchronous
+  bootstrap log from `node -i -e`, a `--trace-gc` message or a TSX warning
+  after the initial `> ` can leave the cursor at column zero before the
+  first `bashsend`. The submitted-line hold requires a visible nonempty
+  prompt, so it does not start there and a later await can still look like
+  an input request until the REPL redraws its prompt.
+- **A relative compiler launcher alias after a cwd change** — aliases are
+  resolved against the running process's current cwd. A `ts-node` or `tsx`
+  REPL that calls `process.chdir()` can make its relative alias unresolvable
+  for the next input. Direct known compiler entry paths remain recognised
+  without depending on that resolution.
 - **A splice with no readable wait channel** — a terminal-to-pipe transfer
   can wait for input or for pipe capacity. Where the kernel hides its wait
   channel, or names one the probe does not recognise, that distinction stays

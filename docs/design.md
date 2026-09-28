@@ -1366,9 +1366,18 @@ stream for their own reasons).
   submitted line beyond its own echo and ordinary newline-terminated logs,
   until a matching prompt, continuation, editor entry or visible screen
   takeover appears. Raw mode during a top-level `await` does not stand for
-  its next prompt. Unrecognised invocations, unreadable processes and
+  its next prompt. The explicit runtime-option set includes numeric
+  memory/stack values, GC/JIT booleans and underscore aliases in native
+  option names; operands stay unchanged. Known compiler entry paths retain
+  direct matching. Other `ts-node`/`tsx` launcher aliases resolve through
+  symlinks using the process's cwd for relative paths; a resolution failure
+  declines an alias without disabling direct matching. Relative aliases
+  can lose recognition after a cwd change. Unknown options, application
+  modes and ordinary scripts do not qualify. Unrecognised invocations, unreadable processes and
   relays retain the ordinary rules; prompt-shaped output remains
-  ambiguous. See
+  ambiguous, and a silent asynchronous stdin listener can report `Running`
+  because its kernel-visible wait also fits a pending promise. Visible
+  nested questions and actual terminal reads still count. See
   `docs/interactive-shell.md` *Limits*.
 - Tool output shown inline is always collapsed to a one-line peek; the only way to
   read it in full is the Ctrl+O conversation view, which shows the whole transcript

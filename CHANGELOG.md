@@ -57,7 +57,14 @@ release heading when a version is cut.
   held for a new prompt or screen takeover; its own echo and ordinary
   newline-terminated logs are not a new input request. `bashsend` can report
   `Running` and `bashwait` wait for the answer. This is scoped to recognised
-  REPL invocations, not arbitrary Node scripts or inaccessible processes.
+  REPL invocations, including supported Node/V8 heap, stack, GC and JIT
+  options and `ts-node`/`tsx` launcher aliases resolved through symlinks;
+  known compiler entry paths keep their direct matching. Option
+  names accept underscore aliases, numeric operands must be attached with
+  `=`, and unknown options and application modes remain excluded.
+  A silent asynchronous stdin listener can still report `Running`; visible
+  questions and kernel-observed reads retain their independent signals
+  (`docs/interactive-shell.md`).
 - **A password check no longer looks like another password request.**
   A line break or terminal control printed after `bashsend` submits a
   password could revive the old prompt or the terminal's echo-off signal

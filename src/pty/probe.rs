@@ -918,6 +918,12 @@ pub fn stat_group(stat: &str) -> Option<u32> {
 /// script, an evaluation, an option whose value might be a script — is not.
 #[must_use]
 pub fn node_repl_argv(argv: &[&str]) -> bool {
+    node_repl_argv_with(argv, &|script| Some(PathBuf::from(script)))
+}
+
+/// Only the actual script operand goes through `resolve`: option values,
+/// preload names and evaluated JavaScript are never filesystem paths here.
+fn node_repl_argv_with(argv: &[&str], resolve: &dyn Fn(&str) -> Option<PathBuf>) -> bool {
     let Some((program, args)) = argv.split_first() else {
         return false;
     };
@@ -925,14 +931,50 @@ pub fn node_repl_argv(argv: &[&str]) -> bool {
     if !matches!(name, "node" | "nodejs") {
         return false;
     }
-    node_repl_args(args.iter().copied(), false)
+    node_repl_args(args.iter().copied(), false, resolve)
 }
 
 /// Recognize only options whose effect on choosing a REPL is known. In
 /// particular, application modes such as `--run` and `--test` are not a REPL.
-fn node_repl_args<'a>(mut args: impl Iterator<Item = &'a str>, compiler: bool) -> bool {
+fn node_repl_args<'a>(
+    mut args: impl Iterator<Item = &'a str>,
+    compiler: bool,
+    resolve: &dyn Fn(&str) -> Option<PathBuf>,
+) -> bool {
     let (mut evaluates, mut interactive) = (false, false);
     while let Some(arg) = args.next() {
+        // Node/V8 accepts underscores in option names too. Never normalize
+        // the operand: a preload path or an evaluation is opaque text.
+        let normalized;
+        let arg = if !compiler && arg.starts_with("--") {
+            let end = arg.find('=').unwrap_or(arg.len());
+            normalized = format!("{}{}", arg[..end].replace('_', "-"), &arg[end..]);
+            normalized.as_str()
+        } else {
+            arg
+        };
+        let (option, attached) = arg
+            .split_once('=')
+            .map_or((arg, None), |(name, value)| (name, Some(value)));
+        if !compiler
+            && matches!(
+                option,
+                "--max-old-space-size"
+                    | "--max-semi-space-size"
+                    | "--initial-old-space-size"
+                    | "--stack-size"
+            )
+        {
+            let Some(value) = attached else {
+                return false;
+            };
+            // V8 requires an attached value. A missing/malformed size must
+            // not turn an invalid invocation into a REPL.
+            if !value.bytes().all(|byte| byte.is_ascii_digit()) || value.parse::<u64>().is_err() {
+                return false;
+            }
+            continue;
+        }
         match arg {
             "-i" | "--interactive" => interactive = true,
             "-e" | "--eval" | "-p" | "--print" => {
@@ -957,7 +999,7 @@ fn node_repl_args<'a>(mut args: impl Iterator<Item = &'a str>, compiler: bool) -
             _ if arg.starts_with("-e") || arg.starts_with("-p") => evaluates = true,
             "--" => {
                 return match args.next() {
-                    Some(script) => !compiler && !evaluates && compiler_repl(script, args),
+                    Some(script) => !compiler && !evaluates && compiler_repl(script, args, resolve),
                     None => !evaluates || interactive,
                 };
             }
@@ -973,6 +1015,9 @@ fn node_repl_args<'a>(mut args: impl Iterator<Item = &'a str>, compiler: bool) -
             | "--no-experimental-repl-await"
             | "--experimental-strip-types"
             | "--no-experimental-strip-types" => {}
+            "--expose-gc" | "--no-expose-gc" | "--trace-gc" | "--no-trace-gc" | "--jitless"
+            | "--no-jitless"
+                if !compiler => {}
             "--transpile-only" | "--transpileOnly" | "--esm" | "--swc" if compiler => {}
             _ if [
                 "--require=",
@@ -987,7 +1032,7 @@ fn node_repl_args<'a>(mut args: impl Iterator<Item = &'a str>, compiler: bool) -
             .iter()
             .any(|prefix| arg.starts_with(prefix)) => {}
             _ if arg.starts_with('-') => return false,
-            script => return !compiler && !evaluates && compiler_repl(script, args),
+            script => return !compiler && !evaluates && compiler_repl(script, args, resolve),
         }
     }
     !evaluates || interactive
@@ -995,16 +1040,40 @@ fn node_repl_args<'a>(mut args: impl Iterator<Item = &'a str>, compiler: bool) -
 
 /// Is `script`, run by node with `rest` after it, ts-node's or tsx's REPL —
 /// its entry point, handed no script of its own?
-fn compiler_repl<'a>(script: &str, rest: impl Iterator<Item = &'a str>) -> bool {
-    let entry = [
-        "/node_modules/ts-node/dist/bin.js",
-        "/node_modules/tsx/dist/cli.mjs",
-        "/node_modules/tsx/dist/cli.cjs",
-        "/node_modules/tsx/dist/cli.js",
-    ]
-    .iter()
-    .any(|end| script.ends_with(end));
-    entry && node_repl_args(rest, true)
+fn compiler_repl<'a>(
+    script: &str,
+    rest: impl Iterator<Item = &'a str>,
+    resolve: &dyn Fn(&str) -> Option<PathBuf>,
+) -> bool {
+    let entry = |script: &str| {
+        [
+            "/node_modules/ts-node/dist/bin.js",
+            "/node_modules/tsx/dist/cli.mjs",
+            "/node_modules/tsx/dist/cli.cjs",
+            "/node_modules/tsx/dist/cli.js",
+        ]
+        .iter()
+        .any(|end| script.ends_with(end))
+    };
+    // A known entry remains evidence if the REPL changed cwd after loading
+    // it. Only an unfamiliar alias needs filesystem resolution.
+    let recognised =
+        entry(script) || resolve(script).is_some_and(|path| path.to_str().is_some_and(entry));
+    recognised && node_repl_args(rest, true, resolve)
+}
+
+/// Resolve a running process's script, including PATH launcher symlinks.
+/// Relative operands belong to its cwd, never the assistant's. An absolute
+/// path can still be resolved when `/proc/PID/cwd` is unreadable.
+#[cfg(target_os = "linux")]
+fn resolve_process_script(pid: u32, script: &str) -> Option<PathBuf> {
+    let script = Path::new(script);
+    let path = if script.is_absolute() {
+        script.to_path_buf()
+    } else {
+        PathBuf::from(format!("/proc/{pid}/cwd")).join(script)
+    };
+    std::fs::canonicalize(path).ok()
 }
 
 /// Does process group `group` run **Node's REPL** ([`node_repl_argv`]) —
@@ -1030,7 +1099,7 @@ pub fn group_runs_node_repl(group: u32) -> bool {
         if std::fs::read(format!("/proc/{pid}/cmdline")).is_ok_and(|cmdline| {
             let cmdline = String::from_utf8_lossy(&cmdline);
             let argv: Vec<&str> = cmdline.split_terminator('\0').collect();
-            node_repl_argv(&argv)
+            node_repl_argv_with(&argv, &|script| resolve_process_script(pid, script))
         }) {
             return true;
         }
@@ -1100,6 +1169,119 @@ const PROBE_MAX_DEPTH: usize = 64;
 mod tests {
     use super::*;
 
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_path_compiler_repl_is_resolved_in_its_process_working_directory() {
+        use std::io::Read;
+        use std::os::unix::{fs::symlink, process::CommandExt};
+        use std::process::{Command, Stdio};
+
+        let dir = tempfile::tempdir().unwrap();
+        let process = |script: &str, rest: &[&str]| {
+            let mut child = Command::new("/bin/sh")
+                .arg0("node")
+                .arg(script)
+                .args(rest)
+                .current_dir(dir.path())
+                .process_group(0)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null())
+                .spawn()
+                .unwrap();
+            // `spawn` can return during exec's /proc transition. A terminal
+            // tool likewise identifies the REPL after its first prompt.
+            let mut ready = [0; 5];
+            child
+                .stdout
+                .as_mut()
+                .unwrap()
+                .read_exact(&mut ready)
+                .unwrap();
+            assert_eq!(&ready, b"ready");
+            let recognised = group_runs_node_repl(child.id());
+            let _ = child.kill();
+            child.wait().unwrap();
+            recognised
+        };
+        for (package, entry) in [("ts-node", "bin.js"), ("tsx", "cli.mjs")] {
+            let target = dir
+                .path()
+                .join(format!("node_modules/{package}/dist/{entry}"));
+            std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+            // A shell fixture supplies controllable argv and cwd through real
+            // /proc files; its builtin read keeps it alive without children.
+            std::fs::write(&target, "printf ready; read answer\n").unwrap();
+            let alias = dir.path().join(package);
+            symlink(&target, &alias).unwrap();
+            for script in [alias.to_str().unwrap(), package] {
+                assert!(
+                    process(script, &[]),
+                    "the process runs its compiler through {script}"
+                );
+                assert!(
+                    !process(script, &["app.ts"]),
+                    "a compiler running a script is no REPL"
+                );
+                assert!(
+                    !node_repl_argv(&["node", script]),
+                    "the public argv matcher does no I/O"
+                );
+            }
+            // An absolute operand does not depend on readable process cwd.
+            assert_eq!(
+                resolve_process_script(u32::MAX, alias.to_str().unwrap()),
+                Some(target.canonicalize().unwrap())
+            );
+            assert_eq!(resolve_process_script(u32::MAX, package), None);
+            std::fs::remove_file(&alias).unwrap();
+            std::fs::write(&alias, "printf ready; read answer\n").unwrap();
+            assert!(
+                !process(package, &[]),
+                "a matching launcher name alone proves nothing"
+            );
+        }
+    }
+
+    #[test]
+    fn compiler_path_resolution_does_not_touch_evaluations_or_preload_operands() {
+        let resolve = |_: &str| -> Option<PathBuf> { panic!("this argument is not a script") };
+        assert!(node_repl_argv_with(
+            &["node", "--require", "./ts-node"],
+            &resolve
+        ));
+        assert!(!node_repl_argv_with(
+            &["node", "--eval", "./ts-node"],
+            &resolve
+        ));
+        assert!(!node_repl_argv_with(
+            &["node", "--eval=./ts-node"],
+            &resolve
+        ));
+        assert!(!node_repl_argv_with(&["node", "--run=./ts-node"], &resolve));
+    }
+
+    #[test]
+    fn known_compiler_entry_paths_survive_an_unavailable_resolver() {
+        // A REPL can change cwd after loading a relative entry point. Its
+        // original known script path remains evidence without filesystem I/O.
+        let unavailable = |_: &str| None;
+        for script in [
+            "./node_modules/ts-node/dist/bin.js",
+            "./node_modules/tsx/dist/cli.mjs",
+            "/app/node_modules/ts-node/dist/bin.js",
+        ] {
+            assert!(
+                node_repl_argv_with(&["node", script], &unavailable),
+                "{script}"
+            );
+            assert!(!node_repl_argv_with(
+                &["node", script, "app.ts"],
+                &unavailable
+            ));
+        }
+    }
+
     #[test]
     fn nodes_own_repl_is_told_from_a_script_by_its_arguments() {
         // Node's REPL keeps the terminal raw while a top-level `await` runs
@@ -1151,6 +1333,72 @@ mod tests {
             &["python3"],
             &["bash", "-c", "node"],
             &[],
+        ] {
+            assert!(!node_repl_argv(argv), "{argv:?}");
+        }
+    }
+
+    #[test]
+    fn node_runtime_options_keep_the_repl_without_hiding_application_modes() {
+        for argv in [
+            &["node", "--max-old-space-size=4096"][..],
+            &["node", "--max_old_space_size=4096"],
+            &["node", "--max_semi_space_size=16"],
+            &["node", "--initial-old-space-size=0", "--stack-size=984"],
+            &["node", "--expose-gc", "--trace-gc", "--jitless"],
+            &["node", "--no-expose-gc", "--no-trace-gc", "--no-jitless"],
+            &[
+                "node",
+                "--max-old-space-size=4096",
+                "--require",
+                "my_module",
+            ],
+            &["node", "--max-old-space-size=4096", "-i", "-e", "0"],
+        ] {
+            assert!(node_repl_argv(argv), "{argv:?}");
+        }
+        for argv in [
+            &["node", "--max-old-space-size=4096", "app.js"][..],
+            &["node", "--max-old-space-size", "4096"],
+            &["node", "--max_semi_space_size", "16"],
+            &["node", "--stack-size", "984"],
+            &["node", "--max-old-space-size", "4096", "--", "app.js"],
+            &["node", "--max-old-space-size", "--run=dev"],
+            &["node", "--max-old-space-size=4096", "--run=dev"],
+            &["node", "--max-old-space-size=4096", "--test"],
+            &["node", "--max-old-space-size=4096", "--watch"],
+            &["node", "--max-old-space-size=4096", "--check"],
+            &[
+                "node",
+                "--max-old-space-size=4096",
+                "--experimental-sea-config=sea.json",
+            ],
+            &["node", "--max-old-space-size=4096", "--build-snapshot"],
+            &[
+                "node",
+                "--max-old-space-size=4096",
+                "--experimental-config-file=config.json",
+            ],
+            &[
+                "node",
+                "--max-old-space-size=4096",
+                "-e",
+                "process.stdin.resume()",
+            ],
+            &["node", "--max-old-space-size=4096", "--print=1"],
+            &["node", "--max-old-space-size"],
+            &["node", "--max-old-space-size="],
+            &["node", "--max-old-space-size=not-a-number"],
+            &["node", "--stack-size=-1"],
+            &["node", "--max-old-space-size=18446744073709551616"],
+            &["node", "--unrecognized-runtime-option=4096"],
+            &[
+                "node",
+                "--max-old-space-size",
+                "4096",
+                "/app/node_modules/ts-node/dist/bin.js",
+                "app.ts",
+            ],
         ] {
             assert!(!node_repl_argv(argv), "{argv:?}");
         }

@@ -3331,6 +3331,19 @@ select.select([sys.stdin], [], [])'"#;
     #[cfg(target_os = "linux")]
     #[test]
     fn a_node_repl_await_is_waited_for_not_taken_for_a_prompt() {
+        assert_node_repl_await("node");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_node_repl_with_runtime_options_awaits_its_answer() {
+        assert_node_repl_await(
+            "node --max-old-space-size=4096 --max_semi_space_size=16 --expose-gc",
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    fn assert_node_repl_await(invocation: &str) {
         let node = std::env::var_os("PATH")
             .is_some_and(|path| std::env::split_paths(&path).any(|dir| dir.join("node").is_file()));
         if !node {
@@ -3342,7 +3355,11 @@ select.select([sys.stdin], [], [])'"#;
         let launched = exec_with(
             &executor,
             "bash",
-            r#"{"command":"NODE_REPL_HISTORY= NODE_DISABLE_COLORS=1 node","wait":20}"#,
+            &serde_json::json!({
+                "command": format!("NODE_REPL_HISTORY= NODE_DISABLE_COLORS=1 {invocation}"),
+                "wait": 20
+            })
+            .to_string(),
         );
         let id = session_of(&launched.output);
         let sent = exec_with(

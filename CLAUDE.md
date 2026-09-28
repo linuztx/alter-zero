@@ -1298,8 +1298,19 @@ one line submitted at its prompt stays pending through its own echo and
 newline-terminated logs, until a matching prompt, continuation, editor entry
 or visible screen takeover answers it. Thus raw mode during top-level
 `await` is not another input request.
+Recognition permits an explicit set of Node/V8 runtime flags, including
+decimal memory/stack values attached with `=`, GC/JIT booleans and
+underscore aliases in native option names, leaving operands unchanged.
+Known `ts-node`/`tsx` entry paths match directly; other launcher script
+paths resolve through symlinks to those entries, relative to the process's
+cwd when needed. Failed resolution declines an alias, while direct entry
+matching is preserved. Arbitrary basenames, unknown options and
+application modes do not qualify.
 This does not track arbitrary async scripts or a REPL hidden behind an
 unreadable process or relay; output shaped like a prompt remains ambiguous
+and a silent async stdin listener can report `Running`, since Node watches
+the same terminal while awaiting a promise. Visible nested questions and
+kernel-observed reads still count
 (`docs/interactive-shell.md`). A waiting call
 **streams** its running cell as `ToolProgress::Screen { settled, live }` →
 `StreamEvent::ToolScreen` → `App::push_tool_screen`, `live` rows replacing
