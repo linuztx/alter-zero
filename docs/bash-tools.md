@@ -92,7 +92,10 @@ simply no longer offers them.
 - `bashsend` types `input` (the key notation of `docs/interactive-shell.md`
   — `<Enter>`, `<C-c>`, `<Up>`, a newline pressing Enter) and returns the
   answer once the program waits again, exits, or its fixed budget
-  ([`SEND_WAIT`], 10 s) passes. It never kills.
+  ([`SEND_WAIT`], 10 s) passes. It never kills. After submitting a password,
+  line breaks or terminal controls alone do not make the old prompt another
+  input request: visible answer text or a terminal read seen by the probe
+  is needed, and a visibly reprinted retry prompt counts too.
 - `bashwait` types nothing and waits up to `wait` seconds (default 120) for
   the exit or a question — silence does not end it, so one call waits out a
   long build. `wait: 0` returns what is new at once. A program already
@@ -148,7 +151,12 @@ also have broken quiet commands. What came with the flip:
    call in half a second, as before — but a tree waiting only elsewhere, or a
    display on the alternate screen that left the terminal in line mode
    (`gh run watch`), is no prompt, and a wait on it rides it out
-   (`docs/interactive-shell.md`).
+   (`docs/interactive-shell.md`). A cursor's position indicates a line prompt
+   only while the cursor is visible: pacman hides it during downloads, so
+   its initial 0% bar does not report `waiting for input` after a password
+   is submitted, even before the bar has redrawn. A kernel-observed read,
+   a password prompt, a key-reading program or a full-screen menu still
+   counts as waiting when it hides its cursor.
 2. **Finished output is data** (`pty::session`'s data view). The terminal's
    transcript is what a person reads — tabs expanded to stops, trailing
    spaces trimmed — so `printf 'a\tb   \n'` came back as `a       b`. The
@@ -201,7 +209,9 @@ happened each time, so none of them is silent:
   program a pipe to format for.
 - **A program that reads stdin waits for it.** `grep needle` with no file
   returns `Running (session …, waiting for input)` in half a second instead of
-  `Exit code: 1`; `< /dev/null` gives it end-of-file.
+  `Exit code: 1`; `< /dev/null` gives it end-of-file. On Linux this also
+  covers modern GNU `cat` reading through `splice` when the kernel's wait
+  channel confirms a terminal read (`docs/interactive-shell.md`).
 - **`sudo` asks for a password** instead of failing: the frame says `waiting
   for a password — only bashsend can type it`, and the model is told never to
   type one it was not given. The clause names the one way in because the

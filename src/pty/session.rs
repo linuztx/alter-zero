@@ -446,7 +446,7 @@ impl SessionIo {
     /// can see, rules out a program at work.
     pub fn take_unseen_prompt(&self, min_quiet: std::time::Duration) -> bool {
         let mut state = self.lock();
-        let quiet = state.last_output.unwrap_or(state.created).elapsed();
+        let quiet = state.last_activity().elapsed();
         if !state.unseen_prompt_shape()
             || quiet < min_quiet
             || !(state.password_prompt() || state.awaiting_keys())
@@ -489,7 +489,10 @@ impl SessionIo {
     #[must_use]
     pub fn waiting(&self, kind: WaitKind, since: Mark) -> bool {
         let state = self.lock();
-        let quiet = state.last_output.unwrap_or(state.created).elapsed();
+        // A timed-out input call can leave paced keys in flight. Count quiet
+        // from their delivery too, as wait does, so its report and bashlist
+        // do not turn the prompt those keys answer into a fresh question.
+        let quiet = state.last_activity().elapsed();
         // The probe's read and the terminal's hidden line are exact: no
         // longer quiet than any prompt.
         let exact = state.probe == Probe::Reading || state.password_prompt();
@@ -515,14 +518,9 @@ impl SessionIo {
     #[must_use]
     pub fn wants_probe(&self) -> bool {
         let state = self.lock();
-        let last = [state.last_output, state.last_input]
-            .into_iter()
-            .flatten()
-            .max()
-            .unwrap_or(state.created);
         state.screen.is_some()
             && !state.finished
-            && last.elapsed() >= PROBE_QUIET
+            && state.last_activity().elapsed() >= PROBE_QUIET
             && (state.waiters > 0 || state.unseen_prompt_shape())
     }
 
@@ -712,7 +710,7 @@ impl SessionIo {
                     awaiting_keys: state.awaiting_keys(),
                     reading: state.probe == Probe::Reading,
                     secret: state.password_prompt(),
-                    answer_pending: state.awaiting_answer && !state.transcript.answered(),
+                    answer_pending: state.answer_pending(),
                     typing: typing_until.is_some_and(|until| now < until),
                     full_screen: state.drawing_screen(),
                     undrawn: state.screen.as_ref().is_some_and(Screen::undrawn),
@@ -868,6 +866,17 @@ impl Streamer {
 }
 
 impl IoState {
+    /// Quiet begins after the latest output or input delivery. While paced
+    /// keys remain queued, `last_input` holds their expected completion;
+    /// the writer replaces it with the actual time once they are all out.
+    fn last_activity(&self) -> Instant {
+        [self.last_output, self.last_input]
+            .into_iter()
+            .flatten()
+            .max()
+            .unwrap_or(self.created)
+    }
+
     /// Is the program waiting for keys? The probe's word first
     /// ([`super::probe`]): a thread reading the terminal is waiting wherever
     /// the cursor sits, and a tree that is all at work is busy whatever the
@@ -891,6 +900,12 @@ impl IoState {
     /// [`Self::awaiting_keys`] falls back on where the probe leaves the
     /// answer open?
     fn screen_awaits_keys(&self) -> bool {
+        // A submitted password can leave its old prompt on screen while
+        // terminal controls arrive. Only visible text answers it; a read
+        // the probe actually sees still wins in `awaiting_keys`.
+        if self.answer_pending() {
+            return false;
+        }
         // A screen switched to and not drawn on has nothing to answer.
         self.screen.as_ref().is_some_and(|screen| {
             !screen.undrawn()
@@ -984,7 +999,15 @@ impl IoState {
         self.screen.is_some()
             && self.hidden_input
             && self.seq > self.input_seq
+            && (self.probe == Probe::Reading || !self.answer_pending())
             && !matches!(self.probe, Probe::Idle | Probe::Elsewhere)
+    }
+
+    /// Has a submitted password received no visible answer yet? A line
+    /// break, spaces or terminal controls do not establish another prompt,
+    /// even if echo remains off while the program checks the password.
+    fn answer_pending(&self) -> bool {
+        self.awaiting_answer && !self.transcript.answered()
     }
 
     /// Has the program printed anything new to a call of `kind` that began
@@ -1869,6 +1892,60 @@ mod tests {
     }
 
     #[test]
+    fn a_report_does_not_ask_for_input_while_keys_are_still_being_typed() {
+        // A bashsend can reach its budget with paced keys still queued. Its
+        // report, bashlist and a zero-budget bashwait must not mistake the
+        // old prompt for a request for even more keys.
+        let io = SessionIo::new(true);
+        io.absorb(b"Ready> ");
+        io.lock().last_output = Some(Instant::now() - Duration::from_secs(5));
+        let since = io.begin_wait();
+        io.note_input(b"\x1b[C");
+        io.typing_for(Duration::from_secs(30));
+        for kind in [WaitKind::Input, WaitKind::Wait] {
+            assert!(!io.waiting(kind, since), "{kind:?}: keys are still queued");
+        }
+    }
+
+    #[test]
+    fn a_report_counts_prompt_quiet_from_the_last_delivered_key() {
+        let io = SessionIo::new(true);
+        io.absorb(b"Ready> ");
+        io.lock().last_output = Some(Instant::now() - Duration::from_secs(5));
+        let since = io.begin_wait();
+        io.note_input(b"\x1b[C");
+        io.typing_for(Duration::from_secs(30));
+        io.typed();
+        assert!(
+            !io.waiting(WaitKind::Input, since),
+            "the program has not had time to answer the last key"
+        );
+        io.lock().last_input = Some(Instant::now() - settle::PROMPT_QUIET);
+        assert!(io.waiting(WaitKind::Input, since));
+    }
+
+    #[test]
+    fn a_report_of_an_unseen_prompt_waits_for_queued_keys() {
+        let io = SessionIo::new(true);
+        io.announce();
+        io.note_input(b"\x1b[C");
+        io.typing_for(Duration::from_secs(30));
+        io.absorb(b"Ready> ");
+        io.lock().last_output = Some(Instant::now() - Duration::from_secs(5));
+        assert!(
+            !io.take_unseen_prompt(Duration::from_secs(3)),
+            "the input already queued can answer this prompt"
+        );
+        io.typed();
+        assert!(
+            !io.take_unseen_prompt(Duration::from_secs(3)),
+            "the program still needs time to answer the delivered keys"
+        );
+        io.lock().last_input = Some(Instant::now() - Duration::from_secs(3));
+        assert!(io.take_unseen_prompt(Duration::from_secs(3)));
+    }
+
+    #[test]
     fn a_program_reading_key_by_key_waits_wherever_its_cursor_is() {
         // A menu drawn on the main screen leaves the cursor at the start of
         // a fresh line — no prompt by the cursor rule — but it has put the
@@ -2323,6 +2400,69 @@ mod tests {
     }
 
     #[test]
+    fn control_output_after_a_password_is_not_another_prompt() {
+        // A login can leave echo off while checking a password and emit a
+        // line break or terminal controls before its answer. Neither those
+        // bytes nor the old prompt still on screen ask for another input.
+        for mode in [HIDDEN_LINE, LINE_MODE] {
+            for output in [b"\r\n".as_slice(), b"\x1b[0m", b" "] {
+                let io = SessionIo::new(true);
+                io.absorb(b"Password: ");
+                io.set_line_mode(HIDDEN_LINE);
+                look_at(&io);
+                io.note_input(b"fixture\r");
+                io.set_line_mode(mode);
+                io.absorb(output);
+                let quiet_since = Instant::now() - settle::PROMPT_QUIET;
+                io.lock().last_output = Some(quiet_since);
+                let since = Mark {
+                    at: quiet_since,
+                    seq: 1,
+                };
+                assert!(!io.password_prompt(), "{mode:?}, {output:?}");
+                for kind in [WaitKind::Input, WaitKind::Wait] {
+                    assert!(!io.waiting(kind, since), "{kind:?}, {mode:?}, {output:?}");
+                    assert_eq!(
+                        io.wait(kind, since, Duration::ZERO, &never, &never, &mut |_, _| {}),
+                        WaitEnd::Settled(Settle::Timeout),
+                        "{kind:?}, {mode:?}, {output:?}"
+                    );
+                }
+                io.announce();
+                assert!(
+                    !io.take_unseen_prompt(Duration::ZERO),
+                    "no background prompt: {mode:?}, {output:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_password_retry_can_reprint_the_same_prompt_or_be_seen_reading() {
+        for probe in [Probe::Unknown, Probe::Reading] {
+            let io = SessionIo::new(true);
+            io.absorb(b"Password: ");
+            io.set_line_mode(HIDDEN_LINE);
+            io.note_input(b"fixture\r");
+            io.absorb(if probe == Probe::Reading {
+                b"\r\n"
+            } else {
+                // Reprinting identical text is still a visible answer.
+                b"\rPassword: "
+            });
+            io.set_probe(probe);
+            let quiet_since = Instant::now() - settle::PROMPT_QUIET;
+            {
+                let mut state = io.lock();
+                state.last_output = Some(quiet_since);
+                state.last_input = Some(quiet_since);
+            }
+            assert!(io.password_prompt(), "{probe:?}");
+            assert!(io.waiting(WaitKind::Input, io.origin_mark()), "{probe:?}");
+        }
+    }
+
+    #[test]
     fn keys_the_program_has_not_answered_are_no_second_password_prompt() {
         // Just typed: until the program answers, a terminal still in the
         // prompt's mode is the answer on its way, not a fresh prompt.
@@ -2416,6 +2556,74 @@ mod tests {
         let end = io.wait(WaitKind::Input, since, LONG, &never, &never, &mut |_, _| {});
         assert_eq!(end, WaitEnd::Settled(Settle::Quiet));
         assert!(started.elapsed() < settle::LINE_QUIET + Duration::from_millis(500));
+    }
+
+    #[test]
+    fn a_hidden_cursor_after_a_password_does_not_report_a_progress_bar_as_input() {
+        // sudo's root process leaves the probe blind. Pacman hides the
+        // cursor, but its initial 0% frame has not animated yet: its pause
+        // used to end bashsend as "waiting for input" after half a second.
+        let io = SessionIo::new(true);
+        io.absorb(b"[sudo] password for u: ");
+        io.set_line_mode(HIDDEN_LINE);
+        look_at(&io);
+        io.note_input(b"test-password\r");
+        io.set_line_mode(RELAY);
+        io.absorb(
+            b"\r\n\x1b[?25l:: Synchronizing package databases...\r\n\
+            omarchy   0.0 B  0.00 B/s --:-- [Co  o  o]   0%",
+        );
+        // Advance the quiet interval without sleeping; no probe verdict
+        // or second frame is needed to reject this false prompt.
+        let quiet_since = Instant::now() - settle::WAIT_PROMPT_QUIET;
+        io.lock().last_output = Some(quiet_since);
+        let since = Mark {
+            at: quiet_since,
+            seq: 1,
+        };
+        for (kind, expected) in [
+            (WaitKind::Launch, Settle::Timeout),
+            (WaitKind::Input, Settle::Quiet),
+            (WaitKind::Wait, Settle::Timeout),
+        ] {
+            assert_eq!(
+                io.wait(kind, since, Duration::ZERO, &never, &never, &mut |_, _| {}),
+                WaitEnd::Settled(expected),
+                "{kind:?}"
+            );
+            assert!(!io.waiting(kind, since), "{kind:?}: the report agrees");
+        }
+        io.announce();
+        assert!(
+            !io.take_unseen_prompt(Duration::ZERO),
+            "no background notice"
+        );
+        io.absorb(b"\r\n\x1b[?25hProceed? [Y/n] ");
+        assert!(
+            io.take_unseen_prompt(Duration::ZERO),
+            "a later question still asks"
+        );
+    }
+
+    #[test]
+    fn a_hidden_cursor_preserves_other_evidence_that_a_program_takes_input() {
+        for (mode, probe, text) in [
+            (LINE_MODE, Probe::Reading, b"Question: ".as_slice()),
+            (HIDDEN_LINE, Probe::Unknown, b"Password: ".as_slice()),
+            (KEY_BY_KEY, Probe::Unknown, b"Choose an item: ".as_slice()),
+            (RELAY, Probe::Unknown, b"\x1b[?1049hmenu".as_slice()),
+        ] {
+            let io = SessionIo::new(true);
+            io.set_line_mode(mode);
+            io.absorb(b"\x1b[?25l");
+            io.absorb(text);
+            io.set_probe(probe);
+            io.lock().last_output = Some(Instant::now() - settle::PROMPT_QUIET);
+            assert!(
+                io.waiting(WaitKind::Launch, io.origin_mark()),
+                "{mode:?}, {probe:?}"
+            );
+        }
     }
 
     #[test]

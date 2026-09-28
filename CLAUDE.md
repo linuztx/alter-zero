@@ -1228,7 +1228,10 @@ running as a session, never killed, or it
 `pty::probe` walks the session's process tree in Linux's
 `/proc/…/task/…/syscall` from the monitor thread while a call waits on a
 quiet terminal, and a `read` blocked on the session's pts (or `/dev/tty`) is
-a program waiting for input whatever the screen shows, while a tree all at
+a program waiting for input whatever the screen shows — so is `splice`
+reading that terminal when its wait channel names a terminal read, as modern
+GNU `cat` does; a splice stalled on pipe capacity is work, an unreadable or
+unrecognised wait channel remains uncertain — while a tree all at
 work is busy however prompt-shaped its line, and one whose waits are all
 epoll instances watching no terminal (the `/proc/…/fdinfo` interest list,
 matched by inode — an event loop between network calls, `gh run watch`
@@ -1257,8 +1260,10 @@ was hidden, a model sent the user to "enter it in the terminal prompt"; the
 old clause still parses for recorded sessions), detection only, nothing
 masked — then, where the probe cannot decide (a
 `sudo`-owned process, a wait on the terminal itself, no `/proc`), the
-screen: the cursor left mid-line, the alternate screen with the terminal out
-of line mode (a display left in canonical mode, `gh run watch`, takes no key
+screen: a **visible** cursor left mid-line (a hidden cursor's position is no
+line prompt — pacman's initial progress bar can pause before it has redrawn),
+the alternate screen with the terminal out of line mode (a display left in
+canonical mode, `gh run watch`, takes no key
 and is judged like the main screen — `IoState::drawing_screen`, fed the
 whole mode by `SessionIo::set_line_mode`), or a terminal reading key by key — canonical mode off with
 output processing still on, read off the pty with `tcgetattr`, since a relay
@@ -1272,7 +1277,10 @@ decided to wait ends the wait instead of letting it sit out its budget,
 still looking 0.5 s itself first so the probe can veto; and a password the
 call **submitted** (`keys::submits_line` at a password prompt) is waited on
 until the program answers with visible text (`Transcript::answered` — sudo's
-bare line break is none), `CHECK_QUIET` (10 s) replacing the 2 s silence
+bare line break is none): the pending answer suppresses both the old screen
+prompt and echo-off password detection, unless the probe sees a terminal
+read; a visibly reprinted retry prompt still answers even with identical
+text. `CHECK_QUIET` (10 s) replaces the 2 s silence
 rule meanwhile, so a refusal and its next prompt come back in that same
 call — and silence **alone** never ends a call on a program the probe sees
 at work (`Observation::busy`): a quiet `sleep 4; echo done` runs to its exit

@@ -265,14 +265,17 @@ impl Screen {
         screen.alternate_screen() && screen.rows(0, columns).all(|row| row.trim().is_empty())
     }
 
-    /// Is the cursor left **past column 1** — where a prompt leaves it
+    /// Is a **visible** cursor left **past column 1** — where a prompt leaves it
     /// (`>>> `, `Password: `, `[Y/n] `)? A program between lines of output
     /// leaves it at the start of a fresh line. On the alternate screen too:
     /// whether a full-screen program takes keys wherever its cursor is, the
-    /// terminal's line mode says (`pty::session`), not the screen.
+    /// terminal's line mode says (`pty::session`), not the screen. A hidden
+    /// cursor's position is no evidence of a prompt: pacman hides it while
+    /// drawing progress, including a first frame that has not redrawn yet.
     #[must_use]
     pub fn cursor_mid_line(&self) -> bool {
-        self.parser.screen().cursor_position().1 > 0
+        let screen = self.parser.screen();
+        !screen.hide_cursor() && screen.cursor_position().1 > 0
     }
 }
 
@@ -1543,5 +1546,16 @@ mod tests {
         assert!(!s.cursor_mid_line(), "a display, the cursor under its text");
         s.feed(b"Name: ");
         assert!(s.cursor_mid_line(), "a prompt on the alternate screen");
+    }
+
+    #[test]
+    fn a_hidden_cursor_is_no_evidence_of_a_line_prompt() {
+        let mut s = screen();
+        s.feed(b"\x1b[?25l omarchy   0.0 B  0.00 B/s --:-- [Co  o  o]   0%");
+        assert!(!s.cursor_mid_line(), "pacman's first, paused frame");
+        // Visibility, not the progress text, decides: a later question can
+        // reuse the same line before any animation was observed.
+        s.feed(b"\r\x1b[KProceed? [Y/n] \x1b[?25h");
+        assert!(s.cursor_mid_line(), "a visible cursor at the next question");
     }
 }

@@ -1314,7 +1314,10 @@ stream for their own reasons).
   when the overlay opened is re-committed on return a chunk later (no data loss).
 - Terminal sessions (every `bash` call, `docs/bash-tools.md`) decide *waiting for input* first
   by asking Linux's `/proc` what the session's processes are blocked in (a
-  `read` on the terminal is waiting, a tree all at work is busy — a `poll` or
+  `read` on the terminal is waiting, as is a `splice` from it whose wait
+  channel identifies a terminal read; a splice waiting for pipe capacity
+  is work, and a hidden or unrecognised wait channel stays uncertain;
+  a tree all at work is busy — a `poll` or
   `select` over no descriptors being a sleep — and one waiting only in epoll
   sets, or `poll` and `select` sets read out of its memory, that hold nothing
   on the terminal, a network client or an event loop between timers, asks
@@ -1328,22 +1331,30 @@ stream for their own reasons).
   mask what is typed — and where the probe is blind — a process run as
   another user (`sudo` and what it runs), a `poll` or `select` wait over
   descriptors or an epoll set holding the terminal, no `/proc` — by
-  heuristics: the cursor left mid-line, the alternate screen of a program
-  that took the terminal out of line mode (a display that never does,
+  heuristics: a visible cursor left mid-line, the alternate screen of a
+  program that took the terminal out of line mode (a display that never does,
   `gh run watch`, takes no keys), or a terminal read key by key (raw input
   with output processing still on, which a relay such as sudo's own pty does
   not leave),
   each after half a second of quiet (three for a pure wait that saw the line
-  appear), never on a line redrawn in place like a progress bar. So, there, a
+  appear), never on a line redrawn in place like a progress bar. A hidden
+  cursor's position is no line prompt, even before a progress bar has redrawn
+  — pacman's initial 0% frame after sudo accepts a password. This visibility
+  check does not override a kernel-observed read, the password mode, a
+  key-reading program or an interactive alternate screen. So, there, a
   program that prints its question, a newline, and then waits in line mode
   reports `Running` rather than `waiting for input` (its output still shows
   the question), and a busy command that leaves a line open (`Reading package
-  lists... `) can read as a prompt for a moment; a password prompt that
-  echoes `*` per key, or one behind a relay, is not named as one. A wait
+  lists... `) with a visible cursor can read as a prompt for a moment; a
+  password prompt that echoes `*` per key, or one behind a relay, is not
+  named as one. A wait
   counts what the model has not yet seen, so a question asked between two
   calls ends the next wait; and the call that submits a password waits up to
   10 s for the program's answer, so a command that runs on silently once let
-  in holds that call longer than the usual 2 s. See
+  in holds that call longer than the usual 2 s. Line breaks and terminal
+  controls alone do not revive the old prompt or the echo-off password
+  signal while that answer is pending; visible text (even a retry printing
+  the same prompt) or a terminal read seen by the probe does. See
   `docs/interactive-shell.md` *Limits*.
 - Tool output shown inline is always collapsed to a one-line peek; the only way to
   read it in full is the Ctrl+O conversation view, which shows the whole transcript

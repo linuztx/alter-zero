@@ -40,6 +40,30 @@ release heading when a version is cut.
 
 ### Fixed
 
+- **Pacman's first download bar no longer looks like another question
+  after the sudo password.** `bashsend` could report `waiting for input`
+  while `sudo pacman -Sy` was synchronizing package databases: the initial
+  0% bar paused before any redraw, and its hidden cursor's position was
+  mistaken for a prompt. A cursor must now be visible for its position to
+  indicate a line prompt. Password prompts, terminal reads and interactive
+  programs keep their own input detection (`docs/interactive-shell.md`).
+- **A password check no longer looks like another password request.**
+  A line break or terminal control printed after `bashsend` submits a
+  password could revive the old prompt or the terminal's echo-off signal
+  while the program was still checking it. Both now wait for a visible
+  answer; a repeated retry prompt and a terminal read detected by the
+  process probe still report waiting for input.
+- **A session still receiving paced keys no longer reports another input
+  request.** If a long `bashsend` reaches its wait budget before all keys
+  are delivered, its result, `bashlist` and a zero-budget `bashwait` now
+  count quiet from input delivery as well as output. The old prompt is not
+  reported as waiting while the remaining keys are on their way or have
+  only just arrived, and background waiting notices follow the same rule.
+- **Modern GNU `cat` waiting for terminal input is now recognised.**
+  Linux can report its input operation as `splice` rather than `read`.
+  The process probe now checks the input descriptor and kernel wait channel
+  to distinguish a terminal read from a transfer stalled on a full pipe;
+  an unavailable or unfamiliar wait channel remains uncertain.
 - **A build that compiles in silence is no longer handed back halfway.** A
   `bash` call running `cargo build` came back `Running` about ten seconds
   into a long compile, however long the agent had asked it to wait: cargo

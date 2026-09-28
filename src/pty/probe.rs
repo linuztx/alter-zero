@@ -8,6 +8,10 @@
 //! a path. A thread blocked in `read` on the session's terminal is waiting for
 //! input ([`Probe::Reading`]): exact, and the only tell for a program that
 //! asks with no prompt at all — a bare `read x`, a `cat`. A thread in
+//! `splice` from the terminal can be waiting for input too (modern `cat`),
+//! or for space in its output pipe: its task's `wchan` distinguishes the
+//! terminal read from the full pipe, leaving unfamiliar channels uncertain.
+//! A thread in
 //! `poll`/`select`/`epoll` may be waiting on the terminal or on anything
 //! else — a REPL, `vim`, `ssh` and every network client wait that way — and
 //! the kernel says which. An epoll instance's interest list
@@ -123,7 +127,7 @@ impl Arch {
     };
 
     /// What `call` waits on, when it is a wait the probe knows: `read`,
-    /// `readv` or `pread64`; `poll` or `ppoll`; `select` or `pselect6`;
+    /// `readv` or `pread64`; `splice`; `poll` or `ppoll`; `select` or `pselect6`;
     /// `epoll_wait` or a `pwait` sibling.
     #[must_use]
     pub fn wait(self, call: Syscall) -> Option<Wait> {
@@ -132,6 +136,7 @@ impl Arch {
             (Self::X86_64, 0 | 17 | 19) | (Self::Aarch64, 63 | 65 | 67) => {
                 Some(Wait::Read { fd: first })
             }
+            (Self::X86_64, 275) | (Self::Aarch64, 76) => Some(Wait::Splice { fd: first }),
             (Self::X86_64, 7 | 271) | (Self::Aarch64, 73) => Some(Wait::Poll {
                 at: first,
                 count: second,
@@ -153,6 +158,8 @@ impl Arch {
 pub enum Wait {
     /// A read of descriptor `fd`.
     Read { fd: u64 },
+    /// A splice from descriptor `fd`: it may wait on its output pipe first.
+    Splice { fd: u64 },
     /// `poll` or `ppoll` over the `count` entries of the `pollfd` array at
     /// address `at` — a sleep, over none.
     Poll { at: u64, count: u64 },
@@ -277,6 +284,11 @@ pub trait Descriptors {
     /// where a `poll` or a `select` keeps the descriptors it waits on —
     /// `None` when fewer can be read.
     fn memory(&self, address: u64, len: usize) -> Option<Vec<u8>>;
+    /// Where this task sleeps (`/proc/PID/task/TID/wchan`), when readable.
+    /// A splice can wait for terminal input or space in its output pipe.
+    fn wait_channel(&self) -> Option<String> {
+        None
+    }
 }
 
 /// How much of a `poll`'s array one entry takes: `int fd; short events;
@@ -401,11 +413,26 @@ pub enum Thread {
 #[must_use]
 pub fn classify(arch: Arch, line: &str, fds: &impl Descriptors, terminal: &Terminal) -> Thread {
     match parse_syscall(line).and_then(|call| arch.wait(call)) {
-        Some(Wait::Read { fd }) => match fds.link(fd) {
-            Some(link) if terminal.leads_here(&link) => Thread::Reading,
-            Some(link) if is_terminal_slave(&link) => Thread::Terminal,
-            _ => Thread::Busy,
-        },
+        Some(wait @ (Wait::Read { fd } | Wait::Splice { fd })) => {
+            let reading = match fds.link(fd) {
+                Some(link) if terminal.leads_here(&link) => Thread::Reading,
+                Some(link) if is_terminal_slave(&link) => Thread::Terminal,
+                _ => Thread::Busy,
+            };
+            match (wait, reading) {
+                (Wait::Splice { .. }, Thread::Reading | Thread::Terminal) => {
+                    // Linux checks the output pipe's capacity before reading
+                    // from the terminal. Only its terminal-read wait proves
+                    // input is wanted; a hidden or unfamiliar channel does not.
+                    match fds.wait_channel().as_deref().map(str::trim) {
+                        Some("wait_woken" | "n_tty_read") => reading,
+                        Some("pipe_wait_writable") => Thread::Busy,
+                        _ => Thread::Maybe,
+                    }
+                }
+                _ => reading,
+            }
+        }
         Some(Wait::Poll { count: 0, .. } | Wait::Select { count: 0, .. }) | None => Thread::Busy,
         Some(Wait::Poll { at, count }) => poll_watch(fds, terminal, at, count).thread(),
         Some(Wait::Select { count, read_set }) => {
@@ -840,6 +867,10 @@ struct TaskDescriptors<'a> {
 
 #[cfg(target_os = "linux")]
 impl Descriptors for TaskDescriptors<'_> {
+    fn wait_channel(&self) -> Option<String> {
+        std::fs::read_to_string(self.dir.join("wchan")).ok()
+    }
+
     fn link(&self, fd: u64) -> Option<String> {
         let target = std::fs::read_link(self.dir.join("fd").join(fd.to_string())).ok()?;
         Some(target.to_string_lossy().into_owned())
@@ -1311,6 +1342,7 @@ mod tests {
         files: std::collections::HashMap<u64, FileId>,
         infos: std::collections::HashMap<u64, String>,
         memory: std::collections::HashMap<u64, Vec<u8>>,
+        wait_channel: Option<String>,
     }
 
     impl Table {
@@ -1339,6 +1371,10 @@ mod tests {
     }
 
     impl Descriptors for Table {
+        fn wait_channel(&self) -> Option<String> {
+            self.wait_channel.clone()
+        }
+
         fn link(&self, fd: u64) -> Option<String> {
             self.links.get(&fd).cloned()
         }
@@ -1904,6 +1940,38 @@ mod tests {
             Thread::Maybe,
             "more descriptors than the probe looks up"
         );
+    }
+
+    #[test]
+    fn a_terminal_splice_waits_for_input_only_on_its_read_side() {
+        // Modern cat splices stdin into an internal pipe before copying it
+        // out. The same syscall can instead block on a full output pipe.
+        let splice = |number, input| {
+            let output = if input == 0 { 4 } else { 0 };
+            format!("{number} {input:#x} 0x0 {output:#x} 0x0 0x80000 0x0 0x7ffd 0x7f2d")
+        };
+        for (arch, number) in [(Arch::X86_64, 275), (Arch::Aarch64, 76)] {
+            for (channel, want) in [
+                (Some("wait_woken"), Thread::Reading),
+                (Some("n_tty_read"), Thread::Reading),
+                (Some("pipe_wait_writable"), Thread::Busy),
+                (Some("0"), Thread::Maybe),
+                (None, Thread::Maybe),
+            ] {
+                let mut fds = process().fd(4, "pipe:[77]", PIPE);
+                fds.wait_channel = channel.map(str::to_string);
+                assert_eq!(
+                    classify(arch, &splice(number, 0), &fds, &terminal()),
+                    want,
+                    "{arch:?}, {channel:?}"
+                );
+                assert_eq!(
+                    classify(arch, &splice(number, 4), &fds, &terminal()),
+                    Thread::Busy,
+                    "a splice from a pipe is not terminal input"
+                );
+            }
+        }
     }
 
     #[test]
