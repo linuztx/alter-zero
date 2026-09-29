@@ -485,10 +485,20 @@ which Ctrl+V reads the clipboard from.
   async walk. ↑/↓ move, **Tab/Enter insert `$name `** (the sigil kept, an
   existing following space reused), Esc dismisses sticky-per-mention. A
   submitted message carrying a mention makes the model load that skill via
-  the ordinary `skill` tool — its description names the mention syntax — so
+  the ordinary `skill` tool if its instructions are not already in context —
+  its description names the mention syntax and the load-once rule — so
   the green `● Skill(name)` cell, the context replay and the
   rollout round-trip all come for free (deliberately not codex's eager
   `<skill>` injection, which exists because codex has no skill tool).
+- **Skill bodies load once per agent context** (`docs/skills.md`): the tool
+  enforces its short load-once guidance at runtime. `LoadedSkills` is seeded
+  from that agent's incoming skill call/result pairs, identifies successful
+  body loads by their directory headers, and updates after each successful
+  read and parse. Repeated calls return a successful reminder without another
+  body or disk read. This covers batches, later turns and resumes, while
+  subagents remain independent and removing the body through compaction,
+  `/clear` or backtracking permits reloading. Context is the source of truth;
+  a session-lifetime cache would outlive the instructions it was protecting.
 - **A large paste collapses to a placeholder** (codex's large-paste handling —
   see `docs/paste.md`): a bracketed paste (`Event::Paste`) longer than
   `LARGE_PASTE_CHAR_THRESHOLD` (1000 chars) drops a compact

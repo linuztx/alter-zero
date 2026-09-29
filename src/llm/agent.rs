@@ -734,6 +734,174 @@ mod tests {
         out
     }
 
+    fn skill_fixture(root: &std::path::Path) -> crate::skills::SkillRegistry {
+        for name in ["alpha", "beta"] {
+            let dir = root.join(name);
+            std::fs::create_dir(&dir).expect("skill directory");
+            std::fs::write(
+                dir.join("SKILL.md"),
+                format!("---\ndescription: {name} skill\n---\n\n{name} instructions\n"),
+            )
+            .expect("skill file");
+        }
+        let (skills, errors) = super::super::skill::discover_skills(&[root.to_path_buf()]);
+        assert!(errors.is_empty(), "{errors:?}");
+        crate::skills::SkillRegistry::new(skills)
+    }
+
+    fn skill_rounds(
+        registry: &crate::skills::SkillRegistry,
+        messages: &mut Vec<ChatMessage>,
+        rounds: Vec<Vec<ToolCallRequest>>,
+        hooks: &dyn HookSink,
+    ) -> Vec<StreamEvent> {
+        let (tx, mut rx) = unbounded_channel();
+        let mut rounds = rounds.into_iter();
+        let mut loaded = super::super::skill::LoadedSkills::from_messages(registry, messages, None);
+        run_agent(
+            &tx,
+            &CancelToken::new(),
+            MAX_TOOL_ITERATIONS,
+            messages,
+            |_| match rounds.next() {
+                Some(calls) => RoundOutcome::ToolCalls {
+                    assistant: assistant_with(&calls),
+                    calls,
+                },
+                None => RoundOutcome::Complete {
+                    text: String::new(),
+                },
+            },
+            |call, _| super::super::skill::run_skill_tool(registry, &mut loaded, call),
+            Vec::new,
+            |_| Vec::new(),
+            |_, _| Approval::Allow,
+            hooks,
+            &no_sessions,
+        );
+        drain(&mut rx)
+    }
+
+    fn skill_results(messages: &[ChatMessage]) -> Vec<(&str, &str)> {
+        messages
+            .iter()
+            .filter_map(|message| match (&message.role[..], &message.content) {
+                ("tool", crate::llm::MessageContent::Text(text)) => Some((
+                    message.tool_call_id.as_deref().expect("call id"),
+                    text.as_str(),
+                )),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn repeated_skill_calls_load_one_body_across_batches_rounds_and_continuations() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let registry = skill_fixture(tmp.path());
+        let mut messages = vec![ChatMessage::user("use alpha")];
+        let events = skill_rounds(
+            &registry,
+            &mut messages,
+            vec![
+                vec![
+                    call("first", "skill", r#"{"skill":"alpha"}"#),
+                    call("same-batch", "skill", r#"{"skill":"alpha"}"#),
+                ],
+                vec![call("next-round", "skill", r#"{"skill":"alpha"}"#)],
+            ],
+            &NoHooks,
+        );
+        let results = skill_results(&messages);
+        assert!(results[0].1.contains("alpha instructions"));
+        for (id, result) in &results[1..] {
+            assert!(result.contains("already loaded"), "{id}: {result}");
+            assert!(!result.contains("alpha instructions"), "{id}: {result}");
+        }
+        assert_eq!(
+            results.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+            vec!["first", "same-batch", "next-round"],
+            "duplicate calls still receive their own native results"
+        );
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(event, StreamEvent::ToolAnswered { result, .. } if result.contains("alpha instructions")))
+                .count(),
+            1,
+            "the full body enters the recorded context exactly once"
+        );
+        assert!(!events.iter().any(|event| matches!(
+            event,
+            StreamEvent::ToolRejected { .. } | StreamEvent::ToolEnd { ok: false, .. }
+        )));
+
+        messages.push(ChatMessage::user("use alpha again"));
+        skill_rounds(
+            &registry,
+            &mut messages,
+            vec![vec![call("continued", "skill", r#"{"skill":"alpha"}"#)]],
+            &NoHooks,
+        );
+        let results = skill_results(&messages);
+        let (id, result) = results.last().expect("continuation result");
+        assert_eq!(*id, "continued");
+        assert!(result.contains("already loaded"), "{result}");
+        assert!(!result.contains("alpha instructions"), "{result}");
+    }
+
+    #[test]
+    fn skill_continuation_tracks_the_body_a_hook_loaded_not_the_requested_name() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let registry = skill_fixture(tmp.path());
+        let mut messages = vec![ChatMessage::user("use alpha")];
+        let hooks = FakeHooks {
+            pre: PreToolVerdict {
+                updated_input: Some(r#"{"skill":"beta"}"#.to_string()),
+                ..PreToolVerdict::default()
+            },
+            post: PostToolVerdict {
+                context: Some("Keep following the loaded instructions.".to_string()),
+                ..PostToolVerdict::default()
+            },
+            ..FakeHooks::default()
+        };
+        let events = skill_rounds(
+            &registry,
+            &mut messages,
+            vec![vec![call("rewritten", "skill", r#"{"skill":"alpha"}"#)]],
+            &hooks,
+        );
+        // Stored subagent conversations retain the original assistant call,
+        // while the tool result belongs to the hook's replacement skill.
+        assert_eq!(
+            messages[1].tool_calls[0].function.arguments,
+            r#"{"skill":"alpha"}"#
+        );
+        assert!(events.iter().any(|event| matches!(
+            event,
+            StreamEvent::ToolAnswered { display, result, .. }
+                if display == crate::skills::SKILL_LOADED_DISPLAY
+                    && result.contains("beta instructions")
+                    && result.contains("Keep following the loaded instructions.")
+        )));
+
+        messages.push(ChatMessage::user("use both skills"));
+        skill_rounds(
+            &registry,
+            &mut messages,
+            vec![vec![
+                call("alpha", "skill", r#"{"skill":"alpha"}"#),
+                call("beta", "skill", r#"{"skill":"beta"}"#),
+            ]],
+            &NoHooks,
+        );
+        let results = skill_results(&messages);
+        assert!(results[1].1.contains("alpha instructions"), "{results:?}");
+        assert!(results[2].1.contains("already loaded"), "{results:?}");
+        assert!(!results[2].1.contains("beta instructions"), "{results:?}");
+    }
+
     #[test]
     fn a_plain_answer_finishes_with_stream_done_and_no_tools() {
         let (tx, mut rx) = unbounded_channel();

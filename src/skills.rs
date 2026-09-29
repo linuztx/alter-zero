@@ -78,8 +78,8 @@ pub fn is_skill_tool(name: &str) -> bool {
 }
 
 /// One skill discovered on disk: what the listing shows and where the body
-/// is. The body itself is **not** held — it is re-read at invoke time, so
-/// editing a `SKILL.md` mid-session takes effect on the next call.
+/// is. The body itself is **not** held — it is read on the first load into
+/// an agent's context, so edits before that load take effect immediately.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SkillMetadata {
     /// The invocable name — the frontmatter's `name`, else the directory's.

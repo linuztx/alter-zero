@@ -13,7 +13,9 @@ its one-line description sits in the context until the model asks for the body.
 That cell is the whole visible surface. What the *model* reads is the skill's
 entire `SKILL.md` body; what the *user* sees is one green line saying it
 loaded. The split is the point — a 400-line skill would otherwise dump itself
-into the transcript every time it is used.
+into the transcript every time it is used. Once loaded, the model reuses the
+instructions while they remain in its context; repeated calls return a short
+reminder instead of another copy of the body.
 
 ## On disk
 
@@ -159,12 +161,13 @@ byte-for-byte.
 
 Discovery runs at startup **and at every turn start** —
 `Session::rescan_skills`, right beside the `AGENTS.md` refresh and for the
-same reason. A skill's *body* was always re-read on every invocation, so
-editing a `SKILL.md` mid-session already took effect on the next call; what
-the startup-only walk could not do was notice a skill that had just been
-*added*. That left the session frozen at what it booted with — including,
-awkwardly, a skill the agent had written for you one turn earlier, which it
-then could not use.
+same reason. A startup-only walk could not notice a skill that had just been
+*added*, including one the agent had written for you one turn earlier. The
+repeated walk keeps discovery and descriptions current. The tool reads the
+body on its first successful load into the agent's context, so edits before
+that load are observed; after loading, it reuses the instructions already in
+context until that body is removed. Discovery does not reload bodies into
+the conversation.
 
 The cost is four to six `read_dir`s and one small read per skill, against a
 turn that is about to make a network request. Two things follow from the new
@@ -276,6 +279,45 @@ Base directory for this skill: /home/u/.claude/skills/dataviz
 same directory (the second spelling for ecosystem compatibility). That
 expansion is the **only** rewrite the loader performs; everything else in a
 body reaches the model exactly as its author wrote it.
+
+### Load once while the instructions remain in context
+
+The tool description briefly tells the model when to load a skill, recognizes
+`$<name>` mentions, points to the `<system-reminder>` for valid names, and says
+to load each skill only once while its instructions remain in context.
+The executor enforces that rule too: a repeated call succeeds with only:
+
+```text
+Skill dataviz is already loaded. Follow its instructions; do not load it again.
+```
+
+It neither rereads `SKILL.md` nor appends its body again. This saves the body
+tokens even when a model ignores the description. The normal name and enabled
+skill checks still run first, and a failed read or parse does not mark a skill
+as loaded, so a repaired file can be retried.
+
+`LoadedSkills` belongs to one agent's running turn. It is seeded from that
+agent's incoming messages, pairing assistant `skill` call IDs with tool
+results containing a rendered body and matching its directory header to the
+current registry. Matching accepts raw and secret-redacted headers, so normal
+result masking cannot bypass deduplication. A user quoting a skill, a failed
+call, or an already-loaded reminder does not establish a load. Directory
+identity keeps aliases and hook rewrites from causing a second body load.
+Successful loads update the set
+immediately, covering repeats within one batch and later rounds.
+
+Rebuilding this set from the actual context also covers later turns, resumed
+sessions, backend rebuilds, and subagent continuations without a separate
+persistent cache. Each subagent uses its own messages, so a lead's load cannot
+suppress the subagent's first load. If compaction, `/clear`, or backtracking
+removes the body, the skill can be loaded again. A process-wide or
+session-lifetime cache would incorrectly block that recovery; prompt guidance
+alone would still allow duplicate bodies.
+
+If a secret is renamed, removed, or changed after masking a directory header,
+that older header may no longer identify the skill. A fresh load is then
+allowed rather than suppressing a different skill on uncertain evidence;
+subsequent calls recognize the new result normally.
 
 ### Why there are no arguments
 
@@ -531,7 +573,7 @@ here unchanged (`hooks::claude_code_alias`, `docs/hooks.md`).
 |---|---|
 | `src/skills.rs` | **pure**: `SkillMetadata`, frontmatter parse, name validation, listing + budget, body render, the `SkillRegistry` handle |
 | `prompts/skills/skill-creator/` | the built-in skill itself — `SKILL.md` + `reference.md`, embedded and seeded |
-| `src/llm/skill.rs` | **boundary**: root resolution, the `read_dir` walk, the built-in seed (`seed_builtin_skills`), the tool executor (`run_skill_tool`) |
+| `src/llm/skill.rs` | root resolution, the `read_dir` walk, the built-in seed (`seed_builtin_skills`), context-derived `LoadedSkills`, and the tool executor (`run_skill_tool`) |
 | `src/llm/tools.rs` | `skill_spec()`, `display_name`, `summarize_call` |
 | `src/llm/backend.rs` | `with_skills` — the `with_tasks` pattern |
 | `src/context.rs` | the leading listing fragment |

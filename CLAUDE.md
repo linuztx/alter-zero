@@ -1908,8 +1908,15 @@ Ctrl+O keeps the one line too (the transcript is what *happened*, Ctrl+D what
 was *sent* — the rule every other two-text call follows), and the replay
 reconstructs `{"skill": "<name>"}` from the summary, which for this tool
 **is** the name, since a validating provider rejects the `{}` an unmapped
-tool would have sent. Nothing runs, so no permission prompt is raised — the
-body's own `bash` calls still meet it, and the call *does* meet the lifecycle
+tool would have sent. The short spec tells the model to load each skill once
+while its instructions remain in context; `LoadedSkills`, seeded from each
+agent's incoming skill call/body-result pairs and updated after successful
+loads, enforces this with an "already loaded" result and no body reread.
+Directory identity covers aliases and hook rewrites; deriving it from context
+preserves loads across turns/resumes while allowing reload after the body is
+compacted, cleared or backtracked away (`docs/skills.md`). Nothing runs, so no
+permission prompt is raised — the body's own `bash` calls still meet it, and
+the call *does* meet the lifecycle
 hooks like any other (`{"matcher": "Skill"}` selects it —
 `hooks::claude_code_alias`). Subagents carry the tool **and its listing** —
 `subagent_skill_reminder` pushes the `<system-reminder>` right after the
@@ -1925,7 +1932,8 @@ carries is a dead end the model spends a round hunting for; the tools-free
 `/compact` turn carries no listing for the same reason;
 `$<skill-name>` needs no code — the mention submits as
 plain text and the Skill tool's own description tells the model a `$<name>`
-mention is a load request (verified live —
+mention is a load request unless its instructions are already in context
+(verified live —
 `live_dollar_mention_loads_the_mentioned_skill`), the composer's **`$`
 mention picker** (`docs/skill-mentions.md`) completing one in place with
 Tab/Enter, and the offline `skills`

@@ -12,6 +12,25 @@ release heading when a version is cut.
 
 ## [Unreleased]
 
+### Changed
+
+- **Shorter, clearer skill-tool guidance.** The description tells the model
+  to load a matching or mentioned skill once and reuse its instructions while
+  they remain in context. It removes conflicting advice that required another
+  tool call whenever mentioning a skill.
+
+### Fixed
+
+- **Repeated skill calls no longer duplicate instructions in context.** The
+  executor returns a short "already loaded" reminder without rereading
+  `SKILL.md` or appending its body, even when the model repeats a call within
+  the same batch. Detection follows each agent's actual context across turns,
+  resumed sessions, and subagent continuations; each new subagent can load
+  its own copy. Compaction, clearing, or backtracking permits a fresh load
+  when the original instructions are gone. Failed loads remain retryable,
+  disabled skills remain unavailable, and name aliases, hook-rewritten calls,
+  and secret-masked directory headers are handled (`docs/skills.md`).
+
 ## [0.9.0] - 2026-09-29
 
 ### Added
