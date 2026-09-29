@@ -36,8 +36,8 @@ use crate::stream::{
 /// and compiled in with `include_str!` so the wording lives in a maintainable
 /// markdown file (drop in a new `prompts/*.md` and point this const at it to
 /// swap personas). Kept short to save tokens. The boundary folds the runtime
-/// **environment context** (date/os/cwd) onto this at startup so the agent has
-/// context awareness — see [`augment_with_environment`] and
+/// **environment context** (date/os/user/cwd) onto this at startup so the
+/// agent has context awareness — see [`augment_with_environment`] and
 /// `docs/environment.md`. Override the persona with `ALTER_ZERO_SYSTEM_PROMPT`.
 pub const DEFAULT_SYSTEM_PROMPT: &str = include_str!("../../prompts/alter_zero.md");
 
@@ -68,8 +68,8 @@ pub struct LlmBackend {
     /// environment and scratchpad blocks, without the persona
     /// (`docs/subagents.md`). Kept apart so an agent definition whose body
     /// **replaces** the persona can still carry the facts about this session:
-    /// the date, the os, the cwd, where temporary files go. `None` when the
-    /// boundary composed no context (the tests, an embedder).
+    /// the date, the os, the user, the cwd, where temporary files go. `None`
+    /// when the boundary composed no context (the tests, an embedder).
     prompt_context: Option<String>,
     /// The shared subagent registry, when the boundary attached one — enables
     /// the `agent` tool (`docs/agent-tool.md`). Attaching it swaps the
@@ -462,38 +462,42 @@ fn tools_enabled_from_env() -> bool {
 /// The environment-context template appended to the system prompt for the
 /// agent's runtime awareness — authored in
 /// [`prompts/environment.md`](../../prompts/environment.md) (terse, in the
-/// persona's own style) with `{date}`/`{os}`/`{cwd}` placeholders that
-/// [`render_environment`] fills. See `docs/environment.md`.
+/// persona's own style) with `{date}`/`{os}`/`{user}`/`{cwd}` placeholders
+/// that [`render_environment`] fills. See `docs/environment.md`.
 const ENVIRONMENT_TEMPLATE: &str = include_str!("../../prompts/environment.md");
 
-/// Fill the environment template with the session's `date`, `os`, and `cwd`.
-/// Pure: the boundary (`main.rs`) gathers the values (the same clock-injection
-/// pattern as [`App::set_clock`]), keeping the library free of time/CWD reads.
+/// Fill the environment template with the session's `date`, `os`, `user`
+/// (the [`user_label`] of the account it runs as) and `cwd`. Pure: the
+/// boundary (`tui::host`) gathers the values (the same clock-injection
+/// pattern as [`App::set_clock`]), keeping the library free of time, CWD and
+/// uid reads.
 ///
 /// [`App::set_clock`]: crate::app::App::set_clock
 #[must_use]
-pub fn render_environment(date: &str, os: &str, cwd: &str) -> String {
+pub fn render_environment(date: &str, os: &str, user: &str, cwd: &str) -> String {
     ENVIRONMENT_TEMPLATE
         .trim()
         .replace("{date}", date)
         .replace("{os}", os)
+        .replace("{user}", user)
         .replace("{cwd}", cwd)
 }
 
 /// Append the environment context to a base system prompt so the agent knows
-/// its date/os/cwd (`docs/environment.md`). A blank base is returned unchanged
-/// so the "empty `ALTER_ZERO_SYSTEM_PROMPT` → no system message" contract holds
-/// (`docs/context.md`); nothing else is appended — the final prompt reads
-/// persona → environment (the tool schemas carry their own detail).
+/// its date/os/user/cwd (`docs/environment.md`). A blank base is returned
+/// unchanged so the "empty `ALTER_ZERO_SYSTEM_PROMPT` → no system message"
+/// contract holds (`docs/context.md`); nothing else is appended — the final
+/// prompt reads persona → environment (the tool schemas carry their own
+/// detail).
 #[must_use]
-pub fn augment_with_environment(base: &str, date: &str, os: &str, cwd: &str) -> String {
+pub fn augment_with_environment(base: &str, date: &str, os: &str, user: &str, cwd: &str) -> String {
     if base.trim().is_empty() {
         return base.to_string();
     }
     format!(
         "{}\n\n{}",
         base.trim_end(),
-        render_environment(date, os, cwd)
+        render_environment(date, os, user, cwd)
     )
 }
 
@@ -549,6 +553,46 @@ pub fn os_release_name(contents: &str) -> Option<String> {
         })
     };
     value("PRETTY_NAME").or_else(|| value("NAME"))
+}
+
+/// The account name `/etc/passwd` gives `uid`: the first
+/// `name:password:uid:…` entry carrying it, as `getpwuid` answers. Comments
+/// (macOS opens the file on a block of them) and NIS compat entries
+/// (`+`/`-`, which name no local account) are skipped, as is any line whose
+/// uid field isn't a number. Pure: the boundary (`tui::host`) reads the file.
+/// See `docs/environment.md`.
+#[must_use]
+pub fn passwd_name(contents: &str, uid: u32) -> Option<String> {
+    contents.lines().find_map(|line| {
+        let line = line.trim_start();
+        if line.starts_with(['#', '+', '-']) {
+            return None;
+        }
+        let mut fields = line.split(':');
+        let name = fields.next()?.trim();
+        // The uid is the third field — `nth(1)` steps over the password.
+        let id: u32 = fields.nth(1)?.trim().parse().ok()?;
+        (id == uid && !name.is_empty()).then(|| name.to_string())
+    })
+}
+
+/// The environment block's `User` value — the account the session runs as,
+/// so the agent knows whether it is root (`docs/environment.md`). The
+/// **uid** decides root and the name only labels it: uid 0 reads `root`, or
+/// `toor (root)` when it answers to another name; any other uid reads its
+/// name — never `root`, which a stale `$USER` could otherwise claim — else
+/// `uid 1000`. With no uid to read (off unix) the name is taken as given,
+/// else `unknown`. A blank name counts as none.
+#[must_use]
+pub fn user_label(uid: Option<u32>, name: Option<&str>) -> String {
+    let name = name.map(str::trim).filter(|name| !name.is_empty());
+    match (uid, name) {
+        (Some(0), None | Some("root")) => "root".to_string(),
+        (Some(0), Some(name)) => format!("{name} (root)"),
+        (Some(uid), None | Some("root")) => format!("uid {uid}"),
+        (_, Some(name)) => name.to_string(),
+        (None, None) => "unknown".to_string(),
+    }
 }
 
 /// Assemble the request messages for one turn: the optional system prompt,
@@ -2443,7 +2487,7 @@ mod tests {
 
     #[test]
     fn render_environment_fills_every_placeholder() {
-        let block = render_environment("Sunday 2026-07-19", "linux", "/home/user/proj");
+        let block = render_environment("Sunday 2026-07-19", "linux", "linuztx", "/home/user/proj");
         assert!(
             block.starts_with("## Environment"),
             "the section header leads: {block}"
@@ -2453,6 +2497,11 @@ mod tests {
             "date is in: {block}"
         );
         assert!(block.contains("OS linux"), "os is in: {block}");
+        // The user is a line of its own, so `root` can't hide in another fact.
+        assert!(
+            block.lines().any(|line| line == "User linuztx"),
+            "user is in: {block}"
+        );
         assert!(block.contains("CWD /home/user/proj"), "cwd is in: {block}");
         // Every `{token}` placeholder is substituted — none survive.
         assert!(!block.contains('{'), "no leftover placeholder: {block}");
@@ -2460,8 +2509,13 @@ mod tests {
 
     #[test]
     fn augment_with_environment_appends_the_block_after_the_base() {
-        let out =
-            augment_with_environment("You are Alter Zero", "Sunday 2026-07-19", "linux", "/tmp/x");
+        let out = augment_with_environment(
+            "You are Alter Zero",
+            "Sunday 2026-07-19",
+            "linux",
+            "root",
+            "/tmp/x",
+        );
         assert!(
             out.starts_with("You are Alter Zero"),
             "persona leads: {out}"
@@ -2470,7 +2524,7 @@ mod tests {
         let cwd = out.find("/tmp/x").unwrap();
         assert!(persona < cwd, "environment follows the persona: {out}");
         assert!(
-            out.contains("Sunday 2026-07-19") && out.contains("linux"),
+            out.contains("Sunday 2026-07-19") && out.contains("linux") && out.contains("User root"),
             "{out}"
         );
     }
@@ -2480,8 +2534,8 @@ mod tests {
         // The "empty ALTER_ZERO_SYSTEM_PROMPT → no system message" contract
         // (docs/context.md) must survive: a blank base gains no environment
         // block, so `configure` still drops it to `None`.
-        assert_eq!(augment_with_environment("   ", "d", "o", "c"), "   ");
-        assert_eq!(augment_with_environment("", "d", "o", "c"), "");
+        assert_eq!(augment_with_environment("   ", "d", "o", "u", "c"), "   ");
+        assert_eq!(augment_with_environment("", "d", "o", "u", "c"), "");
     }
 
     #[test]
@@ -2490,8 +2544,13 @@ mod tests {
         // environment section appended — `configure` adds nothing on top
         // (the tool schemas carry the capability detail), so the Ctrl+D
         // debug view reads persona → environment, whole.
-        let base =
-            augment_with_environment("You are Alter Zero", "Sunday 2026-07-19", "linux", "/repo");
+        let base = augment_with_environment(
+            "You are Alter Zero",
+            "Sunday 2026-07-19",
+            "linux",
+            "root",
+            "/repo",
+        );
         let backend = LlmBackend::configure(ModelConfig::fallback(), Some(base.clone()), true);
         let prompt = backend.system_prompt.as_deref().unwrap();
         assert_eq!(prompt, base, "tools add no prompt suffix");
@@ -2520,8 +2579,13 @@ mod tests {
 
     #[test]
     fn augment_with_scratchpad_appends_the_block_after_the_base() {
-        let base =
-            augment_with_environment("You are Alter Zero", "Sunday 2026-07-19", "linux", "/repo");
+        let base = augment_with_environment(
+            "You are Alter Zero",
+            "Sunday 2026-07-19",
+            "linux",
+            "root",
+            "/repo",
+        );
         let out = augment_with_scratchpad(&base, "/tmp/alter-zero-0/s1/scratchpad");
         let persona = out.find("Alter Zero").expect("persona present");
         let env = out.find("/repo").expect("environment present");
@@ -2575,6 +2639,96 @@ ID=ubuntu
         // A key that merely ends in NAME (CPE_NAME) must not be read as NAME.
         let contents = "CPE_NAME=\"cpe:/o:fedoraproject:fedora:40\"\n";
         assert_eq!(os_release_name(contents), None);
+    }
+
+    #[test]
+    fn passwd_name_finds_the_account_for_a_uid() {
+        let contents = "\
+root:x:0:0:root:/root:/bin/bash
+daemon:x:1:1:daemon:/usr/sbin:/usr/sbin/nologin
+linuztx:x:1000:1000:Linuz,,,:/home/linuztx:/bin/bash
+";
+        assert_eq!(passwd_name(contents, 0).as_deref(), Some("root"));
+        assert_eq!(passwd_name(contents, 1000).as_deref(), Some("linuztx"));
+    }
+
+    #[test]
+    fn passwd_name_takes_the_first_account_sharing_a_uid() {
+        // BSD ships `toor` beside `root`, both uid 0; `getpwuid` answers the
+        // first, and so does the parse.
+        let contents =
+            "root:*:0:0:Charlie &:/root:/bin/sh\ntoor:*:0:0:Bourne-again Superuser:/root:\n";
+        assert_eq!(passwd_name(contents, 0).as_deref(), Some("root"));
+    }
+
+    #[test]
+    fn passwd_name_skips_comments_blank_lines_and_nis_compat_entries() {
+        // macOS opens the file on a comment block, and a NIS compat entry
+        // (`+`/`-`) names no local account of its own.
+        let contents = "\
+##
+# User Database
+##
+
++linuztx::1000:1000:::
+nobody:*:-2:-2:Unprivileged User:/var/empty:/usr/bin/false
+root:*:0:0:System Administrator:/var/root:/bin/sh
+";
+        assert_eq!(passwd_name(contents, 0).as_deref(), Some("root"));
+        assert_eq!(passwd_name(contents, 1000), None);
+    }
+
+    #[test]
+    fn passwd_name_is_none_for_an_unknown_uid_or_a_malformed_line() {
+        let contents = "root:x:0:0:root:/root:/bin/bash\nbroken:x:\n:x:1001:1001::/:\n";
+        assert_eq!(passwd_name(contents, 1000), None, "no such uid");
+        assert_eq!(passwd_name(contents, 1001), None, "an entry with no name");
+        assert_eq!(passwd_name("", 0), None);
+        // The uid field is matched whole, never by prefix.
+        assert_eq!(passwd_name("svc:x:10000:10000::/:\n", 1000), None);
+    }
+
+    #[test]
+    fn user_label_names_uid_zero_root() {
+        assert_eq!(user_label(Some(0), Some("root")), "root");
+        // No passwd entry and no `$USER` (a bare container): uid 0 is root
+        // all the same.
+        assert_eq!(user_label(Some(0), None), "root");
+    }
+
+    #[test]
+    fn user_label_marks_a_uid_zero_account_with_another_name_as_root() {
+        // `toor`, or a `$USER` left over from `su` — whatever the name, the
+        // agent must still learn it is root.
+        assert_eq!(user_label(Some(0), Some("toor")), "toor (root)");
+        assert_eq!(user_label(Some(0), Some("linuztx")), "linuztx (root)");
+    }
+
+    #[test]
+    fn user_label_names_an_ordinary_account() {
+        assert_eq!(user_label(Some(1000), Some("linuztx")), "linuztx");
+    }
+
+    #[test]
+    fn user_label_never_claims_root_without_uid_zero() {
+        // A stale `$USER=root` in an unprivileged process: the uid decides,
+        // so the label falls back to it instead of saying `root`.
+        assert_eq!(user_label(Some(1000), Some("root")), "uid 1000");
+    }
+
+    #[test]
+    fn user_label_falls_back_to_the_uid_then_unknown() {
+        // `docker run --user 1000` with no such account: the uid is all
+        // there is to say.
+        assert_eq!(user_label(Some(1000), None), "uid 1000");
+        assert_eq!(
+            user_label(Some(1000), Some("  ")),
+            "uid 1000",
+            "blank is none"
+        );
+        // Off unix there is no uid: the name is taken as given.
+        assert_eq!(user_label(None, Some("linuztx")), "linuztx");
+        assert_eq!(user_label(None, None), "unknown");
     }
 
     #[test]

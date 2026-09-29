@@ -106,10 +106,11 @@ property the tool depends on, not a convenience.
   `inherit` (or an omitted key) changes nothing.
 - **system prompt** — the body replaces the persona, keeping the environment
   and scratchpad blocks (`{body}` → environment → scratchpad → subagent note):
-  those are runtime facts about *this* session — the date, the os, the cwd,
-  where temporary files go — and a subagent that doesn't know them writes into
-  `/tmp` and guesses the year. With no body the prompt is exactly what it was
-  before this feature: the session's own assembled prompt plus the note.
+  those are runtime facts about *this* session — the date, the os, the user,
+  the cwd, where temporary files go — and a subagent that doesn't know them
+  writes into `/tmp` and guesses the year. With no body the prompt is exactly
+  what it was before this feature: the session's own assembled prompt plus
+  the note.
 
 An unknown `subagent_type` no longer silently becomes `general-purpose`: the
 call resolves as a recoverable error naming the available types, so the model

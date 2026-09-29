@@ -442,11 +442,11 @@ pub fn listing_sections(skill_listing: &str, agent_listing: &str) -> String {
 /// `base` is the session's own assembled prompt (persona → environment →
 /// scratchpad) and `context` is the runtime half of it alone (environment →
 /// scratchpad). A definition **with** a body replaces the persona and keeps
-/// the context: the date, the os, the cwd and the scratchpad are facts about
-/// this session, not personality, and an agent that doesn't know them writes
-/// into `/tmp` and guesses the year. A definition without one is exactly what
-/// every subagent got before this feature: the session's prompt, plus the
-/// note.
+/// the context: the date, the os, the user, the cwd and the scratchpad are
+/// facts about this session, not personality, and an agent that doesn't know
+/// them writes into `/tmp` and guesses the year. A definition without one is
+/// exactly what every subagent got before this feature: the session's
+/// prompt, plus the note.
 ///
 /// `note` (`prompts/subagent.md`) always closes it — it is what tells the
 /// agent its final message is the caller's result. `None` only when there is

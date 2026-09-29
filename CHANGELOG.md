@@ -12,6 +12,16 @@ release heading when a version is cut.
 
 ## [Unreleased]
 
+### Added
+
+- **The agent knows which user it runs as.** The environment block in its
+  system prompt gains a `User` line — `User root`, `User linuztx` — so it
+  knows whether it is root before it reaches for `sudo`. Root is decided by
+  the user id, never by a name: a root account under another name reads
+  `toor (root)`, a leftover `$USER=root` cannot make an ordinary user look
+  like root, and an account with no name reads `uid 1000`. Subagents carry
+  the same line (`docs/environment.md`).
+
 ## [0.9.0] - 2026-09-29
 
 ### Added

@@ -645,11 +645,11 @@ fn live_amended_rejection_still_steers_the_model_a_turn_later() {
 #[ignore = "hits the network; needs OPENROUTER_API_KEY"]
 fn live_environment_context_reaches_the_model() {
     // The context-awareness feature end to end (docs/environment.md): the
-    // boundary folds date/os/cwd into the system prompt via
+    // boundary folds date/os/user/cwd into the system prompt via
     // `augment_with_environment`; a real model must be able to read the cwd
-    // back out of that block. Proves the block rides the request and is
-    // legible to the model. Tools off so the model answers from the prompt
-    // instead of shelling out for the path.
+    // and the user back out of that block. Proves the block rides the
+    // request and is legible to the model. Tools off so the model answers
+    // from the prompt instead of shelling out for the path or `whoami`.
     use alter_zero::llm::backend::augment_with_environment;
     let key =
         std::env::var("OPENROUTER_API_KEY").expect("set OPENROUTER_API_KEY to run the live tests");
@@ -659,10 +659,12 @@ fn live_environment_context_reaches_the_model() {
     // The os string is the distro-enriched form the boundary builds on Linux
     // (docs/environment.md) — assert the model can read the distro back too.
     let os = "linux (Ubuntu 24.04.4 LTS)";
+    let user = "sentinel-user-42";
     let system = augment_with_environment(
         "You are Alter Zero an autonomous AI agent running in terminal UI",
         "Sunday 2026-07-19",
         os,
+        user,
         cwd,
     );
     let cfg = ModelConfig {
@@ -685,7 +687,7 @@ fn live_environment_context_reaches_the_model() {
     };
     let backend = LlmBackend::configure(cfg, Some(system), false);
 
-    let prompt = "Report your operating system and your current working directory, \
+    let prompt = "Report your operating system, your user and your current working directory, \
                   exactly as given in your environment context.";
     let context = vec![ContextMessage::new(ContextRole::User, prompt)];
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
@@ -710,6 +712,10 @@ fn live_environment_context_reaches_the_model() {
         reply.contains("Ubuntu 24.04.4 LTS"),
         "the model read the distro-enriched OS out of the environment context, got: {reply:?}"
     );
+    assert!(
+        reply.contains(user),
+        "the model read the user out of the environment context, got: {reply:?}"
+    );
 }
 
 #[test]
@@ -731,6 +737,7 @@ fn live_scratchpad_context_reaches_the_model() {
             "You are Alter Zero an autonomous AI agent running in terminal UI",
             "Sunday 2026-07-19",
             "linux (Ubuntu 24.04.4 LTS)",
+            "user",
             "/home/user/proj",
         ),
         scratchpad,
@@ -813,6 +820,7 @@ fn scratchpad_targets(scratchpad: &std::path::Path, cwd: &str, task: &str) -> Ve
             alter_zero::llm::backend::DEFAULT_SYSTEM_PROMPT,
             "Monday 2026-08-24",
             "linux (Ubuntu 24.04.4 LTS)",
+            "user",
             cwd,
         ),
         &scratchpad.display().to_string(),

@@ -158,7 +158,7 @@ directory's entry being only what a *new* session starts on
 | `OLLAMA_API_KEY` | `ollama_cloud`'s key alone — the two Ollama providers read two variables, so one does not configure the other (`docs/ollama.md`) | unset |
 | `ALTER_ZERO_TEMPERATURE` | sampling temperature | provider/omit |
 | `ALTER_ZERO_TOOLS` | falsy (`0`/`false`/`no`/`off`) disables the `bash`/`read`/`write`/`edit` tools (see `docs/tools.md`) | tools on |
-| `ALTER_ZERO_SYSTEM_PROMPT` | override the "Alter Zero" persona; empty sends no system prompt. Any non-empty prompt still gets the runtime environment context (date/os/cwd, `docs/environment.md`) folded on | persona in `prompts/alter_zero.md` |
+| `ALTER_ZERO_SYSTEM_PROMPT` | override the "Alter Zero" persona; empty sends no system prompt. Any non-empty prompt still gets the runtime environment context (date/os/user/cwd, `docs/environment.md`) folded on | persona in `prompts/alter_zero.md` |
 | `SSL_CERT_FILE` / `ALTER_ZERO_CA_FILE` | extra CA bundle for the proxy | unset |
 
 **The dummy is the fallback, never a surprise.** The real backend activates only

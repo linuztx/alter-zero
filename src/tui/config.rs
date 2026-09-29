@@ -34,7 +34,7 @@ use alter_zero::scratchpad;
 use alter_zero::settings::{SessionSettings, SettingKey, SettingsFile};
 use alter_zero::stream;
 
-use super::host::{self, local_date, os_context};
+use super::host::{self, local_date, os_context, user_context};
 
 /// Is the built-in dummy backend forced on? (`ALTER_ZERO_DUMMY` set to a truthy
 /// value). Keeps `smoke.sh` — which sets nothing — on the dummy, and lets a
@@ -1222,11 +1222,11 @@ pub(crate) fn context_window_override() -> Option<u64> {
 /// The real backend's system prompt: the "Alter Zero" persona
 /// (`prompts/alter_zero.md`) unless `ALTER_ZERO_SYSTEM_PROMPT` overrides it
 /// (an empty value sends no system prompt at all — `with_system_prompt` drops
-/// blanks). Either way we fold in the runtime environment — date, os, cwd —
-/// so the agent has context awareness (`docs/environment.md`), and — when the
-/// session has one — the `## Scratchpad` block pointing every temporary file
-/// at the session's own directory (`docs/scratchpad.md`), for an assembled
-/// persona → environment → scratchpad. The values are
+/// blanks). Either way we fold in the runtime environment — date, os, user,
+/// cwd — so the agent has context awareness (`docs/environment.md`), and —
+/// when the session has one — the `## Scratchpad` block pointing every
+/// temporary file at the session's own directory (`docs/scratchpad.md`), for
+/// an assembled persona → environment → scratchpad. The values are
 /// gathered here at the boundary (the `set_clock` pattern), the assembly is
 /// the pure `backend::augment_with_environment`/`augment_with_scratchpad`.
 /// Resolved once at startup, so
@@ -1241,6 +1241,7 @@ pub(crate) fn system_prompt(cwd: &Path, scratchpad: Option<&Path>) -> Option<Str
                 &base,
                 &local_date(),
                 &os_context(),
+                &user_context(),
                 &cwd.display().to_string(),
             );
             match scratchpad {
@@ -1256,14 +1257,18 @@ pub(crate) fn system_prompt(cwd: &Path, scratchpad: Option<&Path>) -> Option<Str
 /// — when the session has one — the scratchpad block, without the persona.
 ///
 /// What a subagent definition whose body *replaces* the persona still carries
-/// (`docs/subagents.md`): the date, the os, the cwd and where temporary files
-/// go are facts about this session, and an agent that doesn't know them
-/// writes into `/tmp` and guesses the year. Built from the same two pure
+/// (`docs/subagents.md`): the date, the os, the user, the cwd and where
+/// temporary files go are facts about this session, and an agent that doesn't
+/// know them writes into `/tmp` and guesses the year. Built from the same two pure
 /// renderers `system_prompt` composes with, from the same boundary reads, so
 /// the two can never describe different environments.
 pub(crate) fn prompt_context(cwd: &Path, scratchpad: Option<&Path>) -> Option<String> {
-    let environment =
-        llm::backend::render_environment(&local_date(), &os_context(), &cwd.display().to_string());
+    let environment = llm::backend::render_environment(
+        &local_date(),
+        &os_context(),
+        &user_context(),
+        &cwd.display().to_string(),
+    );
     Some(match scratchpad {
         Some(dir) => format!(
             "{environment}\n\n{}",
