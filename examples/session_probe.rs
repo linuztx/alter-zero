@@ -69,10 +69,17 @@ fn main() {
 
     std::env::set_current_dir(&workdir).expect("the workdir exists");
     let cwd = std::env::current_dir().expect("a cwd");
+    // The probe's commands really run, so the user is the real one: whether
+    // the model reaches for `sudo` depends on it (docs/environment.md).
+    let user = alter_zero::llm::backend::user_label(
+        Some(rustix::process::geteuid().as_raw()),
+        std::env::var("USER").ok().as_deref(),
+    );
     let system = alter_zero::llm::backend::augment_with_environment(
         alter_zero::llm::backend::DEFAULT_SYSTEM_PROMPT,
         "Wednesday 2026-09-23",
         "linux",
+        &user,
         &cwd.display().to_string(),
     );
 

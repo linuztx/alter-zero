@@ -12,6 +12,16 @@ release heading when a version is cut.
 
 ## [Unreleased]
 
+### Added
+
+- **The agent knows which user it runs as.** The environment block in its
+  system prompt gains a `User` line — `User root`, `User linuztx` — so it
+  knows whether it is root before it reaches for `sudo`. Root is decided by
+  the user id, never by a name: a root account under another name reads
+  `toor (root)`, a leftover `$USER=root` cannot make an ordinary user look
+  like root, and an account with no name reads `uid 1000`. Subagents carry
+  the same line (`docs/environment.md`).
+
 ### Changed
 
 - **Shorter, clearer skill-tool guidance.** The description tells the model
@@ -30,6 +40,13 @@ release heading when a version is cut.
   when the original instructions are gone. Failed loads remain retryable,
   disabled skills remain unavailable, and name aliases, hook-rewritten calls,
   and secret-masked directory headers are handled (`docs/skills.md`).
+- **Each account gets its own temp directory where `/proc` is missing.**
+  The session's scratchpad and background output live under
+  `alter-zero-{uid}`, and the uid was read from `/proc/self`, which answered
+  0 wherever `/proc` is absent: on a Linux sandbox without it every account
+  shared `/tmp/alter-zero-0`, where a second account could not create its
+  session. The uid now comes from the kernel's effective uid on every
+  platform (`docs/background.md`).
 
 ## [0.9.0] - 2026-09-29
 

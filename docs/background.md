@@ -98,8 +98,9 @@ executor (`llm::exec`), and the `!` shell runner:
   naming these files apart from the agent's `scratchpad/` beside them. Short
   deliberately: the model reads these paths back out of every launch text, and
   the session id already separates projects, so a dashed-cwd segment would be
-  pure length. The boundary injects the uid (`tui::host::process_uid` —
-  `/proc/self`'s owner; no `libc` in a `forbid(unsafe)` crate) and session id.
+  pure length. The boundary injects the uid (`tui::host::process_uid` — the
+  effective uid through rustix's safe `geteuid`; no `libc` in a
+  `forbid(unsafe)` crate) and session id.
 
 - `launch(command, description, from_model)` spawns `sh -c` in its own process
   group **detached from the controlling terminal**

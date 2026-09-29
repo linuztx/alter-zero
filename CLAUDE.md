@@ -3317,7 +3317,8 @@ paste (`images::remember_attachment`, `docs/memory.md`); and a model
   Ctrl+O expansion and the **permission prompt's preview** — where "what
   exactly am I approving?" is load-bearing — get it as well. The backend's **system prompt** is assembled from two
   `include_str!`d markdown files — the persona (`prompts/alter_zero.md`) and the
-  runtime **environment context** of date/os/cwd (`prompts/environment.md`,
+  runtime **environment context** of date/os/user/cwd (`prompts/environment.md`,
   folded in at the boundary via `backend::augment_with_environment` so the agent
-  has context awareness) — persona → environment, nothing else: the tool
+  has context awareness — the `User` line decided by the effective uid, so it
+  knows whether it is root) — persona → environment, nothing else: the tool
   schemas carry their own capability detail (`docs/environment.md`).
