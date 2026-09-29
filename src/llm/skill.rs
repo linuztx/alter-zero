@@ -4,12 +4,14 @@
 //! [`crate::llm::task`]'s sibling — every rule lives in the pure
 //! [`crate::skills`] module and this is the adapter that touches the
 //! filesystem: the root walk ([`discover_skills`]) and the executor
-//! ([`run_skill_tool`]), which re-reads the `SKILL.md` so editing a skill
-//! mid-session takes effect on the next call.
+//! ([`run_skill_tool`]), which reads a `SKILL.md` only when its instructions
+//! are not already in this agent's context ([`LoadedSkills`]).
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use super::tools::{ToolCallRequest, ToolOutcome};
+use super::{ChatMessage, MessageContent};
 use crate::skills::{
     SKILL_FILE_NAME, SKILL_LOADED_DISPLAY, SkillError, SkillMetadata, SkillRegistry, parse_skill,
     render_skill_body,
@@ -278,6 +280,70 @@ struct SkillArgs {
     skill: String,
 }
 
+/// Successful skill loads still present in one agent's context.
+///
+/// Rebuild from the incoming messages at each turn, then reuse for every
+/// call in that turn. The shared registry cannot own this state: subagents
+/// have independent contexts, and compaction or a rewind can remove a body.
+#[derive(Debug, Default)]
+pub struct LoadedSkills {
+    directories: BTreeSet<PathBuf>,
+}
+
+impl LoadedSkills {
+    /// Recover loads from native skill call/result pairs, including resumed
+    /// history. Only a rendered body counts, never a failure, a duplicate
+    /// reminder, or user prose. Match the full directory header rather than
+    /// the requested name: a hook may have loaded a different skill.
+    #[must_use]
+    pub fn from_messages(
+        registry: &SkillRegistry,
+        messages: &[ChatMessage],
+        secrets: Option<&crate::secrets::SecretRegistry>,
+    ) -> Self {
+        let headers: Vec<_> = registry
+            .snapshot()
+            .into_iter()
+            .map(|skill| {
+                let header = render_skill_body(&skill.dir, "");
+                let redacted = secrets.map(|secrets| secrets.redact(&header));
+                (skill.dir, header, redacted)
+            })
+            .collect();
+        let mut loaded = Self::default();
+        let mut pending = BTreeSet::new();
+        for message in messages {
+            if message.role == "assistant" {
+                pending = message
+                    .tool_calls
+                    .iter()
+                    .filter(|call| {
+                        call.kind == "function" && crate::skills::is_skill_tool(&call.function.name)
+                    })
+                    .map(|call| call.id.as_str())
+                    .collect();
+            } else if message.role == "tool"
+                && let Some(id) = message.tool_call_id.as_deref()
+                && pending.remove(id)
+                && let MessageContent::Text(text) = &message.content
+            {
+                for (dir, header, redacted) in &headers {
+                    // The executor masks results before recording them. Keep
+                    // the raw form too, for loads predating a secret's addition.
+                    if text.starts_with(header)
+                        || redacted
+                            .as_ref()
+                            .is_some_and(|header| text.starts_with(header))
+                    {
+                        loaded.directories.insert(dir.clone());
+                    }
+                }
+            }
+        }
+        loaded
+    }
+}
+
 /// Run one `skill` call: load the named skill's body for the model, and
 /// resolve the *cell* as the one-line `Successfully loaded skill`.
 ///
@@ -288,8 +354,13 @@ struct SkillArgs {
 ///
 /// An unknown name resolves **red and recoverable** with the available names
 /// listed, so the model can correct itself in the same turn.
+/// Repeated successful loads return a short reminder without reading the file.
 #[must_use]
-pub fn run_skill_tool(registry: &SkillRegistry, call: &ToolCallRequest) -> ToolOutcome {
+pub fn run_skill_tool(
+    registry: &SkillRegistry,
+    loaded: &mut LoadedSkills,
+    call: &ToolCallRequest,
+) -> ToolOutcome {
     let args: SkillArgs = match super::tools::parse_args(&call.arguments) {
         Ok(args) => args,
         Err(err) => return ToolOutcome::error(format!("Invalid skill arguments: {err}")),
@@ -297,6 +368,12 @@ pub fn run_skill_tool(registry: &SkillRegistry, call: &ToolCallRequest) -> ToolO
     let Some(skill) = registry.find(&args.skill) else {
         return ToolOutcome::error(unknown_skill_message(&args.skill, &registry.names()));
     };
+    if loaded.directories.contains(&skill.dir) {
+        return ToolOutcome::ok(format!(
+            "Skill {} is already loaded. Follow its instructions; do not load it again.",
+            skill.name
+        ));
+    }
     let contents = match std::fs::read_to_string(&skill.path) {
         Ok(contents) => contents,
         Err(err) => {
@@ -306,16 +383,17 @@ pub fn run_skill_tool(registry: &SkillRegistry, call: &ToolCallRequest) -> ToolO
             ));
         }
     };
-    // Re-parsed rather than cached at discovery: a skill edited mid-session
-    // takes effect on the next call, and the listing's description stays the
-    // one the model chose from either way.
+    // Read fresh on the first load into this context. A failed read or parse
+    // must remain retryable; only a successfully rendered body marks a load.
     let body = match parse_skill(&contents, &skill.name) {
         Ok(parsed) => parsed.body,
         Err(err) => {
             return ToolOutcome::error(format!("Skill {} could not be loaded: {err}", skill.name));
         }
     };
-    ToolOutcome::ok(SKILL_LOADED_DISPLAY).with_context(render_skill_body(&skill.dir, &body))
+    let rendered = render_skill_body(&skill.dir, &body);
+    loaded.directories.insert(skill.dir);
+    ToolOutcome::ok(SKILL_LOADED_DISPLAY).with_context(rendered)
 }
 
 /// The recoverable error an unknown skill name resolves with.
@@ -492,6 +570,291 @@ mod tests {
     }
 
     #[test]
+    fn repeated_skill_loads_return_a_reminder_without_reading_the_file_again() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        write_skill(
+            tmp.path(),
+            "dataviz",
+            &skill_md("Charts.", "Use the palette."),
+        );
+        let (skills, _) = discover_skills(&[tmp.path().to_path_buf()]);
+        let registry = SkillRegistry::new(skills);
+
+        let mut loaded = LoadedSkills::default();
+        let first = run_skill_tool(&registry, &mut loaded, &call(r#"{"skill":"dataviz"}"#));
+        assert!(
+            first
+                .context
+                .expect("first load")
+                .contains("Use the palette.")
+        );
+        std::fs::remove_file(tmp.path().join("dataviz/SKILL.md")).expect("rm");
+        let repeated = run_skill_tool(&registry, &mut loaded, &call(r#"{"skill":" /DATAVIZ "}"#));
+        assert!(
+            repeated.ok,
+            "a duplicate must not reread the file: {}",
+            repeated.output
+        );
+        assert!(repeated.context.is_none(), "no second copy of the body");
+        assert_eq!(
+            repeated.output,
+            "Skill dataviz is already loaded. Follow its instructions; do not load it again."
+        );
+    }
+
+    #[test]
+    fn failed_skill_loads_can_be_retried_after_the_file_is_repaired() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        write_skill(tmp.path(), "x", &skill_md("X.", "body"));
+        let (skills, _) = discover_skills(&[tmp.path().to_path_buf()]);
+        let registry = SkillRegistry::new(skills);
+        let mut loaded = LoadedSkills::default();
+        let request = call(r#"{"skill":"x"}"#);
+
+        for arguments in ["not json", r#"{"skill":"missing"}"#] {
+            assert!(!run_skill_tool(&registry, &mut loaded, &call(arguments)).ok);
+        }
+        std::fs::remove_file(tmp.path().join("x/SKILL.md")).expect("rm");
+        assert!(!run_skill_tool(&registry, &mut loaded, &request).ok);
+        write_skill(tmp.path(), "x", "broken frontmatter");
+        assert!(!run_skill_tool(&registry, &mut loaded, &request).ok);
+        write_skill(tmp.path(), "x", &skill_md("X.", "repaired instructions"));
+        let repaired = run_skill_tool(&registry, &mut loaded, &request);
+        assert!(repaired.ok);
+        assert!(
+            repaired
+                .context
+                .expect("body")
+                .contains("repaired instructions")
+        );
+        assert!(
+            run_skill_tool(&registry, &mut loaded, &request)
+                .context
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn only_a_paired_skill_body_marks_a_load_in_incoming_context() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        write_skill(tmp.path(), "x", &skill_md("X.", "instructions"));
+        let (skills, _) = discover_skills(&[tmp.path().to_path_buf()]);
+        let registry = SkillRegistry::new(skills);
+        let request = call(r#"{"skill":"x"}"#);
+        let body = render_skill_body(&tmp.path().join("x"), "instructions");
+        let assistant = |tool| {
+            ChatMessage::assistant_tool_calls(
+                "",
+                vec![super::super::ToolCallSpec::function(
+                    "c",
+                    tool,
+                    &request.arguments,
+                )],
+            )
+        };
+        let cases = [
+            vec![ChatMessage::user(&body)],
+            vec![ChatMessage::assistant(&body)],
+            vec![ChatMessage::tool_result("c", &body)],
+            vec![assistant("read"), ChatMessage::tool_result("c", &body)],
+            vec![assistant("skill"), ChatMessage::tool_result("other", &body)],
+            vec![assistant("skill"), ChatMessage::user(&body)],
+            vec![
+                assistant("skill"),
+                assistant("read"),
+                ChatMessage::tool_result("c", &body),
+            ],
+            vec![
+                assistant("skill"),
+                ChatMessage::tool_result("c", "Could not read skill"),
+            ],
+            vec![
+                assistant("skill"),
+                ChatMessage::tool_result("c", SKILL_LOADED_DISPLAY),
+            ],
+            vec![
+                assistant("skill"),
+                ChatMessage::tool_result(
+                    "c",
+                    "Skill x is already loaded. Follow its instructions; do not load it again.",
+                ),
+            ],
+        ];
+        for messages in cases {
+            let mut loaded = LoadedSkills::from_messages(&registry, &messages, None);
+            let outcome = run_skill_tool(&registry, &mut loaded, &request);
+            assert!(outcome.ok && outcome.context.is_some(), "{messages:?}");
+        }
+        let messages = vec![assistant("skill"), ChatMessage::tool_result("c", &body)];
+        let mut loaded = LoadedSkills::from_messages(&registry, &messages, None);
+        assert!(
+            run_skill_tool(&registry, &mut loaded, &request)
+                .context
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn a_skill_body_with_a_secret_redacted_directory_still_counts_as_loaded() {
+        use crate::secrets::{SecretDraft, SecretRegistry, SecretStore, SecretValue};
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path().join("private-skill-root");
+        write_skill(&root, "x", &skill_md("X.", "instructions"));
+        let (skills, _) = discover_skills(&[root]);
+        let registry = SkillRegistry::new(skills);
+        let mut store = SecretStore::new();
+        store
+            .apply(&SecretDraft {
+                original: None,
+                name: "SKILL_ROOT".into(),
+                value: Some(SecretValue::new("private-skill-root")),
+                context: String::new(),
+            })
+            .expect("secret");
+        let secrets = SecretRegistry::new(store);
+        let request = call(r#"{"skill":"x"}"#);
+        let first = super::super::secret_exec::run_with_secrets(
+            Some(&secrets),
+            &request,
+            &mut |_| {},
+            |call, _| run_skill_tool(&registry, &mut LoadedSkills::default(), call),
+        );
+        let body = first.context.expect("body");
+        assert!(body.contains("<secret:SKILL_ROOT>"));
+        assert!(!body.contains("private-skill-root"));
+        let messages = vec![
+            ChatMessage::assistant_tool_calls(
+                "",
+                vec![super::super::ToolCallSpec::function(
+                    "c",
+                    "skill",
+                    &request.arguments,
+                )],
+            ),
+            ChatMessage::tool_result("c", body),
+        ];
+        let mut loaded = LoadedSkills::from_messages(&registry, &messages, Some(&secrets));
+        let repeated = run_skill_tool(&registry, &mut loaded, &request);
+        assert!(
+            repeated.ok && repeated.context.is_none(),
+            "a masked path must not cause a reload"
+        );
+        // A secret added since the first load must not hide an earlier raw
+        // header from the same reconstruction either.
+        let mut unmasked = messages;
+        unmasked[1] = ChatMessage::tool_result(
+            "c",
+            render_skill_body(&registry.find("x").expect("skill").dir, "instructions"),
+        );
+        let mut loaded = LoadedSkills::from_messages(&registry, &unmasked, Some(&secrets));
+        assert!(
+            run_skill_tool(&registry, &mut loaded, &request)
+                .context
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn skill_loads_are_independent_per_context_and_preserve_registry_gates() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        write_skill(tmp.path(), "x", &skill_md("X.", "instructions"));
+        let (skills, _) = discover_skills(&[tmp.path().to_path_buf()]);
+        let registry = SkillRegistry::new(skills);
+        let shared = registry.clone();
+        let mut lead = LoadedSkills::default();
+        let request = call(r#"{"skill":"x"}"#);
+        assert!(
+            run_skill_tool(&registry, &mut lead, &request)
+                .context
+                .is_some()
+        );
+        let mut child = LoadedSkills::from_messages(&shared, &[], None);
+        assert!(
+            run_skill_tool(&shared, &mut child, &request)
+                .context
+                .is_some()
+        );
+        registry.replace(registry.snapshot());
+        assert!(
+            run_skill_tool(&registry, &mut lead, &request)
+                .context
+                .is_none()
+        );
+
+        assert!(!registry.toggle("x"));
+        let disabled = run_skill_tool(&registry, &mut lead, &request);
+        assert!(!disabled.ok && disabled.output.contains("Unknown skill"));
+        assert!(registry.toggle("x"));
+        let enabled = run_skill_tool(&registry, &mut lead, &request);
+        assert!(enabled.ok && enabled.context.is_none());
+    }
+
+    #[test]
+    fn skill_load_state_follows_replayed_resumed_compacted_and_rewound_history() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        // Match a complete rendered header, not a path parsed from one line.
+        let root = tmp.path().join("skills\n\nwith newlines");
+        write_skill(&root, "x", &skill_md("X.", "instructions"));
+        let (skills, _) = discover_skills(&[root]);
+        let registry = SkillRegistry::new(skills);
+        let request = call(r#"{"skill":"x"}"#);
+        let first = run_skill_tool(&registry, &mut LoadedSkills::default(), &request);
+        let mut app = crate::app::App::new();
+        app.start_tool("Skill", "x", Some(&request.arguments));
+        app.answer_tool(&first.output, first.context.as_deref().expect("body"));
+
+        let reload = |history: &[crate::app::HistoryItem]| {
+            let messages = super::super::backend::build_messages(
+                None,
+                "continue",
+                &crate::context::context_messages(history),
+                |_| None::<String>,
+            );
+            let mut loaded = LoadedSkills::from_messages(&registry, &messages, None);
+            run_skill_tool(&registry, &mut loaded, &request)
+        };
+        assert!(reload(&app.history).context.is_none(), "later turn");
+        let meta = crate::session::SessionMeta {
+            id: "skill-session".into(),
+            timestamp: "2026-09-29T00:00:00Z".into(),
+            cwd: tmp.path().display().to_string(),
+            model: "test".into(),
+            originator: crate::APP_NAME.into(),
+            version: env!("CARGO_PKG_VERSION").into(),
+        };
+        let mut rollout = crate::session::meta_line(&meta, &meta.timestamp);
+        for item in &app.history {
+            rollout.push('\n');
+            rollout.push_str(&crate::session::item_line(item, &meta.timestamp));
+        }
+        let (_, restored) = crate::session::parse_session(&rollout).expect("resume");
+        assert!(
+            reload(&restored).context.is_none(),
+            "resume retains the body"
+        );
+
+        let before_compact = app.history.len();
+        app.begin_compact(false);
+        app.push_chunk("Skill x was loaded earlier.");
+        app.finish_compact(0).expect("compact");
+        assert!(
+            reload(&app.history).context.is_some(),
+            "compaction removed the body"
+        );
+        app.history.truncate(before_compact);
+        assert!(
+            reload(&app.history).context.is_none(),
+            "rewind before compaction restores the body"
+        );
+        app.history.clear();
+        assert!(
+            reload(&app.history).context.is_some(),
+            "clear or rewind before the load"
+        );
+    }
+
+    #[test]
     fn a_call_resolves_with_the_body_for_the_model_and_one_line_for_the_cell() {
         let tmp = tempfile::tempdir().expect("tempdir");
         write_skill(
@@ -502,7 +865,11 @@ mod tests {
         let (skills, _) = discover_skills(&[tmp.path().to_path_buf()]);
         let registry = SkillRegistry::new(skills);
 
-        let outcome = run_skill_tool(&registry, &call(r#"{"skill":"dataviz"}"#));
+        let outcome = run_skill_tool(
+            &registry,
+            &mut LoadedSkills::default(),
+            &call(r#"{"skill":"dataviz"}"#),
+        );
         assert!(outcome.ok);
         assert_eq!(outcome.output, SKILL_LOADED_DISPLAY, "the cell's one row");
         let body = outcome.context.expect("the model reads the body");
@@ -528,6 +895,7 @@ mod tests {
         let (skills, _) = discover_skills(&[tmp.path().to_path_buf()]);
         let outcome = run_skill_tool(
             &SkillRegistry::new(skills),
+            &mut LoadedSkills::default(),
             &call(r#"{"skill":"review-pr"}"#),
         );
         assert!(
@@ -549,6 +917,7 @@ mod tests {
         let (skills, _) = discover_skills(&[tmp.path().to_path_buf()]);
         let outcome = run_skill_tool(
             &SkillRegistry::new(skills),
+            &mut LoadedSkills::default(),
             &call(r#"{"skill":"dataviz","args":"revenue"}"#),
         );
         assert!(outcome.ok, "{}", outcome.output);
@@ -565,7 +934,11 @@ mod tests {
         // Red, with the names listed — so the model can correct itself in the
         // same turn rather than ending the round on an error.
         let registry = SkillRegistry::new(Vec::new());
-        let outcome = run_skill_tool(&registry, &call(r#"{"skill":"nope"}"#));
+        let outcome = run_skill_tool(
+            &registry,
+            &mut LoadedSkills::default(),
+            &call(r#"{"skill":"nope"}"#),
+        );
         assert!(!outcome.ok);
         assert!(
             outcome.output.contains("Unknown skill: nope"),
@@ -583,7 +956,11 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         write_skill(tmp.path(), "commit", &skill_md("Commit.", "b"));
         let (skills, _) = discover_skills(&[tmp.path().to_path_buf()]);
-        let outcome = run_skill_tool(&SkillRegistry::new(skills), &call(r#"{"skill":"pdf"}"#));
+        let outcome = run_skill_tool(
+            &SkillRegistry::new(skills),
+            &mut LoadedSkills::default(),
+            &call(r#"{"skill":"pdf"}"#),
+        );
         assert!(
             outcome.output.contains("Available skills: commit."),
             "{}",
@@ -593,7 +970,11 @@ mod tests {
 
     #[test]
     fn malformed_arguments_resolve_red_rather_than_panicking() {
-        let outcome = run_skill_tool(&SkillRegistry::new(Vec::new()), &call("not json"));
+        let outcome = run_skill_tool(
+            &SkillRegistry::new(Vec::new()),
+            &mut LoadedSkills::default(),
+            &call("not json"),
+        );
         assert!(!outcome.ok);
         assert!(
             outcome.output.starts_with("Invalid skill arguments"),
@@ -609,7 +990,11 @@ mod tests {
         let (skills, _) = discover_skills(&[tmp.path().to_path_buf()]);
         std::fs::remove_file(tmp.path().join("gone").join(SKILL_FILE_NAME)).expect("rm");
 
-        let outcome = run_skill_tool(&SkillRegistry::new(skills), &call(r#"{"skill":"gone"}"#));
+        let outcome = run_skill_tool(
+            &SkillRegistry::new(skills),
+            &mut LoadedSkills::default(),
+            &call(r#"{"skill":"gone"}"#),
+        );
         assert!(!outcome.ok);
         assert!(
             outcome.output.starts_with("Could not read skill"),
@@ -620,15 +1005,19 @@ mod tests {
 
     #[test]
     fn a_skill_edited_since_discovery_loads_its_new_body() {
-        // The body is re-read per call, so editing a SKILL.md mid-session
-        // takes effect on the next invoke.
+        // Discovery does not freeze the body: an edit before this context
+        // first loads the skill must reach the model.
         let tmp = tempfile::tempdir().expect("tempdir");
         write_skill(tmp.path(), "x", &skill_md("X.", "old body"));
         let (skills, _) = discover_skills(&[tmp.path().to_path_buf()]);
         let registry = SkillRegistry::new(skills);
         write_skill(tmp.path(), "x", &skill_md("X.", "new body"));
 
-        let outcome = run_skill_tool(&registry, &call(r#"{"skill":"x"}"#));
+        let outcome = run_skill_tool(
+            &registry,
+            &mut LoadedSkills::default(),
+            &call(r#"{"skill":"x"}"#),
+        );
         assert!(outcome.context.expect("body").contains("new body"));
     }
 

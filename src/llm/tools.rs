@@ -426,40 +426,23 @@ pub fn ask_spec() -> Value {
 /// The `Skill` tool definition (`docs/skills.md`) — offered only when a
 /// **non-empty** [`crate::skills::SkillRegistry`] is attached
 /// (`LlmBackend::with_skills`): with no skills on disk the tool has nothing
-/// to load, and both references omit it too. The description follows Claude
-/// Code's `SkillTool` prompt, with the reference's slash-command paragraph
-/// swapped for this TUI's `$<name>` mention syntax (`docs/skill-mentions.md`
-/// — here a leading `/` is the built-in command palette, never a skill), and
-/// the reference's optional `args` string dropped: the body is handed over
-/// verbatim, so there is nothing for arguments to substitute into
-/// (`docs/skills.md`).
+/// to load. Keep the matching-task, `$<name>` mention, and load-once guidance
+/// together and brief: this prose rides every request. The executor enforces
+/// deduplication even when the model calls again (`docs/skills.md`).
 #[must_use]
 pub fn skill_spec() -> Value {
     function_spec(
         crate::skills::SKILL_TOOL_NAME,
-        "Execute a skill within the main conversation.\n\n\
-         When the user asks you to perform a task, check whether one of the \
-         available skills matches. Skills package specialized capabilities and \
-         domain knowledge; loading one gives you instructions written for \
-         exactly this kind of work.\n\n\
-         The user may reference a skill anywhere in a message as `$<name>` \
-         (e.g. `$commit`, `$review-pr`); treat each such mention as a request \
-         to run that skill.\n\n\
-         Important:\n\
-         - The available skills are listed in a system-reminder message in the \
-         conversation; only those names are valid, so never guess one.\n\
-         - When a skill matches the request, invoke it BEFORE answering about \
-         the task — the skill may change how the work should be done.\n\
-         - Never mention a skill without actually calling this tool.\n\
-         - Do not invoke a skill already loaded in this conversation; its \
-         instructions are in front of you, so just follow them.",
+        "Load a skill's instructions before starting a matching task. Use only names \
+         listed in the system-reminder. A `$<name>` mention (e.g. `$commit`) requests \
+         that skill. Load each skill only once while its instructions remain in \
+         context. If already loaded, follow them without calling this tool again.",
         json!({
             "type": "object",
             "properties": {
                 "skill": {
                     "type": "string",
-                    "description": "The skill name. E.g., \"commit\", \
-                        \"review-pr\", or \"pdf\"."
+                    "description": "The skill name from the system-reminder."
                 }
             },
             "required": ["skill"],
@@ -2684,6 +2667,22 @@ mod tests {
         assert!(
             title.chars().count() <= 61 && title.ends_with('…'),
             "{title}"
+        );
+    }
+
+    #[test]
+    fn the_skill_description_is_brief_and_says_to_load_only_once() {
+        let spec = skill_spec();
+        let desc = spec["function"]["description"].as_str().unwrap();
+        assert!(
+            desc.len() <= 500,
+            "the tool guidance must stay short: {} bytes",
+            desc.len()
+        );
+        assert!(desc.contains("Load each skill only once"), "{desc}");
+        assert!(
+            !desc.contains("Never mention a skill without"),
+            "using loaded instructions needs no call"
         );
     }
 

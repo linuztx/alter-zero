@@ -752,6 +752,12 @@ impl ReplySource for LlmBackend {
             if let Ok(mut previous) = wire_history.lock() {
                 previous.restore(&mut messages);
             }
+            let mut loaded_skills = skills
+                .as_ref()
+                .map(|registry| {
+                    super::skill::LoadedSkills::from_messages(registry, &messages, secrets.as_ref())
+                })
+                .unwrap_or_default();
             let mut executor = RealToolExecutor::new().with_vision(vision);
             let notices = background.clone();
             if let Some(registry) = background.clone() {
@@ -832,7 +838,11 @@ impl ReplySource for LlmBackend {
                                 .as_ref()
                                 .filter(|_| crate::skills::is_skill_tool(&call.name))
                             {
-                                return super::skill::run_skill_tool(registry, call);
+                                return super::skill::run_skill_tool(
+                                    registry,
+                                    &mut loaded_skills,
+                                    call,
+                                );
                             }
                             // An `mcp__server__tool` call (docs/mcp.md):
                             // routed to the manager's live connection; without
@@ -1589,6 +1599,12 @@ fn spawn_subagent_run(
         let executor = executor;
         let inputs_registry = registry.clone();
         let inputs_id = id.clone();
+        let mut loaded_skills = skills
+            .as_ref()
+            .map(|registry| {
+                super::skill::LoadedSkills::from_messages(registry, &messages, secrets.as_ref())
+            })
+            .unwrap_or_default();
         agent::run_agent(
             &tx2,
             &cancel,
@@ -1625,7 +1641,11 @@ fn spawn_subagent_run(
                             .as_ref()
                             .filter(|_| crate::skills::is_skill_tool(&call.name))
                         {
-                            return super::skill::run_skill_tool(registry, call);
+                            return super::skill::run_skill_tool(
+                                registry,
+                                &mut loaded_skills,
+                                call,
+                            );
                         }
                         // …and its MCP calls ride the same live connections
                         // (docs/mcp.md).

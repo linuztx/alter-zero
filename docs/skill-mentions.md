@@ -10,7 +10,8 @@ type `$`, fuzzy-filter the discovered skills as you type, ↑/↓ to choose,
 **Tab/Enter inserts the mention** (`$name` — the sigil stays, plus a
 separating space), Esc dismisses. The mention can sit **anywhere in the
 message** (`Hello world $dataviz …chart this`), and submitting a message that
-carries one makes the model **load that skill's manual** before answering:
+carries one makes the model **load that skill's manual** before answering,
+unless the instructions are already in its context:
 
 ```text
 ────────────────────────────────────────────────────────────────────────
@@ -62,10 +63,10 @@ This TUI already has Claude Code's `skill` tool with the two-text split
 subagent's own copy all come from it. So the mention stays plain text in the
 message and the **guidance** makes the model call the tool:
 
-- the `skill` tool's own description states the mention rule (`The user may
-  reference a skill anywhere in a message as `$<name>` …`) — it rides every
-  request the tool does, so the `<system-reminder>` listing stays the bare
-  roster and spends its budget on names and descriptions alone;
+- the `skill` tool's short description states the `$<name>` mention rule and
+  says to load each skill only once while its instructions remain in context.
+  It rides every request the tool does, so the `<system-reminder>` listing
+  stays the bare roster and spends its budget on names and descriptions alone;
 - verified live: `live_dollar_mention_loads_the_mentioned_skill`
   (`tests/live_openrouter.rs`) proves a real model answers a bare
   `Use $mixology — name a cocktail` by calling `skill("mixology")` and
@@ -74,14 +75,17 @@ message and the **guidance** makes the model call the tool:
 The deliberate divergence from codex: their injection is deterministic but
 invisible (no cell, no record of *whether* the model needed it); the tool
 path shows the user the load as the green `● Skill(name)` cell, keeps the
-body out of the transcript, and costs nothing when the model already has the
-manual in context (the guidance tells it not to re-load). An unmatched
-`$name` is a no-op in both designs — the literal text reaches the model.
+body out of the transcript, and asks the model to reuse a manual already in
+context. If the model calls again anyway, the executor returns only a short
+successful "already loaded" reminder, with no disk reread or duplicate body
+(`docs/skills.md`). An unmatched `$name` is a no-op in both designs — the
+literal text reaches the model.
 
 It also keeps the mention **literal in history**, which is what makes a
 `/resume` or an Esc-Esc backtrack replay honestly: the message still reads
-`$mixology` and the model re-decides, rather than a previously-injected body
-having to be replayed as its own history item.
+`$mixology` and the model re-decides. Previously loaded bodies replay through
+their ordinary tool results; deduplication follows the bodies still present
+in context, so backtracking past a load allows that skill to load again.
 
 What the tool path trades away is determinism — it depends on the model
 honouring the description's guidance — so that is measured rather than assumed.
