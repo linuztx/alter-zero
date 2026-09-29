@@ -22,6 +22,16 @@ release heading when a version is cut.
   like root, and an account with no name reads `uid 1000`. Subagents carry
   the same line (`docs/environment.md`).
 
+### Fixed
+
+- **Each account gets its own temp directory where `/proc` is missing.**
+  The session's scratchpad and background output live under
+  `alter-zero-{uid}`, and the uid was read from `/proc/self`, which answered
+  0 wherever `/proc` is absent: on a Linux sandbox without it every account
+  shared `/tmp/alter-zero-0`, where a second account could not create its
+  session. The uid now comes from the kernel's effective uid on every
+  platform (`docs/background.md`).
+
 ## [0.9.0] - 2026-09-29
 
 ### Added

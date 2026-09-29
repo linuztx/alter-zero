@@ -14,7 +14,8 @@
 //! - the agent's environment context: [`local_date`], [`os_context`] and
 //!   [`user_context`] (`docs/environment.md`),
 //! - process identity: [`process_uid`] (the background tasks root,
-//!   `docs/background.md`) and [`session_id`],
+//!   `docs/background.md`, and the environment's `User` line) and
+//!   [`session_id`],
 //! - telemetry (`docs/telemetry.md`): [`utc_day`] (the once-a-day key) and
 //!   [`random_bytes`] (the install id's entropy).
 
@@ -60,13 +61,16 @@ pub(crate) fn os_context() -> String {
 
 /// The user for the agent's environment context — the account this process
 /// runs as, e.g. `root` or `linuztx`, so the agent knows whether it is root
-/// (`docs/environment.md`). The effective uid decides, as `whoami` reports
-/// it; the name comes from `/etc/passwd`, else `$USER`/`$LOGNAME`/`$USERNAME`
-/// (macOS and directory-service accounts live outside the file). Boundary
-/// code (reads the uid, the file and the environment); the label is the pure
-/// `backend::user_label`, the parse `backend::passwd_name`.
+/// (`docs/environment.md`). The effective uid decides ([`process_uid`], as
+/// `whoami` reports it); the name comes from `/etc/passwd`, else
+/// `$USER`/`$LOGNAME`/`$USERNAME` (macOS and directory-service accounts live
+/// outside the file). Boundary code (reads the uid, the file and the
+/// environment); the label is the pure `backend::user_label`, the parse
+/// `backend::passwd_name`.
 pub(crate) fn user_context() -> String {
-    let uid = effective_uid();
+    // Off unix there is no uid to read, and `process_uid`'s path-shape 0
+    // there would claim root.
+    let uid = cfg!(unix).then(process_uid);
     let name = uid.and_then(passwd_lookup).or_else(|| {
         ["USER", "LOGNAME", "USERNAME"].into_iter().find_map(|key| {
             std::env::var(key)
@@ -87,21 +91,6 @@ fn passwd_lookup(uid: u32) -> Option<String> {
         .split(b'\n')
         .map_while(Result::ok)
         .find_map(|line| llm::backend::passwd_name(&String::from_utf8_lossy(&line), uid))
-}
-
-/// This process's effective uid — the one its permissions are checked
-/// against, so the one that says whether the agent is root. Read through
-/// rustix's safe `geteuid`; not [`process_uid`], a path segment whose
-/// fallback where `/proc` is absent is 0 — which here would claim root.
-#[cfg(unix)]
-fn effective_uid() -> Option<u32> {
-    Some(rustix::process::geteuid().as_raw())
-}
-
-/// Non-unix fallback: no uid to read — the label goes by the name alone.
-#[cfg(not(unix))]
-fn effective_uid() -> Option<u32> {
-    None
 }
 
 /// UTC write-time stamp for rollout lines — codex's
@@ -157,15 +146,17 @@ pub(crate) fn unix_secs() -> u64 {
         .map_or(0, |elapsed| elapsed.as_secs())
 }
 
-/// This process's uid — the stable per-user segment of the background tasks
-/// root (Claude Code's `claude-{uid}` pattern, `background::tasks_dir`). Read
-/// from `/proc/self`'s owner: this crate forbids `unsafe`, so no `libc`
-/// getuid. Falls back to 0 where `/proc` is absent (macOS) — `temp_dir()` is
-/// already per-user there.
+/// This process's effective uid — the one its permissions are checked
+/// against: the stable per-user segment of the background tasks root (Claude
+/// Code's `claude-{uid}` pattern, `background::tasks_dir`), and what the
+/// environment's `User` line calls root or not ([`user_context`]). Read
+/// through rustix's safe `geteuid` (this crate forbids `unsafe`, so no
+/// `libc`), on macOS as on Linux: the `/proc/self` owner it replaced answered
+/// 0 wherever `/proc` is absent, which on a Linux sandbox without it put every
+/// user under one `/tmp/alter-zero-0`.
 #[cfg(unix)]
 pub(crate) fn process_uid() -> u32 {
-    use std::os::unix::fs::MetadataExt;
-    std::fs::metadata("/proc/self").map_or(0, |meta| meta.uid())
+    rustix::process::geteuid().as_raw()
 }
 
 /// Non-unix fallback: no uid concept to read — 0 keeps the path shape.

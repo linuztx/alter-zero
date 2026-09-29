@@ -39,7 +39,7 @@ The full system prompt the real backend sends is three blocks, in order:
 
 ```
 persona        prompts/alter_zero.md   (who you are)
-environment    prompts/environment.md  (where/when you are)   ← this doc
+environment    prompts/environment.md  (where/when you are, as which user)   ← this doc
 scratchpad     prompts/scratchpad.md   (where your scratch goes, docs/scratchpad.md)
 ```
 
@@ -115,11 +115,11 @@ is no uid, so the name is taken as given, else `unknown`.
 
 Where the values come from (`tui::host::user_context`):
 
-- **The effective uid**, through rustix's safe `geteuid` — the uid
-  permissions are checked against, and what `whoami` reports. Not
-  `host::process_uid`: that is a path segment for the session's temp tree,
-  and its fallback where `/proc` is absent (macOS) is 0, which here would
-  claim root.
+- **The effective uid**, `host::process_uid` — the uid permissions are
+  checked against, and what `whoami` reports — read through rustix's safe
+  `geteuid`, the same answer that names the session's temp root. It used to
+  be `/proc/self`'s owner, which answered 0 wherever `/proc` is absent
+  (macOS, a sandbox without it): here that would claim root.
 - **The name** from `/etc/passwd` (`passwd_name`: the first entry carrying
   the uid, as `getpwuid` answers; comments and NIS `+`/`-` compat entries
   skipped), streamed a line at a time and decoded lossily, so a big file
