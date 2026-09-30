@@ -1839,13 +1839,15 @@ unchanged) over a body, discovered from the cwd's `.alter-zero/skills` +
 `skills`, and `~/.claude/skills`, first root winning a name
 (`ALTER_ZERO_SKILLS_DIR` **replaces** the list, the `*_DIR` convention — and
 what makes a smoke run hermetic; a `SKILL.md` that won't parse is a toast
-naming it, never silence). **One skill ships in the binary** — `skill-creator`,
+naming it, never silence). **Two skills ship in the binary** — `jina-reader` (public webpages and PDFs
+through Jina Reader using curl, optional `JINA_API_KEY`, no native fetch tool)
+and `skill-creator`,
 which teaches this format (the frontmatter contract, the roots, how to word a
 description that triggers, how to update one without clobbering it), because
 the format is *ours*: a model asked for "a skill" without it writes a lone
 `my-skill.md` at a root, or an `allowed-tools:` line it expects honoured, and
 every such near-miss fails **silently**, the walk reading only
-`<root>/<name>/SKILL.md`. Authored in `prompts/skills/skill-creator/` beside
+`<root>/<name>/SKILL.md`. Authored in `prompts/skills/<name>/` beside
 every other `include_str!`'d markdown and seeded into `{config_home}/skills`
 **before** the startup walk (so the session that installed the app can already
 use it) the way the agent definitions are — editable, never clobbered, a
@@ -1854,7 +1856,7 @@ rather than `rm -rf` — but **never into an `ALTER_ZERO_SKILLS_DIR` override**,
 the one place the two seeds differ: that variable says *only these*, and a
 built-in skill is a convenience the session works without where a built-in
 agent *type* must resolve (`general-purpose` is the `agent` schema's default).
-It is **two files** because the loader's own expansion runs over the body:
+`skill-creator` is **two files** because the loader's own expansion runs over the body:
 a body that documents `${…SKILL_DIR}` has it rewritten out from under it —
 the first live run got the same path twice for the sentence naming both
 skill-dir spellings — so detail that must survive verbatim lives in the

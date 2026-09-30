@@ -4413,7 +4413,7 @@ fn live_the_built_in_skill_creator_writes_a_skill_this_crate_can_load() {
     );
     let written = found
         .iter()
-        .find(|skill| skill.name != "skill-creator")
+        .find(|skill| skill.name == "commit-style")
         .unwrap_or_else(|| panic!("a new skill was written: {found:?}"));
     println!("wrote {} — {}", written.name, written.description);
     assert!(
