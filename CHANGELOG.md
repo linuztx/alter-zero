@@ -12,6 +12,8 @@ release heading when a version is cut.
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-09-30
+
 ### Added
 
 - **Jina Reader ships as a built-in skill.** Mention `$jina-reader` with a
@@ -852,7 +854,8 @@ release heading when a version is cut.
   release whose notes come from this file — driven end to end by
   `scripts/release.sh`, which also rehearses a release locally.
 
-[Unreleased]: https://github.com/linuztx/alter-zero/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/linuztx/alter-zero/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/linuztx/alter-zero/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/linuztx/alter-zero/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/linuztx/alter-zero/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/linuztx/alter-zero/compare/v0.6.0...v0.7.0
