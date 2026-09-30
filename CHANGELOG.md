@@ -14,6 +14,15 @@ release heading when a version is cut.
 
 ### Added
 
+- **Jina Reader ships as a built-in skill.** Mention `$jina-reader` with a
+  public webpage or PDF URL to read it through Jina Reader using curl. It
+  covers Markdown, text, HTML, JSON and screenshot links, works without a key
+  for basic access, and supports optional `JINA_API_KEY` authentication. Like
+  `skill-creator`, it is installed on first launch, preserves local edits and
+  can be disabled through `/skills`; custom skill-directory overrides remain
+  untouched. Loading the skill itself makes no network request
+  (`docs/skills.md`).
+
 - **The agent knows which user it runs as.** The environment block in its
   system prompt gains a `User` line — `User root`, `User linuztx` — so it
   knows whether it is root before it reaches for `sudo`. Root is decided by

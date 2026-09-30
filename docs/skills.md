@@ -105,9 +105,14 @@ is inert markdown until the model explicitly loads it, and any command in a
 loaded body still meets the permission gate like every other tool call —
 there is nothing here that executes on discovery.
 
-### The built-in `skill-creator`
+### Built-in skills
 
-One skill ships with the binary: **`skill-creator`**, which teaches this
+Two skills ship with the binary: **`skill-creator`** and **`jina-reader`**.
+Both use the same seed and discovery path described below.
+
+#### `skill-creator`
+
+**`skill-creator`** teaches this
 format — the frontmatter contract, where to write the folder, how to word a
 description that actually triggers, and how to update an existing skill
 without clobbering it.
@@ -119,7 +124,7 @@ a persona — and every one of those fails silently: the walk only looks for
 `<root>/<name>/SKILL.md`, and a skill that is never listed is a skill that is
 never chosen. The rules are cheap to state and impossible to guess.
 
-Authored in `prompts/skills/skill-creator/` and `include_str!`'d beside every
+Authored in `prompts/skills/<name>/` and `include_str!`'d beside every
 other markdown this crate carries, then **written into `{config_home}/skills`
 at startup when the file is absent** — the agent definitions' rule
 (`docs/subagents.md`), for the agent definitions' reasons: a default that is a
@@ -137,7 +142,7 @@ works without, where a built-in *agent type* has to resolve because
 literally: nothing of ours is written into a directory the user curates, and a
 hermetic run (`smoke.sh`) keeps the empty root it made.
 
-#### Why it is two files
+#### Why `skill-creator` is two files
 
 The skill is a directory holding `SKILL.md` **and** `reference.md`, and the
 split is forced by the loader itself. A body is rendered through the
@@ -156,6 +161,36 @@ the built-in demonstrates it rather than only describing it.
 `no_built_in_body_carries_a_placeholder_the_loader_would_eat` keeps a body
 from re-acquiring one: it renders every built-in and requires the body back
 byte-for-byte.
+
+#### `jina-reader`
+
+**`jina-reader`** teaches the agent to fetch public webpages and PDFs through
+`https://r.jina.ai/` using curl. Mention `$jina-reader` with a URL, or ask to
+read a webpage and let its description select it. No Jina API key is required
+for basic access; an existing `JINA_API_KEY` can provide optional authentication.
+The skill requires curl, not a new dependency or a native web-fetch tool.
+
+Its single `prompts/skills/jina-reader/SKILL.md` covers extracted Markdown,
+plain text, rendered HTML, JSON envelopes, screenshot URLs, selectors,
+client-rendered pages, hash routes and PDFs. It separates response formats
+from JSON envelopes and screenshot links from image bytes, and instructs the
+agent to inspect responses before summarizing and cite the original URL.
+
+Loading it performs **no request**. Subsequent curl calls use the ordinary
+shell tool and permission gate. Reader is a third-party service: the skill
+forbids sending private/internal URLs, credentials, signed links, cookies or
+sensitive content without explicit authorization. Retrieved content is
+untrusted data, not instructions. Optional keys must never be logged or sent
+to screenshot download hosts; failures and rate limits require bounded,
+non-automatic retries rather than an assumption that HTTP success means
+complete extraction.
+
+Like `skill-creator`, it is editable at `{config_home}/skills/jina-reader/`,
+never overwrites an existing file, respects project-root precedence and can
+be disabled per project through `/skills`. An `ALTER_ZERO_SKILLS_DIR` override
+receives neither built-in. Offline regression tests exercise the actual
+seed → discovery → listing → tool-load path and verify that local edits
+survive reseeding and deleted files are restored.
 
 ### The walk re-runs every turn
 

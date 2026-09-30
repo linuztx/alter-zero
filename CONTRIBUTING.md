@@ -132,7 +132,7 @@ helper it calls (the live-region geometry works this way: `term.rs` acts on
 | `src/llm/` | The real backend: the agent tool loop, the four wire formats, auth, MCP |
 | `tests/` | Integration tests, including the memory gates and the `#[ignore]`d live ones |
 | `scripts/smoke/phases/` | One file per smoke phase |
-| `prompts/` | The system prompt, the built-in agent definitions and the built-in skill |
+| `prompts/` | The system prompt, the built-in agent definitions and the built-in skills |
 | `telemetry/`, `docker/` | The collector Worker and the headless Kali image, each with its own tests |
 
 [`docs/module-layout.md`](docs/module-layout.md) is the full map.
