@@ -36,7 +36,7 @@ from pathlib import Path
 # package names: `rg` is ripgrep, `nc` netcat-openbsd, `dig` bind9-dnsutils.
 TOOLS = (
     "alter-zero", "bash", "git", "ssh", "curl", "wget", "jq", "rg", "file", "less",
-    "nano", "tree", "xxd", "unzip", "python3", "ps", "tini", "getcap",
+    "nano", "tree", "xxd", "unzip", "python3", "node", "npm", "ps", "tini", "getcap",
     "ifconfig", "netstat", "ip", "ss", "ping", "traceroute",
     "nmap", "whois", "nc", "socat", "dig", "nslookup", "openssl",
 )

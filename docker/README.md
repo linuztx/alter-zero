@@ -9,7 +9,7 @@ It works the same with **Docker** and **Podman**.
   build is about a minute.
 - **It runs as root**, as Kali's own image does. No user is added.
 - **It is small on purpose**: no desktop, no Kali metapackage, no compiler.
-  About 280 MB on top of the Kali base.
+  Node.js and npm are included for JavaScript projects.
 - **Ports 8080 and 8888** are published to your machine, for whatever you or
   the agent start on them.
 - **Telemetry is left exactly as it is** in an ordinary install. See
@@ -159,6 +159,11 @@ To switch from a host folder back to a named workspace, use
 `docker/run.sh --replace --workspace-volume alter-zero-workspace`.
 
 ## Ports
+
+The image also declares TCP ports **22, 80, 3000, 5000, 8000 and 9000–9009**
+with `EXPOSE`. This is image metadata, not host publishing; use `--port` to
+publish any of them. No SSH or web server is installed or started by this
+declaration.
 
 Nothing in the image listens. `run.sh` publishes **8080** and **8888** to
 `127.0.0.1` on your machine so that a server started inside is reachable:
@@ -350,6 +355,7 @@ exactly as a paste would.
 | **Alter Zero** | the latest release, at `/usr/local/bin/alter-zero` |
 | Shell and files | `bash` `git` `ssh` `curl` `wget` `jq` `rg` `file` `less` `nano` `tree` `xxd` `unzip` |
 | Python | `python3` and `pip` from a virtualenv at `/opt/az-venv`, active by default — see [Python](#python) |
+| JavaScript | `node` and `npm` from Kali's `nodejs` and `npm` packages |
 | Network | `nmap` `nc` `socat` `whois` `dig` `nslookup` `ping` `traceroute` `ip` `ss` `ifconfig` `netstat` `openssl` |
 | Terminal | terminfo for kitty, Alacritty, foot, WezTerm, Rio, VTE |
 

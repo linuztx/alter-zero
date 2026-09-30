@@ -56,7 +56,7 @@ RUN printf '%s\n' \
     && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
         ca-certificates curl wget git openssh-client \
         jq ripgrep file less nano tree xxd unzip \
-        python3 python3-venv procps tini libcap2-bin \
+        python3 python3-venv nodejs npm procps tini libcap2-bin \
         net-tools iproute2 iputils-ping traceroute \
         nmap whois netcat-openbsd socat bind9-dnsutils openssl \
         kitty-terminfo ncurses-term \
@@ -197,9 +197,10 @@ ENV LANG=C.UTF-8 \
 # Root, as Kali's own image is: no user is added.
 WORKDIR /workspace
 
-# Nothing listens by default. These are the two ports docker/run.sh publishes
-# to your machine, for whatever you or the agent start on them.
+# Nothing listens by default. docker/run.sh publishes only 8080/8888 unless
+# --port is supplied; EXPOSE does not publish the other ports to the host.
 EXPOSE 8080 8888
+EXPOSE 22 80 3000 5000 8000 9000 9001 9002 9003 9004 9005 9006 9007 9008 9009
 
 # Idle under an init that reaps children, so the container is a place to
 # `exec` into — once for alter-zero, again for a shell — rather than one

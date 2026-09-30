@@ -12,6 +12,13 @@ release heading when a version is cut.
 
 ## [Unreleased]
 
+### Added
+
+- The Kali container includes Node.js and npm by default and declares TCP
+  ports 22, 80, 3000, 5000, 8000 and 9000–9009 alongside 8080/8888. Host
+  publishing stays limited to loopback ports 8080/8888 unless configured with
+  `docker/run.sh --port`. No additional services are started.
+
 ## [0.10.0] - 2026-09-30
 
 ### Added

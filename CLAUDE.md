@@ -72,7 +72,9 @@ The context is the repository root behind an **allowlist** `/.dockerignore`
 `target/` or a local `.env`). The image is **root with no user added**, its
 tools chosen by
 measured size (a dpkg `path-exclude` keeps docs/man/locales from unpacking:
-435 → 393 MB, 409 MB with the venv below), `EXPOSE`s 8080/8888, and idles under `tini` so the container is
+435 → 393 MB, 409 MB with the venv below, before Node.js/npm were added),
+includes `nodejs` and `npm`, `EXPOSE`s TCP 22/80/3000/5000/8000/8080/8888
+and 9000–9009, and idles under `tini` so the container is
 somewhere to `exec` into. Kali's `nmap` carries forced file capabilities a
 container cannot grant, so it would not even exec — `setcap -r` plus a
 `DPkg::Post-Invoke` hook that re-strips after every `apt` run.

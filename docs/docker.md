@@ -84,9 +84,11 @@ alone with `apt-get install --no-install-recommends --assume-no`:
 | `binutils` | +33 MB | **left out** — `--with binutils` |
 | `tcpdump` | +22 MB | **left out** — `--with tcpdump` |
 
-Shared dependencies make the whole smaller than the sum: the default set is
-55 MB to download. `build.sh --with "PKG …"` adds packages in a **layer of its
-own after the tools**, so choosing extras never reinstalls the defaults; each
+The image also installs Kali's `nodejs` and `npm` packages by default for
+JavaScript projects. The measurements above predate that addition.
+
+Shared dependencies made the earlier default set 55 MB to download.
+`build.sh --with "PKG …"` adds packages in a **layer of its own after the tools**, so choosing extras never reinstalls the defaults; each
 word is checked to be a package name, since the list is word-split into an
 `apt-get install` and an option-shaped word would be apt's to interpret.
 
@@ -101,8 +103,9 @@ dpkg `path-exclude` file written **before** the install (the technique
 Each package's `copyright` file is kept. The rule stays in force for whatever
 the user installs later; the README says how to lift it.
 
-Final size: **409 MB on disk, 278 MB over the 131 MB Kali base** — the 393 MB
-that leaves, plus the 16 MB of `python3-venv` and the virtualenv it builds.
+Before Node.js/npm were added: **409 MB on disk, 278 MB over the 131 MB Kali
+base** — the 393 MB that leaves, plus the 16 MB of `python3-venv` and the
+virtualenv it builds.
 
 ## Root, and no user
 
@@ -345,7 +348,10 @@ not the virtualenv. The README says so where someone would hit it.
 
 ## Ports
 
-The Dockerfile `EXPOSE`s 8080 and 8888 and `run.sh` publishes both — to
+The Dockerfile `EXPOSE`s TCP ports 22, 80, 3000, 5000, 8000, 8080, 8888 and
+9000–9009. This metadata does not publish host ports or start services; in
+particular, exposing 22 does not install an SSH server. `run.sh` still
+publishes only 8080 and 8888 by default — to
 **`127.0.0.1`**. Nothing in the image listens; the ports are for what the user
 or the agent starts. Loopback is the default because this is a root shell an
 agent can start servers in, and Docker's published ports bypass `ufw`; `--bind
