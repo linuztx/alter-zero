@@ -31,6 +31,8 @@ docker/build.sh [--engine podman] [DIR]     # the headless Kali image from the l
 docker/run.sh [--engine podman] [DIR]       # create the container: DIR at /workspace, ports 8080/8888, --clipboard
 python3 -m unittest discover -s docker/tests -p 'test_*.py'   # both scripts under a stub engine: no engine, no network
 docker/tests/smoke.sh [--engine podman]     # the built image + run.sh against a real engine
+(cd aur && makepkg -Cf && namcap PKGBUILD alter-zero-*.pkg.tar.zst)   # the AUR package: the release tag's source, built and tested on Arch (docs/aur.md)
+(cd aur && makepkg --printsrcinfo > .SRCINFO)   # after every PKGBUILD edit — the AUR reads .SRCINFO, never the PKGBUILD
 ```
 
 The standard pre-commit gate used throughout this project is: `cargo fmt --check`
@@ -127,6 +129,24 @@ no test ping can reach production. The one source change is
 `clipboard::require_display`: a session naming no display is refused at once
 with the cause and the way around it, instead of whatever arboard's X11 probe
 ran into.
+
+**`aur/`** is the Arch User Repository recipe for the same tagged release,
+built from source by the user's own `makepkg` (`docs/aur.md`): the
+`PKGBUILD`, the `.SRCINFO` the AUR actually reads (regenerated, never
+hand-edited) and an allowlist `.gitignore`, the AUR repository's contents
+exactly. It builds with **Arch's** `rust`, not the pinned toolchain, so it
+answers what the release build never meets: `--cap-lints=warn` in
+`RUSTFLAGS`, since `warnings = "deny"` would turn a lint added in a newer
+rustc into a failed install; `options=('!lto')`, since makepkg's
+`-flto=auto` makes GCC emit `ring`'s C as bytecode `rust-lld` cannot link;
+`CARGO_PROFILE_RELEASE_STRIP=false`, so makepkg's `debug` option gets the
+debug info Cargo would strip; and `RUSTONIG_SYSTEM_LIBONIG=1`, linking Arch's
+`oniguruma` — so a C library newly linked in `Cargo.toml` is a new
+`depends` entry there. Its `check()` runs the dev-profile suite without
+debug info and `--skip`s the five frame-budget gates by name (a redraw under
+25 ms measures the user's machine, not the package), so a new wall-clock
+gate belongs on that list too. It follows a release and never leads it: the
+tag's tarball has no checksum until the tag is pushed.
 
 Toolchain: Rust **edition 2024**, `ratatui = 0.30.1` (crossterm is re-exported as
 `ratatui::crossterm` — import it from there, not as a separate crate), plus

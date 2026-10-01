@@ -1,0 +1,20 @@
+pkgbase = alter-zero
+	pkgdesc = Agent harness for coding, cybersecurity, and automation
+	pkgver = 0.10.0
+	pkgrel = 1
+	url = https://github.com/linuztx/alter-zero
+	arch = x86_64
+	arch = aarch64
+	license = Apache-2.0
+	checkdepends = git
+	checkdepends = python
+	makedepends = cargo
+	depends = glibc
+	depends = libgcc
+	depends = oniguruma
+	optdepends = git: filesystem checkpoints and the /diff review
+	options = !lto
+	source = alter-zero-0.10.0.tar.gz::https://github.com/linuztx/alter-zero/archive/refs/tags/v0.10.0.tar.gz
+	sha256sums = 86c99782ed500028edca47a235d6fe0f0904cfe73e3210d4de30b03027578a64
+
+pkgname = alter-zero
