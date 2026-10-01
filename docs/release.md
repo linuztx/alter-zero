@@ -300,6 +300,12 @@ git push origin HEAD v0.2.0
 `main` — ideally after one rehearsal run. The section's date is the day it
 was written; edit it to the tag's day if that differs.
 
+**The AUR package follows the release, never leads it.** `aur/PKGBUILD`
+builds the tag's own source tarball, whose checksum cannot exist before the
+tag is pushed, so `prepare` leaves it alone and `check` never compares it.
+Once the release is published, bump it as [`docs/aur.md`](aur.md) describes
+and push the same files to the AUR.
+
 While a version is in progress, changes land under `## [Unreleased]` in
 Keep a Changelog's groups (`Added`, `Changed`, `Deprecated`, `Removed`,
 `Fixed`, `Security`), written for the user who reads the release notes, not

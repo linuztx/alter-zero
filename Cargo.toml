@@ -3,7 +3,7 @@ name = "alter-zero"
 version = "0.10.0"
 edition = "2024"
 authors = ["linuztx <linuztx@gmail.com>"]
-description = "An autonomous AI coding agent that lives in your terminal."
+description = "Agent harness for coding, cybersecurity, and automation."
 license = "Apache-2.0"
 repository = "https://github.com/linuztx/alter-zero"
 
