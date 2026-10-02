@@ -17,6 +17,7 @@ use alter_zero::context::{ContextMessage, ContextRole, context_messages};
 use alter_zero::llm::hooks::{HookSink, PromptVerdict};
 use alter_zero::llm::{LlmBackend, ModelConfig, WireApi};
 use alter_zero::stream::{CancelToken, ReplySource, StreamEvent};
+use alter_zero::tasks::TaskRegistry;
 
 /// The one call every round below makes, and the arguments it records.
 const ARGUMENTS: &str = r#"{"path":"/nonexistent/alter-zero-wire-history"}"#;
@@ -38,6 +39,15 @@ const CHAT_BATCH_ROUND: &str = concat!(
     r#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_provider_a","type":"function","function":{"name":"read","arguments":"{\"path\":\"/nonexistent/alter-zero-a\"}"}}]}}]}"#,
     "\n\n",
     r#"data: {"choices":[{"delta":{"tool_calls":[{"index":1,"id":"call_provider_b","type":"function","function":{"name":"read","arguments":"{\"path\":\"/nonexistent/alter-zero-b\"}"}}]}}]}"#,
+    "\n\n",
+    r#"data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}"#,
+    "\n\n",
+    "data: [DONE]\n\n",
+);
+
+/// A Chat Completions round that plans one task (`docs/task-tools.md`).
+const CHAT_PLAN_ROUND: &str = concat!(
+    r#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_plan","type":"function","function":{"name":"taskcreate","arguments":"{\"subject\":\"Serve the page\",\"description\":\"on port 3000\"}"}}]}}]}"#,
     "\n\n",
     r#"data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}"#,
     "\n\n",
@@ -179,6 +189,21 @@ fn fold(app: &mut App, events: Vec<StreamEvent>) {
                 display, result, ..
             } => {
                 app.reject_tool(&display, &result);
+            }
+            StreamEvent::TaskCall {
+                name,
+                args,
+                arguments,
+                output,
+                ok,
+                tasks,
+            } => {
+                app.flush_streaming_segment();
+                app.record_task_call(&name, &args, &arguments, &output, ok, tasks);
+            }
+            StreamEvent::HookNote { label, text } => {
+                app.flush_streaming_segment();
+                app.record_hook_note(&label, &text);
             }
             StreamEvent::StreamDone => {
                 app.finish_stream();
@@ -644,4 +669,76 @@ fn live_chatgpt_a_rebuilt_backend_reads_the_tool_round_back_from_cache() {
         usage.cached > 1_000,
         "the rebuilt backend read the prefix back from cache: {usage:?}"
     );
+}
+
+#[test]
+fn a_task_reminder_rides_the_wire_and_the_next_turn_replays_it_in_place() {
+    // The task guard end to end (docs/task-tools.md): a turn that plans with
+    // `taskcreate` and then works with nothing in progress gets the
+    // stale-list reminder on its next request; its plain answer, the task
+    // still open, gets the end-of-turn reminder and one more round. Both are
+    // recorded, so the next turn — on a rebuilt backend, nothing retained —
+    // sends the prefix the provider already cached.
+    let (base, requests) = stand_in(&[
+        CHAT_PLAN_ROUND,
+        CHAT_TOOL_ROUND,
+        CHAT_TEXT_ROUND,
+        CHAT_TEXT_ROUND,
+        CHAT_TEXT_ROUND,
+    ]);
+    let tasks = TaskRegistry::new();
+    let first = backend_on(WireApi::Chat, &base).with_tasks(tasks.clone());
+    let mut app = App::new();
+    app.record_user_message("serve a page");
+    app.begin_stream();
+    let events = turn(&first, "serve a page", context_messages(&app.history));
+    let labels: Vec<&str> = events
+        .iter()
+        .filter_map(|event| match event {
+            StreamEvent::HookNote { label, .. } => Some(label.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(labels, ["Task reminder", "Task reminder"], "{events:?}");
+    fold(&mut app, events);
+
+    let sent = requests.lock().expect("the request log").clone();
+    assert_eq!(sent.len(), 4, "plan, work, answer, the reminded answer");
+    let worked = sent[2]["messages"].as_array().expect("a messages array");
+    assert_eq!(worked[worked.len() - 2]["role"], "tool", "{worked:?}");
+    let stale = &worked[worked.len() - 1];
+    assert_eq!(stale["role"], "user");
+    assert!(
+        stale["content"]
+            .as_str()
+            .is_some_and(|text| text.contains("#1 [pending] Serve the page")
+                && text.contains("Nothing is in_progress")),
+        "{stale}"
+    );
+    let closing = sent[3]["messages"].as_array().expect("a messages array");
+    assert_eq!(closing[closing.len() - 2]["content"], "done");
+    assert!(
+        closing[closing.len() - 1]["content"]
+            .as_str()
+            .is_some_and(|text| text.contains("You are ending your turn with open tasks")),
+        "{closing:?}"
+    );
+
+    let rebuilt = backend_on(WireApi::Chat, &base).with_tasks(tasks);
+    app.record_user_message("and now?");
+    app.begin_stream();
+    let events = turn(&rebuilt, "and now?", context_messages(&app.history));
+    fold(&mut app, events);
+    let requests = requests.lock().expect("the request log");
+    assert_eq!(requests.len(), 5, "the second turn answers in one round");
+    let next = requests[4]["messages"]
+        .as_array()
+        .expect("a messages array");
+    assert_eq!(
+        &next[..closing.len()],
+        &closing[..],
+        "both reminders replay in place, byte for byte"
+    );
+    assert_eq!(next[closing.len()]["content"], "done");
+    assert_eq!(next[closing.len() + 1]["content"], "and now?");
 }

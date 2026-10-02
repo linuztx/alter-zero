@@ -1689,7 +1689,30 @@ whole lifecycle so every scripted result string and snapshot is
 byte-for-byte the live executor's, ending with work outstanding so the
 resting panel and the cross-turn list show, while its `tasks-finished` twin
 (the same cue plus `finish`) walks a two-task list to all-✔ so the
-retirement is drivable too — `smoke.sh` Phases 69 and 70) in
+retirement is drivable too — `smoke.sh` Phases 69 and 70 — and the **task
+guard** keeps a smaller model's list honest: gpt-oss:120b, reported from
+the TUI, did the work and never marked anything, and measured live with
+`examples/task_probe.rs` it planned with `taskcreate` and then ended the turn
+with every task pending, or went to work with nothing in progress.
+`llm::agent::run_agent` consults a `TurnGuard` — one trait
+object with defaulted methods, the `HookSink` shape — after every tool
+round, before every request and before a turn may end, and the main
+backend's is `llm::task::RegistryGuard`: the pure `tasks::TaskGuard` over
+the live registry, `NoGuard` everywhere else (subagents, `/compact`, the
+tests). Between rounds it sends a `<system-reminder>` carrying the
+`tasklist` lines and one instruction once the list has gone stale — after
+1 round of work with nothing `in_progress` (naming the next unblocked task),
+3 with one in progress (none when that task is the only one left open), an
+ignored reminder returning after 3, 6, then 12 more rounds; and when the
+model answers over open tasks on a turn that wrote to the list, the answer
+stands but the turn continues with the reminder as its next user message —
+the `Stop`-hook continuation, built in, asked after the user's own `Stop`
+hooks, at most twice per turn and the second only after more work, never on
+a turn whose user refused a call. A reminder rides `StreamEvent::HookNote`
+labelled `Task reminder`, so it records as the cell-less
+`HistoryItem::HookNote`: Ctrl+O shows it, `/resume` keeps it, and every
+later turn replays it in place, keeping the cached prefix whole
+(`tests/wire_history.rs` proves it on a rebuilt backend)) in
 `docs/task-tools.md`; and the **lifecycle hooks** (Claude Code's
 `hooks.json`, ported whole — `docs/hooks.md`: the user's own commands wedged
 into the tool loop, `~/.alter-zero/hooks.json` mapping event → matcher groups

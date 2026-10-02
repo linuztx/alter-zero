@@ -628,7 +628,12 @@ which Ctrl+V reads the clipboard from.
   while a plan whose tasks are all done **retires** at the turn boundary, so
   the next one starts fresh. Ctrl+O keeps the full per-call record, and the
   list survives `/resume`, the Esc-Esc backtrack, and `/clear` via
-  per-record snapshots.
+  per-record snapshots. A **task guard** keeps a smaller model's list
+  current: once the list goes stale mid-turn the next request carries a
+  `<system-reminder>` with the list and one instruction, and a turn that
+  wrote to the list cannot end over open tasks without one reminder (two,
+  if the model worked in between) — recorded as hidden notes, so later
+  turns replay them in place.
 - **Spinner tips** (`docs/tips.md`): Claude Code's dim `⎿  Tip: …` row under
   the status line — not at once but once the turn has run three seconds, so a
   quick answer never flashes one; the next tip in a fixed catalog each turn

@@ -822,6 +822,14 @@ impl ReplySource for LlmBackend {
             if let Ok(mut log) = turn_context.lock() {
                 log.push_request(&prompt);
             }
+            // The task guard (docs/task-tools.md): with a task list attached,
+            // a turn keeps the model's plan in front of it — a reminder
+            // between rounds once the list goes stale, and another before a
+            // turn that wrote to it may end with tasks still open.
+            let mut guard: Box<dyn agent::TurnGuard> = match &task_list {
+                Some(registry) => Box::new(super::task::RegistryGuard::new(registry.clone())),
+                None => Box::new(agent::NoGuard),
+            };
             // The agentic loop: `run_agent` streams one round, runs any tool
             // calls the model requested (via `executor`, emitting the
             // ToolStart/ToolEnd pair the TUI renders), appends the results, and
@@ -995,6 +1003,7 @@ impl ReplySource for LlmBackend {
                     approval
                 },
                 hooks.as_ref(),
+                guard.as_mut(),
                 // A session's command, for a `bash_session` call's header —
                 // the lookup its permission prompt makes
                 // (docs/interactive-shell.md).
@@ -1765,6 +1774,9 @@ fn spawn_subagent_run(
                 approval
             },
             hooks.as_ref(),
+            // Subagents carry no task list, so there is nothing to guard
+            // (docs/task-tools.md).
+            &mut agent::NoGuard,
             &|id: &str| {
                 background
                     .as_ref()

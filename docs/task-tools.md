@@ -133,6 +133,97 @@ matters:
   descriptions and dependency wiring gone from the conversation. A record
   written before the field existed replays as `{}`, exactly as it used to.
 
+## Keeping the list current — the task guard
+
+A capable model keeps its list honest unprompted: `in_progress` before a
+task's work, `completed` right after. A smaller one does not. Reported from
+the TUI, `gpt-oss:120b` on Ollama Cloud did the work and never touched the
+list again, so the checklist and the resting block went on reporting every
+task open over a finished job. Measured live (`examples/task_probe.rs`), asked
+to build a login page and serve it on port 3000, it showed the other half of
+the habit: it created a plan and **ended the turn** with every task still
+pending — one run with no reply at all, another telling the *user* to
+"proceed with the tasks in order" — and whenever it did go to work, it
+started with nothing marked in progress. The tool descriptions already say
+what to do. What the model lacks is the list in front of it at the moment it
+matters, so the agent loop puts it there.
+
+`llm::agent::run_agent` consults a [`TurnGuard`] at three points — after
+every tool round, before every request, and before it lets a turn end — and
+the main backend's guard is the task list's: [`TaskGuard`], the pure policy
+in `crate::tasks`, bound to the shared registry by `llm::task::RegistryGuard`.
+Subagents, the `/compact` backend and the tests pass `NoGuard`. Two rules:
+
+- **The stale-list reminder.** While tasks are open, a tool round with any
+  non-task call is a round of *work*. Work that leaves the list unwritten
+  makes it staler; a `taskcreate` or `taskupdate` resets the count, and
+  reading it (`tasklist`, `taskget`) does not, since a look is not an
+  update. Once the count reaches a threshold, the next request carries a
+  `<system-reminder>` holding the current list and one instruction. The
+  threshold depends on what the list says: **1** round when nothing is
+  `in_progress`, because the model is then working outside its plan and the
+  first round is the cheapest moment to correct that; **3** when a task is,
+  since a task can simply take a while. When that task is the only one left
+  open there is no reminder at all: the point of this one is to keep the
+  list moving from task to task, and with nothing to move on to it can only
+  repeat what the model is doing — gemma4:31b ignored two such reminders and
+  completed its task when it was done — while a forgotten completion is the
+  end-of-turn guard's to catch. A reminder the model ignores comes back
+  after 3 more rounds of work, then 6, then 12: persistent for a model that
+  forgot, quiet for one deep in a long task. A model that keeps its list
+  current never sees one.
+- **The end-of-turn guard.** When the model answers with plain text while
+  tasks are still open, and this turn wrote to the list, the reply stands
+  but the turn does not end. The reminder goes in as the next user message
+  and the loop runs another round — the `Stop` hook's continuation
+  (`docs/hooks.md`), built in, and consulted after the user's own `Stop`
+  hooks. A plain answer right after it ends the turn whatever the list says;
+  it comes back only if the model has worked since, and **at most twice per
+  turn**. The second chance is the live finding: gpt-oss answered the first
+  reminder of a plan-then-stop turn by starting the work, then ended again
+  with the list as stale as before, and a guard spent on the plan would have
+  let that end stand. It never fires on a turn that did not write to the
+  list, since tasks left open by an earlier turn are not this one's business
+  and a question about something else must not restart them. Nor on a turn
+  where the user refused a call — a permission rejection, a hook block, a
+  declined question — because that model was told to stop and wait, and a
+  nudge to continue would overrule the user.
+
+The texts are short and name the action. The list is `tasklist`'s own lines,
+so the model reads the shape it already knows:
+
+```
+<system-reminder>
+Your task list:
+#1 [completed] Initialize project
+#2 [in_progress] Create server
+#3 [pending] Build login page [blocked by #2]
+
+Still in_progress: #2. Mark each completed as soon as it is done, then start the next task. Don't mention this reminder.
+</system-reminder>
+```
+
+With nothing in progress the instruction reads `Nothing is in_progress. Set
+the task you are working on (next: #2) to in_progress with taskupdate now,
+and mark finished tasks completed.` — the action the list is missing first,
+and a concrete candidate (the lowest-numbered pending task nothing open
+blocks), which a small model acts on where it skims a general rule. At the
+end of a turn it reads `You are ending your turn with open tasks. Mark
+finished ones completed and delete ones that no longer apply, then continue
+the rest. If you need the user, say so.`
+
+A reminder travels as a `StreamEvent::HookNote` labelled `Task reminder`,
+the channel a hook's injected text already rides: the loop records the
+cell-less `HistoryItem::HookNote`, which shows nothing inline, appears in
+Ctrl+O under its label, survives `/resume`, and is replayed verbatim by
+`context::context_messages` in every later turn. Replaying it in place is
+what keeps the prompt cache whole (`docs/prompt-caching.md`): the reminder
+is appended at the frontier mid-turn, and the next turn's derived request
+carries it at exactly the position the provider cached it. In a round it
+sits after the background notices and before any message the user queued
+into the turn, so the user's own words stay the last thing the model reads
+(`docs/queue.md`).
+
 ## How it flows
 
 One new event carries the whole resolution — a task call is instant, needs no
@@ -214,3 +305,5 @@ demonstrate one of them.
 [`TaskRegistry`]: ../src/tasks.rs
 [`crate::tasks`]: ../src/tasks.rs
 [`TASK_MAX_ROWS`]: ../src/ui/theme.rs
+[`TaskGuard`]: ../src/tasks.rs
+[`TurnGuard`]: ../src/llm/agent.rs

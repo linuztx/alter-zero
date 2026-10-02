@@ -19,6 +19,18 @@ release heading when a version is cut.
   publishing stays limited to loopback ports 8080/8888 unless configured with
   `docker/run.sh --port`. No additional services are started.
 
+- **Smaller models keep their task list current.** A model that plans with
+  the task tools and then forgets the list — gpt-oss:120b would create its
+  tasks and either stop right there or do the work without ever marking one
+  in progress or done — now gets the list put back in front of it. Once the
+  list goes stale mid-turn, the next request carries a short reminder with
+  the current tasks and the one update it is missing, naming the next task
+  to start; and a turn that planned cannot end over open tasks without being
+  reminded to update them and finish the work, at most twice per turn. A
+  model that keeps its list current never sees either. Reminders stay out of
+  the conversation view, show in Ctrl+O, and survive `/resume`
+  (`docs/task-tools.md`).
+
 ### Fixed
 
 - **Ollama Cloud's internal server errors are retried.** Ollama Cloud

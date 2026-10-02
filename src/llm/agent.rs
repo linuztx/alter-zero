@@ -109,6 +109,49 @@ pub enum PendingInput {
     User(String),
 }
 
+/// A note a [`TurnGuard`] folds into the conversation: the heading the
+/// transcript shows it under and the text the model reads as a user-role
+/// message.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GuardNote {
+    /// The Ctrl+O transcript heading (`Task reminder`).
+    pub label: String,
+    /// Verbatim what the model reads.
+    pub text: String,
+}
+
+/// The loop's watch over a turn (`docs/task-tools.md`): told what every tool
+/// round ran, asked before every request whether the conversation needs a
+/// note first, and asked once more before the turn may end. The main
+/// backend's guard is the task list's (`llm::task::RegistryGuard`);
+/// [`NoGuard`] answers nothing. One trait object with defaulted methods —
+/// the [`HookSink`] shape — so a second rule is one more method and one call
+/// site, never a wider [`run_agent`] signature.
+pub trait TurnGuard {
+    /// A tool round ran `calls`; `refused` says the user turned one of them
+    /// down — a permission rejection, a hook block, a declined question.
+    fn round_ran(&mut self, _calls: &[ToolCallRequest], _refused: bool) {}
+
+    /// A note the next request should carry, in front of whatever the user
+    /// queued into the turn.
+    fn before_round(&mut self) -> Option<GuardNote> {
+        None
+    }
+
+    /// A note that keeps the turn going instead of letting it end — the
+    /// model's plain answer stands, the note is its next user message.
+    fn before_finish(&mut self) -> Option<GuardNote> {
+        None
+    }
+}
+
+/// The guard that never says anything — subagents, the `/compact` turn, the
+/// tests.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct NoGuard;
+
+impl TurnGuard for NoGuard {}
+
 /// Drive one agentic turn to completion, sending the terminal `StreamDone` /
 /// `Error` (or nothing on a cancel) and the per-tool `ToolStart`/`ToolEnd`
 /// events. Generic over `round` (one streaming request), `execute` (running
@@ -158,6 +201,15 @@ pub enum PendingInput {
 /// [`NoHooks`](super::hooks::NoHooks) is the do-nothing default and costs
 /// one vtable dispatch.
 ///
+/// `guard` is the turn's watch (`docs/task-tools.md`): told what every tool
+/// round ran and whether the user refused a call in it, asked before every
+/// request for a note — appended after the notices and ahead of the user's
+/// queued messages — and asked once more when the model answers, after the
+/// `Stop` hooks, where a note continues the turn exactly as a hook's block
+/// does. Each note is announced as a [`StreamEvent::HookNote`] so the loop
+/// records it. The main backend passes the task guard; [`NoGuard`] is the
+/// silent default.
+///
 /// `session_command` maps a session id to the command that session runs —
 /// the lookup the permission prompt makes — so a `bash_session` call's
 /// header names the program its keys go to from the moment the call is
@@ -175,6 +227,7 @@ pub fn run_agent(
     mut run_agents: impl FnMut(&[ToolCallRequest]) -> Vec<(String, String)>,
     mut approve: impl FnMut(&ToolCallRequest, bool) -> Approval,
     hooks: &dyn HookSink,
+    guard: &mut dyn TurnGuard,
     session_command: &dyn Fn(&str) -> Option<String>,
 ) {
     let mut used_calls = 0usize;
@@ -192,15 +245,23 @@ pub fn run_agent(
         let (notices, steered): (Vec<_>, Vec<_>) = pending_inputs()
             .into_iter()
             .partition(|input| matches!(input, PendingInput::Notice(_)));
-        for input in notices.into_iter().chain(steered) {
-            match input {
-                PendingInput::Notice(note) => messages.push(ChatMessage::user(&note)),
-                // The queued row above the user's box becomes a real bubble
-                // the moment the model actually has the text (docs/queue.md).
-                PendingInput::User(text) => {
-                    let _ = tx.send(StreamEvent::Steered { text: text.clone() });
-                    messages.push(ChatMessage::user(&text));
-                }
+        for input in notices {
+            if let PendingInput::Notice(note) = input {
+                messages.push(ChatMessage::user(&note));
+            }
+        }
+        // The guard's note (docs/task-tools.md) — a reminder about the work
+        // so far — sits after the results and notices it is about and ahead
+        // of whatever the user just said, which stays the last thing read.
+        if let Some(note) = guard.before_round() {
+            push_guard_note(tx, messages, note);
+        }
+        for input in steered {
+            // The queued row above the user's box becomes a real bubble the
+            // moment the model actually has the text (docs/queue.md).
+            if let PendingInput::User(text) = input {
+                let _ = tx.send(StreamEvent::Steered { text: text.clone() });
+                messages.push(ChatMessage::user(&text));
             }
         }
         match round(messages) {
@@ -235,6 +296,20 @@ pub fn run_agent(
                     }
                     messages.push(ChatMessage::user(&feedback));
                     stop_hook_active = true;
+                    continue;
+                }
+                // The guard's last word (docs/task-tools.md), asked only once
+                // the user's own Stop hooks let the turn end: a turn that
+                // planned with the task tools must not end with its plan
+                // silently stale. The same continuation as a hook's block —
+                // the answer stands, the note is the next user message.
+                if !cancel.is_cancelled()
+                    && let Some(note) = guard.before_finish()
+                {
+                    if !text.trim().is_empty() {
+                        messages.push(ChatMessage::new("assistant", &text));
+                    }
+                    push_guard_note(tx, messages, note);
                     continue;
                 }
                 let _ = tx.send(StreamEvent::StreamDone);
@@ -326,6 +401,11 @@ pub fn run_agent(
                         .collect(),
                 ));
                 let mut results: Vec<(String, String)> = Vec::with_capacity(calls.len());
+                // Did the user turn a call of this round down — a permission
+                // rejection, a hook block, a declined question? The guard
+                // stands down on a turn told to stop and wait
+                // (docs/task-tools.md).
+                let mut user_refused = false;
                 if !agent_calls.is_empty() {
                     // `PreToolUse` gates a subagent launch too — Claude Code
                     // fires it for its Task tool, and `Task` aliases to our
@@ -339,6 +419,7 @@ pub fn run_agent(
                     for call in agent_calls {
                         let hook = hooks.pre_tool_use(call, cancel);
                         if let Some(reason) = &hook.blocked {
+                            user_refused = true;
                             let (display, result) = hook_block_texts(reason);
                             let _ = tx.send(tool_start_event(call, session_command));
                             let _ = tx.send(StreamEvent::ToolRejected {
@@ -435,6 +516,7 @@ pub fn run_agent(
                     // its arguments, or answer the gate's question itself.
                     let hook = hooks.pre_tool_use(call, cancel);
                     if let Some(reason) = &hook.blocked {
+                        user_refused = true;
                         let (display, result) = hook_block_texts(reason);
                         let _ = tx.send(tool_start_event(call, session_command));
                         // The permission gate's own rejection event, reused
@@ -486,6 +568,7 @@ pub fn run_agent(
                         approve(call, hook.force_ask)
                     };
                     if let Approval::Reject { display, result } = approval {
+                        user_refused = true;
                         let _ = tx.send(tool_start_event(call, session_command));
                         // ToolRejected, not ToolEnd: it carries BOTH texts, so
                         // the recorded call keeps the model-facing `result`
@@ -539,6 +622,9 @@ pub fn run_agent(
                         let _ = tx.send(event);
                     };
                     let mut outcome = execute(call, &mut on_output);
+                    // A question the user declined, or asked to chat about
+                    // instead, is a refusal like a rejected call (docs/ask.md).
+                    user_refused |= call.name == super::tools::ASK_TOOL_NAME && !outcome.ok;
                     // `PostToolUse` (docs/hooks.md): the call ran, so there is
                     // nothing left to refuse — only things to say. Whatever a
                     // hook adds goes onto the **model-facing** text via the
@@ -659,6 +745,7 @@ pub fn run_agent(
                     messages.push(ChatMessage::tool_result(&call.id, &output));
                 }
                 messages.append(&mut attachments);
+                guard.round_ran(&calls, user_refused);
                 // A cancel that landed during a tool run reaps us here rather
                 // than spending another round that would just return Cancelled.
                 if cancelled_mid_tools || cancel.is_cancelled() {
@@ -674,6 +761,24 @@ pub fn run_agent(
             }
         }
     }
+}
+
+/// Fold a [`TurnGuard`]'s note into the conversation: appended as the user
+/// message the model reads, and announced as a [`StreamEvent::HookNote`] —
+/// the channel a hook's injected text rides — so the loop records it:
+/// nothing inline, under its heading in Ctrl+O, replayed verbatim by every
+/// later turn's context, which keeps the cached prefix whole
+/// (`docs/task-tools.md`).
+fn push_guard_note(
+    tx: &UnboundedSender<StreamEvent>,
+    messages: &mut Vec<ChatMessage>,
+    note: GuardNote,
+) {
+    messages.push(ChatMessage::user(&note.text));
+    let _ = tx.send(StreamEvent::HookNote {
+        label: note.label,
+        text: note.text,
+    });
 }
 
 /// The `ToolStart` announcing `call`: the display name, the one-line header
@@ -777,6 +882,7 @@ mod tests {
             |_| Vec::new(),
             |_, _| Approval::Allow,
             hooks,
+            &mut NoGuard,
             &no_sessions,
         );
         drain(&mut rx)
@@ -919,6 +1025,7 @@ mod tests {
             |_calls| Vec::new(),
             |_call, _force| Approval::Allow,
             &NoHooks,
+            &mut NoGuard,
             &no_sessions,
         );
         assert_eq!(drain(&mut rx), vec![StreamEvent::StreamDone]);
@@ -1035,6 +1142,7 @@ mod tests {
             |_calls| Vec::new(),
             |_call, _force| Approval::Allow,
             hooks,
+            &mut NoGuard,
             &no_sessions,
         );
         let result = messages
@@ -1085,6 +1193,7 @@ mod tests {
             |_calls| Vec::new(),
             |_call, _force| approval.clone(),
             hooks,
+            &mut NoGuard,
             &no_sessions,
         );
         let result = messages
@@ -1144,6 +1253,7 @@ mod tests {
             |_calls| panic!("a blocked launch must never reach the launcher"),
             |_call, _force| Approval::Allow,
             &hooks,
+            &mut NoGuard,
             &no_sessions,
         );
         let events = drain(&mut rx);
@@ -1197,6 +1307,7 @@ mod tests {
             |_calls| Vec::new(),
             |_call, _force| Approval::Allow,
             &hooks,
+            &mut NoGuard,
             &no_sessions,
         );
         assert_eq!(
@@ -1283,6 +1394,7 @@ mod tests {
                 |_calls| Vec::new(),
                 |_call, _force| Approval::Allow,
                 &hooks,
+                &mut NoGuard,
                 &no_sessions,
             );
             assert_eq!(hooks.stop_seen(), Vec::<(bool, String)>::new());
@@ -1564,6 +1676,7 @@ mod tests {
                 |_calls| Vec::new(),
                 |_call, _force| Approval::Allow,
                 &hooks,
+                &mut NoGuard,
                 &no_sessions,
             );
             let events = drain(&mut rx);
@@ -1635,6 +1748,7 @@ mod tests {
             |_calls| Vec::new(),
             |_call, _force| Approval::Allow,
             &NoHooks,
+            &mut NoGuard,
             &no_sessions,
         );
         let events = drain(&mut rx);
@@ -1742,6 +1856,7 @@ mod tests {
                 |_calls| Vec::new(),
                 |_call, _force| Approval::Allow,
                 &NoHooks,
+                &mut NoGuard,
                 &no_sessions,
             );
             let events = drain(&mut rx);
@@ -1812,6 +1927,7 @@ mod tests {
             |_calls| Vec::new(),
             |_call, _force| Approval::Allow,
             &NoHooks,
+            &mut NoGuard,
             &no_sessions,
         );
         let events = drain(&mut rx);
@@ -1885,6 +2001,7 @@ mod tests {
             |_calls| Vec::new(),
             |_call, _force| Approval::Allow,
             &NoHooks,
+            &mut NoGuard,
             &no_sessions,
         );
         let events = drain(&mut rx);
@@ -1952,6 +2069,7 @@ mod tests {
             |_calls| Vec::new(),
             |_call, _force| Approval::Allow,
             &NoHooks,
+            &mut NoGuard,
             &no_sessions,
         );
         let events = drain(&mut rx);
@@ -2041,6 +2159,7 @@ mod tests {
             |_calls| Vec::new(),
             |_call, _force| Approval::Allow,
             &NoHooks,
+            &mut NoGuard,
             &no_sessions,
         );
         drain(&mut rx);
@@ -2063,6 +2182,7 @@ mod tests {
             |_calls| Vec::new(),
             |_call, _force| Approval::Allow,
             &NoHooks,
+            &mut NoGuard,
             &no_sessions,
         );
         let events = drain(&mut rx);
@@ -2085,6 +2205,7 @@ mod tests {
             |_calls| Vec::new(),
             |_call, _force| Approval::Allow,
             &NoHooks,
+            &mut NoGuard,
             &no_sessions,
         );
         assert!(drain(&mut rx).is_empty(), "a cancel is a silent stop");
@@ -2106,6 +2227,7 @@ mod tests {
             |_calls| Vec::new(),
             |_call, _force| Approval::Allow,
             &NoHooks,
+            &mut NoGuard,
             &no_sessions,
         );
         assert!(drain(&mut rx).is_empty());
@@ -2139,6 +2261,7 @@ mod tests {
             |_calls| Vec::new(),
             |_call, _force| Approval::Allow,
             &NoHooks,
+            &mut NoGuard,
             &no_sessions,
         );
         assert_eq!(
@@ -2187,6 +2310,7 @@ mod tests {
             |_calls| Vec::new(),
             |_call, _force| Approval::Allow,
             &NoHooks,
+            &mut NoGuard,
             &no_sessions,
         );
         let results: Vec<&ChatMessage> = messages.iter().filter(|m| m.role == "tool").collect();
@@ -2219,6 +2343,7 @@ mod tests {
             |_calls| Vec::new(),
             |_call, _force| Approval::Allow,
             &NoHooks,
+            &mut NoGuard,
             &no_sessions,
         );
         let events = drain(&mut rx);
@@ -2307,6 +2432,7 @@ mod tests {
             |_calls| Vec::new(),
             |_call, _force| Approval::Allow,
             &NoHooks,
+            &mut NoGuard,
             &no_sessions,
         );
         let events = drain(&mut rx);
@@ -2374,6 +2500,7 @@ mod tests {
             |_calls| Vec::new(),
             |_call, _force| Approval::Allow,
             &NoHooks,
+            &mut NoGuard,
             &no_sessions,
         );
         let events = drain(&mut rx);
@@ -2426,6 +2553,7 @@ mod tests {
             |_calls| Vec::new(),
             |_call, _force| Approval::Allow,
             &NoHooks,
+            &mut NoGuard,
             &no_sessions,
         );
         let events = drain(&mut rx);
@@ -2497,6 +2625,7 @@ mod tests {
             |_calls| Vec::new(),
             |_call, _force| Approval::Allow,
             &NoHooks,
+            &mut NoGuard,
             &no_sessions,
         );
         drain(&mut rx);
@@ -2548,6 +2677,7 @@ mod tests {
             |_calls| Vec::new(),
             |_call, _force| Approval::Allow,
             &NoHooks,
+            &mut NoGuard,
             &no_sessions,
         );
         drain(&mut rx);
@@ -2606,6 +2736,7 @@ mod tests {
             |_calls| Vec::new(),
             |_call, _force| Approval::Allow,
             &NoHooks,
+            &mut NoGuard,
             &no_sessions,
         );
         let seen = seen_round2.borrow();
@@ -2659,6 +2790,7 @@ mod tests {
             |_calls| Vec::new(),
             |_call, _force| Approval::Allow,
             &NoHooks,
+            &mut NoGuard,
             &no_sessions,
         );
         assert_eq!(
@@ -2704,6 +2836,7 @@ mod tests {
             |_calls| Vec::new(),
             |_call, _force| Approval::Allow,
             &NoHooks,
+            &mut NoGuard,
             &no_sessions,
         );
         assert!(drain(&mut rx).is_empty());
@@ -2762,6 +2895,7 @@ mod tests {
             |_calls| Vec::new(),
             |_call, _force| Approval::Allow,
             &NoHooks,
+            &mut NoGuard,
             &no_sessions,
         );
         drain(&mut rx);
@@ -2828,6 +2962,7 @@ mod tests {
             |_calls| Vec::new(),
             |_call, _force| Approval::Allow,
             &NoHooks,
+            &mut NoGuard,
             &no_sessions,
         );
         drain(&mut rx);
@@ -2879,6 +3014,7 @@ mod tests {
             |_calls| Vec::new(),
             |_call, _force| Approval::Allow,
             &NoHooks,
+            &mut NoGuard,
             &no_sessions,
         );
         let events = drain(&mut rx);
@@ -2938,6 +3074,7 @@ mod tests {
                 result: "The user doesn't want to proceed…".to_string(),
             },
             &NoHooks,
+            &mut NoGuard,
             &no_sessions,
         );
         let events = drain(&mut rx);
@@ -3020,6 +3157,7 @@ mod tests {
                 result: "The user doesn't want to proceed…".to_string(),
             },
             &NoHooks,
+            &mut NoGuard,
             &|id: &str| (id == "b5xg4o2w0").then(|| "sudo pacman -Syy".to_string()),
         );
         let events = drain(&mut rx);
@@ -3075,6 +3213,7 @@ mod tests {
                 note: "Allowed by auto mode classifier".to_string(),
             },
             &NoHooks,
+            &mut NoGuard,
             &no_sessions,
         );
         let events = drain(&mut rx);
@@ -3135,6 +3274,7 @@ mod tests {
                 Approval::Allow
             },
             &NoHooks,
+            &mut NoGuard,
             &no_sessions,
         );
         drain(&mut rx);
@@ -3184,6 +3324,7 @@ mod tests {
             |_calls| Vec::new(),
             |_call, _force| panic!("task calls never consult the permission gate"),
             &NoHooks,
+            &mut NoGuard,
             &no_sessions,
         );
         let events = drain(&mut rx);
@@ -3286,6 +3427,7 @@ mod tests {
             |_calls| Vec::new(),
             |_call, _force| Approval::Allow,
             &NoHooks,
+            &mut NoGuard,
             &no_sessions,
         );
         let events = drain(&mut rx);
@@ -3346,6 +3488,7 @@ mod tests {
             |_calls| Vec::new(),
             |_call, _force| Approval::Allow,
             &NoHooks,
+            &mut NoGuard,
             &no_sessions,
         );
         let events = drain(&mut rx);
@@ -3408,6 +3551,7 @@ mod tests {
             |_calls| Vec::new(),
             |_call, _force| Approval::Allow,
             &NoHooks,
+            &mut NoGuard,
             &no_sessions,
         );
         let events = drain(&mut rx);
@@ -3433,6 +3577,358 @@ mod tests {
             refused.content,
             crate::llm::MessageContent::Text(TOOL_LIMIT_OUTPUT.to_string())
         );
+    }
+
+    // --- the turn guard (docs/task-tools.md) ---
+
+    /// A guard that plays back scripted notes and records what it was told.
+    #[derive(Default)]
+    struct ScriptedGuard {
+        /// Notes for successive `before_round` asks; `None` (or running out)
+        /// says nothing.
+        rounds: Vec<Option<&'static str>>,
+        /// Notes for successive `before_finish` asks.
+        finishes: Vec<Option<&'static str>>,
+        /// Every `round_ran`: the call names and the refused flag.
+        seen: Vec<(Vec<String>, bool)>,
+        /// How many times `before_finish` was asked.
+        finish_asks: usize,
+    }
+
+    impl ScriptedGuard {
+        fn note(text: &str) -> GuardNote {
+            GuardNote {
+                label: "Guard".to_string(),
+                text: text.to_string(),
+            }
+        }
+    }
+
+    impl TurnGuard for ScriptedGuard {
+        fn round_ran(&mut self, calls: &[ToolCallRequest], refused: bool) {
+            self.seen
+                .push((calls.iter().map(|c| c.name.clone()).collect(), refused));
+        }
+
+        fn before_round(&mut self) -> Option<GuardNote> {
+            if self.rounds.is_empty() {
+                return None;
+            }
+            self.rounds.remove(0).map(Self::note)
+        }
+
+        fn before_finish(&mut self) -> Option<GuardNote> {
+            self.finish_asks += 1;
+            if self.finishes.is_empty() {
+                return None;
+            }
+            self.finishes.remove(0).map(Self::note)
+        }
+    }
+
+    /// The (role, text) pairs of a message list — enough to read its order.
+    fn transcript(messages: &[ChatMessage]) -> Vec<(String, String)> {
+        messages
+            .iter()
+            .map(|m| {
+                let text = match &m.content {
+                    crate::llm::MessageContent::Text(t) => t.clone(),
+                    crate::llm::MessageContent::Parts(_) => String::new(),
+                };
+                (m.role.clone(), text)
+            })
+            .collect()
+    }
+
+    /// Drive a turn whose rounds answer from `rounds` in order (a `None`
+    /// is a plain answer), with `pending` taken at every round boundary;
+    /// returns the events, the messages each request carried, and the
+    /// guard.
+    fn guarded_turn(
+        rounds: Vec<RoundOutcome>,
+        mut guard: ScriptedGuard,
+        mut pending: impl FnMut() -> Vec<PendingInput>,
+        approve: impl FnMut(&ToolCallRequest, bool) -> Approval,
+        hooks: &dyn HookSink,
+    ) -> (Vec<StreamEvent>, Vec<Vec<ChatMessage>>, ScriptedGuard) {
+        let (tx, mut rx) = unbounded_channel();
+        let mut rounds = rounds.into_iter();
+        let sent: RefCell<Vec<Vec<ChatMessage>>> = RefCell::new(Vec::new());
+        run_agent(
+            &tx,
+            &CancelToken::new(),
+            MAX_TOOL_ITERATIONS,
+            &mut vec![ChatMessage::user("build it")],
+            |msgs| {
+                sent.borrow_mut().push(msgs.to_vec());
+                rounds.next().unwrap_or(RoundOutcome::Complete {
+                    text: String::new(),
+                })
+            },
+            |c, _sink| {
+                if c.name == crate::llm::tools::ASK_TOOL_NAME {
+                    ToolOutcome::error("User declined to answer questions")
+                        .with_context("The user declined. Stop and wait.")
+                } else {
+                    ToolOutcome::ok("fine")
+                }
+            },
+            &mut pending,
+            |_calls| Vec::new(),
+            approve,
+            hooks,
+            &mut guard,
+            &no_sessions,
+        );
+        (drain(&mut rx), sent.into_inner(), guard)
+    }
+
+    fn tool_round(calls: &[ToolCallRequest]) -> RoundOutcome {
+        RoundOutcome::ToolCalls {
+            assistant: assistant_with(calls),
+            calls: calls.to_vec(),
+        }
+    }
+
+    #[test]
+    fn a_guard_note_reaches_the_next_request_and_is_recorded() {
+        // The reminder is appended at the frontier, after the round's tool
+        // results, and announced as a HookNote so the loop records it — the
+        // transcript shows it and every later turn replays it in place.
+        let bash = vec![call("c1", "bash", r#"{"command":"ls"}"#)];
+        let guard = ScriptedGuard {
+            rounds: vec![None, Some("your list went stale")],
+            ..ScriptedGuard::default()
+        };
+        let (events, sent, guard) = guarded_turn(
+            vec![tool_round(&bash)],
+            guard,
+            Vec::new,
+            |_, _| Approval::Allow,
+            &NoHooks,
+        );
+        assert_eq!(sent.len(), 2);
+        let second = transcript(&sent[1]);
+        assert_eq!(
+            second[second.len() - 2..],
+            [
+                ("tool".to_string(), "fine".to_string()),
+                ("user".to_string(), "your list went stale".to_string()),
+            ],
+            "{second:?}"
+        );
+        assert!(
+            !transcript(&sent[0])
+                .iter()
+                .any(|(_, text)| text == "your list went stale"),
+            "the first request carries no note"
+        );
+        let note = events
+            .iter()
+            .position(|e| {
+                matches!(e, StreamEvent::HookNote { label, text }
+                    if label == "Guard" && text == "your list went stale")
+            })
+            .expect("the note is announced");
+        let tool_end = events
+            .iter()
+            .position(|e| matches!(e, StreamEvent::ToolEnd { .. }))
+            .expect("the round resolved");
+        assert!(tool_end < note, "{events:?}");
+        assert_eq!(guard.seen, vec![(vec!["bash".to_string()], false)]);
+    }
+
+    #[test]
+    fn a_guard_note_follows_the_notices_and_precedes_the_users_own_words() {
+        // The user's queued message stays the last thing the model reads
+        // (docs/queue.md); a background completion is a result and leads.
+        let bash = vec![call("c1", "bash", r#"{"command":"ls"}"#)];
+        let mut taken = 0;
+        let (_, sent, _) = guarded_turn(
+            vec![tool_round(&bash)],
+            ScriptedGuard {
+                rounds: vec![None, Some("your list went stale")],
+                ..ScriptedGuard::default()
+            },
+            move || {
+                taken += 1;
+                if taken == 2 {
+                    vec![
+                        PendingInput::User("and deploy it".to_string()),
+                        PendingInput::Notice("[background] done".to_string()),
+                    ]
+                } else {
+                    Vec::new()
+                }
+            },
+            |_, _| Approval::Allow,
+            &NoHooks,
+        );
+        let second = transcript(&sent[1]);
+        let tail: Vec<&str> = second[second.len() - 3..]
+            .iter()
+            .map(|(_, text)| text.as_str())
+            .collect();
+        assert_eq!(
+            tail,
+            ["[background] done", "your list went stale", "and deploy it"]
+        );
+    }
+
+    #[test]
+    fn the_guard_hears_every_tool_round_and_whether_the_user_refused() {
+        let rejected = vec![call("c1", "write", r#"{"path":"a","content":"b"}"#)];
+        let declined = vec![call(
+            "c2",
+            crate::llm::tools::ASK_TOOL_NAME,
+            r#"{"questions":[]}"#,
+        )];
+        let mixed = vec![
+            call("c3", "taskupdate", r#"{"taskId":"1"}"#),
+            call("c4", "bash", r#"{"command":"false"}"#),
+        ];
+        let (_, _, guard) = guarded_turn(
+            vec![
+                tool_round(&rejected),
+                tool_round(&declined),
+                tool_round(&mixed),
+            ],
+            ScriptedGuard::default(),
+            Vec::new,
+            |call, _| {
+                if call.name == "write" {
+                    Approval::Reject {
+                        display: "User rejected write".to_string(),
+                        result: "rejected".to_string(),
+                    }
+                } else {
+                    Approval::Allow
+                }
+            },
+            &NoHooks,
+        );
+        assert_eq!(
+            guard.seen,
+            vec![
+                (vec!["write".to_string()], true),
+                (vec![crate::llm::tools::ASK_TOOL_NAME.to_string()], true),
+                (vec!["taskupdate".to_string(), "bash".to_string()], false),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_hook_block_is_a_refusal_too() {
+        let bash = vec![call("c1", "bash", r#"{"command":"rm -rf /"}"#)];
+        let hooks = FakeHooks {
+            pre: PreToolVerdict {
+                blocked: Some("not here".to_string()),
+                ..PreToolVerdict::default()
+            },
+            ..FakeHooks::default()
+        };
+        let (_, _, guard) = guarded_turn(
+            vec![tool_round(&bash)],
+            ScriptedGuard::default(),
+            Vec::new,
+            |_, _| Approval::Allow,
+            &hooks,
+        );
+        assert_eq!(guard.seen, vec![(vec!["bash".to_string()], true)]);
+    }
+
+    #[test]
+    fn a_finish_note_keeps_the_turn_going() {
+        // The model's answer stands; the note becomes its next user message
+        // and the same turn runs another round — one StreamDone, at the end.
+        let (events, sent, guard) = guarded_turn(
+            vec![
+                RoundOutcome::Complete {
+                    text: "The page is live.".to_string(),
+                },
+                RoundOutcome::Complete {
+                    text: "Marked done.".to_string(),
+                },
+            ],
+            ScriptedGuard {
+                finishes: vec![Some("tasks are still open")],
+                ..ScriptedGuard::default()
+            },
+            Vec::new,
+            |_, _| Approval::Allow,
+            &NoHooks,
+        );
+        assert_eq!(sent.len(), 2, "the turn ran a second round");
+        let second = transcript(&sent[1]);
+        assert_eq!(
+            second[second.len() - 2..],
+            [
+                ("assistant".to_string(), "The page is live.".to_string()),
+                ("user".to_string(), "tasks are still open".to_string()),
+            ]
+        );
+        assert_eq!(
+            events
+                .iter()
+                .filter(|e| matches!(e, StreamEvent::StreamDone))
+                .count(),
+            1
+        );
+        assert!(matches!(events.last(), Some(StreamEvent::StreamDone)));
+        assert!(events.iter().any(|e| matches!(
+            e,
+            StreamEvent::HookNote { text, .. } if text == "tasks are still open"
+        )));
+        assert_eq!(guard.finish_asks, 2, "asked again at the second answer");
+    }
+
+    #[test]
+    fn a_finish_note_after_an_empty_answer_adds_no_assistant_message() {
+        let (_, sent, _) = guarded_turn(
+            vec![RoundOutcome::Complete {
+                text: "  \n".to_string(),
+            }],
+            ScriptedGuard {
+                finishes: vec![Some("tasks are still open")],
+                ..ScriptedGuard::default()
+            },
+            Vec::new,
+            |_, _| Approval::Allow,
+            &NoHooks,
+        );
+        assert_eq!(
+            transcript(&sent[1]),
+            [
+                ("user".to_string(), "build it".to_string()),
+                ("user".to_string(), "tasks are still open".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_stop_hook_has_its_say_before_the_guard() {
+        // The user's own Stop hook first (docs/hooks.md); the built-in guard
+        // is asked only when the hook lets the turn end.
+        let hooks = FakeHooks {
+            stops: std::sync::Mutex::new(vec![Some("run the tests".to_string())]),
+            ..FakeHooks::default()
+        };
+        let (_, sent, guard) = guarded_turn(
+            vec![
+                RoundOutcome::Complete {
+                    text: "done".to_string(),
+                },
+                RoundOutcome::Complete {
+                    text: "tests pass".to_string(),
+                },
+            ],
+            ScriptedGuard::default(),
+            Vec::new,
+            |_, _| Approval::Allow,
+            &hooks,
+        );
+        assert_eq!(sent.len(), 2);
+        assert_eq!(guard.finish_asks, 1, "only the answer the hook let through");
     }
 
     #[test]
@@ -3476,6 +3972,7 @@ mod tests {
             },
             |_call, _force| Approval::Allow,
             &NoHooks,
+            &mut NoGuard,
             &no_sessions,
         );
         let events = drain(&mut rx);

@@ -267,8 +267,9 @@ impl Session<'_> {
                 false
             }
             StreamEvent::HookNote { label, text } => {
-                // A lifecycle hook injected conversation text mid-turn
-                // (docs/hooks.md): finalise the assistant run before it —
+                // A lifecycle hook — or the task guard — injected
+                // conversation text mid-turn (docs/hooks.md,
+                // docs/task-tools.md): finalise the assistant run before it —
                 // invariant 4's flush-before-you-interleave, so the
                 // continuation that may follow streams as its own message —
                 // and record the cell-less item the transcript shows and the
