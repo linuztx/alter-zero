@@ -19,6 +19,15 @@ release heading when a version is cut.
   publishing stays limited to loopback ports 8080/8888 unless configured with
   `docker/run.sh --port`. No additional services are started.
 
+### Fixed
+
+- **Ollama Cloud's internal server errors are retried.** Ollama Cloud
+  sometimes fails a request with an error inside an otherwise successful
+  response, usually before any output, and the same request then succeeds.
+  These arrived as `HTTP 0: Internal Server Error` and ended the turn
+  outright; they are now treated as the server errors they are and retried
+  like any other (`docs/ollama.md`).
+
 ## [0.10.0] - 2026-09-30
 
 ### Added

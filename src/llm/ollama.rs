@@ -619,6 +619,25 @@ fn error_text(error: &Value) -> String {
         .map_or_else(|| error.to_string(), str::to_string)
 }
 
+/// The HTTP status an in-stream error frame stands for. The frame arrives
+/// inside a `200`, so the transport has no status of its own to report; an
+/// `Internal Server Error` is the server failing — Ollama Cloud does so, often
+/// before any output, and the same request then succeeds — so it reads as a
+/// `500` the content-free retry covers (`docs/ollama.md`). Anything else (a
+/// missing model, a capability refusal) is the request's own problem: `0`,
+/// surfaced at once.
+#[must_use]
+pub fn stream_error_status(message: &str) -> u16 {
+    if message
+        .to_ascii_lowercase()
+        .contains("internal server error")
+    {
+        500
+    } else {
+        0
+    }
+}
+
 // ---------------------------------------------------------------------------
 // The catalog
 // ---------------------------------------------------------------------------
@@ -1308,6 +1327,29 @@ mod tests {
         assert!(
             matches!(&steps[0], Step::Failed(m) if m == "model 'nope:latest' not found"),
             "{steps:?}"
+        );
+    }
+
+    #[test]
+    fn an_in_stream_internal_server_error_reads_as_a_retryable_500() {
+        // Ollama Cloud fails a request with an `{"error": …}` frame inside a
+        // 200 stream, often before any output — measured on gpt-oss:120b, a
+        // replay of the same request then succeeding. A server failure the
+        // content-free retry should cover, not a status-0 error to surface.
+        let status = stream_error_status("Internal Server Error (ref: 47c23eb6-3c0d)");
+        assert_eq!(status, 500);
+        assert!(crate::llm::retry::is_retryable(
+            &crate::llm::LlmError::Api {
+                status,
+                body: String::new(),
+            }
+        ));
+        // Everything else a stream can say is the request's own problem, and
+        // retrying it would only fail the same way.
+        assert_eq!(stream_error_status("model 'nope:latest' not found"), 0);
+        assert_eq!(
+            stream_error_status("registry.ollama.ai/library/gemma3:270m does not support tools"),
+            0
         );
     }
 

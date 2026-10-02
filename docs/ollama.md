@@ -316,7 +316,15 @@ wires. `ChatAccumulator` folds it:
   tokenizer estimate.
 - **An in-band `{"error": …}` line** (a 200 that fails mid-stream) fails the
   turn; a non-2xx status arrives from the transport as an ordinary API error
-  and is explained below.
+  and is explained below. The line has no status of its own, so one reading
+  `Internal Server Error` is classified as the `500` it is
+  (`ollama::stream_error_status`) and retried like one when nothing has
+  streamed yet. Ollama Cloud sends exactly that, usually as a stream's
+  first line, and the same request then succeeds: measured on
+  `gpt-oss:120b`, it used to end roughly one long agentic turn in three as
+  `HTTP 0: Internal Server Error`, a status no retry rule matched. Any other
+  in-band error (a missing model, a capability refusal) stays status `0`
+  and surfaces at once, since a retry would only fail the same way.
 
 `accept: application/x-ndjson` names what the request expects.
 

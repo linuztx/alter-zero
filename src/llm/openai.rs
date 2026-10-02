@@ -787,7 +787,7 @@ fn drain_ollama(
             Step::Continue => SseStep::Continue,
             Step::Done => SseStep::Done,
             Step::Failed(message) => SseStep::Fail(LlmError::Api {
-                status: 0,
+                status: super::ollama::stream_error_status(&message),
                 body: message,
             }),
         }

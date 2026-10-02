@@ -610,7 +610,11 @@ The stream is NDJSON over the shared `pump_lines`, a tool call landing
 tool, usage the final frame's `prompt_eval_count`/`eval_count` (verified to
 report the whole prompt on a cache hit), and the machine-shaped refusals —
 server not running, model not pulled, `does not support tools/thinking`, an
-image on a blind model — rewritten into what to do. `tests/live_ollama.rs`
+image on a blind model — rewritten into what to do, while an in-band
+`{"error": "Internal Server Error …"}` frame (Ollama Cloud's, usually a
+stream's first line, the same request then succeeding) reads as the `500`
+it is (`ollama::stream_error_status`) so the content-free retry covers it,
+where status `0` matched no retry rule and ended the turn. `tests/live_ollama.rs`
 drives it against a real server; `smoke.sh` unsets `OLLAMA_HOST` beside its
 key scrub for hermeticity; the **Ctrl+T thinking-mode
 cycle** (a reasoning-capable model's effort — detected per model from the
