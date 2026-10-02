@@ -250,10 +250,15 @@ pub fn run_agent(
                 messages.push(ChatMessage::user(&note));
             }
         }
+        // A spent budget leaves the model one request, to answer in; a guard
+        // note asking for a task update there could only be refused, and a
+        // continuation after the answer would end the turn on the limit
+        // error instead (docs/task-tools.md).
+        let budget_spent = max_tool_calls > 0 && used_calls >= max_tool_calls;
         // The guard's note (docs/task-tools.md) — a reminder about the work
         // so far — sits after the results and notices it is about and ahead
         // of whatever the user just said, which stays the last thing read.
-        if let Some(note) = guard.before_round() {
+        if !budget_spent && let Some(note) = guard.before_round() {
             push_guard_note(tx, messages, note);
         }
         for input in steered {
@@ -266,6 +271,23 @@ pub fn run_agent(
         }
         match round(messages) {
             RoundOutcome::Complete { text } => {
+                // The guard's word first (docs/task-tools.md): a turn that
+                // planned with the task tools must not end with its plan
+                // silently stale. The same continuation as a hook's block —
+                // the answer stands, the note is the next user message — and
+                // asked ahead of the Stop hooks, so they judge the answer
+                // that really ends the turn rather than firing on one the
+                // guard sends back to work.
+                if !cancel.is_cancelled()
+                    && !budget_spent
+                    && let Some(note) = guard.before_finish()
+                {
+                    if !text.trim().is_empty() {
+                        messages.push(ChatMessage::new("assistant", &text));
+                    }
+                    push_guard_note(tx, messages, note);
+                    continue;
+                }
                 // `Stop` / `SubagentStop` (docs/hooks.md), fired where "the
                 // model finished answering" is native — and *only* here:
                 // never on a cancel (Claude Code returns before stop hooks
@@ -296,20 +318,6 @@ pub fn run_agent(
                     }
                     messages.push(ChatMessage::user(&feedback));
                     stop_hook_active = true;
-                    continue;
-                }
-                // The guard's last word (docs/task-tools.md), asked only once
-                // the user's own Stop hooks let the turn end: a turn that
-                // planned with the task tools must not end with its plan
-                // silently stale. The same continuation as a hook's block —
-                // the answer stands, the note is the next user message.
-                if !cancel.is_cancelled()
-                    && let Some(note) = guard.before_finish()
-                {
-                    if !text.trim().is_empty() {
-                        messages.push(ChatMessage::new("assistant", &text));
-                    }
-                    push_guard_note(tx, messages, note);
                     continue;
                 }
                 let _ = tx.send(StreamEvent::StreamDone);
@@ -3646,6 +3654,18 @@ mod tests {
     /// guard.
     fn guarded_turn(
         rounds: Vec<RoundOutcome>,
+        guard: ScriptedGuard,
+        pending: impl FnMut() -> Vec<PendingInput>,
+        approve: impl FnMut(&ToolCallRequest, bool) -> Approval,
+        hooks: &dyn HookSink,
+    ) -> (Vec<StreamEvent>, Vec<Vec<ChatMessage>>, ScriptedGuard) {
+        guarded_turn_capped(MAX_TOOL_ITERATIONS, rounds, guard, pending, approve, hooks)
+    }
+
+    /// [`guarded_turn`] under a `max_tool_calls` budget of its own.
+    fn guarded_turn_capped(
+        max_tool_calls: usize,
+        rounds: Vec<RoundOutcome>,
         mut guard: ScriptedGuard,
         mut pending: impl FnMut() -> Vec<PendingInput>,
         approve: impl FnMut(&ToolCallRequest, bool) -> Approval,
@@ -3657,7 +3677,7 @@ mod tests {
         run_agent(
             &tx,
             &CancelToken::new(),
-            MAX_TOOL_ITERATIONS,
+            max_tool_calls,
             &mut vec![ChatMessage::user("build it")],
             |msgs| {
                 sent.borrow_mut().push(msgs.to_vec());
@@ -3906,9 +3926,40 @@ mod tests {
     }
 
     #[test]
-    fn a_stop_hook_has_its_say_before_the_guard() {
-        // The user's own Stop hook first (docs/hooks.md); the built-in guard
-        // is asked only when the hook lets the turn end.
+    fn the_guard_has_its_say_before_the_stop_hook() {
+        // The user's Stop hook judges the turn's real final answer: an
+        // answer the guard sends back to work is not the end of the turn, so
+        // the hook must not fire on it — a notify-on-done hook would announce
+        // a turn still running, then fire again when it did end.
+        let hooks = FakeHooks::default();
+        let (_, sent, guard) = guarded_turn(
+            vec![
+                RoundOutcome::Complete {
+                    text: "done".to_string(),
+                },
+                RoundOutcome::Complete {
+                    text: "marked them".to_string(),
+                },
+            ],
+            ScriptedGuard {
+                finishes: vec![Some("tasks are still open")],
+                ..ScriptedGuard::default()
+            },
+            Vec::new,
+            |_, _| Approval::Allow,
+            &hooks,
+        );
+        assert_eq!(sent.len(), 2);
+        assert_eq!(guard.finish_asks, 2);
+        assert_eq!(
+            hooks.stop_seen(),
+            vec![(false, "marked them".to_string())],
+            "the hook saw only the answer that ended the turn"
+        );
+    }
+
+    #[test]
+    fn a_stop_hook_block_still_continues_a_turn_the_guard_let_end() {
         let hooks = FakeHooks {
             stops: std::sync::Mutex::new(vec![Some("run the tests".to_string())]),
             ..FakeHooks::default()
@@ -3928,7 +3979,46 @@ mod tests {
             &hooks,
         );
         assert_eq!(sent.len(), 2);
-        assert_eq!(guard.finish_asks, 1, "only the answer the hook let through");
+        assert_eq!(guard.finish_asks, 2, "the guard is asked at every answer");
+        assert_eq!(hooks.stop_seen().len(), 2);
+    }
+
+    #[test]
+    fn the_guard_stays_quiet_once_the_tool_budget_is_spent() {
+        // A spent budget leaves the model one request, to answer in: a note
+        // asking for a taskupdate there could only be refused, and a
+        // continuation after the answer would turn a clean finish into the
+        // "Stopped after N tool calls" error.
+        let bash = vec![call("c1", "bash", r#"{"command":"ls"}"#)];
+        let update = vec![call("c2", "taskupdate", r#"{"taskId":"1"}"#)];
+        let (events, sent, guard) = guarded_turn_capped(
+            1,
+            vec![
+                tool_round(&bash),
+                RoundOutcome::Complete {
+                    text: "done".to_string(),
+                },
+                tool_round(&update),
+            ],
+            ScriptedGuard {
+                rounds: vec![None, Some("your list went stale")],
+                finishes: vec![Some("tasks are still open")],
+                ..ScriptedGuard::default()
+            },
+            Vec::new,
+            |_, _| Approval::Allow,
+            &NoHooks,
+        );
+        assert_eq!(sent.len(), 2, "no continuation");
+        assert!(
+            !transcript(&sent[1])
+                .iter()
+                .any(|(_, text)| text == "your list went stale"),
+            "no reminder in the answer-only request"
+        );
+        assert_eq!(guard.finish_asks, 0);
+        assert!(matches!(events.last(), Some(StreamEvent::StreamDone)));
+        assert!(!events.iter().any(|e| matches!(e, StreamEvent::Error(_))));
     }
 
     #[test]

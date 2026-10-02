@@ -1706,8 +1706,9 @@ tests). Between rounds it sends a `<system-reminder>` carrying the
 ignored reminder returning after 3, 6, then 12 more rounds; and when the
 model answers over open tasks on a turn that wrote to the list, the answer
 stands but the turn continues with the reminder as its next user message —
-the `Stop`-hook continuation, built in, asked after the user's own `Stop`
-hooks, at most twice per turn and the second only after more work, never on
+the `Stop`-hook continuation, built in, asked before the user's own `Stop`
+hooks (so they judge the answer that really ends the turn) and never once
+the tool-call budget is spent, at most twice per turn and the second only after more work, never on
 a turn whose user refused a call. A reminder rides `StreamEvent::HookNote`
 labelled `Task reminder`, so it records as the cell-less
 `HistoryItem::HookNote`: Ctrl+O shows it, `/resume` keeps it, and every

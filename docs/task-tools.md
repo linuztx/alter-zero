@@ -179,8 +179,10 @@ Subagents, the `/compact` backend and the tests pass `NoGuard`. Two rules:
   tasks are still open, and this turn wrote to the list, the reply stands
   but the turn does not end. The reminder goes in as the next user message
   and the loop runs another round — the `Stop` hook's continuation
-  (`docs/hooks.md`), built in, and consulted after the user's own `Stop`
-  hooks. A plain answer right after it ends the turn whatever the list says;
+  (`docs/hooks.md`), built in, and consulted **before** the user's own
+  `Stop` hooks, so a hook judges the answer that really ends the turn:
+  asked after them, a notify-on-done hook fired on an answer the guard then
+  sent back to work, and again at the real end. A plain answer right after it ends the turn whatever the list says;
   it comes back only if the model has worked since, and **at most twice per
   turn**. The second chance is the live finding: gpt-oss answered the first
   reminder of a plan-then-stop turn by starting the work, then ended again
@@ -191,6 +193,11 @@ Subagents, the `/compact` backend and the tests pass `NoGuard`. Two rules:
   where the user refused a call — a permission rejection, a hook block, a
   declined question — because that model was told to stop and wait, and a
   nudge to continue would overrule the user.
+
+Neither rule fires once the `/settings` **Max tool calls** budget is spent.
+The model then gets one request to answer in: a reminder there asks for a
+`taskupdate` the budget refuses, and a continuation after the answer ends the
+turn on the limit error instead of the answer.
 
 The texts are short and name the action. The list is `tasklist`'s own lines,
 so the model reads the shape it already knows:
