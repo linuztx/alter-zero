@@ -463,20 +463,23 @@ impl TaskStore {
         let blocks_ids = parse_dependency_ids(self, id, args.add_blocks.as_deref())?;
         let blocked_by_ids = parse_dependency_ids(self, id, args.add_blocked_by.as_deref())?;
 
+        // A blank text field is no value at all: a model that fills every
+        // field of the schema sends "" for the ones it leaves alone, and
+        // taking that literally blanked the subject on the checklist.
+        let given = |value: Option<String>| value.filter(|v| !v.trim().is_empty());
         let mut fields: Vec<&str> = Vec::new();
         {
             let task = &mut self.tasks[index];
-            if let Some(subject) = args.subject.filter(|s| *s != task.subject) {
+            if let Some(subject) = given(args.subject).filter(|s| *s != task.subject) {
                 task.subject = subject;
                 fields.push("subject");
             }
-            if let Some(description) = args.description.filter(|d| *d != task.description) {
+            if let Some(description) = given(args.description).filter(|d| *d != task.description) {
                 task.description = description;
                 fields.push("description");
             }
-            if let Some(form) = args
-                .active_form
-                .filter(|f| task.active_form.as_ref() != Some(f))
+            if let Some(form) =
+                given(args.active_form).filter(|f| task.active_form.as_ref() != Some(f))
             {
                 task.active_form = Some(form);
                 fields.push("activeForm");
@@ -924,6 +927,34 @@ mod tests {
         assert_eq!(task.subject, "b");
         assert_eq!(task.description, "new");
         assert_eq!(task.active_form.as_deref(), Some("Doing b"));
+        assert_eq!(task.status, TaskStatus::Completed);
+    }
+
+    #[test]
+    fn blank_update_fields_change_nothing() {
+        // gpt-oss:120b fills every field of the schema and sends "" for the
+        // ones it means to leave alone — this exact call, live — which
+        // blanked the subject on the checklist and in the task reminder. A
+        // blank value is no value: create already refuses a blank subject
+        // and drops a blank activeForm.
+        let mut store = TaskStore::new();
+        store
+            .run_create(
+                r#"{"subject":"Serve it","description":"On port 3000","activeForm":"Serving it"}"#,
+            )
+            .unwrap();
+        assert_eq!(
+            store
+                .run_update(
+                    r##"{"taskId":"#1","status":"completed","activeForm":"","description":" ","subject":""}"##
+                )
+                .unwrap(),
+            "Updated task #1 status"
+        );
+        let task = store.get(1).unwrap();
+        assert_eq!(task.subject, "Serve it");
+        assert_eq!(task.description, "On port 3000");
+        assert_eq!(task.active_form.as_deref(), Some("Serving it"));
         assert_eq!(task.status, TaskStatus::Completed);
     }
 

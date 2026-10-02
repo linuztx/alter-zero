@@ -49,7 +49,12 @@ the schema honest — what the model can send is what the feature does.
   `status` (`pending`/`in_progress`/`completed`/`deleted`)/`addBlocks`/
   `addBlockedBy`. Result: `Updated task #3 {changed fields}`; unknown id:
   `Task #9 not found`. `deleted` removes the task permanently and scrubs it
-  from every other task's dependency list.
+  from every other task's dependency list. A **blank** `subject`,
+  `description` or `activeForm` changes nothing — the create's own rule for
+  a blank subject and activeForm — because a model that fills every field of
+  the schema sends `""` for the ones it means to leave alone (gpt-oss:120b,
+  live: `{"taskId":"#1","status":"completed","subject":"",…}`), and taking
+  that literally blanked the row on the checklist.
 
 All the texts above are Claude Code's own result strings, so a model trained on
 them is at home. Task ids count up from a **high-water mark** that survives

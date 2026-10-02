@@ -30,6 +30,13 @@ release heading when a version is cut.
   publishing stays limited to loopback ports 8080/8888 unless configured with
   `docker/run.sh --port`. No additional services are started.
 
+### Fixed
+
+- **A task update no longer blanks the task.** A model that fills every
+  field of the `taskupdate` schema sends empty strings for the fields it
+  means to leave alone, which erased the task's subject from the checklist.
+  An empty subject, description or active form now changes nothing.
+
 ## [0.10.0] - 2026-09-30
 
 ### Added
