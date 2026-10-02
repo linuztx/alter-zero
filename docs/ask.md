@@ -51,7 +51,9 @@ park until the user decides.
     `chat_result` — stop-and-wait instructions; `timed_out_display`/
     `timed_out_result` — the keep-working one);
   - `AskGate` — the `Arc<Mutex<…>> + Condvar` sibling of `PermissionGate`:
-    `next_id` → `resolve(id, AskDecision)` → `wait(id, cancelled)`.
+    `next_id` → `resolve(id, AskDecision)` → `wait(id, cancelled)`;
+  - `AskTimer` — the question timeout's idle clock, pure over injected
+    instants (*The timeout*, below).
 
 - **`llm` half** — `tools::ask_spec()` (the function definition, wire name
   `askuserquestion`, offered only when `LlmBackend::with_ask` attached a gate
@@ -151,8 +153,9 @@ park until the user decides.
   `StreamEvent::AskUser` opens the prompt; `Action::ResolveAsk` posts the
   decision on the gate; the loop bottom releases abandoned requests as
   `Declined` (the permission release's twin) and `/clear` clears the board.
-  The question's **idle clock** (`tui::ask`) runs beside it and posts
-  `TimedOut` when nobody touches a key for the timeout.
+  The question's **idle clock** (`ask::AskTimer`, read by the draw tick in
+  `tui::ask`) runs beside it and posts `TimedOut` when nobody touches a key
+  for the timeout.
 
 - **The dummy demo** — a `Play::Asked` scenario (cue: "ask" + "question")
   drives the whole round trip offline: three questions — single-select,
@@ -167,7 +170,7 @@ model calls askuserquestion
   └─ execute closure → llm::ask::ask_user
        ├─ parse_questions ── error → ToolOutcome::error (model retries)
        ├─ tx.send(AskUser(request)) ─────────► loop: App::open_ask (modal up)
-       │                                      + the idle clock starts
+       │                                      + the next draw starts its idle clock
        └─ gate.wait(id) … blocked …          user answers / declines / chats
             ▲                                 └─ Action::ResolveAsk
             ├──────── gate.resolve(id, decision) ┘
@@ -246,19 +249,33 @@ available, and the turn keeps going.
   never — any value, which is how the smoke suite sits one out in eight
   seconds (Phase 128).
 
-The clock lives at the boundary (`tui::ask`) because time does — the toast
-deadline's pattern. `Session::ask_clock` is armed when a question arrives
-(`StreamEvent::AskUser` → `restart_ask_clock`), started over by every key or
-paste (`note_user_activity`), kept in step at the loop bottom
-(`sync_ask_clock`: armed while `App::has_pending_asks`, dropped once none
-waits) and checked by the draw tick **before** the paint (`tick_ask_clock`).
-Past the deadline `App::expire_asks` closes the modal — handing the composer
-draft back — and drops every queued question, and each decision goes up on
-the gate exactly as an answer would, waking the parked tool thread into
-`ask_user`'s `TimedOut` arm; that same frame paints the modal closed, and a
-permission prompt queued behind it opens. Before the deadline the open
-modal's remaining time is injected (`App::set_ask_remaining`) and a frame is
-kept pending a second away — at the deadline itself under an overlay, where
-none of it is on screen — so the expiry needs no input at all to fire. A
-timeout that lands under the Ctrl+O transcript closes the modal underneath
-it, and the transcript follows the turn as it carries on.
+The clock's rules are pure — `ask::AskTimer`, read with injected instants
+and unit-tested like everything else here — and only time itself lives at
+the boundary (`tui::ask`), the toast deadline's pattern. The timer keeps
+**when the wait started**, never a deadline: no wait is ever added to an
+`Instant`, so an `ALTER_ZERO_ASK_TIMEOUT_SECS` past anything a clock can
+reach reads as a very long countdown instead of overflowing. Each reading
+(`AskTimer::tick`) takes whether a question waits (`App::has_pending_asks`),
+the open one's id (a different one opening starts the wait over, so every
+question gets the whole wait on screen) and the row's wait, and answers
+`Idle`, `Running(left)` or `Expired(wait)`; `AskTimer::touch` is every key
+press or paste (`Session::note_user_activity`), and starts a running wait
+over without arming one when nothing waits. The draw tick reads it
+**before** the paint (`Session::tick_ask_clock`). Expired, `App::expire_asks`
+closes the modal — handing the composer draft back — and drops every queued
+question, and each decision goes up on the gate exactly as an answer would,
+from the loop's own thread, so a key and the expiry can never race; the
+parked tool thread wakes into `ask_user`'s `TimedOut` arm, that same frame
+paints the modal closed, and a permission prompt queued behind it opens.
+Running, the open modal's remaining time is injected
+(`App::set_ask_remaining`) and a frame is kept booked a second away — no
+later than the expiry, capped at an hour, under an overlay, where none of
+it is on screen and the status chain stops re-arming — so the expiry needs
+no input at all to fire. A timeout that lands under the Ctrl+O transcript
+closes the modal underneath it, and the transcript follows the turn as it
+carries on.
+
+The tool's own description says so too: the user "may instead decline, ask
+to chat, or not answer in time; the result then tells you how to proceed" —
+it used to promise that every unanswered outcome meant stop and wait, which a
+timeout's keep-working result now contradicts.

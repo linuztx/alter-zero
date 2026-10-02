@@ -626,6 +626,17 @@ which Ctrl+V reads the clipboard from.
   not only where the specs are offered; and the model picks a type from the
   `<system-reminder>` that carries the skill listing beside it, under one
   shared budget.
+- **Mid-turn questions** (`docs/ask.md`): Claude Code's `AskUserQuestion` —
+  the model asks one to four multiple-choice questions in an inline modal
+  (the permission prompt's sibling) and its turn blocks on the answers. A
+  decline or a `Chat about this` tells it to stop and wait; a question nobody
+  touches **times out** after ten idle minutes (every key or paste starts the
+  wait over, the modal's closing rule counts it down, the pure
+  `ask::AskTimer` keeping the rules; `/settings` → **Ask timeout**, where
+  `never` waits forever) and the agent keeps working without the user — any
+  answers given before they left included — told to take the safest, most
+  reversible option and state what it assumed. A permission prompt never
+  times out: nobody being there to refuse a write is no reason to approve it.
 - **Task tools** (`docs/task-tools.md`): Claude Code's structured task list —
   the model plans multi-step work with
   `taskcreate`/`taskget`/`tasklist`/`taskupdate` and the user watches a

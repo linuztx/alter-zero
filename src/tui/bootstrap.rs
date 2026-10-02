@@ -474,7 +474,7 @@ impl<'t> Session<'t> {
             burst: PasteBurst::new(),
             clocks: StatusClocks::started_now(),
             toast_deadline: None,
-            ask_clock: None,
+            ask_timer: alter_zero::ask::AskTimer::new(),
             bg_clocks: HashMap::new(),
             agent_clocks: HashMap::new(),
             agent_thinking_clocks: HashMap::new(),
@@ -970,10 +970,6 @@ impl<'t> Session<'t> {
             self.ask
                 .resolve(&id, alter_zero::ask::AskDecision::Declined);
         }
-        // The question timeout's clock follows whatever this iteration did to
-        // the questions: armed while one waits, dropped once none does
-        // (docs/ask.md).
-        self.sync_ask_clock();
         // Mirror the finished history to the session file (docs/resume.md):
         // append what this iteration added, rewrite on a backtrack truncation,
         // nothing when unchanged — so streaming chunks (which never touch history)

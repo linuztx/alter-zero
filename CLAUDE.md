@@ -1627,9 +1627,11 @@ while the model reads the schema's `{"answers": {question: labels},
 all replay exactly what was sent; abandoned requests (Esc-cancelled
 permission turns, `/clear`) release on the gate as declines at the loop
 bottom so no thread parks; and a question **nobody touches** times out —
-the boundary's idle clock (`tui::ask`, `Session::ask_clock`: armed when a
-question arrives, started over by **every key press or paste**, checked by
-the draw tick before the paint) runs `ask::DEFAULT_ASK_TIMEOUT` (ten
+the pure idle clock `ask::AskTimer` (keeping when the wait started, never a
+deadline, so no wait can overflow an `Instant`; started over by **every key
+press or paste** and by a different question opening; read with injected
+instants by the draw tick before the paint — `tui::ask`'s
+`Session::ask_timer`) runs `ask::DEFAULT_ASK_TIMEOUT` (ten
 minutes; the `/settings` **Ask timeout** row, `ALTER_ZERO_ASK_TIMEOUT_SECS`,
 `0` = never) and then `App::expire_asks` resolves the open modal and every
 queued question `AskDecision::TimedOut { answers, after }` — the answers
@@ -1639,7 +1641,9 @@ short keep-working result (`ask::timed_out_result`: the user is not
 available, continue without them on the safest, most reversible option,
 state the assumptions, don't ask again until the user writes), the modal's
 closing rule counting the wait down meanwhile (`── continues without you in
-9:41 ─`, amber in its last minute; `smoke.sh` Phase 128); the offline dummy's `Play::Asked` scenario (cue
+9:41 ─`, amber in its last minute; `smoke.sh` Phase 128, Ctrl+D proving
+the model read it), and the tool's own description saying the user may
+*not answer in time* and that the result then says how to proceed; the offline dummy's `Play::Asked` scenario (cue
 "ask" + "question") drives the whole round trip through the real
 `ask_user` mapping — three questions: single-select coffee, multi-select
 demo topics, preview+notes code style) in `docs/ask.md`; and the **task

@@ -347,7 +347,8 @@ pub fn ask_spec() -> Value {
          requirements, or picking an option you cannot resolve yourself. Each \
          question shows 2-4 options plus an automatic free-text entry — never \
          add a catch-all \"Other\" option yourself. The user may instead \
-         decline or ask to chat; the result then tells you to stop and wait. \
+         decline, ask to chat, or not answer in time; the result then tells \
+         you how to proceed. \
          Do not use this for questions you can answer by exploring the code, \
          or for permission to proceed with the obvious next step.",
         json!({
@@ -2876,6 +2877,19 @@ mod tests {
             !desc.contains("the result reports what they chose"),
             "got {desc}"
         );
+    }
+
+    #[test]
+    fn ask_description_admits_a_question_can_go_unanswered() {
+        // A question nobody answers times out and its result says to keep
+        // working (docs/ask.md) — so the description can no longer promise
+        // that every unanswered outcome means stop and wait.
+        let desc = ask_spec()["function"]["description"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(desc.contains("not answer in time"), "got {desc}");
+        assert!(!desc.contains("stop and wait"), "got {desc}");
     }
 
     #[test]

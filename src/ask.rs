@@ -348,6 +348,92 @@ pub fn timed_out_result(answers: &[AskAnswer], after: Duration) -> String {
     )
 }
 
+/// One reading of the [`AskTimer`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AskClock {
+    /// No question waits, or the wait is `never`: nothing counts down.
+    Idle,
+    /// A question waits and has this long left — the modal's countdown.
+    Running(Duration),
+    /// The user has been idle for the whole wait, which this names: every
+    /// waiting question resolves [`AskDecision::TimedOut`].
+    Expired(Duration),
+}
+
+/// The idle clock over waiting questions (`docs/ask.md`) — pure, the instants
+/// injected by the boundary that owns it (the draw tick reads it, the key and
+/// paste paths [`touch`](Self::touch) it), so every rule is unit-tested with
+/// no thread and no terminal.
+///
+/// It keeps **when the wait started**, never a deadline, so no wait is ever
+/// added to an `Instant`: a `ALTER_ZERO_ASK_TIMEOUT_SECS` no clock can reach
+/// reads as running rather than overflowing. One clock covers every waiting
+/// question, open or queued behind another modal, because what it measures is
+/// the **user's** absence: it starts at the first reading with one waiting,
+/// starts over when a different question opens (each gets the whole wait on
+/// screen) and on every key, and runs out only once the wait passes with
+/// nobody at the keyboard.
+#[derive(Debug, Clone, Default)]
+pub struct AskTimer {
+    /// When the wait last (re)started — `None` while nothing waits.
+    since: Option<std::time::Instant>,
+    /// The open question's id at the last reading: a different one opening
+    /// starts the wait over.
+    open: Option<String>,
+}
+
+impl AskTimer {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// A key press or a paste: someone is at the keyboard, so a running wait
+    /// starts over. With nothing waiting it arms nothing — a question that
+    /// arrives later starts its own wait.
+    pub fn touch(&mut self, now: std::time::Instant) {
+        if self.since.is_some() {
+            self.since = Some(now);
+        }
+    }
+
+    /// Read the clock at `now`: `waiting` is whether any question waits (open
+    /// or queued), `open` the open one's id, `wait` the session's (`None` is
+    /// never). Expiry rests the clock — the caller times every waiting
+    /// question out, and the next one starts fresh.
+    pub fn tick(
+        &mut self,
+        waiting: bool,
+        open: Option<&str>,
+        wait: Option<Duration>,
+        now: std::time::Instant,
+    ) -> AskClock {
+        let Some(wait) = wait.filter(|_| waiting) else {
+            self.rest();
+            return AskClock::Idle;
+        };
+        let since = match self.since {
+            Some(since) if self.open.as_deref() == open => since,
+            _ => {
+                self.open = open.map(str::to_string);
+                *self.since.insert(now)
+            }
+        };
+        match wait.checked_sub(now.saturating_duration_since(since)) {
+            Some(left) if !left.is_zero() => AskClock::Running(left),
+            _ => {
+                self.rest();
+                AskClock::Expired(wait)
+            }
+        }
+    }
+
+    fn rest(&mut self) {
+        self.since = None;
+        self.open = None;
+    }
+}
+
 /// State shared between the blocked tool thread and the event loop.
 #[derive(Debug, Default)]
 struct GateInner {
@@ -696,6 +782,146 @@ mod tests {
         let value: serde_json::Value = serde_json::from_str(json).unwrap();
         assert_eq!(value["answers"]["Pick a season?"], "Fall");
         assert!(value["answers"].get("Pick a snack?").is_none());
+    }
+
+    // --- the idle clock (docs/ask.md) ---
+
+    const TEN_MINUTES: Duration = Duration::from_secs(600);
+
+    /// A clock reading taken `secs` after `start`.
+    fn at(start: std::time::Instant, secs: u64) -> std::time::Instant {
+        start + Duration::from_secs(secs)
+    }
+
+    #[test]
+    fn the_clock_is_idle_while_nothing_waits_or_the_timeout_is_never() {
+        let start = std::time::Instant::now();
+        let mut timer = AskTimer::new();
+        assert_eq!(
+            timer.tick(false, None, Some(TEN_MINUTES), start),
+            AskClock::Idle
+        );
+        assert_eq!(
+            timer.tick(true, Some("ask_0"), None, at(start, 100_000)),
+            AskClock::Idle,
+            "`never` waits forever"
+        );
+    }
+
+    #[test]
+    fn the_clock_counts_down_from_its_first_reading_and_expires_on_the_wait() {
+        let start = std::time::Instant::now();
+        let mut timer = AskTimer::new();
+        assert_eq!(
+            timer.tick(true, Some("ask_0"), Some(TEN_MINUTES), start),
+            AskClock::Running(TEN_MINUTES)
+        );
+        assert_eq!(
+            timer.tick(true, Some("ask_0"), Some(TEN_MINUTES), at(start, 599)),
+            AskClock::Running(Duration::from_secs(1))
+        );
+        assert_eq!(
+            timer.tick(true, Some("ask_0"), Some(TEN_MINUTES), at(start, 600)),
+            AskClock::Expired(TEN_MINUTES),
+            "the expiry names the wait the cell and the model are told"
+        );
+    }
+
+    #[test]
+    fn a_key_starts_the_wait_over_so_a_present_user_is_never_cut_off() {
+        let start = std::time::Instant::now();
+        let mut timer = AskTimer::new();
+        let _ = timer.tick(true, Some("ask_0"), Some(TEN_MINUTES), start);
+        timer.touch(at(start, 540)); // typing an answer at minute nine
+        assert_eq!(
+            timer.tick(true, Some("ask_0"), Some(TEN_MINUTES), at(start, 600)),
+            AskClock::Running(Duration::from_secs(540))
+        );
+        assert_eq!(
+            timer.tick(true, Some("ask_0"), Some(TEN_MINUTES), at(start, 1_140)),
+            AskClock::Expired(TEN_MINUTES)
+        );
+    }
+
+    #[test]
+    fn a_key_with_nothing_waiting_arms_nothing() {
+        let start = std::time::Instant::now();
+        let mut timer = AskTimer::new();
+        timer.touch(start);
+        assert_eq!(
+            timer.tick(true, Some("ask_0"), Some(TEN_MINUTES), at(start, 3_000)),
+            AskClock::Running(TEN_MINUTES),
+            "a question arriving later starts its own wait, not the stale key's"
+        );
+    }
+
+    #[test]
+    fn a_new_question_opening_gets_the_whole_wait() {
+        let start = std::time::Instant::now();
+        let mut timer = AskTimer::new();
+        let _ = timer.tick(true, Some("ask_0"), Some(TEN_MINUTES), start);
+        assert_eq!(
+            timer.tick(true, Some("ask_1"), Some(TEN_MINUTES), at(start, 300)),
+            AskClock::Running(TEN_MINUTES)
+        );
+    }
+
+    #[test]
+    fn a_question_queued_behind_another_modal_counts_down_too() {
+        // Queued behind a permission prompt there is no open question, but
+        // one waits all the same — an absent user must not wedge the agent.
+        let start = std::time::Instant::now();
+        let mut timer = AskTimer::new();
+        let _ = timer.tick(true, None, Some(TEN_MINUTES), start);
+        assert_eq!(
+            timer.tick(true, None, Some(TEN_MINUTES), at(start, 600)),
+            AskClock::Expired(TEN_MINUTES)
+        );
+    }
+
+    #[test]
+    fn the_clock_rests_after_expiring_and_rearms_for_the_next_question() {
+        let start = std::time::Instant::now();
+        let mut timer = AskTimer::new();
+        let _ = timer.tick(true, Some("ask_0"), Some(TEN_MINUTES), start);
+        let _ = timer.tick(true, Some("ask_0"), Some(TEN_MINUTES), at(start, 600));
+        assert_eq!(
+            timer.tick(false, None, Some(TEN_MINUTES), at(start, 601)),
+            AskClock::Idle
+        );
+        assert_eq!(
+            timer.tick(true, Some("ask_1"), Some(TEN_MINUTES), at(start, 900)),
+            AskClock::Running(TEN_MINUTES)
+        );
+    }
+
+    #[test]
+    fn a_changed_wait_applies_to_the_running_clock() {
+        let start = std::time::Instant::now();
+        let mut timer = AskTimer::new();
+        let _ = timer.tick(true, Some("ask_0"), Some(TEN_MINUTES), start);
+        let twenty = Duration::from_secs(1_200);
+        assert_eq!(
+            timer.tick(true, Some("ask_0"), Some(twenty), at(start, 600)),
+            AskClock::Running(TEN_MINUTES)
+        );
+    }
+
+    #[test]
+    fn an_enormous_wait_never_overflows_the_clock() {
+        // `ALTER_ZERO_ASK_TIMEOUT_SECS` takes any number: a wait no `Instant`
+        // can be pushed out by must read as running, never panic.
+        let start = std::time::Instant::now();
+        let mut timer = AskTimer::new();
+        let forever = Duration::from_secs(u64::MAX);
+        assert_eq!(
+            timer.tick(true, Some("ask_0"), Some(forever), start),
+            AskClock::Running(forever)
+        );
+        assert!(matches!(
+            timer.tick(true, Some("ask_0"), Some(forever), at(start, 600)),
+            AskClock::Running(_)
+        ));
     }
 
     // --- the gate ---

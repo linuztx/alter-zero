@@ -9,8 +9,9 @@ smoke_begin
 # of IDLENESS: the modal's closing rule counts down, a key press starts the
 # wait over, and once nothing is touched the question resolves unanswered —
 # the red "User did not finish answering within 8s" cell keeping the one
-# answer given — while the turn carries on to its closing reply and the
-# composer draft typed before the modal comes back.
+# answer given — while the turn carries on to its closing reply, the
+# composer draft typed before the modal comes back, and Ctrl+D shows the
+# model read the keep-working result rather than a stop-and-wait.
 S128="${S}_asktimeout"
 APP_AT="env $CFG_ENV_NOHIST ALTER_ZERO_STARTUP_DELAY_MS=800 ALTER_ZERO_ASK_TIMEOUT_SECS=8 $BIN"
 launch "$S128" 100 44 "$APP_AT"
@@ -41,6 +42,15 @@ carried="$(wait_pane 15 "$S128" -F "$SETTLED_REPLY")" ||
 settled="$(wait_settled 10 "$S128" -F "a draft typed while it asks")" ||
 	fail "the draft never came back to the composer"
 dump "timed out; the agent carried on and the draft is back" "$settled"
+# What the model read: the keep-working result with the answer it was given,
+# never the decline's stop-and-wait (Ctrl+D shows the context as sent).
+keys "$S128" C-d
+context="$(wait_pane 5 "$S128" -F "is not available")"
+dump "Ctrl+D — the tool result the model read" "$context"
+# The page hard-wraps mid-word under a two-space indent: join each wrapped
+# row back onto the one before it.
+context_flat="$(printf '%s' "$context" | sed -e ':a' -e 'N' -e '$!ba' -e 's/\n  //g')"
+keys "$S128" C-d
 tmux kill-session -t "$S128" 2>/dev/null
 
 note "the AskUserQuestion idle timeout — countdown, key restarts, expiry, the cell, the carry-on, the draft"
@@ -52,3 +62,7 @@ expect_has "$carried" -F "→ Latte" "the timeout cell dropped the answer given 
 expect_has "$carried" -F "carrying on without you" "the demo did not carry on after the timeout"
 expect_has "$settled" -F "❯ a draft typed while it asks" "the composer draft did not come back"
 expect_lacks "$settled" -F "continues without you in" "the countdown outlived its question"
+expect_has "$context_flat" -F "did not respond for 8s and is not available. Continue working without them" \
+	"the model did not read the keep-working result"
+expect_has "$context_flat" -F "Latte" "the model did not read the answer given before the user left"
+expect_lacks "$context_flat" -F "STOP what you are doing" "the model read the decline's stop-and-wait instead"
