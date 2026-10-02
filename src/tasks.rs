@@ -257,6 +257,14 @@ impl TaskStore {
             .collect()
     }
 
+    /// Is any task still to do — pending or in progress? What the task
+    /// guard reminds about ([`TaskGuard`]); an empty or all-✔ list has
+    /// nothing left to keep current.
+    #[must_use]
+    pub fn has_unfinished(&self) -> bool {
+        self.tasks.iter().any(|t| t.status != TaskStatus::Completed)
+    }
+
     /// Is the plan **finished** — non-empty with every task completed?
     /// Empty is not "finished" (there was never a plan). What
     /// [`retire_if_finished`](Self::retire_if_finished) acts on.
@@ -617,6 +625,110 @@ impl TaskRegistry {
         self.inner
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+}
+
+/// The Ctrl+O heading a task reminder's note wears — it rides
+/// [`crate::stream::StreamEvent::HookNote`], the one channel for text the
+/// loop adds to the conversation mid-turn (`docs/task-tools.md`).
+pub const TASK_REMINDER_LABEL: &str = "Task reminder";
+
+/// How many tool rounds may pass without a task call while some task is
+/// **in progress** before the guard reminds: one task can take a few rounds
+/// (write, run, fix). With nothing in progress the reminder is due after a
+/// single untracked round — work is happening outside the plan.
+pub const TASK_GUARD_IN_PROGRESS_ROUNDS: u32 = 3;
+
+/// The reminder's wording (`prompts/task_reminder.md`), `{tasks}` filled
+/// with the [`TaskStore::run_list`] lines the model already knows.
+const TASK_REMINDER_TEMPLATE: &str = include_str!("../prompts/task_reminder.md");
+
+/// The `<system-reminder>` that shows the model its live list and asks it to
+/// bring the list up to date ([`TaskGuard`], `docs/task-tools.md`).
+#[must_use]
+pub fn task_reminder(store: &TaskStore) -> String {
+    use crate::reminder::{REMINDER_CLOSE, REMINDER_OPEN};
+    let body = TASK_REMINDER_TEMPLATE
+        .trim()
+        .replace("{tasks}", &store.run_list());
+    format!("{REMINDER_OPEN}\n{body}\n{REMINDER_CLOSE}")
+}
+
+/// The **task guard** (`docs/task-tools.md`): one turn's watch over whether
+/// the model keeps its task list current. A weaker model plans with
+/// `taskcreate` and then works without ever calling `taskupdate`, leaving
+/// every task pending under finished work; the guard notices the tool
+/// rounds that pass without a task call and answers with [`task_reminder`].
+///
+/// - **Before a round** ([`before_round`](Self::before_round)): due after
+///   one untracked round when nothing is in progress, after
+///   [`TASK_GUARD_IN_PROGRESS_ROUNDS`] when something is — and an ignored
+///   reminder **backs off**, each repeat waiting twice as long as the last
+///   (1, 3, 7, 15 untracked rounds with nothing in progress), so a model that
+///   will not track is reminded a handful of times, not every round.
+/// - **At the turn's end** ([`at_turn_end`](Self::at_turn_end)): an answer
+///   given over untracked work, with tasks unfinished, is asked once more —
+///   **once per turn**, so the extra round can never become a loop.
+///
+/// Only unfinished lists are reminded about, and any task call — even a
+/// `tasklist` — resets the watch: the model is looking at its list.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TaskGuard {
+    /// Tool rounds since the last one that called a task tool.
+    untracked_rounds: u32,
+    /// Reminders sent before a round since the last task call.
+    nudges: u32,
+    /// Whether this turn's end has been reminded already.
+    end_reminded: bool,
+}
+
+impl TaskGuard {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Note one finished tool round: whether any of its calls was a task
+    /// tool call.
+    pub fn record_round(&mut self, touched_tasks: bool) {
+        if touched_tasks {
+            self.untracked_rounds = 0;
+            self.nudges = 0;
+        } else {
+            self.untracked_rounds = self.untracked_rounds.saturating_add(1);
+        }
+    }
+
+    /// The reminder owed before the next request, if one is due — counted
+    /// as sent.
+    pub fn before_round(&mut self, store: &TaskStore) -> Option<String> {
+        if !store.has_unfinished() {
+            return None;
+        }
+        let base = if store.counts().in_progress > 0 {
+            TASK_GUARD_IN_PROGRESS_ROUNDS
+        } else {
+            1
+        };
+        // base · (2^(n+1) − 1): the first reminder after `base` untracked
+        // rounds, each ignored one doubling the wait for the next.
+        let due = base.saturating_mul(2u32.saturating_pow(self.nudges.saturating_add(1)) - 1);
+        if self.untracked_rounds < due {
+            return None;
+        }
+        self.nudges = self.nudges.saturating_add(1);
+        Some(task_reminder(store))
+    }
+
+    /// The reminder owed when the model answers without calling a tool, if
+    /// it worked since its last task call and left tasks unfinished — at
+    /// most once per turn.
+    pub fn at_turn_end(&mut self, store: &TaskStore) -> Option<String> {
+        if self.end_reminded || self.untracked_rounds == 0 || !store.has_unfinished() {
+            return None;
+        }
+        self.end_reminded = true;
+        Some(task_reminder(store))
     }
 }
 
@@ -1127,6 +1239,174 @@ mod tests {
         let mut store = TaskStore::from_parts(store.tasks().to_vec(), 0);
         let text = create(&mut store, "again");
         assert_eq!(text, "Task #9 created successfully: again");
+    }
+
+    #[test]
+    fn has_unfinished_means_some_task_is_not_completed() {
+        let mut store = TaskStore::new();
+        assert!(!store.has_unfinished(), "an empty list has nothing left");
+        create(&mut store, "a");
+        assert!(store.has_unfinished());
+        store
+            .run_update(r#"{"taskId":"1","status":"in_progress"}"#)
+            .unwrap();
+        assert!(store.has_unfinished(), "a running task is unfinished");
+        store
+            .run_update(r#"{"taskId":"1","status":"completed"}"#)
+            .unwrap();
+        assert!(!store.has_unfinished());
+    }
+
+    #[test]
+    fn the_reminder_shows_the_live_list_inside_a_system_reminder() {
+        // The `tasklist` lines the model already knows, under the template's
+        // one-line instruction (`prompts/task_reminder.md`).
+        let mut store = store_of_three();
+        store
+            .run_update(r#"{"taskId":"1","status":"completed"}"#)
+            .unwrap();
+        store
+            .run_update(r#"{"taskId":"2","status":"in_progress"}"#)
+            .unwrap();
+        store
+            .run_update(r#"{"taskId":"3","addBlockedBy":["2"]}"#)
+            .unwrap();
+        assert_eq!(
+            task_reminder(&store),
+            "<system-reminder>\n\
+             Your task list:\n\
+             #1 [completed] a\n\
+             #2 [in_progress] b\n\
+             #3 [pending] c [blocked by #2]\n\
+             Update it now with taskupdate: completed for every finished task, \
+             in_progress for the one you are working on, deleted for any no \
+             longer needed. Never mention this reminder.\n\
+             </system-reminder>"
+        );
+    }
+
+    #[test]
+    fn the_guard_is_quiet_until_work_goes_untracked() {
+        let store = store_of_three();
+        let mut guard = TaskGuard::default();
+        assert_eq!(guard.before_round(&store), None, "the turn's first request");
+        assert_eq!(
+            guard.at_turn_end(&store),
+            None,
+            "a plain answer did no work"
+        );
+        guard.record_round(true); // the plan: a round of task calls
+        assert_eq!(
+            guard.before_round(&store),
+            None,
+            "the list was just touched"
+        );
+        assert_eq!(
+            guard.at_turn_end(&store),
+            None,
+            "planning and stopping to ask is not stale"
+        );
+    }
+
+    #[test]
+    fn work_with_nothing_in_progress_is_reminded_at_once() {
+        // The reported failure (gpt-oss:120b): the plan is made, then the
+        // work starts without a single task marked in_progress.
+        let store = store_of_three();
+        let mut guard = TaskGuard::default();
+        guard.record_round(true);
+        guard.record_round(false);
+        assert_eq!(guard.before_round(&store), Some(task_reminder(&store)));
+        assert_eq!(guard.before_round(&store), None, "once per due round");
+    }
+
+    #[test]
+    fn a_task_in_progress_earns_a_few_quiet_rounds() {
+        let mut store = store_of_three();
+        store
+            .run_update(r#"{"taskId":"1","status":"in_progress"}"#)
+            .unwrap();
+        let mut guard = TaskGuard::default();
+        guard.record_round(true);
+        for _ in 1..TASK_GUARD_IN_PROGRESS_ROUNDS {
+            guard.record_round(false);
+            assert_eq!(guard.before_round(&store), None);
+        }
+        guard.record_round(false);
+        assert_eq!(guard.before_round(&store), Some(task_reminder(&store)));
+    }
+
+    #[test]
+    fn an_ignored_reminder_backs_off() {
+        // A model that ignores the reminder is not nagged every round: each
+        // repeat waits twice as long as the last (1, then 2 more, then 4…).
+        let store = store_of_three();
+        let mut guard = TaskGuard::default();
+        let mut fired = Vec::new();
+        for round in 1..=15 {
+            guard.record_round(false);
+            if guard.before_round(&store).is_some() {
+                fired.push(round);
+            }
+        }
+        assert_eq!(fired, vec![1, 3, 7, 15]);
+    }
+
+    #[test]
+    fn touching_the_list_resets_the_backoff() {
+        let store = store_of_three();
+        let mut guard = TaskGuard::default();
+        guard.record_round(false);
+        assert!(guard.before_round(&store).is_some());
+        guard.record_round(false);
+        guard.record_round(true); // the model updated a task
+        guard.record_round(false);
+        assert!(
+            guard.before_round(&store).is_some(),
+            "the next stale round is due again at once"
+        );
+    }
+
+    #[test]
+    fn a_finished_or_empty_list_needs_no_reminder() {
+        let mut guard = TaskGuard::default();
+        guard.record_round(false);
+        assert_eq!(guard.before_round(&TaskStore::new()), None);
+        assert_eq!(guard.at_turn_end(&TaskStore::new()), None);
+        let mut done = TaskStore::new();
+        create(&mut done, "a");
+        done.run_update(r#"{"taskId":"1","status":"completed"}"#)
+            .unwrap();
+        assert_eq!(guard.before_round(&done), None);
+        assert_eq!(guard.at_turn_end(&done), None);
+    }
+
+    #[test]
+    fn ending_the_turn_over_untracked_work_is_reminded_once() {
+        let store = store_of_three();
+        let mut guard = TaskGuard::default();
+        guard.record_round(true);
+        guard.record_round(false);
+        assert!(guard.before_round(&store).is_some(), "the mid-turn nudge");
+        assert_eq!(
+            guard.at_turn_end(&store),
+            Some(task_reminder(&store)),
+            "ignored, so the turn's end asks again"
+        );
+        guard.record_round(false);
+        assert_eq!(guard.at_turn_end(&store), None, "once per turn");
+    }
+
+    #[test]
+    fn ending_the_turn_right_after_an_update_is_not_reminded() {
+        let mut store = store_of_three();
+        let mut guard = TaskGuard::default();
+        guard.record_round(false); // the work
+        guard.record_round(true); // then the update that recorded it
+        store
+            .run_update(r#"{"taskId":"1","status":"completed"}"#)
+            .unwrap();
+        assert_eq!(guard.at_turn_end(&store), None);
     }
 
     #[test]

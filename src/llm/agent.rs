@@ -163,6 +163,17 @@ pub enum PendingInput {
 /// header names the program its keys go to from the moment the call is
 /// announced, above its prompt and on a refused cell alike
 /// (`docs/interactive-shell.md`). One that knows no sessions keeps the id.
+///
+/// `tasks` is the session's task list, when the task tools are offered — the
+/// **task guard**'s view of it (`docs/task-tools.md`). A model that plans
+/// with `taskcreate` and then works without ever calling `taskupdate` is
+/// shown its live list in a `<system-reminder>` at the next round boundary
+/// (after the notices, before the user's own messages), and an answer given
+/// over untracked work with tasks unfinished buys the turn one more round
+/// carrying the same reminder. Both are recorded as
+/// [`StreamEvent::HookNote`]s, so the transcript shows them and every later
+/// turn replays them in place. `None` — a subagent, the `/compact` backend —
+/// runs the loop exactly as before.
 #[allow(clippy::too_many_arguments)] // the loop's full seam set (docs/agent-tool.md)
 pub fn run_agent(
     tx: &UnboundedSender<StreamEvent>,
@@ -176,11 +187,13 @@ pub fn run_agent(
     mut approve: impl FnMut(&ToolCallRequest, bool) -> Approval,
     hooks: &dyn HookSink,
     session_command: &dyn Fn(&str) -> Option<String>,
+    tasks: Option<&crate::tasks::TaskRegistry>,
 ) {
     let mut used_calls = 0usize;
     // True from the first Stop/SubagentStop-forced continuation on — the
     // payloads' loop-guard flag (docs/hooks.md).
     let mut stop_hook_active = false;
+    let mut task_guard = crate::tasks::TaskGuard::new();
     loop {
         if cancel.is_cancelled() {
             return;
@@ -188,23 +201,44 @@ pub fn run_agent(
         // Notices first, the user's own messages last: a completion note is a
         // *result*, belonging with the tool results it follows, while what the
         // user just said is the newest thing in the conversation and must be
-        // the last thing the model reads.
+        // the last thing the model reads. The task guard's reminder sits
+        // between them — it is about the work the results report, and it must
+        // not stand between the model and the user's newest words.
         let (notices, steered): (Vec<_>, Vec<_>) = pending_inputs()
             .into_iter()
             .partition(|input| matches!(input, PendingInput::Notice(_)));
-        for input in notices.into_iter().chain(steered) {
-            match input {
-                PendingInput::Notice(note) => messages.push(ChatMessage::user(&note)),
-                // The queued row above the user's box becomes a real bubble
-                // the moment the model actually has the text (docs/queue.md).
-                PendingInput::User(text) => {
-                    let _ = tx.send(StreamEvent::Steered { text: text.clone() });
-                    messages.push(ChatMessage::user(&text));
-                }
-            }
+        for input in notices {
+            take_pending(tx, messages, input);
+        }
+        // A reminder could only provoke a call a spent budget refuses.
+        if let Some(registry) = tasks
+            && budget_left(max_tool_calls, used_calls)
+            && let Some(reminder) = task_guard.before_round(&registry.snapshot())
+        {
+            push_task_reminder(tx, messages, reminder);
+        }
+        for input in steered {
+            take_pending(tx, messages, input);
         }
         match round(messages) {
             RoundOutcome::Complete { text } => {
+                // The task guard's turn-end check (docs/task-tools.md), ahead
+                // of the Stop hook so a user's hook fires once, on the answer
+                // that really ends the turn. An answer given over untracked
+                // work with tasks unfinished stays as an assistant message,
+                // the reminder follows as the next user message, and the same
+                // turn runs on — once per turn, never a loop.
+                if !cancel.is_cancelled()
+                    && let Some(registry) = tasks
+                    && budget_left(max_tool_calls, used_calls)
+                    && let Some(reminder) = task_guard.at_turn_end(&registry.snapshot())
+                {
+                    if !text.trim().is_empty() {
+                        messages.push(ChatMessage::new("assistant", &text));
+                    }
+                    push_task_reminder(tx, messages, reminder);
+                    continue;
+                }
                 // `Stop` / `SubagentStop` (docs/hooks.md), fired where "the
                 // model finished answering" is native — and *only* here:
                 // never on a cancel (Claude Code returns before stop hooks
@@ -259,7 +293,7 @@ pub fn run_agent(
                 // agentic task runs to its own end rather than being cut off
                 // part-way with its work half-done. The user's Esc is the
                 // stop button; the cap is for those who want a hard ceiling.
-                if max_tool_calls > 0 && used_calls >= max_tool_calls {
+                if !budget_left(max_tool_calls, used_calls) {
                     let _ = tx.send(StreamEvent::Error(limit_error(max_tool_calls)));
                     return;
                 }
@@ -659,6 +693,13 @@ pub fn run_agent(
                     messages.push(ChatMessage::tool_result(&call.id, &output));
                 }
                 messages.append(&mut attachments);
+                // Any task call — even a `tasklist` — means the model is
+                // looking at its list (docs/task-tools.md).
+                task_guard.record_round(
+                    allowed
+                        .iter()
+                        .any(|call| crate::tasks::is_task_tool(&call.name)),
+                );
                 // A cancel that landed during a tool run reaps us here rather
                 // than spending another round that would just return Cancelled.
                 if cancelled_mid_tools || cancel.is_cancelled() {
@@ -674,6 +715,46 @@ pub fn run_agent(
             }
         }
     }
+}
+
+/// Whether the turn may still make a tool call — always under the `0` of
+/// "no limit" (docs/settings.md).
+const fn budget_left(max_tool_calls: usize, used_calls: usize) -> bool {
+    max_tool_calls == 0 || used_calls < max_tool_calls
+}
+
+/// Fold one [`PendingInput`] into the next request: a notice silently, a
+/// user message announced as it is taken, so its queued row above the box
+/// becomes a real bubble the moment the model has the text (docs/queue.md).
+fn take_pending(
+    tx: &UnboundedSender<StreamEvent>,
+    messages: &mut Vec<ChatMessage>,
+    input: PendingInput,
+) {
+    match input {
+        PendingInput::Notice(note) => messages.push(ChatMessage::user(&note)),
+        PendingInput::User(text) => {
+            let _ = tx.send(StreamEvent::Steered { text: text.clone() });
+            messages.push(ChatMessage::user(&text));
+        }
+    }
+}
+
+/// Add the task guard's reminder to the conversation (docs/task-tools.md):
+/// as a user message on the wire, and as a [`StreamEvent::HookNote`] for the
+/// loop — the channel for text added mid-turn, which records it where the
+/// transcript shows it under [`crate::tasks::TASK_REMINDER_LABEL`] and every
+/// later turn's context replays it in place.
+fn push_task_reminder(
+    tx: &UnboundedSender<StreamEvent>,
+    messages: &mut Vec<ChatMessage>,
+    reminder: String,
+) {
+    messages.push(ChatMessage::user(&reminder));
+    let _ = tx.send(StreamEvent::HookNote {
+        label: crate::tasks::TASK_REMINDER_LABEL.to_string(),
+        text: reminder,
+    });
 }
 
 /// The `ToolStart` announcing `call`: the display name, the one-line header
@@ -778,6 +859,7 @@ mod tests {
             |_, _| Approval::Allow,
             hooks,
             &no_sessions,
+            None,
         );
         drain(&mut rx)
     }
@@ -920,6 +1002,7 @@ mod tests {
             |_call, _force| Approval::Allow,
             &NoHooks,
             &no_sessions,
+            None,
         );
         assert_eq!(drain(&mut rx), vec![StreamEvent::StreamDone]);
     }
@@ -1036,6 +1119,7 @@ mod tests {
             |_call, _force| Approval::Allow,
             hooks,
             &no_sessions,
+            None,
         );
         let result = messages
             .iter()
@@ -1086,6 +1170,7 @@ mod tests {
             |_call, _force| approval.clone(),
             hooks,
             &no_sessions,
+            None,
         );
         let result = messages
             .iter()
@@ -1145,6 +1230,7 @@ mod tests {
             |_call, _force| Approval::Allow,
             &hooks,
             &no_sessions,
+            None,
         );
         let events = drain(&mut rx);
         assert!(
@@ -1198,6 +1284,7 @@ mod tests {
             |_call, _force| Approval::Allow,
             &hooks,
             &no_sessions,
+            None,
         );
         assert_eq!(
             *rounds.borrow(),
@@ -1284,6 +1371,7 @@ mod tests {
                 |_call, _force| Approval::Allow,
                 &hooks,
                 &no_sessions,
+                None,
             );
             assert_eq!(hooks.stop_seen(), Vec::<(bool, String)>::new());
         }
@@ -1565,6 +1653,7 @@ mod tests {
                 |_call, _force| Approval::Allow,
                 &hooks,
                 &no_sessions,
+                None,
             );
             let events = drain(&mut rx);
             let truncated = events.iter().find_map(|e| match e {
@@ -1636,6 +1725,7 @@ mod tests {
             |_call, _force| Approval::Allow,
             &NoHooks,
             &no_sessions,
+            None,
         );
         let events = drain(&mut rx);
         assert_eq!(
@@ -1743,6 +1833,7 @@ mod tests {
                 |_call, _force| Approval::Allow,
                 &NoHooks,
                 &no_sessions,
+                None,
             );
             let events = drain(&mut rx);
             assert!(
@@ -1813,6 +1904,7 @@ mod tests {
             |_call, _force| Approval::Allow,
             &NoHooks,
             &no_sessions,
+            None,
         );
         let events = drain(&mut rx);
         let start = events
@@ -1886,6 +1978,7 @@ mod tests {
             |_call, _force| Approval::Allow,
             &NoHooks,
             &no_sessions,
+            None,
         );
         let events = drain(&mut rx);
         let start = events
@@ -1953,6 +2046,7 @@ mod tests {
             |_call, _force| Approval::Allow,
             &NoHooks,
             &no_sessions,
+            None,
         );
         let events = drain(&mut rx);
         // Right after the round's identity (its own test), the batch is
@@ -2042,6 +2136,7 @@ mod tests {
             |_call, _force| Approval::Allow,
             &NoHooks,
             &no_sessions,
+            None,
         );
         drain(&mut rx);
         // Round 1 saw [user]; round 2 saw [user, assistant(tool_calls), tool].
@@ -2064,6 +2159,7 @@ mod tests {
             |_call, _force| Approval::Allow,
             &NoHooks,
             &no_sessions,
+            None,
         );
         let events = drain(&mut rx);
         assert_eq!(events.len(), 1);
@@ -2086,6 +2182,7 @@ mod tests {
             |_call, _force| Approval::Allow,
             &NoHooks,
             &no_sessions,
+            None,
         );
         assert!(drain(&mut rx).is_empty(), "a cancel is a silent stop");
     }
@@ -2107,6 +2204,7 @@ mod tests {
             |_call, _force| Approval::Allow,
             &NoHooks,
             &no_sessions,
+            None,
         );
         assert!(drain(&mut rx).is_empty());
     }
@@ -2140,6 +2238,7 @@ mod tests {
             |_call, _force| Approval::Allow,
             &NoHooks,
             &no_sessions,
+            None,
         );
         assert_eq!(
             *ran.borrow(),
@@ -2188,6 +2287,7 @@ mod tests {
             |_call, _force| Approval::Allow,
             &NoHooks,
             &no_sessions,
+            None,
         );
         let results: Vec<&ChatMessage> = messages.iter().filter(|m| m.role == "tool").collect();
         assert_eq!(
@@ -2220,6 +2320,7 @@ mod tests {
             |_call, _force| Approval::Allow,
             &NoHooks,
             &no_sessions,
+            None,
         );
         let events = drain(&mut rx);
         let errors: Vec<_> = events
@@ -2308,6 +2409,7 @@ mod tests {
             |_call, _force| Approval::Allow,
             &NoHooks,
             &no_sessions,
+            None,
         );
         let events = drain(&mut rx);
         let ran = events
@@ -2375,6 +2477,7 @@ mod tests {
             |_call, _force| Approval::Allow,
             &NoHooks,
             &no_sessions,
+            None,
         );
         let events = drain(&mut rx);
         assert!(
@@ -2427,6 +2530,7 @@ mod tests {
             |_call, _force| Approval::Allow,
             &NoHooks,
             &no_sessions,
+            None,
         );
         let events = drain(&mut rx);
         assert!(
@@ -2498,6 +2602,7 @@ mod tests {
             |_call, _force| Approval::Allow,
             &NoHooks,
             &no_sessions,
+            None,
         );
         drain(&mut rx);
         let seen = seen_round2.borrow();
@@ -2549,6 +2654,7 @@ mod tests {
             |_call, _force| Approval::Allow,
             &NoHooks,
             &no_sessions,
+            None,
         );
         drain(&mut rx);
         assert_eq!(
@@ -2607,6 +2713,7 @@ mod tests {
             |_call, _force| Approval::Allow,
             &NoHooks,
             &no_sessions,
+            None,
         );
         let seen = seen_round2.borrow();
         assert_eq!(
@@ -2660,6 +2767,7 @@ mod tests {
             |_call, _force| Approval::Allow,
             &NoHooks,
             &no_sessions,
+            None,
         );
         assert_eq!(
             *seen.borrow(),
@@ -2705,6 +2813,7 @@ mod tests {
             |_call, _force| Approval::Allow,
             &NoHooks,
             &no_sessions,
+            None,
         );
         assert!(drain(&mut rx).is_empty());
     }
@@ -2763,6 +2872,7 @@ mod tests {
             |_call, _force| Approval::Allow,
             &NoHooks,
             &no_sessions,
+            None,
         );
         drain(&mut rx);
         let seen = seen_round2.borrow();
@@ -2829,6 +2939,7 @@ mod tests {
             |_call, _force| Approval::Allow,
             &NoHooks,
             &no_sessions,
+            None,
         );
         drain(&mut rx);
         let roles: Vec<String> = seen_round2
@@ -2880,6 +2991,7 @@ mod tests {
             |_call, _force| Approval::Allow,
             &NoHooks,
             &no_sessions,
+            None,
         );
         let events = drain(&mut rx);
         assert!(
@@ -2939,6 +3051,7 @@ mod tests {
             },
             &NoHooks,
             &no_sessions,
+            None,
         );
         let events = drain(&mut rx);
         assert!(
@@ -3021,6 +3134,7 @@ mod tests {
             },
             &NoHooks,
             &|id: &str| (id == "b5xg4o2w0").then(|| "sudo pacman -Syy".to_string()),
+            None,
         );
         let events = drain(&mut rx);
         let header = "sudo pacman -Syy ← password123⏎";
@@ -3076,6 +3190,7 @@ mod tests {
             },
             &NoHooks,
             &no_sessions,
+            None,
         );
         let events = drain(&mut rx);
         let start = events
@@ -3136,6 +3251,7 @@ mod tests {
             },
             &NoHooks,
             &no_sessions,
+            None,
         );
         drain(&mut rx);
         assert_eq!(*log.borrow(), vec!["approve", "execute"]);
@@ -3185,6 +3301,7 @@ mod tests {
             |_call, _force| panic!("task calls never consult the permission gate"),
             &NoHooks,
             &no_sessions,
+            None,
         );
         let events = drain(&mut rx);
         assert!(
@@ -3287,6 +3404,7 @@ mod tests {
             |_call, _force| Approval::Allow,
             &NoHooks,
             &no_sessions,
+            None,
         );
         let events = drain(&mut rx);
         let StreamEvent::RoundCalls(round) = &events[0] else {
@@ -3347,6 +3465,7 @@ mod tests {
             |_call, _force| Approval::Allow,
             &NoHooks,
             &no_sessions,
+            None,
         );
         let events = drain(&mut rx);
         let batch = events
@@ -3409,6 +3528,7 @@ mod tests {
             |_call, _force| Approval::Allow,
             &NoHooks,
             &no_sessions,
+            None,
         );
         let events = drain(&mut rx);
         assert_eq!(
@@ -3433,6 +3553,369 @@ mod tests {
             refused.content,
             crate::llm::MessageContent::Text(TOOL_LIMIT_OUTPUT.to_string())
         );
+    }
+
+    /// One scripted round of a [`guarded_turn`]: the calls the model makes,
+    /// or the answer it ends on.
+    enum Scripted {
+        Calls(Vec<ToolCallRequest>),
+        Answer(&'static str),
+    }
+
+    /// Run one turn over `script` with a real task list behind the task
+    /// calls — the task guard's harness (docs/task-tools.md). The guard sees
+    /// the list only when `guarded`; every other call answers `done`, and a
+    /// spent script answers with nothing. Returns the events and every
+    /// request the rounds were shown, as `(role, text)` pairs.
+    fn guarded_turn(
+        registry: &crate::tasks::TaskRegistry,
+        guarded: bool,
+        max_tool_calls: usize,
+        script: Vec<Scripted>,
+        pending_inputs: impl FnMut() -> Vec<PendingInput>,
+    ) -> (Vec<StreamEvent>, Vec<Vec<(String, String)>>) {
+        let (tx, mut rx) = unbounded_channel();
+        let mut script = script.into_iter();
+        let requests = RefCell::new(Vec::new());
+        run_agent(
+            &tx,
+            &CancelToken::new(),
+            max_tool_calls,
+            &mut vec![ChatMessage::user("build it")],
+            |msgs| {
+                requests
+                    .borrow_mut()
+                    .push(msgs.iter().map(|m| (m.role.clone(), text_of(m))).collect());
+                match script.next() {
+                    Some(Scripted::Calls(calls)) => RoundOutcome::ToolCalls {
+                        assistant: assistant_with(&calls),
+                        calls,
+                    },
+                    Some(Scripted::Answer(text)) => RoundOutcome::Complete {
+                        text: text.to_string(),
+                    },
+                    None => RoundOutcome::Complete {
+                        text: String::new(),
+                    },
+                }
+            },
+            |c, _sink| {
+                if crate::tasks::is_task_tool(&c.name) {
+                    super::super::task::run_task_tool(registry, c)
+                } else {
+                    ToolOutcome::ok("done")
+                }
+            },
+            pending_inputs,
+            |_calls| Vec::new(),
+            |_call, _force| Approval::Allow,
+            &NoHooks,
+            &no_sessions,
+            guarded.then_some(registry),
+        );
+        (drain(&mut rx), requests.into_inner())
+    }
+
+    fn task(id: &str, name: &str, args: &str) -> ToolCallRequest {
+        call(id, name, args)
+    }
+
+    /// The reminders a turn's events recorded, in order.
+    fn task_reminders(events: &[StreamEvent]) -> Vec<&str> {
+        events
+            .iter()
+            .filter_map(|e| match e {
+                StreamEvent::HookNote { label, text }
+                    if label == crate::tasks::TASK_REMINDER_LABEL =>
+                {
+                    Some(text.as_str())
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The reminder for a list of `subjects`, each in its given status.
+    fn reminder_for(tasks: &[(&str, &str)]) -> String {
+        let mut store = crate::tasks::TaskStore::new();
+        for (id, (subject, status)) in tasks.iter().enumerate() {
+            store
+                .run_create(
+                    &serde_json::json!({"subject": subject, "description": "d"}).to_string(),
+                )
+                .unwrap();
+            store
+                .run_update(&format!(r#"{{"taskId":"{}","status":"{status}"}}"#, id + 1))
+                .unwrap();
+        }
+        crate::tasks::task_reminder(&store)
+    }
+
+    #[test]
+    fn untracked_work_shows_the_list_before_the_next_round() {
+        // The reported failure (gpt-oss:120b): tasks planned, then the work
+        // starts with none marked in_progress. The very next request carries
+        // the live list in a system-reminder, after the round's tool results,
+        // and the loop records it as a note (docs/task-tools.md).
+        let registry = crate::tasks::TaskRegistry::new();
+        let (events, requests) = guarded_turn(
+            &registry,
+            true,
+            MAX_TOOL_ITERATIONS,
+            vec![
+                Scripted::Calls(vec![
+                    task(
+                        "t1",
+                        "taskcreate",
+                        r#"{"subject":"Write the page","description":"d"}"#,
+                    ),
+                    task(
+                        "t2",
+                        "taskcreate",
+                        r#"{"subject":"Serve it","description":"d"}"#,
+                    ),
+                ]),
+                Scripted::Calls(vec![call("w1", "write", r#"{"path":"index.html"}"#)]),
+                Scripted::Calls(vec![
+                    task("u1", "taskupdate", r#"{"taskId":"1","status":"completed"}"#),
+                    task("u2", "taskupdate", r#"{"taskId":"2","status":"completed"}"#),
+                ]),
+                Scripted::Answer("Done."),
+            ],
+            Vec::new,
+        );
+        let reminder = reminder_for(&[("Write the page", "pending"), ("Serve it", "pending")]);
+        assert_eq!(
+            requests[1].last().map(|(role, _)| role.as_str()),
+            Some("tool"),
+            "a round that just planned is not reminded"
+        );
+        assert_eq!(
+            requests[2].last(),
+            Some(&("user".to_string(), reminder.clone())),
+            "the write went untracked, so the next request ends on the list"
+        );
+        assert_eq!(
+            requests[2][requests[2].len() - 2].0,
+            "tool",
+            "after the round's results, never in front of them"
+        );
+        assert_eq!(
+            task_reminders(&events),
+            vec![reminder.as_str()],
+            "recorded once"
+        );
+        let note = events
+            .iter()
+            .position(|e| matches!(e, StreamEvent::HookNote { .. }))
+            .unwrap();
+        let write_end = events
+            .iter()
+            .position(|e| matches!(e, StreamEvent::ToolEnd { .. }))
+            .unwrap();
+        assert!(write_end < note, "the note follows the work it is about");
+        assert_eq!(events.last(), Some(&StreamEvent::StreamDone));
+        assert_eq!(
+            requests.len(),
+            4,
+            "a closed-out list ends the turn on its answer"
+        );
+    }
+
+    #[test]
+    fn ending_the_turn_over_a_stale_list_buys_one_more_round() {
+        // A task left in_progress under the final answer: the answer becomes
+        // an assistant message, the reminder the next user message, and the
+        // same turn runs on so the model can close the list out.
+        let registry = crate::tasks::TaskRegistry::new();
+        let (events, requests) = guarded_turn(
+            &registry,
+            true,
+            MAX_TOOL_ITERATIONS,
+            vec![
+                Scripted::Calls(vec![
+                    task(
+                        "t1",
+                        "taskcreate",
+                        r#"{"subject":"Serve it","description":"d"}"#,
+                    ),
+                    task(
+                        "u1",
+                        "taskupdate",
+                        r#"{"taskId":"1","status":"in_progress"}"#,
+                    ),
+                ]),
+                Scripted::Calls(vec![call("b1", "bash", r#"{"command":"serve"}"#)]),
+                Scripted::Answer("It is live on port 3000."),
+                Scripted::Calls(vec![task(
+                    "u2",
+                    "taskupdate",
+                    r#"{"taskId":"1","status":"completed"}"#,
+                )]),
+                Scripted::Answer(""),
+            ],
+            Vec::new,
+        );
+        let reminder = reminder_for(&[("Serve it", "in_progress")]);
+        assert_eq!(
+            requests[3][requests[3].len() - 2..],
+            [
+                (
+                    "assistant".to_string(),
+                    "It is live on port 3000.".to_string()
+                ),
+                ("user".to_string(), reminder.clone()),
+            ],
+            "the answer stays, the reminder follows it"
+        );
+        assert_eq!(task_reminders(&events), vec![reminder.as_str()]);
+        assert_eq!(
+            registry.snapshot().counts().completed,
+            1,
+            "the list closed out"
+        );
+        assert_eq!(
+            events
+                .iter()
+                .filter(|e| matches!(e, StreamEvent::StreamDone))
+                .count(),
+            1
+        );
+        assert_eq!(events.last(), Some(&StreamEvent::StreamDone));
+    }
+
+    #[test]
+    fn the_turn_end_reminder_is_asked_once() {
+        // A model that answers the reminder with more prose, list untouched,
+        // ends the turn there: one extra round, never a loop.
+        let registry = crate::tasks::TaskRegistry::new();
+        let (events, requests) = guarded_turn(
+            &registry,
+            true,
+            MAX_TOOL_ITERATIONS,
+            vec![
+                Scripted::Calls(vec![
+                    task(
+                        "t1",
+                        "taskcreate",
+                        r#"{"subject":"Serve it","description":"d"}"#,
+                    ),
+                    task(
+                        "u1",
+                        "taskupdate",
+                        r#"{"taskId":"1","status":"in_progress"}"#,
+                    ),
+                ]),
+                Scripted::Calls(vec![call("b1", "bash", r#"{"command":"serve"}"#)]),
+                Scripted::Answer("first"),
+                Scripted::Answer("second"),
+                Scripted::Answer("never asked"),
+            ],
+            Vec::new,
+        );
+        assert_eq!(requests.len(), 4);
+        assert_eq!(task_reminders(&events).len(), 1);
+        assert_eq!(events.last(), Some(&StreamEvent::StreamDone));
+    }
+
+    #[test]
+    fn the_task_reminder_reads_after_notices_and_before_the_users_words() {
+        // A background completion is a result and leads; the user's own
+        // message is the newest thing said and stays last (docs/queue.md).
+        let registry = crate::tasks::TaskRegistry::new();
+        let taken = RefCell::new(0);
+        let (_events, requests) = guarded_turn(
+            &registry,
+            true,
+            MAX_TOOL_ITERATIONS,
+            vec![
+                Scripted::Calls(vec![task(
+                    "t1",
+                    "taskcreate",
+                    r#"{"subject":"Serve it","description":"d"}"#,
+                )]),
+                Scripted::Calls(vec![call("b1", "bash", r#"{"command":"serve"}"#)]),
+                Scripted::Calls(vec![task(
+                    "u1",
+                    "taskupdate",
+                    r#"{"taskId":"1","status":"completed"}"#,
+                )]),
+            ],
+            || {
+                let mut n = taken.borrow_mut();
+                *n += 1;
+                if *n == 3 {
+                    vec![
+                        PendingInput::User("and add a footer".to_string()),
+                        PendingInput::Notice("[background] build finished".to_string()),
+                    ]
+                } else {
+                    Vec::new()
+                }
+            },
+        );
+        let reminder = reminder_for(&[("Serve it", "pending")]);
+        let tail: Vec<&str> = requests[2][requests[2].len() - 3..]
+            .iter()
+            .map(|(_, text)| text.as_str())
+            .collect();
+        assert_eq!(
+            tail,
+            [
+                "[background] build finished",
+                reminder.as_str(),
+                "and add a footer"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_spent_tool_budget_keeps_the_guard_quiet() {
+        // With the Max tool calls ceiling reached, a reminder could only
+        // provoke a call the ceiling refuses — so the answer ends the turn.
+        let registry = crate::tasks::TaskRegistry::new();
+        let (events, requests) = guarded_turn(
+            &registry,
+            true,
+            2,
+            vec![
+                Scripted::Calls(vec![task(
+                    "t1",
+                    "taskcreate",
+                    r#"{"subject":"Serve it","description":"d"}"#,
+                )]),
+                Scripted::Calls(vec![call("b1", "bash", r#"{"command":"serve"}"#)]),
+                Scripted::Answer("done"),
+            ],
+            Vec::new,
+        );
+        assert!(task_reminders(&events).is_empty(), "{events:?}");
+        assert_eq!(requests.len(), 3);
+        assert_eq!(events.last(), Some(&StreamEvent::StreamDone));
+    }
+
+    #[test]
+    fn without_a_task_list_the_guard_never_speaks() {
+        // Subagents and the `/compact` backend carry no list (and an
+        // embedder may not attach one): the loop runs exactly as before.
+        let registry = crate::tasks::TaskRegistry::new();
+        let (events, requests) = guarded_turn(
+            &registry,
+            false,
+            MAX_TOOL_ITERATIONS,
+            vec![
+                Scripted::Calls(vec![task(
+                    "t1",
+                    "taskcreate",
+                    r#"{"subject":"Serve it","description":"d"}"#,
+                )]),
+                Scripted::Calls(vec![call("b1", "bash", r#"{"command":"serve"}"#)]),
+                Scripted::Answer("done"),
+            ],
+            Vec::new,
+        );
+        assert!(task_reminders(&events).is_empty(), "{events:?}");
+        assert_eq!(requests.len(), 3);
     }
 
     #[test]
@@ -3477,6 +3960,7 @@ mod tests {
             |_call, _force| Approval::Allow,
             &NoHooks,
             &no_sessions,
+            None,
         );
         let events = drain(&mut rx);
         // The ordinary batch announces only the bash call.

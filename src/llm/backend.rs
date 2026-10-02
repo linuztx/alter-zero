@@ -1004,6 +1004,9 @@ impl ReplySource for LlmBackend {
                         .and_then(|registry| registry.session(id))
                         .map(|session| session.command)
                 },
+                // The task guard's view of the list (docs/task-tools.md):
+                // shown back to a model that stops keeping it current.
+                task_list.as_ref(),
             );
         })
     }
@@ -1771,6 +1774,8 @@ fn spawn_subagent_run(
                     .and_then(|registry| registry.session(id))
                     .map(|session| session.command)
             },
+            // Subagents never carry the task list (docs/task-tools.md).
+            None,
         );
         drop(tx2);
         let (final_text, outcome) = forwarder.join().unwrap_or_default();

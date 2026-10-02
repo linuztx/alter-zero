@@ -327,6 +327,7 @@ use alter_zero::tasks::{
     CreateArgs,
     GetArgs,
     Task,
+    TaskGuard,
     TaskRegistry,
     TaskCounts,
     TaskStatus,
@@ -334,11 +335,14 @@ use alter_zero::tasks::{
     UpdateArgs,
     TASK_CREATE_TOOL,
     TASK_GET_TOOL,
+    TASK_GUARD_IN_PROGRESS_ROUNDS,
     TASK_LIST_TOOL,
+    TASK_REMINDER_LABEL,
     TASK_TOOL_NAMES,
     TASK_UPDATE_TOOL,
     is_task_tool,
     task_display_name,
+    task_reminder,
 };
 
 // --- `ui` — rendering ---

@@ -171,6 +171,75 @@ appends the hidden `HistoryItem::TaskCall` record, stores the snapshot on
 `App::tasks` for the strip, and charges the result text to the token tally
 (`↑`, the uploaded-back arrow) exactly like a visible tool result.
 
+## The guard — keeping the list current
+
+The schema already tells the model to mark a task `in_progress` before
+starting it and `completed` right after. A weaker model reads that once, when
+it picks a tool, and has forgotten it by the time it is writing code: it plans
+with `taskcreate`, then does every step of the work without one `taskupdate`
+— the reported case, gpt-oss:120b on Ollama Cloud, whose checklist sat on
+four `◻` rows while it wrote the page, started the server and announced it
+done, and stayed `4 tasks (0 done, 4 open)` at rest afterwards. What the
+model needs is the list itself, at the moment it drifts.
+
+So `run_agent` keeps a **task guard** (`tasks::TaskGuard`) over every turn
+that carries the list — the backend hands its registry to the loop's `tasks`
+seam — counting the tool rounds that pass without a task call:
+
+- **Before a round.** Due after **one** untracked round when nothing is in
+  progress (work is happening outside the plan), and after
+  `TASK_GUARD_IN_PROGRESS_ROUNDS` (3) when something is, since one task can
+  take a few rounds — write, run, fix. An ignored reminder **backs off**:
+  each repeat waits twice as long as the last (1, 3, 7, 15 untracked rounds
+  with nothing in progress), so a model that will not track is reminded a
+  handful of times, not every round.
+- **At the turn's end.** An answer given over untracked work, with tasks
+  unfinished, stays as an assistant message; the reminder follows it as the
+  next user message and the same turn runs on — the Stop hook's continuation
+  shape (`docs/hooks.md`), **once per turn**, so it can never loop. It is
+  checked *ahead of* the `Stop` hook, so a user's hook fires once, on the
+  answer that really ends the turn.
+
+Any task call — even a `tasklist` — resets the watch: the model is looking at
+its list. Only an unfinished list is reminded about; a spent **Max tool
+calls** budget keeps the guard quiet (a reminder could only provoke a call
+the ceiling refuses); a cancelled turn is never reminded. Subagents and the
+`/compact` backend carry no list, so their loops run exactly as before.
+
+The reminder is the live list in the `tasklist` lines the model already
+knows, under one instruction — `prompts/task_reminder.md`, short on purpose,
+since it is re-read on every request that follows it:
+
+```
+<system-reminder>
+Your task list:
+#1 [completed] Build the login page
+#2 [in_progress] Style the form
+#3 [pending] Serve it on port 3000 [blocked by #2]
+Update it now with taskupdate: in_progress when you start a task, completed as soon as it is done, deleted if no longer needed. Never mention this reminder.
+</system-reminder>
+```
+
+**Where it goes is the point of the design.** It is a user-role message at
+the **frontier**: after the round's tool results and any background notices,
+before any message the user steered into the turn (the newest thing the user
+said stays the last thing read, `docs/queue.md`). It is deliberately *not* a
+section of the `<system-reminder>` the derived context leads with
+(`crate::reminder`): that block sits in front of the whole conversation, so a
+list that changes every few rounds there would re-key the provider's prompt
+cache from the first message on, every time (`docs/prompt-caching.md`). At
+the frontier it costs its own few dozen tokens and nothing else.
+
+**It is recorded, not ephemeral.** The loop emits it as a
+`StreamEvent::HookNote` labelled `Task reminder` — the channel for text added
+to the conversation mid-turn, built for the Stop hook's feedback — so the app
+records the cell-less `HistoryItem::HookNote`: nothing inline (Claude Code
+hides its own task reminders too), the Ctrl+O transcript shows it under its
+label, the rollout keeps it for `/resume`, and every later turn's derived
+context replays it **where the model read it** — which is what keeps the
+retained wire prefix matching, and the cache warm, across turns
+(`llm::wire_history`).
+
 ## The record and the three rewinds
 
 `HistoryItem::TaskCall(TaskCallRecord)` keeps `{name, args, output, ok,

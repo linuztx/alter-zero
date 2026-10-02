@@ -89,7 +89,8 @@ pub enum HistoryItem {
     Compaction(Compaction),
     /// Conversation text a **lifecycle hook** injected mid-turn
     /// (`docs/hooks.md`) — a `Stop` block's continuation feedback, a
-    /// `UserPromptSubmit`/`SessionStart` hook's additional context.
+    /// `UserPromptSubmit`/`SessionStart` hook's additional context — or the
+    /// task guard's reminder (`docs/task-tools.md`).
     /// **Cell-less inline** (Claude Code hides these from the normal view
     /// too): `conversation_lines` skips it, the Ctrl+O transcript shows it
     /// under its `label`, and [`crate::context::context_messages`] replays
@@ -101,7 +102,8 @@ pub enum HistoryItem {
 /// [`HistoryItem::HookNote`] and `docs/hooks.md`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HookNote {
-    /// The short transcript heading (`Stop hook`, `UserPromptSubmit hook`).
+    /// The short transcript heading (`Stop hook`, `UserPromptSubmit hook`,
+    /// `Task reminder`).
     pub label: String,
     /// Verbatim what the model reads as a user-role message — formatted by
     /// the producer (`Stop hook feedback:\n…`, the system-reminder-wrapped

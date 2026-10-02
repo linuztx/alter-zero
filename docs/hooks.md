@@ -269,7 +269,10 @@ existing could express them:
   by `context_messages` as the user-role message the model actually read,
   and round-tripped through the rollout so a `/resume` keeps it. Context
   wire text uses Claude Code's exact shape — the
-  `<system-reminder>`-wrapped `{event} hook additional context: …`.
+  `<system-reminder>`-wrapped `{event} hook additional context: …`. The
+  task guard's reminder rides the same channel under a `Task reminder`
+  label, since it is the same kind of thing — text the loop adds to the
+  conversation mid-turn (`docs/task-tools.md`).
 - **`StreamEvent::PromptBlocked { reason }`** is a `UserPromptSubmit`
   block's terminal event — sent instead of `StreamDone`, nothing follows
   it; the loop's arm owns the rollback described above.

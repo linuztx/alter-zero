@@ -1679,7 +1679,21 @@ all three history rewinds restore the list exactly — `/resume` and the
 Esc-Esc backtrack from the last record('s snapshot) before the cut
 (`App::reset_tasks_from_history`), `/clear` to empty — with the boundary
 syncing the shared registry after each (`Session::sync_task_registry`) so
-the model's next `tasklist` agrees with the strip; the offline dummy's
+the model's next `tasklist` agrees with the strip; a **task guard** keeps
+the list current when the model forgets it (`tasks::TaskGuard`, handed the
+registry through `run_agent`'s `tasks` seam — main turns only): tool rounds
+that pass without a task call while tasks are unfinished earn the live list
+as a `<system-reminder>` at the next round boundary — after one untracked
+round when nothing is in progress, after `TASK_GUARD_IN_PROGRESS_ROUNDS`
+when something is, backing off 1/3/7/15 when ignored — and an answer given
+over untracked work buys the turn **one** more round carrying it (ahead of
+the `Stop` hook; never with a spent tool budget); the text is
+`prompts/task_reminder.md`, appended at the **frontier** after the
+notices and before any steered message — never in the leading
+`<system-reminder>`, where a changing list would re-key the prompt cache
+from the first message — and recorded as a `Task reminder` **`HookNote`**,
+so Ctrl+O shows it, the rollout keeps it and later turns replay it in
+place; the offline dummy's
 `tasks` scenario (cue `todo`/`task`) drives a real `TaskStore` through the
 whole lifecycle so every scripted result string and snapshot is
 byte-for-byte the live executor's, ending with work outstanding so the

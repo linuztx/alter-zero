@@ -14,6 +14,17 @@ release heading when a version is cut.
 
 ### Added
 
+- **The agent keeps its task list current.** A model that plans with the
+  task tools and then works without updating them — every task left
+  pending under finished work, seen with gpt-oss:120b on Ollama Cloud — is
+  now shown its live list in a short `<system-reminder>` once its tool
+  calls stop touching the list: after one round when no task is in
+  progress, after three when one is, and less often each time it is
+  ignored. A turn that ends over untracked work gets one more round to
+  close the list out, never more. The reminder is hidden inline, shown in
+  the Ctrl+O transcript, kept across `/resume`, and appended where it
+  leaves the prompt cache intact (`docs/task-tools.md`).
+
 - The Kali container includes Node.js and npm by default and declares TCP
   ports 22, 80, 3000, 5000, 8000 and 9000–9009 alongside 8080/8888. Host
   publishing stays limited to loopback ports 8080/8888 unless configured with
