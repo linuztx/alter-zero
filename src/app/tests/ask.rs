@@ -646,3 +646,114 @@ fn a_question_takes_the_footer_selections_with_the_composer() {
     assert!(app.ask().is_none());
     assert!(!app.background_focused(), "…and does not come back armed");
 }
+
+// --- the timeout (docs/ask.md "When the user is away") ---
+
+fn permission(id: &str) -> PermissionRequest {
+    PermissionRequest {
+        id: id.to_string(),
+        kind: PermissionKind::Write,
+        target: "a.py".to_string(),
+        body: String::new(),
+        detail: None,
+        agent: None,
+        agent_id: None,
+    }
+}
+
+#[test]
+fn nothing_waits_until_a_question_is_asked() {
+    let mut app = App::new();
+    assert!(!app.asks_waiting());
+    app.open_ask(request("ask_0", vec![coffee_question()]));
+    assert!(app.asks_waiting());
+}
+
+#[test]
+fn a_question_queued_behind_a_permission_prompt_is_waiting_too() {
+    let mut app = App::new();
+    app.open_permission(permission("perm_0"));
+    app.open_ask(request("ask_0", vec![coffee_question()]));
+    assert!(app.ask().is_none(), "precondition: the question is queued");
+    assert!(
+        app.asks_waiting(),
+        "a queued question counts: the agent behind it is just as blocked"
+    );
+}
+
+#[test]
+fn timing_out_closes_the_question_and_hands_the_draft_back() {
+    let mut app = App::new();
+    type_text(&mut app, "half a thought");
+    app.open_ask(request("ask_0", vec![coffee_question()]));
+    // Half-way into a free-text answer when the user walked off.
+    app.on_key(key(KeyCode::Char('4')));
+    type_text(&mut app, "unfinished");
+    assert!(app.ask().unwrap().editing(), "precondition: in the entry");
+    assert_eq!(app.time_out_asks(), vec!["ask_0".to_string()]);
+    assert!(app.ask().is_none());
+    assert!(!app.asks_waiting());
+    assert_eq!(
+        app.input.text(),
+        "half a thought",
+        "the stashed draft comes back, not the abandoned entry"
+    );
+    assert!(
+        app.take_abandoned_asks().is_empty(),
+        "a timeout is not an abandonment: the boundary resolves these ids itself"
+    );
+}
+
+#[test]
+fn timing_out_takes_the_queued_questions_and_surfaces_a_waiting_permission() {
+    let mut app = App::new();
+    app.open_ask(request("ask_0", vec![coffee_question()]));
+    app.open_ask(request("ask_1", vec![coffee_question()])); // queues
+    app.open_permission(permission("perm_0")); // queues behind them
+    assert_eq!(
+        app.time_out_asks(),
+        vec!["ask_0".to_string(), "ask_1".to_string()],
+        "the open question first, then the queue in order"
+    );
+    assert!(app.ask().is_none());
+    assert!(!app.asks_waiting());
+    assert!(
+        app.permission().is_some(),
+        "the permission prompt opens next — it never times out"
+    );
+}
+
+#[test]
+fn timing_out_a_question_queued_behind_a_permission_leaves_the_prompt_up() {
+    let mut app = App::new();
+    app.open_permission(permission("perm_0"));
+    app.open_ask(request("ask_0", vec![coffee_question()]));
+    assert_eq!(app.time_out_asks(), vec!["ask_0".to_string()]);
+    assert!(app.permission().is_some(), "the open prompt is untouched");
+    assert!(!app.asks_waiting());
+}
+
+#[test]
+fn timing_out_with_nothing_waiting_changes_nothing() {
+    let mut app = App::new();
+    type_text(&mut app, "draft");
+    assert!(app.time_out_asks().is_empty());
+    assert_eq!(app.input.text(), "draft");
+}
+
+#[test]
+fn the_remaining_time_rides_the_open_question() {
+    let mut app = App::new();
+    let left = std::time::Duration::from_secs(42);
+    app.set_ask_remaining(Some(left)); // no modal: nothing to carry it
+    app.open_ask(request("ask_0", vec![coffee_question()]));
+    assert_eq!(
+        app.ask().unwrap().remaining,
+        None,
+        "a fresh question has no reading until the boundary injects one"
+    );
+    app.set_ask_remaining(Some(left));
+    assert_eq!(app.ask().unwrap().remaining, Some(left));
+    app.set_ask_remaining(None);
+    assert_eq!(app.ask().unwrap().remaining, None);
+}

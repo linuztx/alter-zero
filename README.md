@@ -175,7 +175,7 @@ The footer shows your active model, thinking mode, speed tier and context usage.
 - **Readable file changes.** Numbered, syntax-highlighted file views and diffs highlight the characters that changed, so edits are easy to review.
 - **Live commands and task progress.** Command output streams into the conversation, long results collapse into expandable previews, and a checklist tracks multi-step work.
 - **Parallel and background work.** Tool batches are announced before execution. Move a running command to the background with **Ctrl+B**, then use **Down** from an empty composer to inspect or stop it.
-- **Decisions in context.** Inline questions support multiple-choice and free-text answers. Send a message with **Enter** to steer the running turn, or use **Tab** to queue a follow-up.
+- **Decisions in context.** Inline questions support multiple-choice and free-text answers, and if you've stepped away the agent carries on after ten minutes instead of waiting. Send a message with **Enter** to steer the running turn, or use **Tab** to queue a follow-up.
 
 ### Choose how much control to keep
 

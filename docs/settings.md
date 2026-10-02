@@ -23,7 +23,8 @@ per change.
   Permission mode         manual
   ...
   Max tool calls          0
-  (1/17)
+  Question timeout        10m
+  (1/18)
 
   Hide the model's chain-of-thought…
 
@@ -34,7 +35,7 @@ per change.
 
 ## The settings
 
-Seventeen rows, each one a knob the running session actually reads. Every value
+Eighteen rows, each one a knob the running session actually reads. Every value
 **cycles** — there is no free-text field anywhere, so Enter and Space mean the
 same thing on every row and the menu never needs an edit mode.
 
@@ -54,6 +55,7 @@ same thing on every row and the menu never needs an edit mode.
 | **Skills** | `true` / `false` | Whether the `skill` tool is offered and the `<system-reminder>` listing rides the context (`docs/skills.md`). Seeded from `ALTER_ZERO_SKILLS`; **unavailable** when no `SKILL.md` loaded — there is nothing to turn on. |
 | **Temperature** | `default` / `0.0` / `0.3` / `0.5` / `0.7` / `1.0` | The sampling temperature every request carries; `default` sends none and leaves it to the provider. Seeded from `ALTER_ZERO_TEMPERATURE`. |
 | **Max tool calls** | **`0`** / `5` / `10` / `20` / `50` / `100` | How many tool **calls** one turn may run before it gives up (`llm::agent::run_agent`'s cap). **`0` is no limit, and the default** — see below. |
+| **Question timeout** | `5m` / **`10m`** / `20m` / `30m` / `1h` / `off` | How long an `AskUserQuestion` call waits for an **idle** user before the agent carries on without them (`docs/ask.md` "When the user is away"): every key restarts the clock, so it only ever measures absence. `off` waits forever, the behaviour before the timeout existed, and dims like `false`. Read by the boundary's clock where it is used, so a change needs no rebuild. Seeded from `ALTER_ZERO_ASK_TIMEOUT_SECS` (seconds, `0` = off) — a value the menu doesn't offer reads whole (`4s`) and the next press lands on `5m`. |
 | **Show tips** | `true` / `false` | Whether a dim `⎿  Tip: …` row hangs off the status line once a turn has run three seconds — a key or command worth knowing, the next in the catalog each turn (`docs/tips.md`; Claude Code's `spinnerTipsEnabled`). **Per user, not per directory**: persisted in `tips.json` beside the walk's position, never in `settings.json`. Seeded from `ALTER_ZERO_TIPS`, which — not being a privacy switch — never withdraws the row. Needs nothing from the host, so it is never unavailable. |
 | **Update check** | `true` / `false` | Whether the app asks the repository once a day whether a newer release is out and says so under the banner (`docs/update.md`: one `HEAD` of `/releases/latest`, answered by a redirect whose tag is the version — no body, no install id, nothing about you; the card names the release, `alter-zero update` and the off switch, once a day, never mid-reply). **Per user, not per directory**: persisted in `update.json`, never in `settings.json`. Seeded from `ALTER_ZERO_UPDATE_CHECK`; **unavailable** without a config home (nowhere to remember the day) **and whenever the variable forbids it** — the Telemetry rule, an environment that says no withdraws the row. `alter-zero update` on the command line is the user's own request and runs regardless. |
 | **Telemetry** | `true` / `false` | Whether the anonymous daily usage ping is sent (`docs/telemetry.md`: five fields — a payload version, a random install id, the app version, the OS and the architecture — never a prompt, path, model or key; the collector notes the country, never the address). **Per user, not per directory**: persisted in `telemetry.json`, never in `settings.json`. Seeded from `ALTER_ZERO_TELEMETRY`, outranked by `DO_NOT_TRACK=1`; **unavailable** without a config home (nowhere to keep the install id) **and whenever either variable forbids it** — alone among the rows, an environment that says no withdraws the row rather than merely seeding it, since an opt-out a keystroke could undo is not one (`docs/telemetry.md`). |

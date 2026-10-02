@@ -27,6 +27,18 @@ release heading when a version is cut.
   helper (`yay -Syu`, `paru -Syu`) rather than `alter-zero update`, which
   reinstalls over the running binary's own directory (`docs/aur.md`).
 
+- **A question you don't answer no longer stops the agent for good.** When
+  the agent asks you something and nobody touches a key for ten minutes, the
+  question closes by itself, a red `User did not answer within 10m` cell
+  records it, and the agent carries on without you. It's told you're not
+  available, to pick the safe, reversible option and to say what it assumed,
+  so you can steer when you're back. Any key you press restarts the clock, so
+  you're never cut off mid-answer, and in its final minute the question
+  shows `Continuing without your answer in 0:42`. Change the wait, or turn it
+  off, with `/settings` → **Question timeout** (5m, 10m, 20m, 30m, 1h or off),
+  or set `ALTER_ZERO_ASK_TIMEOUT_SECS` for one run. Permission prompts never
+  time out (`docs/ask.md`).
+
 ### Changed
 
 - **The `/` command palette keeps the highlight centered.** Scrolling the

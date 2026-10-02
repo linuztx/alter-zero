@@ -385,3 +385,58 @@ fn declining_the_ask_demo_resolves_red_and_still_closes_the_turn() {
         "the model reads stop-and-wait: {result}"
     );
 }
+
+#[test]
+fn a_timed_out_ask_demo_carries_on_without_the_user() {
+    // docs/ask.md "When the user is away": nobody answered, so the demo
+    // resolves red with the timeout headline, the model-facing text says to
+    // continue, and the closing reply carries on rather than waiting.
+    let gate = crate::ask::AskGate::new();
+    let dummy = DummyAi::with_startup_delay(Duration::ZERO).with_ask(gate.clone());
+    let (tx, mut rx) = unbounded_channel();
+    let handle = dummy.spawn(
+        "ask me a question".to_string(),
+        vec![],
+        vec![],
+        tx,
+        CancelToken::new(),
+    );
+    let mut rejected = None;
+    let mut closing = String::new();
+    while let Some(event) = rx.blocking_recv() {
+        match event {
+            StreamEvent::AskUser(request) => {
+                gate.resolve(
+                    &request.id,
+                    crate::ask::AskDecision::TimedOut(Duration::from_secs(600)),
+                );
+            }
+            StreamEvent::ToolRejected {
+                display, result, ..
+            } => rejected = Some((display, result)),
+            StreamEvent::Chunk(c) if rejected.is_some() => closing.push_str(&c),
+            StreamEvent::StreamDone => break,
+            _ => {}
+        }
+    }
+    handle.join().unwrap();
+    let (display, result) = rejected.expect("a timeout resolves the cell red");
+    assert!(
+        display.starts_with("User did not answer within 10m"),
+        "got {display}"
+    );
+    assert_eq!(
+        result,
+        crate::ask::timed_out_result(Duration::from_secs(600))
+    );
+    assert!(
+        closing.contains("without you"),
+        "the demo carries on rather than waiting: {closing}"
+    );
+    assert!(
+        closing
+            .trim_end()
+            .ends_with(crate::stream::dummy::script::HANDOFF),
+        "the demo closes on the hand-off: {closing}"
+    );
+}

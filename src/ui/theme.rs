@@ -1198,7 +1198,7 @@ pub(super) fn settings_value_off_color() -> Color {
 }
 
 /// The values rendered in the dim "off" colour.
-pub(super) const SETTINGS_OFF_VALUES: &[&str] = &["false", "default", "0", "disabled"];
+pub(super) const SETTINGS_OFF_VALUES: &[&str] = &["false", "default", "0", "disabled", "off"];
 
 /// The key hint pinned under the description — the menu's whole grammar.
 pub(super) const SETTINGS_HINT: &str = "Type to search · Enter/Space to change · Esc to cancel";
@@ -2631,10 +2631,15 @@ pub(super) const ASK_CANCEL_LABEL: &str = "Cancel";
 pub(super) const ASK_WARNING: &str = "⚠ You have not answered all questions";
 
 /// The warning's colour — the retry/system amber, the one "caution" tone the
-/// theme already speaks.
+/// theme already speaks. The final-minute timeout row wears it too.
 pub(super) fn ask_warning_color() -> Color {
     status_retry_color()
 }
+
+/// The open question's final-minute row, over its `m:ss` countdown — the
+/// agent is about to carry on without an answer (`docs/ask.md` "When the
+/// user is away").
+pub(super) const ASK_TIMEOUT_PREFIX: &str = "Continuing without your answer in ";
 
 /// The review page's `→ {answer}` text — green, so the recorded answer is
 /// the row that carries the eye.

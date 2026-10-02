@@ -1615,7 +1615,24 @@ is omitted; its ☐ chip and the warning already say so —
 unanswered question instead of submitting nothing; Esc anywhere **declines**
 (the turn continues: red `User declined to answer questions` cell over the
 `· question (options)` rows, the model reading the stop-and-wait result and
-reacting in the same turn — never a forced interrupt); a submission resolves
+reacting in the same turn — never a forced interrupt); a question nobody
+answers **times out** (`docs/ask.md` *When the user is away*): ten **idle**
+minutes by default — the `/settings` **Question timeout** row,
+`ALTER_ZERO_ASK_TIMEOUT_SECS` seeding it — measured by the pure
+`ask::AskTimer` the boundary owns, which every key and paste restarts and a
+newly opened question restarts too, so it only ever measures absence and a
+user typing an answer is never cut off; the draw tick reads it before it
+paints (`Session::tick_ask_timer`, re-arming its own frame since the status
+chain stops under an overlay), the modal says `Continuing without your answer
+in 0:42` in its final minute on the row above its closing rule, and on expiry
+`App::time_out_asks` closes the modal (the draft restored) and drains the
+queue while the loop posts `AskDecision::TimedOut(after)` on the gate — on the
+loop's own thread, so a key and the deadline never race — resolving red
+(`User did not answer within 10m` over the question rows) while the model
+reads a short carry-on instruction instead of the decline's stop-and-wait
+(`ask::timed_out_result`: not available, do not wait or ask again, use your
+judgment, prefer safe and reversible choices, state your assumptions), a
+permission prompt never timing out (`smoke.sh` Phase 128); a submission resolves
 green via the new `StreamEvent::ToolAnswered { display, result }` (the
 `ToolRejected` twin, from `ToolOutcome::context` — the split the executor
 `llm::ask::ask_user` builds with the pure `ask::answered_display` /
@@ -2067,7 +2084,7 @@ the **`/settings` menu** (`docs/settings.md`: the knobs that were only ever
 a hard-coded `agent::MAX_TOOL_ITERATIONS`, and an always-on auto-compaction —
 made *visible and changeable mid-session*
 in the `/model` picker's inline frame, the third composer-replacing picker:
-seventeen rows (**Hide thinking**, **Show images**, **Image width**,
+eighteen rows (**Hide thinking**, **Show images**, **Image width**,
 **Auto-resize images** — the three from `docs/images.md` — **Error retry**,
 **Tools**, **Permission
 mode**, **Checkpoints**, **Auto compact**, **Project docs**, **Hooks**,
@@ -2076,7 +2093,9 @@ mode**, **Checkpoints**, **Auto compact**, **Project docs**, **Hooks**,
 trips mid-task abandons the work half-done and Esc is already the stop
 button; it counts the **calls**, not the rounds, because a round can be a
 whole parallel batch, and a round the budget can only partly afford is
-clamped rather than refused whole; **Show tips** — the spinner tip,
+clamped rather than refused whole; **Question timeout** — how long an
+`AskUserQuestion` call waits for an idle user before the agent carries on
+without them, `5m`/**`10m`**/`20m`/`30m`/`1h`/`off`, `docs/ask.md`; **Show tips** — the spinner tip,
 `docs/tips.md`, persisted **per user** in `tips.json` beside the walk's
 position rather than in `settings.json`; **Update check** — the once-a-day
 newer-release check, `docs/update.md`: one `HEAD` of the repository's

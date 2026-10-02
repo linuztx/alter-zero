@@ -12,7 +12,7 @@ use tokio::sync::mpsc::UnboundedSender;
 use super::tools::{ToolCallRequest, ToolOutcome};
 use crate::ask::{
     AskDecision, AskGate, AskRequest, answered_display, answered_result, chat_display, chat_result,
-    declined_display, declined_result, parse_questions,
+    declined_display, declined_result, parse_questions, timed_out_display, timed_out_result,
 };
 use crate::stream::{CancelToken, StreamEvent};
 
@@ -27,7 +27,10 @@ const CANCELLED_DISPLAY: &str = "Interrupted by user";
 /// user decides (or the turn is cancelled), and map the decision onto the
 /// split [`ToolOutcome`] — the displayed cell text in `output`, the
 /// model-facing result in `context` — that `run_agent` surfaces as
-/// `ToolAnswered` (submitted) or `ToolRejected` (declined / chat).
+/// `ToolAnswered` (submitted) or `ToolRejected` (declined / chat / timed
+/// out). The thread never times anything out itself: the boundary's idle
+/// clock does, posting [`AskDecision::TimedOut`] on the gate like any answer,
+/// so a key and the deadline can never race on two threads.
 ///
 /// Unparseable arguments resolve as a recoverable error without raising
 /// anything — the model reads the message and retries, like every other
@@ -57,6 +60,13 @@ pub fn ask_user(
         }
         Some(AskDecision::Chat) => {
             ToolOutcome::error(chat_display(&request.questions)).with_context(chat_result())
+        }
+        // Nobody answered within the timeout (`docs/ask.md` "When the user
+        // is away"): red like a decline — nothing was answered — but the
+        // model reads the carry-on instruction instead of stop-and-wait.
+        Some(AskDecision::TimedOut(after)) => {
+            ToolOutcome::error(timed_out_display(&request.questions, after))
+                .with_context(timed_out_result(after))
         }
         // The cancel that reaps a waiting thread (Esc, `/clear`, quit): the
         // turn is being torn down, so these texts only ever reach an
@@ -180,6 +190,39 @@ mod tests {
             let context = outcome.context.expect("the model reads the instruction");
             assert!(context.contains(needle), "got {context}");
         }
+    }
+
+    #[test]
+    fn a_timed_out_question_resolves_red_and_tells_the_model_to_carry_on() {
+        // The user was away (docs/ask.md "When the user is away"): the cell
+        // names the questions that went unanswered, the model reads the
+        // short continue-without-them instruction — never the decline's
+        // stop-and-wait, which would park an unattended agent anyway.
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let gate = AskGate::new();
+        let cancel = CancelToken::new();
+        let waiter = {
+            let (gate, tx, cancel) = (gate.clone(), tx.clone(), cancel.clone());
+            std::thread::spawn(move || ask_user(&gate, &tx, &cancel, &call(VALID_ARGS)))
+        };
+        let request = loop {
+            if let Ok(StreamEvent::AskUser(request)) = rx.try_recv() {
+                break request;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        };
+        let after = std::time::Duration::from_secs(600);
+        gate.resolve(&request.id, AskDecision::TimedOut(after));
+        let outcome = waiter.join().unwrap();
+        assert!(!outcome.ok, "nothing was answered");
+        assert_eq!(
+            outcome.output,
+            "User did not answer within 10m\n· Pick one? (A / B)"
+        );
+        assert_eq!(
+            outcome.context.as_deref(),
+            Some(crate::ask::timed_out_result(after).as_str())
+        );
     }
 
     #[test]

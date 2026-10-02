@@ -27,12 +27,13 @@
 //! is impure, so the pure `App`/`ui` only ever see already-computed durations.
 
 use std::io;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::text::Line;
 
 use alter_zero::app::{App, DebugPage, View};
+use alter_zero::ask::{ASK_TIMEOUT_WARNING, AskClock, AskDecision};
 use alter_zero::paste;
 use alter_zero::ui;
 
@@ -723,6 +724,9 @@ impl Session<'_> {
         // …and each running agent's, plus the linger sweep (docs/agent-tool.md).
         self.tick_agent_roster();
         self.expire_toast();
+        // Before the paint, so a question that just timed out closes in this
+        // very frame (docs/ask.md "When the user is away").
+        self.tick_ask_timer();
         self.draw_active_view()?;
         // The ↓ manager band re-arms frames like an active turn: its details
         // view's Runtime ticks with no events otherwise — and so does a non-empty
@@ -760,6 +764,52 @@ impl Session<'_> {
                 self.toast_deadline = None;
             } else {
                 self.frame.schedule_frame_in(deadline - now);
+            }
+        }
+    }
+
+    /// Read the question timeout's idle clock (`docs/ask.md` "When the user
+    /// is away"). While a question counts down, inject what it has left —
+    /// the modal warns in its final minute — and keep a frame pending for
+    /// the next moment that changes what is on screen: the warning appearing,
+    /// its countdown's next second, the expiry. Re-armed every tick (the
+    /// toast's rule), since the frame scheduler keeps only the soonest
+    /// deadline and the status chain that would otherwise wake us stops
+    /// under an overlay — where an absent user's question must still expire.
+    ///
+    /// When it runs out, every waiting question times out at once: the modal
+    /// closes (the composer draft comes back) and each blocked call resolves
+    /// on the gate as `TimedOut`, so the model reads the carry-on instruction
+    /// and the turn goes on without the user.
+    fn tick_ask_timer(&mut self) {
+        let timeout = self.app.settings().question_timeout();
+        let clock = self.ask_timer.tick(
+            self.app.asks_waiting(),
+            self.app.ask().map(|prompt| prompt.request.id.as_str()),
+            timeout,
+            Instant::now(),
+        );
+        match clock {
+            AskClock::Idle => self.app.set_ask_remaining(None),
+            AskClock::Running(left) => {
+                self.app.set_ask_remaining(Some(left));
+                let wake = match left.checked_sub(ASK_TIMEOUT_WARNING) {
+                    // Quiet until the warning's first frame.
+                    Some(quiet) if !quiet.is_zero() => quiet,
+                    // The countdown rounds up, so it next changes on the
+                    // whole second below — and the last one is the expiry.
+                    _ => match left.subsec_nanos() {
+                        0 => Duration::from_secs(1).min(left),
+                        nanos => Duration::from_nanos(u64::from(nanos)),
+                    },
+                };
+                self.frame.schedule_frame_in(wake);
+            }
+            AskClock::Expired => {
+                let after = timeout.unwrap_or_default();
+                for id in self.app.time_out_asks() {
+                    self.ask.resolve(&id, AskDecision::TimedOut(after));
+                }
             }
         }
     }

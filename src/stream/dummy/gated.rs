@@ -244,10 +244,10 @@ const DUMMY_ASK_ARGS: &str = r#"{"questions":[
 /// Play the offline `AskUserQuestion` round trip (`docs/ask.md`): stream the
 /// intro, announce the call, raise the question modal and **block on the ask
 /// gate** exactly as the real tool thread does, then resolve the cell —
-/// green with the answers, red for a decline or a `Chat about this` — and
-/// close on a reply that reports what happened. The whole resolution mapping
-/// is the real one ([`crate::llm::ask::ask_user`]), so the offline demo and a
-/// live backend produce byte-identical cells.
+/// green with the answers, red for a decline, a `Chat about this` or a
+/// timeout — and close on a reply that reports what happened. The whole
+/// resolution mapping is the real one ([`crate::llm::ask::ask_user`]), so the
+/// offline demo and a live backend produce byte-identical cells.
 pub(in crate::stream) fn ask_questions_turn(stage: &AskStage<'_>) {
     let intro = "Happy to ask — I'll walk you through the question tool: a single-select, \
                  a multi-select with checkboxes, and a preview question with notes. \
@@ -286,6 +286,7 @@ pub(in crate::stream) fn ask_questions_turn(stage: &AskStage<'_>) {
     });
     let answered = outcome.ok;
     let chatting = outcome.output.starts_with(crate::ask::CHAT_HEADLINE);
+    let timed_out = outcome.output.starts_with(crate::ask::TIMED_OUT_HEADLINE);
     match outcome.context {
         Some(result) if answered => {
             let _ = stage.tx.send(StreamEvent::ToolAnswered {
@@ -323,6 +324,15 @@ pub(in crate::stream) fn ask_questions_turn(stage: &AskStage<'_>) {
             "Sure — let's talk it through. I'm only the demo backend, but a real model \
              would now wait for your message and discuss the options before deciding \
              anything.\n\n",
+            handoff!()
+        )
+    } else if timed_out {
+        // Nobody answered in time (docs/ask.md "When the user is away"): the
+        // model was told to carry on, so the demo does too.
+        concat!(
+            "No answer in time, so I'll carry on without you — a real model would now \
+             make the safe, reversible choice itself, say what it assumed, and keep \
+             working.\n\n",
             handoff!()
         )
     } else {

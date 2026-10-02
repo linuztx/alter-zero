@@ -287,6 +287,11 @@ pub(crate) struct Session<'t> {
     /// (`docs/ask.md`) — always present (asking is not a permission), shared
     /// by every backend build.
     ask: alter_zero::ask::AskGate,
+    /// The question timeout's idle clock (`docs/ask.md` "When the user is
+    /// away"): read by the draw tick, restarted by every key and paste. When
+    /// it runs out the waiting questions resolve `TimedOut` on [`Self::ask`]
+    /// — on this thread, so an answer and the deadline can never race.
+    ask_timer: alter_zero::ask::AskTimer,
     /// The shared task list the task tools operate on
     /// (`docs/task-tools.md`) — the loop syncs it to `App::tasks` after every
     /// history rewind so the model's next `tasklist` agrees with the strip.

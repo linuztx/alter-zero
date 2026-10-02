@@ -10,6 +10,8 @@
 //! skipped top into real scrollback like every framed view
 //! (`docs/view-flow.md`).
 
+use std::time::Duration;
+
 use crate::app::{AskAnswerState, AskInput, AskPrompt, AskRow, ask_row_number, ask_rows};
 use crate::ask::{AskOption, AskQuestion};
 
@@ -198,7 +200,8 @@ struct AskBuild {
 }
 
 /// Build the whole modal at `width`: rule → chip strip → the current page →
-/// hints → rule. Pure and total — an app without an open modal builds empty.
+/// hints → the timeout row → rule. Pure and total — an app without an open
+/// modal builds empty.
 fn ask_build(app: &App, width: u16) -> AskBuild {
     let Some(prompt) = app.ask() else {
         return AskBuild {
@@ -241,12 +244,38 @@ fn ask_build(app: &App, width: u16) -> AskBuild {
     }
     lines.push(Line::default());
     lines.push(hint_row(&hints(prompt)));
-    lines.push(Line::default());
+    lines.push(timeout_row(prompt));
     lines.push(rule(width));
     AskBuild {
         lines,
         cursor,
         marker,
+    }
+}
+
+/// The row between the hints and the closing rule: blank, except in the
+/// question's final minute, when it says the agent is about to carry on
+/// without an answer (`docs/ask.md` "When the user is away") — on every page,
+/// the entry fields included, since any key restarts the clock. A row the
+/// page already had, and one line however narrow the terminal (the paint
+/// clips rather than wraps), so the warning can never move the region. The
+/// seconds round **up**, so `0:00` is never on screen before the close.
+fn timeout_row(prompt: &AskPrompt) -> Line<'static> {
+    match prompt.remaining {
+        Some(left) if left <= crate::ask::ASK_TIMEOUT_WARNING => {
+            let whole = Duration::from_secs(left.as_secs() + u64::from(left.subsec_nanos() > 0));
+            Line::from(vec![
+                Span::raw(ASK_INDENT),
+                Span::styled(
+                    format!(
+                        "{ASK_TIMEOUT_PREFIX}{}",
+                        super::login_view::countdown(whole)
+                    ),
+                    Style::new().fg(ask_warning_color()),
+                ),
+            ])
+        }
+        _ => Line::default(),
     }
 }
 

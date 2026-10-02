@@ -2,9 +2,11 @@
 //! the option pages, the preview panel, the Submit review page, and the
 //! resolved cell's headline header.
 
+use std::time::Duration;
+
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use super::super::theme::ask_chip_current_bg;
+use super::super::theme::{ask_chip_current_bg, ask_warning_color};
 use super::*;
 use crate::ask::{AskOption, AskQuestion, AskRequest};
 
@@ -630,4 +632,83 @@ fn a_full_entry_row_keeps_the_caret_inside_the_width() {
             super::super::ask_view::ask_cursor(&app, 80, 40).expect("a caret while editing");
         assert!(x < 80, "{n} chars: the caret sits at column {x}");
     }
+}
+
+// --- the timeout warning (docs/ask.md "When the user is away") ---
+
+/// The row between the hint row and the closing rule — the warning's slot.
+fn warning_row(lines: &[Line]) -> String {
+    plain(&lines[lines.len() - 2])
+}
+
+#[test]
+fn the_modal_says_nothing_of_the_timeout_until_its_last_minute() {
+    let mut app = App::new();
+    open(&mut app, vec![coffee_question()]);
+    let quiet = ask_lines(&app, 80);
+    assert_eq!(
+        warning_row(&quiet).trim(),
+        "",
+        "no reading yet: a blank row"
+    );
+    app.set_ask_remaining(Some(Duration::from_secs(61)));
+    let early = ask_lines(&app, 80);
+    assert_eq!(
+        warning_row(&early).trim(),
+        "",
+        "more than a minute left: the modal stays quiet"
+    );
+    assert_eq!(early.len(), quiet.len());
+}
+
+#[test]
+fn the_last_minute_warns_in_the_row_above_the_closing_rule() {
+    let mut app = App::new();
+    open(&mut app, vec![coffee_question()]);
+    let before = ask_lines(&app, 80);
+    app.set_ask_remaining(Some(Duration::from_secs(42)));
+    let lines = ask_lines(&app, 80);
+    assert_eq!(
+        warning_row(&lines).trim(),
+        "Continuing without your answer in 0:42"
+    );
+    assert_eq!(
+        lines.len(),
+        before.len(),
+        "the warning takes a row the page already had: the region never jumps"
+    );
+    assert!(
+        plain(lines.last().unwrap()).starts_with("──"),
+        "the closing rule stays last"
+    );
+    // The caution amber the review page's warning wears.
+    let span = lines[lines.len() - 2]
+        .spans
+        .iter()
+        .find(|s| s.content.contains("Continuing"))
+        .expect("the warning span");
+    assert_eq!(span.style.fg, Some(ask_warning_color()));
+}
+
+#[test]
+fn the_warning_follows_the_user_into_the_entry_and_onto_the_review_page() {
+    let mut app = App::new();
+    open(&mut app, vec![coffee_question(), topics_question()]);
+    app.set_ask_remaining(Some(Duration::from_secs(5)));
+    app.on_key(key(KeyCode::Char('4'))); // the Other entry
+    assert!(app.ask().unwrap().editing(), "precondition: in the entry");
+    let entry = ask_lines(&app, 80);
+    assert_eq!(
+        warning_row(&entry).trim(),
+        "Continuing without your answer in 0:05"
+    );
+    app.on_key(key(KeyCode::Esc)); // back to the options
+    app.on_key(key(KeyCode::Right));
+    app.on_key(key(KeyCode::Right));
+    assert!(app.ask().unwrap().on_submit_tab(), "precondition: review");
+    let review = ask_lines(&app, 80);
+    assert_eq!(
+        warning_row(&review).trim(),
+        "Continuing without your answer in 0:05"
+    );
 }

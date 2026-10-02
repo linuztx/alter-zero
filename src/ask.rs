@@ -14,7 +14,7 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde::Deserialize;
 
@@ -142,6 +142,10 @@ pub enum AskDecision {
     /// The `Chat about this` row: the user wants to discuss the questions
     /// before deciding; the model is told to stop and wait for their message.
     Chat,
+    /// Nobody answered within the timeout it carries (`docs/ask.md` "When
+    /// the user is away"): the user is not there, so the model is told to
+    /// carry on without them.
+    TimedOut(Duration),
 }
 
 /// The committed cell's headline for a submission — the first output line,
@@ -264,6 +268,145 @@ pub fn chat_result() -> String {
      question(s) with you before deciding. STOP and wait for their next message, then \
      continue the conversation from there."
         .to_string()
+}
+
+/// How long a question waits for an **idle** user before the agent carries
+/// on without them (`docs/ask.md` "When the user is away") — the `/settings`
+/// **Question timeout** default. Chat and desktop apps commonly treat five
+/// to fifteen idle minutes as "away" and ten sits in the middle; because any
+/// key the user presses restarts the clock ([`AskTimer::touch`]), it only
+/// ever measures absence — someone reading or typing an answer is never cut
+/// off.
+pub const DEFAULT_ASK_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+
+/// How close to its timeout an open question starts saying so — the modal's
+/// `Continuing without your answer in 0:42` row. A minute: long enough to
+/// notice and press a key, short enough that the row is a warning rather
+/// than a fixture every question wears.
+pub const ASK_TIMEOUT_WARNING: Duration = Duration::from_secs(60);
+
+/// Seeds the `/settings` **Question timeout** row for a run, in seconds (`0`
+/// waits forever) — never written back. The smoke suite drives the timeout
+/// with a short one.
+pub const ASK_TIMEOUT_ENV: &str = "ALTER_ZERO_ASK_TIMEOUT_SECS";
+
+/// The headline of a question that timed out — completed by the wait it
+/// gave up after (`User did not answer within 10m`, [`timed_out_display`]).
+pub const TIMED_OUT_HEADLINE: &str = "User did not answer within";
+
+/// A timeout as the cell and the model read it: the `bash` cell's limit
+/// units (`10m`, `4s`, `1h`), shown whole.
+fn wait_text(after: Duration) -> String {
+    crate::app::format_timeout(u64::try_from(after.as_millis()).unwrap_or(u64::MAX))
+}
+
+/// The cell display for a question nobody answered in time: the timeout
+/// headline over the same `· {question} ({options})` rows a decline names.
+#[must_use]
+pub fn timed_out_display(questions: &[AskQuestion], after: Duration) -> String {
+    let mut out = format!("{TIMED_OUT_HEADLINE} {}", wait_text(after));
+    for question in questions {
+        out.push('\n');
+        out.push_str(&question_line(question));
+    }
+    out
+}
+
+/// The model-facing result for a question nobody answered in time: the user
+/// is away, so — unlike a decline's stop-and-wait, which would park an
+/// unattended agent indefinitely — it says to carry on, and how. Short on
+/// purpose: it is an instruction, not an explanation.
+#[must_use]
+pub fn timed_out_result(after: Duration) -> String {
+    format!(
+        "The user did not answer within {} and is not available. Do not wait or ask again: \
+         continue the task using your best judgment, prefer safe and reversible choices, and \
+         state the assumptions you made.",
+        wait_text(after)
+    )
+}
+
+/// One reading of the [`AskTimer`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AskClock {
+    /// No question is waiting, or the timeout is off: nothing counts down.
+    Idle,
+    /// A question is waiting and has this long left.
+    Running(Duration),
+    /// The user has been idle for the whole timeout: the waiting questions
+    /// resolve as [`AskDecision::TimedOut`].
+    Expired,
+}
+
+/// The idle clock over waiting questions (`docs/ask.md` "When the user is
+/// away") — pure, the instants injected by the boundary that owns it (the
+/// draw tick reads the clock, the key and paste paths [`touch`](Self::touch)
+/// it), so every rule is unit-tested without a thread or a terminal.
+///
+/// One clock covers every waiting question, open or queued behind another
+/// modal: what it measures is the **user's** absence, so it starts when the
+/// first question starts waiting, restarts when a new one opens (each gets
+/// the whole wait on screen) and on every key the user presses, and runs out
+/// only after the timeout passes with no sign of anyone at the keyboard.
+#[derive(Debug, Clone, Default)]
+pub struct AskTimer {
+    /// When the countdown last (re)started — `None` while nothing waits.
+    since: Option<Instant>,
+    /// The open question's id as of the last tick: a different one opening
+    /// restarts the countdown.
+    open: Option<String>,
+}
+
+impl AskTimer {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// The user pressed a key or pasted: someone is at the keyboard, so a
+    /// running countdown starts over. With nothing waiting it arms nothing —
+    /// a question that arrives later starts its own clock.
+    pub fn touch(&mut self, now: Instant) {
+        if self.since.is_some() {
+            self.since = Some(now);
+        }
+    }
+
+    /// Read the clock at `now`: `waiting` is whether any question waits
+    /// (open or queued), `open` the open one's id, `timeout` the session's
+    /// (`None` waits forever). Expiry resets the clock — the caller times
+    /// every waiting question out, and the next one starts fresh.
+    pub fn tick(
+        &mut self,
+        waiting: bool,
+        open: Option<&str>,
+        timeout: Option<Duration>,
+        now: Instant,
+    ) -> AskClock {
+        let Some(timeout) = timeout.filter(|_| waiting) else {
+            self.reset();
+            return AskClock::Idle;
+        };
+        let since = match self.since {
+            Some(since) if self.open.as_deref() == open => since,
+            _ => {
+                self.open = open.map(str::to_string);
+                *self.since.insert(now)
+            }
+        };
+        match timeout.checked_sub(now.saturating_duration_since(since)) {
+            Some(left) if !left.is_zero() => AskClock::Running(left),
+            _ => {
+                self.reset();
+                AskClock::Expired
+            }
+        }
+    }
+
+    fn reset(&mut self) {
+        self.since = None;
+        self.open = None;
+    }
 }
 
 /// State shared between the blocked tool thread and the event loop.
@@ -605,5 +748,189 @@ mod tests {
         gate.resolve(&id, AskDecision::Declined);
         gate.clear();
         assert_eq!(gate.wait(&id, &|| true), None);
+    }
+
+    // --- the timeout (docs/ask.md "When the user is away") ---
+
+    const TEN_MINUTES: Duration = Duration::from_secs(600);
+
+    #[test]
+    fn the_default_timeout_is_ten_minutes_with_a_one_minute_warning() {
+        assert_eq!(DEFAULT_ASK_TIMEOUT, TEN_MINUTES);
+        assert_eq!(ASK_TIMEOUT_WARNING, Duration::from_secs(60));
+    }
+
+    #[test]
+    fn a_timed_out_cell_names_the_wait_and_the_unanswered_questions() {
+        let questions = [
+            question("Which database?", &["Postgres", "SQLite"], false),
+            question("Add tests?", &["Yes", "No"], false),
+        ];
+        assert_eq!(
+            timed_out_display(&questions, TEN_MINUTES),
+            "User did not answer within 10m\n\
+             · Which database? (Postgres / SQLite)\n\
+             · Add tests? (Yes / No)"
+        );
+        assert!(
+            timed_out_display(&questions, TEN_MINUTES).starts_with(TIMED_OUT_HEADLINE),
+            "the headline is what the demo and the renderer key on"
+        );
+        // A limit reads whole, in the bash cell's units.
+        assert!(
+            timed_out_display(&questions, Duration::from_secs(4))
+                .starts_with("User did not answer within 4s\n")
+        );
+    }
+
+    #[test]
+    fn a_timeout_tells_the_model_to_carry_on_without_the_user() {
+        let result = timed_out_result(TEN_MINUTES);
+        assert_eq!(
+            result,
+            "The user did not answer within 10m and is not available. Do not wait or ask \
+             again: continue the task using your best judgment, prefer safe and reversible \
+             choices, and state the assumptions you made."
+        );
+        // Never the decline's stop-and-wait: the whole point is to keep going.
+        assert!(!result.contains("STOP"), "got {result}");
+        assert!(!result.contains("wait for"), "got {result}");
+    }
+
+    /// A clock reading taken `secs` after `start`.
+    fn at(start: Instant, secs: u64) -> Instant {
+        start + Duration::from_secs(secs)
+    }
+
+    #[test]
+    fn the_clock_is_idle_while_no_question_waits_or_the_timeout_is_off() {
+        let start = Instant::now();
+        let mut timer = AskTimer::new();
+        assert_eq!(
+            timer.tick(false, None, Some(TEN_MINUTES), start),
+            AskClock::Idle
+        );
+        assert_eq!(
+            timer.tick(true, Some("ask_0"), None, start),
+            AskClock::Idle,
+            "an `off` timeout waits forever"
+        );
+        assert_eq!(
+            timer.tick(true, Some("ask_0"), None, at(start, 100_000)),
+            AskClock::Idle
+        );
+    }
+
+    #[test]
+    fn the_clock_counts_down_from_the_first_tick_and_expires_at_the_timeout() {
+        let start = Instant::now();
+        let mut timer = AskTimer::new();
+        assert_eq!(
+            timer.tick(true, Some("ask_0"), Some(TEN_MINUTES), start),
+            AskClock::Running(TEN_MINUTES)
+        );
+        assert_eq!(
+            timer.tick(true, Some("ask_0"), Some(TEN_MINUTES), at(start, 599)),
+            AskClock::Running(Duration::from_secs(1))
+        );
+        assert_eq!(
+            timer.tick(true, Some("ask_0"), Some(TEN_MINUTES), at(start, 600)),
+            AskClock::Expired
+        );
+    }
+
+    #[test]
+    fn a_key_restarts_the_countdown_so_a_present_user_is_never_cut_off() {
+        let start = Instant::now();
+        let mut timer = AskTimer::new();
+        let _ = timer.tick(true, Some("ask_0"), Some(TEN_MINUTES), start);
+        // Typing a long answer at minute nine…
+        timer.touch(at(start, 540));
+        // …buys a whole new ten minutes from that keystroke.
+        assert_eq!(
+            timer.tick(true, Some("ask_0"), Some(TEN_MINUTES), at(start, 600)),
+            AskClock::Running(Duration::from_secs(540))
+        );
+        assert_eq!(
+            timer.tick(true, Some("ask_0"), Some(TEN_MINUTES), at(start, 1140)),
+            AskClock::Expired
+        );
+    }
+
+    #[test]
+    fn a_key_with_no_question_waiting_arms_nothing() {
+        let start = Instant::now();
+        let mut timer = AskTimer::new();
+        timer.touch(start);
+        // The question arrives long after that keystroke: its clock starts
+        // when it does, not at the stale key.
+        assert_eq!(
+            timer.tick(true, Some("ask_0"), Some(TEN_MINUTES), at(start, 3_000)),
+            AskClock::Running(TEN_MINUTES)
+        );
+    }
+
+    #[test]
+    fn a_new_question_opening_restarts_the_clock() {
+        let start = Instant::now();
+        let mut timer = AskTimer::new();
+        let _ = timer.tick(true, Some("ask_0"), Some(TEN_MINUTES), start);
+        // The first is answered and the agent asks again five minutes in,
+        // in the same breath — the second still gets its whole ten minutes.
+        assert_eq!(
+            timer.tick(true, Some("ask_1"), Some(TEN_MINUTES), at(start, 300)),
+            AskClock::Running(TEN_MINUTES)
+        );
+    }
+
+    #[test]
+    fn the_clock_rests_after_it_expires_and_rearms_for_the_next_question() {
+        let start = Instant::now();
+        let mut timer = AskTimer::new();
+        let _ = timer.tick(true, Some("ask_0"), Some(TEN_MINUTES), start);
+        assert_eq!(
+            timer.tick(true, Some("ask_0"), Some(TEN_MINUTES), at(start, 600)),
+            AskClock::Expired
+        );
+        // The questions were timed out, so nothing waits…
+        assert_eq!(
+            timer.tick(false, None, Some(TEN_MINUTES), at(start, 601)),
+            AskClock::Idle
+        );
+        // …and a later question gets a fresh clock.
+        assert_eq!(
+            timer.tick(true, Some("ask_1"), Some(TEN_MINUTES), at(start, 900)),
+            AskClock::Running(TEN_MINUTES)
+        );
+    }
+
+    #[test]
+    fn a_queued_question_counts_down_while_another_modal_is_open() {
+        // An ask queued behind a permission prompt has no open id, but it is
+        // waiting all the same: an absent user must not wedge the agent
+        // behind a prompt nobody is there to answer.
+        let start = Instant::now();
+        let mut timer = AskTimer::new();
+        let _ = timer.tick(true, None, Some(TEN_MINUTES), start);
+        assert_eq!(
+            timer.tick(true, None, Some(TEN_MINUTES), at(start, 600)),
+            AskClock::Expired
+        );
+    }
+
+    #[test]
+    fn a_changed_timeout_applies_to_the_running_clock() {
+        let start = Instant::now();
+        let mut timer = AskTimer::new();
+        let _ = timer.tick(true, Some("ask_0"), Some(TEN_MINUTES), start);
+        assert_eq!(
+            timer.tick(
+                true,
+                Some("ask_0"),
+                Some(Duration::from_secs(1_200)),
+                at(start, 600)
+            ),
+            AskClock::Running(TEN_MINUTES)
+        );
     }
 }

@@ -420,3 +420,21 @@ fn a_cut_value_ends_with_an_ellipsis() {
     let text = plain(&line);
     assert!(text.trim_end().ends_with('…'), "{text:?}");
 }
+
+#[test]
+fn an_off_question_timeout_is_dimmed_like_any_off_value() {
+    // `off` is the Question timeout row's "nothing happens" value
+    // (docs/ask.md) — it dims through the same rule as `false`.
+    let mut app = settings_app();
+    app.settings_mut().question_timeout_secs = 0;
+    for c in "question".chars() {
+        app.on_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+    }
+    let buf = render(&app, 78);
+    let line = row(&buf, 4, 78);
+    assert!(line.contains("Question timeout"), "{line:?}");
+    // Display columns, not bytes — the selected row's `→` is 3 bytes.
+    let byte = line.find("off").expect("the value");
+    let at = u16::try_from(line[..byte].chars().count()).unwrap();
+    assert_eq!(buf[(at, 4)].fg, settings_value_off_color(), "off is dim");
+}

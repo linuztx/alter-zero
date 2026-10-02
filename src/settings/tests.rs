@@ -712,3 +712,81 @@ fn show_tips_never_reaches_settings_json() {
     assert!(file.tips, "not this file's to record");
     assert_eq!(file, SessionSettings::default());
 }
+
+// ===== the Question timeout row (docs/ask.md "When the user is away") =====
+
+#[test]
+fn question_timeout_defaults_to_ten_minutes_and_cycles_the_offered_waits() {
+    let s = SessionSettings::default();
+    assert_eq!(s.question_timeout_secs, 600);
+    assert_eq!(
+        s.question_timeout(),
+        Some(crate::ask::DEFAULT_ASK_TIMEOUT),
+        "the row's default is the ask module's"
+    );
+    assert_eq!(s.value_text(SettingKey::QuestionTimeout, MANUAL), "10m");
+    let seen = cycle_values(
+        SessionSettings::default(),
+        SettingKey::QuestionTimeout,
+        QUESTION_TIMEOUT_CHOICES.len(),
+    );
+    assert_eq!(seen, ["10m", "20m", "30m", "1h", "off", "5m", "10m"]);
+}
+
+#[test]
+fn an_off_question_timeout_waits_forever() {
+    let s = SessionSettings {
+        question_timeout_secs: 0,
+        ..SessionSettings::default()
+    };
+    assert_eq!(s.question_timeout(), None);
+    assert_eq!(s.value_text(SettingKey::QuestionTimeout, MANUAL), "off");
+}
+
+#[test]
+fn a_question_timeout_the_menu_does_not_offer_reads_whole_and_cycles_to_the_shortest() {
+    // `ALTER_ZERO_ASK_TIMEOUT_SECS=4` — the smoke suite's — is no choice of
+    // the menu's: it reads in the bash cell's units and the next press lands
+    // on the shortest wait rather than turning the timeout off.
+    let mut s = SessionSettings {
+        question_timeout_secs: 4,
+        ..SessionSettings::default()
+    };
+    assert_eq!(s.value_text(SettingKey::QuestionTimeout, MANUAL), "4s");
+    assert_eq!(
+        s.question_timeout(),
+        Some(std::time::Duration::from_secs(4))
+    );
+    assert!(s.cycle(SettingKey::QuestionTimeout));
+    assert_eq!(s.value_text(SettingKey::QuestionTimeout, MANUAL), "5m");
+}
+
+#[test]
+fn question_timeout_persists_in_seconds_only_once_changed() {
+    let s = SessionSettings::default();
+    assert_eq!(s.to_json().trim(), "{}", "the default stays off the wire");
+    let mut changed = s;
+    assert!(changed.cycle(SettingKey::QuestionTimeout));
+    let json = changed.to_json();
+    assert!(json.contains("\"question_timeout_secs\": 1200"), "{json}");
+    assert_eq!(SessionSettings::parse(&json), changed);
+    // The read-modify-write moves it like any other per-directory knob.
+    let mut file = SessionSettings::default();
+    file.copy_value(SettingKey::QuestionTimeout, &changed);
+    assert_eq!(file.question_timeout_secs, 1200);
+}
+
+#[test]
+fn the_question_timeout_row_follows_max_tool_calls() {
+    // The two knobs on how far the agent goes on its own sit together.
+    let all = SettingKey::ALL;
+    let at = all
+        .iter()
+        .position(|k| *k == SettingKey::MaxToolCalls)
+        .unwrap();
+    assert_eq!(all[at + 1], SettingKey::QuestionTimeout);
+    assert_eq!(SettingKey::QuestionTimeout.label(), "Question timeout");
+    let desc = SettingKey::QuestionTimeout.description();
+    assert!(desc.contains("without you"), "{desc}");
+    assert!(desc.contains("off waits forever"), "{desc}");
+}

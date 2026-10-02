@@ -520,6 +520,7 @@ impl<'t> Session<'t> {
             steer,
             permissions,
             ask,
+            ask_timer: alter_zero::ask::AskTimer::new(),
             task_registry,
             skill_registry,
             subagents,

@@ -109,6 +109,11 @@ pub struct AskPrompt {
     pub answers: Vec<AskAnswerState>,
     /// Which field [`App::input`] is editing, if any.
     pub input_mode: AskInput,
+    /// How long until the question times out and the agent carries on
+    /// without an answer — the boundary's idle clock, injected per draw
+    /// ([`App::set_ask_remaining`]); `None` until the first reading, and
+    /// while the timeout is off (`docs/ask.md` "When the user is away").
+    pub remaining: Option<std::time::Duration>,
     /// The composer draft this prompt displaced — restored verbatim when it
     /// closes, the permission prompt's stash.
     saved_input: String,
@@ -199,6 +204,7 @@ impl App {
             row: 0,
             answers,
             input_mode: AskInput::Select,
+            remaining: None,
             saved_input,
             saved_cursor,
             saved_shell_mode,
@@ -251,6 +257,54 @@ impl App {
     /// iteration that abandoned nothing.
     pub fn take_abandoned_asks(&mut self) -> Vec<String> {
         std::mem::take(&mut self.abandoned_asks)
+    }
+
+    /// Whether any `AskUserQuestion` call is waiting on the user — the open
+    /// modal **or** one queued behind another modal. The boundary's idle
+    /// clock counts down while this holds (`docs/ask.md` "When the user is
+    /// away"): a queued question blocks its agent just as surely.
+    #[must_use]
+    pub fn asks_waiting(&self) -> bool {
+        self.ask.is_some() || !self.pending_asks.is_empty()
+    }
+
+    /// The user has been away for the whole question timeout: close the open
+    /// modal (restoring the composer draft — an unfinished entry goes with
+    /// the question), drop the queued questions, and hand back every id —
+    /// the open one first, then the queue in order — for the boundary to
+    /// resolve on the gate as [`AskDecision::TimedOut`]. A permission prompt
+    /// queued behind them opens next: permissions never time out, a write
+    /// must not happen because nobody was there to refuse it. Not an
+    /// abandonment ([`take_abandoned_asks`](Self::take_abandoned_asks) stays
+    /// empty): those resolve as declines, and these must not.
+    pub fn time_out_asks(&mut self) -> Vec<String> {
+        if !self.asks_waiting() {
+            return Vec::new();
+        }
+        let mut ids: Vec<String> = self
+            .ask
+            .as_ref()
+            .map(|prompt| prompt.request.id.clone())
+            .into_iter()
+            .collect();
+        ids.extend(
+            std::mem::take(&mut self.pending_asks)
+                .into_iter()
+                .map(|r| r.id),
+        );
+        self.close_ask();
+        self.open_next_pending();
+        ids
+    }
+
+    /// How long the open question has left before it times out — injected per
+    /// draw by the boundary's idle clock, exactly like the status line's
+    /// elapsed ([`App::set_status_times`]); `None` while it is not counting
+    /// (the timeout is off). The modal says so in its final minute.
+    pub fn set_ask_remaining(&mut self, remaining: Option<std::time::Duration>) {
+        if let Some(prompt) = self.ask.as_mut() {
+            prompt.remaining = remaining;
+        }
     }
 
     /// Resolve the open modal with `decision`: close it (restoring the draft),
