@@ -266,6 +266,27 @@ task registry as an `Option`, `None` for the `/compact` backend and every
 subagent (they are never offered the tools), so the nag can only name tools
 the request carries.
 
+### Seen live
+
+Three runs of gpt-oss:120b over Ollama Cloud on the reported prompt, the
+rollouts read back (`task_reminder` and `task_call` records in order):
+
+- With no plan, ten rounds of work (`node -v`, the writes, `npm install`,
+  `npm start`) → the stale reminder, empty listing. The model finished the
+  work and, at the end, created one task, marked it `in_progress` and
+  answered — the shape that moved the guard from "no task call since the
+  work" to "the last round did not close a task".
+- Same prompt on the final rule: ten rounds → the stale reminder → the
+  model created its task, marked it `completed` and answered; the finished
+  plan retired at the turn's end, nothing stale at rest.
+- Asked to *plan first*: four tasks created, then five rounds of work with
+  none touched → the stale reminder at the open-work window (`#1`–`#4`
+  listed) → `#1 → completed`, `#2 → in_progress`, and the model tried to
+  stop → the finish guard, once → `#2 → completed`, `#3 → in_progress`,
+  then its closing line. The list at rest said what the turn had actually
+  done; that the model stopped with the page unwritten is its own call,
+  and the next turn's spinner wears `#3`.
+
 ### What the reminder is on the record
 
 It is conversation the model read, so it is kept the way a hook's injected
