@@ -1702,13 +1702,15 @@ the live registry, `NoGuard` everywhere else (subagents, `/compact`, the
 tests). Between rounds it sends a `<system-reminder>` carrying the
 `tasklist` lines and one instruction once the list has gone stale — after
 1 round of work with nothing `in_progress` (naming the next unblocked task),
-3 with one in progress (none when that task is the only one left open), an
+3 with one in progress (none when that task is the only one left open), only a round that changed
+the list counting as an update (a failed task call changes nothing), an
 ignored reminder returning after 3, 6, then 12 more rounds; and when the
 model answers over open tasks on a turn that wrote to the list, the answer
 stands but the turn continues with the reminder as its next user message —
 the `Stop`-hook continuation, built in, asked before the user's own `Stop`
 hooks (so they judge the answer that really ends the turn) and never once
-the tool-call budget is spent, at most twice per turn and the second only after more work, never on
+the tool-call budget is spent, at most twice per turn after a plain answer
+and eight times after an empty one, each after more work, never on
 a turn whose user refused a call. A reminder rides `StreamEvent::HookNote`
 labelled `Task reminder`, so it records as the cell-less
 `HistoryItem::HookNote`: Ctrl+O shows it, `/resume` keeps it, and every

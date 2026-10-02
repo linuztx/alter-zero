@@ -632,8 +632,9 @@ which Ctrl+V reads the clipboard from.
   current: once the list goes stale mid-turn the next request carries a
   `<system-reminder>` with the list and one instruction, and a turn that
   wrote to the list cannot end over open tasks without one reminder (two,
-  if the model worked in between) — recorded as hidden notes, so later
-  turns replay them in place.
+  if the model worked in between; up to eight when it stops with no answer
+  at all, as long as each buys progress) — recorded as hidden notes, so
+  later turns replay them in place.
 - **Spinner tips** (`docs/tips.md`): Claude Code's dim `⎿  Tip: …` row under
   the status line — not at once but once the turn has run three seconds, so a
   quick answer never flashes one; the next tip in a fixed catalog each turn

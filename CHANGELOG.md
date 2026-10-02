@@ -26,8 +26,10 @@ release heading when a version is cut.
   list goes stale mid-turn, the next request carries a short reminder with
   the current tasks and the one update it is missing, naming the next task
   to start; and a turn that planned cannot end over open tasks without being
-  reminded to update them and finish the work, at most twice per turn. A
-  model that keeps its list current never sees either. Reminders stay out of
+  reminded to update them and finish the work — at most twice after an
+  answer, and up to eight times after stopping with no answer at all, as
+  long as each reminder gets the model further. A model that keeps its list
+  current never sees either. Reminders stay out of
   the conversation view, show in Ctrl+O, and survive `/resume`
   (`docs/task-tools.md`).
 

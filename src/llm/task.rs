@@ -41,17 +41,16 @@ impl RegistryGuard {
     /// A fresh turn's guard over `registry`.
     #[must_use]
     pub fn new(registry: TaskRegistry) -> Self {
-        Self {
-            registry,
-            guard: TaskGuard::default(),
-        }
+        let guard = TaskGuard::new(registry.snapshot());
+        Self { registry, guard }
     }
 }
 
 impl TurnGuard for RegistryGuard {
     fn round_ran(&mut self, calls: &[ToolCallRequest], refused: bool) {
         let names: Vec<&str> = calls.iter().map(|call| call.name.as_str()).collect();
-        self.guard.round_ran(&names, refused);
+        self.guard
+            .round_ran(&names, &self.registry.snapshot(), refused);
     }
 
     fn before_round(&mut self) -> Option<GuardNote> {
@@ -60,9 +59,9 @@ impl TurnGuard for RegistryGuard {
             .map(reminder_note)
     }
 
-    fn before_finish(&mut self) -> Option<GuardNote> {
+    fn before_finish(&mut self, answer: &str) -> Option<GuardNote> {
         self.guard
-            .finish_reminder(&self.registry.snapshot())
+            .finish_reminder(&self.registry.snapshot(), answer)
             .map(reminder_note)
     }
 }
@@ -131,24 +130,42 @@ mod tests {
     fn the_end_of_turn_guard_reads_the_latest_list() {
         use crate::llm::agent::TurnGuard;
         let registry = TaskRegistry::new();
+        let mut guard = RegistryGuard::new(registry.clone());
         let create = call(TASK_CREATE_TOOL, r#"{"subject":"a","description":"d"}"#);
         let _ = run_task_tool(&registry, &create);
-        let mut guard = RegistryGuard::new(registry.clone());
         guard.round_ran(std::slice::from_ref(&create), false);
+        let note = guard.before_finish("The plan.").expect("open at the end");
+        assert!(note.text.contains("#1 [pending] a"), "{}", note.text);
+        assert_eq!(
+            guard.before_finish("The plan."),
+            None,
+            "not again without more work"
+        );
         // The model finished the task before answering: nothing to say.
         let done = call(TASK_UPDATE_TOOL, r#"{"taskId":"1","status":"completed"}"#);
         let _ = run_task_tool(&registry, &done);
         guard.round_ran(std::slice::from_ref(&done), false);
-        assert_eq!(guard.before_finish(), None);
+        assert_eq!(guard.before_finish("Done."), None);
+    }
 
-        // Another turn's guard over a list left open: reminded.
+    #[test]
+    fn a_task_call_that_failed_is_no_update() {
+        // Live, gpt-oss sends an update naming no task; the call fails and
+        // the list is exactly as stale as before.
+        use crate::llm::agent::TurnGuard;
         let registry = TaskRegistry::new();
-        let _ = run_task_tool(&registry, &create);
-        let mut guard = RegistryGuard::new(registry);
-        guard.round_ran(std::slice::from_ref(&create), false);
-        let note = guard.before_finish().expect("open at the end");
-        assert!(note.text.contains("#1 [pending] a"), "{}", note.text);
-        assert_eq!(guard.before_finish(), None, "not again without more work");
+        let _ = run_task_tool(
+            &registry,
+            &call(TASK_CREATE_TOOL, r#"{"subject":"a","description":"d"}"#),
+        );
+        let mut guard = RegistryGuard::new(registry.clone());
+        let bad = call(TASK_UPDATE_TOOL, r#"{"activeForm":"Creating"}"#);
+        assert!(!run_task_tool(&registry, &bad).ok);
+        guard.round_ran(&[bad, call("bash", r#"{"command":"ls"}"#)], false);
+        assert!(
+            guard.before_round().is_some(),
+            "a round of work, still stale"
+        );
     }
 
     #[test]

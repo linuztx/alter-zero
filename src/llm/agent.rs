@@ -139,8 +139,9 @@ pub trait TurnGuard {
     }
 
     /// A note that keeps the turn going instead of letting it end — the
-    /// model's plain answer stands, the note is its next user message.
-    fn before_finish(&mut self) -> Option<GuardNote> {
+    /// model's plain `answer` (empty when it said nothing) stands, the note
+    /// is its next user message.
+    fn before_finish(&mut self, _answer: &str) -> Option<GuardNote> {
         None
     }
 }
@@ -280,7 +281,7 @@ pub fn run_agent(
                 // guard sends back to work.
                 if !cancel.is_cancelled()
                     && !budget_spent
-                    && let Some(note) = guard.before_finish()
+                    && let Some(note) = guard.before_finish(&text)
                 {
                     if !text.trim().is_empty() {
                         messages.push(ChatMessage::new("assistant", &text));
@@ -3601,6 +3602,8 @@ mod tests {
         seen: Vec<(Vec<String>, bool)>,
         /// How many times `before_finish` was asked.
         finish_asks: usize,
+        /// The answer each `before_finish` was asked about.
+        answers: Vec<String>,
     }
 
     impl ScriptedGuard {
@@ -3625,8 +3628,9 @@ mod tests {
             self.rounds.remove(0).map(Self::note)
         }
 
-        fn before_finish(&mut self) -> Option<GuardNote> {
+        fn before_finish(&mut self, answer: &str) -> Option<GuardNote> {
             self.finish_asks += 1;
+            self.answers.push(answer.to_string());
             if self.finishes.is_empty() {
                 return None;
             }
@@ -3900,6 +3904,7 @@ mod tests {
             StreamEvent::HookNote { text, .. } if text == "tasks are still open"
         )));
         assert_eq!(guard.finish_asks, 2, "asked again at the second answer");
+        assert_eq!(guard.answers, ["The page is live.", "Marked done."]);
     }
 
     #[test]

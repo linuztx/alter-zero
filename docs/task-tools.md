@@ -159,9 +159,10 @@ Subagents, the `/compact` backend and the tests pass `NoGuard`. Two rules:
 
 - **The stale-list reminder.** While tasks are open, a tool round with any
   non-task call is a round of *work*. Work that leaves the list unwritten
-  makes it staler; a `taskcreate` or `taskupdate` resets the count, and
-  reading it (`tasklist`, `taskget`) does not, since a look is not an
-  update. Once the count reaches a threshold, the next request carries a
+  makes it staler; a round that **changes** the list resets the count.
+  Reading it (`tasklist`, `taskget`) does not, since a look is not an
+  update, and neither does a task call that failed: gpt-oss sends updates
+  naming no task, and the list is exactly as stale after one as before. Once the count reaches a threshold, the next request carries a
   `<system-reminder>` holding the current list and one instruction. The
   threshold depends on what the list says: **1** round when nothing is
   `in_progress`, because the model is then working outside its plan and the
@@ -187,7 +188,12 @@ Subagents, the `/compact` backend and the tests pass `NoGuard`. Two rules:
   turn**. The second chance is the live finding: gpt-oss answered the first
   reminder of a plan-then-stop turn by starting the work, then ended again
   with the list as stale as before, and a guard spent on the plan would have
-  let that end stand. It never fires on a turn that did not write to the
+  let that end stand. An **empty** answer is different, since it is never a
+  deliberate end: gpt-oss stops that way again and again in one turn, a step
+  further each time, and a guard spent after two such stops let one run end
+  mid-job with its task still in progress. So an empty answer is sent back
+  for as long as each reminder buys work or a list change, **up to eight
+  times**, without spending a plain answer's two. It never fires on a turn that did not write to the
   list, since tasks left open by an earlier turn are not this one's business
   and a question about something else must not restart them. Nor on a turn
   where the user refused a call — a permission rejection, a hook block, a
