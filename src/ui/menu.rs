@@ -33,44 +33,13 @@ pub fn menu_window(len: usize, selected: usize, max: usize) -> usize {
     }
 }
 
-/// The window of variable-height entries (entry `i` painting `heights[i]`
-/// rows) that keeps `selected` visible inside a budget of `max_rows` painted
-/// rows — [`menu_window`] for the palette's wrapped entries, returned as the
-/// visible `(start, end)` entry range. The window grows **upward** from the
-/// selection first (the fixed window follows the selection toward the end,
-/// pinning it at the window's bottom edge), then fills any leftover budget
-/// downward (the tail clamp: near the end the fixed window shows rows below
-/// the selection too). With uniform heights of 1 this reproduces
-/// [`menu_window`] exactly; a lone entry taller than the whole budget still
-/// windows alone (the caller trims its rows to the budget).
-pub(super) fn menu_window_rows(
-    heights: &[usize],
-    selected: usize,
-    max_rows: usize,
-) -> (usize, usize) {
-    if heights.is_empty() || max_rows == 0 {
-        return (0, 0);
-    }
-    let selected = selected.min(heights.len() - 1);
-    let mut start = selected;
-    let mut rows = heights[selected];
-    while start > 0 && rows + heights[start - 1] <= max_rows {
-        start -= 1;
-        rows += heights[start];
-    }
-    let mut end = selected + 1;
-    while end < heights.len() && rows + heights[end] <= max_rows {
-        rows += heights[end];
-        end += 1;
-    }
-    (start, end)
-}
-
 /// The scroll offset (first visible match index) that keeps `selected`
 /// **centered** in a window of `max` rows: the selection rides the middle row
 /// (`max/2`) while there is room on both sides, so the user always sees as much
 /// of the list *above and below* the highlight as fits — the "broad view" the
-/// `/model` and `/login` pickers want. Near the ends the window can't center
+/// `/model` and `/login` pickers want, and the slash-command palette too
+/// (row-budgeted by `centered_window_rows`, whose wrapped entries make each
+/// one a different height). Near the ends the window can't center
 /// (there aren't enough rows on one side), so it anchors: the top for the first
 /// `max/2` selections, the bottom (flush with the tail) for the last. Clamped to
 /// `[0, len - max]`.
@@ -87,6 +56,49 @@ pub fn centered_window(len: usize, selected: usize, max: usize) -> usize {
     // Put the selection on the middle row, then clamp so the window never runs
     // off either end (`len - max` is safe: `len > max` here).
     selected.saturating_sub(max / 2).min(len - max)
+}
+
+/// The window of variable-height entries (entry `i` painting `heights[i]`
+/// rows) that keeps `selected` **centered** inside a budget of `max_rows`
+/// painted rows — [`centered_window`] for the palette's wrapped entries,
+/// returned as the visible `(start, end)` entry range. Whole entries only,
+/// balanced by *rows*: each step adds the next entry on whichever side of
+/// the selection holds fewer rows so far (above on a tie, which is where
+/// `centered_window`'s middle row leaves the odd row), and a side that has
+/// run out of entries — or whose next entry no longer fits — leaves the
+/// rest of the budget to the other, which is what anchors the window at the
+/// top and flush with the tail. With uniform heights of 1 this reproduces
+/// [`centered_window`] exactly; a lone entry taller than the whole budget
+/// still windows alone (the caller trims its rows to the budget).
+pub(super) fn centered_window_rows(
+    heights: &[usize],
+    selected: usize,
+    max_rows: usize,
+) -> (usize, usize) {
+    if heights.is_empty() || max_rows == 0 {
+        return (0, 0);
+    }
+    let selected = selected.min(heights.len() - 1);
+    let (mut start, mut end) = (selected, selected + 1);
+    let (mut above, mut below) = (0, 0);
+    loop {
+        let rows = heights[selected] + above + below;
+        let fits = |i: usize| rows + heights[i] <= max_rows;
+        let up = start > 0 && fits(start - 1);
+        let down = end < heights.len() && fits(end);
+        if !(up || down) {
+            return (start, end);
+        }
+        // The side holding fewer rows grows first (above on a tie); a side
+        // that can't grow hands its turn to the other.
+        if up && (above <= below || !down) {
+            start -= 1;
+            above += heights[start];
+        } else {
+            below += heights[end];
+            end += 1;
+        }
+    }
 }
 
 /// One palette entry's rows: `/name` padded out to [`MENU_DESC_COL`] columns,
@@ -142,12 +154,14 @@ fn menu_row_lines(cmd: &SlashCommand, selected: bool, width: u16) -> Vec<Line<'s
 /// The styled lines for the open command palette: the session's commands
 /// ([`App::commands`] — the active model's speed-tier rows included) filtered
 /// by the query, their descriptions **wrapped** to the width, windowed by
-/// `menu_window_rows` to keep the selection visible inside the
-/// `MENU_MAX_ROWS` **row budget** — at widths where every description fits
-/// its row that is the familiar eight commands, and where descriptions wrap
-/// the band shows fewer *whole* commands (scrolling reveals the rest) rather
-/// than clipping text or growing under the box; or a single dim placeholder
-/// when nothing matches. Empty when the palette is closed.
+/// `centered_window_rows` to keep the selection **centered** inside the
+/// `MENU_MAX_ROWS` **row budget** — the `/model` and `/resume` lists' rule,
+/// so the commands above *and* below the highlight stay in view as it
+/// scrolls. At widths where every description fits its row that is the
+/// familiar eight commands, and where descriptions wrap the band shows fewer
+/// *whole* commands (scrolling reveals the rest) rather than clipping text or
+/// growing under the box; or a single dim placeholder when nothing matches.
+/// Empty when the palette is closed.
 #[must_use]
 pub fn command_menu_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     let Some(menu) = &app.command_menu else {
@@ -171,7 +185,7 @@ pub fn command_menu_lines(app: &App, width: u16) -> Vec<Line<'static>> {
         .map(|(i, cmd)| menu_row_lines(cmd, i == menu.selected, width))
         .collect();
     let heights: Vec<usize> = blocks.iter().map(Vec::len).collect();
-    let (start, end) = menu_window_rows(&heights, menu.selected, max);
+    let (start, end) = centered_window_rows(&heights, menu.selected, max);
     // `take(max)` only ever bites on a lone entry taller than the whole
     // budget (a degenerately narrow terminal): its first rows show.
     blocks

@@ -19,6 +19,18 @@ release heading when a version is cut.
   publishing stays limited to loopback ports 8080/8888 unless configured with
   `docker/run.sh --port`. No additional services are started.
 
+### Changed
+
+- **The `/` command palette keeps the highlight centered.** Scrolling the
+  slash-command list now works like the `/model` and `/resume` pickers:
+  once the highlight reaches the middle row it stays there and the list
+  scrolls under it, so the commands above and below it remain visible. It
+  slides to the top or bottom row only at the ends of the list. Previously
+  the highlight was pinned to the bottom row once the list began to scroll,
+  hiding every command after it. On narrow terminals, where descriptions wrap
+  onto several rows, the window balances the rows shown above and below the
+  highlight (`docs/design.md`).
+
 ## [0.10.0] - 2026-09-30
 
 ### Added

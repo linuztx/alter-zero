@@ -127,7 +127,7 @@ fn resume_toolbar_spans(picker: &ResumePicker, compact: bool) -> Vec<Span<'stati
 /// line, the dense session rows (windowed to keep the selection **centered**
 /// — the `/model` list's [`centered_window`], so the sessions above *and*
 /// below the highlight stay in view and each ↑/↓ scrolls the next one in,
-/// where the palette's edge-pinned `menu_window` hid what came next), and
+/// where the edge-pinned `menu_window` it used before hid what came next), and
 /// the bottom rule carrying `{selected+1}/{total}` over the dim key hints.
 /// Pure — `term.rs` paints this onto the alternate screen, like the
 /// transcript pager.

@@ -120,7 +120,7 @@ sentence codex's eager injection cannot read and this design can.
   `rank_skills(query, &[SkillMetadata])` — `file_search::fuzzy_match` on
   each **name**, best score first, ties keeping discovery (precedence)
   order via the stable sort; an empty query lists everything. No cap — the
-  band windows with `menu_window` like the palette.
+  band windows with `menu_window` like the `@` file picker.
 
 ### App state (`app/skill_picker.rs`)
 

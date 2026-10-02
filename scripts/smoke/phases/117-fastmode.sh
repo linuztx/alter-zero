@@ -155,12 +155,13 @@ type_text "$S117B" "/"
 # it (docs/design.md), so a bare `/` shows the first eight rows and the tier
 # rows spliced after /model need not be among them — which command sits
 # eighth is an accident of the registry's length, not the thing under test.
-# Walk the selection down until the tiers are in the window instead:
-# `menu_window` pins the selection to the window's bottom edge, so /model
-# rides in directly above /fast and the splice is what the rows below read
-# back. The walk also waits out the background probe (the rows re-derive as
-# its listing lands), and wraps at the end of the list, so it finds the row
-# whenever that happens.
+# Walk the selection down until the tiers are in the window instead: the
+# window keeps the selection centered (`centered_window_rows`), so each step
+# past the middle row scrolls one new row in at the band's bottom edge, /fast
+# arriving there with /model directly above it, and the splice is what the
+# rows below read back. The walk also waits out the background probe (the
+# rows re-derive as its listing lands), and wraps at the end of the list, so
+# it finds the row whenever that happens.
 tiers_palette=""
 for _ in $(seq 1 60); do
 	tiers_palette="$(tmux capture-pane -t "$S117B" -p)"
