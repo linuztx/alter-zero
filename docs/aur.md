@@ -1,22 +1,30 @@
-# The Arch Linux package — `aur/`
+# The Arch Linux packages — `aur/`
 
-`aur/` is the recipe the [Arch User Repository](https://aur.archlinux.org/)
-builds Alter Zero from: `makepkg` on the user's own machine downloads the
-tagged release's source, builds it with Arch's Rust, runs the test suite and
-packages the one binary. This is the design — what was decided, what was
-measured, and what was tried and refused — and the steps that publish it and
-keep it current.
+`aur/` holds the two recipes the [Arch User Repository](https://aur.archlinux.org/)
+installs Alter Zero from, one directory per package because each is its own
+AUR git repository:
+
+- **`alter-zero`** builds the tagged release from source: `makepkg` on the
+  user's own machine downloads the tag's source, builds it with Arch's Rust,
+  runs the test suite and packages the one binary — about fifteen minutes on
+  four cores.
+- **`alter-zero-bin`** repackages the release's own prebuilt Linux archive,
+  checksum-pinned: seconds, and nothing to compile.
+
+This is the design — what was decided, what was measured, and what was tried
+and refused — and the steps that publish both and keep them current.
 
 ```
-aur/PKGBUILD     the recipe
-aur/.SRCINFO     its metadata as the AUR reads it — generated, never edited
-aur/.gitignore   an allowlist: makepkg's src/, pkg/, tarball and packages stay out
+aur/alter-zero/PKGBUILD     the source recipe
+aur/alter-zero/.SRCINFO     its metadata as the AUR reads it — generated, never edited
+aur/alter-zero/.gitignore   an allowlist: makepkg's src/, pkg/, downloads and packages stay out
+aur/alter-zero-bin/         the same three files for the prebuilt package
 ```
 
-The directory is the AUR repository's contents exactly, `.gitignore`
+Each directory is its AUR repository's contents exactly, `.gitignore`
 included, so publishing is copying three files.
 
-## Built from the tag's source
+## `alter-zero`: built from the tag's source
 
 The AUR's naming rule decides the shape: a package named plainly
 (`alter-zero`) builds a stable release from source, `-bin` repackages a
@@ -195,18 +203,53 @@ The package is 8.5 MB, 17.8 MiB installed. `alter-zero-debug` is 80 MB: a
 that debug info the release build directory is 1.9 GB, and the test build
 beside it 1.2 GB.
 
+## `alter-zero-bin`: the release archive, repackaged
+
+For the user who would rather not compile. The package downloads the
+archive the release workflow built for their CPU —
+`alter-zero-vX.Y.Z-{x86_64,aarch64}-unknown-linux-gnu.tar.gz` from the
+GitHub release (`docs/release.md`) — through `source_x86_64` and
+`source_aarch64`, each pinned by the SHA-256 the release's own `SHA256SUMS`
+lists, and installs what the archive holds: the binary, `LICENSE`,
+`README.md` and `CHANGELOG.md`. It is the binary `install.sh` installs, so
+nothing about it differs from the one-line install but who owns the file.
+`provides=('alter-zero=X.Y.Z')` and `conflicts=('alter-zero')` make the two
+packages interchangeable: either one satisfies anything that depends on
+`alter-zero`, and pacman never installs both.
+
+Three things differ from the source package, all because the binary is the
+release's rather than one Arch built:
+
+- **`depends=('glibc' 'libgcc')`, no `oniguruma`.** The release build
+  compiles `onig_sys`'s bundled copy in, so the binary's `NEEDED` list is
+  `libc`, `libm`, `libgcc_s` and the loader. Its newest glibc symbol is
+  `GLIBC_2.34` (it is built on Ubuntu 22.04), far below any Arch install.
+- **`options=('!strip' '!debug')`.** The release binary keeps its symbol
+  table deliberately, so a user's `RUST_BACKTRACE=1` report names functions
+  (`docs/release.md`, *What a release carries*); makepkg's default strip
+  would throw that away, and there is no debug info to split into a debug
+  package. namcap's `ELF file … is unstripped` warning is that decision.
+- **No `build()` or `check()`.** Nothing is compiled; the release workflow
+  ran the gate and `verify` on the archive before publishing it.
+
+namcap also flags `Reference to x86_64 should be changed to $CARCH` on the
+PKGBUILD: it is the URL in `source_x86_64`, which has to name its own
+architecture — `$CARCH` there would resolve to the host's when `.SRCINFO`
+is generated and give the other architecture the wrong file.
+
 ## Publishing
 
 Once, from an [AUR account](https://aur.archlinux.org/register) with an SSH
-key added:
+key added, for each package:
 
 ```bash
-git clone ssh://aur@aur.archlinux.org/alter-zero.git ~/aur/alter-zero   # an empty repository the first time
-cp aur/PKGBUILD aur/.SRCINFO aur/.gitignore ~/aur/alter-zero/
-cd ~/aur/alter-zero
-git add PKGBUILD .SRCINFO .gitignore
-git commit -m "Initial import: alter-zero 0.10.0"
-git push origin HEAD:master                                            # the AUR accepts master only
+for p in alter-zero alter-zero-bin; do
+  git clone ssh://aur@aur.archlinux.org/$p.git ~/aur/$p   # an empty repository the first time
+  cp aur/$p/PKGBUILD aur/$p/.SRCINFO aur/$p/.gitignore ~/aur/$p/
+  (cd ~/aur/$p && git add PKGBUILD .SRCINFO .gitignore &&
+    git commit -m "Initial import: $p 0.10.0" &&
+    git push origin HEAD:master)                          # the AUR accepts master only
+done
 ```
 
 The push creates the package page; `.SRCINFO` is what the AUR reads to fill
@@ -214,19 +257,25 @@ it, which is why the server rejects a push whose `.SRCINFO` is missing.
 
 ## Updating for a release
 
-After `vX.Y.Z` is published on GitHub, on an Arch machine:
+After `vX.Y.Z` is published on GitHub — the publish job uploads every
+archive before the release becomes visible, so both packages can move at
+once — on an Arch machine:
 
 ```bash
-cd aur
-sed -i 's/^pkgver=.*/pkgver=X.Y.Z/; s/^pkgrel=.*/pkgrel=1/' PKGBUILD
-updpkgsums                                    # pacman-contrib: re-pins sha256sums to the new tarball
-makepkg -Cf                                   # a clean build + check(), as a user's machine runs it
-namcap PKGBUILD alter-zero-X.Y.Z-1-*.pkg.tar.zst
-makepkg --printsrcinfo > .SRCINFO
+for p in alter-zero alter-zero-bin; do (
+  cd aur/$p
+  sed -i 's/^pkgver=.*/pkgver=X.Y.Z/; s/^pkgrel=.*/pkgrel=1/' PKGBUILD
+  updpkgsums                          # pacman-contrib: the tag tarball, or both architectures' archives
+  makepkg -Cf                         # a clean build (+ check() for the source package)
+  namcap PKGBUILD $p-X.Y.Z-1-*.pkg.tar.zst
+  makepkg --printsrcinfo > .SRCINFO
+) done
 ```
 
-Commit `PKGBUILD` and `.SRCINFO` here, then copy them into the AUR clone and
-push as above with `Update to X.Y.Z`. A change to the recipe alone — a
+`updpkgsums` refills both of `alter-zero-bin`'s arrays, not just the host's:
+from zeroed checksums it reproduced the two `SHA256SUMS` values exactly.
+Commit each directory's `PKGBUILD` and `.SRCINFO` here, then copy them into
+its AUR clone and push as above with `Update to X.Y.Z`. A change to the recipe alone — a
 dependency, a flag — bumps `pkgrel` instead of `pkgver`. `extra-x86_64-build`
 (from `devtools`) builds in a clean chroot, the strictest stand-in for a fresh
 machine; `.SRCINFO` must be regenerated after **every** PKGBUILD edit, since
@@ -235,7 +284,8 @@ the AUR never reads the PKGBUILD itself.
 ## Known gap: `alter-zero update`
 
 The daily update check (`docs/update.md`) sees a new release on GitHub before
-the AUR package is bumped, and its card says *run `alter-zero update`*. That
+the AUR packages are bumped, and its card says *run `alter-zero update`*. With
+either package installed, that
 command reinstalls over the running binary's own directory — `/usr/bin` here.
 As a user it stops at `/usr/bin is not writable`; under `sudo` it would
 replace a file pacman owns, which `pacman -Qkk` reports as modified until the
@@ -247,7 +297,9 @@ The fix belongs upstream rather than in a source patch here: a build-time
 variable read with `option_env!` — say `ALTER_ZERO_UPDATE_HINT` — that
 replaces the card's **Update** line with the package manager's command and
 makes `alter-zero update` refuse with the same text, which `build()` would
-then export. v0.10.0 predates it.
+then export. `alter-zero-bin` installs the release binary, so it would need
+the hint as a runtime signal instead — a marker file the package installs
+beside the binary, say. v0.10.0 predates both.
 
 ## Verification
 
@@ -270,6 +322,22 @@ build is the one an AUR helper on a stock install runs.
   streamed the offline demo's markdown tour, its Python and Rust blocks drawn
   in five and six colours by the system oniguruma, and quit on Ctrl+C.
 - `makepkg --printsrcinfo` generated `.SRCINFO`.
-- Not run: an aarch64 build. Its dependencies were checked against Arch
-  Linux ARM's repositories, and upstream cross-builds that target on every
-  release.
+- Not run: an aarch64 source build. Its dependencies were checked against
+  Arch Linux ARM's repositories, and upstream cross-builds that target on
+  every release.
+
+`alter-zero-bin`, in the same chroot:
+
+- Both archives matched the release's `SHA256SUMS` before they were pinned.
+- `makepkg -C` built the x86_64 package in 16 seconds, download included,
+  and a configuration with `CARCH=aarch64` built the aarch64 one — its
+  download, checksum and `package()` all ran, and the packaged binary is an
+  `ARM aarch64` ELF.
+- `namcap` reports only the warnings explained above: `unstripped`, the
+  `source_x86_64` URL, and the toolchain's `ld-linux` entry (on the aarch64
+  package checked from an x86_64 host, the loader is reported as not
+  installed).
+- `pacman -U` replaced the installed `alter-zero` with it; `pacman -Qi`
+  shows `Provides: alter-zero=0.10.0` and `Conflicts With: alter-zero`,
+  `pacman -T alter-zero` is satisfied, `pacman -Qkk` found no altered file,
+  and the binary answered `--version` and ran the same TUI tour.

@@ -31,8 +31,9 @@ docker/build.sh [--engine podman] [DIR]     # the headless Kali image from the l
 docker/run.sh [--engine podman] [DIR]       # create the container: DIR at /workspace, ports 8080/8888, --clipboard
 python3 -m unittest discover -s docker/tests -p 'test_*.py'   # both scripts under a stub engine: no engine, no network
 docker/tests/smoke.sh [--engine podman]     # the built image + run.sh against a real engine
-(cd aur && makepkg -Cf && namcap PKGBUILD alter-zero-*.pkg.tar.zst)   # the AUR package: the release tag's source, built and tested on Arch (docs/aur.md)
-(cd aur && makepkg --printsrcinfo > .SRCINFO)   # after every PKGBUILD edit — the AUR reads .SRCINFO, never the PKGBUILD
+(cd aur/alter-zero && makepkg -Cf && namcap PKGBUILD alter-zero-*.pkg.tar.zst)   # the AUR source package: the release tag's source, built and tested on Arch (docs/aur.md)
+(cd aur/alter-zero-bin && makepkg -Cf && namcap PKGBUILD alter-zero-bin-*.pkg.tar.zst)   # the AUR binary package: the release's own Linux archive, repackaged
+(cd aur/<package> && makepkg --printsrcinfo > .SRCINFO)   # after every PKGBUILD edit — the AUR reads .SRCINFO, never the PKGBUILD
 ```
 
 The standard pre-commit gate used throughout this project is: `cargo fmt --check`
@@ -130,12 +131,17 @@ no test ping can reach production. The one source change is
 with the cause and the way around it, instead of whatever arboard's X11 probe
 ran into.
 
-**`aur/`** is the Arch User Repository recipe for the same tagged release,
-built from source by the user's own `makepkg` (`docs/aur.md`): the
+**`aur/`** holds the Arch User Repository recipes for the same tagged
+release (`docs/aur.md`), one directory per AUR repository, each the
 `PKGBUILD`, the `.SRCINFO` the AUR actually reads (regenerated, never
-hand-edited) and an allowlist `.gitignore`, the AUR repository's contents
-exactly. It builds with **Arch's** `rust`, not the pinned toolchain, so it
-answers what the release build never meets: `--cap-lints=warn` in
+hand-edited) and an allowlist `.gitignore`. **`aur/alter-zero-bin`**
+repackages the release's own Linux archives (`source_x86_64`/
+`source_aarch64` pinned to `SHA256SUMS`, `provides`/`conflicts`
+`alter-zero`, `!strip` so the release's symbol table survives, and no
+`oniguruma` dependency since the release links its bundled copy).
+**`aur/alter-zero`** is built from source by the user's own `makepkg`. It
+builds with **Arch's** `rust`, not the pinned toolchain, so it answers what
+the release build never meets: `--cap-lints=warn` in
 `RUSTFLAGS`, since `warnings = "deny"` would turn a lint added in a newer
 rustc into a failed install; `options=('!lto')`, since makepkg's
 `-flto=auto` makes GCC emit `ring`'s C as bytecode `rust-lld` cannot link;

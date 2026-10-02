@@ -15,3 +15,10 @@
 /dist
 # Python's bytecode cache (scripts/release/release_server.py under the selftest).
 __pycache__/
+# makepkg run in aur/ itself, from before each AUR package had its own
+# directory (docs/aur.md): its build tree, staging dir, downloads and
+# packages. Each package directory's allowlist .gitignore covers its own.
+/aur/src/
+/aur/pkg/
+/aur/*.tar.*
+/aur/*.log

@@ -19,6 +19,14 @@ release heading when a version is cut.
   publishing stays limited to loopback ports 8080/8888 unless configured with
   `docker/run.sh --port`. No additional services are started.
 
+- **Arch Linux packages on the AUR.** `alter-zero-bin` installs the prebuilt
+  release binary in seconds, verified against the release's checksums, and
+  `alter-zero` builds the tagged release from source with Arch's own Rust and
+  runs the test suite. Both cover x86_64 and aarch64, and each replaces the
+  other, so only one is installed at a time. Update them through your AUR
+  helper (`yay -Syu`, `paru -Syu`) rather than `alter-zero update`, which
+  reinstalls over the running binary's own directory (`docs/aur.md`).
+
 ### Changed
 
 - **The `/` command palette keeps the highlight centered.** Scrolling the

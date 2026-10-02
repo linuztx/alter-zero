@@ -1,0 +1,6 @@
+# An allowlist, as in the AUR repository this directory mirrors: makepkg's
+# src/, pkg/, the downloaded tarball and the built packages never get in.
+*
+!.gitignore
+!.SRCINFO
+!PKGBUILD
