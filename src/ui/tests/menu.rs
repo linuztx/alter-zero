@@ -79,9 +79,9 @@ fn menu_rows_is_zero_when_the_palette_is_closed() {
 #[test]
 fn the_palette_shows_at_most_eight_commands() {
     // The requested cap (the file picker's): a bare `/` shows the first eight
-    // commands and longer match lists scroll (menu_window) instead of growing
-    // the band — the registry has outgrown the window, so /quit (the ninth)
-    // starts off-window (smoke.sh Phase 4 asserts the same on the real
+    // commands and longer match lists scroll (centered_window_rows) instead of
+    // growing the band — the registry has outgrown the window, so /quit (the
+    // last) starts off-window (smoke.sh Phase 4 asserts the same on the real
     // binary). The cap counts **commands**, not rows: a wrapped description's
     // continuation rows ride under their command without costing a slot.
     assert_eq!(MENU_MAX_ROWS, 8, "the requested cap");
@@ -108,10 +108,10 @@ fn the_palette_shows_at_most_eight_commands() {
 
 #[test]
 fn the_palette_scrolls_down_to_the_last_command() {
-    // ↓ walking the selection past the window's bottom edge scrolls the list
-    // to keep the highlight visible: with the last command selected the band
-    // still shows MENU_MAX_ROWS rows, the top scrolled off and the selection
-    // on the bottom row, cyan.
+    // Walking the selection to the last command scrolls the list with it: the
+    // band still shows MENU_MAX_ROWS rows, the top scrolled off, and — the
+    // list having run out below it — the highlight slid on from the middle
+    // row to the bottom one, cyan.
     let last = crate::app::COMMANDS.len() - 1;
     let lines = command_menu_lines(&palette("/", last), 80);
     let texts = command_rows(&lines);
@@ -129,6 +129,74 @@ fn the_palette_scrolls_down_to_the_last_command() {
             .any(|s| s.style.fg == Some(menu_selected_color())),
         "the selection rode the window down"
     );
+}
+
+/// The band row the highlight starts on: the selected entry paints every
+/// row in the selection colour, the others never do.
+fn highlighted_row(lines: &[Line<'_>]) -> usize {
+    lines
+        .iter()
+        .position(|l| {
+            l.spans
+                .iter()
+                .any(|s| s.style.fg == Some(menu_selected_color()))
+        })
+        .expect("a highlighted row")
+}
+
+#[test]
+fn the_palette_keeps_the_highlight_centered_as_it_scrolls() {
+    // The `/model` and `/resume` lists' rule (`centered_window`): ↓ walks the
+    // highlight down to the band's middle row, then the list scrolls under
+    // it, so the commands above *and* below it stay in view and every step
+    // scrolls the next one in. Only the list running out lets it slide on to
+    // the bottom edge. The edge-pinned window this replaced held the
+    // highlight on the bottom row all the way down, showing nothing of what
+    // came next.
+    let max = MENU_MAX_ROWS as usize;
+    let middle = max / 2;
+    let len = palette("/", 0).commands().len();
+    assert!(len > max, "the registry outgrew the window: {len} commands");
+    for selected in 0..len {
+        let lines = command_menu_lines(&palette("/", selected), 80);
+        assert_eq!(lines.len(), max, "a full window at {selected}");
+        let expected = if selected < middle {
+            selected // anchored at the top, still walking down to the middle
+        } else if selected + (max - middle - 1) >= len {
+            selected - (len - max) // flush with the tail
+        } else {
+            middle
+        };
+        assert_eq!(
+            highlighted_row(&lines),
+            expected,
+            "selection {selected}: {:?}",
+            command_rows(&lines)
+        );
+    }
+}
+
+#[test]
+fn the_wrapped_palette_keeps_a_command_on_each_side_of_the_highlight() {
+    // Where descriptions wrap the band shows fewer, taller entries, and the
+    // window centers the highlight by *rows*. At 60 columns every entry is
+    // one or two rows, so three always fit the eight-row budget and the
+    // highlight never sits on the band's edge while a command remains on
+    // that side. The edge-pinned window filled the band from the highlight
+    // upward and left nothing below it.
+    let len = palette("/", 0).commands().len();
+    for selected in 1..len - 1 {
+        let lines = command_menu_lines(&palette("/", selected), 60);
+        assert!(lines.len() <= MENU_MAX_ROWS as usize, "{lines:?}");
+        let row = highlighted_row(&lines);
+        let above = command_rows(&lines[..row]).len();
+        let below = command_rows(&lines[row + 1..]).len();
+        assert!(
+            above >= 1 && below >= 1,
+            "selection {selected}: {above} above, {below} below: {:?}",
+            command_rows(&lines)
+        );
+    }
 }
 
 #[test]
@@ -187,39 +255,62 @@ fn the_palette_wraps_a_long_description_instead_of_clipping() {
 }
 
 #[test]
-fn menu_window_rows_matches_menu_window_for_uniform_heights() {
-    // With every entry one row tall the variable-height window IS the fixed
-    // one — same offsets, same clamps — so the 80-column palette behaves
-    // exactly as before the wrap.
-    use crate::ui::menu::menu_window_rows;
-    for (len, selected, max) in [(8, 0, 5), (8, 4, 5), (8, 5, 5), (8, 7, 5), (3, 2, 5)] {
-        let heights = vec![1usize; len];
-        let offset = menu_window(len, selected, max);
-        assert_eq!(
-            menu_window_rows(&heights, selected, max),
-            (offset, (offset + max).min(len)),
-            "len {len}, selected {selected}, max {max}"
-        );
+fn centered_window_rows_is_centered_window_for_uniform_heights() {
+    // With every entry the same height the variable-height window IS the
+    // `/model` list's `centered_window` over the whole entries the budget
+    // holds — same offsets, same top and tail anchors — so the 80-column
+    // palette, every command one row, scrolls exactly as `/model` and
+    // `/resume` do. (A budget below one entry's height is the lone-tall-entry
+    // case, pinned by the next test.)
+    use crate::ui::menu::centered_window_rows;
+    for height in 1..=3usize {
+        for max_rows in height..=12 {
+            let max = max_rows / height;
+            for len in 0..=24 {
+                let heights = vec![height; len];
+                for selected in 0..len.max(1) {
+                    let offset = centered_window(len, selected, max);
+                    assert_eq!(
+                        centered_window_rows(&heights, selected, max_rows),
+                        (offset, (offset + max).min(len)),
+                        "height {height}, budget {max_rows}, len {len}, selected {selected}"
+                    );
+                }
+            }
+        }
     }
 }
 
 #[test]
-fn menu_window_rows_fits_wrapped_entries_to_the_budget() {
-    use crate::ui::menu::menu_window_rows;
-    // Three-row entries in an eight-row budget: two whole entries fit, and
-    // the window follows the selection with it pinned at the bottom edge.
-    let heights = vec![3usize; 5];
-    assert_eq!(menu_window_rows(&heights, 0, 8), (0, 2));
-    assert_eq!(
-        menu_window_rows(&heights, 3, 8),
-        (2, 4),
-        "the selection rides the window's bottom edge"
-    );
+fn centered_window_rows_balances_wrapped_entries_by_rows() {
+    use crate::ui::menu::centered_window_rows;
+    // Two-row entries in an eight-row budget: four whole entries fit, and
+    // mid-list the selection is the third of them — two above, one below,
+    // `centered_window`'s middle for a four-entry window — anchoring at the
+    // top and flush with the tail only where the list runs out.
+    let heights = vec![2usize; 9];
+    assert_eq!(centered_window_rows(&heights, 0, 8), (0, 4), "top anchor");
+    assert_eq!(centered_window_rows(&heights, 4, 8), (2, 6), "centered");
+    assert_eq!(centered_window_rows(&heights, 8, 8), (5, 9), "tail anchor");
+    // Mixed heights balance *rows*, not entries: a three-row entry above
+    // the selection is answered by three one-row entries below it, so the
+    // one-row selection lands on the band's fifth row — exactly where
+    // `centered_window` seats it in an eight-row window.
+    let mixed = [1, 1, 1, 3, 1, 1, 1, 1, 1];
+    let (start, end) = centered_window_rows(&mixed, 4, 8);
+    assert_eq!((start, end), (2, 8));
+    assert_eq!(mixed[start..4].iter().sum::<usize>(), 4, "rows above");
+    assert_eq!(mixed[5..end].iter().sum::<usize>(), 3, "rows below");
+    // An entry too tall to join on one side leaves the budget to the other
+    // rather than stopping short: the eight-row entry under the selection
+    // never fits beside it, so every entry above it does.
+    assert_eq!(centered_window_rows(&[1, 1, 1, 1, 1, 1, 8], 5, 8), (0, 6));
     // A lone entry taller than the whole budget still windows alone (the
     // caller trims its rows); empty and zero-budget degenerate to nothing.
-    assert_eq!(menu_window_rows(&[12, 1], 0, 8), (0, 1));
-    assert_eq!(menu_window_rows(&[], 0, 8), (0, 0));
-    assert_eq!(menu_window_rows(&[1, 1], 0, 0), (0, 0));
+    assert_eq!(centered_window_rows(&[12, 1], 0, 8), (0, 1));
+    assert_eq!(centered_window_rows(&[1, 12], 1, 8), (1, 2));
+    assert_eq!(centered_window_rows(&[], 0, 8), (0, 0));
+    assert_eq!(centered_window_rows(&[1, 1], 0, 0), (0, 0));
 }
 
 #[test]

@@ -1944,19 +1944,22 @@ pub(super) const SPINNER_LINE_INTERVAL: Duration = Duration::from_millis(100);
 // selection is shown **by colour**: the whole highlighted row lights up cyan — name
 // *and* description the same colour — while the others are dimmed grey (no
 // caret/arrow), Claude-Code style. Capped at `MENU_MAX_ROWS`; longer lists scroll
-// to keep the selection visible (`menu_window`). ---
+// to keep the selection centered (`centered_window_rows`, the `/model` list's
+// rule). ---
 
 /// The most command rows shown at once; longer match lists scroll within this
-/// (`menu_window` follows the selection, like the `@` file picker's cap). The
-/// registry has outgrown the window — a bare `/` shows the first eight and ↓
-/// scrolls the rest in (the `the_palette_shows_at_most_eight_commands` /
-/// `the_palette_scrolls_down_to_the_last_command` tests pin both halves).
-/// The cap is a **row budget**, not a match count: at widths where every
-/// description fits its row the two are the same eight, and where a
+/// (`centered_window_rows` keeps the selection on the middle row, like the
+/// `/model` and `/resume` lists, so the commands above and below it stay in
+/// view). The registry has outgrown the window — a bare `/` shows the first
+/// eight and ↓ scrolls the rest in (the
+/// `the_palette_shows_at_most_eight_commands` /
+/// `the_palette_keeps_the_highlight_centered_as_it_scrolls` tests pin both
+/// halves). The cap is a **row budget**, not a match count: at widths where
+/// every description fits its row the two are the same eight, and where a
 /// description *wraps* (`menu_row_lines` — narrow terminals continue it on
 /// rows indented to the description column instead of clipping it) the
-/// window shows fewer whole commands so the band never outgrows the budget
-/// (`menu_window_rows`).
+/// window shows fewer whole commands so the band never outgrows the budget,
+/// centering the selection by rows.
 pub(super) const MENU_MAX_ROWS: u16 = 8;
 
 /// The column descriptions start at — names are padded out to here so the
@@ -1985,7 +1988,7 @@ pub(super) const MENU_NO_MATCH: &str = "No matching commands";
 // matched** (from `FileMatch.indices`). See docs/file-search.md. ---
 
 /// The most file rows shown at once; longer match lists scroll to keep the
-/// selection visible (`menu_window`), like the command palette.
+/// selection visible (`menu_window`, which pins it to the edge it crossed).
 pub(super) const FILE_MENU_MAX_ROWS: u16 = 8;
 
 /// The picker's single placeholder row while a search is in flight.

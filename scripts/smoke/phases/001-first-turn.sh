@@ -149,8 +149,11 @@ expect_lacks "$returned" -F "T R A N S C R I P T" "Ctrl+O did not return to the 
 # ---- drive: Phase 4 ----
 # the slash-command palette. Typing "/" opens the command list below
 # the box, capped at 8 rows (/quit, the registry's last, starts off-window); ↑
-# wraps the selection to the last row and the window scrolls /quit in
-# (menu_window); running /help posts a system notice listing them.
+# wraps the selection to the last row and the window scrolls /quit in; four
+# more ↑ walk the highlight back to the band's middle row, where it stays while
+# the list scrolls under it (centered_window_rows, the /model list's rule), so
+# /quit scrolls back out below; running /help posts a system notice listing
+# them.
 # Clear the leftover "AAA\nBBB" draft from Phase 2 first — the palette only opens
 # when the input *starts* with "/".
 for _ in $(seq 1 12); do
@@ -171,16 +174,37 @@ printf '%s\n' "$palette_open"
 # docs/hooks-menu.md's /hooks, then docs/skills.md's /skills each broke the
 # old counted walk; the over-press-↓-and-clamp idiom that replaced it died
 # with the clamp — 40 ↓ now land at 40 % n). The 8-row window follows the
-# selection, so the top rows leave and /quit scrolls in (menu_window).
+# selection, so the top rows leave and /quit scrolls in — on the bottom row,
+# the list having run out below it.
 tmux send-keys -t "$S" Up
 sleep 0.3
 palette_scrolled="$(tmux capture-pane -t "$S" -p)"
 echo "==== captured pane (slash palette scrolled to /quit) ===="
 printf '%s\n' "$palette_scrolled"
 
-# Back to the top the same way — one ↓ from the last row wraps to row 0 (the
-# window follows the selection up again) so Enter runs /help, not /quit.
-tmux send-keys -t "$S" Down
+# Four more ↑ walk the highlight up to the band's middle row, and from there
+# the window scrolls with it, keeping the commands below it in view — so the
+# tail (/quit) leaves at the bottom. The edge-pinned window this replaced kept
+# the highlight on the bottom row the whole way, scrolling the list up with it
+# and showing nothing below it — /quit leaves under that window too, so only
+# the highlight's row tells the two apart. Captured with -e: the highlighted
+# row is the one whose `/name` is bold (the selection lights up cyan *and*
+# bolds the name; the other rows are dim).
+for _ in 1 2 3 4; do
+	tmux send-keys -t "$S" Up
+done
+sleep 0.3
+palette_recentered_raw="$(tmux capture-pane -t "$S" -p -e)"
+palette_recentered="$(printf '%s\n' "$palette_recentered_raw" | sed -E $'s/\x1b\\[[0-9;?]*[A-Za-z]//g')"
+echo "==== captured pane (slash palette recentered, four up from /quit) ===="
+printf '%s\n' "$palette_recentered"
+
+# Back to the top the same way — four ↓ return to /quit and one more wraps to
+# row 0 (the window follows the selection up again) so Enter runs /help, not
+# /quit.
+for _ in 1 2 3 4 5; do
+	tmux send-keys -t "$S" Down
+done
 sleep 0.3
 
 # Run /help (highlighted first) → posts a system notice listing the commands.
@@ -214,6 +238,20 @@ fi
 expect_lacks "$palette_open" -F "Exit the app" "the palette shows /quit (the registry's last command) in its first window — the 8-row cap is gone"
 expect_has "$palette_scrolled" -F "Exit the app" "↓ to the last command did not scroll /quit into the palette window"
 expect_lacks "$palette_scrolled" -F "List the available commands" "the scrolled palette still shows /help — the window did not move"
+# Walking back up from /quit recenters: the window still holds its 8 rows, the
+# highlight rides the middle (5th) one with commands below it, and /quit — four
+# rows under the highlight — has scrolled out.
+recentered_rows="$(printf '%s\n' "$palette_recentered" | grep -c '^/' || true)"
+if [ "$recentered_rows" -ne 8 ]; then
+	fail "the recentered command palette shows $recentered_rows rows, not 8"
+fi
+highlight_row="$(printf '%s\n' "$palette_recentered_raw" | awk -v esc="$(printf '\033')" '
+	{ plain = $0; gsub(esc "\\[[0-9;?]*[A-Za-z]", "", plain) }
+	plain ~ /^\// { n++; if (index($0, esc "[1m") == 1) print n }')"
+if [ "$highlight_row" != 5 ]; then
+	fail "four ↑ from /quit left the palette highlight on row ${highlight_row:-none} of 8, not the middle (5th) row with commands below it"
+fi
+expect_lacks "$palette_recentered" -F "Exit the app" "four ↑ from /quit left it in view — the window did not scroll with the highlight once it reached the middle row"
 # The open palette DISPLACES the session footer (codex's popups take its row).
 expect_lacks "$palette_open" -F "dummy_model_name" "the session footer is still shown while the palette is open (the band must displace it)"
 expect_has "$help_ran" -F "Available commands:" "running /help did not post its system notice"
