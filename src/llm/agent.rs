@@ -21,6 +21,7 @@ use super::tools::{
 use super::{ChatMessage, ContentPart, LlmError};
 use crate::permission::Approval;
 use crate::stream::{CancelToken, RoundCall, StreamEvent, ToolCallSummary};
+use crate::tasks::{TASK_REMINDER_LABEL, TaskGuard, TaskRegistry};
 
 /// The most tool **calls** one turn will run before giving up — a backstop
 /// against a model that loops forever. Generous enough for real multi-step
@@ -169,6 +170,47 @@ pub fn run_agent(
     cancel: &CancelToken,
     max_tool_calls: usize,
     messages: &mut Vec<ChatMessage>,
+    round: impl FnMut(&[ChatMessage]) -> RoundOutcome,
+    execute: impl FnMut(&ToolCallRequest, &mut dyn FnMut(ToolProgress<'_>)) -> ToolOutcome,
+    pending_inputs: impl FnMut() -> Vec<PendingInput>,
+    run_agents: impl FnMut(&[ToolCallRequest]) -> Vec<(String, String)>,
+    approve: impl FnMut(&ToolCallRequest, bool) -> Approval,
+    hooks: &dyn HookSink,
+    session_command: &dyn Fn(&str) -> Option<String>,
+) {
+    run_agent_with_tasks(
+        tx,
+        cancel,
+        max_tool_calls,
+        messages,
+        round,
+        execute,
+        pending_inputs,
+        run_agents,
+        approve,
+        hooks,
+        session_command,
+        None,
+    );
+}
+
+/// [`run_agent`] for a conversation that keeps a task list
+/// (`docs/task-tools.md`): the main turn's loop. `tasks` arms the list's
+/// [`TaskGuard`] — at each round boundary, after the notices and before the
+/// user's own messages, a lapse (work going on with nothing in progress, or
+/// a list left untouched for [`TASK_REMINDER_ROUNDS`](crate::tasks::TASK_REMINDER_ROUNDS)
+/// rounds of work) puts the list in front of the model in a short
+/// `<system-reminder>`, and a turn about to end with tasks open is sent one
+/// more round to mark what it finished. Each reminder is announced as a
+/// [`StreamEvent::HookNote`], so the transcript, the rollout and every later
+/// turn's context keep it exactly where the model read it. `None` runs
+/// exactly [`run_agent`].
+#[allow(clippy::too_many_arguments)] // run_agent's seams plus the list
+pub fn run_agent_with_tasks(
+    tx: &UnboundedSender<StreamEvent>,
+    cancel: &CancelToken,
+    max_tool_calls: usize,
+    messages: &mut Vec<ChatMessage>,
     mut round: impl FnMut(&[ChatMessage]) -> RoundOutcome,
     mut execute: impl FnMut(&ToolCallRequest, &mut dyn FnMut(ToolProgress<'_>)) -> ToolOutcome,
     mut pending_inputs: impl FnMut() -> Vec<PendingInput>,
@@ -176,35 +218,60 @@ pub fn run_agent(
     mut approve: impl FnMut(&ToolCallRequest, bool) -> Approval,
     hooks: &dyn HookSink,
     session_command: &dyn Fn(&str) -> Option<String>,
+    tasks: Option<&TaskRegistry>,
 ) {
     let mut used_calls = 0usize;
     // True from the first Stop/SubagentStop-forced continuation on — the
     // payloads' loop-guard flag (docs/hooks.md).
     let mut stop_hook_active = false;
+    // This turn's watch on the task list (docs/task-tools.md); idle without
+    // one.
+    let mut guard = TaskGuard::new();
     loop {
         if cancel.is_cancelled() {
             return;
         }
+        // A reminder could only ask for a call a spent budget refuses.
+        let can_call = max_tool_calls == 0 || used_calls < max_tool_calls;
         // Notices first, the user's own messages last: a completion note is a
         // *result*, belonging with the tool results it follows, while what the
         // user just said is the newest thing in the conversation and must be
-        // the last thing the model reads.
+        // the last thing the model reads. The task reminder sits between:
+        // it is about the work so far, and the user still speaks last.
         let (notices, steered): (Vec<_>, Vec<_>) = pending_inputs()
             .into_iter()
             .partition(|input| matches!(input, PendingInput::Notice(_)));
-        for input in notices.into_iter().chain(steered) {
-            match input {
-                PendingInput::Notice(note) => messages.push(ChatMessage::user(&note)),
-                // The queued row above the user's box becomes a real bubble
-                // the moment the model actually has the text (docs/queue.md).
-                PendingInput::User(text) => {
-                    let _ = tx.send(StreamEvent::Steered { text: text.clone() });
-                    messages.push(ChatMessage::user(&text));
-                }
-            }
+        for input in notices {
+            take_pending(tx, messages, input);
+        }
+        if let Some(reminder) = tasks
+            .filter(|_| can_call)
+            .and_then(|list| guard.round_reminder(&list.snapshot()))
+        {
+            push_task_reminder(tx, messages, reminder);
+        }
+        for input in steered {
+            take_pending(tx, messages, input);
         }
         match round(messages) {
             RoundOutcome::Complete { text } => {
+                // Tasks left open (docs/task-tools.md): one more round to
+                // mark what this turn finished — once per turn, ahead of the
+                // Stop hook so the hook hears the answer the turn really
+                // ends on, and never after an Esc. The reply so far becomes
+                // an assistant message exactly as a Stop block's does, and
+                // `stop_hook_active` stays the hook's own.
+                if !cancel.is_cancelled()
+                    && let Some(reminder) = tasks
+                        .filter(|_| can_call)
+                        .and_then(|list| guard.closing_reminder(&list.snapshot()))
+                {
+                    if !text.trim().is_empty() {
+                        messages.push(ChatMessage::new("assistant", &text));
+                    }
+                    push_task_reminder(tx, messages, reminder);
+                    continue;
+                }
                 // `Stop` / `SubagentStop` (docs/hooks.md), fired where "the
                 // model finished answering" is native — and *only* here:
                 // never on a cancel (Claude Code returns before stop hooks
@@ -659,6 +726,7 @@ pub fn run_agent(
                     messages.push(ChatMessage::tool_result(&call.id, &output));
                 }
                 messages.append(&mut attachments);
+                guard.record_round(allowed.iter().map(|call| call.name.as_str()));
                 // A cancel that landed during a tool run reaps us here rather
                 // than spending another round that would just return Cancelled.
                 if cancelled_mid_tools || cancel.is_cancelled() {
@@ -674,6 +742,38 @@ pub fn run_agent(
             }
         }
     }
+}
+
+/// Fold one [`PendingInput`] into the next request.
+fn take_pending(
+    tx: &UnboundedSender<StreamEvent>,
+    messages: &mut Vec<ChatMessage>,
+    input: PendingInput,
+) {
+    match input {
+        PendingInput::Notice(note) => messages.push(ChatMessage::user(&note)),
+        // The queued row above the user's box becomes a real bubble the
+        // moment the model actually has the text (docs/queue.md).
+        PendingInput::User(text) => {
+            let _ = tx.send(StreamEvent::Steered { text: text.clone() });
+            messages.push(ChatMessage::user(&text));
+        }
+    }
+}
+
+/// Send the task guard's `reminder` (docs/task-tools.md): a user-role
+/// message for the model, announced as a [`StreamEvent::HookNote`] so the
+/// loop records it where the model read it.
+fn push_task_reminder(
+    tx: &UnboundedSender<StreamEvent>,
+    messages: &mut Vec<ChatMessage>,
+    reminder: String,
+) {
+    messages.push(ChatMessage::user(&reminder));
+    let _ = tx.send(StreamEvent::HookNote {
+        label: TASK_REMINDER_LABEL.to_string(),
+        text: reminder,
+    });
 }
 
 /// The `ToolStart` announcing `call`: the display name, the one-line header
@@ -698,6 +798,7 @@ mod tests {
     use super::super::hooks::{HookSink, NoHooks, PostToolVerdict, PreToolVerdict};
     use super::*;
     use crate::llm::ToolCallSpec;
+    use crate::tasks::{TaskNudge, TaskStore, task_reminder};
     use std::cell::RefCell;
     use tokio::sync::mpsc::unbounded_channel;
 
@@ -3337,5 +3438,267 @@ mod tests {
                 ("c2".to_string(), "listing".to_string()),
             ]
         );
+    }
+
+    /// How [`guarded_turn`] plays its turn.
+    struct Guarded<'a> {
+        /// Hand the loop the task list (`false` plays a loop without one).
+        list: bool,
+        /// The answers rounds 3, 4, … give, in order.
+        answers: &'a [&'a str],
+        /// What the conversation gains at round 3's boundary.
+        pending: Vec<PendingInput>,
+        hooks: &'a dyn HookSink,
+        max_tool_calls: usize,
+        /// Esc lands as round 3 answers.
+        cancel_at_answer: bool,
+    }
+
+    impl Default for Guarded<'_> {
+        fn default() -> Self {
+            Self {
+                list: true,
+                answers: &["", ""],
+                pending: Vec::new(),
+                hooks: &NoHooks,
+                max_tool_calls: MAX_TOOL_ITERATIONS,
+                cancel_at_answer: false,
+            }
+        }
+    }
+
+    /// One request as the fake round saw it: each message's (role, text).
+    type Request = Vec<(String, String)>;
+
+    /// gpt-oss:120b's measured turn (docs/task-tools.md) through the
+    /// task-keeping loop: a plan of two tasks, one round of work with
+    /// neither marked in progress, then the answers. Hands back the events,
+    /// every request as (role, text) pairs, and the list as the turn left it.
+    fn guarded_turn(turn: Guarded<'_>) -> (Vec<StreamEvent>, Vec<Request>, TaskStore) {
+        use crate::tasks::{TASK_CREATE_TOOL, is_task_tool};
+        let (tx, mut rx) = unbounded_channel();
+        let cancel = CancelToken::new();
+        let registry = TaskRegistry::new();
+        let plan = vec![
+            call(
+                "c1",
+                TASK_CREATE_TOOL,
+                r#"{"subject":"Write the page","description":"d"}"#,
+            ),
+            call(
+                "c2",
+                TASK_CREATE_TOOL,
+                r#"{"subject":"Serve it on port 3000","description":"d"}"#,
+            ),
+        ];
+        let work = vec![call(
+            "c3",
+            "write",
+            r#"{"path":"index.html","content":"<form>"}"#,
+        )];
+        let requests: RefCell<Vec<Request>> = RefCell::new(Vec::new());
+        let answers: RefCell<Vec<String>> =
+            RefCell::new(turn.answers.iter().map(ToString::to_string).collect());
+        let pending = RefCell::new(Some(turn.pending));
+        run_agent_with_tasks(
+            &tx,
+            &cancel,
+            turn.max_tool_calls,
+            &mut vec![ChatMessage::user("build a login page on port 3000")],
+            |msgs| {
+                let mut seen = requests.borrow_mut();
+                seen.push(msgs.iter().map(|m| (m.role.clone(), text_of(m))).collect());
+                match seen.len() {
+                    1 => RoundOutcome::ToolCalls {
+                        assistant: assistant_with(&plan),
+                        calls: plan.clone(),
+                    },
+                    2 => RoundOutcome::ToolCalls {
+                        assistant: assistant_with(&work),
+                        calls: work.clone(),
+                    },
+                    n => {
+                        if n == 3 && turn.cancel_at_answer {
+                            cancel.cancel();
+                        }
+                        RoundOutcome::Complete {
+                            text: answers.borrow_mut().remove(0),
+                        }
+                    }
+                }
+            },
+            |c, _sink| {
+                if is_task_tool(&c.name) {
+                    super::super::task::run_task_tool(&registry, c)
+                } else {
+                    ToolOutcome::ok("Wrote 1 lines to index.html")
+                }
+            },
+            || {
+                if requests.borrow().len() == 2 {
+                    pending.borrow_mut().take().unwrap_or_default()
+                } else {
+                    Vec::new()
+                }
+            },
+            |_calls| Vec::new(),
+            |_call, _force| Approval::Allow,
+            turn.hooks,
+            &no_sessions,
+            turn.list.then_some(&registry),
+        );
+        (drain(&mut rx), requests.into_inner(), registry.snapshot())
+    }
+
+    /// The texts of every task reminder `events` announced, in order.
+    fn task_notes(events: &[StreamEvent]) -> Vec<&str> {
+        events
+            .iter()
+            .filter_map(|event| match event {
+                StreamEvent::HookNote { label, text } if label == TASK_REMINDER_LABEL => {
+                    Some(text.as_str())
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn work_with_no_task_in_progress_is_reminded_at_the_next_round_boundary() {
+        // The next request carries the list after the tool results, and the
+        // loop announces it as a HookNote, so the transcript and every later
+        // turn's context keep it.
+        let (events, requests, list) = guarded_turn(Guarded::default());
+        let reminder = task_reminder(TaskNudge::Idle, &list);
+        assert_eq!(
+            requests[2]
+                .iter()
+                .map(|(role, _)| role.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "user",
+                "assistant",
+                "tool",
+                "tool",
+                "assistant",
+                "tool",
+                "user"
+            ],
+        );
+        assert_eq!(requests[2].last().map(|(_, text)| text), Some(&reminder));
+        assert_eq!(task_notes(&events).first(), Some(&reminder.as_str()));
+        assert!(
+            requests[1]
+                .iter()
+                .all(|(_, text)| !text.contains("<system-reminder>")),
+            "the plan alone is no lapse: {:?}",
+            requests[1]
+        );
+    }
+
+    #[test]
+    fn ending_with_tasks_open_continues_the_turn_once_with_the_closing_reminder() {
+        let (events, requests, list) = guarded_turn(Guarded {
+            answers: &["The page is up on port 3000.", ""],
+            ..Guarded::default()
+        });
+        let closing = task_reminder(TaskNudge::Closing, &list);
+        assert_eq!(requests.len(), 4, "one continuation, then the turn ends");
+        assert_eq!(
+            requests[3][requests[3].len() - 2..],
+            [
+                (
+                    "assistant".to_string(),
+                    "The page is up on port 3000.".to_string()
+                ),
+                ("user".to_string(), closing.clone()),
+            ]
+        );
+        assert_eq!(
+            task_notes(&events),
+            vec![
+                task_reminder(TaskNudge::Idle, &list).as_str(),
+                closing.as_str()
+            ]
+        );
+        assert_eq!(events.last(), Some(&StreamEvent::StreamDone));
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| **event == StreamEvent::StreamDone)
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn the_task_reminder_follows_the_notices_and_precedes_the_users_own_words() {
+        let (_, requests, list) = guarded_turn(Guarded {
+            pending: vec![
+                PendingInput::User("and add a logo".to_string()),
+                PendingInput::Notice("[background] note".to_string()),
+            ],
+            ..Guarded::default()
+        });
+        let reminder = task_reminder(TaskNudge::Idle, &list);
+        let tail: Vec<&str> = requests[2][requests[2].len() - 3..]
+            .iter()
+            .map(|(_, text)| text.as_str())
+            .collect();
+        assert_eq!(
+            tail,
+            vec!["[background] note", reminder.as_str(), "and add a logo"]
+        );
+    }
+
+    #[test]
+    fn the_stop_hook_hears_the_answer_the_turn_really_ends_on() {
+        // The closing reminder is the loop's own continuation, not the
+        // hook's: the hook fires once, after it, its loop-guard flag clear.
+        let hooks = FakeHooks::default();
+        let (_, requests, _) = guarded_turn(Guarded {
+            answers: &["The page is up.", "Marked them."],
+            hooks: &hooks,
+            ..Guarded::default()
+        });
+        assert_eq!(requests.len(), 4);
+        assert_eq!(hooks.stop_seen(), vec![(false, "Marked them.".to_string())]);
+    }
+
+    #[test]
+    fn no_reminder_rides_a_turn_whose_tool_budget_is_spent() {
+        // Three calls of three: a reminder now could only ask for a call the
+        // budget refuses, turning a finished turn into an error.
+        let (events, requests, _) = guarded_turn(Guarded {
+            answers: &["Done."],
+            max_tool_calls: 3,
+            ..Guarded::default()
+        });
+        assert_eq!(requests.len(), 3);
+        assert_eq!(task_notes(&events), Vec::<&str>::new());
+        assert_eq!(events.last(), Some(&StreamEvent::StreamDone));
+    }
+
+    #[test]
+    fn an_interrupted_answer_is_not_reminded() {
+        let (events, requests, _) = guarded_turn(Guarded {
+            answers: &["The page"],
+            cancel_at_answer: true,
+            ..Guarded::default()
+        });
+        assert_eq!(requests.len(), 3);
+        assert_eq!(task_notes(&events).len(), 1, "only the round reminder");
+    }
+
+    #[test]
+    fn a_loop_without_a_task_list_never_reminds() {
+        // The subagent's loop, and every `run_agent` caller.
+        let (events, requests, _) = guarded_turn(Guarded {
+            list: false,
+            answers: &["Done."],
+            ..Guarded::default()
+        });
+        assert_eq!(requests.len(), 3);
+        assert_eq!(task_notes(&events), Vec::<&str>::new());
     }
 }

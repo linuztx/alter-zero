@@ -286,13 +286,15 @@ pub enum StreamEvent {
     /// A lifecycle hook injected **conversation text** mid-turn
     /// (`docs/hooks.md`): a `Stop`/`SubagentStop` block's continuation
     /// feedback, or a `UserPromptSubmit`/`SessionStart` hook's additional
-    /// context. `text` is verbatim what the model reads as a user-role
-    /// message — the loop finalises the assistant run before it (invariant
-    /// 4's flush-before-you-interleave) and records the cell-less
+    /// context — or the task list's guard reminded the model of its list
+    /// (`docs/task-tools.md`). `text` is verbatim what the model reads as a
+    /// user-role message — the loop finalises the assistant run before it
+    /// (invariant 4's flush-before-you-interleave) and records the cell-less
     /// [`crate::app::HistoryItem::HookNote`], so the Ctrl+O transcript shows
     /// why the turn kept going, the derived context replays it on every
     /// later turn, and a `/resume` restores it. `label` is the short
-    /// transcript heading (`Stop hook`, `UserPromptSubmit hook`).
+    /// transcript heading (`Stop hook`, `UserPromptSubmit hook`, `Task
+    /// reminder`).
     HookNote { label: String, text: String },
     /// A message the user queued **while this turn was already running** has
     /// been folded into its context, at the round boundary the agent loop

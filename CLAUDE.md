@@ -1625,7 +1625,25 @@ all three history rewinds restore the list exactly — `/resume` and the
 Esc-Esc backtrack from the last record('s snapshot) before the cut
 (`App::reset_tasks_from_history`), `/clear` to empty — with the boundary
 syncing the shared registry after each (`Session::sync_task_registry`) so
-the model's next `tasklist` agrees with the strip; the offline dummy's
+the model's next `tasklist` agrees with the strip; a **guard** keeps the
+list true for a model that forgets it (`tasks::TaskGuard`, pure — measured:
+gpt-oss:120b creating one task and never marking it in progress across
+eleven rounds of work): Claude Code's ten-round reminder kept as the
+**Stale** nudge (`TASK_REMINDER_ROUNDS`), plus an **Idle** nudge at the first
+round boundary after work with tasks open and none in progress, and a
+once-per-turn **Closing** round when the model answers with tasks open that
+this turn created or updated, or one in progress — even after a final
+`taskupdate`, which says nothing of the other tasks the same work finished;
+each a short `<system-reminder>` over the `tasklist` lines, sent by
+`llm::agent::run_agent_with_tasks` (the main turn's loop — `run_agent` is it
+with no list, the subagents' and the tests') after the background notices and
+before the user's steered messages, the closing one ahead of the `Stop` hook
+with `stop_hook_active` left the hook's, none after an Esc or once the Max
+tool calls budget is spent, and every one recorded as a `Task reminder`
+`HookNote` so Ctrl+O shows it and every later context replays it in place
+(a create/update resets the reminder gap; a turn that never touches the list
+hears one round reminder at most; `examples/task_probe.rs` measures it live,
+`tests/task_guard_wire.rs` pins the backend wiring); the offline dummy's
 `tasks` scenario (cue `todo`/`task`) drives a real `TaskStore` through the
 whole lifecycle so every scripted result string and snapshot is
 byte-for-byte the live executor's, ending with work outstanding so the

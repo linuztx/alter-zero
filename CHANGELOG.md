@@ -40,6 +40,16 @@ release heading when a version is cut.
 
 ### Fixed
 
+- **The task checklist no longer stalls on models that forget it.** A
+  smaller model — measured with gpt-oss:120b — would create its tasks and
+  then do the whole job without marking one in progress or done, so the
+  checklist under the status line never moved. When work goes on with tasks
+  open and none in progress, when a task in progress goes ten rounds without
+  an update, and once more when the turn is about to end with tasks still
+  open, the agent is now shown its list in a short reminder and asked to
+  bring it up to date. The reminders stay out of the conversation you see
+  (Ctrl+O shows them, under `Task reminder`), and subagents, which keep no
+  list, never get one (`docs/task-tools.md`).
 - **A build that compiles in silence is no longer handed back halfway.** A
   `bash` call running `cargo build` came back `Running` about ten seconds
   into a long compile, however long the agent had asked it to wait: cargo

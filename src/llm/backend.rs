@@ -784,8 +784,10 @@ impl ReplySource for LlmBackend {
             // background shell that finished (or was killed) since the last
             // request is known to the model within this same turn
             // (docs/background.md). The round's `agent` calls go to the
-            // subagent launcher instead (docs/agent-tool.md).
-            agent::run_agent(
+            // subagent launcher instead (docs/agent-tool.md). The task list
+            // arms the loop's guard, which shows the model its list when it
+            // lets it go stale (docs/task-tools.md).
+            agent::run_agent_with_tasks(
                 &tx,
                 &cancel,
                 max_tool_calls,
@@ -950,6 +952,7 @@ impl ReplySource for LlmBackend {
                         .and_then(|registry| registry.session(id))
                         .map(|session| session.command)
                 },
+                task_list.as_ref(),
             );
         })
     }

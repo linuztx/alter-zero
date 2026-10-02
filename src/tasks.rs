@@ -12,6 +12,10 @@ use std::sync::{Arc, Mutex};
 
 use serde::Deserialize;
 
+mod guard;
+
+pub use guard::{TASK_REMINDER_LABEL, TASK_REMINDER_ROUNDS, TaskGuard, TaskNudge, task_reminder};
+
 /// The wire names of the four task tools, as offered to the model (lowercase
 /// like every other wire name — `crate::llm::tools`'s convention, and what
 /// the context replay's lowercasing fallback reproduces from the display

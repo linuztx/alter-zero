@@ -329,16 +329,21 @@ use alter_zero::tasks::{
     Task,
     TaskRegistry,
     TaskCounts,
+    TaskGuard,
+    TaskNudge,
     TaskStatus,
     TaskStore,
     UpdateArgs,
     TASK_CREATE_TOOL,
     TASK_GET_TOOL,
     TASK_LIST_TOOL,
+    TASK_REMINDER_LABEL,
+    TASK_REMINDER_ROUNDS,
     TASK_TOOL_NAMES,
     TASK_UPDATE_TOOL,
     is_task_tool,
     task_display_name,
+    task_reminder,
 };
 
 // --- `ui` — rendering ---
