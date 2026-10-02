@@ -171,6 +171,138 @@ appends the hidden `HistoryItem::TaskCall` record, stores the snapshot on
 `App::tasks` for the strip, and charges the result text to the token tally
 (`↑`, the uploaded-back arrow) exactly like a visible tool result.
 
+## The guard — keeping the list current
+
+Creating a plan is the half every model manages. Ticking it off is the half
+a weaker one forgets: gpt-oss:120b (Ollama Cloud), asked to *create a
+facebook login page and expose it on port 3000*, created its task, worked
+through eleven tool calls, and ended the turn on a list still reading
+`◻ pending` — the spinner never wore the task and the resting block claimed
+nothing had been done. The schemas already say when to update (`taskupdate`:
+*in_progress before you start, completed immediately after*); what such a
+model lacks is the list **in front of it** at the moment it falls behind.
+
+So the main session's agent loop carries a guard (`tasks::TaskGuard`, pure,
+consulted by `llm::agent::run_agent_guarded`) that watches each round's calls
+and, when the list has fallen behind the work, shows it to the model again:
+
+- **Progress reminder** — at a round boundary, once tool work has gone
+  untracked: after **one** round of work when no task is `in_progress` (it
+  started working without starting a task — the slip above), after
+  `TASK_REMINDER_ROUNDS` (3) rounds with one running — but that stale case
+  only for a model that has already needed a reminder this turn. One that
+  starts its own tasks is trusted to tick them: gemma4 started and ticked
+  every task itself and still drew a reminder three rounds into its last
+  one, while gpt-oss always trips the first reminder and keeps the stale
+  ones that helped it. Once per stretch of untracked work — a model still
+  working after the reminder is most likely still on its task (one coarse
+  task, a long debugging run): repeating it every three rounds sent one live
+  run four reminders it rightly ignored — and never two within three rounds
+  of work.
+- **Closing reminder** — when the model **answers** with open tasks after
+  work it never ticked off, or after a turn of work with a task still
+  `in_progress` (seen live: the work done, the task marked in progress as the
+  last act, the answer saying *completed once you confirm*). Once per turn;
+  after that the answer stands.
+- **Silent stop** — when the model ends its turn with open tasks and **no
+  answer at all**. gpt-oss does this mid-plan, several times a turn: a plan
+  created and nothing more, or one task ticked and silence. An empty answer is
+  no answer, so it is sent back to work — again each time it stops silently,
+  for as long as each nudge buys progress (work, or a list update), with
+  `TASK_SILENT_STOP_LIMIT` (8) behind that as the backstop. A turn that did
+  nothing at all is left alone: an old plan left open is not its to restart.
+
+The closing reminder and the silent-stop nudge both continue the **same
+turn** — the answer, if any, stands as a message, the reminder follows it,
+and the model gets one more round: the `Stop` hook's continuation
+(`docs/hooks.md`), minus the hook, and asked **before** the hooks so a `Stop`
+hook judges the answer the turn actually ends on.
+
+What counts: a successful `taskcreate`/`taskupdate` keeps the list current
+(and starts a new stretch); any other call — a `bash`, a `write`, an agent
+launch — is work; `tasklist`/`taskget` are neither, and a refused update
+(`missing field taskId`) is not tracking. With no open task — no plan, or a
+finished one — the guard has nothing to say, so a model that keeps its list
+current never meets it. A turn that only plans (`plan this for me`) and
+answers is left alone too.
+
+### The texts
+
+Short and direct, in the `tasklist` shape the model already reads its list
+in, wrapped as a `<system-reminder>` so it reads as the session speaking
+rather than the user:
+
+```
+<system-reminder>
+Your tasks, none in_progress:
+#1 [pending] Initialize project
+#2 [pending] Create login UI
+
+Use taskupdate: completed for each task you have finished, in_progress for the one you are working on.
+</system-reminder>
+```
+
+(`Your tasks:` when one is running.) The advice names **finished** tasks
+first because the first wording — *mark the one you are working on
+in_progress* — had gpt-oss mark a task it had just finished `in_progress` and
+stop there. The closing reminder lists only the open tasks:
+
+```
+<system-reminder>
+You are finishing with open tasks:
+#2 [in_progress] Create login UI
+
+Use taskupdate first: completed for each finished task, deleted for any no longer needed. If work remains, do it or say what is left.
+</system-reminder>
+```
+
+and the silent-stop nudge asks for the work, not the bookkeeping — under the
+closing reminder's wording a silent gpt-oss ticked a task it had not done:
+
+```
+<system-reminder>
+You stopped without an answer. Open tasks:
+#3 [pending] Create UI files
+
+Continue: mark the task you work on in_progress, do it, then mark it completed.
+</system-reminder>
+```
+
+### Where it lands
+
+Each reminder is a user-role message at the **frontier** — after the round's
+tool results and any background notices, before any message the user queued
+(the user's own words stay the last thing the model reads) — so nothing the
+provider cached moves (`docs/prompt-caching.md`). It is announced as a
+`StreamEvent::HookNote` labelled `Task reminder`, which is exactly what it
+needs to be: the loop records the cell-less `HistoryItem::HookNote`
+(invisible inline, under a dim `● Task reminder` heading in Ctrl+O), the
+derived context replays it **verbatim** on every later turn — so the next
+turn's request is the cached one, Ctrl+D shows what the model read — and the
+rollout round-trips it, so a `/resume` keeps it. No new event or history kind:
+it is conversation text the harness injected mid-turn, which is what a hook
+note already is.
+
+Only the main session has a guard: it is built per turn from the shared
+`TaskRegistry`'s snapshot (so a plan an earlier turn left open is watched
+too) wherever the task tools are offered. Subagents and the `/compact`
+backend never carry the tools, run the unguarded `run_agent`, and are
+untouched.
+
+### Measuring it
+
+`examples/task_probe.rs` drives the real agent loop with the task list
+attached — the real system prompt, a background registry, uncapped like the
+app — and prints every task call with the checklist it left, every reminder
+the guard sent, and the final list (`SHOW_THINKING=1` adds the model's
+reasoning, which is where gpt-oss says *we need to mark task 1 as
+in_progress*):
+
+```sh
+PROVIDER=ollama_cloud MODEL=gpt-oss:120b OLLAMA_API_KEY=… \
+  cargo run --example task_probe -- /tmp/work "Create a facebook login page UI/UX and expose it to port 3000"
+```
+
 ## The record and the three rewinds
 
 `HistoryItem::TaskCall(TaskCallRecord)` keeps `{name, args, output, ok,

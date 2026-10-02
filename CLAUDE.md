@@ -1685,7 +1685,25 @@ whole lifecycle so every scripted result string and snapshot is
 byte-for-byte the live executor's, ending with work outstanding so the
 resting panel and the cross-turn list show, while its `tasks-finished` twin
 (the same cue plus `finish`) walks a two-task list to all-✔ so the
-retirement is drivable too — `smoke.sh` Phases 69 and 70) in
+retirement is drivable too — `smoke.sh` Phases 69 and 70; and a **guard**
+for the models that create a plan and never tick it — gpt-oss:120b worked
+eleven tool calls on a list still reading `pending` — the pure
+`tasks::TaskGuard`, built per turn from the registry's snapshot and fed every
+round's calls by `llm::agent::run_agent_guarded` (`run_agent` is the same
+loop unguarded, for subagents, `/compact` and every test), which puts the
+list back in front of the model as a short `<system-reminder>`: a
+**progress reminder** at a round boundary once work goes untracked (after
+one round with no task `in_progress`, after `TASK_REMINDER_ROUNDS` with one
+running — that case only for a model that has needed a reminder this turn,
+one starting its own tasks being trusted to tick them — once per stretch of
+untracked work), a **closing reminder** when it
+answers on an untidy list (once per turn), and a **silent-stop nudge** when
+it ends with open tasks and no answer at all (repeated while each nudge buys
+progress, `TASK_SILENT_STOP_LIMIT` behind it) — the last two continuing the
+same turn, asked before the `Stop` hooks; each lands at the frontier as a
+`StreamEvent::HookNote` labelled `Task reminder`, so it is recorded, shown in
+Ctrl+O and replayed verbatim (the cached prefix holds), and
+`examples/task_probe.rs` measures it against a live model) in
 `docs/task-tools.md`; and the **lifecycle hooks** (Claude Code's
 `hooks.json`, ported whole — `docs/hooks.md`: the user's own commands wedged
 into the tool loop, `~/.alter-zero/hooks.json` mapping event → matcher groups

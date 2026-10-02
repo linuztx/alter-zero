@@ -822,6 +822,13 @@ impl ReplySource for LlmBackend {
             if let Ok(mut log) = turn_context.lock() {
                 log.push_request(&prompt);
             }
+            // The task guard (docs/task-tools.md): this turn's watch over the
+            // shared list, starting from the plan the turn found — so a plan
+            // an earlier turn left open is kept current too. No list, no
+            // guard: the tools are not offered then.
+            let mut task_guard = task_list
+                .as_ref()
+                .map(|registry| crate::tasks::TaskGuard::new(registry.snapshot()));
             // The agentic loop: `run_agent` streams one round, runs any tool
             // calls the model requested (via `executor`, emitting the
             // ToolStart/ToolEnd pair the TUI renders), appends the results, and
@@ -834,8 +841,9 @@ impl ReplySource for LlmBackend {
             // background shell that finished (or was killed) since the last
             // request is known to the model within this same turn
             // (docs/background.md). The round's `agent` calls go to the
-            // subagent launcher instead (docs/agent-tool.md).
-            agent::run_agent(
+            // subagent launcher instead (docs/agent-tool.md), and the task
+            // guard watches every round (docs/task-tools.md).
+            agent::run_agent_guarded(
                 &tx,
                 &cancel,
                 max_tool_calls,
@@ -1004,6 +1012,7 @@ impl ReplySource for LlmBackend {
                         .and_then(|registry| registry.session(id))
                         .map(|session| session.command)
                 },
+                task_guard.as_mut(),
             );
         })
     }

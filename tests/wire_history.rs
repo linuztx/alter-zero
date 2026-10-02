@@ -44,6 +44,24 @@ const CHAT_BATCH_ROUND: &str = concat!(
     "data: [DONE]\n\n",
 );
 
+/// A Chat Completions round creating one task (`docs/task-tools.md`).
+const CHAT_TASK_CREATE_ROUND: &str = concat!(
+    r#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_create","type":"function","function":{"name":"taskcreate","arguments":"{\"subject\":\"Read the file\",\"description\":\"d\"}"}}]}}]}"#,
+    "\n\n",
+    r#"data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}"#,
+    "\n\n",
+    "data: [DONE]\n\n",
+);
+
+/// A Chat Completions round ticking that task off.
+const CHAT_TASK_DONE_ROUND: &str = concat!(
+    r#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_done","type":"function","function":{"name":"taskupdate","arguments":"{\"taskId\":\"1\",\"status\":\"completed\"}"}}]}}]}"#,
+    "\n\n",
+    r#"data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}"#,
+    "\n\n",
+    "data: [DONE]\n\n",
+);
+
 /// A plain-text Chat Completions round that ends the turn.
 const CHAT_TEXT_ROUND: &str = concat!(
     r#"data: {"choices":[{"delta":{"content":"done"}}]}"#,
@@ -179,6 +197,21 @@ fn fold(app: &mut App, events: Vec<StreamEvent>) {
                 display, result, ..
             } => {
                 app.reject_tool(&display, &result);
+            }
+            StreamEvent::TaskCall {
+                name,
+                args,
+                arguments,
+                output,
+                ok,
+                tasks,
+            } => {
+                app.flush_streaming_segment();
+                app.record_task_call(&name, &args, &arguments, &output, ok, tasks);
+            }
+            StreamEvent::HookNote { label, text } => {
+                app.flush_streaming_segment();
+                app.record_hook_note(&label, &text);
             }
             StreamEvent::StreamDone => {
                 app.finish_stream();
@@ -364,6 +397,56 @@ fn a_rebuilt_backend_sends_the_batch_the_provider_saw() {
     assert_eq!(messages[3], sent["messages"][3], "the first result");
     assert_eq!(messages[4], sent["messages"][4], "the second result");
     assert_eq!(messages[5]["content"], "done");
+}
+
+#[test]
+fn a_rebuilt_backend_replays_the_task_reminder_where_the_provider_saw_it() {
+    // The task guard's reminder (docs/task-tools.md) lands at the frontier
+    // mid-turn and is recorded as a hook note, so the next turn — sent by a
+    // *fresh* backend, from the history alone — carries it at the very spot
+    // the provider saw it: the cached prefix runs through it.
+    let (base, requests) = stand_in(&[
+        CHAT_TASK_CREATE_ROUND,
+        CHAT_TOOL_ROUND,
+        CHAT_TASK_DONE_ROUND,
+        CHAT_TEXT_ROUND,
+        CHAT_TEXT_ROUND,
+    ]);
+    let tasks = alter_zero::tasks::TaskRegistry::new();
+    let first = backend_on(WireApi::Chat, &base).with_tasks(tasks.clone());
+    let mut app = App::new();
+    app.record_user_message("read the file");
+    app.begin_stream();
+    let events = turn(&first, "read the file", context_messages(&app.history));
+    fold(&mut app, events);
+    let sent = requests.lock().expect("the request log")[2].clone();
+    let sent = sent["messages"]
+        .as_array()
+        .expect("a messages array")
+        .clone();
+    let reminder = sent.last().expect("a frontier message");
+    assert_eq!(reminder["role"], "user");
+    assert!(
+        reminder["content"]
+            .as_str()
+            .is_some_and(|text| text.starts_with(
+                "<system-reminder>\nYour tasks, none in_progress:\n#1 [pending] Read the file\n"
+            )),
+        "the read went untracked, so the list came back: {reminder}"
+    );
+
+    let rebuilt = backend_on(WireApi::Chat, &base).with_tasks(tasks);
+    app.record_user_message("and now?");
+    app.begin_stream();
+    let events = turn(&rebuilt, "and now?", context_messages(&app.history));
+    fold(&mut app, events);
+    let next = requests.lock().expect("the request log")[4].clone();
+    let messages = next["messages"].as_array().expect("a messages array");
+    assert_eq!(
+        &messages[..sent.len()],
+        &sent[..],
+        "the provider's own prefix, reminder and all, byte for byte"
+    );
 }
 
 #[test]

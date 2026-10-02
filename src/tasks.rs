@@ -1,7 +1,8 @@
 //! The task tools' pure model: the store the model's `taskcreate` /
 //! `taskget` / `tasklist` / `taskupdate` calls operate on, every result
-//! string they return, and the shared registry the executor and the event
-//! loop hold together. See `docs/task-tools.md`.
+//! string they return, the shared registry the executor and the event loop
+//! hold together, and the [`TaskGuard`] that keeps a model's list in step
+//! with its work. See `docs/task-tools.md`.
 //!
 //! Claude Code's structured task list, minus the parameters this single-agent
 //! TUI has no use for (`owner`, `metadata`). Everything here is pure and
@@ -403,8 +404,16 @@ impl TaskStore {
         if self.tasks.is_empty() {
             return "No tasks found".to_string();
         }
+        self.lines(|_| true)
+    }
+
+    /// One `tasklist` line per task `keep` accepts, in id order — the shape
+    /// the model already reads its list in, which the guard's reminders
+    /// reuse ([`TaskGuard`]).
+    fn lines(&self, keep: impl Fn(&Task) -> bool) -> String {
         self.tasks
             .iter()
+            .filter(|task| keep(task))
             .map(|task| {
                 let mut line = format!("#{} [{}] {}", task.id, task.status.wire(), task.subject);
                 let blockers = self.open_blockers(task);
@@ -618,6 +627,222 @@ impl TaskRegistry {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
+}
+
+/// The transcript heading a task reminder is recorded under — the Ctrl+O
+/// label of the [`crate::app::HistoryItem::HookNote`] it rides
+/// (`docs/task-tools.md`).
+pub const TASK_REMINDER_LABEL: &str = "Task reminder";
+
+/// How many rounds of tool work a list with a running task may fall behind
+/// before [`TaskGuard`] shows it to the model again — and the cooldown
+/// between any two of its progress reminders, so one the model ignores is
+/// not repeated every round.
+pub const TASK_REMINDER_ROUNDS: usize = 3;
+
+/// How many times one turn may send a model that stopped **silently** —
+/// open tasks, no answer — back to its list. gpt-oss does this mid-plan,
+/// several times a turn, and each nudge has to buy progress before the next
+/// is sent; this is the backstop behind that rule.
+pub const TASK_SILENT_STOP_LIMIT: usize = 8;
+
+/// Keeps a model's task list in step with its work (`docs/task-tools.md`).
+///
+/// Creating a plan is the half every model manages; ticking it off is the
+/// half a weaker one forgets — gpt-oss creates its tasks, works through a
+/// dozen tool calls, and finishes on a list still reading `pending`. The
+/// schemas already say when to update; what such a model lacks is the list
+/// in front of it at the moment it falls behind. The agent loop feeds the
+/// guard each round's calls and asks it, at every round boundary and when
+/// the model finishes, whether to show it the list again:
+///
+/// - **a progress reminder** ([`round_reminder`](Self::round_reminder)) once
+///   tool work has gone untracked — after one round when no task is
+///   `in_progress` (work started without starting a task), after
+///   [`TASK_REMINDER_ROUNDS`] with one running, but only once the model has
+///   needed a reminder this turn (one that starts its own tasks is trusted
+///   to tick them). Once per stretch of untracked work (a model still
+///   working after it is most likely still on its task), and never two
+///   within that many rounds.
+/// - **a closing reminder** ([`stop_reminder`](Self::stop_reminder)) when the
+///   model answers with open tasks after work it never ticked off, or after
+///   work with a task still `in_progress` — once per turn — and a nudge to
+///   continue when it stops with open tasks and **no answer at all**, for as
+///   long as each nudge buys progress ([`TASK_SILENT_STOP_LIMIT`]). Either
+///   way the turn runs another round.
+///
+/// A successful `taskcreate`/`taskupdate` keeps the list current; any other
+/// call is work; `tasklist`/`taskget` are neither. With no open task — no
+/// plan, or a finished one — the guard has nothing to say. One guard lives
+/// for one turn: the backend builds it from the shared list at the turn's
+/// start, so a plan left open by an earlier turn is watched too.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TaskGuard {
+    /// The list as the model's last task call left it.
+    tasks: TaskStore,
+    /// Rounds of work since the list was last created into or updated — the
+    /// current stretch.
+    stale_rounds: usize,
+    /// Whether the current stretch has had its reminder.
+    stretch_reminded: bool,
+    /// Rounds of work since the last reminder; `None` before the first.
+    since_reminder: Option<usize>,
+    /// Whether the current round worked after its last create/update.
+    round_worked: bool,
+    /// Whether the turn has done any work at all.
+    worked: bool,
+    /// Whether anything moved — work, a list update — since the last silent
+    /// stop was nudged (or since the turn began).
+    progressed: bool,
+    /// Whether an answer has had its closing reminder this turn.
+    answer_reminded: bool,
+    /// Silent stops nudged this turn.
+    silent_stops: usize,
+}
+
+impl TaskGuard {
+    /// A guard for one turn, over the list as the turn found it.
+    #[must_use]
+    pub fn new(tasks: TaskStore) -> Self {
+        Self {
+            tasks,
+            ..Self::default()
+        }
+    }
+
+    /// A task tool call resolved. Its post-call snapshot, when it carried
+    /// one, becomes the guard's view; a successful create or update keeps
+    /// the list current and starts a new stretch.
+    pub fn record_task_call(&mut self, name: &str, ok: bool, tasks: Option<TaskStore>) {
+        if let Some(tasks) = tasks {
+            self.tasks = tasks;
+        }
+        if ok && matches!(name, TASK_CREATE_TOOL | TASK_UPDATE_TOOL) {
+            self.stale_rounds = 0;
+            self.stretch_reminded = false;
+            self.round_worked = false;
+            self.progressed = true;
+        }
+    }
+
+    /// Any other call ran — work the list should account for.
+    pub const fn record_work(&mut self) {
+        self.round_worked = true;
+        self.worked = true;
+        self.progressed = true;
+    }
+
+    /// A tool round ended: if it worked after its last create/update, the
+    /// list is a round further behind.
+    pub fn end_round(&mut self) {
+        if std::mem::take(&mut self.round_worked) {
+            self.stale_rounds += 1;
+            if let Some(rounds) = self.since_reminder.as_mut() {
+                *rounds += 1;
+            }
+        }
+    }
+
+    /// The progress reminder to put in front of the next round, if one is
+    /// due.
+    pub fn round_reminder(&mut self) -> Option<String> {
+        if self.stale_rounds == 0 || self.stretch_reminded || !self.has_open() {
+            return None;
+        }
+        if self
+            .since_reminder
+            .is_some_and(|rounds| rounds < TASK_REMINDER_ROUNDS)
+        {
+            return None;
+        }
+        // A running task goes stale only for a model that has needed a
+        // reminder this turn: one that started its own tasks is trusted to
+        // tick them, the closing reminder its safety net.
+        let running = self.has_running();
+        if running && (self.since_reminder.is_none() || self.stale_rounds < TASK_REMINDER_ROUNDS) {
+            return None;
+        }
+        self.note_reminder();
+        let headline = if running {
+            "Your tasks:"
+        } else {
+            "Your tasks, none in_progress:"
+        };
+        Some(reminder_text(
+            headline,
+            &self.tasks.lines(|_| true),
+            "Use taskupdate: completed for each task you have finished, in_progress for the \
+             one you are working on.",
+        ))
+    }
+
+    /// The closing reminder for a model about to finish with `answer`, if
+    /// one is due — the turn then runs another round with it.
+    pub fn stop_reminder(&mut self, answer: &str) -> Option<String> {
+        if !self.has_open() {
+            return None;
+        }
+        let open = self
+            .tasks
+            .lines(|task| task.status != TaskStatus::Completed);
+        if answer.trim().is_empty() {
+            // Silence: the model stopped mid-plan with nothing to say.
+            if !self.progressed || self.silent_stops >= TASK_SILENT_STOP_LIMIT {
+                return None;
+            }
+            self.silent_stops += 1;
+            self.progressed = false;
+            self.note_reminder();
+            return Some(reminder_text(
+                "You stopped without an answer. Open tasks:",
+                &open,
+                "Continue: mark the task you work on in_progress, do it, then mark it \
+                 completed.",
+            ));
+        }
+        let untidy = self.stale_rounds > 0 || (self.worked && self.has_running());
+        if !untidy || self.answer_reminded {
+            return None;
+        }
+        self.answer_reminded = true;
+        self.note_reminder();
+        Some(reminder_text(
+            "You are finishing with open tasks:",
+            &open,
+            "Use taskupdate first: completed for each finished task, deleted for any no \
+             longer needed. If work remains, do it or say what is left.",
+        ))
+    }
+
+    /// A reminder went out: the stretch has had it, and the cooldown starts.
+    const fn note_reminder(&mut self) {
+        self.stretch_reminded = true;
+        self.since_reminder = Some(0);
+    }
+
+    /// Is any task not yet completed?
+    fn has_open(&self) -> bool {
+        self.tasks
+            .tasks()
+            .iter()
+            .any(|task| task.status != TaskStatus::Completed)
+    }
+
+    /// Is any task in progress?
+    fn has_running(&self) -> bool {
+        self.tasks
+            .tasks()
+            .iter()
+            .any(|task| task.status == TaskStatus::InProgress)
+    }
+}
+
+/// A reminder's wire text: the headline over the task lines, the advice
+/// under them, the whole wrapped as a `<system-reminder>` so the model reads
+/// it as the session speaking rather than the user.
+fn reminder_text(headline: &str, lines: &str, advice: &str) -> String {
+    use crate::reminder::{REMINDER_CLOSE, REMINDER_OPEN};
+    format!("{REMINDER_OPEN}\n{headline}\n{lines}\n\n{advice}\n{REMINDER_CLOSE}")
 }
 
 #[cfg(test)]
@@ -1127,6 +1352,339 @@ mod tests {
         let mut store = TaskStore::from_parts(store.tasks().to_vec(), 0);
         let text = create(&mut store, "again");
         assert_eq!(text, "Task #9 created successfully: again");
+    }
+
+    /// A guard over `subjects`, each task pending.
+    fn guard_over(subjects: &[&str]) -> TaskGuard {
+        let mut store = TaskStore::new();
+        for subject in subjects {
+            create(&mut store, subject);
+        }
+        TaskGuard::new(store)
+    }
+
+    /// One tool round of work (a non-task call), ended.
+    fn work_round(guard: &mut TaskGuard) {
+        guard.record_work();
+        guard.end_round();
+    }
+
+    /// `guard`'s view with `update` applied, recorded as the call it was.
+    fn update(guard: &mut TaskGuard, update: &str) {
+        let mut store = guard.tasks.clone();
+        let ok = store.run_update(update).is_ok();
+        guard.record_task_call(TASK_UPDATE_TOOL, ok, Some(store));
+    }
+
+    /// The progress reminders' one advice line.
+    const PROGRESS_ADVICE: &str = "Use taskupdate: completed for each task you have finished, \
+                                   in_progress for the one you are working on.";
+
+    /// The closing reminder's advice.
+    const CLOSING_ADVICE: &str = "Use taskupdate first: completed for each finished task, \
+                                  deleted for any no longer needed. If work remains, do it \
+                                  or say what is left.";
+
+    #[test]
+    fn work_with_no_task_in_progress_is_reminded_after_one_round() {
+        // The reported slip (gpt-oss:120b): tasks created, then straight to
+        // work without starting one. One round of that is enough to say so.
+        let mut guard = guard_over(&["Create the page", "Serve it on port 3000"]);
+        assert_eq!(guard.round_reminder(), None, "nothing has run yet");
+        work_round(&mut guard);
+        assert_eq!(
+            guard.round_reminder(),
+            Some(format!(
+                "<system-reminder>\n\
+                 Your tasks, none in_progress:\n\
+                 #1 [pending] Create the page\n\
+                 #2 [pending] Serve it on port 3000\n\n\
+                 {PROGRESS_ADVICE}\n\
+                 </system-reminder>"
+            ))
+        );
+    }
+
+    #[test]
+    fn a_running_task_is_reminded_only_once_the_list_goes_stale() {
+        let mut guard = guard_over(&["Create the page", "Serve it on port 3000"]);
+        // A model that needed telling to start its task (gpt-oss, every run)…
+        work_round(&mut guard);
+        assert!(guard.round_reminder().is_some());
+        update(&mut guard, r#"{"taskId":"1","status":"in_progress"}"#);
+        // …is reminded again once the running task goes stale.
+        for _ in 1..TASK_REMINDER_ROUNDS {
+            work_round(&mut guard);
+            assert_eq!(guard.round_reminder(), None, "a task is running");
+        }
+        work_round(&mut guard);
+        assert_eq!(
+            guard.round_reminder(),
+            Some(format!(
+                "<system-reminder>\n\
+                 Your tasks:\n\
+                 #1 [in_progress] Create the page\n\
+                 #2 [pending] Serve it on port 3000\n\n\
+                 {PROGRESS_ADVICE}\n\
+                 </system-reminder>"
+            ))
+        );
+    }
+
+    #[test]
+    fn a_stretch_of_untracked_work_is_reminded_once() {
+        // A model still working after the reminder is most likely still on
+        // its task (one coarse task, a long debugging run): telling it again
+        // every few rounds is noise. The next reminder waits for the list to
+        // change.
+        let mut guard = guard_over(&["a", "b"]);
+        work_round(&mut guard);
+        assert!(guard.round_reminder().is_some(), "it needed telling once");
+        update(&mut guard, r#"{"taskId":"1","status":"in_progress"}"#);
+        for _ in 0..TASK_REMINDER_ROUNDS {
+            work_round(&mut guard);
+        }
+        assert!(guard.round_reminder().is_some());
+        for _ in 0..4 * TASK_REMINDER_ROUNDS {
+            work_round(&mut guard);
+            assert_eq!(guard.round_reminder(), None, "said once for this stretch");
+        }
+        update(&mut guard, r#"{"taskId":"1","status":"completed"}"#);
+        update(&mut guard, r#"{"taskId":"2","status":"in_progress"}"#);
+        for _ in 0..TASK_REMINDER_ROUNDS {
+            work_round(&mut guard);
+        }
+        assert!(
+            guard.round_reminder().is_some(),
+            "a new stretch, a new reminder"
+        );
+    }
+
+    #[test]
+    fn a_model_that_starts_its_own_tasks_is_trusted_to_tick_them() {
+        // Seen live: gemma4 started every task itself and ticked each one —
+        // and still drew a stale reminder three rounds into its last task.
+        // A model that has needed no reminder this turn hears none while a
+        // task runs; the closing reminder stays its safety net.
+        let mut guard = guard_over(&["a", "b"]);
+        update(&mut guard, r#"{"taskId":"1","status":"in_progress"}"#);
+        for _ in 0..4 * TASK_REMINDER_ROUNDS {
+            work_round(&mut guard);
+            assert_eq!(guard.round_reminder(), None, "trusted while a task runs");
+        }
+        assert!(
+            guard.stop_reminder("Done.").is_some(),
+            "but it does not finish on a running task unasked"
+        );
+    }
+
+    #[test]
+    fn a_new_stretch_still_waits_out_the_cooldown() {
+        // A model that ticks tasks but never starts one would otherwise hear
+        // the same reminder after every task.
+        let mut guard = guard_over(&["a", "b"]);
+        work_round(&mut guard);
+        assert!(guard.round_reminder().is_some());
+        update(&mut guard, r#"{"taskId":"1","status":"completed"}"#);
+        for _ in 1..TASK_REMINDER_ROUNDS {
+            work_round(&mut guard);
+            assert_eq!(guard.round_reminder(), None, "cooling down");
+        }
+        work_round(&mut guard);
+        assert!(guard.round_reminder().is_some(), "the cooldown is spent");
+    }
+
+    #[test]
+    fn creating_or_updating_a_task_keeps_the_list_current() {
+        let mut guard = guard_over(&["a", "b"]);
+        work_round(&mut guard);
+        // Updated after the work: nothing went untracked.
+        update(&mut guard, r#"{"taskId":"1","status":"completed"}"#);
+        guard.end_round();
+        assert_eq!(guard.round_reminder(), None);
+        assert_eq!(guard.stop_reminder("Done."), None);
+        // A create keeps it current too.
+        work_round(&mut guard);
+        let mut store = guard.tasks.clone();
+        create(&mut store, "c");
+        guard.record_task_call(TASK_CREATE_TOOL, true, Some(store));
+        guard.end_round();
+        assert_eq!(guard.round_reminder(), None);
+    }
+
+    #[test]
+    fn reading_the_list_or_failing_an_update_does_not_count_as_keeping_it() {
+        let mut guard = guard_over(&["a"]);
+        guard.record_work();
+        guard.record_task_call(TASK_LIST_TOOL, true, Some(guard.tasks.clone()));
+        guard.record_task_call(TASK_GET_TOOL, true, Some(guard.tasks.clone()));
+        update(&mut guard, r#"{"status":"completed"}"#); // no taskId: refused
+        guard.end_round();
+        assert!(guard.round_reminder().is_some());
+    }
+
+    #[test]
+    fn work_after_an_update_in_the_same_round_still_goes_untracked() {
+        // [taskupdate, bash] in one round: the bash ran after the list was
+        // last touched, so the list may already be behind it.
+        let mut guard = guard_over(&["a", "b"]);
+        update(&mut guard, r#"{"taskId":"1","status":"completed"}"#);
+        guard.record_work();
+        guard.end_round();
+        assert!(guard.round_reminder().is_some(), "nothing is in progress");
+    }
+
+    #[test]
+    fn a_guard_with_nothing_open_stays_quiet() {
+        let mut empty = TaskGuard::new(TaskStore::new());
+        work_round(&mut empty);
+        assert_eq!(empty.round_reminder(), None);
+        assert_eq!(empty.stop_reminder(""), None);
+        let mut done = guard_over(&["a"]);
+        update(&mut done, r#"{"taskId":"1","status":"completed"}"#);
+        work_round(&mut done);
+        assert_eq!(done.round_reminder(), None, "a finished plan asks nothing");
+        assert_eq!(done.stop_reminder(""), None);
+    }
+
+    #[test]
+    fn finishing_with_untracked_work_is_reminded_once() {
+        let mut guard = guard_over(&["Create the page", "Serve it on port 3000"]);
+        update(&mut guard, r#"{"taskId":"1","status":"completed"}"#);
+        update(&mut guard, r#"{"taskId":"2","status":"pending"}"#);
+        work_round(&mut guard);
+        assert_eq!(
+            guard.stop_reminder("The page is up."),
+            Some(format!(
+                "<system-reminder>\n\
+                 You are finishing with open tasks:\n\
+                 #2 [pending] Serve it on port 3000\n\n\
+                 {CLOSING_ADVICE}\n\
+                 </system-reminder>"
+            )),
+            "only the open tasks are listed"
+        );
+        work_round(&mut guard);
+        assert_eq!(
+            guard.stop_reminder("Still up."),
+            None,
+            "an answer stands after one reminder"
+        );
+        assert_eq!(
+            guard.round_reminder(),
+            None,
+            "the closing reminder starts the cooldown too"
+        );
+    }
+
+    #[test]
+    fn finishing_with_a_task_still_in_progress_is_reminded() {
+        // Seen live: the model did the work, marked the task in_progress as
+        // its last act, and answered "in_progress (completed once you
+        // confirm)". Nothing went untracked, but a turn that worked and
+        // still has a task running has either finished it or stopped in the
+        // middle — it should say which.
+        let mut guard = guard_over(&["Create the page"]);
+        work_round(&mut guard);
+        update(&mut guard, r#"{"taskId":"1","status":"in_progress"}"#);
+        guard.end_round();
+        assert!(guard.stop_reminder("The page is ready.").is_some());
+    }
+
+    #[test]
+    fn a_silent_stop_is_sent_back_to_work() {
+        // Seen live: gpt-oss creates its tasks and stops, answering nothing —
+        // and does it again mid-plan, several times a turn. An empty answer
+        // is no answer: the model is sent back to its list to continue.
+        let mut guard = guard_over(&["Create the page", "Serve it on port 3000"]);
+        let mut store = guard.tasks.clone();
+        create(&mut store, "Test it");
+        guard.record_task_call(TASK_CREATE_TOOL, true, Some(store));
+        guard.end_round();
+        assert_eq!(
+            guard.stop_reminder(" \n"),
+            Some(
+                "<system-reminder>\n\
+                 You stopped without an answer. Open tasks:\n\
+                 #1 [pending] Create the page\n\
+                 #2 [pending] Serve it on port 3000\n\
+                 #3 [pending] Test it\n\n\
+                 Continue: mark the task you work on in_progress, do it, then mark it \
+                 completed.\n\
+                 </system-reminder>"
+                    .to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn silent_stops_are_sent_back_only_while_the_nudges_work() {
+        // Each nudge must buy progress — work, or a list update — for the
+        // next silent stop to earn another; a model the nudges no longer move
+        // is let go.
+        let mut guard = guard_over(&["a", "b"]);
+        work_round(&mut guard);
+        assert!(guard.stop_reminder("").is_some());
+        assert_eq!(guard.stop_reminder(""), None, "nothing happened since");
+        update(&mut guard, r#"{"taskId":"1","status":"completed"}"#);
+        guard.end_round();
+        assert!(guard.stop_reminder("").is_some(), "the update was progress");
+    }
+
+    #[test]
+    fn silent_stops_are_capped() {
+        let mut guard = guard_over(&["a"]);
+        for _ in 0..TASK_SILENT_STOP_LIMIT {
+            work_round(&mut guard);
+            assert!(guard.stop_reminder("").is_some());
+        }
+        work_round(&mut guard);
+        assert_eq!(guard.stop_reminder(""), None, "the backstop holds");
+    }
+
+    #[test]
+    fn a_silent_stop_with_nothing_done_is_left_alone() {
+        // A turn that did nothing at all has no plan of its own to resume —
+        // an old one left open is not this turn's to restart.
+        let mut guard = guard_over(&["a"]);
+        assert_eq!(guard.stop_reminder(""), None);
+    }
+
+    #[test]
+    fn an_answer_after_a_silent_stop_still_gets_its_closing_reminder() {
+        let mut guard = guard_over(&["a", "b"]);
+        work_round(&mut guard);
+        assert!(guard.stop_reminder("").is_some());
+        work_round(&mut guard);
+        assert!(
+            guard
+                .stop_reminder("Done.")
+                .is_some_and(|text| text.contains("You are finishing with open tasks:")),
+            "the nudge did not spend the answer's one reminder"
+        );
+    }
+
+    #[test]
+    fn a_planning_turn_finishes_unreminded() {
+        // "Plan this for me": tasks created, one started, an answer given and
+        // nothing worked on yet — open tasks are expected to stay open.
+        let mut guard = guard_over(&["a", "b"]);
+        update(&mut guard, r#"{"taskId":"1","status":"in_progress"}"#);
+        guard.record_task_call(TASK_LIST_TOOL, true, Some(guard.tasks.clone()));
+        guard.end_round();
+        assert_eq!(guard.stop_reminder("Here is the plan."), None);
+    }
+
+    #[test]
+    fn a_task_call_without_a_snapshot_keeps_the_guards_view() {
+        let mut guard = guard_over(&["a"]);
+        guard.record_task_call(TASK_LIST_TOOL, true, None);
+        assert_eq!(guard.tasks.tasks().len(), 1);
+    }
+
+    #[test]
+    fn the_reminder_label_names_what_the_transcript_shows() {
+        assert_eq!(TASK_REMINDER_LABEL, "Task reminder");
     }
 
     #[test]

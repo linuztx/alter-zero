@@ -19,6 +19,18 @@ release heading when a version is cut.
   publishing stays limited to loopback ports 8080/8888 unless configured with
   `docker/run.sh --port`. No additional services are started.
 
+### Fixed
+
+- **Smaller models keep their task list current.** A model like
+  gpt-oss:120b would create its tasks, do the work, and finish on a list
+  still reading `pending`, or stop mid-plan with no answer at all. The agent
+  now shows the model its list again, as a short reminder, when it works
+  without starting a task, lets a running task go stale, finishes with open
+  tasks it never ticked off, or stops silently with work left, and sends it
+  back to continue. Models that keep their list current never see one. The
+  reminders are hidden in the conversation, listed in Ctrl+O, and kept across
+  turns and `/resume` (`docs/task-tools.md`).
+
 ## [0.10.0] - 2026-09-30
 
 ### Added
