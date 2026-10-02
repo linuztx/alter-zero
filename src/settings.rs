@@ -27,6 +27,15 @@ pub const RETRY_CHOICES: &[u32] = &[0, 1, 2, 3, 5, 10];
 /// library's own backstop) is among them.
 pub const TOOL_CALL_CHOICES: &[usize] = &[0, 5, 10, 20, 50, 100];
 
+/// The waits **Ask timeout** cycles through, in seconds: how long a question
+/// waits on an idle user before the agent goes on without an answer
+/// (`docs/ask.md`). Ascending, with `0` — never — as the far end of them;
+/// the default is [`crate::ask::DEFAULT_ASK_TIMEOUT`].
+pub const ASK_TIMEOUT_CHOICES: &[u64] = &[5 * 60, 10 * 60, 20 * 60, 30 * 60, 60 * 60, 0];
+
+/// What the **Ask timeout** row reads when no clock runs.
+pub const ASK_TIMEOUT_NEVER_LABEL: &str = "never";
+
 /// The sampling temperatures **Temperature** cycles through. `None` is
 /// `default` — send no `temperature` at all and leave it to the provider.
 pub const TEMPERATURE_CHOICES: &[Option<f32>] =
@@ -75,6 +84,9 @@ pub enum SettingKey {
     Temperature,
     /// How many rounds of tool calls one turn may run (`0` = no limit).
     MaxToolCalls,
+    /// How long a question waits on an idle user before the agent goes on
+    /// without an answer (`docs/ask.md`); `never` stops the clock.
+    AskTimeout,
     /// Hang a tip off the status line while a turn runs (`docs/tips.md`).
     /// Persists **per user** (`tips.json`), beside the walk's position.
     Tips,
@@ -104,6 +116,7 @@ impl SettingKey {
         Self::Skills,
         Self::Temperature,
         Self::MaxToolCalls,
+        Self::AskTimeout,
         Self::Tips,
         Self::UpdateCheck,
         Self::Telemetry,
@@ -127,6 +140,7 @@ impl SettingKey {
             Self::Skills => "Skills",
             Self::Temperature => "Temperature",
             Self::MaxToolCalls => "Max tool calls",
+            Self::AskTimeout => "Ask timeout",
             Self::Tips => "Show tips",
             Self::UpdateCheck => "Update check",
             Self::Telemetry => "Telemetry",
@@ -170,6 +184,9 @@ impl SettingKey {
             Self::Temperature => "The sampling temperature sent with every request",
             Self::MaxToolCalls => {
                 "How many rounds of tool calls one turn may run before it gives up — 0 is no limit"
+            }
+            Self::AskTimeout => {
+                "How long a question waits for your answer before the agent goes on without it — any key restarts the wait"
             }
             Self::Tips => {
                 "Show a tip under the spinner once a turn has run a few seconds — a key or command worth knowing"
@@ -298,6 +315,11 @@ pub struct SessionSettings {
     /// Tool rounds allowed per turn; `0` (the default) is no limit.
     #[serde(skip_serializing_if = "is_zero")]
     pub max_tool_calls: usize,
+    /// How long, in seconds, a question waits on an idle user before the
+    /// agent goes on without an answer (default
+    /// [`crate::ask::DEFAULT_ASK_TIMEOUT`]); `0` never times out.
+    #[serde(skip_serializing_if = "is_default_ask_timeout")]
+    pub ask_timeout_secs: u64,
     /// Send the anonymous daily ping (default `true` — opt-out,
     /// `docs/telemetry.md`). **Never in `settings.json`**: an opt-out that
     /// applied only to the directory you happened to be in would be a
@@ -340,6 +362,7 @@ impl Default for SessionSettings {
             skills: true,
             temperature: None,
             max_tool_calls: 0,
+            ask_timeout_secs: crate::ask::DEFAULT_ASK_TIMEOUT.as_secs(),
             telemetry: true,
             update_check: true,
             tips: true,
@@ -417,6 +440,17 @@ impl SessionSettings {
         self.tools && self.skills_active()
     }
 
+    /// How long a question waits on an idle user before it resolves
+    /// unanswered (`docs/ask.md`) — `None` when the row says `never`.
+    #[must_use]
+    pub const fn ask_timeout(&self) -> Option<std::time::Duration> {
+        if self.ask_timeout_secs == 0 {
+            None
+        } else {
+            Some(std::time::Duration::from_secs(self.ask_timeout_secs))
+        }
+    }
+
     /// Whether `key` can be cycled at all in this session: the host's verdict
     /// ([`SettingAvailability`]) plus, for the permission row, whether there is
     /// a gate to cycle.
@@ -463,6 +497,7 @@ impl SessionSettings {
             SettingKey::Skills => bool_text(self.skills_active()),
             SettingKey::Temperature => temperature_text(self.temperature),
             SettingKey::MaxToolCalls => self.max_tool_calls.to_string(),
+            SettingKey::AskTimeout => ask_timeout_text(self.ask_timeout_secs),
             SettingKey::Tips => bool_text(self.tips),
             SettingKey::UpdateCheck => bool_text(self.update_check_active()),
             SettingKey::Telemetry => bool_text(self.telemetry_active()),
@@ -503,6 +538,9 @@ impl SessionSettings {
             SettingKey::MaxToolCalls => {
                 self.max_tool_calls = next_in(TOOL_CALL_CHOICES, &self.max_tool_calls);
             }
+            SettingKey::AskTimeout => {
+                self.ask_timeout_secs = next_in(ASK_TIMEOUT_CHOICES, &self.ask_timeout_secs);
+            }
             SettingKey::Tips => self.tips = !self.tips,
             SettingKey::UpdateCheck => self.update_check = !self.update_check,
             SettingKey::Telemetry => self.telemetry = !self.telemetry,
@@ -534,6 +572,7 @@ impl SessionSettings {
             SettingKey::Skills => self.skills = live.skills,
             SettingKey::Temperature => self.temperature = live.temperature,
             SettingKey::MaxToolCalls => self.max_tool_calls = live.max_tool_calls,
+            SettingKey::AskTimeout => self.ask_timeout_secs = live.ask_timeout_secs,
             // Not ours — the posture persists per project in permissions.json.
             SettingKey::PermissionMode => {}
             // Not ours either — the switch persists per user in telemetry.json
@@ -657,6 +696,11 @@ fn is_zero(v: &usize) -> bool {
     *v == 0
 }
 
+#[allow(clippy::trivially_copy_pass_by_ref)]
+fn is_default_ask_timeout(v: &u64) -> bool {
+    *v == crate::ask::DEFAULT_ASK_TIMEOUT.as_secs()
+}
+
 /// The deserialized value of a field the file never carries — `telemetry`
 /// is `#[serde(skip)]`, so a plain `Default` would read it as `false` and a
 /// parsed blob would silently turn the ping off.
@@ -667,6 +711,16 @@ const fn on() -> bool {
 /// `true`/`false`, the value column's boolean spelling.
 fn bool_text(on: bool) -> String {
     if on { "true" } else { "false" }.to_string()
+}
+
+/// An ask timeout's value text: the wait as a limit reads (`10m`, `1h`,
+/// `1m 30s` — [`crate::app::format_timeout`]), or `never` for `0`.
+fn ask_timeout_text(secs: u64) -> String {
+    if secs == 0 {
+        ASK_TIMEOUT_NEVER_LABEL.to_string()
+    } else {
+        crate::app::format_timeout(secs.saturating_mul(1000))
+    }
 }
 
 /// A temperature's value text: one decimal place, or `default` for `None`.

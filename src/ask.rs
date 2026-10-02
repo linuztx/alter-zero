@@ -22,6 +22,15 @@ use serde::Deserialize;
 /// so an Esc/quit reaps the waiting tool thread promptly.
 const WAIT_POLL: Duration = Duration::from_millis(50);
 
+/// How long a question waits on an **idle** user before it resolves
+/// unanswered and the agent carries on without them (`docs/ask.md`). The
+/// clock restarts on every key press, so a user who is reading, choosing or
+/// typing never runs it out: ten minutes covers a glance back from another
+/// window or a short break, and past it the user is away — every further
+/// minute is the agent idling for nobody. The `/settings` **Ask timeout** row
+/// and `ALTER_ZERO_ASK_TIMEOUT_SECS` change it, `0` meaning never.
+pub const DEFAULT_ASK_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+
 /// The schema's bounds: how many questions one call may ask, and how many
 /// options each may offer. Mirrored in [`parse_questions`]'s validation and
 /// the tool spec (`crate::llm::tools::ask_spec`).
@@ -142,6 +151,15 @@ pub enum AskDecision {
     /// The `Chat about this` row: the user wants to discuss the questions
     /// before deciding; the model is told to stop and wait for their message.
     Chat,
+    /// Nobody answered: the user was idle for `after` while the question
+    /// waited, so the boundary's clock resolved it ([`DEFAULT_ASK_TIMEOUT`]).
+    /// `answers` holds whatever the user had already answered (in question
+    /// order, often none); the model is told the user is away and to keep
+    /// working on its own judgment.
+    TimedOut {
+        answers: Vec<AskAnswer>,
+        after: Duration,
+    },
 }
 
 /// The committed cell's headline for a submission — the first output line,
@@ -157,6 +175,13 @@ pub const DECLINED_HEADLINE: &str = "User declined to answer questions";
 
 /// The headline for a `Chat about this` resolution.
 pub const CHAT_HEADLINE: &str = "User wants to chat about this";
+
+/// The headline when the idle clock ran out with nothing answered — the wait
+/// follows it (`User did not answer within 10m`).
+pub const TIMED_OUT_HEADLINE: &str = "User did not answer within";
+
+/// The headline when the user answered some questions and then went idle.
+pub const TIMED_OUT_PARTIAL_HEADLINE: &str = "User did not finish answering within";
 
 /// One `· {question} → {labels}` line of the answered cell.
 fn answer_line(answer: &AskAnswer) -> String {
@@ -264,6 +289,63 @@ pub fn chat_result() -> String {
      question(s) with you before deciding. STOP and wait for their next message, then \
      continue the conversation from there."
         .to_string()
+}
+
+/// The wait as the cell and the model read it — `10m`, `1h`, `3s`, the whole
+/// units a limit is shown in ([`crate::app::format_timeout`]).
+fn wait_text(after: Duration) -> String {
+    crate::app::format_timeout(u64::try_from(after.as_millis()).unwrap_or(u64::MAX))
+}
+
+/// The cell display when the idle clock ran out: the timeout headline (the
+/// partial one when anything was answered) over one row per question — its
+/// `· Q → A` answer when the user gave one, else the `· Q (options)` row a
+/// decline shows.
+#[must_use]
+pub fn timed_out_display(
+    questions: &[AskQuestion],
+    answers: &[AskAnswer],
+    after: Duration,
+) -> String {
+    let headline = if answers.is_empty() {
+        TIMED_OUT_HEADLINE
+    } else {
+        TIMED_OUT_PARTIAL_HEADLINE
+    };
+    let mut out = format!("{headline} {}", wait_text(after));
+    for question in questions {
+        out.push('\n');
+        match answers.iter().find(|a| a.question == question.question) {
+            Some(answer) => out.push_str(&answer_line(answer)),
+            None => out.push_str(&question_line(question)),
+        }
+    }
+    out
+}
+
+/// The model-facing result when the idle clock ran out: the user is away, so
+/// the agent keeps working on its own judgment — the opposite of a decline's
+/// stop-and-wait — and states what it assumed. Answers given before the user
+/// left ride last, as the schema's own JSON ([`answered_result`]).
+#[must_use]
+pub fn timed_out_result(answers: &[AskAnswer], after: Duration) -> String {
+    let wait = wait_text(after);
+    if answers.is_empty() {
+        return format!(
+            "The user did not answer within {wait} and is not available. Continue working \
+             without them: decide using your best judgment, preferring the safest, most \
+             reversible option, and state your assumptions in your final response. Do not \
+             ask again until the user sends a message."
+        );
+    }
+    format!(
+        "The user answered some questions, then did not respond for {wait} and is not \
+         available. Continue working without them: use the answers below, decide the rest \
+         using your best judgment, preferring the safest, most reversible option, and state \
+         your assumptions in your final response. Do not ask again until the user sends a \
+         message.\n\n{}",
+        answered_result(answers)
+    )
 }
 
 /// State shared between the blocked tool thread and the event loop.
@@ -545,6 +627,75 @@ mod tests {
         let result = chat_result();
         assert!(result.contains("Chat about this"), "got {result}");
         assert!(result.contains("wait"), "got {result}");
+    }
+
+    // --- the timeout (docs/ask.md) ---
+
+    #[test]
+    fn the_default_wait_is_ten_minutes() {
+        assert_eq!(DEFAULT_ASK_TIMEOUT, Duration::from_secs(10 * 60));
+    }
+
+    #[test]
+    fn a_timeout_cell_names_the_wait_and_what_went_unanswered() {
+        let questions = [
+            question("Pick a season?", &["Spring", "Fall"], false),
+            question("Pick a snack?", &["Chips", "Fruit"], true),
+        ];
+        assert_eq!(
+            timed_out_display(&questions, &[], Duration::from_secs(600)),
+            "User did not answer within 10m\n\
+             · Pick a season? (Spring / Fall)\n\
+             · Pick a snack? (Chips / Fruit)"
+        );
+    }
+
+    #[test]
+    fn a_timeout_tells_the_model_the_user_is_gone_and_to_keep_working() {
+        let result = timed_out_result(&[], Duration::from_secs(600));
+        assert!(result.contains("within 10m"), "names the wait: {result}");
+        assert!(result.contains("not available"), "got {result}");
+        assert!(
+            result.contains("Continue working without them"),
+            "got {result}"
+        );
+        assert!(result.contains("best judgment"), "got {result}");
+        assert!(
+            result.contains("Do not ask again until the user sends a message"),
+            "no second stall on a user who is away: {result}"
+        );
+        // Short and direct — it rides the context of every later request.
+        assert!(result.len() < 320, "{} chars: {result}", result.len());
+        assert!(
+            !result.contains("STOP"),
+            "a timeout is the opposite of stop-and-wait: {result}"
+        );
+    }
+
+    #[test]
+    fn a_timeout_keeps_the_answers_given_before_the_user_left() {
+        let questions = [
+            question("Pick a season?", &["Spring", "Fall"], false),
+            question("Pick a snack?", &["Chips", "Fruit"], true),
+        ];
+        let answers = [answer("Pick a season?", &["Fall"])];
+        assert_eq!(
+            timed_out_display(&questions, &answers, Duration::from_secs(3)),
+            "User did not finish answering within 3s\n\
+             · Pick a season? → Fall\n\
+             · Pick a snack? (Chips / Fruit)"
+        );
+        let result = timed_out_result(&answers, Duration::from_secs(3));
+        assert!(
+            result.starts_with("The user answered some questions"),
+            "got {result}"
+        );
+        assert!(result.contains("decide the rest"), "got {result}");
+        // The answers ride last, as the schema's own JSON.
+        let json = result.rsplit("\n\n").next().unwrap();
+        let value: serde_json::Value = serde_json::from_str(json).unwrap();
+        assert_eq!(value["answers"]["Pick a season?"], "Fall");
+        assert!(value["answers"].get("Pick a snack?").is_none());
     }
 
     // --- the gate ---

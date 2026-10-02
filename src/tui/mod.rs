@@ -79,6 +79,7 @@ use self::workers::{DeviceEvent, FileSearchResult, ModelFetch};
 
 pub(crate) mod actions;
 pub(crate) mod agent;
+pub(crate) mod ask;
 pub(crate) mod background;
 pub(crate) mod bootstrap;
 pub(crate) mod commit;
@@ -153,6 +154,11 @@ pub(crate) struct Session<'t> {
     clocks: StatusClocks,
     /// When the transient toast above the box should self-clear (`docs/toast.md`).
     toast_deadline: Option<Instant>,
+    /// The `AskUserQuestion` idle clock: running while a question waits,
+    /// started over by every key or paste, resolving the question unanswered
+    /// when it runs out (`docs/ask.md`). `None` when nothing waits or the
+    /// **Ask timeout** row says `never`.
+    ask_clock: Option<ask::AskClock>,
     /// When each background shell started, so the manager's Runtime ticks
     /// (`docs/background.md`).
     bg_clocks: HashMap<String, Instant>,

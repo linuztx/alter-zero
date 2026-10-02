@@ -14,6 +14,16 @@ release heading when a version is cut.
 
 ### Added
 
+- **A question nobody answers no longer stalls the agent.** When the agent
+  asks you something and no key is pressed for ten minutes, the question
+  closes unanswered and the agent keeps working: it is told you are away,
+  takes the safest option, and states what it assumed in its reply. Any key
+  starts the wait over, so you are never timed out mid-answer, and the
+  question's bottom border counts it down. Answers you gave before stepping
+  away still count. Set the wait — 5 minutes to an hour, or never — with the
+  new `/settings` **Ask timeout** row, or `ALTER_ZERO_ASK_TIMEOUT_SECS`
+  (`docs/ask.md`).
+
 - The Kali container includes Node.js and npm by default and declares TCP
   ports 22, 80, 3000, 5000, 8000 and 9000–9009 alongside 8080/8888. Host
   publishing stays limited to loopback ports 8080/8888 unless configured with

@@ -12,7 +12,7 @@ use tokio::sync::mpsc::UnboundedSender;
 use super::tools::{ToolCallRequest, ToolOutcome};
 use crate::ask::{
     AskDecision, AskGate, AskRequest, answered_display, answered_result, chat_display, chat_result,
-    declined_display, declined_result, parse_questions,
+    declined_display, declined_result, parse_questions, timed_out_display, timed_out_result,
 };
 use crate::stream::{CancelToken, StreamEvent};
 
@@ -27,7 +27,8 @@ const CANCELLED_DISPLAY: &str = "Interrupted by user";
 /// user decides (or the turn is cancelled), and map the decision onto the
 /// split [`ToolOutcome`] — the displayed cell text in `output`, the
 /// model-facing result in `context` — that `run_agent` surfaces as
-/// `ToolAnswered` (submitted) or `ToolRejected` (declined / chat).
+/// `ToolAnswered` (submitted) or `ToolRejected` (declined / chat / timed out —
+/// the last telling the model the user is away and to keep working).
 ///
 /// Unparseable arguments resolve as a recoverable error without raising
 /// anything — the model reads the message and retries, like every other
@@ -57,6 +58,12 @@ pub fn ask_user(
         }
         Some(AskDecision::Chat) => {
             ToolOutcome::error(chat_display(&request.questions)).with_context(chat_result())
+        }
+        // The user went idle and the clock ran out (docs/ask.md): red, since
+        // nothing was submitted, while the model is told to keep working.
+        Some(AskDecision::TimedOut { answers, after }) => {
+            ToolOutcome::error(timed_out_display(&request.questions, &answers, after))
+                .with_context(timed_out_result(&answers, after))
         }
         // The cancel that reaps a waiting thread (Esc, `/clear`, quit): the
         // turn is being torn down, so these texts only ever reach an
@@ -179,6 +186,67 @@ mod tests {
             );
             let context = outcome.context.expect("the model reads the instruction");
             assert!(context.contains(needle), "got {context}");
+        }
+    }
+
+    #[test]
+    fn a_timeout_resolves_red_and_tells_the_model_to_keep_working() {
+        // Nobody answered in time (docs/ask.md): the call resolves red with
+        // the timeout cell, while the model reads the keep-working result —
+        // and the answers given before the user left reach it too.
+        for (answers, headline) in [
+            (Vec::new(), crate::ask::TIMED_OUT_HEADLINE),
+            (
+                vec![AskAnswer {
+                    question: "Pick one?".to_string(),
+                    labels: vec!["B".to_string()],
+                    notes: None,
+                    preview: None,
+                }],
+                crate::ask::TIMED_OUT_PARTIAL_HEADLINE,
+            ),
+        ] {
+            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+            let gate = AskGate::new();
+            let cancel = CancelToken::new();
+            let waiter = {
+                let (gate, tx, cancel) = (gate.clone(), tx.clone(), cancel.clone());
+                std::thread::spawn(move || ask_user(&gate, &tx, &cancel, &call(VALID_ARGS)))
+            };
+            let request = loop {
+                if let Ok(StreamEvent::AskUser(request)) = rx.try_recv() {
+                    break request;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            };
+            let partial = !answers.is_empty();
+            gate.resolve(
+                &request.id,
+                AskDecision::TimedOut {
+                    answers,
+                    after: std::time::Duration::from_secs(600),
+                },
+            );
+            let outcome = waiter.join().unwrap();
+            assert!(!outcome.ok, "nothing was submitted");
+            assert!(
+                outcome.output.starts_with(&format!("{headline} 10m")),
+                "got {}",
+                outcome.output
+            );
+            let row = if partial {
+                "· Pick one? → B"
+            } else {
+                "· Pick one? (A / B)"
+            };
+            assert!(outcome.output.contains(row), "got {}", outcome.output);
+            let context = outcome.context.expect("the model reads the instruction");
+            assert!(context.contains("not available"), "got {context}");
+            assert!(
+                context.contains("Continue working without them"),
+                "got {context}"
+            );
+            assert_eq!(context.contains(r#""Pick one?":"B""#), partial, "{context}");
         }
     }
 

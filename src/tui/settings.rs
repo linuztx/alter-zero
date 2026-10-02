@@ -297,6 +297,10 @@ impl Session<'_> {
             SettingKey::AutoResizeImages => self.sync_image_policy(),
             // Read where they are used — nothing to rebuild.
             SettingKey::HideThinking | SettingKey::AutoCompact => {}
+            // The idle clock arms from the row; a question already waiting
+            // restarts its wait under the new value — `never` stops it at
+            // once (docs/ask.md).
+            SettingKey::AskTimeout => self.restart_ask_clock(),
             // Shift+Tab's path owns this one; the menu never routes it here.
             SettingKey::PermissionMode => {}
             // The one per-user row: its file is telemetry.json, and turning

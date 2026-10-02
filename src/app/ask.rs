@@ -109,6 +109,11 @@ pub struct AskPrompt {
     pub answers: Vec<AskAnswerState>,
     /// Which field [`App::input`] is editing, if any.
     pub input_mode: AskInput,
+    /// How long until the idle clock resolves the question unanswered — the
+    /// boundary's reading, injected per draw ([`App::set_ask_remaining`]) for
+    /// the countdown the closing rule shows; `None` when no clock runs (the
+    /// timeout is off, or no draw has injected one yet). See `docs/ask.md`.
+    pub remaining: Option<Duration>,
     /// The composer draft this prompt displaced — restored verbatim when it
     /// closes, the permission prompt's stash.
     saved_input: String,
@@ -147,6 +152,18 @@ impl AskPrompt {
     #[must_use]
     pub fn editing(&self) -> bool {
         self.input_mode != AskInput::Select
+    }
+
+    /// The answered questions as a submission would carry them, in question
+    /// order — an unanswered question is simply absent.
+    fn answered(&self) -> Vec<AskAnswer> {
+        self.request
+            .questions
+            .iter()
+            .zip(&self.answers)
+            .filter(|(_, state)| state.answered())
+            .map(|(question, state)| build_answer(question, state))
+            .collect()
     }
 
     /// The current page's row count.
@@ -199,6 +216,7 @@ impl App {
             row: 0,
             answers,
             input_mode: AskInput::Select,
+            remaining: None,
             saved_input,
             saved_cursor,
             saved_shell_mode,
@@ -253,6 +271,49 @@ impl App {
         std::mem::take(&mut self.abandoned_asks)
     }
 
+    /// Whether any `AskUserQuestion` call is waiting on the user — the open
+    /// modal, or one queued behind another modal. The boundary's idle clock
+    /// runs exactly while this holds (`docs/ask.md`).
+    #[must_use]
+    pub fn has_pending_asks(&self) -> bool {
+        self.ask.is_some() || !self.pending_asks.is_empty()
+    }
+
+    /// Inject the idle clock's remaining time for the open modal's countdown —
+    /// the boundary's per-draw reading, `set_device_remaining`'s twin. A
+    /// no-op with no modal open.
+    pub fn set_ask_remaining(&mut self, remaining: Option<Duration>) {
+        if let Some(prompt) = self.ask.as_mut() {
+            prompt.remaining = remaining;
+        }
+    }
+
+    /// Resolve every waiting question unanswered: the user has been idle for
+    /// `after` (`docs/ask.md`). The open modal keeps what was answered before
+    /// the user left — an entry field's unaccepted text is no answer, and its
+    /// paste pairs go with it — then closes, handing the draft back; a queued
+    /// question resolves with nothing. Returns each id with its decision for
+    /// the boundary to post on the gate, and opens whatever was queued behind
+    /// them (a permission prompt still waits for the user).
+    pub fn expire_asks(&mut self, after: Duration) -> Vec<(String, AskDecision)> {
+        let mut out = Vec::new();
+        if self.ask.as_ref().is_some_and(AskPrompt::editing) {
+            let _ = self.take_entry_text();
+        }
+        if let Some(prompt) = self.ask.as_ref() {
+            let id = prompt.request.id.clone();
+            let answers = prompt.answered();
+            self.close_ask();
+            out.push((id, AskDecision::TimedOut { answers, after }));
+        }
+        for request in std::mem::take(&mut self.pending_asks) {
+            let answers = Vec::new();
+            out.push((request.id, AskDecision::TimedOut { answers, after }));
+        }
+        self.open_next_pending();
+        out
+    }
+
     /// Resolve the open modal with `decision`: close it (restoring the draft),
     /// open the next queued modal, and hand the loop the id to post on the
     /// gate.
@@ -274,14 +335,7 @@ impl App {
         let Some(prompt) = self.ask.as_ref() else {
             return Action::None;
         };
-        let answers: Vec<AskAnswer> = prompt
-            .request
-            .questions
-            .iter()
-            .zip(&prompt.answers)
-            .filter(|(_, state)| state.answered())
-            .map(|(question, state)| build_answer(question, state))
-            .collect();
+        let answers = prompt.answered();
         if answers.is_empty() {
             // Nothing to submit — walk to the first unanswered question.
             if let Some(prompt) = self.ask.as_mut() {

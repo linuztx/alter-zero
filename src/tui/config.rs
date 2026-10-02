@@ -1122,6 +1122,15 @@ pub(crate) fn apply_setting_overrides(mut settings: SessionSettings) -> SessionS
     if let Some(t) = temperature() {
         settings.temperature = Some(t);
     }
+    // The Ask timeout row: `ALTER_ZERO_ASK_TIMEOUT_SECS` seeds it for the
+    // run, `0` meaning never — a wait the menu doesn't list still reads whole
+    // (`1m 30s`), which is how the smoke suite sits one out (docs/ask.md).
+    if let Some(secs) = std::env::var("ALTER_ZERO_ASK_TIMEOUT_SECS")
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+    {
+        settings.ask_timeout_secs = secs;
+    }
     // The Telemetry row: `ALTER_ZERO_TELEMETRY` (and the cross-tool
     // `DO_NOT_TRACK`, which outranks it) seed it for the run over the value
     // `telemetry.json` supplied — an override, never saved

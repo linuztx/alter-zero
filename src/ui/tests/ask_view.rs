@@ -631,3 +631,76 @@ fn a_full_entry_row_keeps_the_caret_inside_the_width() {
         assert!(x < 80, "{n} chars: the caret sits at column {x}");
     }
 }
+
+// ===== The idle timeout's countdown (docs/ask.md) =====
+
+/// The closing rule's countdown span — the one carrying the label text.
+fn countdown_span(app: &App, width: u16) -> Option<Span<'static>> {
+    let lines = ask_lines(app, width);
+    lines
+        .last()?
+        .spans
+        .iter()
+        .find(|s| s.content.contains("continues without you"))
+        .cloned()
+}
+
+#[test]
+fn the_closing_rule_counts_down_while_the_idle_clock_runs() {
+    let mut app = App::new();
+    open(&mut app, vec![coffee_question()]);
+    // No clock (the timeout is off, or no draw has injected one): plain.
+    let bare = plain(ask_lines(&app, 80).last().unwrap());
+    assert_eq!(bare, "─".repeat(80));
+    app.set_ask_remaining(Some(std::time::Duration::from_secs(581)));
+    let rule = plain(ask_lines(&app, 80).last().unwrap());
+    assert!(
+        rule.ends_with("── continues without you in 9:41 ─"),
+        "got {rule:?}"
+    );
+    assert_eq!(rule.chars().count(), 80, "the rule keeps its width");
+}
+
+#[test]
+fn the_countdown_rounds_up_so_it_never_reads_zero_while_open() {
+    let mut app = App::new();
+    open(&mut app, vec![coffee_question()]);
+    for (left_ms, shown) in [(600_000, "10:00"), (599_200, "10:00"), (400, "0:01")] {
+        app.set_ask_remaining(Some(std::time::Duration::from_millis(left_ms)));
+        let rule = plain(ask_lines(&app, 80).last().unwrap());
+        assert!(
+            rule.ends_with(&format!(" continues without you in {shown} ─")),
+            "{left_ms} ms left: {rule:?}"
+        );
+    }
+}
+
+#[test]
+fn the_countdown_turns_amber_in_its_last_minute() {
+    let warn = Some(super::super::theme::ask_warning_color());
+    let mut app = App::new();
+    open(&mut app, vec![coffee_question()]);
+    app.set_ask_remaining(Some(std::time::Duration::from_secs(60)));
+    let calm = countdown_span(&app, 80).expect("the countdown");
+    assert_ne!(calm.style.fg, warn, "1:00 left is still calm");
+    app.set_ask_remaining(Some(std::time::Duration::from_secs(59)));
+    let late = countdown_span(&app, 80).expect("the countdown");
+    assert_eq!(late.style.fg, warn, "0:59 left takes the caution amber");
+}
+
+#[test]
+fn a_rule_too_narrow_for_the_countdown_stays_plain_and_the_height_holds() {
+    let mut app = App::new();
+    open(&mut app, vec![coffee_question()]);
+    let before = ask_lines(&app, 20).len();
+    app.set_ask_remaining(Some(std::time::Duration::from_secs(581)));
+    let lines = ask_lines(&app, 20);
+    assert_eq!(plain(lines.last().unwrap()), "─".repeat(20));
+    assert_eq!(lines.len(), before, "the countdown never costs a row");
+    let wide_before = {
+        app.set_ask_remaining(None);
+        ask_lines(&app, 80).len()
+    };
+    app.set_ask_remaining(Some(std::time::Duration::from_secs(581)));
+    assert_eq!(ask_lines(&app, 80).len(), wide_before);
+}

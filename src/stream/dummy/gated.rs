@@ -244,8 +244,9 @@ const DUMMY_ASK_ARGS: &str = r#"{"questions":[
 /// Play the offline `AskUserQuestion` round trip (`docs/ask.md`): stream the
 /// intro, announce the call, raise the question modal and **block on the ask
 /// gate** exactly as the real tool thread does, then resolve the cell —
-/// green with the answers, red for a decline or a `Chat about this` — and
-/// close on a reply that reports what happened. The whole resolution mapping
+/// green with the answers, red for a decline, a `Chat about this` or a
+/// question nobody answered in time — and close on a reply that reports what
+/// happened. The whole resolution mapping
 /// is the real one ([`crate::llm::ask::ask_user`]), so the offline demo and a
 /// live backend produce byte-identical cells.
 pub(in crate::stream) fn ask_questions_turn(stage: &AskStage<'_>) {
@@ -286,6 +287,10 @@ pub(in crate::stream) fn ask_questions_turn(stage: &AskStage<'_>) {
     });
     let answered = outcome.ok;
     let chatting = outcome.output.starts_with(crate::ask::CHAT_HEADLINE);
+    let timed_out = outcome.output.starts_with(crate::ask::TIMED_OUT_HEADLINE)
+        || outcome
+            .output
+            .starts_with(crate::ask::TIMED_OUT_PARTIAL_HEADLINE);
     match outcome.context {
         Some(result) if answered => {
             let _ = stage.tx.send(StreamEvent::ToolAnswered {
@@ -323,6 +328,13 @@ pub(in crate::stream) fn ask_questions_turn(stage: &AskStage<'_>) {
             "Sure — let's talk it through. I'm only the demo backend, but a real model \
              would now wait for your message and discuss the options before deciding \
              anything.\n\n",
+            handoff!()
+        )
+    } else if timed_out {
+        concat!(
+            "No answer came in time, so I'm carrying on without you — a real model \
+             would now decide on its own, take the safest option, and list what it \
+             assumed in its final reply.\n\n",
             handoff!()
         )
     } else {

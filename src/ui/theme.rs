@@ -1197,8 +1197,15 @@ pub(super) fn settings_value_off_color() -> Color {
     model_meta_color()
 }
 
-/// The values rendered in the dim "off" colour.
-pub(super) const SETTINGS_OFF_VALUES: &[&str] = &["false", "default", "0", "disabled"];
+/// The values rendered in the dim "off" colour — `never` being the **Ask
+/// timeout** row's (no clock runs, `docs/ask.md`).
+pub(super) const SETTINGS_OFF_VALUES: &[&str] = &[
+    "false",
+    "default",
+    "0",
+    "disabled",
+    crate::settings::ASK_TIMEOUT_NEVER_LABEL,
+];
 
 /// The key hint pinned under the description — the menu's whole grammar.
 pub(super) const SETTINGS_HINT: &str = "Type to search · Enter/Space to change · Esc to cancel";
@@ -2646,6 +2653,31 @@ pub(super) fn ask_answer_color() -> Color {
 /// `…` row — an expanded multi-kilobyte paste must not flood the page (the
 /// committed cell and the answers JSON still carry it whole).
 pub(super) const ASK_REVIEW_ANSWER_MAX_ROWS: usize = 4;
+
+/// The idle clock's countdown, right-aligned in the modal's closing rule
+/// while it runs (`docs/ask.md`): ` continues without you in 9:41 ─`. The
+/// rule is the one row a bottom-anchored page always paints, so a ticking
+/// label there never re-signs the flow and never costs the page a row.
+pub(super) const ASK_TIMEOUT_PREFIX: &str = "continues without you in ";
+
+/// The fewest rule cells left of the countdown — below this the closing rule
+/// stays plain rather than reading as a sentence with a stub of a frame.
+pub(super) const ASK_TIMEOUT_MIN_LEAD: usize = 2;
+
+/// Inside its last minute the countdown takes [`ask_timeout_warn_color`].
+pub(super) const ASK_TIMEOUT_WARN: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// The countdown's colour — the hint row's dim, so it reads as a fact about
+/// the modal rather than a demand on the user.
+pub(super) fn ask_timeout_color() -> Color {
+    permission_hint_text_color()
+}
+
+/// The countdown's last-minute colour — the caution amber the review page's
+/// warning already speaks, the cue that a user who is here should say so.
+pub(super) fn ask_timeout_warn_color() -> Color {
+    ask_warning_color()
+}
 
 /// The review page's `● {question}` bullet and the `→ {answer}` arrow.
 pub(super) const ASK_REVIEW_BULLET: &str = "● ";

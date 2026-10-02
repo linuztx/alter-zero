@@ -2,7 +2,8 @@
 
 Claude Code's `AskUserQuestion`: the model asks the user 1–4 multiple-choice
 questions and **blocks until they answer**, then reads the answers as the tool
-result. The UI is an inline modal — the permission prompt's sibling — with a
+result — or, when the user leaves it untouched for ten minutes, reads that
+they are away and keeps working (*The timeout*, below). The UI is an inline modal — the permission prompt's sibling — with a
 chip strip of question tabs, numbered options, multi-select checkboxes, an
 auto-added free-text "Other" row, an optional side-by-side preview panel with
 per-question notes, and (for multi-question calls) a closing review-and-submit
@@ -37,7 +38,8 @@ park until the user decides.
   - `AskQuestion`/`AskOption` parsed from the tool-call JSON
     (`parse_questions`, validating the schema's 1–4 questions of 2–4 options);
   - `AskAnswer`/`AskDecision` — what the user produced: `Submitted(answers)`,
-    `Declined`, or `Chat` (the "Chat about this" row);
+    `Declined`, or `Chat` (the "Chat about this" row) — or, with the user
+    away, `TimedOut { answers, after }` (*The timeout*, below);
   - the two texts of every resolution: the **cell display**
     (`answered_display` — `User answered Alter Zero's questions:`, the
     headline naming *this* agent through the single `alter_zero::APP_NAME`,
@@ -46,7 +48,8 @@ park until the user decides.
     `· Q (opt / opt / …)` rows) and the **model-facing result**
     (`answered_result` — the schema's `{"answers": {question: labels}}` JSON
     plus `annotations` carrying notes/previews; `declined_result`/
-    `chat_result` — stop-and-wait instructions);
+    `chat_result` — stop-and-wait instructions; `timed_out_display`/
+    `timed_out_result` — the keep-working one);
   - `AskGate` — the `Arc<Mutex<…>> + Condvar` sibling of `PermissionGate`:
     `next_id` → `resolve(id, AskDecision)` → `wait(id, cancelled)`.
 
@@ -148,11 +151,14 @@ park until the user decides.
   `StreamEvent::AskUser` opens the prompt; `Action::ResolveAsk` posts the
   decision on the gate; the loop bottom releases abandoned requests as
   `Declined` (the permission release's twin) and `/clear` clears the board.
+  The question's **idle clock** (`tui::ask`) runs beside it and posts
+  `TimedOut` when nobody touches a key for the timeout.
 
 - **The dummy demo** — a `Play::Asked` scenario (cue: "ask" + "question")
   drives the whole round trip offline: three questions — single-select,
   multi-select, and a previews+notes code-style pick — resolved through the
-  real gate, closing on the shared handoff sentence.
+  real gate, closing on the shared handoff sentence (a timed-out run closes
+  on carrying on without the user — `smoke.sh` Phase 128).
 
 ## Flow
 
@@ -161,9 +167,13 @@ model calls askuserquestion
   └─ execute closure → llm::ask::ask_user
        ├─ parse_questions ── error → ToolOutcome::error (model retries)
        ├─ tx.send(AskUser(request)) ─────────► loop: App::open_ask (modal up)
+       │                                      + the idle clock starts
        └─ gate.wait(id) … blocked …          user answers / declines / chats
             ▲                                 └─ Action::ResolveAsk
-            └──────── gate.resolve(id, decision) ┘
+            ├──────── gate.resolve(id, decision) ┘
+            │                                 …or no key for the timeout
+            │                                 └─ App::expire_asks (draw tick)
+            └──────── gate.resolve(id, TimedOut) ┘
        decision → ToolOutcome { output: display, context: result, ok }
   └─ run_agent → ToolAnswered / ToolRejected → the committed cell
        └─ result appended as the tool message → the model reads the answers
@@ -172,3 +182,83 @@ model calls askuserquestion
 Esc/`/clear`/quit reap the blocked thread through the turn's `CancelToken`
 (the gate's `wait` polls it); a request dropped without an answer is resolved
 `Declined` at the loop bottom so no thread ever parks forever.
+
+## The timeout — when nobody answers
+
+A question blocks the turn, and the user may have walked away. Before this,
+a question asked of an empty room parked the agent until the user came back,
+however long that took — an hour-long task left running over lunch spent the
+hour waiting on its first question. Now a question waits on an **idle** user
+for **ten minutes** (`ask::DEFAULT_ASK_TIMEOUT`) and then resolves
+*unanswered*: the tool returns, the model reads that the user is not
+available, and the turn keeps going.
+
+- **Idle, not elapsed.** The clock runs while any question is pending — the
+  open modal, or one queued behind a permission prompt — and **every key press
+  or paste starts it over**, wherever the key lands: an option, an entry
+  field, the Ctrl+O transcript opened over the modal. A user reading the
+  options, typing an answer or scrolling the conversation to decide never runs
+  it out; ten untouched minutes means the user is not there.
+- **What the model reads** (`ask::timed_out_result`), short because it rides
+  every later request:
+
+  > The user did not answer within 10m and is not available. Continue working
+  > without them: decide using your best judgment, preferring the safest, most
+  > reversible option, and state your assumptions in your final response. Do
+  > not ask again until the user sends a message.
+
+  It is the opposite of a decline's stop-and-wait: a decline is the user
+  *present* and saying no, a timeout is the user *absent*. "Safest, most
+  reversible" keeps an unattended agent off the destructive branch of the
+  question it could not get answered; "state your assumptions" is what the
+  user reads when they come back; and "do not ask again until the user sends
+  a message" keeps the next question from stalling another ten minutes on the
+  same empty room — scoped to the next message, so it never outlives the
+  user's return.
+- **Partial answers are kept.** A user who picked the first of three
+  questions and then left gave a real answer, so the timeout delivers it:
+  `TimedOut { answers, .. }` carries the same answered set a Submit would
+  (an entry field's unaccepted text is not an answer, and its paste pairs go
+  with it), and the result becomes *The user answered some questions, then
+  did not respond for 10m…* with the answers JSON last. A question still
+  queued — never shown — resolves with none.
+- **The cell** is the decline's shape, red: `User did not answer within 10m`
+  (`User did not finish answering within 10m` when something was answered)
+  over a `· Q → A` row per answer and a `· Q (A / B)` row per question left
+  open.
+- **The countdown.** While the clock runs, the modal's closing rule carries
+  it right-aligned — `── continues without you in 9:41 ─`, dim, amber inside
+  its last minute. The rule, because it is the one row a bottom-anchored page
+  always paints: a ticking label there never re-signs the flow
+  (`docs/view-flow.md`) and never costs the page a row. The count rounds up,
+  so a fresh clock reads `10:00` and the last second `0:01`, never `0:00`
+  over a question that is still open; a rule too narrow for it stays plain.
+- **Why ten minutes.** Long enough for a user who is present but busy — back
+  from another window, reading a preview, gone for a coffee — since any key
+  starts it over; past it the user is away, and every further minute is the
+  agent idling for nobody. Twenty doubles that idle time for the common case
+  without catching a meeting or a lunch either, and a provider's prompt cache
+  has usually expired by ten minutes anyway, so the longer wait buys nothing
+  back.
+- **Changing it.** The `/settings` **Ask timeout** row cycles `5m` / `10m` /
+  `20m` / `30m` / `1h` / `never`, per directory (`docs/settings.md`);
+  `ALTER_ZERO_ASK_TIMEOUT_SECS` seeds it for a run in seconds, `0` meaning
+  never — any value, which is how the smoke suite sits one out in eight
+  seconds (Phase 128).
+
+The clock lives at the boundary (`tui::ask`) because time does — the toast
+deadline's pattern. `Session::ask_clock` is armed when a question arrives
+(`StreamEvent::AskUser` → `restart_ask_clock`), started over by every key or
+paste (`note_user_activity`), kept in step at the loop bottom
+(`sync_ask_clock`: armed while `App::has_pending_asks`, dropped once none
+waits) and checked by the draw tick **before** the paint (`tick_ask_clock`).
+Past the deadline `App::expire_asks` closes the modal — handing the composer
+draft back — and drops every queued question, and each decision goes up on
+the gate exactly as an answer would, waking the parked tool thread into
+`ask_user`'s `TimedOut` arm; that same frame paints the modal closed, and a
+permission prompt queued behind it opens. Before the deadline the open
+modal's remaining time is injected (`App::set_ask_remaining`) and a frame is
+kept pending a second away — at the deadline itself under an overlay, where
+none of it is on screen — so the expiry needs no input at all to fire. A
+timeout that lands under the Ctrl+O transcript closes the modal underneath
+it, and the transcript follows the turn as it carries on.

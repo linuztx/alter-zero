@@ -128,6 +128,7 @@ opening the viewport, running the loop — and everything else lives here:
 | `agent.rs` | Subagent events, the roster's clocks, the linger sweep, the session view's arms (`docs/agent-tool.md`). |
 | `background.rs` | Background-shell events and `settle_bg_completions` (`docs/background.md`). |
 | `permission.rs` | `PermissionStore` — the gate, its file, this project's key — and the prompt's answers (`docs/permissions.md`). |
+| `ask.rs` | The `AskUserQuestion` idle clock: armed by a question, started over by every key or paste, resolving the question unanswered when it runs out (`docs/ask.md`). |
 | `view.rs` | Drawing: the draw tick, the overlays, the repaints, `live_region_height`, the injected clocks. |
 | `commit.rs` | Scrollback commits — the one place invariant 4 is enforced — and the toast. |
 | `models.rs` | `ModelSession`: the backend and every knob that selects it, plus the `/model`, Ctrl+T and probe arms (`docs/llm.md`). |
