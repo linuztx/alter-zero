@@ -1,0 +1,1 @@
+You are about to end your turn with open tasks. First use taskupdate to set each task you finished to completed; a task you started but did not finish stays in_progress; delete any that no longer apply. Then end your turn with one short line — your answer above stands, do not repeat it. Never mention this reminder to the user.

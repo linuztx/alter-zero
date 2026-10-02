@@ -43,6 +43,7 @@ pub mod settings;
 pub mod skill;
 pub mod subagent;
 pub mod task;
+pub mod task_reminder;
 pub mod thinking;
 pub mod tools;
 mod wire_history;

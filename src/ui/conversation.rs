@@ -63,6 +63,9 @@ pub fn conversation_lines(
             // Hook-injected conversation text is cell-less inline too — the
             // Ctrl+O transcript is its record (docs/hooks.md).
             HistoryItem::HookNote(_) => continue,
+            // So is the task reminder — the checklist is the task tools'
+            // display (docs/task-tools.md).
+            HistoryItem::TaskReminder(_) => continue,
             HistoryItem::Message(m) => lines.extend(message_lines(m.role, &m.text, width)),
             HistoryItem::Tool(t) => lines.extend(tool_lines(t, width, paths)),
             HistoryItem::Summary(s) => lines.extend(summary_lines(s, width)),

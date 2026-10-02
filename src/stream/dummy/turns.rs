@@ -571,8 +571,11 @@ const TASKS_SEGMENTS: [&str; 4] = [
     "Three tasks created, all pending. Now the dependencies: the core logic \
      waits on the setup, and the tests wait on the core logic — the blocked \
      rows name their blockers.",
-    "Time to work through it: setup first (the spinner is wearing that \
-     task's label now), then complete it and pick up the core logic — \
+    "A task reminder just landed in my context — the loop sends one when \
+     a model goes a few rounds without touching its list, naming every \
+     task and its status (**ctrl+o** shows it, **ctrl+d** shows what I \
+     read). Time to work through it: setup first (the spinner is wearing \
+     that task's label now), then complete it and pick up the core logic — \
      watch the tick turn green and the next row unblock.",
     concat!(
         "That's the whole lifecycle — create, link, work, complete — and not \
@@ -661,7 +664,19 @@ pub(in crate::stream) fn tasks_turn(cue: &Cue) -> Vec<StreamEvent> {
             (TASK_UPDATE_TOOL, r#"{"taskId":"2","status":"in_progress"}"#),
         ],
     ];
-    for (segment, calls) in TASKS_SEGMENTS.iter().zip(rounds.iter()) {
+    for (index, (segment, calls)) in TASKS_SEGMENTS.iter().zip(rounds.iter()).enumerate() {
+        // Ahead of the work round, the **task reminder** the live loop
+        // would fold in once the list had gone quiet (docs/task-tools.md):
+        // the real builder's text over this very store, so the Ctrl+O cell
+        // and the Ctrl+D replay are byte-for-byte the live path's.
+        if index == 2 {
+            events.push(StreamEvent::TaskReminder {
+                text: crate::llm::task_reminder::reminder_text(
+                    crate::llm::task_reminder::ReminderKind::Stale,
+                    &store,
+                ),
+            });
+        }
         events.extend(say(segment));
         for (wire, args) in *calls {
             // The model "generating" the call ticks the tally, like every

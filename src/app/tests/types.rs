@@ -90,6 +90,7 @@ fn set_clock_stamps_every_recorded_message_and_tool() {
             HistoryItem::Reasoning(r) => &r.timestamp,
             HistoryItem::TaskCall(t) => &t.timestamp,
             HistoryItem::HookNote(n) => &n.timestamp,
+            HistoryItem::TaskReminder(r) => &r.timestamp,
         };
         assert_eq!(ts, STAMP, "every recorded item carries the clock's stamp");
     }

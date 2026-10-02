@@ -1,0 +1,1 @@
+The task tools haven't been used recently. If this work has steps worth tracking, use taskcreate to add them and taskupdate to set a task in_progress when you start it and completed when it is done. Delete tasks that no longer apply. Only if relevant to the current work; otherwise ignore this. Never mention this reminder to the user.

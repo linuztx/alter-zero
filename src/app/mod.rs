@@ -119,7 +119,8 @@ pub use self::turn::{
 };
 pub(crate) use self::types::count_tokens;
 pub use self::types::{
-    DebugPage, HistoryItem, HookNote, Message, Role, SessionInfo, Toast, ToastKind, View,
+    DebugPage, HistoryItem, HookNote, Message, Role, SessionInfo, TaskReminder, Toast, ToastKind,
+    View,
 };
 
 /// All mutable conversation state: the editable input line, the reply currently

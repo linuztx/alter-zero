@@ -1691,8 +1691,41 @@ whole lifecycle so every scripted result string and snapshot is
 byte-for-byte the live executor's, ending with work outstanding so the
 resting panel and the cross-turn list show, while its `tasks-finished` twin
 (the same cue plus `finish`) walks a two-task list to all-✔ so the
-retirement is drivable too — `smoke.sh` Phases 69 and 70) in
-`docs/task-tools.md`; and the **lifecycle hooks** (Claude Code's
+retirement is drivable too — `smoke.sh` Phases 69 and 70; and the model
+is **kept aware of the list** — Claude Code's `task_reminder` attachment,
+ported and extended for the smaller models that create a plan and never
+touch it again (`llm::task_reminder`, pure, over `prompts/task_reminder.md`
++ `prompts/task_finish.md` and `TaskStore::reminder_listing`'s `#1.
+[pending] subject` rows): at every round boundary `run_agent` counts the
+request's own messages back to the last `taskcreate`/`taskupdate` and the
+last reminder (`round_counts` — one assistant message is one round;
+`tasklist`/`taskget` are reading, not managing) and past
+`TASK_REMINDER_ROUNDS` (10, the reference's) on both — `TASK_REMINDER_OPEN_ROUNDS`
+(5) while the list has open work — pushes the `<system-reminder>` naming
+every task and its status as a user message **after the background
+notices and before the user's queued messages**; and the **finish guard**
+(`finish_reminder`), when the model answers with plain text while the list
+has open work, the turn ran an acting call (`is_work_call`: bash, a file
+write or edit, typed input, an agent launch, an MCP tool — never a read, a
+session wait/kill/list, a skill load, a question to the user or a task op)
+and the round before the answer did not **close** a task
+(`last_round_closed_a_task`: a `taskupdate` setting `completed`/`deleted`,
+off the model's own arguments — a round that only created a task or set
+it `in_progress` and then stopped is the live shape the guard exists for),
+holds the answer for one more round in the `Stop` hook's continuation shape
+(the reply so far an assistant message, the reminder the next user
+message) — once per turn, never on a cancel. `run_agent` takes the registry
+as an `Option` (`None` for `/compact` and every subagent, which are never
+offered the tools). Both ride `StreamEvent::TaskReminder { text }` → the
+cell-less `HistoryItem::TaskReminder` on the `HookNote` path — invisible
+inline, a dim `● Task reminder` cell in Ctrl+O, replayed verbatim in place
+by `context_messages` (what keeps the counts honest across turns and the
+cached prefix the one the retained request kept), the rollout's
+`task_reminder` record — the loop's arm flushing the streamed segment first
+(invariant 4: the guard lands right after the model's answer) and charging
+the text to the `↑` tally; the `tasks` demo scripts one through the real
+text builder ahead of its work round, Phase 69 asserting the Ctrl+O cell
+and the Ctrl+D replay) in `docs/task-tools.md`; and the **lifecycle hooks** (Claude Code's
 `hooks.json`, ported whole — `docs/hooks.md`: the user's own commands wedged
 into the tool loop, `~/.alter-zero/hooks.json` mapping event → matcher groups
 → `{"type":"command"}` handlers, each fed its event as **`snake_case` JSON on

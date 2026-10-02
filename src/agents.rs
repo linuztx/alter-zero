@@ -348,6 +348,7 @@ impl AgentRun {
             StreamEvent::ToolBatch(_)
                 | StreamEvent::ToolStart { .. }
                 | StreamEvent::HookNote { .. }
+                | StreamEvent::TaskReminder { .. }
                 | StreamEvent::Steered { .. }
                 | StreamEvent::StreamDone
                 | StreamEvent::Error(_)
@@ -397,6 +398,20 @@ impl AgentRun {
                 self.history
                     .push(HistoryItem::HookNote(crate::app::HookNote {
                         label: label.clone(),
+                        text: text.clone(),
+                        timestamp: String::new(),
+                    }));
+                self.tokens += crate::app::count_tokens(text) as u64;
+            }
+            // A task reminder on an agent's own channel (docs/task-tools.md)
+            // — never sent today, since subagents are not offered the task
+            // tools, but folded like the hook note it is shaped after so
+            // the fold stays total and a future lead-only rule cannot drop
+            // a reply's withheld tail here.
+            StreamEvent::TaskReminder { text } => {
+                self.flush_segment();
+                self.history
+                    .push(HistoryItem::TaskReminder(crate::app::TaskReminder {
                         text: text.clone(),
                         timestamp: String::new(),
                     }));
@@ -2360,6 +2375,12 @@ mod tests {
                 "Steered",
                 StreamEvent::Steered {
                     text: "one more thing".to_string(),
+                },
+            ),
+            (
+                "TaskReminder",
+                StreamEvent::TaskReminder {
+                    text: "<system-reminder>\nopen tasks\n</system-reminder>".to_string(),
                 },
             ),
             ("ThinkingChunk", StreamEvent::ThinkingChunk("t".to_string())),

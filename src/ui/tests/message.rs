@@ -169,6 +169,40 @@ fn a_hook_note_is_invisible_inline_and_expanded_in_the_transcript() {
 }
 
 #[test]
+fn a_task_reminder_is_invisible_inline_and_expanded_in_the_transcript() {
+    // The checklist is the reminder's display (docs/task-tools.md): the
+    // inline repaint skips the item, the Ctrl+O transcript shows the dim
+    // `● Task reminder` heading over the wire text.
+    let reminder = HistoryItem::TaskReminder(crate::app::TaskReminder {
+        text:
+            "<system-reminder>\nYou are about to end your turn with open tasks.\n</system-reminder>"
+                .to_string(),
+        timestamp: String::new(),
+    });
+    let history = [msg(Role::User, "hi"), reminder.clone()];
+    let inline: String = conversation_lines(&history, 80, &PathDisplay::VERBATIM)
+        .iter()
+        .map(plain)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        !inline.contains("reminder") && !inline.contains("open tasks"),
+        "cell-less inline: {inline:?}"
+    );
+    let mut app = crate::app::App::new();
+    app.history.extend(history);
+    let transcript: String = transcript_lines(&app, 80)
+        .iter()
+        .map(plain)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        transcript.contains("● Task reminder") && transcript.contains("open tasks"),
+        "the transcript is the record: {transcript:?}"
+    );
+}
+
+#[test]
 fn conversation_lines_lays_out_a_turn_with_a_trailing_blank() {
     let history = [msg(Role::User, "hi"), msg(Role::Assistant, "hello")];
     let texts: Vec<String> = conversation_lines(&history, 80, &PathDisplay::VERBATIM)

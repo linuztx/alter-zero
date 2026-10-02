@@ -55,6 +55,38 @@ fn record_task_call_appends_the_record_and_installs_the_snapshot() {
 }
 
 #[test]
+fn record_task_reminder_appends_the_cell_less_item_and_charges_the_tally() {
+    // The loop's TaskReminder arm (docs/task-tools.md): the text the model
+    // read becomes a history item behind what streamed — no cell, no
+    // rewrite — and counts into the turn's ↑ tally like a notice.
+    let mut app = App::new();
+    app.record_user_message("build it");
+    app.begin_stream();
+    app.push_chunk("working");
+    let before = app.status.as_ref().map_or(0, |s| s.tokens);
+    let text = "<system-reminder>\nThe task tools haven't been used recently.\n</system-reminder>";
+    app.record_task_reminder(text);
+    let after = app.status.as_ref().map_or(0, |s| s.tokens);
+    assert!(
+        after > before,
+        "the reminder is uploaded next round: {before} → {after}"
+    );
+    assert_eq!(app.status.as_ref().map(|s| s.arrow), Some(TokenArrow::Up));
+    assert!(
+        matches!(
+            app.history.last(),
+            Some(HistoryItem::TaskReminder(r)) if r.text == text
+        ),
+        "{:?}",
+        app.history.last()
+    );
+    assert_eq!(
+        app.history_generation, 0,
+        "appended, never a rewrite — the transcript cache keeps its prefix"
+    );
+}
+
+#[test]
 fn record_task_call_charges_the_result_to_the_tally_like_a_tool() {
     let mut app = App::new();
     app.record_user_message("plan");

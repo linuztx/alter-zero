@@ -476,8 +476,9 @@ fn task_create_spec() -> Value {
          when the user asks for a todo list or gives several tasks, and to \
          capture follow-ups discovered mid-implementation. Skip it for a \
          single trivial task — just do that directly. Every task is created \
-         pending; use taskupdate to track progress and wire dependencies. \
-         Keep subjects short and actionable, in imperative form (\"Fix \
+         pending: mark it in_progress with taskupdate when you start it and \
+         completed when it is done, and wire dependencies there too. Keep \
+         subjects short and actionable, in imperative form (\"Fix \
          authentication bug\").",
         json!({
             "type": "object",

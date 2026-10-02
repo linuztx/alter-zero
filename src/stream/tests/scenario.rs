@@ -447,6 +447,39 @@ fn the_tasks_demo_drives_a_real_store_through_the_whole_lifecycle() {
         Some("Writing the core logic"),
         "the spinner override ends the demo on the active task's label"
     );
+    // The scripted task reminder (docs/task-tools.md): one, built by the
+    // real text builder over the store as it stood after the wiring round
+    // — three pending tasks — and ahead of the work round's calls.
+    let reminders: Vec<(usize, &String)> = events
+        .iter()
+        .enumerate()
+        .filter_map(|(i, e)| match e {
+            StreamEvent::TaskReminder { text } => Some((i, text)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(reminders.len(), 1, "{reminders:?}");
+    let (at, text) = reminders[0];
+    assert_eq!(
+        *text,
+        crate::llm::task_reminder::reminder_text(
+            crate::llm::task_reminder::ReminderKind::Stale,
+            &calls[4].3
+        ),
+        "the real builder's text over the wiring round's snapshot"
+    );
+    assert!(
+        text.contains("#1. [pending] Set up the project structure\n#2. [pending] Write the core logic\n#3. [pending] Add tests"),
+        "{text}"
+    );
+    let first_status_flip = events
+        .iter()
+        .position(|e| matches!(e, StreamEvent::TaskCall { args, .. } if args == "#1 → in_progress"))
+        .expect("the work round");
+    assert!(
+        at < first_status_flip,
+        "the reminder lands before the work round"
+    );
 }
 
 #[test]

@@ -608,6 +608,11 @@ pub(super) const TASK_IDLE_INDENT: &str = "  ";
 /// what is actionable — see `ui::tasks`).
 pub(super) const TASK_MAX_ROWS: usize = 10;
 
+/// The Ctrl+O heading over a task reminder the loop folded into a turn —
+/// the hook note's dim `● {label}` shape under a fixed label
+/// (`docs/task-tools.md`).
+pub(super) const TASK_REMINDER_LABEL: &str = "Task reminder";
+
 // ===== The spinner tip (docs/tips.md) =====
 
 /// The label opening the tip row, after the `⎿` gutter

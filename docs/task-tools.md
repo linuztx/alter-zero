@@ -191,6 +191,102 @@ In each case the boundary syncs the shared registry to the app's snapshot
 (`tui`'s `sync_task_registry`), so the model's next `tasklist` agrees with
 the strip.
 
+## Keeping the model aware: the task reminder
+
+A model that creates a plan and then never touches it again leaves the
+checklist lying about what is happening — every row `◻` pending while the
+files are being written, and still pending when the turn ends with the work
+done. Smaller models do exactly this (the report that drove the feature:
+gpt-oss:120b over Ollama Cloud, asked for a login page on port 3000, created
+its tasks, built the page, and updated nothing). Nothing in the loop told
+them otherwise: a task call's result is the last the model hears of the
+list, and every tool result after it is about files and commands.
+
+Claude Code answers this with a **`task_reminder` attachment**
+(`src/utils/attachments.ts`): after a tool round, when the transcript shows
+ten assistant turns since the last `TaskCreate`/`TaskUpdate` and ten since
+the last reminder, it appends a `<system-reminder>` — *The task tools
+haven't been used recently… set to in_progress when starting, completed when
+done… Make sure that you NEVER mention this reminder to the user* — followed
+by every task as `#1. [pending] subject`. The attachment stays in the
+transcript, which is what makes the counts honest across turns. We port
+that, and add the one thing a weaker model also needs.
+
+### The two triggers
+
+Both live in the pure `llm::task_reminder` module and both send the same
+shape — a template from `prompts/` and, when the list has rows, the
+`Existing tasks:` listing (`TaskStore::reminder_listing`, the reference's
+row format) — wrapped in the bare tags by `reminder::wrap` (no preamble: this
+is not the leading block).
+
+- **The stale reminder** (`prompts/task_reminder.md`,
+  `task_reminder::stale_reminder`) is the reference's nag. At the top of
+  every round, `run_agent` counts back over the request's own messages
+  (`round_counts`: every assistant message is one round; an assistant
+  message carrying a `taskcreate`/`taskupdate` ends the first count without
+  being counted, a user message carrying a reminder ends the second —
+  `tasklist`/`taskget` are reading, not managing). Past
+  `TASK_REMINDER_ROUNDS` (10, Claude Code's `TURNS_SINCE_WRITE`) on both
+  counts the reminder is pushed as a user message **after the background
+  notices and before the user's queued messages** — it is system
+  information, and the newest thing the user said stays last. While the
+  list has **open work** (`TaskStore::has_open_work`: a task pending or in
+  progress) the window is `TASK_REMINDER_OPEN_ROUNDS` (5) instead: a task
+  left pending while its work happens is the symptom, so the list comes back
+  sooner. A model that marks tasks as it goes never meets either — each
+  update restarts the count.
+- **The finish guard** (`prompts/task_finish.md`,
+  `task_reminder::finish_reminder`) is ours. When the model answers with
+  plain text (`RoundOutcome::Complete`) while the list has open work, the
+  turn ran at least one **acting** call (`is_work_call`: a command, a file
+  write or edit, typed input, a launched agent, an MCP tool — never a read,
+  a session wait/kill/list, a skill load, a question to the user or a task
+  op) and the round before the answer did not **close** a task
+  (`last_round_closed_a_task`: a `taskupdate` setting `completed` or
+  `deleted`, read off the model's own arguments),
+  the loop does not end the turn: the reply so far becomes an assistant
+  message (the `Stop` hook's continuation shape), the reminder the next user
+  message, and one more round runs — *set each task you finished to
+  completed … then end your turn with one short line; your answer above
+  stands*. **Once per turn**: a model that reads the list and still stops
+  with it open is not asked twice, and a plain answer to a question (no
+  acting call) is never held. Closing rather than merely touching is the
+  rule because of the live shape a "no task call since the work" rule let
+  through: gpt-oss:120b built the page, then — reminded — created one
+  task, marked it `in_progress` and answered, leaving the list saying
+  running with the server up; a round that only opens work is no
+  reconciliation, while a round that completed or deleted something was
+  the model choosing what to leave open. The user sees the ticks land
+  under the spinner and a one-line close instead of a plan that stays
+  pending forever.
+
+Where the reminder cannot apply it does not exist: `run_agent` takes the
+task registry as an `Option`, `None` for the `/compact` backend and every
+subagent (they are never offered the tools), so the nag can only name tools
+the request carries.
+
+### What the reminder is on the record
+
+It is conversation the model read, so it is kept the way a hook's injected
+text is (`docs/hooks.md`): `StreamEvent::TaskReminder { text }` → the
+cell-less `HistoryItem::TaskReminder`. Inline it renders **nothing** (the
+checklist is the display, and Claude Code hides these too); the loop's arm
+finalises the streamed segment ahead of it (invariant 4 — the finish guard
+lands right after the model's answer, which must commit as its own bullet
+before the continuation streams a new one), settles held background
+completions at that safe boundary, charges the text to the `↑` tally, and
+records the item. The **Ctrl+O transcript** shows it as a dim `● Task
+reminder` over the wire text; `context::context_messages` replays it
+**verbatim in place** as the user-role message the model read, so Ctrl+D
+shows exactly what was sent, every later turn's counts see it, and the
+prompt-cache prefix the retained request kept is the one the record derives
+(`docs/prompt-caching.md`); the rollout's `task_reminder` record brings it
+back on a `/resume` (old builds skip the unknown type, the
+forward-compatibility contract). The offline `tasks` demo scripts one
+between its wiring round and its work round, so `smoke.sh` Phase 69 can
+prove the transcript and the derived context carry it with no network.
+
 ## The offline demo
 
 The dummy plays a `todo`/`task` prompt as a scripted lifecycle
@@ -199,7 +295,11 @@ The dummy plays a `todo`/`task` prompt as a scripted lifecycle
 dependency wiring, `in_progress` → `completed` — so the offline checklist,
 spinner override, and Ctrl+O cells are byte-for-byte what the live executor
 produces, and it closes on the shared `handoff!()` sentence like every other
-scenario. It ends with **work outstanding** (#1 done, #2 running, #3 pending),
+scenario. Between its wiring round and its work round it scripts one **task
+reminder** through the real text builder (`task_reminder::reminder_text`
+over the store as it stands), so the Ctrl+O cell and the Ctrl+D replay are
+the live path's byte for byte. It ends with **work outstanding** (#1 done,
+#2 running, #3 pending),
 which is what makes the resting block and the cross-turn list drivable
 offline — and `smoke.sh` Phase 69 asserts exactly that.
 
@@ -214,3 +314,4 @@ demonstrate one of them.
 [`TaskRegistry`]: ../src/tasks.rs
 [`crate::tasks`]: ../src/tasks.rs
 [`TASK_MAX_ROWS`]: ../src/ui/theme.rs
+[`task_reminder`]: ../src/llm/task_reminder.rs

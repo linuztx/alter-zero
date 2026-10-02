@@ -14,6 +14,24 @@ release heading when a version is cut.
 
 ### Added
 
+- **The model is kept aware of its task list.** A model that created tasks
+  and then never marked one in progress or done left the checklist lying
+  — every row pending while the files were written, and still pending when
+  the turn ended with the work finished (seen with gpt-oss:120b over Ollama
+  Cloud). Two reminders now bring the list back to it, Claude Code's
+  `task_reminder` ported and extended: at a round boundary, once the model
+  has gone ten rounds without a `taskcreate`/`taskupdate` (five while the
+  list has open work), a short `<system-reminder>` names every task and its
+  status; and when the model is about to end its turn with open tasks it
+  worked on without completing or deleting one in its last round, the same
+  list holds the answer for one more round so the tasks are reconciled
+  first — once per turn, never for a question answered without doing work. The reminder renders nothing
+  inline (the checklist is the display), shows in the Ctrl+O transcript as
+  a dim `● Task reminder` cell, replays in the derived context exactly as
+  the model read it, and survives a `/resume`. Subagents and the `/compact`
+  turn, which are never offered the task tools, never see one
+  (`docs/task-tools.md`).
+
 - The Kali container includes Node.js and npm by default and declares TCP
   ports 22, 80, 3000, 5000, 8000 and 9000–9009 alongside 8080/8888. Host
   publishing stays limited to loopback ports 8080/8888 unless configured with

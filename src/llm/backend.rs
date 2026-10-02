@@ -921,6 +921,10 @@ impl ReplySource for LlmBackend {
                     pending.extend(steer.take().into_iter().map(agent::PendingInput::User));
                     pending
                 },
+                // The task reminder's list (docs/task-tools.md): the same
+                // registry the task calls run against, so the stale nag and
+                // the finish guard read the state those calls left.
+                task_list.as_ref(),
                 |calls| {
                     // A subagent launch is an action of this turn too — the
                     // classifier should see `Agent(explore the repo)` beside
@@ -1613,7 +1617,8 @@ fn spawn_subagent_run(
                     // this — but that is a property of the current paths, not
                     // of the rule, and the rule is what belongs here.
                     | StreamEvent::Steered { .. }
-                    | StreamEvent::HookNote { .. } => final_text.clear(),
+                    | StreamEvent::HookNote { .. }
+                    | StreamEvent::TaskReminder { .. } => final_text.clear(),
                     StreamEvent::StreamDone => outcome = Some(Ok(())),
                     StreamEvent::Error(e) => outcome = Some(Err(e.clone())),
                     _ => {}
@@ -1715,6 +1720,9 @@ fn spawn_subagent_run(
                     .map(agent::PendingInput::User)
                     .collect()
             },
+            // No task list: subagents are never offered the task tools, so
+            // nothing may remind them of one (docs/task-tools.md).
+            None,
             // Subagents cannot nest agents (the tool isn't offered; a
             // hallucinated call is declined recoverably).
             |calls| {

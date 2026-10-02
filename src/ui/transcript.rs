@@ -6,7 +6,9 @@
 
 use super::agent::{AgentCellView, agent_cell_lines, agent_group_full_lines};
 use super::conversation::is_shell_header;
-use super::message::{compaction_full_lines, hook_note_lines, user_stamp_lines};
+use super::message::{
+    compaction_full_lines, hook_note_lines, task_reminder_lines, user_stamp_lines,
+};
 use super::reasoning::{reasoning_full_lines, reasoning_live_full_lines};
 use super::theme::*;
 use super::tool::tool_full_lines;
@@ -104,6 +106,9 @@ fn transcript_item_lines(
         // Hook-injected conversation text (docs/hooks.md): invisible inline,
         // the transcript is its record.
         HistoryItem::HookNote(n) => lines.extend(hook_note_lines(n, width)),
+        // The task reminder the loop folded into a turn: invisible inline,
+        // the transcript is its record too (docs/task-tools.md).
+        HistoryItem::TaskReminder(r) => lines.extend(task_reminder_lines(r, width)),
     }
     // The transcript draws the same pictures the inline view does — the
     // reserved rows are ordinary lines, so the overlay's paint stamps them

@@ -55,11 +55,38 @@ for _ in $(seq 1 300); do # up to ~30s
 	fi
 	sleep 0.1
 done
+# An overlay is an alternate-screen pager with no scrollback of its own, so
+# a page-sized window is all a capture sees: walk it from the top, one
+# PageDown at a time, and keep every page (the separator's percentage says
+# when the last one is reached).
+overlay_pages() { # SESSION → every page of the open overlay, top to bottom
+	local sess="$1" pages="" page="" n
+	tmux send-keys -t "$sess" Home
+	sleep 0.3
+	for n in $(seq 1 30); do
+		page="$(tmux capture-pane -t "$sess" -p)"
+		pages="$pages
+$page"
+		if printf '%s' "$page" | grep -qF "100% ─"; then
+			break
+		fi
+		tmux send-keys -t "$sess" PageDown
+		sleep 0.3
+	done
+	printf '%s' "$pages"
+}
 # The Ctrl+O transcript keeps the record the conversation hides.
 tmux send-keys -t "${S}_tasks" C-o
 sleep 0.5
-tasks_overlay="$(tmux capture-pane -t "${S}_tasks" -p -S -120)"
+tasks_overlay="$(overlay_pages "${S}_tasks")"
 tmux send-keys -t "${S}_tasks" C-o
+sleep 0.3
+# …and the Ctrl+D derived context carries the task reminder the demo
+# scripts (docs/task-tools.md) exactly as the model read it.
+tmux send-keys -t "${S}_tasks" C-d
+sleep 0.5
+tasks_context="$(overlay_pages "${S}_tasks")"
+tmux send-keys -t "${S}_tasks" C-d
 sleep 0.3
 echo "==== Phase 69: captured pane (mid-turn checklist) ===="
 printf '%s\n' "$tasks_checklist" | grep -v "^$" | tail -12
@@ -98,3 +125,14 @@ else
 fi
 expect_has "$tasks_overlay" -F "TaskUpdate(#1 → completed)" "the Ctrl+O transcript is missing the task-call record"
 expect_has "$tasks_overlay" -F "Updated task #1 status" "the Ctrl+O record is missing the executor's result text"
+# The task reminder (docs/task-tools.md): cell-less inline, a dim
+# `● Task reminder` cell in the transcript, and the verbatim
+# `<system-reminder>` in the derived context — never in the conversation.
+expect_has "$tasks_overlay" -F "● Task reminder" "the Ctrl+O transcript is missing the task reminder cell"
+expect_has "$tasks_overlay" -F "#1. [pending] Set up the project structure" "the Ctrl+O reminder cell is missing the task listing"
+expect_has "$tasks_context" -F "The task tools haven't been used recently" "the Ctrl+D context is missing the task reminder's text"
+expect_has "$tasks_context" -F "Existing tasks:" "the Ctrl+D context is missing the reminder's task listing"
+if [ -n "$tasks_done" ]; then
+	expect_lacks "$tasks_done" -F "Task reminder" "the task reminder leaked into the conversation as a cell"
+	expect_lacks "$tasks_done" -F "haven't been used recently" "the task reminder's text leaked into the conversation"
+fi

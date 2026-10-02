@@ -125,6 +125,11 @@ fn main() {
             StreamEvent::PromptBlocked { reason } => {
                 println!("\n\x1b[90m[prompt blocked by hook: {reason}]\x1b[0m");
             }
+            // The task reminder the loop folded in (docs/task-tools.md):
+            // logged like a hook note — what the model read, dim.
+            StreamEvent::TaskReminder { text } => {
+                println!("\n\x1b[90m[task reminder] {text}\x1b[0m");
+            }
             // …and no ask gate, so the ask tool is not offered (docs/ask.md).
             StreamEvent::AskUser(request) => {
                 println!(

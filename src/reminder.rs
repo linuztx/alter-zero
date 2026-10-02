@@ -54,6 +54,19 @@ pub fn reminder_message(sections: &[&str]) -> String {
     format!("{REMINDER_OPEN}\n{REMINDER_PREAMBLE}\n\n{body}\n{REMINDER_CLOSE}")
 }
 
+/// `text` between the tags and nothing else — the shape of a reminder
+/// folded into a running turn (the task reminder, `docs/task-tools.md`),
+/// which is not the leading block and takes no preamble: Claude Code's
+/// `wrapInSystemReminder`. Trimmed; blank is no block at all.
+#[must_use]
+pub fn wrap(text: &str) -> String {
+    let body = text.trim();
+    if body.is_empty() {
+        return String::new();
+    }
+    format!("{REMINDER_OPEN}\n{body}\n{REMINDER_CLOSE}")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -101,5 +114,20 @@ mod tests {
             REMINDER_PREAMBLE,
             "Use the following contexts and instructions:"
         );
+    }
+    #[test]
+    fn wrap_puts_the_tags_around_the_text_and_nothing_else() {
+        // A mid-turn reminder (docs/task-tools.md) is not the leading
+        // block: no preamble, just the tags around the one text.
+        assert_eq!(
+            wrap("The task tools haven't been used recently."),
+            "<system-reminder>\nThe task tools haven't been used recently.\n</system-reminder>"
+        );
+        assert_eq!(
+            wrap("  a\n"),
+            "<system-reminder>\na\n</system-reminder>",
+            "trimmed"
+        );
+        assert_eq!(wrap("   "), "", "nothing to say is no block at all");
     }
 }

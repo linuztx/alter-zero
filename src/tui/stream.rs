@@ -285,6 +285,22 @@ impl Session<'_> {
                 }
                 false
             }
+            StreamEvent::TaskReminder { text } => {
+                // The agent loop folded a task reminder into the running
+                // turn (docs/task-tools.md): finalise the assistant run
+                // before it — the finish guard lands right after the
+                // model's answer, which must commit as its own bullet
+                // before the continuation streams a fresh one (invariant
+                // 4) — settle held background completions at that safe
+                // boundary, and record the cell-less item the transcript
+                // shows and the derived context replays. Never a compact
+                // turn: that backend carries no task registry.
+                self.flush_segment(committing, width);
+                self.render.reset();
+                self.settle_bg_completions();
+                self.app.record_task_reminder(&text);
+                false
+            }
             StreamEvent::Steered { text } => {
                 // The running turn reached a round boundary and took a message
                 // the user queued into it (docs/queue.md). The model has it

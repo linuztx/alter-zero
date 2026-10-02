@@ -142,13 +142,30 @@ pub(super) fn compaction_full_lines(
 /// skips the item entirely (Claude Code hides these from its normal view
 /// too), so this renders nowhere else.
 pub(super) fn hook_note_lines(note: &crate::app::HookNote, width: u16) -> Vec<Line<'static>> {
+    note_lines(&note.label, &note.text, width)
+}
+
+/// The task reminder's transcript cell (`docs/task-tools.md`): the hook
+/// note's shape under the fixed [`TASK_REMINDER_LABEL`] heading — what the
+/// model read at the round boundary, readable in place. Transcript-only,
+/// like the hook note: inline the checklist is the display.
+pub(super) fn task_reminder_lines(
+    reminder: &crate::app::TaskReminder,
+    width: u16,
+) -> Vec<Line<'static>> {
+    note_lines(TASK_REMINDER_LABEL, &reminder.text, width)
+}
+
+/// A dim `● {label}` heading over `text`, wrapped + indented — the one
+/// shape every cell-less conversation entry takes in the transcript.
+fn note_lines(label: &str, text: &str, width: u16) -> Vec<Line<'static>> {
     let dim = Style::new().fg(tool_dim_color());
     let mut lines = vec![Line::from(Span::styled(
-        format!("{SYSTEM_BULLET}{}", note.label),
+        format!("{SYSTEM_BULLET}{label}"),
         dim,
     ))];
     let body_width = width.saturating_sub(BULLET_WIDTH).max(1);
-    for row in wrap_text(&note.text, body_width) {
+    for row in wrap_text(text, body_width) {
         lines.push(Line::from(vec![
             Span::raw(INDENT.to_string()),
             Span::styled(row, dim),

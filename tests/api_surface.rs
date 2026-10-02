@@ -284,6 +284,7 @@ use alter_zero::reminder::{
     REMINDER_PREAMBLE,
     join_sections,
     reminder_message,
+    wrap,
 };
 
 // --- `project_doc` — the AGENTS.md instructions section (docs/project-doc.md) ---

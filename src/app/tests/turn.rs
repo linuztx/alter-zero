@@ -1546,6 +1546,7 @@ fn a_completion_pending_at_turn_end_records_above_the_summary() {
             HistoryItem::Reasoning(_) => "reasoning",
             HistoryItem::TaskCall(_) => "task_call",
             HistoryItem::HookNote(_) => "hook_note",
+            HistoryItem::TaskReminder(_) => "task_reminder",
         })
         .collect();
     assert_eq!(

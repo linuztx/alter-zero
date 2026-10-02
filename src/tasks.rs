@@ -265,6 +265,30 @@ impl TaskStore {
         !self.tasks.is_empty() && self.tasks.iter().all(|t| t.status == TaskStatus::Completed)
     }
 
+    /// Does the list hold **open work** — a task still pending or in
+    /// progress? What the task reminder gates on (`docs/task-tools.md`): a
+    /// list like that is one the model owes a status for, while an empty
+    /// list and a finished plan owe nothing. The complement of
+    /// [`all_completed`](Self::all_completed) over a non-empty list.
+    #[must_use]
+    pub fn has_open_work(&self) -> bool {
+        self.tasks.iter().any(|t| t.status != TaskStatus::Completed)
+    }
+
+    /// The list as the task reminder shows it to the model: one
+    /// `#1. [pending] subject` row per task in id order — Claude Code's
+    /// `#${id}. [${status}] ${subject}` — and nothing else (the reminder
+    /// names what is open, not why; `tasklist` has the blockers). Empty
+    /// when there are no tasks, so the heading over it can be left out.
+    #[must_use]
+    pub fn reminder_listing(&self) -> String {
+        self.tasks
+            .iter()
+            .map(|task| format!("#{}. [{}] {}", task.id, task.status.wire(), task.subject))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
     /// **Retire a finished plan**: once every task is completed the list has
     /// served its purpose, so it is dropped whole at the next turn boundary —
     /// the checklist stops showing *and stays gone*, and the plan the model
@@ -1140,5 +1164,45 @@ mod tests {
         assert_eq!(clone.snapshot().tasks().len(), 1);
         clone.replace(TaskStore::new());
         assert!(registry.snapshot().is_empty());
+    }
+    #[test]
+    fn has_open_work_means_some_task_is_not_completed() {
+        // The reminder's gate (docs/task-tools.md): a list with a pending or
+        // in-progress task is work the model owes a status for; an empty
+        // list and a fully ticked one are not.
+        let mut store = TaskStore::new();
+        assert!(!store.has_open_work(), "no list, no open work");
+        create(&mut store, "a");
+        assert!(store.has_open_work(), "a pending task is open work");
+        store
+            .run_update(r#"{"taskId":"1","status":"in_progress"}"#)
+            .unwrap();
+        assert!(store.has_open_work(), "a running task is open work");
+        store
+            .run_update(r#"{"taskId":"1","status":"completed"}"#)
+            .unwrap();
+        assert!(!store.has_open_work(), "a finished plan owes nothing");
+    }
+
+    #[test]
+    fn reminder_listing_is_one_numbered_status_line_per_task() {
+        // Claude Code's `#${id}. [${status}] ${subject}` rows, id order, no
+        // dependency clause — the reminder names what is open, not why.
+        let mut store = store_of_three();
+        assert_eq!(
+            store.reminder_listing(),
+            "#1. [pending] a\n#2. [pending] b\n#3. [pending] c"
+        );
+        store
+            .run_update(r#"{"taskId":"1","status":"completed"}"#)
+            .unwrap();
+        store
+            .run_update(r#"{"taskId":"2","status":"in_progress","addBlockedBy":["1"]}"#)
+            .unwrap();
+        assert_eq!(
+            store.reminder_listing(),
+            "#1. [completed] a\n#2. [in_progress] b\n#3. [pending] c"
+        );
+        assert_eq!(TaskStore::new().reminder_listing(), "", "no tasks, no rows");
     }
 }

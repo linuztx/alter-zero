@@ -95,6 +95,17 @@ pub enum HistoryItem {
     /// under its `label`, and [`crate::context::context_messages`] replays
     /// `text` verbatim as the user-role message the model actually read.
     HookNote(HookNote),
+    /// The task reminder the agent loop folded into a running turn
+    /// (`docs/task-tools.md`): the `<system-reminder>` listing the tasks
+    /// that reached the model as a user-role message when it had gone a
+    /// while without updating the list, or was about to finish with open
+    /// tasks. **Cell-less inline** like [`HistoryItem::HookNote`] — the live
+    /// checklist is the task tools' display — the Ctrl+O transcript shows
+    /// it under a dim `● Task reminder` heading, and
+    /// [`crate::context::context_messages`] replays `text` verbatim in
+    /// place, so later turns' reminder counts and the cached prefix both
+    /// see exactly what was sent.
+    TaskReminder(TaskReminder),
 }
 
 /// One hook-injected conversation entry — see
@@ -106,6 +117,17 @@ pub struct HookNote {
     /// Verbatim what the model reads as a user-role message — formatted by
     /// the producer (`Stop hook feedback:\n…`, the system-reminder-wrapped
     /// additional context), so the replay is exactly the wire text.
+    pub text: String,
+    /// Wall-clock stamp (recorded like every item's; never displayed).
+    pub timestamp: String,
+}
+
+/// One task reminder the model read mid-turn — see
+/// [`HistoryItem::TaskReminder`] and `docs/task-tools.md`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TaskReminder {
+    /// Verbatim the wire text: the `<system-reminder>`-wrapped template over
+    /// the `Existing tasks:` rows (`llm::task_reminder::reminder_text`).
     pub text: String,
     /// Wall-clock stamp (recorded like every item's; never displayed).
     pub timestamp: String,

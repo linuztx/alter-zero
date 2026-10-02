@@ -407,6 +407,7 @@ pub fn derives_conversation(history: &[HistoryItem]) -> bool {
         | HistoryItem::Background(_)
         | HistoryItem::AgentNotice(_)
         | HistoryItem::HookNote(_)
+        | HistoryItem::TaskReminder(_)
         // The compacted shape always pushes the summary bridge, even over an
         // empty summary ("(no summary available)").
         | HistoryItem::Compaction(_) => true,
@@ -790,6 +791,14 @@ fn derive_item(out: &mut Vec<ContextMessage>, history: &[HistoryItem], position:
         HistoryItem::HookNote(note) => {
             push_text(out, ContextRole::User, note.text.clone(), vec![]);
         }
+        // The task reminder (docs/task-tools.md): the same rule — the model
+        // read it as a user message at a round boundary, and the replay
+        // keeping it in place is what lets the next turn's reminder scan
+        // count rounds since it, and what keeps the cached prefix the one
+        // the retained request carried.
+        HistoryItem::TaskReminder(reminder) => {
+            push_text(out, ContextRole::User, reminder.text.clone(), vec![]);
+        }
         HistoryItem::Message(message) => match message.role {
             // A pasted picture's placeholder names the file it was saved
             // at *here*, not in the request builder: the derived context
@@ -1006,6 +1015,42 @@ mod tests {
             out[4].tool_calls.len(),
             1,
             "…and the next round's call opened a fresh one"
+        );
+    }
+
+    #[test]
+    fn a_task_reminder_replays_verbatim_as_a_user_message() {
+        // The loop folded it into the running turn as a user message
+        // (docs/task-tools.md); every later turn replays exactly that, in
+        // place, so the reminder scan's counts and the cached prefix both
+        // see what the model read.
+        let history = vec![
+            message(Role::User, "build it"),
+            message(Role::Assistant, "working"),
+            HistoryItem::TaskReminder(crate::app::TaskReminder {
+                text: "<system-reminder>\nYou are about to end your turn with open tasks.\n</system-reminder>".into(),
+                timestamp: String::new(),
+            }),
+            message(Role::Assistant, "all done"),
+        ];
+        let context = context_messages(&history);
+        let roles_texts: Vec<(ContextRole, &str)> =
+            context.iter().map(|m| (m.role, m.text.as_str())).collect();
+        assert_eq!(
+            roles_texts,
+            vec![
+                (ContextRole::User, "build it"),
+                (ContextRole::Assistant, "working"),
+                (
+                    ContextRole::User,
+                    "<system-reminder>\nYou are about to end your turn with open tasks.\n</system-reminder>"
+                ),
+                (ContextRole::Assistant, "all done"),
+            ]
+        );
+        assert!(
+            derives_conversation(&history[2..3]),
+            "a reminder is conversation"
         );
     }
 

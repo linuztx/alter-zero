@@ -129,6 +129,12 @@ enum ItemRecord {
     /// mid-turn. Old builds skip the unknown record type (the
     /// forward-compatibility contract).
     HookNote(HookNoteRecord),
+    /// A task reminder the loop folded into a turn (`docs/task-tools.md`)
+    /// — persists so a `/resume`'s derived context still carries what the
+    /// model read, and the reminder's own round counts stay honest. Old
+    /// builds skip the unknown record type (the forward-compatibility
+    /// contract).
+    TaskReminder(TaskReminderRecord),
     /// The session's own model selection (`docs/session-model.md`) — not a
     /// [`HistoryItem`] but recorded in the same file, so a resume brings the
     /// conversation back on the model it ran on. The payload is the
@@ -143,6 +149,15 @@ enum ItemRecord {
 #[derive(Serialize, Deserialize)]
 struct HookNoteRecord {
     label: String,
+    text: String,
+    #[serde(default)]
+    timestamp: String,
+}
+
+/// A [`crate::app::TaskReminder`] on disk (`docs/task-tools.md`): the
+/// verbatim wire text.
+#[derive(Serialize, Deserialize)]
+struct TaskReminderRecord {
     text: String,
     #[serde(default)]
     timestamp: String,
@@ -588,6 +603,10 @@ pub fn item_line(item: &HistoryItem, stamp: &str) -> String {
             text: note.text.clone(),
             timestamp: note.timestamp.clone(),
         }),
+        HistoryItem::TaskReminder(reminder) => ItemRecord::TaskReminder(TaskReminderRecord {
+            text: reminder.text.clone(),
+            timestamp: reminder.timestamp.clone(),
+        }),
         HistoryItem::Compaction(compaction) => ItemRecord::Compaction(CompactionRecord {
             summary: compaction.summary.clone(),
             timestamp: compaction.timestamp.clone(),
@@ -821,6 +840,12 @@ pub fn parse_session(text: &str) -> Option<(SessionMeta, Vec<HistoryItem>)> {
                     label: note.label,
                     text: note.text,
                     timestamp: note.timestamp,
+                }));
+            }
+            ItemRecord::TaskReminder(reminder) => {
+                items.push(HistoryItem::TaskReminder(crate::app::TaskReminder {
+                    text: reminder.text,
+                    timestamp: reminder.timestamp,
                 }));
             }
             ItemRecord::Compaction(compaction) => {
@@ -1067,6 +1092,30 @@ mod tests {
         let value: serde_json::Value = serde_json::from_str(&line).expect("valid JSON");
         assert_eq!(value["type"], "hook_note");
         assert_eq!(value["payload"]["label"], "Stop hook");
+        let (_, parsed) = parse_session(&file_of(std::slice::from_ref(&item))).expect("parses");
+        assert_eq!(parsed, vec![item]);
+    }
+
+    #[test]
+    fn a_task_reminder_round_trips() {
+        // The reminder the loop folded into a turn persists so a /resume's
+        // derived context still carries it and the counts stay honest
+        // (docs/task-tools.md).
+        let item = HistoryItem::TaskReminder(crate::app::TaskReminder {
+            text:
+                "<system-reminder>\nThe task tools haven't been used recently.\n</system-reminder>"
+                    .into(),
+            timestamp: "03:20 PM".into(),
+        });
+        let line = item_line(&item, "t");
+        let value: serde_json::Value = serde_json::from_str(&line).expect("valid JSON");
+        assert_eq!(value["type"], "task_reminder");
+        assert!(
+            value["payload"]["text"]
+                .as_str()
+                .unwrap()
+                .starts_with("<system-reminder>")
+        );
         let (_, parsed) = parse_session(&file_of(std::slice::from_ref(&item))).expect("parses");
         assert_eq!(parsed, vec![item]);
     }

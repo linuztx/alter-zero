@@ -294,6 +294,21 @@ pub enum StreamEvent {
     /// later turn, and a `/resume` restores it. `label` is the short
     /// transcript heading (`Stop hook`, `UserPromptSubmit hook`).
     HookNote { label: String, text: String },
+    /// The **task reminder** the agent loop folded into the running turn
+    /// (`docs/task-tools.md`, `llm::task_reminder`): the `<system-reminder>`
+    /// naming every task and its status, sent when the model has gone a
+    /// while without a `taskcreate`/`taskupdate` or is about to end its
+    /// turn with open tasks it worked on but never updated. `text` is
+    /// verbatim what the model now reads as a user-role message. The loop
+    /// finalises the assistant run before it (invariant 4 — the finish
+    /// guard lands right after the model's answer, which must commit as
+    /// its own bullet before the continuation streams a new one) and
+    /// records the cell-less [`crate::app::HistoryItem::TaskReminder`]: the
+    /// Ctrl+O transcript shows it, the derived context replays it in place
+    /// on every later turn — which is what keeps the reminder's own counts
+    /// honest across turns — and a `/resume` restores it. Never on a
+    /// subagent's channel: subagents are not offered the task tools.
+    TaskReminder { text: String },
     /// A message the user queued **while this turn was already running** has
     /// been folded into its context, at the round boundary the agent loop
     /// reached (right after the previous round's tool results) — codex's

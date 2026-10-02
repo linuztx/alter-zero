@@ -128,6 +128,28 @@ impl App {
         self.tasks = tasks;
     }
 
+    /// Record a task reminder the agent loop folded into the running turn
+    /// (the boundary's handler for
+    /// [`crate::stream::StreamEvent::TaskReminder`], `docs/task-tools.md`):
+    /// append the cell-less [`HistoryItem::TaskReminder`] the Ctrl+O
+    /// transcript shows and the derived context replays verbatim, and
+    /// charge the text to the token tally like a notice (`↑` — it is
+    /// uploaded with the next round). The caller flushes the streaming
+    /// segment first (the `HookNote` dance), so the item slots between the
+    /// finalised text and whatever streams next. Appended, never a rewrite
+    /// — no `history_generation` bump.
+    pub fn record_task_reminder(&mut self, text: &str) {
+        if let Some(turn) = self.status.as_mut() {
+            turn.tokens += count_tokens(text);
+            turn.arrow = TokenArrow::Up;
+        }
+        let timestamp = self.now_stamp();
+        self.history.push(HistoryItem::TaskReminder(TaskReminder {
+            text: text.to_string(),
+            timestamp,
+        }));
+    }
+
     /// **Retire a finished plan** at the turn boundary: once every task is
     /// completed the list has done its job, so it is dropped whole — the
     /// checklist stops showing *and stays gone*, and the next plan the model
