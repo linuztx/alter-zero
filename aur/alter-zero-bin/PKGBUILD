@@ -1,0 +1,28 @@
+# Maintainer: linuztx <linuztx at gmail dot com>
+
+pkgname=alter-zero-bin
+_pkgname=alter-zero
+pkgver=0.10.0
+pkgrel=1
+pkgdesc='Agent harness for coding, cybersecurity, and automation (prebuilt binary)'
+arch=('x86_64' 'aarch64')
+url='https://github.com/linuztx/alter-zero'
+license=('Apache-2.0')
+depends=('glibc' 'libgcc')
+optdepends=('git: filesystem checkpoints and the /diff review')
+provides=("$_pkgname=$pkgver")
+conflicts=("$_pkgname")
+# The release binary keeps its symbol table on purpose, so a RUST_BACKTRACE
+# report names functions; stripping it would undo that.
+options=('!strip' '!debug')
+source_x86_64=("$url/releases/download/v$pkgver/$_pkgname-v$pkgver-x86_64-unknown-linux-gnu.tar.gz")
+source_aarch64=("$url/releases/download/v$pkgver/$_pkgname-v$pkgver-aarch64-unknown-linux-gnu.tar.gz")
+sha256sums_x86_64=('5862729dda49d3edc015477dda4b08f3fd8b80bf075f20d0e8638b5daa122cfc')
+sha256sums_aarch64=('54b5664e454473416a6bf00d28474427954766e9d41c9f27f94d45ff2b2854c9')
+
+package() {
+  cd "$_pkgname-v$pkgver-$CARCH-unknown-linux-gnu"
+  install -Dm0755 -t "$pkgdir/usr/bin/" "$_pkgname"
+  install -Dm0644 -t "$pkgdir/usr/share/licenses/$pkgname/" LICENSE
+  install -Dm0644 -t "$pkgdir/usr/share/doc/$pkgname/" README.md CHANGELOG.md
+}
