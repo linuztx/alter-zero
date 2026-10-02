@@ -39,6 +39,10 @@ release heading when a version is cut.
   These arrived as `HTTP 0: Internal Server Error` and ended the turn
   outright; they are now treated as the server errors they are and retried
   like any other (`docs/ollama.md`).
+- **A task update no longer blanks a task's name.** Some models send an
+  empty `subject`, `description` or `activeForm` for the fields they mean to
+  leave alone; the update took that literally and the checklist showed a
+  blank row. Blank fields are now ignored, as task creation already did.
 
 ## [0.10.0] - 2026-09-30
 
