@@ -67,9 +67,10 @@ pub fn centered_window(len: usize, selected: usize, max: usize) -> usize {
 /// `centered_window`'s middle row leaves the odd row), and a side that has
 /// run out of entries — or whose next entry no longer fits — leaves the
 /// rest of the budget to the other, which is what anchors the window at the
-/// top and flush with the tail. With uniform heights of 1 this reproduces
-/// [`centered_window`] exactly; a lone entry taller than the whole budget
-/// still windows alone (the caller trims its rows to the budget).
+/// top and flush with the tail. With uniform heights this is
+/// [`centered_window`] over the `max_rows / height` whole entries the budget
+/// holds, exactly; a lone entry taller than the whole budget still windows
+/// alone (the caller trims its rows to the budget).
 pub(super) fn centered_window_rows(
     heights: &[usize],
     selected: usize,

@@ -161,11 +161,15 @@ type_text "$S117B" "/"
 # arriving there with /model directly above it, and the splice is what the
 # rows below read back. The walk also waits out the background probe (the
 # rows re-derive as its listing lands), and wraps at the end of the list, so
-# it finds the row whenever that happens.
+# it finds the row whenever that happens. It stops only once /model is in
+# view too: rows landing while the window's top row is the one they splice in
+# at would show /fast with /model just above it, out of view — a frame the
+# walk moves on from instead of failing on.
 tiers_palette=""
 for _ in $(seq 1 60); do
 	tiers_palette="$(tmux capture-pane -t "$S117B" -p)"
-	if printf '%s\n' "$tiers_palette" | grep -qE '^/fast +1\.5x speed, increased usage'; then
+	if printf '%s\n' "$tiers_palette" | grep -qE '^/fast +1\.5x speed, increased usage' &&
+		printf '%s\n' "$tiers_palette" | grep -qE '^/model '; then
 		break
 	fi
 	keys "$S117B" Down

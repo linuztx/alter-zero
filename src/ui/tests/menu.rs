@@ -255,22 +255,27 @@ fn the_palette_wraps_a_long_description_instead_of_clipping() {
 }
 
 #[test]
-fn centered_window_rows_matches_centered_window_for_uniform_heights() {
-    // With every entry one row tall the variable-height window IS the
-    // `/model` list's `centered_window` — same offsets, same top and tail
-    // anchors — so the 80-column palette scrolls exactly as `/model` and
-    // `/resume` do.
+fn centered_window_rows_is_centered_window_for_uniform_heights() {
+    // With every entry the same height the variable-height window IS the
+    // `/model` list's `centered_window` over the whole entries the budget
+    // holds — same offsets, same top and tail anchors — so the 80-column
+    // palette, every command one row, scrolls exactly as `/model` and
+    // `/resume` do. (A budget below one entry's height is the lone-tall-entry
+    // case, pinned by the next test.)
     use crate::ui::menu::centered_window_rows;
-    for len in 0..=24 {
-        for max in 0..=10 {
-            for selected in 0..len.max(1) {
-                let heights = vec![1usize; len];
-                let offset = centered_window(len, selected, max);
-                assert_eq!(
-                    centered_window_rows(&heights, selected, max),
-                    (offset, (offset + max).min(len)),
-                    "len {len}, selected {selected}, max {max}"
-                );
+    for height in 1..=3usize {
+        for max_rows in height..=12 {
+            let max = max_rows / height;
+            for len in 0..=24 {
+                let heights = vec![height; len];
+                for selected in 0..len.max(1) {
+                    let offset = centered_window(len, selected, max);
+                    assert_eq!(
+                        centered_window_rows(&heights, selected, max_rows),
+                        (offset, (offset + max).min(len)),
+                        "height {height}, budget {max_rows}, len {len}, selected {selected}"
+                    );
+                }
             }
         }
     }
