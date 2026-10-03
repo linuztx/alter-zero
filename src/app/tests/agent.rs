@@ -515,10 +515,12 @@ fn agent_notice_texts_humanize_the_runtime() {
         "{}",
         notice.context_text()
     );
-    // No id token: the model cannot address an agent by id anywhere, so the
-    // description is the note's whole correlation key.
+    // The note names the agent's id beside its task: `agentsend` continues
+    // the conversation it reports on (docs/agent-tools.md).
     assert!(
-        !notice.context_text().contains("(id "),
+        notice
+            .context_text()
+            .starts_with("[background agent] Agent \"Count 1-100 with sleep\" (a1) completed"),
         "{}",
         notice.context_text()
     );
@@ -1193,4 +1195,174 @@ fn an_agent_launch_carries_the_call_it_answers_into_the_group_record() {
         "{:?}",
         app.history
     );
+}
+
+// --- The lead's companions (`docs/agent-tools.md`) ---
+
+/// A background group of the two test agents, launched and resolved — the
+/// state `agentsend`/`agentoutput`/`agentkill` find a roster in.
+fn launched_background_agents() -> App {
+    let mut app = App::new();
+    app.begin_stream();
+    app.start_agent_group(true, &agent_specs(true));
+    app.finish_agent_group(
+        true,
+        &[
+            AgentCallDone {
+                id: "a1".into(),
+                output: "launched a1".into(),
+                ok: true,
+            },
+            AgentCallDone {
+                id: "a2".into(),
+                output: "launched a2".into(),
+                ok: true,
+            },
+        ],
+    );
+    app
+}
+
+#[test]
+fn an_observed_settle_owes_no_notice_but_still_updates_its_group_entry() {
+    // An `agentoutput` waiting on the agent already handed the lead its
+    // outcome — a notice would repeat it.
+    let mut app = launched_background_agents();
+    app.apply_agent_event("a1", &StreamEvent::Chunk("28°C".into()));
+    let notice = app.apply_agent_settled("a1", &StreamEvent::StreamDone, true);
+    assert!(notice.is_none(), "observed: nothing owed");
+    assert_eq!(
+        app.agent("a1").map(|run| run.status),
+        Some(crate::agents::AgentStatus::Done)
+    );
+    let Some(HistoryItem::AgentGroup(group)) = app
+        .history
+        .iter()
+        .find(|item| matches!(item, HistoryItem::AgentGroup(_)))
+    else {
+        panic!("group recorded");
+    };
+    assert_eq!(
+        group.agents[0].status,
+        crate::agents::AgentStatus::Done,
+        "the Ctrl+O cell learns the outcome all the same"
+    );
+    assert_eq!(group.agents[0].result, "28°C");
+    // Unobserved, it is the ordinary background completion.
+    app.apply_agent_event("a2", &StreamEvent::Chunk("31°C".into()));
+    assert!(
+        app.apply_agent_settled("a2", &StreamEvent::StreamDone, false)
+            .is_some()
+    );
+}
+
+#[test]
+fn the_leads_stop_settles_the_row_without_claiming_the_user_stopped_it() {
+    let mut app = launched_background_agents();
+    app.apply_agent_event("a1", &StreamEvent::Chunk("working".into()));
+    assert!(app.stop_agent_by_lead("a1"));
+    let run = app.agent("a1").expect("still on the roster");
+    assert_eq!(run.status, crate::agents::AgentStatus::Interrupted);
+    assert!(!run.stopped_by_user, "the user's `x to clear` is not owed");
+    assert_eq!(run.linger(), crate::agents::AGENT_LINGER);
+    assert!(!app.stop_agent_by_lead("a1"), "nothing left to stop");
+    assert!(!app.stop_agent_by_lead("nope"));
+}
+
+#[test]
+fn a_resumed_agent_reopens_its_row_and_owes_the_lead_its_answer() {
+    // A *foreground* agent's settle is carried by its group, not a notice —
+    // but once its group has resolved, a follow-up's answer can only reach
+    // the lead as one.
+    let mut app = App::new();
+    app.begin_stream();
+    app.start_agent_group(false, &agent_specs(false));
+    app.apply_agent_event("a1", &StreamEvent::Chunk("28°C".into()));
+    assert!(
+        app.apply_agent_event("a1", &StreamEvent::StreamDone)
+            .is_none()
+    );
+    app.resume_agent("a1", "Fetch Warsaw weather", "general-purpose", "p");
+    app.apply_agent_event(
+        "a1",
+        &StreamEvent::Steered {
+            text: "and tomorrow?".into(),
+        },
+    );
+    let run = app.agent("a1").expect("on the roster");
+    assert_eq!(run.status, crate::agents::AgentStatus::Running);
+    assert!(
+        matches!(
+            run.history.last(),
+            Some(HistoryItem::Message(m)) if m.role == Role::User && m.text == "and tomorrow?"
+        ),
+        "the lead's message lands on the agent's transcript"
+    );
+    app.apply_agent_event("a1", &StreamEvent::Chunk("31°C".into()));
+    let notice = app
+        .apply_agent_event("a1", &StreamEvent::StreamDone)
+        .expect("the follow-up's answer is noticed");
+    assert_eq!(notice.result, "31°C");
+}
+
+#[test]
+fn a_swept_agent_comes_back_with_its_whole_transcript() {
+    let mut app = launched_background_agents();
+    app.apply_agent_event("a1", &StreamEvent::Chunk("28°C".into()));
+    let _ = app.apply_agent_event("a1", &StreamEvent::StreamDone);
+    let transcript = app.agent("a1").unwrap().history.clone();
+    app.remove_agent("a1");
+    assert!(app.agent("a1").is_none(), "swept off the roster");
+    app.resume_agent("a1", "Fetch Warsaw weather", "general-purpose", "p");
+    let run = app.agent("a1").expect("back on the roster");
+    assert_eq!(run.history, transcript, "with everything it said");
+    assert!(run.background);
+}
+
+#[test]
+fn an_agent_long_retired_comes_back_on_its_prompt_alone() {
+    let mut app = App::new();
+    app.resume_agent("a9", "Search the repo", "explore", "Find the parser");
+    let run = app
+        .agent("a9")
+        .expect("rebuilt from what the registry kept");
+    assert_eq!(run.description, "Search the repo");
+    assert_eq!(run.agent_type, "explore");
+    assert!(run.background, "its answer is owed to the lead");
+    assert!(
+        matches!(
+            run.history.as_slice(),
+            [HistoryItem::Message(m)] if m.text == "Find the parser"
+        ),
+        "{:?}",
+        run.history
+    );
+}
+
+#[test]
+fn retirement_keeps_only_the_newest_swept_agents() {
+    let mut app = App::new();
+    let specs: Vec<AgentSpec> = (0..=crate::agents::AGENT_RETAINED_MAX)
+        .map(|n| AgentSpec {
+            id: format!("a{n}"),
+            description: format!("task {n}"),
+            agent_type: crate::agents::GENERAL_PURPOSE.to_string(),
+            prompt: "p".into(),
+            background: true,
+            call_id: None,
+            arguments: None,
+        })
+        .collect();
+    app.begin_stream();
+    app.start_agent_group(true, &specs);
+    for spec in &specs {
+        app.remove_agent(&spec.id);
+    }
+    assert_eq!(app.retired_agents.len(), crate::agents::AGENT_RETAINED_MAX);
+    assert!(
+        !app.retired_agents.iter().any(|run| run.id == "a0"),
+        "the oldest is let go"
+    );
+    app.clear_conversation();
+    assert!(app.retired_agents.is_empty(), "/clear forgets them all");
 }

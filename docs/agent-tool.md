@@ -38,7 +38,7 @@ backend only — a subagent never gets the `agent` tool, so agents can't nest:
 | `description` | required | a short (3-5 word) task label — the tree rows / footer list show it |
 | `prompt` | required | the full task for the agent to perform |
 | `subagent_type` | optional | which **agent definition** to launch — `general-purpose` (the default) and `explore` ship as `agents/*.md` files, and a project or the user can add more; the available types and their tools are named in the `<system-reminder>` listing (`docs/subagents.md`). An unknown type resolves as a recoverable error listing the real ones |
-| `run_in_background` | optional | **default `true`** — the call returns at once with the launch acknowledgement (the agent named by its description; no id — nothing model-facing takes one back); `false` blocks the turn until the agent finishes and returns its final response |
+| `run_in_background` | optional | **default `true`** — the call returns at once with the launch acknowledgement (the agent named by its description and its id, which the companion tools take back — `docs/agent-tools.md`); `false` blocks the turn until the agent finishes and returns its final response, closed by the line naming the agent `agentsend` continues |
 
 (The reference schema's `isolation` param is deliberately not implemented —
 out of scope for this TUI. Its `model` is here, but as a property of the
@@ -108,8 +108,14 @@ Claude-Code-style ids (`a` + 8 base36 chars), keeps each running subagent's
 `CancelToken` + completion flag + final message list, and owns the per-agent
 **pending-input queue** (the chat feature). `kill(id)` cancels the token and
 marks the completion `killed` so the parent's wait loop resolves at once
-(without waiting for the thread to notice); `kill_all()` sweeps on
-`/clear`/quit. Completed foreground results are read off the shared slot.
+(without waiting for the thread to notice); `kill_all()` sweeps on quit and
+`clear()` on `/clear`. Completed foreground results are read off the shared
+slot. Each slot also keeps what the lead's companions need — the agent's
+task, its calls as one-liners, its runtime — and a settled slot outlives its
+roster row, the newest 16 kept resumable (`docs/agent-tools.md`). A run's
+terminal event goes out through `AgentRegistry::settle`, under the lock,
+once the outcome is recorded — which is what lets a waiting `agentoutput`
+claim the outcome so no notice repeats it.
 
 Background completion notices ride the **existing**
 `BackgroundRegistry::post_notice` board (`from_model: true`), so the in-flight
@@ -127,7 +133,10 @@ zero new plumbing. The TUI cell is a new `HistoryItem::AgentNotice` —
   (create) and the agent channel (update). A finished agent **lingers** with a
   coloured `◯` (green done / red stopped/failed), then the boundary sweeps it
   (timed in `main.rs` like the toast) — deferred while the user is inside that
-  agent's session. How long is the entry's own
+  agent's session. A swept entry **retires** rather than going — the newest
+  16 kept with their transcripts, so an agent the lead resumes with
+  `agentsend` comes back to the roster whole (`docs/agent-tools.md`). How long
+  is the entry's own
   `AgentRun::linger()`: `AGENT_LINGER` (30s) for a natural finish — a row
   swept in a few seconds could vanish before the user had read it, and (the
   expiry being armed from the agent's *own* settle) even before its group

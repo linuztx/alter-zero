@@ -137,9 +137,11 @@ impl AgentNotice {
         } else {
             self.result.trim_end_matches('\n')
         };
+        // The id rides beside the task: `agentsend` continues the
+        // conversation this note reports on (docs/agent-tools.md).
         format!(
-            "[background agent] Agent \"{}\" {outcome}.\nFinal response:\n{body}",
-            self.description,
+            "[background agent] Agent \"{}\" ({}) {outcome}.\nFinal response:\n{body}",
+            self.description, self.id,
         )
     }
 }
@@ -625,14 +627,92 @@ impl App {
         }
     }
 
+    /// [`apply_agent_event`](App::apply_agent_event) for a run's terminal
+    /// event as the registry delivered it ([`crate::agents::AgentEvent::Settled`]):
+    /// `observed` when an `agentoutput` waiting on the agent already handed
+    /// the lead its outcome — then no notice is owed, though the recorded
+    /// group entry still learns the outcome for its Ctrl+O cell
+    /// (`docs/agent-tools.md` *One notice per answer*).
+    pub fn apply_agent_settled(
+        &mut self,
+        id: &str,
+        event: &StreamEvent,
+        observed: bool,
+    ) -> Option<AgentNotice> {
+        let notice = self.apply_agent_event(id, event)?;
+        if observed {
+            self.settle_agent_completion(&notice);
+            return None;
+        }
+        Some(notice)
+    }
+
+    /// The **lead** stopped `id` (`agentkill`, `docs/agent-tools.md`):
+    /// settle its row as interrupted, the way the user's `x` does — its
+    /// running call resolved, its partial kept — but without claiming the
+    /// user stopped it: the row lingers the natural while, offers no `x to
+    /// clear`, and stays resumable. The lead's own result reported the stop,
+    /// so no notice is owed; the recorded group entry still learns it.
+    /// `false` when there was nothing running to stop.
+    pub fn stop_agent_by_lead(&mut self, id: &str) -> bool {
+        let stamp = self.now_stamp();
+        let Some(agent) = self.agents.iter_mut().find(|agent| agent.id == id) else {
+            return false;
+        };
+        if !agent.interrupt() {
+            return false;
+        }
+        let notice = AgentNotice {
+            id: agent.id.clone(),
+            description: agent.description.clone(),
+            status: agent.status,
+            secs: agent.runtime.as_secs(),
+            result: String::new(),
+            timestamp: stamp,
+        };
+        self.agents_generation += 1;
+        self.settle_agent_completion(&notice);
+        true
+    }
+
+    /// The **lead** resumed `id` (`agentsend` on a settled agent,
+    /// `docs/agent-tools.md`): bring its row back — from the roster, from the
+    /// retired list with its whole transcript, or rebuilt on its prompt when
+    /// even that has let it go — and mark it background, since its group
+    /// resolved long ago and the answer can only reach the lead as a notice.
+    /// The continuation's first round then announces the message
+    /// (`StreamEvent::Steered`), which reopens the row and records it.
+    pub fn resume_agent(&mut self, id: &str, description: &str, agent_type: &str, prompt: &str) {
+        if !self.agents.iter().any(|agent| agent.id == id) {
+            let revived = match self.retired_agents.iter().position(|agent| agent.id == id) {
+                Some(index) => self.retired_agents.remove(index),
+                None => None,
+            };
+            self.agents.push(
+                revived.unwrap_or_else(|| AgentRun::new(id, description, agent_type, prompt, true)),
+            );
+        }
+        if let Some(agent) = self.agents.iter_mut().find(|agent| agent.id == id) {
+            agent.background = true;
+            agent.hidden = false;
+        }
+        self.agents_generation += 1;
+    }
+
     /// Sweep one roster entry (its linger expired). Deferred by the boundary
     /// while the user is inside that agent's session view. Also drops the
-    /// selection/view if they pointed at it.
+    /// selection/view if they pointed at it. The entry itself retires rather
+    /// than going — the newest [`crate::agents::AGENT_RETAINED_MAX`] are kept
+    /// for a resume (`docs/agent-tools.md` *Retention*).
     pub fn remove_agent(&mut self, id: &str) {
         let Some(index) = self.agents.iter().position(|agent| agent.id == id) else {
             return;
         };
-        self.agents.remove(index);
+        let retired = self.agents.remove(index);
+        self.retired_agents.push_back(retired);
+        while self.retired_agents.len() > crate::agents::AGENT_RETAINED_MAX {
+            self.retired_agents.pop_front();
+        }
         self.agents_generation += 1;
         if self.agent_view.as_deref() == Some(id) {
             self.agent_view = None;

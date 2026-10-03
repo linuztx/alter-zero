@@ -15,6 +15,7 @@
 //! shape as `DummyAi`, with no nested tokio runtime.
 
 pub mod agent;
+pub mod agent_tools;
 pub mod anthropic;
 pub mod approval;
 pub mod ask;

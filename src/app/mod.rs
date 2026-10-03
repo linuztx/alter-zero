@@ -728,6 +728,12 @@ pub struct App {
     /// own, red when the user's `x` stopped it — and not at all once a
     /// second `x` clears the row.
     agents: Vec<AgentRun>,
+    /// Roster entries the sweep collected, newest last — kept, transcripts
+    /// and all, for the [`AGENT_RETAINED_MAX`](crate::agents::AGENT_RETAINED_MAX)
+    /// most recent, so an agent the lead resumes with `agentsend` comes back
+    /// to the roster with its whole conversation
+    /// ([`resume_agent`](App::resume_agent), `docs/agent-tools.md`).
+    retired_agents: VecDeque<AgentRun>,
     /// Bumped on every roster mutation — what the Ctrl+O transcript cache's
     /// signature fingerprints so a streaming agent invalidates it.
     agents_generation: u64,
@@ -1175,6 +1181,9 @@ impl App {
         // the registry; the wiped roster drops the late events
         // (docs/agent-tool.md).
         self.agents.clear();
+        // …and the retired ones: the conversation that knew their ids is
+        // gone, so nothing may bring them back (docs/agent-tools.md).
+        self.retired_agents.clear();
         self.agents_generation += 1;
         self.agent_group = None;
         self.agent_selection = None;

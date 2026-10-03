@@ -166,6 +166,7 @@ picked. Same trick `ui::TranscriptCache`'s counters use.
 | `permission-staggered` | "permission" + "staggered" | a screen-tall `write` prompt answered into a one-line one: the modal region's hardest shrink |
 | `permission-write` | "permission" | the single `Write` approval: the options, Tab's amend, the stashed draft |
 | `compact` | the summarization marker | `/compact`'s text-only handoff summary (`docs/compact.md`) |
+| `agent-follow-up` | "follow-up" + "agent" | the lead **working its agent** with the companion tools — a background launch, an `agentoutput` wait, an `agentsend` that resumes the finished agent's conversation, a second wait, `agentlist` — every call through the **real** executor against the real registry, so each cell is the live one and both waits settle observed, owing no notice (`docs/agent-tools.md`, `smoke.sh` Phase 130) |
 | `agent-stream` | "subagent" | one background subagent that streams **its own session** — a thinking phase then a forming table — the only demo that drives the agent session view's strip (`docs/agent-view-streaming.md`) |
 | `table` | "table" | a streaming GFM table with wide emoji (`docs/table-streaming.md`) |
 | `markdown` | "markdown", not "agents.md" | the slow-stream stress tour: every markdown element in one long text-only reply, streamed in **token-sized** pieces (`tokens`) — the document `smoke.sh` Phase 121 streams at a few tokens a second (`docs/slow-stream.md`) |

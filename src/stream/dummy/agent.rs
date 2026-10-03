@@ -105,7 +105,10 @@ pub(in crate::stream) fn agent_stream_turn(stage: &AgentStage<'_>) {
     if !say(&first, stage.tx, stage.cancel) {
         return;
     }
-    let (id, agent_cancel) = stage.agents.register(GENERAL_PURPOSE);
+    let (id, agent_cancel) =
+        stage
+            .agents
+            .register_agent(GENERAL_PURPOSE, DEMO_DESCRIPTION, DEMO_PROMPT);
     let announced = stage.tx.send(StreamEvent::AgentBatch {
         background: true,
         agents: vec![AgentSpec {
@@ -125,10 +128,10 @@ pub(in crate::stream) fn agent_stream_turn(stage: &AgentStage<'_>) {
     let resolved = stage.tx.send(StreamEvent::AgentGroupDone {
         background: true,
         agents: vec![AgentCallDone {
-            id,
             // The real executor's own acknowledgement (the dummy-backend
             // rule: an offline cell carries live output).
-            output: crate::llm::backend::agent_launch_text(DEMO_DESCRIPTION),
+            output: crate::llm::backend::agent_launch_text(&id, DEMO_DESCRIPTION),
+            id,
             ok: true,
         }],
     });
@@ -338,7 +341,10 @@ pub(in crate::stream) fn agent_permission_turn(stage: &AgentStage<'_>) {
     if !say(&first, stage.tx, stage.cancel) {
         return;
     }
-    let (id, agent_cancel) = stage.agents.register(GENERAL_PURPOSE);
+    let (id, agent_cancel) =
+        stage
+            .agents
+            .register_agent(GENERAL_PURPOSE, GATED_DESCRIPTION, GATED_PROMPT);
     let announced = stage.tx.send(StreamEvent::AgentBatch {
         background: false,
         agents: vec![AgentSpec {
@@ -533,4 +539,243 @@ fn ask_at_gate(
         )),
         None => Gated::Cancelled,
     }
+}
+
+// --- the lead WORKING its agent (docs/agent-tools.md) ----------------------
+//
+// The agent tools, drivable offline: the lead launches a background agent,
+// waits on it with `agentoutput`, sends it a follow-up with `agentsend` —
+// which resumes its stored conversation — waits again, and lists it. Every
+// companion call runs through the REAL executor against the real registry,
+// so each cell carries what a live call would (the dummy-backend rule), and
+// the agent's runs settle through `AgentRegistry::settle`, so the waiter
+// protocol — an answer the lead read is never noticed again — runs here too.
+
+/// The follow-up demo's task label — the roster row, and what every
+/// companion's cell names the agent by.
+const FOLLOW_UP_DESCRIPTION: &str = "Read the release notes";
+
+/// The prompt it is launched with.
+const FOLLOW_UP_PROMPT: &str =
+    "Read CHANGELOG.md and say in one line what the latest release added.";
+
+/// The one command its first run makes — the call the reports list.
+const FOLLOW_UP_COMMAND: &str = "head -12 CHANGELOG.md";
+
+/// What that command prints.
+const FOLLOW_UP_COMMAND_OUTPUT: &str =
+    "# Changelog\n\n## [0.11.0]\n\n### Added\n\n- A lost connection no longer fails the turn.";
+
+/// Its first answer — the final response the first wait reports.
+const FOLLOW_UP_FIRST_REPLY: &str = "The latest release stops a lost connection from \
+     failing the turn: it waits for the network and carries on.";
+
+/// The lead's follow-up — what `agentsend` resumes the agent with.
+const FOLLOW_UP_MESSAGE: &str = "And what did it add for questions nobody answers?";
+
+/// Its answer to the follow-up, from the same conversation.
+const FOLLOW_UP_SECOND_REPLY: &str = "A question nobody answers for ten minutes now \
+     closes by itself, and the agent keeps working on its best judgment.";
+
+/// How long the agent's first run takes before its call — long enough that
+/// the lead's first `agentoutput` is visibly waiting.
+const FOLLOW_UP_PRE_ROLL: Duration = Duration::from_millis(900);
+
+/// What each of the lead's waits allows, in seconds — far more than the demo
+/// agent needs, so the wait ends on the settle, never on the clock.
+const FOLLOW_UP_WAIT_SECS: u64 = 60;
+
+const FOLLOW_UP_NARRATION: &str = concat!(
+    "I'll launch an agent to read the changelog, wait on it with `agentoutput`, \
+     then send it a follow-up with `agentsend` — a finished agent resumes with \
+     its context intact — and wait on that answer too.\n\n",
+    "Both answers came from the same agent, and neither came back a second \
+     time as a notice: the waits had already reported them.\n\n",
+    handoff!()
+);
+
+/// Play the follow-up demo (see the section comment).
+pub(in crate::stream) fn agent_follow_up_turn(stage: &AgentStage<'_>) {
+    let (first, second) = reply_parts(FOLLOW_UP_NARRATION);
+    if !say(&first, stage.tx, stage.cancel) {
+        return;
+    }
+    let (id, agent_cancel) =
+        stage
+            .agents
+            .register_agent(GENERAL_PURPOSE, FOLLOW_UP_DESCRIPTION, FOLLOW_UP_PROMPT);
+    let announced = stage.tx.send(StreamEvent::AgentBatch {
+        background: true,
+        agents: vec![AgentSpec {
+            id: id.clone(),
+            description: FOLLOW_UP_DESCRIPTION.to_string(),
+            agent_type: GENERAL_PURPOSE.to_string(),
+            prompt: FOLLOW_UP_PROMPT.to_string(),
+            background: true,
+            call_id: None,
+            arguments: None,
+        }],
+    });
+    if announced.is_err() {
+        return;
+    }
+    spawn_follow_up_run(stage.agents.clone(), id.clone(), agent_cancel, true);
+    let resolved = stage.tx.send(StreamEvent::AgentGroupDone {
+        background: true,
+        agents: vec![AgentCallDone {
+            output: crate::llm::backend::agent_launch_text(&id, FOLLOW_UP_DESCRIPTION),
+            id: id.clone(),
+            ok: true,
+        }],
+    });
+    if resolved.is_err() {
+        return;
+    }
+    let wait = serde_json::json!({ "agent_id": id, "wait": FOLLOW_UP_WAIT_SECS });
+    let steps = [
+        (crate::llm::tools::AGENT_OUTPUT_TOOL, wait.clone()),
+        (
+            crate::llm::tools::AGENT_SEND_TOOL,
+            serde_json::json!({ "agent_id": id, "message": FOLLOW_UP_MESSAGE }),
+        ),
+        (crate::llm::tools::AGENT_OUTPUT_TOOL, wait),
+        (crate::llm::tools::AGENT_LIST_TOOL, serde_json::json!({})),
+    ];
+    for (name, arguments) in steps {
+        if !lead_call(stage, name, &arguments.to_string()) {
+            return;
+        }
+    }
+    if say(&second, stage.tx, stage.cancel) {
+        let _ = stage.tx.send(StreamEvent::StreamDone);
+    }
+}
+
+/// One companion call of the lead's, announced and resolved the way
+/// `llm::agent::run_agent` resolves an ordinary call — through the **real**
+/// executor, its waiting progress streamed into the running cell, and a
+/// settled agent's continuation started by this demo's own launcher.
+/// `false` once the turn was cancelled or the receiver is gone.
+fn lead_call(stage: &AgentStage<'_>, name: &str, arguments: &str) -> bool {
+    let lookup = |id: &str| stage.agents.description(id);
+    let display = crate::llm::tools::display_name(name);
+    let args = crate::llm::tools::summarize_call_naming(name, arguments, &lookup);
+    let announced = stage.tx.send(StreamEvent::ToolBatch(vec![
+        crate::stream::ToolCallSummary {
+            name: display.clone(),
+            args: args.clone(),
+        },
+    ]));
+    let started = stage.tx.send(StreamEvent::ToolStart {
+        name: display,
+        args,
+        detail: None,
+        arguments: Some(arguments.to_string()),
+    });
+    if announced.is_err() || started.is_err() {
+        return false;
+    }
+    let registry = stage.agents.clone();
+    let resume = move |continuation: crate::llm::agent_tools::Continuation| {
+        spawn_follow_up_run(
+            registry.clone(),
+            continuation.id,
+            continuation.cancel,
+            false,
+        );
+    };
+    let ctx = crate::llm::agent_tools::AgentToolContext {
+        registry: stage.agents,
+        cancel: stage.cancel,
+        background: None,
+        resume: &resume,
+    };
+    let call = crate::llm::tools::ToolCallRequest {
+        id: format!("dummy-{name}"),
+        name: name.to_string(),
+        arguments: arguments.to_string(),
+    };
+    let outcome = crate::llm::agent_tools::run_agent_tool(&ctx, &call, &mut |progress| {
+        if let crate::llm::exec::ToolProgress::Screen { settled, live } = progress {
+            let _ = stage.tx.send(StreamEvent::ToolScreen {
+                settled: settled.to_string(),
+                live: live.to_string(),
+            });
+        }
+    });
+    if stage.cancel.is_cancelled() {
+        return false;
+    }
+    let ended = stage.tx.send(StreamEvent::ToolEnd {
+        output: outcome.output,
+        ok: outcome.ok,
+        truncated: false,
+    });
+    nap(TOOL_DELAY, stage.cancel);
+    ended.is_ok() && !stage.cancel.is_cancelled()
+}
+
+/// Play one run of the follow-up demo's agent on the agent channel — the
+/// launch's (a call, then its answer) or the continuation's (the lead's
+/// message announced as its loop reads it, then the answer) — and settle it
+/// through the registry, which delivers the terminal event to a waiting
+/// `agentoutput` rather than straight to the roster (`docs/agent-tools.md`).
+fn spawn_follow_up_run(registry: AgentRegistry, id: String, cancel: CancelToken, launch: bool) {
+    thread::spawn(move || {
+        let send = |event: StreamEvent, pause: Duration| -> bool {
+            if cancel.is_cancelled() {
+                return false;
+            }
+            registry.send(AgentEvent::Stream {
+                id: id.clone(),
+                event,
+            });
+            nap(pause, &cancel);
+            !cancel.is_cancelled()
+        };
+        nap(
+            if launch {
+                FOLLOW_UP_PRE_ROLL
+            } else {
+                CHUNK_DELAY
+            },
+            &cancel,
+        );
+        let reply = if launch {
+            let call = ScriptedCall::command(FOLLOW_UP_COMMAND, FOLLOW_UP_COMMAND_OUTPUT, 0);
+            if !send(StreamEvent::ToolBatch(vec![call.summary()]), TOOL_DELAY) {
+                return;
+            }
+            // The live forwarder records each call as it starts; this one
+            // has no forwarder, so it says so itself.
+            registry.record_call(
+                &id,
+                &crate::app::tool_header_text("Bash", FOLLOW_UP_COMMAND),
+            );
+            if !send(call.start(), TOOL_DELAY) || !send(call.end(), CHUNK_DELAY) {
+                return;
+            }
+            FOLLOW_UP_FIRST_REPLY
+        } else {
+            // A continuation's first round boundary: the message the lead
+            // sent is read here, and announced as it is.
+            for text in registry.take_pending_inputs(&id) {
+                if !send(StreamEvent::Steered { text }, CHUNK_DELAY) {
+                    return;
+                }
+            }
+            FOLLOW_UP_SECOND_REPLY
+        };
+        for piece in chunks(reply) {
+            if !send(StreamEvent::Chunk(piece), CHUNK_DELAY) {
+                return;
+            }
+        }
+        registry.settle(
+            &id,
+            Ok(reply.to_string()),
+            vec![crate::llm::ChatMessage::user(FOLLOW_UP_PROMPT)],
+            Some(StreamEvent::StreamDone),
+        );
+    });
 }

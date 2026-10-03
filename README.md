@@ -186,7 +186,7 @@ The footer shows your active model, thinking mode, speed tier and context usage.
 
 ### Give the agent the right tools
 
-- **Subagents.** Delegate focused work to agents with their own context, model, and tool access. Built-in `general-purpose` and `explore` agents are editable, and you can open a running agent's session to chat, send follow-up work, or stop it.
+- **Subagents.** Delegate focused work to agents with their own context, model, and tool access. Built-in `general-purpose` and `explore` agents are editable, and you can open a running agent's session to chat, send follow-up work, or stop it — while the main agent does the same by each agent's id: checks its progress, sends a finished agent a follow-up with its context intact, or stops it.
 - **Skills.** Add reusable `SKILL.md` folders, mention one with `$`, or browse them with `/skills`. Built-in `skill-creator` helps you write your own; `jina-reader` reads public webpages and PDFs through Jina Reader.
 - **MCP servers.** Connect tools over stdio, HTTP, or SSE, including remote servers with OAuth. Manage connections with `/mcp` or `alter-zero mcp`.
 - **Hooks and project instructions.** Use `hooks.json` to approve, reject, or adjust tool calls and supply context. `AGENTS.md` files carry your project's conventions; `/init` helps create one.

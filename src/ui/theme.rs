@@ -696,9 +696,17 @@ pub(super) const DIFF_TOOL_NAMES: [&str; 2] = ["Edit", "Write"];
 /// companions that are the same command's later steps — `bashsend`,
 /// `bashwait`, `bashkill` (`docs/bash-tools.md`) — and the legacy
 /// `bash_session`. `bashlist`'s list is no command output: a generic tool
-/// keeps the single collapsed peek line.
-pub(super) const COMMAND_TOOL_NAMES: [&str; 5] =
-    ["Bash", "BashSend", "BashWait", "BashKill", "BashSession"];
+/// keeps the single collapsed peek line. `agentoutput` joins them for the
+/// same reason the companions do: a wait on it streams the agent's calls as
+/// they start, and the cell tails them (`docs/agent-tools.md`).
+pub(super) const COMMAND_TOOL_NAMES: [&str; 6] = [
+    "Bash",
+    "BashSend",
+    "BashWait",
+    "BashKill",
+    "BashSession",
+    "AgentOutput",
+];
 
 /// The dim closing row of a command cell whose session is still alive
 /// (`docs/interactive-shell.md`) — `{state} · session {id}`, in place of the
@@ -2390,6 +2398,9 @@ pub(super) const AGENT_BACKGROUNDED: &str =
 /// The Ctrl+O cell's `Prompt:` / `Response:` section labels (green bold,
 /// Claude Code's transcript look).
 pub(super) const AGENT_PROMPT_LABEL: &str = "Prompt:";
+/// What sets the dim agent id off the Ctrl+O agent cell's header —
+/// `● Agent(Fetch Warsaw) · a7k2m9x4q` (`docs/agent-tools.md`).
+pub(super) const AGENT_ID_SEPARATOR: &str = " · ";
 
 pub(super) const AGENT_RESPONSE_LABEL: &str = "Response:";
 

@@ -38,9 +38,61 @@ use alter_zero::ui;
 use super::Session;
 
 impl Session<'_> {
+    /// Handle one message off the agent channel — a subagent's own event,
+    /// its settle, or the lead's stop or resume of it (`docs/agent-tools.md`)
+    /// — without the idle follow-up dispatch [`Session::on_agent_message`]
+    /// adds, so the group drain can run it mid-resolution.
+    fn handle_agent_message(&mut self, message: AgentEvent) {
+        match message {
+            AgentEvent::Stream { id, event } => self.on_agent_event(&id, event, false),
+            AgentEvent::Settled {
+                id,
+                event,
+                observed,
+            } => self.on_agent_event(&id, event, observed),
+            AgentEvent::Stopped { id } => self.on_agent_stopped_by_lead(&id),
+            AgentEvent::Resumed {
+                id,
+                description,
+                agent_type,
+                prompt,
+            } => self.on_agent_resumed(&id, &description, &agent_type, &prompt),
+        }
+    }
+
+    /// The lead stopped `id` with `agentkill`: settle its row locally, as the
+    /// user's `x` does — the session view committing what the stop recorded —
+    /// but owing no notice, since the lead's own result reported the stop.
+    fn on_agent_stopped_by_lead(&mut self, id: &str) {
+        let width = self.term.screen().width;
+        let on_screen = self.viewing_agent(id);
+        let recorded = self.begin_local_agent_settle(id, width);
+        if self.app.stop_agent_by_lead(id) {
+            if on_screen {
+                self.commit_agent_tail(recorded, width);
+            }
+            self.agent_clocks.remove(id);
+            self.agent_thinking_clocks.remove(id);
+            let linger = self.app.agent(id).map_or(AGENT_LINGER, |run| run.linger());
+            self.agent_expiry
+                .insert(id.to_string(), Instant::now() + linger);
+        }
+    }
+
+    /// The lead resumed `id` with `agentsend`: its row comes back — or, still
+    /// lingering, stays — and its clock starts over for the continuation,
+    /// whose first round announces the message (`docs/agent-tools.md`).
+    fn on_agent_resumed(&mut self, id: &str, description: &str, agent_type: &str, prompt: &str) {
+        self.app.resume_agent(id, description, agent_type, prompt);
+        self.agent_clocks.insert(id.to_string(), Instant::now());
+        self.agent_expiry.remove(id);
+    }
+
     /// Fold one subagent event into its roster entry, committing to the screen
     /// when the user is inside that agent's session view (see the module doc).
-    pub(crate) fn on_agent_event(&mut self, id: &str, event: StreamEvent) {
+    /// `observed` marks a settle an `agentoutput` already reported, which owes
+    /// no completion notice (`docs/agent-tools.md`).
+    pub(crate) fn on_agent_event(&mut self, id: &str, event: StreamEvent, observed: bool) {
         let width = self.term.screen().width;
         // A subagent's permission request is the *user's* business, not the
         // roster's: raise the same shared prompt the main turn does, and stop —
@@ -141,9 +193,18 @@ impl Session<'_> {
         // What the fold appends to the agent's transcript is what the screen
         // owes it — see `commit_agent_view_event`.
         let recorded = self.app.agent(id).map_or(0, |run| run.history.len());
-        let settled = self.app.apply_agent_event(id, &event);
+        let was_final = self.app.agent(id).is_some_and(|run| run.status.is_final());
+        let settled = self.app.apply_agent_settled(id, &event, observed);
         if viewing {
             self.commit_agent_view_event(&event, width, recorded);
+        }
+        // A message delivered into a settled run reopened it — the lead's
+        // `agentsend`, or a message typed in the settle window
+        // (docs/queue.md) — so the continuation's runtime counts from now,
+        // and its row stops counting down to the sweep.
+        if was_final && self.app.agent(id).is_some_and(|run| !run.status.is_final()) {
+            self.agent_clocks.insert(id.to_string(), Instant::now());
+            self.agent_expiry.remove(id);
         }
         if let Some(notice) = settled {
             // A background agent completed on its own: the model-facing note
@@ -427,8 +488,8 @@ impl Session<'_> {
     /// resolution, so taking them first is what makes the roster snapshots the
     /// recorded group entries are built from final (`docs/agent-tool.md`).
     pub(crate) fn drain_agent_events(&mut self) {
-        while let Ok(AgentEvent::Stream { id, event }) = self.agent_rx.try_recv() {
-            self.on_agent_event(&id, event);
+        while let Ok(message) = self.agent_rx.try_recv() {
+            self.handle_agent_message(message);
         }
     }
 
@@ -479,7 +540,7 @@ impl Session<'_> {
                 if on_screen {
                     self.commit_agent_tail(recorded, width);
                 }
-                let _ = self.agent_registry.kill(id);
+                let stop = self.agent_registry.kill(id);
                 self.agent_clocks.remove(id);
                 // The open thought settled above, through the same helper the
                 // event path uses — this only makes sure no clock survives to
@@ -489,10 +550,17 @@ impl Session<'_> {
                 self.agent_expiry
                     .insert(id.to_string(), Instant::now() + linger);
                 if let Some(notice) = notice {
-                    self.registry.post_notice(notice.context_text(), true);
-                    self.app.defer_agent_notice(notice);
-                    if !self.app.turn_active() {
-                        self.dispatch_after_turn();
+                    if stop.watched {
+                        // An `agentoutput` waiting on it reports the stop
+                        // itself — the lead must not hear it twice
+                        // (docs/agent-tools.md *One notice per answer*).
+                        self.app.settle_agent_completion(&notice);
+                    } else {
+                        self.registry.post_notice(notice.context_text(), true);
+                        self.app.defer_agent_notice(notice);
+                        if !self.app.turn_active() {
+                            self.dispatch_after_turn();
+                        }
                     }
                 }
             }
@@ -638,11 +706,12 @@ impl Session<'_> {
         // Sweep finished agents whose linger expired — deferred while the user is
         // inside that agent's session view (the deadline pushes forward, so
         // leaving restarts the full linger), and a timer whose agent reopened (a
-        // chat continuation) is dropped.
+        // chat continuation) is dropped. Only the **row** goes: the registry
+        // keeps the agent's conversation and the roster retires its entry, so
+        // the lead can still resume it (docs/agent-tools.md *Retention*).
         let Session {
             agent_expiry,
             app,
-            agent_registry,
             agent_thinking_clocks,
             ..
         } = self;
@@ -656,7 +725,6 @@ impl Session<'_> {
             }
             if now >= *deadline {
                 app.remove_agent(id);
-                agent_registry.remove(id);
                 agent_thinking_clocks.remove(id);
                 return false;
             }
@@ -688,11 +756,12 @@ impl Session<'_> {
 }
 
 impl Session<'_> {
-    /// The subagent channel's branch: fold the event in, then — with nothing in
-    /// flight and a settled background agent's note waiting — settle it at once and
-    /// start the automatic follow-up turn (the background-shell pattern).
-    pub(crate) fn on_agent_stream(&mut self, id: &str, event: StreamEvent) {
-        self.on_agent_event(id, event);
+    /// The subagent channel's branch: handle the message, then — with nothing
+    /// in flight and a settled background agent's note waiting — settle it at
+    /// once and start the automatic follow-up turn (the background-shell
+    /// pattern).
+    pub(crate) fn on_agent_message(&mut self, message: AgentEvent) {
+        self.handle_agent_message(message);
         if !self.app.turn_active() && self.app.has_pending_agent_notices() {
             self.dispatch_after_turn();
         }
