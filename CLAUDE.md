@@ -2973,8 +2973,13 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   theme's** palette (`ui/palette.rs`, one `Palette` table of twenty-one
   roles per `/theme` entry; `docs/theme.md`). A new colour is a new role on
   `Palette` filled in every table plus its accessor; a new theme is one
-  table; and a colour is never written as a literal `Color::Rgb` outside
-  `palette.rs`, since a literal is a colour that ignores the theme. The
+  table; and a colour is never written as a literal — a `Color::Rgb`, a
+  named `Color::Yellow`, a `Stylize` `.red()` — outside `palette.rs`, since
+  a literal is a colour that ignores the theme
+  (`ui::tests::palette::no_renderer_names_a_colour_of_its_own` walks the
+  source and fails on one; the one value a renderer may name is
+  `Color::Reset`, the terminal's own ink, which is what every prose body
+  wears by design — `docs/theme.md` *What is deliberately not themed*). The
   accessors name — bullets,
   prompt, colours (including the red error bullet and the cyan system bullet),
   border, the tool-call styling (`TOOL_*` — dim-waiting/grey-running/green/red status

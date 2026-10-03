@@ -30,8 +30,11 @@ use crate::highlight::CodeTheme;
 /// else.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct Palette {
-    /// The reply text, the composer prompt, a tool's name and arguments and
-    /// output, the status verb's shimmer crest — the brightest ink.
+    /// The brightest ink the chrome paints: the assistant bullet, the
+    /// composer prompt, a tool's name and arguments and output, a detail
+    /// page's values, the status verb's shimmer crest — never the prose,
+    /// which wears the terminal's own foreground (`docs/theme.md`, *What is
+    /// deliberately not themed*).
     pub text: Color,
     /// A quieter ink: an unselected model id, a settings value, the comet's
     /// mid-tail, the thinking header's shimmer floor.
@@ -42,9 +45,9 @@ pub(super) struct Palette {
     pub dim: Color,
     /// The composer box's rules and every framed view's.
     pub border: Color,
-    /// The user bubble's ink and ground — the `❯ …` block, muted on purpose:
-    /// the user's own words are the one thing on screen they need not
-    /// re-read.
+    /// The user bubble's `❯` marker and its ground — the dark block, muted
+    /// on purpose: the user's own words are the one thing on screen they
+    /// need not re-read, and inside it they wear the terminal's own ink.
     pub user_fg: Color,
     pub user_bg: Color,
     /// The `/resume` picker's selected-row tint.

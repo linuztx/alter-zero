@@ -7,6 +7,9 @@ use crate::ui::palette::{activate_theme, active_theme, palette, palette_of, with
 use crate::ui::theme::*;
 use crate::ui::wrap::{blend_color, lerp_color};
 
+use crate::app::OfflineInfo;
+use std::time::Duration;
+
 /// The `(r, g, b)` of an RGB colour.
 fn rgb_of(color: Color) -> (u8, u8, u8) {
     match color {
@@ -335,4 +338,206 @@ fn a_rendered_cell_wears_the_active_theme() {
         bubble_under(Theme::Nord),
         Some(Color::Rgb(0x3B, 0x42, 0x52))
     );
+}
+
+/// The `.rs` files under `dir` — test trees (`tests/`, `tests.rs`) left
+/// out — in a stable order, so a failure names the same line every run.
+fn source_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+    let mut entries: Vec<_> = std::fs::read_dir(dir)
+        .unwrap_or_else(|e| panic!("read {}: {e}", dir.display()))
+        .map(|entry| entry.expect("a directory entry").path())
+        .collect();
+    entries.sort();
+    for path in entries {
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        if path.is_dir() {
+            if name != "tests" {
+                source_files(&path, out);
+            }
+        } else if name.ends_with(".rs") && name != "tests.rs" {
+            out.push(path);
+        }
+    }
+}
+
+/// `Stylize`'s colour shorthands — `Color::Red` spelled `.red()`.
+const STYLIZE_COLOURS: [&str; 32] = [
+    "black",
+    "red",
+    "green",
+    "yellow",
+    "blue",
+    "magenta",
+    "cyan",
+    "gray",
+    "dark_gray",
+    "light_red",
+    "light_green",
+    "light_yellow",
+    "light_blue",
+    "light_magenta",
+    "light_cyan",
+    "white",
+    "on_black",
+    "on_red",
+    "on_green",
+    "on_yellow",
+    "on_blue",
+    "on_magenta",
+    "on_cyan",
+    "on_gray",
+    "on_dark_gray",
+    "on_light_red",
+    "on_light_green",
+    "on_light_yellow",
+    "on_light_blue",
+    "on_light_magenta",
+    "on_light_cyan",
+    "on_white",
+];
+
+/// A `Color` that is not ratatui's: the session emulator's `vt100::Color`
+/// is a program's own SGR, read to find its highlighted row and reported to
+/// the model as text (`pty::screen`) — never a colour the TUI paints.
+const FOREIGN_COLOUR_PATHS: [&str; 1] = ["vt100::"];
+
+/// Whether `line` names a colour of its own: a `Color::` variant other than
+/// `Reset` (the terminal's own ink), an `Rgb` with literal components (one
+/// built from variables is a blend or a carrier, not a colour choice), a
+/// `from_*` constructor, or a `Stylize` colour shorthand. A comment is prose
+/// and does not count, and neither does another crate's `Color`.
+fn names_a_colour(line: &str) -> bool {
+    let code = line.trim_start();
+    if code.starts_with("//") {
+        return false;
+    }
+    for (at, _) in code.match_indices("Color::") {
+        if FOREIGN_COLOUR_PATHS
+            .iter()
+            .any(|path| code[..at].ends_with(path))
+        {
+            continue;
+        }
+        let rest = &code[at + "Color::".len()..];
+        let ident_len = rest
+            .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+            .unwrap_or(rest.len());
+        let (ident, after) = rest.split_at(ident_len);
+        let arg = after.trim_start_matches(|c: char| c == '(' || c.is_whitespace());
+        match ident {
+            "Reset" => {}
+            "Rgb" if !arg.starts_with(|c: char| c.is_ascii_digit()) => {}
+            _ => return true,
+        }
+    }
+    STYLIZE_COLOURS
+        .iter()
+        .any(|name| code.contains(&format!(".{name}()")))
+}
+
+#[test]
+fn no_renderer_names_a_colour_of_its_own() {
+    // Every colour the TUI paints is a `Palette` role read through a
+    // `ui::theme` accessor — the one convention a `/theme` switch depends
+    // on, since a colour named at a call site is a colour the switch cannot
+    // reach. This walks the crate's own source (its tests cut away) and
+    // refuses a named ratatui colour, an indexed one, an RGB literal, a
+    // `from_*` constructor or a `Stylize` colour shorthand anywhere but the
+    // palette tables and the highlighter's ANSI map, where bat's `ansi`
+    // theme resolves its scopes to the terminal's own sixteen — that theme's
+    // whole point. `Color::Reset` is allowed: it is the terminal's own ink,
+    // what the prose wears by design (`docs/theme.md`), and the `ansi`
+    // palette's `text`; an `Rgb` built from variables is a blend of palette
+    // values or a link/image carrier, never a colour choice.
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut files = Vec::new();
+    source_files(&root, &mut files);
+    assert!(
+        files.iter().any(|f| f.ends_with("ui/theme.rs")),
+        "the walk reaches the renderers"
+    );
+    let exempt = [
+        root.join("ui").join("palette.rs"),
+        root.join("highlight.rs"),
+    ];
+    let mut offenders = Vec::new();
+    for path in files.iter().filter(|p| !exempt.contains(p)) {
+        let text = std::fs::read_to_string(path)
+            .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+        let lines: Vec<&str> = text.lines().collect();
+        for (i, line) in lines.iter().enumerate() {
+            // An inline `#[cfg(test)] mod tests {` closes the file's
+            // production code; a `#[cfg(test)]` on a field or a block does not.
+            if line.trim() == "#[cfg(test)]"
+                && lines.get(i + 1).is_some_and(|next| {
+                    next.trim_start().starts_with("mod ") && next.trim_end().ends_with('{')
+                })
+            {
+                break;
+            }
+            if names_a_colour(line) {
+                let shown = path.strip_prefix(root.parent().unwrap()).unwrap_or(path);
+                offenders.push(format!("{}:{}: {}", shown.display(), i + 1, line.trim()));
+            }
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "a colour named at a call site ignores /theme — read it through a \
+         `ui::theme` accessor over a `Palette` role instead (docs/theme.md):\n{}",
+        offenders.join("\n")
+    );
+}
+
+#[test]
+fn the_warning_amber_is_each_themes_own() {
+    // One caution role wears every warning the chrome shows — the `retrying
+    // n/m` clause, the offline row's host, the context view's `system:` tag,
+    // a background session waiting for input, the ask review's `⚠`, the
+    // timeout chip's last minute, the `/donate` caution (and, through
+    // `ask_warning_color`, an untrusted `/mcp` server and the `/trust`
+    // badge) — and every theme paints it with its own value: Catppuccin's
+    // pale yellow, Dracula's orange, Latte's dark amber, the terminal's
+    // `Yellow` under `ansi`. Pinned on the accessors *and* on a built row,
+    // since a view reaching past its accessor for a literal would pass the
+    // accessor half alone.
+    for theme in Theme::ALL {
+        with_theme(theme, || {
+            let own = palette_of(theme).warning;
+            for (name, color) in [
+                ("status_retry_color", status_retry_color()),
+                ("status_offline_color", status_offline_color()),
+                ("context_system_color", context_system_color()),
+                ("bg_notice_waiting_color", bg_notice_waiting_color()),
+                ("ask_warning_color", ask_warning_color()),
+                ("ask_timeout_warn_bg", ask_timeout_warn_bg()),
+                ("donate_caution_color", donate_caution_color()),
+            ] {
+                assert_eq!(color, own, "{theme:?}: {name} is not the theme's warning");
+            }
+            let outage = OfflineInfo {
+                host: "api.example.com".into(),
+                attempts: 2,
+                began: Duration::ZERO,
+            };
+            let row = &offline_lines(&outage, Duration::ZERO, 120)[0];
+            let host = row
+                .spans
+                .iter()
+                .find(|s| s.content == "api.example.com")
+                .expect("the host as its own span");
+            assert_eq!(
+                host.style.fg,
+                Some(own),
+                "{theme:?}: the offline row's host is not in the theme's warning"
+            );
+        });
+    }
+    // And it is a different amber per design system, not one yellow under
+    // eleven names: the default's pale yellow is none of these.
+    let mocha = palette_of(Theme::Mocha).warning;
+    for theme in [Theme::Latte, Theme::Dracula, Theme::Monokai, Theme::Ansi] {
+        assert_ne!(palette_of(theme).warning, mocha, "{theme:?}");
+    }
+    assert_eq!(palette_of(Theme::Ansi).warning, Color::Yellow);
 }

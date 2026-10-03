@@ -48,11 +48,11 @@ chrome paints is one of these or derived from one:
 
 | role | what wears it |
 | --- | --- |
-| `text` | the reply text, the composer prompt, a tool's name/arguments/output, the shimmer's crest, the comet's head |
+| `text` | the brightest ink the chrome paints: the assistant bullet, the composer prompt, a tool's name/arguments/output, a detail page's values, the shimmer's crest, the comet's head — never the prose, which is the terminal's own (*What is deliberately not themed*, below) |
 | `text_muted` | an unselected model id, a settings value, the comet's mid-tail, the thinking header's shimmer floor |
 | `dim` | the `⎿` corners and placeholders, the footer, the hints, the counters, a waiting or running bullet (the one grey it blinks in), quotes, timestamps |
 | `border` | the composer box's rules and every framed view's |
-| `user_fg` / `user_bg` | the `❯ …` user bubble (and a `!` command's header) — muted on purpose |
+| `user_fg` / `user_bg` | the user bubble's `❯` marker and its ground (a `!` command's header shares the ground) — muted on purpose; the words inside wear the terminal's own ink |
 | `selection_bg` | the `/resume` picker's selected row |
 | `accent` | what every picker selects with, the system bullet, inline code, the banner hint, a permission prompt's title, the Ctrl+R query, the ↓-focused footer chip's fill, the agent session view's composer label chip — and the gradient's near end (the banner, every page title) |
 | `on_accent` | ink over an `accent` fill (the footer chip, the current ask-question chip, the agent session view's composer label) |
@@ -293,6 +293,55 @@ activates it **before the banner is built** (an absent or corrupt file keeps
 the default — never a startup failure), so the first frame already wears
 the saved theme.
 
+## What is deliberately not themed
+
+The palette colours the **chrome** — bullets, rules, markers, gutters,
+hints, tints, the semantic hues — and leaves the **prose** to the terminal.
+The reply's markdown body, the user bubble's words, a notice's text, the
+composer's draft, and a modal's question and unselected options are built
+with no foreground at all (`Style::default()`, or the explicit
+`Color::Reset` where a builder takes a colour), so they wear the terminal's
+own foreground and a `/theme` switch leaves them alone. The terminal's
+default foreground is the one ink it guarantees readable on its own
+background, most of what is on screen is prose, and it is the reference
+renderers' rule too — `assistant.rs`'s `heading_style`, ported from codex,
+is modifiers-only for the same reason. The `ansi` palette's `text` *is*
+`Reset`, so there the two agree by construction. What is themed *inside*
+prose is what carries meaning beyond the words — inline code (`accent`),
+a link and a list marker (`link`), a code block's syntax colours (`code`)
+— and the bullet in front of it.
+
+Three more places name a colour the palette does not own, each for a
+reason:
+
+- `highlight.rs`'s ANSI map turns bat's `ansi` theme — scopes encoded as
+  palette *indices* — into the terminal's own sixteen colours, which is
+  that theme's whole point.
+- The `links` and `images` carriers pack an id into `Style::underline_color`
+  as an `Rgb` triple built from the id; `term::draw_cells` strips it before
+  anything reaches the terminal (`docs/links.md`, `docs/images.md`), so it
+  is never a colour on screen.
+- The `--help` page and a usage error print before the TUI boots, in the
+  terminal's own bold cyan and red (`cli::help`, `docs/cli.md`); no theme
+  is loaded for a page that may be going to a pipe.
+
+Everything else is a role, and two tests keep it that way.
+`no_renderer_names_a_colour_of_its_own` (`ui/tests/palette.rs`) walks the
+crate's source with its tests cut away and fails on a named ratatui
+colour, an indexed one, an RGB literal, a `from_*` constructor or a
+`Stylize` shorthand anywhere but `palette.rs` and the highlighter's map
+(the session emulator's `vt100::Color`, a program's own SGR read as text,
+is another crate's type and is skipped) — so a `Color::Yellow` typed at a
+call site is a red test, not a yellow that ignores the switch.
+`the_warning_amber_is_each_themes_own` pins the caution role in
+particular — every warning accessor, and a built offline row, under every
+theme — since a warning is the hue most easily hard-coded by habit, and
+the one most likely to be *read* as hard-coded: eight of the eleven design
+systems paint it with a yellow of their own (`#F9E2AF`, `#EBCB8B`,
+`#FABD2F`, …), so Mocha → Nord moves it less than Mocha → Dracula's orange
+does. It moves every time; `smoke.sh` Phase 111's raw-SGR read is the same
+check in a real terminal.
+
 ## Design notes
 
 - **Why is Catppuccin Mocha the default, not the old look?** The code
@@ -375,7 +424,9 @@ the saved theme.
   semantic hues per theme, One Dark value for value, the ANSI theme naming
   no RGB and its stepping blends, the light theme's inverted inks and
   tints, the gradient/blend derivations, the error toast's softened red in
-  every theme, and a rendered cell wearing the active theme.
+  every theme, a rendered cell wearing the active theme, every warning
+  accessor and a built offline row wearing each theme's own amber, and the
+  source walk that refuses a colour named outside the palette.
 - `ui/tests/theme_view.rs` — the framed page (rules, search, rows, counter,
   preview, description, hint), the preview's real cells, every row's own
   swatch, the preview in the highlighted theme against the frame in the
