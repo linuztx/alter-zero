@@ -295,8 +295,10 @@ impl Session<'_> {
             // Read by the `read` executor per call — nothing to redraw, since
             // this row is about the request and not the screen.
             SettingKey::AutoResizeImages => self.sync_image_policy(),
-            // Read where they are used — nothing to rebuild.
-            SettingKey::HideThinking | SettingKey::AutoCompact => {}
+            // Read where they are used — nothing to rebuild. The ask timeout
+            // is read by the draw tick on every reading of the idle clock, so
+            // `never` stops a running wait at once (docs/ask.md).
+            SettingKey::HideThinking | SettingKey::AutoCompact | SettingKey::AskTimeout => {}
             // Shift+Tab's path owns this one; the menu never routes it here.
             SettingKey::PermissionMode => {}
             // The one per-user row: its file is telemetry.json, and turning

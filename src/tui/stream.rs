@@ -340,7 +340,9 @@ impl Session<'_> {
                 // The model is asking the user questions: raise the inline
                 // modal (which stashes the composer draft) — the backend
                 // thread is parked on the ask gate until an
-                // `Action::ResolveAsk` answers it. See docs/ask.md.
+                // `Action::ResolveAsk` answers it — or, with the user away,
+                // the idle clock the next draw starts runs out and resolves
+                // it unanswered. See docs/ask.md.
                 self.app.open_ask(request);
                 false
             }

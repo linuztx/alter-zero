@@ -474,6 +474,7 @@ impl<'t> Session<'t> {
             burst: PasteBurst::new(),
             clocks: StatusClocks::started_now(),
             toast_deadline: None,
+            ask_timer: alter_zero::ask::AskTimer::new(),
             bg_clocks: HashMap::new(),
             agent_clocks: HashMap::new(),
             agent_thinking_clocks: HashMap::new(),

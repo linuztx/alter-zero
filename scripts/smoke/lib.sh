@@ -395,10 +395,16 @@ smoke_split_args() {
 	fi
 }
 # has CONTENT [grep options] PATTERN — does the captured text match?
+#
+# The content goes in as a here-string, never piped from printf: bash's
+# printf writes a multi-line capture in several write()s, `grep -q` exits on
+# its first match, and the writer's SIGPIPE then fails the whole pipeline
+# under `pipefail` — a match reported as a miss whenever it falls early in
+# the pane (and, in expect_lacks, a forbidden match let through).
 has() {
 	local content="$1"
 	shift
-	printf '%s\n' "$content" | grep -q "$@"
+	grep -q "$@" <<<"$content"
 }
 lacks() { ! has "$@"; }
 # pane_has SESSION [capture opts --] [grep opts] PATTERN
@@ -518,14 +524,14 @@ expect_has() {
 	local content="$1" msg="${*: -1}"
 	shift
 	set -- "${@:1:$#-1}"
-	printf '%s\n' "$content" | grep -q "$@" || fail "$msg"
+	grep -q "$@" <<<"$content" || fail "$msg"
 }
 # expect_lacks CONTENT [grep opts] PATTERN MESSAGE
 expect_lacks() {
 	local content="$1" msg="${*: -1}"
 	shift
 	set -- "${@:1:$#-1}"
-	printf '%s\n' "$content" | grep -q "$@" && fail "$msg"
+	grep -q "$@" <<<"$content" && fail "$msg"
 	return 0
 }
 # expect_eq ACTUAL EXPECTED MESSAGE

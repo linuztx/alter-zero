@@ -420,3 +420,18 @@ fn a_cut_value_ends_with_an_ellipsis() {
     let text = plain(&line);
     assert!(text.trim_end().ends_with('…'), "{text:?}");
 }
+
+#[test]
+fn a_never_ask_timeout_is_dimmed_like_any_off_value() {
+    // `never` is the Ask timeout's off state (docs/ask.md): no clock runs.
+    let mut app = settings_app();
+    app.settings_mut().ask_timeout_secs = 0;
+    for c in "timeout".chars() {
+        app.on_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+    }
+    let buf = render(&app, 78);
+    let line = row(&buf, 4, 78);
+    assert!(line.contains("Ask timeout"), "{line:?}");
+    let at = u16::try_from(line.find("never").expect("the value")).unwrap();
+    assert_eq!(buf[(at, 4)].fg, settings_value_off_color(), "never is dim");
+}

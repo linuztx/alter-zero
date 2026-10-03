@@ -712,3 +712,77 @@ fn show_tips_never_reaches_settings_json() {
     assert!(file.tips, "not this file's to record");
     assert_eq!(file, SessionSettings::default());
 }
+
+#[test]
+fn ask_timeout_defaults_to_ten_minutes_and_cycles_the_offered_waits() {
+    // How long a question waits on an idle user before the agent goes on
+    // without an answer (docs/ask.md). `never` is the far end of the waits.
+    let s = SessionSettings::default();
+    assert_eq!(
+        s.ask_timeout(),
+        Some(crate::ask::DEFAULT_ASK_TIMEOUT),
+        "ten minutes by default"
+    );
+    let seen = cycle_values(s, SettingKey::AskTimeout, ASK_TIMEOUT_CHOICES.len());
+    assert_eq!(seen, ["10m", "20m", "30m", "1h", "never", "5m", "10m"]);
+}
+
+#[test]
+fn an_ask_timeout_of_never_stops_the_clock() {
+    let s = SessionSettings {
+        ask_timeout_secs: 0,
+        ..SessionSettings::default()
+    };
+    assert_eq!(s.ask_timeout(), None, "no clock runs at all");
+    assert_eq!(s.value_text(SettingKey::AskTimeout, MANUAL), "never");
+}
+
+#[test]
+fn an_ask_timeout_the_menu_does_not_offer_reads_whole_and_cycles_back_in() {
+    // `ALTER_ZERO_ASK_TIMEOUT_SECS=90` sets a wait the menu never lists: it
+    // still reads as the limit it is, and a cycle joins the list at its start.
+    let mut s = SessionSettings {
+        ask_timeout_secs: 90,
+        ..SessionSettings::default()
+    };
+    assert_eq!(s.ask_timeout(), Some(std::time::Duration::from_secs(90)));
+    assert_eq!(s.value_text(SettingKey::AskTimeout, MANUAL), "1m 30s");
+    assert!(s.cycle(SettingKey::AskTimeout));
+    assert_eq!(s.ask_timeout_secs, ASK_TIMEOUT_CHOICES[0]);
+}
+
+#[test]
+fn the_ask_timeout_persists_per_directory_and_its_override_never_sticks() {
+    // The environment's wait (a smoke run's 3 s) rides the live blob only;
+    // cycling another row must not write it, cycling this one does.
+    let live = SessionSettings {
+        ask_timeout_secs: 3,
+        error_retry: 10,
+        ..SessionSettings::default()
+    };
+    let mut file = SessionSettings::default();
+    file.copy_value(SettingKey::ErrorRetry, &live);
+    assert_eq!(
+        file.ask_timeout(),
+        Some(crate::ask::DEFAULT_ASK_TIMEOUT),
+        "the override did not stick"
+    );
+    file.copy_value(SettingKey::AskTimeout, &live);
+    assert_eq!(file.ask_timeout_secs, 3, "cycling the row records it");
+    let json = file.to_json();
+    assert!(json.contains("\"ask_timeout_secs\": 3"), "{json}");
+    assert_eq!(SessionSettings::parse(&json), file);
+}
+
+#[test]
+fn the_ask_timeout_row_follows_max_tool_calls() {
+    // Both say how a turn runs while nobody watches it — and the per-user
+    // rows keep the foot of the menu.
+    let all = SettingKey::ALL;
+    let at = all
+        .iter()
+        .position(|k| *k == SettingKey::AskTimeout)
+        .expect("listed");
+    assert_eq!(all[at - 1], SettingKey::MaxToolCalls);
+    assert_eq!(all[at + 1], SettingKey::Tips);
+}

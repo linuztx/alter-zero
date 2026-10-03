@@ -723,6 +723,9 @@ impl Session<'_> {
         // …and each running agent's, plus the linger sweep (docs/agent-tool.md).
         self.tick_agent_roster();
         self.expire_toast();
+        // Before the paint: a question whose idle clock ran out closes in
+        // this very frame (docs/ask.md).
+        self.tick_ask_clock();
         self.draw_active_view()?;
         // The ↓ manager band re-arms frames like an active turn: its details
         // view's Runtime ticks with no events otherwise — and so does a non-empty

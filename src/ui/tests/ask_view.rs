@@ -631,3 +631,127 @@ fn a_full_entry_row_keeps_the_caret_inside_the_width() {
         assert!(x < 80, "{n} chars: the caret sits at column {x}");
     }
 }
+
+// ===== The idle timeout's countdown (docs/ask.md) =====
+
+/// The closing rule's countdown chip — the span carrying the label text.
+fn countdown_span(app: &App, width: u16) -> Option<Span<'static>> {
+    let lines = ask_lines(app, width);
+    lines
+        .last()?
+        .spans
+        .iter()
+        .find(|s| s.content.contains("Timeout:"))
+        .cloned()
+}
+
+#[test]
+fn the_closing_rule_counts_down_while_the_idle_clock_runs() {
+    let mut app = App::new();
+    open(&mut app, vec![coffee_question()]);
+    // No clock (the timeout is off, or no draw has injected one): plain.
+    let bare = plain(ask_lines(&app, 80).last().unwrap());
+    assert_eq!(bare, "─".repeat(80));
+    app.set_ask_remaining(Some(std::time::Duration::from_secs(581)));
+    let rule = plain(ask_lines(&app, 80).last().unwrap());
+    assert!(rule.ends_with("── Timeout: 9:41 ─"), "got {rule:?}");
+    assert_eq!(rule.chars().count(), 80, "the rule keeps its width");
+}
+
+#[test]
+fn the_countdown_rounds_up_so_it_never_reads_zero_while_open() {
+    let mut app = App::new();
+    open(&mut app, vec![coffee_question()]);
+    for (left_ms, shown) in [(600_000, "10:00"), (599_200, "10:00"), (400, "0:01")] {
+        app.set_ask_remaining(Some(std::time::Duration::from_millis(left_ms)));
+        let rule = plain(ask_lines(&app, 80).last().unwrap());
+        assert!(
+            rule.ends_with(&format!(" Timeout: {shown} ─")),
+            "{left_ms} ms left: {rule:?}"
+        );
+    }
+}
+
+#[test]
+fn the_countdown_is_a_chip_in_the_theme_accent_set_into_the_rule() {
+    // The user-requested fill: the countdown rides the closing rule as the
+    // agent session view's label does — a chip of the theme's accent under
+    // its on-accent ink, the label's padding inside the fill, the rule before
+    // it and the one tail cell after it bare and border-coloured.
+    use crate::app::Theme;
+    use crate::ui::palette::{palette_of, with_theme};
+    use crate::ui::theme::{agent_view_label_bg, agent_view_label_fg, border_color};
+    let mut app = App::new();
+    open(&mut app, vec![coffee_question()]);
+    app.set_ask_remaining(Some(std::time::Duration::from_secs(581)));
+    let lines = ask_lines(&app, 80);
+    let spans = &lines.last().unwrap().spans;
+    let chip = countdown_span(&app, 80).expect("the countdown");
+    assert_eq!(
+        chip.content, " Timeout: 9:41 ",
+        "the padding rides the fill"
+    );
+    assert_eq!(chip.style.bg, Some(agent_view_label_bg()));
+    assert_eq!(chip.style.fg, Some(agent_view_label_fg()));
+    for span in spans.iter().filter(|s| !s.content.contains("Timeout:")) {
+        assert!(
+            span.content.chars().all(|c| c == '─'),
+            "only rule cells beside the chip: {span:?}"
+        );
+        assert_eq!(span.style.fg, Some(border_color()), "{span:?}");
+        assert_eq!(span.style.bg, None, "no fill outside the chip: {span:?}");
+    }
+    // Every theme paints it from its own table, the ink never the fill.
+    for theme in Theme::ALL {
+        with_theme(theme, || {
+            let p = palette_of(theme);
+            let chip = countdown_span(&app, 80).expect("the countdown");
+            assert_eq!(chip.style.bg, Some(p.accent), "{theme:?}: the fill");
+            assert_eq!(chip.style.fg, Some(p.on_accent), "{theme:?}: the ink");
+            assert_ne!(p.on_accent, p.accent, "{theme:?}: the ink must show");
+        });
+    }
+}
+
+#[test]
+fn the_countdown_turns_amber_in_its_last_minute() {
+    use crate::ui::theme::{agent_view_label_bg, agent_view_label_fg, ask_warning_color};
+    let mut app = App::new();
+    open(&mut app, vec![coffee_question()]);
+    app.set_ask_remaining(Some(std::time::Duration::from_secs(60)));
+    let calm = countdown_span(&app, 80).expect("the countdown");
+    assert_eq!(
+        calm.style.bg,
+        Some(agent_view_label_bg()),
+        "1:00 left is calm"
+    );
+    app.set_ask_remaining(Some(std::time::Duration::from_secs(59)));
+    let late = countdown_span(&app, 80).expect("the countdown");
+    assert_eq!(
+        late.style.bg,
+        Some(ask_warning_color()),
+        "0:59 left lights the chip amber"
+    );
+    assert_eq!(late.style.fg, Some(agent_view_label_fg()), "the same ink");
+}
+
+#[test]
+fn a_rule_too_narrow_for_the_countdown_stays_plain_and_the_height_holds() {
+    let mut app = App::new();
+    open(&mut app, vec![coffee_question()]);
+    // ` Timeout: 9:41 ` is 15 columns, plus the tail cell and a two-cell
+    // lead: 17 columns are too few, 18 are enough.
+    let before = ask_lines(&app, 17).len();
+    app.set_ask_remaining(Some(std::time::Duration::from_secs(581)));
+    let lines = ask_lines(&app, 17);
+    assert_eq!(plain(lines.last().unwrap()), "─".repeat(17));
+    assert_eq!(lines.len(), before, "the countdown never costs a row");
+    let fits = plain(ask_lines(&app, 18).last().unwrap());
+    assert_eq!(fits, "── Timeout: 9:41 ─");
+    let wide_before = {
+        app.set_ask_remaining(None);
+        ask_lines(&app, 80).len()
+    };
+    app.set_ask_remaining(Some(std::time::Duration::from_secs(581)));
+    assert_eq!(ask_lines(&app, 80).len(), wide_before);
+}

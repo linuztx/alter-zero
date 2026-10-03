@@ -189,7 +189,7 @@ A **library** (`src/lib.rs` → `app`, `stream`, `ui`, `term`, `frame`, `paste`,
 the detached-exec hook, the CLI resolution, the viewport, the loop — over
 **`src/tui/`**, the binary-private tree that drives the codex-style **async
 (tokio) `select!`** loop (`event_loop`, `actions`, `turn`, `stream`, `agent`,
-`background`, `permission`, `view`, `commit`, `models`, `config`, `bootstrap`,
+`background`, `permission`, `ask`, `view`, `commit`, `models`, `config`, `bootstrap`,
 `startup`, `recorder`, `resume`, `history_store`, `settings`, `telemetry`, `update`, `update_cli`, `shell`, `workers`, `host`, `mascot`, `spinner`, `theme`, `donate`, `export`, `secrets`, `mcp`, `trust`, `login`,
 with the **`Session`** struct itself in `mod.rs` — every handler is an `impl
 Session` block in its area module, reaching the private fields the way `app/`'s
@@ -1626,7 +1626,25 @@ while the model reads the schema's `{"answers": {question: labels},
 `ToolCall::context_output`, so the derived context, Ctrl+D, and a `/resume`
 all replay exactly what was sent; abandoned requests (Esc-cancelled
 permission turns, `/clear`) release on the gate as declines at the loop
-bottom so no thread parks; the offline dummy's `Play::Asked` scenario (cue
+bottom so no thread parks; and a question **nobody touches** times out —
+the pure idle clock `ask::AskTimer` (keeping when the wait started, never a
+deadline, so no wait can overflow an `Instant`; started over by **every key
+press or paste** and by a different question opening; read with injected
+instants by the draw tick before the paint — `tui::ask`'s
+`Session::ask_timer`) runs `ask::DEFAULT_ASK_TIMEOUT` (ten
+minutes; the `/settings` **Ask timeout** row, `ALTER_ZERO_ASK_TIMEOUT_SECS`,
+`0` = never) and then `App::expire_asks` resolves the open modal and every
+queued question `AskDecision::TimedOut { answers, after }` — the answers
+given before the user left kept, an entry's unaccepted text not — so the
+red `User did not answer within 10m` cell commits while the model reads the
+short keep-working result (`ask::timed_out_result`: the user is not
+available, continue on your best judgment, state the assumptions, don't
+ask again until the user writes), the modal's
+closing rule counting the wait down meanwhile (`── Timeout: 9:41 ─`, a
+chip in the agent view label's accent dress, amber in its last minute;
+`smoke.sh` Phase 128, Ctrl+D proving
+the model read it), and the tool's own description leaving every unanswered
+outcome to the result, never naming the timeout; the offline dummy's `Play::Asked` scenario (cue
 "ask" + "question") drives the whole round trip through the real
 `ask_user` mapping — three questions: single-select coffee, multi-select
 demo topics, preview+notes code style) in `docs/ask.md`; and the **task
@@ -2067,7 +2085,7 @@ the **`/settings` menu** (`docs/settings.md`: the knobs that were only ever
 a hard-coded `agent::MAX_TOOL_ITERATIONS`, and an always-on auto-compaction —
 made *visible and changeable mid-session*
 in the `/model` picker's inline frame, the third composer-replacing picker:
-seventeen rows (**Hide thinking**, **Show images**, **Image width**,
+eighteen rows (**Hide thinking**, **Show images**, **Image width**,
 **Auto-resize images** — the three from `docs/images.md` — **Error retry**,
 **Tools**, **Permission
 mode**, **Checkpoints**, **Auto compact**, **Project docs**, **Hooks**,
@@ -2076,7 +2094,10 @@ mode**, **Checkpoints**, **Auto compact**, **Project docs**, **Hooks**,
 trips mid-task abandons the work half-done and Esc is already the stop
 button; it counts the **calls**, not the rounds, because a round can be a
 whole parallel batch, and a round the budget can only partly afford is
-clamped rather than refused whole; **Show tips** — the spinner tip,
+clamped rather than refused whole; **Ask timeout** — how long an
+`AskUserQuestion` question waits on an idle user before the agent goes on
+without an answer, `5m`/**`10m`**/`20m`/`30m`/`1h`/`never`, `docs/ask.md`;
+**Show tips** — the spinner tip,
 `docs/tips.md`, persisted **per user** in `tips.json` beside the walk's
 position rather than in `settings.json`; **Update check** — the once-a-day
 newer-release check, `docs/update.md`: one `HEAD` of the repository's

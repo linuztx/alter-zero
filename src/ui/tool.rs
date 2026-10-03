@@ -794,8 +794,9 @@ fn tool_cell_lines(
 
 /// A resolved `AskUserQuestion` cell (`docs/ask.md`): the output's first line
 /// **is** the headline (`User answered Alter Zero's questions:` /
-/// `User declined…` / `User wants to chat…`), promoted to the `●` header —
-/// green or red by outcome — with the `· Q → A` rows in the `⎿` gutter.
+/// `User declined…` / `User wants to chat…` / `User did not answer within
+/// 10m`), promoted to the `●` header — green or red by outcome — with the
+/// `· Q → A` rows in the `⎿` gutter.
 /// `None` while the call runs (the generic header stands) or for any other
 /// tool, so the ordinary branches are untouched. `cap` bounds the gutter rows
 /// (the inline peek); `None` renders them all (the Ctrl+O transcript).

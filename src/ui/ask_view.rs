@@ -26,6 +26,42 @@ fn rule(width: u16) -> Line<'static> {
     ))
 }
 
+/// The closing rule: plain, or — while the idle clock runs — carrying the
+/// countdown right-aligned as a lit chip with one bare rule cell after it
+/// (`── Timeout: 9:41 ─`, `docs/ask.md`), the agent session view's label
+/// dress: the theme's accent under its on-accent ink, the padding inside the
+/// fill. The count rounds **up** to the whole second, so a fresh clock reads
+/// `10:00` and the last second `0:01` rather than `0:00` over a question that
+/// is still open; in its last minute the chip lights the caution amber. Too
+/// narrow to keep [`ASK_TIMEOUT_MIN_LEAD`] rule cells in front of it, the
+/// rule stays plain — the clock still runs, and the resolved cell says what
+/// happened.
+fn closing_rule(width: u16, remaining: Option<std::time::Duration>) -> Line<'static> {
+    let Some(left) = remaining else {
+        return rule(width);
+    };
+    let secs = u64::try_from(left.as_millis().div_ceil(1000)).unwrap_or(u64::MAX);
+    let count = super::login_view::countdown(std::time::Duration::from_secs(secs));
+    let label = format!(" {ASK_TIMEOUT_PREFIX}{count} ");
+    let Some(lead) = (width as usize)
+        .checked_sub(cols(&label) + 1)
+        .filter(|lead| *lead >= ASK_TIMEOUT_MIN_LEAD)
+    else {
+        return rule(width);
+    };
+    let ground = if secs < ASK_TIMEOUT_WARN.as_secs() {
+        ask_timeout_warn_bg()
+    } else {
+        ask_timeout_bg()
+    };
+    let border = Style::new().fg(border_color());
+    Line::from(vec![
+        Span::styled(PERMISSION_RULE.repeat(lead), border),
+        Span::styled(label, Style::new().fg(ask_timeout_fg()).bg(ground)),
+        Span::styled(PERMISSION_RULE, border),
+    ])
+}
+
 /// A one-space-inset row of plain `text`, wrapped to the width.
 fn text_rows(text: &str, color: Color, width: u16) -> Vec<Line<'static>> {
     let room = (width as usize).saturating_sub(cols(ASK_INDENT)).max(1);
@@ -242,7 +278,7 @@ fn ask_build(app: &App, width: u16) -> AskBuild {
     lines.push(Line::default());
     lines.push(hint_row(&hints(prompt)));
     lines.push(Line::default());
-    lines.push(rule(width));
+    lines.push(closing_rule(width, prompt.remaining));
     AskBuild {
         lines,
         cursor,

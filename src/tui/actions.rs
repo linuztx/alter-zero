@@ -41,6 +41,9 @@ impl Session<'_> {
     pub(crate) fn on_terminal_event(&mut self, event: Event) -> std::io::Result<Flow> {
         match event {
             Event::Key(key) if key.kind == KeyEventKind::Press => {
+                // A key says the user is here: a waiting question's idle
+                // clock starts over (docs/ask.md).
+                self.note_user_activity();
                 let action = self.app.on_key(key);
                 let flow = self.on_action(action)?;
                 if flow == Flow::Quit {
@@ -57,6 +60,7 @@ impl Session<'_> {
             // collapses to a `[Pasted Content N chars]` placeholder in the
             // composer, expanded back on send — docs/paste.md.
             Event::Paste(pasted) => {
+                self.note_user_activity();
                 self.on_paste(&pasted);
                 Ok(Flow::Continue)
             }

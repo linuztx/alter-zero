@@ -646,3 +646,138 @@ fn a_question_takes_the_footer_selections_with_the_composer() {
     assert!(app.ask().is_none());
     assert!(!app.background_focused(), "…and does not come back armed");
 }
+
+// ===== The idle timeout (docs/ask.md) =====
+
+fn permission(id: &str) -> PermissionRequest {
+    PermissionRequest {
+        id: id.to_string(),
+        kind: PermissionKind::Write,
+        target: "a.py".to_string(),
+        body: String::new(),
+        detail: None,
+        agent: None,
+        agent_id: None,
+    }
+}
+
+#[test]
+fn an_idle_question_expires_unanswered_and_gives_the_draft_back() {
+    let mut app = App::new();
+    type_text(&mut app, "half a thought");
+    app.open_ask(request("ask_0", vec![coffee_question()]));
+    assert!(app.has_pending_asks());
+    let after = std::time::Duration::from_secs(600);
+    assert_eq!(
+        app.expire_asks(after),
+        vec![(
+            "ask_0".to_string(),
+            AskDecision::TimedOut {
+                answers: Vec::new(),
+                after,
+            },
+        )]
+    );
+    assert!(app.ask().is_none(), "the modal closed");
+    assert!(!app.has_pending_asks());
+    assert_eq!(app.input.text(), "half a thought", "the draft came back");
+    assert!(app.expire_asks(after).is_empty(), "nothing left to expire");
+}
+
+#[test]
+fn an_expiry_keeps_what_was_answered_before_the_user_left() {
+    let mut app = App::new();
+    app.open_ask(request("ask_0", vec![coffee_question(), topics_question()]));
+    app.on_key(key(KeyCode::Char('2'))); // Latte, on to the topics page
+    let after = std::time::Duration::from_secs(3);
+    let resolutions = app.expire_asks(after);
+    assert_eq!(resolutions.len(), 1, "got {resolutions:?}");
+    let (id, decision) = &resolutions[0];
+    let AskDecision::TimedOut {
+        answers,
+        after: waited,
+    } = decision
+    else {
+        panic!("expected a timeout, got {decision:?}");
+    };
+    assert_eq!(id, "ask_0");
+    assert_eq!(*waited, after);
+    assert_eq!(answers.len(), 1, "only the answered question rides");
+    assert_eq!(answers[0].question, coffee_question().question);
+    assert_eq!(answers[0].labels, vec!["Latte".to_string()]);
+}
+
+#[test]
+fn an_expiry_mid_entry_drops_the_unaccepted_text_and_its_paste() {
+    // The Other field was open, a large paste in it, when the user left:
+    // nothing there was accepted, so none of it is an answer — and the
+    // entry's paste pair goes with it while the draft keeps its own.
+    let draft_big = "d".repeat(1200);
+    let mut app = App::new();
+    app.on_paste(&draft_big);
+    app.open_ask(request("ask_0", vec![coffee_question()]));
+    app.on_key(key(KeyCode::Char('4'))); // the Other entry
+    app.paste_into_ask(&"e".repeat(1500));
+    let resolutions = app.expire_asks(std::time::Duration::from_secs(600));
+    assert!(
+        matches!(
+            resolutions.as_slice(),
+            [(_, AskDecision::TimedOut { answers, .. })] if answers.is_empty()
+        ),
+        "got {resolutions:?}"
+    );
+    assert_eq!(app.input.text(), "[Pasted Content 1200 chars]");
+    assert_eq!(app.pasted.len(), 1, "only the draft's pair is left");
+    assert_eq!(app.take_input(), draft_big);
+}
+
+#[test]
+fn an_expiry_releases_a_question_queued_behind_a_permission_prompt() {
+    // The user is away while a background agent's permission prompt holds
+    // the screen: the main turn's queued question expires too, so that agent
+    // keeps working, while the prompt stays up for the user to answer.
+    let mut app = App::new();
+    app.open_permission(permission("perm_0"));
+    app.open_ask(request("ask_0", vec![coffee_question()]));
+    assert!(app.has_pending_asks(), "a queued question is pending too");
+    let resolutions = app.expire_asks(std::time::Duration::from_secs(600));
+    assert_eq!(resolutions.len(), 1);
+    assert_eq!(resolutions[0].0, "ask_0");
+    assert!(app.permission().is_some(), "the prompt is untouched");
+    assert!(!app.has_pending_asks());
+    // Answering the prompt later opens nothing stale behind it.
+    app.on_key(key(KeyCode::Char('1')));
+    assert!(app.permission().is_none());
+    assert!(app.ask().is_none());
+}
+
+#[test]
+fn an_expiry_opens_the_permission_queued_behind_the_question() {
+    let mut app = App::new();
+    app.open_ask(request("ask_0", vec![coffee_question()]));
+    app.open_permission(permission("perm_0"));
+    let resolutions = app.expire_asks(std::time::Duration::from_secs(600));
+    assert_eq!(resolutions.len(), 1);
+    assert!(app.ask().is_none());
+    assert!(app.permission().is_some(), "the queued permission opened");
+}
+
+#[test]
+fn the_countdown_rides_the_open_question_only() {
+    let mut app = App::new();
+    // Nothing open: a no-op rather than a stale value for the next question.
+    app.set_ask_remaining(Some(std::time::Duration::from_secs(5)));
+    app.open_ask(request("ask_0", vec![coffee_question()]));
+    assert_eq!(
+        app.ask().unwrap().remaining,
+        None,
+        "the boundary injects it per draw"
+    );
+    app.set_ask_remaining(Some(std::time::Duration::from_secs(581)));
+    assert_eq!(
+        app.ask().unwrap().remaining,
+        Some(std::time::Duration::from_secs(581))
+    );
+    app.set_ask_remaining(None);
+    assert_eq!(app.ask().unwrap().remaining, None);
+}
