@@ -748,7 +748,9 @@ fn exchange(oauth_token: &str) -> Result<ExchangedToken> {
         .header("editor-plugin-version", EDITOR_PLUGIN_VERSION)
         .header("user-agent", USER_AGENT)
         .send()
-        .map_err(|e| LlmError::Http(e.to_string()))?;
+        // Runs ahead of every request: offline here is offline for the turn,
+        // and waited out like the request itself would be (docs/offline.md).
+        .map_err(|e| super::transport_error(&e))?;
     let status = resp.status().as_u16();
     let body = read_body(resp);
     if !(200..300).contains(&status) {

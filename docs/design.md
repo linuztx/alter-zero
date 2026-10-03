@@ -398,6 +398,20 @@ which Ctrl+V reads the clipboard from.
   with **no** `Done for Ns` summary (the notice is the turn's terminal state).
   The palette still wins: Esc with the palette open only dismisses it, even
   mid-turn. The status line's `esc to interrupt` hint advertises this.
+- **A lost connection is waited out, not failed** (`docs/offline.md`). A
+  request that cannot leave the machine — no DNS answer, no route, a connect
+  that timed out — is re-sent 1 s → 2 s → 4 s → then every 5 s with no
+  deadline and without spending the Error-retry budget, while the status line
+  swaps to four amber signal bars and `Waiting for internet… (… · offline 41s
+  · retrying in 3s · esc to interrupt)`; the next answered request ends it
+  under a `Back online after 41s offline` toast and the turn carries on.
+  `llm::network` reads the cause out of `reqwest`'s error chain, and an
+  outage that does not name itself — a large request whose DNS failure
+  `reqwest` masks as a broken upload, a mid-turn request on a pooled
+  connection the outage killed (caught by the per-request outage watchdog
+  after 10 s of silence) — is recognised by a credential-less `HEAD` on an
+  unpooled connection. Esc during the wait undoes the submission, as for any
+  turn that streamed nothing.
 - **Esc Esc edits a previous message** (codex's backtrack — see
   `docs/backtrack.md`): from an idle, empty composer with a previous user
   message, the first Esc **arms** the gesture (the footer slot shows

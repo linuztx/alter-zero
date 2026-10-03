@@ -6,10 +6,11 @@ use crate::app::Spinner;
 use crate::app::{STATUS_VERBS, VERB_ROTATION};
 use crate::ui::message::compaction_full_lines;
 use crate::ui::theme::{
-    INDENT, SHIMMER_SWEEP, SPINNER_SPAN_COUNT, ai_color, header_gradient_end,
-    header_gradient_start, shimmer_base, shimmer_highlight, spinner_bars_high,
-    spinner_pulse_bright, spinner_tail_color, status_color, status_detail_color, status_done_color,
-    status_retry_color, tool_diff_add_color, tool_diff_del_color, tool_dim_color, tool_pulse_dim,
+    INDENT, OFFLINE_SIGNAL_ASCII, OFFLINE_SIGNAL_BARS, OFFLINE_SIGNAL_STEP, SHIMMER_SWEEP,
+    SPINNER_SPAN_COUNT, ai_color, header_gradient_end, header_gradient_start, shimmer_base,
+    shimmer_highlight, spinner_bars_high, spinner_pulse_bright, spinner_tail_color, status_color,
+    status_detail_color, status_done_color, status_offline_color, status_retry_color,
+    tool_diff_add_color, tool_diff_del_color, tool_dim_color, tool_pulse_dim,
 };
 
 #[test]
@@ -728,6 +729,148 @@ fn status_retrying(attempt: u32, max: u32, tokens: usize) -> TurnStatus {
     let mut s = status(tokens, TokenArrow::Up, 5, None);
     s.retry = Some(RetryInfo { attempt, max });
     s
+}
+
+// --- the offline look (docs/offline.md) -------------------------------------
+
+/// A live status waiting out a lost connection: `elapsed` on the turn's
+/// clock, the streak begun at `since`, the next attempt due at `next_check`.
+fn status_offline(elapsed: Duration, since: u64, next_check: u64, tokens: usize) -> TurnStatus {
+    let mut s = status(tokens, TokenArrow::Up, 0, None);
+    s.elapsed = elapsed;
+    s.offline = Some(OfflineInfo {
+        since: Duration::from_secs(since),
+        next_check: Duration::from_secs(next_check),
+    });
+    s
+}
+
+#[test]
+fn the_offline_line_says_it_is_waiting_and_when_it_tries_again() {
+    let text = plain(&status_line(
+        &status_offline(Duration::from_secs(5), 3, 7, 42),
+        200,
+    ));
+    assert!(
+        text.ends_with(
+            "Waiting for internet… (5s · ↑ 42 tokens · offline 2s · retrying in 2s · esc to interrupt)"
+        ),
+        "{text:?}"
+    );
+}
+
+#[test]
+fn the_offline_countdown_rounds_up_then_reads_reconnecting() {
+    // `1s` until the attempt actually fires — never a `0s` that sits there
+    // while nothing happens — then the attempt in flight says so.
+    let soon = plain(&status_line(
+        &status_offline(Duration::from_millis(5_200), 3, 7, 0),
+        200,
+    ));
+    assert!(soon.contains("· retrying in 2s ·"), "{soon:?}");
+    let last = plain(&status_line(
+        &status_offline(Duration::from_millis(6_900), 3, 7, 0),
+        200,
+    ));
+    assert!(last.contains("· retrying in 1s ·"), "{last:?}");
+    let now = plain(&status_line(
+        &status_offline(Duration::from_millis(7_500), 3, 7, 0),
+        200,
+    ));
+    assert!(now.contains("· offline 4s · reconnecting… ·"), "{now:?}");
+}
+
+#[test]
+fn every_spinner_style_gives_way_to_the_signal_bars() {
+    // Nothing is working while the network is gone, so no style's working
+    // animation runs; the ASCII `line` font gets dots instead of blocks.
+    for spinner in Spinner::ALL {
+        let line = styled_status_line(&status_offline(Duration::ZERO, 0, 1, 0), None, spinner, 200);
+        let expected = if spinner == Spinner::Line {
+            ". . . . Waiting for internet…"
+        } else {
+            "▂ ▄ ▆ █ Waiting for internet…"
+        };
+        assert!(
+            plain(&line).starts_with(expected),
+            "{spinner:?}: {:?}",
+            plain(&line)
+        );
+    }
+}
+
+#[test]
+fn every_offline_signal_glyph_is_single_width() {
+    // The spinner rule (docs/table-streaming.md "Wide glyphs"): a wide glyph
+    // would shove the verb a column per frame.
+    for glyph in OFFLINE_SIGNAL_BARS
+        .iter()
+        .chain(OFFLINE_SIGNAL_ASCII.iter())
+    {
+        assert_eq!(crate::ui::wrap::cols(glyph), 1, "{glyph:?}");
+    }
+}
+
+#[test]
+fn the_signal_lights_one_more_bar_per_step_then_goes_dark() {
+    let lit_at = |step: u32| {
+        let line = status_line(&status_offline(OFFLINE_SIGNAL_STEP * step, 0, 1, 0), 200);
+        line.spans[..OFFLINE_SIGNAL_BARS.len()]
+            .iter()
+            .filter(|span| span.style.fg == Some(status_offline_color()))
+            .count()
+    };
+    let sweep: Vec<usize> = (0..=5).map(lit_at).collect();
+    assert_eq!(sweep, vec![0, 1, 2, 3, 4, 0], "fill, then a dark beat");
+}
+
+#[test]
+fn the_offline_line_is_amber_where_it_matters_and_dim_elsewhere() {
+    let line = status_line(&status_offline(Duration::ZERO, 0, 1, 42), 200);
+    let span = |needle: &str| {
+        line.spans
+            .iter()
+            .find(|s| s.content.contains(needle))
+            .unwrap_or_else(|| panic!("a span carrying {needle:?}"))
+    };
+    assert_eq!(span("offline 0s").style.fg, Some(status_offline_color()));
+    assert_eq!(span("tokens").style.fg, Some(status_detail_color()));
+    assert_eq!(
+        span("esc to interrupt").style.fg,
+        Some(status_detail_color())
+    );
+    // The verb shimmers over the amber base: away from the band's crest a
+    // char reads as the base itself (at elapsed 0 the crest is off the text).
+    let verb = &line.spans[OFFLINE_SIGNAL_BARS.len()];
+    assert_eq!(verb.content.as_ref(), "W");
+    assert_eq!(verb.style.fg, Some(status_offline_color()));
+    assert_ne!(
+        status_offline_color(),
+        status_detail_color(),
+        "the warning reads apart from the metrics"
+    );
+}
+
+#[test]
+fn a_task_verb_gives_way_to_the_offline_line() {
+    // The task's activeForm says what is being worked on; while the network
+    // is gone nothing is (docs/task-tools.md, docs/offline.md).
+    let text = plain(&status_line_with_verb(
+        &status_offline(Duration::ZERO, 0, 1, 0),
+        Some("Setting up project structure"),
+        200,
+    ));
+    assert!(text.contains("Waiting for internet…"), "{text:?}");
+    assert!(!text.contains("Setting up"), "{text:?}");
+}
+
+#[test]
+fn the_offline_line_clamps_to_the_width_with_an_ellipsis() {
+    let line = status_line(&status_offline(Duration::from_secs(95), 10, 99, 12_345), 40);
+    let text = plain(&line);
+    assert!(crate::ui::wrap::cols(&text) <= 40, "{text:?}");
+    assert!(text.ends_with('…'), "{text:?}");
+    assert!(text.contains("Waiting"), "{text:?}");
 }
 
 #[test]

@@ -9,8 +9,8 @@
 use super::*;
 
 use crate::app::{
-    FileSearch, KeyKind, Message, ModelFetchError, ProviderChoice, RetryInfo, SigninKind,
-    SubscriptionChoice,
+    FileSearch, KeyKind, Message, ModelFetchError, OfflineInfo, ProviderChoice, RetryInfo,
+    SigninKind, SubscriptionChoice,
 };
 
 mod agent;
@@ -200,6 +200,7 @@ pub(super) fn status(
         thinking: thinking.map(Duration::from_secs),
         shell: false,
         retry: None,
+        offline: None,
         tip: None,
     }
 }

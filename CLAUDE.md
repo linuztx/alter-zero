@@ -670,7 +670,30 @@ between turns), applied in the strip only — `tool_lines` renders at rest so
 a scrollback commit can never freeze the hidden half, and the Ctrl+O
 transcript stays still to keep its cache's signature clock-free; the `pulse`
 spinner style keeps the raised-cosine breath over the `pulse_dim` role) in
-`docs/tool-pulse.md`; the flicker-free frame pipeline
+`docs/tool-pulse.md`; the **offline wait** (a request that cannot leave the
+machine — no DNS answer, no route, a connect that timed out — fails as
+`LlmError::Offline`, which `llm::retry::next_step` answers with
+`AwaitNetwork` rather than `Retry`: no budget spent, no deadline, re-sent
+1 s → 2 s → 4 s → every 5 s, each wait a `StreamEvent::Offline { wait }`,
+until the transport's `StreamEvent::Connected` on the next answered request
+ends it under a `Back online after 41s offline` toast; Error retry `0` turns
+it off with everything else. `reqwest`'s `Display` hides every cause, so the
+pure `llm::network` walks the `source()` chain — `llm::transport_error` is
+the one boundary call, at the streaming transport and the sign-ins'
+per-request token refreshes. Two outages that do not name themselves are
+recognised by a credential-less `HEAD` on the unpooled `llm::probe_client`:
+a sizeable request whose DNS failure `reqwest` masks as a broken body upload
+(`network::is_unsent_body`), and a mid-turn request on a pooled connection
+the outage killed, which every request's **outage watchdog**
+(`openai::watch_for_outage`, sharing a `RequestPhase` with the transport so
+exactly one of them speaks for the request) catches after
+`OUTAGE_PROBE_AFTER` of silence. The status line swaps whole while it waits —
+`▂ ▄ ▆ █ Waiting for internet… (… · offline 41s · retrying in 3s · esc to
+interrupt)`: the spinner and any task verb give way to amber signal bars, the
+verb shimmers over the amber base, the times derive from `OfflineInfo`'s two
+instants on the turn's own clock (`App::set_offline`/`set_connected`, an
+`AgentRun` mirroring it for the session view); the dummy's `offline` demo and
+`smoke.sh` Phase 129 drive it) in `docs/offline.md`; the flicker-free frame pipeline
 (scrollback commits deferred into the draw's synchronized update) in
 `docs/flicker.md`, and its **slow-stream** half in `docs/slow-stream.md` — a
 model streaming a few tokens a second keeps every intermediate state on
@@ -2974,6 +2997,10 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   `SPINNER_FRAMES`/`SPINNER_INTERVAL` animation, dim metrics, the `↓`/`↑` arrows
   and `…` ellipsis, the `STATUS_INTERRUPT_HINT` (`esc to interrupt`, the detail's
   closing clause), the dim committed-summary colour, and `STATUS_ROWS`/`STATUS_GAP_ROWS`;
+  the offline line is the `OFFLINE_*` consts — the verb, the signal bars and
+  their ASCII twin for the `line` style, the fill step, the `reconnecting…`
+  clause — over `status_offline_color()`, the palette's warning amber
+  (`docs/offline.md`);
   the verb's white shimmer wave is the `SHIMMER_*` consts — base/highlight
   colours, sweep period, padding, band half-width, max blend — a port of codex's
   `shimmer_spans`; the verbs themselves are `STATUS_VERBS` in `app/turn.rs` —

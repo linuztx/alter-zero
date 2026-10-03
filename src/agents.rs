@@ -250,6 +250,12 @@ pub struct AgentRun {
     /// same `retrying {attempt}/{max}` clause the main turn's does, and the
     /// next streamed content clears it (`docs/llm.md`).
     pub retry: Option<crate::app::RetryInfo>,
+    /// Set while this agent's request is waiting out a lost connection
+    /// ([`StreamEvent::Offline`]), on its own [`runtime`](Self::runtime)
+    /// clock — its session view's status line takes the same offline look
+    /// the main turn's does, until [`StreamEvent::Connected`], content or a
+    /// retry ends the streak (`docs/offline.md`).
+    pub offline: Option<crate::app::OfflineInfo>,
 }
 
 impl AgentRun {
@@ -320,6 +326,7 @@ impl AgentRun {
             thinking: None,
             command_elapsed: None,
             retry: None,
+            offline: None,
         }
     }
 
@@ -385,8 +392,9 @@ impl AgentRun {
                     .push_str(chunk);
                 self.tokens += crate::app::count_tokens(chunk) as u64;
                 // Content arrived — the reconnect is over (the main turn's
-                // rule, `docs/llm.md`).
+                // rule, `docs/llm.md`, `docs/offline.md`).
                 self.retry = None;
+                self.offline = None;
             }
             // A SubagentStop block's continuation feedback on this agent's
             // own loop (docs/hooks.md): the reply so far becomes its own
@@ -424,14 +432,19 @@ impl AgentRun {
             StreamEvent::ThinkingChunk(text) => {
                 self.tokens += crate::app::count_tokens(text) as u64;
                 self.retry = None;
+                self.offline = None;
                 if let Some(buffer) = self.reasoning.as_mut() {
                     buffer.push_str(text);
                 }
             }
             // Opaque progress — counted so the footer tally ticks while the
-            // agent generates a call (the status-line pattern).
+            // agent generates a call (the status-line pattern). Content, so
+            // it ends a reconnect like the main turn's
+            // `push_tool_call_progress` does.
             StreamEvent::ToolCallDelta(text) => {
                 self.tokens += crate::app::count_tokens(text) as u64;
+                self.retry = None;
+                self.offline = None;
             }
             StreamEvent::ToolBatch(items) => {
                 self.flush_segment();
@@ -727,7 +740,21 @@ impl AgentRun {
                     attempt: *attempt,
                     max: *max,
                 });
+                self.offline = None;
             }
+            // Waiting out a lost connection, on the agent's own clock
+            // (`docs/offline.md`): its session view counts `offline Ns ·
+            // retrying in Ns` like the main turn's line, until the provider
+            // answers.
+            StreamEvent::Offline { wait } => {
+                self.offline = Some(crate::app::OfflineInfo::after(
+                    self.offline,
+                    self.runtime,
+                    *wait,
+                ));
+                self.retry = None;
+            }
+            StreamEvent::Connected => self.offline = None,
             StreamEvent::RoundCalls(_)
             | StreamEvent::Permission(_)
             | StreamEvent::AskUser(_)
@@ -2716,6 +2743,71 @@ mod tests {
         );
         run.apply(&chunk("here we go"));
         assert!(run.retry.is_none(), "content ends the reconnect");
+    }
+
+    #[test]
+    fn an_offline_agent_says_so_on_its_own_clock_until_it_connects() {
+        // Main parity (`docs/offline.md`): the streak is read off the agent's
+        // runtime, so its session view counts `offline Ns · retrying in Ns`
+        // exactly like the main turn's line.
+        let mut run = AgentRun::new("a1", "d", GENERAL_PURPOSE, "p", false);
+        run.runtime = Duration::from_secs(5);
+        run.apply(&StreamEvent::Offline {
+            wait: Duration::from_secs(1),
+        });
+        assert_eq!(
+            run.offline,
+            Some(crate::app::OfflineInfo {
+                since: Duration::from_secs(5),
+                next_check: Duration::from_secs(6),
+            })
+        );
+        run.runtime = Duration::from_secs(7);
+        run.apply(&StreamEvent::Offline {
+            wait: Duration::from_secs(2),
+        });
+        assert_eq!(
+            run.offline,
+            Some(crate::app::OfflineInfo {
+                since: Duration::from_secs(5),
+                next_check: Duration::from_secs(9),
+            }),
+            "the streak keeps its start"
+        );
+        run.apply(&StreamEvent::Connected);
+        assert_eq!(run.offline, None);
+    }
+
+    #[test]
+    fn content_or_another_failure_ends_an_agents_offline_streak() {
+        let offline = StreamEvent::Offline {
+            wait: Duration::from_secs(1),
+        };
+        let mut run = AgentRun::new("a1", "d", GENERAL_PURPOSE, "p", false);
+        for content in [
+            chunk("back"),
+            StreamEvent::ThinkingChunk("hmm".into()),
+            StreamEvent::ToolCallDelta("{\"a\"".into()),
+        ] {
+            run.apply(&offline);
+            run.apply(&content);
+            assert_eq!(run.offline, None, "{content:?} ends it");
+        }
+        run.apply(&offline);
+        run.apply(&StreamEvent::Retrying { attempt: 1, max: 3 });
+        assert_eq!(run.offline, None, "a retry replaces it");
+        assert!(run.retry.is_some());
+    }
+
+    #[test]
+    fn going_offline_drops_an_agents_retry_clause() {
+        let mut run = AgentRun::new("a1", "d", GENERAL_PURPOSE, "p", false);
+        run.apply(&StreamEvent::Retrying { attempt: 1, max: 3 });
+        run.apply(&StreamEvent::Offline {
+            wait: Duration::from_secs(1),
+        });
+        assert_eq!(run.retry, None);
+        assert!(run.offline.is_some());
     }
 
     #[test]

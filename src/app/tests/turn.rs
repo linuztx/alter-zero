@@ -1439,6 +1439,148 @@ fn streamed_content_clears_the_retry_indicator() {
     );
 }
 
+// --- waiting out a lost connection (docs/offline.md) -----------------------
+
+#[test]
+fn a_fresh_turn_is_not_offline() {
+    let mut app = App::new();
+    app.begin_stream();
+    assert_eq!(app.status().unwrap().offline, None);
+}
+
+#[test]
+fn set_offline_opens_a_streak_on_the_turns_own_clock() {
+    let mut app = App::new();
+    app.begin_stream();
+    app.set_status_times(Duration::from_secs(10), None);
+    app.set_offline(Duration::from_secs(1));
+    assert_eq!(
+        app.status().unwrap().offline,
+        Some(OfflineInfo {
+            since: Duration::from_secs(10),
+            next_check: Duration::from_secs(11),
+        })
+    );
+}
+
+#[test]
+fn a_later_offline_wait_moves_the_next_check_but_keeps_the_start() {
+    let mut app = App::new();
+    app.begin_stream();
+    app.set_status_times(Duration::from_secs(10), None);
+    app.set_offline(Duration::from_secs(1));
+    app.set_status_times(Duration::from_secs(12), None);
+    app.set_offline(Duration::from_secs(2));
+    assert_eq!(
+        app.status().unwrap().offline,
+        Some(OfflineInfo {
+            since: Duration::from_secs(10),
+            next_check: Duration::from_secs(14),
+        })
+    );
+}
+
+#[test]
+fn going_offline_drops_the_retry_clause() {
+    // The two describe different problems; only the current one shows.
+    let mut app = App::new();
+    app.begin_stream();
+    app.set_retry(1, 3);
+    app.set_offline(Duration::from_secs(1));
+    assert_eq!(app.status().unwrap().retry, None);
+}
+
+#[test]
+fn reconnecting_ends_the_streak_and_says_how_long_it_lasted() {
+    let mut app = App::new();
+    app.begin_stream();
+    app.set_status_times(Duration::from_secs(10), None);
+    app.set_offline(Duration::from_secs(1));
+    app.set_status_times(Duration::from_secs(25), None);
+    assert_eq!(app.set_connected(), Some(Duration::from_secs(15)));
+    assert_eq!(app.status().unwrap().offline, None);
+    assert_eq!(app.set_connected(), None, "only once");
+}
+
+#[test]
+fn connecting_with_no_streak_is_nothing() {
+    let mut app = App::new();
+    app.begin_stream();
+    assert_eq!(app.set_connected(), None);
+}
+
+#[test]
+fn the_offline_state_is_a_no_op_when_idle() {
+    let mut app = App::new();
+    app.set_offline(Duration::from_secs(1));
+    assert!(app.status().is_none());
+    assert_eq!(app.set_connected(), None);
+}
+
+#[test]
+fn streamed_content_or_another_failure_ends_the_offline_streak() {
+    // `Connected` precedes content, but content is proof on its own; and a
+    // retryable failure means something other than the network went wrong.
+    let mut app = App::new();
+    app.begin_stream();
+    app.set_offline(Duration::from_secs(1));
+    app.push_chunk("hello");
+    assert_eq!(app.status().unwrap().offline, None, "a chunk ends it");
+
+    app.set_offline(Duration::from_secs(1));
+    app.push_thinking("hmm");
+    assert_eq!(app.status().unwrap().offline, None, "a reasoning delta too");
+
+    app.set_offline(Duration::from_secs(1));
+    app.push_tool_call_progress("{\"a\"");
+    assert_eq!(app.status().unwrap().offline, None, "a tool call too");
+
+    app.set_offline(Duration::from_secs(1));
+    app.set_retry(1, 3);
+    let status = app.status().unwrap();
+    assert_eq!(status.offline, None, "a retry replaces it");
+    assert_eq!(status.retry, Some(RetryInfo { attempt: 1, max: 3 }));
+}
+
+#[test]
+fn the_back_online_notice_says_how_long_the_network_was_gone() {
+    assert_eq!(
+        back_online_notice(Duration::from_secs(41)),
+        "Back online after 41s offline"
+    );
+    assert_eq!(
+        back_online_notice(Duration::from_secs(90)),
+        "Back online after 1m 30s offline",
+        "humanized like every other elapsed"
+    );
+    assert_eq!(
+        back_online_notice(Duration::from_millis(400)),
+        "Back online",
+        "no `0s` for a blip"
+    );
+}
+
+#[test]
+fn the_offline_clock_reads_how_long_and_how_soon() {
+    let streak = OfflineInfo {
+        since: Duration::from_secs(10),
+        next_check: Duration::from_secs(14),
+    };
+    assert_eq!(
+        streak.offline_for(Duration::from_secs(12)),
+        Duration::from_secs(2)
+    );
+    assert_eq!(
+        streak.retry_in(Duration::from_secs(12)),
+        Duration::from_secs(2)
+    );
+    assert_eq!(
+        streak.retry_in(Duration::from_secs(20)),
+        Duration::ZERO,
+        "an attempt in flight"
+    );
+}
+
 #[test]
 fn end_turn_records_a_summary_and_clears_the_status() {
     let mut app = App::new();

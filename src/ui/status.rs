@@ -403,6 +403,12 @@ pub fn styled_status_line(
     spinner: Spinner,
     width: u16,
 ) -> Line<'static> {
+    // Waiting out a lost connection is a line of its own: nothing is working,
+    // so neither the session's spinner nor a task's activeForm is true of it
+    // (docs/offline.md).
+    if let Some(offline) = status.offline {
+        return offline_status_line(status, offline, spinner, width);
+    }
     let dim = Style::new().fg(status_detail_color());
     let mut spans = spinner_spans(spinner, status.elapsed);
     spans.extend(shimmer_spans(
@@ -412,20 +418,8 @@ pub fn styled_status_line(
     // The parenthesised metrics are dim, except the retry clause, which carries
     // its own warning colour — so it is built as its own span between the
     // (dim) token and hint clauses.
-    spans.push(Span::styled(
-        format!(" ({}", format_elapsed(status.elapsed.as_secs())),
-        dim,
-    ));
-    if status.tokens > 0 {
-        let arrow = match status.arrow {
-            TokenArrow::Down => STATUS_ARROW_DOWN,
-            TokenArrow::Up => STATUS_ARROW_UP,
-        };
-        spans.push(Span::styled(
-            format!(" · {arrow} {} tokens", format_token_count(status.tokens)),
-            dim,
-        ));
-    }
+    spans.push(elapsed_clause(status));
+    spans.extend(tokens_clause(status));
     if let Some(retry) = status.retry {
         spans.push(Span::styled(
             format!(" · retrying {}/{}", retry.attempt, retry.max),
@@ -438,8 +432,115 @@ pub fn styled_status_line(
             dim,
         ));
     }
-    spans.push(Span::styled(format!(" · {STATUS_INTERRUPT_HINT})"), dim));
+    spans.push(interrupt_clause());
     clamp_spans(spans, width as usize)
+}
+
+/// The status line while the request **waits out a lost connection**
+/// (`docs/offline.md`): `▂ ▄ ▆ █ Waiting for internet… ({elapsed}[ · {arrow}
+/// {n} tokens] · offline {for} · retrying in {n}s · esc to interrupt)`. The
+/// signal ([`offline_signal_spans`]) stands where the spinner stands, the
+/// verb shimmers over the amber base, and the clause naming the outage is the
+/// one amber metric; while an attempt is in flight it reads `reconnecting…`.
+/// Both times derive from the streak's instants against the turn's injected
+/// `elapsed`, so this stays pure like the working line.
+fn offline_status_line(
+    status: &TurnStatus,
+    offline: crate::app::OfflineInfo,
+    spinner: Spinner,
+    width: u16,
+) -> Line<'static> {
+    let mut spans = offline_signal_spans(spinner, status.elapsed);
+    spans.extend(shimmer_spans_from(
+        &format!("{OFFLINE_VERB}{STATUS_ELLIPSIS}"),
+        status.elapsed,
+        status_offline_color(),
+    ));
+    spans.push(elapsed_clause(status));
+    spans.extend(tokens_clause(status));
+    let next = offline.retry_in(status.elapsed);
+    let attempt = if next.is_zero() {
+        OFFLINE_RECONNECTING.to_string()
+    } else {
+        // Rounded up: `1s` until the attempt fires, never a `0s` standing
+        // still while nothing happens.
+        let secs = next.as_secs() + u64::from(next.subsec_nanos() > 0);
+        format!("retrying in {}", format_elapsed(secs))
+    };
+    spans.push(Span::styled(
+        format!(
+            " · offline {} · {attempt}",
+            format_elapsed(offline.offline_for(status.elapsed).as_secs())
+        ),
+        Style::new().fg(status_offline_color()),
+    ));
+    spans.push(interrupt_clause());
+    clamp_spans(spans, width as usize)
+}
+
+/// The offline line's spinner: the [`OFFLINE_SIGNAL_BARS`] lit one more per
+/// [`OFFLINE_SIGNAL_STEP`] in bold amber, unlit ones dim, and after the fourth
+/// a step with none lit — a phone searching for signal. A session on the
+/// ASCII `line` style gets [`OFFLINE_SIGNAL_ASCII`] instead, its font having
+/// no block elements to promise. One span per bar, each carrying the space
+/// after it, the last one's being the separator before the verb; every frame
+/// is the same width, since only the colours move.
+fn offline_signal_spans(spinner: Spinner, elapsed: Duration) -> Vec<Span<'static>> {
+    let glyphs = if spinner == Spinner::Line {
+        OFFLINE_SIGNAL_ASCII
+    } else {
+        OFFLINE_SIGNAL_BARS
+    };
+    let steps = glyphs.len() as u128 + 1;
+    let lit = (elapsed.as_millis() / OFFLINE_SIGNAL_STEP.as_millis().max(1) % steps) as usize;
+    glyphs
+        .iter()
+        .enumerate()
+        .map(|(i, glyph)| {
+            let style = if i < lit {
+                Style::new()
+                    .fg(status_offline_color())
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::new().fg(status_detail_color())
+            };
+            Span::styled(format!("{glyph} "), style)
+        })
+        .collect()
+}
+
+/// The status line's first metric, ` ({elapsed}` — dim, opening the
+/// parenthesis every later clause sits inside.
+fn elapsed_clause(status: &TurnStatus) -> Span<'static> {
+    Span::styled(
+        format!(" ({}", format_elapsed(status.elapsed.as_secs())),
+        Style::new().fg(status_detail_color()),
+    )
+}
+
+/// ` · {arrow} {n} tokens`, dim — `None` while the tally is still 0 (the
+/// just-submitted frame).
+fn tokens_clause(status: &TurnStatus) -> Option<Span<'static>> {
+    if status.tokens == 0 {
+        return None;
+    }
+    let arrow = match status.arrow {
+        TokenArrow::Down => STATUS_ARROW_DOWN,
+        TokenArrow::Up => STATUS_ARROW_UP,
+    };
+    Some(Span::styled(
+        format!(" · {arrow} {} tokens", format_token_count(status.tokens)),
+        Style::new().fg(status_detail_color()),
+    ))
+}
+
+/// The closing ` · esc to interrupt)`, dim — the line's last clause in every
+/// phase (`docs/interrupt.md`).
+fn interrupt_clause() -> Span<'static> {
+    Span::styled(
+        format!(" · {STATUS_INTERRUPT_HINT})"),
+        Style::new().fg(status_detail_color()),
+    )
 }
 
 /// The committed turn summary: dim, bullet-less `"{verb} for {elapsed}"`

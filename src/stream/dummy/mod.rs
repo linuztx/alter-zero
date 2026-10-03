@@ -376,9 +376,12 @@ fn replay(
 /// event, and every word/output line trickles at `chunk_delay` —
 /// [`CHUNK_DELAY`] unless the backend was built slower. `None` means the next
 /// event follows immediately.
-fn pace(event: &StreamEvent, chunk_delay: Duration) -> Option<Duration> {
+pub(super) fn pace(event: &StreamEvent, chunk_delay: Duration) -> Option<Duration> {
     match event {
         StreamEvent::Chunk(_) => Some(chunk_delay),
+        // An offline wait lasts exactly as long as it announces, so the
+        // demo's countdown is the real backend's (docs/offline.md).
+        StreamEvent::Offline { wait } => Some(*wait),
         StreamEvent::ToolStart { .. } => Some(TOOL_DELAY),
         // A foreground agent group "runs" between its announcement
         // and its resolution so the live tree cell shows; a

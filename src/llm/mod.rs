@@ -32,6 +32,7 @@ pub mod hooks;
 pub mod keystore;
 pub mod mcp;
 pub mod models;
+pub mod network;
 pub mod ollama;
 pub mod openai;
 pub mod reasoning;
@@ -252,8 +253,15 @@ impl ChatMessage {
 /// message surfaced as a red `StreamEvent::Error`.
 #[derive(Debug)]
 pub enum LlmError {
-    /// A transport/connection failure (DNS, TLS, proxy, timeout).
+    /// A transport/connection failure (TLS, a refused connection, a proxy, a
+    /// stalled read) — anything on the wire but the network being absent.
     Http(String),
+    /// No connection could be made at all because the network is not there:
+    /// a DNS lookup that got no answer, no route, a network that is down, no
+    /// local address, a connect that timed out ([`network::is_offline`]).
+    /// Nothing left the machine, so the retry policy waits it out with no
+    /// deadline instead of spending the retry budget (`docs/offline.md`).
+    Offline(String),
     /// A non-2xx HTTP response, with the provider's error body.
     Api { status: u16, body: String },
     /// The response body didn't match the expected shape.
@@ -266,6 +274,7 @@ impl std::fmt::Display for LlmError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Http(e) => write!(f, "request failed: {e}"),
+            Self::Offline(e) => write!(f, "could not connect: {e}"),
             Self::Api { status, body } => {
                 let body = body.trim();
                 if body.is_empty() {
@@ -295,6 +304,23 @@ fn truncate_chars(s: &str, max: usize) -> String {
     }
     let head: String = s.chars().take(max).collect();
     format!("{head}…")
+}
+
+/// A `reqwest` failure as the crate's error, deciding the one thing the
+/// retry policy needs to know about it: did the request never leave the
+/// machine because the network is not there? Then it is
+/// [`LlmError::Offline`], which the turn waits out; anything else is
+/// [`LlmError::Http`]. Either way the message is the whole cause chain
+/// ([`network::describe`]) — `reqwest`'s own top line names no cause at all.
+/// Used wherever a turn meets the network: the streaming transport and the
+/// sign-ins' per-request token refreshes (`docs/offline.md`).
+pub(crate) fn transport_error(e: &reqwest::Error) -> LlmError {
+    let message = network::describe(e);
+    if network::is_offline(e.is_connect(), e.is_timeout(), e) {
+        LlmError::Offline(message)
+    } else {
+        LlmError::Http(message)
+    }
 }
 
 /// Build a blocking HTTP client: env proxies (`HTTPS_PROXY`) are picked up
@@ -343,6 +369,42 @@ pub(crate) fn http_client(op_timeout: Duration) -> Result<reqwest::blocking::Cli
     let client = builder.build().map_err(|e| LlmError::Http(e.to_string()))?;
     if let Ok(mut map) = cache.lock() {
         map.insert(op_timeout, client.clone());
+    }
+    Ok(client)
+}
+
+/// The deadline on an outage probe — connect and answer alike — so a probe
+/// that cannot get through says so in seconds (`docs/offline.md`).
+const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// The client the outage watchdog probes with (`docs/offline.md`): the chat
+/// client's proxy and trust roots, but **no connection pool**, so every probe
+/// opens a fresh connection — the pooled one may be exactly the connection
+/// the outage killed — under its own short deadline. Built on first use (a
+/// probe is rare: only a request that has heard nothing for seconds sends
+/// one) and kept, the [`http_client`] way.
+///
+/// # Errors
+/// Returns [`LlmError::Http`] if the client can't be built.
+pub(crate) fn probe_client() -> Result<reqwest::blocking::Client> {
+    use std::sync::{Mutex, OnceLock};
+    static CLIENT: OnceLock<Mutex<Option<reqwest::blocking::Client>>> = OnceLock::new();
+    let slot = CLIENT.get_or_init(|| Mutex::new(None));
+    if let Ok(cached) = slot.lock()
+        && let Some(client) = cached.as_ref()
+    {
+        return Ok(client.clone());
+    }
+    let mut builder = reqwest::blocking::Client::builder()
+        .pool_max_idle_per_host(0)
+        .connect_timeout(PROBE_TIMEOUT)
+        .timeout(PROBE_TIMEOUT);
+    for cert in extra_root_certificates() {
+        builder = builder.add_root_certificate(cert);
+    }
+    let client = builder.build().map_err(|e| transport_error(&e))?;
+    if let Ok(mut cached) = slot.lock() {
+        *cached = Some(client.clone());
     }
     Ok(client)
 }
@@ -506,5 +568,47 @@ mod tests {
     fn truncate_chars_adds_an_ellipsis_when_cut() {
         assert_eq!(truncate_chars("hello", 10), "hello");
         assert_eq!(truncate_chars("hello", 3), "hel…");
+    }
+
+    #[test]
+    fn an_offline_failure_says_it_could_not_connect() {
+        // Surfaced only when the offline wait is off (Error retry 0) — and
+        // then the user is told plainly that no connection was made
+        // (docs/offline.md).
+        let e = LlmError::Offline("error sending request for url (https://x/): dns error".into());
+        assert_eq!(
+            e.to_string(),
+            "could not connect: error sending request for url (https://x/): dns error"
+        );
+    }
+
+    #[test]
+    fn a_refused_connection_is_an_ordinary_transport_failure_naming_its_cause() {
+        // A real socket, loopback only: a port bound and released has nothing
+        // listening, so the kernel refuses at once. Refused is not offline —
+        // the host answered — and the message now carries the cause that
+        // `reqwest`'s own top line leaves out (docs/offline.md).
+        let port = {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+            listener.local_addr().expect("local addr").port()
+        };
+        let client = reqwest::blocking::Client::builder()
+            .no_proxy()
+            .build()
+            .expect("client");
+        let err = client
+            .get(format!("http://127.0.0.1:{port}/"))
+            .send()
+            .expect_err("nothing listens there");
+        match transport_error(&err) {
+            LlmError::Http(message) => {
+                assert!(message.contains("Connection refused"), "{message}");
+                assert!(
+                    message.starts_with("error sending request for url"),
+                    "{message}"
+                );
+            }
+            other => panic!("a refusal is not offline: {other:?}"),
+        }
     }
 }

@@ -17,7 +17,7 @@ use super::classifier::{ClassifierContext, SafetyClassifier};
 use super::config::ModelConfig;
 use super::exec::{RealToolExecutor, ToolExecutor};
 use super::hooks::{HookSink, NoHooks};
-use super::openai::{Delta, OpenAiClient};
+use super::openai::{ConnectHook, Delta, OpenAiClient};
 use super::retry::{self, AttemptResult, MAX_RETRIES};
 use super::tools::{self, AgentArgs, ToolCallRequest};
 use super::{ChatMessage, ContentPart, LlmError, ToolCallSpec};
@@ -1828,17 +1828,24 @@ fn stream_round(
     // The successful attempt's outcome (text + tool calls) is stashed here so
     // it survives the retry driver, which only reports the disposition.
     let mut captured = None;
+    // Did the previous attempt fail because the network is gone? Then this
+    // one reports the reconnect the moment the provider answers
+    // (docs/offline.md).
+    let mut after_offline = false;
     // One streaming attempt: stream the deltas as events and report the outcome
     // plus whether it emitted any content. `retry::run_attempts` re-runs it —
-    // after a `Retrying` announcement + backoff — only for a retryable failure
-    // that emitted nothing, so a retry can never duplicate streamed text.
+    // after a `Retrying` announcement + backoff, or an `Offline` wait — only
+    // for a failure that emitted nothing, so a retry can never duplicate
+    // streamed text.
     let attempt = || {
         let mut emitted = false;
         // Track the thinking phase so a reasoning burst opens exactly one
         // ThinkingStart and the first response text after it closes with a
         // ThinkingEnd — the pairing the status line expects.
         let mut thinking = false;
-        let result = client.stream_chat(messages.to_vec(), cancel, |delta: Delta| {
+        let on_connect = reconnect_hook(after_offline, tx);
+        let request = messages.to_vec();
+        let result = client.stream_chat_with(request, cancel, on_connect, |delta: Delta| {
             if !delta.reasoning.is_empty() {
                 emitted = true;
                 if !thinking {
@@ -1872,6 +1879,7 @@ fn stream_round(
         if thinking {
             let _ = tx.send(StreamEvent::ThinkingEnd);
         }
+        after_offline = matches!(result, Err(LlmError::Offline(_)));
         match result {
             Ok(outcome) => {
                 // A tool-calling round emits no visible reply text, so treat it
@@ -1915,6 +1923,20 @@ fn stream_round(
     }
 }
 
+/// The transport hook for one attempt: after an offline failure
+/// (`after_offline`), a report of [`StreamEvent::Connected`] the moment the
+/// provider answers, which ends the offline look; otherwise none, so a turn
+/// that was never offline streams exactly the events it always did
+/// (`docs/offline.md`).
+fn reconnect_hook(after_offline: bool, tx: &UnboundedSender<StreamEvent>) -> Option<ConnectHook> {
+    after_offline.then(|| {
+        let tx = tx.clone();
+        Box::new(move || {
+            let _ = tx.send(StreamEvent::Connected);
+        }) as ConnectHook
+    })
+}
+
 /// Echo the model's requested tool calls back as the assistant message's
 /// `tool_calls` array, so the provider can pair each `role:"tool"` result to
 /// its call.
@@ -1948,6 +1970,23 @@ mod tests {
 
     use crate::context::{ContextMessage, ContextRole, ContextToolCall};
     use crate::llm::MessageContent;
+
+    #[test]
+    fn a_request_after_an_offline_failure_reports_the_reconnect() {
+        // docs/offline.md: the hook the transport runs on the response
+        // headers is what ends the offline look.
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let hook = reconnect_hook(true, &tx).expect("armed after an offline failure");
+        hook();
+        assert_eq!(rx.try_recv().ok(), Some(StreamEvent::Connected));
+    }
+
+    #[test]
+    fn an_ordinary_request_reports_nothing_extra() {
+        // A turn that was never offline streams exactly the events it did.
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        assert!(reconnect_hook(false, &tx).is_none());
+    }
 
     /// A fake encoder for the pure tests: every path "encodes" to a data URL
     /// naming its file, so assertions can tell attachments apart.

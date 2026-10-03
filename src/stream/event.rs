@@ -368,6 +368,24 @@ pub enum StreamEvent {
     /// `retrying {attempt}/{max}`. Only a real backend sends this (see
     /// `llm::retry`); the loop shows it in the status and keeps the turn alive.
     Retrying { attempt: u32, max: u32 },
+    /// The request could not leave the machine because the network is not
+    /// there (a DNS lookup with no answer, no route, a connect that timed out
+    /// — `llm::network`), so the backend is **waiting it out**: no deadline,
+    /// no retry budget spent, the request re-sent after `wait`. Sent before
+    /// each wait; the status line turns into the offline look with a
+    /// `retrying in {wait}` countdown ([`crate::app::App::set_offline`]).
+    /// Only a real backend, or the dummy's `offline` demo, sends this. See
+    /// `docs/offline.md`.
+    Offline { wait: std::time::Duration },
+    /// The provider answered a request that followed an [`Offline`] wait —
+    /// sent the moment the response headers arrive, before the first token,
+    /// so `reconnecting…` never outlives the reconnect while a model thinks.
+    /// Ends the offline look ([`crate::app::App::set_connected`]). Never sent
+    /// by a request that was not preceded by an offline failure. See
+    /// `docs/offline.md`.
+    ///
+    /// [`Offline`]: StreamEvent::Offline
+    Connected,
     /// The provider's real token usage for one completed request round (the
     /// final usage frame of the stream — sent once per round by a real
     /// backend, so an agentic turn reports one per tool round). The loop

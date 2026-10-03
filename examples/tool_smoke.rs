@@ -223,6 +223,11 @@ fn main() {
             StreamEvent::Retrying { attempt, max } => {
                 println!("\x1b[33m[retrying {attempt}/{max}]\x1b[0m");
             }
+            // Waiting out a lost connection (docs/offline.md).
+            StreamEvent::Offline { wait } => {
+                println!("\x1b[33m[offline — retrying in {wait:?}]\x1b[0m");
+            }
+            StreamEvent::Connected => println!("\x1b[33m[back online]\x1b[0m"),
             // A message queued mid-turn, folded in at a round boundary
             // (docs/queue.md) — this probe queues none, but print it if one
             // ever arrives rather than swallowing it.

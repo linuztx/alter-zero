@@ -147,6 +147,16 @@ fn error_retry_cycles_the_offered_counts_and_wraps() {
 }
 
 #[test]
+fn the_error_retry_row_says_a_lost_connection_is_waited_out() {
+    // The budget never runs down while the network is gone — the row the
+    // user tunes says so, and that 0 turns the wait off too
+    // (docs/offline.md).
+    let text = SettingKey::ErrorRetry.description();
+    assert!(text.contains("lost connection"), "{text}");
+    assert!(text.contains('0'), "{text}");
+}
+
+#[test]
 fn temperature_cycles_from_default_through_the_offered_values() {
     let seen = cycle_values(
         SessionSettings::default(),

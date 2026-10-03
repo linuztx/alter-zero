@@ -8,6 +8,19 @@ use tokio::sync::mpsc::unbounded_channel;
 use super::*;
 
 #[test]
+fn an_offline_wait_plays_for_exactly_as_long_as_it_announces() {
+    // The demo's countdown is the real one, so its pause must be too
+    // (docs/offline.md); the reconnect itself takes no time.
+    use super::super::dummy::pace;
+    let wait = Duration::from_secs(2);
+    assert_eq!(
+        pace(&StreamEvent::Offline { wait }, CHUNK_DELAY),
+        Some(wait)
+    );
+    assert_eq!(pace(&StreamEvent::Connected, CHUNK_DELAY), None);
+}
+
+#[test]
 fn dummy_ai_reports_its_model_name() {
     // The footer under the input box names the active backend's model
     // (see docs/footer.md); the dummy reports its placeholder id.
@@ -114,6 +127,9 @@ fn dummy_ai_emits_all_chunks_and_tool_calls_then_done() {
                 break;
             }
             StreamEvent::Retrying { .. } => panic!("the dummy never retries"),
+            StreamEvent::Offline { .. } | StreamEvent::Connected => {
+                panic!("only the offline demo waits for the network")
+            }
             StreamEvent::Usage(_) => panic!("the dummy never reports usage"),
             StreamEvent::Permission(_) => {
                 panic!("no gate attached — the dummy never asks")

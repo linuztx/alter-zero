@@ -408,6 +408,27 @@ impl Session<'_> {
                 self.app.set_retry(attempt, max);
                 false
             }
+            StreamEvent::Offline { wait } => {
+                // The request could not leave the machine, and the backend is
+                // waiting for the network with no deadline: the status line
+                // takes the offline look and counts down to the next attempt.
+                // Nothing commits — the turn is still in flight
+                // (docs/offline.md).
+                self.app.set_offline(wait);
+                false
+            }
+            StreamEvent::Connected => {
+                // The provider answered after an offline wait: the line goes
+                // back to the turn's own spinner, and the toast says so for a
+                // moment above the box.
+                if let Some(gap) = self.app.set_connected() {
+                    self.toast(
+                        alter_zero::app::back_online_notice(gap),
+                        alter_zero::app::ToastKind::Info,
+                    );
+                }
+                false
+            }
             StreamEvent::Usage(usage) => {
                 // The round's real usage frame: snap the live tally from the
                 // app-side estimate to the provider's own accounting (cache

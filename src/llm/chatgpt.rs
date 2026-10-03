@@ -1202,7 +1202,9 @@ fn exchange_refresh(presented: &str) -> Result<TokenSet> {
         .header("user-agent", user_agent())
         .json(&refresh_body(presented))
         .send()
-        .map_err(|e| LlmError::Http(e.to_string()))?;
+        // Runs ahead of a request whose bearer expired: offline here is
+        // offline for the turn, and waited out (docs/offline.md).
+        .map_err(|e| super::transport_error(&e))?;
     let status = resp.status().as_u16();
     let text = read_body(resp);
     if !(200..300).contains(&status) {

@@ -14,6 +14,20 @@ release heading when a version is cut.
 
 ### Added
 
+- **Losing your internet connection no longer ends the turn.** When a
+  request can't leave your machine — the Wi-Fi drops, the router loses its
+  uplink — Alter Zero now waits for the connection to come back, however
+  long that takes, instead of giving up after three retries, and the turn
+  carries on from where it stopped. The status line shows what is happening:
+  signal bars searching in amber beside `Waiting for internet…`, how long
+  you have been offline, and a countdown to the next attempt (one second,
+  then two, four, and every five after that). When the provider answers, a
+  `Back online after 41s offline` note shows above the input box. An outage
+  in the middle of an agent's tool loop is caught within ten seconds as
+  well. A lost connection never uses up the **Error retry** budget; setting
+  that to `0` turns the wait off. Esc stops waiting and puts your prompt
+  back in the composer (`docs/offline.md`).
+
 - **A question nobody answers no longer stalls the agent.** When the agent
   asks you something and no key is pressed for ten minutes, the question
   closes unanswered and the agent keeps working: it is told you are away,
@@ -49,6 +63,15 @@ release heading when a version is cut.
   hiding every command after it. On narrow terminals, where descriptions wrap
   onto several rows, the window balances the rows shown above and below the
   highlight (`docs/design.md`).
+
+### Fixed
+
+- **Network errors say what went wrong.** A failed request used to read only
+  `request failed: error sending request for url (…)`. It now names the cause
+  underneath: a refused connection, a failed DNS lookup, a connect that
+  timed out. This also means the Ollama provider's `is ollama serve
+  running?` advice now appears when the server is down, which the bare
+  message never triggered (`docs/offline.md`).
 
 ## [0.10.0] - 2026-09-30
 

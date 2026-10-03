@@ -166,6 +166,7 @@ picked. Same trick `ui::TranscriptCache`'s counters use.
 | `permission-staggered` | "permission" + "staggered" | a screen-tall `write` prompt answered into a one-line one: the modal region's hardest shrink |
 | `permission-write` | "permission" | the single `Write` approval: the options, Tab's amend, the stashed draft |
 | `compact` | the summarization marker | `/compact`'s text-only handoff summary (`docs/compact.md`) |
+| `offline` | "offline" | waiting out a lost connection: two `Offline` waits at the real `offline_backoff` cadence (paced for exactly as long as each announces), the `Connected` reconnect, then a text-only reply — the status line's offline look and the `Back online` toast (`docs/offline.md`, `smoke.sh` Phase 129). Above every other scripted entry: a prompt saying "offline" means this |
 | `agent-stream` | "subagent" | one background subagent that streams **its own session** — a thinking phase then a forming table — the only demo that drives the agent session view's strip (`docs/agent-view-streaming.md`) |
 | `table` | "table" | a streaming GFM table with wide emoji (`docs/table-streaming.md`) |
 | `markdown` | "markdown", not "agents.md" | the slow-stream stress tour: every markdown element in one long text-only reply, streamed in **token-sized** pieces (`tokens`) — the document `smoke.sh` Phase 121 streams at a few tokens a second (`docs/slow-stream.md`) |

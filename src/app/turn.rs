@@ -215,6 +215,7 @@ impl App {
             thinking: None,
             shell: false,
             retry: None,
+            offline: None,
             tip: None,
         });
     }
@@ -263,6 +264,7 @@ impl App {
             thinking: None,
             shell: true,
             retry: None,
+            offline: None,
             tip: None,
         });
         self.start_tool(command, "", None);
@@ -285,9 +287,10 @@ impl App {
         if let Some(status) = self.status.as_mut() {
             status.tokens += count_tokens(chunk);
             status.arrow = TokenArrow::Down;
-            // Content arrived, so the retrying request just succeeded — drop the
-            // live retry indicator.
+            // Content arrived, so the retrying (or offline) request just
+            // succeeded — drop the live indicator.
             status.retry = None;
+            status.offline = None;
         }
     }
 

@@ -162,7 +162,7 @@ impl SettingKey {
                 "Resize large images to 2000x2000 before sending them to the model"
             }
             Self::ErrorRetry => {
-                "How many times a failed request is retried before the error is shown"
+                "Retries before an error is shown — a lost connection is waited out, unless 0"
             }
             Self::Tools => "Offer the bash, read, write, edit and agent tools to the model",
             Self::PermissionMode => {

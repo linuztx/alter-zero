@@ -207,6 +207,16 @@ pub(in crate::stream) const SCENARIOS: &[Scenario] = &[
         selects: |cue| cue.starts_with(turns::COMPACT_PROMPT_MARKER),
         play: Play::Script(turns::compact_turn),
     },
+    // Waiting out a lost connection (docs/offline.md): two offline checks at
+    // the real cadence, the reconnect, then the reply — the one demo of the
+    // status line's offline look. Ahead of every other scripted entry: a
+    // prompt that says "offline" means this.
+    Scenario {
+        #[cfg(test)]
+        name: "offline",
+        selects: |cue| cue.mentions("offline"),
+        play: Play::Script(turns::offline_turn),
+    },
     // A UserPromptSubmit hook refusing the submission (docs/hooks.md) — the
     // more specific cue, so it outranks the general hooks demo below.
     Scenario {

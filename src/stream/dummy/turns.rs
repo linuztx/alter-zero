@@ -708,6 +708,45 @@ pub(in crate::stream) fn tasks_finished_turn(cue: &Cue) -> Vec<StreamEvent> {
     events
 }
 
+/// The offline demo's reply, streamed whole once the connection is back —
+/// the wait it narrates is over before any of it can arrive, so there is no
+/// work to split it around. Two paragraphs and the hand-off, like every demo.
+const OFFLINE_REPLY: &str = concat!(
+    "Back online — that pause was the network, not me. My request couldn't \
+     leave the machine, so instead of failing the turn I waited: the status \
+     line turned into the `Waiting for internet…` look, the signal bars \
+     searched, and the countdown said when the next attempt would go out — \
+     one second, then two.\n\n",
+    "The moment the provider answered, the line went back to normal and the \
+     toast above the box said how long the outage lasted. A lost connection \
+     never spends the error-retry budget and has no deadline, and **esc** \
+     still stops the wait and hands your prompt back.\n\n",
+    handoff!()
+);
+
+/// The **offline** demo (`docs/offline.md`): the request "fails" twice for
+/// want of a network — each wait announced with the real
+/// [`crate::llm::retry::offline_backoff`], and played for exactly that long by
+/// the dummy's pacing, so the countdown on screen is the real backend's —
+/// then the reconnect the transport reports, then a text-only reply. No
+/// retry counter anywhere: a lost connection never spends the budget.
+pub(in crate::stream) fn offline_turn(cue: &Cue) -> Vec<StreamEvent> {
+    use crate::llm::retry::offline_backoff;
+    let mut events = vec![
+        StreamEvent::Offline {
+            wait: offline_backoff(1),
+        },
+        StreamEvent::Offline {
+            wait: offline_backoff(2),
+        },
+        StreamEvent::Connected,
+    ];
+    events.extend(opening(cue));
+    events.extend(say(OFFLINE_REPLY));
+    events.push(StreamEvent::StreamDone);
+    events
+}
+
 /// `/compact`'s summarization request plays a **text-only** canned summary —
 /// no thinking phase, no tool batch (codex sends the summarize request with no
 /// tools) — so the offline dummy path (and `smoke.sh`) can drive the whole

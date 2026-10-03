@@ -8,6 +8,7 @@
 use std::borrow::Cow;
 use std::io::Read;
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use serde::Deserialize;
@@ -73,6 +74,165 @@ pub struct StreamOutcome {
     pub tool_calls: Vec<ToolCallRequest>,
     pub finish_reason: Option<String>,
     pub usage: Option<TokenUsage>,
+}
+
+/// Run on the transport thread the moment a request's response headers
+/// arrive — [`OpenAiClient::stream_chat_with`]'s report that the provider
+/// answered (`docs/offline.md`).
+pub type ConnectHook = Box<dyn FnOnce() + Send>;
+
+/// How long a request may hear nothing back — no response headers — before
+/// its outage watchdog tries a fresh connection to the same host, and again
+/// every as long after (`docs/offline.md`). Most providers answer in a second
+/// or two, so a probe on a healthy network is rare; a request written into a
+/// connection an outage killed would otherwise sit out [`NET_OP_TIMEOUT`].
+pub(crate) const OUTAGE_PROBE_AFTER: Duration = Duration::from_secs(10);
+
+/// Where one request stands, shared by its transport thread and its outage
+/// watchdog so that exactly one of them speaks for it (`docs/offline.md`):
+/// the transport once the provider answers, the watchdog once it has found
+/// the network gone — and the drain, by finishing, silences both.
+///
+/// The watchdog's way into the transport channel lives **here**, not with the
+/// watchdog: answering or finishing drops it on the spot, so a probe still in
+/// flight can never hold the channel open past the response's end (some
+/// drains read their EOF off the channel disconnecting), and failing the
+/// request is the only thing it is ever used for.
+#[derive(Debug)]
+struct RequestPhase {
+    state: Mutex<PhaseState>,
+    changed: Condvar,
+}
+
+#[derive(Debug)]
+struct PhaseState {
+    phase: Phase,
+    /// The watchdog's sender, until the request leaves `Waiting`.
+    watchdog: Option<Sender<Result<Vec<u8>>>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Phase {
+    /// Sent, and nothing heard back yet.
+    Waiting,
+    /// The response headers are in.
+    Answered,
+    /// The watchdog found the network gone and failed the request.
+    Abandoned,
+    /// The drain is done with the request.
+    Finished,
+}
+
+impl RequestPhase {
+    /// A request just sent, its watchdog reporting through `watchdog`.
+    fn new(watchdog: Sender<Result<Vec<u8>>>) -> Self {
+        Self {
+            state: Mutex::new(PhaseState {
+                phase: Phase::Waiting,
+                watchdog: Some(watchdog),
+            }),
+            changed: Condvar::new(),
+        }
+    }
+
+    /// Has nothing been heard back, nor the request given up on? (The
+    /// watchdog itself asks through [`nap_while_waiting`](Self::nap_while_waiting).)
+    #[cfg(test)]
+    fn is_waiting(&self) -> bool {
+        self.lock().phase == Phase::Waiting
+    }
+
+    /// The transport heard back. True when it may go on to forward the
+    /// response; false when the watchdog already failed the request (or the
+    /// drain is gone), and what arrived belongs to nobody.
+    fn answer(&self) -> bool {
+        self.leave_waiting(Phase::Answered).is_some()
+    }
+
+    /// The watchdog gives up on the request, failing it with `error`. True
+    /// when the failure went out; false when the provider answered meanwhile
+    /// or the drain is done.
+    fn abandon(&self, error: LlmError) -> bool {
+        match self.leave_waiting(Phase::Abandoned) {
+            Some(watchdog) => {
+                let _ = watchdog.send(Err(error));
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// The drain is done with the request: whatever still waits on it stops.
+    fn finish(&self) {
+        let mut state = self.lock();
+        state.phase = Phase::Finished;
+        state.watchdog = None;
+        self.changed.notify_all();
+    }
+
+    /// Wait up to `dur` for the request to stop waiting — woken the moment it
+    /// does. True when it still is.
+    fn nap_while_waiting(&self, dur: Duration) -> bool {
+        let (state, _) = self
+            .changed
+            .wait_timeout_while(self.lock(), dur, |state| state.phase == Phase::Waiting)
+            .unwrap_or_else(PoisonError::into_inner);
+        state.phase == Phase::Waiting
+    }
+
+    /// `Waiting` → `to`, waking the watchdog and handing back its sender — or
+    /// `None`, changing nothing, when the request no longer waits.
+    fn leave_waiting(&self, to: Phase) -> Option<Sender<Result<Vec<u8>>>> {
+        let mut state = self.lock();
+        if state.phase != Phase::Waiting {
+            return None;
+        }
+        state.phase = to;
+        self.changed.notify_all();
+        state.watchdog.take()
+    }
+
+    fn lock(&self) -> MutexGuard<'_, PhaseState> {
+        self.state.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+/// One request's outage watchdog (`docs/offline.md`). A request written into
+/// a connection the network has since dropped hears nothing until the stall
+/// detector fires minutes later, since a dead link reports nothing to the
+/// socket waiting on it. So while the request waits, after each `nap` (which
+/// returns false once it no longer does), `probe` tries a fresh connection to
+/// the same host; the first time even that cannot be made, the request is
+/// failed as [`LlmError::Offline`] — sent down the transport channel ahead of
+/// the hung read ([`RequestPhase::abandon`]) — and the turn waits for the
+/// network instead of the timeout. A probe that gets through means the
+/// network is there and the provider is merely slow, so the watch goes on.
+fn watch_for_outage(
+    phase: &RequestPhase,
+    mut nap: impl FnMut() -> bool,
+    probe: impl Fn() -> Option<String>,
+) {
+    while nap() {
+        if let Some(why) = probe() {
+            phase.abandon(LlmError::Offline(why));
+            return;
+        }
+    }
+}
+
+/// Can a fresh connection reach `url` right now? `None` when it can — any
+/// answer at all, whatever its status — else why not, when the failure says
+/// the network is gone ([`super::network::is_offline`]). A `HEAD` with no
+/// credentials, on the probe client's own unpooled connection. Boundary code.
+fn probe_connection(url: &str) -> Option<String> {
+    let client = super::probe_client().ok()?;
+    match client.head(url).send() {
+        Ok(_) => None,
+        Err(e) => match super::transport_error(&e) {
+            LlmError::Offline(why) => Some(why),
+            _ => None,
+        },
+    }
 }
 
 /// A streaming chat client bound to one [`ModelConfig`], optionally carrying the
@@ -403,6 +563,25 @@ impl OpenAiClient {
         cancel: &CancelToken,
         on_delta: impl FnMut(Delta),
     ) -> Result<StreamOutcome> {
+        self.stream_chat_with(messages, cancel, None, on_delta)
+    }
+
+    /// [`stream_chat`](Self::stream_chat) that also reports **the moment the
+    /// provider answers**: `on_connect` runs on the transport thread as soon
+    /// as the response headers are in, whatever their status — before the
+    /// first token, which a reasoning model can sit on for a minute. The
+    /// backend arms it only for a request that follows an offline failure, so
+    /// the offline look ends with the reconnect (`docs/offline.md`).
+    ///
+    /// # Errors
+    /// As [`stream_chat`](Self::stream_chat).
+    pub fn stream_chat_with(
+        &self,
+        messages: Vec<ChatMessage>,
+        cancel: &CancelToken,
+        on_connect: Option<ConnectHook>,
+        on_delta: impl FnMut(Delta),
+    ) -> Result<StreamOutcome> {
         if cancel.is_cancelled() {
             return Err(LlmError::Cancelled);
         }
@@ -452,13 +631,37 @@ impl OpenAiClient {
         // socket — detached and bounded, never joined (the loop's
         // detach-don't-join discipline, docs/interrupt.md).
         let (tx, rx) = std::sync::mpsc::channel();
-        std::thread::spawn(move || run_transport(req, &tx));
+        // A request written into a connection the network has since dropped
+        // hears nothing until NET_OP_TIMEOUT — so while it waits, a watchdog
+        // tries a fresh connection to the same host every OUTAGE_PROBE_AFTER
+        // and fails it as `Offline` once even that cannot be made, which the
+        // retry policy then waits out (docs/offline.md).
+        let phase = Arc::new(RequestPhase::new(tx.clone()));
+        let probe_url = self.base_url(auth.base.as_deref());
+        {
+            let phase = Arc::clone(&phase);
+            let probe_url = probe_url.clone();
+            std::thread::spawn(move || {
+                watch_for_outage(
+                    &phase,
+                    || phase.nap_while_waiting(OUTAGE_PROBE_AFTER),
+                    || probe_connection(&probe_url),
+                );
+            });
+        }
+        let transport_phase = Arc::clone(&phase);
+        std::thread::spawn(move || {
+            run_transport(req, &tx, &transport_phase, &probe_url, on_connect);
+        });
         let outcome = match self.cfg.wire_api {
             super::WireApi::Responses => drain_responses(&rx, cancel, on_delta),
             super::WireApi::Anthropic => drain_anthropic(&rx, cancel, on_delta),
             super::WireApi::Ollama => drain_ollama(&rx, cancel, on_delta),
             super::WireApi::Chat => drain_stream(&rx, cancel, on_delta),
         };
+        // Done either way: the watchdog stands down, and a response that
+        // arrives after a cancel is dropped rather than read.
+        phase.finish();
         outcome.map_err(|e| self.explain(e))
     }
 
@@ -481,6 +684,15 @@ impl OpenAiClient {
                         Some(advice) => LlmError::Http(advice),
                         None => LlmError::Http(message),
                     }
+                }
+                // Still offline — the variant is what the turn waits on
+                // (docs/offline.md) — but reading as the advice should the
+                // wait be off and the failure surface.
+                LlmError::Offline(message) => {
+                    let base = self.base_url(None);
+                    LlmError::Offline(
+                        super::ollama::connection_advice(&base, &message).unwrap_or(message),
+                    )
                 }
                 LlmError::Api { status, body } => {
                     match super::ollama::advice(status, &body, &self.cfg.model) {
@@ -564,15 +776,48 @@ impl BodySource for ChatRequest<'static> {
 /// error, or a non-2xx status with its body); a clean EOF just drops the
 /// sender, the disconnect being the signal. Each blocking operation here is
 /// bounded by [`NET_OP_TIMEOUT`]; a failed channel send (the drain dropped its
-/// receiver after a cancel) exits early. Boundary code — real HTTP.
-fn run_transport(req: reqwest::blocking::RequestBuilder, tx: &Sender<Result<Vec<u8>>>) {
+/// receiver after a cancel) exits early. `on_connect` runs once the response
+/// headers are in, before anything is forwarded (see
+/// [`OpenAiClient::stream_chat_with`]) — unless the request's `phase` says
+/// the outage watchdog already failed it, when the response is dropped
+/// unread. A failure that hides its cause behind the unsent body is settled
+/// by a probe of `probe_url`. Boundary code — real HTTP.
+fn run_transport(
+    req: reqwest::blocking::RequestBuilder,
+    tx: &Sender<Result<Vec<u8>>>,
+    phase: &RequestPhase,
+    probe_url: &str,
+    on_connect: Option<ConnectHook>,
+) {
     let mut resp = match req.send() {
         Ok(resp) => resp,
         Err(e) => {
-            let _ = tx.send(Err(LlmError::Http(e.to_string())));
+            // `Offline` when the network simply is not there — the failure
+            // the retry policy waits out (docs/offline.md). A connection that
+            // died before the streamed body was taken reports only the broken
+            // upload, never why — so a fresh connection is tried, and if even
+            // that cannot be made, the network is what is missing.
+            let error = match super::transport_error(&e) {
+                LlmError::Http(message) if super::network::is_unsent_body(&e) => {
+                    probe_connection(probe_url).map_or(LlmError::Http(message), LlmError::Offline)
+                }
+                error => error,
+            };
+            let _ = tx.send(Err(error));
             return;
         }
     };
+    // The provider answered — whatever the status, the network is back —
+    // unless the watchdog gave up on this request first, or the drain is
+    // gone: then nobody is reading, and the response is dropped.
+    if !phase.answer() {
+        return;
+    }
+    // Run ahead of the first forwarded byte, so the report always precedes
+    // the content it unblocks.
+    if let Some(on_connect) = on_connect {
+        on_connect();
+    }
     if !resp.status().is_success() {
         let status = resp.status().as_u16();
         let body = resp.text().unwrap_or_default();
@@ -589,7 +834,9 @@ fn run_transport(req: reqwest::blocking::RequestBuilder, tx: &Sender<Result<Vec<
                 }
             }
             Err(e) => {
-                let _ = tx.send(Err(LlmError::Http(e.to_string())));
+                // A body read is past the connect phase, so never offline;
+                // the description still names the cause.
+                let _ = tx.send(Err(LlmError::Http(super::network::describe(&e))));
                 return;
             }
         }
@@ -1809,6 +2056,25 @@ mod tests {
     }
 
     #[test]
+    fn an_offline_ollama_failure_stays_offline_with_the_advice_as_its_text() {
+        // The variant is what the retry policy waits on (docs/offline.md), so
+        // explaining it must not turn it into an ordinary failure; the advice
+        // only replaces what a surfaced one would read.
+        let mut cfg = ModelConfig::fallback();
+        cfg.wire_api = crate::llm::WireApi::Ollama;
+        cfg.api_base = "http://gpu-box:11434".to_string();
+        let failure = LlmError::Offline(
+            "error sending request for url (http://gpu-box:11434/api/chat): client error \
+             (Connect): dns error: failed to lookup address information: Name or service not known"
+                .to_string(),
+        );
+        match OpenAiClient::new(cfg).explain(failure) {
+            LlmError::Offline(message) => assert!(message.contains("OLLAMA_HOST"), "{message}"),
+            other => panic!("still offline, so still waited out: {other:?}"),
+        }
+    }
+
+    #[test]
     fn sse_data_strips_the_prefix_and_optional_space() {
         assert_eq!(sse_data("data: hello\n"), Some("hello"));
         assert_eq!(sse_data("data:hello\n"), Some("hello"));
@@ -2631,5 +2897,268 @@ mod body_tests {
             messages[0].content == MessageContent::Text("persona".into()),
             "the caller's messages are untouched"
         );
+    }
+}
+
+#[cfg(test)]
+mod connect_hook_tests {
+    //! The transport's report that the provider answered — what ends an
+    //! offline wait the moment the headers are in, not at the first token
+    //! (`docs/offline.md`). Exercised against a loopback stand-in: a real
+    //! socket, no network.
+
+    use super::*;
+    use std::io::Write;
+    use std::net::{TcpListener, TcpStream};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    /// A one-request provider stand-in on the loopback: reads the request
+    /// whole, answers with `status` and an SSE `body`, then closes.
+    fn one_shot(status: &'static str, body: &'static str) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("a loopback port");
+        let base = format!("http://{}/v1", listener.local_addr().expect("bound"));
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("a connection");
+            drain_request(&mut stream);
+            let reply = format!(
+                "HTTP/1.1 {status}\r\ncontent-type: text/event-stream\r\n\
+                 content-length: {}\r\nconnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            let _ = stream.write_all(reply.as_bytes());
+        });
+        base
+    }
+
+    /// Read one request off `stream`: its headers, then `content-length`
+    /// bytes of body — so the reply never races the upload.
+    fn drain_request(stream: &mut TcpStream) {
+        let mut bytes = Vec::new();
+        let mut chunk = [0u8; 4096];
+        let header_end = loop {
+            let n = stream.read(&mut chunk).expect("request bytes");
+            assert!(n > 0, "the request ended before its headers did");
+            bytes.extend_from_slice(&chunk[..n]);
+            if let Some(end) = bytes.windows(4).position(|w| w == b"\r\n\r\n") {
+                break end + 4;
+            }
+        };
+        let headers = String::from_utf8_lossy(&bytes[..header_end]).to_ascii_lowercase();
+        let length: usize = headers
+            .lines()
+            .find_map(|line| line.strip_prefix("content-length:"))
+            .and_then(|value| value.trim().parse().ok())
+            .unwrap_or(0);
+        while bytes.len() < header_end + length {
+            let n = stream.read(&mut chunk).expect("body bytes");
+            assert!(n > 0, "the request ended before its body did");
+            bytes.extend_from_slice(&chunk[..n]);
+        }
+    }
+
+    fn client_at(base: String) -> OpenAiClient {
+        let mut cfg = ModelConfig::fallback();
+        cfg.api_base = base;
+        cfg.api_key = Some("stand-in".to_string());
+        OpenAiClient::new(cfg)
+    }
+
+    /// A hook that raises the returned flag when it runs.
+    fn flagging_hook() -> (ConnectHook, Arc<AtomicBool>) {
+        let fired = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&fired);
+        (Box::new(move || flag.store(true, Ordering::SeqCst)), fired)
+    }
+
+    #[test]
+    fn the_hook_fires_once_the_provider_answers_whatever_the_status() {
+        // A 503 is the provider talking: the network is back even though the
+        // request failed, and the retry that follows is an ordinary one.
+        for status in ["200 OK", "503 Service Unavailable"] {
+            let client = client_at(one_shot(status, "data: [DONE]\n\n"));
+            let (hook, fired) = flagging_hook();
+            let _ = client.stream_chat_with(
+                vec![ChatMessage::user("hi")],
+                &CancelToken::new(),
+                Some(hook),
+                |_| {},
+            );
+            assert!(fired.load(Ordering::SeqCst), "{status}");
+        }
+    }
+
+    #[test]
+    fn the_hook_never_fires_without_an_answer() {
+        let port = {
+            let listener = TcpListener::bind("127.0.0.1:0").expect("a loopback port");
+            listener.local_addr().expect("bound").port()
+        };
+        let client = client_at(format!("http://127.0.0.1:{port}/v1"));
+        let (hook, fired) = flagging_hook();
+        let result = client.stream_chat_with(
+            vec![ChatMessage::user("hi")],
+            &CancelToken::new(),
+            Some(hook),
+            |_| {},
+        );
+        assert!(result.is_err(), "nothing listens there");
+        assert!(!fired.load(Ordering::SeqCst));
+    }
+}
+
+#[cfg(test)]
+mod outage_watch_tests {
+    //! The outage watchdog (`docs/offline.md`): a request written into a
+    //! connection the network has since dropped hears nothing back until the
+    //! stall detector fires, minutes later — so while no answer has come, a
+    //! fresh connection is tried every so often, and when even that cannot be
+    //! made the request fails as `Offline` and the turn waits for the network.
+
+    use super::*;
+    use std::cell::Cell;
+    use std::sync::mpsc::TryRecvError;
+
+    /// What a transport channel carries: body bytes, or the failure.
+    type Carried = Result<Vec<u8>>;
+
+    /// A request's phase over a fresh channel: the phase holds the watchdog's
+    /// sender, the test the transport's and the drain's receiver.
+    fn request() -> (RequestPhase, Sender<Carried>, Receiver<Carried>) {
+        let (tx, rx) = std::sync::mpsc::channel();
+        (RequestPhase::new(tx.clone()), tx, rx)
+    }
+
+    fn offline() -> LlmError {
+        LlmError::Offline("dns error".to_string())
+    }
+
+    #[test]
+    fn a_request_is_answered_or_abandoned_never_both() {
+        let (phase, _tx, rx) = request();
+        assert!(phase.is_waiting());
+        assert!(phase.answer(), "the transport heard back first");
+        assert!(!phase.abandon(offline()), "so the watchdog may not fail it");
+        assert!(!phase.is_waiting());
+        assert!(rx.try_recv().is_err(), "and nothing was reported");
+
+        let (phase, _tx, rx) = request();
+        assert!(phase.abandon(offline()), "the watchdog gave up first");
+        assert!(!phase.answer(), "so the transport must drop what it got");
+        assert!(matches!(rx.try_recv(), Ok(Err(LlmError::Offline(_)))));
+    }
+
+    #[test]
+    fn a_finished_request_is_neither_answered_nor_abandoned_afterwards() {
+        let (phase, _tx, rx) = request();
+        phase.finish();
+        assert!(!phase.is_waiting());
+        assert!(!phase.abandon(offline()));
+        assert!(!phase.answer());
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn an_answer_lets_the_channel_close_whatever_the_watchdog_is_doing() {
+        // The watchdog's sender lives in the phase, and the answer drops it:
+        // a probe still in flight cannot hold the channel open past the
+        // response's end, which some drains read as their EOF.
+        let (phase, tx, rx) = request();
+        assert!(phase.answer());
+        drop(tx); // the transport, done reading
+        assert!(matches!(rx.try_recv(), Err(TryRecvError::Disconnected)));
+    }
+
+    #[test]
+    fn finishing_lets_the_channel_close_too() {
+        let (phase, tx, rx) = request();
+        phase.finish();
+        drop(tx);
+        assert!(matches!(rx.try_recv(), Err(TryRecvError::Disconnected)));
+    }
+
+    #[test]
+    fn the_watchdog_fails_a_silent_request_once_the_network_is_gone() {
+        let (phase, _tx, rx) = request();
+        let naps = Cell::new(0);
+        watch_for_outage(
+            &phase,
+            || {
+                naps.set(naps.get() + 1);
+                true
+            },
+            || {
+                // Online for the first look, gone for the second.
+                (naps.get() == 2).then(|| "dns error".to_string())
+            },
+        );
+        assert_eq!(naps.get(), 2, "it kept watching while the network answered");
+        match rx.try_recv() {
+            Ok(Err(LlmError::Offline(why))) => assert_eq!(why, "dns error"),
+            other => panic!("expected the request failed as offline, got {other:?}"),
+        }
+        assert!(rx.try_recv().is_err(), "exactly one failure");
+        assert!(!phase.answer(), "and the late response is dropped");
+    }
+
+    #[test]
+    fn the_watchdog_stands_down_once_the_request_is_no_longer_waiting() {
+        let (phase, _tx, rx) = request();
+        let probes = Cell::new(0);
+        watch_for_outage(
+            &phase,
+            || false,
+            || {
+                probes.set(probes.get() + 1);
+                Some("dns error".to_string())
+            },
+        );
+        assert_eq!(probes.get(), 0, "nothing to probe for");
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn an_answer_that_lands_during_the_probe_wins() {
+        // The probe can take seconds; if the headers arrive meanwhile, the
+        // request is alive and its stale verdict must not fail it.
+        let (phase, _tx, rx) = request();
+        watch_for_outage(
+            &phase,
+            || true,
+            || {
+                assert!(phase.answer());
+                Some("dns error".to_string())
+            },
+        );
+        assert!(
+            rx.try_recv().is_err(),
+            "an answered request is never failed"
+        );
+    }
+
+    #[test]
+    fn the_wait_between_probes_ends_the_moment_the_request_does() {
+        let (phase, _tx, _rx) = request();
+        let phase = Arc::new(phase);
+        let finisher = Arc::clone(&phase);
+        let started = std::time::Instant::now();
+        let ender = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(30));
+            finisher.finish();
+        });
+        let still_waiting = phase.nap_while_waiting(Duration::from_secs(60));
+        ender.join().expect("the finishing thread");
+        assert!(!still_waiting);
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "{:?}",
+            started.elapsed()
+        );
+    }
+
+    #[test]
+    fn a_nap_with_nothing_happening_runs_its_length() {
+        let (phase, _tx, _rx) = request();
+        assert!(phase.nap_while_waiting(Duration::from_millis(20)));
     }
 }

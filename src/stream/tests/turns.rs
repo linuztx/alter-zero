@@ -35,6 +35,37 @@ fn a_table_prompt_streams_a_pure_table_turn() {
 }
 
 #[test]
+fn an_offline_prompt_waits_out_two_checks_then_reconnects() {
+    // docs/offline.md: the demo plays the real cadence — the first two waits
+    // the retry policy announces — then the reconnect the transport reports,
+    // then a reply naming the look it just showed. No retry counter: a lost
+    // connection never spends the budget.
+    use crate::llm::retry::offline_backoff;
+    let events = turn_events("show me what happens offline", 0);
+    assert_eq!(
+        events[..3],
+        [
+            StreamEvent::Offline {
+                wait: offline_backoff(1)
+            },
+            StreamEvent::Offline {
+                wait: offline_backoff(2)
+            },
+            StreamEvent::Connected,
+        ]
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, StreamEvent::Retrying { .. })),
+        "{events:?}"
+    );
+    assert!(matches!(events.last(), Some(StreamEvent::StreamDone)));
+    let text = chunk_text(&events);
+    assert!(text.contains("Waiting for internet"), "{text}");
+}
+
+#[test]
 fn turn_events_chunks_still_reconstruct_the_reply() {
     // Tool events are interleaved, but the Chunk events alone must still
     // concatenate to exactly the dummy reply.

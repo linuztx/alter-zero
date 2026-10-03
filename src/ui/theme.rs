@@ -1776,6 +1776,38 @@ pub(super) fn status_retry_color() -> Color {
     palette().warning
 }
 
+// --- The offline look (docs/offline.md). While a request waits out a lost
+// connection the status line drops the session's spinner and the turn's verb
+// for `▂ ▄ ▆ █ Waiting for internet… (… · offline 41s · retrying in 3s · esc
+// to interrupt)`: four signal bars filling one by one in amber, a dark beat,
+// and again — a phone searching for signal — over the verb's ordinary shimmer
+// on an amber base. ---
+
+/// What the status line says while the request waits for the network.
+pub(super) const OFFLINE_VERB: &str = "Waiting for internet";
+
+/// The signal bars, lowest to tallest — single-width block elements, the
+/// `bars` spinner's own glyphs, each drawn with a space after it.
+pub(super) const OFFLINE_SIGNAL_BARS: [&str; 4] = ["▂", "▄", "▆", "█"];
+
+/// The bars for a session on the ASCII `line` spinner, whose font may have no
+/// block elements to draw.
+pub(super) const OFFLINE_SIGNAL_ASCII: [&str; 4] = [".", ".", ".", "."];
+
+/// How long each bar takes to light: four steps fill the meter and a fifth
+/// is the dark beat between sweeps — a 1.25 s search.
+pub(super) const OFFLINE_SIGNAL_STEP: Duration = Duration::from_millis(250);
+
+/// The clause in place of the countdown while an attempt is in flight.
+pub(super) const OFFLINE_RECONNECTING: &str = "reconnecting…";
+
+/// Amber — the lit signal bars, the verb's shimmer base and the `offline 41s
+/// · retrying in 3s` clause: the retry clause's warning hue, since the request
+/// has not failed, it is waiting.
+pub(super) fn status_offline_color() -> Color {
+    palette().warning
+}
+
 /// Trailing ellipsis after the working verb (`Working…`).
 pub(super) const STATUS_ELLIPSIS: &str = "…";
 

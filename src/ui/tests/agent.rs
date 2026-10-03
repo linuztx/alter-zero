@@ -778,6 +778,31 @@ fn an_agents_chat_continuation_opens_on_the_verb_after_the_last_one_shown() {
 }
 
 #[test]
+fn an_agent_views_status_carries_its_offline_streak() {
+    // A subagent waiting for the network says so in its session view, on
+    // its own runtime clock (docs/offline.md).
+    use crate::stream::StreamEvent;
+    let mut app = App::new();
+    app.begin_stream();
+    app.start_agent_group(false, &[spec("a1", "Fetch", false)]);
+    app.freeze_agent_runtime("a1", Duration::from_secs(8));
+    app.apply_agent_event(
+        "a1",
+        &StreamEvent::Offline {
+            wait: Duration::from_secs(2),
+        },
+    );
+    let run = app.agent("a1").expect("listed");
+    assert_eq!(
+        agent_view_status(run).offline,
+        Some(crate::app::OfflineInfo {
+            since: Duration::from_secs(8),
+            next_check: Duration::from_secs(10),
+        })
+    );
+}
+
+#[test]
 fn an_agent_views_strip_previews_its_thinking_block() {
     // A reasoning subagent shows the same live `● Thinking…` block the main
     // view does, and its status line says `Thinking for Ns`

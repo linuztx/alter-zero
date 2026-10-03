@@ -36,6 +36,7 @@ network calls are boundary code (like `main.rs`/`term.rs`), verified by hand.
 | `llm/openai.rs` | `OpenAiClient` — endpoint/payload build (pure) + the blocking SSE stream (boundary). The request is a typed `ChatRequest` written from the messages by reference; `build_payload` is the JSON-tree view the tests read | split |
 | `llm/body.rs` | how a request leaves the process (`docs/memory.md`): `BodySource`, the trait each wire's owned request implements by writing its typed, borrowed form; `streamed_request`, which serializes it on its own thread into a bounded pipe of 64 KB chunks the transport pumps, with `Content-Length` from a counting pass — so a body carrying a picture is never held whole | **pure** |
 | `llm/models.rs` | `/v1/models` response → `Vec<ModelEntry>` (parse pure; fetch boundary; each entry carries its model's reasoning capability — `docs/reasoning.md`; records decode one at a time off borrowed `RawValue` slices, never a whole-list tree — `docs/memory.md`; the Ollama wire's `/api/tags` + `/api/show` walk lives here too) | split |
+| `llm/network.rs` | the offline classifier (`docs/offline.md`): `is_offline` — did a transport failure happen before any connection existed, because the network is not there? — `is_unsent_body` (the masked upload failure behind which a sizeable request's DNS error hides) and `describe`, the whole cause chain `reqwest`'s `Display` leaves out; all over `&dyn Error`, so hand-built chains stand in for the real ones | **pure** |
 | `llm/ollama.rs` | Ollama's **native** wire format (`wire_api = "ollama"`): the `OLLAMA_HOST` grammar, the `/api/chat` body (`options.num_ctx` — the reason it exists beside Ollama's `/v1`), the NDJSON fold, the catalog parse with the context-window rule, and the explained refusals (`docs/ollama.md`) | **pure** |
 | `llm/backend.rs` | `LlmBackend: ReplySource` — bridges the SSE deltas to `StreamEvent`s | boundary |
 
@@ -105,6 +106,21 @@ The loop turns `Retrying` into `App::set_retry`, which sets `TurnStatus::retry`;
 the next streamed `Chunk`/`ThinkingChunk` clears it (the request recovered). The
 turn stays alive throughout — nothing commits to scrollback during the retries,
 so a resize/Ctrl+O repaint is unaffected.
+
+**A lost connection is not a failure to count** (`docs/offline.md`). A request
+that never left the machine — no DNS answer, no route, a connect that timed
+out — fails as `LlmError::Offline` (`llm::network` classifies `reqwest`'s
+cause chain, which its `Display` hides), and `next_step` answers it with
+`AwaitNetwork` instead of `Retry`: no budget spent, no ceiling, the request
+re-sent 1 s → 2 s → 4 s → then every 5 s, each wait announced as
+`StreamEvent::Offline { wait }` and the status line showing the offline look
+(`▂ ▄ ▆ █ Waiting for internet… (… · offline 41s · retrying in 3s · …)`) until
+the transport reports `StreamEvent::Connected` on the next answered request.
+A budget of `0` turns the wait off with everything else. Two outages that do
+not name themselves — a sizeable request whose DNS failure `reqwest` masks as
+a broken body upload, and a mid-turn request on a pooled connection the outage
+killed — are recognised by a credential-less `HEAD` probe on an unpooled
+connection.
 
 ### Reasoning (`ThinkingSplitter`)
 
@@ -537,7 +553,10 @@ Retheme there.
   own — at its next channel send, or after at most one op-timeout if parked on
   the silent socket. A failure before any content streamed retries as usual
   (`llm::retry`); one after content is surfaced, never retried (a retry would
-  duplicate the streamed text).
+  duplicate the streamed text). The one silence that *is* cut short is a
+  request still waiting for its response headers while the network is gone:
+  its outage watchdog finds that out within `OUTAGE_PROBE_AFTER` (10 s) and
+  hands the turn to the offline wait (`docs/offline.md`).
 - A `429`'s `Retry-After` (and OpenRouter's rate-limit reset headers) are not
   read; a rate-limited retry waits the standard exponential backoff instead.
 - The `ThinkingSplitter`'s inline-tag path and a provider's *native* `reasoning`

@@ -47,6 +47,7 @@ below), so a short turn reads `3s` and a long one `1m 30s` / `1h 5m`:
 | generating a tool call | `( ·•●  ) Working… (3s · ↓ 170 tokens · esc to interrupt)` (count ticks as the call streams) |
 | after a tool result  | `( ·•●  ) Working… (4s · ↑ 200 tokens · esc to interrupt)`                     |
 | retrying a failure   | `( ·•●  ) Working… (5s · ↑ 42 tokens · retrying 2/3 · esc to interrupt)`       |
+| waiting for the network | `▂ ▄ ▆ █ Waiting for internet… (1m 12s · ↑ 42 tokens · offline 41s · retrying in 3s · esc to interrupt)` — the whole line swaps (`docs/offline.md`) |
 | finished (committed) | `Worked for 20s` — the past tense of the verb the line wore last                |
 | interrupted (Esc)    | *no summary* — the red `Conversation interrupted` notice (see `docs/interrupt.md`) |
 
@@ -124,6 +125,16 @@ real backend's own latency plays the same role.
   content streamed, so the real backend is reconnecting (`llm::retry`, see
   `docs/llm.md`). `App::set_retry` sets it from a `StreamEvent::Retrying`; the
   next streamed chunk clears it (the request recovered). The dummy never retries.
+- **The offline line** — while a request **waits out a lost connection**
+  (`docs/offline.md`) the line is not this one at all: the session's spinner
+  and the verb (a task's `activeForm` too) give way to four amber signal bars
+  filling one by one (`▂ ▄ ▆ █`, `. . . .` for the ASCII `line` style) and
+  `Waiting for internet…` shimmering over an amber base, and the amber clause
+  `offline {for} · retrying in {n}s` — `reconnecting…` while an attempt is in
+  flight — takes the retry clause's place. `App::set_offline` opens it from a
+  `StreamEvent::Offline { wait }`; `StreamEvent::Connected`, content or a
+  retry ends it, and a `Back online after {for} offline` toast marks the
+  reconnect. The dummy's `offline` demo plays it.
 - **Thinking for {m}** — shown *only while actively thinking* (the `{m}`
   humanized by `format_elapsed` like the elapsed); dropped once thinking ends.
 - **esc to interrupt** — the closing clause, always present while the line
@@ -177,8 +188,11 @@ struct (with the boundary-supplied durations) — unit-tested with explicit valu
 
 - `TokenArrow { Down, Up }`.
 - `RetryInfo { attempt, max }` — a live retry indicator (see `docs/llm.md`).
+- `OfflineInfo { since, next_check }` — a live offline indicator, both instants
+  on the turn's own clock (`TurnStatus::elapsed`), so the renderer derives
+  `offline 41s` and `retrying in 3s` with no clock of its own (`docs/offline.md`).
 - `TurnStatus { verb, done_verb, rotates_from, tokens, arrow, elapsed, thinking,
-  shell, retry }` (`verb`/`done_verb` are one `StatusVerb`'s two forms, moved
+  shell, retry, offline }` (`verb`/`done_verb` are one `StatusVerb`'s two forms, moved
   together; `rotates_from: Option<usize>` is the `STATUS_VERBS` index the line
   opened on when its verb rotates, `None` when it is fixed as given.
   `elapsed: Duration` / `thinking: Option<Duration>` are written by the boundary

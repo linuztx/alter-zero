@@ -36,6 +36,7 @@ there" and fades it after a few seconds.
 | `/init` run mid-turn | `/init is disabled while a task is in progress` | info |
 | `/compact` run mid-turn | `/compact is disabled while a task is in progress` | info |
 | `/compact` with an empty context | `Nothing to compact` | info |
+| the provider answers after an offline wait | `Back online after {n}s offline` (`docs/offline.md`) | info |
 
 The original rows (`/copy`, `/model`, `/login`, `/resume`, `/help`) were all
 committed as scrollback messages before this design; the later `/init` and

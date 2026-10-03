@@ -70,6 +70,14 @@ pub struct TurnStatus {
     /// / [`App::push_thinking`]). Set by [`App::set_retry`] from the backend's
     /// [`crate::stream::StreamEvent::Retrying`]. See `docs/llm.md`.
     pub retry: Option<RetryInfo>,
+    /// Set while the request is **waiting out a lost connection** — it could
+    /// not leave the machine, and the backend re-sends it on a gentle cadence
+    /// with no deadline. The status line turns into the offline look
+    /// (`Waiting for internet… (… · offline 41s · retrying in 3s · …)`) until
+    /// the provider answers. Set by [`App::set_offline`], cleared by
+    /// [`App::set_connected`], by streamed content and by a retry. See
+    /// `docs/offline.md`.
+    pub offline: Option<OfflineInfo>,
     /// The tip this turn's line is showing — or last drew, while something
     /// hides it — once the turn has run [`crate::tips::TIP_DELAY`]; drawn by
     /// [`App::set_status_times`] (`docs/tips.md`). `None` until then, and
@@ -85,6 +93,57 @@ pub struct RetryInfo {
     pub attempt: u32,
     /// The maximum number of retries ([`crate::llm::retry::MAX_RETRIES`]).
     pub max: u32,
+}
+
+/// A live **offline** indicator: the request could not leave the machine and
+/// the backend is waiting for the network (`docs/offline.md`). Both instants
+/// are on the clock of whatever is waiting — the turn's
+/// [`TurnStatus::elapsed`], or a subagent's
+/// [`runtime`](crate::agents::AgentRun::runtime) — which the boundary already
+/// injects every frame, so the renderer derives `offline 41s` and
+/// `retrying in 3s` with no clock of its own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OfflineInfo {
+    /// When this streak of offline failures began.
+    pub since: Duration,
+    /// When the next attempt goes out. At or before the clock, an attempt is
+    /// in flight (`reconnecting…`).
+    pub next_check: Duration,
+}
+
+impl OfflineInfo {
+    /// The streak after an offline wait of `wait` was announced at `now`:
+    /// the `previous` streak's start kept, or `now` for a new one.
+    #[must_use]
+    pub fn after(previous: Option<Self>, now: Duration, wait: Duration) -> Self {
+        Self {
+            since: previous.map_or(now, |streak| streak.since),
+            next_check: now.saturating_add(wait),
+        }
+    }
+
+    /// How long the network has been gone at `now`.
+    #[must_use]
+    pub const fn offline_for(&self, now: Duration) -> Duration {
+        now.saturating_sub(self.since)
+    }
+
+    /// How long until the next attempt at `now` — zero once one is in flight.
+    #[must_use]
+    pub const fn retry_in(&self, now: Duration) -> Duration {
+        self.next_check.saturating_sub(now)
+    }
+}
+
+/// The toast raised when the provider answers after an offline wait —
+/// `Back online after 41s offline`, the gap humanized like every elapsed —
+/// or a bare `Back online` for a blip under a second (`docs/offline.md`).
+#[must_use]
+pub fn back_online_notice(offline_for: Duration) -> String {
+    match offline_for.as_secs() {
+        0 => "Back online".to_string(),
+        secs => format!("Back online after {} offline", format_elapsed(secs)),
+    }
 }
 
 /// A finished turn's summary, committed to scrollback as a dim `"{verb} for
@@ -176,8 +235,10 @@ impl App {
         if let Some(status) = self.status.as_mut() {
             status.tokens += count_tokens(chunk);
             status.arrow = TokenArrow::Down;
-            // Reasoning is content too — the retrying request recovered.
+            // Reasoning is content too — the retrying (or offline) request
+            // recovered.
             status.retry = None;
+            status.offline = None;
         }
     }
     /// Count a streamed tool-call generation delta (the model emitting a tool
@@ -191,8 +252,10 @@ impl App {
         if let Some(status) = self.status.as_mut() {
             status.tokens += count_tokens(chunk);
             status.arrow = TokenArrow::Down;
-            // Generating the call is content too — a retrying request recovered.
+            // Generating the call is content too — a retrying (or offline)
+            // request recovered.
             status.retry = None;
+            status.offline = None;
         }
     }
     /// Fold one provider usage report (the round's final `usage` frame,
@@ -232,7 +295,32 @@ impl App {
     pub fn set_retry(&mut self, attempt: u32, max: u32) {
         if let Some(status) = self.status.as_mut() {
             status.retry = Some(RetryInfo { attempt, max });
+            // Whatever failed this time, it was not the network being gone.
+            status.offline = None;
         }
+    }
+    /// Record that the request is **waiting out a lost connection**: the next
+    /// attempt goes out `wait` from now (the backend's
+    /// [`crate::stream::StreamEvent::Offline`]). Opens the streak on the
+    /// turn's own clock — the [`TurnStatus::elapsed`] the boundary injects —
+    /// or moves an open one's next check, keeping its start; drops a retry
+    /// clause, which describes a different problem. No-op when no turn is in
+    /// flight. See `docs/offline.md`.
+    pub fn set_offline(&mut self, wait: Duration) {
+        if let Some(status) = self.status.as_mut() {
+            status.offline = Some(OfflineInfo::after(status.offline, status.elapsed, wait));
+            status.retry = None;
+        }
+    }
+    /// The provider answered after an offline wait (the backend's
+    /// [`crate::stream::StreamEvent::Connected`]): close the streak and
+    /// return how long the network was gone, for the boundary's `Back
+    /// online` toast. `None` — changing nothing — when no streak was open or
+    /// no turn is in flight. See `docs/offline.md`.
+    pub fn set_connected(&mut self) -> Option<Duration> {
+        let status = self.status.as_mut()?;
+        let streak = status.offline.take()?;
+        Some(streak.offline_for(status.elapsed))
     }
     /// The live turn status, if a turn is in flight.
     #[must_use]
