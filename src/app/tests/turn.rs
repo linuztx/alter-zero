@@ -2,6 +2,7 @@
 //! committed summary (`docs/status-indicator.md`, `docs/interrupt.md`).
 
 use super::*;
+use crate::stream::ToolCallSummary;
 
 #[test]
 fn ctrl_c_clears_the_draft_even_mid_stream() {
@@ -1436,6 +1437,108 @@ fn streamed_content_clears_the_retry_indicator() {
         app.status().unwrap().retry,
         None,
         "a reasoning delta clears it too"
+    );
+}
+
+// ===== a lost connection (docs/offline.md) =====
+
+#[test]
+fn a_fresh_turn_is_not_offline() {
+    let mut app = App::new();
+    app.begin_stream();
+    assert_eq!(app.status().unwrap().offline, None);
+    assert_eq!(app.offline(), None);
+}
+
+#[test]
+fn set_offline_records_the_host_the_count_and_when_the_wait_began() {
+    let mut app = App::new();
+    app.begin_stream();
+    app.set_status_times(Duration::from_secs(12), None);
+    app.set_offline("api.venice.ai", 1);
+    assert_eq!(
+        app.offline(),
+        Some(&OfflineInfo {
+            host: "api.venice.ai".into(),
+            attempts: 1,
+            began: Duration::from_secs(12),
+        })
+    );
+    // Every later failed attempt moves the count on and keeps the spell's
+    // start, so the line's `offline for Ns` measures the whole outage.
+    app.set_status_times(Duration::from_secs(20), None);
+    app.set_offline("api.venice.ai", 2);
+    let info = app.offline().expect("still offline");
+    assert_eq!(info.attempts, 2);
+    assert_eq!(info.began, Duration::from_secs(12));
+    assert_eq!(
+        info.duration(Duration::from_secs(45)),
+        Duration::from_secs(33),
+        "how long the host has been gone, read off the turn's clock"
+    );
+}
+
+#[test]
+fn set_offline_is_a_no_op_when_idle() {
+    let mut app = App::new();
+    app.set_offline("api.venice.ai", 1);
+    assert!(app.status().is_none());
+    assert_eq!(app.offline(), None);
+}
+
+#[test]
+fn the_request_getting_through_ends_the_wait() {
+    // Whatever the first thing back is — reply text, a reasoning delta, a
+    // tool call being generated, or a whole batch announced (the wires that
+    // deliver a call whole stream no delta first) — the host answered.
+    type Clear = fn(&mut App);
+    let clears: [(&str, Clear); 5] = [
+        ("a chunk", |app| app.push_chunk("hello")),
+        ("a reasoning delta", |app| app.push_thinking("hmm")),
+        ("a tool-call delta", |app| {
+            app.push_tool_call_progress("{\"co")
+        }),
+        ("a batch announcement", |app| {
+            app.start_tool_batch(&[ToolCallSummary {
+                name: "Bash".into(),
+                args: "ls".into(),
+            }]);
+        }),
+        ("a lone call", |app| app.start_tool("Bash", "ls", None)),
+    ];
+    for (what, clear) in clears {
+        let mut app = App::new();
+        app.begin_stream();
+        app.set_offline("api.venice.ai", 3);
+        assert!(app.offline().is_some());
+        clear(&mut app);
+        assert_eq!(app.offline(), None, "{what} ends the wait");
+    }
+}
+
+#[test]
+fn a_lost_connection_and_a_bounded_retry_never_show_together() {
+    // The two are the driver's two policies, and a request is under exactly
+    // one of them at a time: the newest announcement is the state.
+    let mut app = App::new();
+    app.begin_stream();
+    app.set_retry(1, 3);
+    app.set_offline("api.venice.ai", 1);
+    assert_eq!(
+        app.status().unwrap().retry,
+        None,
+        "the outage replaces the retry clause"
+    );
+    assert!(app.offline().is_some());
+    app.set_retry(1, 3);
+    assert_eq!(
+        app.offline(),
+        None,
+        "the host answered: a retry replaces the wait"
+    );
+    assert_eq!(
+        app.status().unwrap().retry,
+        Some(RetryInfo { attempt: 1, max: 3 })
     );
 }
 

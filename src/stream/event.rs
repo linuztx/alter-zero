@@ -368,6 +368,17 @@ pub enum StreamEvent {
     /// `retrying {attempt}/{max}`. Only a real backend sends this (see
     /// `llm::retry`); the loop shows it in the status and keeps the turn alive.
     Retrying { attempt: u32, max: u32 },
+    /// No connection could be made to the provider — the machine is offline,
+    /// or `host` (the host the request was for, with its port when the URL
+    /// names one) is — and the backend is **waiting for it to come back**,
+    /// trying again every few seconds for as long as it takes rather than
+    /// spending the bounded retry budget. Sent after every connection attempt
+    /// that failed, `attempts` counting them since the host last answered.
+    /// The loop shows the wait live in the status line — the amber `Waiting
+    /// for internet…` verb and the ripple row naming the host — and the next
+    /// streamed content clears it; nothing commits. Only a real backend sends
+    /// it (`llm::retry`). See `docs/offline.md`.
+    Offline { host: String, attempts: u32 },
     /// The provider's real token usage for one completed request round (the
     /// final usage frame of the stream — sent once per round by a real
     /// backend, so an agentic turn reports one per tool round). The loop

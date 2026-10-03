@@ -56,14 +56,19 @@ impl App {
     /// but the clock: a seeded walk, **Show tips** on, a status line of the
     /// main session's own to hang from (not a `!` shell turn, which has none,
     /// nor an agent session view, whose line is the subagent's), no task
-    /// checklist, which takes the slot (`docs/task-tools.md`) — and the
+    /// checklist, which takes the slot (`docs/task-tools.md`), no lost
+    /// connection, whose `No connection to …` row takes it too
+    /// (`docs/offline.md`) — and the
     /// strip actually on screen: an inline modal replaces the whole live
     /// region and an overlay covers it, and a tip drawn under either would be
     /// spent without being seen.
     fn tip_slot_open(&self) -> bool {
         self.tip_cursor.is_some()
             && self.settings.tips
-            && self.status.as_ref().is_some_and(|status| !status.shell)
+            && self
+                .status
+                .as_ref()
+                .is_some_and(|status| !status.shell && status.offline.is_none())
             && self.viewed_agent().is_none()
             && self.tasks.is_empty()
             && !self.modal_open()

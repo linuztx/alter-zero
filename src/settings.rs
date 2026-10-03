@@ -64,7 +64,9 @@ pub enum SettingKey {
     /// Downscale a large image before it is **sent to the model**
     /// (`docs/images.md`) — nothing to do with the display.
     AutoResizeImages,
-    /// How many times a failed request is retried (`llm::retry`).
+    /// How many times a failed request is retried (`llm::retry`); a lost
+    /// connection is waited for instead, and `0` turns both off
+    /// (`docs/offline.md`).
     ErrorRetry,
     /// Offer `bash`/`read`/`write`/`edit`/`agent` to the model (`docs/tools.md`).
     Tools,
@@ -162,7 +164,7 @@ impl SettingKey {
                 "Resize large images to 2000x2000 before sending them to the model"
             }
             Self::ErrorRetry => {
-                "How many times a failed request is retried before the error is shown"
+                "Retries before a failed request gives up — a lost connection is waited for"
             }
             Self::Tools => "Offer the bash, read, write, edit and agent tools to the model",
             Self::PermissionMode => {

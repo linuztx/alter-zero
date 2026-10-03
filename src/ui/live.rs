@@ -315,10 +315,13 @@ pub(super) fn strip_lines(
                 .map(|status| styled_status_line(status, app.task_verb(), app.spinner(), width))
         };
         lines.push(line.unwrap_or_default());
-        // The checklist's `⎿` rows hang directly off the status line —
-        // Claude Code's live task list (docs/task-tools.md) — or, with no
-        // list, the tip, once the turn has run a few seconds (docs/tips.md).
-        // The two never show together, so `hang_rows` is their plain sum.
+        // The rows hanging off the status line, in `hang_rows`' sum: the
+        // lost-connection row first, right under the line whose verb it
+        // explains (docs/offline.md); then the checklist's `⎿` rows — Claude
+        // Code's live task list (docs/task-tools.md) — or, with no list and
+        // no wait, the tip, once the turn has run a few seconds
+        // (docs/tips.md).
+        lines.extend(super::offline::status_offline_lines(app, width));
         lines.extend(tasks);
         lines.extend(super::tips::status_tip_lines(app, width));
         lines.push(Line::default()); // STATUS_GAP_ROWS

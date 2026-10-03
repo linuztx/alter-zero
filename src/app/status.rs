@@ -70,6 +70,16 @@ pub struct TurnStatus {
     /// / [`App::push_thinking`]). Set by [`App::set_retry`] from the backend's
     /// [`crate::stream::StreamEvent::Retrying`]. See `docs/llm.md`.
     pub retry: Option<RetryInfo>,
+    /// Set while the backend **waits for a lost connection**: no connection
+    /// could be made to the provider, and the request is re-sent every few
+    /// seconds for as long as that lasts (`docs/offline.md`). Rendered as the
+    /// amber `Waiting for internet…` verb and an `offline for Ns` clause,
+    /// with the `No connection to {host}` row hanging under the line. Set by
+    /// [`App::set_offline`] from the backend's
+    /// [`crate::stream::StreamEvent::Offline`], cleared the moment the host
+    /// answers — content, a tool round, or a bounded retry announcement.
+    /// Never `Some` beside [`retry`](Self::retry).
+    pub offline: Option<OfflineInfo>,
     /// The tip this turn's line is showing — or last drew, while something
     /// hides it — once the turn has run [`crate::tips::TIP_DELAY`]; drawn by
     /// [`App::set_status_times`] (`docs/tips.md`). `None` until then, and
@@ -85,6 +95,44 @@ pub struct RetryInfo {
     pub attempt: u32,
     /// The maximum number of retries ([`crate::llm::retry::MAX_RETRIES`]).
     pub max: u32,
+}
+
+/// A live **lost-connection** indicator (`docs/offline.md`): which host
+/// cannot be reached, how many connection attempts have failed since it
+/// last answered, and when the wait began — the turn's own clock reading
+/// (`TurnStatus::elapsed`, or an agent's runtime) at the first announcement,
+/// so `offline for Ns` is one subtraction off the clock the boundary already
+/// injects rather than a second clock of its own.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OfflineInfo {
+    /// The host (and port, when the URL names one) the request was for.
+    pub host: String,
+    /// Connection attempts that have failed in a row (1-based: the first
+    /// announcement says one attempt failed).
+    pub attempts: u32,
+    /// The turn clock's reading when the outage began.
+    pub began: Duration,
+}
+
+impl OfflineInfo {
+    /// How long the host has been gone, given the turn clock's reading
+    /// `now` (never negative — a clock that read earlier than the start
+    /// answers zero).
+    #[must_use]
+    pub fn duration(&self, now: Duration) -> Duration {
+        now.saturating_sub(self.began)
+    }
+}
+
+impl TurnStatus {
+    /// The host answered: whatever the request was waiting on — a bounded
+    /// retry's backoff or a lost connection — is over, so both live
+    /// indicators come down together. Content, a tool round and the
+    /// announcements themselves all call this first.
+    pub(super) fn recovered(&mut self) {
+        self.retry = None;
+        self.offline = None;
+    }
 }
 
 /// A finished turn's summary, committed to scrollback as a dim `"{verb} for
@@ -177,7 +225,7 @@ impl App {
             status.tokens += count_tokens(chunk);
             status.arrow = TokenArrow::Down;
             // Reasoning is content too — the retrying request recovered.
-            status.retry = None;
+            status.recovered();
         }
     }
     /// Count a streamed tool-call generation delta (the model emitting a tool
@@ -192,7 +240,7 @@ impl App {
             status.tokens += count_tokens(chunk);
             status.arrow = TokenArrow::Down;
             // Generating the call is content too — a retrying request recovered.
-            status.retry = None;
+            status.recovered();
         }
     }
     /// Fold one provider usage report (the round's final `usage` frame,
@@ -231,8 +279,44 @@ impl App {
     /// content arrives. No-op when no turn is in flight. See `docs/llm.md`.
     pub fn set_retry(&mut self, attempt: u32, max: u32) {
         if let Some(status) = self.status.as_mut() {
+            // A retry means the host answered (badly): any outage is over.
+            status.recovered();
             status.retry = Some(RetryInfo { attempt, max });
         }
+    }
+    /// Record that no connection could be made to `host` and the backend is
+    /// waiting for it to come back — `attempts` connection attempts have
+    /// failed so far — so the status line wears `Waiting for internet…` and
+    /// the `No connection to {host}` row hangs under it (`docs/offline.md`).
+    /// The first announcement of an outage stamps the wait's start with the
+    /// turn clock's current reading; the later ones move the count on and
+    /// keep it. Comes straight from the backend's
+    /// [`crate::stream::StreamEvent::Offline`]; cleared the moment the host
+    /// answers (`TurnStatus::recovered`). No-op when no turn is in flight.
+    pub fn set_offline(&mut self, host: &str, attempts: u32) {
+        if let Some(status) = self.status.as_mut() {
+            let began = status
+                .offline
+                .as_ref()
+                .map_or(status.elapsed, |outage| outage.began);
+            status.recovered();
+            status.offline = Some(OfflineInfo {
+                host: host.to_string(),
+                attempts,
+                began,
+            });
+        }
+    }
+    /// The lost-connection wait on screen, if any: inside an agent session
+    /// view the **viewed agent's** (its strip is that agent's,
+    /// `docs/agent-view-streaming.md`), else the main turn's. What the status
+    /// line's clause and the row under it are built from.
+    #[must_use]
+    pub fn offline(&self) -> Option<&OfflineInfo> {
+        if let Some(run) = self.viewed_agent() {
+            return run.offline.as_ref();
+        }
+        self.status.as_ref()?.offline.as_ref()
     }
     /// The live turn status, if a turn is in flight.
     #[must_use]

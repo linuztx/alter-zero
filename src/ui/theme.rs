@@ -1790,6 +1790,52 @@ pub(super) const STATUS_ARROW_UP: &str = "↑";
 /// codebase's hint convention (`(ctrl+o to expand)`, `esc return`).
 pub(super) const STATUS_INTERRUPT_HINT: &str = "esc to interrupt";
 
+// --- Waiting for a lost connection (docs/offline.md): the status line's
+// verb and clause while no connection can be made to the provider, and the
+// ripple row hanging under it. ---
+
+/// The verb the status line wears while the backend waits for a connection it
+/// cannot make — in place of the turn's own verb and of any task's
+/// activeForm, since waiting is all the turn is doing.
+pub(super) const OFFLINE_VERB: &str = "Waiting for internet";
+
+/// The clause naming how long the host has been gone, in the retry clause's
+/// slot: `offline for 45s`.
+pub(super) const OFFLINE_CLAUSE: &str = "offline for ";
+
+/// Amber — the offline verb's resting colour under its shimmer, the `offline
+/// for` clause, the ripple's dot and the host in the row under the line. The
+/// retry clause's own caution tone: the request has not failed, it is
+/// waiting.
+pub(super) fn status_offline_color() -> Color {
+    palette().warning
+}
+
+/// The ripple's frames — a dot sending rings out and drawing them back in,
+/// the shape of a signal being sent to a host that does not answer. Every
+/// frame is the same width, so the text after it never jitters.
+pub(super) const OFFLINE_FRAMES: &[&str] = &[
+    "   ·   ", "  (·)  ", " ((·)) ", "(((·)))", " ((·)) ", "  (·)  ",
+];
+
+/// How long each ripple frame shows — a sub-second cycle, calm beside the
+/// spinner.
+pub(super) const OFFLINE_FRAME_INTERVAL: Duration = Duration::from_millis(160);
+
+/// How much of the dot's amber each ring out loses toward the dim, so the
+/// widest frame fades with distance instead of reading as a bracket soup.
+pub(super) const OFFLINE_RING_FADE: f32 = 0.25;
+
+/// The gap between the ripple and the row's text.
+pub(super) const OFFLINE_RIPPLE_GAP: &str = "  ";
+
+/// The row's text around the host: `No connection to {host} — trying again ·
+/// {n} attempts`. Short on purpose — the status line's verb already says the
+/// turn is waiting — so the row fits one 80-column line beside an ordinary
+/// host and leaves the reassurance to the count ticking.
+pub(super) const OFFLINE_ROW_LEAD: &str = "No connection to ";
+pub(super) const OFFLINE_ROW_TAIL: &str = " — trying again · ";
+
 /// Dim grey — the committed `"{done verb} for {n}"` turn summary.
 pub(super) fn status_done_color() -> Color {
     tool_dim_color()

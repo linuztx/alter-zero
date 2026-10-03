@@ -245,19 +245,24 @@ pub fn strip_has_status(app: &App) -> bool {
 }
 
 /// The rows **hanging off the status line**, inside its slot and above its
-/// trailing gap: the task checklist (`docs/task-tools.md`) — or, with no list
-/// to show, the spinner tip (`docs/tips.md`). The two share one slot, so they
-/// share this one count, and every caller hands it to `strip_rows` /
-/// [`live_height`] / `live_layout` / `input_box` where the checklist's
-/// alone used to go — the sum spelled once, so the rows the region reserves
-/// and the rows `strip_lines` paints cannot disagree.
+/// trailing gap: the lost-connection row while the backend waits for the
+/// network (`docs/offline.md`), the task checklist (`docs/task-tools.md`),
+/// and — with neither to show — the spinner tip (`docs/tips.md`). They share
+/// one slot, so they share this one count, and every caller hands it to
+/// `strip_rows` / [`live_height`] / `live_layout` / `input_box` where the
+/// checklist's alone used to go — the sum spelled once, so the rows the
+/// region reserves and the rows `strip_lines` paints cannot disagree.
 ///
-/// A plain sum is exact because the two never show together: a tip hides
-/// while any task is listed (`App::tip`), and at rest — where the checklist
-/// becomes the standalone block — there is no turn to draw a tip.
+/// A plain sum is exact: a tip hides while any task is listed or the
+/// connection is gone (`App::tip`), a wait and a checklist may hang
+/// together (a plan's rows and the network's state are both worth a row),
+/// and at rest — where the checklist becomes the standalone block — there is
+/// no turn to draw a tip or to wait on.
 #[must_use]
 pub fn hang_rows(app: &App, width: u16) -> u16 {
-    super::tasks::task_rows(app, width).saturating_add(super::tips::tip_rows(app, width))
+    super::tasks::task_rows(app, width)
+        .saturating_add(super::tips::tip_rows(app, width))
+        .saturating_add(super::offline::offline_rows(app, width))
 }
 
 /// Columns the input field's text occupies: the box spans the full width (no side

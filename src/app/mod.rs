@@ -105,7 +105,9 @@ pub use self::settings::{SettingRow, SettingsPicker};
 pub use self::skill_picker::SkillPicker;
 pub use self::skills_menu::{SkillMenuRow, SkillsMenu};
 pub use self::spinner::{Spinner, SpinnerPicker, SpinnerRow};
-pub use self::status::{RetryInfo, ThinkingState, TokenArrow, TurnStatus, TurnSummary};
+pub use self::status::{
+    OfflineInfo, RetryInfo, ThinkingState, TokenArrow, TurnStatus, TurnSummary,
+};
 pub use self::tasks::TaskCallRecord;
 pub use self::theme::{Theme, ThemePicker, ThemeRow, parse_theme_file, theme_file_json};
 pub use self::tips::ShownTip;

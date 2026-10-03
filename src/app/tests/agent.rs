@@ -237,6 +237,33 @@ fn enter_views_an_agent_and_the_composer_chats_with_it() {
 }
 
 #[test]
+fn an_agent_session_view_reports_the_viewed_agents_lost_connection() {
+    // Inside a session view the strip is that agent's (docs/offline.md): its
+    // wait shows there, and the main turn's wait does not.
+    let mut app = App::new();
+    app.begin_stream();
+    app.start_agent_group(false, &agent_specs(false));
+    app.set_offline("main.example", 2);
+    app.apply_agent_event(
+        "a1",
+        &StreamEvent::Offline {
+            host: "agent.example".into(),
+            attempts: 5,
+        },
+    );
+    assert_eq!(
+        app.offline().map(|info| info.host.as_str()),
+        Some("main.example")
+    );
+    app.open_agent_view("a1");
+    let viewed = app.offline().expect("the viewed agent is waiting");
+    assert_eq!(viewed.host, "agent.example");
+    assert_eq!(viewed.attempts, 5);
+    app.open_agent_view("a2");
+    assert_eq!(app.offline(), None, "a2 is not waiting on anything");
+}
+
+#[test]
 fn enter_on_main_from_an_agent_view_returns_to_the_main_session() {
     let mut app = App::new();
     app.begin_stream();

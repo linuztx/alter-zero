@@ -2,14 +2,15 @@
 //! (`docs/status-indicator.md`).
 
 use super::*;
-use crate::app::Spinner;
+use crate::app::{OfflineInfo, Spinner};
 use crate::app::{STATUS_VERBS, VERB_ROTATION};
 use crate::ui::message::compaction_full_lines;
 use crate::ui::theme::{
     INDENT, SHIMMER_SWEEP, SPINNER_SPAN_COUNT, ai_color, header_gradient_end,
     header_gradient_start, shimmer_base, shimmer_highlight, spinner_bars_high,
     spinner_pulse_bright, spinner_tail_color, status_color, status_detail_color, status_done_color,
-    status_retry_color, tool_diff_add_color, tool_diff_del_color, tool_dim_color, tool_pulse_dim,
+    status_offline_color, status_retry_color, tool_diff_add_color, tool_diff_del_color,
+    tool_dim_color, tool_pulse_dim,
 };
 
 #[test]
@@ -728,6 +729,84 @@ fn status_retrying(attempt: u32, max: u32, tokens: usize) -> TurnStatus {
     let mut s = status(tokens, TokenArrow::Up, 5, None);
     s.retry = Some(RetryInfo { attempt, max });
     s
+}
+
+/// A live status waiting for a lost connection (verb fixed to "Working"):
+/// `began`/`elapsed` are the turn clock's readings when the outage started
+/// and now.
+fn status_offline(host: &str, attempts: u32, began: u64, elapsed: u64) -> TurnStatus {
+    let mut s = status(42, TokenArrow::Up, elapsed, None);
+    s.offline = Some(OfflineInfo {
+        host: host.into(),
+        attempts,
+        began: Duration::from_secs(began),
+    });
+    s
+}
+
+#[test]
+fn a_waiting_status_line_wears_the_offline_verb_and_how_long_the_host_is_gone() {
+    // docs/offline.md: the verb says what the turn is doing now, and the
+    // clause — the retry clause's twin, in its slot — says for how long,
+    // read off the turn's own clock.
+    let text = plain(&status_line(
+        &status_offline("api.venice.ai", 3, 20, 65),
+        200,
+    ));
+    assert!(
+        text.ends_with(
+            "Waiting for internet… (1m 5s · ↑ 42 tokens · offline for 45s · esc to interrupt)"
+        ),
+        "{text:?}"
+    );
+    assert!(
+        !text.contains("Working"),
+        "the offline verb replaces the turn's own: {text:?}"
+    );
+}
+
+#[test]
+fn the_offline_verb_outranks_a_task_verb_and_shimmers_in_amber() {
+    // A task's activeForm says what the model is doing; while the host is
+    // gone it is doing nothing but waiting, so the wait wins the verb slot.
+    // At elapsed 0 the shimmer band is off the text, so every verb char
+    // rests on its base colour — the warning amber, not the grey base.
+    let line = status_line_with_verb(
+        &status_offline("api.venice.ai", 1, 0, 0),
+        Some("Setting up project structure"),
+        200,
+    );
+    let text = plain(&line);
+    assert!(
+        text.contains("Waiting for internet…") && !text.contains("Setting up"),
+        "{text:?}"
+    );
+    let verb_len = "Waiting for internet…".chars().count();
+    let verb = &line.spans[VERB_START..VERB_START + verb_len];
+    assert!(
+        verb.iter()
+            .all(|s| s.style.fg == Some(status_offline_color())),
+        "the verb rests on the warning colour: {:?}",
+        verb.iter().map(|s| s.style.fg).collect::<Vec<_>>()
+    );
+    assert_ne!(
+        status_offline_color(),
+        shimmer_base(),
+        "the offline verb is told apart from an ordinary one by colour"
+    );
+    let clause = line
+        .spans
+        .iter()
+        .find(|s| s.content.contains("offline for"))
+        .expect("the offline clause");
+    assert_eq!(clause.style.fg, Some(status_offline_color()));
+}
+
+#[test]
+fn a_status_line_not_waiting_has_no_offline_clause() {
+    let text = plain(&status_line(&status(5, TokenArrow::Down, 3, None), 200));
+    assert!(!text.contains("offline"), "{text:?}");
+    assert!(!text.contains("Waiting for internet"), "{text:?}");
 }
 
 #[test]

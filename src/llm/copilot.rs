@@ -748,7 +748,7 @@ fn exchange(oauth_token: &str) -> Result<ExchangedToken> {
         .header("editor-plugin-version", EDITOR_PLUGIN_VERSION)
         .header("user-agent", USER_AGENT)
         .send()
-        .map_err(|e| LlmError::Http(e.to_string()))?;
+        .map_err(|e| LlmError::transport(&e))?;
     let status = resp.status().as_u16();
     let body = read_body(resp);
     if !(200..300).contains(&status) {
@@ -777,7 +777,7 @@ pub fn request_device_code() -> Result<DeviceCode> {
         .header("user-agent", USER_AGENT)
         .body(form_body(&[("client_id", CLIENT_ID), ("scope", SCOPE)]))
         .send()
-        .map_err(|e| LlmError::Http(e.to_string()))?;
+        .map_err(|e| LlmError::transport(&e))?;
     let status = resp.status().as_u16();
     let body = read_body(resp);
     if !(200..300).contains(&status) {

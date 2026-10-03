@@ -57,6 +57,23 @@ fn the_tip_appears_at_the_delay_and_moves_the_cursor_on() {
 }
 
 #[test]
+fn no_tip_hangs_under_a_status_line_waiting_for_the_connection() {
+    // The slot under the status line carries the `No connection to …` row
+    // while the host is gone (docs/offline.md); a shortcut tip beside it
+    // would be noise, so the tip hides and comes back — the same tip, no
+    // cursor spent — once the request gets through.
+    let mut app = seeded(2);
+    turn(&mut app);
+    app.set_status_times(TIP_DELAY, None);
+    assert_eq!(app.tip(), Some(TIPS[2]));
+    app.set_offline("api.venice.ai", 1);
+    assert_eq!(app.tip(), None, "the outage row takes the slot");
+    assert_eq!(app.tip_cursor(), Some(3), "nothing more was drawn");
+    app.push_chunk("back");
+    assert_eq!(app.tip(), Some(TIPS[2]), "the same tip returns");
+}
+
+#[test]
 fn a_turn_keeps_its_tip_until_the_rotation_draws_the_next() {
     let mut app = seeded(0);
     turn(&mut app);

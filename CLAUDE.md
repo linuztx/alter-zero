@@ -200,7 +200,7 @@ of per-area modules**, not single files — `src/app/` (`types`, `action`, `keys
 `agent`, `status`, `tips`, `permission`, with the `App` struct itself in `mod.rs` so every submodule and
 the test tree keeps its private-field access), `src/ui/` (`theme`, `wrap`,
 `layout`, `assistant`, `inline`, `table`, `message`, `conversation`, `tool`,
-`file_cell`, `inline_diff`, `status`, `tips`, `agent`, `menu`, `footer`, `header`, `hooks_view`, `live`, `transcript`,
+`file_cell`, `inline_diff`, `status`, `tips`, `offline`, `agent`, `menu`, `footer`, `header`, `hooks_view`, `live`, `transcript`,
 `context_view`, `resume_view`, `model_view`, `login_view`, `background_view`,
 `permission_view`, `settings_view`, `mascot_view`, `spinner_view`, `palette`, `theme_view`, `donate_view`, `export_view`, `secrets_view`, `mcp_view`, `trust_view`, `view_flow`, `stream_render`), and **`src/stream/`** — the backend seam
 kept apart from the offline demo that used to crowd it: `event` (the whole
@@ -306,7 +306,30 @@ the boundary seeds it from the per-user `tips.json` (`App::seed_tips`, the
 unit-test default being no tips), written back at the loop bottom whenever
 it moved, beside the `/settings` **Show tips** switch; `ALTER_ZERO_TIPS`
 seeding the row for a run, and the smoke suite exporting it `0`) in
-`docs/tips.md`, and the **`/theme` picker** that switches
+`docs/tips.md`; the **lost-connection wait** (`docs/offline.md`: a failed
+send is classified at the `reqwest` seam — `LlmError::transport`,
+`is_connect()` → `LlmError::Unreachable { host, message }`, the cause chain
+kept — and, since a **streamed** body's refused connect surfaces as a body
+error (`receiver is gone`) rather than a connect error, the chat transport
+checks any other send failure against the host itself with one bodyless
+`GET` of the origin through the same client (`openai::Reachability`), and
+`llm::retry` answers an `Unreachable` with `RetryStep::AwaitConnection`: a
+`StreamEvent::Offline { host, attempts }` per failed connect, a 1 s → 5 s
+backoff, another attempt, for as long as the outage lasts and **never
+counted** against the bounded `Error retry` (whose `0` still means never);
+`TurnStatus::offline`/`AgentRun::offline` — `OfflineInfo { host, attempts,
+began }`, `began` the turn clock's reading so `offline for Ns` is one
+subtraction off the injected `elapsed`, no second clock — cleared by any
+content, a round announcement or a retry (`TurnStatus::recovered`); on
+screen the amber `Waiting for internet…` verb, outranking a task verb,
+under the usual shimmer, the `offline for` clause in the retry clause's
+slot, and `ui::offline`'s `⎿ ((·)) No connection to {host} — trying again ·
+N attempts` row hanging off the line through `ui::hang_rows`, the ripple
+fading with distance on the status line's own clock, the tip giving way to
+it; a refused loopback Ollama stays `ollama serve` advice on the bounded
+retry (`ollama::is_local_base`); a drop mid-reply is still surfaced; Esc
+interrupts and the undo hands the unsent message back; `smoke.sh` Phase
+129), and the **`/theme` picker** that switches
 the whole **colour theme** (`docs/theme.md`: every colour the chrome paints
 — the accent the pickers select with, the success/error/warning hues, the
 dim, the user bubble, the diff tints, the banner gradient — plus the

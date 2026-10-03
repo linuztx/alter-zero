@@ -83,7 +83,8 @@ widened for the split.
 | `file_cell.rs` | The `read`/`write`/`edit` numbered-diff cell. |
 | `inline_diff.rs` | Character-level refinement of a diff cell's `-`/`+` pairs — which bytes of a line actually changed (`docs/inline-diff.md`). |
 | `image.rs` | The rows a picture reserves under a cell — the pure half of the inline images (`docs/images.md`). |
-| `status.rs` | The status line (spinner, shimmer, tally) and the `Done for Ns` summary. |
+| `status.rs` | The status line (spinner, shimmer, tally) and the `Done for Ns` summary — the amber `Waiting for internet…` verb and `offline for` clause included (`docs/offline.md`). |
+| `offline.rs` | The lost-connection row under the status line — the ripple, the host, the attempt count (`docs/offline.md`); `layout.rs`'s `hang_rows` sums it with the checklist's and the tip's. |
 | `tips.rs` | The spinner tip's `⎿  Tip: …` row under the status line (`docs/tips.md`); `layout.rs`'s `hang_rows` sums it with the checklist's. |
 | `agent.rs` | Subagent trees, cells, and the footer roster. |
 | `menu.rs` | The palette / `@` picker / `?` shortcuts bands. |

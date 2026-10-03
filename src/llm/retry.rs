@@ -9,6 +9,15 @@
 //! the attempts and announces each retry on the event channel. Only the actual
 //! sleep ([`sleep_cancellable`]) touches the clock; everything else is unit-tested
 //! with fakes and no network. See `docs/llm.md`.
+//!
+//! Two kinds of failure, two policies. A host that **answers badly** — a
+//! `503`, a reset mid-exchange, a stall — gets the bounded retry: a few
+//! attempts a short backoff apart, then the error. A host that **cannot be
+//! reached at all** ([`LlmError::Unreachable`]: the machine is offline, or the
+//! host is) gets no budget and no deadline: the driver announces the outage
+//! ([`StreamEvent::Offline`]), waits a few seconds ([`offline_backoff`]), and
+//! tries again, for as long as it takes — Esc is the way out, and the attempt
+//! that gets through is the one that streams. See `docs/offline.md`.
 
 use std::time::Duration;
 
@@ -40,6 +49,29 @@ pub enum RetryStep {
     Proceed,
     /// Announce this retry `number`, wait `wait`, then attempt again.
     Retry { number: u32, wait: Duration },
+    /// No connection could be made to `host`: announce the outage with the
+    /// running count of failed attempts (`attempt`, 1-based), wait `wait`,
+    /// then try again — **never counted** against the bounded budget
+    /// (`docs/offline.md`).
+    AwaitConnection {
+        attempt: u32,
+        wait: Duration,
+        host: String,
+    },
+}
+
+/// Where a stream's attempts stand, as [`next_step`] reads them: how many of
+/// the bounded retries have been spent, and how many connection attempts in a
+/// row have failed since the host last answered. The two are kept apart
+/// because they answer different questions — a host that cannot be reached
+/// spends none of the budget meant for one that answers badly.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Attempts {
+    /// Bounded retries spent so far (`retrying {n}/{max}`'s `n`).
+    pub retried: u32,
+    /// Connection attempts that failed in a row — reset once the host answers
+    /// at all, even with an error.
+    pub unreachable: u32,
 }
 
 /// Is this failure worth retrying? Transport errors (the connection/send
@@ -50,7 +82,7 @@ pub enum RetryStep {
 #[must_use]
 pub fn is_retryable(err: &LlmError) -> bool {
     match err {
-        LlmError::Http(_) => true,
+        LlmError::Http(_) | LlmError::Unreachable { .. } => true,
         LlmError::Api { status, .. } => matches!(status, 408 | 429 | 500 | 502 | 503 | 504),
         LlmError::Decode(_) | LlmError::Cancelled => false,
     }
@@ -75,18 +107,52 @@ pub fn retry_backoff(retry_number: u32) -> Duration {
         .min(BACKOFF_CAP)
 }
 
-/// Decide what to do after an attempt: retry only a **retryable** failure that
-/// has **not yet emitted any content** (`emitted == false`) and still has
-/// budget (`attempt < max`) — retrying after bytes have streamed would duplicate
-/// them, so once anything is emitted the error is surfaced instead.
+/// The first wait for a lost connection; each failed attempt after it doubles
+/// the wait up to [`OFFLINE_BACKOFF_CAP`].
+const OFFLINE_BACKOFF_BASE: Duration = Duration::from_secs(1);
+/// The longest wait between two connection attempts while offline. Short on
+/// purpose: a connect that fails costs nothing while the network is gone, and
+/// the turn should pick up within seconds of its return.
+pub const OFFLINE_BACKOFF_CAP: Duration = Duration::from_secs(5);
+
+/// The wait before the `attempt`-th connection attempt (1-based) while the
+/// host cannot be reached: 1 s, 2 s, 4 s, then [`OFFLINE_BACKOFF_CAP`] for
+/// every attempt after — for as long as the outage lasts.
 #[must_use]
-pub fn next_step(result: &AttemptResult, attempt: u32, emitted: bool, max: u32) -> RetryStep {
-    if let AttemptResult::Failed(err) = result
-        && !emitted
-        && attempt < max
-        && is_retryable(err)
-    {
-        let number = attempt + 1;
+pub fn offline_backoff(attempt: u32) -> Duration {
+    let shift = attempt.saturating_sub(1).min(16);
+    OFFLINE_BACKOFF_BASE
+        .checked_mul(1u32 << shift)
+        .unwrap_or(OFFLINE_BACKOFF_CAP)
+        .min(OFFLINE_BACKOFF_CAP)
+}
+
+/// Decide what to do after an attempt. Only a failure that has **not yet
+/// emitted any content** (`emitted == false`) is ever re-sent — restarting a
+/// request after bytes have streamed would duplicate them, so once anything
+/// is emitted the error is surfaced instead — and with retries turned off
+/// (`max == 0`) nothing is. Then: a host that could not be reached is
+/// **waited for** ([`RetryStep::AwaitConnection`], the count running on
+/// `attempts.unreachable` and no budget spent), and any other retryable
+/// failure takes the bounded retry while `attempts.retried < max`.
+#[must_use]
+pub fn next_step(result: &AttemptResult, attempts: Attempts, emitted: bool, max: u32) -> RetryStep {
+    let AttemptResult::Failed(err) = result else {
+        return RetryStep::Proceed;
+    };
+    if emitted || max == 0 {
+        return RetryStep::Proceed;
+    }
+    if let LlmError::Unreachable { host, .. } = err {
+        let attempt = attempts.unreachable + 1;
+        return RetryStep::AwaitConnection {
+            attempt,
+            wait: offline_backoff(attempt),
+            host: host.clone(),
+        };
+    }
+    if attempts.retried < max && is_retryable(err) {
+        let number = attempts.retried + 1;
         return RetryStep::Retry {
             number,
             wait: retry_backoff(number),
@@ -125,12 +191,13 @@ pub fn run_stream(
 }
 
 /// Drive the retry sequence and **return** the final disposition instead of
-/// sending a terminal event — announcing each [`StreamEvent::Retrying`] on the
-/// way. This is the reusable core of [`run_stream`]; the agentic tool loop
-/// ([`crate::llm::agent::run_agent`]) uses it directly, because *it* decides
-/// when the turn is really done (a successful round that requested tool calls
-/// is not the end). Generic over `attempt`/`sleep` for the same fake-driven
-/// tests. A cancel — mid-attempt or during a backoff — returns
+/// sending a terminal event — announcing each [`StreamEvent::Retrying`] and
+/// each [`StreamEvent::Offline`] on the way. This is the reusable core of
+/// [`run_stream`]; the agentic tool loop ([`crate::llm::agent::run_agent`])
+/// uses it directly, because *it* decides when the turn is really done (a
+/// successful round that requested tool calls is not the end). Generic over
+/// `attempt`/`sleep` for the same fake-driven tests. A cancel — mid-attempt,
+/// during a backoff, or while waiting for the connection — returns
 /// [`AttemptResult::Cancelled`].
 pub fn run_attempts(
     tx: &UnboundedSender<StreamEvent>,
@@ -139,7 +206,7 @@ pub fn run_attempts(
     mut attempt: impl FnMut() -> (AttemptResult, bool),
     sleep: impl Fn(Duration, &CancelToken),
 ) -> AttemptResult {
-    let mut attempt_no = 0u32;
+    let mut attempts = Attempts::default();
     // Cumulative: once any attempt streams a byte we never retry (retrying
     // would duplicate the content). So the attempt that emits is always the
     // last one — succeed or give up.
@@ -147,21 +214,36 @@ pub fn run_attempts(
     loop {
         let (result, this_emitted) = attempt();
         emitted |= this_emitted;
-        match next_step(&result, attempt_no, emitted, max) {
+        let wait = match next_step(&result, attempts, emitted, max) {
             RetryStep::Proceed => return result,
             RetryStep::Retry { number, wait } => {
                 let _ = tx.send(StreamEvent::Retrying {
                     attempt: number,
                     max,
                 });
-                attempt_no = number;
-                sleep(wait, cancel);
-                // A cancel during the backoff reaps us here — a silent stop,
-                // exactly as a cancel mid-attempt would.
-                if cancel.is_cancelled() {
-                    return AttemptResult::Cancelled;
-                }
+                attempts.retried = number;
+                // The host answered (badly): a later outage is a new one.
+                attempts.unreachable = 0;
+                wait
             }
+            RetryStep::AwaitConnection {
+                attempt: number,
+                wait,
+                host,
+            } => {
+                let _ = tx.send(StreamEvent::Offline {
+                    host,
+                    attempts: number,
+                });
+                attempts.unreachable = number;
+                wait
+            }
+        };
+        sleep(wait, cancel);
+        // A cancel during the wait reaps us here — a silent stop, exactly as
+        // a cancel mid-attempt would.
+        if cancel.is_cancelled() {
+            return AttemptResult::Cancelled;
         }
     }
 }
@@ -231,11 +313,103 @@ mod tests {
         assert!(retry_backoff(100) <= Duration::from_secs(8));
     }
 
+    /// `retried` bounded retries spent, no connection attempt failed.
+    const fn retried(n: u32) -> Attempts {
+        Attempts {
+            retried: n,
+            unreachable: 0,
+        }
+    }
+
+    fn unreachable(host: &str) -> AttemptResult {
+        AttemptResult::Failed(LlmError::Unreachable {
+            host: host.into(),
+            message: "tcp connect error: Network is unreachable".into(),
+        })
+    }
+
+    #[test]
+    fn a_lost_connection_is_retryable() {
+        assert!(is_retryable(&LlmError::Unreachable {
+            host: "api.venice.ai".into(),
+            message: "refused".into(),
+        }));
+    }
+
+    #[test]
+    fn the_offline_backoff_doubles_from_a_second_to_a_low_cap() {
+        // Short on purpose: when the network returns, the turn should pick up
+        // within seconds, and a failed connect costs nothing while it is gone.
+        assert_eq!(offline_backoff(1), Duration::from_secs(1));
+        assert_eq!(offline_backoff(2), Duration::from_secs(2));
+        assert_eq!(offline_backoff(3), Duration::from_secs(4));
+        assert_eq!(offline_backoff(4), OFFLINE_BACKOFF_CAP);
+        assert_eq!(offline_backoff(100), OFFLINE_BACKOFF_CAP);
+        assert!(OFFLINE_BACKOFF_CAP <= Duration::from_secs(5));
+    }
+
+    #[test]
+    fn next_step_waits_for_the_connection_instead_of_spending_a_retry() {
+        let step = next_step(
+            &unreachable("api.venice.ai"),
+            retried(0),
+            false,
+            MAX_RETRIES,
+        );
+        assert_eq!(
+            step,
+            RetryStep::AwaitConnection {
+                attempt: 1,
+                wait: offline_backoff(1),
+                host: "api.venice.ai".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn the_wait_for_a_connection_is_unbounded() {
+        // Every retry spent and a hundred failed connects later, the answer is
+        // still to wait — the budget is for a host that answers badly, not
+        // for one that cannot be reached (`docs/offline.md`).
+        let attempts = Attempts {
+            retried: MAX_RETRIES,
+            unreachable: 100,
+        };
+        let step = next_step(&unreachable("api.venice.ai"), attempts, false, MAX_RETRIES);
+        assert_eq!(
+            step,
+            RetryStep::AwaitConnection {
+                attempt: 101,
+                wait: OFFLINE_BACKOFF_CAP,
+                host: "api.venice.ai".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn retries_turned_off_surface_a_lost_connection_at_once() {
+        // `Error retry` 0 means never retry — a lost connection included.
+        assert_eq!(
+            next_step(&unreachable("api.venice.ai"), retried(0), false, 0),
+            RetryStep::Proceed
+        );
+    }
+
+    #[test]
+    fn a_connection_lost_after_content_streamed_is_surfaced() {
+        // Only a request that emitted nothing can be re-sent; a drop after
+        // bytes streamed would duplicate them (the bounded rule's twin).
+        assert_eq!(
+            next_step(&unreachable("api.venice.ai"), retried(0), true, MAX_RETRIES),
+            RetryStep::Proceed
+        );
+    }
+
     #[test]
     fn next_step_retries_a_content_free_transport_failure() {
         let step = next_step(
             &AttemptResult::Failed(LlmError::Http("boom".into())),
-            0,
+            retried(0),
             false,
             MAX_RETRIES,
         );
@@ -254,7 +428,7 @@ mod tests {
         // duplicate), so we surface it.
         let step = next_step(
             &AttemptResult::Failed(LlmError::Http("mid-stream drop".into())),
-            0,
+            retried(0),
             true,
             MAX_RETRIES,
         );
@@ -265,7 +439,7 @@ mod tests {
     fn next_step_stops_when_the_budget_is_exhausted() {
         let step = next_step(
             &AttemptResult::Failed(LlmError::Http("boom".into())),
-            MAX_RETRIES,
+            retried(MAX_RETRIES),
             false,
             MAX_RETRIES,
         );
@@ -279,7 +453,7 @@ mod tests {
                 status: 401,
                 body: String::new(),
             }),
-            0,
+            retried(0),
             false,
             MAX_RETRIES,
         );
@@ -289,11 +463,11 @@ mod tests {
     #[test]
     fn next_step_proceeds_on_success_and_cancel() {
         assert_eq!(
-            next_step(&AttemptResult::Ok, 0, false, MAX_RETRIES),
+            next_step(&AttemptResult::Ok, retried(0), false, MAX_RETRIES),
             RetryStep::Proceed
         );
         assert_eq!(
-            next_step(&AttemptResult::Cancelled, 0, false, MAX_RETRIES),
+            next_step(&AttemptResult::Cancelled, retried(0), false, MAX_RETRIES),
             RetryStep::Proceed
         );
     }
@@ -443,6 +617,153 @@ mod tests {
                 max: MAX_RETRIES
             }]
         );
+    }
+
+    #[test]
+    fn a_lost_connection_waits_without_spending_the_budget_and_recovers() {
+        // Offline for longer than the whole bounded budget would allow, then
+        // the network comes back: the request goes through, every wait
+        // announced with its running count and the host it waits for.
+        let (tx, mut rx) = unbounded_channel();
+        let cancel = CancelToken::new();
+        let mut calls = 0;
+        let outages = MAX_RETRIES as usize + 2;
+        run_stream(
+            &tx,
+            &cancel,
+            MAX_RETRIES,
+            || {
+                calls += 1;
+                if calls <= outages {
+                    (unreachable("api.venice.ai"), false)
+                } else {
+                    let _ = tx.send(StreamEvent::Chunk("back".into()));
+                    (AttemptResult::Ok, true)
+                }
+            },
+            no_sleep,
+        );
+        assert_eq!(
+            calls,
+            outages + 1,
+            "one attempt per outage, then the one that got through"
+        );
+        let mut expected: Vec<StreamEvent> = (1..=outages)
+            .map(|n| StreamEvent::Offline {
+                host: "api.venice.ai".into(),
+                attempts: n as u32,
+            })
+            .collect();
+        expected.push(StreamEvent::Chunk("back".into()));
+        expected.push(StreamEvent::StreamDone);
+        assert_eq!(drain(&mut rx), expected);
+    }
+
+    #[test]
+    fn a_host_that_answers_badly_after_an_outage_takes_the_bounded_retry() {
+        // Offline, then reachable but failing (503): the bounded retry opens
+        // on its first number — the outage spent none of it — and the outage
+        // count starts over once the host has answered.
+        let (tx, mut rx) = unbounded_channel();
+        let cancel = CancelToken::new();
+        let mut calls = 0;
+        run_stream(
+            &tx,
+            &cancel,
+            MAX_RETRIES,
+            || {
+                calls += 1;
+                match calls {
+                    1 => (unreachable("api.venice.ai"), false),
+                    2 => (
+                        AttemptResult::Failed(LlmError::Api {
+                            status: 503,
+                            body: String::new(),
+                        }),
+                        false,
+                    ),
+                    3 => (unreachable("api.venice.ai"), false),
+                    _ => {
+                        let _ = tx.send(StreamEvent::Chunk("ok".into()));
+                        (AttemptResult::Ok, true)
+                    }
+                }
+            },
+            no_sleep,
+        );
+        assert_eq!(
+            drain(&mut rx),
+            vec![
+                StreamEvent::Offline {
+                    host: "api.venice.ai".into(),
+                    attempts: 1
+                },
+                StreamEvent::Retrying {
+                    attempt: 1,
+                    max: MAX_RETRIES
+                },
+                StreamEvent::Offline {
+                    host: "api.venice.ai".into(),
+                    attempts: 1
+                },
+                StreamEvent::Chunk("ok".into()),
+                StreamEvent::StreamDone,
+            ]
+        );
+    }
+
+    #[test]
+    fn a_cancel_while_waiting_for_the_connection_stops_silently() {
+        // Esc while offline: no further attempt, no Error — the loop's
+        // interrupt path owns the outcome (the submission is handed back).
+        let (tx, mut rx) = unbounded_channel();
+        let cancel = CancelToken::new();
+        let mut calls = 0;
+        run_stream(
+            &tx,
+            &cancel,
+            MAX_RETRIES,
+            || {
+                calls += 1;
+                (unreachable("api.venice.ai"), false)
+            },
+            |_, c| c.cancel(),
+        );
+        assert_eq!(calls, 1);
+        assert_eq!(
+            drain(&mut rx),
+            vec![StreamEvent::Offline {
+                host: "api.venice.ai".into(),
+                attempts: 1
+            }]
+        );
+    }
+
+    #[test]
+    fn with_retries_off_a_lost_connection_is_the_surfaced_error() {
+        let (tx, mut rx) = unbounded_channel();
+        let cancel = CancelToken::new();
+        let mut calls = 0;
+        run_stream(
+            &tx,
+            &cancel,
+            0,
+            || {
+                calls += 1;
+                (unreachable("api.venice.ai"), false)
+            },
+            no_sleep,
+        );
+        assert_eq!(calls, 1, "never retried");
+        match drain(&mut rx).as_slice() {
+            [StreamEvent::Error(message)] => {
+                assert!(
+                    message.starts_with("could not reach api.venice.ai"),
+                    "{message}"
+                );
+            }
+            other => panic!("expected the surfaced error alone, got {other:?}"),
+        }
     }
 
     #[test]
