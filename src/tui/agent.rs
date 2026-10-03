@@ -141,16 +141,27 @@ impl Session<'_> {
         // What the fold appends to the agent's transcript is what the screen
         // owes it — see `commit_agent_view_event`.
         let recorded = self.app.agent(id).map_or(0, |run| run.history.len());
+        let was_final = self.app.agent(id).is_some_and(|run| run.status.is_final());
         let settled = self.app.apply_agent_event(id, &event);
         if viewing {
             self.commit_agent_view_event(&event, width, recorded);
         }
+        // A settled agent **reopened** — a continuation delivered a message
+        // into it (`agentsend`'s echo, the settle-window continuation): it
+        // runs again, so its clock starts and its linger sweep stands down
+        // (docs/agent-tools.md). The user's own chat path arms these itself.
+        if was_final && self.app.agent(id).is_some_and(|run| !run.status.is_final()) {
+            self.agent_clocks
+                .entry(id.to_string())
+                .or_insert_with(Instant::now);
+            self.agent_expiry.remove(id);
+        }
         if let Some(notice) = settled {
-            // A background agent completed on its own: the model-facing note
-            // goes on the shared board (from_model — its untaken presence at a
-            // turn boundary starts the automatic follow-up turn), the notice
-            // cell defers to the next safe boundary (docs/agent-tool.md).
-            self.registry.post_notice(notice.context_text(), true);
+            // A background agent completed on its own: the notice cell — and
+            // the model-facing board note — defer to the next safe boundary
+            // (`settle_bg_completions`, docs/agent-tool.md). Posting the note
+            // there rather than here is what lets a companion that reported
+            // the result first keep it off the board (docs/agent-tools.md).
             self.app.defer_agent_notice(notice);
         }
         if let Some(linger) = self
@@ -427,9 +438,33 @@ impl Session<'_> {
     /// resolution, so taking them first is what makes the roster snapshots the
     /// recorded group entries are built from final (`docs/agent-tool.md`).
     pub(crate) fn drain_agent_events(&mut self) {
-        while let Ok(AgentEvent::Stream { id, event }) = self.agent_rx.try_recv() {
-            self.on_agent_event(&id, event);
+        while let Ok(event) = self.agent_rx.try_recv() {
+            match event {
+                AgentEvent::Stream { id, event } => self.on_agent_event(&id, event),
+                AgentEvent::Stopped { id } => self.on_agent_stopped(&id),
+            }
         }
+    }
+
+    /// The model stopped an agent (`agentkill`, `docs/agent-tools.md`): the
+    /// registry already cancelled its loop, which sends no terminal event,
+    /// so the roster settles the row here — the user's `x` minus the kill,
+    /// the user's mark and the notice.
+    pub(crate) fn on_agent_stopped(&mut self, id: &str) {
+        let width = self.term.screen().width;
+        let on_screen = self.viewing_agent(id);
+        let recorded = self.begin_local_agent_settle(id, width);
+        if self.app.settle_agent_stopped(id) {
+            if on_screen {
+                self.commit_agent_tail(recorded, width);
+            }
+            self.agent_clocks.remove(id);
+            self.agent_thinking_clocks.remove(id);
+            let linger = self.app.agent(id).map_or(AGENT_LINGER, |run| run.linger());
+            self.agent_expiry
+                .insert(id.to_string(), Instant::now() + linger);
+        }
+        self.frame.schedule_frame();
     }
 
     /// A foreground group's members are settled — arm their linger sweeps (a
@@ -625,11 +660,13 @@ impl Session<'_> {
             self.app.set_agent_thinking(id, started.elapsed());
         }
         let now = Instant::now();
+        // A retired row (hidden, kept for a continuation) is not re-armed:
+        // its sweep already ran, and a hidden row has nothing left to hide.
         let settled: Vec<(String, std::time::Duration)> = self
             .app
             .agents()
             .iter()
-            .filter(|run| run.status.is_final())
+            .filter(|run| run.status.is_final() && !run.hidden)
             .map(|run| (run.id.clone(), run.linger()))
             .collect();
         for (id, linger) in settled {
@@ -655,8 +692,19 @@ impl Session<'_> {
                 return true;
             }
             if now >= *deadline {
-                app.remove_agent(id);
-                agent_registry.remove(id);
+                // A stopped agent is dropped — a cancelled loop cannot be
+                // continued; a finished or failed one is **retired**: its row
+                // leaves the footer, its entry and its registry slot stay for
+                // the follow-up `agentsend` sends it (docs/agent-tools.md).
+                if app
+                    .agent(id)
+                    .is_some_and(|run| run.status == alter_zero::agents::AgentStatus::Interrupted)
+                {
+                    app.remove_agent(id);
+                    agent_registry.remove(id);
+                } else {
+                    app.retire_agent(id);
+                }
                 agent_thinking_clocks.remove(id);
                 return false;
             }

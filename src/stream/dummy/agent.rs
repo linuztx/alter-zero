@@ -25,7 +25,9 @@
 use std::thread;
 use std::time::Duration;
 
-use crate::agents::{AgentEvent, AgentRegistry, GENERAL_PURPOSE};
+use crate::agents::{
+    AgentEvent, AgentRegistry, AgentSnapshot, AgentStatus, GENERAL_PURPOSE, report,
+};
 use crate::permission::{PermissionDecision, PermissionGate, PermissionKind, PermissionRequest};
 
 use super::super::{AgentCallDone, AgentSpec, CancelToken, StreamEvent};
@@ -105,7 +107,7 @@ pub(in crate::stream) fn agent_stream_turn(stage: &AgentStage<'_>) {
     if !say(&first, stage.tx, stage.cancel) {
         return;
     }
-    let (id, agent_cancel) = stage.agents.register(GENERAL_PURPOSE);
+    let (id, agent_cancel) = stage.agents.register(GENERAL_PURPOSE, DEMO_DESCRIPTION);
     let announced = stage.tx.send(StreamEvent::AgentBatch {
         background: true,
         agents: vec![AgentSpec {
@@ -125,10 +127,10 @@ pub(in crate::stream) fn agent_stream_turn(stage: &AgentStage<'_>) {
     let resolved = stage.tx.send(StreamEvent::AgentGroupDone {
         background: true,
         agents: vec![AgentCallDone {
-            id,
             // The real executor's own acknowledgement (the dummy-backend
             // rule: an offline cell carries live output).
-            output: crate::llm::backend::agent_launch_text(DEMO_DESCRIPTION),
+            output: crate::llm::backend::agent_launch_text(&id, DEMO_DESCRIPTION),
+            id,
             ok: true,
         }],
     });
@@ -211,6 +213,203 @@ fn spawn_agent_session(registry: AgentRegistry, id: String, cancel: CancelToken)
         // finished run, exactly as the live backend's wait loop leaves it.
         registry.finish(&id, Ok(DEMO_REPLY.to_string()), Vec::new());
     });
+}
+
+// --- the companions (docs/agent-tools.md) ----------------------------------
+
+/// The companions' demo narration — the two-part shape every demo reply uses.
+const CONTROL_NARRATION: &str = concat!(
+    "Launching one background subagent, then **controlling** it with the agent \
+     tools: `agentoutput` for its progress, `agentlist` for the roster, \
+     `agentwait` for its result, and `agentsend` for a follow-up it answers on \
+     the same conversation.\n\n",
+    "Every report above is the registry's own record of what the agent did — \
+     the same text a live model reads — and the follow-up reopened the agent's \
+     row on the roster, where **↓** then **Enter** opens its session with the \
+     whole exchange on it.\n\n",
+    handoff!()
+);
+
+/// The follow-up the demo sends the finished agent with `agentsend`.
+const CONTROL_FOLLOW_UP: &str = "Add a row for Zig to the table.";
+
+/// How long the companions' demo waits for the launched agent to reach each
+/// point it reports on — generous against the agent's own pacing, and cancel-
+/// aware like every demo wait.
+const CONTROL_WAIT: Duration = Duration::from_secs(20);
+
+/// Play the companions' demo (`docs/agent-tools.md`): narrate, launch the
+/// table-streaming agent in the background, then — as scripted cells on the
+/// reply channel, each resolving with the **real** report over the registry's
+/// **real** snapshot (the dummy-backend rule) — `agentoutput` once the agent
+/// has made its calls, `agentlist`, `agentwait` until it finishes, and
+/// `agentsend` with a follow-up that continues it; close.
+pub(in crate::stream) fn agent_control_turn(stage: &AgentStage<'_>) {
+    let (first, second) = reply_parts(CONTROL_NARRATION);
+    if !say(&first, stage.tx, stage.cancel) {
+        return;
+    }
+    let (id, agent_cancel) = stage.agents.register(GENERAL_PURPOSE, DEMO_DESCRIPTION);
+    let announced = stage.tx.send(StreamEvent::AgentBatch {
+        background: true,
+        agents: vec![AgentSpec {
+            id: id.clone(),
+            description: DEMO_DESCRIPTION.to_string(),
+            agent_type: GENERAL_PURPOSE.to_string(),
+            prompt: DEMO_PROMPT.to_string(),
+            background: true,
+            call_id: None,
+            arguments: None,
+        }],
+    });
+    if announced.is_err() {
+        return;
+    }
+    spawn_agent_session(stage.agents.clone(), id.clone(), agent_cancel);
+    let resolved = stage.tx.send(StreamEvent::AgentGroupDone {
+        background: true,
+        agents: vec![AgentCallDone {
+            output: crate::llm::backend::agent_launch_text(&id, DEMO_DESCRIPTION),
+            id: id.clone(),
+            ok: true,
+        }],
+    });
+    if resolved.is_err() {
+        return;
+    }
+    // `agentoutput`, once the agent has started its parallel write batch —
+    // the report shows both headers, the second still `← running`.
+    let Some(snapshot) = wait_for_agent(stage, &id, |snapshot| snapshot.calls.len() >= 2) else {
+        return;
+    };
+    if !companion_cell(
+        stage,
+        crate::llm::tools::AGENT_OUTPUT_DISPLAY,
+        serde_json::json!({ "agent_id": id }),
+        None,
+        report::progress(&snapshot),
+        snapshot.status != AgentStatus::Failed,
+    ) {
+        return;
+    }
+    // `agentlist`: the roster as the model reads it.
+    if !companion_cell(
+        stage,
+        crate::llm::tools::AGENT_LIST_DISPLAY,
+        serde_json::json!({}),
+        None,
+        report::list(&stage.agents.snapshots()),
+        true,
+    ) {
+        return;
+    }
+    // `agentwait`: the final response — observed, so the completion posts no
+    // second copy of it onto the board (the executor's own rule).
+    let Some(snapshot) = wait_for_agent(stage, &id, |snapshot| snapshot.status.is_final()) else {
+        return;
+    };
+    stage.agents.mark_observed(&id);
+    if !companion_cell(
+        stage,
+        crate::llm::tools::AGENT_WAIT_DISPLAY,
+        serde_json::json!({ "agent_id": id, "wait": 60 }),
+        None,
+        report::progress(&snapshot),
+        snapshot.status != AgentStatus::Failed,
+    ) {
+        return;
+    }
+    // `agentsend` to the finished agent: a continuation on its own
+    // conversation, announced on the agent channel first so the roster
+    // records the message and brings the row back (`deliver_to_agent`'s
+    // echo, docs/agent-tools.md).
+    let delivered = match stage.agents.begin_continuation(&id) {
+        Some((_messages, cancel)) => {
+            stage.agents.send(AgentEvent::Stream {
+                id: id.clone(),
+                event: StreamEvent::Steered {
+                    text: CONTROL_FOLLOW_UP.to_string(),
+                },
+            });
+            spawn_chat_continuation(stage.agents.clone(), id.clone(), cancel);
+            true
+        }
+        None => false,
+    };
+    let output = if delivered {
+        crate::llm::backend::agent_send_started_text(&id, DEMO_DESCRIPTION)
+    } else {
+        format!("Agent {id} (\"{DEMO_DESCRIPTION}\") cannot take a message right now.")
+    };
+    if !companion_cell(
+        stage,
+        crate::llm::tools::AGENT_SEND_DISPLAY,
+        serde_json::json!({ "agent_id": id, "message": CONTROL_FOLLOW_UP }),
+        Some(CONTROL_FOLLOW_UP),
+        output,
+        delivered,
+    ) {
+        return;
+    }
+    if say(&second, stage.tx, stage.cancel) {
+        let _ = stage.tx.send(StreamEvent::StreamDone);
+    }
+}
+
+/// Poll the registry until the demo agent's snapshot satisfies `ready` —
+/// `None` once the turn is cancelled, the agent is gone, or [`CONTROL_WAIT`]
+/// passes without it.
+fn wait_for_agent(
+    stage: &AgentStage<'_>,
+    id: &str,
+    ready: impl Fn(&AgentSnapshot) -> bool,
+) -> Option<AgentSnapshot> {
+    let deadline = std::time::Instant::now() + CONTROL_WAIT;
+    loop {
+        if stage.cancel.is_cancelled() || std::time::Instant::now() >= deadline {
+            return None;
+        }
+        let snapshot = stage.agents.snapshot(id)?;
+        if ready(&snapshot) {
+            return Some(snapshot);
+        }
+        nap(TOOL_DELAY, stage.cancel);
+    }
+}
+
+/// One companion call as a scripted cell on the reply channel: the header
+/// naming the agent by its task the way the live cell does
+/// ([`crate::llm::tools::agent_title`]), the verbatim arguments a live model
+/// would send, and the given report as its result. `false` once the receiver
+/// is gone or the turn was cancelled.
+fn companion_cell(
+    stage: &AgentStage<'_>,
+    name: &str,
+    arguments: serde_json::Value,
+    message: Option<&str>,
+    output: String,
+    ok: bool,
+) -> bool {
+    let start = StreamEvent::ToolStart {
+        name: name.to_string(),
+        args: crate::llm::tools::agent_title(DEMO_DESCRIPTION, message),
+        detail: None,
+        arguments: Some(arguments.to_string()),
+    };
+    if stage.cancel.is_cancelled() || stage.tx.send(start).is_err() {
+        return false;
+    }
+    nap(TOOL_DELAY, stage.cancel);
+    let end = StreamEvent::ToolEnd {
+        output,
+        ok,
+        truncated: false,
+    };
+    if stage.cancel.is_cancelled() || stage.tx.send(end).is_err() {
+        return false;
+    }
+    nap(CHUNK_DELAY, stage.cancel);
+    !stage.cancel.is_cancelled()
 }
 
 /// What the demo agent answers a **chat continuation** with — a message the
@@ -338,7 +537,7 @@ pub(in crate::stream) fn agent_permission_turn(stage: &AgentStage<'_>) {
     if !say(&first, stage.tx, stage.cancel) {
         return;
     }
-    let (id, agent_cancel) = stage.agents.register(GENERAL_PURPOSE);
+    let (id, agent_cancel) = stage.agents.register(GENERAL_PURPOSE, GATED_DESCRIPTION);
     let announced = stage.tx.send(StreamEvent::AgentBatch {
         background: false,
         agents: vec![AgentSpec {

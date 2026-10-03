@@ -21,6 +21,7 @@ const EXAMPLES: &[&str] = &[
     crate::context::SUMMARIZATION_PROMPT,
     "hook demo: block my prompt",
     "show me the hooks demo",
+    "launch a subagent and control it",
     "launch a subagent that streams a table",
     "show me a table",
     "stream some markdown to me",

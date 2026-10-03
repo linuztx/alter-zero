@@ -158,6 +158,15 @@ impl Session<'_> {
         // group entry so the Ctrl+O cell shows the final response
         // (docs/agent-tool.md).
         for notice in self.app.take_pending_agent_notices() {
+            // The model-facing note goes on the shared board (from_model —
+            // its untaken presence at a turn boundary starts the automatic
+            // follow-up turn) — unless a companion already reported this
+            // very outcome to the model, which would make the note a second
+            // copy of a result it has (docs/agent-tools.md). The cell is the
+            // user's record and commits either way.
+            if !self.agent_registry.outcome_observed(&notice.id) {
+                self.registry.post_notice(notice.context_text(), true);
+            }
             self.app.record_agent_notice(&notice);
             self.app.settle_agent_completion(&notice);
             if committing {

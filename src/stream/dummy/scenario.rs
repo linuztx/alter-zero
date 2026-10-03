@@ -223,6 +223,16 @@ pub(in crate::stream) const SCENARIOS: &[Scenario] = &[
         selects: |cue| cue.mentions("hook"),
         play: Play::Script(turns::hooks_turn),
     },
+    // The agent companions (docs/agent-tools.md): the table-streaming
+    // subagent launched in the background and then controlled by id —
+    // `agentoutput`, `agentlist`, `agentwait`, `agentsend` — every cell the
+    // registry's real report. Above the stream demo, whose cue it shares.
+    Scenario {
+        #[cfg(test)]
+        name: "agent-control",
+        selects: |cue| cue.mentions("subagent") && cue.mentions("control"),
+        play: Play::Agent(agent::agent_control_turn),
+    },
     // One background subagent that streams its OWN session — the only demo
     // that drives the agent session view's strip
     // (docs/agent-view-streaming.md). Above the table demo, whose cue it

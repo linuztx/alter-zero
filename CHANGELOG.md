@@ -12,6 +12,22 @@ release heading when a version is cut.
 
 ## [Unreleased]
 
+### Added
+
+- **The agent tool got the bash tool's shape: an id for every agent, and
+  one tool per action to control it.** A launch now tells the model the
+  agent's id, and five new tools take it back — `agentsend` sends an agent a
+  message (a running one reads it at its next step; a *finished* one picks
+  its conversation back up and answers as a new turn, so a follow-up no
+  longer means a fresh agent with none of the old one's context),
+  `agentwait` waits for an agent's result, `agentoutput` reports its
+  progress as the list of tool calls it has made so far (`Bash(curl -s …)`,
+  the one in flight marked) and its response once it is done, `agentkill`
+  stops it, and `agentlist` names every agent of the session. Finished
+  agents therefore stay around after their roster row fades, and come back
+  onto the roster when continued; a result the model already waited for is
+  not announced to it a second time (`docs/agent-tools.md`).
+
 ## [0.11.0] - 2026-10-03
 
 ### Added

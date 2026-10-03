@@ -1130,6 +1130,22 @@ it mid-turn owes no follow-up), `Done for Ns · N shells still running` on the
 summary) in `docs/background.md`; and the **`Agent` tool** (Claude-Code-style subagents,
 `docs/agent-tool.md`: the model launches autonomous side-agents —
 `description`/`prompt`/`subagent_type`/`run_in_background` (default true) —
+**and controls them by id** the way the bash family controls a session
+(`docs/agent-tools.md`: every launch, result and completion note names the
+agent's `a…` id, and `agentsend` sends a message to a running agent — read at
+its next round boundary — or a **finished** one, which continues on its own
+conversation; `agentwait` blocks for its result, Esc and Ctrl+B ending the
+wait; `agentoutput` reports its progress — the `Name(args)` headers of the
+calls it has made, the one in flight marked, its response once done;
+`agentkill` stops it, `AgentEvent::Stopped` settling the roster row locally;
+`agentlist` names every agent; none asks permission; the reports are the pure
+`agents::report` over `AgentSnapshot`s of the registry's own `AgentProgress`
+record, folded by `AgentRegistry::send` so the live forwarder and the dummy
+record alike; a finished agent is **retired** by the sweep — row hidden,
+entry and slot kept, `reopen` un-hiding it — rather than swept, a stopped one
+dropped; and a result a companion reported marks the slot *observed* so the
+deferred settle posts no duplicate board note; the `agent-control` demo and
+`smoke.sh` Phase 130 drive the whole round trip offline) —
 each running its own `run_agent` tool loop over a fresh context on its own
 thread, the **type** coming from an `agents/*.md` **definition** on disk
 (`docs/subagents.md`: Claude Code's agent files — YAML frontmatter naming and

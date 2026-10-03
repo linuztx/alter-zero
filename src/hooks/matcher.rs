@@ -64,6 +64,12 @@ pub fn claude_code_alias(tool: &str) -> Option<&'static str> {
         crate::llm::tools::BASH_SESSION_TOOL_NAME => {
             Some(crate::llm::tools::BASH_SESSION_TOOL_DISPLAY)
         }
+        // The agent companions, likewise (docs/agent-tools.md).
+        crate::llm::tools::AGENT_SEND_TOOL => Some(crate::llm::tools::AGENT_SEND_DISPLAY),
+        crate::llm::tools::AGENT_WAIT_TOOL => Some(crate::llm::tools::AGENT_WAIT_DISPLAY),
+        crate::llm::tools::AGENT_OUTPUT_TOOL => Some(crate::llm::tools::AGENT_OUTPUT_DISPLAY),
+        crate::llm::tools::AGENT_KILL_TOOL => Some(crate::llm::tools::AGENT_KILL_DISPLAY),
+        crate::llm::tools::AGENT_LIST_TOOL => Some(crate::llm::tools::AGENT_LIST_DISPLAY),
         _ => None,
     }
 }

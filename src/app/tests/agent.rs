@@ -423,6 +423,143 @@ fn x_clears_a_naturally_finished_row_too() {
 }
 
 #[test]
+fn a_stopped_agents_note_names_no_way_to_continue_it() {
+    let notice = crate::app::AgentNotice {
+        id: "a1".into(),
+        description: "Runaway".into(),
+        status: crate::agents::AgentStatus::Interrupted,
+        secs: 5,
+        result: String::new(),
+        timestamp: String::new(),
+    };
+    let text = notice.context_text();
+    assert!(
+        text.contains("Agent a1 \"Runaway\" was stopped by the user."),
+        "{text}"
+    );
+    assert!(
+        !text.contains("agentsend"),
+        "a stopped agent cannot be continued: {text}"
+    );
+}
+
+#[test]
+fn retiring_a_finished_agent_hides_its_row_but_keeps_the_entry() {
+    // The linger sweep retires a finished agent rather than dropping it
+    // (docs/agent-tools.md): the footer row goes, the transcript stays, and
+    // `agentsend`'s continuation brings the row back.
+    let mut app = App::new();
+    app.begin_stream();
+    app.start_agent_group(true, &agent_specs(true));
+    app.apply_agent_event("a1", &StreamEvent::Chunk("done".into()));
+    app.apply_agent_event("a1", &StreamEvent::StreamDone);
+    app.retire_agent("a1");
+    assert_eq!(app.visible_agents().len(), 1, "the row is off the footer");
+    let run = app.agent("a1").expect("the entry stays");
+    assert!(run.hidden);
+    assert!(run.history.len() >= 2, "its transcript is whole");
+    // The model's follow-up: the continuation announces the message on the
+    // agent channel, which reopens — and un-hides — the entry.
+    let settled = app.apply_agent_event(
+        "a1",
+        &StreamEvent::Steered {
+            text: "and in Manila?".into(),
+        },
+    );
+    assert!(settled.is_none(), "a reopen is not a settle");
+    let run = app.agent("a1").expect("still listed");
+    assert!(!run.hidden, "running again, back on the roster");
+    assert_eq!(run.status, crate::agents::AgentStatus::Running);
+    assert_eq!(app.visible_agents().len(), 2);
+    assert!(
+        run.history
+            .iter()
+            .any(|item| matches!(item, HistoryItem::Message(m) if m.text == "and in Manila?")),
+        "the message is on its transcript"
+    );
+    // Its completion owes a notice, whatever the launch was.
+    app.apply_agent_event("a1", &StreamEvent::Chunk("28°C".into()));
+    assert!(
+        app.apply_agent_event("a1", &StreamEvent::StreamDone)
+            .is_some()
+    );
+    // Retiring an unknown id is a no-op; a retired row is never selected.
+    app.retire_agent("nope");
+    app.retire_agent("a1");
+    assert_eq!(app.agent_selection_start(), 0);
+}
+
+#[test]
+fn a_continued_foreground_agent_finishes_with_a_notice() {
+    // A foreground launch's result came back inline, so its settle owed no
+    // notice. Continued by `agentsend`, nothing blocks on it any more: the
+    // continuation's completion must reach the model like a background
+    // agent's (docs/agent-tools.md).
+    let mut app = App::new();
+    app.begin_stream();
+    app.start_agent_group(false, &agent_specs(false));
+    app.apply_agent_event("a1", &StreamEvent::Chunk("19°C".into()));
+    assert!(
+        app.apply_agent_event("a1", &StreamEvent::StreamDone)
+            .is_none(),
+        "a foreground settle resolves with its group"
+    );
+    app.apply_agent_event(
+        "a1",
+        &StreamEvent::Steered {
+            text: "and tomorrow?".into(),
+        },
+    );
+    app.apply_agent_event("a1", &StreamEvent::Chunk("21°C".into()));
+    let notice = app
+        .apply_agent_event("a1", &StreamEvent::StreamDone)
+        .expect("the continuation's settle owes a notice");
+    assert_eq!(notice.result, "21°C");
+}
+
+#[test]
+fn the_model_stopping_an_agent_settles_it_without_a_user_mark() {
+    let mut app = App::new();
+    app.begin_stream();
+    app.start_agent_group(true, &agent_specs(true));
+    app.apply_agent_event(
+        "a1",
+        &StreamEvent::ToolStart {
+            name: "Bash".into(),
+            args: "sleep 100".into(),
+            detail: None,
+            arguments: None,
+        },
+    );
+    assert!(app.settle_agent_stopped("a1"));
+    let run = app.agent("a1").expect("listed");
+    assert_eq!(run.status, crate::agents::AgentStatus::Interrupted);
+    assert!(!run.stopped_by_user, "the model did it, not the user");
+    assert!(
+        run.history.iter().any(|item| matches!(
+            item,
+            HistoryItem::Tool(tool) if tool.status == ToolStatus::Failed
+                && tool.output == INTERRUPT_TOOL_OUTPUT
+        )),
+        "its running call resolved: {:?}",
+        run.history
+    );
+    assert!(!app.settle_agent_stopped("a1"), "already final");
+    assert!(!app.settle_agent_stopped("nope"));
+    // A stopped agent is closed for good: a late message never reopens it.
+    app.apply_agent_event(
+        "a1",
+        &StreamEvent::Steered {
+            text: "still there?".into(),
+        },
+    );
+    assert_eq!(
+        app.agent("a1").unwrap().status,
+        crate::agents::AgentStatus::Interrupted
+    );
+}
+
+#[test]
 fn a_naturally_finished_agent_lingers_long_enough_to_be_read() {
     // The green row is the roster's only evidence the agent ran until its
     // group cell commits — swept in a few seconds it can vanish before the
@@ -515,12 +652,19 @@ fn agent_notice_texts_humanize_the_runtime() {
         "{}",
         notice.context_text()
     );
-    // No id token: the model cannot address an agent by id anywhere, so the
-    // description is the note's whole correlation key.
+    // The id is what the companions take back, and the note says how the
+    // agent is continued (docs/agent-tools.md).
+    let text = notice.context_text();
     assert!(
-        !notice.context_text().contains("(id "),
-        "{}",
-        notice.context_text()
+        text.starts_with(
+            "[background agent] Agent a1 \"Count 1-100 with sleep\" completed in 6m 2s."
+        ),
+        "{text}"
+    );
+    assert!(text.contains("Final response:\ndone"), "{text}");
+    assert!(
+        text.ends_with("Reply to it with agentsend — it keeps its conversation."),
+        "{text}"
     );
     let quick = crate::app::AgentNotice { secs: 35, ..notice };
     assert_eq!(

@@ -11,9 +11,11 @@
 //! subagent threads report on (agents outlive turns, so their events must
 //! survive the reply channel's interrupt swaps).
 
+pub mod report;
+
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use tokio::sync::mpsc::UnboundedSender;
 
@@ -195,9 +197,12 @@ pub struct AgentRun {
     pub result: Option<String>,
     /// The error message when it failed.
     pub error: Option<String>,
-    /// Set by the user's **second** `x` (the clear) — the footer roster drops
-    /// the row at once, while the entry's data stays for its group's
-    /// resolution until the boundary's sweep collects it.
+    /// The footer roster shows the row no more: the user's **second** `x`
+    /// (the clear), or the linger sweep **retiring** a finished agent
+    /// (`docs/agent-tools.md`). The entry's data stays — its group's
+    /// resolution snapshots it, and a continuation (`agentsend`, a message
+    /// typed into its session) runs it again, which [`reopen`](Self::reopen)
+    /// un-hides. Only a stopped agent's entry is dropped outright.
     pub hidden: bool,
     /// Set by the user's **first** `x` (the stop) — it buys the row the
     /// longer [`AGENT_STOPPED_LINGER`] so the red `◯` is there to be read
@@ -376,9 +381,12 @@ impl AgentRun {
             // window — and folding it is what keeps that continuation
             // visible: without this it runs with the model working, the
             // transcript showing nothing and the pending row never clearing.
-            // A run the user **stopped** is closed for good: the `x` said so,
+            // A **stopped** run — the user's `x`, the model's `agentkill`, an
+            // Esc on its group — is closed for good: its loop is cancelled,
             // and nothing may resurrect it.
-            if !matches!(event, StreamEvent::Steered { .. }) || self.stopped_by_user {
+            if !matches!(event, StreamEvent::Steered { .. })
+                || self.status == AgentStatus::Interrupted
+            {
                 return false;
             }
             self.reopen();
@@ -935,6 +943,13 @@ impl AgentRun {
         self.verb_index = self.verb_start;
         self.status = AgentStatus::Running;
         self.stopped_by_user = false;
+        // A row the sweep hid is running again: back on the roster
+        // (docs/agent-tools.md). And nothing blocks on a continuation — it
+        // runs in the background whatever the launch was, so its completion
+        // owes the notice a background agent's does: a foreground agent
+        // continued by `agentsend` must not finish in silence.
+        self.hidden = false;
+        self.background = true;
         self.result = None;
         self.error = None;
         self.turn_usage_tokens = 0;
@@ -1131,6 +1146,128 @@ fn activity_line(name: &str, args: &str, detail: Option<&str>) -> String {
     format!("{name}: {args}")
 }
 
+/// How many of an agent's calls its registry record keeps
+/// ([`AgentProgress::calls`]) — the newest ones, the rest counted
+/// (`omitted_calls`). A record is read back as a model-facing report
+/// (`agents::report`), so it is bounded like every other buffer this process
+/// idles with (`docs/memory.md`); the report shows fewer still.
+pub const PROGRESS_MAX_CALLS: usize = 200;
+
+/// One tool call on an agent's progress record: the display name and the
+/// one-line args summary its `ToolStart` carried (a refined `ToolTitle`
+/// replacing the args), and whether it is still in flight.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProgressCall {
+    pub name: String,
+    pub args: String,
+    pub running: bool,
+}
+
+impl ProgressCall {
+    /// The `Name(args)` one-liner — the Ctrl+O agent cell's nested header,
+    /// and the row an `agentoutput` report shows per call
+    /// (`docs/agent-tools.md`). A multi-line `bash` command flattens to one
+    /// line.
+    #[must_use]
+    pub fn header(&self) -> String {
+        let args = crate::llm::tools::flatten_one_line(&self.args);
+        format!("{}({args})", self.name)
+    }
+}
+
+/// What the registry remembers of an agent's run for the companions
+/// (`docs/agent-tools.md`): the calls it has made, how many, and the
+/// provider-billed tokens — the lean twin of the roster's [`AgentRun`],
+/// folded by [`AgentRegistry::send`] from the same events, because the
+/// companions execute on the backend thread and cannot read the roster.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AgentProgress {
+    /// The newest [`PROGRESS_MAX_CALLS`] calls, in order.
+    pub calls: Vec<ProgressCall>,
+    /// How many older calls the bound dropped.
+    pub omitted_calls: usize,
+    /// Every call it started, dropped ones included.
+    pub tool_uses: usize,
+    /// Billed tokens summed over its usage frames (0 until the first lands).
+    pub tokens: u64,
+}
+
+impl AgentProgress {
+    /// Fold one of the agent's own events in.
+    pub fn apply(&mut self, event: &StreamEvent) {
+        match event {
+            StreamEvent::ToolStart { name, args, .. } => {
+                self.end_running_call();
+                self.tool_uses += 1;
+                self.calls.push(ProgressCall {
+                    name: name.clone(),
+                    args: args.clone(),
+                    running: true,
+                });
+                if self.calls.len() > PROGRESS_MAX_CALLS {
+                    let excess = self.calls.len() - PROGRESS_MAX_CALLS;
+                    self.calls.drain(..excess);
+                    self.omitted_calls += excess;
+                }
+            }
+            StreamEvent::ToolTitle(title) => {
+                if let Some(call) = self.calls.last_mut().filter(|call| call.running) {
+                    call.args.clone_from(title);
+                }
+            }
+            StreamEvent::ToolEnd { .. }
+            | StreamEvent::ToolRejected { .. }
+            | StreamEvent::ToolAnswered { .. }
+            | StreamEvent::ToolBackgrounded { .. }
+            | StreamEvent::StreamDone
+            | StreamEvent::Error(_) => self.end_running_call(),
+            // Never on an agent channel (subagents get no task tools), but a
+            // call is a call: recorded resolved, the roster's rule.
+            StreamEvent::TaskCall { name, args, .. } => {
+                self.tool_uses += 1;
+                self.calls.push(ProgressCall {
+                    name: name.clone(),
+                    args: args.clone(),
+                    running: false,
+                });
+            }
+            StreamEvent::Usage(usage) => self.tokens += usage.total(),
+            _ => {}
+        }
+    }
+
+    fn end_running_call(&mut self) {
+        if let Some(call) = self.calls.last_mut() {
+            call.running = false;
+        }
+    }
+}
+
+/// One agent as the companions see it — a copy of its registry slot's
+/// reportable state ([`AgentRegistry::snapshot`]), what `agents::report`
+/// renders for `agentoutput`, `agentwait` and `agentlist`
+/// (`docs/agent-tools.md`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentSnapshot {
+    pub id: String,
+    pub agent_type: String,
+    pub description: String,
+    /// `Running` while its loop runs, else the settled outcome — never
+    /// `Pending`, which is the roster's word for "no event yet".
+    pub status: AgentStatus,
+    /// How long the current run has gone on, or took: from the launch (or
+    /// the continuation's start) to now, or to its settle.
+    pub elapsed: Duration,
+    pub tool_uses: usize,
+    pub tokens: u64,
+    pub calls: Vec<ProgressCall>,
+    pub omitted_calls: usize,
+    /// Its final response once `Done`.
+    pub result: Option<String>,
+    /// Its error once `Failed`.
+    pub error: Option<String>,
+}
+
 /// The base36 alphabet agent ids are drawn from (the task-id alphabet).
 const AGENT_ID_ALPHABET: &[u8; 36] = b"0123456789abcdefghijklmnopqrstuvwxyz";
 
@@ -1176,16 +1313,35 @@ pub enum AgentEvent {
     /// One event of the subagent's own stream (chunks, tool calls, usage,
     /// the terminal done/error).
     Stream { id: String, event: StreamEvent },
+    /// The **model** stopped this agent (`agentkill`, `docs/agent-tools.md`):
+    /// its token is cancelled and its slot killed, and — a cancelled loop
+    /// sends no terminal event — the roster must settle the row locally,
+    /// the way the user's `x` does.
+    Stopped { id: String },
 }
 
 /// One running subagent's shared slot: its cancel token, completion state,
 /// stored conversation (for chat continuations), and pending chat inputs.
-#[derive(Default)]
 struct AgentSlot {
     cancel: CancelToken,
     /// The registered subagent type (`general-purpose` / `explore`) — a chat
     /// continuation rebuilds the same tool set from it.
     agent_type: String,
+    /// The model's short task label, as the launch registered it — what the
+    /// companions' cells and reports name the agent by
+    /// (`docs/agent-tools.md`).
+    description: String,
+    /// The launch counter at registration: `snapshots` lists in this order.
+    launched: u64,
+    /// When the current run started (the launch, or a continuation).
+    started: Instant,
+    /// When it settled (`finish` / `kill`); `None` while running.
+    settled_at: Option<Instant>,
+    /// What the agent has done so far, for the companions' reports.
+    progress: AgentProgress,
+    /// A companion reported the settled outcome to the model, so the loop's
+    /// deferred settle owes no board note for it (`docs/agent-tools.md`).
+    observed: bool,
     /// The run (initial or a chat continuation) is still executing.
     busy: bool,
     /// The agent has settled at least once (a result/failure is stored).
@@ -1212,6 +1368,38 @@ struct AgentSlot {
     /// prompt and records one line per call; a chat continuation pushes onto
     /// the same rolling windows, because it is the same agent's conversation.
     classifier: Arc<Mutex<ClassifierContext>>,
+}
+
+impl AgentSlot {
+    /// The companions' copy of this slot (`docs/agent-tools.md`).
+    fn snapshot(&self, id: &str) -> AgentSnapshot {
+        let status = if self.killed {
+            AgentStatus::Interrupted
+        } else if self.failed.is_some() {
+            AgentStatus::Failed
+        } else if self.done {
+            AgentStatus::Done
+        } else {
+            AgentStatus::Running
+        };
+        let elapsed = self
+            .settled_at
+            .unwrap_or_else(Instant::now)
+            .saturating_duration_since(self.started);
+        AgentSnapshot {
+            id: id.to_string(),
+            agent_type: self.agent_type.clone(),
+            description: self.description.clone(),
+            status,
+            elapsed,
+            tool_uses: self.progress.tool_uses,
+            tokens: self.progress.tokens,
+            calls: self.progress.calls.clone(),
+            omitted_calls: self.progress.omitted_calls,
+            result: (status == AgentStatus::Done).then(|| self.result.clone().unwrap_or_default()),
+            error: self.failed.clone(),
+        }
+    }
 }
 
 struct Inner {
@@ -1248,11 +1436,13 @@ impl AgentRegistry {
         }
     }
 
-    /// Register a fresh subagent of `agent_type`: allocate its id (collision
-    /// re-roll) and its cancel token. The caller spawns the thread.
+    /// Register a fresh subagent of `agent_type` for the task `description`
+    /// names: allocate its id (collision re-roll) and its cancel token. The
+    /// caller spawns the thread.
     #[must_use]
-    pub fn register(&self, agent_type: &str) -> (String, CancelToken) {
+    pub fn register(&self, agent_type: &str, description: &str) -> (String, CancelToken) {
         let mut inner = self.inner.lock().expect("agent registry poisoned");
+        let launched = inner.next_id;
         let id = loop {
             let seed = entropy_seed(inner.next_id);
             inner.next_id = inner.next_id.wrapping_add(1);
@@ -1269,10 +1459,67 @@ impl AgentRegistry {
                 cancel: cancel.clone(),
                 busy: true,
                 agent_type: agent_type.to_string(),
-                ..AgentSlot::default()
+                description: description.to_string(),
+                launched,
+                started: Instant::now(),
+                settled_at: None,
+                progress: AgentProgress::default(),
+                observed: false,
+                done: false,
+                killed: false,
+                result: None,
+                failed: None,
+                messages: None,
+                pending_inputs: Vec::new(),
             },
         );
         (id, cancel)
+    }
+
+    /// The task label `id` was registered with — how a companion's cell
+    /// names the agent (`docs/agent-tools.md`). `None` for an unknown id.
+    #[must_use]
+    pub fn description(&self, id: &str) -> Option<String> {
+        let inner = self.inner.lock().expect("agent registry poisoned");
+        inner.slots.get(id).map(|slot| slot.description.clone())
+    }
+
+    /// A copy of `id`'s reportable state for the companions
+    /// (`docs/agent-tools.md`), `None` for an id the registry no longer
+    /// holds.
+    #[must_use]
+    pub fn snapshot(&self, id: &str) -> Option<AgentSnapshot> {
+        let inner = self.inner.lock().expect("agent registry poisoned");
+        inner.slots.get(id).map(|slot| slot.snapshot(id))
+    }
+
+    /// Every agent the registry holds, in launch order — `agentlist`'s
+    /// rows.
+    #[must_use]
+    pub fn snapshots(&self) -> Vec<AgentSnapshot> {
+        let inner = self.inner.lock().expect("agent registry poisoned");
+        let mut slots: Vec<(&String, &AgentSlot)> = inner.slots.iter().collect();
+        slots.sort_by_key(|(_, slot)| slot.launched);
+        slots
+            .into_iter()
+            .map(|(id, slot)| slot.snapshot(id))
+            .collect()
+    }
+
+    /// A companion reported `id`'s settled outcome to the model: the loop's
+    /// deferred settle owes it no board note (`docs/agent-tools.md`).
+    pub fn mark_observed(&self, id: &str) {
+        let mut inner = self.inner.lock().expect("agent registry poisoned");
+        if let Some(slot) = inner.slots.get_mut(id) {
+            slot.observed = true;
+        }
+    }
+
+    /// Was `id`'s settled outcome already reported by a companion?
+    #[must_use]
+    pub fn outcome_observed(&self, id: &str) -> bool {
+        let inner = self.inner.lock().expect("agent registry poisoned");
+        inner.slots.get(id).is_some_and(|slot| slot.observed)
     }
 
     /// The shared handle to `id`'s classifier context — for the agent's own
@@ -1311,8 +1558,17 @@ impl AgentRegistry {
             .unwrap_or_else(|| GENERAL_PURPOSE.to_string())
     }
 
-    /// Send one subagent event to the loop (used by the forwarder threads).
+    /// Send one subagent event to the loop (used by the forwarder threads)
+    /// — folding it into the agent's progress record on the way, the one
+    /// path every event takes, so the live forwarder and the dummy's
+    /// scripted agent record alike (`docs/agent-tools.md`).
     pub fn send(&self, event: AgentEvent) {
+        if let AgentEvent::Stream { id, event } = &event {
+            let mut inner = self.inner.lock().expect("agent registry poisoned");
+            if let Some(slot) = inner.slots.get_mut(id) {
+                slot.progress.apply(event);
+            }
+        }
         let _ = self.events.send(event);
     }
 
@@ -1324,6 +1580,7 @@ impl AgentRegistry {
         if let Some(slot) = inner.slots.get_mut(id) {
             slot.busy = false;
             slot.done = true;
+            slot.settled_at.get_or_insert_with(Instant::now);
             slot.messages = Some(messages);
             if !slot.killed {
                 match outcome {
@@ -1347,10 +1604,14 @@ impl AgentRegistry {
         let was_live = !slot.done;
         slot.killed = true;
         slot.done = true;
+        slot.settled_at.get_or_insert_with(Instant::now);
         was_live
     }
 
-    /// Stop every agent (`/clear`, quit).
+    /// Stop every agent (`/clear`, quit) — and forget them: a stopped agent
+    /// cannot be continued, and a cleared session's `agentlist` must name
+    /// no ghosts (`docs/agent-tools.md`). The threads notice their cancelled
+    /// tokens on their own; a late `finish` finds no slot and does nothing.
     pub fn kill_all(&self) {
         let mut inner = self.inner.lock().expect("agent registry poisoned");
         for slot in inner.slots.values_mut() {
@@ -1358,6 +1619,7 @@ impl AgentRegistry {
             slot.killed = true;
             slot.done = true;
         }
+        inner.slots.clear();
     }
 
     /// Drop an agent's slot entirely (its roster entry was swept).
@@ -1481,7 +1743,9 @@ impl AgentRegistry {
     pub fn begin_continuation(&self, id: &str) -> Option<(Vec<ChatMessage>, CancelToken)> {
         let mut inner = self.inner.lock().expect("agent registry poisoned");
         let slot = inner.slots.get_mut(id)?;
-        if slot.busy {
+        // A stopped agent is closed for good — the roster refuses to reopen
+        // it (`AgentRun::apply`), so a continuation here would run unseen.
+        if slot.busy || slot.killed {
             return None;
         }
         let messages = slot.messages.take()?;
@@ -1492,6 +1756,11 @@ impl AgentRegistry {
         slot.killed = false;
         slot.result = None;
         slot.failed = None;
+        // A new run on the same conversation: its own clock, its own
+        // completion to report — the calls it made so far stay on the record.
+        slot.started = Instant::now();
+        slot.settled_at = None;
+        slot.observed = false;
         Some((messages, cancel))
     }
 }
@@ -1996,8 +2265,8 @@ mod tests {
     #[test]
     fn register_allocates_unique_ids_and_finish_stores_the_outcome() {
         let registry = test_registry();
-        let (id1, _c1) = registry.register(GENERAL_PURPOSE);
-        let (id2, _c2) = registry.register(GENERAL_PURPOSE);
+        let (id1, _c1) = registry.register(GENERAL_PURPOSE, "task");
+        let (id2, _c2) = registry.register(GENERAL_PURPOSE, "task");
         assert_ne!(id1, id2);
         assert!(!registry.is_done(&id1), "busy while running");
         registry.finish(&id1, Ok("the answer".into()), vec![ChatMessage::user("p")]);
@@ -2014,8 +2283,8 @@ mod tests {
         // live, because the Ctrl+D classifier page reads it from outside the
         // agent's thread while the agent's session view is open.
         let registry = test_registry();
-        let (id1, _c1) = registry.register(GENERAL_PURPOSE);
-        let (id2, _c2) = registry.register(GENERAL_PURPOSE);
+        let (id1, _c1) = registry.register(GENERAL_PURPOSE, "task");
+        let (id2, _c2) = registry.register(GENERAL_PURPOSE, "task");
         let handle = registry.classifier_handle(&id1).expect("registered");
         {
             let mut log = handle.lock().expect("poisoned");
@@ -2047,7 +2316,7 @@ mod tests {
     #[test]
     fn removing_an_agent_drops_its_classifier_context() {
         let registry = test_registry();
-        let (id, _cancel) = registry.register(GENERAL_PURPOSE);
+        let (id, _cancel) = registry.register(GENERAL_PURPOSE, "task");
         assert!(registry.classifier_context(&id).is_some());
         registry.remove(&id);
         assert!(registry.classifier_context(&id).is_none());
@@ -2056,7 +2325,7 @@ mod tests {
     #[test]
     fn kill_settles_at_once_and_wins_over_a_late_finish() {
         let registry = test_registry();
-        let (id, cancel) = registry.register(GENERAL_PURPOSE);
+        let (id, cancel) = registry.register(GENERAL_PURPOSE, "task");
         assert!(registry.kill(&id));
         assert!(cancel.is_cancelled(), "the token cancels the thread");
         assert!(registry.is_done(&id), "resolved without the thread");
@@ -2077,7 +2346,7 @@ mod tests {
     #[test]
     fn chat_inputs_queue_while_busy_and_continuations_resume_the_stored_list() {
         let registry = test_registry();
-        let (id, _cancel) = registry.register(GENERAL_PURPOSE);
+        let (id, _cancel) = registry.register(GENERAL_PURPOSE, "task");
         assert!(registry.queue_input(&id, "also check Manila"));
         assert_eq!(registry.take_pending_inputs(&id), vec!["also check Manila"]);
         assert!(registry.take_pending_inputs(&id).is_empty(), "drained");
@@ -2235,7 +2504,7 @@ mod tests {
         // over, and the roster's terminal event may already have been folded.
         // The run's own thread checks this before exiting and continues.
         let registry = test_registry();
-        let (id, _cancel) = registry.register(GENERAL_PURPOSE);
+        let (id, _cancel) = registry.register(GENERAL_PURPOSE, "task");
         assert!(!registry.has_pending_inputs(&id), "nothing queued yet");
         assert!(registry.queue_input(&id, "one more thing"));
         assert!(
@@ -2251,7 +2520,7 @@ mod tests {
         // Alt+Up inside the agent's session view: the registry is the only
         // side that knows whether the round boundary has read it yet.
         let registry = test_registry();
-        let (id, _cancel) = registry.register(GENERAL_PURPOSE);
+        let (id, _cancel) = registry.register(GENERAL_PURPOSE, "task");
         assert!(registry.queue_input(&id, "first"));
         assert!(registry.queue_input(&id, "second"));
         assert_eq!(registry.take_last_input(&id).as_deref(), Some("second"));
@@ -2270,7 +2539,7 @@ mod tests {
         // follow-up becomes its own continuation turn rather than a steer
         // into a run still going (docs/queue.md).
         let registry = test_registry();
-        let (id, _cancel) = registry.register(GENERAL_PURPOSE);
+        let (id, _cancel) = registry.register(GENERAL_PURPOSE, "task");
         assert!(!registry.ready_for_turn(&id), "still running");
         registry.finish(&id, Ok("done".into()), vec![ChatMessage::user("hi")]);
         assert!(registry.ready_for_turn(&id), "settled with a conversation");
@@ -2278,7 +2547,7 @@ mod tests {
             !registry.ready_for_turn("nope"),
             "an unknown id takes nothing"
         );
-        let (killed, _c2) = registry.register(GENERAL_PURPOSE);
+        let (killed, _c2) = registry.register(GENERAL_PURPOSE, "task");
         registry.finish(&killed, Ok("done".into()), vec![ChatMessage::user("hi")]);
         registry.kill(&killed);
         assert!(
@@ -2309,14 +2578,19 @@ mod tests {
     #[test]
     fn kill_all_sweeps_every_slot_and_remove_drops_one() {
         let registry = test_registry();
-        let (id1, c1) = registry.register(GENERAL_PURPOSE);
-        let (id2, c2) = registry.register(GENERAL_PURPOSE);
+        let (id1, c1) = registry.register(GENERAL_PURPOSE, "task");
+        let (id2, c2) = registry.register(GENERAL_PURPOSE, "task");
         registry.kill_all();
         assert!(c1.is_cancelled() && c2.is_cancelled());
         assert!(registry.is_done(&id1) && registry.is_done(&id2));
+        // The slots went with the cancel (docs/agent-tools.md): a cleared
+        // session holds no ghosts, and a missing id reads as settled.
+        assert!(!registry.is_killed(&id2), "nothing left to be killed");
         registry.remove(&id1);
         assert!(registry.is_done(&id1), "unknown ids read as done");
-        assert!(registry.is_killed(&id2));
+        let (id3, _c3) = registry.register(GENERAL_PURPOSE, "task");
+        registry.remove(&id3);
+        assert!(registry.snapshot(&id3).is_none());
     }
 
     // ===== The agent's thinking stream (docs/agent-view-streaming.md) =====
@@ -2900,5 +3174,221 @@ mod tests {
             "prompt, the thought, then the partial: {:?}",
             run.history
         );
+    }
+
+    // --- the companions' side of the registry (docs/agent-tools.md) ---
+
+    fn tool_start(name: &str, args: &str) -> StreamEvent {
+        StreamEvent::ToolStart {
+            name: name.to_string(),
+            args: args.to_string(),
+            detail: None,
+            arguments: None,
+        }
+    }
+
+    fn tool_end(output: &str) -> StreamEvent {
+        StreamEvent::ToolEnd {
+            output: output.to_string(),
+            ok: true,
+            truncated: false,
+        }
+    }
+
+    #[test]
+    fn a_registered_agent_snapshots_as_running_with_what_the_launch_said() {
+        let registry = test_registry();
+        let (id, _cancel) = registry.register("explore", "Find the config loader");
+        let snapshot = registry.snapshot(&id).expect("registered");
+        assert_eq!(snapshot.id, id);
+        assert_eq!(snapshot.agent_type, "explore");
+        assert_eq!(snapshot.description, "Find the config loader");
+        assert_eq!(snapshot.status, AgentStatus::Running);
+        assert!(snapshot.calls.is_empty());
+        assert_eq!(snapshot.tool_uses, 0);
+        assert_eq!(snapshot.tokens, 0);
+        assert_eq!(snapshot.result, None);
+        assert_eq!(snapshot.error, None);
+        assert_eq!(
+            registry.description(&id).as_deref(),
+            Some("Find the config loader")
+        );
+        assert_eq!(registry.description("nope"), None);
+        assert!(registry.snapshot("nope").is_none());
+    }
+
+    #[test]
+    fn send_folds_the_agents_calls_into_its_progress_record() {
+        // The companions run on the backend thread and cannot read the
+        // roster, so the registry keeps its own record of what the agent
+        // did — folded by `send`, the one path every agent event takes, so
+        // the live forwarder and the dummy's scripted agent record alike.
+        let registry = test_registry();
+        let (id, _cancel) = registry.register(GENERAL_PURPOSE, "Fetch repos");
+        let send = |event: StreamEvent| {
+            registry.send(AgentEvent::Stream {
+                id: id.clone(),
+                event,
+            });
+        };
+        send(tool_start(
+            "Bash",
+            "curl -s https://api.github.com/users/linuztx",
+        ));
+        let snapshot = registry.snapshot(&id).unwrap();
+        assert_eq!(snapshot.tool_uses, 1);
+        assert_eq!(snapshot.calls.len(), 1);
+        assert_eq!(
+            snapshot.calls[0].header(),
+            "Bash(curl -s https://api.github.com/users/linuztx)"
+        );
+        assert!(snapshot.calls[0].running, "in flight until it resolves");
+        send(tool_end("Exit code: 0\n{}"));
+        send(tool_start("Bash", "curl -s\n  https://x/y"));
+        send(StreamEvent::Usage(TokenUsage {
+            input: 1000,
+            output: 200,
+            ..TokenUsage::default()
+        }));
+        let snapshot = registry.snapshot(&id).unwrap();
+        assert_eq!(snapshot.tool_uses, 2);
+        assert!(!snapshot.calls[0].running);
+        assert!(snapshot.calls[1].running);
+        // A multi-line command flattens to the one-line header the Ctrl+O
+        // agent cell shows.
+        assert_eq!(snapshot.calls[1].header(), "Bash(curl -s https://x/y)");
+        assert_eq!(snapshot.tokens, 1200, "the provider's own count");
+        // A refined title (a session named by its command) replaces the args.
+        send(StreamEvent::ToolTitle("python3 ← print(1)⏎".into()));
+        assert_eq!(
+            registry.snapshot(&id).unwrap().calls[1].header(),
+            "Bash(python3 ← print(1)⏎)"
+        );
+        // The ToolRejected / ToolAnswered / ToolBackgrounded resolutions end
+        // the call too.
+        send(StreamEvent::ToolRejected {
+            display: "User rejected".into(),
+            result: "no".into(),
+            truncated: false,
+        });
+        assert!(!registry.snapshot(&id).unwrap().calls[1].running);
+        send(tool_start("Write", "/tmp/x.py"));
+        send(StreamEvent::ToolAnswered {
+            display: "Wrote 1 lines".into(),
+            result: "File created".into(),
+            truncated: false,
+        });
+        send(tool_start("Bash", "sleep 100"));
+        send(StreamEvent::ToolBackgrounded {
+            id: "b1".into(),
+            output: "Command running in the background".into(),
+        });
+        let snapshot = registry.snapshot(&id).unwrap();
+        assert_eq!(snapshot.calls.len(), 4);
+        assert!(snapshot.calls.iter().all(|call| !call.running));
+    }
+
+    #[test]
+    fn the_progress_record_keeps_the_newest_calls_and_counts_the_rest() {
+        let mut progress = AgentProgress::default();
+        for i in 0..(PROGRESS_MAX_CALLS + 3) {
+            progress.apply(&tool_start("Bash", &format!("echo {i}")));
+            progress.apply(&tool_end(""));
+        }
+        assert_eq!(progress.calls.len(), PROGRESS_MAX_CALLS);
+        assert_eq!(progress.omitted_calls, 3);
+        assert_eq!(progress.tool_uses, PROGRESS_MAX_CALLS + 3);
+        assert_eq!(progress.calls[0].header(), "Bash(echo 3)");
+    }
+
+    #[test]
+    fn a_settling_event_ends_the_call_still_in_flight() {
+        let mut progress = AgentProgress::default();
+        progress.apply(&tool_start("Bash", "ls"));
+        progress.apply(&StreamEvent::Error("boom".into()));
+        assert!(!progress.calls[0].running);
+        let mut progress = AgentProgress::default();
+        progress.apply(&tool_start("Bash", "ls"));
+        progress.apply(&StreamEvent::StreamDone);
+        assert!(!progress.calls[0].running);
+    }
+
+    #[test]
+    fn snapshots_list_every_agent_in_launch_order() {
+        let registry = test_registry();
+        let (a, _) = registry.register(GENERAL_PURPOSE, "first");
+        let (b, _) = registry.register("explore", "second");
+        let (c, _) = registry.register(GENERAL_PURPOSE, "third");
+        let ids: Vec<String> = registry.snapshots().into_iter().map(|s| s.id).collect();
+        assert_eq!(ids, vec![a.clone(), b.clone(), c]);
+        registry.remove(&b);
+        let ids: Vec<String> = registry.snapshots().into_iter().map(|s| s.id).collect();
+        assert_eq!(ids.len(), 2);
+        assert_eq!(ids[0], a);
+    }
+
+    #[test]
+    fn the_snapshot_follows_the_slots_outcome() {
+        let registry = test_registry();
+        let (done, _) = registry.register(GENERAL_PURPOSE, "d");
+        let (failed, _) = registry.register(GENERAL_PURPOSE, "f");
+        let (killed, _) = registry.register(GENERAL_PURPOSE, "k");
+        registry.finish(&done, Ok("the answer".into()), vec![ChatMessage::user("p")]);
+        registry.finish(&failed, Err("boom".into()), vec![ChatMessage::user("p")]);
+        assert!(registry.kill(&killed));
+        let done = registry.snapshot(&done).unwrap();
+        assert_eq!(done.status, AgentStatus::Done);
+        assert_eq!(done.result.as_deref(), Some("the answer"));
+        let failed = registry.snapshot(&failed).unwrap();
+        assert_eq!(failed.status, AgentStatus::Failed);
+        assert_eq!(failed.error.as_deref(), Some("boom"));
+        let killed = registry.snapshot(&killed).unwrap();
+        assert_eq!(killed.status, AgentStatus::Interrupted);
+        assert_eq!(killed.result, None);
+    }
+
+    #[test]
+    fn a_reported_outcome_is_observed_until_the_next_continuation() {
+        // A companion that reported the settled result marks it observed, so
+        // the loop's deferred settle posts no duplicate board note; a
+        // continuation's own completion is news again (docs/agent-tools.md).
+        let registry = test_registry();
+        let (id, _) = registry.register(GENERAL_PURPOSE, "d");
+        assert!(!registry.outcome_observed(&id));
+        registry.finish(&id, Ok("answer".into()), vec![ChatMessage::user("p")]);
+        registry.mark_observed(&id);
+        assert!(registry.outcome_observed(&id));
+        assert!(registry.begin_continuation(&id).is_some());
+        assert!(!registry.outcome_observed(&id));
+        assert!(!registry.outcome_observed("nope"));
+    }
+
+    #[test]
+    fn kill_all_drops_every_slot() {
+        // `/clear` and quit: a cleared session lists no ghosts.
+        let registry = test_registry();
+        let (id, cancel) = registry.register(GENERAL_PURPOSE, "d");
+        registry.kill_all();
+        assert!(cancel.is_cancelled());
+        assert!(registry.snapshots().is_empty());
+        assert!(registry.snapshot(&id).is_none());
+        assert!(registry.is_done(&id), "a missing slot reads as settled");
+    }
+
+    #[test]
+    fn a_continuation_restarts_the_runs_clock_and_reopens_its_progress() {
+        let registry = test_registry();
+        let (id, _) = registry.register(GENERAL_PURPOSE, "d");
+        registry.send(AgentEvent::Stream {
+            id: id.clone(),
+            event: tool_start("Bash", "ls"),
+        });
+        registry.finish(&id, Ok("answer".into()), vec![ChatMessage::user("p")]);
+        assert!(registry.begin_continuation(&id).is_some());
+        let snapshot = registry.snapshot(&id).unwrap();
+        assert_eq!(snapshot.status, AgentStatus::Running);
+        assert_eq!(snapshot.result, None);
+        // The calls it made stay on the record: it is the same conversation.
+        assert_eq!(snapshot.calls.len(), 1);
     }
 }

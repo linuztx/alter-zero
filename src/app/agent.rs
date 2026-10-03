@@ -124,7 +124,9 @@ impl AgentNotice {
     /// The model-facing context note: outcome + the final response — the
     /// bracketed user-role form [`crate::context::context_messages`] sends,
     /// and the automatic follow-up turn's prompt text (the background-shell
-    /// pattern, `docs/background.md`).
+    /// pattern, `docs/background.md`). It names the agent's **id** and the
+    /// tool that continues it: the companions take the id back, and a
+    /// finished agent keeps its conversation (`docs/agent-tools.md`).
     #[must_use]
     pub fn context_text(&self) -> String {
         let outcome = match self.status {
@@ -137,9 +139,13 @@ impl AgentNotice {
         } else {
             self.result.trim_end_matches('\n')
         };
+        let continued = match self.status {
+            AgentStatus::Interrupted => "",
+            _ => "\nReply to it with agentsend — it keeps its conversation.",
+        };
         format!(
-            "[background agent] Agent \"{}\" {outcome}.\nFinal response:\n{body}",
-            self.description,
+            "[background agent] Agent {} \"{}\" {outcome}.\nFinal response:\n{body}{continued}",
+            self.id, self.description,
         )
     }
 }
@@ -625,9 +631,50 @@ impl App {
         }
     }
 
-    /// Sweep one roster entry (its linger expired). Deferred by the boundary
-    /// while the user is inside that agent's session view. Also drops the
-    /// selection/view if they pointed at it.
+    /// **Retire** one roster entry (its linger expired on a finished or
+    /// failed agent, `docs/agent-tools.md`): the footer row goes, exactly as
+    /// the sweep always dropped it, but the entry stays — hidden — so the
+    /// model's `agentsend` (or a message typed into its session) can run
+    /// the agent again on its own conversation, with its transcript whole.
+    /// A continuation's first event un-hides it ([`AgentRun::reopen`]). Also
+    /// drops the selection/view if they pointed at it.
+    ///
+    /// [`AgentRun::reopen`]: crate::agents::AgentRun::reopen
+    pub fn retire_agent(&mut self, id: &str) {
+        let Some(agent) = self.agents.iter_mut().find(|agent| agent.id == id) else {
+            return;
+        };
+        agent.hidden = true;
+        self.agents_generation += 1;
+        if self.agent_view.as_deref() == Some(id) {
+            self.agent_view = None;
+        }
+        self.forget_agent_selection(id);
+        self.clamp_agent_selection();
+    }
+
+    /// The **model** stopped this agent (`agentkill`, `docs/agent-tools.md`):
+    /// settle the entry as interrupted — resolve its running call, keep the
+    /// partial, drop what was queued for it — exactly as the user's `x`
+    /// does, minus the user's mark and the notice (the model did it, so it
+    /// knows; the `AgentKill` cell is the user's record). Returns whether
+    /// this call did the settling (`false` once final, or unknown).
+    pub fn settle_agent_stopped(&mut self, id: &str) -> bool {
+        let Some(agent) = self.agents.iter_mut().find(|agent| agent.id == id) else {
+            return false;
+        };
+        if !agent.interrupt() {
+            return false;
+        }
+        self.agents_generation += 1;
+        true
+    }
+
+    /// Sweep one roster entry — a **stopped** agent whose linger expired
+    /// (a cancelled loop cannot be continued, so nothing is worth keeping;
+    /// a finished one is [`retire_agent`](App::retire_agent)'d instead).
+    /// Deferred by the boundary while the user is inside that agent's
+    /// session view. Also drops the selection/view if they pointed at it.
     pub fn remove_agent(&mut self, id: &str) {
         let Some(index) = self.agents.iter().position(|agent| agent.id == id) else {
             return;

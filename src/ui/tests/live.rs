@@ -785,6 +785,36 @@ fn the_running_preview_hints_ctrl_b_but_the_committed_cell_does_not() {
 }
 
 #[test]
+fn an_agentwait_cell_hints_that_ctrl_b_stops_the_wait() {
+    // The agent keeps running on its own thread; Ctrl+B only ends the wait
+    // — the `bashwait` cell's hint, not the `bash` launch's
+    // (docs/agent-tools.md). `agentkill` answers the key with nothing.
+    let mut app = App::new();
+    app.begin_stream();
+    app.start_tool("AgentWait", "Fetch weather in Manila", None);
+    app.set_command_elapsed(Some(TOOL_BACKGROUND_HINT_DELAY + Duration::from_secs(1)));
+    let rows: Vec<String> = preview_tool_lines(&app, 80).iter().map(plain).collect();
+    assert!(
+        rows.iter()
+            .any(|l| l.trim() == crate::ui::theme::TOOL_STOP_WAITING_HINT),
+        "the stop-waiting hint rides the running AgentWait cell: {rows:?}"
+    );
+    assert!(
+        !rows.iter().any(|l| l.trim() == TOOL_BACKGROUND_HINT),
+        "never the background hint: {rows:?}"
+    );
+    let mut app = App::new();
+    app.begin_stream();
+    app.start_tool("AgentKill", "Fetch weather in Manila", None);
+    app.set_command_elapsed(Some(TOOL_BACKGROUND_HINT_DELAY + Duration::from_secs(1)));
+    let rows: Vec<String> = preview_tool_lines(&app, 80).iter().map(plain).collect();
+    assert!(
+        !rows.iter().any(|l| l.contains("ctrl+b")),
+        "a kill answers no key: {rows:?}"
+    );
+}
+
+#[test]
 fn the_ctrl_b_hint_waits_a_few_seconds_before_showing() {
     // Like Claude Code: a command that finishes right away never shows the
     // Ctrl+B hint (it isn't needed) — the hint appears only once the

@@ -357,9 +357,12 @@ pub(super) fn ctrl_b_hint(tool: &ToolCall) -> Option<&'static str> {
     }
     match tool.name.as_str() {
         "Bash" => Some(TOOL_BACKGROUND_HINT),
+        // An `agentwait` waits on an agent that already runs on its own
+        // thread: Ctrl+B ends the wait, never the agent (docs/agent-tools.md).
         crate::llm::tools::BASH_WAIT_DISPLAY
         | crate::llm::tools::BASH_SEND_DISPLAY
-        | crate::llm::tools::BASH_SESSION_TOOL_DISPLAY => Some(TOOL_STOP_WAITING_HINT),
+        | crate::llm::tools::BASH_SESSION_TOOL_DISPLAY
+        | crate::llm::tools::AGENT_WAIT_DISPLAY => Some(TOOL_STOP_WAITING_HINT),
         _ => None,
     }
 }

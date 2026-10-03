@@ -696,9 +696,23 @@ pub(super) const DIFF_TOOL_NAMES: [&str; 2] = ["Edit", "Write"];
 /// companions that are the same command's later steps — `bashsend`,
 /// `bashwait`, `bashkill` (`docs/bash-tools.md`) — and the legacy
 /// `bash_session`. `bashlist`'s list is no command output: a generic tool
-/// keeps the single collapsed peek line.
-pub(super) const COMMAND_TOOL_NAMES: [&str; 5] =
-    ["Bash", "BashSend", "BashWait", "BashKill", "BashSession"];
+/// keeps the single collapsed peek line. The agent companions take the
+/// shape too (`docs/agent-tools.md`): an `agentoutput` report is a list of
+/// the agent's calls, the summary the user asked to **see**, and the
+/// multi-row peek shows it where a generic cell's one line would not —
+/// `agentlist` included, since its rows are the same kind of thing.
+pub(super) const COMMAND_TOOL_NAMES: [&str; 10] = [
+    "Bash",
+    "BashSend",
+    "BashWait",
+    "BashKill",
+    "BashSession",
+    "AgentSend",
+    "AgentWait",
+    "AgentOutput",
+    "AgentKill",
+    "AgentList",
+];
 
 /// The dim closing row of a command cell whose session is still alive
 /// (`docs/interactive-shell.md`) — `{state} · session {id}`, in place of the

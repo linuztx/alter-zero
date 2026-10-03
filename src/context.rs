@@ -2645,10 +2645,13 @@ mod tests {
         let messages = context_messages(&history);
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].role, ContextRole::User);
+        // The note names the id the companions take back (docs/agent-tools.md).
         assert!(
             messages[0]
                 .text
-                .starts_with("[background agent] Agent \"Fetch Warsaw\"")
+                .starts_with("[background agent] Agent a1 \"Fetch Warsaw\""),
+            "{}",
+            messages[0].text
         );
         assert!(messages[0].text.contains("19°C and sunny"));
     }

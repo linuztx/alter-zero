@@ -5,7 +5,10 @@ their own agentic tool loop (`bash`/`read`/`write`/`edit`) over their own
 context, report progress live in the TUI, and hand their final response back to
 the main agent as the tool result. It is Claude Code's `Agent` (Task) tool,
 adapted to this inline TUI — including the parts Claude Code doesn't have: the
-user can **enter a subagent's own inline session and chat with it**.
+user can **enter a subagent's own inline session and chat with it**. And the
+*model* can too: every agent has an id, and the five companions of
+`docs/agent-tools.md` — `agentsend`, `agentwait`, `agentoutput`, `agentkill`,
+`agentlist` — control a launched agent by it, the `bash` family's shape.
 
 ```
 ❯ Call two agents to fetch weather and time in Manila and Warsaw
@@ -38,7 +41,7 @@ backend only — a subagent never gets the `agent` tool, so agents can't nest:
 | `description` | required | a short (3-5 word) task label — the tree rows / footer list show it |
 | `prompt` | required | the full task for the agent to perform |
 | `subagent_type` | optional | which **agent definition** to launch — `general-purpose` (the default) and `explore` ship as `agents/*.md` files, and a project or the user can add more; the available types and their tools are named in the `<system-reminder>` listing (`docs/subagents.md`). An unknown type resolves as a recoverable error listing the real ones |
-| `run_in_background` | optional | **default `true`** — the call returns at once with the launch acknowledgement (the agent named by its description; no id — nothing model-facing takes one back); `false` blocks the turn until the agent finishes and returns its final response |
+| `run_in_background` | optional | **default `true`** — the call returns at once with the launch acknowledgement naming the agent's **id** and the companions that take it (`docs/agent-tools.md`); `false` blocks the turn until the agent finishes and returns its final response, closed by a line naming the id |
 
 (The reference schema's `isolation` param is deliberately not implemented —
 out of scope for this TUI. Its `model` is here, but as a property of the
@@ -108,8 +111,12 @@ Claude-Code-style ids (`a` + 8 base36 chars), keeps each running subagent's
 `CancelToken` + completion flag + final message list, and owns the per-agent
 **pending-input queue** (the chat feature). `kill(id)` cancels the token and
 marks the completion `killed` so the parent's wait loop resolves at once
-(without waiting for the thread to notice); `kill_all()` sweeps on
-`/clear`/quit. Completed foreground results are read off the shared slot.
+(without waiting for the thread to notice); `kill_all()` sweeps — and drops
+the slots — on `/clear`/quit. Completed foreground results are read off the
+shared slot. Each slot also keeps the launch's description and a lean
+**progress record** (`AgentProgress` — the call headers, the counters), which
+`send` folds from every event on the way to the loop, and hands out as
+`AgentSnapshot`s: what the companions report from (`docs/agent-tools.md`).
 
 Background completion notices ride the **existing**
 `BackgroundRegistry::post_notice` board (`from_model: true`), so the in-flight
@@ -127,7 +134,10 @@ zero new plumbing. The TUI cell is a new `HistoryItem::AgentNotice` —
   (create) and the agent channel (update). A finished agent **lingers** with a
   coloured `◯` (green done / red stopped/failed), then the boundary sweeps it
   (timed in `main.rs` like the toast) — deferred while the user is inside that
-  agent's session. How long is the entry's own
+  agent's session. The sweep **retires** a finished or failed agent — the row
+  hides, the entry and its registry slot stay so `agentsend` can continue it
+  (`AgentRun::reopen` un-hides the row) — and drops a stopped one outright
+  (`docs/agent-tools.md`). How long is the entry's own
   `AgentRun::linger()`: `AGENT_LINGER` (30s) for a natural finish — a row
   swept in a few seconds could vanish before the user had read it, and (the
   expiry being armed from the agent's *own* settle) even before its group
