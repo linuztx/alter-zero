@@ -12,6 +12,8 @@ release heading when a version is cut.
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-10-03
+
 ### Added
 
 - **A lost connection no longer fails the turn.** When no connection can be
@@ -904,7 +906,8 @@ release heading when a version is cut.
   release whose notes come from this file — driven end to end by
   `scripts/release.sh`, which also rehearses a release locally.
 
-[Unreleased]: https://github.com/linuztx/alter-zero/compare/v0.10.0...HEAD
+[Unreleased]: https://github.com/linuztx/alter-zero/compare/v0.11.0...HEAD
+[0.11.0]: https://github.com/linuztx/alter-zero/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/linuztx/alter-zero/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/linuztx/alter-zero/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/linuztx/alter-zero/compare/v0.7.0...v0.8.0
