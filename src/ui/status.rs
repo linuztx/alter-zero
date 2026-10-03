@@ -12,29 +12,26 @@ use crate::app::Spinner;
 /// One bold span per char of `text`, shimmered codex-style: a raised-cosine
 /// brightness band (half-width [`SHIMMER_BAND_HALF_WIDTH`], plus
 /// [`SHIMMER_PADDING`] chars of off-text run-in/out) sweeps the text once per
-/// [`SHIMMER_SWEEP`], each char blending from the white-grey [`shimmer_base`]
-/// toward the bright [`shimmer_highlight`] by its distance from the band's
-/// crest. A faithful port of openai/codex `tui/src/shimmer.rs::shimmer_spans`,
-/// made pure: the phase comes from the boundary-supplied `elapsed` (sub-second
-/// resolution), not a process-wide clock — so it's deterministic in tests.
+/// [`SHIMMER_SWEEP`], each char blending from the wave's **resting** colour
+/// `base` toward the bright [`shimmer_highlight`] by its distance from the
+/// band's crest. A faithful port of openai/codex
+/// `tui/src/shimmer.rs::shimmer_spans`, made pure: the phase comes from the
+/// boundary-supplied `elapsed` (sub-second resolution), not a process-wide
+/// clock — so it's deterministic in tests.
+///
+/// `base` is what the text reads as between crests, which is most of the
+/// sweep (the band is [`SHIMMER_BAND_HALF_WIDTH`] wide inside a period of the
+/// text plus `2 × `[`SHIMMER_PADDING`]). The status verb passes codex's grey
+/// [`shimmer_base`], so it reads as *grey text with a white wave* — or the
+/// warning [`status_offline_color`] while the connection is gone, *amber
+/// with a white glint* (`docs/offline.md`). The thinking stream's
+/// `Thinking…` (`docs/thinking-stream.md`) passes the near-white
+/// [`reasoning_shimmer_base`] instead, so it reads as *bold white with a
+/// brighter wave* — a header, not a metric. Same motion, different floor.
 ///
 /// **Live regions only**: every span carries a colour sampled from one frame
 /// of the wave, so committing these rows to scrollback would freeze the sweep
 /// mid-stride forever.
-pub(super) fn shimmer_spans(text: &str, elapsed: Duration) -> Vec<Span<'static>> {
-    shimmer_spans_from(text, elapsed, shimmer_base())
-}
-
-/// [`shimmer_spans`] with the wave's **resting** colour chosen by the caller —
-/// what the text reads as between crests, which is most of the sweep (the band
-/// is [`SHIMMER_BAND_HALF_WIDTH`] wide inside a period of the text plus
-/// `2 × `[`SHIMMER_PADDING`]).
-///
-/// The status verb keeps codex's grey [`shimmer_base`], so it reads as *grey
-/// text with a white wave*. The thinking stream's `Thinking…`
-/// (`docs/thinking-stream.md`) passes the near-white
-/// [`reasoning_shimmer_base`] instead, so it reads as *bold white with a
-/// brighter wave* — a header, not a metric. Same motion, different floor.
 pub(super) fn shimmer_spans_from(text: &str, elapsed: Duration, base: Color) -> Vec<Span<'static>> {
     let chars: Vec<char> = text.chars().collect();
     if chars.is_empty() {
@@ -352,8 +349,9 @@ pub fn format_token_count(tokens: usize) -> String {
 
 /// The live status line shown in the strip above the box while a turn is in
 /// flight:
-/// `⣤⣀⣀⣀⣀⣀⣀⣀ {verb}… ({elapsed}[ · {arrow} {n} tokens][ · Thinking for {m}] · esc to
-/// interrupt)`.
+/// `⣤⣀⣀⣀⣀⣀⣀⣀ {verb}… ({elapsed}[ · {arrow} {n} tokens][ · retrying {a}/{max} |
+/// · offline for {d}][ · Thinking for {m}] · esc to interrupt)` — the verb
+/// `Waiting for internet` while no connection can be made (`docs/offline.md`).
 ///
 /// It opens with the spinner (`spinner_spans`) and the verb
 /// text **shimmers** — a bright-white band sweeping its white-grey chars
@@ -405,9 +403,19 @@ pub fn styled_status_line(
 ) -> Line<'static> {
     let dim = Style::new().fg(status_detail_color());
     let mut spans = spinner_spans(spinner, status.elapsed);
-    spans.extend(shimmer_spans(
-        &format!("{}{STATUS_ELLIPSIS}", verb.unwrap_or(status.verb)),
+    // While no connection can be made the line says so in the verb slot —
+    // over the turn's own verb and over a task's activeForm alike, since
+    // waiting is all the turn is doing — resting on the warning amber under
+    // the same shimmer, so the state is told apart by colour as well as by
+    // word (docs/offline.md).
+    let (verb_text, base) = match status.offline {
+        Some(_) => (OFFLINE_VERB, status_offline_color()),
+        None => (verb.unwrap_or(status.verb), shimmer_base()),
+    };
+    spans.extend(shimmer_spans_from(
+        &format!("{verb_text}{STATUS_ELLIPSIS}"),
         status.elapsed,
+        base,
     ));
     // The parenthesised metrics are dim, except the retry clause, which carries
     // its own warning colour — so it is built as its own span between the
@@ -430,6 +438,17 @@ pub fn styled_status_line(
         spans.push(Span::styled(
             format!(" · retrying {}/{}", retry.attempt, retry.max),
             Style::new().fg(status_retry_color()),
+        ));
+    }
+    // The retry clause's twin, in its slot (the two never show together):
+    // how long the host has been gone, read off the turn's own clock.
+    if let Some(outage) = &status.offline {
+        spans.push(Span::styled(
+            format!(
+                " · {OFFLINE_CLAUSE}{}",
+                format_elapsed(outage.duration(status.elapsed).as_secs())
+            ),
+            Style::new().fg(status_offline_color()),
         ));
     }
     if let Some(thinking) = status.thinking {

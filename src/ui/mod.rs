@@ -61,6 +61,7 @@ mod mcp_view;
 mod menu;
 mod message;
 mod model_view;
+mod offline;
 mod palette;
 mod permission_view;
 mod reasoning;
@@ -124,6 +125,7 @@ pub use self::menu::{
 };
 pub use self::message::{compaction_lines, message_lines};
 pub use self::model_view::render_model_picker;
+pub use self::offline::{offline_lines, offline_rows};
 pub use self::palette::{activate_theme, active_theme, with_theme};
 pub use self::permission_view::{permission_lines, permission_remember_label, render_permission};
 pub use self::reasoning::reasoning_lines;

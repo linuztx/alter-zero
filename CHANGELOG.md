@@ -14,6 +14,18 @@ release heading when a version is cut.
 
 ### Added
 
+- **A lost connection no longer fails the turn.** When no connection can be
+  made to the provider — the Wi-Fi dropped, a VPN is reconnecting, the DNS
+  stopped answering — the request is re-sent every few seconds for as long
+  as it takes, and the turn carries on by itself the moment the network is
+  back. Meanwhile the status line says what is happening: an amber
+  `Waiting for internet…` with how long the host has been gone, over a row
+  naming the host and counting the attempts. Esc still interrupts, and a
+  message that never got through comes back to the composer. A provider that
+  answers badly keeps the bounded `/settings` **Error retry**, which at `0`
+  turns the wait off too; a local Ollama that is not running still says to
+  start it (`docs/offline.md`).
+
 - **A question nobody answers no longer stalls the agent.** When the agent
   asks you something and no key is pressed for ten minutes, the question
   closes unanswered and the agent keeps working: it is told you are away,

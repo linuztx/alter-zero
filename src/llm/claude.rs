@@ -631,7 +631,7 @@ pub fn redeem(
         // Deliberately no `anthropic-beta` here — see `code_exchange_body`.
         .body(code_exchange_body(&code, verifier, state, redirect_uri))
         .send()
-        .map_err(|e| LlmError::Http(e.to_string()))?;
+        .map_err(|e| LlmError::transport(&e))?;
     let status = resp.status().as_u16();
     let text = read_body(resp);
     if !(200..300).contains(&status) {
@@ -819,7 +819,7 @@ fn exchange_refresh(presented: &str) -> Result<TokenSet> {
         .header("anthropic-beta", OAUTH_BETA)
         .json(&refresh_body(presented))
         .send()
-        .map_err(|e| LlmError::Http(e.to_string()))?;
+        .map_err(|e| LlmError::transport(&e))?;
     let status = resp.status().as_u16();
     let text = read_body(resp);
     if !(200..300).contains(&status) {

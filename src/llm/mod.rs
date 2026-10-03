@@ -252,8 +252,17 @@ impl ChatMessage {
 /// message surfaced as a red `StreamEvent::Error`.
 #[derive(Debug)]
 pub enum LlmError {
-    /// A transport/connection failure (DNS, TLS, proxy, timeout).
+    /// A transport failure on a connection that **was** made — a stall past the
+    /// per-operation timeout, a reset mid-exchange, a body read that failed.
     Http(String),
+    /// No connection could be made to `host` at all: the name would not
+    /// resolve, the TCP connect was refused or timed out, the TLS handshake
+    /// failed, or the proxy in front of it could not be reached. The machine
+    /// is offline, or the host is — and the retry policy *waits* for it
+    /// rather than spending its bounded budget (`docs/offline.md`). `host` is
+    /// the host (and non-default port) the request was for; `message` the
+    /// transport's own account, cause chain included.
+    Unreachable { host: String, message: String },
     /// A non-2xx HTTP response, with the provider's error body.
     Api { status: u16, body: String },
     /// The response body didn't match the expected shape.
@@ -266,6 +275,7 @@ impl std::fmt::Display for LlmError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Http(e) => write!(f, "request failed: {e}"),
+            Self::Unreachable { host, message } => write!(f, "could not reach {host}: {message}"),
             Self::Api { status, body } => {
                 let body = body.trim();
                 if body.is_empty() {
@@ -284,6 +294,73 @@ impl std::fmt::Display for LlmError {
 }
 
 impl std::error::Error for LlmError {}
+
+impl LlmError {
+    /// Classify a failed `reqwest` send at the one seam that still has the
+    /// typed error: a connection-level failure (`is_connect` — DNS, TCP, TLS,
+    /// the connect timeout, an unreachable proxy) is [`Unreachable`], naming
+    /// the host the request was for; anything else is a plain [`Http`]. Both
+    /// carry the error's **whole cause chain**: `reqwest`'s own `Display` stops
+    /// at `error sending request for url (…)`, and the part a user can act on
+    /// (`Connection refused`, `failed to lookup address information`) is two
+    /// sources down. See `docs/offline.md`.
+    ///
+    /// [`Unreachable`]: LlmError::Unreachable
+    /// [`Http`]: LlmError::Http
+    pub(crate) fn transport(error: &reqwest::Error) -> Self {
+        let message = transport_message(error);
+        if error.is_connect() {
+            let host = error
+                .url()
+                .map_or_else(|| "the provider".to_string(), host_label);
+            return Self::Unreachable { host, message };
+        }
+        Self::Http(message)
+    }
+
+    /// A failed read of a response body: the `io::Error` the blocking client
+    /// wraps its own error in, the cause — a reset, a stream closed early —
+    /// further down. Always [`Http`](LlmError::Http): the connection existed,
+    /// so there is nothing to wait for; the message walks the chain the way
+    /// [`transport`](Self::transport) does for a send.
+    pub(crate) fn body_read(error: &std::io::Error) -> Self {
+        Self::Http(error_chain_message(error))
+    }
+}
+
+/// `host[:port]` for a request URL — the port only when the URL names one
+/// explicitly (`127.0.0.1:11434`), since `api.venice.ai:443` would say
+/// nothing the scheme does not. What the status line's `No connection to …`
+/// row names (`docs/offline.md`).
+pub(crate) fn host_label(url: &reqwest::Url) -> String {
+    let host = url.host_str().unwrap_or("the provider");
+    match url.port() {
+        Some(port) => format!("{host}:{port}"),
+        None => host.to_string(),
+    }
+}
+
+/// A failed send's message: the error and every cause under it
+/// ([`error_chain_message`]).
+pub(crate) fn transport_message(error: &reqwest::Error) -> String {
+    error_chain_message(error)
+}
+
+/// An error and every cause under it, joined `: ` — a layer whose own text
+/// already spells its source (hyper's do) is not repeated.
+fn error_chain_message(error: &dyn std::error::Error) -> String {
+    let mut text = error.to_string();
+    let mut source = error.source();
+    while let Some(cause) = source {
+        let part = cause.to_string();
+        if !part.is_empty() && !text.contains(&part) {
+            text.push_str(": ");
+            text.push_str(&part);
+        }
+        source = cause.source();
+    }
+    text
+}
 
 /// The module's result alias.
 pub type Result<T> = std::result::Result<T, LlmError>;
@@ -506,5 +583,112 @@ mod tests {
     fn truncate_chars_adds_an_ellipsis_when_cut() {
         assert_eq!(truncate_chars("hello", 10), "hello");
         assert_eq!(truncate_chars("hello", 3), "hel…");
+    }
+
+    // --- a lost connection (`docs/offline.md`) -----------------------------
+
+    #[test]
+    fn an_unreachable_host_displays_as_could_not_reach_it() {
+        let err = LlmError::Unreachable {
+            host: "api.venice.ai".into(),
+            message: "tcp connect error: Network is unreachable".into(),
+        };
+        assert_eq!(
+            err.to_string(),
+            "could not reach api.venice.ai: tcp connect error: Network is unreachable"
+        );
+    }
+
+    #[test]
+    fn host_label_names_the_host_and_only_a_non_default_port() {
+        let label = |s: &str| host_label(&reqwest::Url::parse(s).unwrap());
+        assert_eq!(label("https://api.venice.ai/api/v1/chat"), "api.venice.ai");
+        assert_eq!(label("http://127.0.0.1:11434/api/chat"), "127.0.0.1:11434");
+        assert_eq!(label("https://proxy.example:443/v1"), "proxy.example");
+    }
+
+    #[test]
+    fn a_refused_connect_classifies_as_unreachable_naming_the_host() {
+        // Offline-safe: the kernel refuses a connect to a loopback port nothing
+        // listens on at once — the shape a provider gives when the machine has
+        // no route to it.
+        let port = {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            listener.local_addr().unwrap().port()
+        };
+        let client = reqwest::blocking::Client::builder()
+            .no_proxy()
+            .build()
+            .unwrap();
+        let err = client
+            .get(format!("http://127.0.0.1:{port}/v1/chat/completions"))
+            .send()
+            .unwrap_err();
+        match LlmError::transport(&err) {
+            LlmError::Unreachable { host, message } => {
+                assert_eq!(host, format!("127.0.0.1:{port}"));
+                assert!(
+                    message.to_ascii_lowercase().contains("connect"),
+                    "the transport's own words are kept: {message}"
+                );
+            }
+            other => panic!("a refused connect should be Unreachable, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_body_read_failure_names_its_cause_chain() {
+        // A streamed body's read error reaches the transport as an
+        // `io::Error` wrapping the HTTP client's own error, whose cause — the
+        // connection reset, the stream closed early — is further down. The
+        // message walks the whole chain, as `transport` does for a send.
+        #[derive(Debug)]
+        struct Reset;
+        impl std::fmt::Display for Reset {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("connection reset by peer")
+            }
+        }
+        impl std::error::Error for Reset {}
+        #[derive(Debug)]
+        struct BodyError(Reset);
+        impl std::fmt::Display for BodyError {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("request or response body error")
+            }
+        }
+        impl std::error::Error for BodyError {
+            fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+                Some(&self.0)
+            }
+        }
+        let io = std::io::Error::other(BodyError(Reset));
+        assert_eq!(
+            LlmError::body_read(&io).to_string(),
+            "request failed: request or response body error: connection reset by peer"
+        );
+        // A bare I/O error keeps its one line.
+        let plain = std::io::Error::new(std::io::ErrorKind::TimedOut, "operation timed out");
+        assert_eq!(
+            LlmError::body_read(&plain).to_string(),
+            "request failed: operation timed out"
+        );
+    }
+
+    #[test]
+    fn a_failure_to_build_the_request_stays_a_plain_transport_error() {
+        // A reqwest error that is not about connecting — here an unsupported
+        // scheme, which fails before any socket is opened — keeps the old
+        // `Http` shape, so only a connection that cannot be made waits for
+        // one (`docs/offline.md`).
+        let client = reqwest::blocking::Client::builder()
+            .no_proxy()
+            .build()
+            .unwrap();
+        let err = client.get("ftp://127.0.0.1/x").send().unwrap_err();
+        assert!(
+            matches!(LlmError::transport(&err), LlmError::Http(_)),
+            "not a connect failure: {err}"
+        );
     }
 }

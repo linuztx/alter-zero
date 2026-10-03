@@ -105,6 +105,12 @@ impl App {
     /// (the `!` shell, the dummy's lone calls) skips it and a lone
     /// [`start_tool`](App::start_tool) still works. See `docs/parallel-tools.md`.
     pub fn start_tool_batch(&mut self, items: &[ToolCallSummary]) {
+        // The round came back: a request that was retrying, or waiting for a
+        // lost connection, got through — the wires that deliver a call whole
+        // stream no delta ahead of this (`docs/offline.md`).
+        if let Some(status) = self.status.as_mut() {
+            status.recovered();
+        }
         // One id per announced batch: what tells the renderer a run of MCP
         // cells was **parallel** (one `Called deepwiki 2 times` line) from two
         // sequential single calls that merely landed next to each other in
@@ -185,6 +191,10 @@ impl App {
     /// silently — the derived context would quietly fall back to the lossy
     /// summary with nothing to notice.
     pub fn start_tool(&mut self, name: &str, args: &str, arguments: Option<&str>) {
+        // A lone call (no batch announced it) is the round coming back too.
+        if let Some(status) = self.status.as_mut() {
+            status.recovered();
+        }
         self.tool_live_len = 0;
         self.tool_revision += 1;
         let arguments = arguments.map(str::to_string);

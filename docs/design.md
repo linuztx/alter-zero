@@ -657,6 +657,14 @@ which Ctrl+V reads the clipboard from.
   walk's cursor moves only when a tip is actually seen and persists per user
   in `tips.json` beside the `/settings` **Show tips** switch, so every tip
   comes round before any repeats, across sessions.
+- **Waiting for a lost connection** (`docs/offline.md`): a request no
+  connection can be made for — the name won't resolve, the connect is refused
+  or times out, the proxy is gone — is re-sent every few seconds for as long
+  as it takes, never counted against the bounded `Error retry`, while the
+  status line wears an amber `Waiting for internet…` with `offline for Ns`
+  over a ripple row naming the host and counting the attempts; content ends
+  it, Esc interrupts it (and hands an unsent message back to the composer),
+  a refused local Ollama still says to start the server.
 - **Lifecycle hooks** (`docs/hooks.md`): Claude Code's `hooks.json` contract —
   the user's own shell commands wedged into the agent's lifecycle, fed their
   event as `snake_case` JSON on stdin and answering with `camelCase` JSON on

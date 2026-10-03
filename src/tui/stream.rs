@@ -408,6 +408,16 @@ impl Session<'_> {
                 self.app.set_retry(attempt, max);
                 false
             }
+            StreamEvent::Offline { host, attempts } => {
+                // No connection could be made and the backend is waiting for
+                // one, re-sending the request every few seconds for as long
+                // as that takes (docs/offline.md). Live only: the status line
+                // wears `Waiting for internet…` over the row naming the host,
+                // off the turn clock this draw tick already injects — nothing
+                // commits, and the next content takes it down.
+                self.app.set_offline(&host, attempts);
+                false
+            }
             StreamEvent::Usage(usage) => {
                 // The round's real usage frame: snap the live tally from the
                 // app-side estimate to the provider's own accounting (cache

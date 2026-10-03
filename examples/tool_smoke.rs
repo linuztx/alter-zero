@@ -223,6 +223,9 @@ fn main() {
             StreamEvent::Retrying { attempt, max } => {
                 println!("\x1b[33m[retrying {attempt}/{max}]\x1b[0m");
             }
+            StreamEvent::Offline { host, attempts } => {
+                println!("\x1b[33m[no connection to {host} — waiting, {attempts} attempts]\x1b[0m");
+            }
             // A message queued mid-turn, folded in at a round boundary
             // (docs/queue.md) — this probe queues none, but print it if one
             // ever arrives rather than swallowing it.

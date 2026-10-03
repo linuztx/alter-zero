@@ -712,7 +712,7 @@ pub fn fetch_models(cfg: &ModelConfig, cancel: &CancelToken) -> Result<Vec<Model
     for (k, v) in &auth.headers {
         req = req.header(k, v);
     }
-    let mut resp = req.send().map_err(|e| LlmError::Http(e.to_string()))?;
+    let mut resp = req.send().map_err(|e| LlmError::transport(&e))?;
     if !resp.status().is_success() {
         let status = resp.status().as_u16();
         let mut body = String::new();
@@ -820,7 +820,7 @@ fn ollama_show(
     for (k, v) in &auth.headers {
         req = req.header(k, v);
     }
-    let mut resp = req.send().map_err(|e| LlmError::Http(e.to_string()))?;
+    let mut resp = req.send().map_err(|e| LlmError::transport(&e))?;
     if !resp.status().is_success() {
         let status = resp.status().as_u16();
         let mut body = String::new();

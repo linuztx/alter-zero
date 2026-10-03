@@ -415,6 +415,9 @@ impl OpenAiClient {
         // than the file names. See `docs/copilot.md`.
         let auth = super::auth::request_auth(&self.cfg)?;
         let url = self.request_url(auth.base.as_deref());
+        // Where a failed send is checked against the host (`docs/offline.md`):
+        // this same client, so the probe goes the way the request went.
+        let reach = Reachability::new(client.clone(), &url);
         // Ollama streams NDJSON rather than SSE; the header names which.
         let accept = match self.cfg.wire_api {
             super::WireApi::Ollama => "application/x-ndjson",
@@ -452,7 +455,7 @@ impl OpenAiClient {
         // socket — detached and bounded, never joined (the loop's
         // detach-don't-join discipline, docs/interrupt.md).
         let (tx, rx) = std::sync::mpsc::channel();
-        std::thread::spawn(move || run_transport(req, &tx));
+        std::thread::spawn(move || run_transport(req, &tx, &reach));
         let outcome = match self.cfg.wire_api {
             super::WireApi::Responses => drain_responses(&rx, cancel, on_delta),
             super::WireApi::Anthropic => drain_anthropic(&rx, cancel, on_delta),
@@ -480,6 +483,20 @@ impl OpenAiClient {
                     match super::ollama::connection_advice(&base, &message) {
                         Some(advice) => LlmError::Http(advice),
                         None => LlmError::Http(message),
+                    }
+                }
+                // A server on this machine that is not running is not an
+                // outage to wait out: the refusal becomes the `ollama serve`
+                // advice on the bounded retry, surfaced in seconds. A remote
+                // host (Ollama's cloud, an `OLLAMA_HOST` elsewhere) keeps the
+                // wait (`docs/offline.md`).
+                LlmError::Unreachable { host, message } => {
+                    let base = self.base_url(None);
+                    match super::ollama::connection_advice(&base, &message)
+                        .filter(|_| super::ollama::is_local_base(&base))
+                    {
+                        Some(advice) => LlmError::Http(advice),
+                        None => LlmError::Unreachable { host, message },
                     }
                 }
                 LlmError::Api { status, body } => {
@@ -558,6 +575,59 @@ impl BodySource for ChatRequest<'static> {
     }
 }
 
+/// How a failed send is told apart from a host that cannot be reached
+/// (`docs/offline.md`): the request's own URL, and the client it went out
+/// through — the same proxy, trust roots and pool, so what the probe reaches
+/// is what the request would have.
+///
+/// `reqwest` blames a plain connect failure on the connect (`is_connect`),
+/// and that needs no second opinion. But the chat request streams its body
+/// out of a pipe (`docs/memory.md`), and when its connect fails the body
+/// pump loses its receiver first: what comes back is a *body* error — `send
+/// failed because receiver is gone` — with no connect error anywhere in its
+/// chain. So a send failure the transport does not blame on the connect is
+/// answered by **asking the host**: one bodyless `GET` of the request's
+/// origin. A host that answers at all — any status — is there, and the
+/// failure keeps the bounded retry; one the probe cannot connect to is
+/// unreachable, and the probe's own cause (`Connection refused`, `failed to
+/// lookup address information`) is what the user reads.
+struct Reachability {
+    client: reqwest::blocking::Client,
+    url: Option<reqwest::Url>,
+}
+
+impl Reachability {
+    fn new(client: reqwest::blocking::Client, url: &str) -> Self {
+        Self {
+            client,
+            url: reqwest::Url::parse(url).ok(),
+        }
+    }
+
+    /// Classify a failed send: [`LlmError::transport`]'s verdict, with a
+    /// transport error the request did not blame on the connect checked
+    /// against the host itself. Boundary code — the probe is real HTTP.
+    fn classify(&self, error: &reqwest::Error) -> LlmError {
+        let direct = LlmError::transport(error);
+        if !matches!(direct, LlmError::Http(_)) {
+            return direct;
+        }
+        let Some(url) = &self.url else {
+            return direct;
+        };
+        let Ok(origin) = url.join("/") else {
+            return direct;
+        };
+        match self.client.get(origin).send() {
+            Err(probe) if probe.is_connect() => LlmError::Unreachable {
+                host: super::host_label(url),
+                message: super::transport_message(&probe),
+            },
+            _ => direct,
+        }
+    }
+}
+
 /// The transport thread body: perform the blocking send, then forward the
 /// response body to [`drain_stream`] in chunks. Every event on the channel is
 /// a `Result` — body bytes, or the failure that ended the stream (a transport
@@ -565,11 +635,18 @@ impl BodySource for ChatRequest<'static> {
 /// sender, the disconnect being the signal. Each blocking operation here is
 /// bounded by [`NET_OP_TIMEOUT`]; a failed channel send (the drain dropped its
 /// receiver after a cancel) exits early. Boundary code — real HTTP.
-fn run_transport(req: reqwest::blocking::RequestBuilder, tx: &Sender<Result<Vec<u8>>>) {
+fn run_transport(
+    req: reqwest::blocking::RequestBuilder,
+    tx: &Sender<Result<Vec<u8>>>,
+    reach: &Reachability,
+) {
     let mut resp = match req.send() {
         Ok(resp) => resp,
         Err(e) => {
-            let _ = tx.send(Err(LlmError::Http(e.to_string())));
+            // Classified here, where the typed error still is: a connection
+            // that could not be made waits for the network, anything else
+            // takes the bounded retry (`docs/offline.md`).
+            let _ = tx.send(Err(reach.classify(&e)));
             return;
         }
     };
@@ -589,7 +666,10 @@ fn run_transport(req: reqwest::blocking::RequestBuilder, tx: &Sender<Result<Vec<
                 }
             }
             Err(e) => {
-                let _ = tx.send(Err(LlmError::Http(e.to_string())));
+                // The connection existed, so this never waits — but the
+                // cause (a reset, a stream closed early) is what the user
+                // reads, not the client's bare `body error`.
+                let _ = tx.send(Err(LlmError::body_read(&e)));
                 return;
             }
         }
@@ -1770,6 +1850,151 @@ mod tests {
         assert_eq!(p["prompt_cache_key"], json!("alter-zero-42"));
         assert_eq!(p["reasoning"], json!({"effort": "high"}));
         assert!(p.get("reasoning_effort").is_none(), "{p}");
+    }
+
+    // --- a lost connection, as the transport sees it (docs/offline.md) ---
+
+    /// A loopback port nothing listens on: the kernel refuses a connect to it
+    /// at once.
+    fn refused_port() -> u16 {
+        std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port()
+    }
+
+    fn no_proxy_client() -> reqwest::blocking::Client {
+        reqwest::blocking::Client::builder()
+            .no_proxy()
+            .build()
+            .unwrap()
+    }
+
+    /// A send that fails before any socket is opened — an unsupported scheme —
+    /// so the failure is a transport error `reqwest` does not blame on the
+    /// connect, the shape a streamed body's refused connect takes.
+    fn non_connect_failure(client: &reqwest::blocking::Client) -> reqwest::Error {
+        client.get("ftp://127.0.0.1/x").send().unwrap_err()
+    }
+
+    #[test]
+    fn a_streamed_request_to_a_refused_port_is_unreachable() {
+        // The smoke suite's finding: with a streamed body, a refused connect
+        // surfaces from `reqwest` as the body pipe's "send failed because
+        // receiver is gone" — a body error, not a connect error — so the
+        // transport has to ask the host itself.
+        let port = refused_port();
+        let client = no_proxy_client();
+        let url = format!("http://127.0.0.1:{port}/v1/chat/completions");
+        let body = b"{\"model\":\"m\"}".to_vec();
+        let len = body.len() as u64;
+        let req = client.post(&url).body(reqwest::blocking::Body::sized(
+            std::io::Cursor::new(body),
+            len,
+        ));
+        let (tx, rx) = std::sync::mpsc::channel();
+        run_transport(req, &tx, &Reachability::new(client, &url));
+        match rx.recv() {
+            Ok(Err(LlmError::Unreachable { host, .. })) => {
+                assert_eq!(host, format!("127.0.0.1:{port}"));
+            }
+            other => panic!("expected Unreachable, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_send_failure_on_a_host_that_answers_keeps_the_plain_transport_error() {
+        // A host that answers the probe — here a listener replying 404 to
+        // anything — is not an outage, whatever the send failed with.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            use std::io::{Read, Write};
+            if let Ok((mut stream, _)) = listener.accept() {
+                let mut buf = [0u8; 4096];
+                let _ = stream.read(&mut buf);
+                let _ = stream.write_all(
+                    b"HTTP/1.1 404 Not Found\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
+                );
+            }
+        });
+        let client = no_proxy_client();
+        let error = non_connect_failure(&client);
+        let reach = Reachability::new(
+            client,
+            &format!("http://127.0.0.1:{port}/v1/chat/completions"),
+        );
+        let classified = reach.classify(&error);
+        assert!(
+            matches!(classified, LlmError::Http(_)),
+            "a reachable host keeps the bounded retry: {classified:?}"
+        );
+    }
+
+    #[test]
+    fn a_send_failure_whose_host_cannot_be_reached_is_unreachable() {
+        let port = refused_port();
+        let client = no_proxy_client();
+        let error = non_connect_failure(&client);
+        let reach = Reachability::new(
+            client,
+            &format!("http://127.0.0.1:{port}/v1/chat/completions"),
+        );
+        match reach.classify(&error) {
+            LlmError::Unreachable { host, message } => {
+                assert_eq!(host, format!("127.0.0.1:{port}"));
+                assert!(
+                    message.to_ascii_lowercase().contains("refused"),
+                    "the probe's own cause is what the user reads: {message}"
+                );
+            }
+            other => panic!("expected Unreachable, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_connect_failure_needs_no_probe() {
+        // `reqwest` blamed the connect itself: classified at once, with the
+        // request's own cause chain, and nothing asked of the host.
+        let port = refused_port();
+        let client = no_proxy_client();
+        let url = format!("http://127.0.0.1:{port}/v1/models");
+        let error = client.get(&url).send().unwrap_err();
+        assert!(error.is_connect(), "the fixture is a connect failure");
+        let reach = Reachability::new(client, &url);
+        match reach.classify(&error) {
+            LlmError::Unreachable { host, message } => {
+                assert_eq!(host, format!("127.0.0.1:{port}"));
+                assert!(message.contains("/v1/models"), "{message}");
+            }
+            other => panic!("expected Unreachable, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_refused_local_ollama_is_advice_but_a_remote_one_is_waited_for() {
+        // `docs/offline.md`: a server on this machine that is not running is
+        // `ollama serve` to start, surfaced on the bounded retry; a host
+        // elsewhere that cannot be reached is the network, waited for.
+        let unreachable = |host: &str| LlmError::Unreachable {
+            host: host.to_string(),
+            message: "client error (Connect): tcp connect error: Connection refused (os error 111)"
+                .to_string(),
+        };
+        let mut local = ModelConfig::fallback();
+        local.wire_api = super::super::WireApi::Ollama;
+        local.api_base = "http://127.0.0.1:11434".to_string();
+        let explained = OpenAiClient::new(local).explain(unreachable("127.0.0.1:11434"));
+        assert!(
+            matches!(&explained, LlmError::Http(advice) if advice.contains("ollama serve")),
+            "{explained:?}"
+        );
+        let mut remote = ModelConfig::fallback();
+        remote.wire_api = super::super::WireApi::Ollama;
+        remote.api_base = "https://ollama.com".to_string();
+        let kept = OpenAiClient::new(remote).explain(unreachable("ollama.com"));
+        assert!(matches!(kept, LlmError::Unreachable { .. }), "{kept:?}");
     }
 
     #[test]

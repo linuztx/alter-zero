@@ -35,7 +35,7 @@ survives only as the verb old rollouts recorded.
 ## What shows, and when
 
 The live line is
-`(●•·   ) {verb}… ({elapsed}[ · {arrow} {n} tokens][ · retrying {a}/{max}][ · Thinking for {m}] · esc to interrupt)`
+`(●•·   ) {verb}… ({elapsed}[ · {arrow} {n} tokens][ · retrying {a}/{max} | · offline for {d}][ · Thinking for {m}] · esc to interrupt)`
 — `{elapsed}` and `{m}` are **humanized** by `ui::format_elapsed` (see *Elapsed*
 below), so a short turn reads `3s` and a long one `1m 30s` / `1h 5m`:
 
@@ -47,6 +47,7 @@ below), so a short turn reads `3s` and a long one `1m 30s` / `1h 5m`:
 | generating a tool call | `( ·•●  ) Working… (3s · ↓ 170 tokens · esc to interrupt)` (count ticks as the call streams) |
 | after a tool result  | `( ·•●  ) Working… (4s · ↑ 200 tokens · esc to interrupt)`                     |
 | retrying a failure   | `( ·•●  ) Working… (5s · ↑ 42 tokens · retrying 2/3 · esc to interrupt)`       |
+| waiting for the network | `( ·•●  ) Waiting for internet… (2m 3s · ↑ 42 tokens · offline for 1m 10s · esc to interrupt)` — verb and clause amber, over a `⎿ ((·)) No connection to {host} — trying again · N attempts` row (`docs/offline.md`) |
 | finished (committed) | `Worked for 20s` — the past tense of the verb the line wore last                |
 | interrupted (Esc)    | *no summary* — the red `Conversation interrupted` notice (see `docs/interrupt.md`) |
 
@@ -177,8 +178,11 @@ struct (with the boundary-supplied durations) — unit-tested with explicit valu
 
 - `TokenArrow { Down, Up }`.
 - `RetryInfo { attempt, max }` — a live retry indicator (see `docs/llm.md`).
+- `OfflineInfo { host, attempts, began }` — a live lost-connection wait
+  (`docs/offline.md`): `began` is the turn clock's reading when the outage
+  started, so `offline for Ns` is one subtraction off the injected `elapsed`.
 - `TurnStatus { verb, done_verb, rotates_from, tokens, arrow, elapsed, thinking,
-  shell, retry }` (`verb`/`done_verb` are one `StatusVerb`'s two forms, moved
+  shell, retry, offline }` (`verb`/`done_verb` are one `StatusVerb`'s two forms, moved
   together; `rotates_from: Option<usize>` is the `STATUS_VERBS` index the line
   opened on when its verb rotates, `None` when it is fixed as given.
   `elapsed: Duration` / `thinking: Option<Duration>` are written by the boundary
@@ -202,7 +206,10 @@ struct (with the boundary-supplied durations) — unit-tested with explicit valu
   the model *generates* a tool call — driven by `StreamEvent::ToolCallDelta`, the
   streamed `name`/`arguments` fragments the real backend surfaces before the
   `ToolStart`; `set_retry(a, max)` sets the amber `retrying a/max` clause (from a
-  `StreamEvent::Retrying`); `end_tool` adds tokens (`↑`); `fail_stream`
+  `StreamEvent::Retrying`); `set_offline(host, n)` sets the `Waiting for
+  internet…` verb, the `offline for` clause and the row under the line (from
+  a `StreamEvent::Offline`), and content, a tool round or a retry clears
+  either (`TurnStatus::recovered`); `end_tool` adds tokens (`↑`); `fail_stream`
   clears the status (an error is the summary — no "Done" line); `interrupt_turn`
   clears it the same way (the `Conversation interrupted` notice is the summary);
   `end_turn(secs)` records the summary and clears the status.
@@ -474,6 +481,8 @@ same events straight from its streamed `tool_calls` deltas
   under an hour, `{h}h {m}m` past one) and that `status_line`/`summary_lines`
   humanize a long elapsed / thinking / done time through it; `status_line` for
   each phase (no tokens at 0; `↓`/`↑`; `Thinking for`);
+  the offline verb outranks a task verb and rests on the warning amber, the
+  `offline for` clause and the row under the line (`docs/offline.md`);
   `preview_rows` is 0 on the pre-stream pause, so `live_height` reserves
   no preview row and `render_live` draws the status as the strip's top row (with
   `↑` tokens, no reserved blank above it); `live_layout` tiles the four areas for

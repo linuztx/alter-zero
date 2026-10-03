@@ -807,6 +807,30 @@ fn an_agent_views_strip_previews_its_thinking_block() {
 }
 
 #[test]
+fn an_agent_views_status_carries_its_lost_connection() {
+    // The session view's synthesized status is built from the run, so the
+    // wait shows there exactly as the main turn's does (docs/offline.md).
+    let mut app = App::new();
+    app.begin_stream();
+    app.start_agent_group(false, &[spec("a1", "Fetch Warsaw", false)]);
+    app.set_agent_runtime("a1", Duration::from_secs(9));
+    app.apply_agent_event(
+        "a1",
+        &crate::stream::StreamEvent::Offline {
+            host: "api.venice.ai".into(),
+            attempts: 4,
+        },
+    );
+    let run = app.agent("a1").expect("listed");
+    let status = agent_view_status(run);
+    assert_eq!(status.offline, run.offline);
+    assert_eq!(
+        status.offline.as_ref().map(|o| (o.attempts, o.began)),
+        Some((4, Duration::from_secs(9)))
+    );
+}
+
+#[test]
 fn an_agent_views_strip_shows_every_waiting_sibling_of_a_parallel_batch() {
     // The main strip renders a parallel batch as the running call over each
     // dim `⎿ Waiting…` sibling, blank-separated (docs/parallel-tools.md).

@@ -910,6 +910,24 @@ pub fn advice(status: u16, body: &str, model: &str) -> Option<String> {
     }
 }
 
+/// Does `base` name a server on **this machine** — a loopback address or
+/// `localhost`? The one case a refused connection is `ollama serve` not
+/// running rather than the network being gone, so it is the one case the
+/// connection advice replaces the wait for the host to come back
+/// (`docs/offline.md`).
+#[must_use]
+pub fn is_local_base(base: &str) -> bool {
+    let Ok(url) = url::Url::parse(base) else {
+        return false;
+    };
+    match url.host() {
+        Some(url::Host::Domain(name)) => name.eq_ignore_ascii_case("localhost"),
+        Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
+        Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
+        None => false,
+    }
+}
+
 /// The sentence for a transport failure that means the server is not there:
 /// a refused connection is `ollama serve` not running (or the wrong host),
 /// and a name that won't resolve is a mistyped `OLLAMA_HOST`. A timeout or a
@@ -1642,6 +1660,26 @@ mod tests {
         assert!(text.contains("OLLAMA_API_KEY"), "{text}");
         assert!(text.contains("OLLAMA_HOST_API_KEY"), "{text}");
         assert!(text.contains("ollama.com/settings/keys"), "{text}");
+    }
+
+    #[test]
+    fn only_a_loopback_or_localhost_base_is_local() {
+        for base in [
+            "http://127.0.0.1:11434",
+            "http://localhost:11434",
+            "http://LOCALHOST:11434",
+            "http://[::1]:11434",
+        ] {
+            assert!(is_local_base(base), "{base} is this machine");
+        }
+        for base in [
+            "https://ollama.com",
+            "http://192.168.1.20:11434",
+            "http://ollama.lan:11434",
+            "not a url",
+        ] {
+            assert!(!is_local_base(base), "{base} is not this machine");
+        }
     }
 
     #[test]

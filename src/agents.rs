@@ -250,6 +250,13 @@ pub struct AgentRun {
     /// same `retrying {attempt}/{max}` clause the main turn's does, and the
     /// next streamed content clears it (`docs/llm.md`).
     pub retry: Option<crate::app::RetryInfo>,
+    /// Set while this agent's request **waits for a lost connection**
+    /// ([`StreamEvent::Offline`]) — its session view's status line wears the
+    /// same `Waiting for internet…` the main turn's does, over the same `No
+    /// connection to {host}` row, the wait's start stamped off this run's
+    /// [`runtime`](Self::runtime). Cleared the moment the host answers, and
+    /// never `Some` beside [`retry`](Self::retry) (`docs/offline.md`).
+    pub offline: Option<crate::app::OfflineInfo>,
 }
 
 impl AgentRun {
@@ -320,6 +327,7 @@ impl AgentRun {
             thinking: None,
             command_elapsed: None,
             retry: None,
+            offline: None,
         }
     }
 
@@ -384,9 +392,10 @@ impl AgentRun {
                     .get_or_insert_with(String::new)
                     .push_str(chunk);
                 self.tokens += crate::app::count_tokens(chunk) as u64;
-                // Content arrived — the reconnect is over (the main turn's
-                // rule, `docs/llm.md`).
-                self.retry = None;
+                // Content arrived — the reconnect, or the wait for the
+                // connection, is over (the main turn's rule, `docs/llm.md`,
+                // `docs/offline.md`).
+                self.recovered();
             }
             // A SubagentStop block's continuation feedback on this agent's
             // own loop (docs/hooks.md): the reply so far becomes its own
@@ -423,7 +432,7 @@ impl AgentRun {
             // (`docs/agent-view-streaming.md`).
             StreamEvent::ThinkingChunk(text) => {
                 self.tokens += crate::app::count_tokens(text) as u64;
-                self.retry = None;
+                self.recovered();
                 if let Some(buffer) = self.reasoning.as_mut() {
                     buffer.push_str(text);
                 }
@@ -432,8 +441,12 @@ impl AgentRun {
             // agent generates a call (the status-line pattern).
             StreamEvent::ToolCallDelta(text) => {
                 self.tokens += crate::app::count_tokens(text) as u64;
+                self.recovered();
             }
             StreamEvent::ToolBatch(items) => {
+                // The round came back (the wires that deliver a call whole
+                // stream no delta first) — any wait is over.
+                self.recovered();
                 self.flush_segment();
                 // The announcement is the round's **whole** queue, exactly as
                 // `App::start_tool_batch` treats it: anything left over from
@@ -723,9 +736,28 @@ impl AgentRun {
             // like the main turn's (`docs/llm.md`). Nothing commits — the run
             // is still in flight.
             StreamEvent::Retrying { attempt, max } => {
+                // The host answered (badly): any outage is over.
+                self.recovered();
                 self.retry = Some(crate::app::RetryInfo {
                     attempt: *attempt,
                     max: *max,
+                });
+            }
+            // No connection could be made for this agent's request and its
+            // loop is waiting for one: the session view says so, exactly
+            // like the main turn's strip (`docs/offline.md`). The first
+            // announcement stamps the wait's start with the runtime the view
+            // shows; later ones move the count on and keep it.
+            StreamEvent::Offline { host, attempts } => {
+                let began = self
+                    .offline
+                    .as_ref()
+                    .map_or(self.runtime, |outage| outage.began);
+                self.recovered();
+                self.offline = Some(crate::app::OfflineInfo {
+                    host: host.clone(),
+                    attempts: *attempts,
+                    began,
                 });
             }
             StreamEvent::RoundCalls(_)
@@ -865,6 +897,14 @@ impl AgentRun {
     /// `App::drain_last_batch`'s twin), leaving the earlier ones queued.
     pub fn take_last_followup(&mut self) -> Option<String> {
         self.followups.pop_back()
+    }
+
+    /// The host answered: the reconnect or the wait for the connection is
+    /// over, so both live indicators come down together (the main turn's
+    /// `TurnStatus::recovered`).
+    fn recovered(&mut self) {
+        self.retry = None;
+        self.offline = None;
     }
 
     /// The status verb its session view's line wears now — the synthesized
@@ -2716,6 +2756,50 @@ mod tests {
         );
         run.apply(&chunk("here we go"));
         assert!(run.retry.is_none(), "content ends the reconnect");
+    }
+
+    #[test]
+    fn an_agent_waiting_for_the_connection_says_so_until_content_arrives() {
+        // Main parity (`docs/offline.md`): the wait begins at the runtime the
+        // first announcement lands on, later announcements move the count
+        // on and keep that start, a retry announcement or any content ends
+        // it, and it never shows beside the bounded retry clause.
+        let mut run = AgentRun::new("a1", "d", GENERAL_PURPOSE, "p", false);
+        run.runtime = Duration::from_secs(7);
+        run.apply(&StreamEvent::Retrying { attempt: 1, max: 3 });
+        run.apply(&StreamEvent::Offline {
+            host: "api.venice.ai".into(),
+            attempts: 1,
+        });
+        assert_eq!(
+            run.offline,
+            Some(crate::app::OfflineInfo {
+                host: "api.venice.ai".into(),
+                attempts: 1,
+                began: Duration::from_secs(7),
+            })
+        );
+        assert!(run.retry.is_none(), "the outage replaces the retry clause");
+        run.runtime = Duration::from_secs(19);
+        run.apply(&StreamEvent::Offline {
+            host: "api.venice.ai".into(),
+            attempts: 2,
+        });
+        let info = run.offline.as_ref().expect("still waiting");
+        assert_eq!((info.attempts, info.began), (2, Duration::from_secs(7)));
+        run.apply(&chunk("back"));
+        assert!(run.offline.is_none(), "content ends the wait");
+
+        run.apply(&StreamEvent::Offline {
+            host: "api.venice.ai".into(),
+            attempts: 1,
+        });
+        run.apply(&StreamEvent::Retrying { attempt: 1, max: 3 });
+        assert!(
+            run.offline.is_none(),
+            "the host answered: a retry ends the wait"
+        );
+        assert!(run.retry.is_some());
     }
 
     #[test]

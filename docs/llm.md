@@ -106,6 +106,20 @@ the next streamed `Chunk`/`ThinkingChunk` clears it (the request recovered). The
 turn stays alive throughout — nothing commits to scrollback during the retries,
 so a resize/Ctrl+O repaint is unaffected.
 
+**A connection that cannot be made at all takes a different policy**
+(`docs/offline.md`). A failed send is classified at the one seam that still
+has the typed `reqwest` error (`LlmError::transport`): `is_connect()` — DNS,
+TCP, TLS, the connect timeout, an unreachable proxy — becomes
+`LlmError::Unreachable { host, message }`, the message carrying the whole
+cause chain, and `next_step` answers it with `RetryStep::AwaitConnection`: a
+`StreamEvent::Offline { host, attempts }` announcement, an `offline_backoff`
+of 1 s doubling to a 5 s cap, and another attempt — **not counted** against
+`max`, for as long as the outage lasts. The loop shows it as the amber
+`Waiting for internet…` verb with an `offline for Ns` clause and a `No
+connection to {host}` row under the line. `Error retry` at `0` surfaces it
+at once like everything else; the Ollama wire keeps its `ollama serve`
+advice for a refused local server.
+
 ### Reasoning (`ThinkingSplitter`)
 
 Some providers stream reasoning as a native `reasoning`/`reasoning_content` delta;
@@ -536,8 +550,9 @@ Retheme there.
   turn ends immediately, and the detached transport thread winds down on its
   own — at its next channel send, or after at most one op-timeout if parked on
   the silent socket. A failure before any content streamed retries as usual
-  (`llm::retry`); one after content is surfaced, never retried (a retry would
-  duplicate the streamed text).
+  (`llm::retry`; a connection that cannot be made at all is waited for
+  instead, `docs/offline.md`); one after content is surfaced, never retried
+  (a retry would duplicate the streamed text).
 - A `429`'s `Retry-After` (and OpenRouter's rate-limit reset headers) are not
   read; a rate-limited retry waits the standard exponential backoff instead.
 - The `ThinkingSplitter`'s inline-tag path and a provider's *native* `reasoning`

@@ -906,7 +906,7 @@ fn exchange_code(code: &str, verifier: &str, redirect_uri: &str) -> Result<(Stri
         .header("accept", "application/json")
         .body(body)
         .send()
-        .map_err(|e| LlmError::Http(e.to_string()))?;
+        .map_err(|e| LlmError::transport(&e))?;
     let status = resp.status().as_u16();
     let text = read_body(resp);
     if !(200..300).contains(&status) {
@@ -945,7 +945,7 @@ pub fn request_device_code() -> Result<DeviceCode> {
         .header("user-agent", user_agent())
         .json(&device_code_request_body())
         .send()
-        .map_err(|e| LlmError::Http(e.to_string()))?;
+        .map_err(|e| LlmError::transport(&e))?;
     let status = resp.status().as_u16();
     let text = read_body(resp);
     if !(200..300).contains(&status) {
@@ -1202,7 +1202,7 @@ fn exchange_refresh(presented: &str) -> Result<TokenSet> {
         .header("user-agent", user_agent())
         .json(&refresh_body(presented))
         .send()
-        .map_err(|e| LlmError::Http(e.to_string()))?;
+        .map_err(|e| LlmError::transport(&e))?;
     let status = resp.status().as_u16();
     let text = read_body(resp);
     if !(200..300).contains(&status) {

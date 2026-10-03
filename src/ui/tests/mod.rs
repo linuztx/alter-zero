@@ -35,6 +35,7 @@ mod mcp_view;
 mod menu;
 mod message;
 mod model_view;
+mod offline;
 mod palette;
 mod permission_view;
 mod reasoning;
@@ -200,6 +201,7 @@ pub(super) fn status(
         thinking: thinking.map(Duration::from_secs),
         shell: false,
         retry: None,
+        offline: None,
         tip: None,
     }
 }
