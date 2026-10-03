@@ -206,18 +206,16 @@ available, and the turn keeps going.
   every later request:
 
   > The user did not answer within 10m and is not available. Continue working
-  > without them: decide using your best judgment, preferring the safest, most
-  > reversible option, and state your assumptions in your final response. Do
-  > not ask again until the user sends a message.
+  > with your best judgment and state your assumptions. Do not ask again until
+  > the user sends a message.
 
   It is the opposite of a decline's stop-and-wait: a decline is the user
-  *present* and saying no, a timeout is the user *absent*. "Safest, most
-  reversible" keeps an unattended agent off the destructive branch of the
-  question it could not get answered; "state your assumptions" is what the
-  user reads when they come back; and "do not ask again until the user sends
-  a message" keeps the next question from stalling another ten minutes on the
-  same empty room — scoped to the next message, so it never outlives the
-  user's return.
+  *present* and saying no, a timeout is the user *absent*. "State your
+  assumptions" is what the user reads when they come back; "do not ask again
+  until the user sends a message" keeps the next question from stalling
+  another ten minutes on the same empty room — scoped to the next message, so
+  it never outlives the user's return. Nothing more: how to choose is the
+  model's own judgment, and every extra clause rides every later request.
 - **Partial answers are kept.** A user who picked the first of three
   questions and then left gave a real answer, so the timeout delivers it:
   `TimedOut { answers, .. }` carries the same answered set a Submit would
@@ -230,9 +228,12 @@ available, and the turn keeps going.
   over a `· Q → A` row per answer and a `· Q (A / B)` row per question left
   open.
 - **The countdown.** While the clock runs, the modal's closing rule carries
-  it right-aligned — `── continues without you in 9:41 ─`, dim, amber inside
-  its last minute. The rule, because it is the one row a bottom-anchored page
-  always paints: a ticking label there never re-signs the flow
+  it right-aligned — `── Timeout: 9:41 ─` — as a lit chip, the agent session
+  view's label dress: the theme's accent under its on-accent ink, the padding
+  inside the fill and one bare rule cell after it, so it reads at a glance
+  rather than as dim text in a dim rule; inside its last minute the chip
+  lights the caution amber. The rule, because it is the one row a
+  bottom-anchored page always paints: a ticking label there never re-signs the flow
   (`docs/view-flow.md`) and never costs the page a row. The count rounds up,
   so a fresh clock reads `10:00` and the last second `0:01`, never `0:00`
   over a question that is still open; a rule too narrow for it stays plain.
@@ -275,7 +276,9 @@ no input at all to fire. A timeout that lands under the Ctrl+O transcript
 closes the modal underneath it, and the transcript follows the turn as it
 carries on.
 
-The tool's own description says so too: the user "may instead decline, ask
-to chat, or not answer in time; the result then tells you how to proceed" —
-it used to promise that every unanswered outcome meant stop and wait, which a
-timeout's keep-working result now contradicts.
+The tool's own description leaves it to the result: the user "may instead
+decline or ask to chat; the result then tells you how to proceed". It used to
+promise that every unanswered outcome meant stop and wait, which a timeout's
+keep-working result contradicts — and it does not name the timeout either,
+since the result says what to do when one happens and the description rides
+every request.

@@ -27,13 +27,15 @@ fn rule(width: u16) -> Line<'static> {
 }
 
 /// The closing rule: plain, or — while the idle clock runs — carrying the
-/// countdown right-aligned with one rule cell after it
-/// (`── continues without you in 9:41 ─`, `docs/ask.md`). The count rounds
-/// **up** to the whole second, so a fresh clock reads `10:00` and the last
-/// second `0:01` rather than `0:00` over a question that is still open; its
-/// last minute takes the caution amber. Too narrow to keep
-/// [`ASK_TIMEOUT_MIN_LEAD`] rule cells in front of it, the rule stays plain —
-/// the clock still runs, and the resolved cell says what happened.
+/// countdown right-aligned as a lit chip with one bare rule cell after it
+/// (`── Timeout: 9:41 ─`, `docs/ask.md`), the agent session view's label
+/// dress: the theme's accent under its on-accent ink, the padding inside the
+/// fill. The count rounds **up** to the whole second, so a fresh clock reads
+/// `10:00` and the last second `0:01` rather than `0:00` over a question that
+/// is still open; in its last minute the chip lights the caution amber. Too
+/// narrow to keep [`ASK_TIMEOUT_MIN_LEAD`] rule cells in front of it, the
+/// rule stays plain — the clock still runs, and the resolved cell says what
+/// happened.
 fn closing_rule(width: u16, remaining: Option<std::time::Duration>) -> Line<'static> {
     let Some(left) = remaining else {
         return rule(width);
@@ -47,15 +49,15 @@ fn closing_rule(width: u16, remaining: Option<std::time::Duration>) -> Line<'sta
     else {
         return rule(width);
     };
-    let color = if secs < ASK_TIMEOUT_WARN.as_secs() {
-        ask_timeout_warn_color()
+    let ground = if secs < ASK_TIMEOUT_WARN.as_secs() {
+        ask_timeout_warn_bg()
     } else {
-        ask_timeout_color()
+        ask_timeout_bg()
     };
     let border = Style::new().fg(border_color());
     Line::from(vec![
         Span::styled(PERMISSION_RULE.repeat(lead), border),
-        Span::styled(label, Style::new().fg(color)),
+        Span::styled(label, Style::new().fg(ask_timeout_fg()).bg(ground)),
         Span::styled(PERMISSION_RULE, border),
     ])
 }

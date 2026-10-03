@@ -2655,27 +2655,36 @@ pub(super) fn ask_answer_color() -> Color {
 pub(super) const ASK_REVIEW_ANSWER_MAX_ROWS: usize = 4;
 
 /// The idle clock's countdown, right-aligned in the modal's closing rule
-/// while it runs (`docs/ask.md`): ` continues without you in 9:41 ─`. The
-/// rule is the one row a bottom-anchored page always paints, so a ticking
-/// label there never re-signs the flow and never costs the page a row.
-pub(super) const ASK_TIMEOUT_PREFIX: &str = "continues without you in ";
+/// while it runs (`docs/ask.md`): `── Timeout: 9:41 ─`. The rule is the one
+/// row a bottom-anchored page always paints, so a ticking label there never
+/// re-signs the flow and never costs the page a row.
+pub(super) const ASK_TIMEOUT_PREFIX: &str = "Timeout: ";
 
 /// The fewest rule cells left of the countdown — below this the closing rule
-/// stays plain rather than reading as a sentence with a stub of a frame.
+/// stays plain rather than reading as a chip with a stub of a frame.
 pub(super) const ASK_TIMEOUT_MIN_LEAD: usize = 2;
 
-/// Inside its last minute the countdown takes [`ask_timeout_warn_color`].
+/// Inside its last minute the countdown takes [`ask_timeout_warn_bg`].
 pub(super) const ASK_TIMEOUT_WARN: std::time::Duration = std::time::Duration::from_secs(60);
 
-/// The countdown's colour — the hint row's dim, so it reads as a fact about
-/// the modal rather than a demand on the user.
-pub(super) fn ask_timeout_color() -> Color {
-    permission_hint_text_color()
+/// The countdown's ground: it rides the closing rule as a **lit chip**, the
+/// agent session view's label dress ([`agent_view_label_bg`]) — the theme's
+/// accent, so the one row saying the question will not wait forever reads at
+/// a glance rather than as dim text in a dim rule (the user-requested fill).
+/// The label's padding sits inside the fill, one bare rule cell after it.
+pub(super) fn ask_timeout_bg() -> Color {
+    agent_view_label_bg()
 }
 
-/// The countdown's last-minute colour — the caution amber the review page's
+/// The chip's ink — `on_accent`, the agent label's own
+/// ([`agent_view_label_fg`]), over the calm and the last-minute ground alike.
+pub(super) fn ask_timeout_fg() -> Color {
+    agent_view_label_fg()
+}
+
+/// The chip's last-minute ground — the caution amber the review page's
 /// warning already speaks, the cue that a user who is here should say so.
-pub(super) fn ask_timeout_warn_color() -> Color {
+pub(super) fn ask_timeout_warn_bg() -> Color {
     ask_warning_color()
 }
 

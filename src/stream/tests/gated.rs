@@ -426,13 +426,14 @@ fn a_timed_out_ask_demo_carries_on_without_the_user() {
         display.starts_with(crate::ask::TIMED_OUT_HEADLINE),
         "got {display}"
     );
-    assert!(
-        result.contains("Continue working without them"),
-        "got {result}"
-    );
+    assert!(result.contains("Continue working with"), "got {result}");
     assert!(
         closing.contains("carrying on without you"),
         "the demo says it went on alone: {closing}"
+    );
+    assert!(
+        !closing.contains("safest"),
+        "the demo narrates what the model was told, nothing more: {closing}"
     );
     assert!(
         closing

@@ -17,9 +17,10 @@ release heading when a version is cut.
 - **A question nobody answers no longer stalls the agent.** When the agent
   asks you something and no key is pressed for ten minutes, the question
   closes unanswered and the agent keeps working: it is told you are away,
-  takes the safest option, and states what it assumed in its reply. Any key
-  starts the wait over, so you are never timed out mid-answer, and the
-  question's bottom border counts it down. Answers you gave before stepping
+  uses its best judgment, and states what it assumed in its reply. Any key
+  starts the wait over, so you are never timed out mid-answer, and a
+  `Timeout: 9:41` chip in the question's bottom border counts it down, amber
+  in its last minute. Answers you gave before stepping
   away still count. Set the wait — 5 minutes to an hour, or never — with the
   new `/settings` **Ask timeout** row, or `ALTER_ZERO_ASK_TIMEOUT_SECS`
   (`docs/ask.md`).

@@ -333,17 +333,14 @@ pub fn timed_out_result(answers: &[AskAnswer], after: Duration) -> String {
     if answers.is_empty() {
         return format!(
             "The user did not answer within {wait} and is not available. Continue working \
-             without them: decide using your best judgment, preferring the safest, most \
-             reversible option, and state your assumptions in your final response. Do not \
-             ask again until the user sends a message."
+             with your best judgment and state your assumptions. Do not ask again until \
+             the user sends a message."
         );
     }
     format!(
         "The user answered some questions, then did not respond for {wait} and is not \
-         available. Continue working without them: use the answers below, decide the rest \
-         using your best judgment, preferring the safest, most reversible option, and state \
-         your assumptions in your final response. Do not ask again until the user sends a \
-         message.\n\n{}",
+         available. Continue working with the answers below and your best judgment, and \
+         state your assumptions. Do not ask again until the user sends a message.\n\n{}",
         answered_result(answers)
     )
 }
@@ -738,20 +735,14 @@ mod tests {
 
     #[test]
     fn a_timeout_tells_the_model_the_user_is_gone_and_to_keep_working() {
-        let result = timed_out_result(&[], Duration::from_secs(600));
-        assert!(result.contains("within 10m"), "names the wait: {result}");
-        assert!(result.contains("not available"), "got {result}");
-        assert!(
-            result.contains("Continue working without them"),
-            "got {result}"
-        );
-        assert!(result.contains("best judgment"), "got {result}");
-        assert!(
-            result.contains("Do not ask again until the user sends a message"),
-            "no second stall on a user who is away: {result}"
-        );
         // Short and direct — it rides the context of every later request.
-        assert!(result.len() < 320, "{} chars: {result}", result.len());
+        let result = timed_out_result(&[], Duration::from_secs(600));
+        assert_eq!(
+            result,
+            "The user did not answer within 10m and is not available. Continue working \
+             with your best judgment and state your assumptions. Do not ask again until \
+             the user sends a message."
+        );
         assert!(
             !result.contains("STOP"),
             "a timeout is the opposite of stop-and-wait: {result}"
@@ -773,10 +764,14 @@ mod tests {
         );
         let result = timed_out_result(&answers, Duration::from_secs(3));
         assert!(
-            result.starts_with("The user answered some questions"),
+            result.starts_with(
+                "The user answered some questions, then did not respond for 3s and is not \
+                 available. Continue working with the answers below and your best judgment, \
+                 and state your assumptions. Do not ask again until the user sends a \
+                 message.\n\n"
+            ),
             "got {result}"
         );
-        assert!(result.contains("decide the rest"), "got {result}");
         // The answers ride last, as the schema's own JSON.
         let json = result.rsplit("\n\n").next().unwrap();
         let value: serde_json::Value = serde_json::from_str(json).unwrap();

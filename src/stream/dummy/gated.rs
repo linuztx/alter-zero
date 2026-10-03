@@ -333,8 +333,8 @@ pub(in crate::stream) fn ask_questions_turn(stage: &AskStage<'_>) {
     } else if timed_out {
         concat!(
             "No answer came in time, so I'm carrying on without you — a real model \
-             would now decide on its own, take the safest option, and list what it \
-             assumed in its final reply.\n\n",
+             would now decide on its own and list what it assumed in its final \
+             reply.\n\n",
             handoff!()
         )
     } else {

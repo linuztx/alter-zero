@@ -634,8 +634,8 @@ which Ctrl+V reads the clipboard from.
   wait over, the modal's closing rule counts it down, the pure
   `ask::AskTimer` keeping the rules; `/settings` → **Ask timeout**, where
   `never` waits forever) and the agent keeps working without the user — any
-  answers given before they left included — told to take the safest, most
-  reversible option and state what it assumed. A permission prompt never
+  answers given before they left included — told to use its best judgment
+  and state what it assumed. A permission prompt never
   times out: nobody being there to refuse a write is no reason to approve it.
 - **Task tools** (`docs/task-tools.md`): Claude Code's structured task list —
   the model plans multi-step work with

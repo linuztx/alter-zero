@@ -19,7 +19,7 @@ submit "$S128" "ask me some questions"
 sleep 0.3
 # Typed while the request is on its way — this draft must survive the modal.
 type_text "$S128" "a draft typed while it asks"
-modal="$(wait_pane 10 "$S128" -F "continues without you in")" ||
+modal="$(wait_pane 10 "$S128" -F "Timeout: ")" ||
 	fail "the modal never showed its countdown"
 dump "the question counts down in its closing rule" "$modal"
 # 2 picks Latte: the first question is answered, and the key starts the wait
@@ -29,7 +29,7 @@ sleep 4
 before="$(pane "$S128")"
 # Halfway there, a plain ↓ says the user is still here: the count jumps back.
 keys "$S128" Down
-restarted="$(wait_pane 3 "$S128" -F "continues without you in 0:08")" ||
+restarted="$(wait_pane 3 "$S128" -F "Timeout: 0:08")" ||
 	fail "a key did not start the wait over (no 0:08 after ↓)"
 dump "↓ started the wait over" "$restarted"
 # Past the deadline the pick had set — still open, because of the ↓.
@@ -55,14 +55,14 @@ tmux kill-session -t "$S128" 2>/dev/null
 
 note "the AskUserQuestion idle timeout — countdown, key restarts, expiry, the cell, the carry-on, the draft"
 expect_has "$modal" -F "What's your favorite way to drink coffee?" "the modal showed the wrong page"
-expect_has "$before" -E "continues without you in 0:0[3-5]" "the countdown did not run down while idle"
-expect_has "$alive" -F "continues without you in" "the question expired on the deadline the key had replaced"
+expect_has "$before" -E "Timeout: 0:0[3-5]" "the countdown did not run down while idle"
+expect_has "$alive" -F "Timeout: " "the question expired on the deadline the key had replaced"
 expect_has "$carried" -F "User did not finish answering within 8s" "the timeout cell is missing its headline"
 expect_has "$carried" -F "→ Latte" "the timeout cell dropped the answer given before the user left"
 expect_has "$carried" -F "carrying on without you" "the demo did not carry on after the timeout"
 expect_has "$settled" -F "❯ a draft typed while it asks" "the composer draft did not come back"
-expect_lacks "$settled" -F "continues without you in" "the countdown outlived its question"
-expect_has "$context_flat" -F "did not respond for 8s and is not available. Continue working without them" \
+expect_lacks "$settled" -F "Timeout: " "the countdown outlived its question"
+expect_has "$context_flat" -F "did not respond for 8s and is not available. Continue working with the answers below" \
 	"the model did not read the keep-working result"
 expect_has "$context_flat" -F "Latte" "the model did not read the answer given before the user left"
 expect_lacks "$context_flat" -F "STOP what you are doing" "the model read the decline's stop-and-wait instead"

@@ -242,10 +242,7 @@ mod tests {
             assert!(outcome.output.contains(row), "got {}", outcome.output);
             let context = outcome.context.expect("the model reads the instruction");
             assert!(context.contains("not available"), "got {context}");
-            assert!(
-                context.contains("Continue working without them"),
-                "got {context}"
-            );
+            assert!(context.contains("Continue working with"), "got {context}");
             assert_eq!(context.contains(r#""Pick one?":"B""#), partial, "{context}");
         }
     }

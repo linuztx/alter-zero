@@ -1638,12 +1638,13 @@ queued question `AskDecision::TimedOut { answers, after }` — the answers
 given before the user left kept, an entry's unaccepted text not — so the
 red `User did not answer within 10m` cell commits while the model reads the
 short keep-working result (`ask::timed_out_result`: the user is not
-available, continue without them on the safest, most reversible option,
-state the assumptions, don't ask again until the user writes), the modal's
-closing rule counting the wait down meanwhile (`── continues without you in
-9:41 ─`, amber in its last minute; `smoke.sh` Phase 128, Ctrl+D proving
-the model read it), and the tool's own description saying the user may
-*not answer in time* and that the result then says how to proceed; the offline dummy's `Play::Asked` scenario (cue
+available, continue on your best judgment, state the assumptions, don't
+ask again until the user writes), the modal's
+closing rule counting the wait down meanwhile (`── Timeout: 9:41 ─`, a
+chip in the agent view label's accent dress, amber in its last minute;
+`smoke.sh` Phase 128, Ctrl+D proving
+the model read it), and the tool's own description leaving every unanswered
+outcome to the result, never naming the timeout; the offline dummy's `Play::Asked` scenario (cue
 "ask" + "question") drives the whole round trip through the real
 `ask_user` mapping — three questions: single-select coffee, multi-select
 demo topics, preview+notes code style) in `docs/ask.md`; and the **task
