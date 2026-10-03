@@ -13,7 +13,7 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use tokio::sync::mpsc::UnboundedSender;
 
@@ -935,6 +935,10 @@ impl AgentRun {
         self.verb_index = self.verb_start;
         self.status = AgentStatus::Running;
         self.stopped_by_user = false;
+        // A row the sweep (or the second `x`) hid comes back for the run:
+        // the entry outlived its row exactly so a follow-up could reopen it
+        // (`docs/agent-tools.md`).
+        self.hidden = false;
         self.result = None;
         self.error = None;
         self.turn_usage_tokens = 0;
@@ -1131,6 +1135,195 @@ fn activity_line(name: &str, args: &str, detail: Option<&str>) -> String {
     format!("{name}: {args}")
 }
 
+/// Where an agent's run stands, as the companions report it
+/// (`docs/agent-tools.md`) — the registry slot's lifecycle, read off its
+/// busy/done/killed/failed flags so a report can never say two things at
+/// once.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AgentState {
+    /// Its loop is running (the launch, or a continuation).
+    Running,
+    /// It answered; its final response is the reply.
+    Finished,
+    /// Its backend errored, with this message.
+    Failed(String),
+    /// Stopped — by the user's `x`, the model's `agentkill`, an Esc on its
+    /// foreground group, or `/clear`.
+    Stopped,
+}
+
+/// One agent's progress as the registry records it — what `agentoutput`
+/// reports and `agentlist` lists (`docs/agent-tools.md`). A snapshot: the
+/// companions run on the backend's thread, and this is the one record of a
+/// run they can read there (the roster is the event loop's).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentProgress {
+    pub id: String,
+    pub agent_type: String,
+    pub description: String,
+    pub state: AgentState,
+    /// How long it has run — so far, or in all once it settled.
+    pub elapsed: Duration,
+    /// Its steps, oldest first: each tool call as its cell header
+    /// (`Bash(curl …)`), each message delivered into it as `Message: …`.
+    pub steps: Vec<String>,
+    /// Its reply so far (the text run since the last round boundary) while
+    /// it runs; its final response once it finished; the partial it got to
+    /// when it failed or was stopped.
+    pub reply: String,
+    /// Billed tokens off its usage frames; `0` when the provider sent none.
+    pub tokens: u64,
+    /// How many tool calls it started.
+    pub tool_uses: usize,
+}
+
+impl AgentProgress {
+    /// The `running 48s` / `finished in 1m 2s` / `stopped after 12s` /
+    /// `failed after 5s: {error}` clause the reports lead with.
+    fn state_clause(&self) -> String {
+        let elapsed = crate::app::format_elapsed(self.elapsed.as_secs());
+        match &self.state {
+            AgentState::Running => format!("running {elapsed}"),
+            AgentState::Finished => format!("finished in {elapsed}"),
+            AgentState::Stopped => format!("stopped after {elapsed}"),
+            AgentState::Failed(error) => format!(
+                "failed after {elapsed}: {}",
+                crate::llm::tools::flatten_one_line(error)
+            ),
+        }
+    }
+
+    /// `{n} tool use(s)`.
+    fn tool_uses_clause(&self) -> String {
+        format!(
+            "{} tool use{}",
+            self.tool_uses,
+            if self.tool_uses == 1 { "" } else { "s" }
+        )
+    }
+}
+
+/// The most steps an `agentoutput` report lists; older ones fold into one
+/// `… +N earlier steps` line, so a long run's report stays a screen.
+pub const AGENT_REPORT_MAX_STEPS: usize = 40;
+
+/// `agentlist`'s report (`docs/agent-tools.md`): every agent, launch order,
+/// one row each — id, type, description, state and running time — so a
+/// model that lost an id to a `/compact` or a `/resume` finds it without
+/// guessing (the `bashlist` rule).
+#[must_use]
+pub fn agent_list_report(agents: &[AgentProgress]) -> String {
+    if agents.is_empty() {
+        return "No agents have been launched.".to_string();
+    }
+    let rows: Vec<String> = agents
+        .iter()
+        .map(|agent| {
+            format!(
+                "- {}: {} \"{}\" — {} · {}",
+                agent.id,
+                agent.agent_type,
+                agent.description,
+                agent.state_clause(),
+                agent.tool_uses_clause(),
+            )
+        })
+        .collect();
+    let head = match agents.len() {
+        1 => "1 agent:".to_string(),
+        n => format!("{n} agents:"),
+    };
+    format!("{head}\n{}", rows.join("\n"))
+}
+
+/// `agentoutput`'s report (`docs/agent-tools.md`): one line naming the agent
+/// and its state, its steps — one line each, the oldest folded past
+/// [`AGENT_REPORT_MAX_STEPS`] — and its reply: so far, final, or the partial
+/// a failure or a stop left (omitted when there is none). The reply is
+/// **verbatim**, never indented: a code block in a final response has to
+/// survive the trip.
+#[must_use]
+pub fn agent_output_report(agent: &AgentProgress) -> String {
+    let mut head = format!(
+        "Agent {} ({}, \"{}\"): {} · {}",
+        agent.id,
+        agent.agent_type,
+        agent.description,
+        agent.state_clause(),
+        agent.tool_uses_clause(),
+    );
+    if agent.tokens > 0 {
+        head.push_str(&format!(
+            " · {} tokens",
+            crate::ui::format_token_count(usize::try_from(agent.tokens).unwrap_or(usize::MAX))
+        ));
+    }
+    let running = agent.state == AgentState::Running;
+    let mut lines = vec![head];
+    lines.push(if running { "Steps so far:" } else { "Steps:" }.to_string());
+    if agent.steps.is_empty() {
+        lines.push(if running { "  (none yet)" } else { "  (none)" }.to_string());
+    } else {
+        let folded = agent.steps.len().saturating_sub(AGENT_REPORT_MAX_STEPS);
+        if folded > 0 {
+            lines.push(format!("  … +{folded} earlier steps"));
+        }
+        lines.extend(agent.steps[folded..].iter().map(|step| format!("  {step}")));
+    }
+    match &agent.state {
+        AgentState::Running => {
+            lines.push("Reply so far:".to_string());
+            lines.push(if agent.reply.is_empty() {
+                "(nothing yet)".to_string()
+            } else {
+                agent.reply.clone()
+            });
+        }
+        AgentState::Finished => {
+            lines.push("Final response:".to_string());
+            lines.push(if agent.reply.trim().is_empty() {
+                "(no output)".to_string()
+            } else {
+                agent.reply.clone()
+            });
+        }
+        AgentState::Failed(_) | AgentState::Stopped => {
+            if !agent.reply.trim().is_empty() {
+                lines.push("Partial reply:".to_string());
+                lines.push(agent.reply.clone());
+            }
+        }
+    }
+    lines.join("\n")
+}
+
+/// The model-facing error for an agent id nothing answers to — naming the
+/// agents that exist, so a model that lost track can find its way back
+/// rather than guess (the executor's unknown-session rule).
+#[must_use]
+pub fn unknown_agent_text(id: &str, agents: &[AgentProgress]) -> String {
+    let head = format!("No agent {id} — it never existed, or the session was cleared.");
+    if agents.is_empty() {
+        return format!("{head} No agents have been launched.");
+    }
+    let list: Vec<String> = agents
+        .iter()
+        .map(|agent| {
+            let state = match &agent.state {
+                AgentState::Running => "running",
+                AgentState::Finished => "finished",
+                AgentState::Failed(_) => "failed",
+                AgentState::Stopped => "stopped",
+            };
+            format!(
+                "{} ({} \"{}\", {state})",
+                agent.id, agent.agent_type, agent.description
+            )
+        })
+        .collect();
+    format!("{head} Agents: {}.", list.join(", "))
+}
+
 /// The base36 alphabet agent ids are drawn from (the task-id alphabet).
 const AGENT_ID_ALPHABET: &[u8; 36] = b"0123456789abcdefghijklmnopqrstuvwxyz";
 
@@ -1176,16 +1369,50 @@ pub enum AgentEvent {
     /// One event of the subagent's own stream (chunks, tool calls, usage,
     /// the terminal done/error).
     Stream { id: String, event: StreamEvent },
+    /// The model continued a settled agent (`agentsend`,
+    /// `docs/agent-tools.md`): from now on it is a background one — its next
+    /// settle owes the completion notice, since its result will arrive as a
+    /// note rather than inside a call. Sent ahead of the continuation's own
+    /// events on the same channel, so the loop knows before the first lands.
+    Background { id: String },
+    /// The model stopped the agent (`agentkill`): the loop settles its
+    /// roster row through the same path the user's `x` takes — the red
+    /// linger, the session view's `Interrupted`, a waiting foreground group
+    /// resolving. The thread was already cancelled by the registry.
+    Stop { id: String },
 }
 
 /// One running subagent's shared slot: its cancel token, completion state,
-/// stored conversation (for chat continuations), and pending chat inputs.
-#[derive(Default)]
+/// stored conversation (for chat continuations), pending chat inputs, and
+/// the progress record the companions report (`docs/agent-tools.md`).
 struct AgentSlot {
     cancel: CancelToken,
     /// The registered subagent type (`general-purpose` / `explore`) — a chat
     /// continuation rebuilds the same tool set from it.
     agent_type: String,
+    /// The model's short task label — what `agentlist` names the agent by,
+    /// and what a companion's cell header shows in place of the id.
+    description: String,
+    /// The launch counter at registration: `agentlist` lists in this order,
+    /// whatever the map's.
+    order: u64,
+    /// When the run — the launch, or the newest continuation — started.
+    started: Instant,
+    /// When it settled (`finish`/`kill`); `None` while it runs.
+    finished: Option<Instant>,
+    /// The steps `agentoutput` lists: each tool call as its cell header,
+    /// each delivered message as `Message: …`, oldest first.
+    steps: Vec<String>,
+    /// Which of `steps` is the newest **tool** step — the one a
+    /// [`StreamEvent::ToolTitle`] refines.
+    last_tool_step: Option<usize>,
+    /// How many tool calls it started (the steps minus the messages).
+    tool_uses: usize,
+    /// The reply so far: the text run since the last round boundary, the
+    /// forwarder's own final-text rule.
+    reply: String,
+    /// Billed tokens off its usage frames.
+    tokens: u64,
     /// The run (initial or a chat continuation) is still executing.
     busy: bool,
     /// The agent has settled at least once (a result/failure is stored).
@@ -1248,10 +1475,11 @@ impl AgentRegistry {
         }
     }
 
-    /// Register a fresh subagent of `agent_type`: allocate its id (collision
-    /// re-roll) and its cancel token. The caller spawns the thread.
+    /// Register a fresh subagent of `agent_type` described as `description`:
+    /// allocate its id (collision re-roll) and its cancel token. The caller
+    /// spawns the thread.
     #[must_use]
-    pub fn register(&self, agent_type: &str) -> (String, CancelToken) {
+    pub fn register(&self, agent_type: &str, description: &str) -> (String, CancelToken) {
         let mut inner = self.inner.lock().expect("agent registry poisoned");
         let id = loop {
             let seed = entropy_seed(inner.next_id);
@@ -1262,17 +1490,77 @@ impl AgentRegistry {
             }
         };
         let cancel = CancelToken::new();
+        let order = inner.next_id;
         inner.slots.insert(
             id.clone(),
             AgentSlot {
-                classifier: Arc::new(Mutex::new(ClassifierContext::new())),
                 cancel: cancel.clone(),
-                busy: true,
                 agent_type: agent_type.to_string(),
-                ..AgentSlot::default()
+                description: description.to_string(),
+                order,
+                started: Instant::now(),
+                finished: None,
+                steps: Vec::new(),
+                last_tool_step: None,
+                tool_uses: 0,
+                reply: String::new(),
+                tokens: 0,
+                busy: true,
+                done: false,
+                killed: false,
+                result: None,
+                failed: None,
+                messages: None,
+                pending_inputs: Vec::new(),
+                classifier: Arc::new(Mutex::new(ClassifierContext::new())),
             },
         );
         (id, cancel)
+    }
+
+    /// The description `id` was launched with — what a companion's cell
+    /// header names the agent by (`docs/agent-tools.md`). `None` for an id
+    /// the registry does not hold.
+    #[must_use]
+    pub fn description(&self, id: &str) -> Option<String> {
+        let inner = self.inner.lock().expect("agent registry poisoned");
+        inner.slots.get(id).map(|slot| slot.description.clone())
+    }
+
+    /// Every agent's progress, launch order — `agentlist`'s rows
+    /// (`docs/agent-tools.md`).
+    #[must_use]
+    pub fn list(&self) -> Vec<AgentProgress> {
+        let inner = self.inner.lock().expect("agent registry poisoned");
+        let now = Instant::now();
+        let mut slots: Vec<(&String, &AgentSlot)> = inner.slots.iter().collect();
+        slots.sort_by_key(|(_, slot)| slot.order);
+        slots
+            .into_iter()
+            .map(|(id, slot)| slot.progress(id, now))
+            .collect()
+    }
+
+    /// One agent's progress — `agentoutput`'s report, `agentwait`'s answer
+    /// (`docs/agent-tools.md`). `None` for an id the registry does not hold.
+    #[must_use]
+    pub fn progress(&self, id: &str) -> Option<AgentProgress> {
+        let inner = self.inner.lock().expect("agent registry poisoned");
+        inner
+            .slots
+            .get(id)
+            .map(|slot| slot.progress(id, Instant::now()))
+    }
+
+    /// Stop every agent **and forget them all** — `/clear`'s wipe, where
+    /// [`kill_all`](Self::kill_all) alone would leave the cleared
+    /// conversation's agents listed to the model.
+    pub fn clear(&self) {
+        let mut inner = self.inner.lock().expect("agent registry poisoned");
+        for slot in inner.slots.values_mut() {
+            slot.cancel.cancel();
+        }
+        inner.slots.clear();
     }
 
     /// The shared handle to `id`'s classifier context — for the agent's own
@@ -1311,8 +1599,18 @@ impl AgentRegistry {
             .unwrap_or_else(|| GENERAL_PURPOSE.to_string())
     }
 
-    /// Send one subagent event to the loop (used by the forwarder threads).
+    /// Send one subagent event to the loop (used by the forwarder threads) —
+    /// and record what it says about the agent's progress first
+    /// (`docs/agent-tools.md`). Every event a subagent reports passes through
+    /// here, the live forwarder's and the offline demo's alike, which is what
+    /// makes this the one place the record is kept.
     pub fn send(&self, event: AgentEvent) {
+        if let AgentEvent::Stream { id, event } = &event {
+            let mut inner = self.inner.lock().expect("agent registry poisoned");
+            if let Some(slot) = inner.slots.get_mut(id) {
+                slot.record(event);
+            }
+        }
         let _ = self.events.send(event);
     }
 
@@ -1324,6 +1622,7 @@ impl AgentRegistry {
         if let Some(slot) = inner.slots.get_mut(id) {
             slot.busy = false;
             slot.done = true;
+            slot.finished.get_or_insert_with(Instant::now);
             slot.messages = Some(messages);
             if !slot.killed {
                 match outcome {
@@ -1347,16 +1646,18 @@ impl AgentRegistry {
         let was_live = !slot.done;
         slot.killed = true;
         slot.done = true;
+        slot.finished.get_or_insert_with(Instant::now);
         was_live
     }
 
-    /// Stop every agent (`/clear`, quit).
+    /// Stop every agent (quit; `/clear` goes further — [`clear`](Self::clear)).
     pub fn kill_all(&self) {
         let mut inner = self.inner.lock().expect("agent registry poisoned");
         for slot in inner.slots.values_mut() {
             slot.cancel.cancel();
             slot.killed = true;
             slot.done = true;
+            slot.finished.get_or_insert_with(Instant::now);
         }
     }
 
@@ -1492,7 +1793,87 @@ impl AgentRegistry {
         slot.killed = false;
         slot.result = None;
         slot.failed = None;
+        // A new turn: its own clock and its own reply, over the steps the
+        // whole conversation has taken so far.
+        slot.started = Instant::now();
+        slot.finished = None;
+        slot.reply.clear();
         Some((messages, cancel))
+    }
+}
+
+impl AgentSlot {
+    /// Fold one of the agent's own events into its progress record
+    /// (`docs/agent-tools.md`): a call is a step, a title refines the newest
+    /// one, a delivered message is a step of its own, the reply so far is the
+    /// text run since the last round boundary (reset where the forwarder's
+    /// final-text rule resets it), the usage frames count the tokens.
+    fn record(&mut self, event: &StreamEvent) {
+        match event {
+            StreamEvent::Chunk(text) => self.reply.push_str(text),
+            StreamEvent::ToolStart { name, args, .. } => {
+                self.reply.clear();
+                self.steps.push(format!(
+                    "{name}({})",
+                    crate::llm::tools::flatten_one_line(args)
+                ));
+                self.last_tool_step = Some(self.steps.len() - 1);
+                self.tool_uses += 1;
+            }
+            StreamEvent::ToolTitle(title) => {
+                if let Some(step) = self
+                    .last_tool_step
+                    .and_then(|index| self.steps.get_mut(index))
+                    && let Some(open) = step.find('(')
+                {
+                    step.truncate(open);
+                    step.push_str(&format!("({})", crate::llm::tools::flatten_one_line(title)));
+                }
+            }
+            StreamEvent::Steered { text } => {
+                self.reply.clear();
+                self.steps.push(format!(
+                    "Message: {}",
+                    crate::llm::tools::flatten_one_line(text)
+                ));
+            }
+            StreamEvent::ToolBatch(_)
+            | StreamEvent::AgentBatch { .. }
+            | StreamEvent::HookNote { .. } => self.reply.clear(),
+            StreamEvent::Usage(usage) => self.tokens += usage.total(),
+            _ => {}
+        }
+    }
+
+    /// This slot's progress as the companions report it, at `now`.
+    fn progress(&self, id: &str, now: Instant) -> AgentProgress {
+        let state = if self.killed {
+            AgentState::Stopped
+        } else if let Some(error) = &self.failed {
+            AgentState::Failed(error.clone())
+        } else if self.done {
+            AgentState::Finished
+        } else {
+            AgentState::Running
+        };
+        let reply = match (&state, &self.result) {
+            (AgentState::Finished, Some(result)) => result.clone(),
+            _ => self.reply.clone(),
+        };
+        AgentProgress {
+            id: id.to_string(),
+            agent_type: self.agent_type.clone(),
+            description: self.description.clone(),
+            state,
+            elapsed: self
+                .finished
+                .unwrap_or(now)
+                .saturating_duration_since(self.started),
+            steps: self.steps.clone(),
+            reply,
+            tokens: self.tokens,
+            tool_uses: self.tool_uses,
+        }
     }
 }
 
@@ -1996,8 +2377,8 @@ mod tests {
     #[test]
     fn register_allocates_unique_ids_and_finish_stores_the_outcome() {
         let registry = test_registry();
-        let (id1, _c1) = registry.register(GENERAL_PURPOSE);
-        let (id2, _c2) = registry.register(GENERAL_PURPOSE);
+        let (id1, _c1) = registry.register(GENERAL_PURPOSE, "d");
+        let (id2, _c2) = registry.register(GENERAL_PURPOSE, "d");
         assert_ne!(id1, id2);
         assert!(!registry.is_done(&id1), "busy while running");
         registry.finish(&id1, Ok("the answer".into()), vec![ChatMessage::user("p")]);
@@ -2014,8 +2395,8 @@ mod tests {
         // live, because the Ctrl+D classifier page reads it from outside the
         // agent's thread while the agent's session view is open.
         let registry = test_registry();
-        let (id1, _c1) = registry.register(GENERAL_PURPOSE);
-        let (id2, _c2) = registry.register(GENERAL_PURPOSE);
+        let (id1, _c1) = registry.register(GENERAL_PURPOSE, "d");
+        let (id2, _c2) = registry.register(GENERAL_PURPOSE, "d");
         let handle = registry.classifier_handle(&id1).expect("registered");
         {
             let mut log = handle.lock().expect("poisoned");
@@ -2047,7 +2428,7 @@ mod tests {
     #[test]
     fn removing_an_agent_drops_its_classifier_context() {
         let registry = test_registry();
-        let (id, _cancel) = registry.register(GENERAL_PURPOSE);
+        let (id, _cancel) = registry.register(GENERAL_PURPOSE, "d");
         assert!(registry.classifier_context(&id).is_some());
         registry.remove(&id);
         assert!(registry.classifier_context(&id).is_none());
@@ -2056,7 +2437,7 @@ mod tests {
     #[test]
     fn kill_settles_at_once_and_wins_over_a_late_finish() {
         let registry = test_registry();
-        let (id, cancel) = registry.register(GENERAL_PURPOSE);
+        let (id, cancel) = registry.register(GENERAL_PURPOSE, "d");
         assert!(registry.kill(&id));
         assert!(cancel.is_cancelled(), "the token cancels the thread");
         assert!(registry.is_done(&id), "resolved without the thread");
@@ -2077,7 +2458,7 @@ mod tests {
     #[test]
     fn chat_inputs_queue_while_busy_and_continuations_resume_the_stored_list() {
         let registry = test_registry();
-        let (id, _cancel) = registry.register(GENERAL_PURPOSE);
+        let (id, _cancel) = registry.register(GENERAL_PURPOSE, "d");
         assert!(registry.queue_input(&id, "also check Manila"));
         assert_eq!(registry.take_pending_inputs(&id), vec!["also check Manila"]);
         assert!(registry.take_pending_inputs(&id).is_empty(), "drained");
@@ -2235,7 +2616,7 @@ mod tests {
         // over, and the roster's terminal event may already have been folded.
         // The run's own thread checks this before exiting and continues.
         let registry = test_registry();
-        let (id, _cancel) = registry.register(GENERAL_PURPOSE);
+        let (id, _cancel) = registry.register(GENERAL_PURPOSE, "d");
         assert!(!registry.has_pending_inputs(&id), "nothing queued yet");
         assert!(registry.queue_input(&id, "one more thing"));
         assert!(
@@ -2251,7 +2632,7 @@ mod tests {
         // Alt+Up inside the agent's session view: the registry is the only
         // side that knows whether the round boundary has read it yet.
         let registry = test_registry();
-        let (id, _cancel) = registry.register(GENERAL_PURPOSE);
+        let (id, _cancel) = registry.register(GENERAL_PURPOSE, "d");
         assert!(registry.queue_input(&id, "first"));
         assert!(registry.queue_input(&id, "second"));
         assert_eq!(registry.take_last_input(&id).as_deref(), Some("second"));
@@ -2270,7 +2651,7 @@ mod tests {
         // follow-up becomes its own continuation turn rather than a steer
         // into a run still going (docs/queue.md).
         let registry = test_registry();
-        let (id, _cancel) = registry.register(GENERAL_PURPOSE);
+        let (id, _cancel) = registry.register(GENERAL_PURPOSE, "d");
         assert!(!registry.ready_for_turn(&id), "still running");
         registry.finish(&id, Ok("done".into()), vec![ChatMessage::user("hi")]);
         assert!(registry.ready_for_turn(&id), "settled with a conversation");
@@ -2278,7 +2659,7 @@ mod tests {
             !registry.ready_for_turn("nope"),
             "an unknown id takes nothing"
         );
-        let (killed, _c2) = registry.register(GENERAL_PURPOSE);
+        let (killed, _c2) = registry.register(GENERAL_PURPOSE, "d");
         registry.finish(&killed, Ok("done".into()), vec![ChatMessage::user("hi")]);
         registry.kill(&killed);
         assert!(
@@ -2309,14 +2690,299 @@ mod tests {
     #[test]
     fn kill_all_sweeps_every_slot_and_remove_drops_one() {
         let registry = test_registry();
-        let (id1, c1) = registry.register(GENERAL_PURPOSE);
-        let (id2, c2) = registry.register(GENERAL_PURPOSE);
+        let (id1, c1) = registry.register(GENERAL_PURPOSE, "d");
+        let (id2, c2) = registry.register(GENERAL_PURPOSE, "d");
         registry.kill_all();
         assert!(c1.is_cancelled() && c2.is_cancelled());
         assert!(registry.is_done(&id1) && registry.is_done(&id2));
         registry.remove(&id1);
         assert!(registry.is_done(&id1), "unknown ids read as done");
         assert!(registry.is_killed(&id2));
+    }
+
+    // ===== The companions' record (docs/agent-tools.md) =====
+
+    #[test]
+    fn register_records_the_description_and_lists_in_launch_order() {
+        let registry = test_registry();
+        let (first, _c1) = registry.register(GENERAL_PURPOSE, "Fetch Warsaw weather");
+        let (second, _c2) = registry.register("explore", "Find the config loader");
+        assert_eq!(
+            registry.description(&first).as_deref(),
+            Some("Fetch Warsaw weather")
+        );
+        assert_eq!(registry.description("nope"), None);
+        let listed = registry.list();
+        assert_eq!(
+            listed
+                .iter()
+                .map(|agent| agent.id.as_str())
+                .collect::<Vec<_>>(),
+            vec![first.as_str(), second.as_str()],
+            "launch order, whatever the map's"
+        );
+        assert_eq!(listed[1].agent_type, "explore");
+        assert_eq!(listed[1].description, "Find the config loader");
+        assert_eq!(listed[0].state, AgentState::Running);
+        assert!(listed[0].steps.is_empty() && listed[0].reply.is_empty());
+    }
+
+    #[test]
+    fn send_folds_the_agents_progress_into_its_slot() {
+        // The one chokepoint every subagent event passes through records
+        // what `agentoutput` reports: a step per call (the cell's own
+        // header), the newest step refined by a title, the reply so far —
+        // reset at a round boundary — a delivered message as a step, and
+        // the tokens off the usage frames (docs/agent-tools.md).
+        let registry = test_registry();
+        let (id, _cancel) = registry.register(GENERAL_PURPOSE, "d");
+        let stream = |event: StreamEvent| {
+            registry.send(AgentEvent::Stream {
+                id: id.clone(),
+                event,
+            });
+        };
+        stream(chunk("Looking it up"));
+        stream(StreamEvent::ToolStart {
+            name: "Bash".to_string(),
+            args: "curl -s x\n| head".to_string(),
+            detail: None,
+            arguments: None,
+        });
+        stream(StreamEvent::ToolTitle(
+            "curl -s x | head · refined".to_string(),
+        ));
+        stream(StreamEvent::ToolEnd {
+            output: "Exit code: 0".to_string(),
+            ok: true,
+            truncated: false,
+        });
+        stream(StreamEvent::Usage(TokenUsage {
+            input: 100,
+            output: 20,
+            ..TokenUsage::default()
+        }));
+        stream(StreamEvent::Steered {
+            text: "also check the tests".to_string(),
+        });
+        stream(chunk("Here is "));
+        stream(chunk("the answer."));
+        let progress = registry.progress(&id).expect("a registered agent");
+        assert_eq!(
+            progress.steps,
+            vec![
+                "Bash(curl -s x | head · refined)",
+                "Message: also check the tests"
+            ],
+            "the header refined in place, the message among the steps"
+        );
+        assert_eq!(progress.tool_uses, 1, "a message is not a tool use");
+        assert_eq!(
+            progress.reply, "Here is the answer.",
+            "the reply so far is the text run since the last boundary"
+        );
+        assert_eq!(progress.tokens, 120);
+        assert_eq!(progress.state, AgentState::Running);
+        // Unknown ids have no progress.
+        assert!(registry.progress("nope").is_none());
+    }
+
+    #[test]
+    fn finish_and_kill_stamp_the_state_the_report_names() {
+        let registry = test_registry();
+        let (done, _) = registry.register(GENERAL_PURPOSE, "d");
+        let (failed, _) = registry.register(GENERAL_PURPOSE, "f");
+        let (stopped, _) = registry.register(GENERAL_PURPOSE, "s");
+        registry.finish(&done, Ok("the report".into()), Vec::new());
+        registry.finish(&failed, Err("boom".into()), Vec::new());
+        let _ = registry.kill(&stopped);
+        let state = |id: &str| registry.progress(id).expect("registered").state;
+        assert_eq!(state(&done), AgentState::Finished);
+        assert_eq!(state(&failed), AgentState::Failed("boom".to_string()));
+        assert_eq!(state(&stopped), AgentState::Stopped);
+        assert_eq!(
+            registry.progress(&done).expect("registered").reply,
+            "the report",
+            "a finished agent's reply is the result the caller received"
+        );
+        // A continuation starts a new run on the same slot.
+        let (_messages, _cancel) = registry
+            .begin_continuation(&done)
+            .expect("a finished agent resumes");
+        assert_eq!(state(&done), AgentState::Running);
+        assert!(
+            registry
+                .progress(&done)
+                .expect("registered")
+                .reply
+                .is_empty(),
+            "the new turn's reply starts empty"
+        );
+    }
+
+    #[test]
+    fn clear_drops_every_slot() {
+        let registry = test_registry();
+        let (id, cancel) = registry.register(GENERAL_PURPOSE, "d");
+        registry.clear();
+        assert!(cancel.is_cancelled(), "the thread is told to stop");
+        assert!(registry.list().is_empty());
+        assert!(registry.description(&id).is_none());
+    }
+
+    fn progress(id: &str, state: AgentState) -> AgentProgress {
+        AgentProgress {
+            id: id.to_string(),
+            agent_type: GENERAL_PURPOSE.to_string(),
+            description: "Fetch Warsaw weather".to_string(),
+            state,
+            elapsed: Duration::from_secs(48),
+            steps: vec![
+                "Bash(curl -s https://api.github.com/users/linuztx)".to_string(),
+                "Bash(curl -s \"https://api.github.com/users/linuztx/repos?per_page=100\")"
+                    .to_string(),
+            ],
+            reply: String::new(),
+            tokens: 1234,
+            tool_uses: 2,
+        }
+    }
+
+    #[test]
+    fn the_list_report_names_each_agent_by_id_and_state() {
+        assert_eq!(agent_list_report(&[]), "No agents have been launched.");
+        let agents = vec![
+            progress("a1111111", AgentState::Running),
+            AgentProgress {
+                elapsed: Duration::from_secs(62),
+                tool_uses: 7,
+                ..progress("a2222222", AgentState::Finished)
+            },
+            AgentProgress {
+                elapsed: Duration::from_secs(12),
+                tool_uses: 0,
+                ..progress("a3333333", AgentState::Stopped)
+            },
+            AgentProgress {
+                elapsed: Duration::from_secs(5),
+                tool_uses: 1,
+                ..progress(
+                    "a4444444",
+                    AgentState::Failed("model refused\nthe request".into()),
+                )
+            },
+        ];
+        assert_eq!(
+            agent_list_report(&agents),
+            "4 agents:\n\
+             - a1111111: general-purpose \"Fetch Warsaw weather\" — running 48s · 2 tool uses\n\
+             - a2222222: general-purpose \"Fetch Warsaw weather\" — finished in 1m 2s · 7 tool uses\n\
+             - a3333333: general-purpose \"Fetch Warsaw weather\" — stopped after 12s · 0 tool uses\n\
+             - a4444444: general-purpose \"Fetch Warsaw weather\" — failed after 5s: model refused the request · 1 tool use"
+        );
+        assert!(agent_list_report(&agents[..1]).starts_with("1 agent:\n"));
+    }
+
+    #[test]
+    fn the_output_report_lists_the_steps_and_the_reply() {
+        let running = AgentProgress {
+            reply: "Looking at the repos".to_string(),
+            ..progress("a1111111", AgentState::Running)
+        };
+        assert_eq!(
+            agent_output_report(&running),
+            "Agent a1111111 (general-purpose, \"Fetch Warsaw weather\"): running 48s · 2 tool uses · 1.2k tokens\n\
+             Steps so far:\n\
+             \x20 Bash(curl -s https://api.github.com/users/linuztx)\n\
+             \x20 Bash(curl -s \"https://api.github.com/users/linuztx/repos?per_page=100\")\n\
+             Reply so far:\n\
+             Looking at the repos"
+        );
+        let fresh = AgentProgress {
+            steps: Vec::new(),
+            tool_uses: 0,
+            tokens: 0,
+            ..progress("a1111111", AgentState::Running)
+        };
+        assert_eq!(
+            agent_output_report(&fresh),
+            "Agent a1111111 (general-purpose, \"Fetch Warsaw weather\"): running 48s · 0 tool uses\n\
+             Steps so far:\n\
+             \x20 (none yet)\n\
+             Reply so far:\n\
+             (nothing yet)"
+        );
+        let finished = AgentProgress {
+            reply: "linuztx has 12 public repos.\n\nThe newest is alter-zero.".to_string(),
+            elapsed: Duration::from_secs(62),
+            ..progress("a2222222", AgentState::Finished)
+        };
+        assert_eq!(
+            agent_output_report(&finished),
+            "Agent a2222222 (general-purpose, \"Fetch Warsaw weather\"): finished in 1m 2s · 2 tool uses · 1.2k tokens\n\
+             Steps:\n\
+             \x20 Bash(curl -s https://api.github.com/users/linuztx)\n\
+             \x20 Bash(curl -s \"https://api.github.com/users/linuztx/repos?per_page=100\")\n\
+             Final response:\n\
+             linuztx has 12 public repos.\n\nThe newest is alter-zero.",
+            "the response is verbatim — never indented, a code block in it must survive"
+        );
+        let failed = AgentProgress {
+            reply: "I was about to".to_string(),
+            ..progress("a4444444", AgentState::Failed("boom".into()))
+        };
+        let report = agent_output_report(&failed);
+        assert!(report.contains("failed after 48s: boom"), "{report}");
+        assert!(
+            report.ends_with("Partial reply:\nI was about to"),
+            "{report}"
+        );
+        let stopped = AgentProgress {
+            reply: String::new(),
+            ..progress("a3333333", AgentState::Stopped)
+        };
+        let report = agent_output_report(&stopped);
+        assert!(report.contains("stopped after 48s"), "{report}");
+        assert!(
+            report.ends_with("Steps:\n  Bash(curl -s https://api.github.com/users/linuztx)\n  Bash(curl -s \"https://api.github.com/users/linuztx/repos?per_page=100\")"),
+            "no reply section when there is nothing to show: {report}"
+        );
+    }
+
+    #[test]
+    fn the_output_report_folds_the_oldest_steps() {
+        let steps: Vec<String> = (1..=AGENT_REPORT_MAX_STEPS + 5)
+            .map(|n| format!("Bash(step-{n})"))
+            .collect();
+        let long = AgentProgress {
+            steps,
+            tool_uses: AGENT_REPORT_MAX_STEPS + 5,
+            ..progress("a1111111", AgentState::Running)
+        };
+        let report = agent_output_report(&long);
+        assert!(
+            report.contains("  … +5 earlier steps\n  Bash(step-6)\n"),
+            "{report}"
+        );
+        assert!(!report.contains("Bash(step-5)\n"), "{report}");
+        assert!(
+            report.contains(&format!("Bash(step-{})", AGENT_REPORT_MAX_STEPS + 5)),
+            "the newest step is always shown: {report}"
+        );
+    }
+
+    #[test]
+    fn unknown_agent_text_names_the_agents_that_exist() {
+        assert_eq!(
+            unknown_agent_text("a9", &[]),
+            "No agent a9 — it never existed, or the session was cleared. No agents have been launched."
+        );
+        let agents = [progress("a1111111", AgentState::Running)];
+        assert_eq!(
+            unknown_agent_text("a9", &agents),
+            "No agent a9 — it never existed, or the session was cleared. \
+             Agents: a1111111 (general-purpose \"Fetch Warsaw weather\", running)."
+        );
     }
 
     // ===== The agent's thinking stream (docs/agent-view-streaming.md) =====

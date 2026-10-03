@@ -144,6 +144,11 @@ pub struct PendingNotice {
     /// Whether the model launched the shell (an untaken note from one is what
     /// warrants the automatic follow-up turn).
     pub from_model: bool,
+    /// What the note is about, when a report may supersede it — an agent's
+    /// id (`docs/agent-tools.md`): a companion that reports the same
+    /// completion observes the tag, and the note goes with it. `None` for a
+    /// shell's note, which nothing reports on this way.
+    pub tag: Option<String>,
 }
 
 /// The base36 alphabet task ids are drawn from.
@@ -291,6 +296,10 @@ struct Inner {
     background_request: bool,
     /// The completion notice board (see [`PendingNotice`]).
     pending_notices: Vec<PendingNotice>,
+    /// The tags whose completion a companion already reported to the model
+    /// (`docs/agent-tools.md`): no note is posted about one, and a note
+    /// posted before the mark is taken back.
+    observed: std::collections::HashSet<String>,
     /// Where the `{id}.output` interim files live.
     dir: PathBuf,
 }
@@ -335,6 +344,7 @@ impl BackgroundRegistry {
                 tasks: HashMap::new(),
                 background_request: false,
                 pending_notices: Vec::new(),
+                observed: std::collections::HashSet::new(),
                 dir,
             })),
             events,
@@ -1058,7 +1068,65 @@ impl BackgroundRegistry {
             .push(PendingNotice {
                 context,
                 from_model,
+                tag: None,
             });
+    }
+
+    /// Post a note **about** `tag` — an agent's completion, by its id
+    /// (`docs/agent-tools.md`) — unless a companion has already observed
+    /// that completion, in which case nothing is posted and `false` comes
+    /// back: the model read the response in that call's result, and the
+    /// loop skips the cell as well. The check and the post are one critical
+    /// section, so no order of the loop's post and the companion's
+    /// [`observe`](Self::observe) lets a note slip through.
+    #[must_use]
+    pub fn post_notice_about(&self, tag: &str, context: String, from_model: bool) -> bool {
+        let mut inner = self.inner.lock().expect("registry lock");
+        if inner.observed.contains(tag) {
+            return false;
+        }
+        inner.pending_notices.push(PendingNotice {
+            context,
+            from_model,
+            tag: Some(tag.to_string()),
+        });
+        true
+    }
+
+    /// A companion reported `tag`'s completion to the model: mark it
+    /// observed — [`post_notice_about`](Self::post_notice_about) then refuses
+    /// its note — and take back any note already posted for it. Returns
+    /// whether a note was there to remove.
+    pub fn observe(&self, tag: &str) -> bool {
+        let mut inner = self.inner.lock().expect("registry lock");
+        inner.observed.insert(tag.to_string());
+        let before = inner.pending_notices.len();
+        inner
+            .pending_notices
+            .retain(|note| note.tag.as_deref() != Some(tag));
+        inner.pending_notices.len() < before
+    }
+
+    /// Has a companion observed `tag`'s completion? What the loop asks
+    /// before it posts the note **and** before it commits the cell, so an
+    /// observed completion shows neither (the observed-exit rule).
+    #[must_use]
+    pub fn is_observed(&self, tag: &str) -> bool {
+        self.inner
+            .lock()
+            .expect("registry lock")
+            .observed
+            .contains(tag)
+    }
+
+    /// `tag` runs again (a continuation): its next completion is a new one,
+    /// so the mark comes off.
+    pub fn forget_observed(&self, tag: &str) {
+        self.inner
+            .lock()
+            .expect("registry lock")
+            .observed
+            .remove(tag);
     }
 
     /// Take every posted note, in arrival order, each delivered exactly once —
@@ -1848,10 +1916,12 @@ mod tests {
                 PendingNotice {
                     context: "[background] a terminated".to_string(),
                     from_model: true,
+                    tag: None,
                 },
                 PendingNotice {
                     context: "[background] b completed".to_string(),
                     from_model: false,
+                    tag: None,
                 },
             ]
         );
@@ -1859,6 +1929,51 @@ mod tests {
             reg.take_pending_notices().is_empty(),
             "a take drains the board — nothing is delivered twice"
         );
+    }
+
+    #[test]
+    fn an_observed_tag_keeps_its_note_off_the_board_whichever_side_moves_first() {
+        // An agent companion that reports a completion observes it
+        // (docs/agent-tools.md): the model has read the response in the
+        // call's result, so the note the loop posts for the same completion
+        // must not reach it as well. Both orders, under the board's one lock.
+        let (reg, _rx) = registry();
+        // The loop posted first: observing removes the posted note.
+        assert!(reg.post_notice_about("a1", "[agent a1] done".to_string(), true));
+        assert!(!reg.is_observed("a1"));
+        assert!(reg.observe("a1"), "a note was there to remove");
+        assert!(reg.is_observed("a1"));
+        assert!(
+            reg.take_pending_notices().is_empty(),
+            "the note never reaches the model"
+        );
+        // The companion observed first: the loop's post is refused.
+        assert!(!reg.observe("a2"), "nothing posted yet");
+        assert!(
+            !reg.post_notice_about("a2", "[agent a2] done".to_string(), true),
+            "an observed completion is not posted"
+        );
+        assert!(reg.take_pending_notices().is_empty());
+        // Other tags, and untagged notes, are untouched.
+        reg.post_notice("[background] b completed".to_string(), true);
+        assert!(reg.post_notice_about("a3", "[agent a3] done".to_string(), true));
+        assert!(
+            !reg.observe("a1"),
+            "idempotent — still marked, nothing to remove this time"
+        );
+        let left = reg.take_pending_notices();
+        assert_eq!(
+            left.iter()
+                .map(|note| note.tag.as_deref())
+                .collect::<Vec<_>>(),
+            vec![None, Some("a3")]
+        );
+        // A continuation is a new completion: forgetting the mark lets the
+        // next settle's note through.
+        reg.forget_observed("a1");
+        assert!(!reg.is_observed("a1"));
+        assert!(reg.post_notice_about("a1", "[agent a1] done again".to_string(), true));
+        assert_eq!(reg.take_pending_notices().len(), 1);
     }
 
     #[test]

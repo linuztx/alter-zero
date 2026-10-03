@@ -30,6 +30,11 @@ user can **enter a subagent's own inline session and chat with it**.
 
 ## The tool
 
+The launch is one of a **family**: `agentsend`, `agentwait`, `agentoutput`,
+`agentkill` and `agentlist` work the launched agent by the id every result
+names — the model's side of the same agents, in `docs/agent-tools.md`. This
+page is the launch itself and what the *user* sees and does.
+
 Declared beside `bash`/`read`/`write`/`edit` (`llm::tools::agent_spec`), main
 backend only — a subagent never gets the `agent` tool, so agents can't nest:
 
@@ -38,7 +43,7 @@ backend only — a subagent never gets the `agent` tool, so agents can't nest:
 | `description` | required | a short (3-5 word) task label — the tree rows / footer list show it |
 | `prompt` | required | the full task for the agent to perform |
 | `subagent_type` | optional | which **agent definition** to launch — `general-purpose` (the default) and `explore` ship as `agents/*.md` files, and a project or the user can add more; the available types and their tools are named in the `<system-reminder>` listing (`docs/subagents.md`). An unknown type resolves as a recoverable error listing the real ones |
-| `run_in_background` | optional | **default `true`** — the call returns at once with the launch acknowledgement (the agent named by its description; no id — nothing model-facing takes one back); `false` blocks the turn until the agent finishes and returns its final response |
+| `run_in_background` | optional | **default `true`** — the call returns at once with the launch acknowledgement (the agent named by its description **and its id** — the handle the companions take, `docs/agent-tools.md`); `false` blocks the turn until the agent finishes and returns its final response |
 
 (The reference schema's `isolation` param is deliberately not implemented —
 out of scope for this TUI. Its `model` is here, but as a property of the

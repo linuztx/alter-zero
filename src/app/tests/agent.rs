@@ -144,6 +144,55 @@ fn a_live_agent_group_blocks_the_interrupt_undo() {
 }
 
 #[test]
+fn the_model_continuing_a_foreground_agent_makes_it_a_background_one() {
+    // `agentsend` into a settled foreground agent (docs/agent-tools.md): its
+    // result will arrive as a notice, never inside a call, so the next
+    // settle must owe one — which `apply_agent_event` keys on `background`.
+    let mut app = App::new();
+    app.begin_stream();
+    app.start_agent_group(false, &agent_specs(false));
+    app.finish_agent_group(
+        false,
+        &[
+            AgentCallDone {
+                id: "a1".into(),
+                output: "done".into(),
+                ok: true,
+            },
+            AgentCallDone {
+                id: "a2".into(),
+                output: "done".into(),
+                ok: true,
+            },
+        ],
+    );
+    assert!(!app.agents()[0].background);
+    let generation = app.agents_generation();
+    app.background_agent("a1");
+    assert!(app.agents()[0].background);
+    assert!(app.agents_generation() > generation);
+    app.background_agent("a1");
+    app.background_agent("nope");
+    assert_eq!(
+        app.agents_generation(),
+        generation + 1,
+        "idempotent, and inert on an unknown id"
+    );
+    // The continuation's settle now owes its notice.
+    app.apply_agent_event(
+        "a1",
+        &StreamEvent::Steered {
+            text: "also check the tests".into(),
+        },
+    );
+    app.apply_agent_event("a1", &StreamEvent::Chunk("checked".into()));
+    let notice = app
+        .apply_agent_event("a1", &StreamEvent::StreamDone)
+        .expect("a background settle owes a notice");
+    assert_eq!(notice.result, "checked");
+}
+
+#[test]
 fn a_background_agent_completion_returns_its_notice() {
     let mut app = App::new();
     app.begin_stream();
@@ -381,6 +430,46 @@ fn x_interrupts_the_agent_and_a_second_x_clears_the_lingering_row() {
 }
 
 #[test]
+fn the_linger_sweep_hides_the_row_and_a_continuation_brings_it_back() {
+    // Agents outlive their roster rows (docs/agent-tools.md): the sweep
+    // hides a settled row instead of dropping the entry, so a follow-up the
+    // model sends a minute later reopens the same transcript — the whole
+    // earlier exchange above the new one — and the row comes back for the
+    // run's duration.
+    let mut app = App::new();
+    app.begin_stream();
+    app.start_agent_group(true, &agent_specs(true));
+    app.open_agent_view("a1");
+    app.apply_agent_event("a1", &StreamEvent::Chunk("19°C".into()));
+    app.apply_agent_event("a1", &StreamEvent::StreamDone);
+    let before = app.agent("a1").expect("listed").history.len();
+    app.hide_agent("a1");
+    assert_eq!(app.visible_agents().len(), 1, "the row is gone");
+    assert!(app.agent("a1").is_some(), "the entry is not");
+    assert!(
+        app.agent_view.is_none(),
+        "the view it rendered closed with the row"
+    );
+    // The model's message reaches the settled agent's loop: its Steered
+    // echo reopens the entry, row and all.
+    app.apply_agent_event(
+        "a1",
+        &StreamEvent::Steered {
+            text: "and Krakow".into(),
+        },
+    );
+    let run = app.agent("a1").expect("listed");
+    assert!(!run.hidden, "the row is back");
+    assert!(!run.status.is_final(), "running again");
+    assert_eq!(
+        run.history.len(),
+        before + 1,
+        "the transcript kept the earlier exchange"
+    );
+    assert_eq!(app.visible_agents().len(), 2);
+}
+
+#[test]
 fn clearing_the_viewed_agent_closes_its_session_view() {
     // The session view renders *from* the roster entry, so a clear that drops
     // the entry takes the screen with it (the boundary repaints the main
@@ -515,10 +604,13 @@ fn agent_notice_texts_humanize_the_runtime() {
         "{}",
         notice.context_text()
     );
-    // No id token: the model cannot address an agent by id anywhere, so the
-    // description is the note's whole correlation key.
+    // The id leads the note: it is what `agentsend` takes to continue the
+    // agent, so a notice has to be enough to send a follow-up
+    // (docs/agent-tools.md).
     assert!(
-        !notice.context_text().contains("(id "),
+        notice.context_text().starts_with(
+            "[background agent a1] Agent \"Count 1-100 with sleep\" completed in 6m 2s."
+        ),
         "{}",
         notice.context_text()
     );

@@ -137,9 +137,12 @@ impl AgentNotice {
         } else {
             self.result.trim_end_matches('\n')
         };
+        // The id leads: it is what `agentsend` takes to continue the agent,
+        // so the notice alone is enough to send a follow-up
+        // (docs/agent-tools.md).
         format!(
-            "[background agent] Agent \"{}\" {outcome}.\nFinal response:\n{body}",
-            self.description,
+            "[background agent {}] Agent \"{}\" {outcome}.\nFinal response:\n{body}",
+            self.id, self.description,
         )
     }
 }
@@ -625,9 +628,30 @@ impl App {
         }
     }
 
-    /// Sweep one roster entry (its linger expired). Deferred by the boundary
-    /// while the user is inside that agent's session view. Also drops the
-    /// selection/view if they pointed at it.
+    /// Hide one roster entry (its linger expired) — the clock's clear, the
+    /// second `x`'s twin: the row leaves the footer at once while the entry,
+    /// its transcript and its registry slot stay, so a message the model
+    /// sends later reopens the same agent and brings the row back
+    /// (`docs/agent-tools.md`). Deferred by the boundary while the user is
+    /// inside that agent's session view; drops the selection/view if they
+    /// pointed at it, since both render from a row that is leaving.
+    pub fn hide_agent(&mut self, id: &str) {
+        let Some(agent) = self.agents.iter_mut().find(|agent| agent.id == id) else {
+            return;
+        };
+        agent.hidden = true;
+        self.agents_generation += 1;
+        if self.agent_view.as_deref() == Some(id) {
+            self.agent_view = None;
+        }
+        self.forget_agent_selection(id);
+        self.clamp_agent_selection();
+    }
+
+    /// Drop one roster entry outright. The sweep hides instead
+    /// ([`hide_agent`](App::hide_agent)) so a settled agent stays
+    /// continuable; this is for a row whose agent is gone for good. Also
+    /// drops the selection/view if they pointed at it.
     pub fn remove_agent(&mut self, id: &str) {
         let Some(index) = self.agents.iter().position(|agent| agent.id == id) else {
             return;
@@ -670,6 +694,22 @@ impl App {
         }
         if changed {
             self.history_generation += 1;
+        }
+    }
+
+    /// The model continued a settled agent (`agentsend`,
+    /// `docs/agent-tools.md`): from now on it is a background one, so its
+    /// next settle owes the completion notice — its result arrives as a
+    /// note, never inside a call. The [`AgentEvent::Background`] fold; inert
+    /// for an id the roster does not list.
+    ///
+    /// [`AgentEvent::Background`]: crate::agents::AgentEvent::Background
+    pub fn background_agent(&mut self, id: &str) {
+        if let Some(agent) = self.agents.iter_mut().find(|agent| agent.id == id)
+            && !agent.background
+        {
+            agent.background = true;
+            self.agents_generation += 1;
         }
     }
 

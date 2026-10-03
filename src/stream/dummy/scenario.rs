@@ -150,6 +150,17 @@ pub(in crate::stream) struct Scenario {
 /// cues are the narrowest), then the scripted turns, then the default turn —
 /// which matches anything, so selection never falls off the end.
 pub(in crate::stream) const SCENARIOS: &[Scenario] = &[
+    // The agent **companions** worked against a launched subagent through
+    // the real executor — `agentlist`, `agentsend`, `agentoutput`,
+    // `agentwait`, `agentkill` (docs/agent-tools.md). First: its cue is a
+    // pair no other agent demo's prompt carries, and the `subagent`/`agents`
+    // cues below would otherwise claim a prompt naming the agent it works.
+    Scenario {
+        #[cfg(test)]
+        name: "agent-tools",
+        selects: |cue| cue.mentions("agent") && cue.mentions("control"),
+        play: Play::Agent(agent::agent_tools_turn),
+    },
     // A subagent that **asks**: its own parallel `bash` batch raises the
     // shared permission prompt from inside its session view, which is the
     // one place the view's context cells had no offline coverage — and so

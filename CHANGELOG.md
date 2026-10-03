@@ -12,6 +12,25 @@ release heading when a version is cut.
 
 ## [Unreleased]
 
+### Added
+
+- **The model can now work the agents it launches, by id.** Every agent
+  result names the agent's id — the launch acknowledgement, a foreground
+  result's closing line, the completion notice — and five new tools act on
+  it the way the bash companions act on a command: `agentsend` sends an
+  agent a message, into its running loop or as a new turn over its kept
+  conversation once it has finished, so a follow-up costs nothing the first
+  task did not; `agentwait` waits for it to finish and returns its final
+  response; `agentoutput` shows what it has done so far — each tool call on
+  one line, and its reply so far; `agentkill` stops it; `agentlist` lists
+  every agent with its state. Each call is an ordinary cell named by the
+  agent's description (`● AgentSend(Fetch Warsaw weather ← …)`), a message
+  the model sends lands as a bubble on the agent's own transcript, and a
+  completion the model already read through `agentwait` or `agentoutput` is
+  not announced a second time. The roster row and the launch cell show the
+  id too, and a finished agent stays reachable after its row has gone —
+  the row comes back when it runs again (`docs/agent-tools.md`).
+
 ## [0.11.0] - 2026-10-03
 
 ### Added

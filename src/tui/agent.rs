@@ -141,7 +141,19 @@ impl Session<'_> {
         // What the fold appends to the agent's transcript is what the screen
         // owes it — see `commit_agent_view_event`.
         let recorded = self.app.agent(id).map_or(0, |run| run.history.len());
+        let was_final = self.app.agent(id).is_some_and(|run| run.status.is_final());
         let settled = self.app.apply_agent_event(id, &event);
+        // A message delivered into a settled agent reopened it — the
+        // continuation the model's `agentsend` (or the settle window)
+        // started, which nothing else announces here: its clock starts now
+        // and its linger is off, exactly as the user's chat continuation
+        // arms them (docs/agent-tools.md).
+        if was_final && self.app.agent(id).is_some_and(|run| !run.status.is_final()) {
+            self.agent_clocks
+                .entry(id.to_string())
+                .or_insert_with(Instant::now);
+            self.agent_expiry.remove(id);
+        }
         if viewing {
             self.commit_agent_view_event(&event, width, recorded);
         }
@@ -150,8 +162,15 @@ impl Session<'_> {
             // goes on the shared board (from_model — its untaken presence at a
             // turn boundary starts the automatic follow-up turn), the notice
             // cell defers to the next safe boundary (docs/agent-tool.md).
-            self.registry.post_notice(notice.context_text(), true);
-            self.app.defer_agent_notice(notice);
+            // Posted **about** the agent: a companion that already reported
+            // this completion to the model observed it, and then neither the
+            // note nor the cell is owed (docs/agent-tools.md).
+            if self
+                .registry
+                .post_notice_about(&notice.id, notice.context_text(), true)
+            {
+                self.app.defer_agent_notice(notice);
+            }
         }
         if let Some(linger) = self
             .app
@@ -427,8 +446,16 @@ impl Session<'_> {
     /// resolution, so taking them first is what makes the roster snapshots the
     /// recorded group entries are built from final (`docs/agent-tool.md`).
     pub(crate) fn drain_agent_events(&mut self) {
-        while let Ok(AgentEvent::Stream { id, event }) = self.agent_rx.try_recv() {
-            self.on_agent_event(&id, event);
+        while let Ok(event) = self.agent_rx.try_recv() {
+            match event {
+                AgentEvent::Stream { id, event } => self.on_agent_event(&id, event),
+                AgentEvent::Background { id } => self.app.background_agent(&id),
+                // A model stop mid-drain: settle the row now, the `x` path;
+                // the screen work it does is the same the fold's would be.
+                AgentEvent::Stop { id } => {
+                    let _ = self.stop_agent(&id);
+                }
+            }
         }
     }
 
@@ -489,10 +516,17 @@ impl Session<'_> {
                 self.agent_expiry
                     .insert(id.to_string(), Instant::now() + linger);
                 if let Some(notice) = notice {
-                    self.registry.post_notice(notice.context_text(), true);
-                    self.app.defer_agent_notice(notice);
-                    if !self.app.turn_active() {
-                        self.dispatch_after_turn();
+                    // The model's own `agentkill` observed the stop before
+                    // sending it here, so its note and cell are skipped;
+                    // the user's `x` posts both (docs/agent-tools.md).
+                    if self
+                        .registry
+                        .post_notice_about(&notice.id, notice.context_text(), true)
+                    {
+                        self.app.defer_agent_notice(notice);
+                        if !self.app.turn_active() {
+                            self.dispatch_after_turn();
+                        }
                     }
                 }
             }
@@ -625,11 +659,13 @@ impl Session<'_> {
             self.app.set_agent_thinking(id, started.elapsed());
         }
         let now = Instant::now();
+        // A hidden row has been swept already: re-arming it would hide it
+        // again every tick for nothing (docs/agent-tools.md).
         let settled: Vec<(String, std::time::Duration)> = self
             .app
             .agents()
             .iter()
-            .filter(|run| run.status.is_final())
+            .filter(|run| run.status.is_final() && !run.hidden)
             .map(|run| (run.id.clone(), run.linger()))
             .collect();
         for (id, linger) in settled {
@@ -642,7 +678,6 @@ impl Session<'_> {
         let Session {
             agent_expiry,
             app,
-            agent_registry,
             agent_thinking_clocks,
             ..
         } = self;
@@ -655,8 +690,10 @@ impl Session<'_> {
                 return true;
             }
             if now >= *deadline {
-                app.remove_agent(id);
-                agent_registry.remove(id);
+                // The row leaves; the entry and its registry slot stay, so
+                // a message the model sends later reopens the same agent
+                // (docs/agent-tools.md). `/clear` drops both.
+                app.hide_agent(id);
                 agent_thinking_clocks.remove(id);
                 return false;
             }
@@ -688,6 +725,23 @@ impl Session<'_> {
 }
 
 impl Session<'_> {
+    /// The subagent channel's branch, every variant (`docs/agent-tools.md`):
+    /// an agent's own stream event folds into its roster entry; the model's
+    /// `agentsend` into a settled agent marks it background so its next
+    /// settle is announced; the model's `agentkill` settles the row through
+    /// the user's own `x` path.
+    pub(crate) fn on_agent_channel(&mut self, event: AgentEvent) -> std::io::Result<()> {
+        match event {
+            AgentEvent::Stream { id, event } => self.on_agent_stream(&id, event),
+            AgentEvent::Background { id } => {
+                self.app.background_agent(&id);
+                self.frame.schedule_frame();
+            }
+            AgentEvent::Stop { id } => self.stop_agent(&id)?,
+        }
+        Ok(())
+    }
+
     /// The subagent channel's branch: fold the event in, then — with nothing in
     /// flight and a settled background agent's note waiting — settle it at once and
     /// start the automatic follow-up turn (the background-shell pattern).

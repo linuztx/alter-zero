@@ -330,3 +330,141 @@ fn live_the_reminder_tells_the_model_which_types_exist() {
         "the model read the agent listing: {text:?}"
     );
 }
+
+/// Run one turn and return every tool cell it resolved as `(display name,
+/// output)` pairs — a companion's cell beside its real report — plus the
+/// foreground agent results (`docs/agent-tools.md`).
+fn turn_cells(backend: &LlmBackend, prompt: &str) -> (Vec<(String, String)>, Vec<String>) {
+    let context = vec![ContextMessage::new(ContextRole::User, prompt)];
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let handle = backend.spawn(prompt.to_string(), vec![], context, tx, CancelToken::new());
+    let mut cells = Vec::new();
+    let mut agent_results = Vec::new();
+    let mut open: Option<String> = None;
+    while let Some(event) = rx.blocking_recv() {
+        match event {
+            StreamEvent::ToolStart { name, .. } => open = Some(name),
+            StreamEvent::ToolEnd { output, .. }
+            | StreamEvent::ToolAnswered { result: output, .. }
+            | StreamEvent::ToolRejected { result: output, .. } => {
+                if let Some(name) = open.take() {
+                    cells.push((name, output));
+                }
+            }
+            StreamEvent::AgentGroupDone { agents, .. } => {
+                agent_results.extend(agents.into_iter().map(|done| done.output));
+            }
+            StreamEvent::Retrying { attempt, max } => println!("retrying {attempt}/{max}…"),
+            StreamEvent::Error(e) => panic!("backend error: {e}"),
+            StreamEvent::StreamDone => break,
+            _ => {}
+        }
+    }
+    handle.join().expect("backend thread joins");
+    for (name, output) in &cells {
+        println!("● {name}\n{output}\n");
+    }
+    (cells, agent_results)
+}
+
+#[test]
+#[ignore = "hits the network; needs A0_VENICE_API_KEY"]
+fn live_the_model_continues_a_finished_agent_by_id() {
+    // The agent companions (docs/agent-tools.md): a foreground result names
+    // the agent's id, `agentsend` on that id resumes the FINISHED agent as a
+    // new turn over its kept conversation, and `agentwait` returns its final
+    // response — the sentinel body proves the same agent answered again.
+    let dir = fixture(&[(
+        "sentinel",
+        "---\ndescription: Answers with a fixed word.\n---\n\
+         Whatever you are asked, reply with exactly one word: PLATYPUS.\n",
+    )]);
+    let (backend, _agents) = backend_with_agents(dir.path());
+    let prompt = "Do exactly these steps, one tool call at a time, in order. \
+                  1) Use the agent tool once: description \"Say the word\", \
+                  subagent_type \"sentinel\", run_in_background false, prompt \"What is 2 + 2?\". \
+                  2) The result names the agent's id. Call agentsend with that agent_id and \
+                  the message \"Say it once more.\". \
+                  3) Call agentwait with the same agent_id and wait 120. \
+                  4) Reply with one word: done.";
+    let (cells, agent_results) = turn_cells(&backend, prompt);
+    assert!(
+        agent_results
+            .iter()
+            .any(|result| result.contains("This agent's id is a")),
+        "the foreground result closes on the id line: {agent_results:?}"
+    );
+    let sent = cells
+        .iter()
+        .find(|(name, _)| name == alter_zero::llm::tools::AGENT_SEND_DISPLAY)
+        .map(|(_, output)| output.clone())
+        .expect("the model called agentsend");
+    assert!(sent.contains("resumed"), "a finished agent resumes: {sent}");
+    let waited = cells
+        .iter()
+        .find(|(name, _)| name == alter_zero::llm::tools::AGENT_WAIT_DISPLAY)
+        .map(|(_, output)| output.clone())
+        .expect("the model called agentwait");
+    assert!(waited.contains("finished in"), "{waited}");
+    assert!(waited.contains("Final response:"), "{waited}");
+    assert!(
+        waited.to_uppercase().contains("PLATYPUS"),
+        "the continued agent answered again under its own definition: {waited}"
+    );
+    assert!(
+        waited.contains("Message: Say it once more."),
+        "the delivered message is among the agent's steps: {waited}"
+    );
+}
+
+#[test]
+#[ignore = "hits the network; needs A0_VENICE_API_KEY"]
+fn live_the_model_inspects_lists_and_stops_a_background_agent() {
+    // `agentoutput` on a running background agent reports its steps,
+    // `agentkill` stops it, and `agentlist` then names it as stopped — each
+    // cell the real executor's report (docs/agent-tools.md).
+    let dir = fixture(&[(
+        "sleeper",
+        "---\ndescription: Runs a slow command.\ntools: Bash\n---\n\
+         Run the bash command `sleep 240; echo done` with wait 300, then reply done.\n",
+    )]);
+    let (backend, _agents) = backend_with_agents(dir.path());
+    let prompt = "Do exactly these steps, one tool call at a time, in order. \
+                  1) Use the agent tool once: description \"Sleep a while\", \
+                  subagent_type \"sleeper\", run_in_background true, prompt \"Run the slow \
+                  command now.\". The result names the agent's id. \
+                  2) Call bash with the command \"sleep 8\". \
+                  3) Call agentoutput with that agent_id. \
+                  4) Call agentkill with that agent_id. \
+                  5) Call agentlist. \
+                  6) Reply with one word: done.";
+    let (cells, agent_results) = turn_cells(&backend, prompt);
+    assert!(
+        agent_results
+            .iter()
+            .any(|result| result.contains("launched as a")),
+        "the launch acknowledgement names the id: {agent_results:?}"
+    );
+    let output = cells
+        .iter()
+        .find(|(name, _)| name == alter_zero::llm::tools::AGENT_OUTPUT_DISPLAY)
+        .map(|(_, output)| output.clone())
+        .expect("the model called agentoutput");
+    assert!(output.contains("running"), "{output}");
+    assert!(
+        output.contains("Bash(sleep"),
+        "the agent's command is a step: {output}"
+    );
+    let killed = cells
+        .iter()
+        .find(|(name, _)| name == alter_zero::llm::tools::AGENT_KILL_DISPLAY)
+        .map(|(_, output)| output.clone())
+        .expect("the model called agentkill");
+    assert!(killed.starts_with("Stopped agent a"), "{killed}");
+    let listed = cells
+        .iter()
+        .find(|(name, _)| name == alter_zero::llm::tools::AGENT_LIST_DISPLAY)
+        .map(|(_, output)| output.clone())
+        .expect("the model called agentlist");
+    assert!(listed.contains("stopped after"), "{listed}");
+}

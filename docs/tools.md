@@ -30,7 +30,7 @@ red deletes) are ported.
 
 ## The core tools
 
-All eight are declared to the model as
+All eight core tools are declared to the model as
 `{"type":"function","function":{"name","description","parameters":<schema>}}`
 entries in the request's `tools` array, with `tool_choice:"auto"`. The pure
 definitions + JSON schemas live in [`llm::tools`](../src/llm/tools.rs)
@@ -43,6 +43,11 @@ definitions + JSON schemas live in [`llm::tools`](../src/llm/tools.rs)
 | `bashwait` | `session_id` (req), `wait` (opt, seconds — default 120) | wait for new output, the exit or a question; `wait: 0` just checks |
 | `bashkill` | `session_id` (req) | stop a command and everything it started — `SIGINT`, `SIGTERM`, then `SIGKILL` |
 | `bashlist` | — | the running sessions: id, command, runtime, whether each waits for input |
+| `agentsend` | `agent_id` (req), `message` (req) | send a launched agent a message — into its running loop, or a new turn over its finished conversation; returns at once (`docs/agent-tools.md`) |
+| `agentwait` | `agent_id` (req), `wait` (opt, seconds — default 120, cap 600; `0` just looks) | wait for the agent to finish and return its final response, or its progress so far once `wait` passes |
+| `agentoutput` | `agent_id` (req) | the agent's progress: its state, each tool call it made on one line, its reply so far or final response |
+| `agentkill` | `agent_id` (req) | stop a running agent; a finished one is reported, not stopped |
+| `agentlist` | — | every launched agent: id, type, description, state, running time |
 | `read` | `path` (req — absolute, like the other two), `offset` (opt 1-based line), `limit` (opt, default 2000 lines) | read the file: text returns numbered lines (a dynamic-width gutter); an **image** (png/jpg/jpeg/gif/webp) is attached visually so the model can see it (`offset`/`limit` ignored — see "Image reads" below) |
 | `write` | `path` (req — the schema asks for an **absolute** path), `content` (req) | create parent dirs, write the file; **show** `Wrote {N} lines to {path}` over the numbered contents for a new file, or the numbered diff hunks vs the previous content — the head's path shown cwd-relative (`tools::display_path`, `../` climbs outside the cwd), the `● Write({path})` header by the TUI's own rule ("Path display" below) — while the *model* reads a one-line ack |
 | `edit` | `path` (req — absolute, like `write`'s), `old_string` (req), `new_string` (req), `replace_all` (opt) | exact string replacement; error if `old_string` is absent, or non-unique without `replace_all`; **show** `Updated {path} (+A -D)` over the numbered diff hunks, the path shown cwd-relative like `write`'s — the model again reads the ack |
@@ -53,7 +58,9 @@ grammar: they work on any function-calling model, and `edit`'s exact
 arbitrary models than fuzzy-context patch matching.
 
 Other tools attach conditionally, each enabled by the boundary handing the
-backend the state it needs: `agent` (`docs/agent-tool.md`),
+backend the state it needs: `agent` and its five companions above — the
+agent family rides together, and only the main backend carries it
+(`docs/agent-tool.md`, `docs/agent-tools.md`),
 `askuserquestion` (`docs/ask.md`), the four task tools
 (`docs/task-tools.md`), and `skill` (`docs/skills.md`) — offered only when at
 least one `SKILL.md` was discovered, since with none it could answer nothing

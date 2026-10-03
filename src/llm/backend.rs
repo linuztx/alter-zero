@@ -899,6 +899,36 @@ impl ReplySource for LlmBackend {
                                     ),
                                 };
                             }
+                            // An agent companion (docs/agent-tools.md):
+                            // worked against the registry the launch
+                            // registered the agent in; a continuation it
+                            // opens is spawned exactly as the user's chat
+                            // continuation is. Without a registry the tool
+                            // was never offered, so a call is declined
+                            // recoverably.
+                            if tools::is_agent_companion(&call.name) {
+                                return match &agents {
+                                    Some(registry) => super::agent_tools::run_companion(
+                                        call,
+                                        registry,
+                                        background.as_ref(),
+                                        &cancel,
+                                        &|id, messages, cancel| {
+                                            spawn_subagent_run(
+                                                &subagent,
+                                                registry.clone(),
+                                                id.clone(),
+                                                registry.agent_type(&id),
+                                                messages,
+                                                cancel,
+                                            );
+                                        },
+                                    ),
+                                    None => tools::ToolOutcome::error(
+                                        "the agent tools are not available here",
+                                    ),
+                                };
+                            }
                             match (&ask, call.name.as_str()) {
                                 (Some(gate), tools::ASK_TOOL_NAME) => {
                                     super::ask::ask_user(gate, &tx, &cancel, call)
@@ -997,12 +1027,19 @@ impl ReplySource for LlmBackend {
                 hooks.as_ref(),
                 // A session's command, for a `bash_session` call's header —
                 // the lookup its permission prompt makes
-                // (docs/interactive-shell.md).
+                // (docs/interactive-shell.md) — and an agent's description,
+                // for a companion's (docs/agent-tools.md): the ids never
+                // collide (`b…` against `a…`), so one lookup answers both.
                 &|id: &str| {
                     background
                         .as_ref()
                         .and_then(|registry| registry.session(id))
                         .map(|session| session.command)
+                        .or_else(|| {
+                            agents
+                                .as_ref()
+                                .and_then(|registry| registry.description(id))
+                        })
                 },
             );
         })
@@ -1073,6 +1110,12 @@ impl ReplySource for LlmBackend {
         let Some((mut messages, cancel)) = registry.begin_continuation(id) else {
             return AgentChatDelivery::Declined;
         };
+        // A new turn is a new completion: the mark a companion's report may
+        // have left comes off, so the next settle's notice goes through
+        // (docs/agent-tools.md).
+        if let Some(board) = &self.background {
+            board.forget_observed(id);
+        }
         messages.push(ChatMessage::user(text));
         spawn_subagent_run(
             &self.subagent_config(),
@@ -1277,17 +1320,20 @@ const AGENT_WAIT_POLL: std::time::Duration = std::time::Duration::from_millis(30
 
 /// The model-facing acknowledgement of a background agent launch — the tool
 /// result a `run_in_background` `agent` call returns at once. The agent is
-/// named by its description alone: nothing model-facing takes an agent id
-/// back, and the completion note quotes the same description, so an
-/// `agentId:` line was a token with no consumer. See `docs/agent-tool.md`.
+/// named by its description **and its id**: the id is what the companions
+/// take — `agentsend` to steer it, `agentoutput` to see its progress,
+/// `agentwait` to block on it, `agentkill` to stop it — so a launch that
+/// withheld it would leave the model nothing to act on
+/// (`docs/agent-tools.md`). The completion notice names the same id.
 #[must_use]
-pub fn agent_launch_text(description: &str) -> String {
+pub fn agent_launch_text(id: &str, description: &str) -> String {
     format!(
-        "Async agent \"{description}\" launched and working in the \
+        "Async agent \"{description}\" launched as {id} and working in the \
          background. You will be notified with its final response when it \
-         finishes. Do not wait or poll for it — continue with the rest of \
-         the task (or end your turn) and briefly tell the user what you \
-         launched."
+         finishes — continue with the rest of the task meanwhile (or end \
+         your turn) and briefly tell the user what you launched. Its id is \
+         {id}: agentoutput shows what it has done so far, agentsend sends \
+         it a follow-up, agentwait waits for it, agentkill stops it."
     )
 }
 
@@ -1296,29 +1342,51 @@ pub fn agent_launch_text(description: &str) -> String {
 /// must not expect the response in this result (the bash handoff's twin,
 /// `docs/background.md`).
 #[must_use]
-pub fn agent_handoff_text(description: &str) -> String {
+pub fn agent_handoff_text(id: &str, description: &str) -> String {
     format!(
         "The user moved this agent to the background while it was running — \
          it keeps running there, so its final response will not arrive in \
          this result.\n{}",
-        agent_launch_text(description),
+        agent_launch_text(id, description),
     )
 }
 
-/// The tool result of a settled foreground agent: its final response — or
-/// the reference's placeholder when it answered with nothing, the stopped
-/// note for a user kill, and a failure note otherwise.
-fn agent_result_text(outcome: Option<Result<String, String>>) -> (String, bool) {
+/// The line a foreground result closes on, naming the id the companions
+/// take — so a finished agent can be continued (`docs/agent-tools.md`).
+fn agent_result_trailer(id: &str) -> String {
+    format!(
+        "(This agent's id is {id}: agentsend sends it a follow-up over its kept \
+         conversation, agentoutput reviews what it did.)"
+    )
+}
+
+/// The tool result of a settled foreground agent: its final response — left
+/// verbatim, over a line naming the agent's id — or the reference's
+/// placeholder when it answered with nothing, the **exact** stopped note for
+/// a user kill (the roster reads it back to tell a stop from a failure, and
+/// a stopped agent cannot be continued anyway), and a failure note
+/// otherwise.
+fn agent_result_text(id: &str, outcome: Option<Result<String, String>>) -> (String, bool) {
     match outcome {
         Some(Ok(text)) if text.trim().is_empty() => (
-            "(Subagent completed but returned no output.)".to_string(),
+            format!(
+                "(Subagent {id} completed but returned no output.)\n\n{}",
+                agent_result_trailer(id)
+            ),
             true,
         ),
-        Some(Ok(text)) => (text, true),
+        Some(Ok(text)) => (
+            format!(
+                "{}\n\n{}",
+                text.trim_end_matches('\n'),
+                agent_result_trailer(id)
+            ),
+            true,
+        ),
         Some(Err(error)) if error == "stopped by the user" => {
             (crate::app::AGENT_STOPPED_OUTPUT.to_string(), false)
         }
-        Some(Err(error)) => (format!("[agent failed: {error}]"), false),
+        Some(Err(error)) => (format!("[agent {id} failed: {error}]"), false),
         None => (crate::app::AGENT_STOPPED_OUTPUT.to_string(), false),
     }
 }
@@ -1386,7 +1454,7 @@ fn run_agent_calls(
             ));
             continue;
         }
-        let (id, agent_cancel) = registry.register(args.agent_type());
+        let (id, agent_cancel) = registry.register(args.agent_type(), &args.description);
         let spec = agent_spec(&id, call, &args);
         // A subagent conversation starts fresh: the (augmented) system
         // prompt, the briefing, then the task as the first user message.
@@ -1433,7 +1501,7 @@ fn run_agent_calls(
         });
         let mut dones = Vec::new();
         for launched in &launched_background {
-            let text = agent_launch_text(&launched.spec.description);
+            let text = agent_launch_text(&launched.spec.id, &launched.spec.description);
             results.push((launched.call_id.clone(), text.clone()));
             dones.push(AgentCallDone {
                 id: launched.spec.id.clone(),
@@ -1480,9 +1548,12 @@ fn run_agent_calls(
         let mut dones = Vec::new();
         for launched in &foreground {
             let (text, ok) = if handed_off && !registry.is_done(&launched.spec.id) {
-                (agent_handoff_text(&launched.spec.description), true)
+                (
+                    agent_handoff_text(&launched.spec.id, &launched.spec.description),
+                    true,
+                )
             } else {
-                agent_result_text(registry.outcome(&launched.spec.id))
+                agent_result_text(&launched.spec.id, registry.outcome(&launched.spec.id))
             };
             results.push((launched.call_id.clone(), text.clone()));
             dones.push(AgentCallDone {
@@ -1666,6 +1737,13 @@ fn spawn_subagent_run(
                         &call.name,
                         &agent_type,
                     ));
+                }
+                // Agents do not reach other agents (docs/agent-tools.md):
+                // the family is never offered to a subagent, and a call it
+                // names anyway is declined recoverably rather than reaching
+                // the executor as an unknown tool.
+                if tools::is_agent_family(&call.name) {
+                    return tools::ToolOutcome::error(super::agent_tools::NO_NESTING_TEXT);
                 }
                 // The classifier's task context, one line per executed call —
                 // the lead's pattern (`docs/permissions.md`), placeholders
@@ -2484,17 +2562,17 @@ mod tests {
     }
 
     #[test]
-    fn agent_launch_text_is_id_free_and_steers_off_waiting() {
-        // The launch acknowledgement names the agent by its description
-        // alone: nothing model-facing takes an agent id back (the completion
-        // note quotes the same description), so an `agentId:` line was a
-        // token with no consumer — and the signature (`description` only)
-        // is what enforces id-freedom; the label pin below catches a
-        // hardcoded `agentId:` creeping back into the format string.
-        let text = agent_launch_text("Scan the logs");
-        assert!(!text.contains("agentId"), "no id label: {text}");
+    fn agent_launch_text_names_the_id_the_companions_take() {
+        // The launch acknowledgement names the agent by its description AND
+        // its id (docs/agent-tools.md): the id is what `agentsend`,
+        // `agentwait`, `agentoutput` and `agentkill` take, so a launch that
+        // withheld it would leave the model nothing to act on.
+        let text = agent_launch_text("a7k2m9x4q", "Scan the logs");
         assert!(text.contains("\"Scan the logs\""), "got {text}");
-        assert!(text.contains("Do not wait or poll"), "got {text}");
+        assert!(text.contains("a7k2m9x4q"), "the id: {text}");
+        for companion in ["agentsend", "agentwait", "agentoutput", "agentkill"] {
+            assert!(text.contains(companion), "{companion}: {text}");
+        }
         // The completion promise reads like `bash`'s: one vocabulary for
         // the one mechanism, stated as what the model gets rather than as
         // the harness's own re-invocation (exec::background_launch_text).
@@ -2503,6 +2581,28 @@ mod tests {
             "got {text}"
         );
         assert!(!text.contains("re-invoked"), "got {text}");
+        // The handoff carries the same id; a foreground result closes on a
+        // line naming it, the response itself left verbatim above.
+        assert!(agent_handoff_text("a7k2m9x4q", "Scan the logs").contains("a7k2m9x4q"));
+        let (result, ok) = agent_result_text("a7k2m9x4q", Some(Ok("All clear.".to_string())));
+        assert!(ok);
+        assert!(result.starts_with("All clear.\n\n"), "{result}");
+        assert!(result.contains("a7k2m9x4q"), "{result}");
+        assert!(result.contains("agentsend"), "{result}");
+        // A stopped agent keeps the exact note the roster reads back.
+        let (stopped, ok) =
+            agent_result_text("a7k2m9x4q", Some(Err("stopped by the user".to_string())));
+        assert!(!ok);
+        assert_eq!(stopped, crate::app::AGENT_STOPPED_OUTPUT);
+        let (failed, ok) = agent_result_text("a7k2m9x4q", Some(Err("boom".to_string())));
+        assert!(!ok);
+        assert_eq!(failed, "[agent a7k2m9x4q failed: boom]");
+        let (empty, ok) = agent_result_text("a7k2m9x4q", Some(Ok("  ".to_string())));
+        assert!(ok);
+        assert!(
+            empty.contains("a7k2m9x4q") && empty.contains("no output"),
+            "{empty}"
+        );
     }
 
     #[test]

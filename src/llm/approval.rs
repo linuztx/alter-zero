@@ -789,6 +789,29 @@ mod tests {
     }
 
     #[test]
+    fn the_agent_companions_never_ask() {
+        // A message to an agent is a prompt, not a command — the agent's
+        // own tool calls ask, as they always did — and a wait, a report, a
+        // stop or a list runs nothing (docs/agent-tools.md).
+        let describe = |_: &str| Some("Fetch Warsaw weather".to_string());
+        for (name, args) in [
+            (
+                tools::AGENT_SEND_TOOL,
+                r#"{"agent_id":"a1","message":"rm -rf ~"}"#,
+            ),
+            (tools::AGENT_WAIT_TOOL, r#"{"agent_id":"a1","wait":30}"#),
+            (tools::AGENT_OUTPUT_TOOL, r#"{"agent_id":"a1"}"#),
+            (tools::AGENT_KILL_TOOL, r#"{"agent_id":"a1"}"#),
+            (tools::AGENT_LIST_TOOL, "{}"),
+        ] {
+            assert!(
+                permission_request(&call(name, args), None, Some(&describe)).is_none(),
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
     fn auto_mode_classifies_session_input() {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let gate = gate_in(crate::permission::PermissionMode::Auto);

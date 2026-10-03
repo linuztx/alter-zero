@@ -257,7 +257,12 @@ pub fn agent_group_lines(group: &crate::app::AgentGroup, width: u16) -> Vec<Line
         let dim = Style::new().fg(tool_dim_color());
         let mut lines = vec![agent_cell_header(color, None, &entry.description)];
         let (settle, settle_color) = if group.background {
-            (AGENT_BACKGROUNDED.to_string(), tool_dim_color())
+            // The id the model's companions take, where the user can match
+            // it to a `● AgentSend(…)` cell (docs/agent-tools.md).
+            (
+                format!("{AGENT_BACKGROUNDED}{}{AGENT_MANAGE_HINT}", entry.id),
+                tool_dim_color(),
+            )
         } else {
             match entry.status {
                 crate::agents::AgentStatus::Done => (
@@ -306,11 +311,14 @@ pub fn agent_group_lines(group: &crate::app::AgentGroup, width: u16) -> Vec<Line
     let count = group.agents.len();
     for (i, entry) in group.agents.iter().enumerate() {
         let is_last = i + 1 == count;
+        // Each row closes on the agent's id — what the model's companions
+        // take, and what the user matches a `● AgentSend(…)` cell to
+        // (docs/agent-tools.md).
         if group.background {
             lines.extend(agent_tree_rows(
                 is_last,
                 &entry.description,
-                "",
+                &format!(" · {}", entry.id),
                 None,
                 width,
             ));
@@ -318,7 +326,11 @@ pub fn agent_group_lines(group: &crate::app::AgentGroup, width: u16) -> Vec<Line
             lines.extend(agent_tree_rows(
                 is_last,
                 &entry.description,
-                &agent_counters_clause(entry.tool_uses, entry.tokens),
+                &format!(
+                    "{} · {}",
+                    agent_counters_clause(entry.tool_uses, entry.tokens),
+                    entry.id
+                ),
                 Some((entry.status.label(), agent_status_color(entry.status))),
                 width,
             ));
@@ -721,9 +733,10 @@ pub fn agent_list_lines(app: &App, width: u16) -> Vec<Line<'static>> {
         if viewed {
             text_style = text_style.add_modifier(Modifier::BOLD);
         }
-        // `{type}  {description}` truncated so the ` {elapsed} · ↓ {n} tokens`
-        // suffix always fits.
-        let mut suffix = format!(" {}", format_elapsed(run.runtime.as_secs()));
+        // `{type}  {description}` truncated so the ` {id} · {elapsed} · ↓ {n}
+        // tokens` suffix always fits — the id leading it, since it is what
+        // the model's companions name the agent by (docs/agent-tools.md).
+        let mut suffix = format!(" {} · {}", run.id, format_elapsed(run.runtime.as_secs()));
         if run.tokens > 0 {
             suffix.push_str(&format!(
                 " · {} {} tokens",

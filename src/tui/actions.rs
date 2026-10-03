@@ -451,8 +451,9 @@ impl Session<'_> {
         // that was just wiped (docs/queue.md).
         let _ = self.steer.take();
         // …and the subagents (docs/agent-tool.md): the wiped roster drops their
-        // late events.
-        self.agent_registry.kill_all();
+        // late events — and the registry forgets them whole, or `agentlist`
+        // would name the wiped conversation's agents (docs/agent-tools.md).
+        self.agent_registry.clear();
         self.agent_clocks.clear();
         self.agent_expiry.clear();
         // …and the permission gate: `clear_conversation` dropped the prompt, the

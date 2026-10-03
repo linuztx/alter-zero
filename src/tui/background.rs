@@ -158,8 +158,17 @@ impl Session<'_> {
         // group entry so the Ctrl+O cell shows the final response
         // (docs/agent-tool.md).
         for notice in self.app.take_pending_agent_notices() {
-            self.app.record_agent_notice(&notice);
             self.app.settle_agent_completion(&notice);
+            // A completion a companion reported to the model meanwhile
+            // (`agentwait`, `agentoutput` — docs/agent-tools.md) is
+            // observed: the model read the response in that call's result,
+            // so neither the note nor the cell is owed — the observed-exit
+            // rule a `bashwait` applies to its shell. The group entry above
+            // still updates, so the Ctrl+O cell shows the final state.
+            if self.registry.is_observed(&notice.id) {
+                continue;
+            }
+            self.app.record_agent_notice(&notice);
             if committing {
                 let width = self.term.screen().width;
                 let height = self.live_region_height();

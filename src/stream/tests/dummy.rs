@@ -265,7 +265,7 @@ fn the_dummy_queues_a_chat_message_into_a_running_agent() {
     // every chat.
     let (agent_tx, _agent_rx) = unbounded_channel();
     let registry = crate::agents::AgentRegistry::new(agent_tx);
-    let (id, _cancel) = registry.register(crate::agents::GENERAL_PURPOSE);
+    let (id, _cancel) = registry.register(crate::agents::GENERAL_PURPOSE, "d");
     let dummy = DummyAi::with_startup_delay(Duration::ZERO).with_agents(registry.clone());
     assert_eq!(
         dummy.spawn_agent_chat(&id, "also add Elixir"),

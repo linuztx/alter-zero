@@ -2397,6 +2397,26 @@ mod tests {
     }
 
     #[test]
+    fn an_agent_companion_call_replays_under_its_own_wire_name_with_its_arguments() {
+        // `AgentSend` lowercases to `agentsend` — the same convention as the
+        // bash companions, so the replay needs no table for the agent family
+        // either (docs/agent-tools.md).
+        let arguments = r#"{"agent_id":"a7k2m9x4q","message":"also check the tests"}"#;
+        let history = vec![tool_with_arguments(
+            crate::llm::tools::AGENT_SEND_DISPLAY,
+            "Fetch Warsaw weather ← also check the tests",
+            arguments,
+            "Message delivered to agent a7k2m9x4q.",
+        )];
+        let ctx = context_messages(&history);
+        assert_eq!(
+            ctx[0].tool_calls[0].name,
+            crate::llm::tools::AGENT_SEND_TOOL
+        );
+        assert_eq!(ctx[0].tool_calls[0].arguments, arguments);
+    }
+
+    #[test]
     fn a_legacy_session_call_replays_as_the_tool_that_does_it_now() {
         // `bash_session` is executed but no longer offered: a resumed
         // conversation's request must name only tools it offers, or a

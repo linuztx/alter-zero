@@ -105,7 +105,7 @@ pub(in crate::stream) fn agent_stream_turn(stage: &AgentStage<'_>) {
     if !say(&first, stage.tx, stage.cancel) {
         return;
     }
-    let (id, agent_cancel) = stage.agents.register(GENERAL_PURPOSE);
+    let (id, agent_cancel) = stage.agents.register(GENERAL_PURPOSE, DEMO_DESCRIPTION);
     let announced = stage.tx.send(StreamEvent::AgentBatch {
         background: true,
         agents: vec![AgentSpec {
@@ -125,10 +125,10 @@ pub(in crate::stream) fn agent_stream_turn(stage: &AgentStage<'_>) {
     let resolved = stage.tx.send(StreamEvent::AgentGroupDone {
         background: true,
         agents: vec![AgentCallDone {
-            id,
             // The real executor's own acknowledgement (the dummy-backend
             // rule: an offline cell carries live output).
-            output: crate::llm::backend::agent_launch_text(DEMO_DESCRIPTION),
+            output: crate::llm::backend::agent_launch_text(&id, DEMO_DESCRIPTION),
+            id,
             ok: true,
         }],
     });
@@ -338,7 +338,7 @@ pub(in crate::stream) fn agent_permission_turn(stage: &AgentStage<'_>) {
     if !say(&first, stage.tx, stage.cancel) {
         return;
     }
-    let (id, agent_cancel) = stage.agents.register(GENERAL_PURPOSE);
+    let (id, agent_cancel) = stage.agents.register(GENERAL_PURPOSE, GATED_DESCRIPTION);
     let announced = stage.tx.send(StreamEvent::AgentBatch {
         background: false,
         agents: vec![AgentSpec {
@@ -533,4 +533,153 @@ fn ask_at_gate(
         )),
         None => Gated::Cancelled,
     }
+}
+
+// --- the agent COMPANIONS (docs/agent-tools.md) -----------------------------
+//
+// The model's side of a launched agent, drivable offline: launch the
+// table-streaming demo agent in the background, then work it with every
+// companion through the **real executor** — `agentlist` names it,
+// `agentsend` queues a message its round boundary takes (the bubble lands on
+// its transcript), `agentoutput` lists its `Write(…)` steps and the message
+// mid-run, `agentwait` blocks until its table closes and returns the final
+// response, and `agentkill` on the finished agent reports that it had already
+// finished — so every cell carries live output, the dummy-backend rule.
+
+/// What the main turn sends the running agent.
+const TOOLS_MESSAGE: &str = "Add a fifth row for Elixir";
+
+/// How long the demo waits for the agent to have made its writes before
+/// `agentoutput` reads them back — the agent's pre-roll, thinking and
+/// batch take about two seconds; this is the ceiling, not the wait.
+const TOOLS_STEPS_WAIT: Duration = Duration::from_secs(15);
+
+/// The main turn's narration, in the two-part shape every demo reply uses.
+const TOOLS_NARRATION: &str = concat!(
+    "Launching one background subagent, then working it with the agent \
+     tools: `agentlist` names it by id, `agentsend` hands it a message \
+     mid-run, `agentoutput` reads back what it has done so far, `agentwait` \
+     blocks until it finishes, and `agentkill` finds nothing left to stop. \
+     Every cell below is the real executor's own output.\n\n",
+    "That is the whole family: one launch, one tool per action, the agent \
+     named by its id in every result — and the id on its roster row below, \
+     so you can match the two. Press **↓** then **Enter** to open its \
+     session: the message sent to it is a bubble on its own transcript.\n\n",
+    handoff!()
+);
+
+/// Play the companions demo (see the section comment).
+pub(in crate::stream) fn agent_tools_turn(stage: &AgentStage<'_>) {
+    let (first, second) = reply_parts(TOOLS_NARRATION);
+    if !say(&first, stage.tx, stage.cancel) {
+        return;
+    }
+    let (id, agent_cancel) = stage.agents.register(GENERAL_PURPOSE, DEMO_DESCRIPTION);
+    let announced = stage.tx.send(StreamEvent::AgentBatch {
+        background: true,
+        agents: vec![AgentSpec {
+            id: id.clone(),
+            description: DEMO_DESCRIPTION.to_string(),
+            agent_type: GENERAL_PURPOSE.to_string(),
+            prompt: DEMO_PROMPT.to_string(),
+            background: true,
+            call_id: None,
+            arguments: None,
+        }],
+    });
+    if announced.is_err() {
+        return;
+    }
+    spawn_agent_session(stage.agents.clone(), id.clone(), agent_cancel);
+    let resolved = stage.tx.send(StreamEvent::AgentGroupDone {
+        background: true,
+        agents: vec![AgentCallDone {
+            output: crate::llm::backend::agent_launch_text(&id, DEMO_DESCRIPTION),
+            id: id.clone(),
+            ok: true,
+        }],
+    });
+    if resolved.is_err() {
+        return;
+    }
+    let registry = stage.agents;
+    // The companion calls, each announced, started and resolved like any
+    // ordinary tool cell — with the real executor's outcome.
+    let send = serde_json::json!({ "agent_id": id, "message": TOOLS_MESSAGE }).to_string();
+    let by_id = serde_json::json!({ "agent_id": id }).to_string();
+    let wait = serde_json::json!({ "agent_id": id, "wait": 60 }).to_string();
+    if !companion_cell(stage, crate::llm::tools::AGENT_LIST_TOOL, "{}")
+        || !companion_cell(stage, crate::llm::tools::AGENT_SEND_TOOL, &send)
+    {
+        return;
+    }
+    // Let the agent make its writes (and take the message at its round
+    // boundary) before reading its progress back.
+    let started = std::time::Instant::now();
+    while started.elapsed() < TOOLS_STEPS_WAIT
+        && registry.progress(&id).is_some_and(|progress| {
+            progress.tool_uses < 2 && progress.state == crate::agents::AgentState::Running
+        })
+    {
+        nap(GATED_WAIT_POLL, stage.cancel);
+        if stage.cancel.is_cancelled() {
+            return;
+        }
+    }
+    if !companion_cell(stage, crate::llm::tools::AGENT_OUTPUT_TOOL, &by_id)
+        || !companion_cell(stage, crate::llm::tools::AGENT_WAIT_TOOL, &wait)
+        || !companion_cell(stage, crate::llm::tools::AGENT_KILL_TOOL, &by_id)
+    {
+        return;
+    }
+    if say(&second, stage.tx, stage.cancel) {
+        let _ = stage.tx.send(StreamEvent::StreamDone);
+    }
+}
+
+/// One companion call as a cell: announced, started with the header the
+/// real loop would give it (the agent named by its description), run through
+/// [`crate::llm::agent_tools::run_companion`], resolved with its outcome.
+/// `false` once the receiver is gone or the turn was cancelled.
+fn companion_cell(stage: &AgentStage<'_>, name: &str, arguments: &str) -> bool {
+    let registry = stage.agents;
+    let lookup = |id: &str| registry.description(id);
+    let summary = super::super::ToolCallSummary {
+        name: crate::llm::tools::display_name(name),
+        args: crate::llm::tools::summarize_call_naming(name, arguments, &lookup),
+    };
+    let send = |event: StreamEvent| -> bool {
+        !stage.cancel.is_cancelled() && stage.tx.send(event).is_ok()
+    };
+    if !send(StreamEvent::ToolBatch(vec![summary.clone()])) {
+        return false;
+    }
+    nap(TOOL_DELAY, stage.cancel);
+    if !send(StreamEvent::ToolStart {
+        name: summary.name,
+        args: summary.args,
+        detail: None,
+        arguments: Some(arguments.to_string()),
+    }) {
+        return false;
+    }
+    let call = crate::llm::tools::ToolCallRequest {
+        id: String::new(),
+        name: name.to_string(),
+        arguments: arguments.to_string(),
+    };
+    // A finished agent sent a message resumes with the scripted
+    // continuation — the offline half of the backend's `spawn_subagent_run`.
+    let resume = |id: String, _messages: Vec<crate::llm::ChatMessage>, cancel: CancelToken| {
+        spawn_chat_continuation(registry.clone(), id, cancel);
+    };
+    let outcome =
+        crate::llm::agent_tools::run_companion(&call, registry, None, stage.cancel, &resume);
+    let resolved = send(StreamEvent::ToolEnd {
+        output: outcome.output,
+        ok: outcome.ok,
+        truncated: false,
+    });
+    nap(CHUNK_DELAY, stage.cancel);
+    resolved
 }

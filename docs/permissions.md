@@ -50,7 +50,10 @@ rather than a command, so it wears the same shape (`docs/mcp.md`). So is the
 `python3` is Python — so it asks the same way. A call that types nothing
 never asks: `bashwait` and `bashlist` only read, `bashkill` ends a command the
 model started (the ↓ manager's stop asks nothing either), and a lone `<C-c>`
-only interrupts.
+only interrupts. Nor do the agent companions (`agentsend`, `agentwait`,
+`agentoutput`, `agentkill`, `agentlist` — `docs/agent-tools.md`): a message to
+an agent is a prompt, not a command, and the agent's own calls ask as they
+always did.
 
 A `write` whose target **already exists** is an `Edit` — it shows the diff, not
 the whole file, exactly as the resulting `Updated {path} (+A -D)` cell will.

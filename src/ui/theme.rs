@@ -2384,8 +2384,7 @@ pub(super) const AGENT_MANAGE_HINT: &str = " (↓ to manage · ctrl+o to expand)
 /// launch — [`TOOL_BACKGROUNDED`]'s agent twin with the transcript hint
 /// added, since the cell expands in Ctrl+O to the agent's prompt, nested
 /// tool headers, and response.
-pub(super) const AGENT_BACKGROUNDED: &str =
-    "Running in the background (↓ to manage · ctrl+o to expand)";
+pub(super) const AGENT_BACKGROUNDED: &str = "Running in the background as ";
 
 /// The Ctrl+O cell's `Prompt:` / `Response:` section labels (green bold,
 /// Claude Code's transcript look).

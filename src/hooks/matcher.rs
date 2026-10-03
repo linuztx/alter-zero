@@ -64,6 +64,12 @@ pub fn claude_code_alias(tool: &str) -> Option<&'static str> {
         crate::llm::tools::BASH_SESSION_TOOL_NAME => {
             Some(crate::llm::tools::BASH_SESSION_TOOL_DISPLAY)
         }
+        // The agent companions, the same rule (docs/agent-tools.md).
+        crate::llm::tools::AGENT_SEND_TOOL => Some(crate::llm::tools::AGENT_SEND_DISPLAY),
+        crate::llm::tools::AGENT_WAIT_TOOL => Some(crate::llm::tools::AGENT_WAIT_DISPLAY),
+        crate::llm::tools::AGENT_OUTPUT_TOOL => Some(crate::llm::tools::AGENT_OUTPUT_DISPLAY),
+        crate::llm::tools::AGENT_KILL_TOOL => Some(crate::llm::tools::AGENT_KILL_DISPLAY),
+        crate::llm::tools::AGENT_LIST_TOOL => Some(crate::llm::tools::AGENT_LIST_DISPLAY),
         _ => None,
     }
 }
@@ -87,6 +93,20 @@ fn is_fast_path(pattern: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_agent_companions_answer_to_their_cell_names() {
+        // No reference tool to borrow a spelling from: the name the cell
+        // header shows is the one a user writes (docs/agent-tools.md). The
+        // launch keeps Claude Code's `Task`.
+        assert_eq!(claude_code_alias("agent"), Some("Task"));
+        assert_eq!(claude_code_alias("agentsend"), Some("AgentSend"));
+        assert_eq!(claude_code_alias("agentwait"), Some("AgentWait"));
+        assert_eq!(claude_code_alias("agentoutput"), Some("AgentOutput"));
+        assert_eq!(claude_code_alias("agentkill"), Some("AgentKill"));
+        assert_eq!(claude_code_alias("agentlist"), Some("AgentList"));
+        assert_eq!(claude_code_alias("agentic"), None, "exact, never a prefix");
+    }
 
     #[test]
     fn an_absent_empty_or_star_matcher_matches_everything() {

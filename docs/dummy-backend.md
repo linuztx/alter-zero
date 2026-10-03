@@ -58,7 +58,7 @@ subtree inside it:
 | `dummy/script.rs` | The canned replies, the `handoff!()` sentence they close on, and the streaming/output primitives (`chunks`, `tokens` — the token-sized split the slow-stream stress demo streams by (`docs/slow-stream.md`), `dummy_response`, `reply_parts`, `image_ack`; the file-cell bodies come straight from `llm::tools::write_report`/`update_report`). |
 | `dummy/turns.rs` | The **pure** scripted turns — one `Cue -> Vec<StreamEvent>` per scenario. |
 | `dummy/gated.rs` | The turns that *ask*, blocking on the permission gate. |
-| `dummy/agent.rs` | The two turns that stream a **launched subagent's own round** on the agent channel, so the agent session view is drivable offline (`docs/agent-view-streaming.md`) — one that streams a table, one whose own parallel `bash` batch **asks** on the shared permission gate. |
+| `dummy/agent.rs` | The three turns that stream a **launched subagent's own round** on the agent channel, so the agent session view is drivable offline (`docs/agent-view-streaming.md`) — one that streams a table, one whose own parallel `bash` batch **asks** on the shared permission gate, and one that works the launched agent with the **agent companions** through the real executor (`docs/agent-tools.md`). |
 
 Everything above the dummy is the seam a real backend implements: `event.rs`
 (the whole wire format), `source.rs` (`ReplySource`), `cancel.rs`

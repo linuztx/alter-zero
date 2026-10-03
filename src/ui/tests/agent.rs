@@ -24,9 +24,17 @@ fn agent_group_lines_render_the_finished_tree() {
     let lines = agent_group_lines(&group, 80);
     let texts: Vec<String> = lines.iter().map(plain).collect();
     assert_eq!(texts[0], "● 2 agents finished (ctrl+o to expand)");
-    assert_eq!(texts[1], "   ├ Fetch Warsaw · 2 tool uses · 16.1k tokens");
+    // Each row closes on the agent's id — what the model's companions take
+    // (docs/agent-tools.md).
+    assert_eq!(
+        texts[1],
+        "   ├ Fetch Warsaw · 2 tool uses · 16.1k tokens · a1"
+    );
     assert_eq!(texts[2], "   │ ⎿  Done");
-    assert_eq!(texts[3], "   └ Fetch Manila · 2 tool uses · 16.1k tokens");
+    assert_eq!(
+        texts[3],
+        "   └ Fetch Manila · 2 tool uses · 16.1k tokens · a2"
+    );
     assert_eq!(texts[4], "     ⎿  Done");
     // All clean → green bullet; one interrupted → red.
     assert_eq!(lines[0].spans[0].style.fg, Some(tool_ok_color()));
@@ -54,9 +62,9 @@ fn agent_group_lines_render_the_background_launch() {
         texts[0],
         "● 2 background agents launched (↓ to manage · ctrl+o to expand)"
     );
-    assert_eq!(texts[1], "   ├ Fetch Warsaw");
-    assert_eq!(texts[2], "   └ Fetch Manila");
-    assert_eq!(texts.len(), 3, "description-only rows, no status");
+    assert_eq!(texts[1], "   ├ Fetch Warsaw · a1");
+    assert_eq!(texts[2], "   └ Fetch Manila · a2");
+    assert_eq!(texts.len(), 3, "description-and-id rows, no status");
 }
 
 #[test]
@@ -182,7 +190,7 @@ fn a_lone_committed_agent_renders_done_with_the_expand_hint() {
     assert_eq!(texts[0], "● Agent(Fetch current weather in Warsaw)");
     assert_eq!(
         texts[1],
-        "  ⎿  Running in the background (↓ to manage · ctrl+o to expand)"
+        "  ⎿  Running in the background as a1 (↓ to manage · ctrl+o to expand)"
     );
     assert_eq!(
         texts.len(),
@@ -394,11 +402,13 @@ fn the_footer_roster_lists_main_and_the_agents() {
         "{}",
         texts[2]
     );
-    assert!(texts[2].ends_with(" 48s"), "{}", texts[2]);
+    // The suffix leads with the id the model's companions name the agent
+    // by (docs/agent-tools.md), then the elapsed.
+    assert!(texts[2].ends_with(" a1 · 48s"), "{}", texts[2]);
     // A narrow width truncates the description, never the suffix.
     let narrow: Vec<String> = agent_list_lines(&app, 46).iter().map(plain).collect();
     assert!(narrow[2].contains('…'), "{}", narrow[2]);
-    assert!(narrow[2].ends_with(" 48s"), "{}", narrow[2]);
+    assert!(narrow[2].ends_with(" a1 · 48s"), "{}", narrow[2]);
 }
 
 #[test]
