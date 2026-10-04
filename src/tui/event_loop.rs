@@ -35,7 +35,6 @@ use std::io;
 
 use tokio_stream::StreamExt;
 
-use alter_zero::agents::AgentEvent;
 use alter_zero::term::InlineViewport;
 
 use super::Session;
@@ -101,10 +100,9 @@ pub(crate) async fn run(term: &mut InlineViewport, startup: Startup) -> io::Resu
             // 8. A background-shell event from the registry's monitors.
             Some(event) = session.bg_rx.recv() => session.on_bg_event(event),
 
-            // 9. A subagent event.
-            Some(AgentEvent::Stream { id, event }) = session.agent_rx.recv() => {
-                session.on_agent_stream(&id, event);
-            }
+            // 9. A subagent event — its own stream, its settle, or the lead's
+            //    stop or resume of it (docs/agent-tools.md).
+            Some(event) = session.agent_rx.recv() => session.on_agent_message(event),
 
             // 10. An MCP server's state changed (a connect resolved, an auth
             //     flow progressed) — docs/mcp.md.

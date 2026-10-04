@@ -28,3 +28,14 @@ impl CancelToken {
         self.0.load(Ordering::Relaxed)
     }
 }
+
+/// Two tokens are equal when they are the **same flag** — clones of one
+/// another — never merely two flags in the same state: what a token means is
+/// which run it stops.
+impl PartialEq for CancelToken {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl Eq for CancelToken {}

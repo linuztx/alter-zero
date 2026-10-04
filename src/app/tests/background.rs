@@ -507,6 +507,24 @@ fn ctrl_b_ends_a_session_calls_wait_too() {
 }
 
 #[test]
+fn ctrl_b_ends_an_agentoutput_wait_too() {
+    // A waiting `agentoutput` polls the same latch: the wait ends and the
+    // agent runs on (docs/agent-tools.md). Its siblings return at once, so
+    // there is nothing for the key to end.
+    let mut app = App::new();
+    app.begin_stream();
+    app.start_tool("AgentOutput", "Fetch profile", None);
+    assert!(app.can_move_to_background());
+    assert_eq!(app.on_key(ctrl('b')), Action::MoveToBackground);
+    for name in ["AgentSend", "AgentKill", "AgentList"] {
+        let mut app = App::new();
+        app.begin_stream();
+        app.start_tool(name, "Fetch profile", None);
+        assert!(!app.can_move_to_background(), "{name}");
+    }
+}
+
+#[test]
 fn ctrl_b_moves_a_running_shell_turn_too() {
     let mut app = App::new();
     app.begin_shell("ping x.com");

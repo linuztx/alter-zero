@@ -223,6 +223,16 @@ pub(in crate::stream) const SCENARIOS: &[Scenario] = &[
         selects: |cue| cue.mentions("hook"),
         play: Play::Script(turns::hooks_turn),
     },
+    // The lead working its agent with the companion tools — launch, wait,
+    // follow up, wait, list — every call through the real executor
+    // (docs/agent-tools.md). Above the subagent demo: a prompt naming both is
+    // a follow-up.
+    Scenario {
+        #[cfg(test)]
+        name: "agent-follow-up",
+        selects: |cue| cue.mentions("follow-up") && cue.mentions("agent"),
+        play: Play::Agent(agent::agent_follow_up_turn),
+    },
     // One background subagent that streams its OWN session — the only demo
     // that drives the agent session view's strip
     // (docs/agent-view-streaming.md). Above the table demo, whose cue it

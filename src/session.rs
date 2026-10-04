@@ -258,6 +258,10 @@ struct AgentNoticeRecord {
     secs: u64,
     result: String,
     timestamp: String,
+    /// The messages the user sent the agent directly — absent from a record
+    /// that names none, and from every rollout older than the field.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    user_messages: Vec<String>,
 }
 
 /// The lowercase on-disk name of an agent status.
@@ -633,6 +637,7 @@ pub fn item_line(item: &HistoryItem, stamp: &str) -> String {
             secs: notice.secs,
             result: notice.result.clone(),
             timestamp: notice.timestamp.clone(),
+            user_messages: notice.user_messages.clone(),
         }),
         HistoryItem::Reasoning(reasoning) => ItemRecord::Reasoning(ReasoningRecord {
             text: reasoning.text.clone(),
@@ -814,6 +819,7 @@ pub fn parse_session(text: &str) -> Option<(SessionMeta, Vec<HistoryItem>)> {
                     secs: notice.secs,
                     result: notice.result,
                     timestamp: notice.timestamp,
+                    user_messages: notice.user_messages,
                 }));
             }
             ItemRecord::HookNote(note) => {
@@ -2110,6 +2116,7 @@ mod tests {
             secs: 12,
             result: String::new(),
             timestamp: "t".into(),
+            user_messages: vec!["also check Manila".into()],
         });
         let text = format!(
             "{}\n{}\n{}\n",
@@ -2121,6 +2128,20 @@ mod tests {
         assert_eq!(items.len(), 2);
         assert_eq!(items[0], group);
         assert_eq!(items[1], notice);
+        // A notice naming no user messages writes no field — the shape every
+        // rollout older than it has, which reads back as naming none.
+        let HistoryItem::AgentNotice(plain) = &notice else {
+            unreachable!()
+        };
+        let plain = HistoryItem::AgentNotice(AgentNotice {
+            user_messages: Vec::new(),
+            ..plain.clone()
+        });
+        let line = item_line(&plain, "s");
+        assert!(!line.contains("user_messages"), "{line}");
+        let (_, items) =
+            parse_session(&format!("{}\n{line}\n", meta_line(&meta(), "s"))).expect("parses");
+        assert_eq!(items, [plain]);
         // A still-running recorded status reads back as interrupted (agents
         // don't survive a session).
         let running = item_line(

@@ -476,6 +476,11 @@ mod tests {
             ("BashKill", "bashkill"),
             ("BashList", "bashlist"),
             ("BashSession", "bash_session"),
+            // The agent companions the same way (docs/agent-tools.md).
+            ("AgentSend", "agentsend"),
+            ("AgentOutput", "agentoutput"),
+            ("AgentKill", "agentkill"),
+            ("AgentList", "agentlist"),
         ];
         for (matcher, query) in cases {
             let file = parse(&format!(

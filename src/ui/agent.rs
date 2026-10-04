@@ -411,6 +411,9 @@ pub fn agent_notice_lines(notice: &crate::app::AgentNotice, width: u16) -> Vec<L
 /// [`crate::app::AgentGroupEntry`] or a **live** roster
 /// [`crate::agents::AgentRun`], so the two views share one renderer.
 pub(super) struct AgentCellView {
+    /// The registry id — the header names it, since the lead addresses agents
+    /// by it (`docs/agent-tools.md`).
+    pub(super) id: String,
     pub(super) description: String,
     pub(super) status: crate::agents::AgentStatus,
     pub(super) background: bool,
@@ -427,6 +430,7 @@ pub(super) struct AgentCellView {
 impl AgentCellView {
     pub(super) fn of_entry(entry: &crate::app::AgentGroupEntry, background: bool) -> Self {
         Self {
+            id: entry.id.clone(),
             description: entry.description.clone(),
             status: entry.status,
             background,
@@ -467,6 +471,7 @@ impl AgentCellView {
             tool_headers.push(crate::app::tool_header_text(&running.name, &running.args));
         }
         Self {
+            id: run.id.clone(),
             description: run.description.clone(),
             status: run.status,
             background: run.background,
@@ -521,6 +526,9 @@ pub(super) fn agent_cell_lines(
             format!("({})", cell.description),
             Style::new().fg(tool_args_color()),
         ),
+        // The id, dim: what the lead's `AgentSend`/`AgentOutput` calls and its
+        // replies name the agent by (docs/agent-tools.md).
+        Span::styled(format!("{AGENT_ID_SEPARATOR}{}", cell.id), dim),
     ])];
     // ⎿  Prompt: over the indented prompt body.
     lines.push(Line::from(vec![

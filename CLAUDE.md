@@ -1256,7 +1256,28 @@ transcript expands each agent as `● Agent({description})` with `⎿ Prompt:`,
 the nested tool headers, `⎿ Response:`, and `⎿ Done ({n} tool uses ·
 {tokens} tokens · {s}s)`; the parent's calls replay as native `agent`
 tool_calls + results (`context.rs`), the records round-trip (`session.rs`),
-and subagents never get the `agent` tool — no nesting); and the **tty detach** (every shell child
+and subagents never get the `agent` tool — no nesting); and the **agent tools**
+(`docs/agent-tools.md` — `agent`'s four companions, the bash family one level
+up, the lead's alone: every launch, foreground result and completion notice
+names the agent's **id**, and `agentsend {agent_id, message}` queues into a
+running agent's next round or **resumes a settled one's stored
+conversation** (`AgentRegistry::resume` → `AgentEvent::Resumed`, the roster
+reviving the row — or its retired entry, transcript and all — before the
+continuation's first round announces the message as `Steered`; a user-`x`
+stop is final, the lead's own `agentkill` resumable), `agentoutput
+{agent_id, wait?}` reports `{State} (agent {id} · {task} · {runtime} · {n}
+tool uses)` over one `Name(args)` line per call — lifetime numbers, each
+read message marked `— message received —` (a message the *user* typed
+into its session view quoted instead, and named as the user's in the
+lead's notice and foreground result), the final response once
+settled — and with `wait` blocks, its cell tailing each new call as a
+command cell (`COMMAND_TOOL_NAMES`), Ctrl+B ending the wait, `agentkill`
+stops (`AgentEvent::Stopped`), `agentlist` lists; the subagent's forwarder
+**holds back** the run's terminal event and `AgentRegistry::settle` sends it
+under the lock — at once, or to a waiting `agentoutput` that releases it
+`observed` (`AgentEvent::Settled`), so an answer the lead read is never
+noticed again; settled slots outlive their roster rows, the newest
+`AGENT_RETAINED_MAX` (16) kept, `/clear` forgetting all); and the **tty detach** (every shell child
 that runs on a pipe — `!`, a `bash` call where no terminal can be had, a
 hook — spawned into a fresh session with no
 controlling terminal via `subprocess::spawn_detached_shell`'s

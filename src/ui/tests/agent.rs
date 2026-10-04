@@ -214,6 +214,7 @@ fn agent_durations_humanize_past_a_minute() {
         secs: 362,
         result: String::new(),
         timestamp: String::new(),
+        user_messages: Vec::new(),
     };
     let texts: Vec<String> = agent_notice_lines(&notice, 100).iter().map(plain).collect();
     assert_eq!(
@@ -317,7 +318,9 @@ fn agent_cell_lines_expand_prompt_response_and_done() {
         .iter()
         .map(plain)
         .collect();
-    assert_eq!(texts[0], "● Agent(Fetch Warsaw)");
+    // The id rides the header: the lead names agents by it
+    // (docs/agent-tools.md), and this is where the user can match one.
+    assert_eq!(texts[0], "● Agent(Fetch Warsaw) · a1");
     assert_eq!(texts[1], "  ⎿  Prompt:");
     assert_eq!(texts[2], "       What is the weather in Fetch Warsaw?");
     assert!(texts.contains(&"     Bash(curl wttr.in)".to_string()));
@@ -358,9 +361,10 @@ fn the_transcript_expands_agent_groups_and_notices() {
             secs: 35,
             result: "19°C".into(),
             timestamp: String::new(),
+            user_messages: Vec::new(),
         }));
     let texts: Vec<String> = transcript_lines(&app, 100).iter().map(plain).collect();
-    assert!(texts.contains(&"● Agent(Fetch Warsaw)".to_string()));
+    assert!(texts.contains(&"● Agent(Fetch Warsaw) · a1".to_string()));
     assert!(
         texts
             .iter()

@@ -477,7 +477,9 @@ impl App {
     /// shell turn — the only runners that poll the registry's background
     /// request — **or while a foreground agent group runs** (its wait loop
     /// polls the same latch and hands the rest of the group over,
-    /// `docs/agent-tool.md`). See `docs/background.md`.
+    /// `docs/agent-tool.md`) **or while an `agentoutput` waits** on an agent
+    /// (the wait ends, the agent runs on — `docs/agent-tools.md`). See
+    /// `docs/background.md`.
     #[must_use]
     pub fn can_move_to_background(&self) -> bool {
         if self
@@ -496,6 +498,7 @@ impl App {
                             | crate::llm::tools::BASH_SEND_DISPLAY
                             | crate::llm::tools::BASH_WAIT_DISPLAY
                             | crate::llm::tools::BASH_SESSION_TOOL_DISPLAY
+                            | crate::llm::tools::AGENT_OUTPUT_DISPLAY
                     ))
         })
     }

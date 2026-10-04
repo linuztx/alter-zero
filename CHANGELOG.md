@@ -12,6 +12,32 @@ release heading when a version is cut.
 
 ## [Unreleased]
 
+### Added
+
+- **The main agent can work its subagents the way it works a shell.** Every
+  agent now has an id, named when it launches, in its result and in its
+  completion notice, and four new tools take it back: `agentsend` messages
+  an agent — a running one reads it after its current step, and a finished
+  one **resumes its conversation** with it, so a follow-up question costs
+  one message instead of a fresh agent starting over; `agentoutput` shows
+  what an agent has been doing as a summary of its tool calls
+  (`Bash(curl -s …)`, one line each) and its final response, and with
+  `wait` blocks until it finishes, its cell streaming each call as it
+  starts; `agentkill` stops a running agent while keeping it resumable; and
+  `agentlist` names every agent of the session. An answer `agentoutput`
+  already handed the main agent is not followed by a notice repeating it,
+  and finished agents stay resumable — up to the 16 most recent — after their
+  roster rows are gone. The id also shows on the agent's Ctrl+O cell
+  (`docs/agent-tools.md`).
+- **The main agent knows when you talked to a subagent yourself.** A
+  message you type into an agent's session view now reaches the main agent
+  as yours: the notice of the agent's answer — or a waiting agent's result —
+  lists what you sent it, saying it came from you and not from the main
+  agent, and `agentoutput` quotes it where it arrived. Before, the answer came
+  back looking like part of the main agent's own conversation, and a chat
+  with an agent that had finished in the foreground never reached the main
+  agent at all (`docs/agent-tools.md`).
+
 ### Fixed
 
 - **A running command's cell follows the rows that are still moving.** The

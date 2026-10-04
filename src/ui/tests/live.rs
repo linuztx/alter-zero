@@ -861,6 +861,40 @@ fn a_wait_on_a_session_hints_that_ctrl_b_stops_waiting() {
     assert_eq!(hints("BashWait"), ["(ctrl+b to stop waiting)"]);
     assert_eq!(hints("BashSend"), ["(ctrl+b to stop waiting)"]);
     assert_eq!(hints("BashKill"), Vec::<String>::new());
+    // A waiting `agentoutput` too — the agent runs on (docs/agent-tools.md).
+    assert_eq!(hints("AgentOutput"), ["(ctrl+b to stop waiting)"]);
+    assert_eq!(hints("AgentSend"), Vec::<String>::new());
+}
+
+#[test]
+fn a_waiting_agentoutput_tails_the_agents_calls_under_its_wait_clock() {
+    // The lead watches the agent work from its own transcript: each call the
+    // agent starts streams into the waiting cell, which tails them like a
+    // running command, under the wait the call asked for
+    // (docs/agent-tools.md).
+    let mut app = App::new();
+    app.begin_stream();
+    app.start_tool(
+        "AgentOutput",
+        "Fetch GitHub profile",
+        Some(r#"{"agent_id":"a7k2m9x4q","wait":300}"#),
+    );
+    app.push_tool_screen(
+        "Bash(curl -s https://api.github.com/users/linuztx)\nBash(curl -s https://api.github.com/users/linuztx/repos)\n",
+        "",
+    );
+    app.set_command_elapsed(Some(Duration::from_secs(12)));
+    let texts: Vec<String> = preview_tool_lines(&app, 100).iter().map(plain).collect();
+    assert!(
+        texts
+            .iter()
+            .any(|t| t.contains("Bash(curl -s https://api.github.com/users/linuztx/repos)")),
+        "the newest call is on screen: {texts:?}"
+    );
+    assert!(
+        texts.iter().any(|t| t.contains("(12s · wait 5m)")),
+        "under the wait it runs: {texts:?}"
+    );
 }
 
 #[test]

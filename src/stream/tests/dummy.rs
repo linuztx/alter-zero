@@ -323,3 +323,79 @@ fn dummy_ai_paces_its_chunks_by_the_configured_chunk_delay() {
         );
     }
 }
+
+#[test]
+fn the_follow_up_demo_works_its_agent_through_the_real_companions() {
+    // docs/agent-tools.md, offline: the lead launches a background agent,
+    // waits on it, sends it a follow-up that resumes its conversation, waits
+    // again and lists it — every companion call resolved by the REAL
+    // executor (the dummy-backend rule: offline cells carry live output), and
+    // both waits observed, so neither answer is noticed a second time.
+    use crate::agents::{AGENT_FOLLOW_UP_MARK, AgentEvent};
+    let (agent_tx, mut agent_rx) = unbounded_channel();
+    let registry = crate::agents::AgentRegistry::new(agent_tx);
+    let (tx, mut rx) = unbounded_channel();
+    let handle = DummyAi::with_startup_delay(Duration::ZERO)
+        .with_agents(registry.clone())
+        .spawn(
+            "send an agent a follow-up".to_string(),
+            vec![],
+            vec![],
+            tx,
+            CancelToken::new(),
+        );
+    let mut calls: Vec<(String, String, bool)> = Vec::new();
+    let mut running = None;
+    let mut launched = None;
+    while let Some(event) = rx.blocking_recv() {
+        match event {
+            StreamEvent::AgentGroupDone { agents, .. } => {
+                launched = agents.first().map(|done| done.output.clone());
+            }
+            StreamEvent::ToolStart { name, .. } => running = Some(name),
+            StreamEvent::ToolEnd { output, ok, .. } => {
+                calls.push((running.take().expect("started"), output, ok));
+            }
+            _ => {}
+        }
+    }
+    handle.join().expect("dummy thread");
+    let launched = launched.expect("the launch resolved");
+    assert!(launched.contains("launched as a"), "{launched}");
+    let names: Vec<&str> = calls.iter().map(|(name, _, _)| name.as_str()).collect();
+    assert_eq!(
+        names,
+        ["AgentOutput", "AgentSend", "AgentOutput", "AgentList"]
+    );
+    assert!(calls.iter().all(|(_, _, ok)| *ok), "{calls:?}");
+    assert!(calls[0].1.starts_with("Done (agent a"), "{}", calls[0].1);
+    assert!(calls[1].1.contains("resumed"), "{}", calls[1].1);
+    assert!(
+        calls[2].1.contains(AGENT_FOLLOW_UP_MARK),
+        "the second report marks where the follow-up arrived: {}",
+        calls[2].1
+    );
+    assert!(calls[3].1.starts_with("1 agent:"), "{}", calls[3].1);
+    let mut observed = 0;
+    let mut resumed = false;
+    let mut steered = false;
+    while let Ok(event) = agent_rx.try_recv() {
+        match event {
+            AgentEvent::Settled { observed: true, .. } => observed += 1,
+            AgentEvent::Settled {
+                observed: false, ..
+            } => {
+                panic!("an answer the lead read was owed a notice anyway");
+            }
+            AgentEvent::Resumed { .. } => resumed = true,
+            AgentEvent::Stream {
+                event: StreamEvent::Steered { .. },
+                ..
+            } => steered = true,
+            _ => {}
+        }
+    }
+    assert_eq!(observed, 2, "both waits reported their answer");
+    assert!(resumed, "the roster is told of the continuation");
+    assert!(steered, "…whose first round announces the message");
+}

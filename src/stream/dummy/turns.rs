@@ -779,7 +779,7 @@ pub(in crate::stream) fn agents_turn(cue: &Cue) -> Vec<StreamEvent> {
                 output: if background {
                     // The real executor's own acknowledgement (the
                     // dummy-backend rule: offline cells carry live output).
-                    crate::llm::backend::agent_launch_text(description)
+                    crate::llm::backend::agent_launch_text(id, description)
                 } else {
                     response.to_string()
                 },

@@ -201,15 +201,30 @@ pub fn tool_specs() -> Vec<Value> {
     ]
 }
 
-/// [`tool_specs`] plus the `agent` tool — the **main** backend's set when a
-/// subagent registry is attached (`docs/agent-tool.md`). A subagent itself
-/// never gets `agent` (no nesting), so it keeps [`tool_specs`] — or the
-/// reduced [`subagent_tool_specs`] its type allows.
+/// [`tool_specs`] plus the `agent` tool and its four companions — the
+/// **main** backend's set when a subagent registry is attached
+/// (`docs/agent-tool.md`, `docs/agent-tools.md`). A subagent itself never
+/// gets any of them (no nesting, and no steering its siblings), so it keeps
+/// [`tool_specs`] — or the reduced [`subagent_tool_specs`] its type allows.
 #[must_use]
 pub fn tool_specs_with_agents() -> Vec<Value> {
     let mut specs = tool_specs();
     specs.push(agent_spec());
+    specs.extend(agent_companion_specs());
     specs
+}
+
+/// The `agent` tool's four companions, in definition order
+/// (`docs/agent-tools.md`): message an agent, read its progress, stop it,
+/// list them.
+#[must_use]
+pub fn agent_companion_specs() -> Vec<Value> {
+    vec![
+        agent_send_spec(),
+        agent_output_spec(),
+        agent_kill_spec(),
+        agent_list_spec(),
+    ]
 }
 
 /// The built-in tool set a subagent is offered: [`tool_specs`] filtered by
@@ -320,6 +335,52 @@ const SESSION_COMMAND_SUMMARY_CHARS: usize = 60;
 
 /// The wire name of the subagent-launching tool (`docs/agent-tool.md`).
 pub const AGENT_TOOL_NAME: &str = "agent";
+
+/// The wire name of the tool that messages an agent — a running one's next
+/// step, or a finished one's resumed conversation (`docs/agent-tools.md`).
+/// `agent`'s companions are one lowercase word each, the bash companions'
+/// convention, so each display name lowercases to its wire name.
+pub const AGENT_SEND_TOOL: &str = "agentsend";
+
+/// The wire name of the tool that reads an agent's progress.
+pub const AGENT_OUTPUT_TOOL: &str = "agentoutput";
+
+/// The wire name of the tool that stops an agent.
+pub const AGENT_KILL_TOOL: &str = "agentkill";
+
+/// The wire name of the tool that lists the session's agents.
+pub const AGENT_LIST_TOOL: &str = "agentlist";
+
+/// The display names the agent companions' cells show.
+pub const AGENT_SEND_DISPLAY: &str = "AgentSend";
+/// See [`AGENT_SEND_DISPLAY`].
+pub const AGENT_OUTPUT_DISPLAY: &str = "AgentOutput";
+/// See [`AGENT_SEND_DISPLAY`].
+pub const AGENT_KILL_DISPLAY: &str = "AgentKill";
+/// See [`AGENT_SEND_DISPLAY`].
+pub const AGENT_LIST_DISPLAY: &str = "AgentList";
+
+/// Is `name` one of `agent`'s companions, by wire name? Not `agent` itself:
+/// a launch takes its own path through the loop (`run_agents`), while the
+/// companions run as ordinary calls (`docs/agent-tools.md`).
+#[must_use]
+pub fn is_agent_companion(name: &str) -> bool {
+    matches!(
+        name,
+        AGENT_SEND_TOOL | AGENT_OUTPUT_TOOL | AGENT_KILL_TOOL | AGENT_LIST_TOOL
+    )
+}
+
+/// The longest an `agentoutput` call waits for its agent to settle — the
+/// bash tools' cap, in seconds.
+pub const AGENT_WAIT_MAX_SECS: u64 = 600;
+
+/// The most of an `agentsend` message its cell header shows — the
+/// transcript, and the agent's own session view, have all of it.
+const AGENT_MESSAGE_SUMMARY_CHARS: usize = 100;
+
+/// The most of an agent's task a companion's header shows.
+const AGENT_NAME_SUMMARY_CHARS: usize = 60;
 
 /// The wire name of the ask-the-user tool (`docs/ask.md`). Lowercase like
 /// every other wire name — which is also what the context replay's
@@ -600,8 +661,10 @@ fn agent_spec() -> Value {
          see this conversation, so give it a complete, self-contained prompt \
          and say what to return. Several calls in one message run \
          concurrently. Agents run in the background by default — the call \
-         returns at once and you are notified when one finishes; pass \
-         run_in_background false to wait for the result.",
+         returns at once with the agent's id and you are notified when one \
+         finishes; pass run_in_background false to wait for the result. A \
+         finished agent keeps its context: agentsend continues it with a \
+         follow-up instead of a new agent starting over.",
         json!({
             "type": "object",
             "properties": {
@@ -626,6 +689,97 @@ fn agent_spec() -> Value {
                 }
             },
             "required": ["description", "prompt"],
+            "additionalProperties": false
+        }),
+    )
+}
+
+/// The agent id parameter every agent companion takes — one wording, so the
+/// specs cannot drift apart (the bash companions' `session_id_param`).
+fn agent_id_param() -> Value {
+    json!({
+        "type": "string",
+        "description": "The agent id an agent result named."
+    })
+}
+
+/// `agentsend` (`docs/agent-tools.md`): message an agent — a running one at
+/// its next step, a finished one by resuming its conversation.
+fn agent_send_spec() -> Value {
+    function_spec(
+        AGENT_SEND_TOOL,
+        "Send a message to an agent. A running agent reads it after its \
+         current step; a finished one resumes its conversation with it in the \
+         background. Returns at once — you are notified when the agent \
+         finishes. Use it to ask a follow-up or redirect an agent's work \
+         rather than launching a new agent that starts over.",
+        json!({
+            "type": "object",
+            "properties": {
+                "agent_id": agent_id_param(),
+                "message": {
+                    "type": "string",
+                    "description": "The message for the agent."
+                }
+            },
+            "required": ["agent_id", "message"],
+            "additionalProperties": false
+        }),
+    )
+}
+
+/// `agentoutput` (`docs/agent-tools.md`): an agent's progress, optionally
+/// waiting for it to settle.
+fn agent_output_spec() -> Value {
+    function_spec(
+        AGENT_OUTPUT_TOOL,
+        "Show an agent's progress: its state, the tool calls it has made, and \
+         its final response once it finishes. `wait` blocks until the agent \
+         finishes or the seconds pass — use it only when you need the result \
+         to continue, since you are notified when an agent finishes anyway.",
+        json!({
+            "type": "object",
+            "properties": {
+                "agent_id": agent_id_param(),
+                "wait": {
+                    "type": "number",
+                    "description": "Seconds to wait for the agent to finish: \
+                        default 0 (just check), max 600."
+                }
+            },
+            "required": ["agent_id"],
+            "additionalProperties": false
+        }),
+    )
+}
+
+/// `agentkill` (`docs/agent-tools.md`): stop a running agent, keeping its
+/// conversation resumable.
+fn agent_kill_spec() -> Value {
+    function_spec(
+        AGENT_KILL_TOOL,
+        "Stop a running agent and whatever it is doing. Its conversation is \
+         kept: agentsend resumes it with new instructions.",
+        json!({
+            "type": "object",
+            "properties": {
+                "agent_id": agent_id_param()
+            },
+            "required": ["agent_id"],
+            "additionalProperties": false
+        }),
+    )
+}
+
+/// `agentlist` (`docs/agent-tools.md`): the session's agents.
+fn agent_list_spec() -> Value {
+    function_spec(
+        AGENT_LIST_TOOL,
+        "List this session's agents: each one's id, type, task, state, \
+         running time and tool uses.",
+        json!({
+            "type": "object",
+            "properties": {},
             "additionalProperties": false
         }),
     )
@@ -903,6 +1057,81 @@ impl AgentArgs {
     pub fn background(&self) -> bool {
         self.run_in_background.unwrap_or(true)
     }
+}
+
+/// Parsed `agentsend` arguments (`docs/agent-tools.md`). The id takes the
+/// short names a model reaches for too, and the message the words a model
+/// uses for one — a call whose intent is plain is not refused over a
+/// spelling (the bash companions' rule).
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct AgentSendArgs {
+    #[serde(alias = "id", alias = "agentId", alias = "agent")]
+    pub agent_id: String,
+    #[serde(alias = "text", alias = "prompt", alias = "input")]
+    pub message: String,
+}
+
+impl AgentSendArgs {
+    /// The id as named, its surrounding whitespace dropped.
+    #[must_use]
+    pub fn id(&self) -> &str {
+        self.agent_id.trim()
+    }
+}
+
+/// Parsed `agentoutput` arguments (`docs/agent-tools.md`).
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct AgentOutputArgs {
+    #[serde(alias = "id", alias = "agentId", alias = "agent")]
+    pub agent_id: String,
+    /// Seconds to wait for the agent to settle; absent or `0` just looks.
+    #[serde(default, deserialize_with = "lenient::count")]
+    pub wait: Option<u64>,
+}
+
+impl AgentOutputArgs {
+    /// The id as named, its surrounding whitespace dropped.
+    #[must_use]
+    pub fn id(&self) -> &str {
+        self.agent_id.trim()
+    }
+
+    /// The effective wait in milliseconds: the `wait` in seconds, none by
+    /// default, at most [`AGENT_WAIT_MAX_SECS`].
+    #[must_use]
+    pub fn wait_ms(&self) -> u64 {
+        self.wait
+            .unwrap_or(0)
+            .min(AGENT_WAIT_MAX_SECS)
+            .saturating_mul(1000)
+    }
+}
+
+/// Parsed arguments of a companion that names an agent and nothing else
+/// (`agentkill`).
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct AgentIdArgs {
+    #[serde(alias = "id", alias = "agentId", alias = "agent")]
+    pub agent_id: String,
+}
+
+impl AgentIdArgs {
+    /// The id as named, its surrounding whitespace dropped.
+    #[must_use]
+    pub fn id(&self) -> &str {
+        self.agent_id.trim()
+    }
+}
+
+/// An `agentoutput` call's wait in milliseconds, read off its recorded
+/// arguments — [`AgentOutputArgs::wait_ms`]'s rule, so the running cell's
+/// clock names exactly what the executor waits (`bash_wait_ms`'s twin).
+/// Arguments that don't parse — or none at all — wait nothing.
+#[must_use]
+pub fn agent_output_wait_ms(arguments: Option<&str>) -> u64 {
+    arguments
+        .and_then(|arguments| parse_args::<AgentOutputArgs>(arguments).ok())
+        .map_or(0, |args| args.wait_ms())
 }
 
 /// Parsed `bash` arguments (`docs/bash-tools.md`).
@@ -1275,6 +1504,10 @@ pub fn display_name(name: &str) -> String {
         BASH_KILL_TOOL => BASH_KILL_DISPLAY.to_string(),
         BASH_LIST_TOOL => BASH_LIST_DISPLAY.to_string(),
         BASH_SESSION_TOOL_NAME => BASH_SESSION_TOOL_DISPLAY.to_string(),
+        AGENT_SEND_TOOL => AGENT_SEND_DISPLAY.to_string(),
+        AGENT_OUTPUT_TOOL => AGENT_OUTPUT_DISPLAY.to_string(),
+        AGENT_KILL_TOOL => AGENT_KILL_DISPLAY.to_string(),
+        AGENT_LIST_TOOL => AGENT_LIST_DISPLAY.to_string(),
         other => other.to_string(),
     }
 }
@@ -1343,7 +1576,14 @@ pub fn summarize_call(name: &str, arguments: &str) -> String {
     if let Some((id, input, kill)) = session_call_parts(name, arguments) {
         return session_summary(&id, input.as_deref(), kill);
     }
-    if name == BASH_LIST_TOOL {
+    // `● AgentSend(a7k2m9x4q ← also check gists)`, `● AgentOutput(a7k2m9x4q)`
+    // — which agent, and what was sent to it, on one line. With the registry
+    // at hand the agent is named by its task instead
+    // ([`summarize_call_naming`], docs/agent-tools.md).
+    if let Some((id, message)) = agent_call_parts(name, arguments) {
+        return agent_summary(&id, message.as_deref());
+    }
+    if name == BASH_LIST_TOOL || name == AGENT_LIST_TOOL {
         return String::new();
     }
     let summary = match name {
@@ -1392,24 +1632,68 @@ pub fn summarize_call(name: &str, arguments: &str) -> String {
 }
 
 /// [`summarize_call`], with a `bash_session` call's session named by the
-/// command it runs when `session_command` knows its id — [`session_title`],
-/// what the executor refines the header to. So the header names the program
-/// the keys go to from the moment the call is announced: above its
-/// permission prompt, and on a cell the user refused, which never reaches
-/// the executor (`docs/interactive-shell.md`). An id nothing answers to is
+/// command it runs when `lookup` knows its id — [`session_title`], what the
+/// executor refines the header to. So the header names the program the keys
+/// go to from the moment the call is announced: above its permission prompt,
+/// and on a cell the user refused, which never reaches the executor
+/// (`docs/interactive-shell.md`). An agent companion's agent is named the
+/// same way, by its task — `lookup` answers an agent id with the agent's
+/// description (`docs/agent-tools.md`; the two kinds of id never collide, a
+/// session's opening `b` and an agent's `a`). An id nothing answers to is
 /// kept.
 #[must_use]
 pub fn summarize_call_naming(
     name: &str,
     arguments: &str,
-    session_command: &dyn Fn(&str) -> Option<String>,
+    lookup: &dyn Fn(&str) -> Option<String>,
 ) -> String {
     if let Some((id, input, kill)) = session_call_parts(name, arguments)
-        && let Some(command) = session_command(&id)
+        && let Some(command) = lookup(&id)
     {
         return session_title(&command, input.as_deref(), kill);
     }
+    if let Some((id, message)) = agent_call_parts(name, arguments)
+        && let Some(task) = lookup(&id)
+    {
+        let task = cut_chars(&flatten_one_line(&task), AGENT_NAME_SUMMARY_CHARS);
+        return agent_summary(&task, message.as_deref());
+    }
     summarize_call(name, arguments)
+}
+
+/// A call to an agent companion that names one agent, by its parts: the id,
+/// and what `agentsend` sent it. `None` for any other tool (`agentlist`
+/// names none), or arguments that don't parse.
+fn agent_call_parts(name: &str, arguments: &str) -> Option<(String, Option<String>)> {
+    match name {
+        AGENT_SEND_TOOL => {
+            let args = parse_args::<AgentSendArgs>(arguments).ok()?;
+            Some((args.id().to_string(), Some(args.message)))
+        }
+        AGENT_OUTPUT_TOOL => {
+            let args = parse_args::<AgentOutputArgs>(arguments).ok()?;
+            Some((args.id().to_string(), None))
+        }
+        AGENT_KILL_TOOL => {
+            let args = parse_args::<AgentIdArgs>(arguments).ok()?;
+            Some((args.id().to_string(), None))
+        }
+        _ => None,
+    }
+}
+
+/// `{who} ← {message}`, or `{who}` alone — the message on one line, cut.
+fn agent_summary(who: &str, message: Option<&str>) -> String {
+    match message
+        .map(flatten_one_line)
+        .filter(|message| !message.is_empty())
+    {
+        Some(message) => format!(
+            "{who} ← {}",
+            cut_chars(&message, AGENT_MESSAGE_SUMMARY_CHARS)
+        ),
+        None => who.to_string(),
+    }
 }
 
 /// A call to a running session, by its parts: the session id, what it typed
@@ -3805,15 +4089,36 @@ mod tests {
         assert_eq!(
             names,
             [
-                "bash", "read", "write", "edit", "bashsend", "bashwait", "bashkill", "bashlist",
-                "agent"
+                "bash",
+                "read",
+                "write",
+                "edit",
+                "bashsend",
+                "bashwait",
+                "bashkill",
+                "bashlist",
+                "agent",
+                "agentsend",
+                "agentoutput",
+                "agentkill",
+                "agentlist",
             ]
         );
         let base: Vec<String> = tool_specs()
             .iter()
             .map(|spec| spec["function"]["name"].as_str().unwrap().to_string())
             .collect();
-        assert!(!base.contains(&"agent".to_string()));
+        // Agents don't nest, and an agent never steers its siblings: the
+        // whole family is the lead's alone (docs/agent-tools.md).
+        for lead_only in [
+            "agent",
+            "agentsend",
+            "agentoutput",
+            "agentkill",
+            "agentlist",
+        ] {
+            assert!(!base.contains(&lead_only.to_string()), "{lead_only}");
+        }
         // The agent schema: description+prompt required, the optional pair.
         let spec = &agent_spec()["function"]["parameters"];
         assert_eq!(
@@ -3947,6 +4252,180 @@ mod tests {
             ),
             "Fetch Warsaw"
         );
+    }
+
+    #[test]
+    fn the_agent_companions_are_one_word_each_like_the_bash_companions() {
+        // `agentsend`, not `agent_send`: the display name lowercases to the
+        // wire name, so the context replay needs no table for them
+        // (docs/agent-tools.md).
+        for name in [
+            AGENT_SEND_TOOL,
+            AGENT_OUTPUT_TOOL,
+            AGENT_KILL_TOOL,
+            AGENT_LIST_TOOL,
+        ] {
+            assert!(!name.contains('_'), "{name}");
+            assert!(name.starts_with("agent"), "{name}");
+            assert_eq!(display_name(name).to_ascii_lowercase(), name);
+            assert!(is_agent_companion(name), "{name}");
+        }
+        assert_eq!(display_name(AGENT_SEND_TOOL), "AgentSend");
+        assert_eq!(display_name(AGENT_OUTPUT_TOOL), "AgentOutput");
+        assert_eq!(display_name(AGENT_KILL_TOOL), "AgentKill");
+        assert_eq!(display_name(AGENT_LIST_TOOL), "AgentList");
+        // The launcher itself is not a companion: it takes its own path
+        // through the loop (`run_agents`), the companions the ordinary one.
+        assert!(!is_agent_companion(AGENT_TOOL_NAME));
+        assert!(!is_agent_companion("agentsmith") && !is_agent_companion("bashsend"));
+    }
+
+    #[test]
+    fn each_agent_companion_takes_only_what_its_one_action_needs() {
+        let params = |spec: Value| spec["function"]["parameters"].clone();
+        let names = |params: &Value| {
+            let mut names: Vec<String> = params["properties"]
+                .as_object()
+                .unwrap()
+                .keys()
+                .cloned()
+                .collect();
+            names.sort_unstable();
+            names
+        };
+        let send = params(agent_send_spec());
+        assert_eq!(names(&send), ["agent_id", "message"]);
+        assert_eq!(send["required"], json!(["agent_id", "message"]));
+        let output = params(agent_output_spec());
+        assert_eq!(names(&output), ["agent_id", "wait"]);
+        assert_eq!(output["required"], json!(["agent_id"]));
+        assert_eq!(output["properties"]["wait"]["type"], "number");
+        let kill = params(agent_kill_spec());
+        assert_eq!(names(&kill), ["agent_id"]);
+        assert_eq!(kill["required"], json!(["agent_id"]));
+        assert!(names(&params(agent_list_spec())).is_empty());
+        for spec in agent_companion_specs() {
+            assert_eq!(
+                spec["function"]["parameters"]["additionalProperties"],
+                json!(false),
+                "{spec}"
+            );
+        }
+    }
+
+    #[test]
+    fn agent_companion_args_take_the_id_by_its_common_spellings() {
+        // A call whose intent is plain is not refused over a spelling — the
+        // bash companions' rule (`SendArgs`).
+        for raw in [
+            r#"{"agent_id":"a7k2m9x4q","message":"go on"}"#,
+            r#"{"id":"a7k2m9x4q","message":"go on"}"#,
+            r#"{"agentId":"a7k2m9x4q","message":"go on"}"#,
+            r#"{"agent_id":" a7k2m9x4q ","text":"go on"}"#,
+        ] {
+            let args: AgentSendArgs = parse_args(raw).expect(raw);
+            assert_eq!(args.id(), "a7k2m9x4q", "{raw}");
+            assert_eq!(args.message, "go on", "{raw}");
+        }
+        let kill: AgentIdArgs = parse_args(r#"{"agent":"a1"}"#).unwrap();
+        assert_eq!(kill.id(), "a1");
+        assert!(
+            parse_args::<AgentIdArgs>("{}").is_err(),
+            "the id is required"
+        );
+    }
+
+    #[test]
+    fn agent_output_waits_nothing_by_default_and_clamps_to_the_cap() {
+        // A look by default — the tool reads progress; a wait is asked for.
+        let look: AgentOutputArgs = parse_args(r#"{"agent_id":"a1"}"#).unwrap();
+        assert_eq!(look.wait_ms(), 0);
+        let wait: AgentOutputArgs = parse_args(r#"{"agent_id":"a1","wait":300}"#).unwrap();
+        assert_eq!(wait.wait_ms(), 300_000);
+        let float: AgentOutputArgs = parse_args(r#"{"agent_id":"a1","wait":"45.0"}"#).unwrap();
+        assert_eq!(float.wait_ms(), 45_000, "a number in whatever form");
+        let long: AgentOutputArgs = parse_args(r#"{"agent_id":"a1","wait":99999}"#).unwrap();
+        assert_eq!(long.wait_ms(), AGENT_WAIT_MAX_SECS * 1000, "clamped");
+        // The running cell's clock reads the same rule off the recorded call.
+        assert_eq!(
+            agent_output_wait_ms(Some(r#"{"agent_id":"a1","wait":120}"#)),
+            120_000
+        );
+        assert_eq!(agent_output_wait_ms(None), 0);
+    }
+
+    #[test]
+    fn agent_companions_summarize_by_the_agent_they_reach() {
+        // Without the registry at hand: the id, and what was sent on one
+        // line (`● AgentSend(a7k2m9x4q ← also check gists)`).
+        assert_eq!(
+            summarize_call(
+                AGENT_SEND_TOOL,
+                r#"{"agent_id":"a7k2m9x4q","message":"also\ncheck gists"}"#
+            ),
+            "a7k2m9x4q ← also check gists"
+        );
+        assert_eq!(
+            summarize_call(AGENT_OUTPUT_TOOL, r#"{"agent_id":"a7k2m9x4q","wait":30}"#),
+            "a7k2m9x4q"
+        );
+        assert_eq!(
+            summarize_call(AGENT_KILL_TOOL, r#"{"agent_id":"a7k2m9x4q"}"#),
+            "a7k2m9x4q"
+        );
+        assert_eq!(summarize_call(AGENT_LIST_TOOL, "{}"), "");
+        // With it, the agent is named by its task — from the moment the call
+        // is announced, the way a bash session is named by its command.
+        let lookup = |id: &str| (id == "a7k2m9x4q").then(|| "Fetch GitHub profile".to_string());
+        assert_eq!(
+            summarize_call_naming(
+                AGENT_SEND_TOOL,
+                r#"{"agent_id":"a7k2m9x4q","message":"also check gists"}"#,
+                &lookup
+            ),
+            "Fetch GitHub profile ← also check gists"
+        );
+        assert_eq!(
+            summarize_call_naming(AGENT_OUTPUT_TOOL, r#"{"agent_id":"a7k2m9x4q"}"#, &lookup),
+            "Fetch GitHub profile"
+        );
+        assert_eq!(
+            summarize_call_naming(AGENT_KILL_TOOL, r#"{"agent_id":"zzz"}"#, &lookup),
+            "zzz",
+            "an id nothing answers to is kept"
+        );
+        // A long message is cut on the header — the transcript has it whole.
+        let long = "word ".repeat(80);
+        let header = summarize_call(
+            AGENT_SEND_TOOL,
+            &json!({"agent_id": "a1", "message": long}).to_string(),
+        );
+        assert!(header.ends_with('…'), "{header}");
+        assert!(header.chars().count() < 140, "{header}");
+    }
+
+    #[test]
+    fn the_agent_description_names_the_id_and_the_follow_up() {
+        // The launch now hands back an id the companions take, and a finished
+        // agent keeps its context: the schema says both, briefly.
+        let desc = agent_spec()["function"]["description"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(desc.contains("id"), "{desc}");
+        assert!(desc.contains(AGENT_SEND_TOOL), "{desc}");
+        assert!(desc.len() < 1000, "{} chars: {desc}", desc.len());
+    }
+
+    #[test]
+    fn the_agent_output_description_steers_off_polling() {
+        // A model that polls spends a round per look; it is notified anyway.
+        let desc = agent_output_spec()["function"]["description"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(desc.contains("notified"), "{desc}");
+        assert!(desc.contains("wait"), "{desc}");
     }
     #[test]
     fn an_mcp_call_wears_the_claude_code_display_name() {
