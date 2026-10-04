@@ -144,6 +144,10 @@ pub struct PendingNotice {
     /// Whether the model launched the shell (an untaken note from one is what
     /// warrants the automatic follow-up turn).
     pub from_model: bool,
+    /// The subagent whose completion this is — `None` for a shell. What an
+    /// `agentoutput` report retracts by, when it hands the lead the same
+    /// answer first (`docs/agent-tools.md` *One notice per answer*).
+    pub agent: Option<String>,
 }
 
 /// The base36 alphabet task ids are drawn from.
@@ -1051,14 +1055,42 @@ impl BackgroundRegistry {
     /// Post a completed shell's model-facing note onto the notice board (the
     /// event loop, as it handles the shell's `Exited` event).
     pub fn post_notice(&self, context: String, from_model: bool) {
+        self.push_notice(PendingNotice {
+            context,
+            from_model,
+            agent: None,
+        });
+    }
+
+    /// Post a subagent's completion note, tagged with its id
+    /// ([`AgentRegistry::post_notice`](crate::agents::AgentRegistry::post_notice)
+    /// is the one caller).
+    pub fn post_agent_notice(&self, context: String, agent: &str) {
+        self.push_notice(PendingNotice {
+            context,
+            from_model: true,
+            agent: Some(agent.to_string()),
+        });
+    }
+
+    fn push_notice(&self, notice: PendingNotice) {
         self.inner
             .lock()
             .expect("registry lock")
             .pending_notices
-            .push(PendingNotice {
-                context,
-                from_model,
-            });
+            .push(notice);
+    }
+
+    /// Take `agent`'s completion notes back off the board, untaken — an
+    /// `agentoutput` report already handed the lead what they say. Whether
+    /// any was still there.
+    pub fn retract_agent_notice(&self, agent: &str) -> bool {
+        let mut inner = self.inner.lock().expect("registry lock");
+        let before = inner.pending_notices.len();
+        inner
+            .pending_notices
+            .retain(|notice| notice.agent.as_deref() != Some(agent));
+        inner.pending_notices.len() != before
     }
 
     /// Take every posted note, in arrival order, each delivered exactly once —
@@ -1848,10 +1880,12 @@ mod tests {
                 PendingNotice {
                     context: "[background] a terminated".to_string(),
                     from_model: true,
+                    agent: None,
                 },
                 PendingNotice {
                     context: "[background] b completed".to_string(),
                     from_model: false,
+                    agent: None,
                 },
             ]
         );

@@ -302,11 +302,16 @@ So Tab has its own set one level down, exactly as Enter has:
   follow-up (`recall_last_agent_followup`, `recall_last_queued`'s twin) and,
   with none left, the message its loop has not read — `Action::ReclaimAgentChat`
   → `AgentRegistry::take_last_input` (`SteerQueue::take_last`'s twin, `None`
-  once the round boundary has drained it) → `App::recall_agent_chat`. It never
-  falls through to the main session's backlog: that belongs to a conversation
-  the user is not looking at.
+  once the round boundary has drained it) → `App::recall_agent_chat`. It takes
+  only a message the **user** typed: one the lead queued with `agentsend` has
+  no row and no composer to come back to, so taking it dropped it silently
+  (`docs/agent-tools.md`). It never falls through to the main session's
+  backlog: that belongs to a conversation the user is not looking at.
 - `AgentRun::interrupt` drops the follow-ups with the steered rows: each would
-  have continued a run the `x` just cancelled.
+  have continued a run the `x` just cancelled. The registry drops the messages
+  behind those rows in the same stop (`kill`, and the lead's `stop`) — kept,
+  they rode the next continuation unannounced, a user's message reaching the
+  lead as its own.
 
 **Dispatch asks the registry, not the roster** — the rule `AgentChatDelivery`
 already states, for the same reason. `ReplySource::agent_ready_for_turn` →

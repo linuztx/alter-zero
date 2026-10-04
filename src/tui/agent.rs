@@ -31,7 +31,7 @@ use std::time::{Duration, Instant};
 use ratatui::text::Line;
 
 use alter_zero::agents::{AGENT_LINGER, AgentEvent};
-use alter_zero::app::{AgentStop, HistoryItem, Role, ToastKind, ToolStatus, View};
+use alter_zero::app::{AgentNotice, AgentStop, HistoryItem, Role, ToastKind, ToolStatus, View};
 use alter_zero::stream::{AgentChatDelivery, StreamEvent};
 use alter_zero::ui;
 
@@ -44,12 +44,12 @@ impl Session<'_> {
     /// adds, so the group drain can run it mid-resolution.
     fn handle_agent_message(&mut self, message: AgentEvent) {
         match message {
-            AgentEvent::Stream { id, event } => self.on_agent_event(&id, event, false),
+            AgentEvent::Stream { id, event } => self.on_agent_event(&id, event, None),
             AgentEvent::Settled {
                 id,
                 event,
                 observed,
-            } => self.on_agent_event(&id, event, observed),
+            } => self.on_agent_event(&id, event, Some(observed)),
             AgentEvent::Stopped { id } => self.on_agent_stopped_by_lead(&id),
             AgentEvent::Resumed {
                 id,
@@ -90,9 +90,10 @@ impl Session<'_> {
 
     /// Fold one subagent event into its roster entry, committing to the screen
     /// when the user is inside that agent's session view (see the module doc).
-    /// `observed` marks a settle an `agentoutput` already reported, which owes
+    /// `settle` is `Some` for a run's settle as the registry delivered it —
+    /// `Some(true)` when an `agentoutput` already reported it, which owes
     /// no completion notice (`docs/agent-tools.md`).
-    pub(crate) fn on_agent_event(&mut self, id: &str, event: StreamEvent, observed: bool) {
+    pub(crate) fn on_agent_event(&mut self, id: &str, event: StreamEvent, settle: Option<bool>) {
         let width = self.term.screen().width;
         // A subagent's permission request is the *user's* business, not the
         // roster's: raise the same shared prompt the main turn does, and stop —
@@ -194,7 +195,9 @@ impl Session<'_> {
         // owes it — see `commit_agent_view_event`.
         let recorded = self.app.agent(id).map_or(0, |run| run.history.len());
         let was_final = self.app.agent(id).is_some_and(|run| run.status.is_final());
-        let settled = self.app.apply_agent_settled(id, &event, observed);
+        let mut settled = self
+            .app
+            .apply_agent_settled(id, &event, settle == Some(true));
         if viewing {
             self.commit_agent_view_event(&event, width, recorded);
         }
@@ -206,12 +209,25 @@ impl Session<'_> {
             self.agent_clocks.insert(id.to_string(), Instant::now());
             self.agent_expiry.remove(id);
         }
+        // A background agent completed on its own: the model-facing note
+        // goes on the shared board (from_model — its untaken presence at a
+        // turn boundary starts the automatic follow-up turn), the notice
+        // cell defers to the next safe boundary (docs/agent-tool.md). Every
+        // unobserved settle is accounted for with the registry, a notice owed
+        // or not, and one an `agentoutput` report already covered posts
+        // nothing and records no cell (docs/agent-tools.md *One notice per
+        // answer*).
+        if settle == Some(false) {
+            let context = settled.as_ref().map(AgentNotice::context_text);
+            if !self.agent_registry.post_notice(id, &self.registry, context)
+                && let Some(notice) = settled.take()
+            {
+                self.app.settle_agent_completion(&notice);
+            }
+        } else if let Some(notice) = &settled {
+            self.registry.post_agent_notice(notice.context_text(), id);
+        }
         if let Some(notice) = settled {
-            // A background agent completed on its own: the model-facing note
-            // goes on the shared board (from_model — its untaken presence at a
-            // turn boundary starts the automatic follow-up turn), the notice
-            // cell defers to the next safe boundary (docs/agent-tool.md).
-            self.registry.post_notice(notice.context_text(), true);
             self.app.defer_agent_notice(notice);
         }
         if let Some(linger) = self

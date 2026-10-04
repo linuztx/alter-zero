@@ -11,7 +11,7 @@
 //! subagent threads report on (agents outlive turns, so their events must
 //! survive the reply channel's interrupt swaps).
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -1419,6 +1419,10 @@ struct AgentSlot {
     /// outcome it carries.
     held: Option<StreamEvent>,
     held_observed: bool,
+    /// Completion notices sent on the channel **unobserved** that the loop
+    /// has not posted yet — what an `agentoutput` report cancels when it
+    /// gets there first ([`AgentRegistry::report_settled`]).
+    notices_owed: usize,
     /// Its final response text (present once `done`, unless it failed).
     result: Option<String>,
     /// Its failure message (present once `done` when the run errored).
@@ -1520,6 +1524,11 @@ struct Inner {
     /// The order counter launches and settles are stamped from.
     seq: u64,
     slots: HashMap<String, AgentSlot>,
+    /// Agents whose posted notice a report took back off the board — the
+    /// notice cell the loop deferred with it is not owed either
+    /// ([`AgentRegistry::take_retracted`]). Here rather than on the slot, so
+    /// retention cannot let go of it first.
+    retracted: HashSet<String>,
 }
 
 impl Inner {
@@ -1572,6 +1581,7 @@ impl AgentRegistry {
                 next_id: 0,
                 seq: 0,
                 slots: HashMap::new(),
+                retracted: HashSet::new(),
             })),
             events,
         }
@@ -1701,6 +1711,9 @@ impl AgentRegistry {
             && let Some(event) = slot.held.take()
         {
             let observed = std::mem::take(&mut slot.held_observed);
+            if !observed {
+                slot.notices_owed += 1;
+            }
             let _ = self.events.send(AgentEvent::Settled {
                 id: id.to_string(),
                 event,
@@ -1716,6 +1729,7 @@ impl AgentRegistry {
     fn release_held(&self, id: &str, slot: &mut AgentSlot) {
         if let Some(event) = slot.held.take() {
             slot.held_observed = false;
+            slot.notices_owed += 1;
             let _ = self.events.send(AgentEvent::Settled {
                 id: id.to_string(),
                 event,
@@ -1804,6 +1818,7 @@ impl AgentRegistry {
                 if slot.waiters > 0 {
                     slot.held = Some(event);
                 } else {
+                    slot.notices_owed += 1;
                     let _ = self.events.send(AgentEvent::Settled {
                         id: id.to_string(),
                         event,
@@ -1829,6 +1844,8 @@ impl AgentRegistry {
             return Stop::default();
         };
         slot.cancel.cancel();
+        // Nothing will read them now, and the roster drops their rows.
+        slot.pending_inputs.clear();
         let was_live = !slot.done;
         if was_live {
             slot.freeze_runtime();
@@ -1856,6 +1873,8 @@ impl AgentRegistry {
             return Some(Stop::default());
         }
         slot.cancel.cancel();
+        // The roster drops their rows: a resume delivers only its own message.
+        slot.pending_inputs.clear();
         slot.freeze_runtime();
         slot.settled = Some(seq);
         slot.killed = true;
@@ -1884,11 +1903,9 @@ impl AgentRegistry {
     /// (`docs/agent-tools.md` *Retention*).
     pub fn clear(&self) {
         self.kill_all();
-        self.inner
-            .lock()
-            .expect("agent registry poisoned")
-            .slots
-            .clear();
+        let mut inner = self.inner.lock().expect("agent registry poisoned");
+        inner.slots.clear();
+        inner.retracted.clear();
     }
 
     /// Deliver an `agentsend` (`docs/agent-tools.md`): onto a running
@@ -2089,14 +2106,77 @@ impl AgentRegistry {
     /// [`SteerQueue::take_last`](crate::steer::SteerQueue::take_last)'s twin.
     /// `None` once the round boundary has drained it, which is the only
     /// honest answer: a message the loop has read is in its context now.
+    /// Only the **user's** own: a message the lead queued (`agentsend`, a
+    /// routed shell note) has no row and no composer to come back to, so
+    /// taking it would drop it silently.
     pub fn take_last_input(&self, id: &str) -> Option<String> {
         let mut inner = self.inner.lock().expect("agent registry poisoned");
-        inner
-            .slots
-            .get_mut(id)?
-            .pending_inputs
-            .pop()
-            .map(|input| input.text)
+        let pending = &mut inner.slots.get_mut(id)?.pending_inputs;
+        let index = pending.iter().rposition(|input| input.from_user)?;
+        Some(pending.remove(index).text)
+    }
+
+    /// An `agentoutput` call handed the lead `id`'s settled outcome
+    /// (`docs/agent-tools.md` *One notice per answer*): the completion
+    /// notice saying the same must not reach it too. Not posted yet — the
+    /// loop's [`post_notice`](Self::post_notice) is told to skip it; posted
+    /// and still on `board` — taken back, and its cell noted as not owed
+    /// ([`take_retracted`](Self::take_retracted)); already taken by the
+    /// lead — nothing to do, this was a re-read. Under the registry lock, as
+    /// the loop's post is, so the two can never cross.
+    pub fn report_settled(&self, id: &str, board: Option<&crate::background::BackgroundRegistry>) {
+        let mut inner = self.inner.lock().expect("agent registry poisoned");
+        let Some(slot) = inner.slots.get_mut(id) else {
+            return;
+        };
+        if slot.notices_owed > 0 {
+            slot.notices_owed -= 1;
+            return;
+        }
+        if board.is_some_and(|board| board.retract_agent_notice(id)) {
+            inner.retracted.insert(id.to_string());
+        }
+    }
+
+    /// The loop handled one of `id`'s **unobserved** settles: post its
+    /// completion notice on `board` when it owes one (`context`) — unless a
+    /// report already handed the lead that answer
+    /// ([`report_settled`](Self::report_settled)). Called for every such
+    /// settle, a notice owed or not, so each one is accounted for once.
+    /// `false` when a report covered it: no notice cell is owed either.
+    #[must_use]
+    pub fn post_notice(
+        &self,
+        id: &str,
+        board: &crate::background::BackgroundRegistry,
+        context: Option<String>,
+    ) -> bool {
+        let mut inner = self.inner.lock().expect("agent registry poisoned");
+        if let Some(slot) = inner.slots.get_mut(id) {
+            if slot.notices_owed == 0 {
+                return false;
+            }
+            slot.notices_owed -= 1;
+        }
+        if let Some(context) = context {
+            // A retraction left over from an earlier notice — one whose cell
+            // had already committed — must not cost this one its cell.
+            inner.retracted.remove(id);
+            board.post_agent_notice(context, id);
+        }
+        true
+    }
+
+    /// Did a report take `id`'s posted notice back off the board? Asked
+    /// once per deferred notice cell, as the loop settles it: `true` means
+    /// the cell would record a notice the lead never read.
+    #[must_use]
+    pub fn take_retracted(&self, id: &str) -> bool {
+        self.inner
+            .lock()
+            .expect("agent registry poisoned")
+            .retracted
+            .remove(id)
     }
 
     /// Can this agent take a **new turn** right now — settled, not stopped,
@@ -3053,8 +3133,8 @@ mod tests {
         // side that knows whether the round boundary has read it yet.
         let registry = test_registry();
         let (id, _cancel) = registry.register(GENERAL_PURPOSE);
-        assert!(registry.queue_input(&id, "first"));
-        assert!(registry.queue_input(&id, "second"));
+        assert!(registry.queue_user_input(&id, "first"));
+        assert!(registry.queue_user_input(&id, "second"));
         assert_eq!(registry.take_last_input(&id).as_deref(), Some("second"));
         assert_eq!(registry.take_pending_inputs(&id), ["first"]);
         assert_eq!(
@@ -4185,6 +4265,181 @@ mod tests {
         assert_eq!(registry.take_last_input(&id).as_deref(), Some("oops"));
         assert!(registry.take_pending_inputs(&id).is_empty());
         assert!(registry.user_messages(&id).is_empty(), "never read");
+    }
+
+    #[test]
+    fn alt_up_never_takes_back_the_leads_message() {
+        // Alt+Up pulls back what the *user* typed: a message the lead's
+        // `agentsend` queued has no row and no composer to return to, so
+        // taking it would silently drop it.
+        let registry = test_registry();
+        let (id, _cancel) = registry.register_agent(GENERAL_PURPOSE, "d", "p");
+        assert!(registry.queue_user_input(&id, "mine"));
+        assert!(matches!(registry.resume(&id, "the lead's"), Resume::Queued));
+        assert_eq!(registry.take_last_input(&id).as_deref(), Some("mine"));
+        assert_eq!(
+            registry.take_last_input(&id),
+            None,
+            "only the lead's is left"
+        );
+        assert_eq!(registry.take_pending_inputs(&id), ["the lead's"]);
+    }
+
+    #[test]
+    fn a_stop_drops_the_messages_its_loop_never_read() {
+        // A stopped loop reads nothing more, and the roster drops the rows
+        // that promised a delivery — so the registry drops the messages too,
+        // or a later continuation delivers them unannounced, the user's
+        // passing as the lead's (docs/queue.md).
+        let registry = test_registry();
+        let (by_user, _cancel) = registry.register_agent(GENERAL_PURPOSE, "d", "p");
+        assert!(registry.queue_user_input(&by_user, "too late"));
+        let _ = registry.kill(&by_user);
+        assert!(!registry.has_pending_inputs(&by_user));
+
+        let (by_lead, _cancel) = registry.register_agent(GENERAL_PURPOSE, "d", "p");
+        assert!(registry.queue_user_input(&by_lead, "too late"));
+        let _ = registry.stop(&by_lead);
+        assert!(!registry.has_pending_inputs(&by_lead));
+        registry.settle(
+            &by_lead,
+            Ok(String::new()),
+            vec![ChatMessage::user("p")],
+            None,
+        );
+        assert!(matches!(
+            registry.resume(&by_lead, "go on"),
+            Resume::Continue { .. }
+        ));
+        assert_eq!(registry.take_pending_inputs(&by_lead), ["go on"]);
+    }
+
+    /// A finished agent whose completion notice went out unobserved, with a
+    /// board to post it on.
+    fn settled_with_notice() -> (AgentRegistry, String, crate::background::BackgroundRegistry) {
+        let registry = test_registry();
+        let (id, _cancel) = registry.register_agent(GENERAL_PURPOSE, "d", "p");
+        registry.settle(
+            &id,
+            Ok("answer".into()),
+            vec![ChatMessage::user("p")],
+            Some(StreamEvent::StreamDone),
+        );
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let board = crate::background::BackgroundRegistry::new(tx, std::env::temp_dir());
+        (registry, id, board)
+    }
+
+    #[test]
+    fn a_report_before_the_notice_is_posted_cancels_it() {
+        // `agentoutput` read the answer before the loop got to its notice:
+        // the loop must not post it (docs/agent-tools.md *One notice per
+        // answer*).
+        let (registry, id, board) = settled_with_notice();
+        registry.report_settled(&id, Some(&board));
+        assert!(!registry.post_notice(&id, &board, Some("note".into())));
+        assert!(board.take_pending_notices().is_empty());
+        assert!(
+            !registry.take_retracted(&id),
+            "nothing was posted to retract"
+        );
+    }
+
+    #[test]
+    fn a_report_retracts_a_posted_notice_the_lead_has_not_taken() {
+        let (registry, id, board) = settled_with_notice();
+        assert!(registry.post_notice(&id, &board, Some("note".into())));
+        registry.report_settled(&id, Some(&board));
+        assert!(board.take_pending_notices().is_empty(), "off the board");
+        assert!(registry.take_retracted(&id), "its cell is not owed either");
+        assert!(!registry.take_retracted(&id), "once");
+    }
+
+    #[test]
+    fn a_report_after_the_lead_took_the_notice_is_a_re_read() {
+        let (registry, id, board) = settled_with_notice();
+        assert!(registry.post_notice(&id, &board, Some("note".into())));
+        assert_eq!(board.take_pending_notices().len(), 1, "the lead read it");
+        registry.report_settled(&id, Some(&board));
+        assert!(
+            !registry.take_retracted(&id),
+            "the cell records what it read"
+        );
+    }
+
+    #[test]
+    fn a_report_retracts_only_its_own_agents_notice() {
+        let (registry, id, board) = settled_with_notice();
+        board.post_notice("a shell finished".into(), true);
+        assert!(registry.post_notice(&id, &board, Some("note".into())));
+        registry.report_settled(&id, Some(&board));
+        let left = board.take_pending_notices();
+        assert_eq!(left.len(), 1);
+        assert_eq!(left[0].context, "a shell finished");
+    }
+
+    #[test]
+    fn a_settle_that_owed_no_notice_is_still_accounted_for() {
+        // A foreground agent's settle posts nothing (its group carried the
+        // answer); its resumed run's later settle must still be the one a
+        // report retracts.
+        let (registry, id, board) = settled_with_notice();
+        assert!(registry.post_notice(&id, &board, None));
+        assert!(matches!(
+            registry.resume(&id, "again"),
+            Resume::Continue { .. }
+        ));
+        registry.settle(
+            &id,
+            Ok("second".into()),
+            vec![ChatMessage::user("p")],
+            Some(StreamEvent::StreamDone),
+        );
+        assert!(registry.post_notice(&id, &board, Some("note".into())));
+        registry.report_settled(&id, Some(&board));
+        assert!(board.take_pending_notices().is_empty());
+        assert!(registry.take_retracted(&id));
+    }
+
+    #[test]
+    fn a_new_notice_clears_a_retraction_left_over_from_the_last() {
+        // A retraction whose cell had already committed is never taken; the
+        // agent's next notice must still get its cell.
+        let (registry, id, board) = settled_with_notice();
+        assert!(registry.post_notice(&id, &board, Some("first".into())));
+        registry.report_settled(&id, Some(&board));
+        assert!(matches!(
+            registry.resume(&id, "again"),
+            Resume::Continue { .. }
+        ));
+        registry.settle(
+            &id,
+            Ok("second".into()),
+            vec![ChatMessage::user("p")],
+            Some(StreamEvent::StreamDone),
+        );
+        assert!(registry.post_notice(&id, &board, Some("second".into())));
+        assert!(!registry.take_retracted(&id));
+    }
+
+    #[test]
+    fn a_notice_a_wait_observed_is_never_retracted_or_suppressed() {
+        // A held event released observed posts nothing; a report then has
+        // nothing owed and nothing on the board.
+        let registry = test_registry();
+        let (id, _cancel) = registry.register_agent(GENERAL_PURPOSE, "d", "p");
+        assert!(registry.begin_wait(&id));
+        registry.settle(
+            &id,
+            Ok("answer".into()),
+            vec![ChatMessage::user("p")],
+            Some(StreamEvent::StreamDone),
+        );
+        let _ = registry.end_wait(&id, true);
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let board = crate::background::BackgroundRegistry::new(tx, std::env::temp_dir());
+        registry.report_settled(&id, Some(&board));
+        assert!(!registry.take_retracted(&id));
     }
 
     fn snapshot(state: AgentState, calls: &[&str]) -> AgentSnapshot {

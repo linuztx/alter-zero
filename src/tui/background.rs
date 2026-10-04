@@ -158,8 +158,14 @@ impl Session<'_> {
         // group entry so the Ctrl+O cell shows the final response
         // (docs/agent-tool.md).
         for notice in self.app.take_pending_agent_notices() {
-            self.app.record_agent_notice(&notice);
             self.app.settle_agent_completion(&notice);
+            // An `agentoutput` report took its note back off the board before
+            // the lead read it: the cell would record a notice nobody sent
+            // (docs/agent-tools.md *One notice per answer*).
+            if self.agent_registry.take_retracted(&notice.id) {
+                continue;
+            }
+            self.app.record_agent_notice(&notice);
             if committing {
                 let width = self.term.screen().width;
                 let height = self.live_region_height();

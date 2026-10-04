@@ -158,7 +158,7 @@ fn output(
     };
     let wait = Duration::from_millis(args.wait_ms());
     if wait.is_zero() || snapshot.state != AgentState::Running {
-        return ToolOutcome::ok(report(&snapshot, false));
+        return reported(ctx, &snapshot, false);
     }
     if !ctx.registry.begin_wait(id) {
         return unknown_agent(ctx.registry, id);
@@ -206,7 +206,26 @@ fn output(
     let Some(snapshot) = ctx.registry.end_wait(id, reporting) else {
         return unknown_agent(ctx.registry, id);
     };
-    ToolOutcome::ok(report(&snapshot, ended_by_user))
+    if !reporting {
+        return ToolOutcome::ok(report(&snapshot, ended_by_user));
+    }
+    reported(ctx, &snapshot, ended_by_user)
+}
+
+/// The report, handed to the lead — and, for a settled agent, the
+/// registry told so, so the completion notice saying the same is cancelled
+/// or taken back (`docs/agent-tools.md` *One notice per answer*). A wait
+/// that saw the settle already marked it observed; this covers the settle
+/// it just missed, and the one that landed before the lead looked.
+fn reported(
+    ctx: &AgentToolContext<'_>,
+    snapshot: &crate::agents::AgentSnapshot,
+    ended_by_user: bool,
+) -> ToolOutcome {
+    if snapshot.state != AgentState::Running {
+        ctx.registry.report_settled(&snapshot.id, ctx.background);
+    }
+    ToolOutcome::ok(report(snapshot, ended_by_user))
 }
 
 /// `agentoutput`'s result: the report, and — for an agent still at work —
@@ -580,6 +599,99 @@ mod tests {
                 observed: true,
             }],
             "the report was the notice"
+        );
+    }
+
+    /// A finished agent whose completion went out unobserved — the settle a
+    /// wait just missed, or one that landed before the lead looked.
+    fn settled_unobserved() -> (AgentRegistry, String, BackgroundRegistry) {
+        let (registry, _rx) = registry();
+        let (id, _cancel) = registry.register_agent(GENERAL_PURPOSE, "d", "p");
+        registry.settle(
+            &id,
+            Ok("It has 12 repos.".into()),
+            vec![ChatMessage::user("p")],
+            Some(StreamEvent::StreamDone),
+        );
+        let (bg_tx, _bg_rx) = tokio::sync::mpsc::unbounded_channel();
+        let background = BackgroundRegistry::new(bg_tx, std::env::temp_dir());
+        (registry, id, background)
+    }
+
+    #[test]
+    fn a_report_that_beats_the_notice_cancels_it() {
+        // The settle landed just before the wait could register, so its
+        // notice went out unobserved; the report hands the lead the answer,
+        // and the loop must then post nothing (docs/agent-tools.md *One
+        // notice per answer*).
+        let (registry, id, background) = settled_unobserved();
+        let (outcome, _, _) = run(
+            &registry,
+            &CancelToken::new(),
+            Some(&background),
+            &call(
+                tools::AGENT_OUTPUT_TOOL,
+                serde_json::json!({"agent_id": id, "wait": 60}),
+            ),
+        );
+        assert!(
+            outcome.output.ends_with("It has 12 repos."),
+            "{}",
+            outcome.output
+        );
+        assert!(!registry.post_notice(&id, &background, Some("note".into())));
+        assert!(background.take_pending_notices().is_empty());
+    }
+
+    #[test]
+    fn a_report_takes_back_a_notice_the_lead_has_not_read() {
+        let (registry, id, background) = settled_unobserved();
+        assert!(registry.post_notice(&id, &background, Some("note".into())));
+        let (outcome, _, _) = run(
+            &registry,
+            &CancelToken::new(),
+            Some(&background),
+            &call(
+                tools::AGENT_OUTPUT_TOOL,
+                serde_json::json!({"agent_id": id}),
+            ),
+        );
+        assert!(
+            outcome.output.ends_with("It has 12 repos."),
+            "{}",
+            outcome.output
+        );
+        assert!(
+            background.take_pending_notices().is_empty(),
+            "off the board"
+        );
+        assert!(registry.take_retracted(&id), "and its cell is not owed");
+    }
+
+    #[test]
+    fn a_running_agents_report_cancels_no_notice() {
+        let (registry, _rx) = registry();
+        let (id, _cancel) = registry.register_agent(GENERAL_PURPOSE, "d", "p");
+        let (bg_tx, _bg_rx) = tokio::sync::mpsc::unbounded_channel();
+        let background = BackgroundRegistry::new(bg_tx, std::env::temp_dir());
+        let _ = run(
+            &registry,
+            &CancelToken::new(),
+            Some(&background),
+            &call(
+                tools::AGENT_OUTPUT_TOOL,
+                serde_json::json!({"agent_id": id}),
+            ),
+        );
+        registry.settle(
+            &id,
+            Ok("later".into()),
+            vec![ChatMessage::user("p")],
+            Some(StreamEvent::StreamDone),
+        );
+        assert!(
+            registry.post_notice(&id, &background, Some("note".into())),
+            "the answer it did not report is still noticed"
         );
     }
 

@@ -229,9 +229,29 @@ waiter protocol (`BackgroundRegistry::finalize`):
 
 A user's `x` asks the same question atomically (`kill` returns whether a
 waiter will report the stop), so a wait ended by the user's stop is not also
-noticed. The one duplicate left is benign: an `agentoutput` without a wait
-that reads an outcome whose note was posted a moment earlier but not yet
-taken.
+noticed.
+
+A settle **no wait saw** goes out unobserved: the one that lands in the
+instant between `agentoutput` reading the agent as running and registering
+its wait, or one that lands before the lead looks at all. Any `agentoutput`
+that hands the lead a settled outcome then tells the registry
+(`AgentRegistry::report_settled`), and the event loop accounts for **every**
+unobserved settle with it (`AgentRegistry::post_notice`, a note owed or not),
+both under the registry lock, so the two never cross:
+
+- the report comes first: the slot's count of unposted notices is spent, the
+  loop posts nothing, and it settles the group entry with no notice cell —
+  the observed path;
+- the note is posted but the lead has not taken it: the report takes it back
+  off the board (`BackgroundRegistry::retract_agent_notice`, the board's
+  notes tagged with their agent), and the notice cell deferred with it is
+  dropped when the loop settles it (`AgentRegistry::take_retracted`);
+- the lead already took it: the report is a re-read, and the cell records
+  the note it read.
+
+The edge left: a notice cell that committed at a mid-turn boundary before
+the report took its untaken note back stays in the history, so later turns'
+context carries the answer twice.
 
 ## Verified live
 

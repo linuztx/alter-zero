@@ -24,9 +24,9 @@ release heading when a version is cut.
   (`Bash(curl -s …)`, one line each) and its final response, and with
   `wait` blocks until it finishes, its cell streaming each call as it
   starts; `agentkill` stops a running agent while keeping it resumable; and
-  `agentlist` names every agent of the session. A wait that already
-  reported an agent's answer is not followed by a notice repeating it, and
-  finished agents stay resumable — up to the 16 most recent — after their
+  `agentlist` names every agent of the session. An answer `agentoutput`
+  already handed the main agent is not followed by a notice repeating it,
+  and finished agents stay resumable — up to the 16 most recent — after their
   roster rows are gone. The id also shows on the agent's Ctrl+O cell
   (`docs/agent-tools.md`).
 - **The main agent knows when you talked to a subagent yourself.** A
