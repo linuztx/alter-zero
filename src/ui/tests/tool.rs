@@ -773,6 +773,7 @@ fn running_command_lines_tails_recent_output_with_the_elapsed() {
     let t = tool("Bash", "ping -c 10 x", ToolStatus::Running, &out);
     let lines = running_command_lines(
         &t,
+        &crate::app::LiveTail::default(),
         Duration::from_secs(9),
         Duration::ZERO,
         80,
@@ -814,6 +815,7 @@ fn the_running_footer_names_the_timeout_the_call_runs_under() {
     t.arguments = Some(format!(r#"{{"command":{command:?},"timeout":110000}}"#));
     let lines: Vec<String> = running_command_lines(
         &t,
+        &crate::app::LiveTail::default(),
         Duration::from_secs(22),
         Duration::ZERO,
         80,
@@ -849,6 +851,7 @@ fn a_running_command_with_no_output_counts_on_its_running_row() {
     );
     let lines: Vec<String> = running_command_lines(
         &t,
+        &crate::app::LiveTail::default(),
         Duration::from_secs(10),
         Duration::ZERO,
         80,
@@ -878,6 +881,7 @@ fn running_footers_humanize_the_elapsed_past_a_minute() {
     let t = tool("Bash", "ping -c 200 x", ToolStatus::Running, &out);
     let lines = running_command_lines(
         &t,
+        &crate::app::LiveTail::default(),
         Duration::from_secs(123),
         Duration::ZERO,
         80,
@@ -906,6 +910,7 @@ fn running_command_lines_without_overflow_shows_the_clock_row_alone() {
     let t = tool("Bash", "echo", ToolStatus::Running, "a\nb");
     let lines = running_command_lines(
         &t,
+        &crate::app::LiveTail::default(),
         Duration::from_secs(1),
         Duration::ZERO,
         80,
@@ -932,6 +937,7 @@ fn running_command_lines_tail_window_counts_display_rows_when_lines_wrap() {
     let t = tool("Bash", "cat log", ToolStatus::Running, &out);
     let lines = running_command_lines(
         &t,
+        &crate::app::LiveTail::default(),
         Duration::from_secs(7),
         Duration::ZERO,
         40,
@@ -2739,6 +2745,7 @@ fn the_running_tail_footer_counts_hidden_rows() {
     let t = tool("Bash", "curl -s api", ToolStatus::Running, &out);
     let lines: Vec<String> = running_command_lines(
         &t,
+        &crate::app::LiveTail::default(),
         Duration::from_secs(3),
         Duration::ZERO,
         40,
@@ -3684,6 +3691,7 @@ fn the_running_tail_never_reshapes_what_is_still_streaming() {
     let t = tool("Bash", "curl", ToolStatus::Running, "{\"a\":1,\"b\":2}\n");
     let lines: Vec<String> = running_command_lines(
         &t,
+        &crate::app::LiveTail::default(),
         Duration::from_secs(1),
         Duration::ZERO,
         60,
@@ -4202,6 +4210,7 @@ fn a_running_session_call_shows_the_wait_it_runs_under() {
     let t = tool("BashSession", "b1", ToolStatus::Running, "");
     let lines: Vec<String> = running_command_lines(
         &t,
+        &crate::app::LiveTail::default(),
         Duration::from_secs(3),
         Duration::ZERO,
         80,
@@ -4213,5 +4222,123 @@ fn a_running_session_call_shows_the_wait_it_runs_under() {
     assert_eq!(
         lines,
         ["● BashSession(b1)", "  ⎿  Running… (3s · wait 10s)"]
+    );
+}
+
+// --- the running window follows the rows still moving (docs/tool-streaming.md) ---
+
+#[test]
+fn the_running_window_follows_the_rows_still_moving() {
+    // pacman's parallel downloads: the finished bars sit *below* the ones
+    // still moving, all within the terminal's reach and so all live. A window
+    // pinned to the output's end showed exactly the rows that had stopped
+    // while the motion hid behind `+N lines` — the reported "the inline cell
+    // only shows the finished lines, I need Ctrl+O to see the bars move".
+    let mut live = crate::app::LiveTail::default();
+    let mut out = String::new();
+    let screen = |core: u8, extra: u8| {
+        format!(
+            ":: Synchronizing package databases...\n core      {core:>3}%\n extra     {extra:>3}%\n multilib  100%\n omarchy   100%"
+        )
+    };
+    live.apply(&mut out, "", &screen(10, 10), Duration::from_secs(4));
+    live.apply(&mut out, "", &screen(45, 12), Duration::from_secs(50));
+    let t = tool("Bash", "sudo pacman -Syy", ToolStatus::Running, &out);
+    let body: Vec<String> = running_command_lines(
+        &t,
+        &live,
+        Duration::from_secs(50),
+        Duration::ZERO,
+        80,
+        &PathDisplay::VERBATIM,
+    )[1..]
+        .iter()
+        .map(plain)
+        .collect();
+    assert!(
+        body[0].contains(":: Synchronizing"),
+        "the window fills upward from the lowest moving row: {body:?}"
+    );
+    assert!(
+        body[1].contains("core       45%") && body[2].contains("extra      12%"),
+        "the moving bars take the window: {body:?}"
+    );
+    assert!(
+        !body.iter().any(|row| row.contains("100%")),
+        "the finished bars below are what hides: {body:?}"
+    );
+    assert_eq!(
+        body[3].trim(),
+        "+2 lines (50s · wait 2m)",
+        "the footer counts the rows hidden below too: {body:?}"
+    );
+}
+
+#[test]
+fn the_running_window_stays_a_tail_while_the_newest_output_is_at_the_end() {
+    // Every ordinary command: each new line is the newest change *and* the
+    // lowest live row, so the window is the tail it always was — here a
+    // terminal's live block growing a line at a time.
+    let mut live = crate::app::LiveTail::default();
+    let mut out = String::new();
+    for i in 1..=9u64 {
+        let block = (1..=i)
+            .map(|n| format!("line {n}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        live.apply(&mut out, "", &block, Duration::from_secs(i));
+    }
+    let t = tool("Bash", "ping -c 10 x", ToolStatus::Running, &out);
+    let body: Vec<String> = running_command_lines(
+        &t,
+        &live,
+        Duration::from_secs(9),
+        Duration::ZERO,
+        80,
+        &PathDisplay::VERBATIM,
+    )[1..]
+        .iter()
+        .map(plain)
+        .collect();
+    assert!(
+        body[0].contains("line 6") && body[3].contains("line 9"),
+        "the tail: {body:?}"
+    );
+    assert_eq!(body[4].trim(), "+5 lines (9s · wait 2m)", "{body:?}");
+}
+
+#[test]
+fn the_strip_follows_the_apps_live_tail() {
+    // The main strip renders the running call with the App's own live tail:
+    // what `push_tool_screen` stamped is what the window follows.
+    let mut app = App::new();
+    app.begin_stream();
+    app.start_tool("Bash", "sudo pacman -Syy", None);
+    app.set_command_elapsed(Some(Duration::from_secs(4)));
+    app.push_tool_screen(
+        "",
+        ":: Synchronizing\n core 10%\n extra 10%\n multilib 100%\n omarchy 100%",
+    );
+    app.set_command_elapsed(Some(Duration::from_secs(50)));
+    app.push_tool_screen(
+        "",
+        ":: Synchronizing\n core 45%\n extra 12%\n multilib 100%\n omarchy 100%",
+    );
+    let rows: Vec<String> = crate::ui::live::preview_tool_lines(&app, 80)
+        .iter()
+        .map(plain)
+        .collect();
+    assert!(
+        rows.iter().any(|row| row.contains("core 45%")),
+        "the moving bar is on the strip: {rows:?}"
+    );
+    assert!(
+        !rows.iter().any(|row| row.contains("multilib")),
+        "the finished bar below it is not: {rows:?}"
+    );
+    assert_eq!(
+        preview_rows(&app, 80) as usize,
+        rows.len(),
+        "the strip is sized by the same walk it is painted from"
     );
 }

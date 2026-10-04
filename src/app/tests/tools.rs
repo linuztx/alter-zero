@@ -860,3 +860,143 @@ fn each_announced_round_is_its_own_batch_and_a_new_turn_forgets_the_last() {
     app.begin_stream();
     assert_eq!(app.open_round_batch(), None, "a new turn opens on no round");
 }
+
+// --- the live tail: which rows are still moving (docs/tool-streaming.md) ---
+
+#[test]
+fn live_tail_stamps_a_redrawn_row_and_keeps_the_rest() {
+    // pacman's bars: the finished one below keeps the stamp of its last
+    // change while the one above is redrawn.
+    let mut tail = LiveTail::default();
+    let mut out = String::new();
+    tail.apply(
+        &mut out,
+        "",
+        " core 10%\n extra 100%",
+        Duration::from_secs(1),
+    );
+    tail.apply(
+        &mut out,
+        "",
+        " core 50%\n extra 100%",
+        Duration::from_secs(4),
+    );
+    assert_eq!(out, " core 50%\n extra 100%");
+    assert_eq!(
+        tail.changed(),
+        &[Duration::from_secs(4), Duration::from_secs(1)]
+    );
+}
+
+#[test]
+fn live_tail_anchors_the_window_on_the_lowest_row_still_moving() {
+    let mut tail = LiveTail::default();
+    let mut out = String::new();
+    tail.apply(
+        &mut out,
+        ":: Synchronizing\n",
+        " core 10%\n extra 10%\n multilib 100%",
+        Duration::from_secs(1),
+    );
+    // Within the span of the newest change every row is still moving: the
+    // window ends at the last line, today's tail.
+    assert_eq!(tail.anchor(4), 3);
+    tail.apply(
+        &mut out,
+        "",
+        " core 60%\n extra 60%\n multilib 100%",
+        Duration::from_secs(4),
+    );
+    // multilib stopped three seconds before the newest change: the window
+    // ends at extra, the lowest row still moving.
+    assert_eq!(tail.anchor(4), 2);
+    // Nothing live: the end.
+    assert_eq!(LiveTail::default().anchor(4), 3);
+    assert_eq!(LiveTail::default().anchor(0), 0);
+}
+
+#[test]
+fn live_tail_follows_the_newest_activity_not_the_clock() {
+    // A stalled download: no row changed for ten seconds. The reference is
+    // the newest change, so the window holds instead of dropping to the end
+    // and bouncing back when data flows again.
+    let mut tail = LiveTail::default();
+    let mut out = String::new();
+    tail.apply(
+        &mut out,
+        "",
+        " core 10%\n extra 100%",
+        Duration::from_secs(1),
+    );
+    tail.apply(
+        &mut out,
+        "",
+        " core 50%\n extra 100%",
+        Duration::from_secs(4),
+    );
+    assert_eq!(tail.anchor(2), 0);
+    // Ten seconds of silence change nothing: the same rows, the same stamps.
+    tail.apply(
+        &mut out,
+        "",
+        " core 50%\n extra 100%",
+        Duration::from_secs(14),
+    );
+    assert_eq!(tail.anchor(2), 0);
+}
+
+#[test]
+fn live_tail_settled_lines_shift_the_rows_it_compares() {
+    // A row that scrolled out of reach settles; the rows after it are the
+    // same rows, one place up, and keep their stamps.
+    let mut tail = LiveTail::default();
+    let mut out = String::new();
+    tail.apply(&mut out, "", "a\nb\nc", Duration::from_secs(1));
+    tail.apply(&mut out, "a\n", "b\nc\nd", Duration::from_secs(5));
+    assert_eq!(out, "a\nb\nc\nd");
+    assert_eq!(
+        tail.changed(),
+        &[
+            Duration::from_secs(1),
+            Duration::from_secs(1),
+            Duration::from_secs(5)
+        ]
+    );
+}
+
+#[test]
+fn a_screen_update_is_stamped_with_the_commands_clock() {
+    let mut app = App::new();
+    app.start_tool("Bash", "sudo pacman -Syy", None);
+    app.set_command_elapsed(Some(Duration::from_secs(1)));
+    app.push_tool_screen("", " core 10%\n extra 100%");
+    app.set_command_elapsed(Some(Duration::from_secs(4)));
+    app.push_tool_screen("", " core 20%\n extra 100%");
+    assert_eq!(
+        app.live_tail().anchor(2),
+        0,
+        "the window follows the row still moving"
+    );
+    // The next call starts from scratch — its clock too, so a previous
+    // command's reading can never stamp a new call's first rows.
+    app.end_tool("Exit code: 0", true);
+    app.start_tool("Bash", "ls", None);
+    assert_eq!(
+        app.command_elapsed(),
+        None,
+        "a new command has run no time yet"
+    );
+    assert_eq!(*app.live_tail(), LiveTail::default());
+}
+
+#[test]
+fn appended_output_settles_the_live_rows() {
+    // A backend mixing the two forms: text appended after the live rows
+    // makes them final, so the next screen update replaces nothing of them.
+    let mut app = App::new();
+    app.start_tool("Bash", "x", None);
+    app.push_tool_screen("", "45%");
+    app.push_tool_output("\ndone\n");
+    app.push_tool_screen("", "next");
+    assert_eq!(app.current_tool().unwrap().output, "45%\ndone\nnext");
+}

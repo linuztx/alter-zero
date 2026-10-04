@@ -387,6 +387,7 @@ fn running_command_lines_wraps_a_long_tail_line_instead_of_clipping() {
     let t = tool("Bash", "cat log", ToolStatus::Running, &long);
     let lines = running_command_lines(
         &t,
+        &crate::app::LiveTail::default(),
         Duration::from_secs(1),
         Duration::ZERO,
         40,

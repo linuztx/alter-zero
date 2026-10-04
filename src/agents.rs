@@ -187,10 +187,12 @@ pub struct AgentRun {
     pub followups: VecDeque<String>,
     /// Its live tool calls, front running — the parallel-batch queue shape.
     pub tool_queue: VecDeque<ToolCall>,
-    /// How many bytes at the end of the running call's output are a terminal
-    /// session's live rows — the main session's `tool_live_len`
-    /// (`docs/interactive-shell.md`).
-    tool_live_len: usize,
+    /// The running call's live rows and when each last changed — the main
+    /// session's [`App::live_tail`](crate::app::App::live_tail), stamped
+    /// with this agent's own command clock ([`Self::command_elapsed`]) so its
+    /// session view's running cell follows the rows still moving too
+    /// (`docs/tool-streaming.md`).
+    tool_live: crate::app::LiveTail,
     /// The final response text once it settles (what the caller received).
     pub result: Option<String>,
     /// The error message when it failed.
@@ -316,7 +318,7 @@ impl AgentRun {
             queued: Vec::new(),
             followups: VecDeque::new(),
             tool_queue: VecDeque::new(),
-            tool_live_len: 0,
+            tool_live: crate::app::LiveTail::default(),
             result: None,
             error: None,
             hidden: false,
@@ -481,7 +483,12 @@ impl AgentRun {
             } => {
                 self.flush_segment();
                 self.tool_uses += 1;
-                self.tool_live_len = 0;
+                self.tool_live.reset();
+                // A new command has run no time yet: the roster tick injects
+                // its clock, and until then the previous call's reading must
+                // not stamp this one's first live rows (the main session's
+                // `start_tool` rule).
+                self.command_elapsed = None;
                 self.last_call = Some(AgentCall {
                     name: name.clone(),
                     args: args.clone(),
@@ -527,6 +534,7 @@ impl AgentRun {
                     && front.status == ToolStatus::Running
                 {
                     front.output.push_str(chunk);
+                    self.tool_live.reset();
                 }
             }
             // A terminal session's live output and a refined header, folded
@@ -536,12 +544,8 @@ impl AgentRun {
                 if let Some(front) = self.tool_queue.front_mut()
                     && front.status == ToolStatus::Running
                 {
-                    self.tool_live_len = crate::app::apply_tool_screen(
-                        &mut front.output,
-                        self.tool_live_len,
-                        settled,
-                        live,
-                    );
+                    let now = self.command_elapsed.unwrap_or_default();
+                    self.tool_live.apply(&mut front.output, settled, live, now);
                 }
             }
             StreamEvent::ToolTitle(title) => {
@@ -1033,6 +1037,14 @@ impl AgentRun {
     /// (Ns · wait …)` clock row with. `None` when no command is running.
     pub fn set_command_elapsed(&mut self, elapsed: Option<Duration>) {
         self.command_elapsed = elapsed;
+    }
+
+    /// The running call's live rows and when each last changed — what this
+    /// agent's session view's running cell follows
+    /// ([`crate::app::LiveTail`]).
+    #[must_use]
+    pub fn live_tail(&self) -> &crate::app::LiveTail {
+        &self.tool_live
     }
 
     /// Close the open thinking phase, recording it as a
@@ -2512,6 +2524,52 @@ mod tests {
             live: "x".into(),
         });
         assert_eq!(run.tool_queue.front().expect("running").output, "x");
+    }
+
+    #[test]
+    fn a_subagents_window_follows_its_moving_rows() {
+        // The session view's running cell anchors on the rows still moving
+        // exactly as the main one does (docs/tool-streaming.md): each live
+        // row is stamped with the agent's own command clock, and a new call
+        // starts from scratch, clock included.
+        let mut run = AgentRun::new("a1", "d", GENERAL_PURPOSE, "p", false);
+        run.apply(&StreamEvent::ToolStart {
+            name: "Bash".into(),
+            args: "sudo pacman -Syy".into(),
+            detail: None,
+            arguments: None,
+        });
+        run.set_command_elapsed(Some(std::time::Duration::from_secs(1)));
+        run.apply(&StreamEvent::ToolScreen {
+            settled: String::new(),
+            live: " core 10%\n extra 100%".into(),
+        });
+        run.set_command_elapsed(Some(std::time::Duration::from_secs(4)));
+        run.apply(&StreamEvent::ToolScreen {
+            settled: String::new(),
+            live: " core 20%\n extra 100%".into(),
+        });
+        assert_eq!(
+            run.live_tail().anchor(2),
+            0,
+            "the window follows the row still moving"
+        );
+        run.apply(&StreamEvent::ToolEnd {
+            output: "Exit code: 0".into(),
+            ok: true,
+            truncated: false,
+        });
+        run.apply(&StreamEvent::ToolStart {
+            name: "Bash".into(),
+            args: "ls".into(),
+            detail: None,
+            arguments: None,
+        });
+        assert_eq!(
+            run.command_elapsed, None,
+            "a new command has run no time yet"
+        );
+        assert_eq!(*run.live_tail(), crate::app::LiveTail::default());
     }
 
     #[test]

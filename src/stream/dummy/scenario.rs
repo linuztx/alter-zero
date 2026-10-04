@@ -308,6 +308,16 @@ pub(in crate::stream) const SCENARIOS: &[Scenario] = &[
         selects: |cue| cue.mentions("skill") || cue.mentions("$dataviz"),
         play: Play::Script(turns::skills_turn),
     },
+    // A parallel download redrawn in place — pacman refreshing its databases,
+    // the small files finishing first and sitting below the bars still
+    // moving (docs/tool-streaming.md *The window follows what is still
+    // moving*). Whole words, like every cue.
+    Scenario {
+        #[cfg(test)]
+        name: "download",
+        selects: |cue| cue.mentions("pacman") || cue.mentions("download"),
+        play: Play::Script(turns::download_turn),
+    },
     // An interactive program driven through its terminal: a `bash` launch
     // stopping at a prompt, answers typed with `bashsend`
     // (docs/bash-tools.md). Only the whole word — "tty" hides in "pretty",

@@ -608,12 +608,17 @@ fn command_clock_clause(elapsed: Duration, wait_ms: u64) -> String {
 }
 
 /// The live preview for a **running** command-style backend tool (`bash`): the
-/// coloured `● name(args)` header, the **last** [`TOOL_PEEK_ROWS`] display
-/// **rows** of its output under the `⎿` gutter (the *tail* — what just
-/// streamed), then the **clock row** — `+{hidden} lines ({elapsed} · wait
-/// {limit})` when any display rows are fully hidden above the window, the
-/// bare `({elapsed} · wait {limit})` when none are, and for a command that
-/// has printed nothing yet the clause rides the corner row itself:
+/// coloured `● name(args)` header, a window of [`TOOL_PEEK_ROWS`] display
+/// **rows** of its output under the `⎿` gutter — the *tail*, what just
+/// streamed, ending at the lowest row **still moving** (`live`'s
+/// [`LiveTail::anchor`]): the output's last row for every command whose
+/// newest output is at its end, and the bar still redrawing for a program
+/// that leaves finished rows below it, pacman's parallel downloads
+/// (`docs/tool-streaming.md` *The window follows what is still moving*) —
+/// then the **clock row** — `+{hidden} lines ({elapsed} · wait
+/// {limit})` when any display rows are fully hidden, above or below the
+/// window, the bare `({elapsed} · wait {limit})` when none are, and for a
+/// command that has printed nothing yet the clause rides the corner row itself:
 /// `⎿ Running… ({elapsed} · wait {limit})`. The clause is on the cell in
 /// **every** shape, so a silent `sleep 100` no longer sits on a bare
 /// `Running…` for as long as it takes, and the limit is the model's own
@@ -640,6 +645,7 @@ fn command_clock_clause(elapsed: Duration, wait_ms: u64) -> String {
 /// unconditional here (`docs/tool-pulse.md`).
 pub(super) fn running_command_lines(
     tool: &ToolCall,
+    live: &LiveTail,
     elapsed: Duration,
     pulse: Duration,
     width: u16,
@@ -669,12 +675,18 @@ pub(super) fn running_command_lines(
         .saturating_sub(cols(TOOL_RESULT_PREFIX))
         .max(1);
     let wrap_width = u16::try_from(peek_width).unwrap_or(u16::MAX);
-    // The tail window: the last TOOL_PEEK_ROWS wrapped rows, each remembering
-    // its source line index *and* how many of that line's rows it dropped, so
-    // the footer can count what scrolled off in display rows.
+    // The line the window ends at: the lowest row still moving, else the last
+    // one. A program redrawing rows above finished ones (pacman's parallel
+    // downloads, every bar within the terminal's reach and so live) used to
+    // fill the window with the rows that had stopped while the motion sat
+    // in the hidden count (docs/tool-streaming.md).
+    let end = live.anchor(display.len());
+    // The window: the last TOOL_PEEK_ROWS wrapped rows up to `end`, each
+    // remembering its source line index *and* how many of that line's rows
+    // it dropped, so the footer can count what scrolled off in display rows.
     let mut window: VecDeque<(usize, String)> = VecDeque::new();
     let mut cut = 0usize; // rows dropped off the top of the oldest shown line
-    for (idx, line) in display.iter().enumerate().rev() {
+    for (idx, line) in display[..=end].iter().enumerate().rev() {
         let rows = wrap_output(line, wrap_width);
         let over = (window.len() + rows.len()).saturating_sub(TOOL_PEEK_ROWS);
         cut = over.min(rows.len());
@@ -688,22 +700,28 @@ pub(super) fn running_command_lines(
     while window.len() > TOOL_PEEK_ROWS {
         window.pop_front();
     }
-    // Display **rows** above the window — the lines wholly above it plus the
-    // rows the oldest shown line lost off its own top. Counting source lines
-    // called a 2 KB line that scrolled past "1 line" (`docs/long-lines.md`);
+    // Display **rows** outside the window — the lines wholly above it plus
+    // the rows the oldest shown line lost off its own top, and every row of
+    // the lines below the one it ends at. Counting source lines called a
+    // 2 KB line that scrolled past "1 line" (`docs/long-lines.md`);
     // `WrapMode::rows` builds nothing, so this stays cheap per animation frame.
-    let hidden = window.front().map_or(0, |(idx, _)| {
+    let above = window.front().map_or(0, |(idx, _)| {
         cut + display[..*idx]
             .iter()
             .map(|line| WrapMode::Output.rows(line, wrap_width))
             .sum::<usize>()
     });
+    let below: usize = display[end + 1..]
+        .iter()
+        .map(|line| WrapMode::Output.rows(line, wrap_width))
+        .sum();
+    let hidden = above + below;
     let shown = window.len();
     for (i, (_, row)) in window.into_iter().enumerate() {
         lines.push(output_row(i, row));
     }
     // The clock row closes the cell whatever is hidden: `+N lines` in front
-    // of the clause when rows scrolled off the window, the clause alone when
+    // of the clause when rows sit outside the window, the clause alone when
     // the output fits. A continuation row (index ≥ 1) so it indents under
     // the content column; it is meta, so it stays the dim `result_row`.
     let footer = if hidden > 0 {

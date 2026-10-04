@@ -995,6 +995,115 @@ pub(in crate::stream) fn interactive_turn(cue: &Cue) -> Vec<StreamEvent> {
     events
 }
 
+/// The **parallel-download** demo's narration (`docs/tool-streaming.md` *The
+/// window follows what is still moving*): what pacman's multibar does to a
+/// cell whose window is the output's end, and where the finished bars went.
+const DOWNLOAD_REPLY: &str = concat!(
+    "Refreshing the package databases. pacman fetches them in parallel and keeps \
+     one bar per file, redrawing the ones still going above the ones that have \
+     finished — watch the running cell stay on the bars that move.\n\n",
+    "All four databases are current. The two small ones finished in the first \
+     second and sat *below* the two still downloading, so a window pinned to the \
+     output's end would have shown only them; the cell followed the moving bars \
+     instead and left the finished ones to the `+N lines` count, which **ctrl+o** \
+     expands in full.\n\n",
+    handoff!()
+);
+
+/// The command the download demo runs — the one the report was filed about.
+const DOWNLOAD_COMMAND: &str = "sudo pacman -Syy";
+
+/// How many screen frames the download demo redraws: at the dummy's
+/// quarter-second frame pace, five seconds — long enough for the two bars
+/// that finish in the first second to fall out of the active span
+/// ([`crate::app::LIVE_ACTIVE_SPAN`]) while the other two still move, which
+/// is the stretch the demo exists to show.
+const DOWNLOAD_FRAMES: usize = 20;
+
+/// One of the download demo's bars at `pct` percent — pacman's `ILoveCandy`
+/// look at a modest width: the eaten cells `-`, the mouth `C`/`c` chomping on
+/// alternate frames, an `o` every third cell ahead of it, and a finished bar
+/// all dashes (`[------] 100%`, which is what a real one reads).
+fn candy_bar(name: &str, size: &str, pct: usize, mouth: bool) -> String {
+    const CELLS: usize = 24;
+    let eaten = pct.min(100) * CELLS / 100;
+    let bar: String = (0..CELLS)
+        .map(|cell| {
+            if cell < eaten {
+                '-'
+            } else if cell == eaten {
+                if mouth { 'C' } else { 'c' }
+            } else if (CELLS - cell).is_multiple_of(3) {
+                'o'
+            } else {
+                ' '
+            }
+        })
+        .collect();
+    format!(" {name:<10}{size:>10}  21.6 KiB/s [{bar}] {pct:>3}%")
+}
+
+/// The download demo's screen at `frame` of [`DOWNLOAD_FRAMES`]: the heading
+/// over four bars, the two small databases done by the second frame and the
+/// two large ones reaching 100% only on the last — so from the third frame on
+/// the finished bars sit below the moving ones, pacman's own shape.
+fn download_screen(frame: usize) -> String {
+    let mouth = frame.is_multiple_of(2);
+    let core = (frame * 100 / DOWNLOAD_FRAMES).min(100);
+    let extra = (frame * frame * 100 / (DOWNLOAD_FRAMES * DOWNLOAD_FRAMES)).min(100);
+    let small = (frame * 50).min(100);
+    [
+        ":: Synchronizing package databases...".to_string(),
+        candy_bar("core", "130.6 KiB", core, mouth),
+        candy_bar("extra", "8.2 MiB", extra, !mouth),
+        candy_bar("multilib", "82.7 KiB", small, mouth),
+        candy_bar("omarchy", "49.9 KiB", small, !mouth),
+    ]
+    .join("\n")
+}
+
+/// The **parallel-download** demo (`docs/tool-streaming.md` *The window
+/// follows what is still moving*): one `bash` call refreshing pacman's
+/// databases, its screen redrawn in place frame by frame as a session's wait
+/// streams it (`docs/interactive-shell.md`) — the two small databases finish
+/// in the first second and sit *below* the two still downloading, the shape
+/// that made a window pinned to the output's end show only finished bars —
+/// resolving with the real report formatter's frame over the final screen,
+/// as a command that exits inside its launch reports.
+pub(in crate::stream) fn download_turn(cue: &Cue) -> Vec<StreamEvent> {
+    use crate::pty::report::{Status, View, report};
+    let step = ScriptedCall::step(
+        "Bash",
+        serde_json::json!({
+            "command": DOWNLOAD_COMMAND,
+            "description": "Refresh the package databases",
+            "wait": 180,
+        }),
+        report(
+            DUMMY_SESSION_ID,
+            Status::Exited(Some(0)),
+            &View::Data {
+                text: format!("{}\n", download_screen(DOWNLOAD_FRAMES)),
+            },
+        ),
+    );
+    let (first, second) = reply_parts(DOWNLOAD_REPLY);
+    let mut events = opening(cue);
+    events.extend(say(&first));
+    events.push(StreamEvent::ToolBatch(vec![step.summary()]));
+    events.push(step.start());
+    for frame in 1..=DOWNLOAD_FRAMES {
+        events.push(StreamEvent::ToolScreen {
+            settled: String::new(),
+            live: download_screen(frame),
+        });
+    }
+    events.push(step.end());
+    events.extend(say(&second));
+    events.push(StreamEvent::StreamDone);
+    events
+}
+
 /// The **skills** demo's narration (`docs/skills.md`): what a skill is, and
 /// what the one-line cell hides.
 const SKILLS_REPLY: &str = concat!(

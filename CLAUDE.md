@@ -1000,8 +1000,15 @@ nothing new probes as zero) in
 calls in one round announced up front so the running one shows live while the
 not-yet-run ones show `⎿ Waiting…`, executed sequentially) in
 `docs/parallel-tools.md`; the **live-streaming `bash` tool** (a running command
-tails its output — the last rows, long lines word-wrapped to the width with
-spaces preserved, + a `+N lines (22s · wait 1m 50s)` footer whose `22s`
+tails its output — a four-row window ending at the lowest row **still
+moving** (`app::LiveTail`: each live row stamped with the command clock
+when its text last changed, a row active within `LIVE_ACTIVE_SPAN` (2 s)
+of the newest change, so pacman's finished bars below the ones still
+downloading never take the window from them, while every command whose
+newest output is at its end gets the plain tail — `docs/tool-streaming.md`
+*The window follows what is still moving*), long lines word-wrapped to the
+width with spaces preserved, + a `+N lines (22s · wait 1m 50s)` footer
+counting every hidden row, below the window as well as above, whose `22s`
 is the **command's own** runtime — `App::command_elapsed`, the boundary's
 per-command clock started at the call's `ToolStart`, the masked
 `background_hint_elapsed` being the Ctrl+B hint's gate over the same value —
@@ -2278,7 +2285,9 @@ preview shows a running tool's cell when one is executing — its bullet a
 before any output a `⎿ Running… (10s · wait 2m)` row — the command's
 own clock and the wait its call runs under, so a silent command still shows
 it is alive — and once a `bash` command **streams** it
-**tails** its output — the last `TOOL_PEEK_ROWS` display **rows**, long lines
+**tails** its output — `TOOL_PEEK_ROWS` display **rows** ending at the lowest
+row still moving (`App::live_tail`, `docs/tool-streaming.md` *The window
+follows what is still moving*), long lines
 word-wrapped like the Ctrl+O view (`ui::wrap_output` — never clipped at the
 width, spaces preserved), + a
 `+N lines (22s · wait 1m 50s)` footer counting the fully hidden display

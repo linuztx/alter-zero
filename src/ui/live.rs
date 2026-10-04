@@ -169,8 +169,12 @@ fn trim_preview(mut lines: Vec<Line<'static>>, rows: usize, tail: bool) -> Vec<L
 /// here shows: the main strip's boundary-injected [`App::command_elapsed`],
 /// the agent view's [`AgentRun::command_elapsed`](crate::agents::AgentRun::command_elapsed)
 /// — never the turn's or the agent's elapsed, which the status line counts.
+/// `live` is that session's running call's live rows and when each last
+/// changed ([`App::live_tail`], [`AgentRun::live_tail`](crate::agents::AgentRun::live_tail)),
+/// which the command tail's window follows (`docs/tool-streaming.md`).
 pub(super) fn live_call_lines(
     tool: &ToolCall,
+    live: &LiveTail,
     elapsed: Duration,
     pulse: Duration,
     width: u16,
@@ -180,7 +184,7 @@ pub(super) fn live_call_lines(
         return vec![shell_running_line(elapsed)];
     }
     if is_command_tool(tool) && tool.status == ToolStatus::Running {
-        return running_command_lines(tool, elapsed, pulse, width, paths);
+        return running_command_lines(tool, live, elapsed, pulse, width, paths);
     }
     live_tool_lines(tool, width, pulse, paths)
 }
@@ -233,6 +237,7 @@ pub(super) fn preview_tool_lines(app: &App, width: u16) -> Vec<Line<'static>> {
         }
         lines.extend(live_call_lines(
             tool,
+            app.live_tail(),
             elapsed,
             pulse,
             width,

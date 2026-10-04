@@ -863,6 +863,7 @@ pub(super) fn agent_view_preview_lines(
             // call started a minute in used to open on `+N lines (60s)`.
             lines.extend(super::live::live_call_lines(
                 tool,
+                run.live_tail(),
                 run.command_elapsed.unwrap_or(Duration::ZERO),
                 pulse,
                 width,

@@ -172,6 +172,7 @@ picked. Same trick `ui::TranscriptCache`'s counters use.
 | `agents` | "agents", not "agents.md" | a two-subagent group, foreground or background (`docs/agent-tool.md`) |
 | `parallel-batch` | "parallel" | three parallel `Bash(ping …)` calls and their `⎿ Waiting…` cells (`docs/parallel-tools.md`) |
 | `files` | "diff"/"edit"/"write", not "agents.md" | a `Write` then an `Edit` of the same file: the numbered file cell and its green/red diff hunk (`docs/tools.md`) |
+| `download` | "pacman"/"download" | pacman's parallel database refresh as a terminal sees it: one `bash` call whose four bars redraw in place frame by frame, the two small ones finishing in the first second and sitting **below** the two still downloading — the shape a window pinned to the output's end got wrong, so the running cell's window follows the bars that move (`docs/tool-streaming.md` *The window follows what is still moving*, `smoke.sh` Phase 130) |
 | `interactive` | "interactive" | a setup wizard driven through a terminal session: a `bash` launch stopping at a prompt, a `bashsend` answer met by the next question, and the last answer ending the program — one call a round, every result the real `pty::report::report`, so the cells wear their dim `Waiting for input · session …` rows (`docs/interactive-shell.md`, `smoke.sh` Phase 124). The whole word only: `tty` hides in "pretty", `repl` in "reply" |
 | `tools` | anything | the default turn: think, then read `about.py`, `Edit` in the credit it forgot, and run it |
 

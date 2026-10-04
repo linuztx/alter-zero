@@ -5,6 +5,7 @@
 use super::*;
 use crate::stream::RoundCall;
 use std::path::PathBuf;
+use std::time::Duration;
 
 /// The output recorded on a tool that was still running when the user
 /// interrupted: it resolves as [`ToolStatus::Failed`] with this explanation
@@ -195,7 +196,12 @@ impl App {
         if let Some(status) = self.status.as_mut() {
             status.recovered();
         }
-        self.tool_live_len = 0;
+        self.tool_live.reset();
+        // A new command has run no time yet: the boundary injects its clock
+        // before the next draw, and until then the previous command's last
+        // reading must not stamp this call's first live rows
+        // ([`LiveTail::apply`]).
+        self.command_elapsed = None;
         self.tool_revision += 1;
         let arguments = arguments.map(str::to_string);
         if let Some(front) = self.tool_queue.front_mut()
@@ -257,12 +263,15 @@ impl App {
     /// empty queue has nothing to tail. Does **not** count tokens: the tally is
     /// charged once from the authoritative `ToolEnd` output in
     /// [`end_tool`](App::end_tool), which overwrites this partial, so the live
-    /// tail and the final cell never double-count.
+    /// tail and the final cell never double-count. Text appended after a
+    /// [`push_tool_screen`](App::push_tool_screen)'s live rows makes them
+    /// final: the next screen update replaces nothing of them.
     pub fn push_tool_output(&mut self, chunk: &str) {
         if let Some(tool) = self.tool_queue.front_mut()
             && tool.status == ToolStatus::Running
         {
             tool.output.push_str(chunk);
+            self.tool_live.reset();
             self.tool_revision += 1;
         }
     }
@@ -273,13 +282,17 @@ impl App {
     /// good, `live` the rows that replace the `live` appended last time — so
     /// a redrawn progress bar is one row changing in place. Like
     /// [`push_tool_output`](App::push_tool_output) it counts no tokens and is
-    /// a no-op unless the front call is running.
+    /// a no-op unless the front call is running. Each live row that changed
+    /// is stamped with the command's own clock as last injected
+    /// ([`set_command_elapsed`](App::set_command_elapsed) — at most a frame
+    /// stale), which is what lets the running cell's window follow the rows
+    /// still moving ([`LiveTail::anchor`], `docs/tool-streaming.md`).
     pub fn push_tool_screen(&mut self, settled: &str, live: &str) {
         if let Some(tool) = self.tool_queue.front_mut()
             && tool.status == ToolStatus::Running
         {
-            self.tool_live_len =
-                apply_tool_screen(&mut tool.output, self.tool_live_len, settled, live);
+            let now = self.command_elapsed.unwrap_or_default();
+            self.tool_live.apply(&mut tool.output, settled, live, now);
             self.tool_revision += 1;
         }
     }
@@ -300,6 +313,14 @@ impl App {
     #[must_use]
     pub fn tool_revision(&self) -> u64 {
         self.tool_revision
+    }
+
+    /// The running call's live rows and when each last changed — what the
+    /// running cell's window follows ([`LiveTail`]). Empty when no call is
+    /// running, and for a call that has streamed no screen update.
+    #[must_use]
+    pub fn live_tail(&self) -> &LiveTail {
+        &self.tool_live
     }
 
     /// The tool currently at the front of the live queue — the running (or, in
@@ -400,7 +421,7 @@ impl App {
         status: ToolStatus,
     ) -> Option<ToolCall> {
         let mut tool = self.tool_queue.pop_front()?;
-        self.tool_live_len = 0;
+        self.tool_live.reset();
         self.tool_revision += 1;
         tool.output = output.to_string();
         tool.context_output = context_output;
@@ -428,6 +449,121 @@ pub fn apply_tool_screen(output: &mut String, live_len: usize, settled: &str, li
     output.push_str(settled);
     output.push_str(live);
     live.len()
+}
+
+/// How long after the **newest** change a live row still counts as moving
+/// ([`LiveTail::anchor`]): a row redrawn within this span of the latest
+/// redraw keeps the running cell's window on it; one that has sat still for
+/// longer — a download that finished while its siblings go on — has nothing
+/// left to show, and gives the window up to the rows that do. Measured from
+/// the newest change rather than the clock, so a stall holds the window where
+/// it is instead of bouncing it (`docs/tool-streaming.md` *The window follows
+/// what is still moving*). Two seconds covers every progress display that
+/// updates at least once a second.
+pub const LIVE_ACTIVE_SPAN: Duration = Duration::from_secs(2);
+
+/// The running call's **live rows**: the tail of its `output` that the next
+/// screen update replaces ([`App::push_tool_screen`],
+/// `docs/interactive-shell.md`), and — per row — the command clock's reading
+/// when its text last changed. The bookkeeping [`apply_tool_screen`] alone
+/// leaves out, kept beside the queue rather than on the call because it is
+/// live-only: a resolved cell has no moving rows.
+///
+/// It exists for one question the running cell asks every frame: which rows
+/// are **still moving**? A terminal program that redraws in place — pacman's
+/// parallel downloads, `docker pull`'s layers — leaves its finished rows
+/// *below* the ones still changing, all within the screen's reach and so
+/// all `live`, and a window pinned to the output's end showed exactly the
+/// rows that had stopped while the motion hid behind `+N lines`
+/// ([`anchor`](LiveTail::anchor), `docs/tool-streaming.md`).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LiveTail {
+    /// How many bytes at the end of the output are the live rows.
+    len: usize,
+    /// One stamp per live row, in order: when its text last changed.
+    changed: Vec<Duration>,
+}
+
+impl LiveTail {
+    /// Fold one screen update into `output` ([`apply_tool_screen`]) and
+    /// stamp the rows: a row whose text differs from the row it replaces is
+    /// stamped `now`, one that reads the same keeps its stamp. `settled`
+    /// lines shift the comparison — they are the old live block's first
+    /// rows, out of reach now, so each new row is matched against the old
+    /// row that many places down. A row with no counterpart (new, or past a
+    /// shift the sender did not make) counts as changed, which at worst
+    /// makes every row look live and the window the plain tail it always
+    /// was.
+    pub fn apply(&mut self, output: &mut String, settled: &str, live: &str, now: Duration) {
+        let keep = output.len().saturating_sub(self.len);
+        let old: Vec<&str> = if self.len > 0 && output.is_char_boundary(keep) {
+            live_rows(&output[keep..])
+        } else {
+            Vec::new()
+        };
+        let shift = settled.matches('\n').count();
+        let changed: Vec<Duration> = live_rows(live)
+            .iter()
+            .enumerate()
+            .map(
+                |(i, row)| match (old.get(i + shift), self.changed.get(i + shift)) {
+                    (Some(was), Some(&stamp)) if was == row => stamp,
+                    _ => now,
+                },
+            )
+            .collect();
+        self.len = apply_tool_screen(output, self.len, settled, live);
+        self.changed = changed;
+    }
+
+    /// Forget the live rows: a call started or resolved, or appended text
+    /// made them final.
+    pub fn reset(&mut self) {
+        self.len = 0;
+        self.changed.clear();
+    }
+
+    /// When each live row last changed, in row order — the last
+    /// `changed().len()` display lines of the output.
+    #[must_use]
+    pub fn changed(&self) -> &[Duration] {
+        &self.changed
+    }
+
+    /// The display line the running cell's window **ends at**, of `lines`
+    /// display lines of the output: the lowest live row still moving — one
+    /// changed within [`LIVE_ACTIVE_SPAN`] of the newest change — and the
+    /// last line when none is (no live rows, or every one of them stopped).
+    /// A command whose newest output is at its end — nearly every command —
+    /// gets the tail it always had; one redrawing rows above finished ones
+    /// gets the rows that move. The newest change itself is always within
+    /// the span, so with any live row the answer is a live row.
+    #[must_use]
+    pub fn anchor(&self, lines: usize) -> usize {
+        let last = lines.saturating_sub(1);
+        let Some(&latest) = self.changed.iter().max() else {
+            return last;
+        };
+        let rows = self.changed.len().min(lines);
+        let base = lines - rows;
+        (0..rows)
+            .rev()
+            .find(|&row| latest.saturating_sub(self.changed[row]) <= LIVE_ACTIVE_SPAN)
+            .map_or(last, |row| base + row)
+    }
+}
+
+/// The rows of a live block as the display splits them: none for an empty
+/// block, else one per line, a trailing newline (which no sender adds)
+/// closing the last row rather than opening an empty one.
+fn live_rows(text: &str) -> Vec<&str> {
+    if text.is_empty() {
+        return Vec::new();
+    }
+    text.strip_suffix('\n')
+        .unwrap_or(text)
+        .split('\n')
+        .collect()
 }
 
 /// The lifecycle of a tool call — selects its bullet colour when rendered:
