@@ -30,6 +30,7 @@ const EXAMPLES: &[&str] = &[
     "demo the todo tool and finish every task",
     "demo the todo tool i want to see how it works",
     "load a skill for me",
+    "refresh the package databases with pacman",
     "run an interactive installer",
     "hello there",
 ];
@@ -261,6 +262,74 @@ fn every_user_facing_script_hands_the_user_off_to_a_real_model() {
             scenario.name,
         );
     }
+}
+
+#[test]
+fn the_download_demo_keeps_its_finished_bars_below_the_moving_ones() {
+    // docs/tool-streaming.md *The window follows what is still moving*: the
+    // shape the running window exists for — pacman's small databases finish
+    // early and sit below the bars still downloading — every frame replacing
+    // the last, and the report the real formatter's frame over the final
+    // screen (the dummy-backend rule, docs/dummy-backend.md).
+    let scenario = SCENARIOS
+        .iter()
+        .find(|s| s.name == "download")
+        .expect("the download demo is registered");
+    let Play::Script(script) = scenario.play else {
+        panic!("the download demo is a script");
+    };
+    let events = script(&Cue::new("refresh the package databases with pacman", 0));
+    let frames: Vec<&str> = events
+        .iter()
+        .filter_map(|e| match e {
+            StreamEvent::ToolScreen { settled, live } => {
+                assert!(settled.is_empty(), "everything stays in reach: {settled:?}");
+                Some(live.as_str())
+            }
+            _ => None,
+        })
+        .collect();
+    assert!(
+        frames.len() >= 12,
+        "the bars move long enough to outlast the active span: {} frames",
+        frames.len()
+    );
+    assert!(
+        frames
+            .iter()
+            .all(|f| f.matches(" core ").count() == 1 && f.lines().count() == 5),
+        "one row per bar under the heading, every frame: {frames:?}"
+    );
+    let shaped = frames
+        .iter()
+        .filter(|f| {
+            let rows: Vec<&str> = f.lines().collect();
+            rows[3].ends_with("100%") && rows[4].ends_with("100%") && !rows[1].ends_with("100%")
+        })
+        .count();
+    assert!(
+        shaped >= 8,
+        "the finished small bars sit below the moving ones for most of the demo: \
+         {shaped} of {} frames",
+        frames.len()
+    );
+    let last = frames.last().expect("frames");
+    assert!(
+        last.lines().skip(1).all(|row| row.ends_with("100%")),
+        "every bar finishes: {last}"
+    );
+    let (output, ok) = events
+        .iter()
+        .find_map(|e| match e {
+            StreamEvent::ToolEnd { output, ok, .. } => Some((output.as_str(), *ok)),
+            _ => None,
+        })
+        .expect("the call resolves");
+    assert!(ok);
+    assert!(
+        output.starts_with("Exit code: 0\n") && output.contains(last),
+        "the report is the real formatter's frame over the final screen: {output}"
+    );
 }
 
 #[test]

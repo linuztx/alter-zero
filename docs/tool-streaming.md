@@ -252,6 +252,92 @@ commits, the permission prompt's context, the frozen Ctrl+O transcript)
 still renders a running command at rest as `⎿ Running…`, since those
 surfaces have no clock to tick.
 
+### The window follows what is still moving
+
+The running window used to be the output's **last** four display rows, on
+the assumption every command shares: the newest output is at the end. A
+terminal program that redraws in place breaks it. pacman downloads its
+databases in parallel and keeps one bar per file, moving the cursor up to
+redraw the ones still going; a small file finishes early and its `100%`
+row then sits **below** the bars that are still moving. Every one of those
+rows is within the terminal's reach, so the pty transcript streams them all
+as `live` (`docs/interactive-shell.md`), and the window showed exactly the
+finished bars while the motion sat in the `+N lines` count above them —
+the reported "the inline cell only shows the finished lines; I need Ctrl+O
+to see the bars move", `sudo pacman -Syy` under a pacman.conf with
+`ILoveCandy`, whose chomping `C`/`c` is the animation that never reached
+the strip:
+
+```
+● Bash(echo "<secret:ROOT_PASSWORD>" | sudo -S pacman -Syy)
+  ⎿   multilib                    82.7 KiB  21.6 KiB/s 00:04      ← finished 46 s ago
+     [----------------------------------------] 100%
+      omarchy                     49.9 KiB  13.7 KiB/s 00:04      ← finished 46 s ago
+     [----------------------------------------] 100%
+     +5 lines (50s · wait 3m)      ← the heading, core and extra — the two still moving — hidden here
+```
+
+(Each bar is drawn at pacman's own width and wraps to two rows at the
+terminal's, which is why four rows hold two bars.) The window now **ends at
+the lowest row still moving** and fills upward; the finished bars are what
+hides:
+
+```
+● Bash(echo "<secret:ROOT_PASSWORD>" | sudo -S pacman -Syy)
+  ⎿   core                       130.6 KiB  21.6 KiB/s 00:06
+     [-----------------C  o  o  o  o  o  o  o]  45%
+      extra                        8.2 MiB  21.6 KiB/s 00:48
+     [----c  o  o  o  o  o  o  o  o  o  o  o]  12%
+     +5 lines (50s · wait 3m)
+```
+
+What "still moving" means is decided in the pure core, beside the live
+tail it already kept. `App::push_tool_screen` used to track one number —
+how many bytes at the end of the output the next update replaces.
+`app::LiveTail` keeps that number **and a stamp per live row**: the command
+clock's reading (`App::set_command_elapsed`, the per-draw injection whose
+value the cell's `(Ns)` already displays, at most a frame stale) when the
+row's text last changed. An update compares each new live row with the row
+it replaces and stamps only the ones that differ; `settled` lines shift the
+comparison, being the old block's first rows gone out of reach. A row is
+**active** while it changed within `app::LIVE_ACTIVE_SPAN` (2 s) of the
+**newest** change, and `LiveTail::anchor` names the lowest active row as
+the display line the window ends at — the last line when there is none.
+`running_command_lines` takes the tail beside the call and ends its window
+on that line, filling upward — and, when fewer rows sit above the anchor
+than the window holds, downward with what follows, since a window that hid
+rows it had room for would be folding for nothing; the footer counts every
+hidden row, below the window as well as above, so `+N lines` stays what
+Ctrl+O adds. Ending on the lowest moving row rather than opening on it is
+deliberate: every row below that line is by definition still, while the
+rows above it are the only ones that can also be moving — pacman's `core`
+above its `extra` — so filling upward is what keeps both moving bars on
+screen. Two consequences fall out of the definition:
+
+- **Every ordinary command is unchanged.** A new line is both the newest
+  change and the lowest live row, so the anchor is the end and the window is
+  the tail it always was; a command on a pipe streams its one partial line
+  as `live`, same answer; and the default `LiveTail` — no live rows — anchors
+  at the end too, which is what the offline dummy's `ToolOutput` chunks and
+  every unit test that never streams a screen get.
+- **A stall holds the window.** The span is measured from the newest change,
+  not from the clock, so a download that receives nothing for ten seconds
+  keeps the window on its bar instead of dropping to the finished rows and
+  bouncing back when data flows.
+
+A new call starts with an empty tail **and** a cleared clock: `start_tool`
+resets the injected `command_elapsed` (the next draw re-injects it), so a
+previous command's reading can never stamp the first rows of the next one —
+a stale stamp would stay the newest for as long as its row stood still, and
+every real redraw would then read as too old to be moving. Appended text
+(`push_tool_output`) makes the live rows final, so a backend mixing the two
+forms never has an update replace what a chunk appended after it. The
+subagent session view takes the same shape: `AgentRun` keeps its own
+`LiveTail`, stamped with its own injected command clock and reset at its
+`ToolStart` the same way (`docs/agent-view-streaming.md`), and the one
+`live_call_lines` renderer serves both strips, so a subagent's `pacman`
+reads like the main turn's.
+
 ### The `Exit code: N` frame, reframed for display
 
 `tool.output` stays framed (`Exit code: 0\n…`) because `context::context_messages`

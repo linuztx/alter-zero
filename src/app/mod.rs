@@ -112,7 +112,8 @@ pub use self::tasks::TaskCallRecord;
 pub use self::theme::{Theme, ThemePicker, ThemeRow, parse_theme_file, theme_file_json};
 pub use self::tips::ShownTip;
 pub use self::tools::{
-    ERROR_TOOL_OUTPUT, INTERRUPT_TOOL_OUTPUT, PathDisplay, ToolCall, ToolStatus, apply_tool_screen,
+    ERROR_TOOL_OUTPUT, INTERRUPT_TOOL_OUTPUT, LIVE_ACTIVE_SPAN, LiveTail, PathDisplay, ToolCall,
+    ToolStatus, apply_tool_screen,
 };
 pub use self::trust_menu::TrustMenu;
 pub use self::turn::{
@@ -282,11 +283,12 @@ pub struct App {
     /// active call through [`current_tool`](App::current_tool) and the whole
     /// batch through [`tool_queue`](App::tool_queue). See `docs/parallel-tools.md`.
     tool_queue: VecDeque<ToolCall>,
-    /// How many bytes at the end of the running call's `output` are a
-    /// terminal session's **live** rows — what the next
+    /// The running call's **live** rows — the tail of its `output` the next
     /// [`push_tool_screen`](App::push_tool_screen) replaces
-    /// (`docs/interactive-shell.md`). Zero whenever a call starts or resolves.
-    tool_live_len: usize,
+    /// (`docs/interactive-shell.md`), and when each last changed, so the
+    /// running cell's window can follow the rows still moving
+    /// (`docs/tool-streaming.md`). Empty whenever a call starts or resolves.
+    tool_live: LiveTail,
     /// Bumped by every change to the running call's output or header, so the
     /// transcript cache sees a same-length redraw (`45%` → `46%`).
     tool_revision: u64,

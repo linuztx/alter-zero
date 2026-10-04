@@ -767,6 +767,10 @@ the next look would report is streamed, so a cell never shows a line its
 report will not carry. The wait sends at most every `STREAM_INTERVAL` (50 ms),
 only when something changed, `settled` capped at `STREAM_MAX_BYTES` (64 KB) a
 send, and once more as it settles, so the cell ends where the report begins.
+The cell's four-row window ends at the lowest live row **still moving**
+rather than at the output's end — pacman's finished bars sit below the
+ones still downloading, all in reach — `docs/tool-streaming.md` *The
+window follows what is still moving*.
 
 **Plain commands fold the same way** (`pty::fold`). Plenty of programs draw on
 a pipe as if it were a terminal — curl's meter, tqdm, ffmpeg and rsync

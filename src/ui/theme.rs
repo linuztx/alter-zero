@@ -224,7 +224,9 @@ pub(super) const TOOL_LINE_MAX_ROWS: usize = 3;
 pub(super) const TOOL_LINE_ELLIPSIS: &str = "…";
 
 /// The window the **running** command tail shows (`running_command_lines`):
-/// the last four wrapped display **rows** of what the command has printed,
+/// four wrapped display **rows** of what the command has printed, ending at
+/// the lowest row still moving (`LiveTail::anchor` — the last row for every
+/// command whose newest output is at its end, `docs/tool-streaming.md`),
 /// over the `+N lines (Ns · wait …)` clock row — the unit the user reads
 /// the cell in (`docs/long-lines.md`). It is also the ceiling of the
 /// **settled** block,
