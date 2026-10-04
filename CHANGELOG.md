@@ -21,8 +21,8 @@ release heading when a version is cut.
   the ones still moving sat hidden in the `+N lines` count above them,
   visible only in Ctrl+O. The window now ends at the lowest row that changed
   within two seconds of the newest change, so the bars still downloading
-  stay on screen and the finished ones are what folds away, and the footer
-  counts every hidden row. A command whose newest output is at its end —
+  stay on screen and the finished ones are what folds away, the window never
+  hides a row it has room for, and the footer counts every hidden row. A command whose newest output is at its end —
   every ordinary command — shows exactly the tail it always did; the
   subagent session view follows the same rule (`docs/tool-streaming.md`).
 

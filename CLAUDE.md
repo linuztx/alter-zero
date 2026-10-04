@@ -1004,8 +1004,9 @@ tails its output — a four-row window ending at the lowest row **still
 moving** (`app::LiveTail`: each live row stamped with the command clock
 when its text last changed, a row active within `LIVE_ACTIVE_SPAN` (2 s)
 of the newest change, so pacman's finished bars below the ones still
-downloading never take the window from them, while every command whose
-newest output is at its end gets the plain tail — `docs/tool-streaming.md`
+downloading never take the window from them, the window filling downward
+rather than shrinking when fewer rows sit above that row, while every
+command whose newest output is at its end gets the plain tail — `docs/tool-streaming.md`
 *The window follows what is still moving*), long lines word-wrapped to the
 width with spaces preserved, + a `+N lines (22s · wait 1m 50s)` footer
 counting every hidden row, below the window as well as above, whose `22s`

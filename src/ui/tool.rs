@@ -680,44 +680,47 @@ pub(super) fn running_command_lines(
     // downloads, every bar within the terminal's reach and so live) used to
     // fill the window with the rows that had stopped while the motion sat
     // in the hidden count (docs/tool-streaming.md).
-    let end = live.anchor(display.len());
-    // The window: the last TOOL_PEEK_ROWS wrapped rows up to `end`, each
-    // remembering its source line index *and* how many of that line's rows
-    // it dropped, so the footer can count what scrolled off in display rows.
-    let mut window: VecDeque<(usize, String)> = VecDeque::new();
-    let mut cut = 0usize; // rows dropped off the top of the oldest shown line
-    for (idx, line) in display[..=end].iter().enumerate().rev() {
-        let rows = wrap_output(line, wrap_width);
-        let over = (window.len() + rows.len()).saturating_sub(TOOL_PEEK_ROWS);
-        cut = over.min(rows.len());
-        for row in rows.into_iter().rev() {
-            window.push_front((idx, row));
-        }
-        if window.len() >= TOOL_PEEK_ROWS {
+    let anchor = live.anchor(display.len());
+    // Display **rows**, counted without being built (`WrapMode::rows`, so
+    // the whole retained buffer is cheap to measure every animation frame):
+    // counting source lines called a 2 KB line that scrolled past "1 line"
+    // (`docs/long-lines.md`).
+    let rows_of = |line: &String| WrapMode::Output.rows(line, wrap_width);
+    let above: usize = display[..anchor].iter().map(rows_of).sum();
+    let total: usize = above + display[anchor..].iter().map(rows_of).sum::<usize>();
+    // The window's last row: the anchor line's last row — its newest rows
+    // for a line taller than the window, the tail rule for a long newest
+    // line — pushed down only as far as it takes for the window to keep
+    // its TOOL_PEEK_ROWS when fewer rows sit above the anchor: a window
+    // that hid rows it had room for would be folding for nothing.
+    let anchor_end = above + rows_of(&display[anchor]) - 1;
+    let end = anchor_end
+        .max(TOOL_PEEK_ROWS - 1)
+        .min(total.saturating_sub(1));
+    let start = (end + 1).saturating_sub(TOOL_PEEK_ROWS);
+    // Build only the rows the window holds: count past the lines above it,
+    // wrap the ones it reaches, stop at its end.
+    let mut window: Vec<String> = Vec::with_capacity(TOOL_PEEK_ROWS);
+    let mut at = 0usize;
+    for line in &display {
+        if at > end {
             break;
         }
+        let rows = rows_of(line);
+        if at + rows > start {
+            for (offset, row) in wrap_output(line, wrap_width).into_iter().enumerate() {
+                if (start..=end).contains(&(at + offset)) {
+                    window.push(row);
+                }
+            }
+        }
+        at += rows;
     }
-    while window.len() > TOOL_PEEK_ROWS {
-        window.pop_front();
-    }
-    // Display **rows** outside the window — the lines wholly above it plus
-    // the rows the oldest shown line lost off its own top, and every row of
-    // the lines below the one it ends at. Counting source lines called a
-    // 2 KB line that scrolled past "1 line" (`docs/long-lines.md`);
-    // `WrapMode::rows` builds nothing, so this stays cheap per animation frame.
-    let above = window.front().map_or(0, |(idx, _)| {
-        cut + display[..*idx]
-            .iter()
-            .map(|line| WrapMode::Output.rows(line, wrap_width))
-            .sum::<usize>()
-    });
-    let below: usize = display[end + 1..]
-        .iter()
-        .map(|line| WrapMode::Output.rows(line, wrap_width))
-        .sum();
-    let hidden = above + below;
+    // Every row the window leaves out — above it, and below it when it
+    // ends on a moving line with finished rows after it: what Ctrl+O adds.
+    let hidden = total.saturating_sub(window.len());
     let shown = window.len();
-    for (i, (_, row)) in window.into_iter().enumerate() {
+    for (i, row) in window.into_iter().enumerate() {
         lines.push(output_row(i, row));
     }
     // The clock row closes the cell whatever is hidden: `+N lines` in front

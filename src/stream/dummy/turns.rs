@@ -1020,12 +1020,15 @@ const DOWNLOAD_COMMAND: &str = "sudo pacman -Syy";
 /// is the stretch the demo exists to show.
 const DOWNLOAD_FRAMES: usize = 20;
 
-/// One of the download demo's bars at `pct` percent — pacman's `ILoveCandy`
-/// look at a modest width: the eaten cells `-`, the mouth `C`/`c` chomping on
-/// alternate frames, an `o` every third cell ahead of it, and a finished bar
-/// all dashes (`[------] 100%`, which is what a real one reads).
+/// One of the download demo's bars at `pct` percent, at pacman's own width
+/// — its columns and a forty-cell bar reach past a hundred columns, so on
+/// the smoke suite's terminal each bar wraps to two rows, the shape the
+/// report captured — in the `ILoveCandy` look: the eaten cells `-`, the
+/// mouth `C`/`c` chomping on alternate frames, an `o` every third cell ahead
+/// of it, and a finished bar all dashes (`[------] 100%`, what a real one
+/// reads).
 fn candy_bar(name: &str, size: &str, pct: usize, mouth: bool) -> String {
-    const CELLS: usize = 24;
+    const CELLS: usize = 40;
     let eaten = pct.min(100) * CELLS / 100;
     let bar: String = (0..CELLS)
         .map(|cell| {
@@ -1040,7 +1043,12 @@ fn candy_bar(name: &str, size: &str, pct: usize, mouth: bool) -> String {
             }
         })
         .collect();
-    format!(" {name:<10}{size:>10}  21.6 KiB/s [{bar}] {pct:>3}%")
+    let left = (100 - pct.min(100)) * 3;
+    format!(
+        " {name:<24}{size:>12}  21.6 KiB/s {:02}:{:02} [{bar}] {pct:>3}%",
+        left / 60,
+        left % 60
+    )
 }
 
 /// The download demo's screen at `frame` of [`DOWNLOAD_FRAMES`]: the heading

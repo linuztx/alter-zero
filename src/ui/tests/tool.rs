@@ -4229,20 +4229,79 @@ fn a_running_session_call_shows_the_wait_it_runs_under() {
 
 #[test]
 fn the_running_window_follows_the_rows_still_moving() {
-    // pacman's parallel downloads: the finished bars sit *below* the ones
-    // still moving, all within the terminal's reach and so all live. A window
-    // pinned to the output's end showed exactly the rows that had stopped
-    // while the motion hid behind `+N lines` — the reported "the inline cell
-    // only shows the finished lines, I need Ctrl+O to see the bars move".
+    // pacman's parallel downloads as the report captured them: bars at
+    // pacman's own width wrap to two rows each, the finished ones sit
+    // *below* the two still moving, all within the terminal's reach and so
+    // all live. A window pinned to the output's end showed exactly the two
+    // finished bars while both moving ones hid in `+5 lines` — "the inline
+    // cell only shows the finished lines, I need Ctrl+O to see them move".
     let mut live = crate::app::LiveTail::default();
     let mut out = String::new();
+    let bar = |name: &str, pct: u8| {
+        format!(
+            " {name:<10} 82.7 KiB  21.6 KiB/s 00:04 [{}] {pct:>3}%",
+            "-".repeat(20)
+        )
+    };
     let screen = |core: u8, extra: u8| {
         format!(
-            ":: Synchronizing package databases...\n core      {core:>3}%\n extra     {extra:>3}%\n multilib  100%\n omarchy   100%"
+            ":: Synchronizing package databases...\n{}\n{}\n{}\n{}",
+            bar("core", core),
+            bar("extra", extra),
+            bar("multilib", 100),
+            bar("omarchy", 100)
         )
     };
     live.apply(&mut out, "", &screen(10, 10), Duration::from_secs(4));
     live.apply(&mut out, "", &screen(45, 12), Duration::from_secs(50));
+    let t = tool("Bash", "sudo pacman -Syy", ToolStatus::Running, &out);
+    let body: Vec<String> = running_command_lines(
+        &t,
+        &live,
+        Duration::from_secs(50),
+        Duration::ZERO,
+        44,
+        &PathDisplay::VERBATIM,
+    )[1..]
+        .iter()
+        .map(plain)
+        .collect();
+    assert_eq!(
+        body.len(),
+        5,
+        "four window rows over the clock row: {body:?}"
+    );
+    assert!(
+        body[0].contains("core") && body[1].ends_with("45%"),
+        "the window fills upward from the lowest moving row: {body:?}"
+    );
+    assert!(
+        body[2].contains("extra") && body[3].ends_with("12%"),
+        "the lowest moving bar ends the window: {body:?}"
+    );
+    assert!(
+        !body.iter().any(|row| row.contains("100%")),
+        "the finished bars below are what hides: {body:?}"
+    );
+    assert_eq!(
+        body[4].trim(),
+        "+5 lines (50s · wait 2m)",
+        "the footer counts the heading above and the finished bars below: {body:?}"
+    );
+}
+
+#[test]
+fn the_running_window_never_hides_rows_that_fit() {
+    // The lowest moving row near the top: the window still holds its four
+    // rows, filling downward with what follows rather than shrinking — a
+    // window that hid rows it had room for would be folding for nothing.
+    let mut live = crate::app::LiveTail::default();
+    let mut out = String::new();
+    let screen = |core: u8| {
+        format!(":: Synchronizing\n core {core:>3}%\n extra 100%\n multilib 100%\n omarchy 100%")
+    };
+    live.apply(&mut out, "", &screen(10), Duration::from_secs(4));
+    live.apply(&mut out, "", &screen(45), Duration::from_secs(50));
     let t = tool("Bash", "sudo pacman -Syy", ToolStatus::Running, &out);
     let body: Vec<String> = running_command_lines(
         &t,
@@ -4255,23 +4314,16 @@ fn the_running_window_follows_the_rows_still_moving() {
         .iter()
         .map(plain)
         .collect();
+    assert_eq!(body.len(), 5, "four rows over the clock row: {body:?}");
     assert!(
-        body[0].contains(":: Synchronizing"),
-        "the window fills upward from the lowest moving row: {body:?}"
-    );
-    assert!(
-        body[1].contains("core       45%") && body[2].contains("extra      12%"),
-        "the moving bars take the window: {body:?}"
+        body[0].contains(":: Synchronizing") && body[1].contains("core  45%"),
+        "{body:?}"
     );
     assert!(
-        !body.iter().any(|row| row.contains("100%")),
-        "the finished bars below are what hides: {body:?}"
+        body[2].contains("extra") && body[3].contains("multilib"),
+        "the rows after the moving one fill the window: {body:?}"
     );
-    assert_eq!(
-        body[3].trim(),
-        "+2 lines (50s · wait 2m)",
-        "the footer counts the rows hidden below too: {body:?}"
-    );
+    assert_eq!(body[4].trim(), "+1 lines (50s · wait 2m)", "{body:?}");
 }
 
 #[test]
@@ -4317,12 +4369,12 @@ fn the_strip_follows_the_apps_live_tail() {
     app.set_command_elapsed(Some(Duration::from_secs(4)));
     app.push_tool_screen(
         "",
-        ":: Synchronizing\n core 10%\n extra 10%\n multilib 100%\n omarchy 100%",
+        ":: Synchronizing\n:: package\n:: databases\n:: ...\n core 10%\n extra 10%\n multilib 100%\n omarchy 100%",
     );
     app.set_command_elapsed(Some(Duration::from_secs(50)));
     app.push_tool_screen(
         "",
-        ":: Synchronizing\n core 45%\n extra 12%\n multilib 100%\n omarchy 100%",
+        ":: Synchronizing\n:: package\n:: databases\n:: ...\n core 45%\n extra 12%\n multilib 100%\n omarchy 100%",
     );
     let rows: Vec<String> = crate::ui::live::preview_tool_lines(&app, 80)
         .iter()

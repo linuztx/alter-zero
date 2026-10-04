@@ -270,20 +270,25 @@ the strip:
 
 ```
 ● Bash(echo "<secret:ROOT_PASSWORD>" | sudo -S pacman -Syy)
-  ⎿   multilib        82.7 KiB  21.6 KiB/s 00:04 [--------------] 100%   ← finished 46 s ago
-      omarchy         49.9 KiB  13.7 KiB/s 00:04 [--------------] 100%   ← finished 46 s ago
-     +3 lines (50s · wait 3m)                      ← core and extra, still moving, hidden here
+  ⎿   multilib                    82.7 KiB  21.6 KiB/s 00:04      ← finished 46 s ago
+     [----------------------------------------] 100%
+      omarchy                     49.9 KiB  13.7 KiB/s 00:04      ← finished 46 s ago
+     [----------------------------------------] 100%
+     +5 lines (50s · wait 3m)      ← the heading, core and extra — the two still moving — hidden here
 ```
 
-The window now **ends at the lowest row still moving** and fills upward;
-the finished bars are what hides:
+(Each bar is drawn at pacman's own width and wraps to two rows at the
+terminal's, which is why four rows hold two bars.) The window now **ends at
+the lowest row still moving** and fills upward; the finished bars are what
+hides:
 
 ```
 ● Bash(echo "<secret:ROOT_PASSWORD>" | sudo -S pacman -Syy)
-  ⎿  :: Synchronizing package databases...
-      core           130.6 KiB  21.6 KiB/s 00:06 [---C  o  o  o  o  ]  45%
-      extra            8.2 MiB  21.6 KiB/s 00:48 [-c  o  o  o  o  o ]  12%
-     +2 lines (50s · wait 3m)
+  ⎿   core                       130.6 KiB  21.6 KiB/s 00:06
+     [-----------------C  o  o  o  o  o  o  o]  45%
+      extra                        8.2 MiB  21.6 KiB/s 00:48
+     [----c  o  o  o  o  o  o  o  o  o  o  o]  12%
+     +5 lines (50s · wait 3m)
 ```
 
 What "still moving" means is decided in the pure core, beside the live
@@ -298,10 +303,16 @@ comparison, being the old block's first rows gone out of reach. A row is
 **active** while it changed within `app::LIVE_ACTIVE_SPAN` (2 s) of the
 **newest** change, and `LiveTail::anchor` names the lowest active row as
 the display line the window ends at — the last line when there is none.
-`running_command_lines` takes the tail beside the call and walks its window
-up from that line; the footer counts every hidden row, below the window as
-well as above, so `+N lines` stays what Ctrl+O adds. Two consequences fall
-out of the definition:
+`running_command_lines` takes the tail beside the call and ends its window
+on that line, filling upward — and, when fewer rows sit above the anchor
+than the window holds, downward with what follows, since a window that hid
+rows it had room for would be folding for nothing; the footer counts every
+hidden row, below the window as well as above, so `+N lines` stays what
+Ctrl+O adds. Ending on the lowest moving row rather than opening on it is
+deliberate: every row below that line is by definition still, while the
+rows above it are the only ones that can also be moving — pacman's `core`
+above its `extra` — so filling upward is what keeps both moving bars on
+screen. Two consequences fall out of the definition:
 
 - **Every ordinary command is unchanged.** A new line is both the newest
   change and the lowest live row, so the anchor is the end and the window is
