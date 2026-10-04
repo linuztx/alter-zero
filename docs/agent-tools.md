@@ -86,9 +86,11 @@ lead's, and the point of a subagent is that the lead never pays for them.
 
 The frame's numbers cover the agent's **whole life** — its runtime and its
 tool uses summed over the launch and every continuation — and each message
-it read is marked where it arrived (`— message received —`: the lead's
-`agentsend`, a message the user typed into its session, a background
-shell's completion routed to it). Both came out of a live run: the frame
+it read is marked where it arrived: `— message received —` for the lead's
+own `agentsend` and a background shell's completion routed to it, and
+`— message from the user: {text} —` for one the user typed into its session,
+quoted because the lead never saw it (*The user's own messages*, below).
+Both came out of a live run: the frame
 used to give the current run's runtime beside the lifetime's tool count,
 and a model read `9s · 5 tool uses` as five calls its follow-up had made —
 it had made none, which the mark after the fifth call now shows.
@@ -144,6 +146,47 @@ already settled is reported as such; nothing is stopped twice.
 
 Running agents and the retained settled ones, launch order — so a lead that
 lost an id to a `/compact` finds it again without guessing.
+
+## The user's own messages
+
+The user can talk to an agent too — Enter in its session view queues a
+message into its running loop or starts a continuation of a finished one
+(`docs/queue.md`). The lead never wrote those messages, and it used to have
+no way to tell: the agent's next answer came back as an ordinary completion
+notice, reading like a reply in the lead's own conversation, and a chat with
+an agent whose foreground group had already resolved never reached the lead
+at all. So the user's messages are attributed wherever the lead hears from
+the agent:
+
+- the **completion notice** names them between its outcome and the answer —
+
+  ```text
+  [background agent] Agent "Fetch GitHub profile" (a7k2m9x4q) completed in 35s.
+  The user messaged this agent directly in its session view — these came from the user, not from you:
+  - also list the repos with the most stars
+  Final response:
+  …
+  ```
+
+- a **foreground result** carries the same lines between the answer and the
+  `agentsend` line, for a message the user sent while the lead waited;
+- the **`agentoutput` report** quotes each one where it arrived.
+
+A notice names only the messages **its own run** read: each continuation
+starts with none (`AgentRun::user_messages`, cleared by `reopen`; the
+registry's `user_messages(id)`, counted from the run's start). And a run the
+user started or steered **owes a notice even for a foreground agent** once
+its group has resolved — the group's result can no longer carry it — while a
+member of a group still waiting is reported by that group, never twice.
+
+The roster tells them apart without a new event: only a message the user
+typed waits on `AgentRun::queued` (the lead's `agentsend` and a routed shell
+note arrive unannounced), so a `Steered` delivery that clears a queued row is
+the user's, and a continuation the user started is recorded as theirs by
+`App::agent_chat`. On the registry side the user's door is
+`queue_user_input` / `note_user_message` beside the lead's `queue_input`. The
+notice's list is kept in the rollout (`user_messages`, omitted when empty),
+so a resumed session replays the same note.
 
 ## Retention
 

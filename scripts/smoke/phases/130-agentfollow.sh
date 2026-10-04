@@ -13,7 +13,9 @@ smoke_begin
 # summary, the mark where the follow-up arrived), that NEITHER answer comes
 # back a second time as a completion notice — the waits reported them, the
 # observed settle — and that the agent's own session view shows the lead's
-# message as a bubble between its two answers.
+# message as a bubble between its two answers. Then the user messages the
+# agent in that view, and the lead's notice of the answer must name the
+# user's message as the user's (Ctrl+D shows what the lead read).
 S130="${S}_agentfollow"
 launch "$S130" 120 50
 submit "$S130" "send an agent a follow-up"
@@ -42,7 +44,23 @@ view="$(wait_pane 5 "$S130" -F "Read CHANGELOG.md")" ||
 	fail "the agent's session view did not open"
 view="$(pane "$S130" -S -200)"
 dump "the agent's own session" "$view"
+# Now the USER talks to the agent, in its session view. The lead never wrote
+# this message, so the answer's notice must say who did — otherwise the lead
+# reads a reply to a question it never asked as its own conversation.
+submit "$S130" "thanks, keep it short"
+wait_pane 15 "$S130" -F "this reply is its next turn" >/dev/null ||
+	fail "the agent never answered the user's message"
 keys "$S130" Escape
+wait_pane 15 "$S130" -F 'Agent "Read the release notes" finished' >/dev/null ||
+	fail "the user's conversation with the agent was never noticed to the lead"
+wait_settled 30 "$S130" -E "^$SUMMARY_RE" >/dev/null ||
+	fail "the follow-up turn the notice started never settled"
+keys "$S130" C-d
+sleep 0.5
+keys "$S130" End
+told="$(wait_pane 5 "$S130" -F "The user messaged this agent directly")"
+dump "Ctrl+D — what the lead was told about the user's message" "$told"
+keys "$S130" C-d
 tmux kill-session -t "$S130" 2>/dev/null
 
 note "the agent tools — launch, wait, follow-up, wait, list; observed settles; the session view"
@@ -58,4 +76,6 @@ expect_has "$full" -F "1 agent:" "agentlist did not list the agent"
 expect_lacks "$full" -F 'Agent "Read the release notes" finished' "an answer a wait already reported came back again as a notice"
 expect_has "$view" -F "❯ And what did it add for questions nobody answers?" "the agent's session view does not show the lead's follow-up as a bubble"
 expect_has "$view" -F "keeps working on its best judgment" "the agent's session view does not show its answer to the follow-up"
+expect_has "$told" -F "The user messaged this agent directly in its session view" "the lead's notice does not say the user wrote to the agent"
+expect_has "$told" -F -- "- thanks, keep it short" "the lead's notice does not quote the user's message"
 smoke_finish

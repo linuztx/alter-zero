@@ -57,10 +57,57 @@ pub const AGENT_REPORT_CALLS_MAX: usize = 30;
 pub const AGENT_REPORT_CALL_CHARS: usize = 160;
 
 /// The line an `agentoutput` report marks a delivered message with — where,
-/// among the agent's calls, a message reached it: the lead's `agentsend`, one
-/// the user typed into its session, a background shell's completion routed
-/// to it (`docs/agent-tools.md`).
+/// among the agent's calls, a message reached it: the lead's `agentsend` or a
+/// background shell's completion routed to it. One the user typed into its
+/// session is quoted instead ([`FollowUp::from_user`], `docs/agent-tools.md`).
 pub const AGENT_FOLLOW_UP_MARK: &str = "— message received —";
+
+/// Where a delivered message came from, as the lead must know it: a message
+/// the **user** typed into the agent's session view is one the lead never
+/// wrote, so it is quoted rather than marked ([`FollowUp::from_user`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FollowUp {
+    /// How many of the agent's calls it had made when the message arrived.
+    pub at: usize,
+    /// The text, when the user sent it; `None` for the lead's own
+    /// `agentsend` and a background shell's routed completion.
+    pub from_user: Option<String>,
+}
+
+impl FollowUp {
+    /// A message the lead (or a routed note) delivered after `at` calls.
+    #[must_use]
+    pub const fn lead(at: usize) -> Self {
+        Self {
+            at,
+            from_user: None,
+        }
+    }
+}
+
+/// The note telling the lead which messages the **user** sent an agent
+/// directly, in its session view (`docs/agent-tools.md`): the completion
+/// notice and a foreground result both carry it, because a model that reads
+/// an answer to a question it never asked cannot otherwise know who asked.
+/// One `- ` bullet per message, a multi-line one indented beneath its own.
+/// `None` when the user sent nothing.
+#[must_use]
+pub fn user_messages_note(messages: &[String]) -> Option<String> {
+    if messages.is_empty() {
+        return None;
+    }
+    let mut lines = vec![
+        "The user messaged this agent directly in its session view — these came from the \
+         user, not from you:"
+            .to_string(),
+    ];
+    for message in messages {
+        let mut rows = message.trim_end_matches('\n').lines();
+        lines.push(format!("- {}", rows.next().unwrap_or_default()));
+        lines.extend(rows.map(|row| format!("  {row}")));
+    }
+    Some(lines.join("\n"))
+}
 
 /// A subagent's lifecycle — the tree row / footer `◯` colour and the
 /// `⎿ Done` / `⎿ Interrupted` footers key off it.
@@ -204,6 +251,14 @@ pub struct AgentRun {
     /// main view. A run the user **stopped** drops these too
     /// ([`interrupt`](AgentRun::interrupt)) — nothing will continue it.
     pub followups: VecDeque<String>,
+    /// The messages the **user** sent this agent that its current run has
+    /// read — a queued one once [`StreamEvent::Steered`] delivers it, the
+    /// chat that started a continuation at once. What its settle tells the
+    /// lead the answer also answered: the lead never wrote these, and its
+    /// notice is the only place it can learn of them (`docs/agent-tools.md`).
+    /// Cleared by [`reopen`](Self::reopen), so each notice names its own
+    /// run's.
+    pub user_messages: Vec<String>,
     /// Its live tool calls, front running — the parallel-batch queue shape.
     pub tool_queue: VecDeque<ToolCall>,
     /// How many bytes at the end of the running call's output are a terminal
@@ -334,6 +389,7 @@ impl AgentRun {
             streaming: None,
             queued: Vec::new(),
             followups: VecDeque::new(),
+            user_messages: Vec::new(),
             tool_queue: VecDeque::new(),
             tool_live_len: 0,
             result: None,
@@ -435,6 +491,11 @@ impl AgentRun {
             // becomes a real user message on this transcript, after the run
             // of streamed text ahead of it (invariant 4).
             StreamEvent::Steered { text } => {
+                // Only the user's own messages wait on `queued`: the lead's
+                // `agentsend` and a routed shell note arrive unannounced.
+                if self.queued.contains(text) {
+                    self.user_messages.push(text.clone());
+                }
                 self.queued.retain(|pending| pending != text);
                 self.push_user_message(text);
                 self.tokens += crate::app::count_tokens(text) as u64;
@@ -960,6 +1021,7 @@ impl AgentRun {
         self.turn_usage_cached = 0;
         self.turn_usage_cache_write = 0;
         self.round_reasoning.clear();
+        self.user_messages.clear();
     }
 
     /// The tree row's activity: what the agent is doing — or, between tool
@@ -1254,9 +1316,9 @@ pub struct AgentSnapshot {
     pub tool_uses: usize,
     /// Each call's `Name(args)` one-liner, oldest first.
     pub calls: Vec<String>,
-    /// Where each message it read arrived: how many of `calls` it had made
-    /// by then, in order ([`AGENT_FOLLOW_UP_MARK`]).
-    pub follow_ups: Vec<usize>,
+    /// Where each message it read arrived, and whether the user sent it, in
+    /// order ([`AGENT_FOLLOW_UP_MARK`]).
+    pub follow_ups: Vec<FollowUp>,
 }
 
 /// What stopping an agent found ([`AgentRegistry::kill`],
@@ -1294,6 +1356,23 @@ pub enum Resume {
     Unknown,
 }
 
+/// A message waiting for an agent's next round boundary.
+#[derive(Debug, Clone)]
+struct PendingInput {
+    text: String,
+    /// The user typed it into the agent's session view.
+    from_user: bool,
+}
+
+impl PendingInput {
+    fn lead(text: &str) -> Self {
+        Self {
+            text: text.to_string(),
+            from_user: false,
+        }
+    }
+}
+
 /// One running subagent's shared slot: its cancel token, completion state,
 /// stored conversation (for chat continuations), and pending chat inputs.
 #[derive(Default)]
@@ -1320,7 +1399,11 @@ struct AgentSlot {
     calls: Vec<String>,
     /// Where each message it read arrived, in calls made by then
     /// ([`AgentSnapshot::follow_ups`]).
-    follow_ups: Vec<usize>,
+    follow_ups: Vec<FollowUp>,
+    /// How many of `follow_ups` came before the current run — the user's
+    /// messages *this* run answered are the ones after it
+    /// ([`AgentRegistry::user_messages`]).
+    run_follow_ups: usize,
     /// When its current run started; `None` once settled, the run's length
     /// then added to `active`, the time its finished runs took.
     run_started: Option<Instant>,
@@ -1343,9 +1426,9 @@ struct AgentSlot {
     /// The full request message list at settle — a chat continuation resumes
     /// from here.
     messages: Option<Vec<ChatMessage>>,
-    /// User chat messages awaiting delivery into the running loop (taken per
-    /// round via the `pending_notices` seam).
-    pending_inputs: Vec<String>,
+    /// Messages awaiting delivery into the running loop (taken per round via
+    /// the `pending_notices` seam), each remembering whether the user sent it.
+    pending_inputs: Vec<PendingInput>,
     /// The auto-mode classifier's task context for **this agent's** run — its
     /// own launch prompt and its own executed calls, never the lead's
     /// (`docs/permissions.md`). It lives here rather than as a local in the
@@ -1418,6 +1501,7 @@ impl AgentSlot {
         self.failed = None;
         self.run_started = Some(Instant::now());
         self.settled = None;
+        self.run_follow_ups = self.follow_ups.len();
         cancel
     }
 
@@ -1826,14 +1910,14 @@ impl AgentRegistry {
             if slot.killed {
                 return Resume::Stopping;
             }
-            slot.pending_inputs.push(text.to_string());
+            slot.pending_inputs.push(PendingInput::lead(text));
             return Resume::Queued;
         }
         let Some(messages) = slot.messages.take() else {
             return Resume::Unknown;
         };
         self.release_held(id, slot);
-        slot.pending_inputs.push(text.to_string());
+        slot.pending_inputs.push(PendingInput::lead(text));
         let cancel = slot.restart();
         let _ = self.events.send(AgentEvent::Resumed {
             id: id.to_string(),
@@ -1887,16 +1971,37 @@ impl AgentRegistry {
         Some(Ok(slot.result.clone().unwrap_or_default()))
     }
 
-    /// Queue a user chat message for a **running** agent — delivered into its
-    /// loop at the next round boundary (the `pending_notices` seam). Returns
-    /// `false` when the agent isn't currently running a turn (the caller
-    /// should spawn a continuation instead).
+    /// Queue a message for a **running** agent — delivered into its loop at
+    /// the next round boundary (the `pending_notices` seam). Returns `false`
+    /// when the agent isn't currently running a turn (the caller should spawn
+    /// a continuation instead). The lead's and the system's door: a
+    /// background shell's completion routed to the agent that launched it.
+    /// A message the user typed takes
+    /// [`queue_user_input`](Self::queue_user_input).
     #[must_use]
     pub fn queue_input(&self, id: &str, text: &str) -> bool {
+        self.queue(id, PendingInput::lead(text))
+    }
+
+    /// [`queue_input`](Self::queue_input) for a message the **user** typed
+    /// into the agent's session view — remembered as theirs, so the lead is
+    /// told who wrote it (`docs/agent-tools.md`).
+    #[must_use]
+    pub fn queue_user_input(&self, id: &str, text: &str) -> bool {
+        self.queue(
+            id,
+            PendingInput {
+                text: text.to_string(),
+                from_user: true,
+            },
+        )
+    }
+
+    fn queue(&self, id: &str, input: PendingInput) -> bool {
         let mut inner = self.inner.lock().expect("agent registry poisoned");
         match inner.slots.get_mut(id) {
             Some(slot) if slot.busy && !slot.killed => {
-                slot.pending_inputs.push(text.to_string());
+                slot.pending_inputs.push(input);
                 true
             }
             _ => false,
@@ -1913,22 +2018,52 @@ impl AgentRegistry {
         };
         let taken = std::mem::take(&mut slot.pending_inputs);
         // Read now, at this round boundary: the report's timeline marks it
-        // after the calls made so far (docs/agent-tools.md).
-        if !taken.is_empty() {
-            slot.follow_ups.push(slot.calls.len());
+        // after the calls made so far — one mark for the lead's messages, one
+        // per message the user sent, each quoted (docs/agent-tools.md).
+        let at = slot.calls.len();
+        if taken.iter().any(|input| !input.from_user) {
+            slot.follow_ups.push(FollowUp::lead(at));
         }
-        taken
+        slot.follow_ups
+            .extend(
+                taken
+                    .iter()
+                    .filter(|input| input.from_user)
+                    .map(|input| FollowUp {
+                        at,
+                        from_user: Some(input.text.clone()),
+                    }),
+            );
+        taken.into_iter().map(|input| input.text).collect()
     }
 
-    /// Mark that `id` read a message delivered **outside** its queue — a
+    /// Mark that `id` read a message the user sent **outside** its queue — a
     /// session-view chat that continues it with the message already in its
     /// conversation (`spawn_agent_chat`); a queued one is marked as its loop
     /// drains it ([`take_pending_inputs`](Self::take_pending_inputs)).
-    pub fn note_follow_up(&self, id: &str) {
+    pub fn note_user_message(&self, id: &str, text: &str) {
         let mut inner = self.inner.lock().expect("agent registry poisoned");
         if let Some(slot) = inner.slots.get_mut(id) {
-            slot.follow_ups.push(slot.calls.len());
+            let at = slot.calls.len();
+            slot.follow_ups.push(FollowUp {
+                at,
+                from_user: Some(text.to_string()),
+            });
         }
+    }
+
+    /// The messages the user sent `id` that its **current run** has read —
+    /// what the run's answer is told it answered (the foreground result's
+    /// note, `user_messages_note`). Empty for an unknown id.
+    #[must_use]
+    pub fn user_messages(&self, id: &str) -> Vec<String> {
+        let inner = self.inner.lock().expect("agent registry poisoned");
+        inner.slots.get(id).map_or_else(Vec::new, |slot| {
+            slot.follow_ups[slot.run_follow_ups.min(slot.follow_ups.len())..]
+                .iter()
+                .filter_map(|follow_up| follow_up.from_user.clone())
+                .collect()
+        })
     }
 
     /// Does `id` still hold a message nobody has delivered?
@@ -1956,7 +2091,12 @@ impl AgentRegistry {
     /// honest answer: a message the loop has read is in its context now.
     pub fn take_last_input(&self, id: &str) -> Option<String> {
         let mut inner = self.inner.lock().expect("agent registry poisoned");
-        inner.slots.get_mut(id)?.pending_inputs.pop()
+        inner
+            .slots
+            .get_mut(id)?
+            .pending_inputs
+            .pop()
+            .map(|input| input.text)
     }
 
     /// Can this agent take a **new turn** right now — settled, not stopped,
@@ -2040,6 +2180,16 @@ pub fn report_call(header: &str) -> String {
     }
 }
 
+/// The report line for one delivered message: the bare
+/// [`AGENT_FOLLOW_UP_MARK`] for the lead's own, the user's quoted on one
+/// line — the lead never saw it, so naming that it arrived is not enough.
+fn follow_up_mark(follow_up: &FollowUp) -> String {
+    follow_up.from_user.as_deref().map_or_else(
+        || AGENT_FOLLOW_UP_MARK.to_string(),
+        |text| format!("— message from the user: {} —", report_call(text)),
+    )
+}
+
 /// `agentoutput`'s report (`docs/agent-tools.md`): the frame line, then what
 /// the agent has been doing as a **summary** — one `Name(args)` line per tool
 /// call, the newest [`AGENT_REPORT_CALLS_MAX`] with the earlier ones counted,
@@ -2059,18 +2209,15 @@ pub fn output_report(snapshot: &AgentSnapshot) -> String {
     let mut follow_ups = snapshot
         .follow_ups
         .iter()
-        .copied()
-        .filter(|&at| at >= hidden)
+        .filter(|follow_up| follow_up.at >= hidden)
         .peekable();
     for (index, call) in snapshot.calls.iter().enumerate().skip(hidden) {
-        while follow_ups.next_if(|&at| at <= index).is_some() {
-            lines.push(AGENT_FOLLOW_UP_MARK.to_string());
+        while let Some(follow_up) = follow_ups.next_if(|follow_up| follow_up.at <= index) {
+            lines.push(follow_up_mark(follow_up));
         }
         lines.push(report_call(call));
     }
-    for _ in follow_ups {
-        lines.push(AGENT_FOLLOW_UP_MARK.to_string());
-    }
+    lines.extend(follow_ups.map(follow_up_mark));
     match &snapshot.state {
         AgentState::Running if snapshot.calls.is_empty() => {
             lines.push("No tool calls yet.".to_string());
@@ -3946,7 +4093,10 @@ mod tests {
         assert_eq!(snap.tool_uses, 1);
         assert_eq!(
             snap.follow_ups,
-            [1],
+            [FollowUp {
+                at: 1,
+                from_user: None
+            }],
             "the message arrived after the first call"
         );
     }
@@ -3967,8 +4117,74 @@ mod tests {
         assert!(registry.queue_input(&id, "also b"));
         let _ = registry.take_pending_inputs(&id);
         registry.record_call(&id, "Read(b)");
-        registry.note_follow_up(&id);
-        assert_eq!(registry.snapshot(&id).unwrap().follow_ups, [1, 2]);
+        registry.note_user_message(&id, "and c");
+        let at: Vec<usize> = registry
+            .snapshot(&id)
+            .unwrap()
+            .follow_ups
+            .iter()
+            .map(|follow_up| follow_up.at)
+            .collect();
+        assert_eq!(at, [1, 2]);
+    }
+
+    #[test]
+    fn a_message_the_user_typed_is_told_apart_from_the_leads() {
+        // The lead must learn which messages the *user* sent its agent — a
+        // session-view chat it never wrote (docs/agent-tools.md). The report
+        // quotes the user's message where it arrived; the lead's own
+        // `agentsend` (and a routed shell note) stays the bare mark.
+        let registry = test_registry();
+        let (id, _cancel) = registry.register_agent(GENERAL_PURPOSE, "d", "p");
+        assert!(registry.queue_input(&id, "lead's own"));
+        let _ = registry.take_pending_inputs(&id);
+        registry.record_call(&id, "Read(a)");
+        assert!(registry.queue_user_input(&id, "also check\nManila"));
+        assert_eq!(
+            registry.take_pending_inputs(&id),
+            ["also check\nManila"],
+            "the loop reads the text either way"
+        );
+        assert_eq!(registry.user_messages(&id), ["also check\nManila"]);
+        let report = output_report(&registry.snapshot(&id).unwrap());
+        let lines: Vec<&str> = report.lines().collect();
+        assert_eq!(
+            lines[1..4],
+            [
+                AGENT_FOLLOW_UP_MARK,
+                "Read(a)",
+                "— message from the user: also check Manila —"
+            ],
+            "{report}"
+        );
+    }
+
+    #[test]
+    fn the_users_messages_are_the_current_runs_own() {
+        // What a run's answer is told it answered: a continuation starts
+        // with none, then counts the chat that started it.
+        let registry = test_registry();
+        let (id, _cancel) = registry.register_agent(GENERAL_PURPOSE, "d", "p");
+        assert!(registry.queue_user_input(&id, "first"));
+        let _ = registry.take_pending_inputs(&id);
+        registry.finish(&id, Ok("one".into()), vec![ChatMessage::user("p")]);
+        assert_eq!(registry.user_messages(&id), ["first"]);
+        assert!(registry.begin_continuation(&id).is_some());
+        assert!(registry.user_messages(&id).is_empty(), "a new run");
+        registry.note_user_message(&id, "second");
+        assert_eq!(registry.user_messages(&id), ["second"]);
+        assert!(registry.user_messages("nope").is_empty());
+    }
+
+    #[test]
+    fn alt_up_takes_back_a_users_queued_message() {
+        let registry = test_registry();
+        let (id, _cancel) = registry.register_agent(GENERAL_PURPOSE, "d", "p");
+        assert!(registry.queue_user_input(&id, "oops"));
+        assert!(registry.has_pending_inputs(&id));
+        assert_eq!(registry.take_last_input(&id).as_deref(), Some("oops"));
+        assert!(registry.take_pending_inputs(&id).is_empty());
+        assert!(registry.user_messages(&id).is_empty(), "never read");
     }
 
     fn snapshot(state: AgentState, calls: &[&str]) -> AgentSnapshot {
@@ -3990,7 +4206,7 @@ mod tests {
             AgentState::Done("alter-zero.".into()),
             &["Bash(curl one)", "Bash(curl two)"],
         );
-        done.follow_ups = vec![1, 2];
+        done.follow_ups = vec![FollowUp::lead(1), FollowUp::lead(2)];
         let report = output_report(&done);
         let lines: Vec<&str> = report.lines().collect();
         assert_eq!(
@@ -4010,7 +4226,10 @@ mod tests {
             .collect();
         let refs: Vec<&str> = calls.iter().map(String::as_str).collect();
         let mut long = snapshot(AgentState::Running, &refs);
-        long.follow_ups = vec![0, AGENT_REPORT_CALLS_MAX + 1];
+        long.follow_ups = vec![
+            FollowUp::lead(0),
+            FollowUp::lead(AGENT_REPORT_CALLS_MAX + 1),
+        ];
         let report = output_report(&long);
         let lines: Vec<&str> = report.lines().collect();
         assert_eq!(lines[1], "… 1 earlier tool call");

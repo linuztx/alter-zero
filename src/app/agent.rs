@@ -94,6 +94,11 @@ pub struct AgentNotice {
     pub result: String,
     /// Wall-clock stamp (recorded like every item's; never displayed).
     pub timestamp: String,
+    /// The messages the user sent the agent directly, in its session view,
+    /// that this run answered ([`AgentRun::user_messages`]) — named in the
+    /// note so the lead knows the conversation was the user's
+    /// (`docs/agent-tools.md`).
+    pub user_messages: Vec<String>,
 }
 
 impl AgentNotice {
@@ -139,11 +144,27 @@ impl AgentNotice {
         };
         // The id rides beside the task: `agentsend` continues the
         // conversation this note reports on (docs/agent-tools.md).
-        format!(
-            "[background agent] Agent \"{}\" ({}) {outcome}.\nFinal response:\n{body}",
+        let mut text = format!(
+            "[background agent] Agent \"{}\" ({}) {outcome}.\n",
             self.description, self.id,
-        )
+        );
+        if let Some(note) = crate::agents::user_messages_note(&self.user_messages) {
+            text.push_str(&note);
+            text.push('\n');
+        }
+        text.push_str("Final response:\n");
+        text.push_str(body);
+        text
     }
+}
+
+/// Does `agent`'s settle owe the lead a completion notice? A background
+/// agent's always does — the group cell resolved long ago. A foreground one's
+/// is carried by its group's result while that group is still waiting
+/// (`in_live_group`); past it, only a run the **user** started or steered has
+/// anything to tell, and nothing but a notice can tell it.
+fn owes_notice(agent: &AgentRun, in_live_group: bool) -> bool {
+    agent.background || (!in_live_group && !agent.user_messages.is_empty())
 }
 
 /// The **live** agent group — the round's `agent` calls between their
@@ -325,12 +346,14 @@ impl App {
     /// are dropped (a chunk racing a sweep).
     pub fn apply_agent_event(&mut self, id: &str, event: &StreamEvent) -> Option<AgentNotice> {
         let stamp = self.now_stamp();
+        let in_live_group = self.in_live_agent_group(id);
         let agent = self.agents.iter_mut().find(|agent| agent.id == id)?;
         let settled = agent.apply(event);
         self.agents_generation += 1;
         if !settled {
             return None;
         }
+        let owed = owes_notice(agent, in_live_group);
         let notice = AgentNotice {
             id: agent.id.clone(),
             description: agent.description.clone(),
@@ -342,10 +365,17 @@ impl App {
                 .or_else(|| agent.error.clone())
                 .unwrap_or_default(),
             timestamp: stamp,
+            user_messages: agent.user_messages.clone(),
         };
-        // A background agent's completion is its own event (the group cell
-        // resolved long ago); a foreground one resolves with its group.
-        agent.background.then_some(notice)
+        owed.then_some(notice)
+    }
+
+    /// Is `id` a member of the group still waiting in the lead's round? Its
+    /// settle is then carried by that group's result, never a notice.
+    fn in_live_agent_group(&self, id: &str) -> bool {
+        self.agent_group
+            .as_ref()
+            .is_some_and(|group| !group.background && group.ids.iter().any(|live| live == id))
     }
 
     /// A [`StreamEvent::AgentGroupDone`]: snapshot each call's roster entry
@@ -492,6 +522,7 @@ impl App {
     /// at once ([`AgentStop::Cleared`]). `None` when the id isn't listed.
     pub fn stop_agent(&mut self, id: &str) -> Option<AgentStop> {
         let stamp = self.now_stamp();
+        let in_live_group = self.in_live_agent_group(id);
         // A cleared row is off the roster: there is nothing left for `x` to
         // act on, even while the entry waits for its group's resolution.
         let agent = self
@@ -514,13 +545,14 @@ impl App {
             return Some(AgentStop::Cleared);
         }
         agent.stopped_by_user = true;
-        let notice = agent.background.then(|| AgentNotice {
+        let notice = owes_notice(agent, in_live_group).then(|| AgentNotice {
             id: agent.id.clone(),
             description: agent.description.clone(),
             status: agent.status,
             secs: agent.runtime.as_secs(),
             result: String::new(),
             timestamp: stamp,
+            user_messages: agent.user_messages.clone(),
         });
         self.agents_generation += 1;
         Some(AgentStop::Stopped(notice))
@@ -669,6 +701,7 @@ impl App {
             secs: agent.runtime.as_secs(),
             result: String::new(),
             timestamp: stamp,
+            user_messages: agent.user_messages.clone(),
         };
         self.agents_generation += 1;
         self.settle_agent_completion(&notice);
@@ -986,12 +1019,18 @@ impl App {
     /// its newest user turn, so no round boundary will announce it) and
     /// reopen the entry so the continuation's events fold in. The idle-submit
     /// half of [`queue_agent_chat`](App::queue_agent_chat).
+    ///
+    /// The run it starts answers the user, so its settle owes the lead a
+    /// notice naming the message ([`AgentRun::user_messages`]) — even for a
+    /// foreground agent, whose group resolved before this conversation began
+    /// and so cannot carry it (`docs/agent-tools.md`).
     pub fn agent_chat(&mut self, id: &str, text: &str) {
         if let Some(agent) = self.agents.iter_mut().find(|agent| agent.id == id) {
-            agent.push_user_message(text);
             if agent.status.is_final() {
                 agent.reopen();
             }
+            agent.push_user_message(text);
+            agent.user_messages.push(text.to_string());
             self.agents_generation += 1;
         }
     }

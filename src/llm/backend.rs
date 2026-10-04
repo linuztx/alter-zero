@@ -1100,8 +1100,10 @@ impl ReplySource for LlmBackend {
             return AgentChatDelivery::Declined;
         };
         // Still running: the message rides its queue to the next round
-        // boundary, exactly as the main session's does (docs/queue.md).
-        if registry.queue_input(id, text) {
+        // boundary, exactly as the main session's does (docs/queue.md) —
+        // remembered as the user's, since the lead never wrote it
+        // (docs/agent-tools.md).
+        if registry.queue_user_input(id, text) {
             return AgentChatDelivery::Queued;
         }
         let Some((mut messages, cancel)) = registry.begin_continuation(id) else {
@@ -1109,7 +1111,7 @@ impl ReplySource for LlmBackend {
         };
         // In the conversation already, so no drain will mark it: the
         // `agentoutput` timeline is told here (docs/agent-tools.md).
-        registry.note_follow_up(id);
+        registry.note_user_message(id, text);
         messages.push(ChatMessage::user(text));
         spawn_subagent_run(
             &self.subagent_config(),
@@ -1347,21 +1349,38 @@ pub fn agent_handoff_text(id: &str, description: &str) -> String {
 /// the reference's placeholder when it answered with nothing, the stopped
 /// note for a user kill, and a failure note otherwise — closed by the line
 /// naming the agent `agentsend` continues (`docs/agent-tools.md`). A user's
-/// stop is final, so its note offers nothing to continue.
-fn agent_result_text(id: &str, outcome: Option<Result<String, String>>) -> (String, bool) {
-    let follow_up = format!("[agent {id} — agentsend continues this conversation]");
-    match outcome {
+/// stop is final, so its note offers nothing to continue. Messages the user
+/// sent the agent from its session view while the lead waited are named
+/// between the two (`agents::user_messages_note`): the lead never wrote
+/// them, and an answer to a question it never asked reads as a non sequitur.
+fn agent_result_text(
+    id: &str,
+    outcome: Option<Result<String, String>>,
+    user_messages: &[String],
+) -> (String, bool) {
+    // The answer (or what stood in for one), whether the conversation can
+    // go on, and the call's verdict.
+    let (answer, continues, ok) = match outcome {
         Some(Ok(text)) if text.trim().is_empty() => (
-            format!("(Subagent completed but returned no output.)\n\n{follow_up}"),
+            "(Subagent completed but returned no output.)".to_string(),
+            true,
             true,
         ),
-        Some(Ok(text)) => (format!("{}\n\n{follow_up}", text.trim_end()), true),
+        Some(Ok(text)) => (text.trim_end().to_string(), true, true),
         Some(Err(error)) if error == "stopped by the user" => {
-            (crate::app::AGENT_STOPPED_OUTPUT.to_string(), false)
+            (crate::app::AGENT_STOPPED_OUTPUT.to_string(), false, false)
         }
-        Some(Err(error)) => (format!("[agent failed: {error}]\n\n{follow_up}"), false),
-        None => (crate::app::AGENT_STOPPED_OUTPUT.to_string(), false),
+        Some(Err(error)) => (format!("[agent failed: {error}]"), true, false),
+        None => (crate::app::AGENT_STOPPED_OUTPUT.to_string(), false, false),
+    };
+    let mut parts = vec![answer];
+    parts.extend(crate::agents::user_messages_note(user_messages));
+    if continues {
+        parts.push(format!(
+            "[agent {id} — agentsend continues this conversation]"
+        ));
     }
+    (parts.join("\n\n"), ok)
 }
 
 /// One launched subagent as the wait loop tracks it.
@@ -1527,7 +1546,11 @@ fn run_agent_calls(
                     true,
                 )
             } else {
-                agent_result_text(&launched.spec.id, registry.outcome(&launched.spec.id))
+                agent_result_text(
+                    &launched.spec.id,
+                    registry.outcome(&launched.spec.id),
+                    &registry.user_messages(&launched.spec.id),
+                )
             };
             results.push((launched.call_id.clone(), text.clone()));
             dones.push(AgentCallDone {
@@ -2577,7 +2600,7 @@ mod tests {
 
     #[test]
     fn a_foreground_result_names_the_agent_it_can_continue() {
-        let (done, ok) = agent_result_text("a7k2m9x4q", Some(Ok("It has 12 repos.".into())));
+        let (done, ok) = agent_result_text("a7k2m9x4q", Some(Ok("It has 12 repos.".into())), &[]);
         assert!(ok);
         assert!(
             done.starts_with("It has 12 repos."),
@@ -2587,15 +2610,37 @@ mod tests {
             done.ends_with("[agent a7k2m9x4q — agentsend continues this conversation]"),
             "{done}"
         );
-        let (failed, ok) = agent_result_text("a7k2m9x4q", Some(Err("rate limited".into())));
+        let (failed, ok) = agent_result_text("a7k2m9x4q", Some(Err("rate limited".into())), &[]);
         assert!(!ok);
         assert!(
             failed.contains("rate limited") && failed.contains("a7k2m9x4q"),
             "{failed}"
         );
         // A user's stop is final, so its note offers nothing to continue.
-        let (stopped, _) = agent_result_text("a7k2m9x4q", Some(Err("stopped by the user".into())));
+        let (stopped, _) =
+            agent_result_text("a7k2m9x4q", Some(Err("stopped by the user".into())), &[]);
         assert_eq!(stopped, crate::app::AGENT_STOPPED_OUTPUT);
+    }
+
+    #[test]
+    fn a_foreground_result_names_what_the_user_told_the_agent() {
+        // The user steered the agent from its session view while the lead
+        // waited on it: the answer the lead reads says who asked for what.
+        let user = vec!["also check Manila".to_string()];
+        let (done, _) = agent_result_text("a7k2m9x4q", Some(Ok("31°C".into())), &user);
+        assert_eq!(
+            done,
+            "31°C\n\nThe user messaged this agent directly in its session view — these \
+             came from the user, not from you:\n- also check Manila\n\n\
+             [agent a7k2m9x4q — agentsend continues this conversation]"
+        );
+        let (stopped, _) =
+            agent_result_text("a7k2m9x4q", Some(Err("stopped by the user".into())), &user);
+        assert!(
+            stopped.starts_with(crate::app::AGENT_STOPPED_OUTPUT)
+                && stopped.contains("- also check Manila"),
+            "{stopped}"
+        );
     }
 
     #[test]

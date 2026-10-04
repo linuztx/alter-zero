@@ -1259,7 +1259,9 @@ continuation's first round announces the message as `Steered`; a user-`x`
 stop is final, the lead's own `agentkill` resumable), `agentoutput
 {agent_id, wait?}` reports `{State} (agent {id} · {task} · {runtime} · {n}
 tool uses)` over one `Name(args)` line per call — lifetime numbers, each
-read message marked `— message received —`, the final response once
+read message marked `— message received —` (a message the *user* typed
+into its session view quoted instead, and named as the user's in the
+lead's notice and foreground result), the final response once
 settled — and with `wait` blocks, its cell tailing each new call as a
 command cell (`COMMAND_TOOL_NAMES`), Ctrl+B ending the wait, `agentkill`
 stops (`AgentEvent::Stopped`), `agentlist` lists; the subagent's forwarder

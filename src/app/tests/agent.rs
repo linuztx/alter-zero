@@ -505,6 +505,7 @@ fn agent_notice_texts_humanize_the_runtime() {
         secs: 362,
         result: "done".into(),
         timestamp: String::new(),
+        user_messages: Vec::new(),
     };
     assert_eq!(
         notice.headline(),
@@ -1365,4 +1366,165 @@ fn retirement_keeps_only_the_newest_swept_agents() {
     );
     app.clear_conversation();
     assert!(app.retired_agents.is_empty(), "/clear forgets them all");
+}
+
+// --- The user's own messages to an agent (`docs/agent-tools.md`) ---
+
+#[test]
+fn a_message_the_user_typed_into_an_agent_is_named_in_its_notice() {
+    // The user chatted with a background agent in its session view: the
+    // lead's notice must say the user wrote it — the lead never did.
+    let mut app = launched_background_agents();
+    app.queue_agent_chat("a1", "also check Manila");
+    app.apply_agent_event(
+        "a1",
+        &StreamEvent::Steered {
+            text: "also check Manila".into(),
+        },
+    );
+    app.apply_agent_event("a1", &StreamEvent::Chunk("31°C".into()));
+    let notice = app
+        .apply_agent_event("a1", &StreamEvent::StreamDone)
+        .expect("a background settle owes a notice");
+    assert_eq!(notice.user_messages, ["also check Manila"]);
+    let text = notice.context_text();
+    assert!(
+        text.contains("The user messaged this agent directly")
+            && text.contains("- also check Manila"),
+        "{text}"
+    );
+}
+
+#[test]
+fn the_leads_own_follow_up_is_never_attributed_to_the_user() {
+    let mut app = launched_background_agents();
+    app.apply_agent_event("a1", &StreamEvent::StreamDone);
+    app.resume_agent("a1", "Fetch Warsaw weather", "general-purpose", "p");
+    app.apply_agent_event(
+        "a1",
+        &StreamEvent::Steered {
+            text: "and tomorrow?".into(),
+        },
+    );
+    let notice = app
+        .apply_agent_event("a1", &StreamEvent::StreamDone)
+        .expect("noticed");
+    assert!(notice.user_messages.is_empty(), "the lead sent it");
+    assert!(!notice.context_text().contains("The user messaged"));
+}
+
+#[test]
+fn a_user_chat_with_a_settled_foreground_agent_owes_the_lead_a_notice() {
+    // A foreground agent's answer reaches the lead through its group — but
+    // a chat the user starts once that group resolved has no other way
+    // back, and without it the lead never learns the conversation happened.
+    let mut app = App::new();
+    app.begin_stream();
+    app.start_agent_group(false, &agent_specs(false));
+    for id in ["a1", "a2"] {
+        app.apply_agent_event(id, &StreamEvent::StreamDone);
+    }
+    app.finish_agent_group(
+        false,
+        &[
+            AgentCallDone {
+                id: "a1".into(),
+                output: "done".into(),
+                ok: true,
+            },
+            AgentCallDone {
+                id: "a2".into(),
+                output: "done".into(),
+                ok: true,
+            },
+        ],
+    );
+    app.agent_chat("a1", "and tomorrow?");
+    let run = app.agent("a1").expect("on the roster");
+    assert_eq!(run.status, crate::agents::AgentStatus::Running);
+    app.apply_agent_event("a1", &StreamEvent::Chunk("31°C".into()));
+    let notice = app
+        .apply_agent_event("a1", &StreamEvent::StreamDone)
+        .expect("the user's conversation is reported to the lead");
+    assert_eq!(notice.user_messages, ["and tomorrow?"]);
+    assert_eq!(notice.result, "31°C");
+}
+
+#[test]
+fn a_foreground_agent_steered_in_its_live_group_resolves_with_the_group() {
+    // Still inside its group: the group's result carries the answer (and
+    // names the user's messages itself), so no notice is owed.
+    let mut app = App::new();
+    app.begin_stream();
+    app.start_agent_group(false, &agent_specs(false));
+    app.queue_agent_chat("a1", "also check Manila");
+    app.apply_agent_event(
+        "a1",
+        &StreamEvent::Steered {
+            text: "also check Manila".into(),
+        },
+    );
+    assert!(
+        app.apply_agent_event("a1", &StreamEvent::StreamDone)
+            .is_none()
+    );
+}
+
+#[test]
+fn each_notice_names_only_the_messages_its_own_run_answered() {
+    let mut app = launched_background_agents();
+    app.queue_agent_chat("a1", "also check Manila");
+    app.apply_agent_event(
+        "a1",
+        &StreamEvent::Steered {
+            text: "also check Manila".into(),
+        },
+    );
+    let first = app
+        .apply_agent_event("a1", &StreamEvent::StreamDone)
+        .expect("noticed");
+    assert_eq!(first.user_messages, ["also check Manila"]);
+    app.agent_chat("a1", "and Cebu?");
+    let second = app
+        .apply_agent_event("a1", &StreamEvent::StreamDone)
+        .expect("noticed");
+    assert_eq!(second.user_messages, ["and Cebu?"]);
+}
+
+#[test]
+fn a_user_stop_after_a_chat_names_the_chat() {
+    let mut app = launched_background_agents();
+    app.queue_agent_chat("a1", "also check Manila");
+    app.apply_agent_event(
+        "a1",
+        &StreamEvent::Steered {
+            text: "also check Manila".into(),
+        },
+    );
+    let Some(AgentStop::Stopped(Some(notice))) = app.stop_agent("a1") else {
+        panic!("a running background agent's stop owes a notice");
+    };
+    assert_eq!(notice.user_messages, ["also check Manila"]);
+}
+
+#[test]
+fn the_notice_lists_each_user_message_under_the_outcome() {
+    let notice = crate::app::AgentNotice {
+        id: "a1".into(),
+        description: "Fetch weather".into(),
+        status: crate::agents::AgentStatus::Done,
+        secs: 35,
+        result: "31°C".into(),
+        timestamp: String::new(),
+        user_messages: vec!["also check Manila".into(), "two\nlines".into()],
+    };
+    assert_eq!(
+        notice.context_text(),
+        "[background agent] Agent \"Fetch weather\" (a1) completed in 35s.\n\
+         The user messaged this agent directly in its session view — these \
+         came from the user, not from you:\n\
+         - also check Manila\n\
+         - two\n  lines\n\
+         Final response:\n31°C"
+    );
 }

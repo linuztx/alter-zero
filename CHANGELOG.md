@@ -29,6 +29,14 @@ release heading when a version is cut.
   finished agents stay resumable — up to the 16 most recent — after their
   roster rows are gone. The id also shows on the agent's Ctrl+O cell
   (`docs/agent-tools.md`).
+- **The main agent knows when you talked to a subagent yourself.** A
+  message you type into an agent's session view now reaches the main agent
+  as yours: the notice of the agent's answer — or a waiting agent's result —
+  lists what you sent it, saying it came from you and not from the main
+  agent, and `agentoutput` quotes it where it arrived. Before, the answer came
+  back looking like part of the main agent's own conversation, and a chat
+  with an agent that had finished in the foreground never reached the main
+  agent at all (`docs/agent-tools.md`).
 
 ## [0.11.0] - 2026-10-03
 

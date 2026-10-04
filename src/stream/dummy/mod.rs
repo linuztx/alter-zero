@@ -306,12 +306,13 @@ impl ReplySource for DummyAi {
         let Some(registry) = &self.agents else {
             return super::AgentChatDelivery::Declined;
         };
-        if registry.queue_input(id, text) {
+        if registry.queue_user_input(id, text) {
             return super::AgentChatDelivery::Queued;
         }
         let Some((_messages, cancel)) = registry.begin_continuation(id) else {
             return super::AgentChatDelivery::Declined;
         };
+        registry.note_user_message(id, text);
         agent::spawn_chat_continuation(registry.clone(), id.to_string(), cancel);
         super::AgentChatDelivery::Started
     }
