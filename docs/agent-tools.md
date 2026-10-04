@@ -245,6 +245,13 @@ whose answer then arrived as a notice that started the idle follow-up
 turn; and a message queued into a running agent, read after its current
 step and shown as a user bubble in its session view.
 
+Two of those runs are kept as `#[ignore]`d live tests in
+`tests/live_subagents.rs` (`A0_VENICE_API_KEY=… cargo test --test
+live_subagents -- --ignored`): a finished foreground agent resumed by id and
+waited on with `agentoutput`, its new answer under its own definition; and a
+background agent inspected, stopped by the lead and listed, the registry
+agreeing that the stop is resumable.
+
 Offline, the dummy's `agent-follow-up` demo plays the first of those with no
 network — its companion calls through the real executor, its agent's runs
 settling through the real registry — and `smoke.sh` Phase 130 drives it in

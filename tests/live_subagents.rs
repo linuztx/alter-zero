@@ -330,3 +330,166 @@ fn live_the_reminder_tells_the_model_which_types_exist() {
         "the model read the agent listing: {text:?}"
     );
 }
+
+/// Run one turn and return every tool cell it resolved as `(display name,
+/// output)` — a companion's cell beside its real report — plus the
+/// foreground agents' results (`docs/agent-tools.md`).
+fn turn_cells(backend: &LlmBackend, prompt: &str) -> (Vec<(String, String)>, Vec<String>) {
+    let context = vec![ContextMessage::new(ContextRole::User, prompt)];
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let handle = backend.spawn(prompt.to_string(), vec![], context, tx, CancelToken::new());
+    let mut cells = Vec::new();
+    let mut agent_results = Vec::new();
+    let mut open: Option<String> = None;
+    while let Some(event) = rx.blocking_recv() {
+        match event {
+            StreamEvent::ToolStart { name, .. } => open = Some(name),
+            StreamEvent::ToolEnd { output, .. }
+            | StreamEvent::ToolAnswered { result: output, .. }
+            | StreamEvent::ToolRejected { result: output, .. } => {
+                if let Some(name) = open.take() {
+                    cells.push((name, output));
+                }
+            }
+            StreamEvent::AgentGroupDone { agents, .. } => {
+                agent_results.extend(agents.into_iter().map(|done| done.output));
+            }
+            StreamEvent::Retrying { attempt, max } => println!("retrying {attempt}/{max}…"),
+            StreamEvent::Error(e) => panic!("backend error: {e}"),
+            StreamEvent::StreamDone => break,
+            _ => {}
+        }
+    }
+    handle.join().expect("backend thread joins");
+    for (name, output) in &cells {
+        println!("● {name}\n{output}\n");
+    }
+    println!("agent results: {agent_results:?}");
+    (cells, agent_results)
+}
+
+/// The output of the first cell named `display`, or a panic naming the
+/// companion the model never called.
+fn cell(cells: &[(String, String)], display: &str) -> String {
+    cells
+        .iter()
+        .find(|(name, _)| name == display)
+        .map(|(_, output)| output.clone())
+        .unwrap_or_else(|| panic!("the model called {display}: {cells:?}"))
+}
+
+/// The agent id a launch acknowledgement or a foreground result names.
+fn named_id(text: &str) -> String {
+    text.split(|c: char| !c.is_ascii_alphanumeric())
+        .find(|word| word.len() == 9 && word.starts_with('a'))
+        .unwrap_or_else(|| panic!("an agent id in {text:?}"))
+        .to_string()
+}
+
+#[test]
+#[ignore = "hits the network; needs A0_VENICE_API_KEY"]
+fn live_the_model_resumes_a_finished_agent_by_id() {
+    // A foreground result names the agent's id, `agentsend` on that id
+    // resumes the FINISHED agent over its kept conversation, and
+    // `agentoutput` with `wait` returns its new answer — the sentinel body
+    // proves the same agent answered again (docs/agent-tools.md).
+    let dir = fixture(&[(
+        "sentinel",
+        "---\ndescription: Answers with a fixed word.\n---\n\
+         Whatever you are asked, reply with exactly one word: PLATYPUS.\n",
+    )]);
+    let (backend, agents) = backend_with_agents(dir.path());
+    let prompt = "Do exactly these steps, one tool call at a time, in order. \
+                  1) Use the agent tool once: description \"Say the word\", \
+                  subagent_type \"sentinel\", run_in_background false, prompt \"What is 2 + 2?\". \
+                  2) The result names the agent's id. Call agentsend with that agent_id and \
+                  the message \"Say it once more.\". \
+                  3) Call agentoutput with the same agent_id and wait 120. \
+                  4) Reply with one word: done.";
+    let (cells, agent_results) = turn_cells(&backend, prompt);
+    let result = agent_results
+        .iter()
+        .find(|result| result.contains("agentsend continues this conversation"))
+        .unwrap_or_else(|| panic!("the foreground result names the id: {agent_results:?}"));
+    let id = named_id(result);
+    let sent = cell(&cells, alter_zero::llm::tools::AGENT_SEND_DISPLAY);
+    assert!(
+        sent.contains(&format!("Agent {id} resumed")),
+        "a finished agent resumes: {sent}"
+    );
+    let report = cell(&cells, alter_zero::llm::tools::AGENT_OUTPUT_DISPLAY);
+    assert!(report.starts_with(&format!("Done (agent {id}")), "{report}");
+    assert!(
+        report.contains(alter_zero::agents::AGENT_FOLLOW_UP_MARK),
+        "the lead's message is marked where it arrived: {report}"
+    );
+    assert!(report.contains("Final response:"), "{report}");
+    assert!(
+        report.to_uppercase().contains("PLATYPUS"),
+        "the resumed agent answered under its own definition: {report}"
+    );
+    let snapshot = agents.snapshot(&id).expect("the agent is still kept");
+    assert!(
+        matches!(snapshot.state, alter_zero::agents::AgentState::Done(_)),
+        "{snapshot:?}"
+    );
+}
+
+#[test]
+#[ignore = "hits the network; needs A0_VENICE_API_KEY"]
+fn live_the_model_inspects_stops_and_lists_a_background_agent() {
+    // `agentoutput` on a running background agent reports its calls,
+    // `agentkill` stops it with its conversation kept, and `agentlist` then
+    // names it as stopped — each cell the real executor's report, and the
+    // registry agreeing (docs/agent-tools.md).
+    let dir = fixture(&[(
+        "sleeper",
+        "---\ndescription: Runs a slow command.\ntools: Bash\n---\n\
+         Run the bash command `sleep 240; echo done` with wait 300, then reply done.\n",
+    )]);
+    let (backend, agents) = backend_with_agents(dir.path());
+    let prompt = "Do exactly these steps, one tool call at a time, in order. \
+                  1) Use the agent tool once: description \"Sleep a while\", \
+                  subagent_type \"sleeper\", run_in_background true, prompt \"Run the slow \
+                  command now.\". The result names the agent's id. \
+                  2) Call bash with the command \"sleep 8\". \
+                  3) Call agentoutput with that agent_id and no wait. \
+                  4) Call agentkill with that agent_id. \
+                  5) Call agentlist. \
+                  6) Reply with one word: done.";
+    let (cells, agent_results) = turn_cells(&backend, prompt);
+    let ack = agent_results
+        .iter()
+        .find(|result| result.contains("launched as a"))
+        .unwrap_or_else(|| panic!("the launch names the id: {agent_results:?}"));
+    let id = named_id(ack);
+    let report = cell(&cells, alter_zero::llm::tools::AGENT_OUTPUT_DISPLAY);
+    assert!(
+        report.starts_with(&format!("Running (agent {id}")),
+        "{report}"
+    );
+    assert!(
+        report.contains("Bash(sleep"),
+        "the agent's command is one of its calls: {report}"
+    );
+    let killed = cell(&cells, alter_zero::llm::tools::AGENT_KILL_DISPLAY);
+    assert!(
+        killed.starts_with(&format!("Stopped (agent {id}")),
+        "{killed}"
+    );
+    assert!(
+        killed.contains("agentsend resumes it"),
+        "the lead's stop keeps the conversation: {killed}"
+    );
+    let listed = cell(&cells, alter_zero::llm::tools::AGENT_LIST_DISPLAY);
+    assert!(listed.contains(&format!("- {id} (sleeper)")), "{listed}");
+    assert!(listed.contains("stopped after"), "{listed}");
+    let snapshot = agents.snapshot(&id).expect("the agent is still kept");
+    assert!(
+        matches!(
+            snapshot.state,
+            alter_zero::agents::AgentState::Stopped { by_user: false }
+        ),
+        "{snapshot:?}"
+    );
+}
