@@ -12,6 +12,15 @@ release heading when a version is cut.
 
 ## [Unreleased]
 
+### Added
+
+- **A built-in `yt-dlp` skill guides media downloads without bundling a downloader.**
+  On first launch its editable `SKILL.md` is seeded beside the other built-ins;
+  the agent can load it on demand for videos, playlists, captions and audio.
+  It checks installed CLI tools and available formats, defaults to one video
+  unless a playlist was requested, asks before using browser cookies and
+  verifies output files before reporting success (`docs/skills.md`).
+
 ### Fixed
 
 - **A background notice now sits where the model actually read it.** A

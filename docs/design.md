@@ -499,13 +499,13 @@ which Ctrl+V reads the clipboard from.
   the green `● Skill(name)` cell, the context replay and the
   rollout round-trip all come for free (deliberately not codex's eager
   `<skill>` injection, which exists because codex has no skill tool).
-- **Built-in skills are editable defaults** (`docs/skills.md`): `skill-creator`
-  and `jina-reader` ship as embedded markdown and seed absent files in the
-  personal root before discovery. Existing files are never overwritten,
+- **Built-in skills are editable defaults** (`docs/skills.md`): `skill-creator`,
+  `jina-reader` and `yt-dlp` ship as embedded markdown and seed absent files
+  in the personal root before discovery. Existing files are never overwritten,
   project skills keep precedence, and `ALTER_ZERO_SKILLS_DIR` is never seeded.
-  Jina Reader adds curl-based public web/PDF retrieval instructions, not a
-  native tool or requests on load; shell permissions and third-party privacy
-  checks still apply.
+  Jina Reader adds curl-based public web/PDF retrieval instructions; `yt-dlp`
+  guides the external media CLI (not bundled). Neither adds a native tool or
+  runs on load; shell permissions and privacy checks still apply.
 - **Skill bodies load once per agent context** (`docs/skills.md`): the tool
   enforces its short load-once guidance at runtime. `LoadedSkills` is seeded
   from that agent's incoming skill call/result pairs, identifies successful
