@@ -21,6 +21,8 @@ scripts/release.sh build [TARGET]           # one platform's release archive + .
 scripts/release.sh verify dist              # the archives: checksums, layout, CPU, `alter-zero --version`
 scripts/release.sh notes X.Y.Z              # the release notes the workflow publishes: CHANGELOG.md's section, nothing else
 scripts/release.sh selftest                 # the release tooling's own fixture-driven tests
+scripts/release.sh npm X.Y.Z dist [--dry-run]   # the npm packages from the release archives: four platform packages, then the launcher (docs/npm.md)
+(cd npm && node --test)                     # the npm launcher's tests (docs/npm.md)
 scripts/release.sh prepare X.Y.Z            # bump the version everywhere, roll [Unreleased] into a dated section, then tag
 cargo run --release --example mem_probe     # /model parse RSS (docs/memory.md)
 cargo build --example pty_oracle && scripts/pty_oracle.sh 'btop' steps.jsonl   # a program's screen in the session emulator vs tmux, cell for cell (docs/interactive-shell.md)
@@ -48,12 +50,15 @@ the fix is to qualify the path if the target is still public
 
 CI runs that gate on every push to `main` and every pull request
 (`.github/workflows/ci.yml`: the gate, the smoke suite under tmux, the release
-tooling's `selftest` + `check`, and the telemetry collector's `node --test`),
+tooling's `selftest` + `check` + the npm launcher's `node --test`, and the
+telemetry collector's `node --test`),
 and a `vX.Y.Z` tag push runs `.github/workflows/release.yml` — the same gate,
 then one release build per platform (Linux x86_64 and arm64, macOS Intel and
 Apple silicon) packaged, checksummed and verified by `scripts/release.sh`, and
 a GitHub release whose notes are `CHANGELOG.md`'s section for the version
-(`docs/release.md`). Cutting a release is `scripts/release.sh prepare X.Y.Z`,
+(`docs/release.md`), then the npm packages from the same archives — published
+only when the repository variable `NPM_PUBLISH` is `true`, rehearsed
+otherwise (`docs/npm.md`). Cutting a release is `scripts/release.sh prepare X.Y.Z`,
 a commit, an annotated tag and a push; `workflow_dispatch` rehearses the whole
 pipeline without publishing, and every step runs locally the same way. Users
 install a release with the one-line `install.sh` (`curl … | sh`, POSIX `sh`,
@@ -153,6 +158,34 @@ debug info and `--skip`s the five frame-budget gates by name (a redraw under
 25 ms measures the user's machine, not the package), so a new wall-clock
 gate belongs on that list too. It follows a release and never leads it: the
 tag's tarball has no checksum until the tag is pushed.
+
+**`npm/`** is the npm launcher package, `@linuztx/alter-zero`
+(`docs/npm.md`): `npm install -g` fetches it and exactly one of the four
+platform packages its `optionalDependencies` pin —
+`@linuztx/alter-zero-{linux,darwin}-{x64,arm64}`, staged per release target
+by `scripts/release.sh npm` from that target's release archive, with
+`os`/`cpu` (and `libc: glibc` on Linux) so npm installs only the one that
+runs. **No install script anywhere**, so `--ignore-scripts`, pnpm and bun
+install it. `bin/alter-zero.js` finds the package with `require.resolve` and
+**becomes** the binary with `process.execve` (Node 22.15+/23.11+; older Node
+gets a child that relays signals and mirrors the exit), so no ~42 MB Node
+stays resident beside the TUI. A failed `execve` **aborts** Node rather than
+throwing, so `locate` proves first everything it could fail on (package
+resolved, file executable, its ELF `PT_INTERP` loader present), and Node's
+ignored `SIGPIPE`/`SIGXFSZ` are caught before the exec so the binary does not
+inherit them. `argv[0]` is `alter-zero` (the resume hint prints it), while
+`current_exe()` stays the real binary under `node_modules` — which is how
+`update::package_manager` knows a package manager owns the install
+(`.pnpm`/`.bun`/`yarn/global` around `node_modules` say which), so the update
+card names that manager's command and `alter-zero update` refuses. Its
+`package.json` is a fifth place the version is written: `check` rule 7 and
+`prepare` keep the version and the four pins in step, and its
+`prepublishOnly` refuses a publish made from `npm/` itself — the staged copy
+drops `scripts` and gains the LICENSE, and the launcher is published last,
+after its platforms. `verify` accepts a release as published (archives +
+`SHA256SUMS`, `gh release download`), so a version already on GitHub can be
+published by hand. The selftest publishes to and `npm install -g`s from
+`scripts/release/npm_registry.py`, an offline stand-in registry.
 
 Toolchain: Rust **edition 2024**, `ratatui = 0.30.1` (crossterm is re-exported as
 `ratatui::crossterm` — import it from there, not as a separate crate), plus
@@ -2161,7 +2194,9 @@ per-**user** `update.json` beside `telemetry.json` (`enabled`,
 `last_check_day`, `latest`, `notice_day`), and a newer release announced
 **once a day** through the `ui::update_notice_lines` card — the telemetry
 card's own frame, `ui::notice_card_lines`, naming the release page, `alter-zero
-update` and the off switch — committed after the first frame and **never
+update` — or, for a binary a package manager unpacked under `node_modules`,
+that manager's own command (`update::package_manager` over `current_exe()`,
+`docs/npm.md`) — and the off switch — committed after the first frame and **never
 inside a reply** (a result landing mid-turn waits in
 `Session::update_notice_pending` for the idle loop bottom, invariant 4), off
 with the row or `ALTER_ZERO_UPDATE_CHECK=0` (which withdraws the row, the
@@ -2174,7 +2209,8 @@ empty pipe exits 0) and shape-checked before it runs, with
 `ALTER_ZERO_INSTALL_DIR` = the running binary's own directory,
 `ALTER_ZERO_VERSION` = the tag just resolved and `ALTER_ZERO_INSTALL_BASE_URL`
 = the same repository, refusing a `target/{debug,release}` binary (a checkout
-to `git pull`, not an install to overwrite) and running regardless of
+to `git pull`, not an install to overwrite) and a package manager's install
+(named with its command — the manager would put its own copy back) and running regardless of
 `ALTER_ZERO_UPDATE_CHECK=0`, since an explicit command is the user's own
 request; and **Telemetry** — the anonymous daily
 usage ping, `docs/telemetry.md`: one `POST` a day per install carrying seven

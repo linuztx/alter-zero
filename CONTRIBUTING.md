@@ -44,7 +44,7 @@ it, and the smoke suite drives it exclusively ([`docs/dummy-backend.md`](docs/du
 | Tool | Needed for |
 | --- | --- |
 | `tmux` | `scripts/smoke.sh` — the only automated coverage of the terminal I/O boundary |
-| `node` | the telemetry collector's tests (`telemetry/`) |
+| `node` | the telemetry collector's tests (`telemetry/`), the npm launcher's (`npm/`), and — with `npm` — the release selftest's npm cases |
 | `shellcheck` | `install.sh` and `scripts/release/*.sh`, which CI lints |
 | `python3` | the container tests, `scripts/build_timings.py` |
 | Docker or Podman | `docker/` — the headless Kali image |
@@ -166,7 +166,8 @@ the code they cover) plus the integration tests in `tests/` that are not
 | Live provider tests | `OPENROUTER_API_KEY=… cargo test --test live_openrouter -- --ignored --nocapture` | you changed a provider, a wire format, or the context assembly |
 | Memory gates | `cargo test --test image_turn_memory`, `--test model_parse_memory`, `--test image_paste_memory` | you changed anything that allocates per turn, per request or per picture |
 | Telemetry collector | `(cd telemetry && node --test)` | you changed `telemetry/` |
-| Release tooling | `scripts/release.sh selftest` and `scripts/release.sh check` | you changed `scripts/release/` or `install.sh` |
+| Release tooling | `scripts/release.sh selftest` and `scripts/release.sh check` | you changed `scripts/release/`, `install.sh` or `npm/` |
+| npm launcher | `(cd npm && node --test)` | you changed `npm/` |
 | Container | `python3 -m unittest discover -s docker/tests -p 'test_*.py'` | you changed `docker/` |
 
 ### The smoke suite

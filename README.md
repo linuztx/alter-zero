@@ -69,6 +69,12 @@ curl -fsSL https://raw.githubusercontent.com/linuztx/alter-zero/main/install.sh 
 
 It picks the build for your machine, verifies its SHA-256 against the checksum published with the release, installs `alter-zero` into `~/.local/bin`, and tells you if that directory is not on your `PATH`.
 
+Or install the same build with npm:
+
+```bash
+npm install -g @linuztx/alter-zero
+```
+
 <details>
 <summary><strong>Install options</strong></summary>
 
@@ -292,7 +298,7 @@ alter-zero "fix the failing test"
 alter-zero -c "now review the changes"
 ```
 
-Run `alter-zero mcp --help` for MCP server management commands, and `alter-zero update` to install the newest release over the binary you are running.
+Run `alter-zero mcp --help` for MCP server management commands, and `alter-zero update` to install the newest release over the binary you are running (an npm install updates with `npm install -g @linuztx/alter-zero@latest`).
 
 </details>
 

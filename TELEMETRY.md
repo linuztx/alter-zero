@@ -266,7 +266,8 @@ commands. Point your build at it with that variable, or change
 
 One other request leaves your machine on its own: **once a day**, after the
 first frame, the app asks whether a newer release is out, so it can say so
-under the banner and point you at `alter-zero update`. It is a separate
+under the banner and point you at `alter-zero update` (or, for an npm
+install, at `npm install -g @linuztx/alter-zero@latest`). It is a separate
 feature with a separate switch, described in [`docs/update.md`](docs/update.md),
 and it belongs in this document because the document promises to be the
 complete list.

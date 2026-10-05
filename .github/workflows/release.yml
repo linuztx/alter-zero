@@ -4,7 +4,9 @@
 # verification, the notes rendered into the job summary, and nothing
 # published unless the run is on a tag and asked to. Every step is a
 # scripts/release.sh command, so what the workflow does is what a developer
-# can run and read.
+# can run and read. After the GitHub release, the npm job stages the same
+# archives as npm packages (docs/npm.md) and publishes them only when the
+# repository opts in with the NPM_PUBLISH variable; until then it rehearses.
 name: Release
 
 on:
@@ -20,6 +22,7 @@ on:
       - scripts/release.sh
       - scripts/release/**
       - install.sh
+      - npm/**
   workflow_dispatch:
     inputs:
       publish:
@@ -51,7 +54,7 @@ jobs:
       - uses: actions/checkout@v7
       - id: version
         run: echo "version=$(scripts/release.sh version)" >> "$GITHUB_OUTPUT"
-      - name: The tag, Cargo.toml, Cargo.lock, the README badge and CHANGELOG.md agree
+      - name: The tag, Cargo.toml, Cargo.lock, the README badge, npm/package.json and CHANGELOG.md agree
         # On a tag, `check` reads GITHUB_REF_TYPE/GITHUB_REF_NAME and requires
         # the tag to name Cargo.toml's version.
         run: scripts/release.sh check
@@ -163,3 +166,43 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: scripts/release.sh publish "$VERSION" dist --notes release-notes.md
+
+  # The npm packages (docs/npm.md): the same verified archives, staged as one
+  # package per platform plus the launcher, after the GitHub release they
+  # mirror. Publishing is opt-in — the repository variable NPM_PUBLISH=true,
+  # with an NPM_TOKEN secret or npm trusted publishing for the credentials —
+  # so a release cut before npm is set up stays green; every other run, and
+  # every rehearsal, stages and validates the packages and publishes nothing.
+  # A version already on npm is skipped, so the job can simply be re-run.
+  npm:
+    name: ${{ needs.check.outputs.publish == 'true' && vars.NPM_PUBLISH == 'true' && 'publish' || 'rehearse publishing' }} v${{ needs.check.outputs.version }} to npm
+    needs: [check, publish]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # Trusted publishing and npm's provenance statement both present the
+      # job's OIDC token; nothing else here writes anywhere.
+      id-token: write
+    env:
+      VERSION: ${{ needs.check.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: dist-*
+          path: dist
+          merge-multiple: true
+      # Node 24 bundles npm 11, which trusted publishing needs (11.5.1+).
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+      - name: Rehearse (nothing is published)
+        if: needs.check.outputs.publish != 'true' || vars.NPM_PUBLISH != 'true'
+        run: scripts/release.sh npm "$VERSION" dist --dry-run
+      - name: Publish the npm packages
+        if: needs.check.outputs.publish == 'true' && vars.NPM_PUBLISH == 'true'
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NPM_CONFIG_PROVENANCE: "true"
+        run: scripts/release.sh npm "$VERSION" dist

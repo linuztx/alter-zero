@@ -223,6 +223,33 @@ if [ "$up_dev_rc" = "0" ] || ! printf '%s' "$up_dev" | grep -qF "cargo build dir
 	fail "a cargo build directory was not refused (exit $up_dev_rc)"
 fi
 
+# (f2) …and so is an install a package manager owns (docs/npm.md): a copy
+# laid out where npm unpacks it, under node_modules, is refused with npm's
+# own command — replaced behind npm's back, the next npm install would put
+# npm's copy back.
+UP_NPM="$UP_TMP/npm/lib/node_modules/@linuztx/alter-zero/node_modules/@linuztx/alter-zero-linux-x64/bin"
+mkdir -p "$UP_NPM"
+cp "$BIN_ABS" "$UP_NPM/alter-zero"
+up_npm="$(env $UP_BASE ALTER_ZERO_UPDATE_URL="http://127.0.0.1:$UP_PORT" "$UP_NPM/alter-zero" update 2>&1)"
+up_npm_rc=$?
+note "alter-zero update from an npm install (exit $up_npm_rc)"
+printf '%s\n' "$up_npm"
+if [ "$up_npm_rc" != "1" ] || ! printf '%s' "$up_npm" | grep -qF "npm install -g @linuztx/alter-zero@latest"; then
+	fail "an npm install was not refused with npm's command (exit $up_npm_rc)"
+fi
+
+# (f3) That install's card names npm's command too, never `alter-zero update`.
+tmux new-session -d -s "$S116" -x 100 -y 34 "$UP_BASE ALTER_ZERO_UPDATE_URL=http://127.0.0.1:$UP_PORT ALTER_ZERO_CONFIG_DIR=$UP_TMP/npm-home $UP_NPM/alter-zero"
+up_npm_card="$(wait_pane 10 "$S116" -S -40 -- -F "$UP_CARD")" || fail "the npm install's card never appeared"
+dump "the card of an npm install" "$up_npm_card"
+if ! printf '%s' "$up_npm_card" | grep -qF "@linuztx/alter-zero@latest"; then
+	fail "the npm install's card does not name npm's command"
+fi
+if printf '%s' "$up_npm_card" | grep -qF "alter-zero update"; then
+	fail "the npm install's card still says alter-zero update"
+fi
+up_quit
+
 # (g) `alter-zero update` from the copy, against v9.9.9: the installer runs
 # over the copy's own directory, checksum verified, and the binary there is
 # a new file that still runs. The fake release IS this binary, so the

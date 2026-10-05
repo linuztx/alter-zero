@@ -422,34 +422,46 @@ fn telemetry_card_uses_the_active_theme_for_title_border_and_commands() {
 
 #[test]
 fn update_card_keeps_every_character_at_all_widths_and_shares_the_telemetry_chrome() {
-    use crate::update::{DEFAULT_REPO_URL, notice};
+    use crate::update::{DEFAULT_REPO_URL, PackageManager, notice, update_command};
 
     let compact = |text: &str| {
         text.chars()
             .filter(|c| !c.is_whitespace() && !"╭╮╰╯─│*`".contains(*c))
             .collect::<String>()
     };
-    let expected = compact(&format!(
-        "Update available{}",
-        notice("0.1.0", "0.2.0", DEFAULT_REPO_URL)
-    ));
-    assert!(update_notice_lines(0, "0.1.0", "0.2.0", DEFAULT_REPO_URL).is_empty());
-    for width in 1..=160 {
-        let lines = update_notice_lines(width, "0.1.0", "0.2.0", DEFAULT_REPO_URL);
-        let rendered: String = lines.iter().map(plain).collect();
-        assert_eq!(
-            compact(&rendered),
-            expected,
-            "lost content at width {width}"
-        );
-        for line in &lines {
-            assert!(
-                line.width() <= usize::from(width),
-                "overflow at {width}: {line:?}"
+    // The card's own command, and the longest a package manager names.
+    for command in [
+        update_command(None),
+        update_command(Some(PackageManager::Npm)),
+    ] {
+        let expected = compact(&format!(
+            "Update available{}",
+            notice("0.1.0", "0.2.0", DEFAULT_REPO_URL, &command)
+        ));
+        assert!(update_notice_lines(0, "0.1.0", "0.2.0", DEFAULT_REPO_URL, &command).is_empty());
+        for width in 1..=160 {
+            let lines = update_notice_lines(width, "0.1.0", "0.2.0", DEFAULT_REPO_URL, &command);
+            let rendered: String = lines.iter().map(plain).collect();
+            assert_eq!(
+                compact(&rendered),
+                expected,
+                "lost content at width {width} for {command}"
             );
+            for line in &lines {
+                assert!(
+                    line.width() <= usize::from(width),
+                    "overflow at {width}: {line:?}"
+                );
+            }
         }
     }
-    let wide = update_notice_lines(120, "0.1.0", "0.2.0", DEFAULT_REPO_URL);
+    let wide = update_notice_lines(
+        120,
+        "0.1.0",
+        "0.2.0",
+        DEFAULT_REPO_URL,
+        &update_command(None),
+    );
     assert!(
         wide.iter().all(|line| line.width() <= 78),
         "bounded reading width"
@@ -474,7 +486,13 @@ fn update_card_uses_the_active_theme_for_title_border_and_commands() {
 
     for theme in crate::app::Theme::ALL {
         with_theme(theme, || {
-            let lines = update_notice_lines(80, "0.1.0", "0.2.0", DEFAULT_REPO_URL);
+            let lines = update_notice_lines(
+                80,
+                "0.1.0",
+                "0.2.0",
+                DEFAULT_REPO_URL,
+                &crate::update::update_command(None),
+            );
             let span_for = |needle: &str| {
                 lines
                     .iter()

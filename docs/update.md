@@ -91,7 +91,7 @@ Three things this deliberately is not:
 
 ## The card
 
-`ui::update_notice_lines(width, current, latest, repo)` renders
+`ui::update_notice_lines(width, current, latest, repo, command)` renders
 `update::notice`'s text in the telemetry card's frame — both go through
 `ui::notice_card_lines(heading, body, width)`, the rounded `DEVICE_BOX_*`
 box titled in the header accent, the body wrapped to the box with the
@@ -99,7 +99,12 @@ box titled in the header accent, the body wrapped to the box with the
 reply — so the two cards under the banner are one design. The body says four
 things and stops: the release and the running version, the release page
 (`update::release_page_url`, a real link in a terminal that draws them —
-`docs/links.md`), the command that installs it, and the off switch.
+`docs/links.md`), the command that installs it, and the off switch. That
+command is `alter-zero update` unless a JavaScript package manager installed
+the binary: then it is the manager's own — `npm install -g
+@linuztx/alter-zero@latest` and kin, `update::update_command` over
+`update::package_manager(current_exe)` (`docs/npm.md` *Updating*) — because
+`alter-zero update` refuses such an install.
 
 Three rules decide *when* it shows:
 
@@ -204,7 +209,13 @@ What it does, in order:
    per-target `target/{triple}/release/` shape) and stops with `update the
    checkout instead: git pull && cargo build --release`. Overwriting a
    checkout's build output with a release binary would be *undone* by the
-   next `cargo build`, silently.
+   next `cargo build`, silently. **And a package manager's install**, for the
+   same reason: `update::package_manager` reads npm, pnpm, Bun or Yarn off
+   the binary's own path under `node_modules` (`docs/npm.md`), and the
+   subcommand stops with that manager's command — `npm installed {exe} —
+   update it with npm instead: npm install -g @linuztx/alter-zero@latest` —
+   since a binary replaced behind the manager's back is replaced again by its
+   next install. Both exit `1`.
 2. **The same check** — `update::fetch_latest`, the `HEAD` above — and
    `is_newer`. Already newest prints so and exits `0`.
 3. **Fetches the installer** — `install.sh` from the repository's `main`
@@ -255,8 +266,9 @@ records its day.
   off a redirect URL (query strings, a `nightly` tag, the bare `/releases`
   page), the once-a-day rules for the check and the notice, the URLs for a
   github.com repository and for any other root, the environment predicate,
-  the notice text, the build-directory recognition and the installer shape
-  check. `ui::tests::header` pins the card's frame and body;
+  the notice text, the build-directory recognition, the package-manager
+  recognition over each manager's real install layout and the command each
+  updates with, and the installer shape check. `ui::tests::header` pins the card's frame and body;
   `settings::tests` the row's position, cycling, availability and its absence
   from `settings.json`; `cli::tests` and `tests/cli_help.rs` the `update`
   routing, the usage error for an argument, and the help page's rows.
@@ -271,6 +283,8 @@ records its day.
   withdrawing the row and writing no file; a server whose latest release *is*
   the running version recording `latest` with no `notice_day`; `alter-zero
   update` from a copy of the binary against that server (`is the newest
-  release`, exit `0`), from `target/debug` (refused, exit `1`), and against
+  release`, exit `0`), from `target/debug` (refused, exit `1`), from a copy
+  laid out as npm installs it under `node_modules` (refused with the npm
+  command, exit `1`, and its card naming that command), and against
   `v9.9.9` — the copy replaced by the served archive's binary (a new inode)
   and still answering `--version`, since the fake release is this build.
