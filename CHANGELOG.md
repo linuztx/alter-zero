@@ -12,6 +12,8 @@ release heading when a version is cut.
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-10-05
+
 ### Added
 
 - **The main agent can work its subagents the way it works a shell.** Every
@@ -946,7 +948,8 @@ release heading when a version is cut.
   release whose notes come from this file — driven end to end by
   `scripts/release.sh`, which also rehearses a release locally.
 
-[Unreleased]: https://github.com/linuztx/alter-zero/compare/v0.11.0...HEAD
+[Unreleased]: https://github.com/linuztx/alter-zero/compare/v0.12.0...HEAD
+[0.12.0]: https://github.com/linuztx/alter-zero/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/linuztx/alter-zero/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/linuztx/alter-zero/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/linuztx/alter-zero/compare/v0.8.0...v0.9.0
