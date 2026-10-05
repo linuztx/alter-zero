@@ -34,15 +34,16 @@ CHECKOUT="$(cd "$RELEASE_LIB_DIR/../.." && pwd)"
 # per command, which overrides the unset.
 unset GITHUB_REF_TYPE GITHUB_REF_NAME
 T="$(mktemp -d)"
-SERVER_PID=""
-REGISTRY_PID=""
 trap 'stop_release; stop_registry; rm -rf "$T"' EXIT
 
 # serve_release DIST TAG — the stand-in github.com (release_server.py) over
 # DIST, on an ephemeral port printed on stdout; stop_release takes it down.
+# Callers read the port as $(serve_release …), a subshell, so the server's
+# PID goes to a file: a variable set in here would die with the subshell and
+# leave the server running past the selftest.
 serve_release() {
 	python3 "$STEPS/release_server.py" "$1" "$2" >"$T/port" 2>"$T/server.err" &
-	SERVER_PID=$!
+	printf '%s\n' "$!" >"$T/server.pid"
 	local i=0
 	while [ ! -s "$T/port" ] && [ "$i" -lt 100 ]; do
 		sleep 0.05
@@ -51,18 +52,18 @@ serve_release() {
 	cat "$T/port"
 }
 stop_release() {
-	if [ -n "$SERVER_PID" ]; then
-		kill "$SERVER_PID" 2>/dev/null
-		wait "$SERVER_PID" 2>/dev/null
-		SERVER_PID=""
+	if [ -s "$T/server.pid" ]; then
+		kill "$(cat "$T/server.pid")" 2>/dev/null
+		rm -f "$T/server.pid"
 	fi
 	rm -f "$T/port"
 }
 # serve_registry DIR — the stand-in registry.npmjs.org (npm_registry.py) over
-# DIR, its port on stdout; stop_registry takes it down.
+# DIR, its port on stdout; stop_registry takes it down. The PID file is
+# serve_release's, for the same reason.
 serve_registry() {
 	python3 "$STEPS/npm_registry.py" "$1" >"$T/registry-port" 2>"$T/registry.err" &
-	REGISTRY_PID=$!
+	printf '%s\n' "$!" >"$T/registry.pid"
 	local i=0
 	while [ ! -s "$T/registry-port" ] && [ "$i" -lt 100 ]; do
 		sleep 0.05
@@ -71,10 +72,9 @@ serve_registry() {
 	cat "$T/registry-port"
 }
 stop_registry() {
-	if [ -n "$REGISTRY_PID" ]; then
-		kill "$REGISTRY_PID" 2>/dev/null
-		wait "$REGISTRY_PID" 2>/dev/null
-		REGISTRY_PID=""
+	if [ -s "$T/registry.pid" ]; then
+		kill "$(cat "$T/registry.pid")" 2>/dev/null
+		rm -f "$T/registry.pid"
 	fi
 	rm -f "$T/registry-port"
 }
@@ -690,6 +690,23 @@ awk '/^## \[Unreleased\]$/ { print; print ""; print "- First."; next } { print }
 EOF
 RELEASE_ROOT="$T/first" RELEASE_DATE=2026-10-01 expect_ok "prepare handles a first release" bash "$STEPS/prepare.sh" 0.5.0
 expect_eq "…linking the tag, with nothing to compare against" "https://github.com/example/alter-zero/releases/tag/v0.5.0" "$(RELEASE_ROOT="$T/first" changelog_link 0.5.0)"
+
+# ---------------------------------------------------------------------------
+# Every case stops the stand-in it started; one left running would outlive
+# the selftest itself (they were, once: started inside $(…), their PIDs went
+# with the subshell).
+section "stand-in servers"
+if command -v pgrep >/dev/null 2>&1; then
+	for _ in $(seq 1 40); do
+		pgrep -f "(release_server|npm_registry)\.py $T/" >/dev/null || break
+		sleep 0.05
+	done
+	if pgrep -f "(release_server|npm_registry)\.py $T/" >/dev/null; then
+		flunk "stand-in servers still running: $(pgrep -f "(release_server|npm_registry)\.py $T/" | tr '\n' ' ')"
+	else
+		pass "every stand-in server was stopped"
+	fi
+fi
 
 # ---------------------------------------------------------------------------
 printf '\n%d passed, %d failed\n' "$PASS" "$FAILED"
