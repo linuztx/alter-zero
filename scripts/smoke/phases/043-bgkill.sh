@@ -6,12 +6,13 @@ smoke_begin
 
 # a background shell killed MID-TURN surfaces IMMEDIATELY
 # (docs/background.md): with a dummy turn in flight, x-stopping the shell in
-# the ↓ manager commits the red notice at the turn's next tool boundary —
-# visible while the status line still spins — instead of only after the whole
+# the ↓ manager commits the red notice where the turn's next round boundary
+# reads it — once the dummy's tool batch resolves, visible while the status
+# line still spins — instead of only after the whole
 # turn ends (the notice then sits above the turn's Done summary, not below).
 S43="${S}_bgkill"
 # A long pre-stream pause (the dummy's startup delay) is the window the kill
-# lands in; the turn's own tool batch then settles the pending notice.
+# lands in; the end of the turn's own tool batch then delivers the held note.
 # A short `~/work` cwd, so the footer's `· 1 shell` tail fits (see work_dir).
 tmux new-session -d -s "$S43" -x 80 -y 24 -c "$(work_dir)" \
 	"env $CFG_ENV_NOHIST ALTER_ZERO_STARTUP_DELAY_MS=2500 $BIN_ABS"
@@ -36,7 +37,7 @@ sleep 0.2
 tmux send-keys -t "$S43" x
 sleep 0.2
 # The notice must commit while the turn is STILL RUNNING — the esc-to-interrupt
-# status detail on the same screen — at the turn's first tool boundary.
+# status detail on the same screen — once the turn's tool batch resolves.
 bgkill_live_pane=""
 for _ in $(seq 1 100); do
 	bgkill_live_pane="$(tmux capture-pane -t "$S43" -p)"

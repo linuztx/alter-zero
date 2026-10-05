@@ -121,12 +121,12 @@ pub struct DummyAi {
     agents: Option<crate::agents::AgentRegistry>,
     /// The session's mid-turn message queue (`docs/queue.md`), so the whole
     /// round trip is drivable offline: a scripted turn takes what the user
-    /// queued at each of its **tool boundaries** — the dummy's honest stand-in
-    /// for a real round boundary — and announces it with
+    /// queued once each **tool round resolves** — its batch's last call, the
+    /// dummy's honest stand-in for a real round boundary — and announces it with
     /// [`StreamEvent::Steered`] exactly as `run_agent` does.
     steer: crate::steer::SteerQueue,
     /// The session's background registry, when the app attached one — its
-    /// **notice board** is read at the same tool boundaries the queue is,
+    /// **notice board** is read at the same round boundaries the queue is,
     /// each note announced with [`StreamEvent::NoticeDelivered`] as
     /// `run_agent` announces it, so a background notice that lands mid-turn
     /// settles in the offline demo exactly as it does live
@@ -204,8 +204,8 @@ impl DummyAi {
     }
 
     /// Attach the session's mid-turn message queue, so a scripted turn takes
-    /// what the user queued into it at its next tool boundary — the offline
-    /// mirror of a real round boundary (`docs/queue.md`).
+    /// what the user queued into it once its tool round resolves — the
+    /// offline mirror of a real round boundary (`docs/queue.md`).
     #[must_use]
     pub fn with_steer(mut self, queue: crate::steer::SteerQueue) -> Self {
         self.steer = queue;
@@ -213,7 +213,7 @@ impl DummyAi {
     }
 
     /// Attach the session's background registry, so a scripted turn reads its
-    /// notice board at its next tool boundary — the offline mirror of the
+    /// notice board once its tool round resolves — the offline mirror of the
     /// real agent's round-top take (`docs/background.md`).
     #[must_use]
     pub fn with_background(mut self, registry: crate::background::BackgroundRegistry) -> Self {
@@ -348,7 +348,7 @@ impl ReplySource for DummyAi {
     }
 }
 
-/// What a scripted turn reads at its tool boundaries — the dummy's stand-in
+/// What a scripted turn reads at its round boundaries — the dummy's stand-in
 /// for `run_agent`'s `pending_inputs` seam: the session's mid-turn message
 /// queue, and the background registry's notice board when one is attached.
 struct Inputs {
@@ -383,14 +383,17 @@ impl Inputs {
 /// text `chunk_delay` apart. Stops early — sending nothing further — the
 /// moment `cancel` is tripped or the receiver hangs up.
 ///
-/// **Tool boundaries are round boundaries here** (`docs/queue.md`): a resolved
-/// call is the point a real agent loop would build its next request at, so
-/// that is where a message the user queued mid-turn is taken and announced
-/// with [`StreamEvent::Steered`] — and where a background note waiting on the
-/// board is read and announced with [`StreamEvent::NoticeDelivered`]
-/// (`docs/background.md`). Without this the offline demo would show a queued
-/// row that only ever moved at the end of the turn — the behaviour this whole
-/// seam replaced.
+/// **A resolved tool round is a round boundary here** (`docs/queue.md`): the
+/// point a real agent loop builds its next request at is the end of the
+/// round — its announced batch's **last** call resolved — so that is where a
+/// message the user queued mid-turn is taken and announced with
+/// [`StreamEvent::Steered`], and where a background note waiting on the board
+/// is read and announced with [`StreamEvent::NoticeDelivered`]
+/// (`docs/background.md`). A call no batch announced is a round of its own.
+/// Without this the offline demo would show a queued row that only ever moved
+/// at the end of the turn — the behaviour this whole seam replaced — and
+/// taking them after a batch's *first* call recorded both inside a round the
+/// model never saw them in.
 fn replay(
     events: Vec<StreamEvent>,
     tx: &UnboundedSender<StreamEvent>,
@@ -398,20 +401,31 @@ fn replay(
     inputs: &Inputs,
     chunk_delay: Duration,
 ) {
+    // The announced batch's calls still to resolve.
+    let mut unresolved = 0usize;
     for event in events {
         if cancel.is_cancelled() {
             return; // asked to stop — drop the rest quietly
         }
-        let boundary = matches!(
+        if let StreamEvent::ToolBatch(calls) = &event {
+            unresolved = calls.len();
+        }
+        let resolves = matches!(
             event,
-            StreamEvent::ToolEnd { .. } | StreamEvent::ToolAnswered { .. }
+            StreamEvent::ToolEnd { .. }
+                | StreamEvent::ToolAnswered { .. }
+                | StreamEvent::ToolRejected { .. }
+                | StreamEvent::ToolBackgrounded { .. }
         );
         let pause = pace(&event, chunk_delay);
         if tx.send(event).is_err() {
             return; // receiver gone — stop quietly
         }
-        if boundary && !inputs.deliver(tx) {
-            return;
+        if resolves {
+            unresolved = unresolved.saturating_sub(1);
+            if unresolved == 0 && !inputs.deliver(tx) {
+                return;
+            }
         }
         if let Some(pause) = pause {
             nap(pause, cancel);

@@ -18,7 +18,7 @@
 //! process-spawning tests below (real `sh`, like `llm::exec`'s) and
 //! `scripts/smoke.sh`; the pure state it feeds lives in [`crate::app`].
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs::File;
 use std::io::{Read, Write};
 use std::path::PathBuf;
@@ -173,7 +173,24 @@ struct UnreadExit {
     command: String,
     code: Option<i32>,
     killed: bool,
+    /// The subagent that launched the session — `None` for the lead — whose
+    /// queue the note is bound for until the loop posts or routes it.
+    owner: Option<String>,
     note: ExitNote,
+}
+
+impl UnreadExit {
+    /// Is the note `caller`'s to take back — its reader's? One unposted is
+    /// bound for the launcher's queue; one posted sits on the lead's board.
+    /// Anyone else claiming it would leave its reader never hearing how the
+    /// command ended.
+    fn claimable_by(&self, caller: Option<&str>) -> bool {
+        match self.note {
+            ExitNote::Unposted => self.owner.as_deref() == caller,
+            ExitNote::Posted(_) => caller.is_none(),
+            ExitNote::Claimed => false,
+        }
+    }
 }
 
 /// Where an [`UnreadExit`]'s note is.
@@ -202,15 +219,55 @@ pub struct ClaimedExit {
     pub killed: bool,
 }
 
+/// How a shell ended, in the words its notice and a companion call naming it
+/// share: `completed (exit code 0)`, `failed (exit code 2)`, `was terminated
+/// by a signal` (no code), `was stopped by the user` (the registry's own
+/// kill).
+#[must_use]
+pub fn exit_outcome(code: Option<i32>, killed: bool) -> String {
+    if killed {
+        return "was stopped by the user".to_string();
+    }
+    match code {
+        Some(0) => "completed (exit code 0)".to_string(),
+        Some(code) => format!("failed (exit code {code})"),
+        None => "was terminated by a signal".to_string(),
+    }
+}
+
+/// A session that ended, remembered so a companion call still naming it can
+/// say how — and whose it was — when it has no exit of its own to claim
+/// ([`BackgroundRegistry::ended`], `docs/bash-tools.md` *One notice per
+/// exit*): its note already read, or another conversation's to read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EndedSession {
+    /// The exit code — `None` when a signal ended it.
+    pub code: Option<i32>,
+    /// Whether the registry's own kill ended it.
+    pub killed: bool,
+    /// Whether a call's report covered the exit (`Exit code: N` in a
+    /// `bashwait`) — no note was owed.
+    pub observed: bool,
+    /// Whose note it is: the launching subagent's, or `None` — the lead's,
+    /// which a launcher that could no longer hear it also leaves to.
+    pub reader: Option<String>,
+}
+
+/// How many [`EndedSession`]s the registry keeps — the newest, a few times
+/// [`MAX_TTY_SESSIONS`]: any session a model still names is one it remembers.
+const ENDED_SESSIONS_KEPT: usize = 64;
+
 /// Whether a session's note is still owed as it goes to the launching
 /// subagent's own queue ([`BackgroundRegistry::take_shell_notice`]).
 #[derive(Debug)]
 pub enum ShellNotice {
     /// A companion call already reported what the note says: none is owed.
     Covered,
-    /// Owed — with, for an exit, what a claim needs, which travels with the
-    /// note so the launcher's own call can claim it from its queue.
-    Owed(Option<ClaimedExit>),
+    /// Owed — as this note number, from the board's own count (what the loop
+    /// holds the notice cell by), with, for an exit, what a claim needs: both
+    /// travel with the note so the launcher's own call can take it back from
+    /// its queue.
+    Owed { seq: u64, exit: Option<ClaimedExit> },
 }
 
 /// The base36 alphabet task ids are drawn from.
@@ -369,6 +426,8 @@ struct Inner {
     /// Exits no call reported, by session id, until their notes are read
     /// (see [`UnreadExit`]).
     unread_exits: HashMap<String, UnreadExit>,
+    /// The newest ended sessions, oldest first (see [`EndedSession`]).
+    ended: VecDeque<(String, EndedSession)>,
     /// Where the `{id}.output` interim files live.
     dir: PathBuf,
 }
@@ -407,6 +466,15 @@ impl Inner {
             !take
         });
         self.pending_notices.len() != before
+    }
+
+    /// Remember how session `id` ended, forgetting the oldest past
+    /// [`ENDED_SESSIONS_KEPT`].
+    fn remember_ended(&mut self, id: &str, ended: EndedSession) {
+        if self.ended.len() == ENDED_SESSIONS_KEPT {
+            self.ended.pop_front();
+        }
+        self.ended.push_back((id.to_string(), ended));
     }
 
     /// [`retract`](Self::retract) every note of session `id`'s.
@@ -463,6 +531,7 @@ impl BackgroundRegistry {
                 notice_seq: 0,
                 retracted: HashSet::new(),
                 unread_exits: HashMap::new(),
+                ended: VecDeque::new(),
                 dir,
             })),
             events,
@@ -1115,6 +1184,16 @@ impl BackgroundRegistry {
             return;
         }
         let code = task.io.exit().flatten();
+        let owner = task.launch.origin.as_ref().map(|o| o.agent_id.clone());
+        inner.remember_ended(
+            id,
+            EndedSession {
+                code,
+                killed: task.killed,
+                observed,
+                reader: owner,
+            },
+        );
         if !observed {
             inner.unread_exits.insert(
                 id.to_string(),
@@ -1123,6 +1202,7 @@ impl BackgroundRegistry {
                     command: task.launch.command.clone(),
                     code,
                     killed: task.killed,
+                    owner: task.launch.origin.as_ref().map(|o| o.agent_id.clone()),
                     note: ExitNote::Unposted,
                 },
             );
@@ -1239,6 +1319,11 @@ impl BackgroundRegistry {
         if let Some(exit) = inner.unread_exits.get_mut(id) {
             exit.note = ExitNote::Posted(seq);
         }
+        // On the board, the lead reads it — a subagent's too, when its
+        // launcher could no longer hear it.
+        if let Some((_, ended)) = inner.ended.iter_mut().rev().find(|(ended, _)| ended == id) {
+            ended.reader = None;
+        }
         Some(seq)
     }
 
@@ -1270,26 +1355,31 @@ impl BackgroundRegistry {
     /// [`AgentRegistry::route_shell_note`]: crate::agents::AgentRegistry::route_shell_note
     pub fn take_shell_notice(&self, id: &str, waiting: bool) -> ShellNotice {
         let mut inner = self.inner.lock().expect("registry lock");
-        if waiting {
-            return if inner
+        let exit = if waiting {
+            if inner
                 .tasks
                 .get(id)
                 .is_some_and(|task| task.io.prompt_seen())
             {
-                ShellNotice::Covered
-            } else {
-                ShellNotice::Owed(None)
-            };
-        }
-        match inner.unread_exits.remove(id) {
-            Some(exit) if exit.note == ExitNote::Claimed => ShellNotice::Covered,
-            Some(exit) => ShellNotice::Owed(Some(ClaimedExit {
-                io: exit.io,
-                command: exit.command,
-                code: exit.code,
-                killed: exit.killed,
-            })),
-            None => ShellNotice::Owed(None),
+                return ShellNotice::Covered;
+            }
+            None
+        } else {
+            match inner.unread_exits.remove(id) {
+                Some(exit) if exit.note == ExitNote::Claimed => return ShellNotice::Covered,
+                Some(exit) => Some(ClaimedExit {
+                    io: exit.io,
+                    command: exit.command,
+                    code: exit.code,
+                    killed: exit.killed,
+                }),
+                None => None,
+            }
+        };
+        inner.notice_seq += 1;
+        ShellNotice::Owed {
+            seq: inner.notice_seq,
+            exit,
         }
     }
 
@@ -1301,29 +1391,38 @@ impl BackgroundRegistry {
     /// was read, a call already claimed it, or no session had this id
     /// (`docs/bash-tools.md` *One notice per exit*).
     ///
-    /// `caller` is the subagent making the call, `None` for the lead. A
-    /// subagent's shell reports to that agent's own queue, so its exit is
-    /// claimed there — by that agent alone: anyone else taking the note back
-    /// would leave its launcher never hearing how its command ended.
+    /// `caller` is the subagent making the call, `None` for the lead. Only
+    /// the note's own reader claims it: the lead a note on its board, a
+    /// subagent the note of a shell it launched — not yet posted, or already
+    /// in its own queue. Anyone else taking the note back would leave its
+    /// reader never hearing how the command ended.
     pub fn claim_exit(&self, id: &str, caller: Option<&str>) -> Option<ClaimedExit> {
-        if let Some(claimed) = self.claim_board_exit(id) {
+        if let Some(claimed) = self.claim_board_exit(id, caller) {
             return claimed;
         }
         // Released from the board's lock first: the agents' lock is always
-        // taken before this one, never inside it.
-        self.agents.as_ref()?.claim_routed_exit(caller?, id)
+        // taken before this one, never inside it. The note's number joins the
+        // board's retracted ones, so the cell held for it goes too.
+        let (exit, seq) = self.agents.as_ref()?.claim_routed_exit(caller?, id)?;
+        self.inner
+            .lock()
+            .expect("registry lock")
+            .retracted
+            .insert(seq);
+        Some(exit)
     }
 
     /// [`claim_exit`](Self::claim_exit) on this board's own unread exits:
-    /// `None` when the session has none here, else the claim's answer.
-    fn claim_board_exit(&self, id: &str) -> Option<Option<ClaimedExit>> {
+    /// `None` when the session has none here, else the claim's answer —
+    /// nothing, when the note is not `caller`'s to take back.
+    fn claim_board_exit(&self, id: &str, caller: Option<&str>) -> Option<Option<ClaimedExit>> {
         let mut guard = self.inner.lock().expect("registry lock");
         let inner = &mut *guard;
         let exit = inner.unread_exits.get_mut(id)?;
-        let note = exit.note;
-        if note == ExitNote::Claimed {
+        if !exit.claimable_by(caller) {
             return Some(None);
         }
+        let note = exit.note;
         let claimed = ClaimedExit {
             io: Arc::clone(&exit.io),
             command: exit.command.clone(),
@@ -1340,6 +1439,21 @@ impl BackgroundRegistry {
         Some(Some(claimed))
     }
 
+    /// How session `id` ended, when it is one of the newest that did — what a
+    /// companion call with no exit to claim says instead of a bare "no such
+    /// session" (`docs/bash-tools.md` *One notice per exit*). `None` for one
+    /// still running, one long gone, or an id that never was.
+    #[must_use]
+    pub fn ended(&self, id: &str) -> Option<EndedSession> {
+        let inner = self.inner.lock().expect("registry lock");
+        inner
+            .ended
+            .iter()
+            .rev()
+            .find(|(ended, _)| ended == id)
+            .map(|(_, ended)| ended.clone())
+    }
+
     /// Forget session `id`'s unread exit: no note will ever be posted for it
     /// (`/clear` swept the shell before its exit arrived), so no claim may
     /// keep its output alive.
@@ -1351,13 +1465,32 @@ impl BackgroundRegistry {
             .remove(id);
     }
 
-    /// Take session `id`'s untaken notes back off the board — a companion
-    /// call just looked at it, so a `… is waiting for input` note says
-    /// nothing the model has not seen, and would reach it only after the
-    /// answer. Their numbers are remembered as retracted, so the loop drops
-    /// the cells it holds for them ([`take_retracted`](Self::take_retracted)).
-    pub fn retract_shell_notices(&self, id: &str) {
-        self.inner.lock().expect("registry lock").retract_shell(id);
+    /// Take session `id`'s unread notes back — a companion call just looked
+    /// at it, so a `… is waiting for input` note says nothing the model has
+    /// not seen, and would reach it only after the answer. Their numbers are
+    /// remembered as retracted, so the loop drops the cells it holds for them
+    /// ([`take_retracted`](Self::take_retracted)).
+    ///
+    /// Only `caller`'s own notes — the board's for the lead (`None`), the
+    /// ones routed to its queue for a subagent: whoever else reads a note
+    /// about the session has not seen what this look showed.
+    pub fn retract_shell_notices(&self, id: &str, caller: Option<&str>) {
+        let Some(agent) = caller else {
+            self.inner.lock().expect("registry lock").retract_shell(id);
+            return;
+        };
+        // The agents' lock first, released before this board's is taken.
+        let Some(agents) = self.agents.as_ref() else {
+            return;
+        };
+        let seqs = agents.withdraw_routed_notes(agent, id);
+        if !seqs.is_empty() {
+            self.inner
+                .lock()
+                .expect("registry lock")
+                .retracted
+                .extend(seqs);
+        }
     }
 
     /// Take `agent`'s completion notes back off the board, untaken — an
@@ -1540,6 +1673,15 @@ impl MonitorHandle {
                 // never find the session gone with its exit nowhere to be
                 // claimed.
                 if let Some(task) = task.filter(|_| self.io.announced()) {
+                    inner.remember_ended(
+                        &self.id,
+                        EndedSession {
+                            code,
+                            killed,
+                            observed: false,
+                            reader: task.launch.origin.as_ref().map(|o| o.agent_id.clone()),
+                        },
+                    );
                     inner.unread_exits.insert(
                         self.id.clone(),
                         UnreadExit {
@@ -1547,6 +1689,7 @@ impl MonitorHandle {
                             command: task.launch.command,
                             code,
                             killed,
+                            owner: task.launch.origin.map(|o| o.agent_id),
                             note: ExitNote::Unposted,
                         },
                     );
@@ -2697,8 +2840,20 @@ mod tests {
     /// call reported — what a background shell finishing on its own sends.
     #[cfg(unix)]
     fn exited_unread(command: &str) -> (BackgroundRegistry, String) {
+        exited_unread_from(command, None)
+    }
+
+    /// [`exited_unread`] for a shell `agent` launched (`None`: the lead).
+    #[cfg(unix)]
+    fn exited_unread_from(command: &str, agent: Option<&str>) -> (BackgroundRegistry, String) {
         let (reg, mut rx) = registry();
-        let task = reg.launch(command, None, true).expect("launches");
+        let origin = agent.map(|agent| BgOrigin {
+            agent_id: agent.to_string(),
+            agent_type: "general-purpose".to_string(),
+        });
+        let task = reg
+            .launch_from(command, None, true, origin)
+            .expect("launches");
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
         loop {
             match rx.try_recv() {
@@ -2777,6 +2932,39 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn only_the_lead_claims_an_exit_whose_note_is_on_its_board() {
+        // The board is the lead's: a subagent's call naming the lead's
+        // session — it learned the id somehow — must not take the note back,
+        // or the lead never hears how its own command ended.
+        let (reg, id) = exited_unread("echo removed");
+        assert!(
+            reg.claim_exit(&id, Some("a1")).is_none(),
+            "a subagent cannot claim the lead's unposted exit"
+        );
+        let seq = reg
+            .post_exit_notice(&id, "[background] note".into(), true)
+            .expect("still owed to the lead");
+        assert!(
+            reg.claim_exit(&id, Some("a1")).is_none(),
+            "nor its posted note"
+        );
+        assert!(reg.claim_exit(&id, None).is_some(), "the lead can");
+        assert!(reg.take_retracted(seq));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_subagents_unposted_exit_is_its_own_to_claim() {
+        // Its note is bound for that agent's own queue: the lead taking the
+        // exit first would leave the agent never hearing of it.
+        let (reg, id) = exited_unread_from("echo removed", Some("a1"));
+        assert!(reg.claim_exit(&id, None).is_none(), "not the lead's");
+        assert!(reg.claim_exit(&id, Some("a2")).is_none(), "nor another's");
+        assert!(reg.claim_exit(&id, Some("a1")).is_some(), "its launcher's");
+    }
+
     #[test]
     fn a_look_takes_back_the_waiting_notes_of_its_own_session() {
         // A call that looked at a session showed the model whatever it was
@@ -2789,7 +2977,7 @@ mod tests {
         let other = reg
             .post_waiting_notice("b2", "[background] b2 waits".into(), true)
             .expect("posted");
-        reg.retract_shell_notices("b1");
+        reg.retract_shell_notices("b1", None);
         let left: Vec<u64> = reg
             .take_pending_notices()
             .into_iter()
@@ -2798,6 +2986,19 @@ mod tests {
         assert_eq!(left, [other], "only its own session's notes");
         assert!(reg.take_retracted(mine));
         assert!(!reg.take_retracted(other));
+    }
+
+    #[test]
+    fn a_subagents_look_leaves_the_leads_waiting_note() {
+        // The note on the board is the lead's: a subagent that looked at the
+        // lead's session saw the prompt, but the lead has not.
+        let (reg, _rx) = registry();
+        let seq = reg
+            .post_waiting_notice("b1", "[background] b1 waits".into(), true)
+            .expect("posted");
+        reg.retract_shell_notices("b1", Some("a1"));
+        assert!(!reg.take_retracted(seq), "still the lead's to read");
+        assert_eq!(reg.take_pending_notices().len(), 1);
     }
 
     #[cfg(unix)]

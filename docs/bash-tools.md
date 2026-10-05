@@ -153,8 +153,26 @@ owed, by the agents' *One notice per answer* rules under one lock:
 - the note is posted but unread — the claim takes it back off the board and
   the registry remembers its number, so the loop drops the cell it held for it
   (`take_retracted`);
-- the note was read — there is nothing to claim, and the call gets the plain
-  unknown-session answer, which is true again.
+- the note was read — there is nothing to claim, and the call is told the
+  session ended, how, and that its final output was already reported, which
+  is true again.
+
+**Only a note's own reader claims it.** The board is the lead's: a subagent's
+call naming the lead's session — it learned the id somehow — must not take the
+lead's note back, or the lead never hears how its own command ended. So an
+exit whose note sits on the board is the lead's to claim, and one not yet
+posted is its launcher's (`UnreadExit::claimable_by`).
+
+A call with no exit to claim is never told the session "has exited (its final
+output was already reported) or never existed" when the registry knows better.
+It remembers its newest endings — code, whether its own kill did it, whether
+a report covered it, and whose note it is (`background::EndedSession`, the
+last 64) — and says how the session ended and what that means for this call:
+the output was already reported, when the note was the caller's to read or a
+report covered the exit; otherwise `It is not this conversation's session: its
+exit is reported to the main conversation` (or `to agent {id}`), with nothing
+typed or stopped. A stop the model's own `bashkill` escalated to reads
+`was stopped`, never `by the user`.
 
 A shell a **subagent** launched reports to that agent's own queue rather than
 the board, and the same race happens there — a subagent's `bashsend` into its
@@ -168,14 +186,19 @@ subagent's call claims it **from its own queue**
 Only the launching agent may: anyone else taking that note back would leave
 the agent that started the command never hearing how it ended. A claimed exit
 routes nothing; a note the agent's loop already read is reported, and the
-call gets the plain answer.
+call is told so. A routed note is numbered from the board's own count
+(`Route::Routed(seq)`), so the cell the loop holds for it goes with it when
+the agent's own call takes it back, exactly as a board note's does.
 
 The same rule covers the **waiting-for-input** note: a companion call's look
 shows the model whatever the session is asking, so it takes back that
-session's `… is waiting for input` note still on the board
-(`retract_shell_notices`, after the look), and a note the loop posts after the
-look is not posted at all (`SessionIo::prompt_seen`). Otherwise the note would
-reach the model after its answer and read as a second question.
+session's unread `… is waiting for input` note (`retract_shell_notices`, after
+the look) — the lead's off the board, a subagent's out of its own queue
+(`AgentRegistry::withdraw_routed_notes`), and only the caller's own: a
+subagent that looked at the lead's session saw the prompt, the lead did not.
+A note the loop posts after the look is not posted at all
+(`SessionIo::prompt_seen`). Otherwise the note would reach the model after its
+answer and read as a second question.
 
 `smoke.sh` Phase 131 replays the reported race end to end: a stub provider
 whose `bash` call comes back at a `Password: ` prompt, then takes six seconds

@@ -692,10 +692,16 @@ fn run_session(
     let Some(session) = registry.session(id) else {
         // Ended while the model was writing this call, before any note could
         // tell it: the call reports the exit, and that note is not owed.
-        if let Some(exit) = registry.claim_exit(id, origin.map(|origin| origin.agent_id.as_str())) {
+        let caller = origin.map(|origin| origin.agent_id.as_str());
+        if let Some(exit) = registry.claim_exit(id, caller) {
             return claimed_exit_report(&call, id, &exit, on_output);
         }
-        return ToolOutcome::error(unknown_session_text(id, &registry.sessions()));
+        let ended = registry.ended(id);
+        return ToolOutcome::error(unknown_session_text(
+            id,
+            &registry.sessions(),
+            ended.as_ref().map(|ended| (ended, caller)),
+        ));
     };
     let io = session.io;
     let mut parts = parse_input(call.input.as_deref().unwrap_or_default());
@@ -840,7 +846,7 @@ fn run_session(
     // this answer. After the look, not before it — a note the loop posts
     // later finds the prompt seen and is not posted at all
     // (docs/bash-tools.md *One notice per exit*).
-    registry.retract_shell_notices(id);
+    registry.retract_shell_notices(id, origin.map(|origin| origin.agent_id.as_str()));
     // What the model is told beyond the report — never the cell, which shows
     // what happened (its state row says where the session stands).
     let note = match status {
@@ -977,7 +983,19 @@ fn run_list(background: Option<&BackgroundRegistry>) -> ToolOutcome {
 /// The model-facing error for a session id nothing answers to — naming the
 /// ones that are running, so a model that lost track (after a `/compact`, a
 /// `/resume`) can find its way back rather than guess.
-fn unknown_session_text(id: &str, running: &[(String, String)]) -> String {
+///
+/// A session the registry remembers ending (`ended`, with the calling
+/// subagent — `None` for the lead) is said to have ended, and how: its final
+/// output was already reported when the note was the caller's to read, or a
+/// report covered the exit; otherwise the session is another conversation's,
+/// which its exit is reported to. "Already reported or never existed" sent a
+/// model looking for an output it had never been shown
+/// (`docs/bash-tools.md` *One notice per exit*).
+fn unknown_session_text(
+    id: &str,
+    running: &[(String, String)],
+    ended: Option<(&crate::background::EndedSession, Option<&str>)>,
+) -> String {
     // An id run together with more — a model's other arguments leaking into
     // the field — still holds the session it names: say so, rather than that
     // the session is gone (which a model believes, and starts over).
@@ -991,10 +1009,37 @@ fn unknown_session_text(id: &str, running: &[(String, String)]) -> String {
              ({command}) is still running: call again with \"session_id\": \"{session}\"."
         );
     }
-    let head = format!(
-        "No running session {id} — it has exited (its final output was already reported) \
-         or never existed."
-    );
+    let head = match ended {
+        Some((ended, caller)) => {
+            // The registry's kill under a watching call may have been the
+            // model's own `bashkill`: stopped, not by whom.
+            let outcome = if ended.killed && ended.observed {
+                "was stopped".to_string()
+            } else {
+                crate::background::exit_outcome(ended.code, ended.killed)
+            };
+            if ended.observed || ended.reader.as_deref() == caller {
+                format!(
+                    "Session {id} is no longer running — it {outcome}, and its final output \
+                     was already reported."
+                )
+            } else {
+                let reader = ended.reader.as_ref().map_or_else(
+                    || "the main conversation".to_string(),
+                    |agent| format!("agent {agent}"),
+                );
+                format!(
+                    "Session {id} is no longer running — it {outcome}, so this call did \
+                     nothing. It is not this conversation's session: its exit is reported to \
+                     {reader}."
+                )
+            }
+        }
+        None => format!(
+            "No running session {id} — it has exited (its final output was already reported) \
+             or never existed."
+        ),
+    };
     if running.is_empty() {
         return format!("{head} No sessions are running.");
     }
@@ -4235,10 +4280,11 @@ os.write(1, b"\r omarchy [##########] 100%\r\nComplete\r\n\x1b[?25h")'"#;
         let launched = exec_with(&executor, "bash", r#"{"command":"echo removed","wait":0}"#);
         let id = launched.background.expect("backgrounded");
         wait_for_unread_exit(&mut rx, &id);
-        assert_eq!(
-            agents.route_shell_note(&agent, &id, "[background] note", false, &registry),
-            crate::agents::Route::Routed
-        );
+        let crate::agents::Route::Routed(seq) =
+            agents.route_shell_note(&agent, &id, "[background] note", false, &registry)
+        else {
+            panic!("the launcher is running: the note is its to read");
+        };
         let sent = exec_with(
             &executor,
             BASH_SEND,
@@ -4250,6 +4296,7 @@ os.write(1, b"\r omarchy [##########] 100%\r\nComplete\r\n\x1b[?25h")'"#;
             agents.take_pending_inputs(&agent).is_empty(),
             "the routed note is taken back"
         );
+        assert!(registry.take_retracted(seq), "and its cell is not owed");
     }
 
     #[cfg(unix)]
@@ -4332,6 +4379,71 @@ os.write(1, b"\r omarchy [##########] 100%\r\nComplete\r\n\x1b[?25h")'"#;
 
     #[cfg(unix)]
     #[test]
+    fn a_subagents_look_takes_back_the_waiting_note_in_its_queue() {
+        // One level down: the subagent's session asked something, its note
+        // went to the subagent's own queue, and the subagent looked before
+        // its next round read it. The look showed the prompt, so the note —
+        // and the cell held for it — go, as the lead's would off the board
+        // (docs/bash-tools.md *One notice per exit*).
+        let (agents_tx, _agents_rx) = tokio::sync::mpsc::unbounded_channel();
+        let agents = crate::agents::AgentRegistry::new(agents_tx);
+        let (agent, _cancel) = agents.register(crate::agents::GENERAL_PURPOSE);
+        let (registry, mut rx) = test_registry();
+        let registry = registry.with_agents(agents.clone());
+        let executor = RealToolExecutor::new()
+            .with_background(registry.clone())
+            .with_background_origin(crate::background::BgOrigin {
+                agent_id: agent.clone(),
+                agent_type: crate::agents::GENERAL_PURPOSE.to_string(),
+            });
+        let launched = exec_with(
+            &executor,
+            "bash",
+            r#"{"command":"read -r -p 'Port in use, use another? ' answer","wait":0}"#,
+        );
+        let id = launched.background.expect("backgrounded");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            match rx.try_recv() {
+                Ok(crate::background::BgEvent::Waiting { id: asking }) if asking == id => break,
+                Ok(_) => {}
+                Err(_) => {
+                    assert!(std::time::Instant::now() < deadline, "never told");
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                }
+            }
+        }
+        let crate::agents::Route::Routed(seq) =
+            agents.route_shell_note(&agent, &id, "[background] waits", true, &registry)
+        else {
+            panic!("the launcher is running: the note is its to read");
+        };
+        let lead = RealToolExecutor::new().with_background(registry.clone());
+        let _ = exec_with(
+            &lead,
+            BASH_WAIT,
+            &serde_json::json!({"session_id": id, "wait": 0}).to_string(),
+        );
+        assert!(
+            agents.has_pending_inputs(&agent),
+            "the lead's look takes nothing from the subagent's queue"
+        );
+        let looked = exec_with(
+            &executor,
+            BASH_WAIT,
+            &serde_json::json!({"session_id": id, "wait": 0}).to_string(),
+        );
+        assert!(looked.output.contains("use another?"), "{}", looked.output);
+        assert!(
+            agents.take_pending_inputs(&agent).is_empty(),
+            "the stale note is out of its queue"
+        );
+        assert!(registry.take_retracted(seq), "and its cell is not owed");
+        registry.kill_all();
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn a_session_whose_exit_note_was_read_is_gone() {
         // The model read the notice — the exit is old news — so a later call
         // naming the session is the plain unknown-session answer.
@@ -4351,11 +4463,200 @@ os.write(1, b"\r omarchy [##########] 100%\r\nComplete\r\n\x1b[?25h")'"#;
         );
         assert!(!waited.ok);
         assert!(
-            waited
-                .output
-                .starts_with(&format!("No running session {id}")),
+            waited.output.starts_with(&format!(
+                "Session {id} is no longer running — it completed (exit code 0), and its \
+                 final output was already reported."
+            )),
             "{}",
             waited.output
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_session_whose_exit_a_report_covered_says_so() {
+        // A `bashwait` reported `Exit code: 0` — no note was owed — so a later
+        // call naming the session is told the output was reported, whoever
+        // asks, and a stop the model's own `bashkill` escalated to is not
+        // blamed on the user.
+        let (registry, _rx) = test_registry();
+        let executor = RealToolExecutor::new().with_background(registry.clone());
+        let launched = exec_with(&executor, "bash", r#"{"command":"sleep 1","wait":0}"#);
+        let id = launched.background.expect("backgrounded");
+        let waited = exec_with(
+            &executor,
+            BASH_WAIT,
+            &serde_json::json!({"session_id": id, "wait": 10}).to_string(),
+        );
+        assert!(
+            waited.output.starts_with("Exit code: 0"),
+            "{}",
+            waited.output
+        );
+        let subagent = RealToolExecutor::new()
+            .with_background(registry.clone())
+            .with_background_origin(crate::background::BgOrigin {
+                agent_id: "a1".to_string(),
+                agent_type: crate::agents::GENERAL_PURPOSE.to_string(),
+            });
+        let again = exec_with(
+            &subagent,
+            BASH_WAIT,
+            &serde_json::json!({"session_id": id}).to_string(),
+        );
+        assert!(
+            again.output.starts_with(&format!(
+                "Session {id} is no longer running — it completed (exit code 0), and its \
+                 final output was already reported."
+            )),
+            "{}",
+            again.output
+        );
+        let stubborn = exec_with(
+            &executor,
+            "bash",
+            r#"{"command":"trap '' INT TERM; sleep 30","wait":0}"#,
+        );
+        let stubborn = stubborn.background.expect("backgrounded");
+        let stopped = exec_with(
+            &executor,
+            BASH_KILL,
+            &serde_json::json!({"session_id": stubborn}).to_string(),
+        );
+        assert!(stopped.output.starts_with("Stopped"), "{}", stopped.output);
+        let after = exec_with(
+            &executor,
+            BASH_SEND,
+            &serde_json::json!({"session_id": stubborn, "input": "y<Enter>"}).to_string(),
+        );
+        assert!(
+            after.output.starts_with(&format!(
+                "Session {stubborn} is no longer running — it was stopped, and its final \
+                 output was already reported."
+            )),
+            "{}",
+            after.output
+        );
+        registry.kill_all();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_subagents_note_the_board_took_is_the_leads_to_have_read() {
+        // Its launcher settled before the exit, so the note went to the
+        // lead's board instead (docs/agent-tool.md): the lead read it, and a
+        // later call of the lead's naming the session was reported to.
+        let (registry, mut rx) = test_registry();
+        let subagent = RealToolExecutor::new()
+            .with_background(registry.clone())
+            .with_background_origin(crate::background::BgOrigin {
+                agent_id: "a1".to_string(),
+                agent_type: crate::agents::GENERAL_PURPOSE.to_string(),
+            });
+        let launched = exec_with(&subagent, "bash", r#"{"command":"true","wait":0}"#);
+        let id = launched.background.expect("backgrounded");
+        wait_for_unread_exit(&mut rx, &id);
+        registry
+            .post_exit_notice(&id, "[background] note".into(), true)
+            .expect("owed");
+        assert_eq!(registry.take_pending_notices().len(), 1, "the lead read it");
+        let lead = RealToolExecutor::new().with_background(registry.clone());
+        let waited = exec_with(
+            &lead,
+            BASH_WAIT,
+            &serde_json::json!({"session_id": id}).to_string(),
+        );
+        assert!(
+            waited.output.starts_with(&format!(
+                "Session {id} is no longer running — it completed (exit code 0), and its \
+                 final output was already reported."
+            )),
+            "{}",
+            waited.output
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_subagents_call_into_the_leads_ended_session_says_whose_it_is() {
+        // The lead's session ended unheard, and a subagent named it. Its note
+        // is the lead's to read, so the call claims nothing — and must not
+        // answer "already reported or never existed" either: it was reported
+        // to nobody yet, and certainly existed (docs/bash-tools.md).
+        let (registry, mut rx) = test_registry();
+        let lead = RealToolExecutor::new().with_background(registry.clone());
+        let launched = exec_with(&lead, "bash", r#"{"command":"echo removed","wait":0}"#);
+        let id = launched.background.expect("backgrounded");
+        wait_for_unread_exit(&mut rx, &id);
+        let subagent = RealToolExecutor::new()
+            .with_background(registry.clone())
+            .with_background_origin(crate::background::BgOrigin {
+                agent_id: "a1".to_string(),
+                agent_type: crate::agents::GENERAL_PURPOSE.to_string(),
+            });
+        let sent = exec_with(
+            &subagent,
+            BASH_SEND,
+            &serde_json::json!({"session_id": id, "input": "y<Enter>"}).to_string(),
+        );
+        assert!(!sent.ok);
+        assert!(
+            sent.output.starts_with(&format!(
+                "Session {id} is no longer running — it completed (exit code 0), so this call \
+                 did nothing. It is not this conversation's session: its exit is reported to \
+                 the main conversation."
+            )),
+            "{}",
+            sent.output
+        );
+        assert!(
+            registry
+                .post_exit_notice(&id, "[background] note".into(), true)
+                .is_some(),
+            "the lead is still owed its note"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_leads_call_into_a_subagents_ended_session_says_whose_it_is() {
+        let (agents_tx, _agents_rx) = tokio::sync::mpsc::unbounded_channel();
+        let agents = crate::agents::AgentRegistry::new(agents_tx);
+        let (agent, _cancel) = agents.register(crate::agents::GENERAL_PURPOSE);
+        let (registry, mut rx) = test_registry();
+        let registry = registry.with_agents(agents.clone());
+        let subagent = RealToolExecutor::new()
+            .with_background(registry.clone())
+            .with_background_origin(crate::background::BgOrigin {
+                agent_id: agent.clone(),
+                agent_type: crate::agents::GENERAL_PURPOSE.to_string(),
+            });
+        let launched = exec_with(&subagent, "bash", r#"{"command":"exit 2","wait":0}"#);
+        let id = launched.background.expect("backgrounded");
+        wait_for_unread_exit(&mut rx, &id);
+        assert!(matches!(
+            agents.route_shell_note(&agent, &id, "[background] note", false, &registry),
+            crate::agents::Route::Routed(_)
+        ));
+        let lead = RealToolExecutor::new().with_background(registry.clone());
+        let killed = exec_with(
+            &lead,
+            BASH_KILL,
+            &serde_json::json!({"session_id": id}).to_string(),
+        );
+        assert!(
+            killed.output.starts_with(&format!(
+                "Session {id} is no longer running — it failed (exit code 2), so this call did \
+                 nothing. It is not this conversation's session: its exit is reported to agent \
+                 {agent}."
+            )),
+            "{}",
+            killed.output
+        );
+        assert_eq!(
+            agents.take_pending_inputs(&agent),
+            ["[background] note"],
+            "the agent still reads its own note"
         );
     }
 

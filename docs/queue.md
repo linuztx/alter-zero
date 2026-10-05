@@ -524,9 +524,9 @@ The `tab to queue next turn` binding is listed in the `?` shortcuts band
   `agents_generation` (the transcript cache is told); the round boundary lands
   it on **that agent's** transcript and never the main conversation's;
   `reclaim_agent_chat` hands the unread ones back.
-- `stream::dummy`: the offline backend takes a queued message right after its
-  **first** tool call resolves (not at the end of the turn) and drains the
-  queue; `spawn_agent_chat` queues into a running agent and declines with no
+- `stream::dummy`: the offline backend takes a queued message once its
+  **whole tool batch** resolves (not between two of its calls, which the real
+  loop never does, and not at the end of the turn) and drains the queue; `spawn_agent_chat` queues into a running agent and declines with no
   registry attached.
 - `ui` (the memo): one build serves a whole frame's six-plus callers, a queued
   message rebuilds, and so does a new width; and the memo **follows the agent

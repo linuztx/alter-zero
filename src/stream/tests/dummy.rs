@@ -226,11 +226,14 @@ fn dummy_ai_sends_nothing_when_cancelled_before_it_starts() {
 }
 
 #[test]
-fn the_dummy_takes_a_queued_message_at_its_next_tool_boundary() {
+fn the_dummy_takes_a_queued_message_once_its_tool_round_resolves() {
     // The offline mirror of a real round boundary (docs/queue.md): a message
-    // queued while the scripted turn runs is announced as soon as the turn's
-    // next tool call resolves — not at the end of the turn — so the whole
-    // mid-turn queue is drivable with no network.
+    // queued while the scripted turn runs is announced once the turn's tool
+    // round has resolved — every call of its batch, since `run_agent` reads
+    // its pending inputs only after the round's last result — and not at the
+    // end of the turn, so the whole mid-turn queue is drivable with no
+    // network. Taking it between two calls of one batch recorded the message
+    // inside a round the model never saw it in.
     let queue = crate::steer::SteerQueue::new();
     queue.push("also check the tests");
     let (tx, mut rx) = unbounded_channel();
@@ -239,19 +242,22 @@ fn the_dummy_takes_a_queued_message_at_its_next_tool_boundary() {
         .spawn("hi".to_string(), vec![], vec![], tx, CancelToken::new());
 
     let mut steered_after = None;
-    let mut tool_ends = 0;
+    let mut batch = 0;
+    let mut resolved = 0;
     while let Some(event) = rx.blocking_recv() {
         match event {
-            StreamEvent::ToolEnd { .. } => tool_ends += 1,
-            StreamEvent::Steered { text } => steered_after = Some((text, tool_ends)),
+            StreamEvent::ToolBatch(calls) => batch = calls.len(),
+            StreamEvent::ToolEnd { .. } | StreamEvent::ToolAnswered { .. } => resolved += 1,
+            StreamEvent::Steered { text } => steered_after = Some((text, resolved)),
             _ => {}
         }
     }
     handle.join().expect("dummy thread");
+    assert!(batch > 1, "the default turn runs a parallel batch");
     assert_eq!(
         steered_after,
-        Some(("also check the tests".to_string(), 1)),
-        "taken right after the first tool call resolved"
+        Some(("also check the tests".to_string(), batch)),
+        "taken once the whole batch resolved — never between its calls"
     );
     assert!(
         queue.is_empty(),
@@ -260,12 +266,13 @@ fn the_dummy_takes_a_queued_message_at_its_next_tool_boundary() {
 }
 
 #[test]
-fn the_dummy_reads_the_notice_board_at_its_next_tool_boundary() {
+fn the_dummy_reads_the_notice_board_once_its_tool_round_resolves() {
     // The offline mirror of `run_agent`'s board take (docs/background.md): a
-    // background note posted while the scripted turn runs is read at the
-    // turn's next tool boundary and announced with its number — ahead of any
-    // queued message, the real loop's order — so a notice that lands
-    // mid-turn settles in the offline demo exactly as it does live.
+    // background note posted while the scripted turn runs is read once the
+    // turn's tool round resolves and announced with its number — ahead of
+    // any queued message, the real loop's order — so a notice that lands
+    // mid-turn settles in the offline demo exactly where a real model would
+    // have read it: after the batch, never between its calls.
     let (bg_tx, _bg_rx) = unbounded_channel();
     let board = crate::background::BackgroundRegistry::new(bg_tx, std::env::temp_dir());
     let seq = board.post_notice("[background] note".to_string(), true);
@@ -277,25 +284,26 @@ fn the_dummy_reads_the_notice_board_at_its_next_tool_boundary() {
         .with_background(board.clone())
         .spawn("hi".to_string(), vec![], vec![], tx, CancelToken::new());
     let mut order = Vec::new();
-    let mut tool_ends = 0;
+    let mut batch = 0;
+    let mut resolved = 0;
     while let Some(event) = rx.blocking_recv() {
         match event {
-            StreamEvent::ToolEnd { .. } => tool_ends += 1,
-            StreamEvent::NoticeDelivered { seq } => {
-                order.push(format!("notice {seq} @{tool_ends}"))
-            }
-            StreamEvent::Steered { text } => order.push(format!("steered {text} @{tool_ends}")),
+            StreamEvent::ToolBatch(calls) => batch = calls.len(),
+            StreamEvent::ToolEnd { .. } | StreamEvent::ToolAnswered { .. } => resolved += 1,
+            StreamEvent::NoticeDelivered { seq } => order.push(format!("notice {seq} @{resolved}")),
+            StreamEvent::Steered { text } => order.push(format!("steered {text} @{resolved}")),
             _ => {}
         }
     }
     handle.join().expect("dummy thread");
+    assert!(batch > 1, "the default turn runs a parallel batch");
     assert_eq!(
         order,
         vec![
-            format!("notice {seq} @1"),
-            "steered also check the tests @1".to_string()
+            format!("notice {seq} @{batch}"),
+            format!("steered also check the tests @{batch}")
         ],
-        "read at the first tool boundary, the notice before the user's message"
+        "read once the whole batch resolved, the notice before the user's message"
     );
     assert!(
         board.take_pending_notices().is_empty(),

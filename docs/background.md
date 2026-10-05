@@ -158,7 +158,9 @@ executor (`llm::exec`), and the `!` shell runner:
   call that names a session which has just **exited** — it ended while the
   model was writing the call — reports the exit itself and claims its note
   (`claim_exit`); one that **looks** at a running session takes back the
-  session's `… is waiting for input` note (`retract_shell_notices`); an
+  session's `… is waiting for input` note (`retract_shell_notices`) — each
+  only the caller's own, the lead's off the board, a subagent's out of its
+  queue, whose routed notes are numbered from the same count; an
   `agentoutput` that reports an agent's answer takes back that agent's
   completion note (`retract_agent_notice`). The registry remembers each
   retracted number (`take_retracted`), and the loop drops the cell it holds
@@ -241,8 +243,12 @@ not be told apart from one the model really read there, so only recording it
 at the read fixes it.) Steered messages never had the bug: `Steered` has
 always been an echo.
 
-The offline dummy reads the board at its tool boundaries, its stand-in for a
-round's top (`DummyAi::with_background`, beside its mid-turn queue), and
+The offline dummy reads the board once a scripted tool round resolves — its
+announced batch's last call, its stand-in for a round's top
+(`DummyAi::with_background`, beside its mid-turn queue; a call no batch
+announced is a round of its own, and between two calls of one batch is never
+a boundary, since the real loop reads only after the round's last result) —
+and
 announces each note the same way, so the demo — and `smoke.sh` Phase 43 —
 settle a mid-turn notice through this same path. `smoke.sh` Phase 131 drives
 the reported case through the real backend against a stub provider that takes

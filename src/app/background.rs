@@ -62,20 +62,15 @@ impl BackgroundNotice {
         headline
     }
 
-    /// The outcome clause of the headline / context note.
+    /// The outcome clause of the headline / context note — an ended shell's
+    /// in the words a companion call naming it uses too
+    /// ([`crate::background::exit_outcome`]).
     #[must_use]
     pub fn outcome_phrase(&self) -> String {
         if self.waiting {
             return "is waiting for input".to_string();
         }
-        if self.killed {
-            return "was stopped by the user".to_string();
-        }
-        match self.code {
-            Some(0) => "completed (exit code 0)".to_string(),
-            Some(code) => format!("failed (exit code {code})"),
-            None => "was terminated by a signal".to_string(),
-        }
+        crate::background::exit_outcome(self.code, self.killed)
     }
 
     /// The model-facing context note: the headline plus the output tail (the

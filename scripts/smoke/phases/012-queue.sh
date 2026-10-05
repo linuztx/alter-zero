@@ -7,7 +7,7 @@ smoke_begin
 # messages submitted WHILE a turn streams go INTO THAT TURN
 # (codex's steering, docs/queue.md): each waits like a user message ("  ❯ …",
 # two-space inset) *above* the box, and the turn takes them at its next round
-# boundary — the dummy's tool boundary — where each becomes a real user bubble
+# boundary — the end of the dummy's tool batch — where each becomes a real user bubble
 # at column 0 ("❯ world", "❯ again") **while the turn is still running** (the
 # status line is still up). So exactly ONE turn runs: one turn summary appears
 # and a second must NOT — a backlog that waited for the turn to end would
@@ -37,7 +37,7 @@ printf '%s\n' "$queued_band"
 # line still says the turn is running. A message that only landed after the
 # summary is the old wait-for-the-turn behaviour.
 queue_midturn=""
-for _ in $(seq 1 400); do # up to ~60s: the turn reaches its first tool boundary
+for _ in $(seq 1 400); do # up to ~60s: the turn's tool batch resolves
 	frame="$(tmux capture-pane -t "$S9" -p -S -120)"
 	if printf '%s' "$frame" | grep -qE '^❯ world$' &&
 		printf '%s' "$frame" | grep -qE '^❯ again$' &&

@@ -1147,7 +1147,10 @@ not owed twice, where it used to answer that the final output "was already
 reported" before the model had read it (`BackgroundRegistry::claim_exit`, a
 look likewise taking back a session's unread waiting note, and a subagent's
 shell — whose note goes to the agent's own queue — claimed from that queue by
-the agent's own call, `AgentRegistry::route_shell_note`/`claim_routed_exit`,
+the agent's own call, `AgentRegistry::route_shell_note`/`claim_routed_exit`;
+only a note's own reader takes it back — the lead its board's, a subagent its
+queue's — and a call with nothing to claim is told how the session ended and
+whose it is, off the registry's newest endings (`background::EndedSession`),
 `docs/bash-tools.md` *One notice per exit*) in `docs/background.md`; and the **`Agent` tool** (Claude-Code-style subagents,
 `docs/agent-tool.md`: the model launches autonomous side-agents —
 `description`/`prompt`/`subagent_type`/`run_in_background` (default true) —

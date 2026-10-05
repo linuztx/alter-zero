@@ -128,27 +128,31 @@ impl Session<'_> {
                 &self.registry,
             ) {
                 alter_zero::agents::Route::Covered => return,
-                alter_zero::agents::Route::Routed => true,
-                alter_zero::agents::Route::Unheard => false,
+                alter_zero::agents::Route::Routed(seq) => Some(seq),
+                alter_zero::agents::Route::Unheard => None,
             },
-            None => false,
+            None => None,
         };
-        let seq = if routed {
-            None
-        } else {
-            let posted = if completion.waiting {
-                self.registry
-                    .post_waiting_notice(&completion.id, note, completion.from_model)
-            } else {
-                self.registry
-                    .post_exit_notice(&completion.id, note, completion.from_model)
-            };
-            let Some(seq) = posted else {
-                return;
-            };
-            Some(seq)
+        // A routed note is the launcher's to read, never the lead's: its cell
+        // settles at the turn's end — unless the agent's own call took the
+        // note back first, which retracts its number like a board note's.
+        let seq = match routed {
+            Some(seq) => seq,
+            None => {
+                let posted = if completion.waiting {
+                    self.registry
+                        .post_waiting_notice(&completion.id, note, completion.from_model)
+                } else {
+                    self.registry
+                        .post_exit_notice(&completion.id, note, completion.from_model)
+                };
+                let Some(seq) = posted else {
+                    return;
+                };
+                seq
+            }
         };
-        self.app.defer_bg_completion(completion, seq);
+        self.app.defer_bg_completion(completion, Some(seq));
         if !self.app.turn_active() {
             self.dispatch_after_turn();
         }

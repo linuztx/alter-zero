@@ -36,6 +36,19 @@ release heading when a version is cut.
   at a running session likewise withdraws that session's unread "waiting for
   input" notice, which would otherwise arrive after the answer it asks for
   (`docs/bash-tools.md`).
+- **A session's notices belong to the conversation that reads them.** A
+  subagent's call naming a session of the main conversation no longer takes
+  back the main conversation's notice about it, so the main conversation
+  still hears how its own command ended, and the reverse holds too. A call
+  that names a session another conversation reads is told how it ended and
+  whose it is, instead of "already reported or never existed". A subagent
+  that looks at its own session withdraws the stale "waiting for input"
+  notice in its queue as well (`docs/bash-tools.md`).
+- **The offline demo hands over queued messages and notices where a real
+  model would read them.** It used to deliver them right after the first call
+  of a parallel batch, inside a round the model never saw them in. It now
+  waits for the whole batch to resolve, as the agent loop does
+  (`docs/queue.md`).
 
 ## [0.12.0] - 2026-10-05
 

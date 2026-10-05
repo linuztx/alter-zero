@@ -1379,11 +1379,9 @@ struct PendingInput {
     text: String,
     /// The user typed it into the agent's session view.
     from_user: bool,
-    /// The note of an exit this agent's own shell made, routed here unread:
-    /// the session's id and what a claim needs, so the agent's own call into
-    /// that session reports the exit instead of being told it was already
-    /// reported (`docs/bash-tools.md` *One notice per exit*).
-    exit: Option<(String, crate::background::ClaimedExit)>,
+    /// A note of this agent's own shell's, routed here unread (see
+    /// [`RoutedNote`]).
+    routed: Option<RoutedNote>,
 }
 
 impl PendingInput {
@@ -1391,16 +1389,34 @@ impl PendingInput {
         Self {
             text: text.to_string(),
             from_user: false,
-            exit: None,
+            routed: None,
         }
     }
+}
+
+/// A shell's note routed to the agent that launched it
+/// ([`AgentRegistry::route_shell_note`]) — what its own call into that
+/// session takes back while the note is unread (`docs/bash-tools.md` *One
+/// notice per exit*): a look takes back a `… is waiting for input` note it
+/// just answered, and a call into a session that ended reports the exit
+/// instead of being told it was already reported.
+#[derive(Debug, Clone)]
+struct RoutedNote {
+    /// Its number, from the board's own count — what the loop holds the
+    /// notice cell by, so a note taken back costs its cell too.
+    seq: u64,
+    /// The session it reports.
+    shell: String,
+    /// For an exit, what a claim needs.
+    exit: Option<crate::background::ClaimedExit>,
 }
 
 /// Where [`AgentRegistry::route_shell_note`] sent a shell's note.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Route {
-    /// Queued for the launching agent's next round boundary.
-    Routed,
+    /// Queued for the launching agent's next round boundary, as this note
+    /// number — what the loop holds the notice cell by.
+    Routed(u64),
     /// The launcher cannot hear it (settled, stopped): the shared board must
     /// take it, the note still owed.
     Unheard,
@@ -2051,7 +2067,7 @@ impl AgentRegistry {
             PendingInput {
                 text: text.to_string(),
                 from_user: true,
-                exit: None,
+                routed: None,
             },
         )
     }
@@ -2083,35 +2099,61 @@ impl AgentRegistry {
         };
         match board.take_shell_notice(shell, waiting) {
             crate::background::ShellNotice::Covered => Route::Covered,
-            crate::background::ShellNotice::Owed(exit) => {
+            crate::background::ShellNotice::Owed { seq, exit } => {
                 slot.pending_inputs.push(PendingInput {
                     text: text.to_string(),
                     from_user: false,
-                    exit: exit.map(|exit| (shell.to_string(), exit)),
+                    routed: Some(RoutedNote {
+                        seq,
+                        shell: shell.to_string(),
+                        exit,
+                    }),
                 });
-                Route::Routed
+                Route::Routed(seq)
             }
         }
     }
 
     /// Agent `id`'s own call named shell `shell`, which exited with its note
     /// still in the agent's queue, unread: take the note back and hand over
-    /// what the call's report of the exit needs. `None` once the agent's loop
-    /// has read it — then it was reported.
+    /// what the call's report of the exit needs, with the note's number.
+    /// `None` once the agent's loop has read it — then it was reported.
     pub fn claim_routed_exit(
         &self,
         id: &str,
         shell: &str,
-    ) -> Option<crate::background::ClaimedExit> {
+    ) -> Option<(crate::background::ClaimedExit, u64)> {
         let mut inner = self.inner.lock().expect("agent registry poisoned");
         let pending = &mut inner.slots.get_mut(id)?.pending_inputs;
         let index = pending.iter().position(|input| {
             input
-                .exit
+                .routed
                 .as_ref()
-                .is_some_and(|(session, _)| session == shell)
+                .is_some_and(|note| note.shell == shell && note.exit.is_some())
         })?;
-        pending.remove(index).exit.map(|(_, exit)| exit)
+        let note = pending.remove(index).routed?;
+        Some((note.exit?, note.seq))
+    }
+
+    /// Agent `id`'s own call just looked at shell `shell`: take back the
+    /// shell's notes still unread in its queue — a `… is waiting for input`
+    /// note says nothing the look did not show, and would reach the agent
+    /// only after its answer. Their numbers, so the cells held for them go
+    /// too.
+    pub fn withdraw_routed_notes(&self, id: &str, shell: &str) -> Vec<u64> {
+        let mut inner = self.inner.lock().expect("agent registry poisoned");
+        let Some(slot) = inner.slots.get_mut(id) else {
+            return Vec::new();
+        };
+        let mut seqs = Vec::new();
+        slot.pending_inputs.retain(|input| match &input.routed {
+            Some(note) if note.shell == shell => {
+                seqs.push(note.seq);
+                false
+            }
+            _ => true,
+        });
+        seqs
     }
 
     fn queue(&self, id: &str, input: PendingInput) -> bool {
@@ -4465,7 +4507,12 @@ mod tests {
     /// A board whose shell `echo done` exited with nobody waiting — its exit
     /// unread — reaching `agents` for the notes routed to an agent's queue.
     #[cfg(unix)]
-    fn exited_shell(agents: &AgentRegistry) -> (crate::background::BackgroundRegistry, String) {
+    /// A shell `agent` launched, exited with nobody watching — its note not
+    /// yet routed.
+    fn exited_shell(
+        agents: &AgentRegistry,
+        agent: &str,
+    ) -> (crate::background::BackgroundRegistry, String) {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -4474,7 +4521,13 @@ mod tests {
             std::process::id()
         ));
         let board = crate::background::BackgroundRegistry::new(tx, dir).with_agents(agents.clone());
-        let task = board.launch("echo done", None, true).expect("launches");
+        let origin = crate::background::BgOrigin {
+            agent_id: agent.to_string(),
+            agent_type: GENERAL_PURPOSE.to_string(),
+        };
+        let task = board
+            .launch_from("echo done", None, true, Some(origin))
+            .expect("launches");
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         loop {
             match rx.try_recv() {
@@ -4501,11 +4554,11 @@ mod tests {
         // takes the note back (docs/bash-tools.md *One notice per exit*).
         let registry = test_registry();
         let (agent, _cancel) = registry.register(GENERAL_PURPOSE);
-        let (board, shell) = exited_shell(&registry);
-        assert_eq!(
+        let (board, shell) = exited_shell(&registry, &agent);
+        assert!(matches!(
             registry.route_shell_note(&agent, &shell, "[background] note", false, &board),
-            Route::Routed
-        );
+            Route::Routed(_)
+        ));
         assert!(
             board.claim_exit(&shell, None).is_none(),
             "the lead cannot take a subagent's note"
@@ -4525,7 +4578,7 @@ mod tests {
     fn a_routed_exit_the_agent_already_read_is_not_claimed() {
         let registry = test_registry();
         let (agent, _cancel) = registry.register(GENERAL_PURPOSE);
-        let (board, shell) = exited_shell(&registry);
+        let (board, shell) = exited_shell(&registry, &agent);
         registry.route_shell_note(&agent, &shell, "[background] note", false, &board);
         assert_eq!(registry.take_pending_inputs(&agent), ["[background] note"]);
         assert!(board.claim_exit(&shell, Some(&agent)).is_none());
@@ -4536,7 +4589,7 @@ mod tests {
     fn an_exit_a_call_already_reported_routes_nothing() {
         let registry = test_registry();
         let (agent, _cancel) = registry.register(GENERAL_PURPOSE);
-        let (board, shell) = exited_shell(&registry);
+        let (board, shell) = exited_shell(&registry, &agent);
         assert!(board.claim_exit(&shell, Some(&agent)).is_some());
         assert_eq!(
             registry.route_shell_note(&agent, &shell, "[background] note", false, &board),
@@ -4551,7 +4604,7 @@ mod tests {
         let registry = test_registry();
         let (agent, _cancel) = registry.register(GENERAL_PURPOSE);
         registry.settle(&agent, Ok("done".into()), Vec::new(), None);
-        let (board, shell) = exited_shell(&registry);
+        let (board, shell) = exited_shell(&registry, &agent);
         assert_eq!(
             registry.route_shell_note(&agent, &shell, "[background] note", false, &board),
             Route::Unheard
