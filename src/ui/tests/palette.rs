@@ -5,7 +5,7 @@ use crate::app::Theme;
 use crate::highlight::CodeTheme;
 use crate::ui::palette::{activate_theme, active_theme, palette, palette_of, with_theme};
 use crate::ui::theme::*;
-use crate::ui::wrap::{blend_color, lerp_color};
+use crate::ui::wrap::{blend_color, contrast_ratio, legible_on, lerp_color};
 
 /// The `(r, g, b)` of an RGB colour.
 fn rgb_of(color: Color) -> (u8, u8, u8) {
@@ -334,5 +334,101 @@ fn a_rendered_cell_wears_the_active_theme() {
     assert_eq!(
         bubble_under(Theme::Nord),
         Some(Color::Rgb(0x3B, 0x42, 0x52))
+    );
+}
+
+#[test]
+fn contrast_ratio_is_wcags_luminance_ratio() {
+    // WCAG 2.x: (lighter + 0.05) / (darker + 0.05) over the sRGB relative
+    // luminance — 21:1 at the extremes, 1:1 for a colour against itself.
+    let black = Color::Rgb(0, 0, 0);
+    let white = Color::Rgb(0xFF, 0xFF, 0xFF);
+    let ratio = |a, b| contrast_ratio(a, b).expect("two RGB colours");
+    assert!((ratio(black, white) - 21.0).abs() < 0.01);
+    assert!((ratio(white, black) - 21.0).abs() < 0.01, "order-free");
+    assert!((ratio(white, white) - 1.0).abs() < 1e-6);
+    // The reference pair: #767676 is the lightest grey that reads on white
+    // at AA's 4.5:1.
+    let grey = ratio(Color::Rgb(0x76, 0x76, 0x76), white);
+    assert!(
+        (grey - 4.54).abs() < 0.01,
+        "#767676 on white is 4.54:1: {grey}"
+    );
+    // The reported collision: Dracula's comment grey on its added-text mark
+    // share a luminance, so the text vanishes into its own highlight.
+    let collision = ratio(Color::Rgb(0x62, 0x72, 0xA4), Color::Rgb(0x39, 0x81, 0x53));
+    assert!(collision < 1.05, "{collision}");
+    // A terminal-palette colour has no components to measure (the ANSI
+    // theme, `docs/theme.md`).
+    assert_eq!(contrast_ratio(Color::Green, white), None);
+    assert_eq!(contrast_ratio(white, Color::Reset), None);
+}
+
+#[test]
+fn an_ink_that_already_reads_is_left_alone() {
+    // Dracula's string yellow on its added-text mark: 4.2:1 — no lift.
+    let mark = Color::Rgb(0x39, 0x81, 0x53);
+    let yellow = Color::Rgb(0xF1, 0xFA, 0x8C);
+    let text = Color::Rgb(0xF8, 0xF8, 0xF2);
+    assert_eq!(legible_on(yellow, mark, text, 3.0), yellow);
+}
+
+#[test]
+fn a_colliding_ink_lifts_toward_the_theme_ink_just_far_enough() {
+    // The reported collision: Dracula's comment grey on the green mark,
+    // 1.0:1. It moves toward the theme's text until it reads, and stops
+    // there: the result is still the comment's lighter cousin, not the text.
+    let mark = Color::Rgb(0x39, 0x81, 0x53);
+    let comment = Color::Rgb(0x62, 0x72, 0xA4);
+    let text = Color::Rgb(0xF8, 0xF8, 0xF2);
+    let lifted = legible_on(comment, mark, text, 3.0);
+    let ratio = contrast_ratio(lifted, mark).unwrap();
+    assert!(ratio >= 3.0, "reads: {ratio}");
+    assert!(ratio < 3.3, "and no further than it must: {ratio}");
+    let (r, _, b) = rgb_of(lifted);
+    assert!(b > r, "still the comment's blue-grey: {lifted:?}");
+}
+
+#[test]
+fn an_ink_passes_the_theme_ink_when_even_that_falls_short() {
+    // Solarized's own text reads at only 2.6:1 on its added-text mark, so a
+    // comment lifted no further than the text would still fail; it carries
+    // on toward white until it reads.
+    let mark = Color::Rgb(0x42, 0x62, 0x1B);
+    let text = Color::Rgb(0x93, 0xA1, 0xA1);
+    assert!(contrast_ratio(text, mark).unwrap() < 3.0);
+    let lifted = legible_on(Color::Rgb(0x58, 0x6E, 0x75), mark, text, 3.0);
+    assert!(contrast_ratio(lifted, mark).unwrap() >= 3.0, "{lifted:?}");
+}
+
+#[test]
+fn on_a_light_theme_the_lift_runs_toward_dark() {
+    // Latte's inks are dark and its marks pale, so "lifting" an ink means
+    // darkening it: its peach on the pale red mark reads at 1.3:1. A floor
+    // past what Latte's own text reaches there (3.4:1) also walks on past the
+    // text — toward black, not white.
+    let mark = Color::Rgb(0xE3, 0x92, 0xA6);
+    let text = Color::Rgb(0x4C, 0x4F, 0x69);
+    let peach = Color::Rgb(0xFE, 0x64, 0x0B);
+    let lifted = legible_on(peach, mark, text, 4.5);
+    assert!(contrast_ratio(lifted, mark).unwrap() >= 4.5, "{lifted:?}");
+    assert!(
+        luma(lifted) < luma(mark),
+        "darker than its ground: {lifted:?}"
+    );
+}
+
+#[test]
+fn a_terminal_palette_colour_is_never_lifted() {
+    // The ANSI theme's colours are the terminal's to choose: there is
+    // nothing to measure, so nothing to correct.
+    let text = Color::Rgb(0xF8, 0xF8, 0xF2);
+    assert_eq!(
+        legible_on(Color::Green, Color::DarkGray, Color::Reset, 4.5),
+        Color::Green
+    );
+    assert_eq!(
+        legible_on(Color::Rgb(0x30, 0x30, 0x30), Color::DarkGray, text, 4.5),
+        Color::Rgb(0x30, 0x30, 0x30)
     );
 }

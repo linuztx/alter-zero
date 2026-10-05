@@ -466,6 +466,76 @@ pub(super) fn blend_color(fg: Color, bg: Color, alpha: f32) -> Color {
     }
 }
 
+/// WCAG 2.x relative luminance of an RGB colour: its sRGB channels made
+/// linear, then weighted by how strongly the eye reads each. It runs from 0
+/// (black) to 1 (white). `None` for a terminal-palette colour, whose value
+/// only the terminal knows.
+fn relative_luminance(color: Color) -> Option<f32> {
+    let Color::Rgb(r, g, b) = color else {
+        return None;
+    };
+    let linear = |c: u8| {
+        let c = f32::from(c) / 255.0;
+        if c <= 0.040_45 {
+            c / 12.92
+        } else {
+            ((c + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    Some(0.2126 * linear(r) + 0.7152 * linear(g) + 0.0722 * linear(b))
+}
+
+/// WCAG 2.x contrast ratio between two colours, in either order. It runs
+/// from 1:1, two colours of one brightness where text vanishes into its
+/// ground, to 21:1 for black on white. `None` when either is a
+/// terminal-palette colour.
+pub(super) fn contrast_ratio(a: Color, b: Color) -> Option<f32> {
+    let (la, lb) = (relative_luminance(a)?, relative_luminance(b)?);
+    Some((la.max(lb) + 0.05) / (la.min(lb) + 0.05))
+}
+
+/// How many steps each leg of [`legible_on`]'s walk takes. With this many,
+/// the colour it stops at clears the floor by a hair, not by a shade.
+const LEGIBLE_STEPS: u16 = 64;
+
+/// `fg` if it reads at `min` contrast on `bg`; otherwise the first colour on
+/// a walk from `fg` toward `ink` that does.
+///
+/// An ink that reads comes back untouched. One that doesn't walks toward
+/// `ink`, the theme's own text colour, and stops at the first step that
+/// reads, so it keeps as much of its hue as the ground allows. If `ink`
+/// itself falls short on this ground, the walk goes on past it toward white,
+/// or toward black when `ink` is darker than `bg` (a light theme). When any
+/// of the three is a terminal-palette colour there is no value to measure,
+/// and `fg` comes back as it came (`docs/inline-diff.md`).
+pub(super) fn legible_on(fg: Color, bg: Color, ink: Color, min: f32) -> Color {
+    let (Some(_), Some(ground), Some(ink_luminance)) = (
+        relative_luminance(fg),
+        relative_luminance(bg),
+        relative_luminance(ink),
+    ) else {
+        return fg;
+    };
+    let reads = |c: Color| contrast_ratio(c, bg).is_some_and(|r| r >= min);
+    if reads(fg) {
+        return fg;
+    }
+    let extreme = if ink_luminance >= ground {
+        Color::Rgb(0xFF, 0xFF, 0xFF)
+    } else {
+        Color::Rgb(0, 0, 0)
+    };
+    for (from, to) in [(fg, ink), (ink, extreme)] {
+        for step in 1..=LEGIBLE_STEPS {
+            let candidate = lerp_color(from, to, f32::from(step) / f32::from(LEGIBLE_STEPS));
+            if reads(candidate) {
+                return candidate;
+            }
+        }
+    }
+    extreme
+}
+
 /// Where a **breath** is at `elapsed`: a raised cosine easing 0 → 1 → 0 once
 /// per `period`, so a colour driven by it swells and fades rather than
 /// flicking on and off — the `pulse` spinner style's swell (`docs/spinner.md`;

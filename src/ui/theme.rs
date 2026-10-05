@@ -651,8 +651,10 @@ pub(super) fn tool_diff_del_bg() -> Color {
 /// character-level refinement's own colour (`docs/inline-diff.md`). A clearly
 /// brighter green than the row's [`tool_diff_add_bg`], because the two are
 /// read together: the muted row tint says *this line changed*, the bright mark
-/// says *here*. Bright enough to find at a glance, dark enough that the row's
-/// syntax colours still read over it.
+/// says *here*. Bright enough to find at a glance — which puts it at a middle
+/// brightness, where a theme's dimmer syntax colours (a comment's grey above
+/// all) can match it and vanish, so a changed run's ink is held to
+/// [`INLINE_DIFF_MARK_MIN_CONTRAST`] against it.
 pub(super) fn tool_diff_add_mark_bg() -> Color {
     palette().diff_add_mark_bg
 }
@@ -661,6 +663,25 @@ pub(super) fn tool_diff_add_mark_bg() -> Color {
 /// [`tool_diff_add_mark_bg`] twin over [`tool_diff_del_bg`].
 pub(super) fn tool_diff_del_mark_bg() -> Color {
     palette().diff_del_mark_bg
+}
+
+/// The contrast every changed run's ink keeps against its mark, as a WCAG
+/// ratio (`docs/inline-diff.md`). A syntax colour that already reads keeps
+/// its colour. One that doesn't is lifted toward [`tool_diff_mark_ink`]
+/// until it does. In Dracula a doc comment's grey sat on the added-text mark
+/// at 1.0:1, the two the same brightness, so the words the edit changed
+/// disappeared into their own highlight. 3:1 is how Dracula and Monokai set
+/// a comment against their own backgrounds, and more than One Dark, Nord or
+/// Solarized give theirs, so it is a contrast these themes already treat as
+/// readable. WCAG's 4.5:1 for body text is out of reach on a mark this
+/// bright for any ink but near-white.
+pub(super) const INLINE_DIFF_MARK_MIN_CONTRAST: f32 = 3.0;
+
+/// The ink a changed run is lifted toward when its syntax colour won't read
+/// on its mark ([`INLINE_DIFF_MARK_MIN_CONTRAST`]): the theme's own text
+/// colour, so a lifted run moves toward the ink the theme reads in.
+pub(super) fn tool_diff_mark_ink() -> Color {
+    ai_color()
 }
 
 /// How much of a `-`/`+` line pair must be **common** for the character-level

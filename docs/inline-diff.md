@@ -134,13 +134,63 @@ them at the changed-range boundaries, and gives each piece its final style:
 | | background | text |
 |---|---|---|
 | `+` row, untouched | `tool_diff_add_bg()` | syntax colour |
-| `+` row, **added characters** | `tool_diff_add_mark_bg()` | syntax colour + **bold** |
+| `+` row, **added characters** | `tool_diff_add_mark_bg()` | syntax colour, lifted where it won't read (below) + **bold** |
 | `-` row, untouched | `tool_diff_del_bg()` | syntax colour, dimmed |
-| `-` row, **removed characters** | `tool_diff_del_mark_bg()` | syntax colour + **bold**, *not* dimmed |
+| `-` row, **removed characters** | `tool_diff_del_mark_bg()` | syntax colour, lifted where it won't read + **bold**, *not* dimmed |
 
 The removed row's changed text deliberately escapes the `DIM` the rest of the
 row carries: dimming the one run the eye is meant to find would defeat the
 point of marking it.
+
+### The changed text has to read on its mark
+
+A mark has to be bright enough to find at a glance, so it lands at a middle
+brightness. A theme's dimmer syntax colours sit at that same brightness,
+because they are designed to recede against the *editor's* dark ground. A
+comment's grey is the one this hits hardest. When the two match, the
+changed text disappears into its own highlight: the one run on screen the
+reviewer is meant to read is the one run they can't. The reported case was
+a reworded `///` doc comment under Dracula, its comment grey `#6272A4` on
+its added-text mark `#398153`, at **1.0:1**. Across the catalog, a comment
+on the added-text mark read at 1.0:1 in One Dark and Dracula, 1.05:1 in
+Nord and Monokai, and below 2:1 in the three dark Catppuccin flavours. No
+theme's comment reached 3:1 on either mark.
+
+So a changed run's ink is held to `INLINE_DIFF_MARK_MIN_CONTRAST`, a WCAG
+contrast ratio of **3:1** against its mark (`wrap::legible_on`, applied in
+`row_segments`):
+
+- A syntax colour that already reads there keeps its colour. Dracula's
+  string yellow reads at 4.2:1 on the added-text mark, so a changed string
+  stays yellow.
+- One that doesn't is lifted toward the theme's own text colour
+  (`tool_diff_mark_ink()`) and stops at the first step that reads, so it
+  keeps as much of its hue as the ground allows. Dracula's comment grey
+  comes out a light blue-grey, still a comment's colour.
+- Where even the theme's text falls short on its own mark (Solarized's text
+  reads at 2.6:1 on its added-text mark), the lift goes past it toward
+  white, or toward black on a light theme such as Latte, whose inks are
+  dark.
+- A terminal-palette colour (the ANSI theme) has no value to measure and is
+  left as the terminal paints it.
+- Only the marked runs move. The row's unchanged text keeps exactly the
+  colour the highlighter gave it, and a pair that isn't refined renders as
+  it always did.
+
+Why **3:1** rather than the 4.5:1 WCAG asks of body text: a mark at a
+middle brightness caps what any ink can reach on it. Dracula's own text
+reads at only 4.4:1 on its added-text mark, and its string yellow at 4.2:1,
+so a 4.5 floor would turn nearly every changed run white rather than rescue
+the ones that vanish. 3:1 is a contrast these themes already treat as
+readable: it is how Dracula and Monokai set a comment against their own
+editor backgrounds (3.0:1), and One Dark (2.3:1), Nord (2.4:1) and
+Solarized (2.8:1) set theirs lower. The marked run is bold on top of it.
+
+Why not darken the marks instead: no mark brighter than its row can carry a
+comment's grey. For Dracula's comment to reach 3:1, the mark would have to
+be darker than the row tint it sits in, and at that point it no longer
+marks anything. The ink has to move either way, so the ink is what moves.
+The marks keep their colours.
 
 Because the styles are baked into the segments *before* `code_content_rows`,
 the mark survives the wrap — a changed run split across two display rows keeps
@@ -174,4 +224,7 @@ thing that makes the feature affordable at 32 ms.
 ## Tuning
 
 All in `ui/theme.rs`: `tool_diff_add_mark_bg()`, `tool_diff_del_mark_bg()`,
-`INLINE_DIFF_MIN_COMMON_PCT`, `INLINE_DIFF_MAX_CELLS`.
+`tool_diff_mark_ink()`, `INLINE_DIFF_MARK_MIN_CONTRAST`,
+`INLINE_DIFF_MIN_COMMON_PCT`, `INLINE_DIFF_MAX_CELLS`. The contrast
+arithmetic is `ui/wrap.rs`' `relative_luminance`/`contrast_ratio`/
+`legible_on`, beside the other colour helpers.
