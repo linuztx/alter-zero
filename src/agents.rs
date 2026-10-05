@@ -11,7 +11,7 @@
 //! subagent threads report on (agents outlive turns, so their events must
 //! survive the reply channel's interrupt swaps).
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -506,6 +506,11 @@ impl AgentRun {
             // only at the main session's spawn top (docs/hooks.md); mapped so
             // the match stays total and honest if that ever changes.
             StreamEvent::PromptBlocked { .. } => {}
+            // Never sent on an agent's channel either: only the main turn
+            // reads the registry's board, and a shell a subagent launched
+            // reports to it through its own queue, as a `Steered` message
+            // (docs/background.md).
+            StreamEvent::NoticeDelivered { .. } => {}
             // A reasoning delta: counted so the footer tally ticks while the
             // agent thinks (the status-line pattern) and — **while a phase is
             // open** — accumulated for the live `● Thinking…` block the
@@ -1374,6 +1379,11 @@ struct PendingInput {
     text: String,
     /// The user typed it into the agent's session view.
     from_user: bool,
+    /// The note of an exit this agent's own shell made, routed here unread:
+    /// the session's id and what a claim needs, so the agent's own call into
+    /// that session reports the exit instead of being told it was already
+    /// reported (`docs/bash-tools.md` *One notice per exit*).
+    exit: Option<(String, crate::background::ClaimedExit)>,
 }
 
 impl PendingInput {
@@ -1381,8 +1391,21 @@ impl PendingInput {
         Self {
             text: text.to_string(),
             from_user: false,
+            exit: None,
         }
     }
+}
+
+/// Where [`AgentRegistry::route_shell_note`] sent a shell's note.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Route {
+    /// Queued for the launching agent's next round boundary.
+    Routed,
+    /// The launcher cannot hear it (settled, stopped): the shared board must
+    /// take it, the note still owed.
+    Unheard,
+    /// A companion call already reported what the note says: none is owed.
+    Covered,
 }
 
 /// One running subagent's shared slot: its cancel token, completion state,
@@ -1536,11 +1559,6 @@ struct Inner {
     /// The order counter launches and settles are stamped from.
     seq: u64,
     slots: HashMap<String, AgentSlot>,
-    /// Agents whose posted notice a report took back off the board — the
-    /// notice cell the loop deferred with it is not owed either
-    /// ([`AgentRegistry::take_retracted`]). Here rather than on the slot, so
-    /// retention cannot let go of it first.
-    retracted: HashSet<String>,
 }
 
 impl Inner {
@@ -1569,6 +1587,19 @@ impl Inner {
     }
 }
 
+/// What [`AgentRegistry::post_notice`] did with one of an agent's
+/// unobserved settles (`docs/agent-tools.md` *One notice per answer*).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NoticePost {
+    /// An `agentoutput` report already handed the lead this answer: nothing
+    /// was posted, and no notice cell is owed.
+    Covered,
+    /// Owed: posted on the board as this
+    /// [`seq`](crate::background::PendingNotice::seq) — `None` when the
+    /// settle carried no notice to post.
+    Posted(Option<u64>),
+}
+
 /// The shared subagent registry (see the module docs). Cloneable like the
 /// background registry; the boundary (`main.rs`) creates it with the agent
 /// channel's sender and hands clones to the backend.
@@ -1593,7 +1624,6 @@ impl AgentRegistry {
                 next_id: 0,
                 seq: 0,
                 slots: HashMap::new(),
-                retracted: HashSet::new(),
             })),
             events,
         }
@@ -1917,7 +1947,6 @@ impl AgentRegistry {
         self.kill_all();
         let mut inner = self.inner.lock().expect("agent registry poisoned");
         inner.slots.clear();
-        inner.retracted.clear();
     }
 
     /// Deliver an `agentsend` (`docs/agent-tools.md`): onto a running
@@ -2022,8 +2051,67 @@ impl AgentRegistry {
             PendingInput {
                 text: text.to_string(),
                 from_user: true,
+                exit: None,
             },
         )
+    }
+
+    /// Route the note of shell `shell` — one this agent launched, which
+    /// exited or stopped to ask for input — onto the agent's queue
+    /// (`docs/agent-tool.md`), asking the board under this registry's lock
+    /// whether it is still owed ([`BackgroundRegistry::take_shell_notice`]):
+    /// a companion call can never claim the exit in between, and an owed
+    /// exit's claim details travel with the note so the agent's own call can
+    /// claim it from here ([`claim_routed_exit`](Self::claim_routed_exit)).
+    ///
+    /// [`BackgroundRegistry::take_shell_notice`]: crate::background::BackgroundRegistry::take_shell_notice
+    pub fn route_shell_note(
+        &self,
+        id: &str,
+        shell: &str,
+        text: &str,
+        waiting: bool,
+        board: &crate::background::BackgroundRegistry,
+    ) -> Route {
+        let mut inner = self.inner.lock().expect("agent registry poisoned");
+        let Some(slot) = inner
+            .slots
+            .get_mut(id)
+            .filter(|slot| slot.busy && !slot.killed)
+        else {
+            return Route::Unheard;
+        };
+        match board.take_shell_notice(shell, waiting) {
+            crate::background::ShellNotice::Covered => Route::Covered,
+            crate::background::ShellNotice::Owed(exit) => {
+                slot.pending_inputs.push(PendingInput {
+                    text: text.to_string(),
+                    from_user: false,
+                    exit: exit.map(|exit| (shell.to_string(), exit)),
+                });
+                Route::Routed
+            }
+        }
+    }
+
+    /// Agent `id`'s own call named shell `shell`, which exited with its note
+    /// still in the agent's queue, unread: take the note back and hand over
+    /// what the call's report of the exit needs. `None` once the agent's loop
+    /// has read it — then it was reported.
+    pub fn claim_routed_exit(
+        &self,
+        id: &str,
+        shell: &str,
+    ) -> Option<crate::background::ClaimedExit> {
+        let mut inner = self.inner.lock().expect("agent registry poisoned");
+        let pending = &mut inner.slots.get_mut(id)?.pending_inputs;
+        let index = pending.iter().position(|input| {
+            input
+                .exit
+                .as_ref()
+                .is_some_and(|(session, _)| session == shell)
+        })?;
+        pending.remove(index).exit.map(|(_, exit)| exit)
     }
 
     fn queue(&self, id: &str, input: PendingInput) -> bool {
@@ -2132,10 +2220,13 @@ impl AgentRegistry {
     /// (`docs/agent-tools.md` *One notice per answer*): the completion
     /// notice saying the same must not reach it too. Not posted yet — the
     /// loop's [`post_notice`](Self::post_notice) is told to skip it; posted
-    /// and still on `board` — taken back, and its cell noted as not owed
-    /// ([`take_retracted`](Self::take_retracted)); already taken by the
-    /// lead — nothing to do, this was a re-read. Under the registry lock, as
-    /// the loop's post is, so the two can never cross.
+    /// and still on `board` — taken back, the board remembering its number
+    /// so the cell the loop holds for it is dropped too
+    /// ([`BackgroundRegistry::take_retracted`]); already taken by the lead —
+    /// nothing to do, this was a re-read. Under the registry lock, as the
+    /// loop's post is, so the two can never cross.
+    ///
+    /// [`BackgroundRegistry::take_retracted`]: crate::background::BackgroundRegistry::take_retracted
     pub fn report_settled(&self, id: &str, board: Option<&crate::background::BackgroundRegistry>) {
         let mut inner = self.inner.lock().expect("agent registry poisoned");
         let Some(slot) = inner.slots.get_mut(id) else {
@@ -2145,8 +2236,8 @@ impl AgentRegistry {
             slot.notices_owed -= 1;
             return;
         }
-        if board.is_some_and(|board| board.retract_agent_notice(id)) {
-            inner.retracted.insert(id.to_string());
+        if let Some(board) = board {
+            board.retract_agent_notice(id);
         }
     }
 
@@ -2155,40 +2246,23 @@ impl AgentRegistry {
     /// report already handed the lead that answer
     /// ([`report_settled`](Self::report_settled)). Called for every such
     /// settle, a notice owed or not, so each one is accounted for once.
-    /// `false` when a report covered it: no notice cell is owed either.
+    /// [`NoticePost::Covered`] when a report covered it: no notice cell is
+    /// owed either.
     #[must_use]
     pub fn post_notice(
         &self,
         id: &str,
         board: &crate::background::BackgroundRegistry,
         context: Option<String>,
-    ) -> bool {
+    ) -> NoticePost {
         let mut inner = self.inner.lock().expect("agent registry poisoned");
         if let Some(slot) = inner.slots.get_mut(id) {
             if slot.notices_owed == 0 {
-                return false;
+                return NoticePost::Covered;
             }
             slot.notices_owed -= 1;
         }
-        if let Some(context) = context {
-            // A retraction left over from an earlier notice — one whose cell
-            // had already committed — must not cost this one its cell.
-            inner.retracted.remove(id);
-            board.post_agent_notice(context, id);
-        }
-        true
-    }
-
-    /// Did a report take `id`'s posted notice back off the board? Asked
-    /// once per deferred notice cell, as the loop settles it: `true` means
-    /// the cell would record a notice the lead never read.
-    #[must_use]
-    pub fn take_retracted(&self, id: &str) -> bool {
-        self.inner
-            .lock()
-            .expect("agent registry poisoned")
-            .retracted
-            .remove(id)
+        NoticePost::Posted(context.map(|context| board.post_agent_notice(context, id)))
     }
 
     /// Can this agent take a **new turn** right now — settled, not stopped,
@@ -4388,6 +4462,116 @@ mod tests {
         (registry, id, board)
     }
 
+    /// A board whose shell `echo done` exited with nobody waiting — its exit
+    /// unread — reaching `agents` for the notes routed to an agent's queue.
+    #[cfg(unix)]
+    fn exited_shell(agents: &AgentRegistry) -> (crate::background::BackgroundRegistry, String) {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!(
+            "alter-zero-agents-route-test-{}-{seq}",
+            std::process::id()
+        ));
+        let board = crate::background::BackgroundRegistry::new(tx, dir).with_agents(agents.clone());
+        let task = board.launch("echo done", None, true).expect("launches");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            match rx.try_recv() {
+                Ok(crate::background::BgEvent::Exited {
+                    id,
+                    observed: false,
+                    ..
+                }) if id == task.id => return (board, id),
+                Ok(_) => {}
+                Err(_) => {
+                    assert!(std::time::Instant::now() < deadline, "never exited");
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_routed_exit_is_claimed_by_its_launcher_from_its_own_queue() {
+        // One level down, the reported race: a subagent's shell ended while
+        // the subagent was writing a call to it, and the note went to the
+        // subagent's own queue, unread. Its call reports the exit itself and
+        // takes the note back (docs/bash-tools.md *One notice per exit*).
+        let registry = test_registry();
+        let (agent, _cancel) = registry.register(GENERAL_PURPOSE);
+        let (board, shell) = exited_shell(&registry);
+        assert_eq!(
+            registry.route_shell_note(&agent, &shell, "[background] note", false, &board),
+            Route::Routed
+        );
+        assert!(
+            board.claim_exit(&shell, None).is_none(),
+            "the lead cannot take a subagent's note"
+        );
+        let exit = board
+            .claim_exit(&shell, Some(&agent))
+            .expect("its launcher claims it from its own queue");
+        assert_eq!(exit.code, Some(0));
+        assert!(
+            registry.take_pending_inputs(&agent).is_empty(),
+            "the note it would have read is gone"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_routed_exit_the_agent_already_read_is_not_claimed() {
+        let registry = test_registry();
+        let (agent, _cancel) = registry.register(GENERAL_PURPOSE);
+        let (board, shell) = exited_shell(&registry);
+        registry.route_shell_note(&agent, &shell, "[background] note", false, &board);
+        assert_eq!(registry.take_pending_inputs(&agent), ["[background] note"]);
+        assert!(board.claim_exit(&shell, Some(&agent)).is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_exit_a_call_already_reported_routes_nothing() {
+        let registry = test_registry();
+        let (agent, _cancel) = registry.register(GENERAL_PURPOSE);
+        let (board, shell) = exited_shell(&registry);
+        assert!(board.claim_exit(&shell, Some(&agent)).is_some());
+        assert_eq!(
+            registry.route_shell_note(&agent, &shell, "[background] note", false, &board),
+            Route::Covered
+        );
+        assert!(registry.take_pending_inputs(&agent).is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_settled_launcher_leaves_its_note_to_the_board() {
+        let registry = test_registry();
+        let (agent, _cancel) = registry.register(GENERAL_PURPOSE);
+        registry.settle(&agent, Ok("done".into()), Vec::new(), None);
+        let (board, shell) = exited_shell(&registry);
+        assert_eq!(
+            registry.route_shell_note(&agent, &shell, "[background] note", false, &board),
+            Route::Unheard
+        );
+        assert!(
+            board
+                .post_exit_notice(&shell, "[background] note".into(), true)
+                .is_some(),
+            "the board takes it, still tracked"
+        );
+    }
+
+    /// The board number of a notice the loop posted as owed.
+    fn posted(post: NoticePost) -> u64 {
+        match post {
+            NoticePost::Posted(Some(seq)) => seq,
+            other => panic!("expected an owed, posted notice, got {other:?}"),
+        }
+    }
+
     #[test]
     fn a_report_before_the_notice_is_posted_cancels_it() {
         // `agentoutput` read the answer before the loop got to its notice:
@@ -4395,41 +4579,37 @@ mod tests {
         // answer*).
         let (registry, id, board) = settled_with_notice();
         registry.report_settled(&id, Some(&board));
-        assert!(!registry.post_notice(&id, &board, Some("note".into())));
-        assert!(board.take_pending_notices().is_empty());
-        assert!(
-            !registry.take_retracted(&id),
-            "nothing was posted to retract"
+        assert_eq!(
+            registry.post_notice(&id, &board, Some("note".into())),
+            NoticePost::Covered
         );
+        assert!(board.take_pending_notices().is_empty());
     }
 
     #[test]
     fn a_report_retracts_a_posted_notice_the_lead_has_not_taken() {
         let (registry, id, board) = settled_with_notice();
-        assert!(registry.post_notice(&id, &board, Some("note".into())));
+        let seq = posted(registry.post_notice(&id, &board, Some("note".into())));
         registry.report_settled(&id, Some(&board));
         assert!(board.take_pending_notices().is_empty(), "off the board");
-        assert!(registry.take_retracted(&id), "its cell is not owed either");
-        assert!(!registry.take_retracted(&id), "once");
+        assert!(board.take_retracted(seq), "its cell is not owed either");
+        assert!(!board.take_retracted(seq), "once");
     }
 
     #[test]
     fn a_report_after_the_lead_took_the_notice_is_a_re_read() {
         let (registry, id, board) = settled_with_notice();
-        assert!(registry.post_notice(&id, &board, Some("note".into())));
+        let seq = posted(registry.post_notice(&id, &board, Some("note".into())));
         assert_eq!(board.take_pending_notices().len(), 1, "the lead read it");
         registry.report_settled(&id, Some(&board));
-        assert!(
-            !registry.take_retracted(&id),
-            "the cell records what it read"
-        );
+        assert!(!board.take_retracted(seq), "the cell records what it read");
     }
 
     #[test]
     fn a_report_retracts_only_its_own_agents_notice() {
         let (registry, id, board) = settled_with_notice();
         board.post_notice("a shell finished".into(), true);
-        assert!(registry.post_notice(&id, &board, Some("note".into())));
+        posted(registry.post_notice(&id, &board, Some("note".into())));
         registry.report_settled(&id, Some(&board));
         let left = board.take_pending_notices();
         assert_eq!(left.len(), 1);
@@ -4442,7 +4622,10 @@ mod tests {
         // answer); its resumed run's later settle must still be the one a
         // report retracts.
         let (registry, id, board) = settled_with_notice();
-        assert!(registry.post_notice(&id, &board, None));
+        assert_eq!(
+            registry.post_notice(&id, &board, None),
+            NoticePost::Posted(None)
+        );
         assert!(matches!(
             registry.resume(&id, "again"),
             Resume::Continue { .. }
@@ -4453,18 +4636,21 @@ mod tests {
             vec![ChatMessage::user("p")],
             Some(StreamEvent::StreamDone),
         );
-        assert!(registry.post_notice(&id, &board, Some("note".into())));
+        let seq = posted(registry.post_notice(&id, &board, Some("note".into())));
         registry.report_settled(&id, Some(&board));
         assert!(board.take_pending_notices().is_empty());
-        assert!(registry.take_retracted(&id));
+        assert!(board.take_retracted(seq));
     }
 
     #[test]
-    fn a_new_notice_clears_a_retraction_left_over_from_the_last() {
-        // A retraction whose cell had already committed is never taken; the
-        // agent's next notice must still get its cell.
+    fn a_retraction_costs_only_the_notice_it_took_back() {
+        // The loop holds a notice's cell until the lead reads it, so a
+        // retracted notice is still held when the resumed agent's next one
+        // is posted, both settling at the turn's end: the first must stay
+        // taken back and the second keep its cell — which a mark kept per
+        // agent could not tell apart.
         let (registry, id, board) = settled_with_notice();
-        assert!(registry.post_notice(&id, &board, Some("first".into())));
+        let first = posted(registry.post_notice(&id, &board, Some("first".into())));
         registry.report_settled(&id, Some(&board));
         assert!(matches!(
             registry.resume(&id, "again"),
@@ -4476,8 +4662,9 @@ mod tests {
             vec![ChatMessage::user("p")],
             Some(StreamEvent::StreamDone),
         );
-        assert!(registry.post_notice(&id, &board, Some("second".into())));
-        assert!(!registry.take_retracted(&id));
+        let second = posted(registry.post_notice(&id, &board, Some("second".into())));
+        assert!(board.take_retracted(first), "the first stays taken back");
+        assert!(!board.take_retracted(second), "the second keeps its cell");
     }
 
     #[test]
@@ -4497,7 +4684,7 @@ mod tests {
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         let board = crate::background::BackgroundRegistry::new(tx, std::env::temp_dir());
         registry.report_settled(&id, Some(&board));
-        assert!(!registry.take_retracted(&id));
+        assert!(board.take_pending_notices().is_empty());
     }
 
     fn snapshot(state: AgentState, calls: &[&str]) -> AgentSnapshot {

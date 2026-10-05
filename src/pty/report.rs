@@ -147,6 +147,21 @@ pub fn dropped_codes_note(codes: &[String]) -> String {
 pub const HTML_ESCAPED_NOTE: &str = "[Read as HTML-escaped: &lt; as <, &gt; as >, &amp; as &. \
      Write them as themselves — escaped text in other calls was typed as written.]";
 
+/// Appended when a call typed into a session that had already exited — it
+/// ended while the model was writing the call, before any note could say so
+/// (`docs/bash-tools.md` *One notice per exit*): the report is its exit, and
+/// the keys went nowhere.
+pub const EXITED_BEFORE_INPUT_NOTE: &str = "[Nothing was typed: the session had already \
+     exited — its final output is above.]";
+
+/// Appended when a kill found the session already exited, the same way.
+pub const EXITED_BEFORE_KILL_NOTE: &str = "[Nothing to stop: the session had already \
+     exited — its final output is above.]";
+
+/// Appended when the session the call named was stopped by the user (the ↓
+/// manager's `x`) before the call reached it.
+pub const USER_STOPPED_NOTE: &str = "[The user stopped this session.]";
+
 /// Appended when the user pressed Ctrl+B on a call waiting on its session:
 /// the wait ended early, the command did not.
 pub const WAIT_ENDED_NOTE: &str = "[The user ended this wait early; the command keeps \

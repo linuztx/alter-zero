@@ -142,6 +142,9 @@ fn dummy_ai_emits_all_chunks_and_tool_calls_then_done() {
                 panic!("no gate attached — the classifier never speaks")
             }
             StreamEvent::Steered { .. } => panic!("nothing was queued into this turn"),
+            StreamEvent::NoticeDelivered { .. } => {
+                panic!("no registry attached — there is no board to read")
+            }
             StreamEvent::Error(e) => panic!("dummy never errors, got {e:?}"),
         }
     }
@@ -253,6 +256,50 @@ fn the_dummy_takes_a_queued_message_at_its_next_tool_boundary() {
     assert!(
         queue.is_empty(),
         "and drained, so the turn end reclaims nothing"
+    );
+}
+
+#[test]
+fn the_dummy_reads_the_notice_board_at_its_next_tool_boundary() {
+    // The offline mirror of `run_agent`'s board take (docs/background.md): a
+    // background note posted while the scripted turn runs is read at the
+    // turn's next tool boundary and announced with its number — ahead of any
+    // queued message, the real loop's order — so a notice that lands
+    // mid-turn settles in the offline demo exactly as it does live.
+    let (bg_tx, _bg_rx) = unbounded_channel();
+    let board = crate::background::BackgroundRegistry::new(bg_tx, std::env::temp_dir());
+    let seq = board.post_notice("[background] note".to_string(), true);
+    let queue = crate::steer::SteerQueue::new();
+    queue.push("also check the tests");
+    let (tx, mut rx) = unbounded_channel();
+    let handle = DummyAi::with_startup_delay(Duration::ZERO)
+        .with_steer(queue)
+        .with_background(board.clone())
+        .spawn("hi".to_string(), vec![], vec![], tx, CancelToken::new());
+    let mut order = Vec::new();
+    let mut tool_ends = 0;
+    while let Some(event) = rx.blocking_recv() {
+        match event {
+            StreamEvent::ToolEnd { .. } => tool_ends += 1,
+            StreamEvent::NoticeDelivered { seq } => {
+                order.push(format!("notice {seq} @{tool_ends}"))
+            }
+            StreamEvent::Steered { text } => order.push(format!("steered {text} @{tool_ends}")),
+            _ => {}
+        }
+    }
+    handle.join().expect("dummy thread");
+    assert_eq!(
+        order,
+        vec![
+            format!("notice {seq} @1"),
+            "steered also check the tests @1".to_string()
+        ],
+        "read at the first tool boundary, the notice before the user's message"
+    );
+    assert!(
+        board.take_pending_notices().is_empty(),
+        "and taken, so the turn end owes no follow-up for it"
     );
 }
 

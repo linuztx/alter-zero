@@ -184,9 +184,6 @@ impl<'t> Session<'t> {
             None => (alter_zero::secrets::SecretStore::new(), None),
         };
         let secrets = alter_zero::secrets::SecretRegistry::new(secrets);
-        let registry = BackgroundRegistry::new(bg_tx, scratchpad::tasks_dir(&session_tmp))
-            .with_detach_helper(std::env::current_exe().ok())
-            .with_secrets(secrets.clone());
 
         // The subagent registry (docs/agent-tool.md): the model's `agent` tool
         // launches run their own loops on their own threads, reporting on a
@@ -194,6 +191,14 @@ impl<'t> Session<'t> {
         // background shells.
         let (agent_tx, agent_rx) = tokio::sync::mpsc::unbounded_channel();
         let agent_registry = AgentRegistry::new(agent_tx);
+        // …built first, because the background registry reaches it: a
+        // subagent's shell reports to that agent's own queue, which is where
+        // the agent's call into the ended session claims its exit
+        // (docs/bash-tools.md *One notice per exit*).
+        let registry = BackgroundRegistry::new(bg_tx, scratchpad::tasks_dir(&session_tmp))
+            .with_detach_helper(std::env::current_exe().ok())
+            .with_secrets(secrets.clone())
+            .with_agents(agent_registry.clone());
 
         // The tool-permission gate (docs/permissions.md), seeded with this
         // project's saved rules BEFORE the backend is built below — every

@@ -444,7 +444,7 @@ impl Session<'_> {
         // conversation are dropped with it, else the next turn end would start a
         // phantom follow-up turn about them.
         self.registry.kill_all();
-        let _ = self.registry.take_pending_notices();
+        self.registry.clear_notices();
         // …and the mid-turn queue: `App::clear_conversation` dropped the rows,
         // so the handle the dying backend was about to drain must go too, or
         // the next turn would open by reading a message from the conversation

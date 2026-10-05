@@ -125,6 +125,13 @@ pub struct DummyAi {
     /// for a real round boundary — and announces it with
     /// [`StreamEvent::Steered`] exactly as `run_agent` does.
     steer: crate::steer::SteerQueue,
+    /// The session's background registry, when the app attached one — its
+    /// **notice board** is read at the same tool boundaries the queue is,
+    /// each note announced with [`StreamEvent::NoticeDelivered`] as
+    /// `run_agent` announces it, so a background notice that lands mid-turn
+    /// settles in the offline demo exactly as it does live
+    /// (`docs/background.md`).
+    background: Option<crate::background::BackgroundRegistry>,
 }
 
 impl Default for DummyAi {
@@ -136,6 +143,7 @@ impl Default for DummyAi {
             ask: None,
             agents: None,
             steer: crate::steer::SteerQueue::new(),
+            background: None,
         }
     }
 }
@@ -203,6 +211,15 @@ impl DummyAi {
         self.steer = queue;
         self
     }
+
+    /// Attach the session's background registry, so a scripted turn reads its
+    /// notice board at its next tool boundary — the offline mirror of the
+    /// real agent's round-top take (`docs/background.md`).
+    #[must_use]
+    pub fn with_background(mut self, registry: crate::background::BackgroundRegistry) -> Self {
+        self.background = Some(registry);
+        self
+    }
 }
 
 impl ReplySource for DummyAi {
@@ -238,7 +255,10 @@ impl ReplySource for DummyAi {
         let permissions = self.permissions.clone();
         let ask = self.ask.clone();
         let agents = self.agents.clone();
-        let steer = self.steer.clone();
+        let inputs = Inputs {
+            steer: self.steer.clone(),
+            board: self.background.clone(),
+        };
         thread::spawn(move || {
             // Pause before streaming so the status indicator is visible first
             // (interruptibly — an Esc during the wait reaps the thread at once).
@@ -261,7 +281,7 @@ impl ReplySource for DummyAi {
                         tx: &tx,
                         cancel: &cancel,
                     }),
-                    None => replay(turns::tools_turn(&cue), &tx, &cancel, &steer, chunk_delay),
+                    None => replay(turns::tools_turn(&cue), &tx, &cancel, &inputs, chunk_delay),
                 },
                 // The ask demo raises the question modal and blocks on the
                 // ask gate the same way (`docs/ask.md`).
@@ -271,7 +291,7 @@ impl ReplySource for DummyAi {
                         tx: &tx,
                         cancel: &cancel,
                     }),
-                    None => replay(turns::tools_turn(&cue), &tx, &cancel, &steer, chunk_delay),
+                    None => replay(turns::tools_turn(&cue), &tx, &cancel, &inputs, chunk_delay),
                 },
                 // The subagent demo streams on the agent channel too, from
                 // the launched agent's own thread (docs/agent-view-streaming.md).
@@ -285,9 +305,9 @@ impl ReplySource for DummyAi {
                         // (docs/permissions.md).
                         gate: permissions.as_ref(),
                     }),
-                    None => replay(turns::tools_turn(&cue), &tx, &cancel, &steer, chunk_delay),
+                    None => replay(turns::tools_turn(&cue), &tx, &cancel, &inputs, chunk_delay),
                 },
-                Play::Script(script) => replay(script(&cue), &tx, &cancel, &steer, chunk_delay),
+                Play::Script(script) => replay(script(&cue), &tx, &cancel, &inputs, chunk_delay),
             }
         })
     }
@@ -328,6 +348,36 @@ impl ReplySource for DummyAi {
     }
 }
 
+/// What a scripted turn reads at its tool boundaries — the dummy's stand-in
+/// for `run_agent`'s `pending_inputs` seam: the session's mid-turn message
+/// queue, and the background registry's notice board when one is attached.
+struct Inputs {
+    steer: crate::steer::SteerQueue,
+    board: Option<crate::background::BackgroundRegistry>,
+}
+
+impl Inputs {
+    /// Take what is waiting and announce it the way `run_agent` does —
+    /// notices first, each by its board number, the user's messages last.
+    /// `false` once the receiver has hung up.
+    fn deliver(&self, tx: &UnboundedSender<StreamEvent>) -> bool {
+        let notices = self
+            .board
+            .as_ref()
+            .map(crate::background::BackgroundRegistry::take_pending_notices)
+            .unwrap_or_default();
+        let notices = notices
+            .into_iter()
+            .map(|note| StreamEvent::NoticeDelivered { seq: note.seq });
+        let steered = self
+            .steer
+            .take()
+            .into_iter()
+            .map(|text| StreamEvent::Steered { text });
+        notices.chain(steered).all(|event| tx.send(event).is_ok())
+    }
+}
+
 /// Play a scripted turn onto the channel: send each event, then pause for as
 /// long as [`pace`] says so the reply visibly streams — every piece of reply
 /// text `chunk_delay` apart. Stops early — sending nothing further — the
@@ -336,14 +386,16 @@ impl ReplySource for DummyAi {
 /// **Tool boundaries are round boundaries here** (`docs/queue.md`): a resolved
 /// call is the point a real agent loop would build its next request at, so
 /// that is where a message the user queued mid-turn is taken and announced
-/// with [`StreamEvent::Steered`]. Without this the offline demo would show a
-/// queued row that only ever moved at the end of the turn — the behaviour this
-/// whole seam replaced.
+/// with [`StreamEvent::Steered`] — and where a background note waiting on the
+/// board is read and announced with [`StreamEvent::NoticeDelivered`]
+/// (`docs/background.md`). Without this the offline demo would show a queued
+/// row that only ever moved at the end of the turn — the behaviour this whole
+/// seam replaced.
 fn replay(
     events: Vec<StreamEvent>,
     tx: &UnboundedSender<StreamEvent>,
     cancel: &CancelToken,
-    steer: &crate::steer::SteerQueue,
+    inputs: &Inputs,
     chunk_delay: Duration,
 ) {
     for event in events {
@@ -358,12 +410,8 @@ fn replay(
         if tx.send(event).is_err() {
             return; // receiver gone — stop quietly
         }
-        if boundary {
-            for text in steer.take() {
-                if tx.send(StreamEvent::Steered { text }).is_err() {
-                    return;
-                }
-            }
+        if boundary && !inputs.deliver(tx) {
+            return;
         }
         if let Some(pause) = pause {
             nap(pause, cancel);

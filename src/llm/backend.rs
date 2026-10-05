@@ -944,7 +944,10 @@ impl ReplySource for LlmBackend {
                     let mut pending: Vec<agent::PendingInput> = notices
                         .iter()
                         .flat_map(crate::background::BackgroundRegistry::take_pending_notices)
-                        .map(|note| agent::PendingInput::Notice(note.context))
+                        .map(|note| agent::PendingInput::Notice {
+                            seq: note.seq,
+                            text: note.context,
+                        })
                         .collect();
                     pending.extend(steer.take().into_iter().map(agent::PendingInput::User));
                     pending

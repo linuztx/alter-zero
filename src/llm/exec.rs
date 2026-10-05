@@ -690,6 +690,11 @@ fn run_session(
     };
     let id = call.id.trim();
     let Some(session) = registry.session(id) else {
+        // Ended while the model was writing this call, before any note could
+        // tell it: the call reports the exit, and that note is not owed.
+        if let Some(exit) = registry.claim_exit(id, origin.map(|origin| origin.agent_id.as_str())) {
+            return claimed_exit_report(&call, id, &exit, on_output);
+        }
         return ToolOutcome::error(unknown_session_text(id, &registry.sessions()));
     };
     let io = session.io;
@@ -830,6 +835,12 @@ fn run_session(
         _ => Status::Running { waiting },
     };
     let report = io.look(id, status);
+    // The look showed the model whatever the session was asking: a `… is
+    // waiting for input` note still on the board would only reach it after
+    // this answer. After the look, not before it — a note the loop posts
+    // later finds the prompt seen and is not posted at all
+    // (docs/bash-tools.md *One notice per exit*).
+    registry.retract_shell_notices(id);
     // What the model is told beyond the report — never the cell, which shows
     // what happened (its state row says where the session stands).
     let note = match status {
@@ -861,6 +872,44 @@ fn run_session(
     }
     ToolOutcome {
         ok: !matches!(status, Status::Exited(code) if code != Some(0)),
+        context: (!notes.is_empty()).then(|| format!("{report}\n{}", notes.join("\n"))),
+        ..ToolOutcome::ok(report)
+    }
+}
+
+/// A call to a session that exited before it could act — the session ended
+/// while the model was writing the call, so no note had told the model yet
+/// (`docs/bash-tools.md` *One notice per exit*). The look covers the exit, as
+/// a call that saw it happen reports it: what the command printed since the
+/// model's last look under its exit code — and, for the model alone, what
+/// became of the call's own keys or kill, and who stopped the session when
+/// the user did.
+fn claimed_exit_report(
+    call: &SessionCall,
+    id: &str,
+    exit: &crate::background::ClaimedExit,
+    on_output: &mut dyn FnMut(ToolProgress<'_>),
+) -> ToolOutcome {
+    use crate::pty::report::{
+        EXITED_BEFORE_INPUT_NOTE, EXITED_BEFORE_KILL_NOTE, Status, USER_STOPPED_NOTE,
+    };
+    on_output(ToolProgress::Title(&tools::session_title(
+        &exit.command,
+        call.input.as_deref(),
+        call.kill && call.input.is_some(),
+    )));
+    let report = exit.io.look(id, Status::Exited(exit.code));
+    let typed = call.input.as_deref().is_some_and(|input| !input.is_empty());
+    let notes: Vec<&str> = [
+        exit.killed.then_some(USER_STOPPED_NOTE),
+        typed.then_some(EXITED_BEFORE_INPUT_NOTE),
+        (call.kill && !typed).then_some(EXITED_BEFORE_KILL_NOTE),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    ToolOutcome {
+        ok: exit.code == Some(0),
         context: (!notes.is_empty()).then(|| format!("{report}\n{}", notes.join("\n"))),
         ..ToolOutcome::ok(report)
     }
@@ -4094,6 +4143,220 @@ os.write(1, b"\r omarchy [##########] 100%\r\nComplete\r\n\x1b[?25h")'"#;
             assert!(pressed.output.contains(got), "{}", pressed.output);
         }
         registry.kill_all();
+    }
+
+    /// Wait until the registry reports session `id`'s exit as no call saw it
+    /// — a background command finishing on its own.
+    #[cfg(unix)]
+    fn wait_for_unread_exit(
+        rx: &mut tokio::sync::mpsc::UnboundedReceiver<crate::background::BgEvent>,
+        id: &str,
+    ) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            match rx.try_recv() {
+                Ok(crate::background::BgEvent::Exited {
+                    id: exited,
+                    observed: false,
+                    ..
+                }) if exited == id => return,
+                Ok(_) => {}
+                Err(_) => {
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "session {id} never exited"
+                    );
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_call_into_a_session_that_just_ended_reports_its_exit() {
+        // The reported race: `bash` came back at a `sudo` password prompt,
+        // and the command then finished by itself while the model was
+        // writing the `bashsend` that would answer it. The note saying so
+        // had not reached the model, yet the call answered that the session's
+        // final output "was already reported" — so the model typed into
+        // nothing, and read the notice only afterwards. The call reports the
+        // exit itself now: what the command printed since the model's last
+        // look, under its exit code, with the model told nothing was typed —
+        // and the note that would have said the same is not owed
+        // (docs/bash-tools.md *One notice per exit*).
+        let (registry, mut rx) = test_registry();
+        let executor = RealToolExecutor::new().with_background(registry.clone());
+        let launched = exec_with(
+            &executor,
+            "bash",
+            r#"{"command":"sleep 0.2; echo removed","wait":0}"#,
+        );
+        let id = launched.background.expect("backgrounded");
+        wait_for_unread_exit(&mut rx, &id);
+        let sent = exec_with(
+            &executor,
+            BASH_SEND,
+            &serde_json::json!({"session_id": id, "input": "hunter2<Enter>"}).to_string(),
+        );
+        assert!(sent.ok, "it exited 0: {}", sent.output);
+        assert!(sent.output.starts_with("Exit code: 0"), "{}", sent.output);
+        assert!(sent.output.contains("removed"), "{}", sent.output);
+        let told = sent.context.expect("the model is told about its input");
+        assert!(told.starts_with(&sent.output), "{told}");
+        assert!(
+            told.contains(crate::pty::report::EXITED_BEFORE_INPUT_NOTE),
+            "{told}"
+        );
+        assert_eq!(
+            registry.post_exit_notice(&id, "[background] note".into(), true),
+            None,
+            "the call reported the exit: no note is owed"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_subagents_call_into_its_session_that_just_ended_reports_its_exit() {
+        // The same race inside a subagent: its shell's note went to the
+        // subagent's own queue, unread, so its call claims the exit there
+        // (docs/bash-tools.md *One notice per exit*).
+        let (agents_tx, _agents_rx) = tokio::sync::mpsc::unbounded_channel();
+        let agents = crate::agents::AgentRegistry::new(agents_tx);
+        let (agent, _cancel) = agents.register(crate::agents::GENERAL_PURPOSE);
+        let (registry, mut rx) = test_registry();
+        let registry = registry.with_agents(agents.clone());
+        let executor = RealToolExecutor::new()
+            .with_background(registry.clone())
+            .with_background_origin(crate::background::BgOrigin {
+                agent_id: agent.clone(),
+                agent_type: crate::agents::GENERAL_PURPOSE.to_string(),
+            });
+        let launched = exec_with(&executor, "bash", r#"{"command":"echo removed","wait":0}"#);
+        let id = launched.background.expect("backgrounded");
+        wait_for_unread_exit(&mut rx, &id);
+        assert_eq!(
+            agents.route_shell_note(&agent, &id, "[background] note", false, &registry),
+            crate::agents::Route::Routed
+        );
+        let sent = exec_with(
+            &executor,
+            BASH_SEND,
+            &serde_json::json!({"session_id": id, "input": "y<Enter>"}).to_string(),
+        );
+        assert!(sent.output.starts_with("Exit code: 0"), "{}", sent.output);
+        assert!(sent.output.contains("removed"), "{}", sent.output);
+        assert!(
+            agents.take_pending_inputs(&agent).is_empty(),
+            "the routed note is taken back"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_kill_of_a_session_that_just_ended_reports_its_exit() {
+        let (registry, mut rx) = test_registry();
+        let executor = RealToolExecutor::new().with_background(registry.clone());
+        let launched = exec_with(&executor, "bash", r#"{"command":"exit 3","wait":0}"#);
+        let id = launched.background.expect("backgrounded");
+        wait_for_unread_exit(&mut rx, &id);
+        let killed = exec_with(
+            &executor,
+            BASH_KILL,
+            &serde_json::json!({"session_id": id}).to_string(),
+        );
+        assert!(!killed.ok, "it failed by itself: {}", killed.output);
+        assert!(
+            killed.output.starts_with("Exit code: 3"),
+            "{}",
+            killed.output
+        );
+        let told = killed
+            .context
+            .expect("the model is told nothing was stopped");
+        assert!(
+            told.contains(crate::pty::report::EXITED_BEFORE_KILL_NOTE),
+            "{told}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_look_takes_back_the_sessions_waiting_note() {
+        // A background session asked something nobody saw, so the loop
+        // posted `… is waiting for input` — and the model, before reading it,
+        // called the session itself. The call's report shows the prompt; the
+        // note would reach the model only after its answer, so it goes
+        // (docs/bash-tools.md *One notice per exit*).
+        let (registry, mut rx) = test_registry();
+        let executor = RealToolExecutor::new().with_background(registry.clone());
+        let launched = exec_with(
+            &executor,
+            "bash",
+            r#"{"command":"read -r -p 'Port in use, use another? ' answer","wait":0}"#,
+        );
+        let id = launched.background.expect("backgrounded");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            match rx.try_recv() {
+                Ok(crate::background::BgEvent::Waiting { id: asking }) if asking == id => break,
+                Ok(_) => {}
+                Err(_) => {
+                    assert!(std::time::Instant::now() < deadline, "never told");
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                }
+            }
+        }
+        let seq = registry
+            .post_waiting_notice(&id, "[background] waits".into(), true)
+            .expect("nobody has looked yet");
+        let looked = exec_with(
+            &executor,
+            BASH_WAIT,
+            &serde_json::json!({"session_id": id, "wait": 0}).to_string(),
+        );
+        assert!(
+            looked.output.contains("use another?"),
+            "the report shows the prompt: {}",
+            looked.output
+        );
+        assert!(registry.take_pending_notices().is_empty(), "off the board");
+        assert!(registry.take_retracted(seq), "and its cell is not owed");
+        assert_eq!(
+            registry.post_waiting_notice(&id, "[background] waits".into(), true),
+            None,
+            "a told prompt the model has since looked at is not news"
+        );
+        registry.kill_all();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_session_whose_exit_note_was_read_is_gone() {
+        // The model read the notice — the exit is old news — so a later call
+        // naming the session is the plain unknown-session answer.
+        let (registry, mut rx) = test_registry();
+        let executor = RealToolExecutor::new().with_background(registry.clone());
+        let launched = exec_with(&executor, "bash", r#"{"command":"true","wait":0}"#);
+        let id = launched.background.expect("backgrounded");
+        wait_for_unread_exit(&mut rx, &id);
+        let seq = registry
+            .post_exit_notice(&id, "[background] note".into(), true)
+            .expect("owed");
+        assert_eq!(registry.take_pending_notices()[0].seq, seq, "read");
+        let waited = exec_with(
+            &executor,
+            BASH_WAIT,
+            &serde_json::json!({"session_id": id}).to_string(),
+        );
+        assert!(!waited.ok);
+        assert!(
+            waited
+                .output
+                .starts_with(&format!("No running session {id}")),
+            "{}",
+            waited.output
+        );
     }
 
     #[cfg(unix)]

@@ -1130,12 +1130,25 @@ completion is **immediate feedback**: its model-facing note posts onto the
 registry's notice board the moment it exits (the in-flight agent takes the
 board before each round, so a shell the model just `kill`ed is known to it
 within the same turn, right after the killing call's tool result) and the
-green/red `● Background command "…" completed` notice cell commits at the next
-safe boundary — a tool resolution mid-turn, else the turn end — while a
+green/red `● Background command "…" completed` notice cell commits **where the
+model read it** — the agent announces each note it takes off the numbered
+board (`StreamEvent::NoticeDelivered { seq }`, `Steered`'s twin) and the loop
+records the held cell there, else at the turn end; never at a tool boundary,
+which put a note that landed while the model was writing a call *in front of*
+that call, so the transcript and every later context claimed the model had
+read it and ignored it (`docs/background.md` *Where a notice lands*) — while a
 model-launched note **no agent read** auto-starts a follow-up turn that tells
 the model the result when nothing else is queued (an agent that already heard
 it mid-turn owes no follow-up), `Done for Ns · N shells still running` on the
-summary) in `docs/background.md`; and the **`Agent` tool** (Claude-Code-style subagents,
+summary; and a companion call naming a session that **ended while the model
+was writing it** reports the exit itself — output since its last look, `Exit
+code: N`, a model-only `Nothing was typed` note — claiming the note so it is
+not owed twice, where it used to answer that the final output "was already
+reported" before the model had read it (`BackgroundRegistry::claim_exit`, a
+look likewise taking back a session's unread waiting note, and a subagent's
+shell — whose note goes to the agent's own queue — claimed from that queue by
+the agent's own call, `AgentRegistry::route_shell_note`/`claim_routed_exit`,
+`docs/bash-tools.md` *One notice per exit*) in `docs/background.md`; and the **`Agent` tool** (Claude-Code-style subagents,
 `docs/agent-tool.md`: the model launches autonomous side-agents —
 `description`/`prompt`/`subagent_type`/`run_in_background` (default true) —
 each running its own `run_agent` tool loop over a fresh context on its own
@@ -1190,8 +1203,8 @@ a background launch resolves at once as `● {n} background agents launched
 (↓ to manage)` with each completion posting its model-facing note on the
 shared notice board (the in-flight turn hears it mid-round, an idle
 completion auto-starts the follow-up turn — the background-shell pattern) and
-its green/red `● Agent "…" finished · Ns` cell settling at the same safe
-boundaries; the footer gains a persistent roster — `● main` over
+its green/red `● Agent "…" finished · Ns` cell settling where the lead read it,
+the same way; the footer gains a persistent roster — `● main` over
 `◯ {type}  {description} {elapsed} · ↓ {tokens} tokens` rows — that ↓ steps
 into **after** the shell indicator (`❯` selection, Enter views, hint lines in
 the footer slot; **`x` stops, then `x` clears** — the stop interrupts the

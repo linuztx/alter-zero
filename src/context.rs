@@ -578,10 +578,12 @@ impl CallIds {
 }
 
 /// One tool round's records — the consecutive call-bearing items sharing a
-/// `batch` id — plus the completion notices that committed *between* them
-/// (a tool resolution is a safe boundary for a background cell,
-/// `docs/background.md`), which the model actually read at the next round's
-/// top and so replay after the round. `end` is the index past the round.
+/// `batch` id — plus the completion notices that committed *between* them,
+/// which the model actually read at the next round's top and so replay after
+/// the round. Only a rollout recorded before notices settled where the model
+/// read them (`StreamEvent::NoticeDelivered`, `docs/background.md`) has any:
+/// its tool resolutions were settle points. `end` is the index past the
+/// round.
 struct Round<'a> {
     calls: Vec<&'a HistoryItem>,
     deferred: Vec<&'a HistoryItem>,

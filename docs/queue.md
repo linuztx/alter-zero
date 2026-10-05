@@ -130,8 +130,12 @@ beside `with_ask`/`with_tasks`.
 `run_agent`'s `pending_notices` closure widens into `pending_inputs`, returning
 typed `PendingInput`s:
 
-- `PendingInput::Notice(String)` — a background shell or agent that finished
-  (`docs/background.md`). Invisible; the loop already recorded it.
+- `PendingInput::Notice { seq, text }` — a background shell or agent that
+  finished, or a session that stopped to ask for input (`docs/background.md`).
+  Announced with `StreamEvent::NoticeDelivered { seq }`, so the loop records
+  the held notice cell where the model read it. (It used to be invisible, the
+  loop recording the cell at whatever tool boundary came first — which put a
+  note that landed while the model was writing a call in front of that call.)
 - `PendingInput::User(String)` — a message the user queued. Announced with
   `StreamEvent::Steered`.
 

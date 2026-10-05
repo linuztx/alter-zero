@@ -244,8 +244,13 @@ both under the registry lock, so the two never cross:
   the observed path;
 - the note is posted but the lead has not taken it: the report takes it back
   off the board (`BackgroundRegistry::retract_agent_notice`, the board's
-  notes tagged with their agent), and the notice cell deferred with it is
-  dropped when the loop settles it (`AgentRegistry::take_retracted`);
+  notes tagged with their agent), and the notice cell held with it is
+  dropped when the loop settles it at the turn's end
+  (`BackgroundRegistry::take_retracted`). The board remembers retractions by
+  each note's **number**, not by agent: the loop holds a cell until the lead
+  reads its note (`docs/background.md` *Where a notice lands*), so a resumed
+  agent's next notice can be posted while a retracted one is still held, and a
+  mark kept per agent could not tell the two apart;
 - the lead already took it: the report is a re-read, and the cell records
   the note it read.
 

@@ -639,14 +639,21 @@ mod tests {
             "{}",
             outcome.output
         );
-        assert!(!registry.post_notice(&id, &background, Some("note".into())));
+        assert_eq!(
+            registry.post_notice(&id, &background, Some("note".into())),
+            crate::agents::NoticePost::Covered
+        );
         assert!(background.take_pending_notices().is_empty());
     }
 
     #[test]
     fn a_report_takes_back_a_notice_the_lead_has_not_read() {
         let (registry, id, background) = settled_unobserved();
-        assert!(registry.post_notice(&id, &background, Some("note".into())));
+        let crate::agents::NoticePost::Posted(Some(seq)) =
+            registry.post_notice(&id, &background, Some("note".into()))
+        else {
+            panic!("the settle owed a notice");
+        };
         let (outcome, _, _) = run(
             &registry,
             &CancelToken::new(),
@@ -665,7 +672,7 @@ mod tests {
             background.take_pending_notices().is_empty(),
             "off the board"
         );
-        assert!(registry.take_retracted(&id), "and its cell is not owed");
+        assert!(background.take_retracted(seq), "and its cell is not owed");
     }
 
     #[test]
@@ -690,7 +697,10 @@ mod tests {
             Some(StreamEvent::StreamDone),
         );
         assert!(
-            registry.post_notice(&id, &background, Some("note".into())),
+            matches!(
+                registry.post_notice(&id, &background, Some("note".into())),
+                crate::agents::NoticePost::Posted(Some(_))
+            ),
             "the answer it did not report is still noticed"
         );
     }

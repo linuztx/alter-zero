@@ -786,15 +786,26 @@ impl App {
         }
     }
 
-    /// Hold a background-agent completion for the next boundary settle
-    /// (beside [`defer_bg_completion`](App::defer_bg_completion)).
-    pub fn defer_agent_notice(&mut self, notice: AgentNotice) {
-        self.pending_agents.push_back(notice);
+    /// Hold a background-agent completion until the lead reads it — `seq`
+    /// the board note carrying it there (beside
+    /// [`defer_bg_completion`](App::defer_bg_completion)).
+    pub fn defer_agent_notice(&mut self, notice: AgentNotice, seq: Option<u64>) {
+        self.pending_agents.push_back(super::Held { seq, notice });
     }
 
-    /// Drain the held agent completions — settled at the same safe
-    /// boundaries as the shell completions.
-    pub fn take_pending_agent_notices(&mut self) -> Vec<AgentNotice> {
+    /// The held agent completion board note `seq` carried — the lead just
+    /// read it (`StreamEvent::NoticeDelivered`). `None` when none is.
+    pub fn take_delivered_agent_notice(&mut self, seq: u64) -> Option<AgentNotice> {
+        let index = self
+            .pending_agents
+            .iter()
+            .position(|held| held.seq == Some(seq))?;
+        self.pending_agents.remove(index).map(|held| held.notice)
+    }
+
+    /// Drain the held agent completions no agent read — settled at the same
+    /// turn ends as the shell completions.
+    pub fn take_pending_agent_notices(&mut self) -> Vec<super::Held<AgentNotice>> {
         self.pending_agents.drain(..).collect()
     }
 

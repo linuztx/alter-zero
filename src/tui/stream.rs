@@ -15,10 +15,15 @@
 //!   the viewport is reseated to the height the next draw will use *before* the
 //!   lines are queued — otherwise the box rises off the bottom and leaves blank
 //!   rows beneath it (invariant 3).
-//! - **A resolution is a settle point.** Every tool boundary calls
-//!   [`Session::settle_bg_completions`], which is why a background shell that a
-//!   command just killed reports right after that command's cell instead of at
-//!   the turn's distant end (`docs/background.md`).
+//! - **A notice settles where the model read it.** A background completion's
+//!   cell is held until the agent announces it took the note
+//!   (`StreamEvent::NoticeDelivered`, [`Session::settle_delivered_notice`]) —
+//!   the next round boundary, right after the round's tool results — so a shell
+//!   a command just killed reports right after that command's cell, and a note
+//!   that landed while the model was generating a call reports *after* that
+//!   call, where the model heard it. Tool boundaries are no settle points:
+//!   settling there put such a note in front of the call it never informed
+//!   (`docs/background.md`).
 //!
 //! Committing is gated throughout on [`Session::commits_allowed`]: `App`
 //! records regardless. Under an alternate-screen overlay the commits merely
@@ -44,13 +49,11 @@ impl Session<'_> {
         match event {
             StreamEvent::AgentBatch { background, agents } => {
                 // The model launched a group of subagents: finalise the text
-                // before them (the ToolBatch dance), settle held completions at
-                // this safe boundary, then seed the roster + the live group cell.
-                // No scrollback commit — the cell is live until the group
-                // resolves. See docs/agent-tool.md.
+                // before them (the ToolBatch dance), then seed the roster + the
+                // live group cell. No scrollback commit — the cell is live
+                // until the group resolves. See docs/agent-tool.md.
                 self.flush_segment(committing, width);
                 self.render.reset();
-                self.settle_bg_completions();
                 self.app.start_agent_group(background, &agents);
                 // The delayed Ctrl+B hint clock — a foreground group can be moved
                 // to the background like a running command (docs/background.md).
@@ -72,7 +75,6 @@ impl Session<'_> {
                         .insert_before(ui::agent_group_lines(&group, width));
                     self.term.insert_before(vec![Line::default()]);
                 }
-                self.settle_bg_completions();
                 self.clocks.command_start = None;
                 false
             }
@@ -102,10 +104,6 @@ impl Session<'_> {
                 // `docs/parallel-tools.md`.
                 self.flush_segment(committing, width);
                 self.render.reset();
-                // The flush left the streaming buffer empty — a safe boundary for
-                // background completions that landed while the text streamed
-                // (docs/background.md), committed before the batch goes live.
-                self.settle_bg_completions();
                 self.app.start_tool_batch(&items);
                 false
             }
@@ -125,9 +123,6 @@ impl Session<'_> {
                 // call (dummy/shell, no batch) pushes a fresh running call.
                 self.flush_segment(committing, width);
                 self.render.reset();
-                // Same safe boundary as ToolBatch: the buffer is empty, so any
-                // held completions commit ahead of the tool (docs/background.md).
-                self.settle_bg_completions();
                 self.app.start_tool(&name, &args, arguments.as_deref());
                 // Start this command's own clock — the delayed Ctrl+B hint waits
                 // on it, so a fast command never flashes the hint (a model tool
@@ -147,17 +142,13 @@ impl Session<'_> {
                     self.app.set_tool_truncated();
                 }
                 // Commit the finished tool *collapsed* (green/red) to scrollback;
-                // its full (retained) output lives in the Ctrl+O view.
-                let resolved = self.app.end_tool(&output, ok).is_some();
-                let held = resolved && !self.commit_tool_cell(committing, width);
-                // A tool resolution is a settle point: completions that landed
-                // while the call ran (often a `kill` this very command issued)
-                // commit right after its cell — the user's example order — not
-                // at the turn's distant end (docs/background.md). A **held**
-                // MCP run is the exception: its cells commit together when the
-                // run ends, so a notice must not land inside it (docs/mcp.md).
-                if !held {
-                    self.settle_bg_completions();
+                // its full (retained) output lives in the Ctrl+O view. A
+                // completion that landed while the call ran (often a `kill`
+                // this very command issued) commits right after the round's
+                // results, where the agent reads it (`NoticeDelivered`,
+                // docs/background.md).
+                if self.app.end_tool(&output, ok).is_some() {
+                    self.commit_tool_cell(committing, width);
                 }
                 // The command resolved — stop its Ctrl+B-hint clock (the turn may
                 // continue with more text/tools).
@@ -181,8 +172,6 @@ impl Session<'_> {
                 if self.app.reject_tool(&display, &result).is_some() {
                     self.commit_tool_cell(committing, width);
                 }
-                // A resolution boundary like ToolEnd (docs/background.md).
-                self.settle_bg_completions();
                 self.clocks.command_start = None;
                 false
             }
@@ -201,7 +190,6 @@ impl Session<'_> {
                 if self.app.answer_tool(&display, &result).is_some() {
                     self.commit_tool_cell(committing, width);
                 }
-                self.settle_bg_completions();
                 self.clocks.command_start = None;
                 false
             }
@@ -214,9 +202,6 @@ impl Session<'_> {
                 if self.app.background_tool(&output).is_some() {
                     self.commit_tool_cell(committing, width);
                 }
-                // A resolution boundary like ToolEnd — completions held during
-                // the launch settle here (docs/background.md).
-                self.settle_bg_completions();
                 // The command moved to the background — stop its hint clock.
                 self.clocks.command_start = None;
                 false
@@ -231,15 +216,13 @@ impl Session<'_> {
             } => {
                 // A task tool call resolved (docs/task-tools.md): finalise
                 // the text before it — each round's narration becomes its own
-                // `●` bullet, the ToolBatch dance — and settle held
-                // completions at the safe boundary. Then record: the hidden
+                // `●` bullet, the ToolBatch dance. Then record: the hidden
                 // history record appends, the checklist snapshot installs,
                 // and the strip re-renders on the scheduled frame. **No
                 // scrollback commit** — the call has no cell; the checklist
                 // under the status line is its whole display.
                 self.flush_segment(committing, width);
                 self.render.reset();
-                self.settle_bg_completions();
                 self.app
                     .record_task_call(&name, &args, &arguments, &output, ok, tasks);
                 false
@@ -272,15 +255,13 @@ impl Session<'_> {
                 // invariant 4's flush-before-you-interleave, so the
                 // continuation that may follow streams as its own message —
                 // and record the cell-less item the transcript shows and the
-                // derived context replays. The flush leaves the buffer empty:
-                // a safe boundary for held background completions too. A
-                // compact turn's notes (PreCompact's instructions) are
-                // ephemeral like its chunks: they reached the summarization
-                // request, and must not enter the conversation's own record.
+                // derived context replays. A compact turn's notes
+                // (PreCompact's instructions) are ephemeral like its chunks:
+                // they reached the summarization request, and must not enter
+                // the conversation's own record.
                 if !self.app.is_compacting() {
                     self.flush_segment(committing, width);
                     self.render.reset();
-                    self.settle_bg_completions();
                     self.app.record_hook_note(&label, &text);
                 }
                 false
@@ -298,7 +279,6 @@ impl Session<'_> {
                 // nothing was ever queued against it to take.
                 self.flush_segment(committing, width);
                 self.render.reset();
-                self.settle_bg_completions();
                 self.app.deliver_steered(&text);
                 if committing {
                     // The strip loses the pending row as the bubble lands, so
@@ -308,6 +288,30 @@ impl Session<'_> {
                     self.term
                         .insert_before(ui::message_lines(Role::User, &text, width));
                     self.term.insert_before(vec![Line::default()]);
+                }
+                false
+            }
+            StreamEvent::NoticeDelivered { seq } => {
+                // The running turn took a background notice off the board at
+                // a round boundary (docs/background.md): the model reads it in
+                // the request now going out, right after the previous round's
+                // tool results — so its held cell settles here, and history,
+                // scrollback and every later turn's context agree with the
+                // wire. `Steered`'s dance: finalise the assistant run ahead of
+                // it first (invariant 4's flush-before-you-interleave — a
+                // no-op at a round top, which a tool resolution already
+                // flushed, but a Stop hook's continuation round opens on the
+                // reply it just streamed).
+                //
+                // Never inside a `/compact` turn's record: settled now, the
+                // cell would sit in front of the marker and be compacted away
+                // with everything else. It stays held and settles after the
+                // marker at the turn's end, so the next context still carries
+                // it (the HookNote rule).
+                if !self.app.is_compacting() {
+                    self.flush_segment(committing, width);
+                    self.render.reset();
+                    self.settle_delivered_notice(seq);
                 }
                 false
             }
@@ -504,15 +508,15 @@ impl Session<'_> {
             .turn_start
             .map_or(0, |start| start.elapsed().as_secs());
         // Clear the status and BUILD the summary, but don't record it yet: a
-        // background completion still pending at turn end (a shell that finished
-        // during this final text, with no tool call after it to settle at) must
-        // land its notice ABOVE the "Done for Ns" summary — the same placement a
-        // mid-turn tool boundary gives it — in both history and scrollback
-        // (invariant 3). So the order is: reseat to idle (the status is now
-        // cleared), commit the final reply, settle the held completions, THEN
-        // record + commit the summary. The common case (nothing pending) is
-        // unchanged — `settle_bg_completions` is then a no-op. See
-        // `docs/background.md`.
+        // background completion no agent read (a shell that finished during
+        // this final text, with no round after it to take its note) must land
+        // its notice ABOVE the "Done for Ns" summary — after the reply it
+        // never informed, where the next turn's context will carry it — in
+        // both history and scrollback (invariant 3). So the order is: reseat
+        // to idle (the status is now cleared), commit the final reply, settle
+        // the held completions, THEN record + commit the summary. The common
+        // case (nothing pending) is unchanged — `settle_bg_completions` is
+        // then a no-op. See `docs/background.md`.
         let summary = self.app.take_turn_summary(elapsed);
         if committing {
             // The reply just ended, so the streaming strip (preview + gap +
@@ -658,8 +662,8 @@ impl Session<'_> {
         }
         if resolved {
             // The stream ended. Settle any background completions still held
-            // (most settle earlier, at a tool boundary — this catches ones that
-            // landed during the final text), then send the next queued batch as
+            // (most settle earlier, where the agent read their notes — this
+            // catches the ones no round took), then send the next queued batch as
             // the following turn — Enter messages batch into one turn, while
             // Tab-opened follow-up batches each flush at their own turn-end, so
             // they iterate in order; with nothing queued, a model-launched

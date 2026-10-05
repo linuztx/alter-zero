@@ -99,10 +99,12 @@ pub enum RoundOutcome {
 /// registry's for a subagent — the same mechanism, twice (`docs/queue.md`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PendingInput {
-    /// A background shell or agent finished (`docs/background.md`) — the note
-    /// the model reads. Invisible: the loop already recorded the completion,
-    /// so nothing is announced.
-    Notice(String),
+    /// A background shell or agent finished, or a session stopped to ask for
+    /// input (`docs/background.md`) — the note the model reads, `seq` its
+    /// number on the registry's board. Announced with
+    /// [`StreamEvent::NoticeDelivered`] as it is taken, so the loop records
+    /// the held notice cell exactly where the model reads it.
+    Notice { seq: u64, text: String },
     /// A message the **user** queued while the turn was running
     /// (`docs/queue.md`). Announced with [`StreamEvent::Steered`] as it is
     /// taken, so the loop can turn its queued row into a real user bubble.
@@ -191,10 +193,16 @@ pub fn run_agent(
         // the last thing the model reads.
         let (notices, steered): (Vec<_>, Vec<_>) = pending_inputs()
             .into_iter()
-            .partition(|input| matches!(input, PendingInput::Notice(_)));
+            .partition(|input| matches!(input, PendingInput::Notice { .. }));
         for input in notices.into_iter().chain(steered) {
             match input {
-                PendingInput::Notice(note) => messages.push(ChatMessage::user(&note)),
+                // The held notice cell lands here too, where the model reads
+                // it — not at whichever tool boundary the TUI reached first
+                // (docs/background.md).
+                PendingInput::Notice { seq, text } => {
+                    let _ = tx.send(StreamEvent::NoticeDelivered { seq });
+                    messages.push(ChatMessage::user(&text));
+                }
                 // The queued row above the user's box becomes a real bubble
                 // the moment the model actually has the text (docs/queue.md).
                 PendingInput::User(text) => {
@@ -2489,7 +2497,10 @@ mod tests {
                 // The exit landed while the kill command ran: the board has
                 // the note by the time round 2's request is built.
                 if *rounds.borrow() == 1 {
-                    vec![PendingInput::Notice(note.to_string())]
+                    vec![PendingInput::Notice {
+                        seq: 1,
+                        text: note.to_string(),
+                    }]
                 } else {
                     Vec::new()
                 }
@@ -2513,6 +2524,75 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["user", "assistant", "tool", "user"],
             "user → assistant(tool_calls) → tool result → the injected note"
+        );
+    }
+
+    #[test]
+    fn a_taken_notice_is_announced_where_the_model_reads_it() {
+        // The loop records a background notice in the conversation at the
+        // point the agent takes it, not at whichever tool boundary the TUI
+        // reaches first: a note that lands while the model is generating a
+        // call reaches the model only AFTER that call's result, and recording
+        // it in front of the call made the transcript (and every later
+        // turn's context) claim the model ignored it. So the take is
+        // announced on the reply channel, in order — after the round's tool
+        // results, before anything the next round streams.
+        let (tx, mut rx) = unbounded_channel();
+        let cancel = CancelToken::new();
+        let rounds = RefCell::new(0);
+        let calls = vec![call("c1", "bashsend", r#"{"session_id":"b1","input":"y"}"#)];
+        run_agent(
+            &tx,
+            &cancel,
+            MAX_TOOL_ITERATIONS,
+            &mut vec![ChatMessage::user("remove it")],
+            |_msgs| {
+                let mut n = rounds.borrow_mut();
+                *n += 1;
+                if *n == 1 {
+                    RoundOutcome::ToolCalls {
+                        assistant: assistant_with(&calls),
+                        calls: calls.clone(),
+                    }
+                } else {
+                    RoundOutcome::Complete {
+                        text: String::new(),
+                    }
+                }
+            },
+            |_c, _sink| ToolOutcome::ok("Exit code: 0"),
+            || {
+                if *rounds.borrow() == 1 {
+                    vec![PendingInput::Notice {
+                        seq: 7,
+                        text: "[background] note".to_string(),
+                    }]
+                } else {
+                    Vec::new()
+                }
+            },
+            |_calls| Vec::new(),
+            |_call, _force| Approval::Allow,
+            &NoHooks,
+            &no_sessions,
+        );
+        let events = drain(&mut rx);
+        let delivered = events
+            .iter()
+            .position(|event| *event == StreamEvent::NoticeDelivered { seq: 7 })
+            .expect("the take is announced with the note's seq");
+        let resolved = events
+            .iter()
+            .position(|event| matches!(event, StreamEvent::ToolEnd { .. }))
+            .expect("the call resolved");
+        assert!(
+            resolved < delivered,
+            "announced after the round's tool result, where the model reads it: {events:?}"
+        );
+        assert_eq!(
+            events.last(),
+            Some(&StreamEvent::StreamDone),
+            "and before the next round's own events"
         );
     }
 
@@ -2541,7 +2621,7 @@ mod tests {
                 pending
                     .borrow_mut()
                     .take()
-                    .map(PendingInput::Notice)
+                    .map(|text| PendingInput::Notice { seq: 1, text })
                     .into_iter()
                     .collect()
             },
@@ -2653,7 +2733,10 @@ mod tests {
                 }
                 vec![
                     PendingInput::User("and deploy it".to_string()),
-                    PendingInput::Notice("[background] note".to_string()),
+                    PendingInput::Notice {
+                        seq: 1,
+                        text: "[background] note".to_string(),
+                    },
                 ]
             },
             |_calls| Vec::new(),

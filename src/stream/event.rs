@@ -309,6 +309,22 @@ pub enum StreamEvent {
     /// subagent's, where it lands on that agent's own transcript: one event,
     /// both queues (`docs/agent-tool.md`).
     Steered { text: String },
+    /// The running turn took a background **notice** off the registry's
+    /// board at a round boundary — a shell or agent that finished (or a
+    /// session that stopped to ask for input) — and the model reads it in the
+    /// request now going out, right after the previous round's tool results
+    /// (`docs/background.md`). `seq` is the board note's own number
+    /// ([`crate::background::PendingNotice::seq`]).
+    ///
+    /// [`StreamEvent::Steered`]'s twin for notices, and for the same reason:
+    /// the loop records the held notice cell **here**, where the model has it,
+    /// instead of at whatever tool boundary came first. A note that landed
+    /// while the model was generating a call reaches it only after that
+    /// call's result; recorded in front of the call, the transcript and every
+    /// later turn's context said the model had read it and ignored it.
+    /// Main-session only: a subagent hears a shell it launched through its
+    /// own queue, as a [`StreamEvent::Steered`] message.
+    NoticeDelivered { seq: u64 },
     /// A `UserPromptSubmit` hook **blocked the prompt** (`docs/hooks.md`):
     /// the turn is over before the first request. The loop rolls the
     /// just-recorded user message back out of history (the recorder's
