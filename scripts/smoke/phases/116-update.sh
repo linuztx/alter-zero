@@ -223,23 +223,46 @@ if [ "$up_dev_rc" = "0" ] || ! printf '%s' "$up_dev" | grep -qF "cargo build dir
 	fail "a cargo build directory was not refused (exit $up_dev_rc)"
 fi
 
-# (f2) …and so is an install a package manager owns (docs/npm.md): a copy
-# laid out where npm unpacks it, under node_modules, is refused with npm's
-# own command — replaced behind npm's back, the next npm install would put
-# npm's copy back.
-UP_NPM="$UP_TMP/npm/lib/node_modules/@linuztx/alter-zero/node_modules/@linuztx/alter-zero-linux-x64/bin"
-mkdir -p "$UP_NPM"
-cp "$BIN_ABS" "$UP_NPM/alter-zero"
-up_npm="$(env $UP_BASE ALTER_ZERO_UPDATE_URL="http://127.0.0.1:$UP_PORT" "$UP_NPM/alter-zero" update 2>&1)"
+# (f2) …and so is an install a package manager owns (docs/npm.md): the
+# binary as a platform package nested under the launcher package, the way
+# `npm install -g` lays them out, and started the way npm starts it —
+# through the bin link to the launcher, npm/bin/alter-zero.js, which finds
+# the platform package and becomes the binary. It is refused with npm's own
+# command, and the file npm owns is left as it was: replaced behind npm's
+# back, the next npm install would put npm's copy back. Without node there
+# is no launcher to run, and the binary is run from its place directly.
+UP_NPM="$UP_TMP/npm"
+UP_LAUNCHER="$UP_NPM/lib/node_modules/@linuztx/alter-zero"
+UP_KEY="$(node -p 'process.platform + "-" + process.arch' 2>/dev/null || echo linux-x64)"
+UP_PLATFORM="$UP_LAUNCHER/node_modules/@linuztx/alter-zero-$UP_KEY"
+mkdir -p "$UP_LAUNCHER/bin" "$UP_PLATFORM/bin" "$UP_NPM/bin"
+cp "$SMOKE_ROOT/npm/package.json" "$UP_LAUNCHER/package.json"
+cp "$SMOKE_ROOT/npm/bin/alter-zero.js" "$UP_LAUNCHER/bin/alter-zero.js"
+printf '{ "name": "@linuztx/alter-zero-%s", "version": "%s" }\n' "$UP_KEY" "$UP_VERSION" >"$UP_PLATFORM/package.json"
+cp "$BIN_ABS" "$UP_PLATFORM/bin/alter-zero"
+if command -v node >/dev/null 2>&1; then
+	ln -s ../lib/node_modules/@linuztx/alter-zero/bin/alter-zero.js "$UP_NPM/bin/alter-zero"
+	UP_NPM_CMD="$UP_NPM/bin/alter-zero"
+else
+	note "no node on PATH — running the npm install's binary without its launcher"
+	UP_NPM_CMD="$UP_PLATFORM/bin/alter-zero"
+fi
+up_npm_inode="$(ls -i "$UP_PLATFORM/bin/alter-zero" | awk '{ print $1 }')"
+up_npm="$(env $UP_BASE ALTER_ZERO_UPDATE_URL="http://127.0.0.1:$UP_PORT" "$UP_NPM_CMD" update 2>&1)"
 up_npm_rc=$?
 note "alter-zero update from an npm install (exit $up_npm_rc)"
 printf '%s\n' "$up_npm"
 if [ "$up_npm_rc" != "1" ] || ! printf '%s' "$up_npm" | grep -qF "npm install -g @linuztx/alter-zero@latest"; then
 	fail "an npm install was not refused with npm's command (exit $up_npm_rc)"
 fi
+if [ "$(ls -i "$UP_PLATFORM/bin/alter-zero" | awk '{ print $1 }')" != "$up_npm_inode" ]; then
+	fail "alter-zero update wrote over the npm install's binary"
+fi
 
-# (f3) That install's card names npm's command too, never `alter-zero update`.
-tmux new-session -d -s "$S116" -x 100 -y 34 "$UP_BASE ALTER_ZERO_UPDATE_URL=http://127.0.0.1:$UP_PORT ALTER_ZERO_CONFIG_DIR=$UP_TMP/npm-home $UP_NPM/alter-zero"
+# (f3) That install's card names npm's command too, never `alter-zero
+# update`. Where Node has process.execve the launcher BECAME the binary, so
+# the pane runs alter-zero itself, with no Node process beside it.
+tmux new-session -d -s "$S116" -x 100 -y 34 "$UP_BASE ALTER_ZERO_UPDATE_URL=http://127.0.0.1:$UP_PORT ALTER_ZERO_CONFIG_DIR=$UP_TMP/npm-home $UP_NPM_CMD"
 up_npm_card="$(wait_pane 10 "$S116" -S -40 -- -F "$UP_CARD")" || fail "the npm install's card never appeared"
 dump "the card of an npm install" "$up_npm_card"
 if ! printf '%s' "$up_npm_card" | grep -qF "@linuztx/alter-zero@latest"; then
@@ -247,6 +270,12 @@ if ! printf '%s' "$up_npm_card" | grep -qF "@linuztx/alter-zero@latest"; then
 fi
 if printf '%s' "$up_npm_card" | grep -qF "alter-zero update"; then
 	fail "the npm install's card still says alter-zero update"
+fi
+if [ "$UP_NPM_CMD" = "$UP_NPM/bin/alter-zero" ] && node -e 'process.exit(typeof process.execve === "function" ? 0 : 1)'; then
+	up_npm_pane="$(tmux display-message -p -t "$S116" '#{pane_current_command}')"
+	if [ "$up_npm_pane" != "alter-zero" ]; then
+		fail "the launcher did not become the binary: the pane runs '$up_npm_pane'"
+	fi
 fi
 up_quit
 

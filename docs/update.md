@@ -283,8 +283,10 @@ records its day.
   withdrawing the row and writing no file; a server whose latest release *is*
   the running version recording `latest` with no `notice_day`; `alter-zero
   update` from a copy of the binary against that server (`is the newest
-  release`, exit `0`), from `target/debug` (refused, exit `1`), from a copy
-  laid out as npm installs it under `node_modules` (refused with the npm
-  command, exit `1`, and its card naming that command), and against
+  release`, exit `0`), from `target/debug` (refused, exit `1`), from an
+  install laid out as `npm install -g` lays one out under `node_modules` and
+  started through the npm launcher's bin link (refused with the npm command,
+  exit `1`, the binary left as it was, and its card naming that command),
+  and against
   `v9.9.9` — the copy replaced by the served archive's binary (a new inode)
   and still answering `--version`, since the fake release is this build.

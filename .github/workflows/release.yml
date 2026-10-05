@@ -4,9 +4,10 @@
 # verification, the notes rendered into the job summary, and nothing
 # published unless the run is on a tag and asked to. Every step is a
 # scripts/release.sh command, so what the workflow does is what a developer
-# can run and read. After the GitHub release, the npm job stages the same
-# archives as npm packages (docs/npm.md) and publishes them only when the
-# repository opts in with the NPM_PUBLISH variable; until then it rehearses.
+# can run and read. The npm job rehearses publishing the same archives as
+# npm packages (docs/npm.md); npm-publish publishes them after the GitHub
+# release, only when the repository opts in with the NPM_PUBLISH variable,
+# and only from the `npm` environment.
 name: Release
 
 on:
@@ -168,16 +169,44 @@ jobs:
         run: scripts/release.sh publish "$VERSION" dist --notes release-notes.md
 
   # The npm packages (docs/npm.md): the same verified archives, staged as one
-  # package per platform plus the launcher, after the GitHub release they
-  # mirror. Publishing is opt-in — the repository variable NPM_PUBLISH=true,
-  # with an NPM_TOKEN secret or npm trusted publishing for the credentials —
-  # so a release cut before npm is set up stays green; every other run, and
-  # every rehearsal, stages and validates the packages and publishes nothing.
-  # A version already on npm is skipped, so the job can simply be re-run.
+  # package per platform plus the launcher. Every run rehearses them — stages
+  # and validates each with `npm publish --dry-run`, publishing nothing — in
+  # a job that holds no credentials at all, pull requests included.
   npm:
-    name: ${{ needs.check.outputs.publish == 'true' && vars.NPM_PUBLISH == 'true' && 'publish' || 'rehearse publishing' }} v${{ needs.check.outputs.version }} to npm
-    needs: [check, publish]
+    name: rehearse publishing v${{ needs.check.outputs.version }} to npm
+    needs: [check, build]
     runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.check.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: dist-*
+          path: dist
+          merge-multiple: true
+      # The npm that publishes, rehearsing.
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - run: scripts/release.sh npm "$VERSION" dist --dry-run
+
+  # Publishing to npm: the one job that can, after the GitHub release it
+  # mirrors and the rehearsal above. It runs only on a published tag the
+  # repository has opted in to (the variable NPM_PUBLISH=true), so a release
+  # cut before npm is set up stays green, and only in the `npm` environment,
+  # whose protection rules decide which refs may deploy to it and which npm's
+  # trusted publisher names (docs/npm.md) — an OIDC token minted anywhere
+  # else is refused. A version already on npm is skipped, so the job can
+  # simply be re-run.
+  npm-publish:
+    name: publish v${{ needs.check.outputs.version }} to npm
+    needs: [check, publish, npm]
+    if: needs.check.outputs.publish == 'true' && vars.NPM_PUBLISH == 'true'
+    runs-on: ubuntu-latest
+    environment: npm
     permissions:
       contents: read
       # Trusted publishing and npm's provenance statement both present the
@@ -187,6 +216,8 @@ jobs:
       VERSION: ${{ needs.check.outputs.version }}
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       - uses: actions/download-artifact@v8
         with:
           pattern: dist-*
@@ -197,12 +228,10 @@ jobs:
         with:
           node-version: 24
           registry-url: https://registry.npmjs.org
-      - name: Rehearse (nothing is published)
-        if: needs.check.outputs.publish != 'true' || vars.NPM_PUBLISH != 'true'
-        run: scripts/release.sh npm "$VERSION" dist --dry-run
-      - name: Publish the npm packages
-        if: needs.check.outputs.publish == 'true' && vars.NPM_PUBLISH == 'true'
+      - name: Publish the platform packages, then the launcher
         env:
+          # The `npm` environment's secret, until trusted publishing
+          # replaces it; empty, npm presents the OIDC token instead.
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           NPM_CONFIG_PROVENANCE: "true"
         run: scripts/release.sh npm "$VERSION" dist

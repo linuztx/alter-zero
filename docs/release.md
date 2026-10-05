@@ -20,7 +20,8 @@ scripts/release.sh prepare X.Y.Z     # bump + roll the changelog (a commit's wor
 git commit … && git tag -a vX.Y.Z -m "alter-zero vX.Y.Z" && git push origin HEAD vX.Y.Z
         │
         ▼  .github/workflows/release.yml
-   check ──► gate ──► build ×4 ──► publish ──► npm
+   check ──► gate ──► build ×4 ──┬──► publish ──┬──► npm-publish
+                                 └──► npm ──────┘
 ```
 
 1. **`check`** — the tag names Cargo.toml's version, and Cargo.lock, the
@@ -38,14 +39,18 @@ git commit … && git tag -a vX.Y.Z -m "alter-zero vX.Y.Z" && git push origin HE
    either publishes (`scripts/release.sh publish`) or, on a rehearsal,
    prints the exact `gh` commands it would have run.
 5. **`npm`** — stages the same archives as the npm packages
-   (`scripts/release.sh npm`, [`docs/npm.md`](npm.md)) and publishes them
-   once the repository opts in with the `NPM_PUBLISH` variable; until then,
-   and on every rehearsal, it stages and dry-runs them.
+   (`scripts/release.sh npm`, [`docs/npm.md`](npm.md)) and dry-runs them,
+   on every run, pull requests included.
+6. **`npm-publish`** — after the GitHub release and that rehearsal,
+   publishes them: only on a published tag, only once the repository opts
+   in with the `NPM_PUBLISH` variable, and only in the `npm` environment,
+   whose rules admit release tags alone.
 
-Every job but `publish` and `npm` holds `contents: read`; `publish` alone is
-granted `contents: write`, and only the `GH_TOKEN` step uses it. `npm` holds
+Every job holds `contents: read`. `publish` alone is granted `contents:
+write`, and only the `GH_TOKEN` step uses it; `npm-publish` alone is granted
 `id-token: write`, the OIDC token npm's trusted publishing and provenance
-statement present.
+statement present, so no rehearsal — a pull request's included — holds
+anything that can publish.
 
 ### What a release carries
 
@@ -203,12 +208,13 @@ tree, which is how the selftest drives them against fixtures.
 | `version` | Prints Cargo.toml's `[package]` version. |
 | `check [TAG]` | Rules 1–6 below; reads `GITHUB_REF_TYPE`/`GITHUB_REF_NAME` when no TAG is given. |
 | `build [TARGET] [--dist DIR]` | `rustup target add` if needed, the cross-toolchain variables for a Linux GNU target, the documented `cargo build`, then `package_dist` into `dist/`. |
-| `verify [DIST] [--version X]` | Every archive's name, checksum, layout, executable bit, `file` format/CPU, and — when this machine can run it — `--version`; `SHA256SUMS` agreement; no stray files. Takes a release as built (a `.sha256` beside each archive) or as published (the archives and `SHA256SUMS` alone, what `gh release download` fetches). |
+| `verify [DIST] [--version X]` | Every archive's name, checksum, layout, executable bit, `file` format/CPU, and — when this machine can run it — `--version`; `SHA256SUMS` agreement; no stray files. |
 | `notes VERSION [DIST]` | The markdown above, on stdout. |
 | `publish VERSION [DIST] [--notes FILE] [--dry-run]` | `verify`, assemble `SHA256SUMS`, then `gh release create` **as a draft** with notes and every asset, then `gh release edit --draft=false` (`--latest` unless a pre-release). |
+| `download VERSION [DIST] [--from URL]` | A published release back into an empty `dist/`: its `SHA256SUMS`, then every asset it lists, with curl or wget (no `gh`), each beside its `.sha256` as `build` leaves it, then `verify`. `--from` names another repository root. |
 | `npm VERSION [DIST] [--out DIR] [--dry-run]` | `verify`, stage the four platform packages and the launcher under `target/npm`, then `npm publish` each not yet on the registry, the launcher last ([`docs/npm.md`](npm.md)). |
 | `prepare VERSION` | The version bump and changelog roll, then `check`, then the commit/tag/push to run. |
-| `selftest` | 230-odd fixture-driven assertions over all of the above. |
+| `selftest` | 250-odd fixture-driven assertions over all of the above. |
 
 `check`'s rules:
 
@@ -463,7 +469,8 @@ toolchain bump is the one edit it already is.
   a mislabelled binary, `notes` with and without assets, `prepare` rolling
   a fixture forward and a first release, `publish --dry-run` with `gh`
   absent from `PATH`, `install.sh` end to end against the stand-in
-  release server (above), and the npm packages staged, published to a
+  release server (above), `download` back from that server with curl and
+  with wget alone, and the npm packages staged, published to a
   stand-in registry and installed back with `npm install -g`
   ([`docs/npm.md`](npm.md)). It needs bash, awk, sed, tar, gzip, `file`, a C
   compiler and python3, plus node and npm for the npm cases, and runs in

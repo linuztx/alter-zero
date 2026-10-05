@@ -21,6 +21,7 @@ scripts/release.sh build [TARGET]           # one platform's release archive + .
 scripts/release.sh verify dist              # the archives: checksums, layout, CPU, `alter-zero --version`
 scripts/release.sh notes X.Y.Z              # the release notes the workflow publishes: CHANGELOG.md's section, nothing else
 scripts/release.sh selftest                 # the release tooling's own fixture-driven tests
+scripts/release.sh download X.Y.Z [DIST]   # a published release back into an empty dist/, each archive beside its .sha256, verified (curl or wget, no gh)
 scripts/release.sh npm X.Y.Z dist [--dry-run]   # the npm packages from the release archives: four platform packages, then the launcher (docs/npm.md)
 (cd npm && node --test)                     # the npm launcher's tests (docs/npm.md)
 scripts/release.sh prepare X.Y.Z            # bump the version everywhere, roll [Unreleased] into a dated section, then tag
@@ -56,10 +57,13 @@ and a `vX.Y.Z` tag push runs `.github/workflows/release.yml` — the same gate,
 then one release build per platform (Linux x86_64 and arm64, macOS Intel and
 Apple silicon) packaged, checksummed and verified by `scripts/release.sh`, and
 a GitHub release whose notes are `CHANGELOG.md`'s section for the version
-(`docs/release.md`), then the npm packages from the same archives — published
-only when the repository variable `NPM_PUBLISH` is `true`, rehearsed
-otherwise (`docs/npm.md`). Cutting a release is `scripts/release.sh prepare X.Y.Z`,
-a commit, an annotated tag and a push; `workflow_dispatch` rehearses the whole
+(`docs/release.md`), then the npm packages from the same archives —
+rehearsed on every run in a job holding nothing that can publish, and
+published by `npm-publish`, the one job granted `id-token: write`, only on a
+tag, only when the repository variable `NPM_PUBLISH` is `true` and only in
+the `npm` environment, which npm's trusted publisher names (`docs/npm.md`).
+Cutting a release is `scripts/release.sh prepare X.Y.Z`, a commit, an
+annotated tag and a push; `workflow_dispatch` rehearses the whole
 pipeline without publishing, and every step runs locally the same way. Users
 install a release with the one-line `install.sh` (`curl … | sh`, POSIX `sh`,
 checksum-verified), which the selftest drives against
@@ -182,10 +186,18 @@ card names that manager's command and `alter-zero update` refuses. Its
 `prepare` keep the version and the four pins in step, and its
 `prepublishOnly` refuses a publish made from `npm/` itself — the staged copy
 drops `scripts` and gains the LICENSE, and the launcher is published last,
-after its platforms. `verify` accepts a release as published (archives +
-`SHA256SUMS`, `gh release download`), so a version already on GitHub can be
-published by hand. The selftest publishes to and `npm install -g`s from
-`scripts/release/npm_registry.py`, an offline stand-in registry.
+after its platforms. `verify` holds every archive to the `.sha256` beside
+it, so a version already on GitHub is published by hand from what
+`scripts/release.sh download` fetches back — `SHA256SUMS`, then every asset
+it lists, each line written beside its asset — with curl or wget and no
+`gh`. The launcher's
+messages go to fd 2 in one `fs.writeSync` (Node's `process.stderr` is
+asynchronous on a pipe, and the exit after it drops what is queued), and its
+reinstall advice names the manager that installed it, read off its own path
+by `update::package_manager`'s rule. The selftest publishes to and `npm
+install -g`s from `scripts/release/npm_registry.py`, an offline stand-in
+registry, and `smoke.sh` Phase 116 starts the real binary through the
+launcher's bin link.
 
 Toolchain: Rust **edition 2024**, `ratatui = 0.30.1` (crossterm is re-exported as
 `ratatui::crossterm` — import it from there, not as a separate crate), plus

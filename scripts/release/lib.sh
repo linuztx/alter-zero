@@ -338,9 +338,10 @@ package_dist() {
 # just the per-asset ones `package_dist` writes. It lives here because it
 # was three copies of one line in `publish`, the selftest's fixtures and
 # the smoke suite's stand-in release, and the copy that did not exist is
-# what broke the installer. A dist with no per-asset files — a release as
-# published, downloaded back — has nothing to gather, and is refused rather
-# than handed an empty SHA256SUMS (or, with no file to name, `cat`'s stdin).
+# what broke the installer. A dist with no per-asset files — a release's
+# archives and SHA256SUMS alone, as published — has nothing to gather, and
+# is refused rather than handed an empty SHA256SUMS (or, with no file to
+# name, `cat`'s stdin); `download` writes the per-asset files back.
 write_sha256sums() {
 	local dist="$1" sums
 	# Unmatched, the glob is either itself (the default) or nothing at all

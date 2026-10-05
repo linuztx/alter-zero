@@ -10,7 +10,8 @@
 # a consistent tree and then each way of breaking it, `package_dist` +
 # `verify` over a real (tiny, C) binary so the CPU and `--version` checks run
 # for real, `notes` over the changelog, `prepare` rolling a fixture forward,
-# `publish --dry-run`, and the npm packages staged, published to a stand-in
+# `publish --dry-run`, `download` from a stand-in github.com (release_server.py),
+# and the npm packages staged, published to a stand-in
 # registry (npm_registry.py) and installed back with `npm install -g`. Needs
 # only bash, awk, sed, tar, gzip, file and a C compiler (the binary cases are
 # skipped without one), plus python3 for the stand-in servers and node + npm
@@ -412,22 +413,19 @@ EOF
 		printf '%s  missing.tar.gz\n' "0000000000000000000000000000000000000000000000000000000000000000" >>"$T/dist-sums/SHA256SUMS"
 		expect_fail "a SHA256SUMS naming a missing file fails" bash "$STEPS/verify.sh" "$T/dist-sums"
 
-		# A release as published — what `gh release download` hands back: the
-		# archives and SHA256SUMS, never the per-asset files.
+		# A release as published — its archives and SHA256SUMS, never the
+		# per-asset files — is `download`'s to put back in a built dist's shape
+		# (below); verify holds every archive to the .sha256 beside it.
 		mkdir -p "$T/dist-as-published"
 		cp "$T/dist"/*.tar.gz "$T/dist"/*.tar.gz.sha256 "$T/dist-as-published/"
 		write_sha256sums "$T/dist-as-published" >/dev/null
 		rm -f "$T/dist-as-published"/*.tar.gz.sha256
-		expect_ok "verify passes a release as published: its archives and SHA256SUMS" bash "$STEPS/verify.sh" "$T/dist-as-published"
-		cp -R "$T/dist-as-published" "$T/dist-as-published-bad"
-		printf '%s  %s\n' "0000000000000000000000000000000000000000000000000000000000000000" "$(basename "$archive")" >"$T/dist-as-published-bad/SHA256SUMS"
-		expect_fail "…and fails one whose SHA256SUMS does not match" bash "$STEPS/verify.sh" "$T/dist-as-published-bad"
-		mkdir -p "$T/dist-unchecked" && cp "$T/dist"/*.tar.gz "$T/dist-unchecked/"
-		expect_fail "verify refuses an archive with no checksum anywhere" bash "$STEPS/verify.sh" "$T/dist-unchecked"
-		expect_contains "…saying so" "$OUT" "no .sha256 beside it and no SHA256SUMS"
-		expect_fail "publish refuses a dist it cannot gather a SHA256SUMS from" bash "$STEPS/publish.sh" 0.4.2 "$T/dist-as-published" --dry-run
+		expect_fail "verify refuses an archive with no .sha256 beside it, SHA256SUMS or not" bash "$STEPS/verify.sh" "$T/dist-as-published"
+		expect_contains "…saying so" "$OUT" ".sha256 is missing"
+		# shellcheck disable=SC2016 # $1 and $2 are bash -c's own arguments
+		expect_fail "write_sha256sums refuses a dist with no per-asset files to gather" bash -c '. "$1/lib.sh"; write_sha256sums "$2"' _ "$STEPS" "$T/dist-as-published"
 		expect_contains "…naming what is missing" "$OUT" "no per-asset .sha256 files"
-		expect_eq "…leaving the downloaded SHA256SUMS as it was" "1" "$(grep -c "$(basename "$archive")" "$T/dist-as-published/SHA256SUMS")"
+		expect_eq "…leaving the SHA256SUMS there as it was" "1" "$(grep -c "$(basename "$archive")" "$T/dist-as-published/SHA256SUMS")"
 
 		mkdir -p "$T/dist-layout/x/alter-zero-v0.4.2-$host"
 		cp "$T/fake-bin" "$T/dist-layout/x/alter-zero-v0.4.2-$host/alter-zero"
@@ -512,6 +510,55 @@ EOF
 			expect_contains "…and that nothing was installed" "$OUT" "Nothing was installed"
 			if [ ! -e "$T/home/bin4/alter-zero" ]; then pass "…truly"; else flunk "…but left a binary behind"; fi
 			stop_release
+
+			section "download"
+			base="http://127.0.0.1:$(serve_release "$T/dist-published" v0.4.2)"
+			expect_ok "download fetches a published release and verifies it" bash "$STEPS/download.sh" 0.4.2 "$T/dl" --from "$base"
+			expect_contains "…verifying what it fetched" "$OUT" "verified 1 asset(s) for alter-zero 0.4.2"
+			expect_eq "…in the shape build leaves: each archive beside its .sha256, and SHA256SUMS" \
+				"SHA256SUMS alter-zero-v0.4.2-$host.tar.gz alter-zero-v0.4.2-$host.tar.gz.sha256" "$(cd "$T/dl" && printf '%s\n' * | LC_ALL=C sort | tr '\n' ' ' | sed 's/ $//')"
+			expect_eq "…the archive byte for byte" "$(sha256_of "$archive")" "$(sha256_of "$T/dl/$(basename "$archive")")"
+			expect_eq "…and its .sha256 the one build wrote" "$(cat "$archive.sha256")" "$(cat "$T/dl/$(basename "$archive").sha256")"
+			expect_ok "…a dist publish and npm take as built" bash "$STEPS/verify.sh" "$T/dl"
+			expect_fail "download refuses a directory that is not empty" bash "$STEPS/download.sh" 0.4.2 "$T/dl" --from "$base"
+			expect_contains "…saying so" "$OUT" "not empty"
+			expect_fail "download refuses a version that is not published" bash "$STEPS/download.sh" 0.4.3 "$T/dl-unpublished" --from "$base"
+			expect_contains "…naming the tag" "$OUT" "is v0.4.3 published?"
+			if [ ! -e "$T/dl-unpublished" ]; then pass "…creating no directory"; else flunk "…but created $T/dl-unpublished"; fi
+			expect_fail "download refuses a version that is not semver" bash "$STEPS/download.sh" 0.4 "$T/dl-bad-version" --from "$base"
+			# A PATH with every tool there is but curl, as on a minimal server.
+			mkdir -p "$T/no-curl-bin"
+			(
+				IFS=:
+				for dir in $PATH; do
+					[ -d "$dir" ] && ln -s "$dir"/* "$T/no-curl-bin/" 2>/dev/null
+				done
+			)
+			rm -f "$T/no-curl-bin/curl"
+			if [ -e "$T/no-curl-bin/wget" ]; then
+				expect_ok "download fetches with wget where there is no curl" env PATH="$T/no-curl-bin" "$BASH" "$STEPS/download.sh" 0.4.2 "$T/dl-wget" --from "$base"
+				expect_eq "…the same files" "$(cd "$T/dl" && sha256_of SHA256SUMS)" "$(cd "$T/dl-wget" && sha256_of SHA256SUMS)"
+			else
+				warn "no wget — skipping download's curl-less case"
+			fi
+			stop_release
+			base="http://127.0.0.1:$(serve_release "$T/dist-badsum" v0.4.2)"
+			expect_fail "download refuses a release whose archive does not match its SHA256SUMS" bash "$STEPS/download.sh" 0.4.2 "$T/dl-badsum" --from "$base"
+			expect_contains "…as verify does" "$OUT" "does not match"
+			stop_release
+			mkdir -p "$T/dist-evil"
+			printf '%s  ../evil.tar.gz\n' "$(sha256_of "$archive")" >"$T/dist-evil/SHA256SUMS"
+			base="http://127.0.0.1:$(serve_release "$T/dist-evil" v0.4.2)"
+			expect_fail "download refuses a SHA256SUMS naming a path rather than an asset" bash "$STEPS/download.sh" 0.4.2 "$T/dl-evil/inner" --from "$base"
+			expect_contains "…naming it" "$OUT" "../evil.tar.gz"
+			if [ ! -e "$T/dl-evil" ]; then pass "…writing nothing at all"; else flunk "…but wrote into $T/dl-evil"; fi
+			stop_release
+			mkdir -p "$T/dist-empty-sums" && : >"$T/dist-empty-sums/SHA256SUMS"
+			base="http://127.0.0.1:$(serve_release "$T/dist-empty-sums" v0.4.2)"
+			expect_fail "download refuses a SHA256SUMS that lists nothing" bash "$STEPS/download.sh" 0.4.2 "$T/dl-empty" --from "$base"
+			expect_contains "…saying so" "$OUT" "lists no assets"
+			stop_release
+
 			expect_ok "install.sh --help prints the usage" sh "$CHECKOUT/install.sh" --help
 			expect_contains "…naming the one-liner" "$OUT" "curl -fsSL"
 			expect_fail "install.sh refuses an unknown option" sh "$CHECKOUT/install.sh" --bogus

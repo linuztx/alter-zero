@@ -91,7 +91,7 @@ first, and answers each with a message instead:
 | check | what the user is told |
 |---|---|
 | a platform package exists for this OS and CPU | the supported platforms, and WSL for Windows |
-| the platform package resolves | it is an optional dependency: reinstall, without `--omit=optional` |
+| the platform package resolves | it is an optional dependency: reinstall, without `--omit=optional` — in the installing manager's words |
 | …and on musl | the Linux build needs glibc; build from source |
 | `bin/alter-zero` is a file | the install is incomplete: reinstall |
 | it is executable | the 0755 it was published with is restored if possible, else reinstall |
@@ -105,6 +105,22 @@ reports as `ENOENT`. The libc itself is read only to explain a failure —
 package's `libc` field. A glibc older than the build's is not pre-checked
 (that would mean the report on every launch); the dynamic loader's own
 error names the missing symbol version.
+
+**The advice names the package manager that installed the launcher.** A
+pnpm or Bun user told to run `npm install -g` would end up with a second
+install beside the first, so the reinstall command comes from the
+launcher's own real path, read by the rule the binary applies to its own
+(`update::package_manager`, under *Updating* below): `pnpm add -g`, `bun add
+-g`, `yarn global add`, else `npm install -g`. The launcher's tests hold the
+two rules together, so a launcher error and the update card never name
+different managers.
+
+**A message goes to fd 2 in one synchronous write.** Node writes
+`process.stderr` to a pipe asynchronously — on Linux as on macOS — so a
+message the pipe has no room for is queued, and the `process.exit` right
+after it drops the queue: through a pipe with 64 bytes free, the whole
+message was lost. The launcher writes it with `fs.writeSync(2, …)` and only
+then exits.
 
 **Node's ignored signals are not handed on.** Node ignores `SIGPIPE` and
 `SIGXFSZ`, and an ignored signal stays ignored across `exec`: the binary's
@@ -121,11 +137,14 @@ helper re-executes (`docs/tty-detach.md`) — because `execve` keeps the
 binary's file as the process image.
 
 **On an older Node** the binary runs as a child with the terminal inherited;
-the launcher relays `SIGINT`, `SIGTERM` and `SIGHUP` to it and ends the way
-it ended — the same exit status, or death by the same signal (re-raised with
-its own listener removed first, else the listener would swallow it), or
-`128 + n` where Node will not die of the signal (`SIGUSR1` starts Node's
-inspector, so it is never re-raised).
+the launcher relays `SIGINT`, `SIGTERM`, `SIGHUP` and `SIGQUIT` to it (with
+no listener, Node would die of one and leave the binary running at the
+terminal) and ends the way it ended — the same exit status, or death by the
+same signal (re-raised with its own listener removed first, else the
+listener would swallow it), or `128 + n` where dying of it here would
+mislead: a signal whose default action dumps core (`SIGABRT`, `SIGSEGV`, …)
+would dump Node's core too, a crash report about `node` rather than the
+binary, and `SIGUSR1` starts Node's inspector.
 
 ## Updating
 
@@ -165,19 +184,30 @@ scripts/release.sh npm X.Y.Z dist --dry-run   # verify, stage into target/npm, `
 scripts/release.sh npm X.Y.Z dist             # …and publish: four platform packages, then the launcher
 ```
 
-The command first runs `verify` over the archives — which accepts a release
-**as built** (each archive beside its `.sha256`) or **as published** (the
-archives and `SHA256SUMS`, what `gh release download` hands back), so a
-version already on GitHub can be published to npm by hand. It then stages
-the five packages under `target/npm/` (`--out` elsewhere): each platform
-package from its archive, and the launcher as `npm/` with the LICENSE added
-and its `scripts` removed. Publishing is ordered — **the launcher last** — so
-its optional dependencies are on the registry before anything can install
-it, and a real publish refuses a dist missing any platform, which would be
-a missing binary for every install on it (a dry run warns and stages the
-rest). A version already on the registry is left as it is — npm versions are
-immutable — so a run that died halfway is simply run again. A pre-release
-goes to the `next` dist-tag, keeping `npm install -g` on the latest stable.
+The command first runs `verify` over the archives: a release **as built**,
+each archive beside its `.sha256`. A version already on GitHub comes back in
+that shape with
+
+```bash
+scripts/release.sh download X.Y.Z dist       # SHA256SUMS, then every asset it lists; verified
+```
+
+which fetches the release's `SHA256SUMS` from the repository's release
+pages and every asset it lists, with curl or else wget — no `gh` and no
+GitHub account — writes each asset's own line of it beside the asset as its
+`.sha256`, and runs `verify` over the lot (`--from` names another
+repository root, or a stand-in for github.com). It refuses a directory that
+is not empty and an asset name that is a path rather than a file name. The
+`npm` command then stages the five packages under `target/npm/` (`--out`
+elsewhere): each platform package from its archive, and the launcher as
+`npm/` with the LICENSE added and its `scripts` removed. Publishing is
+ordered — **the launcher last** — so its optional dependencies are on the
+registry before anything can install it, and a real publish refuses a dist
+missing any platform, which would be a missing binary for every install on
+it (a dry run warns and stages the rest). A version already on the registry
+is left as it is — npm versions are immutable — so a run that died halfway
+is simply run again. A pre-release goes to the `next` dist-tag, keeping
+`npm install -g` on the latest stable.
 
 `npm/package.json`'s own `prepublishOnly` refuses any publish made from
 `npm/` itself, pointing at the command above: published from there, the
@@ -199,7 +229,7 @@ the `linuztx` account owns the `@linuztx` scope:
 
 ```bash
 npm login
-gh release download v0.11.0 -D dist           # the release's four archives and SHA256SUMS
+scripts/release.sh download 0.11.0 dist       # the release's four archives, verified
 scripts/release.sh npm 0.11.0 dist --dry-run  # look first
 scripts/release.sh npm 0.11.0 dist
 ```
@@ -214,23 +244,39 @@ release cut after it is the better first npm version.
 
 ### Every release after it
 
-In the repository's **Settings → Secrets and variables → Actions**, add the
-secret `NPM_TOKEN` (an npm granular access token with read and write access
-to the five packages, allowed to publish without a one-time password) and
-the variable `NPM_PUBLISH` set to `true`. A
-`vX.Y.Z` tag push then publishes to npm right after the GitHub release, from
-the same verified archives (`release.yml`'s `npm` job, with npm's provenance
-statement attached). Without the variable the job only rehearses — it
-stages and dry-runs the packages, as it does on every pull request that
-touches `npm/` or the release scripts — so a release is never held up by
-npm.
+The workflow publishes in one job, `npm-publish`, which runs only on a
+published tag, only once the repository opts in, and only in the GitHub
+environment `npm`. Set that up once, in the repository's **Settings**:
+
+- **Environments** → new environment `npm`. Under *Deployment branches and
+  tags*, allow only the tag pattern `v*`, so no branch and no pull request
+  can run a job in it (a required reviewer can be added as well).
+- In that environment's secrets, `NPM_TOKEN`: an npm granular access token
+  with read and write access to the five packages, allowed to publish
+  without a one-time password. An environment secret is readable only by a
+  job running in the environment, which the rule above keeps to release
+  tags.
+- **Secrets and variables → Actions → Variables**: `NPM_PUBLISH` set to
+  `true`.
+
+A `vX.Y.Z` tag push then publishes to npm right after the GitHub release,
+from the same verified archives, with npm's provenance statement attached.
+Every run rehearses first: the `npm` job stages and dry-runs the packages,
+as it does on every pull request that touches `npm/` or the release
+scripts, and holds nothing that can publish — no OIDC token, no secret.
+Without the variable only the rehearsal runs, so a release is never held up
+by npm.
 
 npm limits how long a token that can publish stays valid, so the lasting
 setup is **trusted publishing**: on npmjs.com, open each of the five
-packages' settings, add a trusted publisher (GitHub Actions, repository
-`linuztx/alter-zero`, workflow `release.yml`), then delete the `NPM_TOKEN`
-secret. The job already holds `id-token: write`, and the npm 11 that Node 24
-bundles exchanges it for a short-lived publish token on its own.
+packages' settings and add a trusted publisher — GitHub Actions, repository
+`linuztx/alter-zero`, workflow `release.yml`, environment `npm` — then
+delete the `NPM_TOKEN` secret. `npm-publish` alone holds `id-token: write`,
+and the npm 11 that Node 24 bundles exchanges its OIDC token for a
+short-lived publish token on its own. Naming the environment is what makes
+the trust narrow: npm accepts only a token minted by a job in the `npm`
+environment, and GitHub runs a job there only on a ref the environment
+admits.
 
 If the job fails after the GitHub release went out, re-run it: whatever was
 published is skipped.
@@ -239,21 +285,33 @@ published is skipped.
 
 - `node --test` in `npm/` (CI's release-tooling job): the platform table
   against `package.json`, the ELF loader read over real and synthetic
-  headers, every `locate` verdict, and the launcher run for real over a
-  fake install — arguments passed through verbatim, exit statuses, `argv[0]`,
-  the binary taking over the launcher's own PID, `SigIgn` empty, and the
-  spawn fallback's relaying and mirroring, including death by signal.
+  headers, every `locate` verdict, the reinstall command for each package
+  manager's layout (held to `src/update.rs`'s rule), and the launcher run
+  for real over a fake install — arguments passed through verbatim, exit
+  statuses, `argv[0]`, the binary taking over the launcher's own PID,
+  `SigIgn` empty, pnpm's command from a pnpm layout, a message surviving a
+  stderr pipe with no room left, and the spawn fallback's relaying and
+  mirroring, including death by signal, `SIGQUIT` reaching the binary, and
+  `128 + n` for a crash.
 - `scripts/release.sh selftest`: the readers, rule 7, `prepare`'s bump,
-  `verify` on a release as published, and a four-target fixture release
-  (the host's binary real, the others headers `file(1)` accepts) staged,
-  dry-run, published to `scripts/release/npm_registry.py` — a stand-in
-  registry that serves packuments and tarballs and takes `npm publish`'s
-  PUT — in order, re-run to prove it skips what is there, and installed back
-  with `npm install -g`, whose `alter-zero --version` is the host's binary.
-- The v0.11.0 release itself: its four archives, downloaded from GitHub,
-  verified as published, staged (9.5–10.1 MB packages, 20.5–24.1 MB
-  unpacked), published to the stand-in and installed with `npm install -g`,
-  which added two packages — the launcher and `linux-x64`. The installed
+  `download` from `release_server.py`, the stand-in github.com — with curl
+  and with wget only, refusing an unpublished version, a checksum that does
+  not match, a path in `SHA256SUMS` and a directory that is not empty — and
+  a four-target fixture release (the host's binary real, the others headers
+  `file(1)` accepts) staged, dry-run, published to
+  `scripts/release/npm_registry.py` — a stand-in registry that serves
+  packuments and tarballs and takes `npm publish`'s PUT — in order, re-run
+  to prove it skips what is there, and installed back with `npm install
+  -g`, whose `alter-zero --version` is the host's binary.
+- `scripts/smoke.sh 116`: the real binary laid out as `npm install -g`
+  lays it out and started through the launcher's bin link — `alter-zero
+  update` refused with npm's command and the binary's inode unchanged, the
+  update card naming that command, and, on a Node with `process.execve`, the
+  pane running `alter-zero` itself with no Node process beside it.
+- The v0.11.0 release itself: its four archives, fetched from GitHub with
+  `scripts/release.sh download` and verified, staged (9.5–10.1 MB packages,
+  20.5–24.1 MB unpacked), published to the stand-in and installed with `npm
+  install -g`, which added two packages — the launcher and `linux-x64`. The installed
   `alter-zero` answered `--version`, `--help` and a usage error's exit 2;
   under tmux it opened the TUI with no Node process beside it, ran a `!`
   command through the tty-detach helper and a demo turn, and quit printing

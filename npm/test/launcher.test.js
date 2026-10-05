@@ -34,10 +34,11 @@ const HOST = launcher.platformKey(process.platform, process.arch);
 // An install the way npm lays one out globally: the launcher package with
 // its platform package nested under it. `binary` is the platform package's
 // bin/alter-zero — file contents, or { symlink: target } — and null leaves
-// the platform package out entirely.
-function fakeInstall({ key = HOST, binary, mode = 0o755 } = {}) {
+// the platform package out entirely. `prefix` puts the tree under other
+// directories, the way pnpm's store or bun's global folder would.
+function fakeInstall({ key = HOST, binary, mode = 0o755, prefix = [] } = {}) {
   const root = tempDir();
-  const pkg = path.join(root, 'node_modules', ...MANIFEST.name.split('/'));
+  const pkg = path.join(root, ...prefix, 'node_modules', ...MANIFEST.name.split('/'));
   fs.mkdirSync(path.join(pkg, 'bin'), { recursive: true });
   fs.copyFileSync(path.join(ROOT, 'package.json'), path.join(pkg, 'package.json'));
   fs.copyFileSync(LAUNCHER, path.join(pkg, 'bin', 'alter-zero.js'));
@@ -267,6 +268,65 @@ describe('locate', () => {
   });
 });
 
+describe('the reinstall hint', () => {
+  test("names the package manager that installed the launcher, read off the launcher's own path", () => {
+    const cases = {
+      '/usr/lib/node_modules/@linuztx/alter-zero/bin': 'npm',
+      '/home/u/.nvm/versions/node/v24.21.0/lib/node_modules/@linuztx/alter-zero/bin': 'npm',
+      '/home/u/.local/share/pnpm/global/5/.pnpm/@linuztx+alter-zero@0.11.0/node_modules/@linuztx/alter-zero/bin': 'pnpm',
+      '/home/u/.bun/install/global/node_modules/@linuztx/alter-zero/bin': 'bun',
+      '/home/u/.config/yarn/global/node_modules/@linuztx/alter-zero/bin': 'yarn',
+      // Yarn's own cache is not its global folder.
+      '/home/u/.cache/yarn/v6/node_modules/@linuztx/alter-zero/bin': 'npm',
+      // Run from a checkout (npm link): no manager says otherwise.
+      '/home/u/src/alter-zero/npm/bin': 'npm',
+    };
+    for (const [dir, manager] of Object.entries(cases)) {
+      assert.equal(launcher.packageManager(dir), manager, dir);
+    }
+  });
+
+  test("gives each manager its own global install command — the update card's, without @latest", () => {
+    const name = '@linuztx/alter-zero';
+    assert.equal(launcher.installCommand('npm', name), 'npm install -g @linuztx/alter-zero');
+    assert.equal(launcher.installCommand('pnpm', name), 'pnpm add -g @linuztx/alter-zero');
+    assert.equal(launcher.installCommand('yarn', name), 'yarn global add @linuztx/alter-zero');
+    assert.equal(launcher.installCommand('bun', name), 'bun add -g @linuztx/alter-zero');
+  });
+
+  test("agrees with the binary's own rule, src/update.rs's package_manager", () => {
+    // The update card and a launcher error must name the same manager, so
+    // the two rules read the same components.
+    const rust = fs.readFileSync(path.join(ROOT, '..', 'src', 'update.rs'), 'utf8');
+    for (const word of ['".pnpm"', '".bun"', '"yarn"', '"global"', '"node_modules"']) {
+      assert.ok(rust.includes(`== ${word}`), `src/update.rs still tests for ${word}`);
+    }
+    for (const [manager, command] of [
+      ['npm', 'npm install -g'],
+      ['pnpm', 'pnpm add -g'],
+      ['yarn', 'yarn global add'],
+      ['bun', 'bun add -g'],
+    ]) {
+      assert.ok(rust.includes(`"${command} {NPM_PACKAGE}@latest"`), `src/update.rs updates ${manager} with ${command}`);
+      assert.equal(launcher.installCommand(manager, 'x'), `${command} x`);
+    }
+  });
+
+  test("locate's advice names that manager's command", () => {
+    const install = fakeInstall({ key: 'linux-x64', binary: null });
+    const { error } = launcher.locate({
+      name: MANIFEST.name,
+      platform: 'linux',
+      arch: 'x64',
+      resolve: resolverFor(install),
+      report: glibc,
+      manager: 'pnpm',
+    });
+    assert.match(error, /pnpm add -g @linuztx\/alter-zero/);
+    assert.doesNotMatch(error, /npm install -g/);
+  });
+});
+
 // The launcher run for real, as a child process, the way a shell runs it.
 function run(entry, args, options = {}) {
   return childProcess.spawnSync(process.execPath, [entry, ...args], {
@@ -328,6 +388,71 @@ describe('the launcher', { skip: HOST === null && 'no platform package for this 
     assert.match(result.stderr, /^alter-zero: /);
     assert.match(result.stderr, /npm install -g @linuztx\/alter-zero/);
   });
+
+  test('installed by pnpm, advises the pnpm command', () => {
+    const install = fakeInstall({ binary: null, prefix: ['.pnpm', '@linuztx+alter-zero@0.11.0'] });
+    const result = run(install.entry, []);
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /pnpm add -g @linuztx\/alter-zero/);
+    assert.doesNotMatch(result.stderr, /npm install -g/);
+  });
+
+  test('gets its whole message out through a full stderr pipe, then exits 1', { timeout: 20000 }, async () => {
+    // process.stderr writes to a pipe asynchronously: a message the pipe has
+    // no room for is queued, and the exit right after it drops the queue.
+    // This pipe is full when the launcher starts, and is drained only once
+    // the launcher has had time to give up on it.
+    const dir = tempDir();
+    const fifo = path.join(dir, 'stderr');
+    childProcess.execFileSync('mkfifo', [fifo]);
+    const reader = fs.openSync(fifo, fs.constants.O_RDONLY | fs.constants.O_NONBLOCK);
+    // The launcher's fd 2 blocks, as a shell's pipe does; a second, non-
+    // blocking opening fills the pipe up to whatever it holds here.
+    const writer = fs.openSync(fifo, 'w');
+    const filler = fs.openSync(fifo, fs.constants.O_WRONLY | fs.constants.O_NONBLOCK);
+    let filled = 0;
+    const page = Buffer.alloc(4096, 'f');
+    for (;;) {
+      try {
+        filled += fs.writeSync(filler, page);
+      } catch (err) {
+        if (err.code === 'EAGAIN') break;
+        throw err;
+      }
+    }
+    fs.closeSync(filler);
+    const drain = () => {
+      const chunks = [];
+      const buf = Buffer.alloc(65536);
+      for (;;) {
+        let n;
+        try {
+          n = fs.readSync(reader, buf, 0, buf.length, null);
+        } catch (err) {
+          if (err.code === 'EAGAIN') break;
+          throw err;
+        }
+        if (n === 0) break;
+        chunks.push(Buffer.from(buf.subarray(0, n)));
+      }
+      return Buffer.concat(chunks);
+    };
+    try {
+      const install = fakeInstall({ binary: null });
+      const child = childProcess.spawn(process.execPath, [install.entry], { stdio: ['ignore', 'ignore', writer] });
+      const exited = new Promise((resolve) => child.on('exit', (code) => resolve(code)));
+      await new Promise((resolve) => setTimeout(resolve, 750));
+      let got = drain();
+      const code = await exited;
+      got = Buffer.concat([got, drain()]);
+      assert.equal(code, 1);
+      const text = got.subarray(filled).toString('utf8');
+      assert.match(text, /^alter-zero: .*is not installed[\s\S]*npm install -g @linuztx\/alter-zero\n$/);
+    } finally {
+      fs.closeSync(writer);
+      fs.closeSync(reader);
+    }
+  });
 });
 
 // The fallback for a Node without process.execve: the binary runs as a
@@ -375,6 +500,35 @@ describe('the spawn fallback', { skip: HOST === null && 'no platform package for
     const install = fakeInstall({ binary: '#!/bin/sh\nkill -USR1 $$\nsleep 5\n' });
     const result = run(harness(install), []);
     assert.equal(result.status, 128 + os.constants.signals.SIGUSR1);
+  });
+
+  test("exits 128+n for a crash, rather than dumping Node's own core", () => {
+    for (const signal of ['SIGABRT', 'SIGSEGV']) {
+      const install = fakeInstall({ binary: `#!/bin/sh\nulimit -c 0\nkill -${signal.slice(3)} $$\nsleep 5\n` });
+      const result = run(harness(install), []);
+      assert.equal(result.signal, null, `${signal}: the launcher did not die of it`);
+      assert.equal(result.status, 128 + os.constants.signals[signal], signal);
+    }
+  });
+
+  test('relays SIGQUIT to the binary instead of dying of it alone', async () => {
+    const install = fakeInstall({ binary: '#!/bin/sh\nulimit -c 0\necho ready\nexec sleep 30\n' });
+    const child = childProcess.spawn(process.execPath, [harness(install)], { stdio: ['ignore', 'pipe', 'inherit'] });
+    await new Promise((resolve) => child.stdout.once('data', resolve));
+    child.kill('SIGQUIT');
+    const [code, signal] = await new Promise((resolve) => child.on('exit', (...end) => resolve(end)));
+    assert.equal(signal, null, 'the launcher waited for the binary rather than leaving it running');
+    assert.equal(code, 128 + os.constants.signals.SIGQUIT);
+  });
+
+  test('explains a binary it could not start, and exits 1', () => {
+    const install = fakeInstall({ binary: echoArgs });
+    const missing = path.join(install.root, 'nowhere', 'alter-zero');
+    const file = path.join(install.root, 'harness-missing.js');
+    fs.writeFileSync(file, `require(${JSON.stringify(install.entry)}).launch(${JSON.stringify(missing)}, [], { execve: null });\n`);
+    const result = run(file, []);
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /^alter-zero: could not run .*nowhere\/alter-zero/);
   });
 });
 

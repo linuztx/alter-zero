@@ -6,10 +6,7 @@
 #   scripts/release.sh verify out/ --version 0.1.0
 #
 # For every archive: its name is {name}-v{version}-{target}.tar.gz for THIS
-# version; its .sha256 names it and matches — or, for a release as
-# published (`gh release download vX.Y.Z -D dist`: the archives and
-# SHA256SUMS, no per-asset files), SHA256SUMS lists it and matches; it holds
-# exactly one top-level
+# version; its .sha256 names it and matches; it holds exactly one top-level
 # directory of the same stem with the binary, LICENSE, README.md and
 # CHANGELOG.md and nothing else; the binary is executable and `file` reports
 # the target's object format and CPU (so a cross build that produced a host
@@ -62,12 +59,9 @@ for archive in "$dist"/*.tar.gz; do
 		continue
 	fi
 
-	if [ -f "$archive.sha256" ]; then
-		check_sha256 "$archive" || fail "$base: its .sha256 names another file or does not match"
-	elif [ ! -f "$dist/SHA256SUMS" ]; then
-		fail "$base: no .sha256 beside it and no SHA256SUMS listing it"
+	if ! check_sha256 "$archive"; then
+		fail "$base: .sha256 is missing, names another file, or does not match"
 	fi
-	# (With SHA256SUMS alone, its check below covers this archive.)
 
 	entries="$(tar -tzf "$archive" | sed 's#/$##' | sort -u)"
 	expected="$(printf '%s\n' "$stem"

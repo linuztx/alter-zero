@@ -94,7 +94,36 @@ function libcFamily(report) {
   return libs.some((lib) => /(^|\/)(ld-musl-|libc\.musl-)/.test(lib)) ? 'musl' : null;
 }
 
-const reinstall = (name) => `Reinstall it:\n\n  npm install -g ${name}\n`;
+// The package manager that installed this launcher, read off its own real
+// directory by the rule the binary applies to its own path (src/update.rs's
+// package_manager), so a launcher error and the binary's update card name
+// the same one: pnpm's store is node_modules/.pnpm, Bun's global packages
+// live under ~/.bun, Yarn classic's under …/yarn/global/node_modules, and
+// anything else — a checkout run through `npm link` included — is npm's.
+function packageManager(dir) {
+  const parts = dir.split(/[\\/]+/);
+  if (parts.includes('.pnpm')) return 'pnpm';
+  if (parts.includes('.bun')) return 'bun';
+  const yarn = parts.some((part, i) => part === 'yarn' && parts[i + 1] === 'global' && parts[i + 2] === 'node_modules');
+  return yarn ? 'yarn' : 'npm';
+}
+
+// The command that installs `name` globally with `manager`: the binary's
+// update command (src/update.rs's update_command) without the `@latest`.
+function installCommand(manager, name) {
+  switch (manager) {
+    case 'pnpm':
+      return `pnpm add -g ${name}`;
+    case 'yarn':
+      return `yarn global add ${name}`;
+    case 'bun':
+      return `bun add -g ${name}`;
+    default:
+      return `npm install -g ${name}`;
+  }
+}
+
+const reinstall = (command) => `Reinstall it:\n\n  ${command}\n`;
 const needsGlibc = (why) =>
   `${why}\nThe Linux build of Alter Zero needs glibc 2.35 or newer, which musl-based\n` +
   `distributions such as Alpine do not have. Build from source instead:\n${SOURCE_BUILD}\n`;
@@ -103,8 +132,9 @@ const needsGlibc = (why) =>
 // the message the user reads. Every way the exec could fail is checked
 // here, before it: Node aborts on a failed execve rather than throwing.
 // `report` (process.report.getReport, a few milliseconds) is read only to
-// explain a failure.
-function locate({ name, platform, arch, resolve, report }) {
+// explain a failure; `manager` names the package manager whose command the
+// advice to reinstall gives.
+function locate({ name, platform, arch, resolve, report, manager = 'npm' }) {
   const key = platformKey(platform, arch);
   if (key === null) {
     return {
@@ -114,6 +144,7 @@ function locate({ name, platform, arch, resolve, report }) {
     };
   }
   const pkg = platformPackage(name, key);
+  const again = reinstall(installCommand(manager, name));
   const onMusl = () => platform === 'linux' && libcFamily(report()) === 'musl';
   let manifest;
   try {
@@ -128,7 +159,7 @@ function locate({ name, platform, arch, resolve, report }) {
         `${pkg}, the package holding the ${key} binary, is not installed.\n` +
         `npm installs it beside ${name} as an optional dependency, and skips it\n` +
         'when optional dependencies are turned off (--omit=optional, --no-optional).\n' +
-        reinstall(name),
+        again,
     };
   }
   const binary = path.join(path.dirname(manifest), 'bin', COMMAND);
@@ -139,7 +170,7 @@ function locate({ name, platform, arch, resolve, report }) {
     stat = null;
   }
   if (!stat || !stat.isFile()) {
-    return { error: `${binary} is missing — the ${pkg} install is incomplete.\n${reinstall(name)}` };
+    return { error: `${binary} is missing — the ${pkg} install is incomplete.\n${again}` };
   }
   try {
     fs.accessSync(binary, fs.constants.X_OK);
@@ -150,7 +181,7 @@ function locate({ name, platform, arch, resolve, report }) {
       fs.chmodSync(binary, 0o755);
       fs.accessSync(binary, fs.constants.X_OK);
     } catch (err) {
-      return { error: `${binary} is not executable and could not be made so (${err.code || err.message}).\n${reinstall(name)}` };
+      return { error: `${binary} is not executable and could not be made so (${err.code || err.message}).\n${again}` };
     }
   }
   if (platform === 'linux') {
@@ -168,6 +199,35 @@ function locate({ name, platform, arch, resolve, report }) {
   return { binary };
 }
 
+// Say why the launcher cannot go on, and exit 1. One synchronous write
+// straight to fd 2: process.stderr writes to a pipe asynchronously, so a
+// message the pipe has no room for yet would be queued, and the exit right
+// after it would drop the queue.
+function fail(message) {
+  try {
+    fs.writeSync(2, `${COMMAND}: ${message}`);
+  } catch (_) {
+    // nowhere to say it; the exit status still does
+  }
+  process.exit(1);
+}
+
+// The signals whose default action dumps core. The fallback never re-raises
+// one: dying of it here would dump this Node process's core too — a crash
+// report about node, not the binary.
+const CORE_SIGNALS = new Set([
+  'SIGABRT',
+  'SIGBUS',
+  'SIGFPE',
+  'SIGILL',
+  'SIGQUIT',
+  'SIGSEGV',
+  'SIGSYS',
+  'SIGTRAP',
+  'SIGXCPU',
+  'SIGXFSZ',
+]);
+
 // Become the binary (execve), or — on a Node without it — run it as a
 // child that owns the terminal, relay the signals sent to this process,
 // and end the way it ended.
@@ -181,7 +241,9 @@ function launch(binary, args, { execve = process.execve, spawn = require('child_
     return; // not reached: this process is the binary now
   }
   const child = spawn(binary, args, { stdio: 'inherit', argv0: COMMAND });
-  const relayed = ['SIGINT', 'SIGTERM', 'SIGHUP'];
+  // What a process manager or a closing terminal sends to this process;
+  // without a listener, Node would die of it and leave the binary running.
+  const relayed = ['SIGINT', 'SIGTERM', 'SIGHUP', 'SIGQUIT'];
   const relay = (signal) => {
     try {
       child.kill(signal);
@@ -190,18 +252,15 @@ function launch(binary, args, { execve = process.execve, spawn = require('child_
     }
   };
   for (const signal of relayed) process.on(signal, relay);
-  child.on('error', (err) => {
-    process.stderr.write(`${COMMAND}: could not run ${binary}: ${err.message}\n`);
-    process.exit(1);
-  });
+  child.on('error', (err) => fail(`could not run ${binary}: ${err.message}\n`));
   child.on('exit', (code, signal) => {
     for (const s of relayed) process.removeListener(s, relay);
     if (signal) {
       // Die of the same signal, so a shell sees what the binary saw — except
-      // SIGUSR1, which Node answers by starting its inspector. Still here
-      // after the kill (an ignored signal, or that one): exit as a shell
-      // reports a death by signal.
-      if (signal !== 'SIGUSR1') process.kill(process.pid, signal);
+      // one that dumps core, and SIGUSR1, which Node answers by starting its
+      // inspector. Not re-raised, or still here after the kill (an ignored
+      // signal): exit as a shell reports a death by signal.
+      if (signal !== 'SIGUSR1' && !CORE_SIGNALS.has(signal)) process.kill(process.pid, signal);
       process.exit(128 + (os.constants.signals[signal] || 0));
     }
     process.exit(code === null ? 1 : code);
@@ -216,11 +275,9 @@ function main() {
     arch: process.arch,
     resolve: require.resolve,
     report: () => process.report.getReport(),
+    manager: packageManager(__dirname),
   });
-  if (found.error) {
-    process.stderr.write(`${COMMAND}: ${found.error}`);
-    process.exit(1);
-  }
+  if (found.error) fail(found.error);
   launch(found.binary, process.argv.slice(2));
 }
 
@@ -228,4 +285,14 @@ if (require.main === module) {
   main();
 }
 
-module.exports = { PLATFORMS, platformKey, platformPackage, elfInterpreter, libcFamily, locate, launch };
+module.exports = {
+  PLATFORMS,
+  platformKey,
+  platformPackage,
+  elfInterpreter,
+  libcFamily,
+  packageManager,
+  installCommand,
+  locate,
+  launch,
+};
