@@ -232,6 +232,12 @@ fn main() {
             StreamEvent::Steered { text } => {
                 println!("\x1b[36m[steered] {text}\x1b[0m");
             }
+            // A background note the turn read at a round boundary
+            // (docs/background.md) — this probe attaches no registry, but
+            // print it if one ever arrives rather than swallowing it.
+            StreamEvent::NoticeDelivered { seq } => {
+                println!("\x1b[36m[notice {seq} delivered]\x1b[0m");
+            }
             StreamEvent::Error(msg) => {
                 println!("\n\x1b[31m[error] {msg}\x1b[0m");
                 break;

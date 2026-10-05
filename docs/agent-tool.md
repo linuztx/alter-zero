@@ -117,15 +117,17 @@ terminal event goes out through `AgentRegistry::settle`, under the lock,
 once the outcome is recorded — which is what lets a waiting `agentoutput`
 claim the outcome so no notice repeats it.
 
-Background completion notices ride the **existing**
-`BackgroundRegistry::post_notice` board (`from_model: true`), so the in-flight
-agent hears a finished subagent within the same turn and
-`dispatch_after_turn`'s automatic follow-up turn covers idle completions with
-zero new plumbing. The TUI cell is a new `HistoryItem::AgentNotice` —
+Background completion notices ride the **existing** notice board
+(`BackgroundRegistry::post_agent_notice`, `from_model: true`, tagged with the
+agent), so the in-flight agent hears a finished subagent within the same turn
+and `dispatch_after_turn`'s automatic follow-up turn covers idle completions
+with zero new plumbing. The TUI cell is a new `HistoryItem::AgentNotice` —
 `● Agent "{description}" finished · {elapsed}` (green — the runtime
 `format_elapsed`-humanized, `6m 2s` past a minute) / `was stopped by user` /
-`failed` (red) — deferred to the same safe boundaries as shell notices
-(`App::pending agent completions`, settled beside `settle_bg_completions`).
+`failed` (red) — held with the board note's number and settled where the lead
+reads it, exactly as shell notices are (`App::take_delivered_agent_notice` on
+`StreamEvent::NoticeDelivered`, else at the turn's end beside
+`settle_bg_completions` — `docs/background.md` *Where a notice lands*).
 
 ## App state
 

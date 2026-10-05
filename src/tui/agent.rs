@@ -217,18 +217,24 @@ impl Session<'_> {
         // or not, and one an `agentoutput` report already covered posts
         // nothing and records no cell (docs/agent-tools.md *One notice per
         // answer*).
+        let mut seq = None;
         if settle == Some(false) {
             let context = settled.as_ref().map(AgentNotice::context_text);
-            if !self.agent_registry.post_notice(id, &self.registry, context)
-                && let Some(notice) = settled.take()
-            {
-                self.app.settle_agent_completion(&notice);
+            match self.agent_registry.post_notice(id, &self.registry, context) {
+                alter_zero::agents::NoticePost::Posted(posted) => seq = posted,
+                alter_zero::agents::NoticePost::Covered => {
+                    if let Some(notice) = settled.take() {
+                        self.app.settle_agent_completion(&notice);
+                    }
+                }
             }
         } else if let Some(notice) = &settled {
-            self.registry.post_agent_notice(notice.context_text(), id);
+            seq = Some(self.registry.post_agent_notice(notice.context_text(), id));
         }
+        // Held until the lead reads the note (`StreamEvent::NoticeDelivered`),
+        // so its cell lands where the lead heard it (docs/background.md).
         if let Some(notice) = settled {
-            self.app.defer_agent_notice(notice);
+            self.app.defer_agent_notice(notice, seq);
         }
         if let Some(linger) = self
             .app
@@ -572,8 +578,12 @@ impl Session<'_> {
                         // (docs/agent-tools.md *One notice per answer*).
                         self.app.settle_agent_completion(&notice);
                     } else {
-                        self.registry.post_notice(notice.context_text(), true);
-                        self.app.defer_agent_notice(notice);
+                        // Tagged with the agent, like every completion of
+                        // its: an `agentoutput` that reports the stop first
+                        // takes the note back (docs/agent-tools.md *One
+                        // notice per answer*).
+                        let seq = self.registry.post_agent_notice(notice.context_text(), id);
+                        self.app.defer_agent_notice(notice, Some(seq));
                         if !self.app.turn_active() {
                             self.dispatch_after_turn();
                         }

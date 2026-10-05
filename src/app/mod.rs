@@ -69,7 +69,7 @@ pub use self::agent::{
 };
 pub(crate) use self::agent::{file_tool_header, tool_header_text};
 pub use self::ask::{AskAnswerState, AskInput, AskPrompt, AskRow, ask_row_number, ask_rows};
-pub use self::background::{BackgroundNotice, BackgroundShell, BackgroundView, BgCompletion};
+pub use self::background::{BackgroundNotice, BackgroundShell, BackgroundView, BgCompletion, Held};
 pub use self::backtrack::{Backtrack, CHECKPOINT_RESTORED_NOTICE, CHECKPOINT_REWOUND_NOTICE};
 pub use self::commands::{
     COMMANDS, COMPACT_BUSY_NOTICE, COMPACT_EMPTY_NOTICE, COPY_EMPTY_NOTICE, COPY_OK_NOTICE,
@@ -697,11 +697,13 @@ pub struct App {
     /// [`model_picker`](Self::model_picker) — it replaces the composer and
     /// owns every key while open. See `docs/background.md`.
     pub background_view: Option<BackgroundView>,
-    /// Completions that landed while a turn was in flight, awaiting the turn
-    /// end: the loop settles them there — notices committed in arrival order,
-    /// and (for model-launched shells with nothing queued) the automatic
-    /// follow-up turn dispatched. See `docs/background.md`.
-    pending_bg: VecDeque<BgCompletion>,
+    /// Completions that landed while a turn was in flight, held until the
+    /// model reads them: each settles where the in-flight agent announces it
+    /// took its board note, and whatever no agent read settles at the turn's
+    /// end — notices committed in that order, and (for model-launched shells
+    /// with nothing queued) the automatic follow-up turn dispatched. See
+    /// `docs/background.md`.
+    pending_bg: VecDeque<Held<BgCompletion>>,
     /// How long the **current running command** (a model `bash` call or a `!`
     /// shell run) has been executing — boundary-injected each frame
     /// ([`set_command_elapsed`](App::set_command_elapsed), the
@@ -756,9 +758,10 @@ pub struct App {
     /// agent's own conversation (the composer chats with it; Esc returns).
     /// See `docs/agent-tool.md`.
     pub agent_view: Option<String>,
-    /// Background-agent completions awaiting a safe boundary — settled
-    /// beside [`pending_bg`](Self::pending_bg) (same sites, same rules).
-    pending_agents: VecDeque<AgentNotice>,
+    /// Background-agent completions held until the lead reads them —
+    /// settled beside [`pending_bg`](Self::pending_bg) (same sites, same
+    /// rules).
+    pending_agents: VecDeque<Held<AgentNotice>>,
     /// The open tool-permission prompt (`docs/permissions.md`): a `write`,
     /// `edit`, or `bash` call whose thread is blocked on the user's answer.
     /// Inline like [`model_picker`](Self::model_picker) — it replaces the

@@ -62,20 +62,15 @@ impl BackgroundNotice {
         headline
     }
 
-    /// The outcome clause of the headline / context note.
+    /// The outcome clause of the headline / context note — an ended shell's
+    /// in the words a companion call naming it uses too
+    /// ([`crate::background::exit_outcome`]).
     #[must_use]
     pub fn outcome_phrase(&self) -> String {
         if self.waiting {
             return "is waiting for input".to_string();
         }
-        if self.killed {
-            return "was stopped by the user".to_string();
-        }
-        match self.code {
-            Some(0) => "completed (exit code 0)".to_string(),
-            Some(code) => format!("failed (exit code {code})"),
-            None => "was terminated by a signal".to_string(),
-        }
+        crate::background::exit_outcome(self.code, self.killed)
     }
 
     /// The model-facing context note: the headline plus the output tail (the
@@ -225,6 +220,25 @@ impl BgCompletion {
     pub fn origin_label(&self) -> Option<String> {
         self.origin.as_ref().map(|origin| origin.agent_type.clone())
     }
+}
+
+/// A notice held for the conversation until the model reads it — a shell's
+/// [`BgCompletion`] or an agent's [`AgentNotice`] — beside the number of the
+/// board note carrying it to the model
+/// ([`PendingNotice::seq`](crate::background::PendingNotice::seq); `None` when
+/// none does: a subagent's shell reports to that agent's own queue).
+///
+/// The number is what places the notice in the conversation: the in-flight
+/// agent announces each note it reads
+/// ([`StreamEvent::NoticeDelivered`](crate::stream::StreamEvent::NoticeDelivered))
+/// and the loop records the held notice right there, which is the one place
+/// the transcript can put it without claiming the model read it earlier than
+/// it did. What no agent reads settles at the turn's end, to ride the next
+/// turn's context. See `docs/background.md`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Held<T> {
+    pub seq: Option<u64>,
+    pub notice: T,
 }
 
 /// Which page of the ↓ background manager band is showing. The band is
@@ -438,16 +452,31 @@ impl App {
         })
     }
 
-    /// Hold a completion that landed mid-turn for the next boundary settle.
-    pub fn defer_bg_completion(&mut self, completion: BgCompletion) {
-        self.pending_bg.push_back(completion);
+    /// Hold a completion that landed mid-turn until the model reads it —
+    /// `seq` the board note that carries it there ([`Held`]).
+    pub fn defer_bg_completion(&mut self, completion: BgCompletion, seq: Option<u64>) {
+        self.pending_bg.push_back(Held {
+            seq,
+            notice: completion,
+        });
     }
 
-    /// Drain the held completions (empty when none landed) — the loop
-    /// settles them at every safe boundary: each tool resolution and
-    /// segment-flush point mid-turn, and every turn end (`StreamDone`,
-    /// `Error`, and the Esc interrupt alike). See `docs/background.md`.
-    pub fn take_pending_bg_completions(&mut self) -> Vec<BgCompletion> {
+    /// The held completion board note `seq` carried — the in-flight agent
+    /// just read it (`StreamEvent::NoticeDelivered`), so it settles now, in
+    /// that place. `None` when no held completion is that note's.
+    pub fn take_delivered_bg_completion(&mut self, seq: u64) -> Option<BgCompletion> {
+        let index = self
+            .pending_bg
+            .iter()
+            .position(|held| held.seq == Some(seq))?;
+        self.pending_bg.remove(index).map(|held| held.notice)
+    }
+
+    /// Drain the held completions (empty when none is held) — what no agent
+    /// read: the loop settles them at every turn end (`StreamDone`, `Error`,
+    /// and the Esc interrupt alike) and at an idle arrival, to ride the next
+    /// turn's context. See `docs/background.md`.
+    pub fn take_pending_bg_completions(&mut self) -> Vec<Held<BgCompletion>> {
         self.pending_bg.drain(..).collect()
     }
 

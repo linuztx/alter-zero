@@ -1625,14 +1625,14 @@ fn a_completion_pending_at_turn_end_records_above_the_summary() {
         None,
     );
     let completion = app.bg_exited("bash_1", None, false).expect("it finished");
-    app.defer_bg_completion(completion);
+    app.defer_bg_completion(completion, Some(1));
     app.push_chunk("Done — the server was stopped.");
     let _ = app.finish_stream();
     // The StreamDone sequence: build the summary (status cleared, not yet
     // recorded), settle the held completion, then record the summary.
     let summary = app.take_turn_summary(7).expect("a turn was active");
-    for completion in app.take_pending_bg_completions() {
-        app.record_background_notice(&completion);
+    for held in app.take_pending_bg_completions() {
+        app.record_background_notice(&held.notice);
     }
     app.record_turn_summary(summary);
     let kinds: Vec<&str> = app

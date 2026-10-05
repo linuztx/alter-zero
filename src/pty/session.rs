@@ -471,6 +471,18 @@ impl SessionIo {
         true
     }
 
+    /// Has the model looked at the session since its last unseen prompt was
+    /// told of ([`take_unseen_prompt`](Self::take_unseen_prompt))? What the
+    /// event loop asks before it posts that prompt's `… is waiting for input`
+    /// note: a companion call's look that came first already showed the model
+    /// the prompt, and the note would only reach it after the answer
+    /// (`docs/bash-tools.md`).
+    #[must_use]
+    pub fn prompt_seen(&self) -> bool {
+        let state = self.lock();
+        state.prompt_told_seq <= state.looked_seq
+    }
+
     /// Mark the session announced to the event loop; `true` when this call
     /// is the one that did (so it sends the event), `false` if it already was.
     pub fn announce(&self) -> bool {
@@ -2659,6 +2671,26 @@ mod tests {
         assert!(!io.take_unseen_prompt(Duration::ZERO));
         io.absorb(b"\r\nready> ");
         assert!(io.take_unseen_prompt(Duration::ZERO));
+    }
+
+    #[test]
+    fn a_told_prompt_is_seen_once_the_model_looks() {
+        // The event loop posts a told prompt's note only while the model has
+        // not looked since: a companion call whose look came first already
+        // showed it the prompt, and the note would arrive after the answer
+        // it asks for (docs/bash-tools.md).
+        let io = SessionIo::new(true);
+        io.announce();
+        io.absorb(b"Use another port? (Y/n) ");
+        assert!(io.take_unseen_prompt(Duration::ZERO));
+        assert!(!io.prompt_seen(), "told, and not yet looked at");
+        let _ = io.look(
+            "s1",
+            Status::Running {
+                waiting: Waiting::Input,
+            },
+        );
+        assert!(io.prompt_seen(), "the look showed the model that prompt");
     }
 
     #[test]

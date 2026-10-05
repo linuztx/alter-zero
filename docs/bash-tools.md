@@ -124,6 +124,88 @@ Every result is the same small grammar: `Exit code: N`, `Running (session …)`
 with or without `waiting for input`, `Stopped (session …)`, and the output
 since the model's previous look.
 
+### One notice per exit
+
+A session can end **while the model is writing a call to it**: `bash` comes
+back at a `sudo` password prompt, the command then finishes by itself (a
+cached credential, a fingerprint), and the model's `bashsend` with the
+password arrives a few seconds later. The exit's `[background] … completed`
+note was posted after that round's request went out, so the model had not
+read it — yet the call answered `No running session … its final output was
+already reported`, and the note arrived after it. The model typed into
+nothing, was told something untrue, and read the truth one round late.
+
+So an exit **no call reported** (the monitor finalized it with nobody
+waiting — `Finish::Now` — or the waiting call reported something else) is kept
+in the registry, with the session's output, until its note is read
+(`background::UnreadExit`). A companion call naming the session in that window
+**claims** it (`BackgroundRegistry::claim_exit`) and reports the exit itself —
+the look that covers it, what the command printed since the model's last look
+under `Exit code: N`, exactly as a call that saw the exit happen reports it —
+with a model-only note saying what became of the call
+(`pty::report::EXITED_BEFORE_INPUT_NOTE`: nothing was typed;
+`EXITED_BEFORE_KILL_NOTE`: nothing to stop; `USER_STOPPED_NOTE` when the
+user's `x` ended it). The note that would have said the same is then not
+owed, by the agents' *One notice per answer* rules under one lock:
+
+- the claim comes first — the loop's `post_exit_notice` finds the exit
+  claimed and posts nothing, and no notice cell is recorded;
+- the note is posted but unread — the claim takes it back off the board and
+  the registry remembers its number, so the loop drops the cell it held for it
+  (`take_retracted`);
+- the note was read — there is nothing to claim, and the call is told the
+  session ended, how, and that its final output was already reported, which
+  is true again.
+
+**Only a note's own reader claims it.** The board is the lead's: a subagent's
+call naming the lead's session — it learned the id somehow — must not take the
+lead's note back, or the lead never hears how its own command ended. So an
+exit whose note sits on the board is the lead's to claim, and one not yet
+posted is its launcher's (`UnreadExit::claimable_by`).
+
+A call with no exit to claim is never told the session "has exited (its final
+output was already reported) or never existed" when the registry knows better.
+It remembers its newest endings — code, whether its own kill did it, whether
+a report covered it, and whose note it is (`background::EndedSession`, the
+last 64) — and says how the session ended and what that means for this call:
+the output was already reported, when the note was the caller's to read or a
+report covered the exit; otherwise `It is not this conversation's session: its
+exit is reported to the main conversation` (or `to agent {id}`), with nothing
+typed or stopped. A stop the model's own `bashkill` escalated to reads
+`was stopped`, never `by the user`.
+
+A shell a **subagent** launched reports to that agent's own queue rather than
+the board, and the same race happens there — a subagent's `bashsend` into its
+own session that ended while it was writing the call. So the routed note
+carries the exit's claim details with it: the loop routes it in one step under
+the agent registry's lock, asking the board whether it is still owed
+(`AgentRegistry::route_shell_note` → `BackgroundRegistry::take_shell_notice`,
+the agents-then-board lock order the agents' own notices already use), and the
+subagent's call claims it **from its own queue**
+(`AgentRegistry::claim_routed_exit`, reached through `claim_exit`'s `caller`).
+Only the launching agent may: anyone else taking that note back would leave
+the agent that started the command never hearing how it ended. A claimed exit
+routes nothing; a note the agent's loop already read is reported, and the
+call is told so. A routed note is numbered from the board's own count
+(`Route::Routed(seq)`), so the cell the loop holds for it goes with it when
+the agent's own call takes it back, exactly as a board note's does.
+
+The same rule covers the **waiting-for-input** note: a companion call's look
+shows the model whatever the session is asking, so it takes back that
+session's unread `… is waiting for input` note (`retract_shell_notices`, after
+the look) — the lead's off the board, a subagent's out of its own queue
+(`AgentRegistry::withdraw_routed_notes`), and only the caller's own: a
+subagent that looked at the lead's session saw the prompt, the lead did not.
+A note the loop posts after the look is not posted at all
+(`SessionIo::prompt_seen`). Otherwise the note would reach the model after its
+answer and read as a second question.
+
+`smoke.sh` Phase 131 replays the reported race end to end: a stub provider
+whose `bash` call comes back at a `Password: ` prompt, then takes six seconds
+to write the `bashsend` while the command finishes by itself — the call must
+read back `Exit code: 0` with `Nothing was typed`, and no `[background]` note
+for it may reach the wire or the screen.
+
 The legacy `bash_session` tool is still **executed** (a resumed conversation
 may hold calls to it, and a model may remember it) but no longer offered, and
 its recorded calls replay as the tool that does the same thing now: a kill as

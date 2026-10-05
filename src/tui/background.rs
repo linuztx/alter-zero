@@ -14,11 +14,17 @@
 //!   next round — a shell it just `kill`ed is known to it within the same turn.
 //!   A shell launched *by a subagent* reports to that agent first, through the
 //!   registry's pending-input seam.
-//! - **The user, at a safe boundary.** The `● Background command "…" completed`
-//!   cell waits for [`Session::settle_bg_completions`], which every tool
-//!   resolution and every turn end calls. Those are the points where the
-//!   streaming buffer is empty, so a notice cell can never split a committed
-//!   reply (invariants 2/3).
+//! - **The conversation, where the model read it.** The `● Background command
+//!   "…" completed` cell is held until the in-flight agent announces it took
+//!   the note ([`Session::settle_delivered_notice`], on
+//!   `StreamEvent::NoticeDelivered`) — the round boundary that request went
+//!   out from, right after the previous round's tool results, where the
+//!   streaming buffer is empty (invariants 2/3). What no agent read settles
+//!   at the turn's end ([`Session::settle_bg_completions`]) and rides the
+//!   next turn's context. Settling at the first tool boundary instead put a
+//!   note that landed while the model was generating a call *in front of*
+//!   that call — so the transcript, and every later turn's context, said the
+//!   model had read it and gone on regardless.
 //!
 //! With nothing in flight, a model-launched completion no agent read starts the
 //! automatic follow-up turn instead, so the model can report the result.
@@ -70,8 +76,11 @@ impl Session<'_> {
                 id, code, killed, ..
             } => {
                 self.bg_clocks.remove(&id);
-                if let Some(completion) = self.app.bg_exited(&id, code, killed) {
-                    self.report_bg_completion(completion);
+                match self.app.bg_exited(&id, code, killed) {
+                    Some(completion) => self.report_bg_completion(completion),
+                    // Already swept (`/clear`): no note is owed, so the
+                    // registry need not keep the exit claimable.
+                    None => self.registry.forget_exit(&id),
                 }
             }
             // A session nobody waits on stopped to ask for input
@@ -87,7 +96,7 @@ impl Session<'_> {
     }
 
     /// Tell the model what a background shell did — it exited, or stopped to
-    /// ask for input — and hold its notice for the next safe boundary.
+    /// ask for input — and hold its notice until the model reads it.
     fn report_bg_completion(&mut self, completion: BgCompletion) {
         // A subagent-launched shell reports to its launcher first: the note
         // queues onto that agent's seam and is heard at its next round
@@ -102,15 +111,48 @@ impl Session<'_> {
         // A launcher that already settled can't hear it: the shared board
         // takes the note instead, so the main turn (or the idle follow-up
         // turn) relays the outcome (docs/agent-tool.md).
+        //
+        // Either way, a companion call may have got there first — a `bashsend`
+        // into a session that ended while the model was writing it reports
+        // the exit itself, and a look at a session shows the prompt a waiting
+        // note would — and then the model has it: no note, no cell
+        // (docs/bash-tools.md *One notice per exit*). The registry answers
+        // that under its own lock, atomically with the claim.
         let note = completion.context_text();
-        let routed = completion
-            .origin
-            .as_ref()
-            .is_some_and(|origin| self.agent_registry.queue_input(&origin.agent_id, &note));
-        if !routed {
-            self.registry.post_notice(note, completion.from_model);
-        }
-        self.app.defer_bg_completion(completion);
+        let routed = match &completion.origin {
+            Some(origin) => match self.agent_registry.route_shell_note(
+                &origin.agent_id,
+                &completion.id,
+                &note,
+                completion.waiting,
+                &self.registry,
+            ) {
+                alter_zero::agents::Route::Covered => return,
+                alter_zero::agents::Route::Routed(seq) => Some(seq),
+                alter_zero::agents::Route::Unheard => None,
+            },
+            None => None,
+        };
+        // A routed note is the launcher's to read, never the lead's: its cell
+        // settles at the turn's end — unless the agent's own call took the
+        // note back first, which retracts its number like a board note's.
+        let seq = match routed {
+            Some(seq) => seq,
+            None => {
+                let posted = if completion.waiting {
+                    self.registry
+                        .post_waiting_notice(&completion.id, note, completion.from_model)
+                } else {
+                    self.registry
+                        .post_exit_notice(&completion.id, note, completion.from_model)
+                };
+                let Some(seq) = posted else {
+                    return;
+                };
+                seq
+            }
+        };
+        self.app.defer_bg_completion(completion, Some(seq));
         if !self.app.turn_active() {
             self.dispatch_after_turn();
         }
@@ -128,52 +170,86 @@ impl Session<'_> {
         self.registry.request_background();
     }
 
-    /// Settle the background completions held so far (empty when none landed):
-    /// record + commit each notice in arrival order — commits are view-gated
-    /// (invariant 4: history always records; an overlay return repaints from it).
-    /// Runs at every **safe boundary** — each tool resolution / segment flush
-    /// mid-turn, every turn end, and the idle arrival — points where the
-    /// streaming buffer is empty, so a notice cell can never split a committed
-    /// reply (invariants 2/3).
+    /// Settle the notice the in-flight agent just read — board note `seq`
+    /// (`StreamEvent::NoticeDelivered`): record + commit its held cell **here**,
+    /// at the round boundary the model's request went out from, so history,
+    /// scrollback and every later turn's context carry it exactly where the
+    /// wire did (`docs/background.md`). A note nobody holds a cell for (one
+    /// whose cell already settled) changes nothing.
+    pub(crate) fn settle_delivered_notice(&mut self, seq: u64) {
+        if let Some(completion) = self.app.take_delivered_bg_completion(seq) {
+            self.settle_bg_completion(&completion);
+        } else if let Some(notice) = self.app.take_delivered_agent_notice(seq) {
+            self.settle_agent_notice(&notice);
+        }
+    }
+
+    /// Settle every notice still held — the ones no agent read: record +
+    /// commit each in arrival order, shells then agents. Runs at every turn
+    /// end (`StreamDone` — above its summary — a backend error, both Esc
+    /// outcomes) and at an idle arrival; the next turn's context carries them
+    /// from there. A note a report took back off the board before any model
+    /// read it owes no cell (`docs/agent-tools.md` *One notice per answer*).
     pub(crate) fn settle_bg_completions(&mut self) {
-        let committing = self.commits_allowed();
-        for completion in self.app.take_pending_bg_completions() {
-            let notice = self.app.record_background_notice(&completion);
-            if committing {
-                let width = self.term.screen().width;
-                // A completion can settle right after a turn whose strip just
-                // collapsed — reseat the viewport like every post-stream commit
-                // so the notice replaces the strip's rows in place (invariant 3).
-                // Mid-turn this re-asserts the current strip-aware height (a
-                // no-op sync; `paint_live` re-syncs before any pending flush).
-                let height = self.live_region_height();
-                self.term.set_view_height(height);
-                self.term
-                    .insert_before(ui::background_notice_lines(&notice, width));
-                self.term.insert_before(vec![Line::default()]);
+        for held in self.app.take_pending_bg_completions() {
+            if !self.retracted(held.seq) {
+                self.settle_bg_completion(&held.notice);
             }
         }
-        // Background-agent completions settle at the same boundaries — the green
-        // `● Agent "…" finished` / red stopped cell — and update the recorded
-        // group entry so the Ctrl+O cell shows the final response
+        // Background-agent completions settle at the same turn ends — the
+        // green `● Agent "…" finished` / red stopped cell — and update the
+        // recorded group entry so the Ctrl+O cell shows the final response
         // (docs/agent-tool.md).
-        for notice in self.app.take_pending_agent_notices() {
-            self.app.settle_agent_completion(&notice);
-            // An `agentoutput` report took its note back off the board before
-            // the lead read it: the cell would record a notice nobody sent
-            // (docs/agent-tools.md *One notice per answer*).
-            if self.agent_registry.take_retracted(&notice.id) {
+        for held in self.app.take_pending_agent_notices() {
+            if self.retracted(held.seq) {
+                // An `agentoutput` report took the note back before the lead
+                // read it: the cell would record a notice nobody sent — but
+                // the recorded group entry still learns the final state.
+                self.app.settle_agent_completion(&held.notice);
                 continue;
             }
-            self.app.record_agent_notice(&notice);
-            if committing {
-                let width = self.term.screen().width;
-                let height = self.live_region_height();
-                self.term.set_view_height(height);
-                self.term
-                    .insert_before(ui::agent_notice_lines(&notice, width));
-                self.term.insert_before(vec![Line::default()]);
-            }
+            self.settle_agent_notice(&held.notice);
+        }
+    }
+
+    /// Was held note `seq` taken back off the board unread?
+    fn retracted(&self, seq: Option<u64>) -> bool {
+        seq.is_some_and(|seq| self.registry.take_retracted(seq))
+    }
+
+    /// Record + commit one shell's notice cell — commits are view-gated
+    /// (invariant 4: history always records; an overlay return repaints from
+    /// it).
+    fn settle_bg_completion(&mut self, completion: &BgCompletion) {
+        let notice = self.app.record_background_notice(completion);
+        if self.commits_allowed() {
+            let width = self.term.screen().width;
+            // A completion can settle right after a turn whose strip just
+            // collapsed — reseat the viewport like every post-stream commit
+            // so the notice replaces the strip's rows in place (invariant 3).
+            // Mid-turn this re-asserts the current strip-aware height (a
+            // no-op sync; `paint_live` re-syncs before any pending flush).
+            let height = self.live_region_height();
+            self.term.set_view_height(height);
+            self.term
+                .insert_before(ui::background_notice_lines(&notice, width));
+            self.term.insert_before(vec![Line::default()]);
+        }
+    }
+
+    /// Record + commit one background agent's notice cell, updating its
+    /// recorded group entry first so the Ctrl+O cell shows the final response
+    /// (docs/agent-tool.md).
+    fn settle_agent_notice(&mut self, notice: &alter_zero::app::AgentNotice) {
+        self.app.settle_agent_completion(notice);
+        self.app.record_agent_notice(notice);
+        if self.commits_allowed() {
+            let width = self.term.screen().width;
+            let height = self.live_region_height();
+            self.term.set_view_height(height);
+            self.term
+                .insert_before(ui::agent_notice_lines(notice, width));
+            self.term.insert_before(vec![Line::default()]);
         }
     }
 }

@@ -1088,7 +1088,9 @@ attribution and the completion notice for free; what the registry gains is:
   completed` note after it would be noise, or worse, an automatic follow-up
   turn. Who reports an exit is a small handshake (`SessionIo::finish`/
   `end_wait`): a call registers as a waiter *before* it acts on the session,
-  so an exit its own input or kill caused is its to report;
+  so an exit its own input or kill caused is its to report — and an exit no
+  call saw stays claimable until its note is read, so a call that arrives
+  just after it reports it too (`docs/bash-tools.md` *One notice per exit*);
 - **the screen for the UI** — for a TTY shell the monitor sends
   `BgEvent::Screen` (throttled to ten a second) instead of line output, and
   the ↓ manager's details page shows the rendered screen: the prompt it is

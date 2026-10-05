@@ -41,6 +41,7 @@ use alter_zero::app::{
     DonationAddress,
     ExportPicker,
     ExportTarget,
+    Held,
     HistoryItem,
     HistorySearch,
     HooksLevel,

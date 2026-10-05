@@ -422,9 +422,13 @@ impl ModelSession {
                     .with_ask(ask.clone())
                     .with_agents(agents.clone())
                     // …and the mid-turn queue, so the offline demo takes a
-                    // queued message at its next tool boundary exactly as a
-                    // real round boundary does (docs/queue.md).
-                    .with_steer(steer.clone());
+                    // queued message once its tool round resolves, exactly as
+                    // a real round boundary does (docs/queue.md) — and the
+                    // notice board beside it, so a background notice that
+                    // lands mid-turn settles where the turn reads it
+                    // (docs/background.md).
+                    .with_steer(steer.clone())
+                    .with_background(registry.clone());
                 Box::new(match permissions {
                     Some(gate) => dummy.with_permissions(gate.clone()),
                     None => dummy,

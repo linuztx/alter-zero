@@ -12,6 +12,44 @@ release heading when a version is cut.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A background notice now sits where the model actually read it.** A
+  background command that finished while the model was writing its next tool
+  call reached the model only after that call's result, but the transcript
+  recorded its `[background] … completed` notice in front of the call. So
+  Ctrl+D, the rollout and every later request showed the model reading
+  "completed (exit code 0)" and then calling `bashsend` into the finished
+  session anyway, as if the notice had been injected but never sent. The
+  agent now announces each notice as it reads it, and the notice is recorded
+  at exactly that point. One it never read is recorded at the end of the turn
+  and reaches the model in the next one. Background agents' completion
+  notices follow the same rule (`docs/background.md`).
+- **A call into a session that has just ended reports how it ended.** When a
+  session ended on its own while the model was writing a `bashsend`,
+  `bashwait` or `bashkill` to it, the call answered that the session's final
+  output "was already reported", before the model had seen any of it. The
+  call now reports the exit itself: the output since the model last looked,
+  the exit code, and a note that nothing was typed (or nothing stopped).
+  The notice that would have repeated it is withdrawn. This works the same
+  inside a subagent, whose shells report to its own queue. A call that looks
+  at a running session likewise withdraws that session's unread "waiting for
+  input" notice, which would otherwise arrive after the answer it asks for
+  (`docs/bash-tools.md`).
+- **A session's notices belong to the conversation that reads them.** A
+  subagent's call naming a session of the main conversation no longer takes
+  back the main conversation's notice about it, so the main conversation
+  still hears how its own command ended, and the reverse holds too. A call
+  that names a session another conversation reads is told how it ended and
+  whose it is, instead of "already reported or never existed". A subagent
+  that looks at its own session withdraws the stale "waiting for input"
+  notice in its queue as well (`docs/bash-tools.md`).
+- **The offline demo hands over queued messages and notices where a real
+  model would read them.** It used to deliver them right after the first call
+  of a parallel batch, inside a round the model never saw them in. It now
+  waits for the whole batch to resolve, as the agent loop does
+  (`docs/queue.md`).
+
 ## [0.12.0] - 2026-10-05
 
 ### Added

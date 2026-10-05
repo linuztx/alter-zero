@@ -339,10 +339,74 @@ fn completions_defer_and_drain_in_arrival_order() {
     let mut app = app_with_shells(&["a", "b"]);
     let first = app.bg_exited("bash_1", Some(0), false).unwrap();
     let second = app.bg_exited("bash_2", Some(1), false).unwrap();
-    app.defer_bg_completion(first.clone());
-    app.defer_bg_completion(second.clone());
-    assert_eq!(app.take_pending_bg_completions(), vec![first, second]);
+    app.defer_bg_completion(first.clone(), Some(1));
+    // A subagent's shell: its note went to that agent's own queue, so no
+    // board note carries it to the main model.
+    app.defer_bg_completion(second.clone(), None);
+    assert_eq!(
+        app.take_pending_bg_completions(),
+        vec![
+            Held {
+                seq: Some(1),
+                notice: first
+            },
+            Held {
+                seq: None,
+                notice: second
+            },
+        ]
+    );
     assert!(app.take_pending_bg_completions().is_empty(), "drained once");
+}
+
+#[test]
+fn a_delivered_completion_is_taken_by_its_board_number() {
+    // The agent read one of the held notes (`StreamEvent::NoticeDelivered`):
+    // exactly that completion settles there, where the model has it, and the
+    // rest keep waiting for theirs — or for the turn's end
+    // (docs/background.md).
+    let mut app = app_with_shells(&["a", "b"]);
+    let first = app.bg_exited("bash_1", Some(0), false).unwrap();
+    let second = app.bg_exited("bash_2", Some(1), false).unwrap();
+    app.defer_bg_completion(first.clone(), Some(4));
+    app.defer_bg_completion(second.clone(), Some(5));
+    assert_eq!(app.take_delivered_bg_completion(5), Some(second));
+    assert_eq!(app.take_delivered_bg_completion(5), None, "taken once");
+    assert_eq!(app.take_delivered_bg_completion(9), None, "not one of ours");
+    assert_eq!(
+        app.take_pending_bg_completions(),
+        vec![Held {
+            seq: Some(4),
+            notice: first
+        }],
+        "the undelivered one still waits"
+    );
+}
+
+#[test]
+fn a_delivered_agent_notice_is_taken_by_its_board_number() {
+    let mut app = App::new();
+    let notice = |id: &str| AgentNotice {
+        id: id.to_string(),
+        description: format!("task {id}"),
+        status: AgentStatus::Done,
+        secs: 3,
+        result: "done".to_string(),
+        timestamp: String::new(),
+        user_messages: Vec::new(),
+    };
+    app.defer_agent_notice(notice("a1"), Some(2));
+    app.defer_agent_notice(notice("a2"), Some(3));
+    assert_eq!(app.take_delivered_agent_notice(2), Some(notice("a1")));
+    assert_eq!(app.take_delivered_agent_notice(2), None, "taken once");
+    assert!(app.has_pending_agent_notices(), "a2 still waits");
+    assert_eq!(
+        app.take_pending_agent_notices(),
+        vec![Held {
+            seq: Some(3),
+            notice: notice("a2")
+        }]
+    );
 }
 
 #[test]
@@ -593,7 +657,7 @@ fn clear_conversation_wipes_the_background_state() {
     let mut app = app_with_shells(&["a"]);
     let completion = app.bg_exited("bash_1", Some(0), false).unwrap();
     app.bg_started("bash_2", "b", None, false, None);
-    app.defer_bg_completion(completion);
+    app.defer_bg_completion(completion, Some(1));
     // Run /clear the real way: type it (the palette opens) and Enter.
     for c in "/clear".chars() {
         app.on_key(key(KeyCode::Char(c)));
