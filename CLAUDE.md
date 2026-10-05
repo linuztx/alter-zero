@@ -3426,7 +3426,11 @@ paste (`images::remember_attachment`, `docs/memory.md`); and a model
   **never** bridged (the `0`s of `8080` → `9090` stay plain), and a `1` that
   became `10` marks the added `0` alone, leaving the untouched `1` plain. The
   removed row's marked run escapes that row's `DIM` (dimming the one thing the
-  eye is meant to find defeats marking it), and a pair too dissimilar to be an
+  eye is meant to find defeats marking it), its ink is held to 3:1 against the
+  mark (`INLINE_DIFF_MARK_MIN_CONTRAST`, `wrap::legible_on` — the mark sits at
+  a middle brightness a comment's grey can match, 1.0:1 in Dracula, so a
+  syntax colour that won't read there is lifted toward the theme's text just
+  far enough while one that reads keeps its colour), and a pair too dissimilar to be an
   edit is deliberately left flat, since a *replaced* line has no "what changed"
   to point at and would come back speckled with whatever letters the two texts
   coincidentally share (`refine_pair`'s guard, measured in non-whitespace

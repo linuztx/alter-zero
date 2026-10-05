@@ -62,7 +62,7 @@ chrome paints is one of these or derived from one:
 | `warning` | the `retrying n/m` clause, the context view's system tag, the ask review's unanswered warning |
 | `purple` | the context view's tool tag, the `/resume` toolbar's focus |
 | `diff_add_bg` / `diff_del_bg` | an added / removed numbered row's ground |
-| `diff_add_mark_bg` / `diff_del_mark_bg` | the brighter marks under the characters that actually changed (`docs/inline-diff.md`) |
+| `diff_add_mark_bg` / `diff_del_mark_bg` | the brighter marks under the characters that actually changed (`docs/inline-diff.md`); a changed run's ink is held to 3:1 against them, lifted toward `text` where the code theme's colour won't read |
 | `shimmer_base` | the status verb's resting grey, under the sweep to `text` |
 | `pulse_dim` | the bottom of the `pulse` spinner style's breath |
 | `code` | the `highlight::CodeTheme` the code blocks and file cells are coloured with |

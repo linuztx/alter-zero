@@ -7,7 +7,7 @@ use super::inline::wrap_inline_hanging;
 use super::inline_diff::{RefineRow, refine_rows};
 use super::theme::*;
 use super::tool::{more_hint_line, tool_output_lines};
-use super::wrap::{cols, segments_cols, truncate_cols};
+use super::wrap::{cols, legible_on, segments_cols, truncate_cols};
 use super::*;
 
 /// A `⎿` gutter row with an explicit content colour (`None` → dim): the
@@ -323,6 +323,12 @@ fn floor_boundary(s: &str, at: usize) -> usize {
 /// **not**: dimming the one run the eye is meant to find would defeat marking
 /// it at all.
 ///
+/// A changed run keeps its syntax colour wherever that colour reads on the
+/// mark. Where it doesn't, it is lifted toward the theme's text until it
+/// reads at [`INLINE_DIFF_MARK_MIN_CONTRAST`] ([`legible_on`]), so a comment
+/// whose grey matches the mark's brightness no longer vanishes into it. The
+/// unchanged text is never touched.
+///
 /// With no `changed` ranges this is exactly the old uniform styling, which is
 /// what keeps an unrefined pair — and every `read`/`write` body — rendering
 /// byte-for-byte as it did before.
@@ -348,9 +354,20 @@ fn row_segments(
             .collect();
     }
     let marked = |style: Style| {
-        mark_bg
-            .map_or(style, |b| style.bg(b))
-            .add_modifier(Modifier::BOLD)
+        let style = style.add_modifier(Modifier::BOLD);
+        let Some(b) = mark_bg else {
+            return style;
+        };
+        let style = match style.fg {
+            Some(fg) => style.fg(legible_on(
+                fg,
+                b,
+                tool_diff_mark_ink(),
+                INLINE_DIFF_MARK_MIN_CONTRAST,
+            )),
+            None => style,
+        };
+        style.bg(b)
     };
     let mut out: Vec<(String, Style)> = Vec::new();
     let mut at = 0usize;

@@ -3,15 +3,16 @@
 
 use super::*;
 use crate::ui::theme::{
-    CODE_TAB_WIDTH, EXPAND_HINT, FILE_PEEK_LINES, TOOL_BULLET, TOOL_FOLD_ROWS,
-    TOOL_HEADER_ELLIPSIS, TOOL_HEADER_MAX_COLS, TOOL_HEADER_MAX_LINES, TOOL_JSON_PRETTY_MAX_BYTES,
-    TOOL_LINE_ELLIPSIS, TOOL_LINE_MAX_ROWS, TOOL_PULSE_PERIOD, TOOL_TRUNCATED_MARKER,
-    tool_args_color, tool_diff_add_bg, tool_diff_add_color, tool_diff_add_mark_bg,
-    tool_diff_del_bg, tool_diff_del_color, tool_diff_del_mark_bg, tool_dim_color, tool_fail_color,
-    tool_ok_color, tool_output_color, tool_running_color, tool_waiting_color,
+    CODE_TAB_WIDTH, EXPAND_HINT, FILE_PEEK_LINES, INLINE_DIFF_MARK_MIN_CONTRAST, TOOL_BULLET,
+    TOOL_FOLD_ROWS, TOOL_HEADER_ELLIPSIS, TOOL_HEADER_MAX_COLS, TOOL_HEADER_MAX_LINES,
+    TOOL_JSON_PRETTY_MAX_BYTES, TOOL_LINE_ELLIPSIS, TOOL_LINE_MAX_ROWS, TOOL_PULSE_PERIOD,
+    TOOL_TRUNCATED_MARKER, tool_args_color, tool_diff_add_bg, tool_diff_add_color,
+    tool_diff_add_mark_bg, tool_diff_del_bg, tool_diff_del_color, tool_diff_del_mark_bg,
+    tool_dim_color, tool_fail_color, tool_ok_color, tool_output_color, tool_running_color,
+    tool_waiting_color,
 };
 use crate::ui::tool::{live_tool_lines, running_command_lines, tool_full_lines};
-use crate::ui::wrap::cols;
+use crate::ui::wrap::{cols, contrast_ratio};
 
 /// A theme RGB triple as the `Color` a rendered span carries.
 /// The content of a `⎿` gutter row — the corner (or a continuation row's
@@ -3032,6 +3033,132 @@ fn the_trailing_pad_keeps_the_row_tint_not_the_mark_tint() {
     let last = add.spans.last().unwrap();
     assert!(last.content.ends_with(' '), "the row pads to full width");
     assert_eq!(last.style.bg, Some(tool_diff_add_bg()));
+}
+
+// --- the changed run's ink reads on its mark (docs/inline-diff.md) ---
+
+/// The reported edit, verbatim: a reworded `///` doc comment, whose changed
+/// words are comment-coloured on the bright mark.
+const REWORDED_COMMENT: &str = "Updated src/llm/skill.rs (+1 -1)
+23 -/// teaches public webpage and PDF retrieval through Jina Reader using curl
+23 +/// teaches public webpage and PDF retrieval; `yt-dlp` teaches media downloads";
+
+/// Every span of `lines` on `bg`, with the contrast its ink reaches there.
+fn marked_contrasts(lines: &[Line], bg: Color) -> Vec<(String, f32)> {
+    lines
+        .iter()
+        .flat_map(|l| l.spans.iter())
+        .filter(|s| s.style.bg == Some(bg))
+        .map(|s| {
+            let fg = s.style.fg.expect("a marked run carries its ink");
+            let ratio = contrast_ratio(fg, bg).expect("an RGB theme");
+            (s.content.to_string(), ratio)
+        })
+        .collect()
+}
+
+#[test]
+fn a_changed_comment_reads_on_its_mark() {
+    // The reported case, under Dracula: its comment grey and its bright
+    // added-text mark share a luminance (1.0:1), so the words the edit
+    // changed vanished into their own highlight — the one run on screen the
+    // reviewer is meant to read.
+    with_theme(crate::app::Theme::Dracula, || {
+        let lines = tool_lines(
+            &tool("Edit", "src/llm/skill.rs", ToolStatus::Ok, REWORDED_COMMENT),
+            120,
+            &PathDisplay::VERBATIM,
+        );
+        for mark in [tool_diff_del_mark_bg(), tool_diff_add_mark_bg()] {
+            let runs = marked_contrasts(&lines, mark);
+            assert!(!runs.is_empty(), "the reworded pair is marked: {lines:?}");
+            for (text, ratio) in runs {
+                assert!(
+                    ratio >= INLINE_DIFF_MARK_MIN_CONTRAST,
+                    "{text:?} reads at {ratio:.2}:1 on its mark"
+                );
+            }
+        }
+    });
+}
+
+#[test]
+fn every_changed_run_reads_on_its_mark_in_every_theme() {
+    // Not just comments, and not just Dracula: whatever colour a theme's
+    // syntax gives the changed characters — a comment, a keyword, a
+    // constant, a string — the run reads on the mark it sits on. (The ANSI
+    // theme names terminal-palette colours, which have no value to measure.)
+    let output = "Updated src/lib.rs (+3 -3)
+1 -/// teaches public webpage and PDF retrieval through Jina Reader using curl
+1 +/// teaches public webpage and PDF retrieval; `yt-dlp` teaches media downloads
+2 -    (\"jina-reader/SKILL.md\", JINA), // fetch pages
+2 +    (\"yt-dlp/SKILL.md\", YT_DLP), // fetch media
+3 -pub const RETRIES: u32 = 3;
+3 +pub static ATTEMPTS: u64 = 5;";
+    for theme in crate::app::Theme::ALL
+        .into_iter()
+        .filter(|t| *t != crate::app::Theme::Ansi)
+    {
+        with_theme(theme, || {
+            let lines = tool_lines(
+                &tool("Edit", "src/lib.rs", ToolStatus::Ok, output),
+                120,
+                &PathDisplay::VERBATIM,
+            );
+            for mark in [tool_diff_del_mark_bg(), tool_diff_add_mark_bg()] {
+                let runs = marked_contrasts(&lines, mark);
+                assert!(!runs.is_empty(), "{theme:?}: the pairs are marked");
+                for (text, ratio) in runs {
+                    assert!(
+                        ratio >= INLINE_DIFF_MARK_MIN_CONTRAST,
+                        "{theme:?}: {text:?} reads at {ratio:.2}:1 on its mark"
+                    );
+                }
+            }
+        });
+    }
+}
+
+#[test]
+fn only_a_mark_too_bright_for_its_ink_changes_the_ink() {
+    // The lift is a floor, not a recolour. Under Dracula: the unchanged
+    // comment text keeps the highlighter's own grey on the row tint, and a
+    // changed run whose syntax colour already reads on the mark — the
+    // string's yellow — keeps that colour too.
+    let comment = Color::Rgb(0x62, 0x72, 0xA4);
+    let string = Color::Rgb(0xF1, 0xFA, 0x8C);
+    let output = "Updated a.rs (+2 -2)
+1 -/// teaches public webpage and PDF retrieval through Jina Reader using curl
+2 -let colour = \"red\";
+1 +/// teaches public webpage and PDF retrieval; `yt-dlp` teaches media downloads
+2 +let colour = \"blue\";";
+    with_theme(crate::app::Theme::Dracula, || {
+        let lines = tool_lines(
+            &tool("Edit", "a.rs", ToolStatus::Ok, output),
+            120,
+            &PathDisplay::VERBATIM,
+        );
+        let comment_row = diff_row(&lines, "yt-dlp");
+        let unchanged = comment_row
+            .spans
+            .iter()
+            .find(|s| s.content.contains("teaches public"))
+            .expect("the unchanged half of the comment");
+        assert_eq!(unchanged.style.bg, Some(tool_diff_add_bg()));
+        assert_eq!(unchanged.style.fg, Some(comment), "the row keeps its ink");
+
+        let string_row = diff_row(&lines, "blue");
+        let marked: Vec<_> = string_row
+            .spans
+            .iter()
+            .filter(|s| s.style.bg == Some(tool_diff_add_mark_bg()))
+            .collect();
+        assert!(!marked.is_empty(), "the string's change is marked");
+        assert!(
+            marked.iter().all(|s| s.style.fg == Some(string)),
+            "a colour that reads keeps its colour: {marked:?}"
+        );
+    });
 }
 
 // --- the header keeps the command's own spacing (docs/tools.md) ---

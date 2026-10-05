@@ -623,7 +623,10 @@ sits **one column further in** (`ui::file_body_indent`), matching Claude Code:
   is never bridged, and a `1` that became `10` marks the added `0` alone,
   leaving the `1` plain because it was not touched. The mark escapes the
   removed row's `DIM` (dimming the one thing the eye should find defeats
-  marking it) and survives the wrap. A pair too dissimilar to be an edit is
+  marking it) and survives the wrap. Its ink is held to 3:1 against the mark
+  (`INLINE_DIFF_MARK_MIN_CONTRAST`). A comment's grey can match the mark's
+  brightness, at 1.0:1 in Dracula, so a syntax colour that won't read there
+  is lifted toward the theme's text until it does. A pair too dissimilar to be an edit is
   left flat — a replaced line has no "what changed" to point at, and would
   come back speckled with the letters the two texts coincidentally share.
   Derived from the parsed body, so it lights up on rollouts recorded before it

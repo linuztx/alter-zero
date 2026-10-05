@@ -49,6 +49,18 @@ release heading when a version is cut.
   of a parallel batch, inside a round the model never saw them in. It now
   waits for the whole batch to resolve, as the agent loop does
   (`docs/queue.md`).
+- **The words an edit changed are readable on their highlight.** In an
+  `Edit` cell, the characters that changed sit on a brighter mark, and in
+  most themes a comment's grey was as bright as that mark. When the model
+  reworded a comment, the changed words disappeared into their own
+  highlight: 1.0:1 contrast in Dracula and One Dark, 1.05:1 in Nord and
+  Monokai, and under 2:1 in the dark Catppuccin flavours. A changed run's
+  colour is now held to at least 3:1 against its mark. A colour that already
+  reads keeps it; one that doesn't is lifted toward the theme's text just
+  far enough, so a changed comment still looks like a comment. The mark
+  colours themselves are unchanged, and so is the rest of the line. This
+  applies to the inline cell, the Ctrl+O transcript and the permission
+  prompt's preview alike (`docs/inline-diff.md`).
 
 ## [0.12.0] - 2026-10-05
 
