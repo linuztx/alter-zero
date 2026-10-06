@@ -35,7 +35,8 @@ sleep 0.7
 skillseed_menu="$(tmux capture-pane -t "$S102" -p)"
 echo "==== Phase 102: /skills on the first launch ===="
 printf '%s\n' "$skillseed_menu"
-expect_has "$skillseed_menu" -F "skill-creator" "the first launch's /skills does not list the built-in"
+expect_has "$skillseed_menu" -F "skill-creator" "the first launch's /skills does not list skill-creator"
+expect_has "$skillseed_menu" -F "yt-dlp" "the first launch's /skills does not list yt-dlp"
 tmux send-keys -t "$S102" Escape
 sleep 0.3
 submit "$S102" "/quit"
@@ -51,10 +52,14 @@ done
 if ! grep -q "^name: skill-creator" "$SK_CFG/skills/skill-creator/SKILL.md" 2>/dev/null; then
 	fail "the seeded SKILL.md has no name field"
 fi
+if ! grep -q "^name: yt-dlp" "$SK_CFG/skills/yt-dlp/SKILL.md" 2>/dev/null; then
+	fail "the first launch did not seed yt-dlp/SKILL.md"
+fi
 # Edit one file, delete the other, relaunch: the edit survives and the deletion
 # is repaired — a seed that overwrote would discard the user's own copy on
 # every restart.
 printf '%s\n' "---" "name: skill-creator" "description: MINE-NOT-YOURS." "---" >"$SK_CFG/skills/skill-creator/SKILL.md"
+printf '%s\n' "---" "name: yt-dlp" "description: MY-MEDIA-WORKFLOW." "---" >"$SK_CFG/skills/yt-dlp/SKILL.md"
 rm -f "$SK_CFG/skills/skill-creator/reference.md"
 tmux new-session -d -s "$S102" -x 100 -y 24 "$APP_SK"
 sleep 1.2
@@ -63,6 +68,9 @@ sleep 0.6
 tmux kill-session -t "$S102" 2>/dev/null
 if ! grep -q "MINE-NOT-YOURS" "$SK_CFG/skills/skill-creator/SKILL.md" 2>/dev/null; then
 	fail "the relaunch clobbered an edited SKILL.md"
+fi
+if ! grep -q "MY-MEDIA-WORKFLOW" "$SK_CFG/skills/yt-dlp/SKILL.md" 2>/dev/null; then
+	fail "the relaunch clobbered an edited yt-dlp/SKILL.md"
 fi
 if [ ! -f "$SK_CFG/skills/skill-creator/reference.md" ]; then
 	fail "a deleted built-in file did not come back on the next launch"

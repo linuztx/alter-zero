@@ -20,14 +20,15 @@ use crate::skills::{
 /// The built-in skills the binary carries, as `<name>/SKILL.md` → its bytes.
 ///
 /// `skill-creator` teaches this runtime's own skill format; `jina-reader`
-/// teaches public webpage and PDF retrieval through Jina Reader using curl
-/// (`docs/skills.md`). A skill is a *directory*, so extra files are seeded too.
+/// teaches public webpage and PDF retrieval; `yt-dlp` teaches media downloads
+/// through the external CLI (`docs/skills.md`). A skill is a *directory*, so
+/// extra files are seeded too.
 ///
 /// [`seed_builtin_skills`] writes exactly these, so what a session discovers
 /// on a fresh install is what is authored in `prompts/skills/` — beside every
 /// other `include_str!`'d markdown this crate embeds, and editable on disk
 /// once it is there.
-const BUILTIN_SKILL_FILES: [(&str, &str); 3] = [
+const BUILTIN_SKILL_FILES: [(&str, &str); 4] = [
     (
         "jina-reader/SKILL.md",
         include_str!("../../prompts/skills/jina-reader/SKILL.md"),
@@ -41,6 +42,10 @@ const BUILTIN_SKILL_FILES: [(&str, &str); 3] = [
     (
         "skill-creator/reference.md",
         include_str!("../../prompts/skills/skill-creator/reference.md"),
+    ),
+    (
+        "yt-dlp/SKILL.md",
+        include_str!("../../prompts/skills/yt-dlp/SKILL.md"),
     ),
 ];
 
@@ -1073,6 +1078,52 @@ mod tests {
         let (skills, errors) = discover_skills(&[root]);
         assert!(errors.is_empty(), "{errors:?}");
         assert!(skills.iter().any(|skill| skill.name == "jina-reader"));
+    }
+
+    #[test]
+    fn seeded_yt_dlp_is_listed_and_loads_on_demand() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path().join("skills");
+        assert!(seed_builtin_skills(&root).is_empty());
+        let (skills, errors) = discover_skills(std::slice::from_ref(&root));
+        assert!(errors.is_empty(), "{errors:?}");
+        let registry = SkillRegistry::new(skills);
+        let listing = registry.listing(crate::skills::listing_budget(None));
+        assert!(listing.contains("yt-dlp"), "{listing}");
+        assert!(listing.contains("subtitles/captions"), "{listing}");
+        assert!(!listing.contains("--no-playlist"), "body stays on demand");
+
+        let call = ToolCallRequest {
+            id: "media".into(),
+            name: "skill".into(),
+            arguments: serde_json::json!({"skill": "yt-dlp"}).to_string(),
+        };
+        let outcome = run_skill_tool(&registry, &mut LoadedSkills::default(), &call);
+        assert!(outcome.ok, "{}", outcome.output);
+        let body = outcome.context.expect("loaded body");
+        assert!(body.contains("--no-playlist"));
+        assert!(body.contains("--download-archive"));
+        assert!(body.contains("Ask before accessing browser cookies"));
+        assert!(body.contains("Check the command's exit status"));
+    }
+
+    #[test]
+    fn yt_dlp_seed_preserves_edits_and_restores_deleted_files() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path().join("skills");
+        write_skill(&root, "yt-dlp", &skill_md("Mine.", "custom media workflow"));
+        assert!(seed_builtin_skills(&root).is_empty());
+        let path = root.join("yt-dlp").join(SKILL_FILE_NAME);
+        assert!(
+            std::fs::read_to_string(&path)
+                .expect("read")
+                .contains("custom media workflow")
+        );
+        std::fs::remove_file(&path).expect("delete");
+        assert!(seed_builtin_skills(&root).is_empty());
+        let (skills, errors) = discover_skills(&[root]);
+        assert!(errors.is_empty(), "{errors:?}");
+        assert!(skills.iter().any(|skill| skill.name == "yt-dlp"));
     }
 
     #[test]

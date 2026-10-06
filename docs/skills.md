@@ -107,8 +107,8 @@ there is nothing here that executes on discovery.
 
 ### Built-in skills
 
-Two skills ship with the binary: **`skill-creator`** and **`jina-reader`**.
-Both use the same seed and discovery path described below.
+Three skills ship with the binary: **`skill-creator`**, **`jina-reader`**, and
+**`yt-dlp`**. All use the same seed and discovery path described below.
 
 #### `skill-creator`
 
@@ -188,9 +188,29 @@ complete extraction.
 Like `skill-creator`, it is editable at `{config_home}/skills/jina-reader/`,
 never overwrites an existing file, respects project-root precedence and can
 be disabled per project through `/skills`. An `ALTER_ZERO_SKILLS_DIR` override
-receives neither built-in. Offline regression tests exercise the actual
+receives no built-ins. Offline regression tests exercise the actual
 seed → discovery → listing → tool-load path and verify that local edits
 survive reseeding and deleted files are restored.
+
+#### `yt-dlp`
+
+**`yt-dlp`** guides downloads of authorized online videos and playlists,
+subtitles/transcripts and audio extraction with the external `yt-dlp` CLI.
+Mention `$yt-dlp` or ask to save media; its listing covers format/quality
+selection and access troubleshooting. The single
+`prompts/skills/yt-dlp/SKILL.md` checks for `yt-dlp`, `ffmpeg` and `ffprobe`
+before promising conversions, defaults to a single item unless a playlist was
+requested, and inspects formats and subtitle languages when needed. Its recipes
+cover playlist archives, resolution ceilings, MP4 preferences, audio extraction
+and captions; the agent checks the actual output files before reporting success.
+
+The skill **does not install or bundle** `yt-dlp`, `ffmpeg` or `ffprobe`, and
+loading it does not download anything. Later CLI calls use the ordinary shell
+and permission gate. Browser cookies require asking first; credentials must
+not be logged or copied into the download directory. It does not claim to
+bypass DRM or access controls. Like the other built-ins, its seeded copy is
+editable, project skills can shadow it, `/skills` can disable it, and an
+`ALTER_ZERO_SKILLS_DIR` override is never seeded.
 
 ### The walk re-runs every turn
 
@@ -607,7 +627,7 @@ here unchanged (`hooks::claude_code_alias`, `docs/hooks.md`).
 | Where | What |
 |---|---|
 | `src/skills.rs` | **pure**: `SkillMetadata`, frontmatter parse, name validation, listing + budget, body render, the `SkillRegistry` handle |
-| `prompts/skills/skill-creator/` | the built-in skill itself — `SKILL.md` + `reference.md`, embedded and seeded |
+| `prompts/skills/` | embedded and seeded built-ins: `skill-creator` (`SKILL.md` + `reference.md`), `jina-reader` and `yt-dlp` (one `SKILL.md` each) |
 | `src/llm/skill.rs` | root resolution, the `read_dir` walk, the built-in seed (`seed_builtin_skills`), context-derived `LoadedSkills`, and the tool executor (`run_skill_tool`) |
 | `src/llm/tools.rs` | `skill_spec()`, `display_name`, `summarize_call` |
 | `src/llm/backend.rs` | `with_skills` — the `with_tasks` pattern |

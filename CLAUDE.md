@@ -1953,9 +1953,10 @@ unchanged) over a body, discovered from the cwd's `.alter-zero/skills` +
 `skills`, and `~/.claude/skills`, first root winning a name
 (`ALTER_ZERO_SKILLS_DIR` **replaces** the list, the `*_DIR` convention — and
 what makes a smoke run hermetic; a `SKILL.md` that won't parse is a toast
-naming it, never silence). **Two skills ship in the binary** — `jina-reader` (public webpages and PDFs
-through Jina Reader using curl, optional `JINA_API_KEY`, no native fetch tool)
-and `skill-creator`,
+naming it, never silence). **Three skills ship in the binary** — `jina-reader` (public webpages and PDFs
+through Jina Reader using curl, optional `JINA_API_KEY`, no native fetch tool),
+`yt-dlp` (authorized media downloads using the separately installed CLI, no
+native tool or download on load), and `skill-creator`,
 which teaches this format (the frontmatter contract, the roots, how to word a
 description that triggers, how to update one without clobbering it), because
 the format is *ours*: a model asked for "a skill" without it writes a lone
