@@ -149,6 +149,7 @@ opening the viewport, running the loop — and everything else lives here:
 | `telemetry.rs` | The once-a-day anonymous usage ping (once more on the day of an update): the install id's mint, the one-time notice under the banner, the detached send, the record of the delivered day and version (`docs/telemetry.md`). |
 | `update.rs` | The once-a-day update check: the detached `HEAD` of the repository's latest release, the `Update available` card under the banner (held back while a turn streams), the attempt's and the notice's day in `update.json` (`docs/update.md`). |
 | `update_cli.rs` | The `alter-zero update` subcommand: the same check, then the one-line installer fetched to a temp file and run over this binary's own directory (`docs/update.md`). |
+| `herdr.rs` | Reporting the session's state to the herdr pane it runs in: the detached socket worker (newest report only, a fresh `seq` per send, the resend backoff and keepalive), the loop-bottom sync, the release on quit (`docs/herdr.md`). |
 | `shell.rs` | The `!` command runner and its drain/cap unit tests (`docs/shell-command.md`). |
 | `workers.rs` | The off-thread file-search / clipboard / model-list / device-sign-in / telemetry-ping / update-check jobs. |
 | `host.rs` | Clocks, dates, the OS string, the uid, ids — the raw impurities. |

@@ -123,8 +123,10 @@ pub fn tool_shell() -> &'static Path {
     })
 }
 
-/// Is `path` a file this process may execute?
-fn is_executable_file(path: &Path) -> bool {
+/// Is `path` a file this process may execute? (The `installed` test
+/// [`find_on_path`] callers pass when they look for a program to run.)
+#[must_use]
+pub fn is_executable_file(path: &Path) -> bool {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;

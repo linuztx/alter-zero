@@ -18,8 +18,8 @@
 //! [`Session::shutdown`] is the mirror image, and its rule is *bounded*: stop
 //! the backend without joining it (the interrupt-lag freeze), give a `!` shell
 //! runner a short window to reap its child so a reparented process can't outlive
-//! the TUI, kill every background shell and subagent, and hand back the session
-//! id for the exit hint.
+//! the TUI, kill every background shell and subagent, hand the herdr pane back
+//! (`docs/herdr.md`), and hand back the session id for the exit hint.
 
 use std::collections::HashMap;
 use std::io;
@@ -520,6 +520,7 @@ impl<'t> Session<'t> {
             update_rx,
             update_attempted: None,
             update_notice_pending: None,
+            herdr: None,
             _file_worker: file_worker,
             registry,
             agent_registry,
@@ -590,6 +591,13 @@ impl<'t> Session<'t> {
         if let Some(prompt) = prompt {
             session.submit_startup_prompt(prompt);
         }
+        // The herdr pane this runs in, if any (docs/herdr.md): its worker
+        // starts after the first frame too, and the first report claims the
+        // pane for this agent at once — idle, or working when a [PROMPT]
+        // just started the first turn, with a resumed session's resume
+        // command already on it.
+        session.herdr = super::herdr::HerdrReporter::start();
+        session.sync_herdr();
 
         Ok(session)
     }
@@ -888,6 +896,12 @@ impl<'t> Session<'t> {
         // Code's closest reason for an interactive quit is
         // `prompt_input_exit`.
         self.models.fire_session_end("prompt_input_exit");
+        // Hand the herdr pane back (docs/herdr.md): the release replaces any
+        // report not yet written, and the wait for it is bounded, so a wedged
+        // socket costs the quit a fraction of a second at most.
+        if let Some(herdr) = self.herdr.as_mut() {
+            herdr.release();
+        }
         let inputs = self.app.take_unpersisted_inputs();
         self.hist_store.append(&inputs);
         // …and the tip walk's position, for a quit that drew a tip on its way
@@ -943,8 +957,8 @@ impl<'t> Session<'t> {
 
     /// The loop-bottom bookkeeping, run after every event: the auto-compact check,
     /// the abandoned-permission release, the three on-disk mirrors (the
-    /// rollout, the input history, the tip walk's position), the transcript
-    /// pre-render, and the detached-thread sweep.
+    /// rollout, the input history, the tip walk's position), the herdr pane's
+    /// state, the transcript pre-render, and the detached-thread sweep.
     pub(crate) fn after_iteration(&mut self) {
         // Auto-compact (docs/compact.md): past codex's 90%-of-window threshold,
         // start the summarization turn on our own at this idle boundary — the loop
@@ -981,6 +995,11 @@ impl<'t> Session<'t> {
         // cost no I/O.
         self.recorder
             .sync(&self.app.history, self.app.history_generation());
+        // Tell the herdr pane what the session is doing now (docs/herdr.md) —
+        // after the recorder sync, so a conversation's first message reports
+        // the session id its file was just created under. A compare when
+        // nothing changed; the socket write is the worker's.
+        self.sync_herdr();
         // Flush any inputs recorded this iteration to the persistent history file
         // (docs/history-persistence.md) — the drain is empty on iterations that
         // recorded nothing, so streaming ticks cost no I/O.

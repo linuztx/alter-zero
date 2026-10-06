@@ -694,6 +694,18 @@ which Ctrl+V reads the clipboard from.
   the two conversation-level additions are `StreamEvent::HookNote` → the
   cell-less `HistoryItem::HookNote` (transcript-visible, context-replayed
   verbatim, `/resume`-safe) and the terminal `StreamEvent::PromptBlocked`.
+- **herdr panes** (`docs/herdr.md`): run inside the herdr multiplexer, the
+  app reports its own state to herdr's local socket — `working` while a turn
+  or a subagent runs, `blocked` while a permission prompt or a question waits
+  on the user (with the prompt in one line), `idle` otherwise — so herdr's
+  sidebar and notifications track it with no setup, and herdr can resume the
+  session (`alter-zero --resume {id}`) after a restart. The state is derived
+  from the app at every loop bottom, after the turn end has dispatched what
+  comes next, so chained turns never flash a false "finished"; one detached
+  worker writes the newest report only, re-sends it on a backoff and a 30 s
+  keepalive, and hands the pane back on quit within a bounded wait. The
+  model's terminal sessions drop `HERDR_PANE_ID`, so an agent it runs cannot
+  claim the pane. `ALTER_ZERO_HERDR=0` turns it off.
 
 ## Architecture
 
@@ -1294,8 +1306,11 @@ two places that have to agree (both now applied by every phase for itself, so
 a phase run on its own is as hermetic as one run by the suite):
 
 - **The variables.** The script unsets every `*_API_KEY`, every `ALTER_ZERO_*`
-  knob, `OLLAMA_HOST`, `NO_COLOR`, and `DISPLAY`/`WAYLAND_DISPLAY`/`XAUTHORITY`
-  before its first launch, then spells out per launch the ones it wants —
+  knob, `OLLAMA_HOST`, `NO_COLOR`, `DISPLAY`/`WAYLAND_DISPLAY`/`XAUTHORITY`, and
+  herdr's four `HERDR_*` pane variables (run from a herdr pane, every phase
+  would report its turns to the developer's real multiplexer —
+  `docs/herdr.md`) before its first launch, then spells out per launch the ones
+  it wants —
   exporting three switches off for every phase besides (`ALTER_ZERO_TELEMETRY`,
   `ALTER_ZERO_UPDATE_CHECK`, and `ALTER_ZERO_TIPS`, whose row under a turn's
   status line would otherwise land in every strip a phase holds past three

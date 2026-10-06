@@ -185,12 +185,12 @@ pays for and why (`moxcms` under `image`, the sixel quantiser under
 ## Architecture
 
 A **library** (`src/lib.rs` → `app`, `stream`, `ui`, `term`, `frame`, `paste`,
-`session`, `subprocess`, `pty`, `history`, `textarea`, `file_search`, `clipboard`, `context`, `background`, `scratchpad`, `secrets`, `agents`, `subagents`, `frontmatter`, `ask`, `tasks`, `skills`, `steer`, `mcp`, `trust`, `checkpoint`, `project_doc`, `reminder`, `permission`, `settings`, `telemetry`, `update`, `tips`, `cli`, `links`, `images`) holds the logic; **`src/main.rs`** is a 77-line shell —
+`session`, `subprocess`, `pty`, `history`, `textarea`, `file_search`, `clipboard`, `context`, `background`, `scratchpad`, `secrets`, `agents`, `subagents`, `frontmatter`, `ask`, `tasks`, `skills`, `steer`, `mcp`, `trust`, `checkpoint`, `project_doc`, `reminder`, `permission`, `settings`, `telemetry`, `update`, `herdr`, `tips`, `cli`, `links`, `images`) holds the logic; **`src/main.rs`** is a 77-line shell —
 the detached-exec hook, the CLI resolution, the viewport, the loop — over
 **`src/tui/`**, the binary-private tree that drives the codex-style **async
 (tokio) `select!`** loop (`event_loop`, `actions`, `turn`, `stream`, `agent`,
 `background`, `permission`, `ask`, `view`, `commit`, `models`, `config`, `bootstrap`,
-`startup`, `recorder`, `resume`, `history_store`, `settings`, `telemetry`, `update`, `update_cli`, `shell`, `workers`, `host`, `mascot`, `spinner`, `theme`, `donate`, `export`, `secrets`, `mcp`, `trust`, `login`,
+`startup`, `recorder`, `resume`, `history_store`, `settings`, `telemetry`, `update`, `update_cli`, `herdr`, `shell`, `workers`, `host`, `mascot`, `spinner`, `theme`, `donate`, `export`, `secrets`, `mcp`, `trust`, `login`,
 with the **`Session`** struct itself in `mod.rs` — every handler is an `impl
 Session` block in its area module, reaching the private fields the way `app/`'s
 submodules reach `App`'s). The four big ones are **directories
@@ -2295,6 +2295,33 @@ under a red `Can't resume on …` toast and leaving the record alone — so the
 directory's entry is only what a *new* session starts on, and two instances
 in one directory each keep, and each resume, their own model; `smoke.sh`
 Phase 118) — and so are the **`/mascot` and `/spinner` looks** (`mascot.json`/`spinner.json` each gaining `config.json`'s `projects` map over the last choice, a directory pinning that last at its first launch and a choice made in it becoming its entry *and* the last, through one pure `app::LookFile<T>` shared by the two twin catalogs via the `app::Look` trait — `tui::config::adopt_look` at bootstrap, `save_look` from the pickers' Enter, `docs/per-directory-state.md`, `smoke.sh` Phase 114).
+
+**herdr support** (`docs/herdr.md`): inside a [herdr](https://herdr.dev)
+pane (`HERDR_ENV=1` + `HERDR_PANE_ID` + `HERDR_SOCKET_PATH`, read by the pure
+`herdr::pane`) the app is its own status authority — herdr has no screen
+rules for it and a third-party agent cannot ship any, so it self-reports over
+herdr's socket. The state is **derived, never tracked**: `herdr::status(&App)`
+at every loop bottom (after the recorder's sync, so the first message's report
+names the file it created, and after the turn end dispatched what follows, so
+chained turns never report a false idle — herdr's "finished" toast) —
+`blocked` while `App::modal_open` (the prompt in one line as the message),
+`working` while a turn is in flight **or any subagent runs** (deliberately
+unlike herdr's newest Grok/agy rule — a subagent always finishes and its
+result starts the next turn — while background shells never count), `idle`
+otherwise. One `pane.report_agent` line per change carries the state, the
+rollout id and `resume_argv` (`alter-zero --resume {id}`, offered only when
+`argv[0]`'s basename is on `PATH`, validated by `herdr::resume_argv` against
+herdr's own rules since an invalid command takes the state down with it);
+`seq` is microseconds stepping past the last (`herdr::next_seq`) because herdr
+drops anything not above a pane's high-water mark for the pane's lifetime.
+`tui::herdr`'s one detached worker drains a single-slot `herdr::Outbox`
+(newest report only, one request at a time, 500 ms bounds, a fresh `seq` per
+send, `herdr::resend_after`'s 1 s… backoff and 30 s keepalive — herdr never
+expires a self-reported state), and `shutdown` posts the release, waiting at
+most 400 ms. `HERDR_PANE_ID` is in `pty::spawn::FOREIGN_TERMINAL_VARS`, so a
+nested agent the model runs cannot claim the pane; `ALTER_ZERO_HERDR=0` turns
+it all off; `smoke.sh` Phase 132 drives it against a stub socket and the
+fixture unsets every `HERDR_*` variable.
 
 ### The runtime model and its invariants
 
