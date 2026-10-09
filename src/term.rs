@@ -49,13 +49,15 @@
 
 use std::collections::VecDeque;
 use std::io::{self, Stdout, Write};
+use std::os::fd::{AsFd, BorrowedFd};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
 
 use ratatui::backend::{Backend, ClearType, CrosstermBackend};
 use ratatui::buffer::{Buffer, Cell, CellDiffOption, CellWidth};
 use ratatui::crossterm::cursor::{Hide, Show};
 use ratatui::crossterm::event::{
-    DisableBracketedPaste, EnableBracketedPaste, KeyboardEnhancementFlags,
+    DisableBracketedPaste, EnableBracketedPaste, Event, KeyboardEnhancementFlags,
     PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
 };
 use ratatui::crossterm::terminal::{
@@ -68,11 +70,14 @@ use ratatui::layout::{Position, Rect};
 use ratatui::style::Color;
 use ratatui::text::Line;
 use ratatui::widgets::{Paragraph, Widget};
+use rustix::termios::{OptionalActions, SpecialCodeIndex};
 
 use crate::app::App;
 use crate::images::{self, ImageStore};
 use crate::links;
 use crate::ui;
+
+pub mod query;
 
 /// A content-anchored inline viewport whose height can change between draws (its
 /// top stays put; it grows downward in place).
@@ -177,21 +182,34 @@ pub struct InlineViewport {
     hyperlinks: bool,
     /// The terminal's graphics capability and the pictures encoded for it
     /// (`docs/images.md`). Built once in [`init`] — from the environment and
-    /// `TIOCGWINSZ`, deliberately **never** from a stdin round trip
-    /// (invariant 1; `ImageStore::detect` explains what that cost). Every
-    /// paint path stamps the reserved blocks through it just before the cells
-    /// go out, which is the [`visible_cells`] rule: a path that skips the
-    /// stamp shows blank rows in that view alone.
+    /// `TIOCGWINSZ`, and where those name nothing, from the terminal's own
+    /// answer inside the cursor query's read, never a stdin reader of its
+    /// own (invariant 1; `images::Detection` explains what that would cost).
+    /// Every paint path stamps the reserved blocks through it just before the
+    /// cells go out, which is the [`visible_cells`] rule: a path that skips
+    /// the stamp shows blank rows in that view alone.
     ///
     /// [`init`]: InlineViewport::init
     images: ImageStore,
+    /// What [`init`]'s startup read took in that was not the terminal's
+    /// answer: keys typed while it waited (`term::query`). The loop takes
+    /// them once, through [`take_typeahead`], and replays them before its
+    /// first `select!` — so nothing typed while the app was starting is lost
+    /// to the read that had to come first.
+    ///
+    /// [`init`]: InlineViewport::init
+    /// [`take_typeahead`]: InlineViewport::take_typeahead
+    typeahead: Vec<u8>,
 }
 
 impl InlineViewport {
     /// Enter raw mode and reserve `min_height` rows at the bottom for the live
     /// region, anchored to the current cursor row (mirrors how ratatui seats an
-    /// inline viewport). Queries the cursor over stdin — safe here because this
-    /// runs on the main thread before any reply thread is spawned.
+    /// inline viewport). Queries the cursor over stdin — and, where the
+    /// environment names no graphics protocol, whether the terminal speaks
+    /// kitty's (`term::query`) — in one synchronous read, safe here because
+    /// this runs on the main thread before the loop's `EventStream` exists
+    /// (invariant 1).
     pub fn init(min_height: u16) -> io::Result<Self> {
         // Decide up front whether to turn on keyboard enhancement, so the panic
         // hook captures the same answer and only pops the stack if we pushed.
@@ -228,7 +246,23 @@ impl InlineViewport {
         let screen = Rect::new(0, 0, size.width, size.height);
 
         let height = min_height.clamp(1, size.height.max(1));
-        let cursor = backend.get_cursor_position()?;
+        // What graphics the environment says this terminal speaks, decided
+        // *before* the cursor query so that one read can carry the question
+        // the environment could not answer: where it leaves the half-block
+        // fallback, the kitty graphics query and `XTVERSION` ride ahead of
+        // the cursor query, and the terminal's answers come back in order
+        // (`term::query`, `docs/images.md`). `ratatui_image`'s own stdio
+        // probe is no option — it leaks a reader thread that eats keystrokes
+        // on a terminal that never answers (invariant 1, `images::Detection`).
+        let detection =
+            (!images::images_disabled(std::env::var(images::IMAGES_ENV).ok().as_deref()))
+                .then(images::Detection::from_env);
+        let replies = startup_read(
+            detection
+                .as_ref()
+                .is_some_and(images::Detection::wants_query),
+        )?;
+        let cursor = replies.cursor;
         // Turn on bracketed paste so a real paste arrives as one `Event::Paste`
         // (a large one collapses to a `[Pasted Content N chars]` placeholder —
         // see docs/paste.md) instead of a burst of synthetic key presses. Like
@@ -257,17 +291,11 @@ impl InlineViewport {
         let top = cursor.y.saturating_sub(scrolled);
 
         let view = Rect::new(0, top, size.width, height);
-        // What graphics this terminal speaks and how big a cell is. No stdin
-        // round trip and no query escape: the environment plus `TIOCGWINSZ`,
-        // because `ratatui_image`'s own stdio probe leaks a reader thread that
-        // eats keystrokes on a terminal that never answers (invariant 1 —
-        // `ImageStore::detect`). Anything undetected degrades to unicode
-        // half-blocks, which are ordinary cells and need no protocol at all.
-        let images = if images::images_disabled(std::env::var(images::IMAGES_ENV).ok().as_deref()) {
-            ImageStore::disabled()
-        } else {
-            ImageStore::detect()
-        };
+        // Anything still undetected degrades to unicode half-blocks, which are
+        // ordinary cells and need no protocol at all.
+        let images = detection.map_or_else(ImageStore::disabled, |detection| {
+            detection.into_store(&replies.graphics)
+        });
         backend.hide_cursor()?;
         Ok(Self {
             backend,
@@ -283,7 +311,18 @@ impl InlineViewport {
                 std::env::var(links::HYPERLINKS_ENV).ok().as_deref(),
             ),
             images,
+            typeahead: replies.typed,
         })
+    }
+
+    /// The keys typed while [`init`]'s startup read waited on the terminal,
+    /// as the events the loop's `EventStream` would have read for them
+    /// (`term::query::typed_events`) — handed over once. The read stops on
+    /// the cursor report, so these come before anything the stream reads.
+    ///
+    /// [`init`]: InlineViewport::init
+    pub fn take_typeahead(&mut self) -> Vec<Event> {
+        query::typed_events(&std::mem::take(&mut self.typeahead))
     }
 
     /// What this terminal can do about pictures: whether one can be drawn at
@@ -1392,6 +1431,95 @@ fn install_panic_hook(keyboard_enhanced: bool) {
 /// enhancement **off** on terminals where the kitty protocol misbehaves (codex's
 /// `CODEX_TUI_DISABLE_KEYBOARD_ENHANCEMENT`). See `docs/shift-enter.md`.
 const DISABLE_KEYBOARD_ENHANCEMENT_ENV: &str = "ALTER_ZERO_DISABLE_KEYBOARD_ENHANCEMENT";
+
+/// How long the startup read waits for the cursor report before giving up —
+/// the budget crossterm's own `position()` had, which this read replaced.
+const STARTUP_REPLY_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// The terminal's input side, found the way crossterm finds it: stdin when
+/// stdin is a tty, else the controlling terminal — the descriptor the loop's
+/// `EventStream` goes on to read.
+enum TtyInput {
+    Stdin(io::Stdin),
+    Device(std::fs::File),
+}
+
+impl TtyInput {
+    fn open() -> io::Result<Self> {
+        let stdin = io::stdin();
+        if rustix::termios::isatty(&stdin) {
+            Ok(Self::Stdin(stdin))
+        } else {
+            std::fs::File::options()
+                .read(true)
+                .write(true)
+                .open("/dev/tty")
+                .map(Self::Device)
+        }
+    }
+}
+
+impl AsFd for TtyInput {
+    fn as_fd(&self) -> BorrowedFd<'_> {
+        match self {
+            Self::Stdin(stdin) => stdin.as_fd(),
+            Self::Device(file) => file.as_fd(),
+        }
+    }
+}
+
+/// Write the startup query and read the terminal's answer — the one stdin
+/// read before the loop's `EventStream` exists (invariant 1), in raw mode.
+/// `graphics` adds the kitty graphics query and `XTVERSION` ahead of the
+/// cursor query (`term::query`).
+///
+/// It reads **one byte at a time** so it stops on the cursor report's last
+/// byte: whatever the user types after that is still unread, and the
+/// `EventStream` gets it with crossterm's whole parser. What was typed
+/// *before* it is in the answer's `typed`, for the loop to replay.
+fn startup_read(graphics: bool) -> io::Result<query::StartupReplies> {
+    let tty = TtyInput::open()?;
+    // Raw mode's reads block until a byte arrives (VMIN 1, VTIME 0). Give
+    // each read a tenth of a second instead, so the deadline is checked while
+    // the terminal says nothing — POSIX's own read timeout, which holds on a
+    // macOS tty where `poll` does not. `Now` applies it without discarding
+    // the input already queued, which is the type-ahead.
+    let raw = rustix::termios::tcgetattr(&tty)?;
+    let mut timed = raw.clone();
+    timed.special_codes[SpecialCodeIndex::VMIN] = 0;
+    timed.special_codes[SpecialCodeIndex::VTIME] = 1;
+    rustix::termios::tcsetattr(&tty, OptionalActions::Now, &timed)?;
+    let replies = read_replies(&tty, graphics);
+    // Back to raw mode's own reads however the read went.
+    let restored = rustix::termios::tcsetattr(&tty, OptionalActions::Now, &raw);
+    let replies = replies?;
+    restored?;
+    Ok(replies)
+}
+
+/// [`startup_read`]'s write and read loop.
+fn read_replies(tty: &TtyInput, graphics: bool) -> io::Result<query::StartupReplies> {
+    let mut stdout = io::stdout();
+    stdout.write_all(query::startup_query(graphics).as_bytes())?;
+    stdout.flush()?;
+    let deadline = Instant::now() + STARTUP_REPLY_TIMEOUT;
+    let mut scanner = query::ReplyScanner::new();
+    let mut byte = [0u8; 1];
+    while Instant::now() < deadline {
+        match rustix::io::read(tty, &mut byte[..]) {
+            // `0` is a tenth of a second with nothing (VTIME).
+            Ok(1) if scanner.push(byte[0]) => break,
+            Ok(_) | Err(rustix::io::Errno::INTR) => {}
+            Err(err) => return Err(err.into()),
+        }
+    }
+    scanner.into_replies().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::TimedOut,
+            "The cursor position could not be read within a normal duration",
+        )
+    })
+}
 
 /// Whether keyboard enhancement should be left **off**, given the value of
 /// [`DISABLE_KEYBOARD_ENHANCEMENT_ENV`]. A truthy value (`1`/`true`/`yes`,

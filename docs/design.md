@@ -547,10 +547,14 @@ which Ctrl+V reads the clipboard from.
   blank row apart — in the terminal's real scrollback, in the live region, and
   in the Ctrl+O transcript. Real pixels where the terminal speaks a graphics
   protocol (kitty / iTerm2 / sixel, via `ratatui-image`), unicode half-blocks
-  everywhere else. Pure `ui` reserves the rows (a block is `rows` `Line`s of
-  `cols` marked spaces, so a picture rides every path a `Vec<Line>` already
-  rides) and the boundary's `ImageStore::stamp` draws into them in the four
-  paint paths. Three `/settings` rows drive it: **Show images**, **Image
+  everywhere else. The protocol comes from the environment, and where that
+  names none — a herdr pane says `xterm-256color` while its emulator speaks
+  kitty's — from the terminal itself, asked inside the startup cursor query's
+  one read (`docs/images.md` *Asking the terminal*). Pure `ui` reserves the
+  rows (a block is `rows` `Line`s of `cols` marked spaces, so a picture rides
+  every path a `Vec<Line>` already rides) and the boundary's
+  `ImageStore::stamp` draws into them in the four paint paths. Three
+  `/settings` rows drive it: **Show images**, **Image
   width** (a cap in columns), and **Auto-resize images** — the last one about
   the *request* rather than the screen, downscaling a large picture before it
   is uploaded.
@@ -765,7 +769,10 @@ input and draws can't starve each other (codex's explicit round-robin fairness,
 for free). The async-rewrite design lives in `docs/async-rewrite.md`.
 
 The `EventStream` is the **sole** stdin reader, created *after* `InlineViewport::init`
-has queried the cursor position over stdin once, synchronously. The reply backend
+has queried the cursor position over stdin once, synchronously — and any other
+question for the terminal rides in that read (today the kitty graphics query and
+XTVERSION, written ahead of the cursor query; the keys typed while it waited are
+replayed before the loop's first `select!` — `docs/images.md`). The reply backend
 runs on a background thread that only *sends* on its channel — it never reads stdin.
 A second stdin reader would steal the cursor-position (DSR) reply — the cause of the
 "cursor position could not be read" error. (`insert_before` tracks the viewport row

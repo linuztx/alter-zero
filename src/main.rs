@@ -17,11 +17,11 @@
 //! (`docs/tty-detach.md`).
 //!
 //! **Invariant 1 (stdin):** [`InlineViewport::init`] queries the cursor position
-//! over stdin *once, synchronously*, before any `EventStream` exists — so the
-//! loop's `EventStream` is then the **sole** stdin reader. The reply backend runs
-//! on a background thread that only *sends* on its channel, never reading stdin.
-//! A second stdin reader would steal the cursor-position (DSR) reply — the source
-//! of the "cursor position could not be read" error.
+//! over stdin *once, synchronously*, before any `EventStream` exists (any other
+//! question for the terminal rides in that read) — so the loop's `EventStream`
+//! is then the **sole** stdin reader; the reply backend's thread only *sends* on
+//! its channel. A second stdin reader would steal the cursor-position (DSR)
+//! reply — the source of the "cursor position could not be read" error.
 //!
 //! [`InlineViewport::init`]: alter_zero::term::InlineViewport::init
 

@@ -114,8 +114,11 @@ omitting the add would retain Docker's default grant. Resolve both HOME and
 the workspace physically before the SELinux home-directory guard. Two things there are easy
 to get wrong. **The `exec` command forwards the terminal's identity** —
 `-e TERM -e COLORTERM -e TERM_PROGRAM -e KITTY_WINDOW_ID -e TMUX`, the
-variables `ImageStore::detect` actually reads — without which pictures fall to
-half-blocks; it is the documentation, printed by `run.sh`, not a wrapper. And
+variables `images::Detection::from_env` actually reads — without which an
+iTerm2-family terminal falls to half-blocks (a kitty-protocol one is still
+found by the startup question, `docs/images.md` *Asking the terminal*) and a
+container under tmux cannot know not to ask; it is the documentation, printed
+by `run.sh`, not a wrapper. And
 **`--clipboard` forwards the display server, since `exec -it` carries only
 keystrokes**: the Wayland socket alone (never the runtime dir) **and** X11
 with a cookie rewritten to the wildcard family (the server files it under a
@@ -247,7 +250,9 @@ unit-tested save for the odd pure helper that has no terminal in it (like
 `term`'s `keyboard_enhancement_disabled` env predicate — see
 `docs/shift-enter.md` — or its `visible_cells` cell emitter, which skips the
 cells shadowed by a wide emoji/CJK glyph so painted rows never drift — see
-`docs/table-streaming.md` *Wide glyphs*); `frame`'s async scheduler **task** is smoke-covered too
+`docs/table-streaming.md` *Wide glyphs* — or the startup read's `term::query`,
+the scanner that sorts the terminal's answers from the keys typed meanwhile
+and the replay of those keys — see `docs/images.md` *Asking the terminal*); `frame`'s async scheduler **task** is smoke-covered too
 (its rate-limit/coalesce math is unit-tested). Keep logic out of the boundary;
 the geometry *policy* `term.rs` acts on — live-region height, the box's re-pin,
 the cursor seat — comes from pure `ui` helpers it calls (`ui::live_height`,
@@ -846,14 +851,27 @@ picture; a differential test pins the two together against the real
 (`images::read_image_size` — the only record that survives a `/resume`,
 since the rollout keeps the cell's text and not the file's header) or, for a
 paste, from the header the boundary read when the paste landed. Terminal
-detection **never reads stdin**: `ratatui_image`'s `Picker::from_query_stdio`
-spawns a reader thread behind a 2 s timeout and never joins it, so on a
-terminal that doesn't answer that thread eats the user's keystrokes
-(observed under tmux — a 2 s stall and then every key swallowed), which is
-invariant 1, so the cell size comes from `TIOCGWINSZ` and the protocol from
-the environment, falling to half-blocks;
+detection **adds no stdin reader**: `ratatui_image`'s
+`Picker::from_query_stdio` spawns a reader thread behind a 2 s timeout and
+never joins it, so on a terminal that doesn't answer that thread eats the
+user's keystrokes (observed under tmux — a 2 s stall and then every key
+swallowed), which is invariant 1, so the cell size comes from `TIOCGWINSZ`
+and the protocol from the environment (`images::Detection`) — and where the
+environment names none, from the terminal itself, asked **inside the init
+cursor query's own read** (`term::query`): the kitty graphics query and
+XTVERSION ride ahead of the DSR in one write, bracketed by a title push/pop
+because tmux files an unknown APC string as the pane's title, a terminal
+answers in order so the cursor report still ends the read, and a kitty `OK`
+upgrades the half-block fallback unless the answering terminal names itself
+WezTerm or Konsole (no unicode placeholders; the variables saying so are only
+the fallback, since herdr keeps them in panes its own libghostty answers for).
+That is what draws real pictures in a **herdr** pane, whose environment says
+`xterm-256color`/`TERM_PROGRAM=herdr` and nothing else. Never asked under a
+multiplexer (`TMUX`/`STY`/`ZELLIJ`), on a `linux`/`dumb` console, or with the
+protocol pinned; falling to half-blocks;
 `ALTER_ZERO_IMAGE_PROTOCOL`/`ALTER_ZERO_IMAGE_CELL_SIZE` override both and
-`ALTER_ZERO_IMAGES` gates it. The encoded pictures are bounded in **bytes**
+`ALTER_ZERO_IMAGES` gates it (`smoke.sh` Phase 107e plays the answering
+terminal on a pty, since tmux can answer none of it). The encoded pictures are bounded in **bytes**
 (a kitty placement is the whole picture as base64 RGBA), estimated from the
 placement's own geometry, since this process idles in a terminal all day
 (`docs/memory.md`) — and a PNG is **decoded at its fitted size**:
@@ -2339,10 +2357,14 @@ session starts gets `HERDR_PANE_ID`** — the pty sessions
 stdio servers — because a nested official integration's session report makes
 it the pane's owner and herdr then drops every alter-zero report for the
 pane's life; `HERDR_ENV` stays, since herdr's agent skill stops without it
-(herdr's popups get the same environment). `ALTER_ZERO_HERDR=0` turns it all
-off; `smoke.sh` Phase 132 drives it against a stub socket (a failed turn
-through the real backend and a refusing stub provider) and the fixture unsets
-every `HERDR_*` variable.
+(herdr's popups get the same environment). A pane's **pictures** owe nothing
+to the reports: herdr's environment names no graphics protocol, so the
+startup read asks the terminal (`term::query`, `docs/images.md` *Asking the
+terminal*) and herdr's libghostty answers `OK` (`docs/herdr.md` *Pictures in
+a pane*), which `ALTER_ZERO_HERDR` does not touch. `ALTER_ZERO_HERDR=0`
+turns the reporting off; `smoke.sh` Phase 132 drives it against a stub
+socket (a failed turn through the real backend and a refusing stub provider)
+and the fixture unsets every `HERDR_*` variable.
 
 ### The runtime model and its invariants
 
@@ -2606,7 +2628,13 @@ of bug:
    exists*; a second stdin reader would steal that reply and cause "cursor position
    could not be read". So: create the `EventStream` only after init, and never add
    another thread or task that reads stdin (`insert_before` tracks the viewport row
-   itself and never queries the cursor). **Relatedly, the detached-exec hook
+   itself and never queries the cursor). **Any other question for the terminal
+   rides in that same read** (`term::query` — today the kitty graphics query and
+   XTVERSION, `docs/images.md` *Asking the terminal*): written ahead of the DSR,
+   answered in order, the read stopping on the cursor report's last byte so
+   everything typed after it reaches the `EventStream` whole, and the keys typed
+   *before* it — which the read took in — replayed through the ordinary key
+   handler ahead of the loop's first `select!` (`InlineViewport::take_typeahead`). **Relatedly, the detached-exec hook
    (`subprocess::run_detached_exec_if_requested`) must stay the *first statement*
    of `main()`** — before the tokio runtime and any terminal I/O: in a helper
    re-exec (`{exe} __alter-zero-detached-exec {cmd}`) the process must `setsid`

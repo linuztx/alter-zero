@@ -22,9 +22,10 @@
 //!   streaming its rows through an area-average shrink so the source picture
 //!   is never held whole (`docs/memory.md`).
 //! - [`store`] — the paint boundary. What this terminal can draw (from the
-//!   environment and `TIOCGWINSZ`, never a stdin round trip), the encoded
-//!   pictures, and the one pass that turns a reserved block into a picture in
-//!   a `Buffer`.
+//!   environment and `TIOCGWINSZ`, and — where those name nothing — the
+//!   terminal's own answer inside the cursor query's read, never a stdin
+//!   reader of its own), the encoded pictures, and the one pass that turns a
+//!   reserved block into a picture in a `Buffer`.
 
 pub mod attachment;
 pub mod fitted;
@@ -57,8 +58,9 @@ pub use registry::{
     remember_size, set_policy, showing,
 };
 pub use store::{
-    IMAGE_CELL_SIZE_ENV, IMAGE_PROTOCOL_ENV, IMAGE_RETRANSMIT_ENV, IMAGES_ENV, ImageStore,
-    images_disabled, kitty_from_env, load_fitted, parse_cell_size, protocol_from_name,
+    Detection, GraphicsReply, IMAGE_CELL_SIZE_ENV, IMAGE_PROTOCOL_ENV, IMAGE_RETRANSMIT_ENV,
+    IMAGES_ENV, ImageStore, MULTIPLEXER_SESSION_VARS, graphics_query_wanted, images_disabled,
+    kitty_from_env, load_fitted, parse_cell_size, protocol_after_reply, protocol_from_name,
     retransmit_forced, under_multiplexer,
 };
 

@@ -233,6 +233,24 @@ process runs under herdr without being a pane's occupant (`without_pane_identity
 in its source); it also keeps `herdr pane run --current` from typing into the
 TUI itself.
 
+## Pictures in a pane
+
+Separate from the state reports, and needing no setup either: a herdr pane
+draws alter-zero's pictures (a pasted screenshot, an image `read`) as kitty
+graphics. herdr's emulator is libghostty, which speaks the kitty graphics
+protocol, unicode placeholders included, but a pane's environment names none
+of it — `TERM=xterm-256color`, `TERM_PROGRAM=herdr`, and the outer terminal's
+`KITTY_WINDOW_ID` stripped — so detection by environment alone fell to
+half-blocks there. Where the environment names nothing, alter-zero asks the
+terminal inside its startup cursor query, and herdr answers `OK` and calls
+itself `libghostty` (`docs/images.md` *Asking the terminal*). herdr's
+`terminal.kitty_graphics` setting has been on by default since 0.9.0; with it
+off, a pane's terminal has no kitty graphics to answer for, says nothing, and
+the pictures stay half-blocks. herdr then draws the picture on its own outer
+terminal, so what an outer terminal without kitty graphics shows is herdr's
+call; `terminal.kitty_graphics = false` in herdr's config, or
+`ALTER_ZERO_IMAGE_PROTOCOL=halfblocks` in the pane, keeps half-blocks there.
+
 ## Turning it off
 
 `ALTER_ZERO_HERDR=0` (`false`/`no`/`off`, the usual grammar) turns it off for

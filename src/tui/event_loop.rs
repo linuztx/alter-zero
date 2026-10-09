@@ -20,7 +20,9 @@
 //! **Invariant 1:** the `EventStream` is the sole stdin reader.
 //! `InlineViewport::init` already queried the cursor position over stdin,
 //! synchronously, before that stream existed — a second reader would steal the
-//! reply. Nothing here (and nothing in `workers`) may read stdin.
+//! reply. Nothing here (and nothing in `workers`) may read stdin. The keys that
+//! read took in on the way (typed while it waited) are replayed before the
+//! first `select!`, through the same handler.
 //!
 //! ```text
 //! keyboard / resize ──► EventStream ─┐
@@ -49,6 +51,15 @@ use super::startup::Startup;
 /// `main` prints after the terminal is restored — else `None`.
 pub(crate) async fn run(term: &mut InlineViewport, startup: Startup) -> io::Result<Option<String>> {
     let mut session = Session::bootstrap(term, startup)?;
+    // Keys typed while `InlineViewport::init`'s startup read waited on the
+    // terminal: that read took them in, so they go first — through the same
+    // handler, and ahead of anything the EventStream reads (`term::query`).
+    for event in session.term.take_typeahead() {
+        if session.on_terminal_event(event)? == Flow::Quit {
+            return Ok(session.shutdown());
+        }
+        session.after_iteration();
+    }
     loop {
         tokio::select! {
             // 1. Terminal input. The events branch always matches (it binds the
