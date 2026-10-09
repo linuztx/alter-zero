@@ -139,14 +139,20 @@ impl Session<'_> {
     /// Commit the card as scrollback chrome: framed and wrapped to the
     /// terminal (`ui::update_notice_lines`) over a blank spacer, through the
     /// same queue the banner rides. Chrome, never `history`; a purge rebuild
-    /// does not re-emit it.
+    /// does not re-emit it. Its command is the one that updates this install
+    /// — `alter-zero update`, or the package manager's that unpacked this
+    /// binary under `node_modules` (`docs/npm.md`).
     fn commit_update_notice(&mut self, latest: &str) {
         let width = self.term.screen().width;
+        let manager = std::env::current_exe()
+            .ok()
+            .and_then(|exe| update::package_manager(&exe));
         self.term.insert_before(ui::update_notice_lines(
             width,
             env!("CARGO_PKG_VERSION"),
             latest,
             &config::update_repo_url(),
+            &update::update_command(manager),
         ));
         self.term.insert_before(vec![Line::default()]);
     }

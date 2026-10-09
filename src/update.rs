@@ -5,8 +5,10 @@
 //! `/releases/latest` redirect ([`version_from_release_url`]), the once-a-day
 //! decisions ([`should_check`], [`notice_due`]), the URLs built off the
 //! repository ([`latest_url`], [`release_page_url`], [`installer_url`]), the
-//! environment predicate ([`enabled_by_env`]), the card's text ([`notice`])
-//! and the one guard `alter-zero update` needs ([`is_cargo_build_dir`]). No
+//! environment predicate ([`enabled_by_env`]), the card's text ([`notice`]),
+//! the two guards `alter-zero update` needs ([`is_cargo_build_dir`], and
+//! [`package_manager`] for an install npm or its kin own — whose own command,
+//! [`update_command`], the card names instead; `docs/npm.md`). No
 //! clock, no filesystem, no network: the boundary (`tui::update`) reads the
 //! UTC date, does the read-modify-write over the file and spawns the request
 //! — the one impure function here, [`fetch_latest`], is what that worker
@@ -40,6 +42,86 @@ pub const DEFAULT_REPO_URL: &str = env!("CARGO_PKG_REPOSITORY");
 /// is served from ([`installer_url`]).
 pub const INSTALLER_FILE: &str = "install.sh";
 pub const INSTALLER_BRANCH: &str = "main";
+
+/// The npm package that installs the binary — `npm/package.json`'s name
+/// (`docs/npm.md`), which every package manager's update command names.
+pub const NPM_PACKAGE: &str = "@linuztx/alter-zero";
+
+/// A JavaScript package manager that can install [`NPM_PACKAGE`] — and then
+/// owns the binary it unpacked, so its own command updates it, never
+/// `alter-zero update`: a file replaced behind the manager's back is put
+/// back by its next install.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PackageManager {
+    Npm,
+    Pnpm,
+    Yarn,
+    Bun,
+}
+
+impl PackageManager {
+    /// The manager's name as its own users write it.
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Npm => "npm",
+            Self::Pnpm => "pnpm",
+            Self::Yarn => "Yarn",
+            Self::Bun => "Bun",
+        }
+    }
+}
+
+/// Which package manager installed the binary at `exe` (the boundary's
+/// `current_exe()`), or `None` when none did. Every one of them unpacks the
+/// platform package's binary under a `node_modules` directory — nested under
+/// the launcher (npm), hoisted (Bun, Yarn) or in pnpm's store — so that
+/// component is the tell, and the layout around it names the manager:
+/// pnpm's store is `node_modules/.pnpm`, Bun's global packages live under
+/// `~/.bun`, Yarn classic's under `…/yarn/global/node_modules`; any other
+/// `node_modules` is npm's. The path rather than an environment variable the
+/// launcher sets: it holds however the binary was started, and it leaks
+/// nothing into the environment of every command the agent runs.
+#[must_use]
+pub fn package_manager(exe: &Path) -> Option<PackageManager> {
+    let parts: Vec<&std::ffi::OsStr> = exe
+        .components()
+        .filter_map(|part| match part {
+            std::path::Component::Normal(name) => Some(name),
+            _ => None,
+        })
+        .collect();
+    if !parts.iter().any(|part| *part == "node_modules") {
+        return None;
+    }
+    if parts.iter().any(|part| *part == ".pnpm") {
+        return Some(PackageManager::Pnpm);
+    }
+    if parts.iter().any(|part| *part == ".bun") {
+        return Some(PackageManager::Bun);
+    }
+    if parts
+        .windows(3)
+        .any(|run| run[0] == "yarn" && run[1] == "global" && run[2] == "node_modules")
+    {
+        return Some(PackageManager::Yarn);
+    }
+    Some(PackageManager::Npm)
+}
+
+/// The command that updates this install: `alter-zero update`, or — for an
+/// install a package manager owns — that manager's own, installing the
+/// newest [`NPM_PACKAGE`].
+#[must_use]
+pub fn update_command(manager: Option<PackageManager>) -> String {
+    match manager {
+        None => format!("{} update", env!("CARGO_PKG_NAME")),
+        Some(PackageManager::Npm) => format!("npm install -g {NPM_PACKAGE}@latest"),
+        Some(PackageManager::Pnpm) => format!("pnpm add -g {NPM_PACKAGE}@latest"),
+        Some(PackageManager::Yarn) => format!("yarn global add {NPM_PACKAGE}@latest"),
+        Some(PackageManager::Bun) => format!("bun add -g {NPM_PACKAGE}@latest"),
+    }
+}
 
 /// What `update.json` holds: the switch, the last day a check ran, the
 /// newest version that check saw, and the last day the card was shown.
@@ -301,19 +383,19 @@ pub fn enabled_by_env(value: Option<&str>) -> Option<bool> {
 }
 
 /// The card's text (`ui::update_notice_lines` frames and wraps it): both
-/// versions, the release page, the command that updates, and the opt-out.
-/// Inline markdown marks the labels and commands; the blank line separates
-/// the news from the opt-out, the telemetry card's shape.
+/// versions, the release page, `command` — what updates this install,
+/// [`update_command`] — and the opt-out. Inline markdown marks the labels
+/// and commands; the blank line separates the news from the opt-out, the
+/// telemetry card's shape.
 #[must_use]
-pub fn notice(current: &str, latest: &str, repo: &str) -> String {
+pub fn notice(current: &str, latest: &str, repo: &str, command: &str) -> String {
     let current = current.strip_prefix('v').unwrap_or(current);
     let latest = latest.strip_prefix('v').unwrap_or(latest);
     let page = release_page_url(repo, latest);
-    let bin = env!("CARGO_PKG_NAME");
     format!(
         "{APP_NAME} **v{latest}** is out — you are running v{current}.\n\
          **What's new** {page}\n\
-         **Update** run `{bin} update`, then restart.\n\n\
+         **Update** run `{command}`, then restart.\n\n\
          **Turn off** `/settings → Update check` or `{UPDATE_ENV}=0`"
     )
 }
@@ -631,7 +713,7 @@ mod tests {
 
     #[test]
     fn the_notice_names_both_versions_the_release_page_the_command_and_the_opt_out() {
-        let text = notice("0.1.0", "0.2.0", DEFAULT_REPO_URL);
+        let text = notice("0.1.0", "0.2.0", DEFAULT_REPO_URL, &update_command(None));
         assert!(
             text.starts_with(crate::APP_NAME),
             "speaks the app's name first: {text}"
@@ -686,5 +768,108 @@ mod tests {
         ] {
             assert!(!is_cargo_build_dir(Path::new(installed)), "{installed}");
         }
+    }
+
+    #[test]
+    fn a_package_manager_install_is_known_by_where_it_unpacked_the_binary() {
+        for (exe, manager) in [
+            // npm nests the platform package under the launcher, wherever
+            // the global prefix is: a system Node, nvm, Homebrew.
+            (
+                "/usr/local/lib/node_modules/@linuztx/alter-zero/node_modules/@linuztx/alter-zero-linux-x64/bin/alter-zero",
+                PackageManager::Npm,
+            ),
+            (
+                "/home/u/.nvm/versions/node/v24.11.0/lib/node_modules/@linuztx/alter-zero/node_modules/@linuztx/alter-zero-linux-arm64/bin/alter-zero",
+                PackageManager::Npm,
+            ),
+            (
+                "/opt/homebrew/lib/node_modules/@linuztx/alter-zero/node_modules/@linuztx/alter-zero-darwin-arm64/bin/alter-zero",
+                PackageManager::Npm,
+            ),
+            // pnpm unpacks into its store, `node_modules/.pnpm`.
+            (
+                "/home/u/.local/share/pnpm/global/5/node_modules/.pnpm/@linuztx+alter-zero-linux-x64@0.12.0/node_modules/@linuztx/alter-zero-linux-x64/bin/alter-zero",
+                PackageManager::Pnpm,
+            ),
+            // bun's global packages live under ~/.bun.
+            (
+                "/home/u/.bun/install/global/node_modules/@linuztx/alter-zero-linux-x64/bin/alter-zero",
+                PackageManager::Bun,
+            ),
+            // Yarn classic's under its global directory.
+            (
+                "/home/u/.config/yarn/global/node_modules/@linuztx/alter-zero-linux-x64/bin/alter-zero",
+                PackageManager::Yarn,
+            ),
+        ] {
+            assert_eq!(package_manager(Path::new(exe)), Some(manager), "{exe}");
+        }
+        for unmanaged in [
+            "/home/u/.local/bin/alter-zero",
+            "/usr/bin/alter-zero",
+            "/home/u/src/alter-zero/target/release/alter-zero",
+            // A directory merely named like one is not one.
+            "/home/u/node_modules_backup/alter-zero",
+            "/home/u/.pnpm/alter-zero",
+            "/home/u/.bun/bin/alter-zero",
+        ] {
+            assert_eq!(package_manager(Path::new(unmanaged)), None, "{unmanaged}");
+        }
+    }
+
+    #[test]
+    fn each_package_manager_updates_its_own_install() {
+        assert_eq!(update_command(None), "alter-zero update");
+        for (manager, name, command) in [
+            (
+                PackageManager::Npm,
+                "npm",
+                "npm install -g @linuztx/alter-zero@latest",
+            ),
+            (
+                PackageManager::Pnpm,
+                "pnpm",
+                "pnpm add -g @linuztx/alter-zero@latest",
+            ),
+            (
+                PackageManager::Yarn,
+                "Yarn",
+                "yarn global add @linuztx/alter-zero@latest",
+            ),
+            (
+                PackageManager::Bun,
+                "Bun",
+                "bun add -g @linuztx/alter-zero@latest",
+            ),
+        ] {
+            assert_eq!(manager.name(), name);
+            assert_eq!(update_command(Some(manager)), command);
+        }
+    }
+
+    #[test]
+    fn the_notice_names_the_command_that_updates_this_install() {
+        let npm = update_command(Some(PackageManager::Npm));
+        let text = notice("0.1.0", "0.2.0", DEFAULT_REPO_URL, &npm);
+        assert!(
+            text.contains(
+                "**Update** run `npm install -g @linuztx/alter-zero@latest`, then restart."
+            ),
+            "{text}"
+        );
+        assert!(
+            !text.contains("`alter-zero update`"),
+            "never the command that would reinstall under node_modules: {text}"
+        );
+    }
+
+    #[test]
+    fn the_npm_package_is_the_one_npm_package_json_publishes() {
+        let manifest =
+            std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/npm/package.json"))
+                .expect("the checkout's npm/package.json");
+        let manifest: serde_json::Value = serde_json::from_str(&manifest).expect("valid JSON");
+        assert_eq!(manifest["name"], NPM_PACKAGE);
     }
 }

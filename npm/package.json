@@ -1,0 +1,56 @@
+{
+  "name": "@linuztx/alter-zero",
+  "version": "0.12.0",
+  "description": "Agent harness for coding, cybersecurity, and automation.",
+  "keywords": [
+    "agent",
+    "ai",
+    "cli",
+    "coding-agent",
+    "cybersecurity",
+    "llm",
+    "terminal",
+    "tui"
+  ],
+  "homepage": "https://github.com/linuztx/alter-zero#readme",
+  "bugs": {
+    "url": "https://github.com/linuztx/alter-zero/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/linuztx/alter-zero.git",
+    "directory": "npm"
+  },
+  "license": "Apache-2.0",
+  "author": "linuztx <linuztx@gmail.com>",
+  "bin": {
+    "alter-zero": "bin/alter-zero.js"
+  },
+  "files": [
+    "bin/alter-zero.js"
+  ],
+  "os": [
+    "darwin",
+    "linux"
+  ],
+  "cpu": [
+    "arm64",
+    "x64"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "optionalDependencies": {
+    "@linuztx/alter-zero-darwin-arm64": "0.12.0",
+    "@linuztx/alter-zero-darwin-x64": "0.12.0",
+    "@linuztx/alter-zero-linux-arm64": "0.12.0",
+    "@linuztx/alter-zero-linux-x64": "0.12.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "prepublishOnly": "node scripts/refuse-direct-publish.js",
+    "test": "node --test"
+  }
+}

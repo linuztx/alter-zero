@@ -20,6 +20,16 @@ release heading when a version is cut.
   It checks installed CLI tools and available formats, defaults to one video
   unless a playlist was requested, asks before using browser cookies and
   verifies output files before reporting success (`docs/skills.md`).
+- **Install with npm.** `npm install -g @linuztx/alter-zero` installs the
+  same prebuilt binary as the one-line installer, on Linux (x86_64, arm64)
+  and macOS (Intel, Apple silicon). npm downloads only the package built for
+  your machine and runs nothing at install time, so it works with
+  `--ignore-scripts`, pnpm and Bun too; on Node.js 22.15 or newer the binary
+  takes over the `alter-zero` command's process as it starts, so no Node.js
+  stays running beside it. On such an install the update notice names
+  `npm install -g @linuztx/alter-zero@latest` (or pnpm's, Bun's or Yarn's
+  command), and `alter-zero update` points there instead of replacing files
+  npm manages (`docs/npm.md`).
 
 ### Fixed
 
